@@ -203,6 +203,8 @@ final class AppEnvironment: ObservableObject {
     /// Explicit tool calls retain their resolved environment. nil
     /// only where the engine is not built in.
     let linuxGuestService: LinuxGuestCommandService?
+    /// Long-lived native owner; settings only starts/cancels/observes.
+    let storageOptimizationService: StorageOptimizationService
     /// Trusted lazy runtime-component deployment (Impeccable engine): records
     /// immutable task/run/environment-bound plans from verified exact skill
     /// reads and prepares download/staging/probe only at the approved
@@ -644,6 +646,9 @@ final class AppEnvironment: ObservableObject {
     /// Set during tool registration; used at launch to reconcile interrupted
     /// in-process jobs and by UI surfaces that list active background work.
     private(set) var backgroundJobService: BackgroundJobService?
+    /// Set with the background-job tools; owns the bundled Linux cleanup
+    /// script's durable job submissions and dedup.
+    private(set) var linuxCacheCleanupService: LinuxCacheCleanupService?
     #if canImport(AlarmKit) && !targetEnvironment(macCatalyst)
     private var alarmService: SystemAlarmService?
     var systemAlarmControlling: (any SystemAlarmControlling)? { alarmService }
@@ -738,7 +743,13 @@ final class AppEnvironment: ObservableObject {
         try await environmentExecutions.acquireManagement(environmentID: id, cancellation: cancellation)
     }
     func executionSelectedTaskLease(_ context: ToolContext) async throws -> SelectedTaskEnvironmentLease {
-        try await environmentExecutions.acquireSelectedTaskEnvironment(context)
+        let lease = try await environmentExecutions.acquireSelectedTaskEnvironment(context)
+        guard lease.backend == .linuxVM else { return lease }
+        do {
+            let pin = try await runStore.run(id: context.childExecution?.identity.parentRunID ?? context.runID)?.executionBinding
+            guard let physical = try await ResidentRuntimeBindingFence.acquire(context: lease.context, pin: pin, registry: environmentRegistry) else { return lease }
+            return lease.holdingFinalizer { physical.finish() }
+        } catch { await lease.finish(); throw error }
     }
     func executionLeaseCount(_ id: String) async -> Int { await environmentExecutions.activeLeaseCount(environmentID: id) }
     func fenceExecutionForMigration(_ id: String) async -> Bool { await environmentExecutions.fenceMigrationIfIdle(environmentID: id) }
@@ -1119,11 +1130,22 @@ final class AppEnvironment: ObservableObject {
         )
         self.environmentRegistry = environmentRegistry
         let containerCAS = ContainerCAS(roots: environmentRoots)
-        let environmentExecutions = EnvironmentExecutionCoordinator(roots: environmentRoots, registry: environmentRegistry)
+        // The shared layer has no workspace owner. The coordinator consults
+        // this create-only purpose row only when a caller explicitly selects
+        // that layer; ordinary task/session/project execution is unchanged.
+        let cleanupProfilesForShell = LinuxCacheCleanupTaskStore(database: database)
+        let environmentExecutions = EnvironmentExecutionCoordinator(
+            roots: environmentRoots,
+            registry: environmentRegistry,
+            sharedCleanupAuthorization: { conversationID in
+                (try? await cleanupProfilesForShell.isCleanupConversation(conversationID)) ?? false
+            }
+        )
         self.environmentExecutions = environmentExecutions
         let executionPins = SQLiteRunStore(database: database)
         ToolEnvironmentRouting.shared.configure { original in
             var context = original
+            var savedPin: TaskExecutionBinding?
             if let name = context.executionToolName,
                CapabilityExecutionRouter.decision(for: name).backend != .nativeApple,
                let run = try await executionPins.run(id: context.childExecution?.identity.parentRunID ?? context.runID) {
@@ -1136,12 +1158,24 @@ final class AppEnvironment: ObservableObject {
                     // ID. Resolve the missing additive generation ONLY from
                     // this exact run pin, never model arguments or defaults.
                     context.executionBindingGeneration = pin.generation
+                    savedPin = pin
                 } else if context.environmentID == nil,
                           CapabilityExecutionRouter.decision(for: name).backend == .linuxGuest {
                     throw FloeError.validationFailed("The selected execution environment is unavailable. Reconnect or explicitly choose another location; no fallback was started.")
                 }
             }
-            return try await environmentExecutions.acquire(context)
+            let lease = try await environmentExecutions.acquire(context)
+            guard let name = context.executionToolName,
+                  CapabilityExecutionRouter.decision(for: name).backend == .linuxGuest else { return lease }
+            do {
+                guard let physical = try await ResidentRuntimeBindingFence.acquire(context: lease.context, pin: savedPin, registry: environmentRegistry) else { return lease }
+                return ToolEnvironmentLease(context: lease.context) {
+                    // Drop SH before the coordinator publishes this tracked
+                    // execution idle; maintenance cannot observe a false gap.
+                    physical.finish()
+                    await lease.finish()
+                }
+            } catch { await lease.finish(); throw error }
         }
 
         // Linux guest backend: one TinyEMU-backed service for the whole app,
@@ -1155,9 +1189,15 @@ final class AppEnvironment: ObservableObject {
             // Injected here, not read from the lazy workspace center: a
             // cold-start guest start must resolve an external workspace's
             // security scope before any UI object exists.
-            workspaceStore: SQLiteWorkspaceStore(database: database)
+            workspaceStore: SQLiteWorkspaceStore(database: database),
+            // The fixed legacy-recovery-domain authority reads its reference
+            // evidence from the same App DB. No UI, rewrite or deletion is
+            // enabled here; this only assembles the cooperating authority.
+            maintenanceDatabase: database
         )
         self.linuxGuestService = linuxGuests
+        self.storageOptimizationService = StorageOptimizationService(
+            adapter: LinuxGuestMaintenanceAssembly.currentRuntime()?.optimizer)
         // Optional guest → host archive bridge: a `floe-host archive …`
         // command inside an environment's guest delegates to the host's
         // native archive engine over bounded console control frames. The
@@ -1392,6 +1432,26 @@ final class AppEnvironment: ObservableObject {
                 await skillRuntimeComponents.prepareBindings(
                     environmentID: environmentID, runID: runID, cancellation: cancellation
                 )
+            },
+            automaticPreparationAllowed: { runID, environmentID in
+                guard let runID else { return true }
+                guard let run = try await executionPins.run(id: runID) else {
+                    throw FloeError.storageCorrupted("The saved task run is unavailable; no Linux preparation was started")
+                }
+                guard let profile = try await cleanupProfilesForShell.profile(conversationID: run.conversationID) else {
+                    return true
+                }
+                guard profile.isValid,
+                      profile.environmentID == environmentID,
+                      environmentID == EnvironmentRegistry.sharedContainerID else {
+                    throw FloeError.validationFailed("The stored Linux cleanup environment does not match; reopen cleanup from Data Management")
+                }
+                // A cleanup must not create its first disk or repair/download
+                // missing components merely to remove caches. This lookup is
+                // read-only and rejects unverified retained origin evidence.
+                _ = try await FloePlatformServices.shared.linuxResidentImageSource
+                    .imageID(requireExistingDisk: true)
+                return false
             }
         )
         // Only a trusted macBridge lease routes to the same-Mac shell; every
@@ -1519,6 +1579,14 @@ final class AppEnvironment: ObservableObject {
                     guard !(await linuxGuests.guestIsRunning(environmentID: id)) else {
                         throw FloeError.validationFailed("Linux guest has not stopped; environment data was retained")
                     }
+                },
+                beginMaintenanceUse: { id in
+                    // A deletion that can reach the fixed legacy recovery
+                    // domain takes the same shared use as a start/capture.
+                    // Unrelated environments have no legacy trace and return
+                    // nil, so their deletion is unchanged.
+                    guard let maintenance = LinuxGuestMaintenanceAssembly.currentRuntime() else { return nil }
+                    return try await maintenance.beginDeletionUse(environmentID: id)
                 }
             )
         )
@@ -1572,7 +1640,8 @@ final class AppEnvironment: ObservableObject {
                 coordinator: environmentExecutions,
                 python: managedPython,
                 linux: LinuxGuestLanguagePackages(runner: linuxGuests)
-            )
+            ),
+            executionCoordinator: environmentExecutions
         )
 
         self.localModelsCenter.onCatalogChanged = { [weak self] in
@@ -1718,6 +1787,8 @@ final class AppEnvironment: ObservableObject {
                 || LaTeXNativeRunMetadata.matches($0, runID: job.runID,
                     conversationID: job.conversationID, targetTool: job.targetTool,
                     environmentID: job.environmentID)
+                || LinuxCacheCleanupRunMetadata.matches($0, runID: job.runID,
+                    conversationID: job.conversationID, environmentID: job.environmentID)
         }
         let content = "[Floe background job \(job.id.uuidString)] \(job.targetTool) finished with state=\(job.state.rawValue). "
             + "Evidence excerpt: \(String(evidence.prefix(1_000))). "
@@ -2403,6 +2474,25 @@ final class AppEnvironment: ObservableObject {
             Task { [weak self] in await self?.biologyComposition.prepare() }
             Task { [weak self] in await self?.latexComposition.prepare() }
             registerLocalServiceCommand(service: backgroundJobService, store: BackgroundJobStore(database: database))
+            let cleanupProfiles = LinuxCacheCleanupTaskStore(database: database)
+            let runEventStore = runStore
+            let cleanupService = LinuxCacheCleanupService(
+                jobs: backgroundJobService,
+                jobStore: BackgroundJobStore(database: database),
+                profileResolver: { conversationID in
+                    try? await cleanupProfiles.profile(conversationID: conversationID)
+                },
+                recordMetadata: { runID, metadata in
+                    guard let payload = try? metadata.payloadJSON() else { return }
+                    _ = try? await runEventStore.appendEvent(
+                        runID: runID,
+                        kind: .status,
+                        payloadJSON: payload
+                    )
+                }
+            )
+            self.linuxCacheCleanupService = cleanupService
+            registerLinuxCacheCleanupTools(service: cleanupService, profiles: cleanupProfiles)
             // First verified readiness of a long-lived service settles its
             // durable dependency edge and resumes a parked submitting run in
             // the SAME run; the service itself is never terminated here.
@@ -2945,6 +3035,9 @@ final class AppEnvironment: ObservableObject {
             await configurationSync.setCredentialStore(credentialStore)
             await credentialVault.drainDeletionQueue()
             _ = await workspaceCenter.retryPendingLocalCleanup()
+            // Native, fixed-domain upgrade residue maintenance. This launches
+            // a cancellable utility service task and does not block bootstrap.
+            FloePlatformServices.shared.startAutomaticLinuxImageResidueCleanup()
             // Replays offline cloud deletion tombstones. The endpoint is
             // idempotent, so launch-time retry is safe after crashes too.
             Task { [cloudWorkspaceCleanupQueue] in

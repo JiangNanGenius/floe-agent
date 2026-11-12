@@ -182,6 +182,20 @@ public actor RuntimeV2Store {
         build: String,
         onStage: (@Sendable (RecoveryStage) -> Void)? = nil
     ) async throws -> RecoveryReport {
+        // The SHARED use is held across the complete recovery pass: every scan,
+        // salvage move, quarantine write, repair-hold re-derivation and staging
+        // sweep. An exclusive legacy-domain maintenance claim can never
+        // interleave with this pass, and vice versa.
+        try await withMaintenanceSharedUse(owner: "runtime-v2-store", purpose: "prepare-and-recover") {
+            try await performPrepareAndRecover(build: build, onStage: onStage)
+        }
+    }
+
+    @discardableResult
+    private func performPrepareAndRecover(
+        build: String,
+        onStage: (@Sendable (RecoveryStage) -> Void)? = nil
+    ) async throws -> RecoveryReport {
         _ = try layout.prepare(build: build)
         try await registry.open()
         try await caches.prepare()
@@ -765,6 +779,13 @@ public actor RuntimeV2Store {
     /// is idempotent: the same bytes capture to the same content.
     @discardableResult
     public func restoreRepair(environmentID: String) async throws -> RepairResolutionReport {
+        try await withMaintenanceSharedUse(owner: "runtime-v2-store", purpose: "restore-repair") {
+            try await performRestoreRepair(environmentID: environmentID)
+        }
+    }
+
+    @discardableResult
+    private func performRestoreRepair(environmentID: String) async throws -> RepairResolutionReport {
         guard await leases.excludes(environmentID: environmentID) else {
             throw RuntimeV2Error.repairResolutionUnavailable(
                 environmentID: environmentID,
@@ -902,6 +923,13 @@ public actor RuntimeV2Store {
     /// commits before the resolution record, which commits before the lift.
     @discardableResult
     public func discardRepair(environmentID: String, reason: String) async throws -> RepairResolutionReport {
+        try await withMaintenanceSharedUse(owner: "runtime-v2-store", purpose: "discard-repair") {
+            try await performDiscardRepair(environmentID: environmentID, reason: reason)
+        }
+    }
+
+    @discardableResult
+    private func performDiscardRepair(environmentID: String, reason: String) async throws -> RepairResolutionReport {
         guard await leases.excludes(environmentID: environmentID) else {
             throw RuntimeV2Error.repairResolutionUnavailable(
                 environmentID: environmentID,
@@ -1024,6 +1052,15 @@ public actor RuntimeV2Store {
     /// before the resolution record, which commits before the lift.
     @discardableResult
     public func discardUnverifiableRepairEvidence(
+        environmentID: String, reason: String
+    ) async throws -> RepairResolutionReport {
+        try await withMaintenanceSharedUse(owner: "runtime-v2-store", purpose: "discard-unverifiable-repair") {
+            try await performDiscardUnverifiableRepairEvidence(environmentID: environmentID, reason: reason)
+        }
+    }
+
+    @discardableResult
+    private func performDiscardUnverifiableRepairEvidence(
         environmentID: String, reason: String
     ) async throws -> RepairResolutionReport {
         guard await leases.excludes(environmentID: environmentID) else {
@@ -1156,6 +1193,12 @@ public actor RuntimeV2Store {
     /// evidence area (never deleted). If any trace has appeared the cleanup
     /// refuses.
     public func archiveUnknownRuntimeDirectory(runtimeID: String) async throws {
+        try await withMaintenanceSharedUse(owner: "runtime-v2-store", purpose: "archive-unknown-runtime-directory") {
+            try await performArchiveUnknownRuntimeDirectory(runtimeID: runtimeID)
+        }
+    }
+
+    private func performArchiveUnknownRuntimeDirectory(runtimeID: String) async throws {
         try RuntimeV2Identifier.validate(runtimeID, kind: .runtime)
         let directory = try layout.runtimeVMDirectory(runtimeID: runtimeID)
         guard fileManager.fileExists(atPath: directory.path) else {
@@ -1190,6 +1233,8 @@ public actor RuntimeV2Store {
     /// runtime/scratch into environments/<id> atomically — the only moment
     /// scratch state becomes persistent.
     public func promoteScratchEnvironment(scratchID: String, environmentID: String) async throws {
+        let nativeRecoveryUse = try layout.beginNativeRecoveryUse()
+        defer { nativeRecoveryUse?.release() }
         try RuntimeV2Identifier.validate(scratchID, kind: .scratch)
         try RuntimeV2Identifier.validate(environmentID, kind: .environment)
         let scratchRoot = layout.runtimeScratchDirectory.appendingPathComponent(scratchID, isDirectory: true)

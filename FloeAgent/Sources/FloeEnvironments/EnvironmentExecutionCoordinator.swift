@@ -12,6 +12,11 @@ public struct SelectedTaskEnvironmentLease: Sendable {
     init(_ lease: ToolEnvironmentLease, backend: EnvironmentExecutionBackend) {
         context = lease.context; self.backend = backend; finish = lease.finish
     }
+    /// The tool/worker has already returned before finish is called. Release
+    /// the physical generation guard before publishing the tracked lease idle.
+    public func holdingFinalizer(_ finalizer: @escaping @Sendable () async -> Void) -> Self {
+        Self(ToolEnvironmentLease(context: context) { await finalizer(); await self.finish() }, backend: backend)
+    }
 }
 
 /// Resolves task-owned layers and tracks executions until cooperative cleanup completes.
@@ -19,12 +24,24 @@ public actor EnvironmentExecutionCoordinator {
     private let roots: EnvironmentRoots
     private let registry: EnvironmentRegistry
     private let bundledBaseURL: URL?
+    /// Narrow authority for the App-wide shared layer. It is consulted only
+    /// when a caller explicitly selects the `shared` container; ordinary
+    /// task/session/project execution never uses this path. The App injects a
+    /// read-only check of the persisted Linux-cache-cleanup purpose.
+    private let sharedCleanupAuthorization: @Sendable (UUID) async -> Bool
     private var active: [String: [UUID: CancellationToken]] = [:]
     private var stopping = Set<String>()
     private var migrationFences = Set<String>()
+    private var linuxRuntimeMaintenance: UUID?
 
-    public init(roots: EnvironmentRoots, registry: EnvironmentRegistry, bundledBaseURL: URL? = nil) {
+    public init(
+        roots: EnvironmentRoots,
+        registry: EnvironmentRegistry,
+        bundledBaseURL: URL? = nil,
+        sharedCleanupAuthorization: @escaping @Sendable (UUID) async -> Bool = { _ in false }
+    ) {
         self.roots = roots; self.registry = registry; self.bundledBaseURL = bundledBaseURL
+        self.sharedCleanupAuthorization = sharedCleanupAuthorization
     }
 
     public func acquire(_ original: ToolContext) async throws -> ToolEnvironmentLease {
@@ -40,6 +57,7 @@ public actor EnvironmentExecutionCoordinator {
         try await registry.prepare()
         let workspaceID = FloeDigest.sha256Hex(Data(workspace.resolvingSymlinksInPath().standardizedFileURL.path.utf8))
         let record: ContainerRecord
+        var sharedCleanupAuthorized = false
         if let id = original.environmentID {
             guard let selected = await registry.record(id: id) else { throw FloeError.notFound("Execution environment \(id)") }
             if selected.kind == .session {
@@ -51,6 +69,17 @@ public actor EnvironmentExecutionCoordinator {
                       selected.ownerID == conversationID.uuidString else {
                     throw FloeError.validationFailed("Environment belongs to another conversation")
                 }
+            } else if selected.kind == .shared {
+                // The shared layer has no workspace owner by design. It is
+                // writable for exactly the persisted cleanup purpose; an
+                // ordinary task, model text or an arbitrary context cannot
+                // enter this branch.
+                guard let conversationID = original.conversationID,
+                      await sharedCleanupAuthorization(conversationID) else {
+                    throw FloeError.validationFailed(
+                        "The shared environment is reserved for an explicit Linux cache-cleanup task")
+                }
+                sharedCleanupAuthorized = true
             } else if selected.ownerID != workspaceID {
                 let registered = try await registry.workspaceRoot(for: selected.id)
                 guard registered?.path == workspace.resolvingSymlinksInPath().standardizedFileURL.path else {
@@ -65,7 +94,8 @@ public actor EnvironmentExecutionCoordinator {
                     workspaceID: workspaceID, workspaceRootPath: workspace.path)
             } else { record = project }
         }
-        return try await lease(original, record: record)
+        return try await lease(original, record: record,
+                               sharedCleanupAuthorized: sharedCleanupAuthorized)
     }
 
     /// Native scientific services prepare work for the task's frozen target.
@@ -119,6 +149,7 @@ public actor EnvironmentExecutionCoordinator {
                   current.remoteHostID == record.remoteHostID,
                   current.remoteRootPath == record.remoteRootPath,
                   current.parentID == record.parentID, current.layerFormat == record.layerFormat,
+                  linuxRuntimeMaintenance == nil || current.effectiveExecutionBackend != .linuxVM,
                   !stopping.contains(id), !migrationFences.contains(id) else {
                 throw FloeError.validationFailed(FloeL10n.isChinese
                     ? "运行环境在准备期间发生变化。请检查当前任务的运行位置后重试。"
@@ -142,7 +173,11 @@ public actor EnvironmentExecutionCoordinator {
         return try await lease(context, record: record)
     }
 
-    private func lease(_ original: ToolContext, record: ContainerRecord) async throws -> ToolEnvironmentLease {
+    private func lease(
+        _ original: ToolContext,
+        record: ContainerRecord,
+        sharedCleanupAuthorized: Bool = false
+    ) async throws -> ToolEnvironmentLease {
         if record.effectiveExecutionBackend == .macBridge || record.effectiveExecutionBackend == .remoteSSH {
             guard record.kind.isWritableLayer, record.state == .active, !record.requiresRebuild,
                   record.isCompatible(withLayerFormat: ContainerRecord.currentLayerFormat),
@@ -173,6 +208,7 @@ public actor EnvironmentExecutionCoordinator {
         }
         let stack = await registry.layerStack(for: record.id, bundledBaseURL: bundledBaseURL)
         guard let latest = await registry.record(id: record.id), latest.state == .active,
+              (linuxRuntimeMaintenance == nil || latest.effectiveExecutionBackend != .linuxVM),
               !latest.requiresRebuild, !stopping.contains(record.id), !migrationFences.contains(record.id) else {
             throw FloeError.validationFailed("Environment is stopped, being deleted, or requires a dependency rebuild")
         }
@@ -184,7 +220,10 @@ public actor EnvironmentExecutionCoordinator {
             }
         }
         let writable = roots.layerURL(id: record.id, kind: record.kind)
-        guard record.kind.isWritableLayer else { throw FloeError.validationFailed("Execution needs a writable environment") }
+        guard record.kind.isWritableLayer
+                || (record.kind == .shared && sharedCleanupAuthorized) else {
+            throw FloeError.validationFailed("Execution needs a writable environment")
+        }
         let home = writable.appendingPathComponent("home/floe")
         let temporary = writable.appendingPathComponent("tmp")
         try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
@@ -210,6 +249,13 @@ public actor EnvironmentExecutionCoordinator {
                 "PYTHONPATH": pythonPaths.joined(separator: ":"),
                 "NODE_PATH": stack.nodeModulePaths().map(\.path).joined(separator: ":")
             ])
+        // No await may separate this final admission check and registration.
+        // A pending layer lookup must not enter after maintenance cancelled
+        // and enumerated the previously active owners.
+        guard (linuxRuntimeMaintenance == nil || record.effectiveExecutionBackend != .linuxVM),
+              !stopping.contains(record.id), !migrationFences.contains(record.id) else {
+            throw FloeError.validationFailed("Linux runtime maintenance is in progress")
+        }
         let leaseID = UUID()
         active[record.id, default: [:]][leaseID] = original.cancellation
         return ToolEnvironmentLease(context: context) { [weak self] in
@@ -225,13 +271,55 @@ public actor EnvironmentExecutionCoordinator {
     public func activeLeaseCount(environmentID: String) -> Int { active[environmentID]?.count ?? 0 }
 
     /// Atomically prevent new external leases after the last owner exits.
-    public func fenceMigrationIfIdle(environmentID: String) -> Bool {
+    public func fenceMigrationIfIdle(environmentID: String) async -> Bool {
+        if linuxRuntimeMaintenance != nil {
+            guard let record = await registry.record(id: environmentID), record.effectiveExecutionBackend != .linuxVM else { return false }
+        }
         guard active[environmentID]?.isEmpty != false, !stopping.contains(environmentID), !migrationFences.contains(environmentID) else { return false }
         migrationFences.insert(environmentID)
         return true
     }
 
     public func releaseMigrationFence(environmentID: String) { migrationFences.remove(environmentID) }
+
+    /// Reuses this coordinator's admission and cancellation ledger. The fence
+    /// covers future Linux IDs too; SSH/Mac/native work is unaffected.
+    public func beginLinuxRuntimeMaintenance() async throws -> UUID {
+        guard linuxRuntimeMaintenance == nil else { throw FloeError.validationFailed("Linux runtime maintenance is already in progress") }
+        let token = UUID(); linuxRuntimeMaintenance = token
+        do {
+            for id in migrationFences {
+                guard let record = await registry.record(id: id) else { throw FloeError.validationFailed("An environment owner is unknown") }
+                guard record.effectiveExecutionBackend != .linuxVM else { throw FloeError.validationFailed("Finish or cancel the Linux task migration first") }
+            }
+            for id in active.keys where active[id]?.isEmpty == false {
+                guard let record = await registry.record(id: id) else { throw FloeError.validationFailed("An environment owner is unknown") }
+                if record.effectiveExecutionBackend == .linuxVM { active[id]?.values.forEach { $0.cancel() } }
+            }
+            return token
+        } catch { linuxRuntimeMaintenance = nil; throw error }
+    }
+
+    public func waitForLinuxRuntimeMaintenance(_ token: UUID, timeout: Duration = .seconds(10)) async throws {
+        let deadline = ContinuousClock.now.advanced(by: timeout)
+        while true {
+            guard linuxRuntimeMaintenance == token else { throw FloeError.validationFailed("Linux maintenance ownership changed") }
+            var live = false
+            for id in active.keys where active[id]?.isEmpty == false {
+                guard let record = await registry.record(id: id) else { throw FloeError.validationFailed("An environment owner is unknown") }
+                if record.effectiveExecutionBackend == .linuxVM { live = true }
+            }
+            if !live { return }
+            guard ContinuousClock.now < deadline else { throw FloeError.validationFailed("Linux still has running work; existing data was retained") }
+            try await Task.sleep(for: .milliseconds(25))
+        }
+    }
+
+    /// Ending an aborted admission fence never finishes or drops any worker's
+    /// lease or its physical SH guard. Those remain owned by their real finish.
+    public func endLinuxRuntimeMaintenance(_ token: UUID) {
+        if linuxRuntimeMaintenance == token { linuxRuntimeMaintenance = nil }
+    }
 
     /// Cancellation is not proof of termination: retain the environment if any lease remains.
     public func stopAndWait(environmentID: String, timeout: Duration = .seconds(10)) async throws {

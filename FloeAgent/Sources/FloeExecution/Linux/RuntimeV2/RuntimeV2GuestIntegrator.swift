@@ -71,6 +71,11 @@ public enum RuntimeV2StopOutcome: Sendable, Equatable {
     case retainedForRepair(reason: String)
     /// The stop did not confirm: the VM may still be running on the disk.
     case notStopped
+    /// The guest is confirmed stopped but a live exclusive legacy-recovery
+    /// maintenance claim owns the domain: the complete working disk and the
+    /// lease are retained for a later verified capture; nothing was moved or
+    /// deleted.
+    case deferredForMaintenance(reason: String)
     /// The conformer does not report stop outcomes.
     case unknown
 }
@@ -207,10 +212,26 @@ public protocol LinuxGuestRuntimeV2Integrating: Sendable {
     /// the exclusion are never touched on any failure path.
     func restoreRepair(environmentID: String) async throws -> RuntimeV2Store.RepairResolutionReport
     func diskRepairRequired(environmentID: String) async -> Bool?
+    /// Shared use of the fixed legacy recovery domain while this start may
+    /// prepare/capture bytes that can become recovery evidence. nil means the
+    /// configured substrate is not the registered legacy domain (production
+    /// `arm64-v1` / resident ARM64 remain untouched).
+    func beginMaintenanceSharedUse(
+        environmentID: String, purpose: String
+    ) async throws -> RuntimeV2MaintenanceSharedUse?
+    /// Owner facts for the maintenance evidence collector. Must be complete
+    /// or explicitly incomplete; never an empty array as "no owners".
+    func maintenanceOwnerEvidence() async -> RuntimeV2MaintenanceIntegratorEvidence
 }
 
 public extension LinuxGuestRuntimeV2Integrating {
     func diskRepairRequired(environmentID: String) async -> Bool? { nil }
+    func beginMaintenanceSharedUse(
+        environmentID: String, purpose: String
+    ) async throws -> RuntimeV2MaintenanceSharedUse? { nil }
+    func maintenanceOwnerEvidence() async -> RuntimeV2MaintenanceIntegratorEvidence {
+        RuntimeV2MaintenanceIntegratorEvidence(isComplete: false)
+    }
     func completeStoppedGuestResult(
         environmentID: String, runtimeID: String, imageID: String,
         filesystemSynchronized: Bool
@@ -834,6 +855,26 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
         environmentID: String, runtimeID: String, imageID: String,
         legacyWritableDirectory: URL?, targetCapacityBytes: Int64
     ) async throws -> RuntimeV2WorkingDisk {
+        let nativeRecoveryUse = try store.layout.beginNativeRecoveryUse()
+        defer { nativeRecoveryUse?.release() }
+        // Materialization is a domain-touching operation: it can read the
+        // environment delta, write a working disk, and its failure path can
+        // create repair evidence. Hold one shared claim for the complete body.
+        return try await store.withMaintenanceSharedUse(
+            owner: "linux-guest-integrator", purpose: "prepare-working-disk"
+        ) {
+            try await performPrepareWorkingDisk(
+                environmentID: environmentID, runtimeID: runtimeID, imageID: imageID,
+                legacyWritableDirectory: legacyWritableDirectory,
+                targetCapacityBytes: targetCapacityBytes
+            )
+        }
+    }
+
+    private func performPrepareWorkingDisk(
+        environmentID: String, runtimeID: String, imageID: String,
+        legacyWritableDirectory: URL?, targetCapacityBytes: Int64
+    ) async throws -> RuntimeV2WorkingDisk {
         // Fail closed BEFORE anything else (including image migration): an
         // environment whose state is repairRequired, or whose durable
         // repair exclusion answers from ANY physical evidence (marker sidecar
@@ -1071,6 +1112,10 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
         environmentID: String, runtimeID: String, imageID: String, clean: Bool,
         filesystemSynchronized: Bool = true
     ) async -> RuntimeV2StopOutcome {
+        let nativeRecoveryUse: RuntimeV2RecoveryUse?
+        do { nativeRecoveryUse = try store.layout.beginNativeRecoveryUse() }
+        catch { return .deferredForMaintenance(reason: "native recovery maintenance owns this domain") }
+        defer { nativeRecoveryUse?.release() }
         guard clean else {
             try? await store.deltas.recordShutdown(
                 RuntimeV2DeltaStore.ShutdownRecord(
@@ -1092,6 +1137,27 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
             }
             await releaseLease(environmentID: environmentID, runtimeID: runtimeID)
             return .noWorkingDisk
+        }
+        // A live exclusive legacy-recovery maintenance claim owns the domain.
+        // The VM is already stopped, so preserve the complete working disk and
+        // the lease for a later verified capture; never move/capture bytes
+        // under the maintenance owner's feet.
+        let maintenanceUse: RuntimeV2MaintenanceSharedUse?
+        do {
+            maintenanceUse = try await store.acquireMaintenanceSharedUse(
+                owner: "linux-guest-integrator", purpose: "stop-capture"
+            )
+        } catch {
+            await store.logs.log(
+                "runtime v2 stop capture deferred: legacy recovery maintenance is active environment=\(environmentID)"
+            )
+            return .deferredForMaintenance(
+                reason: "legacy recovery maintenance is active; the stopped working disk and lease were retained"
+            )
+        }
+        func settle(_ outcome: RuntimeV2StopOutcome) async -> RuntimeV2StopOutcome {
+            await maintenanceUse?.release()
+            return outcome
         }
         // Flush: the engine's fclose already flushed stdio; fsync before
         // the capture so the delta never records unflushed bytes.
@@ -1142,7 +1208,7 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
                     environmentID: environmentID, runtimeID: runtimeID,
                     directory: directory, error: error
                 )
-                return .retainedForRepair(reason: reason)
+                return await settle(.retainedForRepair(reason: reason))
             }
             do {
                 try await store.deltas.recordShutdown(
@@ -1160,17 +1226,17 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
                     environmentID: environmentID, runtimeID: runtimeID,
                     directory: directory, error: error
                 )
-                return .retainedForRepair(reason: reason)
+                return await settle(.retainedForRepair(reason: reason))
             }
             try? fileManager.removeItem(at: directory)
             await releaseLease(environmentID: environmentID, runtimeID: runtimeID)
-            return .captured(generation: info.header.generation)
+            return await settle(.captured(generation: info.header.generation))
         } catch {
             let reason = await preserveAfterFailedCapture(
                 environmentID: environmentID, runtimeID: runtimeID,
                 directory: directory, error: error
             )
-            return .retainedForRepair(reason: reason)
+            return await settle(.retainedForRepair(reason: reason))
         }
     }
 
@@ -1519,6 +1585,43 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
 
     public func queuedStarts() async -> Int {
         await store.pool.queuedCount
+    }
+
+    public func beginMaintenanceSharedUse(
+        environmentID: String, purpose: String
+    ) async throws -> RuntimeV2MaintenanceSharedUse? {
+        try await store.acquireMaintenanceSharedUse(
+            owner: "linux-guest-integrator", purpose: purpose
+        )
+    }
+
+    /// Complete owner snapshot for the fixed-domain evidence collector. Held
+    /// leases kept by this integrator are the surviving exclusion of a failed
+    /// capture; the registry table adds leases recorded by other cooperating
+    /// instances. A registry read failure makes the snapshot incomplete, never
+    /// empty-and-clean.
+    public func maintenanceOwnerEvidence() async -> RuntimeV2MaintenanceIntegratorEvidence {
+        var blockers: [String] = []
+        let registryLeases: [String]
+        do {
+            let rows = try await store.registry.heldLeases()
+            registryLeases = Array(Set(rows.map(\.environmentID))).sorted()
+        } catch {
+            registryLeases = []
+            blockers.append("lease_registry_unreadable")
+        }
+        let root = store.layout.root.standardizedFileURL.resolvingSymlinksInPath().path
+        let held = Array(Set(heldLeases.values.map(\.lease.environmentID))).sorted()
+        let queued = await store.pool.queuedCount
+        return RuntimeV2MaintenanceIntegratorEvidence(
+            storeRootPath: root,
+            heldLeaseEnvironments: held,
+            leaseRegistryEnvironments: registryLeases,
+            queuedAdmissions: queued,
+            preparationActive: preparationFlight != nil,
+            isComplete: blockers.isEmpty,
+            blockers: blockers
+        )
     }
 
     public func planRetier(environmentID: String, ramMB: Int) async throws {

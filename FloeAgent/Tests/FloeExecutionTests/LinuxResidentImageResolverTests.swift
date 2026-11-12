@@ -97,6 +97,26 @@ final class LinuxResidentImageResolverTests: XCTestCase, @unchecked Sendable {
         XCTAssertFalse(FileManager.default.fileExists(atPath: f.resident.path))
     }
 
+    func testCleanupRequiresExistingDiskWithoutSelectingDefaultOrCreatingStorage() async throws {
+        let f = try Fixture(); defer { f.remove() }
+        do {
+            _ = try await f.resolver().resolve(requireExistingDisk: true)
+            XCTFail("Cleanup must not select the first-creation default")
+        } catch let error as LinuxResidentImageResolutionError {
+            XCTAssertEqual(error, .missingDisk)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: f.resident.path))
+    }
+
+    func testCleanupReusesVerifiedOldOriginWithoutChangingAnyBytes() async throws {
+        let f = try Fixture(); defer { f.remove() }
+        try f.writeResident(f.old)
+        let before = try f.snapshot()
+        let selected = try await f.resolver().resolve(requireExistingDisk: true)
+        XCTAssertEqual(selected, f.old.imageID)
+        XCTAssertEqual(try f.snapshot(), before)
+    }
+
     func testExistingOldOriginWinsOverNewDefaultAndPreservesMutableDisk() async throws {
         let f = try Fixture(); defer { f.remove() }
         try f.writeResident(f.old)

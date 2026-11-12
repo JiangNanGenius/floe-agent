@@ -61,6 +61,10 @@ public struct TaskEnvironmentMigration: Codable, Sendable, Hashable, Identifiabl
     public var manifestDigest: String?
     public var skillDigests: [String: String]?
     public var dependencyReceiptDigest: String?
+    /// A native committed preserving rebuild accepted for this SAME saved
+    /// environment. Such a completed receipt does not claim a file/dependency
+    /// migration or an installation that never ran.
+    public var residentRecoveryID: UUID?
     public var cancellationRequested: Bool?
     public var preparationOutcomeUnknown: Bool?
     public var preparationOperationIDs: [UUID]?

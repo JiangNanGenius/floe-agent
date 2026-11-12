@@ -45,6 +45,12 @@ struct TaskExecutionEnvironmentView: View {
     @State private var freshCheckRevision: Int64?
     /// Real container names for legacy session targets, when available.
     @State private var legacyNames: [String: String] = [:]
+    private struct ResidentConfirmation: Identifiable {
+        let id = UUID()
+        let source: TaskExecutionBinding
+        let target: TaskExecutionTarget
+    }
+    @State private var residentConfirmation: ResidentConfirmation?
 
     init(environment: AppEnvironment, conversationID: UUID) {
         self.environment = environment
@@ -108,6 +114,19 @@ struct TaskExecutionEnvironmentView: View {
             }
         }
         .task { await refresh() }
+        .confirmationDialog(copy("使用重建后的 Linux 环境？", "Use the rebuilt Linux environment?"),
+            isPresented: Binding(get: { residentConfirmation != nil }, set: { if !$0 { residentConfirmation = nil } }),
+            titleVisibility: .visible, presenting: residentConfirmation
+        ) { request in
+            Button(copy("使用新环境继续", "Continue in the new environment")) {
+                residentConfirmation = nil
+                center.acceptResidentRebuild(conversationID: conversationID, expected: request.source, target: request.target)
+            }
+            Button(copy("暂不继续", "Not now"), role: .cancel) { residentConfirmation = nil }
+        } message: { _ in
+            Text(copy("工作文件与历史会保留。Linux 内的软件可能需要重新安装；仅此任务改用新的运行环境。",
+                "Workspace files and history will be kept. Linux software may need reinstalling; only this task switches to the new environment."))
+        }
     }
 
     @ViewBuilder
@@ -187,8 +206,9 @@ struct TaskExecutionEnvironmentView: View {
 
     private var environmentObservedForm: some View {
         migrationObservedForm
-            .onChange(of: snapshot?.binding?.target.environmentID) { _, _ in
+            .onChange(of: snapshot?.binding?.generation) { _, _ in
                 startRequested = false
+                resetCheckedDestination()
             }
             .onChange(of: snapshot?.failure) { _, _ in
                 startRequested = false
@@ -234,6 +254,20 @@ struct TaskExecutionEnvironmentView: View {
                           "Choose an environment for this task; commands will run there."))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
+            }
+            if let target = snapshot.residentRebuildTarget, let source = snapshot.binding {
+                Text(copy("Linux 已重建，旧环境资料仍保留。", "Linux was rebuilt; the previous environment data was kept."))
+                    .font(.subheadline).foregroundStyle(.secondary)
+                if snapshot.acceptingResidentRebuild {
+                    ProgressView(copy("等待当前任务结束…", "Waiting for the current task to finish…"))
+                    Button(copy("取消", "Cancel"), role: .cancel) { center.cancel(conversationID) }
+                } else {
+                    Button(copy("使用新环境继续", "Continue in the new environment")) {
+                        residentConfirmation = ResidentConfirmation(source: source, target: target)
+                    }
+                    .disabled(snapshot.checking || center.isMigrating(conversationID) || activeMigration != nil)
+                    .accessibilityIdentifier("task.environment.accept_resident_rebuild")
+                }
             }
             LabeledContent {
                 Text(fileSummary(snapshot))

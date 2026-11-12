@@ -4,6 +4,7 @@
 import Foundation
 import Testing
 import FloeCore
+import FloeLocalModels
 import FloePersistence
 import FloeTestSupport
 @testable import FloeApp
@@ -25,6 +26,40 @@ struct SetupGuideLaunchRegressionTests {
         await center.reload()
         #expect(center.availableAgentModels.contains(where: { $0.id == model.id }))
         #expect(center.modelPreferences.defaultAgentModelID == model.id)
+        pending.continuation.finish()
+        await center.finishLocalModelRefreshForTesting()
+        center.localModelDiscoveryOverrideForTesting = nil
+    }
+
+    @Test("An unavailable Apple default yields to saved cloud configuration while discovery waits")
+    func unavailableAppleDoesNotDelaySavedCloudFallback() async throws {
+        let (environment, cloud) = try await configuredEnvironment()
+        let provider = LocalProviderAdapter.providerProfile
+        try await environment.configurationStore.saveProvider(provider)
+        let apple = ModelProfile(
+            id: AppleFoundationModelIdentity.profileID,
+            providerID: provider.id, remoteModelID: AppleFoundationModelIdentity.remoteModelID,
+            displayName: "Apple Foundation Model",
+            limits: .init(contextTokens: 4_096, maxOutputTokens: 512)
+        )
+        try await environment.configurationStore.saveModel(apple)
+        var preferences = try await environment.configurationStore.preferences()
+        preferences.defaultAgentModelID = apple.id
+        try await environment.configurationStore.savePreferences(preferences)
+        let available = await AppleFoundationModelRuntime.shared.availability().isAvailable
+        let pending = AsyncStream<Void>.makeStream()
+        let center = environment.conversationCenter
+        center.localModelDiscoveryOverrideForTesting = {
+            for await _ in pending.stream { }
+        }
+        await center.reload()
+        #expect(center.availableAgentModels.contains(where: { $0.id == cloud.id }))
+        if available {
+            #expect(center.modelPreferences.defaultAgentModelID == apple.id)
+        } else {
+            #expect(!center.availableAgentModels.contains(where: { $0.id == apple.id }))
+            #expect(center.modelPreferences.defaultAgentModelID == cloud.id)
+        }
         pending.continuation.finish()
         await center.finishLocalModelRefreshForTesting()
         center.localModelDiscoveryOverrideForTesting = nil

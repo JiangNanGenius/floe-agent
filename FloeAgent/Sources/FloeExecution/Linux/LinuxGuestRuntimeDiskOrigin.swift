@@ -50,6 +50,10 @@ struct LinuxGuestRuntimeDiskOrigin: Codable, Equatable, Sendable {
     /// created already at its target capacity.
     var migratedFromCapacityBytes: Int64?
     var migratedAt: Date?
+    /// Only an explicitly committed preserving rebuild sets this on its NEW
+    /// candidate. Atomic directory exchange publishes it with that new disk;
+    /// ordinary boots, image repair and old origins do not invent a value.
+    var residentRecoveryID: UUID?
 
     init(
         imageID: String,
@@ -58,7 +62,8 @@ struct LinuxGuestRuntimeDiskOrigin: Codable, Equatable, Sendable {
         createdAt: Date = Date(),
         logicalCapacityBytes: Int64? = nil,
         migratedFromCapacityBytes: Int64? = nil,
-        migratedAt: Date? = nil
+        migratedAt: Date? = nil,
+        residentRecoveryID: UUID? = nil
     ) {
         self.version = Self.currentVersion
         self.imageID = imageID
@@ -68,6 +73,7 @@ struct LinuxGuestRuntimeDiskOrigin: Codable, Equatable, Sendable {
         self.logicalCapacityBytes = logicalCapacityBytes
         self.migratedFromCapacityBytes = migratedFromCapacityBytes
         self.migratedAt = migratedAt
+        self.residentRecoveryID = residentRecoveryID
     }
 
     var summary: String {

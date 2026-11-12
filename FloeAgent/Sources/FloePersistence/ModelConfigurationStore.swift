@@ -240,7 +240,8 @@ public actor ModelConfigurationStore {
     @discardableResult
     public func reconcileDeviceLocalProvider(
         provider: ProviderProfile,
-        availableModels: [ModelProfile]
+        availableModels: [ModelProfile],
+        unavailableModelIDs: Set<UUID> = []
     ) async throws -> [ModelProfile] {
         guard provider.kind == .local else {
             throw FloeError.invalidConfiguration("Device-local reconciliation requires a local provider")
@@ -269,6 +270,12 @@ public actor ModelConfigurationStore {
                     model.isEnabled = preferences.enabled
                     model.isHiddenFromPrimaryPicker = preferences.hidden
                     model.omitReasoningParameters = preferences.omitReasoning
+                }
+                // A system-owned model can lose device/OS availability after
+                // restore or a Settings change. Keep its identity and saved
+                // options for history/settings, but never keep it enabled.
+                if unavailableModelIDs.contains(model.id) {
+                    model.isEnabled = false
                 }
                 return try ConfigurationCodec.write(model, to: db)
             }

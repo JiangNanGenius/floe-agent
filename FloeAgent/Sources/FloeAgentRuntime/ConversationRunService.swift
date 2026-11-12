@@ -296,6 +296,9 @@ public actor ConversationRunService {
         public var skillInstructions: String?
         /// Validated signed-content prompt overlay frozen for this run.
         public var contentOverlay: AgentPromptOverlay
+        /// App-owned durable purpose, overwritten from immutable configuration.
+        /// Conversation text, personalization and signed content cannot set it.
+        public var linuxCacheCleanupProfile: LinuxCacheCleanupTaskProfile?
         /// Bounded durable memory projection. This is always framed as data,
         /// never as authority or executable instructions.
         public var memoryContext: String?
@@ -330,6 +333,7 @@ public actor ConversationRunService {
             availableToolNames: Set<String>? = nil,
             skillInstructions: String? = nil,
             contentOverlay: AgentPromptOverlay = .empty,
+            linuxCacheCleanupProfile: LinuxCacheCleanupTaskProfile? = nil,
             memoryContext: String? = nil,
             soulContext: String? = nil,
             userProfileContext: String? = nil,
@@ -347,6 +351,7 @@ public actor ConversationRunService {
             self.availableToolNames = availableToolNames
             self.skillInstructions = skillInstructions
             self.contentOverlay = contentOverlay
+            self.linuxCacheCleanupProfile = linuxCacheCleanupProfile
             self.memoryContext = memoryContext
             self.soulContext = soulContext
             self.userProfileContext = userProfileContext
@@ -358,6 +363,19 @@ public actor ConversationRunService {
             self.projectInstructions = projectInstructions
             self.priorVoicePlayback = priorVoicePlayback
         }
+    }
+
+    /// The durable profile comes from the configuration loaded by the App,
+    /// never from a caller-supplied prompt-context value. Ordinary runs keep
+    /// their existing optional context and catalog semantics.
+    static func trustedRunContext(
+        _ context: RunContext?,
+        cleanupProfile: LinuxCacheCleanupTaskProfile?
+    ) -> RunContext? {
+        guard context != nil || cleanupProfile != nil else { return nil }
+        var trusted = context ?? RunContext()
+        trusted.linuxCacheCleanupProfile = cleanupProfile
+        return trusted
     }
 
     public init(
@@ -395,7 +413,9 @@ public actor ConversationRunService {
         self.intelligenceStore = intelligenceStore
         self.conversationMode = configuration.conversationMode
         self.executionBinding = configuration.executionBinding
-        self.runContext = runContext
+        let trustedRunContext = Self.trustedRunContext(
+            runContext, cleanupProfile: configuration.linuxCacheCleanupProfile)
+        self.runContext = trustedRunContext
         self.conversationHistory = conversationHistory
         self.currentUserImages = currentUserImages
         self.resourceAccessCleanup = resourceAccessCleanup
@@ -417,7 +437,7 @@ public actor ConversationRunService {
         if let provider = personalizationProvider {
             refreshContext = {
                 let latest = try await provider()
-                var context = runContext ?? RunContext()
+                var context = trustedRunContext ?? RunContext()
                 context.soulContext = latest.soul
                 context.userProfileContext = latest.profile
                 return Self.buildContextMessage(context, mode: configuration.conversationMode,
@@ -2487,6 +2507,11 @@ public actor ConversationRunService {
             )
         }
         var lines: [String] = ["# Run context"]
+        if let profile = context?.linuxCacheCleanupProfile {
+            lines.append(profile.isValid
+                ? LinuxCacheCleanupPrompt.systemGuidance(chinese: FloeL10n.isChinese)
+                : "App-owned cleanup purpose is unreadable. Stop and ask the user to reopen cleanup from Data Management; do not use ordinary tools.")
+        }
         // Data sections are assembled separately so a local run can bound
         // each one; essential identity lines stay in `lines` verbatim.
         var dataSections: [String] = []
@@ -2635,6 +2660,11 @@ public actor ConversationRunService {
         temporaryReadOnly: Bool = false
     ) -> String {
         var lines: [String] = ["# Conversation context"]
+        if let profile = context?.linuxCacheCleanupProfile {
+            lines.append(profile.isValid
+                ? LinuxCacheCleanupPrompt.systemGuidance(chinese: FloeL10n.isChinese)
+                : "App-owned cleanup purpose is unreadable. Stop and ask the user to reopen cleanup from Data Management; do not use ordinary tools.")
+        }
         lines.append("Current local date and time at run start: \(localTimestamp(currentDate, in: timeZone))")
         lines.append("Current time zone: \(timeZone.identifier) (UTC\(utcOffset(timeZone.secondsFromGMT(for: currentDate))))")
         // The clock and zone are the ONLY location-adjacent facts injected

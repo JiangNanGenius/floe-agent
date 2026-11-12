@@ -1707,6 +1707,82 @@ private func makePreparedChain(
         #expect(command.contains("echo hi"))
     }
 
+    @Test func cleanupRoutingSkipsAllAutomaticPreparationsForExistingGuest() async {
+        let runner = FakeComponentRunner()
+        let backend = RoutingLocalShellBackend(
+            native: StubNativeShellBackend(), guests: runner,
+            prepareLinux: { _ in Issue.record("Cleanup must not prepare Linux"); return "unexpected" },
+            prepareNativeComponents: { _, _, _ in
+                Issue.record("Cleanup must not install native components"); return ["UNEXPECTED_COMPONENT": "1"]
+            },
+            automaticPreparationAllowed: { _, _ in false }
+        )
+        let workspace = makeComponentTemporaryDirectory("cleanup-existing")
+        defer { try? FileManager.default.removeItem(at: workspace) }
+        FloePlatformServices.shared.setLinuxCommandService(runner)
+        defer { FloePlatformServices.shared.setLinuxCommandService(nil) }
+        let result = await backend.run(ShellRunRequest(
+            command: "echo cleanup", cwd: ".", rootURL: workspace,
+            environment: [:], deadline: .seconds(10), sessionID: "cleanup-existing",
+            runID: UUID(), toolEnvironment: ToolEnvironment(
+                id: "shared", writableLayerURL: workspace, layerURLs: [], variables: [:])
+        ), cancellation: nil)
+        guard case .exited(let code, _, _, _, _, _) = result else {
+            Issue.record("Expected the existing guest command to finish"); return
+        }
+        #expect(code == 0)
+        #expect(runner.lastShellCommand()?.contains("echo cleanup") == true)
+        #expect(runner.lastShellCommand()?.contains("UNEXPECTED_COMPONENT") == false)
+    }
+
+    @Test func cleanupRoutingUnreadablePurposeStopsBeforeActivationOrPreparation() async {
+        let runner = FakeComponentRunner()
+        let backend = RoutingLocalShellBackend(
+            native: StubNativeShellBackend(), guests: runner,
+            prepareLinux: { _ in Issue.record("Must not download after a policy read failure"); return "unexpected" },
+            prepareNativeComponents: { _, _, _ in Issue.record("Must not install after a policy read failure"); return nil },
+            automaticPreparationAllowed: { _, _ in throw FloeError.storageCorrupted("fixture unreadable cleanup purpose") }
+        )
+        let workspace = makeComponentTemporaryDirectory("cleanup-invalid")
+        defer { try? FileManager.default.removeItem(at: workspace) }
+        FloePlatformServices.shared.setLinuxCommandService(runner)
+        defer { FloePlatformServices.shared.setLinuxCommandService(nil) }
+        let result = await backend.run(ShellRunRequest(
+            command: "echo must-not-run", cwd: ".", rootURL: workspace,
+            environment: [:], deadline: .seconds(10), sessionID: "cleanup-invalid",
+            runID: UUID(), toolEnvironment: ToolEnvironment(
+                id: "shared", writableLayerURL: workspace, layerURLs: [], variables: [:])
+        ), cancellation: nil)
+        guard case .failed(let message) = result else {
+            Issue.record("Expected an honest purpose-read failure"); return
+        }
+        #expect(message.contains("fixture unreadable cleanup purpose"))
+        #expect(runner.callHistory().isEmpty)
+    }
+
+    @Test func cleanupRoutingUnavailableGuestCannotBootstrapOrExecute() async {
+        let runner = FakeComponentRunner()
+        runner.supportsResult = false
+        let backend = RoutingLocalShellBackend(
+            native: StubNativeShellBackend(), guests: runner,
+            prepareLinux: { _ in Issue.record("Cleanup must not bootstrap Linux"); return "unexpected" },
+            prepareNativeComponents: { _, _, _ in Issue.record("Cleanup must not bootstrap components"); return nil },
+            automaticPreparationAllowed: { _, _ in false }
+        )
+        let workspace = makeComponentTemporaryDirectory("cleanup-missing")
+        defer { try? FileManager.default.removeItem(at: workspace) }
+        FloePlatformServices.shared.setLinuxCommandService(runner)
+        defer { FloePlatformServices.shared.setLinuxCommandService(nil) }
+        let result = await backend.run(ShellRunRequest(
+            command: "echo must-not-run", cwd: ".", rootURL: workspace,
+            environment: [:], deadline: .seconds(10), sessionID: "cleanup-missing",
+            runID: UUID(), toolEnvironment: ToolEnvironment(
+                id: "shared", writableLayerURL: workspace, layerURLs: [], variables: [:])
+        ), cancellation: nil)
+        guard case .failed = result else { Issue.record("A missing guest must stay unavailable"); return }
+        #expect(runner.callHistory().isEmpty)
+    }
+
     // MARK: Temp pruning
 
     @Test func pruneStaleComponentTempsRemovesOnlyOwnAbandonedFiles() throws {

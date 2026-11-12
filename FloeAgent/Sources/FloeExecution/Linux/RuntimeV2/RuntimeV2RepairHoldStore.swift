@@ -309,6 +309,8 @@ public actor RuntimeV2RepairHoldStore {
     public func place(
         environmentID: String, runtimeID: String, reason: String, preservedPath: String? = nil
     ) throws {
+        let nativeRecoveryUse = try layout.beginNativeRecoveryUse()
+        defer { nativeRecoveryUse?.release() }
         try RuntimeV2Identifier.validate(environmentID, kind: .environment)
         let url = try layout.environmentRepairHoldURL(environmentID: environmentID)
         try withMarkerMutationLock(environmentID: environmentID) {
@@ -557,6 +559,8 @@ public actor RuntimeV2RepairHoldStore {
         diskDigestSHA512: String? = nil, resolvedHoldID: String? = nil,
         observedCorruptMarker: CorruptMarkerObservation? = nil
     ) throws {
+        let nativeRecoveryUse = try layout.beginNativeRecoveryUse()
+        defer { nativeRecoveryUse?.release() }
         let archive = layout.recoveryMigrationsDirectory
             .appendingPathComponent("repair-holds", isDirectory: true)
         try fileManager.createDirectory(at: archive, withIntermediateDirectories: true)

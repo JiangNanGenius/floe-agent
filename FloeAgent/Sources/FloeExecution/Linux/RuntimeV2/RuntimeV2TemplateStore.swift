@@ -744,6 +744,8 @@ public actor RuntimeV2TemplateStore {
     /// recorded) and open the build in the registry. The returned handle is
     /// what the installer receives; nothing is registered as verified yet.
     public func stageBuild(_ request: BuildRequest) async throws -> BuildHandle {
+        let nativeRecoveryUse = try layout.beginNativeRecoveryUse()
+        defer { nativeRecoveryUse?.release() }
         try validate(request)
         let resolvedParent = try await resolveParent(request.parent)
         let existing = try await registry.template(templateID: request.templateID, version: request.version)
@@ -859,6 +861,8 @@ public actor RuntimeV2TemplateStore {
         request: BuildRequest,
         outcome: InstallOutcome
     ) async throws -> Registration {
+        let nativeRecoveryUse = try layout.beginNativeRecoveryUse()
+        defer { nativeRecoveryUse?.release() }
         guard let row = try await registry.template(templateID: request.templateID, version: request.version),
               row.state == .building, row.buildID == handle.buildID else {
             throw RuntimeV2Error.templateNotVerified(
@@ -927,6 +931,8 @@ public actor RuntimeV2TemplateStore {
         using installer: any RuntimeV2TemplateInstaller,
         request: BuildRequest
     ) async throws -> Registration {
+        let nativeRecoveryUse = try layout.beginNativeRecoveryUse()
+        defer { nativeRecoveryUse?.release() }
         let handle = try await stageBuild(request)
         let outcome: InstallOutcome
         do {
@@ -970,6 +976,8 @@ public actor RuntimeV2TemplateStore {
         architecture: String, targetCapacityBytes: Int64,
         provenance: String? = nil
     ) async throws -> Registration {
+        let nativeRecoveryUse = try layout.beginNativeRecoveryUse()
+        defer { nativeRecoveryUse?.release() }
         let plan = try await cleanRebuildPlan(templateID: templateID, version: version, newVersion: newVersion)
         let request = BuildRequest(
             templateID: templateID, version: newVersion, recipe: plan.recipe,
@@ -990,6 +998,8 @@ public actor RuntimeV2TemplateStore {
     /// artifact or an unverified install fails with the explicit reason — no
     /// placeholder is ever registered.
     public func registerOfficialTemplate(_ artifact: OfficialTemplateArtifact) async throws -> Registration {
+        let nativeRecoveryUse = try layout.beginNativeRecoveryUse()
+        defer { nativeRecoveryUse?.release() }
         guard RuntimeV2TemplateCatalog.officialTemplateIDs.contains(artifact.templateID) else {
             throw RuntimeV2Error.templateNotOfficial(templateID: artifact.templateID)
         }
@@ -1217,6 +1227,8 @@ public actor RuntimeV2TemplateStore {
     public func pinEnvironment(
         environmentID: String, templateID: String, version: Int
     ) async throws -> RuntimeV2TemplatePin {
+        let nativeRecoveryUse = try layout.beginNativeRecoveryUse()
+        defer { nativeRecoveryUse?.release() }
         guard let environment = try await registry.environment(id: environmentID) else {
             throw RuntimeV2Error.environmentNotFound(environmentID)
         }
@@ -1251,6 +1263,8 @@ public actor RuntimeV2TemplateStore {
     /// lease and removes the environment reference with the pin, so a
     /// swallowed/unpinned version can never keep a dangling reference.
     public func unpinEnvironment(environmentID: String) async throws {
+        let nativeRecoveryUse = try layout.beginNativeRecoveryUse()
+        defer { nativeRecoveryUse?.release() }
         guard try await registry.environment(id: environmentID) != nil else {
             throw RuntimeV2Error.environmentNotFound(environmentID)
         }
@@ -1319,6 +1333,8 @@ public actor RuntimeV2TemplateStore {
         environmentID: String, runtimeID: String, imageID: String, into diskURL: URL,
         expecting expectedBase: DeltaBase? = nil
     ) async throws -> PinnedDiskClone? {
+        let nativeRecoveryUse = try layout.beginNativeRecoveryUse()
+        defer { nativeRecoveryUse?.release() }
         guard let pin = try await environmentPin(environmentID: environmentID) else { return nil }
         if let expectedBase {
             guard let expectedPin = expectedBase.templatePin,
@@ -1522,6 +1538,8 @@ public actor RuntimeV2TemplateStore {
         grace: TimeInterval = RuntimeV2TemplateStore.defaultGCGrace,
         now: Date = Date()
     ) async throws -> TemplateGCReport {
+        let nativeRecoveryUse = try layout.beginNativeRecoveryUse()
+        defer { nativeRecoveryUse?.release() }
         var report = TemplateGCReport(
             collected: [], skippedPinned: [], skippedQuarantined: [],
             releasedBlobDigests: [], reclaimableBytes: 0, notes: []
@@ -1566,6 +1584,8 @@ public actor RuntimeV2TemplateStore {
     /// failed), the evidence rollback point moves to recovery/trash (still not
     /// a hard delete) and the migration record reaches `done`.
     public func finalizeBuilds() async throws -> Int {
+        let nativeRecoveryUse = try layout.beginNativeRecoveryUse()
+        defer { nativeRecoveryUse?.release() }
         var finalized = 0
         let pending = try await registry.migrations(inPhases: [.cleanupPending])
         for migration in pending where migration.kind == "template-build" {
@@ -1608,6 +1628,8 @@ public actor RuntimeV2TemplateStore {
     /// clone (the install was never verified, so nothing may become verified
     /// from it). Returns notes for the startup report.
     public func recoverInterruptedBuilds() async throws -> [String] {
+        let nativeRecoveryUse = try layout.beginNativeRecoveryUse()
+        defer { nativeRecoveryUse?.release() }
         var notes: [String] = []
         for row in try await registry.templates(state: .building) {
             let reason = "build interrupted before verification; the incomplete install was not registered"

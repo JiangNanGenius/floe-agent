@@ -1,6 +1,15 @@
 import Foundation
 import FloeCore
 
+/// Opaque end-of-deletion use returned by the App's legacy-recovery-domain
+/// adapter. FloeEnvironments stays independent of FloeExecution; the App layer
+/// wraps `RuntimeV2MaintenanceSharedUse` in this protocol so a deletion that
+/// can reach the fixed legacy domain is fenced by the same authority while
+/// unrelated environment deletions continue unaffected.
+public protocol ContainerLifecycleMaintenanceUse: Sendable {
+    func end() async
+}
+
 /// Container lifecycle: stop running work, destroy writable layers, prune
 /// trash and collect orphans. The app injects hooks so this module stays free
 /// of shell/job/media dependencies.
@@ -9,15 +18,21 @@ public actor ContainerLifecycle {
         public var stopSessions: @Sendable (String) async throws -> Void
         public var cancelJobs: @Sendable (String) async throws -> Void
         public var terminateWorkers: @Sendable (String) async throws -> Void
+        /// Shared use of the trusted legacy recovery domain when this
+        /// environment can reach it. nil means this deletion is outside that
+        /// fixed domain; unrelated native/resident deletions stay unaffected.
+        public var beginMaintenanceUse: @Sendable (String) async throws -> (any ContainerLifecycleMaintenanceUse)?
 
         public init(
             stopSessions: @escaping @Sendable (String) async throws -> Void = { _ in throw FloeError.invalidConfiguration("Environment lifecycle hook is not configured") },
             cancelJobs: @escaping @Sendable (String) async throws -> Void = { _ in throw FloeError.invalidConfiguration("Environment lifecycle hook is not configured") },
-            terminateWorkers: @escaping @Sendable (String) async throws -> Void = { _ in throw FloeError.invalidConfiguration("Environment lifecycle hook is not configured") }
+            terminateWorkers: @escaping @Sendable (String) async throws -> Void = { _ in throw FloeError.invalidConfiguration("Environment lifecycle hook is not configured") },
+            beginMaintenanceUse: @escaping @Sendable (String) async throws -> (any ContainerLifecycleMaintenanceUse)? = { _ in nil }
         ) {
             self.stopSessions = stopSessions
             self.cancelJobs = cancelJobs
             self.terminateWorkers = terminateWorkers
+            self.beginMaintenanceUse = beginMaintenanceUse
         }
     }
 
@@ -48,10 +63,38 @@ public actor ContainerLifecycle {
         self.hooks = hooks
     }
 
+    /// Join the existing sessions/jobs/workers for a physical-runtime change.
+    /// The caller holds the coordinator's Linux admission fence. No layer,
+    /// container state, package record or user file is reset or removed.
+    public func quiesceLinuxRuntime(containerIDs: [String]) async throws {
+        for id in Set(containerIDs).sorted() {
+            guard let record = await registry.record(id: id), record.effectiveExecutionBackend == .linuxVM,
+                  record.kind != .template else { throw FloeError.validationFailed("The runtime owner changed") }
+            try await hooks.stopSessions(id)
+            try await hooks.cancelJobs(id)
+            try await hooks.terminateWorkers(id)
+        }
+    }
+
     /// Stops work and destroys the writable layer. Templates and the shared
     /// layer are immutable here (remove them explicitly through the registry).
     @discardableResult
     public func destroy(containerID: String, orphaned: Bool = false) async throws -> DestroyReport? {
+        // Acquire the domain use BEFORE reading/moving/deleting anything. The
+        // App adapter returns nil for an environment with no legacy trace.
+        let maintenanceUse = try await hooks.beginMaintenanceUse(containerID)
+        do {
+            let report = try await performDestroy(containerID: containerID, orphaned: orphaned)
+            await maintenanceUse?.end()
+            return report
+        } catch {
+            await maintenanceUse?.end()
+            throw error
+        }
+    }
+
+    @discardableResult
+    private func performDestroy(containerID: String, orphaned: Bool) async throws -> DestroyReport? {
         guard let record = await registry.record(id: containerID) else { return nil }
         guard record.pendingRuntimeResetID == nil else { throw FloeError.validationFailed("Finish restoring the runtime before removing this environment") }
         guard record.kind == .session || record.kind == .project else {

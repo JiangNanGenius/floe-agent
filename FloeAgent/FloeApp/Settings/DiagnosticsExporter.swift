@@ -27,6 +27,7 @@ import FloePersistence
 /// log lines or JSON content cannot collide with it by accident.
 enum DiagnosticsSection: String, CaseIterable {
     case reportIdentity = "report_identity"
+    case storageSnapshot = "storage_snapshot"
     case executionTrace = "execution_trace"
     case systemRuntime = "system_runtime"
     case officeStageTrace = "office_stage_trace"
@@ -71,6 +72,7 @@ enum DiagnosticsExporter {
     static func render(center: SettingsCenter) async -> String {
         var sections: [RenderedSection] = []
         sections.append(RenderedSection(id: .reportIdentity, body: identitySection(center: center)))
+        sections.append(RenderedSection(id: .storageSnapshot, body: await storageSnapshotEvidence()))
 
         sections.append(RenderedSection(id: .executionTrace, body: ExecutionBreadcrumbs.shared.report()))
         let runtime = splitRuntimeEvidence(RuntimeDiagnostics.shared.report())
@@ -141,6 +143,125 @@ enum DiagnosticsExporter {
         lines.append("python_remote: \(describe(center.remotePythonCapability))")
         lines.append("icloud_drive: \(describe(center.iCloudDrive))")
         lines.append("keychain: \(describe(center.keychainState))")
+        return lines.joined(separator: "\n")
+    }
+
+    // MARK: - Cached storage evidence (never starts a census)
+
+    /// Only the bounded persisted cache is read. Do not touch the shared UI
+    /// service/center: their lifecycle may hydrate or start a refresh. Cache
+    /// I/O, key resolution and summary arithmetic stay off the main actor.
+    nonisolated static func storageSnapshotEvidence(
+        base: FloeStorageBase? = nil,
+        bundleURL: URL? = nil,
+        appBuildFingerprint: String? = nil,
+        exportedAt: Date = Date(),
+        loadSnapshot: @escaping @Sendable (StorageSnapshotStore, StorageSnapshotKey) -> StorageSnapshot? = {
+            store, key in store.load(key: key)
+        }
+    ) async -> String {
+        await Task.detached(priority: .utility) {
+            let resolvedBase = base ?? .standard
+            let build = appBuildFingerprint ?? StorageDiagnosticService.appBuildFingerprint()
+            let request = FloeStorageLayout.request(in: resolvedBase,
+                metricLabel: FloeStorageLayout.dataManagementMetricLabel,
+                contextFingerprint: build, bundleURL: bundleURL ?? Bundle.main.bundleURL)
+            let key = request.key
+            let directory = FloeStorageLayout.floeAgentRoot(in: resolvedBase)?
+                .appendingPathComponent("StorageDiagnostics", isDirectory: true)
+            let snapshot = directory.flatMap { loadSnapshot(StorageSnapshotStore(directory: $0), key) }
+            return storageSnapshotSummary(snapshot, expectedKey: key, appBuildFingerprint: build,
+                exportedAt: exportedAt, cacheLocationAvailable: directory != nil)
+        }.value
+    }
+
+    /// Allowlisted aggregate fields only. Never encode a snapshot or print
+    /// fingerprints, arbitrary bucket IDs, metric labels or scan triggers.
+    nonisolated static func storageSnapshotSummary(
+        _ snapshot: StorageSnapshot?, expectedKey: StorageSnapshotKey,
+        appBuildFingerprint: String, exportedAt: Date,
+        cacheLocationAvailable: Bool = true
+    ) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        let build = !appBuildFingerprint.isEmpty && appBuildFingerprint.count <= 40
+            && appBuildFingerprint.unicodeScalars.allSatisfy { (48...57).contains($0.value) || $0.value == 46 }
+            ? appBuildFingerprint : "unknown"
+        var lines = ["exported_at: \(formatter.string(from: exportedAt))",
+            "export_app_build: \(build)", "source: persisted_cache_only", "live_measurement: false",
+            "measurement_scope: app_files_not_system_accounted_storage",
+            "freshness_limit_seconds: 600", "accounting_version: \(StorageAccountingVersion.current)"]
+        guard let snapshot else {
+            lines += ["cache_status: unavailable", "cache_freshness: unknown",
+                "unavailable_reason: \(cacheLocationAvailable ? "missing_unreadable_or_schema_accounting_layout_mismatch" : "cache_location_unavailable")",
+                "figures_available: false", "category_count: unknown", "measurement_gaps: unknown",
+                "extent_union_available: unknown", "extent_unavailable_reason: cache_unavailable"]
+            return lines.joined(separator: "\n")
+        }
+        let validDates = snapshot.generatedAt.timeIntervalSince1970.isFinite
+            && snapshot.persistedAt.timeIntervalSince1970.isFinite
+        if validDates {
+            lines += ["snapshot_generated_at: \(formatter.string(from: snapshot.generatedAt))",
+                "snapshot_persisted_at: \(formatter.string(from: snapshot.persistedAt))"]
+        }
+        // load(key:) checks schema/accounting/roots, not this separate field.
+        let buildMatches = snapshot.contextFingerprint == appBuildFingerprint
+        lines.append("snapshot_build_matches_export: \(buildMatches)")
+        guard snapshot.schemaVersion == expectedKey.schemaVersion,
+              snapshot.accountingVersion == expectedKey.accountingVersion,
+              snapshot.rootsFingerprint == expectedKey.rootsFingerprint,
+              snapshot.metricLabel == FloeStorageLayout.dataManagementMetricLabel else {
+            return (lines + ["cache_status: incompatible_layout_or_accounting", "cache_freshness: not_usable",
+                "figures_available: false", "category_count: unknown", "measurement_gaps: unknown",
+                "extent_union_available: unknown", "extent_unavailable_reason: incompatible_cache"])
+                .joined(separator: "\n")
+        }
+        guard buildMatches else {
+            return (lines + ["cache_status: historical_build_mismatch", "cache_freshness: not_usable",
+                "figures_available: false", "category_count: unknown", "measurement_gaps: unknown",
+                "extent_union_available: unknown", "extent_unavailable_reason: build_mismatch"])
+                .joined(separator: "\n")
+        }
+        let age = exportedAt.timeIntervalSince(snapshot.generatedAt)
+        guard validDates, age.isFinite, age >= 0 else {
+            return (lines + ["cache_status: invalid_timestamp", "cache_freshness: not_usable",
+                "figures_available: false", "category_count: unknown", "measurement_gaps: unknown",
+                "extent_union_available: unknown", "extent_unavailable_reason: invalid_timestamp"])
+                .joined(separator: "\n")
+        }
+        let report = StorageReportBuilder.build(census: snapshot.census, bundleBytes: snapshot.bundleBytes)
+        let diagnostics = snapshot.census.diagnostics
+        let extentAvailable = snapshot.census.extentUnion != nil && diagnostics.extentBasis == .available
+        let extentReason = diagnostics.extentUnavailableReason?.rawValue
+            ?? (extentAvailable ? "none" : (diagnostics.extentBasis == .notRequested ? "not_requested" : "not_recorded_or_union_absent"))
+        lines += ["cache_status: loaded", "cache_age_seconds: \(String(format: "%.0f", age))",
+            "cache_freshness: \(age <= 600 ? "fresh_by_age" : "stale")",
+            "figures_available: true", "figures_are_cached_observations: true",
+            "schema_version: \(snapshot.schemaVersion)", "basis: \(report.totals.basis.rawValue)",
+            "total_basis_bytes: \(report.totals.totalBytes)", "bundle_basis_bytes: \(report.totals.bundleBytes)",
+            "data_basis_bytes: \(report.totals.dataBytes)", "data_allocated_bytes: \(report.totalAllocatedBytes)",
+            "data_logical_bytes: \(report.totalLogicalBytes)", "measurement_gaps: \(diagnostics.hasMeasurementGaps)",
+            "files_scanned: \(diagnostics.regularFileCount)", "scan_errors: \(diagnostics.errorCount)",
+            "changed_or_vanished: \(diagnostics.changedOrVanishedCount)",
+            "allocated_unavailable: \(diagnostics.allocatedUnavailableCount)",
+            "identity_unavailable: \(diagnostics.identityUnavailableCount)",
+            "extent_basis: \(diagnostics.extentBasis.rawValue)", "extent_union_available: \(extentAvailable)",
+            "extent_unavailable_reason: \(extentReason)", "clone_sharing_estimate: \(report.hasSharedEstimates)"]
+        let allowedIDs: Set<String> = ["models", "workspaces", "fonts", "attachments", "generated", "browser",
+            "checkpoints", "materials", "canvases", "mediaProjects", "cad", "environments", "linuxDisks",
+            "runtimeV2", "runtimeARM64", "floeOther", "library", "documents", "caches", "temporary"]
+        let known = report.categories.filter { allowedIDs.contains($0.id) }.sorted { $0.id < $1.id }
+        let rows = known.prefix(allowedIDs.count)
+        lines += ["category_count: \(report.categories.count)", "category_rows_exported: \(rows.count)",
+            "unrecognized_category_count: \(report.categories.count - known.count)"]
+        for category in rows {
+            lines.append("category.\(category.id): basis_bytes=\(category.basisBytes) allocated_bytes=\(category.allocatedBytes)"
+                + " logical_bytes=\(category.logicalBytes) files=\(category.fileCount) shared_estimate=\(category.isCloneCapable)")
+        }
+        if let other = report.unattributed {
+            lines.append("category.unattributed: basis_bytes=\(other.basisBytes) allocated_bytes=\(other.allocatedBytes)"
+                + " logical_bytes=\(other.logicalBytes) files=\(other.fileCount)")
+        }
         return lines.joined(separator: "\n")
     }
 

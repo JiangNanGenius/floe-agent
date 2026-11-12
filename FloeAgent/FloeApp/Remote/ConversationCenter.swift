@@ -1658,6 +1658,8 @@ final class ConversationCenter: ObservableObject {
         async let loadedProviders = environment.configurationStore.providers()
         async let loadedModels = environment.configurationStore.models()
         async let loadedPreferences = environment.configurationStore.preferences()
+        let appleFoundationAvailable = await AppleFoundationModelRuntime.shared
+            .availability().isAvailable
         do {
             let allProviders = try await loadedProviders
             let allModels = try await loadedModels
@@ -1668,6 +1670,9 @@ final class ConversationCenter: ObservableObject {
             let enabledProviderIDs = Set(providers.map(\.id))
             let models = allModels.filter {
                 $0.isEnabled && enabledProviderIDs.contains($0.providerID)
+                    && ($0.providerID != ProviderProfile.onDeviceProviderID
+                        || $0.remoteModelID != AppleFoundationModelIdentity.remoteModelID
+                        || appleFoundationAvailable)
             }
             modelsByProvider = Dictionary(grouping: models, by: \.providerID)
             modelPreferences = try await loadedPreferences
@@ -1681,7 +1686,10 @@ final class ConversationCenter: ObservableObject {
         if localDiscoveryPending, let selected = modelPreferences.defaultAgentModelID,
            let local = configuredModelsByProvider.values.joined().first(where: { $0.id == selected }),
            configuredProviders.first(where: { $0.id == local.providerID })?.kind == .local {
-            return
+            let unavailableApple = local.providerID == ProviderProfile.onDeviceProviderID
+                && local.remoteModelID == AppleFoundationModelIdentity.remoteModelID
+                && !appleFoundationAvailable
+            if !unavailableApple { return }
         }
         await reconcileDefaultAgentModelIfNeeded()
     }
@@ -1739,10 +1747,14 @@ final class ConversationCenter: ObservableObject {
                 provider: provider,
                 credentials: ProviderCredentials()
             )
+            let appleAvailability = await AppleFoundationModelRuntime.shared.availability()
             try await environment.configurationStore.reconcileDeviceLocalProvider(
                 provider: provider,
-                availableModels: available
+                availableModels: available,
+                unavailableModelIDs: appleAvailability.isAvailable
+                    ? [] : [AppleFoundationModelIdentity.profileID]
             )
+            await environment.localModelsCenter.refresh()
             FloeLogger(category: .providers).info(
                 "localModelConfigurationReconciled provider=\(provider.id.uuidString) available=\(available.count)"
             )
@@ -2284,7 +2296,12 @@ final class ConversationCenter: ObservableObject {
 
     /// Creates a conversation with an optional title and refreshes the list.
     @discardableResult
-    func createConversation(title: String?, purpose: ConversationPurpose = .ordinary) async throws -> ConversationRecord {
+    func createConversation(
+        title: String?, purpose: ConversationPurpose = .ordinary, linuxCacheCleanup: Bool = false
+    ) async throws -> ConversationRecord {
+        guard !linuxCacheCleanup || purpose == .ordinary else {
+            throw FloeError.validationFailed("Linux cleanup requires an ordinary conversation")
+        }
         let record = ConversationRecord(
             id: UUID(),
             title: title ?? "",
@@ -2295,7 +2312,11 @@ final class ConversationCenter: ObservableObject {
         if purpose == .ordinary {
             // The first send requires this exact durable task root. Never
             // expose a new ordinary row before canonical ownership commits.
-            try await environment.conversationStore.saveConversationWithCanonicalWorkspace(record)
+            let cleanupProfile = linuxCacheCleanup ? LinuxCacheCleanupTaskProfile(
+                conversationID: record.id, environmentID: EnvironmentRegistry.sharedContainerID,
+                createdAt: record.createdAt) : nil
+            try await environment.conversationStore.saveConversationWithCanonicalWorkspace(
+                record, cleanupProfile: cleanupProfile)
         } else {
             try await environment.conversationStore.saveConversation(record)
         }
@@ -2308,6 +2329,28 @@ final class ConversationCenter: ObservableObject {
         // This also keeps dedicated assistant records out of ordinary history.
         await refreshConversationInList(record.id)
         return record
+    }
+
+    /// App-owned native work (the bundled Linux cleanup script) writes real
+    /// messages/runs without a provider runtime. Publish the same session
+    /// revision and list refresh every ordinary writer uses; this is not a
+    /// second conversation store or run engine.
+    func nativeConversationDidChange(_ conversationID: UUID) async {
+        publishSession(conversationID)
+        await refreshConversationInList(conversationID)
+    }
+
+    /// App-owned native work (the bundled Linux cleanup script) also uses the
+    /// same active-run projection, so composer Stop and deletion safety see
+    /// it. This is not a second runtime service or provider receipt.
+    func registerNativeRun(_ run: RunRecord) {
+        activeRuns[run.id] = run
+        publishSession(run.conversationID)
+    }
+
+    func finishNativeRun(_ runID: UUID, conversationID: UUID) {
+        activeRuns[runID] = nil
+        publishSession(conversationID)
     }
 
     // MARK: - Temporary chat (store routing + lifecycle)
@@ -4241,6 +4284,22 @@ final class ConversationCenter: ObservableObject {
             runExecutionEnvironmentID = nil
         }
 
+        // The cleanup purpose is durable and read from its own create-only
+        // table, never inferred from title/prompt or a mutable task policy.
+        // A cleanup row is valid only for the SAME conversation and explicit
+        // environment; an unreadable row aborts the run instead of silently
+        // restoring ordinary tools.
+        let linuxCacheCleanupProfile = try await LinuxCacheCleanupTaskStore(database: environment.database)
+            .profile(conversationID: conversationID)
+        if let linuxCacheCleanupProfile {
+            guard linuxCacheCleanupProfile.conversationID == conversationID,
+                  linuxCacheCleanupProfile.environmentID == runExecutionEnvironmentID,
+                  linuxCacheCleanupProfile.backend == .linuxVM else {
+                throw FloeError.validationFailed(
+                    "The cleanup task's stored Linux scope does not match this run. Create a new cleanup task from Data Management.")
+            }
+        }
+
         preparationStage("end:execution_binding")
         preparationStage("begin:native_compositions")
         await environment.biologyComposition.prepare()
@@ -4558,6 +4617,13 @@ final class ConversationCenter: ObservableObject {
         // the durable truth without capturing the app environment.
         preparationStage("end:typed_service_stores")
         preparationStage("begin:runtime_configuration")
+        if linuxCacheCleanupProfile != nil {
+            // Final, outer ceiling: an edited task policy, a saved skill, a
+            // provider route or conversation text cannot add a host/file/
+            // shell/jobs/delegation/network tool to this purpose.
+            let offered = allowedToolNames ?? Set(availableDescriptors.map(\.name))
+            allowedToolNames = LinuxCacheCleanupScope.allowedToolNames(from: offered)
+        }
         let runDependencyStore = SQLiteRunDependencyStore(database: environment.database)
         let jobServiceForRun = environment.backgroundJobService
         // Metadata only: the callback runs after the durable run has been
@@ -4615,6 +4681,7 @@ final class ConversationCenter: ObservableObject {
             // wrapper/alias/batch call cannot widen the descriptor-derived
             // ceiling. The flag travels with the immutable configuration.
             temporaryReadOnly: isTemporary,
+            linuxCacheCleanupProfile: linuxCacheCleanupProfile,
             // Chat uses the brief conversational envelope and skips the
             // optional self-review pass; it does not narrow the ordinary
             // task-authorized toolchain. Temporary sessions retain their
@@ -8500,6 +8567,9 @@ final class ConversationCenter: ObservableObject {
         await automaticReasoningEffortCoordinator.cancelPending(runID: runID)
         do { try await cancelParkedRuntimeWait(runID: runID) }
         catch { FloeLogger(category: .runtime).warning("runtimeWaitStopPending") }
+        if LinuxCacheCleanupFallbackRunner.shared.owns(runID) {
+            await LinuxCacheCleanupFallbackRunner.shared.cancel(runID: runID)
+        }
     }
 
     func sendTaskCoordination(_ request: ConversationCoordinationRequest,

@@ -155,6 +155,8 @@ public actor RuntimeV2ImageStore {
     /// True only when the registry row is verified AND the v2 manifest file
     /// exists — the pair the boot path may rely on.
     public func isImageVerified(imageID: String) async throws -> Bool {
+        let nativeRecoveryUse = try layout.beginNativeRecoveryUse()
+        defer { nativeRecoveryUse?.release() }
         guard try await registry.bootableImage(id: imageID, root: layout.root) != nil else { return false }
         return try manifest(imageID: imageID) != nil
     }
@@ -214,6 +216,8 @@ public actor RuntimeV2ImageStore {
     /// An explicit `smp=false` or a withdrawn declaration in the stored block
     /// is authoritative and is never overridden by this fallback.
     public func smpCapability(imageID: String) async throws -> (capable: Bool, maximumVCPUs: Int, reason: String) {
+        let nativeRecoveryUse = try layout.beginNativeRecoveryUse()
+        defer { nativeRecoveryUse?.release() }
         guard try await registry.bootableImage(id: imageID, root: layout.root) != nil else {
             return (false, 1, "image '\(imageID)' is not verified; no capability can be assumed")
         }
@@ -405,6 +409,8 @@ public actor RuntimeV2ImageStore {
         force: Bool = false,
         isCancelled: (@Sendable () -> Bool)? = nil
     ) async throws -> URL {
+        let nativeRecoveryUse = try layout.beginNativeRecoveryUse()
+        defer { nativeRecoveryUse?.release() }
         try Self.checkReconstructionCancelled(isCancelled)
         guard let imageManifest = try manifest(imageID: imageID) else {
             throw RuntimeV2Error.imageNotFound(imageID)
@@ -490,6 +496,8 @@ public actor RuntimeV2ImageStore {
     /// its blobs. Expanded content is rebuildable: a missing or incomplete
     /// directory is re-cloned, never treated as state.
     public func ensureExpanded(imageID: String) async throws -> URL {
+        let nativeRecoveryUse = try layout.beginNativeRecoveryUse()
+        defer { nativeRecoveryUse?.release() }
         guard let manifest = try manifest(imageID: imageID) else {
             throw RuntimeV2Error.imageNotFound(imageID)
         }
@@ -530,6 +538,8 @@ public actor RuntimeV2ImageStore {
     /// row, the v2 manifest and the blobs are the truth — so this answers
     /// "is the cache intact", never "is the image installed".
     public func isExpandedViewComplete(imageID: String) throws -> Bool {
+        let nativeRecoveryUse = try layout.beginNativeRecoveryUse()
+        defer { nativeRecoveryUse?.release() }
         guard let manifest = try manifest(imageID: imageID) else { return false }
         let expanded = try layout.expandedImageDirectory(imageID: imageID)
         return try expandedViewComplete(imageID: imageID, manifest: manifest, directory: expanded)
@@ -662,6 +672,8 @@ public actor RuntimeV2ImageStore {
     /// it is never modified in place and never deleted outright.
     @discardableResult
     public func migrateLegacyImage(imageID: String, legacyImagesRoot: URL) async throws -> MigrationReport {
+        let nativeRecoveryUse = try layout.beginNativeRecoveryUse()
+        defer { nativeRecoveryUse?.release() }
         try RuntimeV2Identifier.validate(imageID, kind: .image)
         let migrationID = "legacy-image-\(imageID)"
         let legacyDirectory = legacyImagesRoot.appendingPathComponent(imageID, isDirectory: true)
@@ -905,6 +917,8 @@ public actor RuntimeV2ImageStore {
     /// directory moves to recovery/trash (still not a hard delete), and the
     /// migration record reaches `done`.
     public func finalizeMigration(id migrationID: String) async throws {
+        let nativeRecoveryUse = try layout.beginNativeRecoveryUse()
+        defer { nativeRecoveryUse?.release() }
         guard let row = try await registry.migration(id: migrationID), row.phase == .cleanupPending else {
             return
         }
@@ -921,6 +935,8 @@ public actor RuntimeV2ImageStore {
     /// Rolls a cleanupPending migration back: legacy content returns to its
     /// original location and the v2 replacement is quarantined, never deleted.
     public func rollbackMigration(id migrationID: String, legacyImagesRoot: URL) async throws {
+        let nativeRecoveryUse = try layout.beginNativeRecoveryUse()
+        defer { nativeRecoveryUse?.release() }
         guard let row = try await registry.migration(id: migrationID) else { return }
         guard row.phase == .cleanupPending || row.phase == .switched else { return }
         let rollback = layout.recoveryMigrationsDirectory.appendingPathComponent(migrationID, isDirectory: true)
@@ -970,6 +986,8 @@ public actor RuntimeV2ImageStore {
         legacyImagesRoot: URL,
         isCancelled: (@Sendable () -> Bool)? = nil
     ) async throws -> Bool {
+        let nativeRecoveryUse = try layout.beginNativeRecoveryUse()
+        defer { nativeRecoveryUse?.release() }
         try Self.checkReconstructionCancelled(isCancelled)
         try RuntimeV2Identifier.validate(imageID, kind: .image)
         let migrationID = "legacy-image-\(imageID)"

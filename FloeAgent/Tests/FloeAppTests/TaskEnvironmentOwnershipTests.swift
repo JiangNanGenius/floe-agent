@@ -67,6 +67,23 @@ struct TaskEnvironmentOwnershipTests {
         }
         #expect(await changedABI.record(id: id)?.requiresRebuild == true)
     }
+    @MainActor @Test("retaining rebuild rejects an old pin while allowing the explicitly chosen current generation")
+    func residentGenerationIsAnExplicitSavedTargetBoundary() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("resident-task-boundary-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registry = EnvironmentRegistry(roots: .init(rootURL: root), baseRevision: "arm64")
+        try await registry.prepare()
+        let oldTarget = TaskExecutionTarget(environmentID: EnvironmentRegistry.sharedContainerID, backend: .linuxVM,
+            operatingSystem: "linux", architecture: "arm64")
+        let recovery = UUID()
+        try await registry.reconcileResidentRuntimeGeneration(recoveryID: recovery)
+        await #expect(throws: TaskExecutionAvailabilityError.self) {
+            try await TaskExecutionEnvironmentCenter.validateSavedTarget(oldTarget, registry: registry)
+        }
+        var target = oldTarget
+        target.runtimeGeneration = LinuxResidentRuntimeGeneration.value(recoveryID: recovery)
+        try await TaskExecutionEnvironmentCenter.validateSavedTarget(target, registry: registry)
+    }
 #endif
 
     @Test func sharedProjectConfigurationRequiresTheLeasedTaskRoot() async throws {

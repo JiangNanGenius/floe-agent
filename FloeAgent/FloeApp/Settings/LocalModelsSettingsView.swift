@@ -52,6 +52,8 @@ final class LocalModelsCenter: ObservableObject {
 
     func isEnabled(remoteModelID: String) -> Bool {
         enabledRemoteModelIDs.contains(remoteModelID)
+            && (remoteModelID != AppleFoundationModelIdentity.remoteModelID
+                || appleFoundationAvailability.isAvailable)
     }
 
     func setImagePlaygroundAutomaticRouting(_ enabled: Bool) {
@@ -112,7 +114,12 @@ final class LocalModelsCenter: ObservableObject {
                 }) else {
                     throw FloeError.notFound(String(localized: "localmodels.config_not_ready"))
                 }
-                model.isEnabled = isEnabled
+                if remoteModelID == AppleFoundationModelIdentity.remoteModelID {
+                    let availability = await AppleFoundationModelRuntime.shared.availability()
+                    model.isEnabled = isEnabled && availability.isAvailable
+                } else {
+                    model.isEnabled = isEnabled
+                }
                 try await configurationStore.saveModel(model)
                 if !isEnabled, remoteModelID != AppleFoundationModelIdentity.remoteModelID {
                     await runtime.unload(modelID: remoteModelID)
@@ -120,7 +127,7 @@ final class LocalModelsCenter: ObservableObject {
                         runtimeState = .unloaded
                     }
                 }
-                if !isEnabled {
+                if !model.isEnabled {
                     // A disabled model must not stay the persisted default:
                     // Home/Chat would resolve no provider for new tasks even
                     // though other models are enabled. Repair only the broken
@@ -427,6 +434,7 @@ final class LocalModelsCenter: ObservableObject {
 
 struct LocalModelsSettingsView: View {
     @ObservedObject var center: LocalModelsCenter
+    @Environment(\.scenePhase) private var scenePhase
     @AppStorage(AppleImagePlaygroundModelIdentity.automaticDefaultsKey) private var automaticImagePlayground = true
     @State private var pendingRemoval: LocalModelCatalogEntry?
 
@@ -476,7 +484,9 @@ struct LocalModelsSettingsView: View {
             }
         }
         .navigationTitle(FloeL10n.l("localmodels.title"))
-        .task { await center.refresh() }
+        .task(id: scenePhase) {
+            if scenePhase == .active { await center.refresh() }
+        }
         .refreshable { await center.refresh() }
         .confirmationDialog(
             "localmodels.remove_title",
@@ -688,6 +698,7 @@ struct LocalModelsSettingsView: View {
                 }
             ))
             .labelsHidden()
+            .disabled(!center.appleFoundationAvailability.isAvailable)
             .accessibilityIdentifier("localModel.enabled.appleFoundation")
             if center.appleFoundationAvailability.isAvailable {
                 Label("localmodels.available", systemImage: "checkmark.circle.fill")

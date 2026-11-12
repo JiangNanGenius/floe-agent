@@ -24,7 +24,8 @@ extension AppEnvironment {
             // guest fact, never the client CPU.
             return SkillRuntimeTarget(runID: runID, environmentID: environmentID, operatingSystem: .linux,
                 architectures: ["arm64"], backend: .linuxVM, distribution: "debian",
-                launchGeneration: generation, isConnected: linuxGuestService != nil, resolution: .resolved)
+                launchGeneration: generation, runtimeGeneration: record.runtimeGeneration,
+                isConnected: linuxGuestService != nil, resolution: .resolved)
         case .macBridge:
             guard LocalBridgePlatform.current.supportsMacBridge else { return nil }
             return .macBridge(environmentID: environmentID, runID: runID,
@@ -277,5 +278,42 @@ extension AppEnvironment {
             name = try await remoteHostStore.host(id: host)?.displayName ?? IDELanguageRunText.t("远程电脑", "Remote computer")
         } else { name = target.backend == .macBridge ? IDELanguageRunText.t("这台 Mac", "This Mac") : IDELanguageRunText.t("本机运行环境", "On-device environment") }
         return IDELanguageRunText.t("已切换到 \(name)，可继续任务。", "Moved to \(name). You can continue the task.")
+    }
+}
+
+/// One native adapter shared by ordinary dispatch and editor-owned scientific
+/// workers. It checks the authoritative saved pin, not model environment labels.
+/// The caller first owns a tracked coordinator lease, so maintenance sees this
+/// admission until the returned physical guard has actually finished.
+enum ResidentRuntimeBindingFence {
+    static func acquire(context: ToolContext, pin: TaskExecutionBinding?, registry: EnvironmentRegistry) async throws -> LinuxResidentRecoveryGuard? {
+        guard let id = context.environmentID,
+              let record = await registry.record(id: id), record.effectiveExecutionBackend == .linuxVM else { return nil }
+        guard let guests = FloePlatformServices.shared.linuxGuestController() else {
+            throw FloeError.validationFailed(IDELanguageRunText.t("Linux 暂不可用，请稍后重试。", "Linux is unavailable. Try again later."))
+        }
+        let physical = try await guests.acquireResidentRecoveryGuard()
+        do {
+            try await registry.reconcileResidentRuntimeGeneration(recoveryID: physical.receipt?.recoveryID)
+            guard let current = await registry.record(id: id) else { throw FloeError.notFound("Execution environment") }
+            if let pin {
+                guard pin.target.backend == .linuxVM, pin.target.environmentID == id,
+                      context.executionBindingGeneration == nil || context.executionBindingGeneration == pin.generation else {
+                    throw FloeError.validationFailed("The saved task environment changed")
+                }
+                if LinuxResidentRuntimeGeneration.requiresExplicitTaskRebind(current.runtimeGeneration)
+                    || LinuxResidentRuntimeGeneration.requiresExplicitTaskRebind(pin.target.runtimeGeneration) {
+                    guard current.runtimeGeneration == pin.target.runtimeGeneration else {
+                        throw FloeError.validationFailed(IDELanguageRunText.t(
+                            "Linux 环境已重建，请确认新的运行位置，或新建助手会话。旧资料已保留。",
+                            "Linux was rebuilt. Confirm the new task location or start a new assistant session. Previous data was kept."))
+                    }
+                }
+            } else if physical.receipt != nil {
+                throw FloeError.validationFailed(IDELanguageRunText.t(
+                    "请先为此任务确认新的 Linux 运行位置。", "Confirm the new Linux location for this saved task first."))
+            }
+            return physical
+        } catch { physical.finish(); throw error }
     }
 }

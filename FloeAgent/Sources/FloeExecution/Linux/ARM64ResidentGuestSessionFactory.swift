@@ -86,6 +86,15 @@ public final class ARM64ResidentGuestSessionFactory: LinuxGuestSessionCreating, 
     public func restoreInitialState(image: LinuxGuestImage, imageDirectory: URL) async throws {
         try await resident.restoreInitialState(image: image, directory: imageDirectory)
     }
+    public func acquireResidentRecoveryGuard() async throws -> LinuxResidentRecoveryGuard {
+        try LinuxResidentDiskBarrier.acquireRecoveryGuard(root: root)
+    }
+    public func residentRecoveryReceipt() async throws -> LinuxResidentRecoveryReceipt? {
+        try LinuxResidentDiskBarrier.currentRecoveryReceipt(root: root)
+    }
+    public func rebuildPreservingData(image: LinuxGuestImage, imageDirectory: URL) async throws -> LinuxResidentRecoveryReceipt {
+        try await resident.rebuildPreservingData(image: image, directory: imageDirectory)
+    }
 }
 
 /// A handle never owns the physical machine or a sibling's stream. Closing
@@ -126,6 +135,9 @@ private actor ARM64ResidentGuestOwner {
     }
     private let root: URL
     private var machine: ARM64GuestMachine?
+    /// Held from before disk preparation/open through the real worker join.
+    /// A failed stop deliberately retains this physical-use FD.
+    private var diskUse: LinuxResidentDiskBarrier.Use?
     private var supervisor: LinuxGuestProjectSupervisor?
     private var projects: [String: Project] = [:]
     private var imageID: String?
@@ -376,10 +388,11 @@ private actor ARM64ResidentGuestOwner {
             return
         }
         guard projects.isEmpty else { throw LinuxGuestError.guestBusy(environmentID: descriptor.id) }
-        if let machine {
-            guard case .stopped = await machine.stop() else { throw ARM64MachineError.stopTimeout }
-        }
+        if machine != nil { try await stopPhysicalMachine() }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let use = try LinuxResidentDiskBarrier.acquireUse(root: root)
+        var publishedMachine = false
+        defer { if !publishedMachine { use.releaseAfterConfirmedClose() } }
         // Reuse the existing verified, sparse/COW disk preparer. All overlays
         // live on this one private disk, never one physical disk per task.
         let prepared = try LinuxGuestRuntimeImagePreparer().prepare(image: image, imageDirectory: directory,
@@ -409,7 +422,8 @@ private actor ARM64ResidentGuestOwner {
             gpuAppGroupIdentifier: FloeL10n.appGroupIdentifier,
             virtioConsoles: 9, networkEnabled: true)
         let created = try ARM64GuestMachine(ownership: .init(label: "resident"), config: config)
-        machine = created; imageID = image.id; shape = requested
+        machine = created; diskUse = use; publishedMachine = true
+        imageID = image.id; shape = requested
         ResidentMemoryReservations.set(id: "linux-resident-arm64", bytes: Int64(config.ramMiB) * 1_048_576)
         do {
             try created.start()
@@ -433,6 +447,7 @@ private actor ARM64ResidentGuestOwner {
             await supervisor?.close()
             if case .stopped = await created.stop() {
                 machine = nil; supervisor = nil; imageID = nil; shape = nil
+                diskUse?.releaseAfterConfirmedClose(); diskUse = nil
                 ResidentMemoryReservations.set(id: "linux-resident-arm64", bytes: 0)
             }
             throw error
@@ -515,6 +530,7 @@ private actor ARM64ResidentGuestOwner {
         await supervisor?.close()
         guard case .stopped = await machine.stop() else { throw ARM64MachineError.stopTimeout }
         self.machine = nil; supervisor = nil; imageID = nil; shape = nil; cacheRoot = nil
+        diskUse?.releaseAfterConfirmedClose(); diskUse = nil
         pendingMemoryTarget = nil
         capacity = 0
         ResidentMemoryReservations.set(id: "linux-resident-arm64", bytes: 0)
@@ -587,38 +603,56 @@ private actor ARM64ResidentGuestOwner {
         defer { releaseLifecycle() }
         guard projects.isEmpty else { throw LinuxGuestError.guestBusy(environmentID: "shared") }
         try await stopPhysicalMachine()
-        let fm = FileManager.default
-        let staging = root.appendingPathComponent("reset-" + UUID().uuidString, isDirectory: true)
-        try fm.createDirectory(at: staging, withIntermediateDirectories: true)
-        defer { try? fm.removeItem(at: staging) }
-        _ = try LinuxGuestRuntimeImagePreparer().prepare(image: image, imageDirectory: directory,
-            environmentID: LinuxResidentDiskStorage.environmentID, writableDirectory: staging)
-        let fresh = LinuxGuestRuntimeImagePreparer.environmentDiskDirectory(writableDirectory: staging,
-            environmentID: LinuxResidentDiskStorage.environmentID)
-        let current = LinuxGuestRuntimeImagePreparer.environmentDiskDirectory(writableDirectory: root,
-            environmentID: LinuxResidentDiskStorage.environmentID)
-        try Task.checkCancellation()
-        if fm.fileExists(atPath: current.path) {
-            guard (try fm.attributesOfItem(atPath: current.path))[.type] as? FileAttributeType == .typeDirectory else {
-                throw LinuxGuestError.invalidConfiguration("The runtime storage is not a managed directory")
-            }
-            #if canImport(Darwin)
-            let swapped = fresh.path.withCString { first in
-                current.path.withCString { second in
-                    renameatx_np(AT_FDCWD, first, AT_FDCWD, second, UInt32(RENAME_SWAP))
+        try LinuxResidentDiskBarrier.withExclusiveAccess(root: root) {
+            let fm = FileManager.default
+            let staging = root.appendingPathComponent("reset-" + UUID().uuidString, isDirectory: true)
+            try fm.createDirectory(at: staging, withIntermediateDirectories: true)
+            defer { try? fm.removeItem(at: staging) }
+            _ = try LinuxGuestRuntimeImagePreparer().prepare(image: image, imageDirectory: directory,
+                environmentID: LinuxResidentDiskStorage.environmentID, writableDirectory: staging)
+            let fresh = LinuxGuestRuntimeImagePreparer.environmentDiskDirectory(writableDirectory: staging,
+                environmentID: LinuxResidentDiskStorage.environmentID)
+            let current = LinuxGuestRuntimeImagePreparer.environmentDiskDirectory(writableDirectory: root,
+                environmentID: LinuxResidentDiskStorage.environmentID)
+            try Task.checkCancellation()
+            if fm.fileExists(atPath: current.path) {
+                guard (try fm.attributesOfItem(atPath: current.path))[.type] as? FileAttributeType == .typeDirectory else {
+                    throw LinuxGuestError.invalidConfiguration("The runtime storage is not a managed directory")
                 }
+                #if canImport(Darwin)
+                let swapped = fresh.path.withCString { first in
+                    current.path.withCString { second in
+                        renameatx_np(AT_FDCWD, first, AT_FDCWD, second, UInt32(RENAME_SWAP))
+                    }
+                }
+                guard swapped == 0 else {
+                    throw LinuxGuestError.startFailed("The initial state could not be committed; the current runtime was retained")
+                }
+                #else
+                throw LinuxGuestError.invalidConfiguration("Atomic runtime replacement is unavailable")
+                #endif
+            } else {
+                try fm.createDirectory(at: current.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try fm.moveItem(at: fresh, to: current)
             }
-            guard swapped == 0 else {
-                throw LinuxGuestError.startFailed("The initial state could not be committed; the current runtime was retained")
-            }
-            #else
-            throw LinuxGuestError.invalidConfiguration("Atomic runtime replacement is unavailable")
-            #endif
-        } else {
-            try fm.createDirectory(at: current.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try fm.moveItem(at: fresh, to: current)
+            // Commit is complete. Deferred cleanup removes only the retired
+            // managed VM directory; no project file or installed Skill is here.
         }
-        // Commit is complete. Deferred cleanup removes only the retired
-        // managed VM directory; no project file or installed Skill is here.
+    }
+
+    func rebuildPreservingData(image: LinuxGuestImage, directory: URL) async throws -> LinuxResidentRecoveryReceipt {
+        try await acquireLifecycle()
+        defer { releaseLifecycle() }
+        guard projects.isEmpty else { throw LinuxGuestError.guestBusy(environmentID: "shared") }
+        let transaction = try LinuxResidentRecoveryStore(root: root).begin(imageID: image.id)
+        defer { transaction.endAdmission() }
+        // The durable admission fence already exists. Other factory instances
+        // cannot open the disk while this owner awaits its real worker join.
+        try await stopPhysicalMachine()
+        return try transaction.replace { build in
+            _ = try LinuxGuestRuntimeImagePreparer().prepare(image: image, imageDirectory: directory,
+                environmentID: LinuxResidentDiskStorage.environmentID, writableDirectory: build)
+            return LinuxResidentDiskStorage.directory(in: build)
+        }
     }
 }

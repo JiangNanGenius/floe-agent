@@ -22,6 +22,15 @@ final class LinuxImageInstallModel: ObservableObject {
     /// The image-level verification issue, kept so the repair action knows a
     /// re-verify/repair-image sequence is required instead of starting a guest.
     @Published private(set) var imageIssue: LinuxImageVerificationIssue?
+    @Published private(set) var resolutionIssue: LinuxResidentImageResolutionError?
+    @Published private(set) var rebuilding = false
+    @Published private(set) var recoveryError: String?
+    private var recoveryCancellation: CancellationToken?
+
+    var canRebuildPreservingData: Bool {
+        requestedImageID == nil && resolutionIssue?.permitsPreservingRebuild == true
+    }
+    var recoveryRunning: Bool { rebuilding || jobs.running.contains(FloePlatformServices.residentRecoveryJobID) }
     /// Immediate local feedback after a cancel request, until the shared job
     /// task actually unwinds and reports its terminal state.
     @Published private(set) var cancelling = false
@@ -60,6 +69,7 @@ final class LinuxImageInstallModel: ObservableObject {
     }
 
     private func acceptImageID(_ id: String) {
+        resolutionIssue = nil
         guard imageID != id else { return }
         imageID = id
         didProbe = false
@@ -70,7 +80,8 @@ final class LinuxImageInstallModel: ObservableObject {
     }
 
     private func showResolutionFailure(_ error: Error) {
-        let recoverable = (error as? LinuxResidentImageResolutionError)?.recoverableImageID
+        resolutionIssue = error as? LinuxResidentImageResolutionError
+        let recoverable = resolutionIssue?.recoverableImageID
         imageID = recoverable ?? ""
         imageIssue = nil
         completedInstall = false
@@ -253,6 +264,37 @@ final class LinuxImageInstallModel: ObservableObject {
 
     // MARK: actions
 
+    func redownloadOriginalImage() {
+        guard !imageID.isEmpty, !running else { return }
+        let selected = imageID
+        recoveryError = nil
+        Task {
+            do { try await FloePlatformServices.shared.redownloadLinuxImage(imageID: selected) }
+            catch { recoveryError = error.localizedDescription }
+            await refresh()
+        }
+    }
+
+    func rebuildPreservingData() {
+        guard canRebuildPreservingData, !recoveryRunning else { return }
+        rebuilding = true
+        recoveryError = nil
+        let cancellation = CancellationToken()
+        recoveryCancellation = cancellation
+        Task {
+            do { try await FloePlatformServices.shared.rebuildLinuxRuntimePreservingData(cancellation: cancellation) }
+            catch { recoveryError = error.localizedDescription }
+            recoveryCancellation = nil
+            rebuilding = false
+            await refresh()
+        }
+    }
+
+    func cancelPreservingRecovery() {
+        recoveryCancellation?.cancel()
+        jobs.cancel(id: FloePlatformServices.residentRecoveryJobID)
+    }
+
     func startDownload() {
         guard !imageID.isEmpty else { Task { await refresh() }; return }
         // Runs the same shared, cancellable job as automatic first-use
@@ -344,6 +386,7 @@ final class LinuxImageInstallModel: ObservableObject {
 /// Renders the authoritative state. Used by both Settings and Terminal; it
 /// never shows a download button for an installed or running component.
 struct LinuxImageInstallCard: View {
+    @State private var showsPreservingRecovery = false
     @ObservedObject var model: LinuxImageInstallModel
     /// Observed directly: byte progress and the phase of the shared job live
     /// here, so the card re-renders on every service report instead of only
@@ -384,6 +427,12 @@ struct LinuxImageInstallCard: View {
             }
         }
         .accessibilityElement(children: .contain)
+        .confirmationDialog("execution.runtime_rebuild.title", isPresented: $showsPreservingRecovery, titleVisibility: .visible) {
+            Button("execution.runtime_rebuild.title") { model.rebuildPreservingData() }
+            Button("action.cancel", role: .cancel) { }
+        } message: {
+            Text("execution.runtime_rebuild.confirm")
+        }
         .onChange(of: EnvironmentPackageJobs.shared.revision) { _, _ in
             // Refresh first, then continue only when THIS image's own shared
             // job completed with a verified status. An unrelated package job
@@ -418,9 +467,17 @@ struct LinuxImageInstallCard: View {
 
     @ViewBuilder
     private var content: some View {
-        if model.running {
+        if model.recoveryRunning {
+            ProgressView("execution.runtime_rebuild.progress")
+            Button("terminal.linux_image_install_card.cancel") { model.cancelPreservingRecovery() }
+                .buttonStyle(.bordered)
+        } else if model.running {
             downloadingContent(cancelling: model.cancelling)
         } else {
+        if let error = model.recoveryError {
+            Label(error, systemImage: "exclamationmark.triangle")
+                .font(.caption).foregroundStyle(FloeTheme.destructive)
+        }
         switch model.state {
         case .storageUnavailable:
             Text("environment.backend.image_store_unavailable")
@@ -512,9 +569,14 @@ struct LinuxImageInstallCard: View {
                 }
             }
             Button {
-                model.repairImage()
+                if model.resolutionIssue?.recoverableImageID != nil { model.redownloadOriginalImage() }
+                else { model.repairImage() }
             } label: {
-                Label("environment.backend.repair_image", systemImage: "wrench.and.screwdriver")
+                if model.resolutionIssue?.recoverableImageID != nil {
+                    Label("execution.runtime_redownload.title", systemImage: "arrow.down.circle")
+                } else {
+                    Label("environment.backend.repair_image", systemImage: "wrench.and.screwdriver")
+                }
             }
             .buttonStyle(.bordered)
             .font(.caption)
@@ -524,6 +586,14 @@ struct LinuxImageInstallCard: View {
                 .foregroundStyle(FloeTheme.destructive)
                 .textSelection(.enabled)
             if model.imageID.isEmpty {
+                if model.canRebuildPreservingData {
+                    Button {
+                        showsPreservingRecovery = true
+                    } label: {
+                        Label("execution.runtime_rebuild.title", systemImage: "arrow.down.circle")
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
                 Button {
                     Task { await model.retryStorage() }
                 } label: {

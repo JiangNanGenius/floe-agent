@@ -11,13 +11,27 @@ import BackgroundTasks
 import Testing
 import FloeAgentRuntime
 import FloePersistence
-import FloeCore
+@testable import FloeCore
 import FloeNotes
 import FloeProviders
 import FloeLocalModels
 import FloeSecurity
 import FloeModels
 @testable import FloeApp
+
+private final class FeedbackStorageReadProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var calls = 0
+    private var usedMainThread = false
+    func record() {
+        lock.lock(); defer { lock.unlock() }
+        calls += 1; usedMainThread = usedMainThread || Thread.isMainThread
+    }
+    var state: (calls: Int, usedMainThread: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        return (calls, usedMainThread)
+    }
+}
 
 extension CrashAndFeedbackRegressionTests {
 @Test("The actual App can save, restore and remove a local provider credential")
@@ -615,6 +629,9 @@ struct CrashAndFeedbackRegressionTests {
         var sections: [String] = []
         sections.append(DiagnosticsSection.reportIdentity.header + "\n"
             + "Floe Agent Diagnostics\nversion: 1.7.0\nbuild: 231\ngenerated_at: 2026-09-27T14:12:00Z")
+        sections.append(DiagnosticsSection.storageSnapshot.header + "\n"
+            + "cache_status: loaded\ncache_freshness: stale\nbasis: allocatedEstimate\n"
+            + "category.runtimeARM64: basis_bytes=9000 logical_bytes=300000")
         sections.append(DiagnosticsSection.systemRuntime.header + "\n"
             + "previous_exit: noTerminationCallback; requiresMetricKitOrIPS")
         sections.append(DiagnosticsSection.officeStageTrace.header + "\n"
@@ -647,6 +664,9 @@ struct CrashAndFeedbackRegressionTests {
         #expect(bounded.contains("localInferenceFailed lastFailureStage=prefill"))
         #expect(bounded.contains("previous_exit: noTerminationCallback"))
         #expect(bounded.contains("[metrickit build=229 kind=crashDiagnostics]"))
+        #expect(bounded.contains(DiagnosticsSection.storageSnapshot.header))
+        #expect(bounded.contains("cache_freshness: stale"))
+        #expect(bounded.contains("category.runtimeARM64: basis_bytes=9000 logical_bytes=300000"))
 
         // The oversized full payloads are dropped explicitly, never silently.
         #expect(bounded.contains("metrickit_full_payloads omitted by client"))
@@ -665,6 +685,7 @@ struct CrashAndFeedbackRegressionTests {
         #expect(reassembled.contains("stage=hostExit"))
         #expect(reassembled.contains("localInferenceFailed"))
         #expect(reassembled.contains("previous_exit: noTerminationCallback"))
+        #expect(reassembled.contains("category.runtimeARM64: basis_bytes=9000"))
     }
 
     @Test("Oversized diagnostics upload stays inside the multipart event budget")
@@ -684,6 +705,8 @@ struct CrashAndFeedbackRegressionTests {
         #expect(body.contains("stage=hostExit"))
         #expect(body.contains("localInferenceFailed"))
         #expect(body.contains("metrickit_full_payloads omitted by client"))
+        #expect(body.contains("section storage_snapshot"))
+        #expect(body.contains("category.runtimeARM64: basis_bytes=9000"))
     }
 
     @Test("MetricKit summaries stay version-labelled and split from full payloads")
@@ -708,12 +731,108 @@ struct CrashAndFeedbackRegressionTests {
             #expect(rendered.contains(section.header))
         }
         let identity = try #require(rendered.range(of: DiagnosticsSection.reportIdentity.header))
+        let storage = try #require(rendered.range(of: DiagnosticsSection.storageSnapshot.header))
         let office = try #require(rendered.range(of: DiagnosticsSection.officeStageTrace.header))
         let log = try #require(rendered.range(of: DiagnosticsSection.recentLog.header))
-        #expect(identity.lowerBound < office.lowerBound)
+        #expect(identity.lowerBound < storage.lowerBound)
+        #expect(storage.lowerBound < office.lowerBound)
+        #expect(rendered.contains("source: persisted_cache_only"))
         #expect(office.lowerBound < log.lowerBound)
         #expect(rendered.contains("version: "))
         #expect(rendered.contains("build: "))
+    }
+
+
+    @Test("Feedback storage reads one cached snapshot off MainActor without scanning or creating roots")
+    @MainActor func cachedStorageFeedbackOnlyLoadsOffMainActor() async throws {
+        let probe = FeedbackStorageReadProbe()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("feedback-cache-only-\(UUID().uuidString)")
+        let base = FloeStorageBase(applicationSupport: root.appendingPathComponent("Support"), library: root.appendingPathComponent("Library"),
+            documents: root.appendingPathComponent("Documents"), caches: root.appendingPathComponent("Caches"), temporary: root.appendingPathComponent("tmp"))
+        let body = await DiagnosticsExporter.storageSnapshotEvidence(base: base, appBuildFingerprint: "1.8.12.334",
+            exportedAt: Date(timeIntervalSince1970: 1_800_000_000), loadSnapshot: { _, _ in probe.record(); return nil })
+        #expect(probe.state.calls == 1 && !probe.state.usedMainThread)
+        #expect(!FileManager.default.fileExists(atPath: root.path))
+        #expect(body.contains("cache_status: unavailable"))
+        #expect(body.contains("missing_unreadable_or_schema_accounting_layout_mismatch"))
+        #expect(body.contains("live_measurement: false"))
+    }
+
+    @Test("Storage feedback keeps aggregate bytes, gaps and extent reason but no raw paths or IDs")
+    func cachedStorageFeedbackSummaryIsAllowlisted() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let key = StorageSnapshotKey(schemaVersion: StorageSnapshot.currentSchemaVersion,
+            accountingVersion: StorageAccountingVersion.current, rootsFingerprint: "/private/DO_NOT_EXPORT_ROOT")
+        let snapshot = feedbackStorageSnapshot(key: key, generatedAt: now.addingTimeInterval(-30))
+        let body = DiagnosticsExporter.storageSnapshotSummary(snapshot, expectedKey: key,
+            appBuildFingerprint: "1.8.12.334", exportedAt: now)
+        #expect(body.contains("export_app_build: 1.8.12.334"))
+        #expect(body.contains("snapshot_generated_at:"))
+        #expect(body.contains("cache_freshness: fresh_by_age"))
+        #expect(body.contains("measurement_gaps: true"))
+        #expect(body.contains("extent_union_available: false"))
+        #expect(body.contains("extent_unavailable_reason: unsupportedFilesystem"))
+        #expect(body.contains("basis: allocatedEstimate"))
+        #expect(body.contains("category.runtimeARM64: basis_bytes=9000 allocated_bytes=9000 logical_bytes=300000"))
+        #expect(body.contains("unrecognized_category_count: 2"))
+        for value in ["DO_NOT_EXPORT_ROOT", "PRIVATE_FILE.sqlite", "environment-PRIVATE_ID", "task-PRIVATE_ID", "RAW_EXTENT_OFFSET"] {
+            #expect(!body.contains(value))
+            #expect(!SecretRedactor.redact(body).contains(value))
+        }
+        var measuredCensus = snapshot.census
+        measuredCensus.diagnostics.extentBasis = .available
+        measuredCensus.diagnostics.extentUnavailableReason = nil
+        measuredCensus.extentUnion = .init(totalBytes: 8042, bundleBytes: 42, unattributedBytes: 0,
+            categoryBytes: ["runtimeARM64": 8000], measuredFileCount: 1, callCount: 1, intervalCount: 1)
+        let measured = StorageSnapshot(rootsFingerprint: key.rootsFingerprint, contextFingerprint: "1.8.12.334",
+            metricLabel: FloeStorageLayout.dataManagementMetricLabel, generatedAt: snapshot.generatedAt,
+            persistedAt: snapshot.persistedAt, bundleBytes: 42, census: measuredCensus, scanTrigger: "fixture")
+        let measuredBody = DiagnosticsExporter.storageSnapshotSummary(measured, expectedKey: key,
+            appBuildFingerprint: "1.8.12.334", exportedAt: now)
+        #expect(measuredBody.contains("extent_union_available: true"))
+        #expect(measuredBody.contains("extent_unavailable_reason: none"))
+        #expect(measuredBody.contains("basis: measuredExtents"))
+        #expect(measuredBody.contains("category.runtimeARM64: basis_bytes=8000 allocated_bytes=9000"))
+    }
+
+    @Test("Storage feedback marks old, build-mismatched and incompatible cache without claiming current figures")
+    func cachedStorageFeedbackHonorsAgeBuildAndLayout() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let key = StorageSnapshotKey(schemaVersion: StorageSnapshot.currentSchemaVersion,
+            accountingVersion: StorageAccountingVersion.current, rootsFingerprint: "fixture-key")
+        let stale = DiagnosticsExporter.storageSnapshotSummary(feedbackStorageSnapshot(key: key, generatedAt: now.addingTimeInterval(-601)),
+            expectedKey: key, appBuildFingerprint: "1.8.12.334", exportedAt: now)
+        #expect(stale.contains("cache_freshness: stale"))
+        #expect(stale.contains("figures_are_cached_observations: true"))
+        #expect(stale.contains("live_measurement: false"))
+        let oldBuild = DiagnosticsExporter.storageSnapshotSummary(feedbackStorageSnapshot(key: key, generatedAt: now,
+            build: "old /private/PRIVATE_BUILD environment-PRIVATE_ID"), expectedKey: key, appBuildFingerprint: "1.8.12.334", exportedAt: now)
+        #expect(oldBuild.contains("cache_status: historical_build_mismatch"))
+        #expect(oldBuild.contains("snapshot_build_matches_export: false"))
+        #expect(!oldBuild.contains("total_basis_bytes:") && !oldBuild.contains("PRIVATE_BUILD"))
+        let other = StorageSnapshotKey(schemaVersion: key.schemaVersion, accountingVersion: key.accountingVersion, rootsFingerprint: "other-layout")
+        let incompatible = DiagnosticsExporter.storageSnapshotSummary(feedbackStorageSnapshot(key: other, generatedAt: now),
+            expectedKey: key, appBuildFingerprint: "1.8.12.334", exportedAt: now)
+        #expect(incompatible.contains("cache_status: incompatible_layout_or_accounting"))
+        #expect(!incompatible.contains("total_basis_bytes:"))
+        let future = DiagnosticsExporter.storageSnapshotSummary(feedbackStorageSnapshot(key: key, generatedAt: now.addingTimeInterval(10)),
+            expectedKey: key, appBuildFingerprint: "1.8.12.334", exportedAt: now)
+        #expect(future.contains("cache_status: invalid_timestamp") && !future.contains("total_basis_bytes:"))
+    }
+
+    private func feedbackStorageSnapshot(key: StorageSnapshotKey, generatedAt: Date, build: String = "1.8.12.334") -> StorageSnapshot {
+        let census = StorageCensusReport(buckets: [
+            .init(id: "runtimeARM64", attribution: .shared, exists: true,
+                size: .init(logicalBytes: 300000, allocatedBytes: 9000), fileCount: 1, isCloneCapable: true),
+            .init(id: "/private/PRIVATE_FILE.sqlite", attribution: .category, exists: true),
+            .init(id: "environment-PRIVATE_ID/task-PRIVATE_ID/RAW_EXTENT_OFFSET", attribution: .category, exists: true)
+        ], diagnostics: .init(regularFileCount: 1, allocatedUnavailableCount: 1, extentBasis: .unavailable,
+            extentUnavailableReason: .unsupportedFilesystem, metricLabel: "/private/PRIVATE_FILE.sqlite", completedAt: generatedAt),
+            unattributedSize: .zero, unattributedCount: 0, isSharedAllocationEstimate: true)
+        return StorageSnapshot(rootsFingerprint: key.rootsFingerprint, contextFingerprint: build,
+            metricLabel: FloeStorageLayout.dataManagementMetricLabel, generatedAt: generatedAt,
+            persistedAt: generatedAt, bundleBytes: 42, census: census,
+            scanTrigger: "environment-PRIVATE_ID/task-PRIVATE_ID/RAW_EXTENT_OFFSET")
     }
 
     @Test("Feedback images are bounded multipart attachments")

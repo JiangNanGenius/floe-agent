@@ -21,6 +21,7 @@ final class FloePlatformServices: @unchecked Sendable {
     private let lock = NSLock()
     private var registry: EnvironmentRegistry?
     private var lifecycle: ContainerLifecycle?
+    private var executionCoordinator: EnvironmentExecutionCoordinator?
     private var cas: ContainerCAS?
     private var promote: ContainerPromote?
     private var envCommand: FloeEnvCommand?
@@ -36,6 +37,11 @@ final class FloePlatformServices: @unchecked Sendable {
     /// assembly-time root failure is recovered through `ensureLinuxImageService`
     /// and published only after the guest resolver is fully reconnected.
     private let linuxImageBox = BoundedRecoverableBox<LinuxGuestImageInstallationService>()
+    /// One bounded launch/upgrade pass owned by the service, never a View.
+    private var imageResidueCleanupRequested = false
+    private var imageResidueCleanupDidRun = false
+    private var imageResidueCleanupTask: Task<Void, Never>?
+    private var imageResidueCleanupReport: LinuxGuestUpgradeResidueReport?
     /// Runtime v2 verified-image truth, injected by the Linux backend
     /// assembly. Once the v2 migration moves the legacy image directory into
     /// its rollback point, the legacy-only status below would wrongly report
@@ -106,12 +112,14 @@ final class FloePlatformServices: @unchecked Sendable {
         aptEngine: AptEngine,
         contextProvider: @escaping @Sendable () async -> PackagesCLI.Context?,
         baseSliceURL: URL?,
-        languageManagement: EnvironmentLanguagePackageService
+        languageManagement: EnvironmentLanguagePackageService,
+        executionCoordinator: EnvironmentExecutionCoordinator? = nil
     ) {
         lock.lock()
         self.languageManagement = languageManagement
         self.registry = registry
         self.lifecycle = lifecycle
+        self.executionCoordinator = executionCoordinator
         self.cas = cas
         self.promote = promote
         self.aptEngine = aptEngine
@@ -313,6 +321,44 @@ final class FloePlatformServices: @unchecked Sendable {
     /// A nil offer is ignored; a service already present always wins.
     func setLinuxImageService(_ service: LinuxGuestImageInstallationService?) {
         linuxImageBox.publish(service)
+        launchRequestedImageResidueCleanup()
+    }
+
+    /// Called once by durable bootstrap. No download, runtime stop, VM open,
+    /// scan of recovery disks, host shell, model invocation, or UI lifetime.
+    func startAutomaticLinuxImageResidueCleanup() {
+        lock.withLock { imageResidueCleanupRequested = true }
+        launchRequestedImageResidueCleanup()
+    }
+
+    func cancelAutomaticLinuxImageResidueCleanup() {
+        lock.withLock { imageResidueCleanupTask?.cancel() }
+    }
+
+    func automaticLinuxImageResidueCleanupReport() -> LinuxGuestUpgradeResidueReport? {
+        lock.withLock { imageResidueCleanupReport }
+    }
+
+    private func launchRequestedImageResidueCleanup() {
+        guard let service = linuxImageBox.value else { return }
+        lock.withLock {
+            guard imageResidueCleanupRequested, !imageResidueCleanupDidRun else { return }
+            imageResidueCleanupDidRun = true
+            imageResidueCleanupTask = Task.detached(priority: .utility) { [weak self, service] in
+                let report = await service.cleanupUpgradeResidue()
+                self?.lock.withLock {
+                    self?.imageResidueCleanupReport = report
+                    self?.imageResidueCleanupTask = nil
+                }
+                let volumeChange = report.volumeAvailableDeltaBytes.map { String($0) } ?? "unknown"
+                FloeLogger(category: .tools).info(
+                    "imageUpgradeResidue deleted=\(report.deletedJobs) busy=\(report.skippedBusy) "
+                    + "legacyRetained=\(report.retainedLegacyEntries) localRetained=\(report.retainedLocalRecovery) "
+                    + "allocatedUnlinked=\(report.summedDeletedAllocatedBytes) volumeAvailableDelta=\(volumeChange) "
+                    + "unknownRetained=\(report.retainedUnknownOwnership) failures=\(report.failedJobs) "
+                    + "bounded=\(report.budgetReached) cancelled=\(report.wasCancelled)")
+            }
+        }
     }
 
     /// Runtime v2 verified-image truth for install-state composition. Set by
@@ -515,9 +561,11 @@ final class FloePlatformServices: @unchecked Sendable {
     /// temporary image directory is ever fabricated.
     @discardableResult
     func ensureLinuxImageService() async -> Bool {
-        await linuxImageBox.ensure { [weak self] in
+        let ready = await linuxImageBox.ensure { [weak self] in
             await self?.buildRecoveredLinuxImageService()
         }
+        if ready { launchRequestedImageResidueCleanup() }
+        return ready
     }
 
     /// Builds and wires the recovered service, returning it only when fully
@@ -611,9 +659,76 @@ final class FloePlatformServices: @unchecked Sendable {
         )
     }
 
+    /// Exact-origin selection for an explicit re-download. A missing original
+    /// image does not need to resolve successfully before it can be downloaded.
+    /// Unknown provenance still requires the separate preserve-and-rebuild path.
+    func linuxImageIDForRedownload() async throws -> String {
+        do { return try await activeLinuxImageID() }
+        catch let error as LinuxResidentImageResolutionError {
+            if let id = error.recoverableImageID { return id }
+            throw error
+        }
+    }
+
     func redownloadLinuxImage(imageID: String) async throws {
         _ = try await prepareLinuxImage(imageID: imageID, cancellation: CancellationToken(),
             onProgress: { _, _ in }, forceDownload: true)
+    }
+
+    /// Called only on Linux binding paths. A crash after physical commit can
+    /// finish the native receipt before registry publication; a precommit
+    /// cancellation produces no new generation. Other execution targets do not
+    /// depend on the local Linux environment being available.
+    func reconcileResidentRuntimeGeneration() async throws {
+        guard let registry = lock.withLock({ registry }),
+              let guests = currentLinuxCommandService() as? any LinuxGuestControlling else { return }
+        let receipt = try await guests.residentRecoveryReceipt()
+        try await registry.reconcileResidentRuntimeGeneration(recoveryID: receipt?.recoveryID)
+    }
+
+    static let residentRecoveryJobID = "linux-resident-recovery"
+
+    /// A new environment, explicitly requested after unresolved provenance.
+    /// Downloads the trusted default without adopting the retained disk as that
+    /// image. Old disk bytes and host environment metadata are kept unchanged.
+    func rebuildLinuxRuntimePreservingData(cancellation: CancellationToken = CancellationToken()) async throws {
+        guard let guests = currentLinuxCommandService() as? any LinuxGuestControlling,
+              let registry = lock.withLock({ registry }), let lifecycle = lock.withLock({ lifecycle }),
+              let coordinator = lock.withLock({ executionCoordinator }) else {
+            throw FloeError.invalidConfiguration(String(localized: "execution.runtime_reset.unavailable"))
+        }
+        _ = try await EnvironmentPackageJobs.shared.runShared(id: Self.residentRecoveryJobID,
+            title: String(localized: "execution.runtime_rebuild.progress"), cancellation: cancellation) { _, cancellation in
+            let replacementImageID = LinuxGuestImageDistributionCatalog.defaultImageID
+            _ = try await self.prepareLinuxImage(imageID: replacementImageID, cancellation: cancellation,
+                onProgress: { _, _ in }, forceDownload: true)
+            try cancellation.throwIfCancelled()
+            try Task.checkCancellation()
+            // Fence ALL Linux admissions, including future IDs, then cancel
+            // and join the already-owned sessions/jobs/tools. Their SH guards
+            // are released only by real finish callbacks, never a timeout.
+            try await registry.prepare()
+            let maintenance = try await coordinator.beginLinuxRuntimeMaintenance()
+            do {
+                let records = await registry.all().filter { $0.effectiveExecutionBackend == .linuxVM && $0.kind != .template }
+                try await lifecycle.quiesceLinuxRuntime(containerIDs: records.map(\.id))
+                try await coordinator.waitForLinuxRuntimeMaintenance(maintenance)
+                try cancellation.throwIfCancelled(); try Task.checkCancellation()
+                let receipt = try await guests.rebuildPreservingData(imageID: replacementImageID)
+                // Publish the physical commit, not merely successful download or
+                // a stop request. The persistent native receipt repairs this step
+                // after a crash, so old task pins cannot silently use a new disk.
+                try await registry.reconcileResidentRuntimeGeneration(recoveryID: receipt.recoveryID)
+                await self.sharedLinuxRuntimeDidStop(guests: guests, environmentIDs: receipt.environmentIDs)
+                self.linuxImageStatusCache.bumpRevision()
+                StorageMutationHooks.invalidate(.environmentChanged)
+                await coordinator.endLinuxRuntimeMaintenance(maintenance)
+                return String(localized: "execution.runtime_rebuild.complete")
+            } catch {
+                await coordinator.endLinuxRuntimeMaintenance(maintenance)
+                throw error
+            }
+        }
     }
 
     func stopSharedLinuxRuntime() async throws {

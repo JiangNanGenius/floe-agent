@@ -125,6 +125,8 @@ public actor RuntimeV2LeaseStore {
         runtimeID: String,
         staleProof: StaleProof? = nil
     ) async throws -> HeldLease {
+        let nativeRecoveryUse = try layout.beginNativeRecoveryUse()
+        defer { nativeRecoveryUse?.release() }
         try RuntimeV2Identifier.validate(environmentID, kind: .environment)
         try RuntimeV2Identifier.validate(runtimeID, kind: .runtime)
 
@@ -190,6 +192,8 @@ public actor RuntimeV2LeaseStore {
     }
 
     public func renew(environmentID: String, runtimeID: String) async throws {
+        let nativeRecoveryUse = try layout.beginNativeRecoveryUse()
+        defer { nativeRecoveryUse?.release() }
         guard let lease = try loadLease(environmentID: environmentID),
               lease.runtimeID == runtimeID else {
             throw RuntimeV2Error.leaseNotHeld(environmentID: environmentID)
@@ -205,6 +209,10 @@ public actor RuntimeV2LeaseStore {
     /// keeps naming this runtime as its holder, and a later launch re-proves
     /// staleness before any reclaim.
     public func release(environmentID: String, runtimeID: String) async {
+        let nativeRecoveryUse: RuntimeV2RecoveryUse?
+        do { nativeRecoveryUse = try layout.beginNativeRecoveryUse() }
+        catch { return } // Keep the lease intact while native maintenance owns the domain.
+        defer { nativeRecoveryUse?.release() }
         guard let lease = try? loadLease(environmentID: environmentID),
               lease.runtimeID == runtimeID else { return }
         do {
@@ -367,6 +375,8 @@ public actor RuntimeV2LeaseStore {
     /// interrupted/quarantined. Corrupt files are quarantined.
     @discardableResult
     public func recoverOnLaunch(staleProof: StaleProof? = nil) async throws -> [String] {
+        let nativeRecoveryUse = try layout.beginNativeRecoveryUse()
+        defer { nativeRecoveryUse?.release() }
         var unresolved: [String] = []
         let root = layout.environmentsDirectory
         guard let entries = try? fileManager.contentsOfDirectory(atPath: root.path) else { return [] }

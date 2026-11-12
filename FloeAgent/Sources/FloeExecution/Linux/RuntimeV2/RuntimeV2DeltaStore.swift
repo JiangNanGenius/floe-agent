@@ -126,6 +126,8 @@ public actor RuntimeV2DeltaStore {
     /// truncated payload is corruption: the files are quarantined and the
     /// error explains exactly why — the delta is never partially trusted.
     public func loadDelta(environmentID: String) throws -> DeltaInfo? {
+        let nativeRecoveryUse = try layout.beginNativeRecoveryUse()
+        defer { nativeRecoveryUse?.release() }
         let headerURL = try headerURL(environmentID)
         guard fileManager.fileExists(atPath: headerURL.path) else { return nil }
         do {
@@ -236,6 +238,8 @@ public actor RuntimeV2DeltaStore {
         expectedTemplate: RuntimeV2TemplatePin? = nil,
         into workingDisk: URL
     ) throws -> Int64 {
+        let nativeRecoveryUse = try layout.beginNativeRecoveryUse()
+        defer { nativeRecoveryUse?.release() }
         try RuntimeV2Identifier.validate(environmentID, kind: .environment)
         try fileManager.createDirectory(
             at: workingDisk.deletingLastPathComponent(), withIntermediateDirectories: true
@@ -269,6 +273,8 @@ public actor RuntimeV2DeltaStore {
         expectedTemplate: RuntimeV2TemplatePin? = nil,
         into workingDisk: URL
     ) throws -> Int64 {
+        let nativeRecoveryUse = try layout.beginNativeRecoveryUse()
+        defer { nativeRecoveryUse?.release() }
         try RuntimeV2Identifier.validate(environmentID, kind: .environment)
         guard fileManager.fileExists(atPath: workingDisk.path) else {
             throw RuntimeV2Error.deltaCorrupt(
@@ -376,6 +382,8 @@ public actor RuntimeV2DeltaStore {
         baseRootfsSHA512: String,
         templatePin: RuntimeV2TemplatePin? = nil
     ) throws -> DeltaInfo {
+        let nativeRecoveryUse = try layout.beginNativeRecoveryUse()
+        defer { nativeRecoveryUse?.release() }
         try RuntimeV2Identifier.validate(environmentID, kind: .environment)
         let previous = try loadDelta(environmentID: environmentID)
         if let previous, previous.header.baseRootfsSHA512 != baseRootfsSHA512.lowercased() {
@@ -583,6 +591,8 @@ public actor RuntimeV2DeltaStore {
     }
 
     public func recordShutdown(_ record: ShutdownRecord, environmentID: String) throws {
+        let nativeRecoveryUse = try layout.beginNativeRecoveryUse()
+        defer { nativeRecoveryUse?.release() }
         let url = try layout.environmentLastShutdownURL(environmentID: environmentID)
         try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try Self.encoder.encode(record).write(to: url, options: .atomic)

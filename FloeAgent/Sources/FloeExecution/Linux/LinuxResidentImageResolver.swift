@@ -46,6 +46,15 @@ public enum LinuxResidentImageResolutionError: Error, Equatable, Sendable, Local
         return nil
     }
 
+    /// This is an explicit new-environment action, not evidence that the
+    /// retained mutable disk belongs to the current catalog default.
+    public var permitsPreservingRebuild: Bool {
+        switch self {
+        case .invalidOrigin, .unknownOrigin, .originMismatch, .ambiguousOrigin, .missingDisk: true
+        case .storageUnavailable, .sourceUnavailable: false
+        }
+    }
+
     public var errorDescription: String? {
         let zh = FloeL10n.isChinese
         switch self {
@@ -78,7 +87,7 @@ public struct LinuxResidentImageResolver: Sendable {
         self.lookup = lookup
     }
 
-    public func resolve() async throws -> String {
+    public func resolve(requireExistingDisk: Bool = false) async throws -> String {
         try Task.checkCancellation()
         // Reject symlinks or non-directory nodes below the caller-owned root.
         var cursor = root
@@ -95,6 +104,7 @@ public struct LinuxResidentImageResolver: Sendable {
         let originAttributes = try attributes(at: sidecar)
         guard let diskAttributes else {
             guard originAttributes == nil else { throw LinuxResidentImageResolutionError.missingDisk }
+            guard !requireExistingDisk else { throw LinuxResidentImageResolutionError.missingDisk }
             // No disk AND no origin evidence: first creation may prepare the
             // configured default through the existing download job.
             guard trustedImageIDs.contains(defaultImageID) else {

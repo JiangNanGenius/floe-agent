@@ -126,6 +126,8 @@ public actor RuntimeV2EnvironmentMigrator {
         legacyDiskDirectory: URL?,
         legacyLayerDirectory: URL?
     ) async throws -> Report {
+        let nativeRecoveryUse = try store.layout.beginNativeRecoveryUse()
+        defer { nativeRecoveryUse?.release() }
         try RuntimeV2Identifier.validate(environmentID, kind: .environment)
         let migrationID = "legacy-env-\(environmentID)"
         let registry = store.registry
@@ -338,6 +340,8 @@ public actor RuntimeV2EnvironmentMigrator {
     }
 
     public func writeMetadata(_ metadata: EnvironmentMetadata, environmentID: String) throws {
+        let nativeRecoveryUse = try store.layout.beginNativeRecoveryUse()
+        defer { nativeRecoveryUse?.release() }
         let url = try store.layout.environmentMetadataURL(environmentID: environmentID)
         try fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         let encoder = JSONEncoder()

@@ -35,6 +35,8 @@ final class TaskExecutionEnvironmentCenter: ObservableObject {
         var preview: SkillMigrationPreview?
         var selectedChoiceID: String?
         var legacyChoices: [TaskExecutionTarget] = []
+        var residentRebuildTarget: TaskExecutionTarget?
+        var acceptingResidentRebuild = false
     }
     @Published private(set) var snapshots: [UUID: Snapshot] = [:]
     private unowned let environment: AppEnvironment
@@ -77,6 +79,22 @@ final class TaskExecutionEnvironmentCenter: ObservableObject {
             try await environment.environmentRegistry.prepare()
             value.choices = try await choices()
             value.binding = try await store.binding(conversationID: conversationID)
+            value.residentRebuildTarget = nil
+            if let binding = value.binding, binding.target.backend == .linuxVM {
+                try await FloePlatformServices.shared.reconcileResidentRuntimeGeneration()
+                if let record = await environment.environmentRegistry.record(id: binding.target.environmentID),
+                   record.state == .active, !record.requiresRebuild,
+                   LinuxResidentRuntimeGeneration.requiresExplicitTaskRebind(record.runtimeGeneration),
+                   record.runtimeGeneration != binding.target.runtimeGeneration {
+                    let current = try target(record)
+                    var identity = binding.target; identity.runtimeGeneration = current.runtimeGeneration
+                    if identity == current {
+                        value.residentRebuildTarget = current
+                        checkedChoices[conversationID] = nil; checks[conversationID] = nil
+                        value.preview = nil; value.selectedChoiceID = nil
+                    }
+                }
+            }
             value.migration = try await store.activeMigration(conversationID: conversationID)
             if var interrupted = value.migration, jobs[conversationID] == nil,
                !interrupted.phase.isCommitted, interrupted.phase != .failed {
@@ -183,6 +201,7 @@ final class TaskExecutionEnvironmentCenter: ObservableObject {
             try await validate(pin.target); if try await environment.runStore.run(id: runID) != nil { try await store.pinRun(runID: runID, binding: pin) }; return pin
         }
         let target: TaskExecutionTarget
+        var targetPrepared = false
         if let override {
             guard let record = await environment.environmentRegistry.record(id: override) else { throw FloeError.notFound("Execution environment") }
             if record.kind == .session, record.ownerID != conversationID.uuidString {
@@ -197,6 +216,7 @@ final class TaskExecutionEnvironmentCenter: ObservableObject {
                 case .native: throw FloeError.validationFailed("The scheduled execution environment needs an update")
                 }
                 target = try await prepareTarget(Choice(id: record.id, name: "", kind: kind), conversationID: conversationID, root: root, fresh: false)
+                targetPrepared = true
             } else { target = try self.target(record) }
         } else {
             let existing = await environment.environmentRegistry.containersOwned(by: conversationID.uuidString)
@@ -215,9 +235,18 @@ final class TaskExecutionEnvironmentCenter: ObservableObject {
                     preferred = Choice(id: "mac", name: "", kind: .mac)
                 } else { preferred = Choice(id: "local", name: "", kind: .linux) }
                 target = try await prepareTarget(preferred, conversationID: conversationID, root: root, fresh: false)
+                targetPrepared = true
             }
         }
-        let pin = try await store.bindInitial(TaskExecutionBinding(conversationID: conversationID, target: target))
+        var resolvedTarget = target
+        if target.backend == .linuxVM, !targetPrepared {
+            try await FloePlatformServices.shared.reconcileResidentRuntimeGeneration()
+            guard let current = await environment.environmentRegistry.record(id: target.environmentID) else {
+                throw FloeError.notFound("Execution environment")
+            }
+            resolvedTarget = try self.target(current)
+        }
+        let pin = try await store.bindInitial(TaskExecutionBinding(conversationID: conversationID, target: resolvedTarget))
         try await validate(pin.target)
         if try await environment.runStore.run(id: runID) != nil { try await store.pinRun(runID: runID, binding: pin) }
         return pin
@@ -254,15 +283,24 @@ final class TaskExecutionEnvironmentCenter: ObservableObject {
         try await registry.prepare()
         guard let record = await registry.record(id: target.environmentID),
               record.state == .active, !record.requiresRebuild,
+              (!LinuxResidentRuntimeGeneration.requiresExplicitTaskRebind(record.runtimeGeneration)
+                || record.runtimeGeneration == target.runtimeGeneration),
               try sameIdentity(executionTarget(record), target) else {
             throw TaskExecutionAvailabilityError(message: IDELanguageRunText.t("原运行位置不可用，请重新连接或迁移任务。", "The saved environment is unavailable. Reconnect or move this task."))
         }
     }
 
     private func refreshedResetBinding(_ pin: TaskExecutionBinding) async throws -> TaskExecutionBinding {
-        guard pin.target.backend == .linuxVM,
-              let record = await environment.environmentRegistry.record(id: pin.target.environmentID),
-              record.effectiveExecutionBackend == .linuxVM, !record.requiresRebuild,
+        guard pin.target.backend == .linuxVM else { return pin }
+        try await FloePlatformServices.shared.reconcileResidentRuntimeGeneration()
+        guard let record = await environment.environmentRegistry.record(id: pin.target.environmentID) else { return pin }
+        if LinuxResidentRuntimeGeneration.requiresExplicitTaskRebind(record.runtimeGeneration),
+           record.runtimeGeneration != pin.target.runtimeGeneration {
+            throw TaskExecutionAvailabilityError(message: copy(
+                "Linux 环境已重建，请重新选择运行位置。旧资料已保留。",
+                "Linux was rebuilt. Choose this task's location again. Previous data was kept."))
+        }
+        guard record.effectiveExecutionBackend == .linuxVM, !record.requiresRebuild,
               record.pendingRuntimeResetID == nil, record.architecture == "arm64",
               record.runtimeGeneration != nil, record.runtimeGeneration != pin.target.runtimeGeneration else { return pin }
         return try await store.refreshResetLinuxBinding(pin, target: target(record))
@@ -308,6 +346,11 @@ final class TaskExecutionEnvironmentCenter: ObservableObject {
                 workspaceID: workspaceID, workspaceRootPath: root.path, hostID: hostID, remoteRootPath: path,
                 operatingSystem: facts.system, architecture: facts.architecture,
                 distribution: facts.distribution, runtimeGeneration: facts.generation, forceNew: fresh)
+        }
+        if record.effectiveExecutionBackend == .linuxVM {
+            try await FloePlatformServices.shared.reconcileResidentRuntimeGeneration()
+            guard let current = await registry.record(id: record.id) else { throw FloeError.notFound("Execution environment") }
+            return try target(current)
         }
         return try target(record)
     }
@@ -356,6 +399,59 @@ final class TaskExecutionEnvironmentCenter: ObservableObject {
         let store = SQLiteWorkspaceStore(database: environment.database)
         let record = try await store.ensureWorkspace(conversationID: conversationID, title: conversation.title)
         return try await environment.workspaceCenter.acquireTaskRoot(record, conversationID: conversationID)
+    }
+
+    /// Called only by the native confirmation button. Dismissing the dialog
+    /// never invokes it; no timeout/default can consent to this new generation.
+    func acceptResidentRebuild(conversationID: UUID, expected: TaskExecutionBinding, target: TaskExecutionTarget) {
+        guard jobs[conversationID] == nil,
+              snapshots[conversationID]?.binding == expected,
+              snapshots[conversationID]?.residentRebuildTarget == target else { return }
+        let token = CancellationToken()
+        cancellations[conversationID] = token
+        snapshots[conversationID, default: Snapshot()].failure = nil
+        snapshots[conversationID, default: Snapshot()].acceptingResidentRebuild = true
+        jobs[conversationID] = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                self.jobs[conversationID] = nil; self.cancellations[conversationID] = nil
+                self.snapshots[conversationID, default: Snapshot()].acceptingResidentRebuild = false
+                self.objectWillChange.send()
+            }
+            var fenced = false
+            do {
+                let rootLease = try await self.root(conversationID); defer { rootLease.release() }
+                try await self.environment.waitForTaskEnvironmentSafePoint(conversationID: conversationID,
+                    environmentID: expected.target.environmentID, cancellation: token)
+                fenced = true
+                guard let guests = self.environment.linuxGuestService else { throw FloeError.notFound("Linux runtime") }
+                let physicalGuard = try await guests.acquireResidentRecoveryGuard()
+                defer { physicalGuard.finish() }
+                guard let committed = physicalGuard.receipt, committed.runtimeGeneration == target.runtimeGeneration else {
+                    throw TaskExecutionAvailabilityError(message: self.copy("环境已再次变化，请刷新后确认。", "The environment changed again. Refresh and confirm it."))
+                }
+                try await self.environment.environmentRegistry.reconcileResidentRuntimeGeneration(recoveryID: committed.recoveryID)
+                try await Self.validateSavedTarget(target, registry: self.environment.environmentRegistry)
+                try token.throwIfCancelled(); try Task.checkCancellation()
+                let notice = self.copy(
+                    "此任务已改用重建后的 Linux 环境。Linux 内的软件需按需重新安装；工作文件与历史已保留。",
+                    "This task now uses the rebuilt Linux environment. Reinstall Linux software as needed; workspace files and history were kept.")
+                let next = try await self.store.acceptResidentRebuild(expected, target: target,
+                    committedRecoveryID: committed.recoveryID, notice: notice)
+                // A late cancellation cannot undo or misreport an atomic commit.
+                self.snapshots[conversationID, default: Snapshot()].binding = next
+                self.snapshots[conversationID, default: Snapshot()].residentRebuildTarget = nil
+                self.checkedChoices[conversationID] = nil; self.checks[conversationID] = nil
+                self.snapshots[conversationID, default: Snapshot()].preview = nil
+                self.snapshots[conversationID, default: Snapshot()].selectedChoiceID = nil
+            } catch is CancellationError {
+                self.snapshots[conversationID, default: Snapshot()].failure = nil
+            } catch { self.snapshots[conversationID, default: Snapshot()].failure = error.localizedDescription }
+            if fenced { await self.environment.releaseExecutionMigrationFence(expected.target.environmentID) }
+            // Read back on an uncancelled task; a cancelled wait must not turn
+            // an already committed switch into a false failure notification.
+            await Task { @MainActor in await self.load(conversationID) }.value
+        }
     }
 
     func start(conversationID: UUID, choice: Choice, acceptCapabilityLosses: Bool = false) {

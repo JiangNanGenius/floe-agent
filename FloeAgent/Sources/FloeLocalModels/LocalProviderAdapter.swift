@@ -2376,10 +2376,10 @@ public struct LocalProviderAdapter: ProviderAdapter {
             appleSuffix = ""
         }
         // Apple Intelligence starts OFF for a brand-new device. This row is
-        // only authoritative the first time the on-device provider is
-        // reconciled: the store keeps an existing row's own enabled value, so
-        // anyone who already turned the system model on (or off) is never
-        // re-decided by an update, a relaunch or a later availability change.
+        // authoritative for the initial preference. Keep this row for system
+        // settings/history even when unavailable; reconciliation turns it off
+        // and the selectable catalog excludes it until the device can run it.
+        // A later availability recovery does not turn the user's switch on.
         models.append(ModelProfile(
             id: AppleFoundationModelIdentity.profileID,
             providerID: provider.id,

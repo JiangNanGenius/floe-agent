@@ -384,6 +384,7 @@ enum FeedbackUploadService {
     static func sectionAllowance(_ id: DiagnosticsSection) -> Int {
         switch id {
         case .reportIdentity: return 6_000
+        case .storageSnapshot: return 8_000
         case .executionTrace: return 16_000
         case .systemRuntime: return 3_000
         case .officeStageTrace: return 26_000
@@ -402,9 +403,9 @@ enum FeedbackUploadService {
     /// newest record is the current evidence.
     static func headShare(_ id: DiagnosticsSection) -> Double {
         switch id {
-        case .reportIdentity, .systemRuntime, .executionTrace: return 1.0
+        case .reportIdentity, .storageSnapshot, .systemRuntime, .executionTrace: return 1.0
         case .taskSummaries, .metricKitSummaries: return 0.75
-        default: return 0.2
+        case .officeStageTrace, .localInference, .metricKitFullPayloads, .recentLog: return 0.2
         }
     }
 

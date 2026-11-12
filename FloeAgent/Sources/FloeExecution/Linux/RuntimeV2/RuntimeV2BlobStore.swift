@@ -85,6 +85,8 @@ public actor RuntimeV2BlobStore {
         expectedBytes: Int64,
         retainFor imageID: String?
     ) async throws -> String {
+        let nativeRecoveryUse = try layout.beginNativeRecoveryUse()
+        defer { nativeRecoveryUse?.release() }
         let digest = expectedSHA512.lowercased()
         try await registry.takeBlobStagingClaim(digest: digest, bytes: expectedBytes)
         do {
@@ -118,6 +120,8 @@ public actor RuntimeV2BlobStore {
         expectedSHA512: String,
         expectedBytes: Int64
     ) async throws -> String {
+        let nativeRecoveryUse = try layout.beginNativeRecoveryUse()
+        defer { nativeRecoveryUse?.release() }
         let digest = expectedSHA512.lowercased()
         try await registry.takeBlobStagingClaim(digest: digest, bytes: expectedBytes)
         do {
@@ -144,6 +148,8 @@ public actor RuntimeV2BlobStore {
     /// re-copied from the caller's `sourceURL` when no quarantine copy exists.
     /// Throws `blobMissing` only when neither source has the bytes.
     public func ensureBlobPresent(digest: String, sourceURL: URL) async throws {
+        let nativeRecoveryUse = try layout.beginNativeRecoveryUse()
+        defer { nativeRecoveryUse?.release() }
         let normalized = digest.lowercased()
         let canonical = try layout.blobURL(digest: normalized)
         if fileManager.fileExists(atPath: canonical.path) { return }
@@ -275,6 +281,8 @@ public actor RuntimeV2BlobStore {
         sourceURL: URL,
         expectedBytes: Int64
     ) async throws -> Bool {
+        let nativeRecoveryUse = try layout.beginNativeRecoveryUse()
+        defer { nativeRecoveryUse?.release() }
         let normalized = digest.lowercased()
         let canonical = try layout.blobURL(digest: normalized)
         if fileManager.fileExists(atPath: canonical.path) {
@@ -321,6 +329,8 @@ public actor RuntimeV2BlobStore {
     /// without a second materialization) still get a missing-blob error
     /// instead of a silent empty file.
     public func verifiedBlobURL(digest: String) throws -> URL {
+        let nativeRecoveryUse = try layout.beginNativeRecoveryUse()
+        defer { nativeRecoveryUse?.release() }
         let normalized = digest.lowercased()
         let url = try layout.blobURL(digest: normalized)
         if !fileManager.fileExists(atPath: url.path) {
@@ -336,6 +346,8 @@ public actor RuntimeV2BlobStore {
 
     /// Full re-verification of a blob (used by recovery scans and expansion).
     public func verify(digest: String) async throws {
+        let nativeRecoveryUse = try layout.beginNativeRecoveryUse()
+        defer { nativeRecoveryUse?.release() }
         let normalized = digest.lowercased()
         let url = try layout.blobURL(digest: normalized)
         if !fileManager.fileExists(atPath: url.path) {
@@ -360,6 +372,8 @@ public actor RuntimeV2BlobStore {
     public func materialize(
         digest: String, at destination: URL, writable: Bool = false
     ) throws -> MaterializeReport {
+        let nativeRecoveryUse = try layout.beginNativeRecoveryUse()
+        defer { nativeRecoveryUse?.release() }
         let normalized = digest.lowercased()
         let blob = try layout.blobURL(digest: normalized)
         if !fileManager.fileExists(atPath: blob.path) {
@@ -404,6 +418,8 @@ public actor RuntimeV2BlobStore {
     /// reader restores or re-places them.
     @discardableResult
     public func collectGarbage(grace: TimeInterval = 7 * 24 * 3600, now: Date = Date()) async throws -> Int64 {
+        let nativeRecoveryUse = try layout.beginNativeRecoveryUse()
+        defer { nativeRecoveryUse?.release() }
         let cutoff = now.addingTimeInterval(-grace)
         let candidates = try await registry.unreferencedBlobs(olderThan: cutoff)
         var reclaimed: Int64 = 0

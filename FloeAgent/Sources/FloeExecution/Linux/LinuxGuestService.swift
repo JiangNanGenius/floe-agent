@@ -1037,6 +1037,9 @@ public protocol LinuxGuestControlling: Sendable {
     func stopSharedGuest(allowing observedActivities: [LinuxGuestActivityDetail]) async throws -> [String]
     func restoreInitialState(imageID: String,
         prepareForReset: @escaping @Sendable () async throws -> Void) async throws -> LinuxGuestInitialResetReceipt
+    func rebuildPreservingData(imageID: String) async throws -> LinuxResidentRecoveryReceipt
+    func residentRecoveryReceipt() async throws -> LinuxResidentRecoveryReceipt?
+    func acquireResidentRecoveryGuard() async throws -> LinuxResidentRecoveryGuard
     func preferredGuestConfiguration(environmentID: String) async -> LinuxGuestLifecycleConfig?
     /// Starts the environment's guest. Returns false when this service does
     /// not own the environment (native environments are untouched). Throws
@@ -1202,6 +1205,11 @@ public extension LinuxGuestControlling {
     func restoreInitialState(imageID: String) async throws -> LinuxGuestInitialResetReceipt {
         try await restoreInitialState(imageID: imageID, prepareForReset: {})
     }
+    func rebuildPreservingData(imageID: String) async throws -> LinuxResidentRecoveryReceipt {
+        throw LinuxResidentRecoveryError.unsupported
+    }
+    func residentRecoveryReceipt() async throws -> LinuxResidentRecoveryReceipt? { nil }
+    func acquireResidentRecoveryGuard() async throws -> LinuxResidentRecoveryGuard { throw LinuxResidentRecoveryError.unsupported }
     func preferredGuestConfiguration(environmentID: String) async -> LinuxGuestLifecycleConfig? { nil }
     /// Default explicit-shape start: nil shape forwards to the shape-less
     /// start; a non-nil shape is refused honestly by a backend that cannot

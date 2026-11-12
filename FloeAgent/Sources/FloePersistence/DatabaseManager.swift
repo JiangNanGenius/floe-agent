@@ -216,6 +216,7 @@ public actor DatabaseManager {
         V60ExecutionExperiences.register(into: &migrator)
         V61EditorAssistantOwnership.register(into: &migrator)
         V62ModelReasoningMetadata.register(into: &migrator)
+        V63LinuxCacheCleanupTasks.register(into: &migrator)
     }
 
     private static func configuration() -> Configuration {

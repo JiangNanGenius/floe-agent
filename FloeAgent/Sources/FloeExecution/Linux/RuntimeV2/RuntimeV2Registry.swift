@@ -223,21 +223,33 @@ public actor RuntimeV2Registry {
     nonisolated(unsafe) private var db: OpaquePointer?
     private let databaseURL: URL
     private let migrationsAuditDirectory: URL
+    private let nativeLayoutRoot: URL
+    private var nativeRecoveryUse: RuntimeV2RecoveryUse?
     private var fileManager: FileManager { .default }
 
     public init(layout: RuntimeV2Layout) {
+        self.nativeLayoutRoot = layout.root
         self.databaseURL = layout.registryDatabaseURL
         self.migrationsAuditDirectory = layout.registryMigrationsDirectory
     }
 
     deinit {
-        if let db { sqlite3_close_v2(db) }
+        if let use = nativeRecoveryUse {
+            if let db, sqlite3_close(db) != SQLITE_OK {
+                // Unfinished native handles are not closed proof.
+                use.preserveUnknownNativeOwner()
+            } else { use.release() }
+        } else if let db {
+            // Non-legacy stores retain their original lifecycle semantics.
+            sqlite3_close_v2(db)
+        }
     }
 
     // MARK: open + schema
 
     public func open() throws {
         guard db == nil else { return }
+        let admission = try RuntimeV2RecoveryAdmission.acquire(root: nativeLayoutRoot)
         var handle: OpaquePointer?
         let flags = SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX
         guard sqlite3_open_v2(databaseURL.path, &handle, flags, nil) == SQLITE_OK, let handle else {
@@ -246,16 +258,33 @@ public actor RuntimeV2Registry {
             throw RuntimeV2Error.registryCorrupt("cannot open runtime.sqlite: \(message)")
         }
         db = handle
+        nativeRecoveryUse = admission
         do {
             try execute("PRAGMA journal_mode=WAL")
             try execute("PRAGMA foreign_keys=ON")
             try execute("PRAGMA busy_timeout=5000")
             try applySchemaMigrations()
         } catch {
-            sqlite3_close_v2(handle)
+            if let use = nativeRecoveryUse {
+                if sqlite3_close(handle) == SQLITE_OK { use.release() }
+                else { use.preserveUnknownNativeOwner() }
+            } else { sqlite3_close_v2(handle) }
             db = nil
+            nativeRecoveryUse = nil
             throw error
         }
+    }
+
+    /// Only the real owner closes its idle native connection. No VM is
+    /// stopped and no lease/row is rewritten. Busy handles retain exclusion.
+    public func close() throws {
+        guard let handle = db else { return }
+        guard sqlite3_close(handle) == SQLITE_OK else {
+            throw RuntimeV2Error.registryCorrupt("native registry connection is still owned")
+        }
+        db = nil
+        nativeRecoveryUse?.release()
+        nativeRecoveryUse = nil
     }
 
     private static let schemaMigrations: [(version: Int, name: String, sql: String)] = [

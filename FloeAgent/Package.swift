@@ -885,7 +885,7 @@ let package = Package(
             name: "FloeExecutionTests",
             dependencies: [
                 "FloeExecution", "FloeCore", "FloeTools", "FloeModels",
-                "FloeAgentRuntime", "FloeSSH", "FloePersistence", "FloeTestSupport",
+                "FloeAgentRuntime", "FloeSSH", "FloePersistence", "FloeEnvironments", "FloeTestSupport",
                 .product(name: "FloeToolboxDiagnostics", package: "FloeToolbox"),
                 .product(name: "WAT", package: "WasmKit"), .product(name: "Crypto", package: "swift-crypto")
             ],

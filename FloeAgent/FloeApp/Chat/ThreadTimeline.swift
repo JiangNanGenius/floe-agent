@@ -568,6 +568,7 @@ enum ThreadTimelineBuilder {
             sortedEvents.contains {
                 NativeServiceRunMetadata.matches($0, runID: run.id, conversationID: run.conversationID)
                     || CADBasicMachiningNativeRunMetadata.matches($0,runID:run.id,conversationID:run.conversationID)
+                    || LinuxCacheCleanupRunMetadata.matches($0, runID: run.id, conversationID: run.conversationID)
             }
         } ?? false
         let terminalEvent = sortedEvents.last(where: { $0.kind == .terminal })
@@ -583,7 +584,8 @@ enum ThreadTimelineBuilder {
             event.kind != .terminal
                 && !(run.map { run in
                     (NativeServiceRunMetadata.matches(event, runID: run.id, conversationID: run.conversationID)
-                     || CADBasicMachiningNativeRunMetadata.matches(event,runID:run.id,conversationID:run.conversationID))
+                     || CADBasicMachiningNativeRunMetadata.matches(event,runID:run.id,conversationID:run.conversationID)
+                     || LinuxCacheCleanupRunMetadata.matches(event, runID: run.id, conversationID: run.conversationID))
                 } ?? false)
                 && !isTerminalStatusEvent(event, payloadCache: payloadCache)
                 && !isStaleStatusEvent(event, currentState: run?.state, payloadCache: payloadCache)

@@ -37,6 +37,11 @@ public struct TaskExecutionBindingStore: Sendable {
     /// transaction; completed and cancelled runs retain their historical facts.
     public func refreshResetLinuxBinding(_ expected: TaskExecutionBinding,
                                          target: TaskExecutionTarget) async throws -> TaskExecutionBinding {
+        guard !LinuxResidentRuntimeGeneration.requiresExplicitTaskRebind(target.runtimeGeneration) else {
+            throw FloeError.validationFailed(FloeL10n.isChinese
+                ? "Linux 环境已重建，请重新选择运行位置。旧资料已保留。"
+                : "Linux was rebuilt. Choose this task's location again. Previous data was kept.")
+        }
         guard expected.target.backend == .linuxVM, target.backend == .linuxVM,
               target.environmentID == expected.target.environmentID,
               target.operatingSystem == "linux", target.architecture == "arm64",
@@ -72,6 +77,65 @@ public struct TaskExecutionBindingStore: Sendable {
                 let updated = String(decoding: try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]), as: UTF8.self)
                 try db.execute(sql: "UPDATE checkpoints SET body_json=? WHERE run_id=?", arguments: [updated, row["run_id"] as String])
             }
+            return next
+        }
+    }
+
+    /// Explicit native confirmation for the same environment after a retaining
+    /// rebuild. The caller holds the current native generation guard and the
+    /// existing idle migration fence. This entry is not exposed as a model tool.
+    /// Exact old pins/checkpoints and the visible notice commit atomically.
+    public func acceptResidentRebuild(_ expected: TaskExecutionBinding, target: TaskExecutionTarget,
+                                      committedRecoveryID: UUID, notice: String) async throws -> TaskExecutionBinding {
+        var identity = expected.target
+        identity.runtimeGeneration = target.runtimeGeneration
+        guard expected.target.backend == .linuxVM, target.backend == .linuxVM,
+              identity == target, expected.target != target,
+              target.runtimeGeneration == LinuxResidentRuntimeGeneration.value(recoveryID: committedRecoveryID),
+              expected.generation > 0, expected.generation < Int64.max,
+              !notice.isEmpty, notice.utf8.count <= 4_096 else {
+            throw FloeError.validationFailed("The confirmed rebuilt environment identity is invalid")
+        }
+        return try await database.writer { db in
+            guard let current = try Self.decode(TaskExecutionBinding.self, String.fetchOne(db,
+                sql: "SELECT body_json FROM task_execution_bindings WHERE conversation_id=?",
+                arguments: [expected.conversationID.uuidString])), current == expected else {
+                throw FloeError.validationFailed("The task environment changed; confirm it again")
+            }
+            let active = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM task_environment_migrations WHERE conversation_id=? AND phase NOT IN ('completed','cancelled')",
+                arguments: [expected.conversationID.uuidString]) ?? 0
+            guard active == 0 else { throw FloeError.validationFailed("Finish or cancel the environment move first") }
+            let next = TaskExecutionBinding(conversationID: expected.conversationID, target: target,
+                generation: expected.generation + 1)
+            let body = try Self.encode(next)
+            var receipt = TaskEnvironmentMigration(source: expected, target: target)
+            receipt.phase = .completed
+            receipt.residentRecoveryID = committedRecoveryID
+            try db.execute(sql: "INSERT INTO task_environment_migrations(id,conversation_id,phase,revision,body_json,updated_at) VALUES(?,?,?,?,?,?)",
+                arguments: [receipt.id.uuidString, expected.conversationID.uuidString, receipt.phase.rawValue,
+                    receipt.revision, try Self.encode(receipt), PersistenceCodec.encode(receipt.updatedAt)])
+            try db.execute(sql: "UPDATE task_execution_bindings SET generation=?,body_json=? WHERE conversation_id=? AND generation=?",
+                arguments: [next.generation, body, next.conversationID.uuidString, expected.generation])
+            guard db.changesCount == 1 else { throw FloeError.validationFailed("The task environment changed") }
+            let newPin = try JSONSerialization.jsonObject(with: Data(body.utf8))
+            for row in try Row.fetchAll(db, sql: "SELECT c.run_id,c.body_json FROM checkpoints c JOIN runs r ON r.id=c.run_id WHERE r.conversation_id=? AND r.\(Self.rebindableRunFilter)",
+                arguments: [expected.conversationID.uuidString]) {
+                let original: String = row["body_json"]
+                try db.execute(sql: "INSERT INTO task_environment_migration_checkpoints(migration_id,run_id,body_json) VALUES(?,?,?)",
+                    arguments: [receipt.id.uuidString, row["run_id"] as String, original])
+                guard var object = try JSONSerialization.jsonObject(with: Data(original.utf8)) as? [String: Any] else {
+                    throw FloeError.storageCorrupted("The task recovery point is unreadable")
+                }
+                object["executionBinding"] = newPin
+                let updated = String(decoding: try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]), as: UTF8.self)
+                try db.execute(sql: "UPDATE checkpoints SET body_json=? WHERE run_id=?", arguments: [updated, row["run_id"] as String])
+            }
+            try db.execute(sql: "UPDATE runs SET execution_binding_json=? WHERE conversation_id=? AND \(Self.rebindableRunFilter)",
+                arguments: [body, expected.conversationID.uuidString])
+            try db.execute(sql: "INSERT INTO messages(id,conversation_id,role,content,created_at,run_id) VALUES(?,?,'assistant',?,?,NULL)",
+                arguments: [receipt.id.uuidString, expected.conversationID.uuidString, notice, PersistenceCodec.encode(receipt.updatedAt)])
+            try db.execute(sql: "UPDATE conversations SET updated_at=? WHERE id=?",
+                arguments: [PersistenceCodec.encode(receipt.updatedAt), expected.conversationID.uuidString])
             return next
         }
     }
@@ -174,6 +238,7 @@ public struct TaskExecutionBindingStore: Sendable {
               migration.preparationOperationIDs?.isEmpty != false,
               migration.manifestDigest == nil,
               migration.dependencyReceiptDigest == nil,
+              migration.residentRecoveryID == nil,
               migration.skillDigests == nil,
               migration.preparedFileCount == 0,
               migration.preparedBytes == 0,
@@ -206,7 +271,8 @@ public struct TaskExecutionBindingStore: Sendable {
         return try await database.writer { db in
             guard let previous = try Self.decode(TaskEnvironmentMigration.self, String.fetchOne(db,
                 sql: "SELECT body_json FROM task_environment_migrations WHERE id=?", arguments: [value.id.uuidString])),
-                  previous.source == value.source, previous.target == value.target else {
+                  previous.source == value.source, previous.target == value.target,
+                  previous.residentRecoveryID == value.residentRecoveryID else {
                 throw FloeError.validationFailed("The migration identity or commit state changed")
             }
             // Only `commit` may produce `.committed`; only `finish` may

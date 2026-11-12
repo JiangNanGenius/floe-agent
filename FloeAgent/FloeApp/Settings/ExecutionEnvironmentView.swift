@@ -482,7 +482,7 @@ struct ExecutionEnvironmentView: View {
                 try await FloePlatformServices.shared.restoreLinuxInitialState()
                 runtimeRecoveryNotice = String(localized: "execution.runtime_reset.complete")
             case .redownload:
-                let imageID = try await FloePlatformServices.shared.activeLinuxImageID()
+                let imageID = try await FloePlatformServices.shared.linuxImageIDForRedownload()
                 try await FloePlatformServices.shared.redownloadLinuxImage(imageID: imageID)
                 runtimeRecoveryNotice = String(localized: "execution.runtime_redownload.complete")
             case .stopShared:

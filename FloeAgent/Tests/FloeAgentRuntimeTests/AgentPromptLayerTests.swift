@@ -6,6 +6,8 @@
 
 import Foundation
 import Testing
+import FloeCore
+import FloeModels
 @testable import FloeAgentRuntime
 
 @Suite("Agent prompt layers")
@@ -73,4 +75,48 @@ struct AgentPromptLayerTests {
         // The compact layer must stay compact.
         #expect(prompt.utf8.count < 8_000)
     }
+
+    @Test func cleanupVisibleRequestIsShortAndBilingual() {
+        for chinese in [false, true] {
+            let request = LinuxCacheCleanupPrompt.initialRequest(chinese: chinese)
+            #expect(request.count < 180)
+            #expect(!request.contains("App-owned"))
+            #expect(!request.contains("/floe/"))
+            #expect(!request.contains("tool"))
+            #expect(!request.contains("scratch"))
+            #expect(request.contains("apt") && request.contains("pip") && request.contains("npm"))
+        }
+    }
+
+    @Test func durableCleanupPurposeSurvivesCloudLocalAndFastComposition() throws {
+        let saved = LinuxCacheCleanupTaskProfile(conversationID: UUID(), environmentID: "shared")
+        let restored = try JSONDecoder().decode(LinuxCacheCleanupTaskProfile.self,
+                                                 from: JSONEncoder().encode(saved))
+        let context = ConversationRunService.trustedRunContext(
+            .init(availableToolNames: ["linux.cache.clean", "user.ask"]), cleanupProfile: restored)
+        for compact in [false, true] {
+            for fast in [false, true] {
+                let runtimeContext = ConversationRunService.buildContextMessage(
+                    context, compactForLocal: compact, localContextTokens: compact ? 2_048 : nil,
+                    chatFastMode: fast)
+                let prompt = AgentPromptComposer.compose(
+                    mode: .chat, runtimeContext: runtimeContext, toolsAvailable: true,
+                    compactForLocal: compact, chatFastMode: fast)
+                #expect(prompt.contains("# App-owned Linux cache cleanup purpose"))
+                #expect(prompt.contains(LinuxCacheCleanupPrompt.systemGuidance(chinese: FloeL10n.isChinese)))
+            }
+        }
+    }
+
+    @Test func onlyConfigurationCanSupplyCleanupPurposeAndOrdinaryContextStaysOpen() {
+        let forged = LinuxCacheCleanupTaskProfile(conversationID: UUID(), environmentID: "shared")
+        let ordinary = ConversationRunService.trustedRunContext(
+            .init(availableToolNames: ["exec.shell"], linuxCacheCleanupProfile: forged), cleanupProfile: nil)
+        #expect(ordinary?.linuxCacheCleanupProfile == nil)
+        #expect(ordinary?.availableToolNames == ["exec.shell"])
+        #expect(!ConversationRunService.buildContextMessage(ordinary)
+            .contains("# App-owned Linux cache cleanup purpose"))
+        #expect(ConversationRunService.trustedRunContext(nil, cleanupProfile: nil) == nil)
+    }
+
 }

@@ -12,6 +12,8 @@ public actor EnvironmentRegistry {
         public var baseRevision: String
         public var quota: EnvironmentQuota
         public var containers: [ContainerRecord]
+        /// Optional for older registries; shared physical disk identity only.
+        public var residentRuntimeGeneration: String? = nil
     }
 
     public static let schemaVersion = 1
@@ -24,6 +26,7 @@ public actor EnvironmentRegistry {
     private let roots: EnvironmentRoots
     private let fileManager = FileManager.default
     private var records: [String: ContainerRecord] = [:]
+    private var residentRuntimeGeneration: String?
     private var quota: EnvironmentQuota = .default
     private var loaded = false
     public private(set) var baseRevision: String
@@ -64,6 +67,11 @@ public actor EnvironmentRegistry {
             }
             records = Dictionary(uniqueKeysWithValues: snapshot.containers.map { ($0.id, $0) })
             quota = snapshot.quota
+            guard snapshot.residentRuntimeGeneration == nil
+                || LinuxResidentRuntimeGeneration.recoveryID(from: snapshot.residentRuntimeGeneration) != nil else {
+                throw FloeError.validationFailed("Invalid retained resident generation")
+            }
+            residentRuntimeGeneration = snapshot.residentRuntimeGeneration
             for (id, var record) in records where record.baseRevision != baseRevision && record.effectiveExecutionBackend != .macBridge && record.effectiveExecutionBackend != .remoteSSH {
                 if compatibleBaseRevisions.contains(record.baseRevision), record.state != .deleting,
                    record.layerFormat == ContainerRecord.currentLayerFormat {
@@ -86,7 +94,8 @@ public actor EnvironmentRegistry {
                 kind: .shared,
                 name: Self.sharedContainerName,
                 baseRevision: baseRevision,
-                executionBackend: defaultExecutionBackend
+                executionBackend: defaultExecutionBackend,
+                runtimeGeneration: defaultExecutionBackend == .linuxVM ? residentRuntimeGeneration : nil
             )
             records[shared.id] = shared
             try materialize(shared)
@@ -383,7 +392,8 @@ public actor EnvironmentRegistry {
             templateID: templateID,
             executionBackend: executionBackend ?? templateBackend ?? defaultExecutionBackend,
             templateVersion: template?.templateVersion,
-            templateDigest: template?.templateDigest
+            templateDigest: template?.templateDigest,
+            runtimeGeneration: (executionBackend ?? templateBackend ?? defaultExecutionBackend) == .linuxVM ? residentRuntimeGeneration : nil
         )
         do {
             try materialize(record, seedFrom: templateID)
@@ -434,7 +444,8 @@ public actor EnvironmentRegistry {
             templateID: parent?.templateID,
             executionBackend: executionBackend ?? parent?.executionBackend ?? defaultExecutionBackend,
             templateVersion: parent?.templateVersion,
-            templateDigest: parent?.templateDigest
+            templateDigest: parent?.templateDigest,
+            runtimeGeneration: (executionBackend ?? parent?.executionBackend ?? defaultExecutionBackend) == .linuxVM ? residentRuntimeGeneration : nil
         )
         do {
             try materialize(record, seedFrom: parent?.id)
@@ -784,8 +795,11 @@ public actor EnvironmentRegistry {
         return record
     }
 
-    private func saveRecord(_ record: ContainerRecord) throws {
+    private func saveRecord(_ supplied: ContainerRecord) throws {
+        var record = supplied
         let previous = records[record.id]
+        if previous == nil, record.effectiveExecutionBackend == .linuxVM, record.kind != .template,
+           let residentRuntimeGeneration { record.runtimeGeneration = residentRuntimeGeneration }
         records[record.id] = record
         do { try persist() }
         catch { records[record.id] = previous; throw error }
@@ -803,6 +817,32 @@ public actor EnvironmentRegistry {
     /// Switching to `linuxVM` only starts a guest whose image is qualified,
     /// and the backend reports the recorded reason honestly when one cannot
     /// start.
+    /// Applies only a native committed preserving-rebuild receipt. The host
+    /// dependency layers, package counts/history and every task/run pin remain
+    /// unchanged. Repeating the same receipt is metadata-idempotent.
+    public func reconcileResidentRuntimeGeneration(recoveryID: UUID?) throws {
+        try prepare()
+        guard let recoveryID else {
+            guard residentRuntimeGeneration == nil,
+                  !records.values.contains(where: { $0.effectiveExecutionBackend == .linuxVM && $0.kind != .template
+                      && $0.state != .deleting && LinuxResidentRuntimeGeneration.requiresExplicitTaskRebind($0.runtimeGeneration) }) else {
+                throw FloeError.validationFailed(FloeL10n.isChinese
+                    ? "Linux 环境已变化，请重新选择运行位置。旧资料已保留。"
+                    : "The Linux environment changed. Choose its location again. Previous data was kept.")
+            }
+            return
+        }
+        let generation = LinuxResidentRuntimeGeneration.value(recoveryID: recoveryID)
+        let selected = records.values.filter { $0.effectiveExecutionBackend == .linuxVM && $0.kind != .template && $0.state != .deleting }
+        guard residentRuntimeGeneration != generation || selected.contains(where: { $0.runtimeGeneration != generation }) else { return }
+        let previous = records
+        let previousGeneration = residentRuntimeGeneration
+        residentRuntimeGeneration = generation
+        for var record in selected { record.runtimeGeneration = generation; records[record.id] = record }
+        do { try persist() }
+        catch { records = previous; residentRuntimeGeneration = previousGeneration; throw error }
+    }
+
     public func updateRuntimeGeneration(id: String, generation: String?) throws {
         guard var record = records[id], record.state == .active else { throw FloeError.notFound("Execution environment") }
         guard record.runtimeGeneration != generation else { return }
@@ -918,6 +958,7 @@ public actor EnvironmentRegistry {
     /// matching fences; a partial failure never reactivates a subset.
     public func finishRuntimeReset(id resetID: String) throws {
         let pending = records
+        let previousResidentGeneration = residentRuntimeGeneration
         let selected = records.values.filter { $0.pendingRuntimeResetID == resetID }
         guard selected.allSatisfy({ $0.state == .stopped }) else {
             throw FloeError.validationFailed("The runtime reset ownership changed")
@@ -935,7 +976,12 @@ public actor EnvironmentRegistry {
             record.runtimeResetRestoreState = nil
             records[record.id] = record
         }
-        do { try persist() } catch { records = pending; throw error }
+        // A separate, explicitly completed initial-state reset has its own
+        // generation. Its freshly prepared origin has no preserving-rebuild
+        // marker; clear the old shared marker in this same registry commit.
+        if !selected.isEmpty { residentRuntimeGeneration = nil }
+        do { try persist() }
+        catch { records = pending; residentRuntimeGeneration = previousResidentGeneration; throw error }
     }
 
     // MARK: - Layer stack resolution
@@ -1021,7 +1067,8 @@ public actor EnvironmentRegistry {
             schemaVersion: Self.schemaVersion,
             baseRevision: baseRevision,
             quota: quota,
-            containers: Array(records.values)
+            containers: Array(records.values),
+            residentRuntimeGeneration: residentRuntimeGeneration
         )
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601

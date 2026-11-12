@@ -822,6 +822,7 @@ public actor LinuxGuestImageInstallationService {
     private let imagesRoot: URL
     private let limits: LinuxGuestImageImportLimits
     private let verifier: LinuxGuestImageVerifier
+    private let stagingOwner: LinuxGuestImageStagingOwner
     /// In-flight trusted installs keyed by image id. Two callers that ask
     /// for the same image while a download is running share one download:
     /// the model tool, shell auto-preparation and the UI can never start
@@ -848,6 +849,7 @@ public actor LinuxGuestImageInstallationService {
         self.imagesRoot = root.appendingPathComponent("LinuxGuest", isDirectory: true).appendingPathComponent("images", isDirectory: true)
         self.limits = limits
         self.verifier = verifier
+        self.stagingOwner = LinuxGuestImageStagingOwner(root: root)
     }
 
     public nonisolated var imagesDirectory: URL { imagesRoot }
@@ -958,6 +960,35 @@ public actor LinuxGuestImageInstallationService {
         isCancelled: (@Sendable () -> Bool)? = nil,
         fileManager: FileManager = .default
     ) async throws -> LinuxGuestImage {
+        try await importArchiveOwned(
+            at: archiveURL, expectedSHA512: expectedSHA512, expectedImageID: expectedImageID,
+            onProgress: onProgress, onPhase: onPhase, isCancelled: isCancelled,
+            fileManager: fileManager, ownedSource: nil
+        )
+    }
+
+    @discardableResult
+    private func importArchiveOwned(
+        at archiveURL: URL,
+        expectedSHA512: String,
+        expectedImageID: String? = nil,
+        onProgress: (@Sendable (Int64, Int64) -> Void)? = nil,
+        onPhase: (@Sendable (LinuxGuestImageTransferPhase) -> Void)? = nil,
+        isCancelled: (@Sendable () -> Bool)? = nil,
+        fileManager: FileManager = .default,
+        ownedSource: LinuxImageOwnedStage?
+    ) async throws -> LinuxGuestImage {
+        let managed = imagesRoot.appendingPathComponent(LinuxImageStageIO.namespace).resolvingSymlinksInPath().path
+        if archiveURL.resolvingSymlinksInPath().path.hasPrefix(managed + "/") {
+            guard let ownedSource,
+                  archiveURL.standardizedFileURL == ownedSource.payloadURL.appendingPathComponent("archive.zip").standardizedFileURL else {
+                throw LinuxGuestImageInstallError.unsafeArchiveEntry("private transfer input requires its active owner")
+            }
+        }
+        guard let sourceLease = await StorageCleanupLeaseCenter.shared.acquireToken(path: archiveURL.path) else {
+            throw LinuxGuestImageInstallError.cancelled
+        }
+        defer { sourceLease.release() }
         let expected = expectedSHA512.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard expected.count == 128, !expected.contains(where: { !$0.isHexDigit }) else {
             throw LinuxGuestImageInstallError.archiveDigestMismatch(expected: expectedSHA512, actual: "not a SHA-512 hex string")
@@ -990,6 +1021,7 @@ public actor LinuxGuestImageInstallationService {
         // must be a catalog entry and its pinned digest must equal the digest
         // this archive just verified against.
         var extractionBudget = limits.maxExtractedBytes
+        var ownershipCatalog: LinuxGuestTrustedImage?
         if let expectedImageID {
             guard let trusted = LinuxGuestImageDistributionCatalog.entry(id: expectedImageID),
                   trusted.archiveSHA512.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == expected else {
@@ -998,6 +1030,7 @@ public actor LinuxGuestImageInstallationService {
                     detail: "raising the extraction budget requires the id and archive SHA-512 pinned by this build's catalog"
                 )
             }
+            ownershipCatalog = trusted
             let declared = try declaredArtifactBytes(in: archiveURL, expectedID: expectedImageID)
             let (budget, overflow) = declared.addingReportingOverflow(LinuxGuestVolumeSpace.extractionHeadroomBytes)
             guard !overflow, budget > 0, budget <= Self.maxDeclaredExtractedBytes else {
@@ -1015,9 +1048,8 @@ public actor LinuxGuestImageInstallationService {
             ? archiveBytes * 2 + 32 * 1024 * 1024
             : archiveBytes + LinuxGuestVolumeSpace.extractionHeadroomBytes
         try LinuxGuestVolumeSpace.requireAvailable(at: imagesRoot, required: requiredForExtraction)
-        let staging = imagesRoot.appendingPathComponent(".import-\(UUID().uuidString)", isDirectory: true)
-        defer { try? fileManager.removeItem(at: staging) }
-        try fileManager.createDirectory(at: staging, withIntermediateDirectories: true)
+        let stage = try await stagingOwner.beginImport(catalog: ownershipCatalog)
+        let staging = stage.payloadURL
         do {
             switch archiveURL.pathExtension.lowercased() {
             case "zip":
@@ -1034,10 +1066,15 @@ public actor LinuxGuestImageInstallationService {
             if isCancelled?() == true {
                 throw LinuxGuestImageInstallError.cancelled
             }
-            return try await promote(from: staging, fileManager: fileManager, onPhase: onPhase, isCancelled: isCancelled)
+            let image = try await promote(from: staging, fileManager: fileManager, onPhase: onPhase,
+                                          isCancelled: isCancelled, ownedStage: stage)
+            await stagingOwner.finish(stage)
+            return image
         } catch let installError as LinuxGuestImageInstallError {
+            await stagingOwner.finish(stage)
             throw installError
         } catch {
+            await stagingOwner.finish(stage)
             if let spaceError = LinuxGuestVolumeSpace.outOfSpaceError(error, required: requiredForExtraction) {
                 throw spaceError
             }
@@ -1119,12 +1156,22 @@ public actor LinuxGuestImageInstallationService {
         guard fileManager.fileExists(atPath: sourceURL.path, isDirectory: &isDirectory), isDirectory.boolValue else {
             throw LinuxGuestImageInstallError.notFound(sourceURL.path)
         }
-        let staging = imagesRoot.appendingPathComponent(".import-\(UUID().uuidString)", isDirectory: true)
-        defer { try? fileManager.removeItem(at: staging) }
-        try fileManager.createDirectory(at: imagesRoot, withIntermediateDirectories: true)
-        try fileManager.createDirectory(at: staging, withIntermediateDirectories: true)
-        try copyDirectory(sourceURL, into: staging, fileManager: fileManager)
-        return try await promote(from: staging, fileManager: fileManager)
+        let managed = imagesRoot.appendingPathComponent(LinuxImageStageIO.namespace).resolvingSymlinksInPath().path
+        guard !sourceURL.resolvingSymlinksInPath().path.hasPrefix(managed + "/"),
+              let sourceLease = await StorageCleanupLeaseCenter.shared.acquireToken(path: sourceURL.path) else {
+            throw LinuxGuestImageInstallError.cancelled
+        }
+        defer { sourceLease.release() }
+        let stage = try await stagingOwner.beginImport()
+        do {
+            try copyDirectory(sourceURL, into: stage.payloadURL, fileManager: fileManager)
+            let image = try await promote(from: stage.payloadURL, fileManager: fileManager, ownedStage: stage)
+            await stagingOwner.finish(stage)
+            return image
+        } catch {
+            await stagingOwner.finish(stage)
+            throw error
+        }
     }
 
     /// Downloads a catalog-pinned image and imports it. This is the only path
@@ -1229,30 +1276,54 @@ public actor LinuxGuestImageInstallationService {
             )
         }
         try fileManager.createDirectory(at: imagesRoot, withIntermediateDirectories: true)
-        let stagingArchive = imagesRoot.appendingPathComponent(".download-\(UUID().uuidString).zip")
-        defer { try? fileManager.removeItem(at: stagingArchive) }
-        onPhase?(.downloading)
-        try await LinuxGuestImageSourceFetch.fetch(
-            image: trusted,
-            to: stagingArchive,
-            maxBytes: limits.maxArchiveBytes,
-            downloader: downloader,
-            onProgress: onProgress,
-            isCancelled: isCancelled
-        )
-        try Self.checkInstallCancellation(isCancelled)
-        return try await importArchive(
-            at: stagingArchive,
-            expectedSHA512: trusted.archiveSHA512,
-            expectedImageID: trusted.id,
-            onProgress: onProgress,
-            onPhase: onPhase,
-            isCancelled: { Task.isCancelled || isCancelled?() == true },
-            fileManager: fileManager
-        )
+        let stage = try await stagingOwner.beginDownload(catalog: trusted)
+        let stagingArchive = stage.payloadURL.appendingPathComponent("archive.zip")
+        do {
+            onPhase?(.downloading)
+            try await LinuxGuestImageSourceFetch.fetch(
+                image: trusted,
+                to: stagingArchive,
+                maxBytes: limits.maxArchiveBytes,
+                downloader: downloader,
+                onProgress: onProgress,
+                isCancelled: isCancelled
+            )
+            try Self.checkInstallCancellation(isCancelled)
+            let image = try await importArchiveOwned(
+                at: stagingArchive,
+                expectedSHA512: trusted.archiveSHA512,
+                expectedImageID: trusted.id,
+                onProgress: onProgress,
+                onPhase: onPhase,
+                isCancelled: { Task.isCancelled || isCancelled?() == true },
+                fileManager: fileManager,
+                ownedSource: stage
+            )
+            await stagingOwner.finish(stage)
+            return image
+        } catch {
+            // Keep verified pieces in the same owned workspace for retries.
+            // A later build may retire this explicitly regenerable cache.
+            await stagingOwner.finish(stage, retryable: true)
+            throw error
+        }
+    }
+
+    /// Fixed App-owned launch/upgrade maintenance, independent of model tools.
+    /// Never visits installed images, environments, resident or recovery disks.
+    public func cleanupUpgradeResidue() async -> LinuxGuestUpgradeResidueReport {
+        await stagingOwner.cleanup(build: LinuxGuestImageStagingOwner.currentBuild)
+    }
+
+    public func latestUpgradeResidueReport() async -> LinuxGuestUpgradeResidueReport? {
+        await stagingOwner.latestReport
     }
 
     public func removeImage(id: String, fileManager: FileManager = .default) async throws {
+        // Private transfer ownership is not an installed image id. Image
+        // commands must not bypass live leases by removing the parent namespace.
+        try LinuxImageStageIO.validate(id)
+        guard !id.hasPrefix(".") else { throw LinuxGuestImageInstallError.notFound(id) }
         let directory = imagesRoot.appendingPathComponent(id, isDirectory: true)
         guard fileManager.fileExists(atPath: directory.path) else {
             throw LinuxGuestImageInstallError.notFound(id)
@@ -1277,7 +1348,8 @@ public actor LinuxGuestImageInstallationService {
         from staging: URL,
         fileManager: FileManager,
         onPhase: (@Sendable (LinuxGuestImageTransferPhase) -> Void)? = nil,
-        isCancelled: (@Sendable () -> Bool)? = nil
+        isCancelled: (@Sendable () -> Bool)? = nil,
+        ownedStage: LinuxImageOwnedStage? = nil
     ) async throws -> LinuxGuestImage {
         let candidate: URL
         if fileManager.fileExists(atPath: staging.appendingPathComponent("manifest.json").path) {
@@ -1336,6 +1408,9 @@ public actor LinuxGuestImageInstallationService {
             throw LinuxGuestImageInstallError.cancelled
         }
         onPhase?(.finalizing)
+        if let ownedStage {
+            try await stagingOwner.markPromotion(ownedStage, candidate: candidate, imageID: image.id)
+        }
         let destination = imagesRoot.appendingPathComponent(image.id, isDirectory: true)
         let trash = imagesRoot.appendingPathComponent(".trash-\(UUID().uuidString)", isDirectory: true)
         let hadPrevious = fileManager.fileExists(atPath: destination.path)

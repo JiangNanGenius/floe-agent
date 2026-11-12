@@ -194,6 +194,10 @@ public protocol ConversationStore: Sendable {
     func saveConversation(_ conversation: ConversationRecord) async throws
     /// Atomically saves an ordinary conversation with its canonical task workspace.
     func saveConversationWithCanonicalWorkspace(_ conversation: ConversationRecord) async throws
+    /// Optional App-owned purpose commits before the ordinary row is visible.
+    func saveConversationWithCanonicalWorkspace(
+        _ conversation: ConversationRecord, cleanupProfile: LinuxCacheCleanupTaskProfile?
+    ) async throws
     /// Claims native ownership without changing an existing different owner.
     func claimEditorOwnership(id: UUID, owner: ConversationEditorOwnership) async throws
     func editorConversations(owner: ConversationEditorOwnership) async throws -> [ConversationRecord]
@@ -259,6 +263,15 @@ public extension ConversationStore {
     /// Non-durable stores must not approximate this with two independent writes.
     func saveConversationWithCanonicalWorkspace(_ conversation: ConversationRecord) async throws {
         throw FloeError.storageCorrupted("Atomic conversation/workspace creation is unavailable for this store")
+    }
+
+    func saveConversationWithCanonicalWorkspace(
+        _ conversation: ConversationRecord, cleanupProfile: LinuxCacheCleanupTaskProfile?
+    ) async throws {
+        guard cleanupProfile == nil else {
+            throw FloeError.storageCorrupted("Atomic Linux cleanup creation is unavailable for this store")
+        }
+        try await saveConversationWithCanonicalWorkspace(conversation)
     }
 
     /// Compatibility for non-SQLite stores; durable SQLite uses one owned row.
@@ -334,6 +347,16 @@ public actor SQLiteConversationStore: ConversationStore {
     }
 
     public func saveConversationWithCanonicalWorkspace(_ conversation: ConversationRecord) async throws {
+        try await saveConversationWithCanonicalWorkspace(conversation, cleanupProfile: nil)
+    }
+
+    public func saveConversationWithCanonicalWorkspace(
+        _ conversation: ConversationRecord, cleanupProfile: LinuxCacheCleanupTaskProfile?
+    ) async throws {
+        guard cleanupProfile == nil || (cleanupProfile?.isValid == true
+            && cleanupProfile?.conversationID == conversation.id) else {
+            throw FloeError.validationFailed("The cleanup purpose must match its conversation")
+        }
         guard conversation.purpose == .ordinary else {
             throw FloeError.validationFailed("Canonical task creation requires an ordinary conversation")
         }
@@ -341,6 +364,7 @@ public actor SQLiteConversationStore: ConversationStore {
             try Self.writeConversation(conversation, in: db)
             _ = try SQLiteWorkspaceStore.ensureWorkspace(
                 conversationID: conversation.id, title: conversation.title, db: db)
+            if let cleanupProfile { try LinuxCacheCleanupTaskStore.write(cleanupProfile, in: db) }
         }
     }
 

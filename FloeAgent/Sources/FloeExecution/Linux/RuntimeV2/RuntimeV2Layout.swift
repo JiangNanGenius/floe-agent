@@ -223,6 +223,7 @@ public struct RuntimeV2Layout: Sendable {
 
     public init(root: URL) {
         self.root = root.standardizedFileURL
+        RuntimeV2RecoveryAdmission.observeLayout(self.root)
     }
 
     /// Production ARM64 root: `<Application Support>/Floe/Runtime/arm64-v1`. Distinct from
@@ -466,6 +467,8 @@ public struct RuntimeV2Layout: Sendable {
     /// layout version (data retained, never silently rewritten).
     @discardableResult
     public func prepare(build: String, fileManager: FileManager = .default) throws -> Marker {
+        let nativeRecoveryUse = try beginNativeRecoveryUse()
+        defer { nativeRecoveryUse?.release() }
         let directories: [URL] = [
             root, registryDirectory, registryMigrationsDirectory,
             imageManifestsDirectory, blobStoreDirectory, expandedImagesDirectory,
@@ -519,6 +522,8 @@ public struct RuntimeV2Layout: Sendable {
     }
 
     public func writeMarker(_ marker: Marker) throws {
+        let nativeRecoveryUse = try beginNativeRecoveryUse()
+        defer { nativeRecoveryUse?.release() }
         let data = try Self.markerEncoder.encode(marker)
         try data.write(to: markerURL, options: .atomic)
     }

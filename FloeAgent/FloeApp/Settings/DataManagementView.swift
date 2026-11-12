@@ -39,6 +39,10 @@ struct DataManagementView: View {
 
     var body: some View {
         Form {
+            LinuxCacheCleanupSettingsSection(
+                environment: environment,
+                conversationCenter: conversationCenter
+            )
             // Keep actions above asynchronously populated storage sections so
             // completing a scan cannot move a navigation target under a tap.
             Section {
@@ -74,6 +78,8 @@ struct DataManagementView: View {
             } header: {
                 Text("settings.data_management_view.manage")
             }
+
+            StorageOptimizationSection(service: environment.storageOptimizationService)
 
 
             Section {

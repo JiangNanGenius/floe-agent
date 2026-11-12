@@ -94,6 +94,9 @@ public protocol LinuxGuestSessionCreating: Sendable {
     func sharedGPUStatus() async -> ARM64GPUBudget?
     func powerOffSharedMachine() async throws
     func restoreInitialState(image: LinuxGuestImage, imageDirectory: URL) async throws
+    func rebuildPreservingData(image: LinuxGuestImage, imageDirectory: URL) async throws -> LinuxResidentRecoveryReceipt
+    func residentRecoveryReceipt() async throws -> LinuxResidentRecoveryReceipt?
+    func acquireResidentRecoveryGuard() async throws -> LinuxResidentRecoveryGuard
 }
 
 public extension LinuxGuestSessionCreating {
@@ -116,6 +119,11 @@ public extension LinuxGuestSessionCreating {
     func restoreInitialState(image: LinuxGuestImage, imageDirectory: URL) async throws {
         throw LinuxGuestError.invalidConfiguration("This runtime does not support restoring its initial state")
     }
+    func rebuildPreservingData(image: LinuxGuestImage, imageDirectory: URL) async throws -> LinuxResidentRecoveryReceipt {
+        throw LinuxResidentRecoveryError.unsupported
+    }
+    func residentRecoveryReceipt() async throws -> LinuxResidentRecoveryReceipt? { nil }
+    func acquireResidentRecoveryGuard() async throws -> LinuxResidentRecoveryGuard { throw LinuxResidentRecoveryError.unsupported }
 }
 
 /// A registry without explicit runtime wiring cannot execute on the host.
@@ -380,6 +388,12 @@ public actor LinuxGuestRegistry {
         /// ran — e.g. a quarantined survivor that predates it. Diagnostics
         /// only: it never gates availability or the reported network status.
         var loopbackProvisioning: LinuxGuestLoopbackProvisioningOutcome? = nil
+        /// Shared use of the fixed legacy recovery domain, held from before the
+        /// working disk is materialized until the stop capture and every other
+        /// disk-owning worker/fd are confirmed closed. A quarantined survivor
+        /// keeps this claim (its disk is still owned). nil means the configured
+        /// substrate is not that domain (production/resident paths).
+        var maintenanceUse: RuntimeV2MaintenanceSharedUse? = nil
     }
 
     private let environments: any LinuxGuestEnvironmentProviding
@@ -444,6 +458,10 @@ public actor LinuxGuestRegistry {
     /// no new guest may boot on that environment's disk, and a later stop can
     /// still recover it.
     private var quarantinedEnvironments: Set<String> = []
+    /// Shared legacy-recovery-domain use acquired by an in-flight start and
+    /// transferred to the registered/quarantined session. Cleared on every
+    /// start exit; a leftover object releases itself when last dropped.
+    private var pendingMaintenanceUses: [String: RuntimeV2MaintenanceSharedUse] = [:]
     /// Admission reservations: environment id → reserved guest RAM (MB).
     /// Covers starts in flight and running sessions alike, so concurrent
     /// starts cannot oversubscribe the device's guest budget.
@@ -876,6 +894,27 @@ public actor LinuxGuestRegistry {
         return states.sorted { $0.environmentID < $1.environmentID }
     }
 
+    /// Owner facts for the fixed legacy-recovery-domain evidence collector.
+    /// Complete in-memory snapshot of every start/session/teardown/lifecycle
+    /// owner this registry knows. The collector ignores these facts when the
+    /// factory owns the resident ARM64 machine (that machine is a different,
+    /// composed path and is never stopped by legacy recovery maintenance).
+    public func maintenanceOwnerEvidence() -> RuntimeV2MaintenanceRegistryEvidence {
+        RuntimeV2MaintenanceRegistryEvidence(
+            usesResidentMachine: factory.usesResidentMachine,
+            startingEnvironments: startingEnvironments.sorted(),
+            activeSessions: sessions.keys.sorted(),
+            quarantinedEnvironments: quarantinedEnvironments.sorted(),
+            teardownsInFlight: teardownsInFlight.sorted(),
+            pendingStops: pendingStops.sorted(),
+            sharedStarts: sharedStarts.keys.sorted(),
+            lifecycleTransactions: lifecycleTransactions.keys.sorted(),
+            lifecycleLocks: lifecycleLocks.keys.sorted(),
+            unknownOwnerState: false,
+            isComplete: true
+        )
+    }
+
     /// Interactive PTY sessions currently open inside one environment's
     /// guest. The registry owns the session table, so a number is a real
     /// measurement (zero included); an environment this service does not own
@@ -1106,6 +1145,18 @@ public actor LinuxGuestRegistry {
                     "the guest stop did not confirm; the working disk and lease are retained for recovery"
             }
             return false
+        case .deferredForMaintenance(let reason):
+            // The VM stopped, but a live exclusive maintenance claim owns the
+            // legacy recovery domain. The complete working disk and lease stay
+            // owned for a later verified capture; nothing is claimed saved.
+            lastErrors[environmentID] =
+                "the guest stopped but its disk capture was deferred: \(reason)"
+            lastImpacts[environmentID] =
+                "\(action): \(environmentID) stopped; its working disk and lease were retained because legacy recovery maintenance is active"
+            FloeLogger(category: .tools).warning(
+                "Linux guest stop capture deferred environment=\(environmentID) runtime=\(runtimeID)"
+            )
+            return false
         }
     }
 
@@ -1318,6 +1369,27 @@ public actor LinuxGuestRegistry {
             // idempotent even when a race already released it.
             shareAccessLease?.release()
             shareAccessLease = nil
+            // A start that did not register or quarantine a session never owns
+            // the disk any more; dropping the last reference releases the
+            // domain use. A transferred claim is no longer in this map.
+            pendingMaintenanceUses[environmentID] = nil
+        }
+
+        // Acquire this start's domain use BEFORE any heavy admission/disk
+        // await. The defer above already owns the in-flight marker, so a failed
+        // acquisition removes it exactly like every later start failure. The
+        // local claim transfers to the registered session (or the quarantined
+        // survivor) and is dropped on every other exit, so a maintenance
+        // acquisition and a pending start cannot both win.
+        if let runtimeV2, !factory.usesResidentMachine, pendingMaintenanceUses[environmentID] == nil {
+            do {
+                pendingMaintenanceUses[environmentID] = try await runtimeV2.beginMaintenanceSharedUse(
+                    environmentID: environmentID, purpose: "guest-start"
+                )
+            } catch {
+                lastErrors[environmentID] = error.localizedDescription
+                throw LinuxGuestError.guestBusy(environmentID: environmentID)
+            }
         }
         // Durable 9P share access: acquired once per boot, before any share is
         // prepared, and owned by the session that registers (or by a
@@ -1860,6 +1932,7 @@ public actor LinuxGuestRegistry {
             )
             throw error
         }
+        session.maintenanceUse = pendingMaintenanceUses.removeValue(forKey: environmentID)
         sessions[environmentID] = session
         sessionRegistered = true
         // Staged command tracing now that the session identity exists:
@@ -2626,7 +2699,7 @@ public actor LinuxGuestRegistry {
             launchGeneration: retainedGeneration,
             lease: runtimeID
         ))
-        sessions[environmentID] = Session(
+        var quarantined = Session(
             descriptor: descriptor,
             image: image,
             handle: handle,
@@ -2638,6 +2711,8 @@ public actor LinuxGuestRegistry {
             shareAccessLease: shareAccessLease,
             generation: retainedGeneration
         )
+        quarantined.maintenanceUse = pendingMaintenanceUses.removeValue(forKey: environmentID)
+        sessions[environmentID] = quarantined
         // The quarantined survivor may still touch its 9P shares; it owns the
         // lease until a later confirmed stop releases it.
         shareAccessLease = nil
@@ -2799,6 +2874,11 @@ public actor LinuxGuestRegistry {
         // a failure path also ran.
         session.shareAccessLease?.release()
         session.shareAccessLease = nil
+        // The VM is confirmed stopped and its working disk/capture/slot work is
+        // complete: no native worker or fd of this session can reach the domain
+        // anymore. A quarantined survivor returned earlier and keeps the claim.
+        await session.maintenanceUse?.release()
+        session.maintenanceUse = nil
         if stopSavedCleanly {
             // The disk and shares are untouched; only runtime state was dropped.
             lastImpacts[environmentID] =
@@ -2956,6 +3036,44 @@ public actor LinuxGuestRegistry {
         try Task.checkCancellation()
         try await factory.restoreInitialState(image: image, imageDirectory: directory)
         return LinuxGuestInitialResetReceipt(imageID: imageID, environmentIDs: affected.sorted())
+    }
+
+    public func residentRecoveryReceipt() async throws -> LinuxResidentRecoveryReceipt? {
+        try await factory.residentRecoveryReceipt()
+    }
+    public func acquireResidentRecoveryGuard() async throws -> LinuxResidentRecoveryGuard {
+        try await factory.acquireResidentRecoveryGuard()
+    }
+
+    /// Explicit fresh install with the complete old resident disk retained.
+    /// This uses the existing registry admission fence and real stop/join, but
+    /// intentionally never resets host dependency layers or their metadata.
+    public func rebuildPreservingData(imageID: String) async throws -> LinuxResidentRecoveryReceipt {
+        guard factory.usesResidentMachine, !restoringInitialState else {
+            throw LinuxGuestError.guestBusy(environmentID: "shared")
+        }
+        restoringInitialState = true
+        defer { restoringInitialState = false }
+        guard let image = await images.linuxGuestImage(id: imageID),
+              await images.linuxGuestImageVerificationFailure(id: imageID) == nil else {
+            throw LinuxGuestError.imageNotQualified(environmentID: "shared", reason: "The replacement runtime image is unavailable")
+        }
+        let directory: URL
+        if let runtimeV2 { directory = try await runtimeV2.expandedImageDirectory(imageID: imageID) }
+        else if let root = images.imageRoot { directory = root.appendingPathComponent(imageID, isDirectory: true) }
+        else { throw LinuxResidentRecoveryError.invalidStorage }
+        if let failure = image.qualificationFailure(imageDirectory: directory) {
+            throw LinuxGuestError.imageNotQualified(environmentID: "shared", reason: failure)
+        }
+        let affected = Set(sessions.keys).union(startingEnvironments).union(quarantinedEnvironments)
+        await stopAll()
+        guard sessions.isEmpty, startingEnvironments.isEmpty, quarantinedEnvironments.isEmpty else {
+            throw LinuxGuestError.stopFailed(environmentID: "shared", detail: "Running work has not stopped; existing data was retained")
+        }
+        try Task.checkCancellation()
+        var receipt = try await factory.rebuildPreservingData(image: image, imageDirectory: directory)
+        receipt.environmentIDs = affected.sorted()
+        return receipt
     }
 
     // MARK: logical-run ownership / scoped transient release
@@ -4295,6 +4413,18 @@ public struct LinuxGuestCommandService: LinuxCommandRunning, LinuxGuestControlli
         prepareForReset: @escaping @Sendable () async throws -> Void) async throws -> LinuxGuestInitialResetReceipt {
         await localServices.stopAllLocalServices()
         return try await registry.restoreInitialState(imageID: imageID, prepareForReset: prepareForReset)
+    }
+
+    public func residentRecoveryReceipt() async throws -> LinuxResidentRecoveryReceipt? {
+        try await registry.residentRecoveryReceipt()
+    }
+    public func acquireResidentRecoveryGuard() async throws -> LinuxResidentRecoveryGuard {
+        try await registry.acquireResidentRecoveryGuard()
+    }
+
+    public func rebuildPreservingData(imageID: String) async throws -> LinuxResidentRecoveryReceipt {
+        await localServices.stopAllLocalServices()
+        return try await registry.rebuildPreservingData(imageID: imageID)
     }
 
     public func startGuest(environmentID: String, taskID: String?) async throws -> Bool {

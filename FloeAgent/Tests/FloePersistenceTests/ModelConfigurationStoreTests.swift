@@ -203,6 +203,59 @@ struct ModelConfigurationStoreTests {
         #expect(try await store.model(id: installed.id)?.isEnabled == false)
     }
 
+    @Test("Unavailable system models turn off without losing settings or changing other models")
+    func unavailableSystemModelReconciliation() async throws {
+        let store = try await makeStore()
+        let local = ProviderProfile(
+            id: ProviderProfile.onDeviceProviderID, kind: .local,
+            wireProtocol: .openAIChatCompletions,
+            baseURL: try #require(URL(string: "http://127.0.0.1")), allowsPlainHTTP: true
+        )
+        let system = ModelProfile(
+            id: try #require(UUID(uuidString: "A1480001-0000-4000-8000-000000000004")),
+            providerID: local.id, remoteModelID: "apple-foundation-model",
+            displayName: "Apple Foundation Model",
+            limits: .init(contextTokens: 4_096, maxOutputTokens: 512),
+            isHiddenFromPrimaryPicker: true, omitReasoningParameters: true
+        )
+        let downloaded = ModelProfile(
+            providerID: local.id, remoteModelID: "installed-model", displayName: "Installed model",
+            limits: .init(contextTokens: 8_192, maxOutputTokens: 1_024)
+        )
+        _ = try await store.reconcileDeviceLocalProvider(provider: local, availableModels: [system, downloaded])
+        let cloud = ProviderProfile(
+            kind: .custom, wireProtocol: .openAIChatCompletions,
+            baseURL: try #require(URL(string: "https://models.example.test/v1"))
+        )
+        try await store.saveProvider(cloud)
+        let remote = ModelProfile(
+            providerID: cloud.id, remoteModelID: "cloud-model", displayName: "Cloud model",
+            limits: .init(contextTokens: 32_000, maxOutputTokens: 2_048)
+        )
+        try await store.saveModel(remote)
+        let remoteBefore = try await store.model(id: remote.id)
+
+        _ = try await store.reconcileDeviceLocalProvider(
+            provider: local, availableModels: [system, downloaded], unavailableModelIDs: [system.id]
+        )
+        let disabledValue = try await store.model(id: system.id)
+        let disabled = try #require(disabledValue)
+        #expect(disabled.isEnabled == false)
+        #expect(disabled.isHiddenFromPrimaryPicker == true)
+        #expect(disabled.omitReasoningParameters == true)
+        #expect(try await store.model(id: downloaded.id)?.isEnabled == true)
+        #expect(try await store.model(id: remote.id) == remoteBefore)
+
+        // Becoming available again leaves the explicit switch with the user.
+        _ = try await store.reconcileDeviceLocalProvider(provider: local, availableModels: [system, downloaded])
+        #expect(try await store.model(id: system.id)?.isEnabled == false)
+        var enabled = disabled
+        enabled.isEnabled = true
+        try await store.saveModel(enabled)
+        _ = try await store.reconcileDeviceLocalProvider(provider: local, availableModels: [system, downloaded])
+        #expect(try await store.model(id: system.id)?.isEnabled == true)
+    }
+
     @Test("Provider metadata round-trips without an API-key body")
     func providerRoundTrip() async throws {
         let store = try await makeStore()

@@ -668,6 +668,11 @@ public actor FloeAgentRuntime {
         /// caller (the same flag that narrowed `allowedToolNames`); never
         /// model-minted and never changed mid-run.
         public var temporaryReadOnly: Bool
+        /// Persisted Linux cache-cleanup purpose for this task, or nil for
+        /// ordinary tasks. It can only narrow the catalog; the canonical
+        /// dispatcher revalidates every call against the cleanup scope before
+        /// any effect. Never model-minted.
+        public var linuxCacheCleanupProfile: LinuxCacheCleanupTaskProfile?
         /// True for an ORDINARY fast conversation `.chat` run. This selects
         /// ONLY the brief conversational envelope and the final-answer
         /// verification skip: the offered catalog is exactly the ordinary
@@ -779,6 +784,7 @@ public actor FloeAgentRuntime {
             ephemeralTransport: Bool = false,
             publicWebOnly: Bool = false,
             temporaryReadOnly: Bool = false,
+            linuxCacheCleanupProfile: LinuxCacheCleanupTaskProfile? = nil,
             chatFastMode: Bool = false,
             reasoningPolicy: ProviderReasoningPolicy = .modelDefault,
             environmentID: String? = nil,
@@ -829,6 +835,7 @@ public actor FloeAgentRuntime {
             self.ephemeralTransport = ephemeralTransport
             self.publicWebOnly = publicWebOnly
             self.temporaryReadOnly = temporaryReadOnly
+            self.linuxCacheCleanupProfile = linuxCacheCleanupProfile
             self.chatFastMode = chatFastMode
             self.reasoningPolicy = reasoningPolicy
             self.environmentID = environmentID
@@ -4634,6 +4641,22 @@ public actor FloeAgentRuntime {
             return .denied(
                 reason: "Denied: \(reason)",
                 decision: "deny:temporary-readonly"
+            )
+        }
+        // Purpose scope is revalidated at the canonical dispatch boundary,
+        // not just in the offered schema. A stale/forged descriptor, alias or
+        // wrapper cannot widen a cleanup task into shell/jobs/host tools.
+        if let cleanupProfile = configuration.linuxCacheCleanupProfile,
+           let reason = LinuxCacheCleanupScope.denialReason(
+               profile: cleanupProfile,
+               conversationID: configuration.conversationID,
+               environmentID: configuration.environmentID,
+               descriptor: descriptor,
+               arguments: call.argumentsJSON
+           ) {
+            return .denied(
+                reason: "Denied: \(reason)",
+                decision: "deny:linux-cache-cleanup-scope"
             )
         }
         let effectiveAllowedNames = configuration.allowedToolNames

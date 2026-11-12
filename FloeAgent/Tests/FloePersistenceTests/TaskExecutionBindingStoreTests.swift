@@ -62,6 +62,113 @@ struct TaskExecutionBindingStoreTests: Sendable {
         }
     }
 
+    @Test("preserving rebuild cannot silently use the reset auto-rebind path")
+    func preservingRebuildRejectsAutomaticResetRefresh() async throws {
+        let database = try await makeDatabase(), conversation = UUID(), run = UUID()
+        try await insertConversation(database, id: conversation)
+        let original = makeBinding(conversation, target: .init(environmentID: "same-linux", backend: .linuxVM,
+            operatingSystem: "linux", architecture: "arm64"))
+        let store = TaskExecutionBindingStore(database: database)
+        _ = try await store.bindInitial(original)
+        try await insertRun(database, id: run, conversationID: conversation, state: "paused", binding: original)
+        let body = "{\"kept\":true}"
+        try await insertCheckpoint(database, runID: run, conversationID: conversation, body: body)
+        var target = original.target
+        target.runtimeGeneration = LinuxResidentRuntimeGeneration.value(recoveryID: UUID())
+        await #expect(throws: (any Error).self) { _ = try await store.refreshResetLinuxBinding(original, target: target) }
+        #expect(try await store.binding(conversationID: conversation) == original)
+        let saved = try await database.reader { db in
+            try String.fetchOne(db, sql: "SELECT body_json FROM checkpoints WHERE run_id=?", arguments: [run.uuidString])
+        }
+        #expect(saved == body)
+    }
+
+    @Test("explicit same-ID generation acceptance preserves history and emits one atomic notice")
+    func explicitResidentAcceptanceKeepsHistoryAndCannotDoublePublish() async throws {
+        let database = try await makeDatabase(), conversation = UUID(), run = UUID(), completed = UUID(), recovery = UUID()
+        try await insertConversation(database, id: conversation)
+        let original = makeBinding(conversation, target: .init(environmentID: "same-linux", backend: .linuxVM,
+            operatingSystem: "linux", architecture: "arm64"))
+        let store = TaskExecutionBindingStore(database: database)
+        _ = try await store.bindInitial(original)
+        try await insertRun(database, id: run, conversationID: conversation, state: "paused", binding: original)
+        try await insertRun(database, id: completed, conversationID: conversation, state: "completed", binding: original)
+        let originalBody = "{\"kept\":true,\"text\":\"original checkpoint\"}"
+        try await insertCheckpoint(database, runID: run, conversationID: conversation, body: originalBody)
+        var target = original.target; target.runtimeGeneration = LinuxResidentRuntimeGeneration.value(recoveryID: recovery)
+        let next = try await store.acceptResidentRebuild(original, target: target, committedRecoveryID: recovery, notice: "User chose the rebuilt Linux environment")
+        #expect(next.target.environmentID == original.target.environmentID)
+        #expect(next.target == target && next.generation == original.generation + 1)
+        let evidence = try await database.reader { db in
+            (
+                try String.fetchOne(db, sql: "SELECT body_json FROM task_environment_migration_checkpoints WHERE run_id=?", arguments: [run.uuidString]),
+                try String.fetchOne(db, sql: "SELECT body_json FROM checkpoints WHERE run_id=?", arguments: [run.uuidString]),
+                try String.fetchOne(db, sql: "SELECT execution_binding_json FROM runs WHERE id=?", arguments: [completed.uuidString]),
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM messages WHERE conversation_id=?", arguments: [conversation.uuidString]),
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM conversations"),
+                try String.fetchOne(db, sql: "SELECT body_json FROM task_environment_migrations WHERE conversation_id=?", arguments: [conversation.uuidString])
+            )
+        }
+        #expect(evidence.0 == originalBody)
+        #expect(try checkpointBinding(#require(evidence.1))?.target == target)
+        #expect(try TaskExecutionBinding.decoded(#require(evidence.2)) == original)
+        #expect(evidence.3 == 1 && evidence.4 == 1)
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .millisecondsSince1970
+        let receipt = try decoder.decode(TaskEnvironmentMigration.self, from: Data(#require(evidence.5).utf8))
+        #expect(receipt.phase == .completed && receipt.residentRecoveryID == recovery)
+        #expect(receipt.source == original && receipt.target == target)
+        #expect(receipt.manifestDigest == nil && receipt.dependencyReceiptDigest == nil && receipt.preparedFileCount == 0)
+        await #expect(throws: (any Error).self) {
+            _ = try await store.acceptResidentRebuild(original, target: target, committedRecoveryID: recovery, notice: "A duplicate must not be added")
+        }
+        #expect(try await database.reader { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM messages WHERE conversation_id=?", arguments: [conversation.uuidString]) } == 1)
+    }
+
+    @Test("a malformed checkpoint rolls back confirmed same-ID publication and notice")
+    func residentAcceptanceRollbackLeavesEveryOldPinAndNoReceipt() async throws {
+        let database = try await makeDatabase(), conversation = UUID(), run = UUID(), recovery = UUID()
+        try await insertConversation(database, id: conversation)
+        let original = makeBinding(conversation, target: .init(environmentID: "same-linux", backend: .linuxVM,
+            operatingSystem: "linux", architecture: "arm64"))
+        let store = TaskExecutionBindingStore(database: database); _ = try await store.bindInitial(original)
+        try await insertRun(database, id: run, conversationID: conversation, state: "paused", binding: original)
+        try await insertCheckpoint(database, runID: run, conversationID: conversation, body: "not JSON")
+        var target = original.target; target.runtimeGeneration = LinuxResidentRuntimeGeneration.value(recoveryID: recovery)
+        await #expect(throws: (any Error).self) {
+            _ = try await store.acceptResidentRebuild(original, target: target, committedRecoveryID: recovery, notice: "No notice may survive rollback")
+        }
+        #expect(try await store.binding(conversationID: conversation) == original)
+        let result = try await database.reader { db in
+            (try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM task_environment_migrations"),
+             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM task_environment_migration_checkpoints"),
+             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM messages"),
+             try String.fetchOne(db, sql: "SELECT execution_binding_json FROM runs WHERE id=?", arguments: [run.uuidString]))
+        }
+        #expect(result.0 == 0 && result.1 == 0 && result.2 == 0)
+        #expect(try TaskExecutionBinding.decoded(#require(result.3)) == original)
+    }
+
+    @Test("confirmation binds the actual committed UUID and cannot turn into a different environment move")
+    func residentAcceptanceRejectsWrongUUIDAndDifferentEnvironment() async throws {
+        let database = try await makeDatabase(), conversation = UUID(), recovery = UUID()
+        try await insertConversation(database, id: conversation)
+        let original = makeBinding(conversation, target: .init(environmentID: "same-linux", backend: .linuxVM,
+            operatingSystem: "linux", architecture: "arm64"))
+        let store = TaskExecutionBindingStore(database: database); _ = try await store.bindInitial(original)
+        var target = original.target; target.runtimeGeneration = LinuxResidentRuntimeGeneration.value(recoveryID: recovery)
+        let wrongCommitTarget = target
+        await #expect(throws: (any Error).self) {
+            _ = try await store.acceptResidentRebuild(original, target: wrongCommitTarget, committedRecoveryID: UUID(), notice: "Wrong commit")
+        }
+        target.environmentID = "another-linux"
+        let differentEnvironment = target
+        await #expect(throws: (any Error).self) {
+            _ = try await store.acceptResidentRebuild(original, target: differentEnvironment, committedRecoveryID: recovery, notice: "Not a same-ID acceptance")
+        }
+        #expect(try await store.binding(conversationID: conversation) == original)
+        #expect(try await database.reader { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM messages") } == 0)
+    }
+
     // MARK: - Fixtures
 
     private func makeDatabase() async throws -> DatabaseManager {

@@ -52,11 +52,11 @@ final class ResidentImageSource: @unchecked Sendable {
         lock.withLock { self.resolver = resolver }
     }
 
-    func imageID() async throws -> String {
+    func imageID(requireExistingDisk: Bool = false) async throws -> String {
         guard let resolver = lock.withLock({ resolver }) else {
             throw LinuxResidentImageResolutionError.storageUnavailable
         }
-        return try await resolver.resolve()
+        return try await resolver.resolve(requireExistingDisk: requireExistingDisk)
     }
 }
 
@@ -281,8 +281,10 @@ enum LinuxGuestBackendAssembly {
     static func makeService(
         registry: EnvironmentRegistry,
         artifactRoot: URL?,
-        workspaceStore: any WorkspaceStore
+        workspaceStore: any WorkspaceStore,
+        maintenanceDatabase: DatabaseManager? = nil
     ) -> LinuxGuestCommandService {
+        LinuxGuestMaintenanceAssembly.bootstrapIfAvailable(database: maintenanceDatabase)
         // Resolver + v2 substrate plus every hook come from one prepared
         // bundle, so launch assembly and recoverable reconnect never
         // diverge. Construction publishes nothing.
@@ -296,6 +298,7 @@ enum LinuxGuestBackendAssembly {
             )
             wiring = PreparedGuestWiring(
                 images: UnavailableLinuxGuestImageResolver(), runtimeV2: nil,
+                integrator: nil,
                 runtimeV2Status: nil, residentImageResolver: nil, pinnedProbe: nil,
                 officialTemplates: nil, officialTemplateRuntime: nil
             )
@@ -317,6 +320,16 @@ enum LinuxGuestBackendAssembly {
             runtimeV2: wiring.runtimeV2
         )
         let service = LinuxGuestCommandService(registry: guestRegistry)
+        // The fixed legacy-recovery-domain authority is assembled from the SAME
+        // guest registry/integrator and the App DB reference projection. It
+        // invokes no rewrite and exposes no UI; a missing legacy tree registers
+        // nothing, so the resident ARM64 machine and production arm64-v1 store
+        // are entirely outside its claims.
+        _ = LinuxGuestMaintenanceAssembly.installIfAvailable(
+            registry: guestRegistry,
+            integrator: wiring.integrator,
+            database: maintenanceDatabase
+        )
         // ARM64 firmware, kernel and supervisor are verified together with the image.
         // Hooks are published last, before the service can serve anyone.
         publishGuestWiring(wiring)
@@ -333,6 +346,9 @@ enum LinuxGuestBackendAssembly {
     private struct PreparedGuestWiring {
         let images: any LinuxGuestImageResolving
         let runtimeV2: (any LinuxGuestRuntimeV2Integrating)?
+        /// Concrete integrator for the maintenance authority. nil exactly when
+        /// there is no Runtime v2 substrate in this build.
+        let integrator: RuntimeV2GuestIntegrator?
         let runtimeV2Status: LinuxGuestRuntimeV2ImageStatus?
         let residentImageResolver: LinuxResidentImageResolver?
         let pinnedProbe: (@Sendable (String) async -> String?)?
@@ -353,6 +369,7 @@ enum LinuxGuestBackendAssembly {
             // probe is explicitly cleared, other hooks stay as launch left.
             return PreparedGuestWiring(
                 images: legacy, runtimeV2: nil,
+                integrator: nil,
                 runtimeV2Status: nil,
                 residentImageResolver: makeResidentImageResolver(artifactRoot: artifactRoot, imageService: imageService, runtimeV2Status: nil),
                 pinnedProbe: nil,
@@ -465,6 +482,7 @@ enum LinuxGuestBackendAssembly {
         )
         return PreparedGuestWiring(
             images: images, runtimeV2: integrator,
+            integrator: integrator,
             runtimeV2Status: runtimeV2Status,
             residentImageResolver: makeResidentImageResolver(artifactRoot: artifactRoot, imageService: imageService, runtimeV2Status: runtimeV2Status),
             pinnedProbe: pinnedProbe,
@@ -532,6 +550,7 @@ enum LinuxGuestBackendAssembly {
             images: wiring.images,
             runtimeV2: wiring.runtimeV2
         ) else { return false }
+        LinuxGuestMaintenanceAssembly.currentRuntime()?.rebindIntegrator(wiring.integrator)
         publishGuestWiring(wiring)
         await commandService.commitLinuxBackendReconnect()
         return true
@@ -580,18 +599,23 @@ struct RoutingLocalShellBackend: LocalShellBackend {
     /// Optional trusted runtime-component preparation (bound to the approved
     /// exec.shell boundary only — interactive sessions never trigger it).
     let prepareNativeComponents: NativeComponentPreparation?
+    /// App-owned run policy. False permits only existing guest activation;
+    /// errors stop before activation. Ordinary callers keep preparation.
+    let automaticPreparationAllowed: @Sendable (UUID?, String) async throws -> Bool
     private let guestSessions = GuestSessionIDSet()
 
     init(native: any LocalShellBackend,
          guests: any LinuxCommandRunning,
          limits: LinuxGuestLimits = .standard,
          prepareLinux: LinuxPreparationHandler? = nil,
-         prepareNativeComponents: NativeComponentPreparation? = nil) {
+         prepareNativeComponents: NativeComponentPreparation? = nil,
+         automaticPreparationAllowed: @escaping @Sendable (UUID?, String) async throws -> Bool = { _, _ in true }) {
         self.native = native
         self.guests = guests
         self.guestBackend = LinuxGuestShellBackend(runner: guests, limits: limits)
         self.prepareLinux = prepareLinux
         self.prepareNativeComponents = prepareNativeComponents
+        self.automaticPreparationAllowed = automaticPreparationAllowed
     }
 
     func normalizedRunDeadline(_ requested: ShellExecutionDeadline) -> ShellExecutionDeadline {
@@ -638,18 +662,25 @@ struct RoutingLocalShellBackend: LocalShellBackend {
               await guests.ownsLinuxEnvironment(environmentID: environmentID) else {
             return .failed(message: "This task needs a Linux environment. Choose a Linux environment in Settings → Execution → Environments, then prepare it and retry. Existing environment files are preserved; commands never fall back to the iOS host.")
         }
+        let mayPrepare: Bool
         do {
-            try await activateWithPreparation(
-                environmentID: environmentID,
-                taskID: request.runID?.uuidString,
-                guestRunID: request.runID,
-                cancellation: cancellation
-            )
+            mayPrepare = try await automaticPreparationAllowed(request.runID, environmentID)
+            if mayPrepare {
+                try await activateWithPreparation(
+                    environmentID: environmentID,
+                    taskID: request.runID?.uuidString,
+                    guestRunID: request.runID,
+                    cancellation: cancellation
+                )
+            } else {
+                try await FloePlatformServices.shared.activateLinuxGuest(
+                    id: environmentID, taskID: request.runID?.uuidString, runID: request.runID)
+            }
         } catch {
             return .failed(message: error.localizedDescription)
         }
         var preparedRequest = request
-        if let prepareNativeComponents,
+        if mayPrepare, let prepareNativeComponents,
            let bindings = await prepareNativeComponents(
                environmentID, request.runID, cancellation
            ),
