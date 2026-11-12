@@ -14,6 +14,17 @@ object PhoneControlLimits {
     const val DEFAULT_NODES = 250
     const val MAX_DEPTH = 32
     const val DEFAULT_DEPTH = 20
+    /**
+     * One capture reads at most this many nodes from the live window. The
+     * traversal splits the remaining budget across siblings, so a late
+     * fixed-screen control (toolbar/FAB) is still inspected in a wide or deep
+     * tree instead of being lost behind an earlier large subtree. This is a
+     * runtime bound, never authorization; [MAX_NODES] still sizes the
+     * returned observation after actionable-first selection.
+     */
+    const val MAX_SCAN_NODES = 1_200
+    /** Wall-clock ceiling for one bounded capture traversal. */
+    const val SCAN_TIME_BUDGET_MS = 1_500L
     const val MAX_FIELD_CHARS = 2_000
     const val DEFAULT_TEXT_BUDGET_CHARS = 24_000
     const val MAX_TEXT_BUDGET_CHARS = 64_000
@@ -154,6 +165,13 @@ data class PhoneControlNode(
     val redacted: Boolean,
     /** True when one of this node's text fields was cut by the character cap. */
     val truncated: Boolean,
+    /**
+     * True when an enclosing captured node is scrollable. This bounded
+     * structural fact lets the compact projection rank fixed-screen chrome
+     * (toolbar/FAB) above content that can be reached by scrolling. It is
+     * presentation metadata and grants no action.
+     */
+    val insideScrollable: Boolean = false,
 ) {
     /** Never dump observed text into a diagnostic/log line. */
     override fun toString(): String =
@@ -192,6 +210,17 @@ data class PhoneControlObservation(
      * package; it never carries node refs, text or screenshot permission.
      */
     val navigationOnly: Boolean = false,
+    /**
+     * Nodes actually read from the live window before bounded selection.
+     * Always >= `nodes.size`; equal on an untruncated tree.
+     */
+    val scannedNodeCount: Int = nodes.size,
+    /**
+     * Visible actionable nodes that were read but omitted by the bounded
+     * actionable-first selection. Zero when every such control is included;
+     * the omission is also reflected in [truncated].
+     */
+    val omittedActionableCount: Int = 0,
 ) {
     /** Summary only; use PhoneControlJson for an explicit structured payload. */
     override fun toString(): String =

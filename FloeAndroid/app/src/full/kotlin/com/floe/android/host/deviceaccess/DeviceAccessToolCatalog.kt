@@ -288,12 +288,19 @@ internal object DeviceAccessToolCatalog {
     private fun deviceObserve(): JSONObject = tool(
         name = DEVICE_OBSERVE,
         description = "Observe the visible page of the active device task (phone or tablet). " +
-            "Returns the observation id, page identity and a bounded list of " +
-            "actionable node refs (clickable/editable/scrollable). Password " +
-            "fields, secure windows and the lock screen are never read. A " +
-            "fresh observation invalidates older refs. Pass the returned " +
-            "observation= id as observationId on the next device.act: every " +
-            "device.act action except launch requires it.",
+            "Returns the observation id, real page/window/display identity and a bounded " +
+            "actionable-first list of node refs (clickable/editable/scrollable). Visible " +
+            "controls late in a wide or deep tree (toolbar actions, FABs, empty inputs) are " +
+            "kept ahead of decorative grid/content nodes; the scan line reports actual " +
+            "captured/scanned counts and any omitted actions. When full rows run out, " +
+            "moreActions(c/e/s) still lists usable refs from the same live observation. A " +
+            "truncated result is honest, never a complete tree. includeInvisible only adds " +
+            "hidden nodes at lower priority; it is not needed to find visible controls. " +
+            "Password fields, secure windows and the lock screen are never read. A fresh " +
+            "observation invalidates older refs. Pass the returned observation= id as " +
+            "observationId on the next device.act: every device.act action except launch " +
+            "requires it. If the page is not a selected app, select that app or launch an " +
+            "already-selected one; one refusal does not change your selected apps.",
         schema = schema(
             properties = JSONObject()
                 .put("includeInvisible", bool("Include nodes that are not visible.")),
@@ -356,11 +363,23 @@ internal object DeviceAccessToolCatalog {
 
     private fun deviceScreenshot(): JSONObject = tool(
         name = DEVICE_SCREENSHOT,
-        description = "Capture the current page as a real image artifact. " +
-            "With observationId the preferred window-scoped capture is used " +
-            "where the platform supports it; without it an explicit whole-screen " +
-            "capture is attempted only when the user allowed it. Protected, " +
-            "password and foreign/overlay windows are refused, never widened.",
+        description = "Capture the current page as a real image artifact. Capture support is " +
+            "the platform's potential; live readiness is separate and checked on every call " +
+            "(system.access.status reports screenshotSupport, mode, screenScope, " +
+            "wholeScreenConsent, screenshotReady and screenshotNext; an OFF task scope and " +
+            "the saved Allow whole-screen capture setting are independent). On Android 14+ pass " +
+            "observationId from a fresh authorized observe for a window-scoped capture; " +
+            "omitting it attempts an explicit whole-screen display capture. On Android 11-13 " +
+            "only display capture exists, so an explicit observationId fails with " +
+            "window_screenshot_unsupported and omitting it needs the user's whole-screen " +
+            "switch. A refusal with screen_scope_off means the exact task/run is not covered " +
+            "in Settings > Device > Screen content; whole_screen_consent_required means the " +
+            "separate Allow whole-screen capture setting is off. These choices are never enabled " +
+            "automatically. After a handover or any screen change, observe again before " +
+            "capturing. Protected, password and foreign/overlay windows are refused, never " +
+            "widened. A target-page refusal does not deselect your other apps; select the " +
+            "page's app or launch an already-selected app. No Play grant or credential " +
+            "bypass is involved.",
         schema = schema(
             properties = JSONObject()
                 .put("observationId", string(
@@ -379,8 +398,13 @@ internal object DeviceAccessToolCatalog {
         description = "Read actual Android device UI readiness (accessibility connection, " +
             "selected app scope and user stop), embedded-ADB and root service state, the " +
             "user-granted file root ids, write ceiling and whether package " +
-            "management is allowed. Reports unavailable layers honestly; it " +
-            "never changes a permission. Phone UI readiness is independent of system " +
+            "management is allowed. Screenshot status separates potential support " +
+            "(screenshotSupport/mode: window_or_display on Android 14+, display_only on " +
+            "Android 11-13, none earlier) from current live readiness for this task " +
+            "(screenScope, wholeScreenConsent, screenshotReady, displayReady, windowReady, " +
+            "screenshotNext). " +
+            "Reports unavailable layers honestly; it never changes a permission or enables " +
+            "screen sharing. Phone UI readiness is independent of system " +
             "queries: an authorized live ADB/root service can query the system while " +
             "accessibility is disabled. If device tools are absent, check this status " +
             "and ask the user to complete Settings > Device. VNC controls a remote " +

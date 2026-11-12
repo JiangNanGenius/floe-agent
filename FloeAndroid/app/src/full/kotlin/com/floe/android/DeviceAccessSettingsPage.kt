@@ -613,10 +613,10 @@ object DeviceAccessPresentation {
             (state.activeTask.phase == DeviceAccessTaskPhaseUi.RUNNING ||
                 state.activeTask.phase == DeviceAccessTaskPhaseUi.WAITING_FOR_USER)
 
-    /** The whole-screen capture disclosure is shown whenever screen scope is
-     * on; API 34+ prefers window capture but never silently widens to display. */
+    /** Keep saved consent reachable for revocation after the task scope ends.
+     * API 34+ prefers window capture but never silently widens to display. */
     fun wholeScreenConsentVisible(state: DeviceAccessPresentationState): Boolean =
-        state.screenScope != DeviceAccessScreenScopeUi.OFF
+        state.screenScope != DeviceAccessScreenScopeUi.OFF || state.targets.wholeScreenConsent
 
     fun wholeScreenConsentRequired(state: DeviceAccessPresentationState): Boolean =
         state.screenScope != DeviceAccessScreenScopeUi.OFF &&

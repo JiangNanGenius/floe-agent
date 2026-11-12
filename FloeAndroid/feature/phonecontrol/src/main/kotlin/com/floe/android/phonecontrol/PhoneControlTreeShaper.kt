@@ -22,6 +22,8 @@ internal data class PhoneControlRawNode(
     val checkable: Boolean,
     val checked: Boolean,
     val password: Boolean,
+    /** True when an enclosing live node is scrollable. */
+    val insideScrollable: Boolean = false,
 )
 
 /** Locator retained for a returned ref; resolved again against a fresh tree. */
@@ -68,14 +70,17 @@ internal object PhoneControlTreeShaper {
         nodeLimited: Boolean,
     ): PhoneControlShaped {
         val req = request.normalized()
+        val eligible = eligible(raw, req)
+        val selected = selectBounded(eligible, req.maxNodes)
+        val omittedBySelection = eligible.size > selected.size
         val budget = PhoneControlTextBudget(req.textBudgetChars)
-        val nodes = ArrayList<PhoneControlNode>(minOf(raw.size, req.maxNodes))
-        val records = LinkedHashMap<String, PhoneControlNodeRecord>(minOf(raw.size, req.maxNodes))
+        val nodes = ArrayList<PhoneControlNode>(minOf(selected.size, req.maxNodes))
+        val records = LinkedHashMap<String, PhoneControlNodeRecord>(minOf(selected.size, req.maxNodes))
         val refByPath = HashMap<List<Int>, String>()
         var anySensitive = redactAllText
         var textTruncated = false
 
-        for (rawNode in raw) {
+        for (rawNode in selected) {
             if (rawNode.depth > req.maxDepth) continue
             if (nodes.size >= req.maxNodes) break
             if (!req.includeInvisible && !rawNode.visible) continue
@@ -132,6 +137,7 @@ internal object PhoneControlTreeShaper {
                 password = rawNode.password,
                 redacted = redacted,
                 truncated = fieldTruncated || (budget.truncated && !sensitiveField),
+                insideScrollable = rawNode.insideScrollable,
             )
             records[ref] = PhoneControlNodeRecord(
                 ref = ref,
@@ -149,7 +155,8 @@ internal object PhoneControlTreeShaper {
             refByPath[rawNode.path] = ref
         }
 
-        val truncated = nodeLimited || depthLimited || textTruncated || budget.truncated
+        val truncated = nodeLimited || depthLimited || textTruncated ||
+            budget.truncated || omittedBySelection
         return PhoneControlShaped(
             nodes = nodes,
             records = records,
@@ -159,6 +166,67 @@ internal object PhoneControlTreeShaper {
             fingerprint = fingerprint(nodes),
             textChars = budget.spent,
         )
+    }
+
+    private fun eligible(
+        raw: List<PhoneControlRawNode>,
+        request: PhoneControlObserveRequest,
+    ): List<PhoneControlRawNode> {
+        val eligible = ArrayList<PhoneControlRawNode>(raw.size)
+        for (node in raw) {
+            if (node.depth > request.maxDepth) continue
+            if (!request.includeInvisible && !node.visible) continue
+            eligible += node
+        }
+        return eligible
+    }
+
+    /**
+     * Actionable-first bounded selection. The live traversal is already
+     * node/time bounded; this second bound decides what the observation keeps
+     * when the tree is wider than [maxNodes]. Visible editable/protected
+     * fields rank first, then fixed-screen actionables (toolbar/FAB) outside a
+     * scrollable container, then in-scroll actionables, then labelled and
+     * structural nodes. Selected records keep their ACTUAL tree path; the
+     * result is restored to tree order so refs stay deterministic and
+     * ancestry/repacking semantics are unchanged.
+     */
+    private fun selectBounded(
+        eligible: List<PhoneControlRawNode>,
+        maxNodes: Int,
+    ): List<PhoneControlRawNode> {
+        if (eligible.size <= maxNodes) return eligible
+        return eligible.withIndex()
+            .sortedWith(
+                compareBy<IndexedValue<PhoneControlRawNode>> { priority(it.value) }
+                    .thenBy { it.index },
+            )
+            .take(maxNodes)
+            .sortedBy { it.index }
+            .map { it.value }
+    }
+
+    private fun priority(node: PhoneControlRawNode): Int {
+        val sensitive = node.password || PhoneControlText.isSensitiveViewId(node.viewId)
+        val actionable = node.visible && node.enabled &&
+            (node.clickable || node.editable || node.scrollable)
+        val directAction = node.visible && node.enabled && (node.clickable || node.editable)
+        val directScroll = node.visible && node.enabled && node.scrollable
+        return when {
+            node.visible && node.enabled && node.editable && sensitive -> 0
+            node.visible && node.enabled && node.editable -> 1
+            directAction && !node.insideScrollable -> 2
+            directScroll && !node.insideScrollable -> 3
+            actionable && node.insideScrollable -> 4
+            node.visible && (
+                !node.text.isNullOrBlank() ||
+                    !node.contentDescription.isNullOrBlank() ||
+                    !node.hintText.isNullOrBlank()
+                ) -> 5
+            node.visible -> 6
+            node.enabled && (node.clickable || node.editable || node.scrollable) -> 7
+            else -> 8
+        }
     }
 
     private fun fingerprint(nodes: List<PhoneControlNode>): Long {

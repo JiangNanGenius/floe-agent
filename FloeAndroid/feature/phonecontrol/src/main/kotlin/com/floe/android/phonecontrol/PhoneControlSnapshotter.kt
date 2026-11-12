@@ -89,10 +89,12 @@ private fun navigationFingerprint(packageName: String?, windowId: Int): Long {
  */
 internal class PhoneControlSnapshotter(private val service: AccessibilityService) {
     private data class ReadStats(
-        var nodeLimited: Boolean = false,
+        var scanLimited: Boolean = false,
         var depthLimited: Boolean = false,
+        var textLimited: Boolean = false,
         var hasSensitiveField: Boolean = false,
         var obsoleteNode: Boolean = false,
+        var cancelled: Boolean = false,
     )
 
     @Suppress("DEPRECATION")
@@ -101,7 +103,9 @@ internal class PhoneControlSnapshotter(private val service: AccessibilityService
         ticket: PhoneControlFence.Ticket,
         request: PhoneControlObserveRequest,
         keyguardLocked: Boolean,
+        isCancelled: () -> Boolean = { false },
     ): PhoneControlCapture? {
+        if (isCancelled()) return null
         val req = request.normalized()
         // A quiet event stream does not prove the framework cache is fresh.
         // Samsung's calculator returned the preceding formula after accepted
@@ -155,7 +159,9 @@ internal class PhoneControlSnapshotter(private val service: AccessibilityService
                 keyguardLocked = keyguardLocked,
             )
 
-            val raw = ArrayList<PhoneControlRawNode>(minOf(req.maxNodes, 256))
+            val raw = ArrayList<PhoneControlRawNode>(
+                minOf(req.maxNodes * 2, PhoneControlLimits.MAX_SCAN_NODES),
+            )
             val stats = ReadStats()
             readNode(
                 node = root,
@@ -165,12 +171,17 @@ internal class PhoneControlSnapshotter(private val service: AccessibilityService
                 redactAllText = preProtected,
                 request = req,
                 refreshFromSource = !cacheCleared,
+                ancestorScrollable = false,
+                budget = PhoneControlLimits.MAX_SCAN_NODES,
+                deadline = SystemClock.elapsedRealtime() +
+                    PhoneControlLimits.SCAN_TIME_BUDGET_MS,
+                isCancelled = isCancelled,
                 out = raw,
                 stats = stats,
             )
             // An obsolete source is an unavailable capture, never a partial
             // tree presented as the verified effect of the previous action.
-            if (stats.obsoleteNode) return null
+            if (stats.obsoleteNode || stats.cancelled) return null
 
             val protectedWindow = PhoneControlPolicy.isProtectedWindow(
                 packageName = packageName,
@@ -185,8 +196,18 @@ internal class PhoneControlSnapshotter(private val service: AccessibilityService
                 request = req,
                 redactAllText = redactAllText,
                 depthLimited = stats.depthLimited,
-                nodeLimited = stats.nodeLimited,
+                nodeLimited = stats.scanLimited || stats.textLimited,
             )
+            val capturedActionables = shaped.nodes.count { node ->
+                node.visible && node.enabled &&
+                    (node.clickable || node.editable || node.scrollable)
+            }
+            val eligibleActionables = raw.count { node ->
+                node.visible && node.enabled &&
+                    (node.clickable || node.editable || node.scrollable) &&
+                    node.depth <= req.maxDepth &&
+                    (req.includeInvisible || node.visible)
+            }
             val capturedAt = SystemClock.elapsedRealtime()
             val observation = PhoneControlObservation(
                 observationId = UUID.randomUUID().toString(),
@@ -212,6 +233,9 @@ internal class PhoneControlSnapshotter(private val service: AccessibilityService
                 nodes = shaped.nodes,
                 truncated = shaped.truncated,
                 maxDepthReached = shaped.maxDepthReached,
+                scannedNodeCount = raw.size,
+                omittedActionableCount =
+                    (eligibleActionables - capturedActionables).coerceAtLeast(0),
             )
             return PhoneControlCapture(
                 observation = observation,
@@ -235,19 +259,31 @@ internal class PhoneControlSnapshotter(private val service: AccessibilityService
         redactAllText: Boolean,
         request: PhoneControlObserveRequest,
         refreshFromSource: Boolean,
+        ancestorScrollable: Boolean,
+        budget: Int,
+        deadline: Long,
+        isCancelled: () -> Boolean,
         out: MutableList<PhoneControlRawNode>,
         stats: ReadStats,
-    ) {
-        if (stats.obsoleteNode) return
-        if (out.size >= request.maxNodes) {
-            stats.nodeLimited = true
-            return
+    ): Int {
+        if (stats.obsoleteNode || stats.cancelled) return 0
+        if (budget <= 0 || out.size >= PhoneControlLimits.MAX_SCAN_NODES) {
+            stats.scanLimited = true
+            return 0
+        }
+        if (isCancelled()) {
+            stats.cancelled = true
+            return 0
+        }
+        if (SystemClock.elapsedRealtime() > deadline) {
+            stats.scanLimited = true
+            return 0
         }
         // The root was already refreshed before its identity/privacy checks.
         if (refreshFromSource && path.isNotEmpty() &&
             !runCatching { node.refresh() }.getOrDefault(false)) {
             stats.obsoleteNode = true
-            return
+            return 0
         }
         val viewId = runCatching { node.viewIdResourceName }.getOrNull()
         val password = runCatching { node.isPassword }.getOrDefault(false)
@@ -255,8 +291,25 @@ internal class PhoneControlSnapshotter(private val service: AccessibilityService
         if (sensitive) stats.hasSensitiveField = true
         val redact = redactAllText || sensitive
 
+        /**
+         * One raw text field is capped before it enters the local scan. The
+         * final projection applies the ordinary text budget as well; this cap
+         * only stops an extreme field from making the bounded scan itself
+         * unbounded in memory.
+         */
+        fun rawText(value: String?): String? {
+            if (value == null) return null
+            // One past the shaper's input cap, so a selected over-long field
+            // is also marked truncated on the node itself.
+            val limit = PhoneControlLimits.MAX_FIELD_CHARS * 4 + 1
+            if (value.length <= limit) return value
+            stats.textLimited = true
+            return value.substring(0, limit)
+        }
+
         val bounds = Rect()
         runCatching { node.getBoundsInScreen(bounds) }
+        val scrollable = runCatching { node.isScrollable }.getOrDefault(false)
         out += PhoneControlRawNode(
             path = path,
             parentPath = parentPath,
@@ -264,35 +317,53 @@ internal class PhoneControlSnapshotter(private val service: AccessibilityService
             className = node.className?.toString().orEmpty(),
             packageName = node.packageName?.toString(),
             viewId = viewId,
-            text = if (redact) null else node.text?.toString(),
-            contentDescription = if (redact) null else node.contentDescription?.toString(),
-            hintText = if (redact) null else runCatching { node.hintText?.toString() }.getOrNull(),
+            text = if (redact) null else rawText(node.text?.toString()),
+            contentDescription = if (redact) null else
+                rawText(node.contentDescription?.toString()),
+            hintText = if (redact) null else
+                runCatching { rawText(node.hintText?.toString()) }.getOrNull(),
             bounds = PhoneControlBounds(bounds.left, bounds.top, bounds.right, bounds.bottom),
             visible = runCatching { node.isVisibleToUser }.getOrDefault(false),
             clickable = runCatching { node.isClickable }.getOrDefault(false),
             editable = runCatching { node.isEditable }.getOrDefault(false),
-            scrollable = runCatching { node.isScrollable }.getOrDefault(false),
+            scrollable = scrollable,
             enabled = runCatching { node.isEnabled }.getOrDefault(false),
             selected = runCatching { node.isSelected }.getOrDefault(false),
             checkable = runCatching { node.isCheckable }.getOrDefault(false),
             checked = runCatching { node.isChecked }.getOrDefault(false),
             password = password,
+            insideScrollable = ancestorScrollable,
         )
 
         if (depth >= request.maxDepth) {
             if (runCatching { node.childCount }.getOrDefault(0) > 0) stats.depthLimited = true
-            return
+            return 1
         }
         val childCount = runCatching { node.childCount }.getOrDefault(0)
+        var used = 1
+        var available = budget - used
+        // Split the remaining budget across the remaining children. A large
+        // earlier subtree therefore cannot consume the whole scan and hide a
+        // later toolbar/FAB sibling; unused budget flows to later siblings.
         for (index in 0 until childCount) {
-            if (stats.obsoleteNode) return
-            if (out.size >= request.maxNodes) {
-                stats.nodeLimited = true
-                return
+            // scanLimited also records a CHILD exhausting its local share.
+            // Keep scanning siblings until the global node/time bound is hit.
+            if (stats.obsoleteNode || stats.cancelled) return used
+            if (out.size >= PhoneControlLimits.MAX_SCAN_NODES ||
+                SystemClock.elapsedRealtime() > deadline
+            ) {
+                stats.scanLimited = true
+                return used
             }
+            val remainingChildren = childCount - index
+            if (available <= 0) {
+                stats.scanLimited = true
+                return used
+            }
+            val share = maxOf(1, available / remainingChildren)
             val child = runCatching { node.getChild(index) }.getOrNull() ?: continue
             try {
-                readNode(
+                val consumed = readNode(
                     node = child,
                     path = path + index,
                     parentPath = path,
@@ -300,13 +371,20 @@ internal class PhoneControlSnapshotter(private val service: AccessibilityService
                     redactAllText = redactAllText,
                     request = request,
                     refreshFromSource = refreshFromSource,
+                    ancestorScrollable = ancestorScrollable || scrollable,
+                    budget = minOf(share, available),
+                    deadline = deadline,
+                    isCancelled = isCancelled,
                     out = out,
                     stats = stats,
                 )
+                used += consumed
+                available -= consumed
             } finally {
                 @Suppress("DEPRECATION")
                 runCatching { child.recycle() }
             }
         }
+        return used
     }
 }

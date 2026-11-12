@@ -60,6 +60,7 @@ internal fun testNode(
     password: Boolean = false,
     redacted: Boolean = false,
     truncated: Boolean = false,
+    insideScrollable: Boolean = false,
 ): PhoneControlNode = PhoneControlNode(
     ref = ref,
     parentRef = parentRef,
@@ -82,6 +83,7 @@ internal fun testNode(
     password = password,
     redacted = redacted,
     truncated = truncated,
+    insideScrollable = insideScrollable,
 )
 
 internal fun testObservation(
@@ -125,6 +127,7 @@ internal fun testRawNode(
     editable: Boolean = false,
     scrollable: Boolean = false,
     password: Boolean = false,
+    insideScrollable: Boolean = false,
 ): PhoneControlRawNode = PhoneControlRawNode(
     path = path,
     parentPath = if (path.isEmpty()) null else path.dropLast(1),
@@ -145,4 +148,5 @@ internal fun testRawNode(
     checkable = false,
     checked = false,
     password = password,
+    insideScrollable = insideScrollable,
 )

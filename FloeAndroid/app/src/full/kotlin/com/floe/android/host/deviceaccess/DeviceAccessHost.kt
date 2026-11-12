@@ -60,12 +60,14 @@ import com.floe.android.phonecontrol.PhoneControlBlocker
 import com.floe.android.phonecontrol.PhoneControlClient
 import com.floe.android.phonecontrol.PhoneControlDenial
 import com.floe.android.phonecontrol.PhoneControlGrant
+import com.floe.android.phonecontrol.PhoneControlLimits
 import com.floe.android.phonecontrol.PhoneControlModule
 import com.floe.android.phonecontrol.PhoneControlObservation
 import com.floe.android.phonecontrol.PhoneControlObserveRequest
 import com.floe.android.phonecontrol.PhoneControlOwner
 import com.floe.android.phonecontrol.PhoneControlPrincipal
 import com.floe.android.phonecontrol.PhoneControlResult
+import com.floe.android.phonecontrol.PhoneControlScreenshotGuidance
 import com.floe.android.phonecontrol.PhoneControlScreenshotRequest
 import com.floe.android.phonecontrol.PhoneControlStatus
 import com.floe.android.phonecontrol.PhoneControlUnavailable
@@ -3178,7 +3180,7 @@ internal class DeviceAccessHost(
             DeviceAccessToolCatalog.DEVICE_OBSERVE -> deviceObserve(call)
             DeviceAccessToolCatalog.DEVICE_ACT -> deviceAct(call)
             DeviceAccessToolCatalog.DEVICE_SCREENSHOT -> deviceScreenshot(call)
-            DeviceAccessToolCatalog.SYSTEM_ACCESS_STATUS -> systemStatus()
+            DeviceAccessToolCatalog.SYSTEM_ACCESS_STATUS -> systemStatus(call)
             DeviceAccessToolCatalog.SYSTEM_FILES_LIST -> systemFilesList(call)
             DeviceAccessToolCatalog.SYSTEM_FILES_READ -> systemFilesRead(call)
             DeviceAccessToolCatalog.SYSTEM_FILES_WRITE -> systemFilesWrite(call)
@@ -3411,10 +3413,10 @@ internal class DeviceAccessHost(
         bindPhoneCall(call)
         try {
             val request = PhoneControlObserveRequest(
-                maxNodes = 100,
-                maxDepth = 20,
+                maxNodes = PhoneControlLimits.DEFAULT_NODES,
+                maxDepth = PhoneControlLimits.DEFAULT_DEPTH,
                 includeInvisible = call.arguments.optBoolean("includeInvisible", false),
-                textBudgetChars = 8_000,
+                textBudgetChars = PhoneControlLimits.DEFAULT_TEXT_BUDGET_CHARS,
             )
             return when (val result = withTimeout(20_000) {
                 client.observe(principal, request)
@@ -3668,21 +3670,34 @@ internal class DeviceAccessHost(
     private fun observationEvidence(observation: PhoneControlObservation): List<String> {
         val remaining = (observation.expiresAtElapsedRealtimeMillis - SystemClock.elapsedRealtime())
             .coerceAtLeast(0)
+        val actionables = observation.nodes.count { node ->
+            node.visible && node.enabled &&
+                (node.clickable || node.editable || node.scrollable)
+        }
         return listOf(
             "fence=${observation.fenceGeneration}",
             "pageGen=${observation.pageGeneration}",
             "expiresInMs=$remaining",
             "screenshot=${observation.screenshotSupport.name}",
-            "window=${observation.windowId}",
+            "window=${observation.windowId} display=${observation.displayId}" +
+                (observation.windowType?.let { " type=$it" } ?: ""),
             "sensitive=${observation.sensitiveWindow}",
             "navigationOnly=${observation.navigationOnly}",
+            "captured=${observation.nodes.size}/${observation.scannedNodeCount}" +
+                " actions=$actionables omitted=${observation.omittedActionableCount}",
         )
     }
 
     private fun deniedOutcome(reason: PhoneControlDenial): PlatformToolOutcome =
         PlatformToolOutcome.Failure(
             "phone_" + reason.name.lowercase(),
-            denialMessage(reason),
+            // Keep the page-scoped recovery inside the bounded failure-detail
+            // channel instead of appending it after the longer base message.
+            if (reason == PhoneControlDenial.TARGET_PACKAGE_NOT_ALLOWED) {
+                PhoneControlScreenshotGuidance.targetPackageRecovery()
+            } else {
+                denialMessage(reason)
+            },
         )
 
     private fun unavailableOutcome(reason: PhoneControlUnavailable): PlatformToolOutcome =
@@ -3744,12 +3759,26 @@ internal class DeviceAccessHost(
 
     // ------------------------------------------------------------- system tools
 
-    private fun systemStatus(): PlatformToolOutcome {
+    private fun systemStatus(call: PlatformToolCall): PlatformToolOutcome {
         val adb = adbStatus
         val root = rootStatus
         val phone = phoneStatus
         val targets = settings.allowedPackages
         val roots = effectiveSelectedRoots()
+        val owner = ownerOf(call)
+        val epoch = host.nativeRootEpoch()?.takeIf { it > 0 }
+        val screenshotReadiness = PhoneControlScreenshotGuidance.Readiness(
+            support = PhoneControlScreenshotGuidance.supportForSdk(Build.VERSION.SDK_INT),
+            screenScopeGranted = epoch != null &&
+                screenShare.allows(owner, epoch, ownerRunLive = isOwnerRunLive(owner)),
+            wholeScreenConsent = settings.wholeScreenConsent,
+            serviceUsable = phoneServiceUsable(phone) && phoneClient?.isClosed == false,
+            taskArmed = armedOwner == owner,
+            targetAppsSelected = targets.isNotEmpty(),
+            userStopped = userStopped,
+            taskPaused = phonePause.isPaused(owner),
+            runtimeEpochReady = epoch != null,
+        )
         val summary = buildString {
             append("phoneEnabled=").append(phone.enabled)
             append(" connected=").append(phone.connected)
@@ -3767,6 +3796,12 @@ internal class DeviceAccessHost(
             }
             append("\nphoneNext=").append(phoneNext)
             append(" (Settings > Device; VNC is not device UI)\n")
+            append(screenshotReadiness.consentLine())
+            append("\nscreenshotReady=").append(screenshotReadiness.anyCaptureReady)
+            append(" displayReady=").append(screenshotReadiness.displayCaptureReady)
+            append(" windowReady=").append(screenshotReadiness.windowCaptureReady)
+            append("\nscreenshotNext=").append(screenshotReadiness.recovery())
+            append('\n')
             append("adb=").append(
                 when (adb) {
                     is AdbStatus.ServiceAlive -> "alive(uid=${adb.effectiveUid})"
@@ -5952,7 +5987,8 @@ internal class DeviceAccessHost(
         /** Exact-name advanced lookup: same shape the service already checks. */
         val ADVANCED_LOOKUP_NAME = Regex("[A-Za-z0-9._-]{1,255}")
         const val MAX_LIVE_TASK_SCAN = 8
-        const val MAX_DIGEST_NODES = 28
+        /** The summary's own hard row cap is 40; char bound still applies. */
+        const val MAX_DIGEST_NODES = 40
         const val MAX_LIST_ROWS = 24
         const val MAX_WRITE_BYTES = 48_000
         const val ROOT_GRANT_LIFETIME_MILLIS = 30_000L

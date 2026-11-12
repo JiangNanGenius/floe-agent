@@ -1160,3 +1160,19 @@ English: The agreed N01–N08 implementation and this delivery close with immuta
 待交付的是私有1.0.1/code109候选：仍需实际ARM64原生生产、签名Full包和三星保留数据升级。原场景接续由现有实机运行验收，不以测试夹具代替。另见原日志中的Linux工作区所有者不可用错误，当前不与设备证明失败合并归因，也未宣称已闭合。公开1.0.0标签、附件及更新渠道不因本维护改写。
 
 English: The canonical phone/tablet toolchain remains device.observe/act/screenshot throughout discovery, dispatch, approval, interaction waits, restoration and sensitive-input handling; exact old aliases preserve history only. This maintenance separates native device-run proof from display text allocation, acknowledges owned obsolete continuations, rolls back only undelivered page allocations, and merges live/durable text using actual step/event provenance. Read-stream recovery requires fresh native ownership and resumes at the delivered cursor without replaying models or actions. Actual Swift object compilation and14 focused cases, Full Release Kotlin and58 JVM cases pass. The private1.0.1/code109 still needs ARM64 production, signing and a data-preserving Samsung upgrade before the original-scene continuation. The independent Linux workspace-owner failure remains unproven and is not marked fixed. Public1.0.0 stays immutable.
+
+## 2026-11-12 私有109安装结果与N03后续修复
+
+上述私有1.0.1/code109已完成native44实际ARM64生产、签名Full包及三星保留数据联合升级。Android就绪源码为`33d53c488`，实际打包源码为`63b10fc06`，二者Android树一致；主包和运行组件的已安装字节、原UID及既有任务／项目保持。58项原生封装检查、16 KiB及API28／29签名通过。公开1.0.0的源码、标签、附件和更新渠道保持不变。
+
+原场景接续已能进入真实设备观察，但尚未完成媒体和日历工作流。长页面出现捕获节点和模型摘要两层截断，后部操作按钮可能遗漏；猜测节点和过期观察仍按原规则拒绝。后续N03修复聚焦有界关键控件覆盖、真实窗口信息及截图当前就绪状态，不放宽任务归属、应用范围、密码保护和观察有效期，不重放原失败动作。规范工具链继续为`device.observe`、`device.act`、`device.screenshot`，旧名仅用于历史兼容。
+
+另将iOS`16ffac1da`至`3f2e1829e`中取消终态落库、等待恢复及CAD保存回执变化登记为局部增量。Android对应取消路径仍需独立确认，未借此宣布修复，也不将既有完整差异基线前移。本次设备观察维护不等待新增独立功能。
+
+English: Private1.0.1/code109 has now passed real ARM64 production, signed Full packaging and a data-preserving Samsung joint upgrade, with exact installed bytes and original UIDs verified. The continuation reaches actual device observation but has not completed the media/calendar workflow. N03 addresses bounded capture and summary coverage of late actionable controls, actual window information and live screenshot readiness while retaining all authority, privacy and freshness checks. The canonical device.* toolchain and precise legacy aliases remain unchanged. Recent iOS cancellation/recovery and CAD-receipt changes are recorded as a partial delta, without advancing the full baseline or claiming an Android cancellation fix. Public1.0.0 remains immutable.
+
+**N03代码检查点（私有1.0.2/code110）：** 已实现节点／时间有界的扫描与兄弟子树预算分配，选择可见输入框、固定工具栏／浮动按钮等真实控件优先保留；摘要增加真实窗口／显示信息和可操作引用的紧凑溢出索引，仍明确标记截断。截图状态分别报告系统能力、当前任务范围和已保存的整屏同意；任务结束后仍可从设置关闭已开启的整屏同意。审查补正了局部分支截断不应终止其他兄弟分支的问题，保留全局时间／节点限制和节点回收。
+
+源码任务的45项聚焦JVM、3项目录契约及完整phonecontrol对象编译证据已收取。主线复用这些结果，并以实际Gradle完成当前Full Release／Debug Kotlin、测试对象编译和7项相关集成检查；无真实云调用。三星上新版本的真实捕获、截图与原工作流仍待私有包安装后验收，编译和夹具结果不代替该结论。native44的3143个生产输入未变，直接复用；只构建Full，不恢复Play或改写公开1.0.0。
+
+English: Private1.0.2/code110 source now contains bounded fair traversal, actionable-first selection, compact overflow refs, real window/display metadata, live screenshot readiness and a reachable saved-consent revocation control. Primary review separates local branch truncation from global scan termination. Worker45 JVM plus3 descriptor checks and feature objects are reused; actual Gradle Full Release/Debug Kotlin, test objects and7 integration cases pass. Native44's3143 inputs remain unchanged. New device capture and the original workflow remain pending actual private-package acceptance; no cloud call or public1.0.0 mutation is included.

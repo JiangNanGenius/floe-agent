@@ -302,9 +302,14 @@ class DeviceAccessPresentationTest {
     }
 
     @Test
-    fun wholeScreenConsentIsShownOnlyWhileScreeningAndRequiredBeforeApi34() {
+    fun wholeScreenConsentStaysReachableAfterScopeEndsAndIsRequiredBeforeApi34() {
         val off = DeviceAccessPresentationState()
         assertFalse(DeviceAccessPresentation.wholeScreenConsentVisible(off))
+        val ended = off.copy(targets = off.targets.copy(wholeScreenConsent = true))
+        assertTrue(DeviceAccessPresentation.wholeScreenConsentVisible(ended))
+        assertFalse(DeviceAccessPresentation.wholeScreenConsentRequired(ended))
+        assertFalse(DeviceAccessPresentation.wholeScreenConsentVisible(
+            ended.copy(targets = ended.targets.copy(wholeScreenConsent = false))))
         val on = DeviceAccessPresentationState(
             screenScope = DeviceAccessScreenScopeUi.CURRENT_TASK,
             targets = DeviceAccessTargetsUi(windowScreenshotCapable = false),

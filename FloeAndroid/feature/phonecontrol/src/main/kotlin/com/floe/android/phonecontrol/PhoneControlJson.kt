@@ -78,6 +78,8 @@ object PhoneControlJson {
             .put("maxDepthReached", observation.maxDepthReached)
             .put("transportTruncated", transportTruncated)
             .put("nodeCount", observation.nodes.size)
+            .put("scannedNodeCount", observation.scannedNodeCount)
+            .put("omittedActionableCount", observation.omittedActionableCount)
             .put("nodes", nodes)
     }
 
@@ -110,6 +112,7 @@ object PhoneControlJson {
         .put("password", node.password)
         .put("redacted", node.redacted)
         .put("truncated", node.truncated)
+        .put("insideScrollable", node.insideScrollable)
 
     private fun ownerObject(owner: PhoneControlOwner): JSONObject = JSONObject()
         .put("taskID", owner.taskID.toString())

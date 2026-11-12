@@ -146,6 +146,7 @@ internal class PhoneControlSession(
             ticket = ticket,
             request = normalized,
             keyguardLocked = keyguardLocked(),
+            isCancelled = { closed },
         )
         if (first != null) {
             complete(acceptObservation(principal, grant, first, normalized))
@@ -180,6 +181,7 @@ internal class PhoneControlSession(
                         ticket = live,
                         request = normalized,
                         keyguardLocked = keyguardLocked(),
+                        isCancelled = { closed || inFlightId != opId },
                     )
                 }
             },
@@ -949,6 +951,7 @@ internal class PhoneControlSession(
                 ticket = ticket,
                 request = PhoneControlObserveRequest(),
                 keyguardLocked = keyguardLocked(),
+                isCancelled = { closed },
             ) ?: run {
                 complete(PhoneControlResult.Failed(PhoneControlFailure.OBSERVATION_FAILED))
                 return
@@ -1399,6 +1402,7 @@ internal class PhoneControlSession(
                         ticket = ticket,
                         request = record.request,
                         keyguardLocked = false,
+                        isCancelled = { closed || inFlightId != opId },
                     )
                     if (capture != null) {
                         val denial = PhoneControlPolicy.observationDenial(
