@@ -342,6 +342,11 @@ public struct ProviderStreamRequest: Sendable {
     /// Transient liveness only. Partial arguments are never dispatched,
     /// persisted as a tool call, or exposed as model text.
     public var onToolArgumentsProgress: (@Sendable () async -> Void)?
+    /// Transient admission receipt for adapters that further select schemas.
+    /// Report only the complete definitions at the effective inference-call
+    /// boundary, including a bounded repair. Never encoded, checkpointed or
+    /// used as permission, and never a claim that inference/network succeeded.
+    public var onToolSchemasPrepared: (@Sendable ([String]) async -> Void)?
     /// True for temporary (ephemeral) conversations: the transport must not
     /// leave request/response content in any shared on-disk cache. The
     /// request still reaches the provider normally — this is a local cache
@@ -368,7 +373,8 @@ public struct ProviderStreamRequest: Sendable {
         reasoningPolicy: ProviderReasoningPolicy = .modelDefault,
         onToolArgumentsProgress: (@Sendable () async -> Void)? = nil,
         ephemeralTransport: Bool = false,
-        diagnosticRunID: String? = nil
+        diagnosticRunID: String? = nil,
+        onToolSchemasPrepared: (@Sendable ([String]) async -> Void)? = nil
     ) {
         self.provider = provider
         self.model = model
@@ -384,6 +390,7 @@ public struct ProviderStreamRequest: Sendable {
         self.onToolArgumentsProgress = onToolArgumentsProgress
         self.ephemeralTransport = ephemeralTransport
         self.diagnosticRunID = diagnosticRunID
+        self.onToolSchemasPrepared = onToolSchemasPrepared
     }
 
     public var effectiveMessages: [ProviderMessage] {

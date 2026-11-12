@@ -73,7 +73,7 @@ struct StorageOptimizationSection: View {
                 ? FloeL10n.l("settings.storage_optimization.no_change")
                 : FloeL10n.l("settings.storage_optimization.done", service.state.optimized)
         case .cancelled: return FloeL10n.l("settings.storage_optimization.cancelled")
-        case .blocked: return FloeL10n.l("settings.storage_optimization.try_later")
+        case .blocked: return service.state.inventoryNotice ?? FloeL10n.l("settings.storage_optimization.try_later")
         case .unavailable:
             return FloeL10n.l(service.hasLegacyRecoveryTree
                 ? "settings.storage_optimization.try_later" : "settings.storage_optimization.no_change")

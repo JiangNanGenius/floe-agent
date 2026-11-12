@@ -132,6 +132,111 @@ final class TextReaderRapidSwitchTests: XCTestCase {
             XCTFail("a late progress write from the superseded open must not reset the phase")
         }
     }
+    private func source(data: Data, key: String = "pages", limits: ReaderLimits = ReaderLimits(chunkBytes: 64 * 1024),
+                        bytes: (any ReaderByteSource)? = nil) -> TextReaderSource {
+        let sourceBytes = bytes ?? ReaderDataByteSource(data: data)
+        return TextReaderSource(kind: .workspaceFile, ownerID: "paging-test", documentKey: key,
+            displayName: key + ".txt", format: "txt", markdown: false, isRemoteSnapshot: false,
+            persistsPosition: false, hasNonTextContent: false, limits: limits,
+            makeBytes: { TextReaderBytes(source: sourceBytes, fingerprint: key) })
+    }
+
+    func testFullTextScrollReachesEOFWithBoundedRetainedTextAndCanReloadEarlierPages() async throws {
+        let text = String(repeating: "012345中文🙂END", count: 100_003) + "文件末尾TAIL"
+        let model = TextReaderModel(source: source(data: Data(text.utf8)), positionStore: InMemoryPositionStore())
+        await model.open()
+        var seen: [Int64: String] = [:]
+        func remember() { for block in model.blocks { seen[block.byteOffset] = block.text } }
+        remember()
+        var pages = 0
+        while model.hasMore, pages < 100 {
+            model.rememberTop(try XCTUnwrap(model.blocks.last).byteOffset)
+            await model.appendNext(); remember(); pages += 1
+            XCTAssertLessThanOrEqual(model.retainedTextBytes, model.retainedTextLimit + 64 * 1024)
+            XCTAssertNil(model.pageError)
+        }
+        XCTAssertFalse(model.hasMore, "the real EOF must be reachable")
+        XCTAssertEqual(seen.keys.sorted().compactMap { seen[$0] }.joined(), text)
+        XCTAssertGreaterThan(try XCTUnwrap(model.blocks.first).byteOffset, 0, "old UI strings must be retired")
+        var backwards = 0
+        while model.hasEarlier, backwards < 100 {
+            model.rememberTop(try XCTUnwrap(model.blocks.first).byteOffset)
+            await model.prependPrevious(); backwards += 1
+        }
+        XCTAssertEqual(model.blocks.first?.byteOffset, 0)
+        XCTAssertTrue(text.hasPrefix(model.blocks.map(\.text).joined()))
+        XCTAssertLessThanOrEqual(model.retainedTextBytes, model.retainedTextLimit + 64 * 1024)
+    }
+
+    func testContinuationHandlesUTF16EmojiAndBlockLimitWithoutDroppedTextOrCodePrefixes() async throws {
+        let text = String(repeating: "AB中文🙂Z", count: 4_001) + "TAIL"
+        for data in [Data(text.utf8), Data([0xFF, 0xFE]) + (try XCTUnwrap(text.data(using: .utf16LittleEndian)))] {
+            let session = ReaderSession()
+            let input = source(data: data, limits: ReaderLimits(chunkBytes: 64 * 1024,
+                maxBlocksPerWindow: 2, maxBlockCharacters: 500))
+            let bytes = try await input.makeBytes()
+            let file = ReaderFileSource(source: bytes.source,
+                identity: .init(kind: .workspaceFile, ownerID: "test", documentKey: "long", displayName: "long", format: "txt", fingerprint: "fp"),
+                markdown: false, limits: input.limits)
+            var window = try await session.open(source: file).window
+            var recovered = window.blocks.map(\.text).joined(), pages = 0
+            while window.hasMore, pages < 100 {
+                let end = window.endByte
+                window = try await session.window(startByte: end, continuing: true)
+                XCTAssertGreaterThan(window.endByte, end)
+                recovered += window.blocks.map(\.text).joined(); pages += 1
+            }
+            XCTAssertFalse(window.hasMore)
+            XCTAssertEqual(recovered, text)
+            let previous = try await session.window(startByte: window.endByte, backwards: true)
+            XCTAssertTrue(text.hasSuffix(previous.blocks.map(\.text).joined()))
+            XCTAssertLessThanOrEqual(previous.blocks.count, 2)
+        }
+        let code = TextReaderModel(source: source(data: Data("# keep this comment".utf8), key: "code"), positionStore: InMemoryPositionStore())
+        await code.open()
+        XCTAssertEqual(code.blocks.map(\.text).joined(), "# keep this comment")
+    }
+
+    private final class PageGateSource: ReaderByteSource, @unchecked Sendable {
+        let data: Data
+        private let lock = NSLock()
+        private let gate = DispatchSemaphore(value: 0)
+        private var enabled = false
+        private var entered = false
+        init(data: Data) { self.data = data }
+        var byteLength: Int64 { Int64(data.count) }
+        func arm() { lock.lock(); enabled = true; lock.unlock() }
+        var isWaiting: Bool { lock.lock(); defer { lock.unlock() }; return entered }
+        func release() { gate.signal() }
+        func read(offset: Int64, length: Int) throws -> Data {
+            lock.lock(); let block = enabled
+            if block { enabled = false; entered = true }; lock.unlock()
+            if block { _ = gate.wait(timeout: .now() + 5) }
+            return try ReaderDataByteSource(data: data).read(offset: offset, length: length)
+        }
+    }
+
+    func testCancelledPageCannotPublishIntoDismissedReaderOrReplacementFile() async throws {
+        let data = Data(String(repeating: "AB中文🙂Z", count: 100_001).utf8)
+        let gate = PageGateSource(data: data)
+        let outgoing = TextReaderModel(source: source(data: data, key: "old", bytes: gate), positionStore: InMemoryPositionStore())
+        await outgoing.open()
+        let originalBlocks = outgoing.blocks
+        gate.arm()
+        let page = Task { @MainActor in await outgoing.appendNext() }
+        var waits = 0
+        while !gate.isWaiting, waits < 600 { try await Task.sleep(for: .milliseconds(5)); waits += 1 }
+        XCTAssertTrue(gate.isWaiting, "exercise an actual in-flight page")
+        outgoing.cancelOpen()
+        let replacement = TextReaderModel(source: source(data: Data("新文件唯一内容".utf8), key: "new"), positionStore: InMemoryPositionStore())
+        await replacement.open()
+        gate.release(); await page.value
+        XCTAssertEqual(outgoing.blocks, originalBlocks)
+        XCTAssertEqual(replacement.blocks.map(\.text).joined(), "新文件唯一内容")
+        XCTAssertNil(replacement.pageError)
+        XCTAssertFalse(outgoing.isAppending)
+    }
+
 }
 
 /// Local position store so this test never touches UserDefaults.

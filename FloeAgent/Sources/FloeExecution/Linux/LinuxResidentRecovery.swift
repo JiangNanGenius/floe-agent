@@ -302,7 +302,8 @@ struct LinuxResidentRecoveryStore {
 
         /// The prepare closure is App-owned and uses the verified image
         /// preparer. It returns the fresh fixed disk directory inside build.
-        func replace(prepare: (URL) throws -> URL) throws -> LinuxResidentRecoveryReceipt {
+        func replace(onPhase: @Sendable (LinuxGuestImageTransferPhase) -> Void = { _ in },
+                     prepare: (URL) throws -> URL) throws -> LinuxResidentRecoveryReceipt {
             let disk = try store.lockFile("disk-use.lock", operation: LOCK_EX | LOCK_NB)
             defer { _ = close(disk) }
             if resumed, let receipt = try store.recoverPending() { return receipt }
@@ -325,6 +326,7 @@ struct LinuxResidentRecoveryStore {
                 try Task.checkCancellation()
                 let build = store.operation(record.id).appendingPathComponent("build", isDirectory: true)
                 try LinuxResidentRecoveryStore.ensureDirectory(build)
+                onPhase(.creatingEnvironment)
                 let fresh = try prepare(build)
                 let expected = LinuxResidentDiskStorage.directory(in: build)
                 guard fresh.standardizedFileURL == expected.standardizedFileURL else {
@@ -353,6 +355,7 @@ struct LinuxResidentRecoveryStore {
                 guard record.old.map({ $0.matches(observed) }) ?? (observed == nil) else {
                     throw LinuxResidentRecoveryError.identityChanged
                 }
+                if record.old != nil { onPhase(.retainingEnvironment) }
                 try store.hooks.event(.beforeExchange)
                 #if canImport(Darwin)
                 let flags = record.old == nil ? UInt32(RENAME_EXCL) : UInt32(RENAME_SWAP)

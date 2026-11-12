@@ -208,8 +208,8 @@ public enum LinuxCacheCleanupEnvironmentRepair {
         ]
         guard signals.contains(where: { lower.contains($0) }) else { return nil }
         return FloeL10n.isChinese
-            ? "请打开 设置 → 执行环境，检查共享 Linux 环境并使用现有修复入口。本次清理没有重置磁盘、安装组件或改动已有资料。"
-            : "Open Settings > Execution Environments, inspect the shared Linux runtime and use its existing repair action. This cleanup did not reset disk, install components or change existing data."
+            ? "请打开 设置 → 执行环境，使用重新下载或保留资料重新创建环境的入口。本次清理没有重置磁盘、安装组件或改动已有资料。"
+            : "Open Settings > Execution Environments and use the re-download or keep-data/new-environment action. This cleanup did not reset disk, install components or change existing data."
     }
 
     public static func guidance(for error: Error) -> String? {

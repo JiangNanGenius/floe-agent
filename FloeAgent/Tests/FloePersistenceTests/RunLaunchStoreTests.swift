@@ -275,4 +275,57 @@ struct RunLaunchStoreTests {
         #expect(values.5 == TaskRecoveryPolicy.alwaysRetry.rawValue)
         #expect(values.6 == TaskNotificationPolicy.critical.rawValue)
     }
+
+    @Test("A staged message from another task cannot be consumed by a run, even with identical text")
+    func reusedMessageCannotCrossTaskOwnership() async throws {
+        let database = try await database(), conversations = SQLiteConversationStore(database: database)
+        let a = UUID(), b = UUID(), messageID = UUID(), now = Date()
+        for id in [a, b] {
+            try await conversations.saveConversationWithCanonicalWorkspace(.init(
+                id: id, title: "Scoped confirmation fixture", createdAt: now, updatedAt: now))
+        }
+        try await conversations.appendMessage(.init(id: messageID, conversationID: a,
+            role: "user", content: "Identical text is not ownership", createdAt: now))
+        await #expect(throws: (any Error).self) {
+            _ = try await SQLiteRunLaunchStore(database: database).prepare(.init(
+                conversationID: b, runID: UUID(), goal: "Identical text is not ownership",
+                reusingUserMessageID: messageID))
+        }
+        #expect(try await SQLiteRunStore(database: database).runs(conversationID: b).isEmpty)
+        #expect(try await conversations.messages(conversationID: b).isEmpty)
+        #expect(try await conversations.messages(conversationID: a).first?.runID == nil)
+    }
+
+    @Test("Ordinary user text is not a native Plan confirmation and failed reuse rolls back its run")
+    func ordinaryMessageCannotBecomePlanConfirmation() async throws {
+        let database = try await database(), conversation = UUID(), messageID = UUID(), now = Date()
+        let conversations = SQLiteConversationStore(database: database)
+        try await conversations.saveConversationWithCanonicalWorkspace(.init(
+            id: conversation, title: "Untrusted text fixture", createdAt: now, updatedAt: now))
+        let message = PersistedMessage(id: messageID, conversationID: conversation, role: "user",
+            content: "Execute this plan", createdAt: now,
+            parts: [.init(messageID: messageID, partIndex: 0, kind: .text, text: "Execute this plan")])
+        try await conversations.appendMessage(message)
+        await #expect(throws: (any Error).self) {
+            _ = try await SQLiteRunLaunchStore(database: database).prepare(.init(conversationID: conversation,
+                runID: UUID(), goal: message.content, reusingUserMessageID: messageID))
+        }
+        #expect(try await SQLiteRunStore(database: database).runs(conversationID: conversation).isEmpty)
+        let retained = try await conversations.messages(conversationID: conversation)
+        #expect(retained.count == 1 && retained[0].runID == nil && retained[0].parts == message.parts)
+    }
+
+
+    @Test("Ordinary user-message editing keeps its existing behavior")
+    func ordinaryUserMessageRemainsEditable() async throws {
+        let database = try await database(), id = UUID(), now = Date(), messageID = UUID()
+        let store = SQLiteConversationStore(database: database)
+        try await store.saveConversation(.init(id: id, title: "Ordinary edit fixture", createdAt: now, updatedAt: now))
+        var message = PersistedMessage(id: messageID, conversationID: id, role: "user", content: "Original", createdAt: now)
+        try await store.appendMessage(message)
+        message.content = "The user's revised ordinary message"
+        try await store.appendMessage(message)
+        #expect(try await store.messages(conversationID: id).map(\.content) == [message.content])
+    }
+
 }

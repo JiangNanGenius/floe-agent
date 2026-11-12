@@ -915,7 +915,7 @@ struct AgentRuntimeTests {
         #expect(Set(adapter.requests[0].toolSchemas.map(\.name)) == Set(["tools.search", "tools.list", "tools.readResult"]))
         #expect(adapter.requests[1].toolSchemas.contains { $0.name == "test.echo" })
         #expect(executor.executedCalls.map(\.id) == ["execute"])
-        #expect(adapter.requests[1].messages.contains { $0.content.contains("Loaded for the next request") })
+        #expect(adapter.requests[1].messages.contains { $0.content.contains("Activated as candidates for future budgeted requests") })
     }
 
     @Test("Malformed tool calls receive one correction without a fabricated result pair")

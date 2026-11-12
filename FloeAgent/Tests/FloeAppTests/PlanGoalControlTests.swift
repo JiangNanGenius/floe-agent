@@ -5,6 +5,7 @@ import Testing
 import FloeCore
 import FloeModels
 import FloePersistence
+import FloeSecurity
 @testable import FloeAgentRuntime
 import FloeProviders
 import FloeTools
@@ -174,6 +175,7 @@ struct PlanGoalControlTests {
             #expect(thread.effectiveAgentMode == .plan)
             let request = try await waitForRequest(f, after: previous)
             #expect(request.toolSchemas.contains { $0.name == PlanSubmission.toolName })
+            #expect(request.toolSchemas.filter { $0.name == UserAskTool.name }.count == 1)
             var descriptors = Dictionary(uniqueKeysWithValues: CatalogToolExecutor().allDescriptors.map { ($0.name, $0) })
             // These exact metadata tools are added by the runtime, outside
             // CatalogToolExecutor. Their native effects still must be read-only;
@@ -184,7 +186,17 @@ struct PlanGoalControlTests {
             for schema in request.toolSchemas where schema.name != PlanSubmission.toolName {
                 let descriptor = try #require(descriptors[schema.name],
                     "No executable or native runtime descriptor for \(schema.name)")
-                #expect(descriptor.effect == .readOnly)
+                if schema.name == UserAskTool.name {
+                    // This exact main-run interaction was already Plan's
+                    // deliberate internal-state exception. No other internal
+                    // mutation is admitted by the corrected wire assertion.
+                    #expect(descriptor.effect == .internalState)
+                    #expect(descriptor.executionBoundary == .mainRunOnly)
+                    #expect(!descriptor.isSideEffecting && descriptor.riskLabels.isEmpty && !descriptor.requiresHostScope)
+                    if case .failure = PlanToolPolicy().decision(for: descriptor) {
+                        Issue.record("The native question must satisfy Plan's existing narrow exception")
+                    }
+                } else { #expect(descriptor.effect == .readOnly) }
             }
             await f.center.cancel(runID: run.id)
         }
@@ -226,6 +238,13 @@ struct PlanGoalControlTests {
         let runID = try #require(view.selectedRunID)
         let run = try #require(try await f.environment.runStore.run(id: runID))
         #expect(run.conversationMode == ConversationMode.goal.rawValue)
+        let history = try await f.environment.conversationStore.messages(conversationID: conversation.id)
+        let confirmed = history.compactMap { message -> (PersistedMessage, PlanConfirmationSnapshot)? in
+            PlanConfirmationSnapshot.from(message: message).map { (message, $0) }
+        }
+        #expect(confirmed.count == 1 && confirmed[0].0.role == "user" && confirmed[0].0.runID == runID)
+        #expect(confirmed[0].1.plan == accepted && confirmed[0].1.goalID == goal.id)
+        #expect(!accepted.awaitsConfirmation && view.canPauseGoal)
         #expect(run.goal == GoalFromPlanFactory.implementationPrompt(from: accepted))
         #expect(run.goal.contains("Do not send files outside this task") && !run.goal.contains("PLANNING_ONLY_MARKER"))
         let request = try await waitForRequest(f, after: 0)
@@ -533,5 +552,181 @@ struct PlanGoalControlTests {
         #expect(stoppedB.budgets == retainedB.budgets && retainedB.evidence.allSatisfy { stoppedB.evidence.contains($0) })
         #expect(try Data(contentsOf: file) == bytes)
     }
+
+    @Test("A failed Plan confirmation retains the pending action and starts neither a Goal nor provider")
+    func confirmationFailureKeepsPendingPlan() async throws {
+        let f = try await fixture()
+        let conversation = try await f.center.createConversation(title: "Failed confirmation fixture")
+        let source = PlanDraft(conversationID: conversation.id, status: .ready,
+            title: "Retain the pending plan", summary: "No user decision may disappear on a failed write",
+            sections: [.init(title: "Build", body: "Produce the agreed report", order: 0)],
+            acceptanceCriteria: [.init(text: "Verified", verification: "Read the result")])
+        try await f.environment.intelligenceStore.savePlanRevision(source)
+        try await f.environment.database.writer { db in
+            try db.execute(sql: "CREATE TRIGGER fail_plan_message BEFORE INSERT ON message_parts BEGIN SELECT RAISE(ABORT, 'injected Plan history failure'); END;")
+        }
+        let view = ThreadDetailViewModel(conversationID: conversation.id, center: f.center)
+        await view.load(); await view.acceptLatestPlan(as: .goal)
+        #expect(view.latestPlan?.status == .ready && view.latestPlan?.awaitsConfirmation == true)
+        #expect(view.actionError != nil && view.activeGoal == nil)
+        #expect(try await f.environment.intelligenceStore.goals(conversationID: conversation.id).isEmpty)
+        #expect(try await f.environment.runStore.runs(conversationID: conversation.id).isEmpty)
+        #expect(f.requests.all.isEmpty)
+    }
+
+    @Test("Accepted Plan is one user history message and a new pending plan does not rewrite the old card after reload")
+    func acceptedPlanHistoryIsSeparateFromCurrentPlan() async throws {
+        let f = try await fixture()
+        let conversation = try await f.center.createConversation(title: "Plan history fixture")
+        let source = PlanDraft(conversationID: conversation.id, status: .ready,
+            title: "First confirmed deliverable", summary: "The first decision stays in history",
+            sections: [.init(title: "Write the report", body: "Deliver report.csv and verify its rows", order: 0)],
+            acceptanceCriteria: [.init(text: "Correct table", verification: "Read back the rows")])
+        try await f.environment.intelligenceStore.savePlanRevision(source)
+        let view = ThreadDetailViewModel(conversationID: conversation.id, center: f.center)
+        await view.load(); await view.acceptLatestPlan(as: .normal)
+        let runID = try #require(view.selectedRunID)
+        _ = try await waitForRequest(f, after: 0)
+        let accepted = try #require(view.latestPlan)
+        #expect(accepted.status == .accepted && !accepted.awaitsConfirmation)
+        let messages = try await f.environment.conversationStore.messages(conversationID: conversation.id)
+        #expect(messages.filter { $0.role == "user" }.count == 1)
+        let history = try #require(messages.first.flatMap(PlanConfirmationSnapshot.from(message:)))
+        #expect(history.plan.title == source.title && history.execution == .normal)
+        try #require(f.requests.complete(at: 0)); _ = try await waitForEnd(f, runID: runID)
+        try await f.environment.intelligenceStore.savePlanRevision(accepted.revised(status: .ready, title: "Later pending plan"))
+        let reopened = ThreadDetailViewModel(conversationID: conversation.id, center: f.center)
+        await reopened.load()
+        #expect(reopened.latestPlan?.title == "Later pending plan" && reopened.latestPlan?.awaitsConfirmation == true)
+        let reopenedMessages = try await f.environment.conversationStore.messages(conversationID: conversation.id)
+        #expect(reopenedMessages.filter { $0.role == "user" }.count == 1)
+        #expect(reopenedMessages.compactMap(PlanConfirmationSnapshot.from(message:)).first == history)
+        #expect(f.requests.all.count == 1)
+    }
+
+
+    @Test("Plan confirmation captures synthetic ingress secrets before saving and launches the exact safe prompt")
+    func planConfirmationUsesCanonicalSecretIngress() async throws {
+        let f = try await fixture()
+        let conversation = try await f.center.createConversation(title: "Safe Plan confirmation fixture")
+        // Synthetic values from SecretIngressScannerTests, never real keys.
+        let source = PlanDraft(conversationID: conversation.id, status: .ready,
+            title: "Use the task credentials safely", summary: "Keep credentials in secure storage",
+            sections: [.init(title: "Prepare", body: "password: \"correct horse battery staple\"\nAPI_KEY=sk-live-secret", order: 0)],
+            acceptanceCriteria: [.init(text: "Safe result", verification: "Inspect the saved artifact")])
+        try await f.environment.intelligenceStore.savePlanRevision(source)
+        await #expect(throws: (any Error).self) {
+            _ = try await f.environment.intelligenceStore.confirmPlan(
+                source, conversationID: conversation.id, execution: .goal,
+                captureSecrets: { _ in throw FloeError.validationFailed("injected vault capture failure") })
+        }
+        #expect(try await f.environment.intelligenceStore.latestPlan(conversationID: conversation.id)?.status == .ready)
+        #expect(try await f.environment.intelligenceStore.goals(conversationID: conversation.id).isEmpty)
+        #expect(try await f.environment.conversationStore.messages(conversationID: conversation.id).isEmpty)
+        func clearFixtureCredentials() async {
+            for record in (try? await f.environment.credentialStore.records(owner: .conversation(conversation.id))) ?? [] {
+                try? await f.environment.credentialVault.delete(.init(id: record.id))
+            }
+        }
+        do {
+            let view = ThreadDetailViewModel(conversationID: conversation.id, center: f.center)
+            await view.load(); await view.acceptLatestPlan(as: .normal)
+            #expect(view.actionError == nil)
+            let runID = try #require(view.selectedRunID)
+            _ = try await waitForRequest(f, after: 0)
+            let history = try await f.environment.conversationStore.messages(conversationID: conversation.id)
+            let message = try #require(history.first { PlanConfirmationSnapshot.from(message: $0) != nil })
+            let snapshot = try #require(PlanConfirmationSnapshot.from(message: message))
+            let run = try #require(try await f.environment.runStore.run(id: runID))
+            let scanned = SecretIngressScanner.scan(snapshot.executionPrompt)
+            #expect(scanned.captures.isEmpty && scanned.sanitizedText == snapshot.executionPrompt)
+            #expect(snapshot.executionPrompt == message.content && message.content == run.goal)
+            #expect(snapshot.executionPrompt == GoalFromPlanFactory.implementationPrompt(from: snapshot.plan)
+                .trimmingCharacters(in: .whitespacesAndNewlines))
+            let frozen = try snapshot.encoded()
+            for synthetic in ["correct horse battery staple", "sk-live-secret"] {
+                #expect(!message.content.contains(synthetic) && !frozen.contains(synthetic))
+            }
+            let credentials = try await f.environment.credentialStore.records(owner: .conversation(conversation.id))
+            #expect(credentials.count == 2)
+            #expect(credentials.allSatisfy { snapshot.executionPrompt.contains(CapturedSecret.placeholder(for: $0.id)) })
+            let repeated = try await f.center.confirmPlan(source, in: conversation.id, execution: .normal)
+            #expect(repeated.snapshot == snapshot && !repeated.wasCreated)
+            #expect(try await f.environment.credentialStore.records(owner: .conversation(conversation.id)).count == 2)
+            try #require(f.requests.complete(at: 0)); _ = try await waitForEnd(f, runID: runID)
+        } catch {
+            await clearFixtureCredentials()
+            throw error
+        }
+        await clearFixtureCredentials()
+    }
+
+    @Test("An injected run-insert failure leaves one confirmed card whose explicit retry uses the original planned run")
+    func confirmedPlanFirstLaunchCanBeRetriedAfterRunInsertFailure() async throws {
+        let f = try await fixture()
+        let conversation = try await f.center.createConversation(title: "Plan first-launch recovery fixture")
+        let source = PlanDraft(conversationID: conversation.id, status: .ready,
+            title: "Deliver once", summary: "Keep the original accepted decision",
+            sections: [.init(title: "Write", body: "Produce report.csv then verify its rows", order: 0)],
+            acceptanceCriteria: [.init(text: "Correct output", verification: "Read back the rows")])
+        try await f.environment.intelligenceStore.savePlanRevision(source)
+        try await f.environment.database.writer { db in
+            try db.execute(sql: "CREATE TRIGGER reject_plan_run BEFORE INSERT ON runs BEGIN SELECT RAISE(ABORT, 'injected Plan first-run failure'); END;")
+        }
+        let view = ThreadDetailViewModel(conversationID: conversation.id, center: f.center)
+        await view.load(); await view.acceptLatestPlan(as: .normal)
+        #expect(view.actionError != nil && view.latestPlan?.status == .accepted)
+        #expect(try await f.environment.runStore.runs(conversationID: conversation.id).isEmpty)
+        #expect(f.requests.all.isEmpty)
+        let staged = try await f.environment.conversationStore.messages(conversationID: conversation.id)
+        #expect(staged.filter { $0.role == "user" }.count == 1)
+        let message = try #require(staged.first)
+        let snapshot = try #require(PlanConfirmationSnapshot.from(message: message))
+        #expect(message.runID == nil && view.canRetryConfirmedPlan(message))
+        let reopened = ThreadDetailViewModel(conversationID: conversation.id, center: f.center)
+        await reopened.load()
+        #expect(reopened.canRetryConfirmedPlan(message) && f.requests.all.isEmpty,
+            "Loading history must offer recovery without launching automatically")
+        await #expect(throws: FloeError.unauthorized) {
+            _ = try await f.environment.intelligenceStore.planConfirmationForLaunch(snapshot, conversationID: UUID())
+        }
+        try await f.environment.database.writer { db in try db.execute(sql: "DROP TRIGGER reject_plan_run") }
+        await reopened.retryConfirmedPlan(snapshot)
+        #expect(reopened.actionError == nil && reopened.selectedRunID == snapshot.executionRunID)
+        _ = try await waitForRequest(f, after: 0)
+        let runs = try await f.environment.runStore.runs(conversationID: conversation.id)
+        #expect(runs.count == 1 && runs[0].id == snapshot.executionRunID)
+        let consumed = try await f.environment.conversationStore.messages(conversationID: conversation.id)
+        let retained = try #require(consumed.first { $0.id == snapshot.messageID })
+        #expect(consumed.filter { $0.role == "user" }.count == 1 && retained.runID == snapshot.executionRunID)
+        #expect(PlanConfirmationSnapshot.from(message: retained) == snapshot && retained.parts == message.parts)
+        #expect(try await f.environment.intelligenceStore.planRevisions(conversationID: conversation.id).count == 2)
+        #expect(!reopened.canRetryConfirmedPlan(retained))
+        try #require(f.requests.complete(at: 0)); _ = try await waitForEnd(f, runID: snapshot.executionRunID)
+        await reopened.retryConfirmedPlan(snapshot)
+        #expect(try await f.environment.runStore.runs(conversationID: conversation.id).count == 1)
+        #expect(f.requests.all.count == 1, "An existing run must use ordinary Continue, not start another run")
+    }
+
+    @Test("Closing a pending Plan card is revision-scoped presentation only and leaves the plan available")
+    func closingPlanCardDoesNotRejectOrMutateItsPlan() {
+        let conversationID = UUID()
+        let plan = PlanDraft(conversationID: conversationID, status: .ready,
+            title: "Pending plan", summary: "Keep this context",
+            sections: [.init(title: "Write", body: "Produce and verify the result", order: 0)],
+            acceptanceCriteria: [.init(text: "Correct", verification: "Read the result")])
+        let original = plan
+        var hidden: Set<ThreadPlanConfirmationPresentationKey> = []
+        hidden.insert(.init(plan))
+        #expect(hidden.contains(.init(plan)))
+        #expect(plan == original && plan.status == .ready && plan.isDecisionComplete)
+        #expect(plan.awaitsConfirmation) // presentation never changes business state
+        #expect(!hidden.contains(.init(plan.revised(status: .ready))))
+        var otherTask = plan; otherTask.conversationID = UUID()
+        #expect(!hidden.contains(.init(otherTask)))
+        var otherPlan = plan; otherPlan.id = UUID()
+        #expect(!hidden.contains(.init(otherPlan)))
+    }
+
 }
 #endif

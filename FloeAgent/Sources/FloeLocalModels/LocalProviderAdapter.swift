@@ -1851,7 +1851,8 @@ public struct LocalProviderAdapter: ProviderAdapter {
                             conversation: promptBuild.appleConversation,
                             toolHistory: toolHistory,
                             forceToolCall: promptBuild.requiresToolCall,
-                            maxTokens: min(max(64, request.model.limits.configuredMaxOutputTokens ?? 512), 2_048)
+                            maxTokens: min(max(64, request.model.limits.configuredMaxOutputTokens ?? 512), 2_048),
+                            onToolSchemasPrepared: request.onToolSchemasPrepared
                         )
                     } else {
                         // Streamed on-device path. The framer withholds any
@@ -1871,6 +1872,9 @@ public struct LocalProviderAdapter: ProviderAdapter {
                         }
                         displayBuffer = buffer
                         watchdogState.notePhase("generating")
+                        try Task.checkCancellation()
+                        await request.onToolSchemasPrepared?(promptBuild.selectedTools.map(\.name))
+                        try Task.checkCancellation()
                         completion = try await runtime.streamMeasured(
                             modelID: streamedModelID,
                             instructions: promptBuild.systemInstructions,
@@ -2062,6 +2066,11 @@ public struct LocalProviderAdapter: ProviderAdapter {
                                 )
                             } ?? false) {
                             watchdogState.notePhase("toolInvocationRepair")
+                            try Task.checkCancellation()
+                            let repairNames = hasMalformedToolBatch
+                                ? promptBuild.selectedTools.map(\.name) : repairTool.map { [$0.name] } ?? []
+                            await request.onToolSchemasPrepared?(repairNames)
+                            try Task.checkCancellation()
                             let repair = try await runtime.completeMeasured(
                                 modelID: request.model.remoteModelID,
                                 instructions: repairInstructions,

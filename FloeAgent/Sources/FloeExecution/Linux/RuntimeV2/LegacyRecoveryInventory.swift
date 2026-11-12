@@ -136,8 +136,9 @@ private extension LegacyRecoveryInventory {
             // Only the App-authorized root may have fixed OS ancestors resolved
             // (for example /var -> /private/var). Foundation URL presentation is
             // not proof of POSIX canonicality. The existing root is realpath'd,
-            // then opened component-by-component with O_NOFOLLOW. No sidecar or
-            // descendant path is ever sent through realpath.
+            // then opened as the trusted anchor with O_NOFOLLOW. Reading this
+            // App-owned directory does not require read access to its system
+            // ancestors. No descendant path is ever sent through realpath.
             let opened = LegacyRecoveryInventory.openCanonicalDirectory(request.legacyRoot.path)
             let rootFD = opened.descriptor
             guard rootFD >= 0 else {
@@ -538,18 +539,47 @@ private extension LegacyRecoveryInventory {
               canonical.utf8.count <= 4096 else { return failure(.posixCanonicalization, EINVAL) }
         let parts = canonical.split(separator: "/").map(String.init)
         guard parts.allSatisfy(safeComponent) else { return failure(.inputValidation, EINVAL) }
-        var descriptor = open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        // This is ONLY the service-resolved, existing App root. Opening every
+        // system ancestor for reading incorrectly requires permission to list
+        // containers outside the App sandbox. Keep untrusted descendants on
+        // the separate descriptor-relative, no-follow path below.
+        var expected = stat()
+        guard canonical.withCString({ lstat($0, &expected) }) == 0 else {
+            let code = errno
+            return failure(.rootIdentity, code)
+        }
+        let descriptor = canonical.withCString {
+            open($0, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        }
         guard descriptor >= 0 else {
             let code = errno
-            return failure(.filesystemRootOpen, code)
+            return failure(.componentOpen, code, parts.isEmpty ? nil : parts.count - 1)
         }
-        for (index, part) in parts.enumerated() {
-            let next = part.withCString {
-                openat(descriptor, $0, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-            }
+        var observed = stat()
+        guard fstat(descriptor, &observed) == 0 else {
             let code = errno; close(descriptor)
-            guard next >= 0 else { return failure(.componentOpen, code, index) }
-            descriptor = next
+            return failure(.rootIdentity, code)
+        }
+        guard observed.st_dev == expected.st_dev, observed.st_ino == expected.st_ino,
+              observed.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR) else {
+            close(descriptor)
+            return failure(.rootIdentity, EAGAIN)
+        }
+        // Detect an ancestor being replaced by a symlink during the open as
+        // well as an ABA replacement of the final root. The opened descriptor
+        // remains the anchor throughout the scan; later root changes are also
+        // rejected by the existing before/after identity comparison.
+        guard let confirmedPath = canonical.withCString({ realpath($0, nil) }) else {
+            let code = errno; close(descriptor)
+            return failure(.posixCanonicalization, code)
+        }
+        defer { free(confirmedPath) }
+        var confirmed = stat()
+        guard String(validatingUTF8: confirmedPath) == canonical,
+              canonical.withCString({ lstat($0, &confirmed) }) == 0,
+              confirmed.st_dev == observed.st_dev, confirmed.st_ino == observed.st_ino else {
+            close(descriptor)
+            return failure(.rootIdentity, EAGAIN)
         }
         return OpenedRoot(descriptor: descriptor, diagnostic: nil)
     }

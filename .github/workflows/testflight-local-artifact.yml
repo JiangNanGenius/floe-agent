@@ -22,7 +22,7 @@ concurrency:
 jobs:
   upload:
     runs-on: macos-26
-    timeout-minutes: 40
+    timeout-minutes: 50
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
       GH_TOKEN: ${{ github.token }}
@@ -343,6 +343,13 @@ jobs:
         import json, os, pathlib, subprocess, sys, time, urllib.parse
         sys.path.insert(0,'scripts')
         from prepare_testflight import api, rows, prepare
+        last_token_refresh=0
+        def authenticated_api(method,path,body=None):
+            global last_token_refresh
+            if time.monotonic()-last_token_refresh>=300:
+                os.environ['ASC_TOKEN']=subprocess.check_output([sys.executable,'scripts/generate_asc_jwt.py'],text=True).strip()
+                last_token_refresh=time.monotonic()
+            return api(method,path,body)
         version=os.environ['APP_VERSION']; number=os.environ['APP_BUILD']
         series='.'.join(version.split('.')[:2])
         notes=json.loads(pathlib.Path('../docs/releases/testflight/TESTFLIGHT_'+series+'_WHATS_NEW_BUILD_'+number+'.json').read_text())
@@ -357,7 +364,7 @@ jobs:
                 print('Apple processing:',state,flush=True)
                 if state in ('FAILED','INVALID'): raise RuntimeError('Apple rejected build')
                 if state=='VALID':
-                    report=prepare(build['id'],'org.floeagent.ios',version,number,notes)
+                    report=prepare(build['id'],'org.floeagent.ios',version,number,notes,call=authenticated_api)
                     details=api('GET','/v1/builds/'+build['id']+'/buildBetaDetail')['data']['attributes']
                     report['internalBuildState']=details.get('internalBuildState')
                     report['expired']=build['attributes'].get('expired')

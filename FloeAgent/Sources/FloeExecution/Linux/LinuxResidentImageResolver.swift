@@ -30,6 +30,22 @@ public struct LinuxResidentImageCandidate: Codable, Equatable, Sendable {
     }
 }
 
+/// Compile-time catalog metadata used ONLY to plan an exact trusted component repair.
+/// It never represents installed/verified bytes and cannot return execution success.
+public struct LinuxResidentImageRepairSource: Sendable {
+    public let imageID: String
+    public let compatibleOrigins: [LinuxGuestCompatibleDiskOrigin]
+    public init(imageID: String, compatibleOrigins: [LinuxGuestCompatibleDiskOrigin]) {
+        self.imageID = imageID; self.compatibleOrigins = compatibleOrigins
+    }
+    fileprivate func matches(_ origin: LinuxGuestRuntimeDiskOrigin) -> Bool {
+        compatibleOrigins.contains {
+            $0.imageID == origin.imageID && $0.artifactBytes == origin.artifactBytes
+                && $0.artifactSHA512.lowercased() == origin.artifactSHA512.lowercased()
+        }
+    }
+}
+
 public enum LinuxResidentImageResolutionError: Error, Equatable, Sendable, LocalizedError {
     case storageUnavailable
     case missingDisk
@@ -65,7 +81,7 @@ public enum LinuxResidentImageResolutionError: Error, Equatable, Sendable, Local
         case .invalidOrigin, .unknownOrigin, .originMismatch, .ambiguousOrigin:
             return zh ? "无法确认当前运行环境的来源，已有数据已保留。" : "The current runtime's origin could not be confirmed. Existing data was retained."
         case .sourceUnavailable:
-            return zh ? "当前运行环境的原镜像不可用，请重新下载原镜像。" : "The current runtime's original image is unavailable. Download that image again."
+            return zh ? "当前环境需要的运行组件不可用，请重新下载。" : "A verified runtime component for this environment is unavailable. Download it again."
         }
     }
 }
@@ -74,17 +90,21 @@ public enum LinuxResidentImageResolutionError: Error, Equatable, Sendable, Local
 /// No files, environment bindings, pins or rebuild flags are changed here.
 public struct LinuxResidentImageResolver: Sendable {
     public typealias Lookup = @Sendable (String) async -> LinuxResidentImageCandidate?
+    public typealias RepairLookup = @Sendable (String) async -> LinuxResidentImageRepairSource?
     private let root: URL
     private let defaultImageID: String
     private let trustedImageIDs: [String]
     private let lookup: Lookup
+    private let repairLookup: RepairLookup
 
     public init(residentRoot: URL, defaultImageID: String, trustedImageIDs: [String],
+                repairLookup: @escaping RepairLookup = { _ in nil },
                 lookup: @escaping Lookup) {
         self.root = residentRoot.resolvingSymlinksInPath().standardizedFileURL
         self.defaultImageID = defaultImageID
         self.trustedImageIDs = trustedImageIDs
         self.lookup = lookup
+        self.repairLookup = repairLookup
     }
 
     public func resolve(requireExistingDisk: Bool = false) async throws -> String {
@@ -166,8 +186,21 @@ public struct LinuxResidentImageResolver: Sendable {
         }
         try Task.checkCancellation()
         guard matching.count <= 1 else { throw LinuxResidentImageResolutionError.ambiguousOrigin }
-        guard let selected = matching.first else { throw LinuxResidentImageResolutionError.unknownOrigin }
-        return selected
+        if let selected = matching.first { return selected }
+        // A migrated/backup-restored view may be absent even though the pinned catalog
+        // explicitly declares this exact predecessor. Metadata can select only the
+        // repair download ID; it NEVER makes the current disk runnable.
+        var repairs: [String] = []
+        for id in trustedImageIDs {
+            try Task.checkCancellation()
+            if let metadata = await repairLookup(id), metadata.imageID == id, metadata.matches(origin) {
+                repairs.append(id)
+            }
+        }
+        try Task.checkCancellation()
+        guard repairs.count <= 1 else { throw LinuxResidentImageResolutionError.ambiguousOrigin }
+        if let repair = repairs.first { throw LinuxResidentImageResolutionError.sourceUnavailable(imageID: repair) }
+        throw LinuxResidentImageResolutionError.unknownOrigin
     }
 
     private func attributes(at url: URL) throws -> [FileAttributeKey: Any]? {

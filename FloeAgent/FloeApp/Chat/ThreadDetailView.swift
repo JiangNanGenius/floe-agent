@@ -57,6 +57,18 @@ struct ThreadComposerInput: Identifiable {
     let attachments: [AttachmentRef]
 }
 
+/// View-only dismissal identity. A new revision or another conversation is
+/// a different card; this value has no plan/Goal persistence or authority.
+struct ThreadPlanConfirmationPresentationKey: Hashable {
+    let conversationID: UUID
+    let planID: UUID
+    let revision: Int
+
+    init(_ plan: PlanDraft) {
+        conversationID = plan.conversationID; planID = plan.id; revision = plan.revision
+    }
+}
+
 /// The canonical thread: messages + run events for one conversation.
 struct ThreadDetailView: View {
     /// Identity of a delegated child opened from a delegate card.
@@ -116,6 +128,7 @@ struct ThreadDetailView: View {
     @State private var answerForNotes: String?
     @State private var exporting = false
     @State private var showsChecklist = false
+    @State private var hiddenPlanConfirmations: Set<ThreadPlanConfirmationPresentationKey> = []
     @State private var consumedInputID: UUID?
     @State private var refreshingMediaJobs = false
     /// The delegated child opened from a delegate card's "View" action. The
@@ -138,6 +151,13 @@ struct ThreadDetailView: View {
         if let onSaveToNotes { return onSaveToNotes }
         guard !viewModel.isTemporary, !documentAssistant else { return nil }
         return { answerForNotes = $0 }
+    }
+
+    private var presentedPendingPlan: PlanDraft? {
+        guard let plan = viewModel.latestPlan, plan.awaitsConfirmation,
+              plan.conversationID == viewModel.conversationID,
+              !hiddenPlanConfirmations.contains(.init(plan)) else { return nil }
+        return plan
     }
 
     init(conversationID: UUID, center: ConversationCenter, composerInput: ThreadComposerInput? = nil, embedded: Bool = false, documentAssistant: Bool = false, ownsNavigationTitle: Bool = true, onSaveToNotes: ((String) -> Void)? = nil, onInputConsumed: @escaping (UUID) -> Void = { _ in }) {
@@ -181,7 +201,7 @@ struct ThreadDetailView: View {
                 if let checklist = viewModel.taskChecklist {
                     checklistStatus(checklist)
                 }
-                if viewModel.latestPlan != nil {
+                if presentedPendingPlan != nil {
                     intelligenceStatus
                 }
                 Divider()
@@ -583,12 +603,28 @@ struct ThreadDetailView: View {
 
     private var intelligenceStatus: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if let plan = viewModel.latestPlan {
+            if let plan = presentedPendingPlan {
                 HStack(alignment: .top) {
                     Label("plan.title", systemImage: "list.bullet.clipboard")
                         .font(.headline)
                     Spacer()
-                    Text(plan.status.rawValue).font(.caption).foregroundStyle(.secondary)
+                    Text(plan.status == .ready
+                        ? IDELanguageRunText.t("等待确认", "Awaiting confirmation")
+                        : IDELanguageRunText.t("待完善", "In preparation"))
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button {
+                        // Close presentation only. The stored draft and its
+                        // prompt context remain available to later messages.
+                        hiddenPlanConfirmations.insert(.init(plan))
+                    } label: {
+                        Image(systemName: "xmark").font(.body.weight(.medium))
+                            .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel(IDELanguageRunText.t("关闭计划卡片", "Close plan card"))
+                    .accessibilityIdentifier("thread.plan.close")
                 }
                 Text(plan.title).font(.subheadline).lineLimit(2)
                 if let recommendation = plan.executionRecommendation {
@@ -893,7 +929,9 @@ struct ThreadDetailView: View {
                     ranges: viewModel.searchHighlightRanges(
                         for: message.id, query: search.query))
             } else {
-                MessageBubble(message: message, onOpenAttachment: { item in
+                MessageBubble(message: message, onRetryConfirmedPlan: viewModel.canRetryConfirmedPlan(message) ? { snapshot in
+                    Task { await viewModel.retryConfirmedPlan(snapshot) }
+                } : nil, onOpenAttachment: { item in
                     selectedAttachment = ChatAttachmentOpenRequest(conversationID: message.conversationID,
                         messageID: message.id, attachmentID: item.attachmentID)
                 })
@@ -2145,6 +2183,7 @@ private struct MessageBubble: View {
     var displayedText: String? = nil
     var onSaveToNotes: ((String) -> Void)? = nil
     var onContinueInteractive: ((String) -> Void)? = nil
+    var onRetryConfirmedPlan: ((PlanConfirmationSnapshot) -> Void)? = nil
     var onOpenAttachment: ((AttachmentChipItem) -> Void)? = nil
     @EnvironmentObject private var router: AppRouter
     /// Explicit design entrance: one chosen attachment of this message as a typed
@@ -2172,7 +2211,10 @@ private struct MessageBubble: View {
 
     var body: some View {
         Group {
-            if message.role == "user" {
+            if let confirmation = PlanConfirmationSnapshot.from(message: message) {
+                ConfirmedPlanMessageCard(snapshot: confirmation,
+                    onRetryStart: onRetryConfirmedPlan.map { action in { action(confirmation) } })
+            } else if message.role == "user" {
                 UserMessageBubble(text: displayedText ?? message.content, attachments: attachmentItems,
                     onOpenAttachment: onOpenAttachment, onDesignAttachment: openAttachmentDesign)
             } else if InteractiveAnswerView.contains(message, text: displayedText) {
@@ -2203,6 +2245,73 @@ private struct MessageBubble: View {
         }
     }
 }
+/// Historical user decision. All content comes from THIS message's frozen
+/// snapshot; opening the card never fetches the current Plan or Goal.
+private struct ConfirmedPlanMessageCard: View {
+    let snapshot: PlanConfirmationSnapshot
+    var onRetryStart: (() -> Void)? = nil
+    @State private var expanded = false
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 0) {
+            Spacer(minLength: 28)
+            VStack(alignment: .leading, spacing: 10) {
+                DisclosureGroup(isExpanded: $expanded) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        if !snapshot.plan.summary.isEmpty { Text(snapshot.plan.summary).foregroundStyle(.secondary) }
+                        ForEach(snapshot.plan.sections.sorted { $0.order < $1.order }) { section in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(section.title).font(.subheadline.weight(.semibold))
+                                Text(section.body).font(.subheadline)
+                            }
+                        }
+                        if !snapshot.plan.acceptanceCriteria.isEmpty {
+                            Text(IDELanguageRunText.t("验收", "Acceptance")).font(.subheadline.weight(.semibold))
+                            ForEach(snapshot.plan.acceptanceCriteria) { criterion in
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(criterion.text).font(.subheadline)
+                                    Text(criterion.verification).font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                        ForEach(snapshot.plan.assumptions) { assumption in
+                            Label(assumption.text, systemImage: "checkmark.circle").font(.caption)
+                        }
+                        ForEach(snapshot.plan.risks) { risk in
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(risk.text).font(.caption.weight(.medium))
+                                if let mitigation = risk.mitigation { Text(mitigation).font(.caption).foregroundStyle(.secondary) }
+                            }
+                        }
+                    }
+                    .padding(.top, 8)
+                    .textSelection(.enabled)
+                } label: {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Label(snapshot.execution == .goal
+                            ? IDELanguageRunText.t("已确认计划 · 转为目标", "Plan confirmed · Goal")
+                            : IDELanguageRunText.t("已确认计划", "Plan confirmed"),
+                              systemImage: "checkmark.circle.fill")
+                            .font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                        Text(snapshot.plan.title).font(.body.weight(.semibold)).lineLimit(2)
+                    }
+                }
+                if let onRetryStart {
+                    Button(action: onRetryStart) {
+                        Label(IDELanguageRunText.t("重试启动", "Retry start"), systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(.bordered)
+                    .accessibilityIdentifier("thread.plan.retryStart")
+                }
+            }
+            .padding(12)
+            .frame(maxWidth: 680, alignment: .leading)
+            .background(FloeTheme.groupedSurface, in: RoundedRectangle(cornerRadius: 16))
+            .accessibilityIdentifier("thread.plan.confirmedHistory")
+        }
+    }
+}
+
 /// The user's own text with every find term highlighted. Mirrors the normal
 /// user bubble; only the rendering path changes while find is active.
 private struct ThreadSearchHighlightedUserMessage: View {

@@ -500,7 +500,8 @@ enum LinuxGuestBackendAssembly {
         LinuxResidentImageResolver(
             residentRoot: artifactRoot.appendingPathComponent("LinuxGuest/ResidentARM64", isDirectory: true),
             defaultImageID: defaultImageID,
-            trustedImageIDs: LinuxGuestImageDistributionCatalog.bundled.map(\.id)
+            trustedImageIDs: LinuxGuestImageDistributionCatalog.bundled.map(\.id),
+            repairLookup: { LinuxGuestImageDistributionCatalog.residentRepairSource(id: $0) }
         ) { id in
             guard LinuxGuestImageDistributionCatalog.entry(id: id) != nil else { return nil }
             let legacy = await imageService.status(id: id)

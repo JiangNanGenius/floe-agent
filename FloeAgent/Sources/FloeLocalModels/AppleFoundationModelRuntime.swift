@@ -160,7 +160,8 @@ public actor AppleFoundationModelRuntime {
         conversation: [AppleFoundationConversationMessage] = [],
         toolHistory: [AppleFoundationToolExchange] = [],
         forceToolCall: Bool = false,
-        maxTokens: Int
+        maxTokens: Int,
+        onToolSchemasPrepared: (@Sendable ([String]) async -> Void)? = nil
     ) async throws -> LocalRuntimeCompletion {
 #if compiler(>=6.4) && canImport(FoundationModels)
         guard #available(iOS 27.0, macOS 27.0, *) else {
@@ -197,7 +198,7 @@ public actor AppleFoundationModelRuntime {
             throw FloeError.invalidConfiguration(FloeL10n.l("localmodels.apple_foundation_model_runtime.the_selected_tools_cannot_currently_be")
             )
         }
-        let callableNames = nativeDescriptors.map(\.name).sorted().joined(separator: ", ")
+        let callableNames = nativeTools.map { $0.name }.sorted().joined(separator: ", ")
         let localizedInstructions = instructions
             + "\nRespond using the user's language when it is supported. Current locale: \(Locale.current.identifier)."
             + (callableNames.isEmpty ? "" : "\nCallable native tools: \(callableNames). Use the native tool interface when the request needs current or external information; never claim those tools are unavailable.")
@@ -314,6 +315,9 @@ public actor AppleFoundationModelRuntime {
         }
         do {
             FloeLogger(category: .providers).debug("appleFoundationStreamStarted trace=\(traceID)")
+            try Task.checkCancellation()
+            await onToolSchemasPrepared?(nativeTools.map { $0.name })
+            try Task.checkCancellation()
             for try await snapshot in session.streamResponse(
                 to: request,
                 options: options,

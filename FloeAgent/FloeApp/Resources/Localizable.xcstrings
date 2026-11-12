@@ -142677,6 +142677,56 @@
         }
       }
     },
+    "execution.runtime_rebuild.phase.stopping": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Waiting for Linux work to stop…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在等待 Linux 任务停止…"
+          }
+        }
+      }
+    },
+
+    "execution.runtime_rebuild.phase.creating": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Creating the new environment…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在创建新环境…"
+          }
+        }
+      }
+    },
+
+    "execution.runtime_rebuild.phase.retaining": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retaining the old environment and its data…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在保留旧环境及资料…"
+          }
+        }
+      }
+    },
     "execution.runtime_rebuild.progress": {
       "localizations": {
         "en": {

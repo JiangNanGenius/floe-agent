@@ -64,6 +64,10 @@ struct ExecutionEnvironmentView: View {
     @State private var sharedRuntimeRunning = false
     @State private var sharedRunningIDs: Set<String> = []
 
+    private var runtimeRecoveryRunning: Bool {
+        packageJobs.running.contains(FloePlatformServices.residentRecoveryJobID)
+    }
+
     private enum RuntimeRecovery: Equatable {
         case restore, redownload, stopShared
         var titleKey: String {
@@ -222,6 +226,9 @@ struct ExecutionEnvironmentView: View {
                 stopEnvironmentID = nil
             }
         } message: { Text(stopImpact) }
+        .onChange(of: runtimeRecoveryRunning) { wasRunning, isRunning in
+            if wasRunning && !isRunning { Task { await refreshLinux(force: true) } }
+        }
         .confirmationDialog(
             String(localized: String.LocalizationValue(runtimeRecovery?.titleKey ?? "execution.runtime_reset.title")),
             isPresented: Binding(get: { runtimeRecovery != nil }, set: { if !$0 { runtimeRecovery = nil } }),
@@ -464,7 +471,7 @@ struct ExecutionEnvironmentView: View {
             Label(runtimeRecoveryNotice, systemImage: "checkmark.circle")
                 .font(.footnote).foregroundStyle(.secondary)
         }
-        if let linuxError {
+        if let linuxError, !runtimeRecoveryRunning {
             Label(linuxError, systemImage: "exclamationmark.triangle")
                 .font(.caption)
                 .foregroundStyle(FloeTheme.destructive)
@@ -552,7 +559,7 @@ struct ExecutionEnvironmentView: View {
         // reports its own real state; environment reports below are
         // independent of image storage.
         let imageID: String?
-        do { imageID = try await FloePlatformServices.shared.activeLinuxImageID() }
+        do { imageID = try await FloePlatformServices.shared.activeLinuxImageID(); linuxError = nil }
         catch { imageID = nil; linuxError = error.localizedDescription }
         if linuxImageModel == nil {
             linuxImageModel = LinuxImageInstallModel()

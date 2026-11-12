@@ -43,14 +43,15 @@ struct RunOutputReceiptContext: Sendable, Hashable {
 /// has already been identity- and digest-verified before this decision runs.
 enum RunOutputPreviewRoute: Equatable {
     case engineering
+    case text
     case quickLook
 }
 
 enum RunOutputPreviewRouting {
     static func route(for receipt: RunOutputFile) -> RunOutputPreviewRoute {
-        guard let kind = EngineeringPreviewKind.identify(receipt.displayName),
-              kind != .unsupported else { return .quickLook }
-        return .engineering
+        if let kind = EngineeringPreviewKind.identify(receipt.displayName), kind != .unsupported { return .engineering }
+        if RunOutputTextPreviewPolicy.supports(name: receipt.displayName, mimeType: receipt.mimeType) { return .text }
+        return .quickLook
     }
 }
 
@@ -139,11 +140,12 @@ struct RunOutputFileView: View {
 
     private enum PendingAction {
         case preview
+        case systemPreview
         case share
     }
 
     private struct Presentation: Identifiable {
-        enum Kind { case preview, share, engineering }
+        enum Kind { case preview, share, engineering, text }
         let id = UUID()
         let url: URL
         let kind: Kind
@@ -204,6 +206,12 @@ struct RunOutputFileView: View {
                             }
                         }
                 }
+            case .text:
+                TextReaderView(source: RunOutputTextPreviewPolicy.source(receipt: receipt, context: context,
+                    artifactRoot: artifactRoot),
+                    onOpenFile: { presentation = nil; activate(.systemPreview) },
+                    onShareFile: { presentation = nil; activate(.share) })
+                    .id(item.id)
             case .share:
                 RunOutputShareSheet(url: item.url)
             case .engineering:
@@ -335,10 +343,15 @@ struct RunOutputFileView: View {
     private func present(_ action: PendingAction, url: URL) {
         switch action {
         case .preview:
-            presentation = Presentation(
-                url: url,
-                kind: RunOutputPreviewRouting.route(for: receipt) == .engineering
-                    ? .engineering : .preview)
+            let kind: Presentation.Kind
+            switch RunOutputPreviewRouting.route(for: receipt) {
+            case .engineering: kind = .engineering
+            case .text: kind = .text
+            case .quickLook: kind = .preview
+            }
+            presentation = Presentation(url: url, kind: kind)
+        case .systemPreview:
+            presentation = Presentation(url: url, kind: .preview)
         case .share:
             presentation = Presentation(url: url, kind: .share)
         }

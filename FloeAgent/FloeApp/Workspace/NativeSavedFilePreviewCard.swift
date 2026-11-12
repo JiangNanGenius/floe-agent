@@ -7,6 +7,9 @@ import FloeModels
 /// comparable. This is never rendered as an all-added diff or given totals.
 struct NativeSavedFilePreviewCard: View {
     let document: WorkspaceFileChangePreview
+    let artifact: ToolArtifactReference
+    @EnvironmentObject private var environment: AppEnvironment
+    @Environment(\.chatInlineContentScope) private var scope
     let disposition: NativeFileDiffDisposition
     @State private var showingPreview = false
     var body: some View {
@@ -21,31 +24,9 @@ struct NativeSavedFilePreviewCard: View {
             .accessibilityIdentifier("fileDiff.previewSavedFile")
         }
         .sheet(isPresented: $showingPreview) {
-            NavigationStack {
-                VStack(alignment: .leading, spacing: 0) {
-                    if document.truncated {
-                        Text(NativeFileDiffCopy.t("这里只显示部分内容，保存的文件保持完整。", "This is a partial preview. The saved file is complete."))
-                            .font(.callout).foregroundStyle(.secondary).padding()
-                    }
-                    if document.text.isEmpty {
-                        ContentUnavailableView(NativeFileDiffCopy.t("空文件", "Empty file"), systemImage: "doc")
-                    } else {
-                        ScrollView([.horizontal, .vertical]) {
-                            Text(verbatim: document.text)
-                                .font(FloeTheme.Typography.evidence)
-                                .textSelection(.enabled)
-                                .fixedSize(horizontal: true, vertical: false)
-                                .padding()
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .navigationTitle((document.path as NSString).lastPathComponent)
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar { ToolbarItem(placement: .confirmationAction) {
-                    Button(NativeFileDiffCopy.t("完成", "Done")) { showingPreview = false }
-                } }
-            }
+            TextReaderView(source: SavedFileTextPreviewPolicy.source(document: document, artifact: artifact,
+                scope: scope, environment: environment))
+                .id("\(artifact.id)#\(document.sha256)")
             .presentationDetents([.large])
         }
         .accessibilityElement(children: .contain)

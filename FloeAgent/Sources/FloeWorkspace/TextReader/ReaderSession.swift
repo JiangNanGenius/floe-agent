@@ -78,7 +78,7 @@ public actor ReaderSession {
     }
 
     /// Next/previous line-aligned window over the retained index.
-    public func window(startByte: Int64, backwards: Bool = false) throws -> ReaderWindow {
+    public func window(startByte: Int64, backwards: Bool = false, continuing: Bool = false) throws -> ReaderWindow {
         guard let source, let index else {
             throw ReaderError.sourceUnavailable("no document is open")
         }
@@ -86,6 +86,7 @@ public actor ReaderSession {
             startByte: startByte,
             index: index,
             backwards: backwards,
+            continuing: continuing,
             cancellation: .task()
         )
     }

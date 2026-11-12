@@ -84,7 +84,7 @@ struct RichArtifactView: View {
                preview.version == 1, preview.byteCount >= preview.text.utf8.count,
                RunOutputFile.isValidSHA256Hex(preview.sha256),
                preview.truncated || (preview.byteCount == preview.text.utf8.count && FloeDigest.sha256Hex(Data(preview.text.utf8)) == preview.sha256) {
-                NativeSavedFilePreviewCard(document: preview, disposition: fileDiffDisposition)
+                NativeSavedFilePreviewCard(document: preview, artifact: artifact, disposition: fileDiffDisposition)
             } else { invalidContent }
         case "text/x-diff":
             if let diff = String(data: data, encoding: .utf8) {

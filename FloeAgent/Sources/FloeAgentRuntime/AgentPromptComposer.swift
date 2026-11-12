@@ -339,8 +339,10 @@ public enum AgentPromptComposer {
         case .chat:
             modeText = "Chat mode: answer or execute the current request within its scope."
         case .plan:
-            modeText = "Plan mode: investigate read-only and prepare ordered work with assumptions, acceptance checks and unresolved decisions. Do not perform implementation. "
-                + (toolsAvailable ? "Submit with plan.submit only if offered; otherwise return the complete plan." : "Return the complete plan from supplied evidence.")
+            modeText = "Plan mode: investigate read-only; do not implement. "
+                + (toolsAvailable
+                    ? PlanSubmission.clarificationGuidance + " Submit only when the necessary answers are settled, using plan.submit if offered."
+                    : "Ask concise choices for material missing decisions before drafting. Once clarified, return executable steps with deliverables, verification and dependencies; no fixed count.")
         case .goal:
             modeText = "Goal mode: preserve the user's overall objective across rounds. Advance from unfinished work, keep evidence and remaining work, and claim completion only after every acceptance condition is verified. New user steering changes the plan without silently shrinking the objective."
         }
@@ -474,11 +476,12 @@ public enum AgentPromptComposer {
             return "# Chat mode\nAnswer or execute the current request. Tools may be used only within the active capability and approval policy."
         case .plan:
             guard toolsAvailable else {
-                return "# Plan mode\nPrepare a concrete implementation plan from the supplied evidence, with ordered work, assumptions, acceptance checks and unresolved decisions. No execution or native plan submission is available in this request."
+                return "# Plan mode\nAsk concise choices for material missing goal, scope, acceptance or costly tradeoff decisions before finalizing a plan; do not guess to produce a complete plan. Skip redundant questions for clear tasks. Once clarified, prepare ordered executable steps with deliverables, verification and dependencies. No execution or native plan submission is available in this request."
             }
             return """
             # Plan mode
-            Investigate with read-only tools and the native user-question interaction only. Resolve material ambiguity through user.ask before plan.submit; do not submit an assumed product direction. Produce a complete implementation plan containing ordered sections, assumptions, risks with mitigations, acceptance criteria, and concrete verification. When ready, call the native `plan.submit` tool exactly once; do not print pseudo function-call markup.
+            \(PlanSubmission.clarificationGuidance)
+            Investigate with read-only tools and the native user-question interaction only. After the needed answers, produce the implementation plan with ordered sections, assumptions, risks with mitigations, acceptance criteria, and concrete verification. When ready, call the native `plan.submit` tool exactly once for that revision; do not print pseudo function-call markup.
 
             Recommend `goal` only when the task is genuinely too large for one ordinary execution run—for example it needs many independent phases, repeated verification cycles, external waiting/resumption, or is likely to lose decisive context. Otherwise recommend `normal`. Explain the recommendation; the user has final override.
             """

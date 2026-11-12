@@ -512,7 +512,8 @@ final class SetupResourcePreparation: ObservableObject {
             resourcePhase = switch phase {
             case .some(.downloading): .transferring
             case .some(.checking), .some(.verifyingArchive), .some(.verifyingImage): .verifying
-            case .some(.extracting), .some(.finalizing), .some(.reconstructing): .installing
+            case .some(.extracting), .some(.finalizing), .some(.reconstructing),
+                 .some(.stoppingRuntime), .some(.creatingEnvironment), .some(.retainingEnvironment): .installing
             case .none: .transferring
             }
         case .imageRepairRequired(_, let message), .repairRequired(_, let message):

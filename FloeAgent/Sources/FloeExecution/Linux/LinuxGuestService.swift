@@ -1038,6 +1038,7 @@ public protocol LinuxGuestControlling: Sendable {
     func restoreInitialState(imageID: String,
         prepareForReset: @escaping @Sendable () async throws -> Void) async throws -> LinuxGuestInitialResetReceipt
     func rebuildPreservingData(imageID: String) async throws -> LinuxResidentRecoveryReceipt
+    func rebuildPreservingData(imageID: String, onPhase: @escaping @Sendable (LinuxGuestImageTransferPhase) -> Void) async throws -> LinuxResidentRecoveryReceipt
     func residentRecoveryReceipt() async throws -> LinuxResidentRecoveryReceipt?
     func acquireResidentRecoveryGuard() async throws -> LinuxResidentRecoveryGuard
     func preferredGuestConfiguration(environmentID: String) async -> LinuxGuestLifecycleConfig?
@@ -1207,6 +1208,9 @@ public extension LinuxGuestControlling {
     }
     func rebuildPreservingData(imageID: String) async throws -> LinuxResidentRecoveryReceipt {
         throw LinuxResidentRecoveryError.unsupported
+    }
+    func rebuildPreservingData(imageID: String, onPhase: @escaping @Sendable (LinuxGuestImageTransferPhase) -> Void) async throws -> LinuxResidentRecoveryReceipt {
+        try await rebuildPreservingData(imageID: imageID)
     }
     func residentRecoveryReceipt() async throws -> LinuxResidentRecoveryReceipt? { nil }
     func acquireResidentRecoveryGuard() async throws -> LinuxResidentRecoveryGuard { throw LinuxResidentRecoveryError.unsupported }

@@ -150,6 +150,8 @@ private final class SharedJobAttempt {
     @Published private(set) var linuxStorageStage: String?
     private var tasks: [String: Task<Void, Never>] = [:]
 
+    func isCancelling(id: String) -> Bool { sharedAttempts[id]?.cancelling == true }
+
     func start(id: String, title: String, action: FloePlatformServices.PackageAction) {
         start(id: id, title: title) { try await FloePlatformServices.shared.managePackage(id: id, action: action) }
     }

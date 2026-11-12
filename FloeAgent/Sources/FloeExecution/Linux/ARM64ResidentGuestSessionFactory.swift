@@ -95,6 +95,9 @@ public final class ARM64ResidentGuestSessionFactory: LinuxGuestSessionCreating, 
     public func rebuildPreservingData(image: LinuxGuestImage, imageDirectory: URL) async throws -> LinuxResidentRecoveryReceipt {
         try await resident.rebuildPreservingData(image: image, directory: imageDirectory)
     }
+    public func rebuildPreservingData(image: LinuxGuestImage, imageDirectory: URL, onPhase: @escaping @Sendable (LinuxGuestImageTransferPhase) -> Void) async throws -> LinuxResidentRecoveryReceipt {
+        try await resident.rebuildPreservingData(image: image, directory: imageDirectory, onPhase: onPhase)
+    }
 }
 
 /// A handle never owns the physical machine or a sibling's stream. Closing
@@ -640,7 +643,8 @@ private actor ARM64ResidentGuestOwner {
         }
     }
 
-    func rebuildPreservingData(image: LinuxGuestImage, directory: URL) async throws -> LinuxResidentRecoveryReceipt {
+    func rebuildPreservingData(image: LinuxGuestImage, directory: URL,
+        onPhase: @escaping @Sendable (LinuxGuestImageTransferPhase) -> Void = { _ in }) async throws -> LinuxResidentRecoveryReceipt {
         try await acquireLifecycle()
         defer { releaseLifecycle() }
         guard projects.isEmpty else { throw LinuxGuestError.guestBusy(environmentID: "shared") }
@@ -649,7 +653,7 @@ private actor ARM64ResidentGuestOwner {
         // The durable admission fence already exists. Other factory instances
         // cannot open the disk while this owner awaits its real worker join.
         try await stopPhysicalMachine()
-        return try transaction.replace { build in
+        return try transaction.replace(onPhase: onPhase) { build in
             _ = try LinuxGuestRuntimeImagePreparer().prepare(image: image, imageDirectory: directory,
                 environmentID: LinuxResidentDiskStorage.environmentID, writableDirectory: build)
             return LinuxResidentDiskStorage.directory(in: build)

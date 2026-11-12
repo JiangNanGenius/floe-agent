@@ -2167,43 +2167,88 @@ final class ThreadDetailViewModel: ObservableObject {
         defer { isAcceptingPlan = false }
         let selectedExecution = execution ?? latestPlan.executionRecommendation ?? .normal
         let modeSelectionAtStart = modeSelectionGeneration
-        let accepted = latestPlan.revised(
-            status: .accepted,
-            assumptions: latestPlan.assumptions.map {
-                PlanAssumption(id: $0.id, text: $0.text, isAccepted: true)
-            },
-            digest: latestPlan.digest
-        )
         do {
-            try await center.environment.intelligenceStore.savePlanRevision(accepted)
-            self.latestPlan = accepted
-            let acceptedGoal: ConversationGoal?
-            if selectedExecution == .goal {
-                var goal = try GoalFromPlanFactory.makeGoal(from: accepted)
-                goal.status = .active
-                goal.progress.startedAt = Date()
-                try await center.environment.intelligenceStore.saveGoal(goal)
-                activeGoal = goal
-                acceptedGoal = goal
-            } else { acceptedGoal = nil }
-            let prompt = GoalFromPlanFactory.implementationPrompt(from: accepted)
-            let started = try await center.startRun(
-                goal: prompt,
-                in: conversationID,
-                provider: provider,
-                model: model,
-                workspaceID: selectedProjectID,
-                executionMode: selectedExecution == .goal ? .goal : .agent,
-                expectedGoal: acceptedGoal.map { (id: $0.id, revision: $0.revision ?? 1) },
-                startOrigin: .explicitUserAction
-            )
-            if selectedExecution == .goal {
-                finishGoalComposerSetup(selection: modeSelectionAtStart)
-            }
-            locallyStoppedRunIDs.remove(started.runID)
-            selectedRunID = started.runID
+            let receipt = try await center.confirmPlan(latestPlan, in: conversationID, execution: selectedExecution)
+            self.latestPlan = receipt.snapshot.plan
+            if let goal = receipt.goal { activeGoal = goal }
+            await center.nativeConversationDidChange(conversationID)
+            try await launchConfirmedPlan(receipt, provider: provider, model: model,
+                                          modeSelectionAtStart: modeSelectionAtStart)
+        } catch {
+            let message = error.localizedDescription
+            // A failed confirmation transaction leaves the ready draft. A
+            // failed first launch keeps the same explicit retry in history.
             await load()
-        } catch { actionError = error.localizedDescription }
+            actionError = message
+        }
+    }
+
+    func canRetryConfirmedPlan(_ message: PersistedMessage) -> Bool {
+        guard !isAcceptingPlan, !isRunning, message.conversationID == conversationID,
+              message.runID == nil, let snapshot = PlanConfirmationSnapshot.from(message: message),
+              latestPlan == snapshot.plan else { return false }
+        return !runs.contains { $0.id == snapshot.executionRunID }
+    }
+
+    /// Only an explicit history-card action retries a confirmation whose run
+    /// was never inserted. Existing runs retain their ordinary Continue path.
+    func retryConfirmedPlan(_ snapshot: PlanConfirmationSnapshot) async {
+        guard snapshot.plan.conversationID == conversationID, !isAcceptingPlan, !isRunning else { return }
+        guard let (provider, model) = center.providerAndModel(modelID: selectedModelID) else {
+            actionError = FloeL10n.l("chat.thread_detail_view_model.choose_an_available_model_first_and")
+            return
+        }
+        isAcceptingPlan = true
+        defer { isAcceptingPlan = false }
+        actionError = nil
+        let modeSelectionAtStart = modeSelectionGeneration
+        do {
+            if let existing = try await center.runStore(for: conversationID).run(id: snapshot.executionRunID) {
+                guard existing.conversationID == conversationID else { throw FloeError.unauthorized }
+                selectedRunID = existing.id
+                await load()
+                return
+            }
+            let receipt = try await center.environment.intelligenceStore.planConfirmationForLaunch(
+                snapshot, conversationID: conversationID)
+            try await launchConfirmedPlan(receipt, provider: provider, model: model,
+                                          modeSelectionAtStart: modeSelectionAtStart)
+        } catch {
+            let message = error.localizedDescription
+            await load()
+            actionError = message
+        }
+    }
+
+    private func launchConfirmedPlan(
+        _ receipt: PlanConfirmationReceipt, provider: ProviderProfile, model: ModelProfile,
+        modeSelectionAtStart: Int
+    ) async throws {
+        let confirmation = receipt.snapshot
+        if let existing = try await center.runStore(for: conversationID).run(id: confirmation.executionRunID) {
+            guard existing.conversationID == conversationID else { throw FloeError.unauthorized }
+            selectedRunID = existing.id
+            await load()
+            return
+        }
+        let started = try await center.startRun(
+            goal: confirmation.executionPrompt,
+            in: conversationID,
+            provider: provider,
+            model: model,
+            workspaceID: selectedProjectID,
+            executionMode: confirmation.execution == .goal ? .goal : .agent,
+            newRunID: confirmation.executionRunID,
+            reusingUserMessageID: confirmation.messageID,
+            expectedGoal: receipt.goal.map { (id: $0.id, revision: $0.revision ?? 1) },
+            startOrigin: .explicitUserAction
+        )
+        if confirmation.execution == .goal {
+            finishGoalComposerSetup(selection: modeSelectionAtStart)
+        }
+        locallyStoppedRunIDs.remove(started.runID)
+        selectedRunID = started.runID
+        await load()
     }
 
     @discardableResult

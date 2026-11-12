@@ -1,5 +1,7 @@
 import Foundation
 import FloeCore
+import FloePersistence
+import FloeSecurity
 
 /// The execution contract selected for a conversation turn.
 public enum ConversationMode: String, Sendable, Codable, Hashable, CaseIterable {
@@ -192,6 +194,11 @@ public struct PlanDraft: Sendable, Codable, Hashable, Identifiable {
         status == .awaitingInput || assumptions.contains { !$0.isAccepted }
     }
 
+    /// Only unfinished drafts belong in the persistent confirmation area.
+    public var awaitsConfirmation: Bool {
+        status == .drafting || status == .awaitingInput || status == .ready
+    }
+
     public var isDecisionComplete: Bool {
         (status == .ready || status == .accepted)
             && !hasUnresolvedDecisions
@@ -240,6 +247,138 @@ public struct PlanDraft: Sendable, Codable, Hashable, Identifiable {
             createdAt: createdAt,
             updatedAt: now
         )
+    }
+}
+
+/// Value snapshot stored on the existing user message, never a live lookup
+/// of latestPlan. Revisions and later Goal edits cannot rewrite this card.
+public struct PlanConfirmationSnapshot: Codable, Sendable, Hashable {
+    public static let metadataKey = "floe.plan.confirmation.v1"
+    public let schemaVersion: Int
+    public let plan: PlanDraft
+    public let sourceRevision: Int
+    public let execution: PlanExecutionRecommendation
+    public let executionRunID: UUID
+    public let goalID: UUID?
+    public let executionPrompt: String
+
+    public init(plan: PlanDraft, sourceRevision: Int, execution: PlanExecutionRecommendation,
+                executionRunID: UUID, goalID: UUID?, executionPrompt: String) {
+        self.schemaVersion = 1; self.plan = plan; self.sourceRevision = sourceRevision
+        self.execution = execution; self.executionRunID = executionRunID
+        self.goalID = goalID; self.executionPrompt = executionPrompt
+    }
+
+    public static func messageID(conversationID: UUID, planID: UUID, sourceRevision: Int) -> UUID {
+        let hash = Array(FloeDigest.sha256Hex(Data(
+            "floe.plan.confirmation.v1|\(conversationID)|\(planID)|\(sourceRevision)".utf8)).prefix(32))
+        let value = String(hash[0..<8]) + "-" + String(hash[8..<12]) + "-"
+            + String(hash[12..<16]) + "-" + String(hash[16..<20]) + "-" + String(hash[20..<32])
+        return UUID(uuidString: value)!
+    }
+
+    public var messageID: UUID {
+        Self.messageID(conversationID: plan.conversationID, planID: plan.id, sourceRevision: sourceRevision)
+    }
+
+    public func encoded() throws -> String {
+        let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.sortedKeys]
+        return String(decoding: try encoder.encode(self), as: UTF8.self)
+    }
+
+    public static func decode(_ value: String) throws -> Self {
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        let result = try decoder.decode(Self.self, from: Data(value.utf8))
+        guard result.schemaVersion == 1, result.sourceRevision > 0,
+              result.sourceRevision < Int.max,
+              result.plan.revision == result.sourceRevision + 1,
+              result.plan.status == .accepted, result.plan.isDecisionComplete,
+              (result.execution == .goal) == (result.goalID != nil),
+              !result.executionPrompt.isEmpty else {
+            throw FloeError.storageCorrupted(FloeL10n.isChinese ? "已确认的计划记录无法读取，请重新打开任务。" : "The confirmed plan snapshot is invalid")
+        }
+        return result
+    }
+
+    public static func from(message: PersistedMessage) -> Self? {
+        guard message.role == "user", let part = message.parts.first(where: {
+            $0.kind == .text && $0.messageID == message.id && $0.partIndex == 0
+        }), let raw = part.metadata[metadataKey], let value = try? decode(raw),
+              value.messageID == message.id, value.plan.conversationID == message.conversationID,
+              value.executionPrompt == message.content,
+              message.runID == nil || message.runID == value.executionRunID else { return nil }
+        return value
+    }
+}
+
+public struct PlanConfirmationReceipt: Sendable {
+    public let snapshot: PlanConfirmationSnapshot
+    public let goal: ConversationGoal?
+    public let wasCreated: Bool
+}
+
+/// Uses the ordinary ingress scanner before writing a new confirmation.
+/// Captures stay in memory until the App's existing credential boundary has
+/// stored them; only their references enter the accepted revision and card.
+struct PlanConfirmationIngress: Sendable {
+    let plan: PlanDraft
+    let executionPrompt: String
+    let captures: [CapturedSecret]
+
+    init(_ source: PlanDraft) throws {
+        var captures: [CapturedSecret] = []
+        var safe = source.mappingConfirmationText { text in
+            let result = SecretIngressScanner.scan(text)
+            captures.append(contentsOf: result.captures)
+            return result.sanitizedText
+        }
+        // Formatting can bring a label and its value from separate fields
+        // together. Scan the final prompt too, then redact those same values
+        // in the frozen display data; never persist raw text in metadata.
+        let prompt = SecretIngressScanner.scan(GoalFromPlanFactory.implementationPrompt(from: safe))
+        captures.append(contentsOf: prompt.captures)
+        if !prompt.captures.isEmpty {
+            safe = safe.mappingConfirmationText { text in
+                prompt.captures.reduce(text) { value, capture in
+                    value.replacingOccurrences(of: String(decoding: capture.value, as: UTF8.self),
+                                               with: capture.placeholder)
+                }
+            }
+        }
+        let canonical = prompt.sanitizedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let checked = SecretIngressScanner.scan(canonical)
+        guard !canonical.isEmpty, checked.captures.isEmpty, checked.sanitizedText == canonical,
+              canonical == GoalFromPlanFactory.implementationPrompt(from: safe)
+                .trimmingCharacters(in: .whitespacesAndNewlines) else {
+            throw FloeError.validationFailed(FloeL10n.isChinese
+                ? "计划暂时无法安全确认，请修改后重试。" : "The plan could not be safely confirmed. Revise it and try again.")
+        }
+        self.plan = safe; self.executionPrompt = canonical; self.captures = captures
+    }
+}
+
+private extension PlanDraft {
+    func mappingConfirmationText(_ transform: (String) -> String) -> PlanDraft {
+        var value = self
+        value.title = transform(title); value.summary = transform(summary)
+        value.sections = sections.map { item in
+            var item = item; item.title = transform(item.title); item.body = transform(item.body); return item
+        }
+        value.assumptions = assumptions.map { item in
+            var item = item; item.text = transform(item.text); return item
+        }
+        value.risks = risks.map { item in
+            var item = item; item.text = transform(item.text); item.mitigation = item.mitigation.map(transform); return item
+        }
+        value.acceptanceCriteria = acceptanceCriteria.map { item in
+            var item = item; item.text = transform(item.text); item.verification = transform(item.verification); return item
+        }
+        value.sourceReferences = sourceReferences.map { item in
+            var item = item; item.locator = transform(item.locator); item.title = item.title.map(transform); return item
+        }
+        value.recommendationReason = recommendationReason.map(transform)
+        return value
     }
 }
 
@@ -353,15 +492,18 @@ public struct PlanSubmission: Sendable, Codable, Hashable {
     }
 
     public static let toolName = "plan.submit"
+    public static let clarificationGuidance = """
+    Resolve material ambiguity through user.ask before plan.submit. Before finalizing a plan, identify decisions that change the goal, scope, acceptance or a costly tradeoff. Reuse prior answers and narrow factual reads. If a material decision remains, use user.ask when offered (otherwise ask concise choices plainly), keeping its custom-answer field BEFORE plan.submit; important direction uses required with no timer/default. A request for a complete plan or uninterrupted work does not turn an unresolved user decision into permission to guess. Low-impact choices retain the configured optional deadline/default rules. Do not add ceremonial questions to a clear task. Example: “Build a site” with no audience or required outcome → ask the outcome choices first, then plan from the answer. “Rename this file to report.csv; preserve its contents” → no redundant QA. Each plan step states an action, concrete deliverable, verification and dependencies or none; split by executable outcomes, never to meet a fixed count.
+    """
     public static let toolDescription =
-        "Submit a complete implementation plan for user review. Call exactly once after read-only investigation; never emit a pseudo tool call in text."
+        "Submit the reviewed implementation plan only after material goal/scope/acceptance and costly tradeoffs are clarified with user.ask. Do not invent a product direction to finish a plan. Every ordered step needs a concrete action, deliverable, verification and dependencies (or none); split by executable outcomes, not a fixed count. Call once when ready after read-only investigation and necessary answers; never emit pseudo tool-call text."
     public static let parametersJSON = #"""
     {
       "type":"object",
       "properties":{
         "title":{"type":"string"},
         "summary":{"type":"string"},
-        "sections":{"type":"array","items":{"type":"object","properties":{"title":{"type":"string"},"body":{"type":"string"}},"required":["title","body"],"additionalProperties":false}},
+        "sections":{"type":"array","description":"Ordered executable steps at the task's actual scale; no fixed step count and no vague catch-all phases.","items":{"type":"object","properties":{"title":{"type":"string","description":"Specific action and its target."},"body":{"type":"string","description":"State the action, concrete deliverable, acceptance/verification evidence, and dependencies/prerequisites or explicitly none. Split independent outcomes so each step can be executed and checked."}},"required":["title","body"],"additionalProperties":false}},
         "assumptions":{"type":"array","items":{"type":"string"}},
         "risks":{"type":"array","items":{"type":"object","properties":{"text":{"type":"string"},"mitigation":{"type":"string"},"severity":{"type":"string","enum":["low","medium","high"]}},"required":["text","mitigation","severity"],"additionalProperties":false}},
         "acceptanceCriteria":{"type":"array","items":{"type":"object","properties":{"text":{"type":"string"},"verification":{"type":"string"}},"required":["text","verification"],"additionalProperties":false}},

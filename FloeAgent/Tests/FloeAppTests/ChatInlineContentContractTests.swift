@@ -6,6 +6,8 @@ import FloeCore
 import FloeModels
 import FloePersistence
 import FloeTools
+import FloeWorkspace
+import FloeEnvironments
 @testable import FloeApp
 
 @Suite("Saved inline-content ownership and retrieval", .serialized)
@@ -120,6 +122,106 @@ struct ChatInlineContentContractTests {
         var changed = receipt; changed.outputID = String(repeating: "a", count: 64)
         #expect(!ChatInlineContentCatalog.accepts(changed, runID: run, taskID: task, callID: "audio-call", tool: "studio.run"))
     }
+    @Test func previewUnsupportedMissingAndCorruptStatesDoNotRewriteCompletedRun() async throws {
+        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
+        let database = try DatabaseManager.inMemory(); try await database.migrate()
+        let conversations = SQLiteConversationStore(database: database), runs = SQLiteRunStore(database: database)
+        let task = UUID(), run = UUID()
+        try await conversations.saveConversation(.init(id: task, title: "Synthetic preview states", createdAt: Date(), updatedAt: Date()))
+        try await runs.saveRun(.init(id: run, conversationID: task, state: "completed", goal: "File saved", startedAt: Date(), endedAt: Date()))
+        let source = root.appendingPathComponent("source.bin"), data = Data([0, 1, 0, 2, 0, 3, 0, 4])
+        try data.write(to: source)
+        let receipt = try RunOutputSnapshotStore.publish(.init(producerTool: "files.write", slot: "text",
+            commit: .init(sourceURL: source, sha256: FloeDigest.sha256Hex(data), byteCount: data.count,
+                displayName: "result.bin", mimeType: "application/octet-stream")),
+            using: .init(runID: run, toolCallID: "write", cancellation: CancellationToken(), conversationID: task), artifactRoot: root)
+        let fields = ["tool": "files.write", "id": "write", "status": "ok",
+            "outputFilesJSON": String(decoding: try JSONEncoder().encode([receipt]), as: UTF8.self)]
+        _ = try await runs.appendEvent(runID: run, kind: .toolResult,
+            payloadJSON: String(decoding: try JSONEncoder().encode(fields), as: UTF8.self))
+        let reference = try #require(ChatContentReference(kind: .output, ownerID: run, contentID: receipt.outputID))
+        _ = try await ChatInlineContentResolver.resolve(reference, scope: .init(conversationID: task, isTemporary: false),
+            conversations: conversations, runs: runs)
+        #expect(RunOutputPreviewRouting.route(for: receipt) == .quickLook)
+        #expect(try await runs.run(id: run)?.state == "completed")
+        let file = root.appendingPathComponent(receipt.relativePath)
+        try Data(repeating: 65, count: data.count).write(to: file)
+        guard case .changed = RunOutputSnapshotStore.verify(receipt, artifactRoot: root) else { Issue.record("corruption must stay a real file error"); return }
+        #expect(try await runs.run(id: run)?.state == "completed")
+        try FileManager.default.removeItem(at: file)
+        guard case .missing = RunOutputSnapshotStore.verify(receipt, artifactRoot: root) else { Issue.record("missing file must stay missing"); return }
+        #expect(try await runs.run(id: run)?.state == "completed")
+        let missing = try #require(ChatContentReference(kind: .output, ownerID: run, contentID: String(repeating: "f", count: 64)))
+        await #expect(throws: ChatInlineContentResolutionError.unavailable) {
+            try await ChatInlineContentResolver.resolve(missing, scope: .init(conversationID: task, isTemporary: false), conversations: conversations, runs: runs)
+        }
+        #expect(try await runs.run(id: run)?.state == "completed")
+    }
+
+    @Test func savedFilePreviewUsesSQLiteNativeTaskRootAcrossSharedAndProjectBindings() async throws {
+        let scratchRoot = try scratch(); defer { try? FileManager.default.removeItem(at: scratchRoot) }
+        let environment = AppEnvironment.preview()
+        try await environment.database.migrate()
+        let conversations = environment.conversationStore, runs = environment.runStore
+        let workspaces = SQLiteWorkspaceStore(database: environment.database)
+        let center = WorkspaceCenter(environment: environment, publishesSharedState: false)
+        let task = UUID(), now = Date()
+        try await conversations.saveConversation(.init(id: task, title: "Native task root fixture", createdAt: now, updatedAt: now))
+        let owner = try await workspaces.ensureWorkspace(conversationID: task, title: "Native task root fixture")
+        // This is the actual native writer lease used by ConversationCenter.
+        let nativeLease = try await center.acquireTaskRoot(owner, conversationID: task)
+        defer { nativeLease.release(); try? FileManager.default.removeItem(at: nativeLease.url) }
+        let text = String(repeating: "原生任务文件中文🙂", count: 10_001) + "NATIVE-EOF"
+        let bytes = Data(text.utf8)
+        try bytes.write(to: nativeLease.url.appendingPathComponent("answer.txt"))
+        // A real isolated registry proves the alternate project root differs;
+        // shared has no project-workspace mapping at all. Metadata only: no VM.
+        let otherRoot = scratchRoot.appendingPathComponent("other-project", isDirectory: true)
+        try FileManager.default.createDirectory(at: otherRoot, withIntermediateDirectories: true)
+        let unrelated = Data("UNRELATED ENVIRONMENT FILE".utf8)
+        try unrelated.write(to: otherRoot.appendingPathComponent("answer.txt"))
+        let registry = EnvironmentRegistry(roots: EnvironmentRoots(rootURL: scratchRoot.appendingPathComponent("registry")), baseRevision: "preview-fixture")
+        let canonicalOther = otherRoot.resolvingSymlinksInPath().standardizedFileURL
+        let project = try await registry.ensureProjectContainer(workspaceID: FloeDigest.sha256Hex(Data(canonicalOther.path.utf8)), workspaceRootPath: canonicalOther.path)
+        #expect(try await registry.workspaceRoot(for: project.id)?.resolvingSymlinksInPath().path == canonicalOther.path)
+        #expect(try await registry.workspaceRoot(for: EnvironmentRegistry.sharedContainerID) == nil)
+        #expect(canonicalOther.path != nativeLease.url.resolvingSymlinksInPath().path)
+        #expect(center.currentRootURL == nil, "background preview must not rebind the visible workspace")
+        for environmentID in [EnvironmentRegistry.sharedContainerID, project.id] {
+            let runID = UUID()
+            let binding = TaskExecutionBinding(conversationID: task,
+                target: .init(environmentID: environmentID, backend: .linuxVM, operatingSystem: "linux", architecture: "arm64"))
+            try await runs.saveRun(.init(id: runID, conversationID: task, state: "completed", goal: "Saved file",
+                startedAt: now, endedAt: now, executionBinding: binding))
+            let document = WorkspaceFileChangePreview(version: 1, path: "answer.txt", byteCount: bytes.count,
+                sha256: FloeDigest.sha256Hex(bytes), text: String(text.prefix(24_000)), truncated: true, comparison: .comparisonTooLarge)
+            let encoded = try JSONEncoder().encode(document), digest = FloeDigest.sha256Hex(encoded)
+            let artifact = ToolArtifactReference(id: UUID(), relativePath: "ChangeArtifacts/\(runID.uuidString)/\(digest).preview.json",
+                mimeType: "application/vnd.floe.file-preview+json", byteCount: encoded.count, sha256: digest)
+            let file = scratchRoot.appendingPathComponent(artifact.relativePath)
+            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try encoded.write(to: file)
+            _ = try await runs.appendEvent(runID: runID, kind: .toolResult, payloadJSON: eventPayload(artifact, tool: "workspace.writeFile"))
+            let opened = try await SavedFileTextPreviewPolicy.ownedBytes(document: document, artifact: artifact,
+                scope: .init(conversationID: task, isTemporary: false), conversations: conversations, runs: runs,
+                workspaces: workspaces, artifactRoot: scratchRoot,
+                acquireRoot: { record in try await center.acquireMemorySourceRoot(record) })
+            #expect(opened.source.byteLength == Int64(bytes.count))
+            #expect(try opened.source.read(offset: Int64(bytes.count - 10), length: 10) == bytes.suffix(10))
+            #expect(center.currentRootURL == nil)
+            var missingBinding = try #require(try await runs.run(id: runID)); missingBinding.executionBinding = nil
+            try await runs.saveRun(missingBinding)
+            await #expect(throws: (any Error).self) {
+                try await SavedFileTextPreviewPolicy.ownedBytes(document: document, artifact: artifact,
+                    scope: .init(conversationID: task, isTemporary: false), conversations: conversations, runs: runs,
+                    workspaces: workspaces, artifactRoot: scratchRoot,
+                    acquireRoot: { record in try await center.acquireMemorySourceRoot(record) })
+            }
+        }
+        #expect(try Data(contentsOf: nativeLease.url.appendingPathComponent("answer.txt")) == bytes)
+        #expect(try Data(contentsOf: otherRoot.appendingPathComponent("answer.txt")) == unrelated)
+    }
+
     @Test func attachmentsRequireTheActualMessagePartEvenForLegacyMetadata() async throws {
         let database = try DatabaseManager.inMemory(); try await database.migrate()
         let conversations = SQLiteConversationStore(database: database), runs = SQLiteRunStore(database: database)

@@ -4,6 +4,7 @@ import FloeCore
 import FloeModels
 import FloePersistence
 import FloeTools
+import FloeSecurity
 
 public enum MemoryEntryStatus: String, Sendable, Codable, Hashable {
     case pending, active, rejected, superseded
@@ -244,28 +245,184 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
     }
 
     public func savePlanRevision(_ plan: PlanDraft) async throws {
+        try await database.writer { db in try Self.writePlan(plan, in: db) }
+    }
+
+    private static func writePlan(_ plan: PlanDraft, in db: Database) throws {
         let sections = try Self.json(plan.sections)
         let assumptions = try Self.json(plan.assumptions)
         let risks = try Self.json(plan.risks)
         let criteria = try Self.json(plan.acceptanceCriteria)
         let messages = try Self.json(plan.sourceMessageIDs)
         let references = try Self.json(plan.sourceReferences)
-        try await database.writer { db in
-            try db.execute(sql: """
-                INSERT INTO plan_drafts (
-                    id, conversation_id, workspace_id, revision, status, title, summary,
-                    sections_json, assumptions_json, risks_json, criteria_json,
-                    source_message_ids_json, source_conversation_refs_json, digest,
-                    execution_recommendation, recommendation_reason, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, arguments: [
-                    plan.id.uuidString, plan.conversationID.uuidString, plan.workspaceID?.uuidString,
-                    plan.revision, plan.status.rawValue, plan.title, plan.summary, sections,
-                    assumptions, risks, criteria, messages, references, plan.digest,
-                    plan.executionRecommendation?.rawValue, plan.recommendationReason,
-                    Self.date(plan.createdAt), Self.date(plan.updatedAt)
-                ])
+        try db.execute(sql: """
+            INSERT INTO plan_drafts (
+                id, conversation_id, workspace_id, revision, status, title, summary,
+                sections_json, assumptions_json, risks_json, criteria_json,
+                source_message_ids_json, source_conversation_refs_json, digest,
+                execution_recommendation, recommendation_reason, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, arguments: [
+                plan.id.uuidString, plan.conversationID.uuidString, plan.workspaceID?.uuidString,
+                plan.revision, plan.status.rawValue, plan.title, plan.summary, sections,
+                assumptions, risks, criteria, messages, references, plan.digest,
+                plan.executionRecommendation?.rawValue, plan.recommendationReason,
+                Self.date(plan.createdAt), Self.date(plan.updatedAt)
+            ])
+    }
+
+    /// One user decision: safe accepted revision, optional Goal and the
+    /// existing conversation's user-message snapshot commit together. Secret
+    /// capture finishes before this transaction; provider/VM work stays later.
+    public func confirmPlan(
+        _ expected: PlanDraft, conversationID: UUID,
+        execution: PlanExecutionRecommendation,
+        captureSecrets: (@Sendable ([CapturedSecret]) async throws -> Void)? = nil
+    ) async throws -> PlanConfirmationReceipt {
+        guard expected.conversationID == conversationID, expected.revision > 0,
+              expected.revision < Int.max else { throw FloeError.unauthorized }
+        let prior = try await database.reader { db -> PlanConfirmationReceipt? in
+            let source = try Self.confirmationSource(expected, in: db)
+            if let receipt = try Self.existingConfirmation(source, execution: execution, in: db) { return receipt }
+            try Self.requireCurrentPlan(source, in: db)
+            return nil
         }
+        if let prior { return prior }
+        let ingress = try PlanConfirmationIngress(expected)
+        if !ingress.captures.isEmpty {
+            guard let captureSecrets else {
+                throw FloeError.validationFailed(FloeL10n.isChinese
+                    ? "请通过计划卡片确认，以安全保存所需凭据。" : "Confirm from the plan card to securely save its credentials.")
+            }
+            try await captureSecrets(ingress.captures)
+        }
+        try Task.checkCancellation()
+        return try await database.writer { db in
+            let source = try Self.confirmationSource(expected, in: db)
+            // A concurrent confirmation won while credentials were captured.
+            // Keep that exact committed decision and planned run identity.
+            if let receipt = try Self.existingConfirmation(source, execution: execution, in: db) { return receipt }
+            try Self.requireCurrentPlan(source, in: db)
+            let accepted = ingress.plan.revised(status: .accepted, digest: source.digest)
+            var goal: ConversationGoal?
+            if execution == .goal {
+                var value = try GoalFromPlanFactory.makeGoal(from: accepted)
+                value.status = .active; value.progress.startedAt = accepted.updatedAt
+                goal = value
+            }
+            let snapshot = try PlanConfirmationSnapshot.decode(PlanConfirmationSnapshot(
+                plan: accepted, sourceRevision: source.revision, execution: execution,
+                executionRunID: UUID(), goalID: goal?.id,
+                executionPrompt: ingress.executionPrompt).encoded())
+            try Self.writePlan(snapshot.plan, in: db)
+            if let goal { try Self.writeGoal(goal, in: db) }
+            try db.execute(sql: """
+                INSERT INTO messages(id,conversation_id,role,content,created_at,run_id)
+                VALUES(?,?,'user',?,?,NULL)
+                """, arguments: [snapshot.messageID.uuidString, conversationID.uuidString,
+                    snapshot.executionPrompt, Self.date(snapshot.plan.updatedAt)])
+            try db.execute(sql: """
+                INSERT INTO message_parts(id,message_id,part_index,kind,text,attachment_id,metadata_json,created_at)
+                VALUES(?,?,0,'text',?,NULL,?,?)
+                """, arguments: [UUID().uuidString, snapshot.messageID.uuidString, snapshot.executionPrompt,
+                    try Self.json([PlanConfirmationSnapshot.metadataKey: snapshot.encoded()]),
+                    Self.date(snapshot.plan.updatedAt)])
+            try db.execute(sql: "UPDATE conversations SET updated_at = ? WHERE id = ?",
+                           arguments: [Self.date(snapshot.plan.updatedAt), conversationID.uuidString])
+            guard db.changesCount == 1 else { throw FloeError.notFound("Conversation") }
+            return PlanConfirmationReceipt(snapshot: snapshot, goal: goal, wasCreated: true)
+        }
+    }
+
+    /// An explicit retry may launch only the exact committed, unused message
+    /// and planned run. It cannot confirm again or revive a superseded plan.
+    public func planConfirmationForLaunch(
+        _ expected: PlanConfirmationSnapshot, conversationID: UUID
+    ) async throws -> PlanConfirmationReceipt {
+        guard expected.plan.conversationID == conversationID else { throw FloeError.unauthorized }
+        return try await database.reader { db in
+            guard let sourceRow = try Row.fetchOne(db,
+                sql: "SELECT * FROM plan_drafts WHERE id=? AND conversation_id=? AND revision=?",
+                arguments: [expected.plan.id.uuidString, conversationID.uuidString, expected.sourceRevision]),
+                  let receipt = try Self.existingConfirmation(Self.plan(sourceRow), execution: expected.execution, in: db),
+                  receipt.snapshot == expected,
+                  try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM messages WHERE id=? AND conversation_id=? AND run_id IS NULL)",
+                    arguments: [expected.messageID.uuidString, conversationID.uuidString]) == true,
+                  try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM runs WHERE id=?)",
+                    arguments: [expected.executionRunID.uuidString]) == false else {
+                throw FloeError.validationFailed(FloeL10n.isChinese
+                    ? "此计划已开始或已改变，请重新打开任务后继续。" : "This plan has started or changed. Reopen the task to continue.")
+            }
+            return receipt
+        }
+    }
+
+    private static func confirmationSource(_ expected: PlanDraft, in db: Database) throws -> PlanDraft {
+        guard let row = try Row.fetchOne(db,
+            sql: "SELECT * FROM plan_drafts WHERE id=? AND conversation_id=? AND revision=?",
+            arguments: [expected.id.uuidString, expected.conversationID.uuidString, expected.revision]) else {
+            throw FloeError.notFound("Plan")
+        }
+        let source = try Self.plan(row)
+        var definition = expected
+        definition.createdAt = source.createdAt; definition.updatedAt = source.updatedAt
+        guard source.status == .ready, source.isDecisionComplete, source == definition else {
+            throw FloeError.validationFailed(FloeL10n.isChinese
+                ? "计划已改变或仍需补充，请重新打开后确认。" : "The plan changed or still needs clarification; reopen it before confirming")
+        }
+        return source
+    }
+
+    private static func requireCurrentPlan(_ plan: PlanDraft, in db: Database) throws {
+        guard let current = try Row.fetchOne(db,
+            sql: "SELECT id,revision FROM plan_drafts WHERE conversation_id=? ORDER BY revision DESC LIMIT 1",
+            arguments: [plan.conversationID.uuidString]),
+              current["id"] as String == plan.id.uuidString, current["revision"] as Int == plan.revision else {
+            throw FloeError.validationFailed(FloeL10n.isChinese
+                ? "已有更新的计划，请重新打开后确认。" : "A newer plan is available; reopen it before confirming")
+        }
+    }
+
+    private static func existingConfirmation(
+        _ source: PlanDraft, execution: PlanExecutionRecommendation, in db: Database
+    ) throws -> PlanConfirmationReceipt? {
+        let messageID = PlanConfirmationSnapshot.messageID(
+            conversationID: source.conversationID, planID: source.id, sourceRevision: source.revision)
+        guard let row = try Row.fetchOne(db, sql: "SELECT * FROM messages WHERE id=?",
+                                         arguments: [messageID.uuidString]) else { return nil }
+        guard row["conversation_id"] as String == source.conversationID.uuidString,
+              row["role"] as String == "user",
+              let metadata = try String.fetchOne(db,
+                sql: "SELECT metadata_json FROM message_parts WHERE message_id=? AND part_index=0 AND kind='text'",
+                arguments: [messageID.uuidString]),
+              let raw = try Self.decode([String: String].self, metadata)[PlanConfirmationSnapshot.metadataKey] else {
+            throw FloeError.storageCorrupted(FloeL10n.isChinese
+                ? "计划确认记录暂时不可用，请重新打开任务。" : "The plan confirmation message is unavailable")
+        }
+        let snapshot = try PlanConfirmationSnapshot.decode(raw)
+        guard snapshot.messageID == messageID, snapshot.plan.conversationID == source.conversationID,
+              snapshot.plan.id == source.id, snapshot.sourceRevision == source.revision,
+              snapshot.plan.digest == source.digest, snapshot.execution == execution,
+              snapshot.executionPrompt == row["content"] as String,
+              let accepted = try Row.fetchOne(db,
+                sql: "SELECT * FROM plan_drafts WHERE id=? AND conversation_id=? AND revision=? AND status='accepted'",
+                arguments: [source.id.uuidString, source.conversationID.uuidString, snapshot.plan.revision]),
+              try Self.plan(accepted) == snapshot.plan else {
+            throw FloeError.validationFailed(FloeL10n.isChinese
+                ? "此计划的确认记录已改变，请重新打开当前计划。" : "This plan's confirmation changed; reopen the current plan")
+        }
+        try Self.requireCurrentPlan(snapshot.plan, in: db)
+        let goal: ConversationGoal?
+        if let goalID = snapshot.goalID {
+            guard let goalRow = try Row.fetchOne(db,
+                sql: "SELECT * FROM conversation_goals WHERE id=? AND conversation_id=?",
+                arguments: [goalID.uuidString, source.conversationID.uuidString]) else {
+                throw FloeError.storageCorrupted(FloeL10n.isChinese
+                    ? "对应目标暂时不可用，请重新打开任务。" : "The confirmed Goal is unavailable")
+            }
+            goal = try Self.goal(goalRow)
+        } else { goal = nil }
+        return PlanConfirmationReceipt(snapshot: snapshot, goal: goal, wasCreated: false)
     }
 
     public func latestPlan(conversationID: UUID) async throws -> PlanDraft? {

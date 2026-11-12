@@ -54,18 +54,18 @@ def build_groups(build_id, call=api):
 
 
 
-def wait_for_group(build_id, group_id, call=api, pause=time.sleep):
+def wait_for_group(build_id, group_id, call=api, pause=time.sleep, *, attempts=21, interval=3):
     # Apple can accept the association before GET reflects it. Retry reads only.
-    for attempt in range(21):
+    for attempt in range(attempts):
         groups = build_groups(build_id, call)
         if group_id in {group['id'] for group in groups}:
             return groups
-        if attempt < 20:
-            pause(3)
+        if attempt + 1 < attempts:
+            pause(interval)
     raise RuntimeError('Floe QA build visibility not confirmed after bounded readback')
 
 
-def prepare(build_id, bundle, version, number, notes, call=api):
+def prepare(build_id, bundle, version, number, notes, call=api, *, pause=time.sleep):
     if not re.fullmatch(r'[A-Za-z0-9_-]+', build_id):
         raise ValueError('Invalid build ID')
     value = call('GET', f'/v1/builds/{build_id}?include=app,preReleaseVersion')
@@ -102,7 +102,13 @@ def prepare(build_id, bundle, version, number, notes, call=api):
                 'relationships': {'build': {'data': {'type': 'builds', 'id': build_id}}}}})
     group_id = groups[0]['id']
     visible = build_groups(build_id, call)
-    if group_id not in {g['id'] for g in visible}:
+    if group_id not in {g['id'] for g in visible} and groups[0]['attributes'].get('hasAccessToAllBuilds') is True:
+        # Automatic internal groups reject manual assignment with HTTP 422.
+        # Processing and distribution become visible at different times;
+        # wait for the actual relationship instead of issuing that write or
+        # treating the group's setting as proof of this build's availability.
+        visible = wait_for_group(build_id, group_id, call, pause, attempts=61, interval=10)
+    elif group_id not in {g['id'] for g in visible}:
         try:
             call('POST', f'/v1/betaGroups/{group_id}/relationships/builds',
                  {'data': [{'type': 'builds', 'id': build_id}]})
@@ -110,11 +116,11 @@ def prepare(build_id, bundle, version, number, notes, call=api):
             # Automatic distribution may win between GET and POST.
             # A failed write is accepted only after confirmed membership.
             try:
-                visible = wait_for_group(build_id, group_id, call)
+                visible = wait_for_group(build_id, group_id, call, pause)
             except RuntimeError:
                 raise write_error
         else:
-            visible = wait_for_group(build_id, group_id, call)
+            visible = wait_for_group(build_id, group_id, call, pause)
     actual = rows('/v1/betaBuildLocalizations?' + urllib.parse.urlencode({'filter[build]': build_id, 'limit': 200}), call)
     if group_id not in {g['id'] for g in visible}:
         raise RuntimeError('Floe QA build visibility not confirmed')

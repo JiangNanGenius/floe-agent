@@ -1133,6 +1133,7 @@ public actor FloeAgentRuntime {
     private var providerToolProgressPublishedAt: Date?
     private var providerLastProgressAt = Date()
     private var discoveredToolNames: Set<String> = []
+    private var lastDispatchedToolSchemas = DispatchedToolSchemaState()
     private var discoveryPriority: [String] = []
     private var persistedDiscovery: (names: Set<String>, priority: [String])?
     private var discoverableDescriptors: [ToolCatalog.Descriptor] = []
@@ -2866,6 +2867,11 @@ public actor FloeAgentRuntime {
         // subset; delegated children discover and dispatch against exactly
         // this set.
         var catalogDescriptors = runtimeVisibleCatalogDescriptors()
+        // A Plan must be able to clarify BEFORE submitting. Freeze only a
+        // question descriptor actually inside this request's permission and
+        // live availability ceilings; never resurrect an unavailable tool.
+        let requiredPlanQuestion = supportsTools && configuration.conversationMode == .plan
+            ? catalogDescriptors.first(where: { $0.name == UserAskTool.name }) : nil
         // On-device intent pins affect schema presentation only; the frozen
         // identity above is the task's authoritative capability set.
         let isLocalProvider = configuration.provider.kind == .local
@@ -2882,6 +2888,7 @@ public actor FloeAgentRuntime {
             discoveredToolNames.formUnion(initial.map(\.name))
             discoveryPriority = initial.map(\.name)
         }
+        if requiredPlanQuestion != nil { discoveredToolNames.insert(UserAskTool.name) }
         // On-device runs: intersect discovery/remembered state with the
         // descriptors this run actually offers (covers
         // persisted and checkpoint-restored state), then union the stable
@@ -3053,9 +3060,9 @@ public actor FloeAgentRuntime {
                         ? "."
                         : ". Definitions too large for this window's schema allowance are not offered rather than cut: "
                             + plan.oversized.prefix(8).joined(separator: ", ") + ".")
-                    + " They remain installed and callable. A definition you explicitly loaded is retried on a later request with more room; load any other exact name with "
+                    + " They remain in this run's discoverable catalog. Activated definitions are retried when the final request has room; request any other exact name with "
                     + CompatToolNames.wireName(ToolDiscovery.name, for: configuration.provider)
-                    + " and it enters the next request as a complete schema."
+                    + "; activation does not guarantee admission to the next request."
                 logger.info(
                     "toolSchemasAdmitted run=\(runID.uuidString) offered=\(plan.offered.count) deferred=\(plan.deferred.count) oversized=\(plan.oversized.count) tokens=\(plan.estimatedTokens) window=\(configuration.model.limits.contextTokens)"
                 )
@@ -3275,9 +3282,18 @@ public actor FloeAgentRuntime {
             reasoning: pendingToolCalls.isEmpty ? nil : ToolReplayPlanner.boundedReasoning(responseReasoning)
         ) + 2) / 3
         let resultReserveTokens = min(windowTokens / 3, max(1_024, windowTokens / 4))
-        let planSchemas: [ToolSchemaDescriptor] = supportsTools && configuration.conversationMode == .plan
+        var planSchemas: [ToolSchemaDescriptor] = supportsTools && configuration.conversationMode == .plan
             ? [.init(name: PlanSubmission.toolName, description: PlanSubmission.toolDescription,
                      parametersJSON: PlanSubmission.parametersJSON)] : []
+        if let requiredPlanQuestion {
+            // Like native plan.submit, charge the complete question schema in
+            // every subsequent wire-budget calculation. Optional discovery
+            // eviction must not leave “submit” as the only Plan interaction.
+            catalogDescriptors.removeAll { $0.name == requiredPlanQuestion.name }
+            planSchemas.append(.init(name: requiredPlanQuestion.name,
+                description: Self.providerToolDescription(requiredPlanQuestion),
+                parametersJSON: requiredPlanQuestion.parametersJSON))
+        }
         let minimumDiscovery = catalogDescriptors.first { $0.name == ToolDiscovery.name }
         let minimumSchemas = (supportsTools ? minimumDiscovery.map {
             [ToolSchemaDescriptor(name: $0.name, description: Self.providerToolDescription($0),
@@ -3288,10 +3304,9 @@ public actor FloeAgentRuntime {
             optionalDirectoryBlocks.append((schemaDeferredNote, nil))
         }
         if supportsTools, let directory = deferredDiscoveryDirectory {
-            let search = CompatToolNames.wireName(ToolDiscovery.name, for: configuration.provider)
-            let list = CompatToolNames.wireName(ToolDiscovery.listName, for: configuration.provider)
             optionalDirectoryBlocks.append((directory,
-                "Use \(list) for this run's complete authorized tool inventory and \(search) to load complete definitions by exact name or capability. Deferred schemas remain installed and callable; permissions and prerequisites still apply."))
+                ToolDiscovery.compactIndex(discoverableDescriptors,
+                    wireSafeNames: CompatToolNames.usesWireSafeNames(configuration.provider))))
         }
         for block in optionalDirectoryBlocks {
             for text in [block.full, block.fallback].compactMap({ $0 }) {
@@ -3343,6 +3358,9 @@ public actor FloeAgentRuntime {
             borrowedDiscoveryReserve = borrowedDiscoveryReserve
                 || schemaBudget > max(0, size.availableToolResultTokens - resultReserveTokens - pendingMetadataTokens)
             catalogDescriptors = plan.offered
+            if !plan.deferred.isEmpty || !plan.oversized.isEmpty {
+                logger.info("toolSchemasReadmitted run=\(runID.uuidString) offered=\(plan.offered.count) deferred=\(plan.deferred.count) oversized=\(plan.oversized.count) tokens=\(plan.estimatedTokens)")
+            }
         }
         // The paging page is already bounded by its own renderer and must not
         // be re-summarized. Identity comes from the runtime's own pending
@@ -3665,6 +3683,16 @@ public actor FloeAgentRuntime {
         dispatchRequest.onToolArgumentsProgress = { [weak self] in
             await self?.handleToolArgumentsProgress(attempt: attempt)
         }
+        // The actual retry request wins over newly assembled candidates.
+        // Cloud adapters encode these schemas verbatim; local adapters report
+        // their smaller final prompt/repair set before invoking the engine.
+        let exposure = DispatchedToolSchemaState(
+            catalogNames: discoverableDescriptors.map(\.name)
+                + [ToolDiscovery.name, ToolDiscovery.listName, ToolResultPagingTool.name],
+            offeredNames: configuration.provider.kind == .local ? [] : dispatchRequest.toolSchemas.map(\.name)
+        )
+        lastDispatchedToolSchemas = exposure
+        dispatchRequest.onToolSchemasPrepared = { names in exposure.recordPrepared(names) }
         let stream = adapter.stream(request: dispatchRequest, credentials: credentials)
         streamTask = Task { [weak self] in
             guard let self else { return }
@@ -5736,7 +5764,7 @@ public actor FloeAgentRuntime {
                     let output = try ToolDiscovery.list(arguments: call.argumentsJSON,
                         descriptors: discoverableDescriptors + ToolDiscovery.runtimeDescriptors(
                             publicWebOnly: configuration.temporaryReadOnly),
-                        loaded: discoveredToolNames.union([ToolDiscovery.name, ToolDiscovery.listName]),
+                        loaded: lastDispatchedToolSchemas.offeredNames,
                         relatedSkills: configuration.relatedSkillIDsByTool,
                         wireSafeNames: CompatToolNames.usesWireSafeNames(configuration.provider))
                     result = ToolResult(callID: call.id, status: .ok, outputSummary: output, outputDigest: "", maximumSummaryCharacters: 262_144)
@@ -5773,10 +5801,11 @@ public actor FloeAgentRuntime {
                             && !matches.map(\.name).contains($0.name)
                     },
                     priority: matches.map(\.name),
+                    maxTools: Int.max,
                     maxBytes: presentationBudget
                 )
                 let names = selected.map(\.name)
-                let alreadyInContext = discoveredToolNames
+                let alreadyActivated = discoveredToolNames
                 discoveredToolNames.formUnion(names)
                 discoveryPriority = names + discoveryPriority.filter { !names.contains($0) }
                 persistDiscoveryIfChanged()
@@ -5796,9 +5825,9 @@ public actor FloeAgentRuntime {
                 let matchedSummary = matches.isEmpty
                     ? "No matching executable tool in this task's capability set. "
                         + ToolDiscovery.index(discoverableDescriptors, wireSafeNames: wireSafe)
-                    : "Loaded for the next request:\n" + selected.map { descriptor in
+                    : "Activated as candidates for future budgeted requests:\n" + selected.map { descriptor in
                         display(descriptor.name) + ": " + String(descriptor.toolDescription.prefix(160))
-                            + (alreadyInContext.contains(descriptor.name) ? " (schema already in context; call it directly, no reload needed)" : "")
+                            + (alreadyActivated.contains(descriptor.name) ? " (already activated; final request admission still applies)" : "")
                             + " [relatedSkillIDs=" + configuration.relatedSkillIDsByTool[descriptor.name, default: []].joined(separator: ",") + "]"
                     }.joined(separator: "\n")
                         + (deferred.isEmpty ? "" : "\nNot yet loaded (schema budget): \(deferred.map(display).joined(separator: ", ")). Search one exact name when needed, not the same broad query.")

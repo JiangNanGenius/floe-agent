@@ -129,6 +129,24 @@ struct LinuxCacheCleanupScriptContractTests {
         #expect(LinuxCacheCleanupEnvironmentRepair.guidance(forMessage: "network timeout") == nil)
     }
 
+    @Test("Inspect engine failure is a failed card with unchanged job/error and unknown capacity")
+    func inspectFailedReceiptIsFailure() throws {
+        let jobID = UUID(uuidString: "11111111-2222-4333-8444-555555555555")!
+        let receipt = LinuxCacheCleanupReceipt(jobID: jobID, state: "failed", mode: "inspect",
+            categories: ["apt", "pip", "npm"], error: "engineUnavailable: origin unverified; exit125")
+        let output = LinuxCacheCleanupInspectTool.output(receipt)
+        #expect(output.exitStatus == 1)
+        let captured = try #require(output.capturedOutput)
+        let decoded = try JSONDecoder().decode(LinuxCacheCleanupReceipt.self, from: Data(captured.utf8))
+        #expect(decoded.jobID == jobID && decoded.state == "failed")
+        #expect(decoded.error == receipt.error)
+        #expect(decoded.dfAvailableBeforeBytes == nil && decoded.categoryResults.isEmpty)
+        for state in ["queued", "running", "completed"] {
+            var ordinary = receipt; ordinary.state = state; ordinary.error = nil
+            #expect(LinuxCacheCleanupInspectTool.output(ordinary).exitStatus == 0)
+        }
+    }
+
     @Test("Legacy scratch is retained without traversing or deleting generic temporary files")
     func scratchHasNoDeletionCapability() throws {
         let source = LinuxCacheCleanupScript.source

@@ -1028,6 +1028,176 @@ struct HarnessPlanningTests {
             .answerDelta(TextDelta(text: "hello"))
         ])
     }
+
+    private func planConfirmationFixture(path: URL? = nil, editorOwned: Bool = false) async throws -> (DatabaseManager, PlanDraft) {
+        let database = try path.map { try DatabaseManager(path: $0) } ?? DatabaseManager.inMemory()
+        try await database.migrate()
+        let conversationID = UUID()
+        try await SQLiteConversationStore(database: database).saveConversationWithCanonicalWorkspace(
+            ConversationRecord(id: conversationID, title: "Plan confirmation fixture", createdAt: Date(), updatedAt: Date(),
+                editorOwnership: editorOwned ? .file(UUID()) : nil))
+        let plan = PlanDraft(conversationID: conversationID, status: .ready,
+            title: "Deliver the agreed report", summary: "Retain the accepted version",
+            sections: [.init(title: "Build the report", body: "Action: build. Deliverable: report.csv. Verify: read back the table. Dependencies: source.csv.", order: 0)],
+            acceptanceCriteria: [.init(text: "The result matches the source", verification: "Read back report.csv and compare rows")],
+            digest: "confirmation-fixture")
+        let store = SQLiteIntelligenceStore(database: database)
+        try await store.savePlanRevision(plan)
+        return (database, try #require(try await store.latestPlan(conversationID: conversationID)))
+    }
+
+    @Test("Confirmation history is immutable, deduplicated and read from the reopened database after replacing the active plan")
+    func confirmedPlanHistorySurvivesReplacementAndReopen() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("plan-history-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let path = root.appendingPathComponent("history.sqlite")
+        let (database, source) = try await planConfirmationFixture(path: path)
+        let store = SQLiteIntelligenceStore(database: database)
+        let first = try await store.confirmPlan(source, conversationID: source.conversationID, execution: .normal)
+        let duplicate = try await store.confirmPlan(source, conversationID: source.conversationID, execution: .normal)
+        #expect(first.wasCreated && !duplicate.wasCreated)
+        #expect(first.snapshot == duplicate.snapshot)
+        #expect(!first.snapshot.plan.awaitsConfirmation)
+        let next = first.snapshot.plan.revised(status: .ready, title: "Different later plan")
+        try await store.savePlanRevision(next)
+        let reopened = try DatabaseManager(path: path)
+        let messages = try await SQLiteConversationStore(database: reopened).messages(conversationID: source.conversationID)
+        #expect(messages.count == 1 && messages[0].role == "user")
+        let snapshot = try #require(PlanConfirmationSnapshot.from(message: messages[0]))
+        #expect(snapshot == first.snapshot)
+        #expect(snapshot.plan.title == source.title && snapshot.plan.sections == source.sections)
+        #expect(try await SQLiteIntelligenceStore(database: reopened).latestPlan(conversationID: source.conversationID)?.title == next.title)
+        #expect(next.awaitsConfirmation)
+    }
+
+    @Test("Plan-to-Goal commits one exact user snapshot and one Goal without changing editor-assistant ownership")
+    func goalPlanConfirmationStaysWithItsEditorConversation() async throws {
+        let (database, source) = try await planConfirmationFixture(editorOwned: true)
+        let messages = SQLiteConversationStore(database: database)
+        let original = try #require(try await messages.conversation(id: source.conversationID))
+        let store = SQLiteIntelligenceStore(database: database)
+        async let first = store.confirmPlan(source, conversationID: source.conversationID, execution: .goal)
+        async let second = SQLiteIntelligenceStore(database: database).confirmPlan(
+            source, conversationID: source.conversationID, execution: .goal)
+        let receipts = try await [first, second]
+        #expect(receipts.filter(\.wasCreated).count == 1)
+        #expect(receipts[0].snapshot == receipts[1].snapshot)
+        let goals = try await store.goals(conversationID: source.conversationID)
+        #expect(goals.count == 1 && goals[0].status == .active)
+        #expect(goals[0].id == receipts[0].snapshot.goalID)
+        #expect(goals[0].sourcePlanID == source.id)
+        let history = try await messages.messages(conversationID: source.conversationID)
+        #expect(history.count == 1)
+        #expect(PlanConfirmationSnapshot.from(message: history[0])?.execution == .goal)
+        let after = try #require(try await messages.conversation(id: source.conversationID))
+        #expect(after.editorOwnership == original.editorOwnership)
+        #expect(!after.isVisibleInOrdinaryList)
+        var foreign = history[0]; foreign.conversationID = UUID()
+        #expect(PlanConfirmationSnapshot.from(message: foreign) == nil)
+        foreign = history[0]; foreign.role = "assistant"
+        #expect(PlanConfirmationSnapshot.from(message: foreign) == nil)
+    }
+
+    @Test("A confirmation message-write failure rolls back accepted revision and Goal and retains the ready draft")
+    func planConfirmationFailureRetainsPendingDraft() async throws {
+        let (database, source) = try await planConfirmationFixture()
+        try await database.writer { db in
+            try db.execute(sql: "CREATE TRIGGER reject_confirmation BEFORE INSERT ON message_parts BEGIN SELECT RAISE(ABORT, 'injected confirmation failure'); END;")
+        }
+        let store = SQLiteIntelligenceStore(database: database)
+        await #expect(throws: (any Error).self) {
+            _ = try await store.confirmPlan(source, conversationID: source.conversationID, execution: .goal)
+        }
+        #expect(try await store.latestPlan(conversationID: source.conversationID)?.status == .ready)
+        #expect(try await store.planRevisions(conversationID: source.conversationID).count == 1)
+        #expect(try await store.goals(conversationID: source.conversationID).isEmpty)
+        #expect(try await SQLiteConversationStore(database: database).messages(conversationID: source.conversationID).isEmpty)
+    }
+
+    @Test("A stale or foreign confirmation cannot consume a newer pending revision or another task")
+    func stalePlanConfirmationIsRejected() async throws {
+        let (database, source) = try await planConfirmationFixture()
+        let store = SQLiteIntelligenceStore(database: database)
+        let newer = source.revised(status: .ready, title: "Newer pending decision")
+        try await store.savePlanRevision(newer)
+        await #expect(throws: (any Error).self) {
+            _ = try await store.confirmPlan(source, conversationID: source.conversationID, execution: .normal)
+        }
+        await #expect(throws: FloeError.unauthorized) {
+            _ = try await store.confirmPlan(newer, conversationID: UUID(), execution: .normal)
+        }
+        #expect(try await store.latestPlan(conversationID: source.conversationID)?.status == .ready)
+        #expect(try await store.latestPlan(conversationID: source.conversationID)?.title == newer.title)
+        #expect(try await SQLiteConversationStore(database: database).messages(conversationID: source.conversationID).isEmpty)
+    }
+
+    @Test("The actual run consumes the staged confirmation once, preserving its metadata and user-message identity")
+    func confirmedPlanRunReusesOneMessage() async throws {
+        let (database, source) = try await planConfirmationFixture()
+        let receipt = try await SQLiteIntelligenceStore(database: database).confirmPlan(
+            source, conversationID: source.conversationID, execution: .normal)
+        let confirmation = receipt.snapshot
+        await #expect(throws: (any Error).self) {
+            _ = try await SQLiteRunLaunchStore(database: database).prepare(.init(
+                conversationID: source.conversationID, runID: UUID(), goal: confirmation.executionPrompt,
+                reusingUserMessageID: confirmation.messageID))
+        }
+        #expect(try await SQLiteRunStore(database: database).runs(conversationID: source.conversationID).isEmpty)
+        let prepared = try await SQLiteRunLaunchStore(database: database).prepare(.init(
+            conversationID: source.conversationID, runID: confirmation.executionRunID,
+            goal: confirmation.executionPrompt, reusingUserMessageID: confirmation.messageID))
+        #expect(prepared.userMessage.id == confirmation.messageID)
+        #expect(PlanConfirmationSnapshot.from(message: prepared.userMessage) == confirmation)
+        let messages = try await SQLiteConversationStore(database: database).messages(conversationID: source.conversationID)
+        #expect(messages.count == 1 && messages[0].runID == confirmation.executionRunID)
+        #expect(PlanConfirmationSnapshot.from(message: messages[0]) == confirmation)
+        await #expect(throws: (any Error).self) {
+            _ = try await SQLiteRunLaunchStore(database: database).prepare(.init(
+                conversationID: source.conversationID, runID: UUID(), goal: confirmation.executionPrompt,
+                reusingUserMessageID: confirmation.messageID))
+        }
+        #expect(try await SQLiteRunStore(database: database).runs(conversationID: source.conversationID).count == 1)
+        #expect(try await SQLiteConversationStore(database: database).messages(conversationID: source.conversationID).count == 1)
+    }
+
+    @Test("Plan section discovery asks for executable outcomes without imposing a count or invalidating legacy drafts")
+    func planGranularityContractRemainsCompatible() throws {
+        let schema = try #require(try JSONSerialization.jsonObject(with: Data(PlanSubmission.parametersJSON.utf8)) as? [String: Any])
+        let properties = try #require(schema["properties"] as? [String: Any])
+        let sections = try #require(properties["sections"] as? [String: Any])
+        let item = try #require(sections["items"] as? [String: Any])
+        let fields = try #require(item["properties"] as? [String: Any])
+        let body = try #require(fields["body"] as? [String: Any])
+        let description = try #require(body["description"] as? String)
+        for word in ["action", "deliverable", "verification", "dependencies"] { #expect(description.contains(word)) }
+        #expect(sections["minItems"] == nil && sections["maxItems"] == nil)
+        let legacy = PlanSubmission(title: "A precise small task", summary: "One outcome",
+            sections: [.init(title: "Rename the file", body: "Preserve its contents")],
+            acceptanceCriteria: [.init(text: "Renamed", verification: "Read its name and contents")])
+        #expect(legacy.validationErrors.isEmpty)
+    }
+
+
+    @Test("Generic message editing or metadata stripping cannot rewrite a confirmed plan history card")
+    func confirmedPlanMessageIsNotAnEditableDraft() async throws {
+        let (database, source) = try await planConfirmationFixture()
+        let receipt = try await SQLiteIntelligenceStore(database: database).confirmPlan(
+            source, conversationID: source.conversationID, execution: .normal)
+        let conversations = SQLiteConversationStore(database: database)
+        let original = try #require(try await conversations.messages(conversationID: source.conversationID).first)
+        try await conversations.appendMessage(original) // exact idempotent delivery is safe
+        var edited = original; edited.content = "A different plan, never confirmed"
+        var stripped = original; stripped.parts = []
+        var foreign = original; foreign.conversationID = UUID()
+        for changed in [edited, stripped, foreign] {
+            await #expect(throws: (any Error).self) { try await conversations.appendMessage(changed) }
+        }
+        let retained = try #require(try await conversations.messages(conversationID: source.conversationID).first)
+        #expect(retained == original)
+        #expect(PlanConfirmationSnapshot.from(message: retained) == receipt.snapshot)
+    }
+
 }
 
 private struct EmptyContextSummarizer: ContextSummarizer {

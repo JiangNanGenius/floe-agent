@@ -688,6 +688,30 @@ final class FloePlatformServices: @unchecked Sendable {
 
     static let residentRecoveryJobID = "linux-resident-recovery"
 
+    /// Both callers report through the existing attempt epoch/sequence gate.
+    /// Bytes are forwarded in their real phase; no overall percentage is invented.
+    static func residentRecoveryProgress(jobID: String, epoch: UUID) -> (
+        phase: @Sendable (LinuxGuestImageTransferPhase) -> Void,
+        bytes: @Sendable (Int64, Int64) -> Void
+    ) {
+        let box = LinuxImageJobPhaseBox()
+        let phase: @Sendable (LinuxGuestImageTransferPhase) -> Void = { phase in
+            let stamp = box.advance(phase)
+            Task { @MainActor in
+                EnvironmentPackageJobs.shared.reportPhase(id: jobID, epoch: epoch,
+                    sequence: stamp.sequence, phase: stamp.phase)
+            }
+        }
+        let bytes: @Sendable (Int64, Int64) -> Void = { received, expected in
+            let stamp = box.snapshot()
+            Task { @MainActor in
+                EnvironmentPackageJobs.shared.reportBytes(id: jobID, epoch: epoch,
+                    sequence: stamp.sequence, phase: stamp.phase, received: received, expected: expected)
+            }
+        }
+        return (phase, bytes)
+    }
+
     /// A new environment, explicitly requested after unresolved provenance.
     /// Downloads the trusted default without adopting the retained disk as that
     /// image. Old disk bytes and host environment metadata are kept unchanged.
@@ -698,23 +722,27 @@ final class FloePlatformServices: @unchecked Sendable {
             throw FloeError.invalidConfiguration(String(localized: "execution.runtime_reset.unavailable"))
         }
         _ = try await EnvironmentPackageJobs.shared.runShared(id: Self.residentRecoveryJobID,
-            title: String(localized: "execution.runtime_rebuild.progress"), cancellation: cancellation) { _, cancellation in
+            title: String(localized: "execution.runtime_rebuild.progress"), cancellation: cancellation) { epoch, cancellation in
+            let report = Self.residentRecoveryProgress(jobID: Self.residentRecoveryJobID, epoch: epoch)
+            report.phase(.checking)
             let replacementImageID = LinuxGuestImageDistributionCatalog.defaultImageID
             _ = try await self.prepareLinuxImage(imageID: replacementImageID, cancellation: cancellation,
-                onProgress: { _, _ in }, forceDownload: true)
+                onProgress: report.bytes, forceDownload: true, onPhase: report.phase)
             try cancellation.throwIfCancelled()
             try Task.checkCancellation()
             // Fence ALL Linux admissions, including future IDs, then cancel
             // and join the already-owned sessions/jobs/tools. Their SH guards
             // are released only by real finish callbacks, never a timeout.
             try await registry.prepare()
+            report.phase(.stoppingRuntime)
             let maintenance = try await coordinator.beginLinuxRuntimeMaintenance()
             do {
                 let records = await registry.all().filter { $0.effectiveExecutionBackend == .linuxVM && $0.kind != .template }
                 try await lifecycle.quiesceLinuxRuntime(containerIDs: records.map(\.id))
                 try await coordinator.waitForLinuxRuntimeMaintenance(maintenance)
                 try cancellation.throwIfCancelled(); try Task.checkCancellation()
-                let receipt = try await guests.rebuildPreservingData(imageID: replacementImageID)
+                let receipt = try await guests.rebuildPreservingData(imageID: replacementImageID, onPhase: report.phase)
+                report.phase(.finalizing)
                 // Publish the physical commit, not merely successful download or
                 // a stop request. The persistent native receipt repairs this step
                 // after a crash, so old task pins cannot silently use a new disk.
@@ -1119,7 +1147,8 @@ final class FloePlatformServices: @unchecked Sendable {
         cancellation: CancellationToken,
         onProgress: @escaping @Sendable (Int64, Int64) -> Void,
         activityID: UUID? = nil,
-        forceDownload: Bool = false
+        forceDownload: Bool = false,
+        onPhase: @escaping @Sendable (LinuxGuestImageTransferPhase) -> Void = { _ in }
     ) async throws -> String {
         let jobID = "linux-image:" + imageID
         // Register this waiter BEFORE any awaits: a settings-level global
@@ -1163,6 +1192,7 @@ final class FloePlatformServices: @unchecked Sendable {
         ) { epoch, jobCancellation in
             let phaseBox = LinuxImageJobPhaseBox()
             let reportPhase: @Sendable (LinuxGuestImageTransferPhase) -> Void = { phase in
+                if !cancellation.isCancelled { onPhase(phase) }
                 let stamp = phaseBox.advance(phase)
                 Task { @MainActor in
                     EnvironmentPackageJobs.shared.reportPhase(

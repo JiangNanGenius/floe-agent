@@ -24,20 +24,29 @@ class TestFlightPreparationTests(unittest.TestCase):
     def test_preparation_readback_and_retry_are_idempotent(self):
         self._exercise_preparation(race=False)
 
-    def _exercise_preparation(self, race):
+    def test_automatic_internal_group_waits_without_manual_assignment(self):
+        self._exercise_preparation(race=False, automatic=True)
+
+    def _exercise_preparation(self, race, automatic=False):
         writes, locales, groups = [], [], []
-        group = {'type': 'betaGroups', 'id': 'qa', 'attributes': {'name': 'Floe QA', 'isInternalGroup': True}}
+        group = {'type': 'betaGroups', 'id': 'qa', 'attributes': {
+            'name': 'Floe QA', 'isInternalGroup': True, 'hasAccessToAllBuilds': automatic}}
+        group_reads, pauses = [], []
         def api(method, path, body=None):
             if method != 'GET':
                 writes.append((method, path))
                 if path == '/v1/betaBuildLocalizations':
                     item = body['data']; item['id'] = 'locale-' + item['attributes']['locale']; locales.append(item)
                 elif path == '/v1/betaGroups/qa/relationships/builds':
+                    self.assertFalse(automatic, 'Automatic internal groups must never receive manual assignment')
                     groups.append(group)
                     if race: raise RuntimeError('HTTP 422')
                 else: self.fail('Unexpected write')
                 return {}
             if path == '/v1/builds/build?include=betaGroups':
+                group_reads.append(path)
+                if automatic and len(group_reads) == 4:
+                    groups.append(group)
                 return {'data': {'relationships': {'betaGroups': {'data': [{'type': 'betaGroups', 'id': g['id']} for g in groups]}}}, 'included': groups}
             if path.startswith('/v1/builds/build?'):
                 return {'data': {'attributes': {'version': '149', 'processingState': 'VALID'},
@@ -49,9 +58,20 @@ class TestFlightPreparationTests(unittest.TestCase):
             self.fail('Unexpected read')
         notes = {'en-US': 'Check maps', 'zh-Hans': '检查导图'}
         for _ in range(2):
-            result = prepare.prepare('build', 'org.floe', '1.7.0', '149', notes, api)
+            result = prepare.prepare('build', 'org.floe', '1.7.0', '149', notes, api, pause=pauses.append)
             self.assertEqual(result['processing'], 'VALID')
-        self.assertEqual(len(writes), 3)
+        self.assertEqual(len(writes), 2 if automatic else 3)
+        if automatic:
+            self.assertEqual(pauses, [10, 10])
+
+    def test_automatic_internal_group_timeout_never_claims_access(self):
+        pauses = []
+        def api(method, path, body=None):
+            self.assertEqual(method, 'GET')
+            return {'data': {'relationships': {'betaGroups': {'data': []}}}, 'included': []}
+        with self.assertRaisesRegex(RuntimeError, 'not confirmed'):
+            prepare.wait_for_group('build', 'qa', api, pauses.append, attempts=61, interval=10)
+        self.assertEqual(sum(pauses), 600)
 
     def test_incomplete_group_include_is_not_treated_as_absent(self):
         def api(method, path, body=None):

@@ -38,6 +38,12 @@ public enum LinuxGuestImageTransferPhase: String, Sendable, Equatable, CaseItera
     case verifyingImage
     /// Atomic promotion / Runtime v2 refresh of the verified image.
     case finalizing
+    /// The service is stopping admitted work before a physical runtime change.
+    case stoppingRuntime
+    /// Preparing a verified replacement disk; no old disk is overwritten.
+    case creatingEnvironment
+    /// The durable candidate is ready for the atomic exchange that retains the old disk.
+    case retainingEnvironment
 }
 
 /// Shared progress bookkeeping for the image job. A phase change starts a new

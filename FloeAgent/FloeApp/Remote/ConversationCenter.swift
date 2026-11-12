@@ -1429,6 +1429,9 @@ final class ConversationCenter: ObservableObject {
         /// Tests can prepare another Goal in this exact suspension.
         var afterGoalControlFence: (@Sendable (UUID) async -> Void)?
         var afterTaskRootAcquired: (@Sendable (URL?) async throws -> Void)?
+        /// Stop hosted tests after the real durable binding checks, before
+        /// compositions, provider I/O or any executable tool can start.
+        var afterExecutionBindingResolved: (@Sendable (TaskExecutionBinding?) async throws -> Void)?
         var didReleaseTaskRoot: (@Sendable () -> Void)?
         /// Observe the actual native configuration passed to a new service.
         var didConfigureGoalBudget: (@Sendable (UUID, GoalBudgets?) -> Void)?
@@ -4126,11 +4129,41 @@ final class ConversationCenter: ObservableObject {
         let workspaceStore = SQLiteWorkspaceStore(database: environment.database)
         let conversationRecord = try? await conversationStore.conversation(id: conversationID)
         let isNotesAssistant = conversationRecord?.purpose == .notes
+        // Purpose commits with the conversation, before the entry point's
+        // asynchronous environment check/bind. A first send or retry can
+        // therefore legitimately find a cleanup purpose with no pin yet.
+        // Read it BEFORE ordinary defaults can permanently bind a project.
+        let linuxCacheCleanupProfile = try await LinuxCacheCleanupTaskStore(database: environment.database)
+            .profile(conversationID: conversationID)
+        if let profile = linuxCacheCleanupProfile {
+            guard !isTemporary, runSurface == .ordinary, !isNotesAssistant,
+                  profile.isValid, profile.conversationID == conversationID,
+                  profile.environmentID == EnvironmentRegistry.sharedContainerID,
+                  profile.backend == .linuxVM,
+                  environmentBindingOverride == nil || environmentBindingOverride == profile.environmentID else {
+                throw FloeError.validationFailed("The cleanup task's stored Linux scope does not match this run.")
+            }
+        }
+        func cleanupWorkspaceFailure(_ underlying: Error? = nil) -> NSError {
+            var details: [String: Any] = [NSLocalizedDescriptionKey: IDELanguageRunText.t(
+                "清理任务的工作文件夹暂时无法打开。请重新打开此任务后重试；本次未启动清理。",
+                "The cleanup task's working folder is unavailable. Reopen this task and retry; cleanup has not started.")]
+            if let underlying { details[NSUnderlyingErrorKey] = underlying }
+            return NSError(domain: "Floe.LinuxCacheCleanup.Workspace", code: 1, userInfo: details)
+        }
         // A temporary conversation never owns a durable workspace: skip the
         // lease, the ownership lookup and every workspace-side effect.
         let effectiveWorkspaceID: UUID? = isTemporary ? nil : workspaceID
         let canonicalWorkspaceID: UUID?
-        if let effectiveWorkspaceID {
+        if linuxCacheCleanupProfile != nil {
+            // The durable owner wins over a not-yet-published/stale UI list.
+            // An explicit conflicting owner is refused, never substituted.
+            guard let owner = try await workspaceStore.workspaceID(conversationID: conversationID),
+                  effectiveWorkspaceID == nil || effectiveWorkspaceID == owner else {
+                throw cleanupWorkspaceFailure()
+            }
+            canonicalWorkspaceID = owner
+        } else if let effectiveWorkspaceID {
             canonicalWorkspaceID = effectiveWorkspaceID
         } else if isTemporary {
             canonicalWorkspaceID = nil
@@ -4154,10 +4187,20 @@ final class ConversationCenter: ObservableObject {
         // Resolve from persistence, not the UI cache. A private workspace is
         // created in the same transaction as the first run and may not have
         // reached WorkspaceCenter's published list yet.
-        let canonicalWorkspace: WorkspaceRecord? = if let canonicalWorkspaceID {
-            try? await workspaceStore.workspace(id: canonicalWorkspaceID)
+        let canonicalWorkspace: WorkspaceRecord?
+        if let canonicalWorkspaceID {
+            if linuxCacheCleanupProfile != nil {
+                do {
+                    guard let workspace = try await workspaceStore.workspace(id: canonicalWorkspaceID) else {
+                        throw FloeError.notFound("Cleanup task workspace")
+                    }
+                    canonicalWorkspace = workspace
+                } catch { throw cleanupWorkspaceFailure(error) }
+            } else {
+                canonicalWorkspace = try? await workspaceStore.workspace(id: canonicalWorkspaceID)
+            }
         } else {
-            nil
+            canonicalWorkspace = nil
         }
         // Notes assistant runs get their own confined scratch workspace, not a
         // project workspace lease: staged inputs and generated outputs live
@@ -4189,15 +4232,19 @@ final class ConversationCenter: ObservableObject {
                 )
             }
         }
-        let taskRootLease: WorkspaceCenter.TaskRootLease? = if runSurface == .ordinary,
-                                                              !isNotesAssistant,
-                                                              let canonicalWorkspace {
-            try? await environment.workspaceCenter.acquireTaskRoot(
-                canonicalWorkspace,
-                conversationID: conversationID
-            )
+        let taskRootLease: WorkspaceCenter.TaskRootLease?
+        if runSurface == .ordinary, !isNotesAssistant, let canonicalWorkspace {
+            if linuxCacheCleanupProfile != nil {
+                do {
+                    taskRootLease = try await environment.workspaceCenter.acquireTaskRoot(
+                        canonicalWorkspace, conversationID: conversationID)
+                } catch { throw cleanupWorkspaceFailure(error) }
+            } else {
+                taskRootLease = try? await environment.workspaceCenter.acquireTaskRoot(
+                    canonicalWorkspace, conversationID: conversationID)
+            }
         } else {
-            nil
+            taskRootLease = nil
         }
         let releaseObserver = launchTestHooks.didReleaseTaskRoot
         let taskRootResources = ConversationRunResourceLease {
@@ -4264,7 +4311,8 @@ final class ConversationCenter: ObservableObject {
             do {
                 let pin = try await environment.taskExecutionEnvironments.resolveBinding(
                     conversationID: conversationID, runID: runID, root: root,
-                    workspace: canonicalWorkspace, override: environmentBindingOverride)
+                    workspace: canonicalWorkspace,
+                    override: linuxCacheCleanupProfile?.environmentID ?? environmentBindingOverride)
                 runExecutionBinding = pin
                 runExecutionEnvironmentID = pin.target.environmentID
             } catch let unavailable as TaskExecutionAvailabilityError {
@@ -4284,21 +4332,22 @@ final class ConversationCenter: ObservableObject {
             runExecutionEnvironmentID = nil
         }
 
-        // The cleanup purpose is durable and read from its own create-only
-        // table, never inferred from title/prompt or a mutable task policy.
+        // The cleanup purpose was read from its create-only table before
+        // resolving a binding, never inferred from text or a mutable policy.
         // A cleanup row is valid only for the SAME conversation and explicit
         // environment; an unreadable row aborts the run instead of silently
         // restoring ordinary tools.
-        let linuxCacheCleanupProfile = try await LinuxCacheCleanupTaskStore(database: environment.database)
-            .profile(conversationID: conversationID)
         if let linuxCacheCleanupProfile {
             guard linuxCacheCleanupProfile.conversationID == conversationID,
                   linuxCacheCleanupProfile.environmentID == runExecutionEnvironmentID,
-                  linuxCacheCleanupProfile.backend == .linuxVM else {
+                  linuxCacheCleanupProfile.backend == .linuxVM,
+                  runExecutionBinding?.conversationID == conversationID,
+                  runExecutionBinding?.target.backend == .linuxVM else {
                 throw FloeError.validationFailed(
                     "The cleanup task's stored Linux scope does not match this run. Create a new cleanup task from Data Management.")
             }
         }
+        try await launchTestHooks.afterExecutionBindingResolved?(runExecutionBinding)
 
         preparationStage("end:execution_binding")
         preparationStage("begin:native_compositions")
@@ -5373,6 +5422,31 @@ final class ConversationCenter: ObservableObject {
         }
     }
 
+    /// Confirmation uses the same ingress vault boundary as ordinary sends,
+    /// before its safe user message and immutable snapshot become durable.
+    func confirmPlan(
+        _ plan: PlanDraft, in conversationID: UUID, execution: PlanExecutionRecommendation
+    ) async throws -> PlanConfirmationReceipt {
+        guard plan.conversationID == conversationID, !isTemporaryConversation(conversationID),
+              !isClearingHistory, !deletingConversationIDs.contains(conversationID) else {
+            throw FloeError.unauthorized
+        }
+        return try await environment.intelligenceStore.confirmPlan(
+            plan, conversationID: conversationID, execution: execution,
+            captureSecrets: { captures in
+                try await self.capturePlanConfirmationSecrets(captures, conversationID: conversationID)
+            })
+    }
+
+    private func capturePlanConfirmationSecrets(_ captures: [CapturedSecret], conversationID: UUID) async throws {
+        guard !isTemporaryConversation(conversationID), !isClearingHistory,
+              !deletingConversationIDs.contains(conversationID),
+              try await environment.conversationStore.conversation(id: conversationID) != nil else {
+            throw FloeError.unauthorized
+        }
+        try await captureIngressSecrets(captures, owner: .conversation(conversationID))
+    }
+
     /// Launches a new run and returns immediately. The task result covers
     /// the complete run; the run itself is persisted at the beginning of
     /// `ConversationRunService.start`, before provider I/O starts.
@@ -5390,6 +5464,7 @@ final class ConversationCenter: ObservableObject {
         /// Trusted feature-owned attempt identity persisted before launch.
         /// Nil retains ordinary/temporary chat's existing ID allocation.
         newRunID: UUID? = nil,
+        reusingUserMessageID: UUID? = nil,
         executionEnvironmentID: String? = nil,
         expectedGoal: (id: UUID, revision: Int)? = nil,
         startOrigin: ContinuedProcessingStartOrigin
@@ -5419,7 +5494,7 @@ final class ConversationCenter: ObservableObject {
         // session afterwards. Store authority rides the session, which
         // forwards after Keep and closes at End.
         let launchIsTemporary = isTemporaryConversation(conversationID)
-        guard !launchIsTemporary || (newRunID == nil && executionEnvironmentID == nil) else {
+        guard !launchIsTemporary || (newRunID == nil && executionEnvironmentID == nil && reusingUserMessageID == nil) else {
             throw FloeError.validationFailed("A feature-owned launch cannot use temporary chat")
         }
         // Temporary chat is text-only at the ACTUAL launch boundary, not
@@ -5510,6 +5585,7 @@ final class ConversationCenter: ObservableObject {
                 rawValue: environment.settingsCenter.defaultAgentMode.taskApprovalModeName
             ) ?? .ask),
             messageRole: isGoalContinuation ? "goalContinuation" : "user",
+            reusingUserMessageID: reusingUserMessageID,
             providerID: provider.id,
             modelID: model.id,
             providerName: provider.displayName ?? provider.kind.rawValue,

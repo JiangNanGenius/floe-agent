@@ -43,6 +43,45 @@ final class LinuxResidentRecoveryTests: XCTestCase, @unchecked Sendable {
         func previous(_ id: String) -> URL { root.appendingPathComponent("recovery/\(id)/previous") }
     }
 
+    private final class StageTrace: @unchecked Sendable {
+        private let lock = NSLock()
+        private var events: [String] = []
+        func record(_ value: String) { lock.withLock { events.append(value) } }
+        var values: [String] { lock.withLock { events } }
+    }
+
+    func testProgressDescribesRealCandidateCreationAndOldDiskRetention() throws {
+        let f = try Fixture(); defer { f.remove() }
+        let trace = StageTrace()
+        let store = try LinuxResidentRecoveryStore(root: f.root, hooks: .init(event: { event in
+            switch event {
+            case .candidateDurable: trace.record("candidate-durable")
+            case .beforeExchange: trace.record("before-exchange")
+            default: break
+            }
+        }))
+        let transaction = try store.begin(imageID: "trusted-new")
+        defer { transaction.endAdmission() }
+        let receipt = try transaction.replace(onPhase: { trace.record($0.rawValue) }) { build in
+            trace.record("prepare-actual-bytes")
+            return try f.prepare(build)
+        }
+        XCTAssertEqual(trace.values, ["creatingEnvironment", "prepare-actual-bytes", "candidate-durable", "retainingEnvironment", "before-exchange"])
+        XCTAssertEqual(try f.bytes(f.current), f.newBytes)
+        let retained = f.root.appendingPathComponent(try XCTUnwrap(receipt.preservedRelativePath))
+        XCTAssertEqual(try f.bytes(retained), f.oldBytes)
+    }
+
+    func testFailedPreparationNeverReportsOldDiskRetainedOrCompleted() throws {
+        let f = try Fixture(); defer { f.remove() }
+        let trace = StageTrace()
+        let transaction = try LinuxResidentRecoveryStore(root: f.root).begin(imageID: "trusted-new")
+        defer { transaction.endAdmission() }
+        XCTAssertThrowsError(try transaction.replace(onPhase: { trace.record($0.rawValue) }) { _ in throw Fault.injected })
+        XCTAssertEqual(trace.values, ["creatingEnvironment"])
+        XCTAssertEqual(try f.bytes(f.current), f.oldBytes)
+    }
+
     private enum Fault: Error { case injected }
 
     func testAtomicExchangeRetainsEveryOldByteAndSameDiskInode() throws {

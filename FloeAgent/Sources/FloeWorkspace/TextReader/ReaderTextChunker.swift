@@ -308,7 +308,7 @@ public enum ReaderTextChunker {
                    forLine: paragraph[0].text,
                    maxCharacters: limits.maxHeadingCharacters) {
                 kind = .heading(level: heading.level)
-                emit(heading.title, start: paragraph[0].start,
+                emit(markdown ? heading.title : paragraph[0].text, start: paragraph[0].start,
                      lineNumber: paragraph[0].lineNumber, kind: kind, continues: false)
                 paragraph = []
                 return
@@ -373,7 +373,7 @@ public enum ReaderTextChunker {
             // followed directly by prose must not merge into one paragraph.
             if let heading = ReaderChapterRules.heading(forLine: text ?? "", maxCharacters: limits.maxHeadingCharacters) {
                 flushParagraph()
-                emit(heading.title, start: line.start, lineNumber: lineNumber,
+                emit(markdown ? heading.title : (text ?? ""), start: line.start, lineNumber: lineNumber,
                      kind: .heading(level: heading.level), continues: false)
                 continue
             }

@@ -2,6 +2,32 @@ import Foundation
 import FloeTools
 import FloeCore
 
+/// One dispatch's actual schema exposure. A fresh instance per attempt/run
+/// fences late local-adapter callbacks from a newer request or sibling. The
+/// catalog intersection is metadata only; it never changes authorization.
+final class DispatchedToolSchemaState: @unchecked Sendable {
+    private let lock = NSLock()
+    private let catalogNames: Set<String>
+    private var preparedNames: Set<String>
+
+    init(catalogNames: [String] = [], offeredNames: [String] = []) {
+        self.catalogNames = Set(catalogNames)
+        self.preparedNames = Set(offeredNames).intersection(self.catalogNames)
+    }
+
+    func recordPrepared(_ names: [String]) {
+        lock.lock()
+        defer { lock.unlock() }
+        preparedNames = Set(names).intersection(catalogNames)
+    }
+
+    var offeredNames: Set<String> {
+        lock.lock()
+        defer { lock.unlock() }
+        return preparedNames
+    }
+}
+
 /// Provider-independent deferred schemas. Search uses only executable tools
 /// already inside this run's permission/skill ceiling.
 enum ToolDiscovery {
@@ -10,7 +36,7 @@ enum ToolDiscovery {
     static let listName = "tools.list"
     static var listDescriptor: ToolCatalog.Descriptor {
         .init(name: listName,
-              toolDescription: "List the complete executable tool directory within this task's permission ceiling without loading schemas or executing tools. Follow nextAfterName until absent. Filter by group if desired. schemaLoaded=false means discoverable, not missing; use tools.search with an exact name or queries array to load definitions.",
+              toolDescription: "List the complete executable tool directory within this task's permission ceiling without loading schemas or executing tools. Follow nextAfterName until absent. Filter by group if desired. schemaLoaded reports complete definitions in the latest dispatched inference request, not historical activation or permission. false means discoverable, not missing; use tools.search with an exact name or queries array to load definitions.",
               parametersJSON: #"{"type":"object","properties":{"afterName":{"type":"string"},"group":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":100}},"additionalProperties":false}"#,
               riskLabels: [], isSideEffecting: false)
     }
@@ -95,7 +121,7 @@ enum ToolDiscovery {
         var search = descriptor
         search.toolDescription = "Find definitions for currently available tools within \(scope). Search by exact tool name or capability. This runtime metadata helper only loads permitted schemas; it never executes tools, grants permission or enables an unavailable provider. A forbidden name or capability cannot be unlocked by searching."
         var list = listDescriptor
-        list.toolDescription = "List metadata for currently available tools within \(scope). This runtime metadata helper does not execute tools or grant permission. Use tools.search to load a permitted definition; schemaLoaded=false means deferred, not denied. Follow nextAfterName until absent."
+        list.toolDescription = "List metadata for currently available tools within \(scope). This runtime metadata helper does not execute tools or grant permission. Use tools.search to load a permitted definition; schemaLoaded reports the latest dispatched inference request; false means absent from that request, not denied. Follow nextAfterName until absent."
         return [search, list, ToolResultPagingTool.descriptor]
     }
 
@@ -219,7 +245,7 @@ enum ToolDiscovery {
     /// Tools whose canonical name (or a known alias) is an EXACT token of one
     /// query. An exact-name search must give the model the complete callable
     /// schema, not a 160-character teaser: the model may then call the tool
-    /// immediately, and the schema is also loaded for the next request.
+    /// using that complete definition; future provider admission remains budgeted.
     static func exactNameMatches(_ queries: [String], descriptors: [ToolCatalog.Descriptor]) -> [ToolCatalog.Descriptor] {
         let descriptors = descriptors.filter { !RetiredExecutionTools.contains($0.name) }
         var result: [ToolCatalog.Descriptor] = []
@@ -262,7 +288,7 @@ enum ToolDiscovery {
         var used = 0
         for descriptor in descriptors {
             let name = wireSpelling(descriptor.name, wireSafe: wireSafeNames)
-            let section = "Complete schema for \(name) (callable now; also loaded for later requests):\n"
+            let section = "Complete schema for \(name) (complete arguments below; requested for future budgeted admission):\n"
                 + descriptor.toolDescription + "\nparametersJSON: " + descriptor.parametersJSON
             // A JSON Schema cut to fit is not a smaller schema: required
             // fields, nested objects and enums can be lost and the model then
@@ -270,7 +296,7 @@ enum ToolDiscovery {
             // definition instead of slicing it; the provider request carries
             // the complete definition once the name is activated.
             if section.utf8.count > perToolBytes {
-                sections.append("The complete schema for \(name) is \(section.utf8.count) bytes, above this result's per-tool display envelope (\(perToolBytes) bytes). It was not sliced. It is loaded as a complete provider schema when offered; call it with its documented arguments and the runtime will validate them.")
+                sections.append("The complete schema for \(name) is \(section.utf8.count) bytes, above this result's per-tool display envelope (\(perToolBytes) bytes). It was not sliced. It is a candidate for complete provider admission when the final request window permits. Do not guess absent arguments; a search result does not guarantee the next request can carry it.")
                 continue
             }
             if used + section.utf8.count > totalBytes {
@@ -281,6 +307,17 @@ enum ToolDiscovery {
             sections.append(section)
         }
         return sections.joined(separator: "\n\n")
+    }
+
+    /// Admitted at the same measured optional boundary as the full index.
+    static func compactIndex(_ descriptors: [ToolCatalog.Descriptor], wireSafeNames: Bool = false) -> String {
+        let visible = descriptors.filter { !RetiredExecutionTools.contains($0.name) }
+        let groups = Dictionary(grouping: visible, by: { group($0.name) })
+        let summary = groups.keys.sorted().map { "\($0) (\(groups[$0]!.count))" }.joined(separator: ", ")
+        let list = wireSpelling(listName, wireSafe: wireSafeNames)
+        let search = wireSpelling(name, wireSafe: wireSafeNames)
+        return "Available tool groups (metadata only): " + (summary.isEmpty ? "none" : summary)
+            + ". Use \(list) for the complete authorized inventory and \(search) to request exact definitions. Schema activation is budgeted; permissions still apply."
     }
 
     static func index(_ descriptors: [ToolCatalog.Descriptor], wireSafeNames: Bool = false) -> String {

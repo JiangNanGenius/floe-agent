@@ -88,6 +88,7 @@ private struct ChatInlineContentRequest: Hashable {
     let attempt: Int
 }
 private struct ChatInlineContentView: View {
+    @EnvironmentObject private var router: AppRouter
     let title: String
     let uri: String
     @EnvironmentObject private var environment: AppEnvironment
@@ -101,9 +102,14 @@ private struct ChatInlineContentView: View {
         VStack(alignment: .leading, spacing: 0) {
             if failed {
                 VStack(alignment: .leading, spacing: 6) {
-                    Label(IDELanguageRunText.t("内容暂时无法显示，请重试或重新生成。", "Content is unavailable. Retry or generate it again."), systemImage: "doc.badge.ellipsis")
+                    Label(IDELanguageRunText.t("暂时无法预览。可重试或在文件列表中打开。", "Preview is unavailable. Retry or open the file from the file list."), systemImage: "doc.badge.ellipsis")
                         .font(.callout).foregroundStyle(.secondary)
-                    Button(IDELanguageRunText.t("重试", "Retry")) { attempt += 1 }.frame(minHeight: 44)
+                    HStack {
+                        Button(IDELanguageRunText.t("重试", "Retry")) { attempt += 1 }
+                        if let scope, !scope.isTemporary, router.selectedConversationID == scope.conversationID {
+                            Button(IDELanguageRunText.t("文件列表", "Files")) { router.showInspector(.workspaceFiles) }
+                        }
+                    }.frame(minHeight: 44)
                 }
             } else if let resolved {
                 switch resolved {

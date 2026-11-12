@@ -199,6 +199,12 @@ final class TextReaderModel: ObservableObject {
     private var openTask: Task<Void, Never>?
     private var switchedEncodingNotice = false
     private var findTask: Task<Void, Never>?
+    private var pageTask: Task<Int64?, Never>?
+    private var pageGeneration = 0
+    @Published private(set) var hasEarlier = false
+    @Published private(set) var pageError: String?
+    var retainedTextBytes: Int { blocks.reduce(0) { $0 + $1.text.utf8.count } }
+    var retainedTextLimit: Int { max(64 * 1024, source.limits.windowBytes) * 3 }
 
     init(source: TextReaderSource, positionStore: ReaderPositionStoring = ReaderUserDefaultsPositionStore()) {
         self.source = source
@@ -206,7 +212,8 @@ final class TextReaderModel: ObservableObject {
     }
 
     var title: String { source.displayName }
-    var canAppend: Bool { hasMore && !isAppending && phase == .ready }
+    var canAppend: Bool { hasMore && !isAppending && phase == .ready
+        && (retainedTextBytes <= retainedTextLimit || (blocks.dropFirst().first?.byteOffset ?? Int64.max) <= topByte) }
 
     /// Explicit detected-vs-user-chosen state for the encoding readout.
     var encodingOrigin: ReaderEncodingOrigin {
@@ -234,6 +241,9 @@ final class TextReaderModel: ObservableObject {
     /// propagates into the bounded scan, so nothing keeps indexing a closed
     /// reader.
     func cancelOpen() {
+        openGeneration &+= 1
+        pageTask?.cancel(); pageTask = nil
+        isAppending = false
         openTask?.cancel()
         openTask = nil
         findTask?.cancel()
@@ -245,6 +255,8 @@ final class TextReaderModel: ObservableObject {
     /// rapid encoding switch really aborts the outgoing scan.
     private func supersedeOpen(selection: ReaderEncodingSelection, markSwitch: Bool) async {
         openTask?.cancel()
+        pageTask?.cancel(); pageTask = nil
+        isAppending = false
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
             await self.openDocument(selection: selection, markSwitch: markSwitch)
@@ -345,6 +357,8 @@ final class TextReaderModel: ObservableObject {
         blocks = result.window.blocks
         windowEnd = result.window.endByte
         hasMore = result.window.hasMore
+        hasEarlier = result.window.startByte > 0
+        pageError = nil
         progress = result.window.progress
         lineNumber = result.window.startLineNumber
         totalLines = result.totalLines
@@ -373,53 +387,98 @@ final class TextReaderModel: ObservableObject {
         }
     }
 
-    func appendNext() async {
-        guard canAppend else { return }
+    func appendNext() async { _ = await loadPage(.next) }
+    func prependPrevious() async { _ = await loadPage(.previous) }
+
+    private enum PageDirection { case next, previous, jump(Int64) }
+
+    /// Owns cancellation across the actor hop. No cancelled or superseded
+    /// page may publish blocks, EOF, or an error into another open.
+    private func loadPage(_ direction: PageDirection) async -> Int64? {
+        guard phase == .ready else { return nil }
+        switch direction {
+        case .next: guard canAppend else { return nil }
+        case .previous: guard hasEarlier, !isAppending else { return nil }
+        case .jump: pageTask?.cancel()
+        }
+        let generation = openGeneration
+        pageGeneration &+= 1
+        let page = pageGeneration
+        let end = windowEnd, first = blocks.first?.byteOffset ?? 0
         isAppending = true
-        defer { isAppending = false }
-        do {
-            let window = try await session.window(startByte: windowEnd)
-            guard !window.blocks.isEmpty else {
-                hasMore = false
-                return
+        pageError = nil
+        let task = Task { @MainActor [weak self] () -> Int64? in
+            guard let self else { return nil }
+            defer { if generation == self.openGeneration, page == self.pageGeneration { self.isAppending = false } }
+            do {
+                let window: ReaderWindow
+                switch direction {
+                case .next: window = try await self.session.window(startByte: end, continuing: true)
+                case .previous: window = try await self.session.window(startByte: first, backwards: true)
+                case .jump(let byte): window = try await self.session.window(startByte: byte)
+                }
+                try Task.checkCancellation()
+                guard generation == self.openGeneration, page == self.pageGeneration else { return nil }
+                switch direction {
+                case .next:
+                    guard window.endByte > end else { self.hasMore = false; return nil }
+                    self.blocks.append(contentsOf: window.blocks.filter { $0.byteOffset >= end })
+                    self.windowEnd = window.endByte
+                    self.hasMore = window.hasMore
+                    self.trimRetainedText(fromStart: true)
+                case .previous:
+                    let earlier = window.blocks.filter { $0.byteOffset < first }
+                    guard !earlier.isEmpty else { self.hasEarlier = false; return nil }
+                    self.blocks.insert(contentsOf: earlier, at: 0)
+                    self.hasEarlier = window.startByte > 0
+                    self.trimRetainedText(fromStart: false)
+                case .jump(let byte):
+                    self.blocks = window.blocks
+                    self.windowEnd = window.endByte
+                    self.hasMore = window.hasMore
+                    self.hasEarlier = window.startByte > 0
+                    self.topByte = self.blockID(containing: byte) ?? window.startByte
+                }
+                self.progress = window.progress
+                self.lineNumber = window.startLineNumber
+                return self.blockID(containing: self.topByte)
+            } catch is CancellationError { return nil }
+            catch let error as ReaderError {
+                guard generation == self.openGeneration, page == self.pageGeneration, !Task.isCancelled else { return nil }
+                if case .cancelled = error { return nil }
+                if case .superseded = error { return nil }
+                self.pageError = self.message(for: error)
+            } catch {
+                guard generation == self.openGeneration, page == self.pageGeneration, !Task.isCancelled else { return nil }
+                self.pageError = ReaderText.t("暂时无法载入这一页，请重试。", "This page couldn't be loaded. Try again.")
             }
-            blocks.append(contentsOf: window.blocks)
-            windowEnd = window.endByte
-            hasMore = window.hasMore
-            progress = window.progress
-        } catch let error as ReaderError {
-            if case .cancelled = error { return }
-            if case .superseded = error { return }
-        } catch {
-            hasMore = false
+            return nil
+        }
+        pageTask = task
+        return await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
+    }
+
+    private func trimRetainedText(fromStart: Bool) {
+        var bytes = retainedTextBytes
+        while bytes > retainedTextLimit, blocks.count > 1 {
+            if fromStart {
+                // Preserve the visible anchor. Old text remains available by
+                // paging backwards through the same admitted source.
+                guard blocks[1].byteOffset <= topByte else { break }
+                bytes -= blocks.removeFirst().text.utf8.count
+                hasEarlier = true
+            } else {
+                guard let last = blocks.last, last.byteOffset > topByte else { break }
+                windowEnd = last.byteOffset
+                bytes -= blocks.removeLast().text.utf8.count
+                hasMore = true
+            }
         }
     }
 
-    /// Replaces the visible window with the one containing `byte`. Returns the
-    /// block to anchor the scroll at.
+    /// Replaces the visible window with the one containing `byte`.
     @discardableResult
-    func jump(toByte byte: Int64) async -> Int64? {
-        guard case .ready = phase else { return nil }
-        isAppending = true
-        defer { isAppending = false }
-        do {
-            let window = try await session.window(startByte: byte)
-            guard !window.blocks.isEmpty else { return nil }
-            blocks = window.blocks
-            windowEnd = window.endByte
-            hasMore = window.hasMore
-            progress = window.progress
-            lineNumber = window.startLineNumber
-            topByte = window.blocks.first?.byteOffset ?? byte
-            return blockID(containing: byte)
-        } catch let error as ReaderError {
-            if case .cancelled = error { return nil }
-            if case .superseded = error { return nil }
-            return nil
-        } catch {
-            return nil
-        }
-    }
+    func jump(toByte byte: Int64) async -> Int64? { await loadPage(.jump(byte)) }
 
     func rememberTop(_ byteOffset: Int64) {
         topByte = byteOffset
@@ -512,8 +571,13 @@ final class TextReaderModel: ObservableObject {
 
 /// Read-only reader sheet. Present it from the file preview or a Notes text
 /// document; the existing edit entries stay exactly where they were.
+enum TextReaderChrome: Equatable { case standalone, embedded, contentOnly }
+
 struct TextReaderView: View {
     let source: TextReaderSource
+    var chrome: TextReaderChrome = .standalone
+    var onOpenFile: (() -> Void)?
+    var onShareFile: (() -> Void)?
 
     @StateObject private var model: TextReaderModel
     @Environment(\.dismiss) private var dismiss
@@ -532,8 +596,12 @@ struct TextReaderView: View {
     @State private var findQuery = ""
     @State private var noticeDismissed = false
 
-    init(source: TextReaderSource) {
+    init(source: TextReaderSource, chrome: TextReaderChrome = .standalone,
+         onOpenFile: (() -> Void)? = nil, onShareFile: (() -> Void)? = nil) {
         self.source = source
+        self.chrome = chrome
+        self.onOpenFile = onOpenFile
+        self.onShareFile = onShareFile
         _model = StateObject(wrappedValue: TextReaderModel(source: source))
     }
 
@@ -608,32 +676,37 @@ struct TextReaderView: View {
         .accessibilityIdentifier("reader.encoding")
     }
 
-    var body: some View {
-        NavigationStack {
-            ZStack {
-                appearance.background.ignoresSafeArea()
-                content
+    @ViewBuilder var body: some View {
+        if chrome == .standalone {
+            NavigationStack {
+                readerSurface
+                    .navigationTitle(model.title)
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar { toolbarContent }
             }
-            .navigationTitle(model.title)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { toolbarContent }
-            .safeAreaInset(edge: .top, spacing: 0) {
-                if showsFind { findBar }
-            }
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                if case .ready = model.phase { statusBar }
-            }
-            .task { await model.open() }
-            .onChange(of: scenePhase) { _, value in
-                if value != .active { model.savePosition() }
-            }
-            .onDisappear {
-                model.savePosition()
-                model.cancelOpen()
-            }
-            .sheet(isPresented: $showsChapters) { chaptersSheet }
-            .sheet(isPresented: $showsFindResults) { findResultsSheet }
+        } else if chrome == .embedded {
+            readerSurface
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    HStack { Spacer(); readerActions }.labelStyle(.iconOnly).padding(.horizontal, 8)
+                }
+        } else {
+            // The parent owns the only operation bar (e.g. FilePreview).
+            readerSurface
         }
+    }
+
+    private var readerSurface: some View {
+        ZStack {
+            appearance.background.ignoresSafeArea()
+            content
+        }
+        .safeAreaInset(edge: .top, spacing: 0) { if showsFind { findBar } }
+        .safeAreaInset(edge: .bottom, spacing: 0) { if case .ready = model.phase { statusBar } }
+        .task { await model.open() }
+        .onChange(of: scenePhase) { _, value in if value != .active { model.savePosition() } }
+        .onDisappear { model.savePosition(); model.cancelOpen() }
+        .sheet(isPresented: $showsChapters) { chaptersSheet }
+        .sheet(isPresented: $showsFindResults) { findResultsSheet }
     }
 
     // MARK: - Content
@@ -652,14 +725,20 @@ struct TextReaderView: View {
                 Text(message)
             } actions: {
                 encodingMenu
-                Button(ReaderText.t("关闭", "Close")) { dismiss() }
+                if let onOpenFile { Button(ReaderText.t("打开文件", "Open File"), action: onOpenFile) }
+                if let onShareFile { Button(ReaderText.t("分享", "Share"), action: onShareFile) }
+                if chrome == .standalone { Button(ReaderText.t("关闭", "Close")) { dismiss() } }
             }
         case .ready:
             if model.blocks.isEmpty {
                 ContentUnavailableView {
                     Label(ReaderText.t("没有文字", "No Text"), systemImage: "doc")
                 } description: {
-                    Text(ReaderText.t("这份文档没有可显示的文字内容。", "This document has no readable text."))
+                    Text(ReaderText.t("这一页没有可显示的文字。", "This page has no readable text."))
+                } actions: {
+                    if model.hasMore {
+                        Button(ReaderText.t("载入后续内容", "Load More")) { Task { await model.appendNext() } }
+                    }
                 }
             } else {
                 readerScroll
@@ -708,6 +787,10 @@ struct TextReaderView: View {
                     blockView(block)
                         .id(block.id)
                 }
+                if let error = model.pageError {
+                    Text(error).font(.callout).foregroundStyle(.secondary)
+                    Button(ReaderText.t("重试", "Retry")) { Task { await model.appendNext() } }
+                }
                 if model.isAppending {
                     HStack(spacing: 8) {
                         ProgressView()
@@ -729,9 +812,9 @@ struct TextReaderView: View {
         .onChange(of: topBlockID) { _, value in
             guard let value else { return }
             model.rememberTop(value)
-            if let index = model.blocks.firstIndex(where: { $0.id == value }),
-               index >= model.blocks.count - 40 {
-                Task { await model.appendNext() }
+            if let index = model.blocks.firstIndex(where: { $0.id == value }) {
+                if index >= model.blocks.count - 40 { Task { await model.appendNext() } }
+                else if index < 20, model.hasEarlier { Task { await model.prependPrevious() } }
             }
         }
     }
@@ -955,7 +1038,11 @@ struct TextReaderView: View {
             }
             .accessibilityIdentifier("reader.close")
         }
-        ToolbarItemGroup(placement: .topBarTrailing) {
+        ToolbarItemGroup(placement: .topBarTrailing) { readerActions }
+    }
+
+    private var readerActions: some View {
+        Group {
             Button {
                 showsChapters = true
             } label: {
@@ -978,6 +1065,8 @@ struct TextReaderView: View {
 
     private var settingsMenu: some View {
         Menu {
+            if let onOpenFile { Button(ReaderText.t("打开文件", "Open File"), systemImage: "doc", action: onOpenFile) }
+            if let onShareFile { Button(ReaderText.t("分享", "Share"), systemImage: "square.and.arrow.up", action: onShareFile) }
             Section(ReaderText.t("字号", "Text Size")) {
                 Button {
                     fontSize = max(13, fontSize - 2)

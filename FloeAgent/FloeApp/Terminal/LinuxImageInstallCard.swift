@@ -25,12 +25,15 @@ final class LinuxImageInstallModel: ObservableObject {
     @Published private(set) var resolutionIssue: LinuxResidentImageResolutionError?
     @Published private(set) var rebuilding = false
     @Published private(set) var recoveryError: String?
+    @Published private(set) var recoveryNotice: String?
+    @Published private(set) var recoveryCancelling = false
     private var recoveryCancellation: CancellationToken?
 
     var canRebuildPreservingData: Bool {
         requestedImageID == nil && resolutionIssue?.permitsPreservingRebuild == true
     }
-    var recoveryRunning: Bool { rebuilding || jobs.running.contains(FloePlatformServices.residentRecoveryJobID) }
+    var recoveryJobID: String { FloePlatformServices.residentRecoveryJobID }
+    var recoveryRunning: Bool { rebuilding || jobs.running.contains(recoveryJobID) }
     /// Immediate local feedback after a cancel request, until the shared job
     /// task actually unwinds and reports its terminal state.
     @Published private(set) var cancelling = false
@@ -125,6 +128,7 @@ final class LinuxImageInstallModel: ObservableObject {
     /// hint and must NOT forget which environment this card was attached to:
     /// only an explicit hint — a new attachment — updates the identity.
     func refresh(environmentIDHint: String? = nil) async {
+        if recoveryRunning { recoveryError = nil; recoveryNotice = nil }
         if let environmentIDHint {
             self.environmentIDHint = environmentIDHint
         }
@@ -278,21 +282,26 @@ final class LinuxImageInstallModel: ObservableObject {
     func rebuildPreservingData() {
         guard canRebuildPreservingData, !recoveryRunning else { return }
         rebuilding = true
+        recoveryNotice = nil; recoveryCancelling = false
         recoveryError = nil
         let cancellation = CancellationToken()
         recoveryCancellation = cancellation
         Task {
-            do { try await FloePlatformServices.shared.rebuildLinuxRuntimePreservingData(cancellation: cancellation) }
+            do {
+                try await FloePlatformServices.shared.rebuildLinuxRuntimePreservingData(cancellation: cancellation)
+                recoveryNotice = String(localized: "execution.runtime_rebuild.complete")
+            } catch is CancellationError { recoveryNotice = String(localized: "envmgr.job_cancelled") }
             catch { recoveryError = error.localizedDescription }
             recoveryCancellation = nil
-            rebuilding = false
+            rebuilding = false; recoveryCancelling = false
             await refresh()
         }
     }
 
     func cancelPreservingRecovery() {
+        recoveryCancelling = true
         recoveryCancellation?.cancel()
-        jobs.cancel(id: FloePlatformServices.residentRecoveryJobID)
+        jobs.cancel(id: recoveryJobID)
     }
 
     func startDownload() {
@@ -468,13 +477,23 @@ struct LinuxImageInstallCard: View {
     @ViewBuilder
     private var content: some View {
         if model.recoveryRunning {
-            ProgressView("execution.runtime_rebuild.progress")
+            let phase = jobs.phases[model.recoveryJobID] ?? .checking
+            if model.recoveryCancelling || jobs.isCancelling(id: model.recoveryJobID) {
+                ProgressView("envmgr.cancelling")
+            } else {
+                Text(Self.phaseText(phase)).font(.caption).foregroundStyle(.secondary)
+                ProgressView(value: phase == .downloading ? jobs.fractions[model.recoveryJobID] : nil)
+                if phase == .downloading, let transfer = jobs.transfers[model.recoveryJobID] {
+                    Text(Self.recoveryByteText(transfer)).font(.caption2.monospacedDigit())
+                }
+            }
             Button("terminal.linux_image_install_card.cancel") { model.cancelPreservingRecovery() }
-                .buttonStyle(.bordered)
+                .buttonStyle(.bordered).disabled(model.recoveryCancelling || jobs.isCancelling(id: model.recoveryJobID))
         } else if model.running {
             downloadingContent(cancelling: model.cancelling)
         } else {
-        if let error = model.recoveryError {
+        if let notice = model.recoveryNotice { Text(notice).font(.caption).foregroundStyle(.secondary) }
+        if let error = model.recoveryError ?? (jobs.failures.contains(model.recoveryJobID) ? jobs.messages[model.recoveryJobID] : nil) {
             Label(error, systemImage: "exclamationmark.triangle")
                 .font(.caption).foregroundStyle(FloeTheme.destructive)
         }
@@ -646,6 +665,9 @@ struct LinuxImageInstallCard: View {
             ProgressView("environment.backend.image_downloading")
                 .font(.caption)
         }
+        if let transfer = jobs.transfers[model.jobID] {
+            Text(Self.recoveryByteText(transfer)).font(.caption2.monospacedDigit())
+        }
         Button(role: .cancel) {
             model.cancelDownload()
         } label: {
@@ -696,6 +718,12 @@ struct LinuxImageInstallCard: View {
         }
     }
 
+    static func recoveryByteText(_ transfer: LinuxImageTransferSnapshot) -> String {
+        let received = ByteCountFormatter.string(fromByteCount: transfer.receivedBytes, countStyle: .file)
+        guard let total = transfer.totalBytes else { return received }
+        return received + " / " + ByteCountFormatter.string(fromByteCount: total, countStyle: .file)
+    }
+
     /// Localized label for the service-owned phase. Each phase has its own
     /// catalog entry in both languages, so only the active app language is
     /// shown (never inline bilingual product text).
@@ -715,6 +743,12 @@ struct LinuxImageInstallCard: View {
             return String(localized: "environment.backend.image_phase.verifying_image")
         case .finalizing:
             return String(localized: "environment.backend.image_phase.finalizing")
+        case .stoppingRuntime:
+            return String(localized: "execution.runtime_rebuild.phase.stopping")
+        case .creatingEnvironment:
+            return String(localized: "execution.runtime_rebuild.phase.creating")
+        case .retainingEnvironment:
+            return String(localized: "execution.runtime_rebuild.phase.retaining")
         }
     }
 

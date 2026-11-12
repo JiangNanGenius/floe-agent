@@ -95,6 +95,7 @@ public protocol LinuxGuestSessionCreating: Sendable {
     func powerOffSharedMachine() async throws
     func restoreInitialState(image: LinuxGuestImage, imageDirectory: URL) async throws
     func rebuildPreservingData(image: LinuxGuestImage, imageDirectory: URL) async throws -> LinuxResidentRecoveryReceipt
+    func rebuildPreservingData(image: LinuxGuestImage, imageDirectory: URL, onPhase: @escaping @Sendable (LinuxGuestImageTransferPhase) -> Void) async throws -> LinuxResidentRecoveryReceipt
     func residentRecoveryReceipt() async throws -> LinuxResidentRecoveryReceipt?
     func acquireResidentRecoveryGuard() async throws -> LinuxResidentRecoveryGuard
 }
@@ -121,6 +122,9 @@ public extension LinuxGuestSessionCreating {
     }
     func rebuildPreservingData(image: LinuxGuestImage, imageDirectory: URL) async throws -> LinuxResidentRecoveryReceipt {
         throw LinuxResidentRecoveryError.unsupported
+    }
+    func rebuildPreservingData(image: LinuxGuestImage, imageDirectory: URL, onPhase: @escaping @Sendable (LinuxGuestImageTransferPhase) -> Void) async throws -> LinuxResidentRecoveryReceipt {
+        try await rebuildPreservingData(image: image, imageDirectory: imageDirectory)
     }
     func residentRecoveryReceipt() async throws -> LinuxResidentRecoveryReceipt? { nil }
     func acquireResidentRecoveryGuard() async throws -> LinuxResidentRecoveryGuard { throw LinuxResidentRecoveryError.unsupported }
@@ -3049,6 +3053,10 @@ public actor LinuxGuestRegistry {
     /// This uses the existing registry admission fence and real stop/join, but
     /// intentionally never resets host dependency layers or their metadata.
     public func rebuildPreservingData(imageID: String) async throws -> LinuxResidentRecoveryReceipt {
+        try await rebuildPreservingData(imageID: imageID, onPhase: { _ in })
+    }
+
+    public func rebuildPreservingData(imageID: String, onPhase: @escaping @Sendable (LinuxGuestImageTransferPhase) -> Void) async throws -> LinuxResidentRecoveryReceipt {
         guard factory.usesResidentMachine, !restoringInitialState else {
             throw LinuxGuestError.guestBusy(environmentID: "shared")
         }
@@ -3071,7 +3079,7 @@ public actor LinuxGuestRegistry {
             throw LinuxGuestError.stopFailed(environmentID: "shared", detail: "Running work has not stopped; existing data was retained")
         }
         try Task.checkCancellation()
-        var receipt = try await factory.rebuildPreservingData(image: image, imageDirectory: directory)
+        var receipt = try await factory.rebuildPreservingData(image: image, imageDirectory: directory, onPhase: onPhase)
         receipt.environmentIDs = affected.sorted()
         return receipt
     }
@@ -4425,6 +4433,10 @@ public struct LinuxGuestCommandService: LinuxCommandRunning, LinuxGuestControlli
     public func rebuildPreservingData(imageID: String) async throws -> LinuxResidentRecoveryReceipt {
         await localServices.stopAllLocalServices()
         return try await registry.rebuildPreservingData(imageID: imageID)
+    }
+    public func rebuildPreservingData(imageID: String, onPhase: @escaping @Sendable (LinuxGuestImageTransferPhase) -> Void) async throws -> LinuxResidentRecoveryReceipt {
+        await localServices.stopAllLocalServices()
+        return try await registry.rebuildPreservingData(imageID: imageID, onPhase: onPhase)
     }
 
     public func startGuest(environmentID: String, taskID: String?) async throws -> Bool {

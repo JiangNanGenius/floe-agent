@@ -70,6 +70,69 @@ struct SetupDownloadOwnerHooksTests {
         "linux-image:\(tag)-\(UUID().uuidString)"
     }
 
+    private enum RecoveryReportWaitError: Error { case missingServiceEvent }
+    private static func waitForRecoveryReport(_ condition: @escaping @MainActor () -> Bool) async throws {
+        for _ in 0..<500 {
+            if condition() { return }
+            try await Task.sleep(for: .milliseconds(2))
+        }
+        throw RecoveryReportWaitError.missingServiceEvent
+    }
+
+    @Test("Unresolved resident image still renders real outer recovery bytes and transaction stages")
+    func residentRecoveryOuterProgress() async throws {
+        let jobs = EnvironmentPackageJobs.shared
+        let id = FloePlatformServices.residentRecoveryJobID
+        let model = LinuxImageInstallModel()
+        #expect(model.imageID.isEmpty)
+        let result = try await jobs.runShared(id: id, title: "fixture recovery") { epoch in
+            let report = FloePlatformServices.residentRecoveryProgress(jobID: id, epoch: epoch)
+            report.phase(.downloading); report.bytes(512, -1)
+            try await Self.waitForRecoveryReport { jobs.transfers[id]?.receivedBytes == 512 }
+            try await MainActor.run {
+                #expect(model.recoveryRunning && model.recoveryJobID == id)
+                let transfer = try #require(jobs.transfers[id])
+                #expect(transfer.totalBytes == nil && jobs.fractions[id] == nil)
+                #expect(!LinuxImageInstallCard.recoveryByteText(transfer).contains("/"))
+            }
+            report.phase(.verifyingArchive)
+            try await Self.waitForRecoveryReport { jobs.phases[id] == .verifyingArchive }
+            await MainActor.run { #expect(jobs.transfers[id] == nil && jobs.fractions[id] == nil) }
+            report.phase(.creatingEnvironment)
+            try await Self.waitForRecoveryReport { jobs.phases[id] == .creatingEnvironment }
+            report.phase(.retainingEnvironment)
+            try await Self.waitForRecoveryReport { jobs.phases[id] == .retainingEnvironment }
+            return "actual stages observed"
+        }
+        #expect(result == "actual stages observed")
+        #expect(!model.recoveryRunning && jobs.transfers[id] == nil && jobs.phases[id] == nil)
+    }
+
+    @Test("Old recovery callbacks cannot overwrite a new attempt or resurrect a failed job")
+    func residentRecoveryStaleProgressAndFailure() async throws {
+        let jobs = EnvironmentPackageJobs.shared
+        let id = uniqueImageJobID("resident-recovery-epoch")
+        let first = try await jobs.runShared(id: id, title: "first") { epoch in epoch.uuidString }
+        let old = FloePlatformServices.residentRecoveryProgress(jobID: id, epoch: try #require(UUID(uuidString: first)))
+        enum Failure: Error { case preparation }
+        do {
+            _ = try await jobs.runShared(id: id, title: "second") { epoch in
+                old.phase(.downloading); old.bytes(999_999, 1_000_000)
+                let current = FloePlatformServices.residentRecoveryProgress(jobID: id, epoch: epoch)
+                current.phase(.checking)
+                try await Self.waitForRecoveryReport { jobs.phases[id] == .checking }
+                await MainActor.run { #expect(jobs.transfers[id] == nil && jobs.fractions[id] == nil) }
+                throw Failure.preparation
+            }
+            Issue.record("Expected the actual preparation failure")
+        } catch Failure.preparation { }
+        #expect(jobs.failures.contains(id) && !jobs.running.contains(id))
+        old.phase(.retainingEnvironment)
+        for _ in 0..<10 { await Task.yield() }
+        #expect(jobs.phases[id] == nil && jobs.transfers[id] == nil)
+        #expect(jobs.failures.contains(id))
+    }
+
     // MARK: - Hook 1: Linux image byte/rate publication
 
     @Test("Unknown total publishes the real counter, no fabricated total, fraction or rate")

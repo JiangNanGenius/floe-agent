@@ -36,6 +36,8 @@ public struct RunLaunchRequest: Sendable, Hashable {
     /// `goalContinuation` is an internal cycle prompt. It is durable for
     /// audit/recovery, but is not rendered as a user-authored chat message.
     public var messageRole: String
+    /// Native confirmation message staged in this same conversation; consumed once.
+    public var reusingUserMessageID: UUID?
     public var providerID: UUID?
     public var modelID: UUID?
     public var providerName: String?
@@ -61,6 +63,7 @@ public struct RunLaunchRequest: Sendable, Hashable {
         goalDefinitionFingerprint: String? = nil,
         initialPolicy: DraftTaskPolicy = DraftTaskPolicy(),
         messageRole: String = "user",
+        reusingUserMessageID: UUID? = nil,
         providerID: UUID? = nil,
         modelID: UUID? = nil,
         providerName: String? = nil,
@@ -83,6 +86,7 @@ public struct RunLaunchRequest: Sendable, Hashable {
         self.goalDefinitionFingerprint = goalDefinitionFingerprint
         self.initialPolicy = initialPolicy
         self.messageRole = messageRole
+        self.reusingUserMessageID = reusingUserMessageID
         self.providerID = providerID
         self.modelID = modelID
         self.providerName = providerName
@@ -147,6 +151,11 @@ public actor SQLiteRunLaunchStore: RunLaunchStore {
         }
         guard ["user", "goalContinuation"].contains(request.messageRole) else {
             throw FloeError.validationFailed("Unknown launch message role")
+        }
+        guard request.reusingUserMessageID == nil || (request.conversationID != nil
+            && request.newConversationID == nil && request.messageRole == "user"
+            && request.attachments.isEmpty) else {
+            throw FloeError.validationFailed(FloeL10n.isChinese ? "计划确认记录必须属于当前任务且保留原内容。" : "A confirmation message must retain its task and original content")
         }
         guard (request.goalID == nil) == (request.expectedGoalRevision == nil),
               (request.goalID == nil) == (request.goalDefinitionFingerprint == nil),
@@ -386,21 +395,64 @@ public actor SQLiteRunLaunchStore: RunLaunchStore {
                 ]
             )
 
-            let messageID = UUID()
-            try db.execute(
-                sql: """
+            let messageID = request.reusingUserMessageID ?? UUID()
+            var messageCreatedAt = now
+            var preservedParts: [MessagePart]?
+            if request.reusingUserMessageID != nil {
+                guard let row = try Row.fetchOne(db,
+                    sql: "SELECT * FROM messages WHERE id = ?", arguments: [messageID.uuidString]),
+                      row["conversation_id"] as String == conversation.id.uuidString,
+                      row["role"] as String == "user", row["content"] as String == goal,
+                      (row["run_id"] as String?) == nil else {
+                    throw FloeError.validationFailed(FloeL10n.isChinese ? "计划确认记录已改变或已被使用，请重新打开任务。" : "The confirmation message is unavailable or already belongs to another run")
+                }
+                let partRows = try Row.fetchAll(db,
+                    sql: "SELECT * FROM message_parts WHERE message_id = ? ORDER BY part_index",
+                    arguments: [messageID.uuidString])
+                let parts = try partRows.map { part -> MessagePart in
+                    guard let kind = MessagePart.Kind(rawValue: part["kind"]),
+                          let id = UUID(uuidString: part["id"]) else {
+                        throw FloeError.storageCorrupted(FloeL10n.isChinese ? "计划确认记录无法读取，请重新打开任务。" : "The confirmation message part is invalid")
+                    }
+                    let metadata = try JSONDecoder().decode([String: String].self,
+                        from: Data((part["metadata_json"] as String).utf8))
+                    return MessagePart(id: id, messageID: messageID, partIndex: part["part_index"],
+                        kind: kind, text: part["text"],
+                        attachmentID: (part["attachment_id"] as String?).flatMap(UUID.init(uuidString:)),
+                        metadata: metadata, createdAt: try PersistenceCodec.decodeDate(part["created_at"]))
+                }
+                // This is an App-owned, staged Plan confirmation, never a
+                // model-selected arbitrary historical user message. Runtime
+                // owns the full typed snapshot; persistence checks its exact
+                // task/run proof and the committed accepted revision here.
+                guard parts.count == 1, let first = parts.first, first.partIndex == 0, first.kind == .text,
+                      first.text == goal,
+                      parts.allSatisfy({ $0.attachmentID == nil }),
+                      let raw = first.metadata["floe.plan.confirmation.v1"],
+                      let proof = try JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any],
+                      proof["schemaVersion"] as? Int == 1,
+                      (proof["executionRunID"] as? String).flatMap(UUID.init(uuidString:)) == run.id,
+                      proof["executionPrompt"] as? String == goal,
+                      let plan = proof["plan"] as? [String: Any],
+                      let planID = (plan["id"] as? String).flatMap(UUID.init(uuidString:)),
+                      (plan["conversationID"] as? String).flatMap(UUID.init(uuidString:)) == conversation.id,
+                      let revision = plan["revision"] as? Int,
+                      try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM plan_drafts WHERE id=? AND conversation_id=? AND revision=? AND status='accepted')",
+                        arguments: [planID.uuidString, conversation.id.uuidString, revision]) == true else {
+                    throw FloeError.validationFailed(FloeL10n.isChinese ? "计划确认记录与本次执行不符，请重新打开任务。" : "The confirmation message does not belong to this plan execution")
+                }
+                try db.execute(sql: "UPDATE messages SET run_id = ? WHERE id = ? AND conversation_id = ? AND run_id IS NULL",
+                    arguments: [run.id.uuidString, messageID.uuidString, conversation.id.uuidString])
+                guard db.changesCount == 1 else { throw FloeError.validationFailed(FloeL10n.isChinese ? "此计划确认记录已被使用，请重新打开任务。" : "The confirmation message was already used") }
+                messageCreatedAt = try PersistenceCodec.decodeDate(row["created_at"])
+                preservedParts = parts
+            } else {
+                try db.execute(sql: """
                     INSERT INTO messages (id, conversation_id, role, content, created_at, run_id)
                     VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                arguments: [
-                    messageID.uuidString,
-                    conversation.id.uuidString,
-                    request.messageRole,
-                    goal,
-                    PersistenceCodec.encode(now),
-                    run.id.uuidString
-                ]
-            )
+                    """, arguments: [messageID.uuidString, conversation.id.uuidString,
+                        request.messageRole, goal, PersistenceCodec.encode(now), run.id.uuidString])
+            }
             var normalizedAttachments: [AttachmentRef] = []
             normalizedAttachments.reserveCapacity(request.attachments.count)
             for attachment in request.attachments {
@@ -411,7 +463,7 @@ public actor SQLiteRunLaunchStore: RunLaunchStore {
                 try Self.insertAttachment(normalized, db: db)
             }
 
-            var parts = [MessagePart(
+            var parts = preservedParts ?? [MessagePart(
                 messageID: messageID,
                 partIndex: 0,
                 kind: .text,
@@ -433,12 +485,12 @@ public actor SQLiteRunLaunchStore: RunLaunchStore {
                 conversationID: conversation.id,
                 role: request.messageRole,
                 content: goal,
-                createdAt: now,
+                createdAt: messageCreatedAt,
                 parts: parts,
                 runID: run.id
             )
-            for part in parts {
-                try Self.insertPart(part, db: db)
+            if preservedParts == nil {
+                for part in parts { try Self.insertPart(part, db: db) }
             }
 
             guard let workspaceRow = try Row.fetchOne(

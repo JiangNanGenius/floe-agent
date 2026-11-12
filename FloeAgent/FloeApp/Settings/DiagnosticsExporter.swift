@@ -72,7 +72,11 @@ enum DiagnosticsExporter {
     static func render(center: SettingsCenter) async -> String {
         var sections: [RenderedSection] = []
         sections.append(RenderedSection(id: .reportIdentity, body: identitySection(center: center)))
-        sections.append(RenderedSection(id: .storageSnapshot, body: await storageSnapshotEvidence()))
+        // Keep the small, persisted optimization cause at the front of the
+        // existing bounded storage section; no live scan or new upload route.
+        let optimization = StorageOptimizationService.diagnosticText()
+        sections.append(RenderedSection(id: .storageSnapshot,
+            body: optimization + "\n" + (await storageSnapshotEvidence())))
 
         sections.append(RenderedSection(id: .executionTrace, body: ExecutionBreadcrumbs.shared.report()))
         let runtime = splitRuntimeEvidence(RuntimeDiagnostics.shared.report())

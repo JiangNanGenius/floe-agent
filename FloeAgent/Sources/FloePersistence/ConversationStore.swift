@@ -650,6 +650,24 @@ public actor SQLiteConversationStore: ConversationStore {
 
     public func appendMessage(_ message: PersistedMessage) async throws {
         try await database.writer { db in
+            if let existing = try Row.fetchOne(db, sql: "SELECT * FROM messages WHERE id=?",
+                arguments: [message.id.uuidString]), existing["role"] as String == "user" {
+                let parts = try Self.fetchParts(messageID: message.id, db: db)
+                // Historical user decisions are not editable text drafts.
+                // Protect the native metadata even if it is unreadable: a
+                // generic edit must not strip the tag and bypass Plan CAS.
+                if parts.contains(where: { $0.metadata["floe.plan.confirmation.v1"] != nil }) {
+                    guard message.conversationID.uuidString == existing["conversation_id"] as String,
+                          message.role == "user", message.content == existing["content"] as String,
+                          message.runID?.uuidString == existing["run_id"] as String?,
+                          message.parts == parts else {
+                        throw FloeError.validationFailed(FloeL10n.isChinese
+                            ? "已确认的计划记录不可编辑。请在计划模式中修订并重新确认。"
+                            : "A confirmed plan record cannot be edited. Revise and confirm a plan in Plan mode.")
+                    }
+                    return // exact idempotent write; keep the original row
+                }
+            }
             try db.execute(
                 sql: """
                     INSERT INTO messages (id, conversation_id, role, content, created_at, run_id)

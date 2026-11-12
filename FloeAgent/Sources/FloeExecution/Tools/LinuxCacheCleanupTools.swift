@@ -85,11 +85,12 @@ public struct LinuxCacheCleanupInspectTool: AgentTool {
         let cleanup = try support.cleanupContext(context, profile: profile)
         let categories = LinuxCacheCleanupToolArguments.resolve(args.categories, includeScratch: args.includeScratch) ?? []
         let receipt = try await support.service.inspect(context: cleanup, categories: categories)
-        return ToolExecutionOutput(
-            digesting: receipt.modelSummary,
-            exitStatus: 0,
-            capturedOutput: receipt.jsonString
-        )
+        return Self.output(receipt)
+    }
+
+    static func output(_ receipt: LinuxCacheCleanupReceipt) -> ToolExecutionOutput {
+        ToolExecutionOutput(digesting: receipt.modelSummary,
+            exitStatus: receipt.state == "failed" ? 1 : 0, capturedOutput: receipt.jsonString)
     }
 }
 

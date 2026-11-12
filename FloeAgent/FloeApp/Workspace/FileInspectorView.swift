@@ -141,9 +141,9 @@ struct FileInspectorView: View {
                     // Already unwrapped by the enclosing `if let previewPath`;
                     // re-binding here would be a non-optional conditional bind.
                     if Self.previewHeaderShowsIDEEntry(for: previewPath) {
-                        openDocumentInIDEButton
+                        openDocumentInIDEButton.labelStyle(.iconOnly)
                     } else if canOpenCodeWorkbenchForPreview {
-                        openIDEButton
+                        openIDEButton.labelStyle(.iconOnly)
                     }
                     Button {
                         router.hideInspector()
@@ -159,7 +159,8 @@ struct FileInspectorView: View {
                     relativePath: previewPath,
                     center: center,
                     onAddToContext: { addToContext(previewPath) },
-                    onDeleted: { if self.previewPath == previewPath { closePreview() } }
+                    onDeleted: { if self.previewPath == previewPath { closePreview() } },
+                    embeddedInInspector: true
                 )
                 .id("\(previewPath)#\(ideDismissGeneration)")
             }

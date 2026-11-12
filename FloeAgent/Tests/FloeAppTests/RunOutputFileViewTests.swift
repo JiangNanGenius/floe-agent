@@ -18,6 +18,7 @@ import UniformTypeIdentifiers
 import FloeCore
 import FloeModels
 import FloeTools
+import FloeWorkspace
 @testable import FloeApp
 
 final class RunOutputFileViewTests: XCTestCase {
@@ -352,6 +353,96 @@ final class RunOutputFileViewTests: XCTestCase {
         CGImageDestinationAddImage(destination, image, nil)
         XCTAssertTrue(CGImageDestinationFinalize(destination))
         return encoded as Data
+    }
+
+    func testTextAndCodeRoutingHonorsMIMEAndLeavesUnknownBinaryToQuickLook() throws {
+        for name in ["answer.txt", "readme.md", "main.swift", "task.py", "data.json", "settings.yaml", "run.log"] {
+            let receipt = try makeReceipt(runID: UUID(), conversationID: UUID(), callID: "text", tool: "files.write",
+                slot: name, displayName: name, bytes: Data("text".utf8), writeSnapshot: false)
+            XCTAssertEqual(RunOutputPreviewRouting.route(for: receipt), .text, name)
+        }
+        XCTAssertTrue(RunOutputTextPreviewPolicy.supports(name: "result", mimeType: "text/plain; charset=utf-8"))
+        XCTAssertTrue(RunOutputTextPreviewPolicy.supports(name: "result", mimeType: "application/json"))
+        XCTAssertTrue(RunOutputTextPreviewPolicy.isMarkdown(name: "readme.MD", mimeType: "application/octet-stream"))
+        XCTAssertTrue(RunOutputTextPreviewPolicy.isMarkdown(name: "result", mimeType: " TEXT/MARKDOWN ; charset=utf-8"))
+        XCTAssertFalse(RunOutputTextPreviewPolicy.isMarkdown(name: "answer.txt", mimeType: "text/plain"))
+        for (name, mime) in [("unknown.bin", "application/octet-stream"), ("false.txt", "application/pdf"),
+                              ("format.rtf", "text/rtf"), ("photo.png", "image/png")] {
+            XCTAssertFalse(RunOutputTextPreviewPolicy.supports(name: name, mimeType: mime))
+        }
+    }
+
+    @MainActor
+    func testVerifiedUTF8TextSourceReadsPast64KiBToActualEOFWithoutLosingEmoji() async throws {
+        let root = try XCTUnwrap(artifactRoot)
+        let text = String(repeating: "AB中文🙂Z", count: 30_001) + "真实末尾TAIL"
+        let data = Data(text.utf8), run = UUID(), task = UUID()
+        let receipt = try makeReceipt(runID: run, conversationID: task, callID: "text", tool: "files.write",
+            slot: "text", displayName: "answer.txt", mimeType: "text/plain", bytes: data, writeSnapshot: true)
+        let source = RunOutputTextPreviewPolicy.source(receipt: receipt,
+            context: .init(runID: run, conversationID: task, callID: "text", toolName: "files.write"), artifactRoot: root)
+        XCTAssertEqual(source.limits.chunkBytes, 64 * 1024)
+        let bytes = try await source.makeBytes()
+        let file = ReaderFileSource(source: bytes.source,
+            identity: .init(kind: .workspaceFile, ownerID: task.uuidString, documentKey: "text", displayName: "text", format: "txt", fingerprint: bytes.fingerprint),
+            markdown: false, limits: source.limits)
+        let session = ReaderSession()
+        var window = try await session.open(source: file).window
+        var recovered = window.blocks.map(\.text).joined(), pages = 1
+        while window.hasMore, pages < 100 {
+            let previousEnd = window.endByte
+            window = try await session.window(startByte: previousEnd, continuing: true)
+            XCTAssertGreaterThan(window.endByte, previousEnd)
+            recovered += window.blocks.map(\.text).joined()
+            pages += 1
+        }
+        XCTAssertGreaterThan(pages, 1)
+        XCTAssertFalse(window.hasMore)
+        XCTAssertEqual(window.endByte, Int64(data.count))
+        XCTAssertEqual(recovered, text)
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent(receipt.relativePath)), data)
+    }
+
+    @MainActor
+    func testTextPreviewRetainsSizeBoundAndRejectsMissingOrWrongOwner() async throws {
+        let root = try XCTUnwrap(artifactRoot), run = UUID(), task = UUID()
+        let receipt = try makeReceipt(runID: run, conversationID: task, callID: "text", tool: "files.write",
+            slot: "text", displayName: "answer.txt", bytes: Data("文本".utf8), writeSnapshot: false)
+        let context = RunOutputReceiptContext(runID: run, conversationID: task, callID: "text", toolName: "files.write")
+        var oversized = receipt
+        oversized.byteCount = Int(ReaderLimits.default.maxFileBytes) + 1
+        do {
+            _ = try await RunOutputTextPreviewPolicy.source(receipt: oversized, context: context, artifactRoot: root).makeBytes()
+            XCTFail("a UI preview must keep the existing single-file limit")
+        } catch let error as ReaderError {
+            XCTAssertEqual(error, .fileTooLarge(limit: ReaderLimits.default.maxFileBytes))
+        }
+        for owner in [context, .init(runID: UUID(), conversationID: task, callID: "text", toolName: "files.write")] {
+            do {
+                _ = try await RunOutputTextPreviewPolicy.source(receipt: receipt, context: owner, artifactRoot: root).makeBytes()
+                XCTFail("missing and foreign files must not be synthesized from a receipt")
+            } catch {}
+        }
+    }
+
+    func testAdmittedTextDescriptorRejectsMutationSymlinkAndTruncatedReceiptMismatch() throws {
+        let root = try XCTUnwrap(artifactRoot), file = root.appendingPathComponent("answer.txt")
+        let data = Data((String(repeating: "完整🙂", count: 20_000) + "TAIL").utf8)
+        try data.write(to: file)
+        let preview = WorkspaceFileChangePreview(version: 1, path: "answer.txt", byteCount: data.count,
+            sha256: FloeDigest.sha256Hex(data), text: "完整", truncated: true, comparison: .comparisonTooLarge)
+        let bytes = try SavedFileTextPreviewPolicy.verifiedBytes(document: preview, root: root)
+        XCTAssertEqual(try bytes.source.read(offset: Int64(data.count - 4), length: 4), Data("TAIL".utf8))
+        try Data(repeating: 65, count: data.count).write(to: file)
+        XCTAssertThrowsError(try bytes.source.read(offset: 0, length: 20))
+        XCTAssertThrowsError(try SavedFileTextPreviewPolicy.verifiedBytes(document: preview, root: root))
+        try FileManager.default.removeItem(at: file)
+        let outside = root.appendingPathComponent("other.txt"); try data.write(to: outside)
+        try FileManager.default.createSymbolicLink(at: file, withDestinationURL: outside)
+        XCTAssertThrowsError(try SavedFileTextPreviewPolicy.verifiedBytes(document: preview, root: root))
+        let other = WorkspaceFileChangePreview(version: 1, path: "other.txt", byteCount: data.count,
+            sha256: preview.sha256, text: preview.text, truncated: true, comparison: .comparisonTooLarge)
+        XCTAssertFalse(SavedFileTextPreviewPolicy.matches(preview, other))
     }
 
     // MARK: - Fixture

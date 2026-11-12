@@ -79,6 +79,92 @@ final class LinuxResidentImageResolverTests: XCTestCase, @unchecked Sendable {
         func remove() { try? FileManager.default.removeItem(at: root) }
     }
 
+    func testRestoredContainerUsesSameVerifiedRelativeManifestWithoutOldAbsoluteRoot() async throws {
+        let f = try Fixture()
+        let moved = f.root.deletingLastPathComponent().appendingPathComponent("restored-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: moved); f.remove() }
+        try f.writeResident(f.old, imageID: "trusted-v1")
+        let before = try f.snapshot()
+        try FileManager.default.moveItem(at: f.root, to: moved)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: f.root.path))
+        let newImages = moved.appendingPathComponent("images")
+        let newResident = moved.appendingPathComponent("resident")
+        let resolver = LinuxResidentImageResolver(residentRoot: newResident, defaultImageID: f.new.imageID,
+            trustedImageIDs: [f.old.imageID, f.new.imageID]) { id in
+            let directory = newImages.appendingPathComponent(id)
+            guard let data = try? Data(contentsOf: directory.appendingPathComponent("manifest.json")),
+                  let image = try? JSONDecoder().decode(LinuxResidentImageCandidate.self, from: data),
+                  let disk = try? Data(contentsOf: directory.appendingPathComponent("base.ext4")),
+                  image.imageID == id, image.diskBytes == Int64(disk.count),
+                  SHA512.hash(data: disk).map({ String(format: "%02x", $0) }).joined() == image.diskSHA512 else { return nil }
+            return image
+        }
+        let selected = try await resolver.resolve(requireExistingDisk: true)
+        XCTAssertEqual(selected, f.old.imageID)
+        let resident = LinuxResidentDiskStorage.directory(in: newResident)
+        XCTAssertEqual(try Data(contentsOf: resident.appendingPathComponent("disk.img")), before["disk.img"])
+        XCTAssertEqual(try Data(contentsOf: resident.appendingPathComponent("origin.json")), before["origin.json"])
+        // The new root alone grants nothing: changed source bytes still fail actual digest verification.
+        try Data("corrupt-source".utf8).write(to: newImages.appendingPathComponent(f.old.imageID + "/base.ext4"))
+        do { _ = try await resolver.resolve(requireExistingDisk: true); XCTFail("Corrupt relocated source must be refused") }
+        catch let error as LinuxResidentImageResolutionError { XCTAssertEqual(error, .unknownOrigin) }
+        XCTAssertEqual(try Data(contentsOf: resident.appendingPathComponent("disk.img")), before["disk.img"])
+    }
+
+    func testMissingMigratedViewPlansOnlyExactCatalogRepairThenRevalidatesRealBytes() async throws {
+        let f = try Fixture(); defer { f.remove() }
+        try f.writeResident(f.old, imageID: "trusted-v1")
+        let before = try f.snapshot()
+        try FileManager.default.removeItem(at: f.images.appendingPathComponent(f.old.imageID))
+        let resolver = LinuxResidentImageResolver(residentRoot: f.resident, defaultImageID: f.new.imageID,
+            trustedImageIDs: [f.old.imageID, f.new.imageID], repairLookup: { id in
+                guard id == f.old.imageID else { return nil }
+                return LinuxResidentImageRepairSource(imageID: id, compatibleOrigins: f.old.compatibleOrigins)
+            }, lookup: { await f.lookup($0) })
+        do { _ = try await resolver.resolve(requireExistingDisk: true); XCTFail("Metadata must never report runnable success") }
+        catch let error as LinuxResidentImageResolutionError {
+            XCTAssertEqual(error, .sourceUnavailable(imageID: f.old.imageID))
+            XCTAssertEqual(error.recoverableImageID, f.old.imageID)
+            XCTAssertNotEqual(error.recoverableImageID, f.new.imageID)
+        }
+        XCTAssertEqual(try f.snapshot(), before)
+        // Simulated trusted installer restores the real, exact base files; the execution
+        // lookup still verifies their SHA512 instead of trusting the planning metadata.
+        try f.writeImage(f.old, bytes: Data("old-qualified-base".utf8))
+        let selected = try await resolver.resolve(requireExistingDisk: true)
+        XCTAssertEqual(selected, f.old.imageID)
+        XCTAssertEqual(try f.snapshot(), before)
+        try Data("tampered-after-restore".utf8).write(to: f.images.appendingPathComponent(f.old.imageID + "/base.ext4"))
+        do { _ = try await resolver.resolve(requireExistingDisk: true); XCTFail("Planning metadata cannot bypass a fresh content failure") }
+        catch let error as LinuxResidentImageResolutionError { XCTAssertEqual(error, .sourceUnavailable(imageID: f.old.imageID)) }
+        XCTAssertEqual(try f.snapshot(), before)
+    }
+
+    func testRepairMetadataRequiresWholeTupleAndAUniqueTrustedComponentID() async throws {
+        let f = try Fixture(); defer { f.remove() }
+        try f.writeResident(f.old, imageID: "trusted-v1")
+        try FileManager.default.removeItem(at: f.images.appendingPathComponent(f.old.imageID))
+        let before = try f.snapshot()
+        for kind in ["wrong-size", "wrong-digest", "wrong-origin-id", "foreign-candidate-id", "ambiguous"] {
+            let resolver = LinuxResidentImageResolver(residentRoot: f.resident, defaultImageID: f.new.imageID,
+                trustedImageIDs: [f.old.imageID, f.new.imageID], repairLookup: { id in
+                    guard kind == "ambiguous" || id == f.old.imageID else { return nil }
+                    var origins = f.old.compatibleOrigins
+                    if kind == "wrong-size" { origins[0].artifactBytes += 1 }
+                    if kind == "wrong-digest" { origins[0].artifactSHA512 = String(repeating: "0", count: 128) }
+                    if kind == "wrong-origin-id" { origins[0].imageID = "another-disk" }
+                    return LinuxResidentImageRepairSource(imageID: kind == "foreign-candidate-id" ? "outside-catalog" : id,
+                        compatibleOrigins: origins)
+                }, lookup: { await f.lookup($0) })
+            do { _ = try await resolver.resolve(requireExistingDisk: true); XCTFail("Invalid repair metadata must fail closed: " + kind) }
+            catch let error as LinuxResidentImageResolutionError {
+                XCTAssertEqual(error, kind == "ambiguous" ? .ambiguousOrigin : .unknownOrigin)
+                XCTAssertNil(error.recoverableImageID)
+            }
+            XCTAssertEqual(try f.snapshot(), before)
+        }
+    }
+
     private func expect(_ expected: LinuxResidentImageResolutionError, fixture: Fixture) async throws {
         let before = try fixture.snapshot()
         do {

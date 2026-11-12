@@ -3,8 +3,8 @@
 // SPDX-License-Identifier: MPL-2.0
 //
 // See docs/ARCHITECTURE_AGENT_WORKSPACE.md §4: text files (Markdown / JSON /
-// Swift / Python / JS / plain text, ≤10 MiB through the guard) render
-// inline; everything else goes through system Quick Look. Markdown reuses
+// Swift / Python / JS / plain text) stream bounded reader pages through
+// the existing workspace authority; everything else goes through system Quick Look. Markdown reuses
 // the FloeMarkdown renderer from T02.
 
 #if canImport(SwiftUI) && canImport(UIKit)
@@ -35,6 +35,8 @@ struct FilePreviewView: View {
     var expectedDeletionScope: WorkspaceFileActionScope? = nil
     /// Disabled when the preview is already hosted inside WorkspaceIDEView.
     var allowsIDEExpansion = true
+    /// The inspector already owns the filename, Back, expand and Close.
+    var embeddedInInspector = false
     /// Disabled when the preview is already hosted INSIDE the design
     /// conversation page's editor handoff: the page is presenting this
     /// view, so re-presenting the same design page from here would
@@ -46,6 +48,7 @@ struct FilePreviewView: View {
     @StateObject private var officeSession = OfficeFileSession()
     @State private var nativeOfficeURL: URL?
     @State private var content: FileContent?
+    @State private var textPreviewSource: TextReaderSource?
     @State private var pdfURL: URL?
     @State private var binaryPreviewURL: URL?
     @State private var loadError: String?
@@ -240,8 +243,9 @@ struct FilePreviewView: View {
                     QuickLookView(url: binaryPreviewURL)
                         .accessibilityIdentifier("file.preview.binary.inline")
                 }
-            } else if let content {
-                contentView(content)
+            } else if let textPreviewSource {
+                TextReaderView(source: textPreviewSource, chrome: .contentOnly)
+                    .id("\(textPreviewSource.ownerID)#\(displayedPath)#\(reloadGeneration)")
             } else if !isTextual && !isPDF {
                 binaryPlaceholder
             } else {
@@ -250,9 +254,16 @@ struct FilePreviewView: View {
             }
         }
         .background(FloeTheme.readingSurface)
-        .navigationTitle(fileName)
+        .navigationTitle(embeddedInInspector ? "" : fileName)
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar { toolbarContent }
+        .navigationBarBackButtonHidden(embeddedInInspector)
+        .toolbar { if !embeddedInInspector { toolbarContent } }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if embeddedInInspector {
+                HStack { Spacer(minLength: 0); previewActions }
+                    .labelStyle(.iconOnly).padding(.horizontal, 8).background(.bar)
+            }
+        }
         .sheet(item: $printPreparation) { request in
             PrintPreparationSheet(request: request)
         }
@@ -567,7 +578,7 @@ struct FilePreviewView: View {
             isRemoteSnapshot: remote,
             persistsPosition: persistsPosition,
             hasNonTextContent: false,
-            limits: ReaderLimits(),
+            limits: ReaderLimits(chunkBytes: 64 * 1024),
             makeBytes: { [center] in
                 if remote {
                     let data = try await center.readRemotePreview(relativePath: path)
@@ -1121,7 +1132,11 @@ struct FilePreviewView: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
-        ToolbarItemGroup(placement: .topBarTrailing) {
+        ToolbarItemGroup(placement: .topBarTrailing) { previewActions }
+    }
+
+    private var previewActions: some View {
+        Group {
             previewSaveImageAction
             if engineeringPackage != nil {
                 Button { isEngineeringFullScreen = true } label: {
@@ -1168,9 +1183,9 @@ struct FilePreviewView: View {
             .accessibilityLabel("file.preview.share")
             .accessibilityIdentifier("file.preview.share")
             if horizontalSizeClass != .compact { previewDesignAction }
-            if allowsIDEExpansion,
+            if allowsIDEExpansion, !embeddedInInspector,
                WorkspaceFileRouter.allowsCodeEditor(displayedPath),
-               content != nil,
+               (content != nil || textPreviewSource != nil),
                !center.isCloudWorkspacePath(displayedPath),
                !center.isNetworkWorkspacePath(displayedPath) {
                 Button {
@@ -1184,7 +1199,7 @@ struct FilePreviewView: View {
             }
             // A PDF expands into the IDE's internal document tab (native
             // overlay inside the workbench), never an outer task page.
-            if allowsIDEExpansion,
+            if allowsIDEExpansion, !embeddedInInspector,
                isPDF,
                pdfURL != nil,
                center.fileService != nil {
@@ -1210,6 +1225,14 @@ struct FilePreviewView: View {
             // Low-frequency actions live behind More instead of occupying a
             // permanent toolbar badge.
             Menu {
+                if embeddedInInspector, allowsIDEExpansion,
+                   WorkspaceFileRouter.allowsCodeEditor(displayedPath),
+                   textPreviewSource != nil,
+                   !center.isCloudWorkspacePath(displayedPath), !center.isNetworkWorkspacePath(displayedPath) {
+                    Button { isIDEPresented = true } label: {
+                        Label("workspace.file_preview_view.open_in_editor", systemImage: "square.and.pencil")
+                    }.accessibilityIdentifier("file.preview.openIDE")
+                }
                 if horizontalSizeClass == .compact, hasCompactPreviewActions {
                     previewReadActions
                     previewDesignAction
@@ -1249,7 +1272,7 @@ struct FilePreviewView: View {
             .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
             .accessibilityLabel("file.preview.more")
             .accessibilityIdentifier("file.preview.more")
-            .disabled(deletingFile || ((horizontalSizeClass != .compact || !hasCompactPreviewActions)
+            .disabled(deletingFile || (!embeddedInInspector && (horizontalSizeClass != .compact || !hasCompactPreviewActions)
                       && onDeleted == nil && !canPreparePrint && (onAddToContext == nil || isPresentingRecoveredCopy)
                       && (isTextual || nativeOfficeURL != nil || !quickLookAvailable)))
         }
@@ -1392,37 +1415,6 @@ struct FilePreviewView: View {
         .disabled(!quickLookAvailable)
     }
 
-    @ViewBuilder
-    private func contentView(_ content: FileContent) -> some View {
-        ScrollView {
-            Group {
-                if isMarkdown {
-                    MarkdownRendererView(source: content.text)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                } else {
-                    Text(content.text)
-                        .font(FloeTheme.Typography.evidence)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }
-            .padding(12)
-        }
-        .safeAreaInset(edge: .bottom) {
-            if content.truncated {
-                Label(
-                    "inspector.preview.truncated",
-                    systemImage: "arrow.down.doc"
-                )
-                .font(FloeTheme.Typography.metadata)
-                .foregroundStyle(FloeTheme.pending)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 6)
-                .background(FloeTheme.chromeMaterial)
-            }
-        }
-    }
-
     /// E33: create the atomic new package through the store seam, then open
     /// that copy in the existing shared native session. The damaged package is
     /// only read; the sheet's fingerprint CAS refuses a changed source.
@@ -1540,6 +1532,7 @@ struct FilePreviewView: View {
         }
         loadError = nil
         content = nil
+        textPreviewSource = nil
         pdfURL = nil
         binaryPreviewURL = nil
         nativeOfficeURL = nil
@@ -1800,7 +1793,11 @@ struct FilePreviewView: View {
             return
         }
         do {
-            content = try await center.readFile(relativePath: path)
+            // HTML keeps its existing bounded website-preview DTO. The
+            // text surface itself always reads the original in bounded pages.
+            if isHTML { content = try await center.readFile(relativePath: path) }
+            try Task.checkCancellation()
+            textPreviewSource = readingSource
             await center.recordRecentFile(relativePath: path, displayName: name)
         } catch let error as WorkspaceToolError {
             loadError = error.errorDescription ?? error.localizedDescription

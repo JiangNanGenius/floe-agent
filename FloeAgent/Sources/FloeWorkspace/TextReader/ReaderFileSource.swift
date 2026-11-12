@@ -312,24 +312,27 @@ public struct ReaderFileSource: Sendable {
         startByte: Int64,
         index: ReaderFileIndex,
         backwards: Bool = false,
+        continuing: Bool = false,
         cancellation: ReaderCancellation = .never
     ) throws -> ReaderWindow {
         try cancellation.throwIfCancelled()
-        return try makeWindow(startByte: startByte, index: index, backwards: backwards, cancellation: cancellation)
+        return try makeWindow(startByte: startByte, index: index, backwards: backwards, continuing: continuing, cancellation: cancellation)
     }
 
     private func makeWindow(
         startByte: Int64,
         index: ReaderFileIndex,
         backwards: Bool,
+        continuing: Bool = false,
         cancellation: ReaderCancellation
     ) throws -> ReaderWindow {
         let contentStart = Int64(index.bomLength)
         let byteLength = index.byteLength
         let anchor = min(max(startByte, contentStart), byteLength)
+        let pageBytes = min(limits.windowBytes, limits.maxDisplayLineBytes)
         let step = index.encoding.isUTF16
-            ? max(2, limits.windowBytes & ~1)
-            : max(1, limits.windowBytes)
+            ? max(4, pageBytes & ~1)
+            : max(4, pageBytes)
 
         if backwards {
             guard anchor > contentStart else {
@@ -337,17 +340,28 @@ public struct ReaderFileSource: Sendable {
             }
             let target = max(contentStart, anchor - Int64(step))
             let alignedCandidate = try alignedLineStart(for: target, index: index)
-            if alignedCandidate < anchor, anchor - alignedCandidate <= Int64(step) * 2 {
-                return try buildWindow(start: alignedCandidate, end: anchor, index: index, cancellation: cancellation)
+            if alignedCandidate < anchor, anchor - alignedCandidate <= Int64(step) {
+                return try buildWindow(start: alignedCandidate, end: anchor, index: index, keepingTail: true, cancellation: cancellation)
             }
             // Pathological layout (one line longer than the window): fall back
             // to a bounded byte window whose seam is decode-aligned.
             let raw = try source.read(offset: target, length: Int(anchor - target))
             let aligned = alignedStart(raw, offset: target, encoding: index.encoding)
-            return try buildWindow(start: min(aligned, anchor), end: anchor, index: index, cancellation: cancellation)
+            return try buildWindow(start: min(aligned, anchor), end: anchor, index: index, keepingTail: true, cancellation: cancellation)
         }
 
-        let alignedAnchor = try alignedLineStart(for: anchor, index: index)
+        let alignedAnchor: Int64
+        if continuing {
+            alignedAnchor = anchor
+        } else {
+            let lineStart = try alignedLineStart(for: anchor, index: index)
+            if anchor - lineStart >= Int64(step) {
+                let probe = try source.read(offset: anchor, length: step)
+                alignedAnchor = alignedStart(probe, offset: anchor, encoding: index.encoding)
+            } else {
+                alignedAnchor = lineStart
+            }
+        }
         guard alignedAnchor < byteLength else {
             // Nothing after this offset; the session loads backwards instead.
             return ReaderWindow(
@@ -356,8 +370,7 @@ public struct ReaderFileSource: Sendable {
                 notices: [], progress: byteLength > 0 ? Double(anchor) / Double(byteLength) : 0
             )
         }
-        let slack = index.encoding.isUTF16 ? 4 : 2
-        let raw = try source.read(offset: alignedAnchor, length: step + slack)
+        let raw = try source.read(offset: alignedAnchor, length: step)
         guard !raw.isEmpty else {
             return ReaderWindow(
                 startByte: alignedAnchor, endByte: alignedAnchor, blocks: [], hasMore: false,
@@ -418,6 +431,7 @@ public struct ReaderFileSource: Sendable {
         start: Int64,
         end: Int64,
         index: ReaderFileIndex,
+        keepingTail: Bool = false,
         cancellation: ReaderCancellation
     ) throws -> ReaderWindow {
         try cancellation.throwIfCancelled()
@@ -434,8 +448,9 @@ public struct ReaderFileSource: Sendable {
             startOffset: start,
             lineByteLimit: limits.maxDisplayLineBytes
         )
-        let isLast = end >= index.byteLength
-        let lines = splitter.consume(raw, isLast: isLast)
+        // A display page is a bounded stream of its own. Flush its final
+        // partial line; the next page resumes at this exact byte boundary.
+        let lines = splitter.consume(raw, isLast: true)
         let startLineNumber = lineNumber(forByteOffset: start, in: index)
         let chunked = ReaderTextChunker.blocks(
             from: lines,
@@ -447,24 +462,28 @@ public struct ReaderFileSource: Sendable {
             ReaderTextCodec.decode(data, as: index.encoding)
         }
         var blocks = chunked.blocks
+        var retainedStart = start
         var endByte = end
         var truncated = end < index.byteLength
-        if blocks.count > limits.maxBlocksPerWindow {
-            blocks = Array(blocks.prefix(limits.maxBlocksPerWindow))
-            truncated = true
-            if let last = blocks.last,
-               let line = lines.last(where: { $0.start <= last.byteOffset && last.byteOffset < max($0.nextStart, $0.start + 1) }) {
-                endByte = max(last.byteOffset, line.nextStart)
-            } else if let last = blocks.last {
-                endByte = max(last.byteOffset, start)
+        if blocks.count > max(1, limits.maxBlocksPerWindow) {
+            // The first omitted block is the continuation boundary, even
+            // when several blocks belong to the same oversized source line.
+            let retainedCount = max(1, limits.maxBlocksPerWindow)
+            if keepingTail {
+                blocks = Array(blocks.suffix(retainedCount))
+                retainedStart = blocks.first?.byteOffset ?? start
+            } else {
+                endByte = blocks[retainedCount].byteOffset
+                blocks = Array(blocks.prefix(retainedCount))
             }
+            truncated = true
         }
         var notices = chunked.notices
         if index.lineTableTruncated, !notices.contains(.lineTableTruncated) {
             notices.append(.lineTableTruncated)
         }
         return ReaderWindow(
-            startByte: start,
+            startByte: retainedStart,
             endByte: endByte,
             blocks: blocks,
             hasMore: endByte < index.byteLength,
@@ -605,7 +624,10 @@ public struct ReaderFileSource: Sendable {
         for drop in 0...3 {
             guard drop < raw.count else { break }
             let slice = Data(raw.dropFirst(drop))
-            if ReaderTextCodec.decode(slice, as: encoding) != nil { return offset + Int64(drop) }
+            let count = alignedConsumed(slice, encoding: encoding)
+            if count > 0, ReaderTextCodec.decode(Data(slice.prefix(count)), as: encoding) != nil {
+                return offset + Int64(drop)
+            }
         }
         return offset
     }

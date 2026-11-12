@@ -746,6 +746,21 @@ public enum LinuxGuestImageDistributionCatalog {
         )
     ]
 
+    /// Repair-only compatibility from the reviewed pinned v2 distribution manifest.
+    /// Pinned archive manifest SHA256: 23371435ed23fe844a856c50aaf9f52e7b862ee3d71c17ccee6ce4308085fead.
+    /// No AppSupport manifest or path prefix is a trust input here. Changing the
+    /// component archive invalidates this table until its metadata is reviewed again.
+    public static func residentRepairSource(id: String) -> LinuxResidentImageRepairSource? {
+        let v2 = "floe-debian13-arm64-basic-resident-20261105-v2"
+        guard id == v2, let pin = entry(id: v2),
+              pin.archiveSHA512.lowercased() == "8fc26f56804e29e03cfcfd10af621e223879544ee3a3fbdc9438b39ebae9750c99812ee8cf55d26f5b5d3d1c0d473ad5879b1f9a277751ef5765188e534fd3c2" else { return nil }
+        return LinuxResidentImageRepairSource(imageID: v2, compatibleOrigins: [
+            .init(imageID: "floe-debian13-arm64-basic-resident-20261105-v1",
+                artifactSHA512: "2f56746f08ad750eb488f0db29e8ec9d1ac90924dcce4347e1b1c1a5de8e9d3fa629488af4a54c5bb003255c863b8e5d943a098e264999fa64e91c8ce81795b4",
+                artifactBytes: 17_179_869_184)
+        ])
+    }
+
     public static func entry(id: String) -> LinuxGuestTrustedImage? {
         if let bundled = bundled.first(where: { $0.id == id }) {
             return bundled

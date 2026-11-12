@@ -16,6 +16,75 @@ struct UserQuestionModeContractTests {
               executionBoundary: UserAskTool.executionBoundary)
     }
 
+    @Test("Plan wire requests retain one complete available question schema alongside submit under optional-schema pressure")
+    func planQuestionSurvivesOptionalSchemaBudget() async throws {
+        for local in [false, true] {
+            let question = descriptor(), adapter = MockAdapter(), executor = MockExecutor()
+            let wide = ToolCatalog.Descriptor(name: "reference.inspect", toolDescription: String(
+                repeating: "Optional independent reference context. ", count: 1_000),
+                parametersJSON: #"{"type":"object","properties":{}}"#,
+                riskLabels: [], isSideEffecting: false, effect: .readOnly)
+            executor.descriptors = [question.name: question, wide.name: wide]
+            adapter.script = [[.textDelta(.init(text: "The requested output needs clarification.")),
+                               .completed(.init(stopReason: .endTurn))]]
+            var provider = TestFixtures.localhostProvider()
+            if local { provider.kind = .local }
+            var model = TestFixtures.testModel(providerID: provider.id)
+            model.limits = .init(contextTokens: 16_384, maxOutputTokens: 1_024)
+            let runtime = FloeAgentRuntime(configuration: .init(provider: provider, model: model,
+                conversationMode: .plan, verifyFinalAnswer: false), adapter: adapter,
+                policy: HumanApprovalPolicy(), executor: executor, checkpointStore: MockCheckpointStore())
+            try await runtime.start(goal: "Plan this work, inspecting reference.inspect if useful")
+            let request = try #require(adapter.requests.first)
+            let offered = request.toolSchemas.filter { $0.name == UserAskTool.name }
+            #expect(offered.count == 1)
+            #expect(offered.first?.parametersJSON == UserAskTool.parametersJSON)
+            #expect(request.toolSchemas.contains { $0.name == PlanSubmission.toolName })
+            #expect(executor.executedCalls.isEmpty)
+            // This captures actual runtime requests, not an assertion that a
+            // scripted provider has acquired real-model questioning habits.
+        }
+    }
+
+    @Test("Plan schema retention never revives a question excluded by the run ceiling or live availability")
+    func planQuestionRespectsActualAvailability() async throws {
+        for excludedByPolicy in [false, true] {
+            let question = descriptor(), adapter = MockAdapter(), executor = MockExecutor()
+            executor.descriptors = [question.name: question]
+            adapter.script = [[.textDelta(.init(text: "Please clarify the desired result.")),
+                               .completed(.init(stopReason: .endTurn))]]
+            let provider = TestFixtures.localhostProvider()
+            var configuration = FloeAgentRuntime.Configuration(provider: provider,
+                model: TestFixtures.testModel(providerID: provider.id), conversationMode: .plan,
+                verifyFinalAnswer: false)
+            if excludedByPolicy { configuration.allowedToolNames = [] }
+            else { configuration.currentToolAvailability = { [] } }
+            let runtime = FloeAgentRuntime(configuration: configuration, adapter: adapter,
+                policy: HumanApprovalPolicy(), executor: executor, checkpointStore: MockCheckpointStore())
+            try await runtime.start(goal: "Plan a report; its outcome is unspecified")
+            let request = try #require(adapter.requests.first)
+            #expect(!request.toolSchemas.contains { $0.name == UserAskTool.name })
+            #expect(executor.executedCalls.isEmpty)
+        }
+    }
+
+    @Test("Plan clarification precedes completion pressure without changing the ordinary question/default contract")
+    func planClarificationPrecedesFinalization() {
+        for compact in [false, true] {
+            let plan = AgentPromptComposer.compose(mode: .plan, runtimeContext: "ctx", compactForLocal: compact)
+            #expect(plan.contains("BEFORE plan.submit"))
+            #expect(plan.contains("no timer/default"))
+            #expect(plan.contains("Do not add ceremonial questions to a clear task"))
+            #expect(plan.contains("concrete deliverable"))
+            #expect(plan.contains("dependencies or none"))
+            #expect(plan.contains("never to meet a fixed count"))
+            let ordinary = AgentPromptComposer.compose(mode: .chat, runtimeContext: "ctx", compactForLocal: compact)
+            #expect(!ordinary.contains("Build a site"))
+            #expect(ordinary.contains("initially 15 seconds"))
+            #expect(ordinary.contains("required with no timeout or fallback"))
+        }
+    }
+
     @Test("Plan can offer and dispatch the existing main-run question without authorizing execution")
     func planOffersAndDispatchesQuestion() async throws {
         let question = descriptor()

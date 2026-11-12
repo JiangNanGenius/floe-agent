@@ -101,6 +101,34 @@ import Darwin
             isCancelled: { false }, cloneAttributes: { _ in .unsupported })
     }
 
+    @Test func authorizedRootDoesNotRequireAncestorDirectoryReadPermission() throws {
+        let parent = FileManager.default.temporaryDirectory
+            .appendingPathComponent("legacy-search-only-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        defer {
+            _ = parent.path.withCString { chmod($0, 0o700) }
+            try? FileManager.default.removeItem(at: parent)
+        }
+        let fixture = try Fixture(parent: parent)
+        let entry = try fixture.entry()
+        #expect(parent.path.withCString { chmod($0, 0o111) } == 0)
+        let ancestor = parent.path.withCString { open($0, O_RDONLY | O_DIRECTORY | O_CLOEXEC) }
+        if ancestor >= 0 { close(ancestor) }
+        #expect(ancestor < 0, "The fixture must actually refuse ancestor directory reads")
+        let directRoot = fixture.root.path.withCString {
+            open($0, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        }
+        #expect(directRoot >= 0)
+        if directRoot >= 0 { close(directRoot) }
+        let report = fixture.scan(references: fixture.references())
+        #expect(report.rootIdentity != nil)
+        #expect(report.rootDiagnostic == nil)
+        #expect(!report.summary.isPartial)
+        #expect(report.records.count == 1)
+        #expect(report.records.first?.environmentID == entry.environment)
+        #expect(report.diskContentBytesRead == 0)
+    }
+
     @Test func exactIdentityAndBoundedMetadataAreObservedWithoutDiskContent() throws {
         let fixture = try Fixture(); defer { fixture.cleanup() }
         let entry = try fixture.entry()
