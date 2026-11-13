@@ -1,5 +1,24 @@
 # 安卓与 iOS 主线的增量差异记录
 
+## 2026-11-13 iOS341 固定增量与 Android 五项实机闭环
+
+固定比较 iOS340 `ca7e39303404a3f6806006300165b248ad0cd967` → iOS341 `d0c085f9ddda28e1d9a125389a020f618892d408`／`v1.8.20`：`FloeAgent/` 共 32 条变化路径。相对已推送 Android 检查点 `3b9acf6e127020691ca56db95948448c029f4142` 的 App 区间也是 32 条；Android 应用使用该固定快照的 Full08。路径数不是缺功能数量，不重置原 183 项、G/C/N 或 IOS-D 编号。
+
+| iOS 来源 | 延续身份 | Android 处理与下一批优先级 |
+| --- | --- | --- |
+| S57 多历史原始上下文恢复 | C02／N08／IOS-D36 | P1：核对持久历史到模型原上下文、模型选择和工作区的恢复。本次真实完成通知冷启动已恢复本任务，但不冒充多个历史会话的原上下文恢复验收。 |
+| S58 迁移盘覆盖与实际回收 | C07／G11／S46 | P1：沿用 Android PRoot 文件树与环境所有者、引用、取消、原件保护及实际回收合同。iOS VM 稀疏磁盘和专属整理路径不移植，既有 Android 事务证据保留。 |
+| S59 录音 take 分组、连续播放与材料布局 | C03／G09-R2／IOS-D06／S43–S45 | P2：映射适用的录音、转录、播放连续性及文件入口；继续系统／云语音，不引入本地模型或完整 iOS 重型会议工作台。 |
+| S60 运行中 Goal steer 接受／同轮消费、Stop-resume 与输入模式 CAS | C02／N08／S47–S54 | P1：独立核对 Android Goal 控制、暂停恢复与持久回执。本次 Plan 转 Agent、执行交接、reset 和子任务隔离不替代 Goal steer 原子消费验收。 |
+
+本批获准五项已经在三星实际闭合：计划当前页面就绪后一次正常执行；主任务唯一 reset 与三步完整进度；子任务成功且没有覆盖父步骤；父子密封成果在通知冷启动后均可打开；原生文本保存、关闭标签后重开，修改原件不改变已有密封快照。后台应用进程真实结束后，系统通知恢复同一任务的消息、模型和工作区。原失败记录及模型九次目录误读后自行恢复的过程保留。
+
+Android 代码、ARM64 生产组件和 Full APK 以 `d0c085f9` 为固定应用来源，实际包摘要与安装字节一致；新增七项子任务回归、现有相关 JVM 及封装／签名证据分别记录。ADB 界面授权的五个用例发现 namespace 导入缺口，已做仅 import 的测试夹具修复，修复后实际 5／5 通过、零跳过，原零执行失败仍保留。随后 1.0.5 的五个公开附件完整匿名字节和当前／旧版生产更新发现均已通过，iOS Latest 保留。独立新录像在 Linux 的可选清理命令被要求审批后原生停止，未执行该删除；媒体／手机／日历尚未验收。该实际 C02／N08 审批恢复及 shell 契约缺口先于新增独立 iOS 功能修复，不改写五项已验范围或原失败历史。
+
+此处仅增量读取固定 Git 对象，未增加 iOS 构建或独立存储验收。新出现的独立 iOS 功能归后续维护，本批仍只做已批准范围；旧 338、339–340 的来源和失败历史继续保留。
+
+English: The immutable iOS340→341 interval has 32 App paths, not 32 missing features. S57–S60 retain existing Android identities and next-batch priorities. Samsung Full08 now verifies the five approved Plan/checklist/output/text/notification flows, while original failures and recovered model mistakes remain recorded. A namespace-only UI-grant test repair now passes all five original cases, with the original zero-execution failure retained. Fixed-source packaging and all public download/update readbacks passed. A separate fresh recording stopped on an unexecuted optional cleanup approval; safe alternative recovery and the shell contract are the next C02/N08 repair. Recording remains unaccepted; iOS VM or heavy-editor additions do not expand this batch.
+
 ## 2026-11-13 iOS 339–340 的有界增量与 Android 113 实测修复
 
 从上一固定 iOS 338 `67d30edb3bcfc9fa674f2762f096de533e13b427`，经 339 `b1c062d75ffe07603a698e048109776a2d4707ba`，比较到 340 `ca7e39303404a3f6806006300165b248ad0cd967`／`v1.8.19`。实际 Git 对象区间只有 15 条 `FloeAgent/` 唯一路径：7 条生产、5 条测试、3 条工程／版本／许可；339→340 子区间为 11 条。数量不作缺功能计数，不重启原 183 项核对或重置 IOS-D／C／G／N 编号。

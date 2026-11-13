@@ -1,5 +1,29 @@
 # Floe Android 分目标实施记录
 
+## 五项三星闭环，1.0.5 发行与新录像（2026-11-13）
+
+本批应用固定源码为 `d0c085f9ddda28e1d9a125389a020f618892d408`；Android 代码检查点 `0f2a0f5fc7013dc0a261bc9cd8dec04f151cde0f`、`3b9acf6e127020691ca56db95948448c029f4142` 已进入该快照。当前实际安装的是 Full08：1.0.5／113，166,427,659 字节，SHA-256 `61c29e8d182249f9493010ff50dddfba54271e02234d08649391ed69a91802f7`。主应用／运行组件字节与原 UID 保留均已读回；这是保留数据的同版本 ADB 修复安装，不是新的在线升级验收。
+
+| 本轮必需项 | 三星实际结果 |
+| --- | --- |
+| 计划转执行 | 新任务唯一发送，计划直接在当前页面出现普通执行入口，输入模式自动回到智能体；正常执行一次后完成。 |
+| 进度重置与子任务隔离 | 执行开始时唯一 reset 返回 `wasReset=true`、revision 2、空步骤；随后父任务保持三步，revision 6 全部完成。唯一执行子任务五次迭代成功，未覆盖父清单，也未再把已执行命令列为未执行。 |
+| 真实文件成果 | 父任务 12 字节、子任务 11 字节的真实密封成果卡均在冷启动恢复后打开，原生阅读器内容与发布摘要一致。较大 UTF-8／未知扩展名预览沿用同一阅读器此前的实际首页与 EOF 证据。 |
+| 轻量文本 | 从本任务工作区进入原生全屏编辑器，修改、保存、关闭标签后重开读回。修改原文件后，已发布的密封快照仍保持原 12 字节。 |
+| 通知恢复 | 后台任务完成通知真实送达；结束后台应用进程、证实进程消失后，点击系统通知冷启动，正确恢复同任务消息、模型、工作区及可打开的文件。 |
+
+原始故障保留：早期成果发布重复 MIME 键崩溃、大文本 ANR、子任务覆盖父清单和通知冷启动空白分别留存原证据，修复后才登记上述结果。本次小任务也保留九次模型误把目录交给文本读取工具的失败；工具正确拒绝，模型重新查询目录工具后自行完成，没有追加发送或人工代办文件工作。该模型效率问题列为已知限制，不记成无错误执行。
+
+ARM64 Core／Authority 实际对象与链接、Full APK、58 项封装绑定、16 KiB 及 API28／29 双包签名检查通过。新增七项子任务边界检查通过；其余未改组件复用已有证据。另发现新增 ADB 界面授权测试漏导入实际 `policy.GrantRegistry`，已仅补一行 import，五个原用例及断言未改；修复后实际定向执行 5／5 通过、零跳过，耗时 13.356 秒，79 项模块输入未漂移。原零执行编译失败保留，不计作通过。应用源码与安装包保持上述固定快照，测试夹具修复另行记录。
+
+发行已完成：[Android 1.0.5 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v1.0.5) 固定标签 `android/v1.0.5` →上述应用源码。五个附件的远端摘要与完整匿名下载字节均通过；当前 113、保留 108／65 的实际生产解析器均能从 65／81／1.0.0 发现 1.0.5 完整包，1.0.5 自身报告当前版本，已知问题与校验文本一致。跨大版本沿用完整 APK，保留现有完整回退与镜像入口，未附增量旁路清单，不新增 Play 产物；iOS Latest 保持其独立发行。
+
+同包完整录像已做新的唯一发送验收，真实运行到 Linux 准备／依赖安装与公开资料查询；模型随后因 POSIX shell 不展开目录花括号而试图附带 `rm -rf` 清理，转入人工审批。录制按原生 Stop 停止，未批准、未执行这次删除，未追加业务提示；终止后任务／工具／本地作业计数均归零。尚未到媒体成果、手机操作和日历保存，完整视频仍未通过。下一修复批优先补齐实际 shell 契约及现有审批流程中的安全替代／放弃可选步骤，保留删除保护、精确用户审批与 Stop 栅栏，修好后从新任务重录。片尾独立实际编码、完整解码与两帧三档二维码读回已通过，可继续复用。
+
+本批同时从固定 iOS340 比较至 iOS341／`v1.8.20`，实际 32 条 App 路径仅作增量索引。S57–S60 延续原 C/G/N/IOS-D 归属，见[增量对账](FLOE_ANDROID_IOS_DELTA_AUDIT.zh-CN.md)。多历史原上下文、适用的迁移／存储合同和 Goal steer 连续性为后续优先项；不把 iOS VM、重型编辑器或本地模型加入本批。
+
+English: Full08 at source d0c085f9 is installed with exact-byte and UID readback. The five approved Samsung flows passed: first-screen Plan execution, one durable reset with isolated child progress, real sealed parent/child previews, native text save/close/reopen, and actual process-death notification recovery. Original crashes, blank routing and recovered model tool errors remain recorded. Native/package/signature checks passed; the namespace-only UI-grant test repair passed all five selected cases without skipped or changed assertions. All five anonymous release assets and three real production update parsers passed, preserving iOS Latest. The separate fresh recording stopped on an unexecuted optional destructive-cleanup approval after a POSIX directory mistake; native Stop settled all run/work counters. Shell-contract and safe alternative recovery are the next repair, with no new OTA or complete-video acceptance claimed.
+
 ## 下一版已批准范围与录像交接（2026-11-13）
 
 用户已确认将计划转执行、进度重置、文件成果预览、轻量文本和通知恢复纳入下一候选，并用新版本制作视频。两个 Normal／auto 源码包已终结交回，协调者接手集成小修，当前零 worker。私有 1.0.5／Full113 已从 `8dafbc0e5e7862b984c8232e23e407983bc70c87` 构建、签名并升级安装到三星，主包及匹配运行组件的安装字节读回一致；主包 166,410,935 字节，SHA-256 `f46ef8311d0a74d4d8c11852b48a39a023fd5de633d90f78ef1e8a22840caee3`。这次是 ADB 安装，不能当作在线升级通过，也尚未公开 Release。
