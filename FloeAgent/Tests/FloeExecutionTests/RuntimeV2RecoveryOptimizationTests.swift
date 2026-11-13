@@ -189,6 +189,43 @@ private final class RecoveryOptimizationFixture: @unchecked Sendable {
 }
 
 
+private struct RelocatedOptimizationSession {
+    let work: URL
+    let domain: RuntimeV2MaintenanceDomain
+    let state: URL
+    let evidence: RecoveryOptimizationEvidence
+    let coordinator: RuntimeV2MaintenanceCoordinator
+    let adapter: RuntimeV2RecoveryOptimizationAdapter
+
+    init(_ fixture: RecoveryOptimizationFixture) throws {
+        let fm = FileManager.default
+        let indexed = fixture.root.deletingLastPathComponent()
+            .appendingPathComponent("MaintenanceAuthority/" + fixture.domain.domainKey)
+        try fm.createDirectory(at: indexed.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try fm.moveItem(at: fixture.state, to: indexed)
+        let moved = fixture.work.deletingLastPathComponent()
+            .appendingPathComponent(fixture.work.lastPathComponent + "-new-container")
+        try fm.moveItem(at: fixture.work, to: moved)
+        let current = try RuntimeV2MaintenanceDomain(trustedLegacyRoot: moved.appendingPathComponent("v2"))
+        let selected = try current.authorityStateDirectory()
+        let source = RecoveryOptimizationEvidence(domain: current, state: selected)
+        RuntimeV2RecoveryAdmission.installSyntheticDomainForTests(domain: current, stateDirectory: selected)
+        let authority = try RuntimeV2MaintenanceCoordinator(domain: current, stateDirectory: selected,
+            evidenceProvider: { await source.admitted() })
+        source.coordinator = authority
+        _ = RuntimeV2MaintenanceRegistry.install(authority)
+        self.work = moved; self.domain = current; self.state = selected; self.evidence = source
+        self.coordinator = authority
+        self.adapter = RuntimeV2RecoveryOptimizationAdapter(domain: current, coordinator: authority,
+            closureAuthority: source.closure, rawEvidence: { await source.raw() },
+            admittedEvidence: { await source.admitted() })
+    }
+    func cleanup() {
+        RuntimeV2MaintenanceRegistry.unregister(domainRoot: domain.root)
+        try? FileManager.default.removeItem(at: work)
+    }
+}
+
 /// Explicit macOS qualification-host setup only. The production owner audit
 /// stays untouched. XCTest may raise its inherited soft FD limit at startup.
 private struct SyntheticDescriptorLimitScope {
@@ -625,6 +662,50 @@ final class RuntimeV2RecoveryOptimizationTests: XCTestCase {
         XCTAssertEqual(state.phase, .open)
     }
 
+    func testRenamedContainerReusesCompletedJournalWithoutNewCoreWorkOrGain() async throws {
+        let descriptorLimit = try SyntheticDescriptorLimitScope()
+        defer { XCTAssertEqual(descriptorLimit.restore(), 0) }
+        let fixture = try RecoveryOptimizationFixture(); defer { fixture.cleanup() }
+        _ = await fixture.adapter.recoverBeforeUse()
+        let first = await fixture.adapter.optimize(try await fixture.record(), cancellation: .init())
+        XCTAssertEqual(first.code, "optimized")
+        let names = try FileManager.default.contentsOfDirectory(atPath: fixture.journals.path)
+        let receiptNames = try FileManager.default.contentsOfDirectory(atPath: fixture.receipts.path)
+        let journalBytes = try Data(contentsOf: fixture.journals.appendingPathComponent(try XCTUnwrap(names.first)))
+        let receiptBytes = try Data(contentsOf: fixture.receipts.appendingPathComponent(try XCTUnwrap(receiptNames.first)))
+        let before = try StorageSparseDiskRewrite.inspectSource(rootURL: fixture.root, relativePath: fixture.relative + "/disk.img")
+        let metadata = try fixture.preservedMetadata()
+        let current = try RelocatedOptimizationSession(fixture); defer { current.cleanup() }
+        XCTAssertNotEqual(current.domain.domainKey, fixture.domain.domainKey)
+        XCTAssertEqual(current.state.lastPathComponent, fixture.domain.domainKey)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.root.path))
+        let recovery = await current.adapter.recoverBeforeUse()
+        XCTAssertEqual(recovery.outcome, .notNeeded)
+        let inventory = try await current.adapter.inventory()
+        let record = try XCTUnwrap(inventory.records.first)
+        let result = await current.adapter.optimize(record, cancellation: .init()) { _ in
+            XCTFail("A completed relocated disk must not enter Core counting/staging/digest work")
+        }
+        XCTAssertEqual(result.code, "already-optimized"); XCTAssertTrue(result.verifiedUnchanged)
+        XCTAssertNil(result.report, "Do not count the historical gain again")
+        XCTAssertFalse(result.recoveryPending)
+        let after = try StorageSparseDiskRewrite.inspectSource(rootURL: current.domain.root, relativePath: fixture.relative + "/disk.img")
+        XCTAssertTrue(after.identity.matchesFully(before.identity))
+        let journals = current.state.appendingPathComponent("sparse-journals")
+        let receipts = current.state.appendingPathComponent("sparse-receipts")
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: journals.path), names)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: receipts.path), receiptNames)
+        XCTAssertEqual(try Data(contentsOf: journals.appendingPathComponent(try XCTUnwrap(names.first))), journalBytes)
+        XCTAssertEqual(try Data(contentsOf: receipts.appendingPathComponent(try XCTUnwrap(receiptNames.first))), receiptBytes)
+        XCTAssertEqual(try Data(contentsOf: current.domain.root.appendingPathComponent(fixture.relative + "/disk.img")), fixture.original)
+        for (name, bytes) in metadata {
+            let path = name == "runtime.json" ? fixture.relative + "/runtime.json"
+                : (name == "registry" ? "registry/runtime.sqlite" : "environments/env-a/" + name)
+            XCTAssertEqual(try Data(contentsOf: current.domain.root.appendingPathComponent(path)), bytes)
+        }
+        XCTAssertEqual(try current.domain.authorityStateDirectory(), current.state)
+    }
+
     func testChangedCommittedDiskCannotReuseAnEarlierSuccessJournal() async throws {
         let descriptorLimit = try SyntheticDescriptorLimitScope()
         defer { XCTAssertEqual(descriptorLimit.restore(), 0) }
@@ -781,6 +862,83 @@ final class RuntimeV2RecoveryOptimizationTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: fixture.disk), fixture.original)
         let repeatPass = await fixture.adapter.recoverBeforeUse()
         XCTAssertEqual(repeatPass.outcome, .notNeeded)
+    }
+
+    func testRenamedContainerRealCoreCrashAfterSwapConvergesThroughCurrentHeldSession() async throws {
+        let descriptorLimit = try SyntheticDescriptorLimitScope()
+        defer { XCTAssertEqual(descriptorLimit.restore(), 0) }
+        let fixture = try RecoveryOptimizationFixture(); defer { fixture.cleanup() }
+        _ = await fixture.adapter.recoverBeforeUse()
+        let record = try await fixture.record()
+        let source = try StorageSparseDiskRewrite.inspectSource(rootURL: fixture.root, relativePath: fixture.relative + "/disk.img")
+        let claim = try await fixture.coordinator.acquireExclusiveMaintenance(.init(
+            owner: "app-legacy-storage-optimization", reason: "lossless-legacy-recovery",
+            targetRelativePath: fixture.relative + "/disk.img",
+            targetIdentity: RuntimeV2RecoveryOptimizationAdapter.runtimeIdentity(source.identity)))
+        let closed = try await fixture.evidence.closure.currentReceipt(intentID: claim.intentID)
+        let receipt = RuntimeV2OptimizationJobReceipt(
+            version: 1, intentID: claim.intentID, authorityGeneration: claim.holdGeneration,
+            domainKey: fixture.domain.domainKey, relativePath: fixture.relative + "/disk.img",
+            expectedSource: source.identity,
+            preservationFingerprint: try RuntimeV2OptimizationPreservation(record).fingerprint(),
+            repairHoldGeneration: 7, closure: closed)
+        try RuntimeV2OptimizationJournalIO.writeOnce(receipt, directory: fixture.receipts, name: claim.intentID + ".json")
+        try FileManager.default.createDirectory(at: fixture.journals, withIntermediateDirectories: true)
+        try await claim.markCommitting()
+        let fence = StorageSparseDiskMaintenanceFence(leaseID: claim.intentID, generation: claim.holdGeneration) {
+            try RuntimeV2OptimizationAsyncFence.check {
+                try await claim.validate()
+                let fresh = await fixture.evidence.admitted()
+                guard fresh.isComplete else { throw StorageSparseDiskRewriteError.needsInspection("test-proof") }
+                try claim.validateReferenceFingerprint(fresh.references.fingerprint)
+            }
+        }
+        let request = StorageSparseDiskRewriteRequest(
+            rootURL: fixture.root, relativePath: receipt.relativePath, expectedSource: source.identity,
+            journalDirectoryURL: fixture.journals, jobID: claim.intentID, maintenanceLeaseID: claim.intentID,
+            holdGeneration: 7, jobGeneration: claim.holdGeneration, mode: .cloneAndPunch,
+            minimumReclaimBytes: 1, allowSparseCopyFallback: false)
+        var hooks = StorageSparseDiskRewrite.TestHooks()
+        hooks.crashAt = { if $0 == .afterSwap { throw StorageSparseDiskRewriteError.crashInjected("adapter-after-swap") } }
+        let capturedHooks = hooks
+        let worker = RuntimeV2OptimizationWorker("synthetic.real-core", allowsSynchronousFence: true)
+        do {
+            _ = try await worker.run {
+                try StorageSparseDiskRewrite._rewrite(request, fence: fence, hooks: capturedHooks,
+                                                      isCancelled: { false })
+            }
+            XCTFail("Expected the explicit synthetic durable crash point")
+        } catch { XCTAssertEqual(error as? StorageSparseDiskRewriteError, .crashInjected("adapter-after-swap")) }
+        fixture.evidence.lock.withLock { fixture.evidence.active = true }
+        await claim.handoffToRecovery()
+        let current = try RelocatedOptimizationSession(fixture); defer { current.cleanup() }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.root.path))
+        current.evidence.lock.withLock { current.evidence.active = true }
+        let recovered = await current.adapter.recoverBeforeUse()
+        XCTAssertEqual(recovered.outcome, .resolved)
+        XCTAssertEqual(try Data(contentsOf: current.domain.root.appendingPathComponent(receipt.relativePath)), fixture.original)
+        let savedJournal = current.state.appendingPathComponent("sparse-journals/" + claim.intentID + ".json")
+        let settled = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: savedJournal)) as? [String: Any])
+        XCTAssertEqual(settled["phase"] as? String, "retired")
+        XCTAssertEqual(settled["sourceDigestSHA512"] as? String, settled["stageDigestSHA512"] as? String)
+        XCTAssertEqual(settled["rootPath"] as? String, fixture.root.path)
+        let closureDirectory = current.state.appendingPathComponent("closed-receipts")
+        let closureNames = try FileManager.default.contentsOfDirectory(atPath: closureDirectory.path)
+        var foundFresh = false
+        for name in closureNames {
+            if let proof = try RuntimeV2OptimizationJournalIO.read(RuntimeV2RecoveryClosedReceipt.self,
+                directory: closureDirectory, name: name), proof.isConvergenceProof {
+                XCTAssertEqual(proof.domainKey, current.domain.domainKey)
+                XCTAssertNotEqual(proof.proofID, closed.proofID)
+                XCTAssertEqual(proof.rootDevice, closed.rootDevice); XCTAssertEqual(proof.rootInode, closed.rootInode)
+                foundFresh = true
+            }
+        }
+        XCTAssertTrue(foundFresh, "Recovery requires a new current-incarnation closure proof")
+        let repeatPass = await current.adapter.recoverBeforeUse()
+        XCTAssertEqual(repeatPass.outcome, .notNeeded)
+        let state = await current.coordinator.state()
+        XCTAssertEqual(state.phase, .open)
     }
 
     func testFutureReferenceCannotDeadlockUnchangedIntentConvergence() async throws {

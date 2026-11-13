@@ -1,0 +1,9 @@
+Floe Agent 1.8.19 (340) — focused internal repair candidate
+
+Only repairs recovery of legacy-environment cleanup state when the same physical directory has moved with an app-container location change. Copied, ambiguous and unidentified directories retain existing refusal/protection; this does not authorize new cleanup targets or add engines/capabilities.
+
+Existing internal Floe QA plus the standing unsigned GitHub stable/latest and awaited Feather channels only. No public TestFlight or formal App Store submission; Build315 and withdrawn public Build331 remain unchanged.
+
+Verify the actual recovered progress, unchanged original data/software/recovery disks and completed work after installation. These candidate notes do not claim that340 is already delivered or that all capacity has been reclaimed.
+
+本轮仅修旧环境路径恢复；保留原资料、已安装软件与恢复盘及身份核验。不得将空目录、复制目录或身份不明的内容视作旧环境。容量以实际完成结果为准，本稿不代表340已发布。

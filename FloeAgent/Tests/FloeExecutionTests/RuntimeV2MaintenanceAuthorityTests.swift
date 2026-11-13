@@ -64,6 +64,131 @@ final class RuntimeV2MaintenanceAuthorityTests: XCTestCase {
         try? FileManager.default.removeItem(at: stateDirectory)
     }
 
+    func testRenamedPhysicalDomainSelectsOriginalAuthorityAndRecoversHeldIntent() async throws {
+        let fm = FileManager.default
+        let work = root.appendingPathComponent("relocation-state")
+        let oldContainer = work.appendingPathComponent("container-old")
+        let newContainer = work.appendingPathComponent("container-new")
+        let suffix = "Library/Application Support/Floe/Runtime/v2"
+        let oldRoot = oldContainer.appendingPathComponent(suffix)
+        try fm.createDirectory(at: oldRoot, withIntermediateDirectories: true)
+        let oldDomain = try RuntimeV2MaintenanceDomain(trustedLegacyRoot: oldRoot)
+        let physical = try RuntimeV2DiskIdentity.read(at: oldDomain.root)
+        let oldState = try oldDomain.authorityStateDirectory()
+        try fm.createDirectory(at: oldState, withIntermediateDirectories: true)
+        let lock = open(oldState.appendingPathComponent("maintenance.lock").path, O_CREAT | O_RDWR | O_NOFOLLOW, 0o600)
+        guard lock >= 0 else { return XCTFail("fixture lock open") }; close(lock)
+        let lockBefore = try RuntimeV2DiskIdentity.read(at: oldState.appendingPathComponent("maintenance.lock"))
+        let record = RuntimeV2MaintenanceIntentRecord(intentID: UUID().uuidString,
+            holdGeneration: 9, phase: .recovering, owner: "test", reason: "rename",
+            createdAt: Date(), updatedAt: Date(), domainRoot: oldDomain.root.path,
+            domainDevice: physical.device, domainInode: physical.inode)
+        let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+        let original = try encoder.encode(record)
+        try original.write(to: oldState.appendingPathComponent("intent.json"))
+        try fm.moveItem(at: oldContainer, to: newContainer)
+        XCTAssertFalse(fm.fileExists(atPath: oldRoot.path))
+        let current = try RuntimeV2MaintenanceDomain(trustedLegacyRoot: newContainer.appendingPathComponent(suffix))
+        XCTAssertNotEqual(current.domainKey, oldDomain.domainKey)
+        // Reproduce339 bootstrap before this patch: the new path hash already
+        // exists as an empty state directory, while old history remains below
+        // the old hash. Merely preferring an existing current-key URL is wrong.
+        let emptyNewState = current.root.deletingLastPathComponent()
+            .appendingPathComponent("MaintenanceAuthority/" + current.domainKey)
+        try fm.createDirectory(at: emptyNewState, withIntermediateDirectories: false)
+        let emptyIdentity = try RuntimeV2DiskIdentity.read(at: emptyNewState)
+        let selected = try current.authorityStateDirectory()
+        XCTAssertEqual(selected.lastPathComponent, oldDomain.domainKey)
+        XCTAssertNotEqual(selected, emptyNewState)
+        XCTAssertTrue(try fm.contentsOfDirectory(atPath: emptyNewState.path).isEmpty)
+        XCTAssertEqual(try RuntimeV2DiskIdentity.read(at: emptyNewState).inode, emptyIdentity.inode)
+        XCTAssertEqual(try Data(contentsOf: selected.appendingPathComponent("intent.json")), original)
+        let lockAfter = try RuntimeV2DiskIdentity.read(at: selected.appendingPathComponent("maintenance.lock"))
+        XCTAssertEqual(lockAfter.device, lockBefore.device); XCTAssertEqual(lockAfter.inode, lockBefore.inode)
+        let box = evidence!
+        let recovered = try RuntimeV2MaintenanceCoordinator(domain: current, stateDirectory: selected,
+            evidenceProvider: { box.value })
+        await recovered.installRecoveryHandler { intent in
+            XCTAssertEqual(intent.domainRoot, record.domainRoot)
+            return .resolved
+        }
+        let result = await recovered.recoverIfNeeded()
+        XCTAssertEqual(result.outcome, .resolved)
+        // A later current-path intent remains in the same selected state even
+        // though its path hash differs from this directory's historical index.
+        var later = record; later.domainRoot = current.root.path; later.phase = .resolved
+        try encoder.encode(later).write(to: selected.appendingPathComponent("intent.json"))
+        XCTAssertEqual(try current.authorityStateDirectory(), selected)
+        let admission = open(emptyNewState.appendingPathComponent("admission.lock").path,
+            O_CREAT | O_EXCL | O_RDWR | O_NOFOLLOW, 0o600)
+        guard admission >= 0 else { return XCTFail("synthetic admission lock open") }; close(admission)
+        XCTAssertEqual(try current.authorityStateDirectory(), selected)
+        // An unexplained maintenance namespace is NOT empty. Do not ignore
+        // its possible live/durable work just because an older key is known.
+        let unknownLock = open(emptyNewState.appendingPathComponent("maintenance.lock").path,
+            O_CREAT | O_EXCL | O_RDWR | O_NOFOLLOW, 0o600)
+        guard unknownLock >= 0 else { return XCTFail("synthetic maintenance lock open") }; close(unknownLock)
+        let settledBytes = try Data(contentsOf: selected.appendingPathComponent("intent.json"))
+        XCTAssertThrowsError(try current.authorityStateDirectory())
+        XCTAssertEqual(try Data(contentsOf: selected.appendingPathComponent("intent.json")), settledBytes)
+    }
+
+    func testCopiedOrAmbiguousAuthorityHistoryCannotCreateFreshNamespace() throws {
+        let fm = FileManager.default
+        let work = root.appendingPathComponent("copy-state")
+        let oldContainer = work.appendingPathComponent("container-old")
+        let newContainer = work.appendingPathComponent("container-new")
+        let suffix = "Library/Application Support/Floe/Runtime/v2"
+        let oldRoot = oldContainer.appendingPathComponent(suffix)
+        try fm.createDirectory(at: oldRoot, withIntermediateDirectories: true)
+        let oldDomain = try RuntimeV2MaintenanceDomain(trustedLegacyRoot: oldRoot)
+        let physical = try RuntimeV2DiskIdentity.read(at: oldDomain.root)
+        let state = try oldDomain.authorityStateDirectory()
+        try fm.createDirectory(at: state, withIntermediateDirectories: true)
+        let record = RuntimeV2MaintenanceIntentRecord(intentID: UUID().uuidString,
+            holdGeneration: 2, phase: .resolved, owner: "test", reason: "copy",
+            createdAt: Date(), updatedAt: Date(), domainRoot: oldDomain.root.path,
+            domainDevice: physical.device, domainInode: physical.inode)
+        let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+        let original = try encoder.encode(record)
+        try original.write(to: state.appendingPathComponent("intent.json"))
+        try fm.copyItem(at: oldContainer, to: newContainer)
+        try fm.removeItem(at: oldContainer)
+        let copied = try RuntimeV2MaintenanceDomain(trustedLegacyRoot: newContainer.appendingPathComponent(suffix))
+        let copiedState = copied.root.deletingLastPathComponent().appendingPathComponent("MaintenanceAuthority/" + oldDomain.domainKey)
+        XCTAssertThrowsError(try copied.authorityStateDirectory())
+        XCTAssertEqual(try Data(contentsOf: copiedState.appendingPathComponent("intent.json")), original)
+        XCTAssertFalse(fm.fileExists(atPath: copied.root.deletingLastPathComponent()
+            .appendingPathComponent("MaintenanceAuthority/" + copied.domainKey).path))
+        let actual = try RuntimeV2DiskIdentity.read(at: copied.root)
+        var same = record; same.domainRoot = copied.root.path; same.domainDevice = actual.device; same.domainInode = actual.inode
+        let sameBytes = try encoder.encode(same)
+        try sameBytes.write(to: copiedState.appendingPathComponent("intent.json"))
+        let duplicate = copiedState.deletingLastPathComponent().appendingPathComponent(String(repeating: "b", count: 64))
+        try fm.createDirectory(at: duplicate, withIntermediateDirectories: false)
+        try sameBytes.write(to: duplicate.appendingPathComponent("intent.json"))
+        XCTAssertThrowsError(try copied.authorityStateDirectory())
+        try fm.removeItem(at: duplicate)
+        try fm.createSymbolicLink(at: duplicate, withDestinationURL: copiedState)
+        XCTAssertThrowsError(try copied.authorityStateDirectory())
+    }
+
+    func testUnknownPhysicalIdentityCannotBeClearedByTrustedHandler() async throws {
+        let record = RuntimeV2MaintenanceIntentRecord(intentID: UUID().uuidString,
+            holdGeneration: 3, phase: .recovering, owner: "test", reason: "missing identity",
+            createdAt: Date(), updatedAt: Date(), domainRoot: root.path)
+        let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+        let bytes = try encoder.encode(record)
+        try bytes.write(to: stateDirectory.appendingPathComponent("intent.json"))
+        let box = evidence!
+        let recovered = try RuntimeV2MaintenanceCoordinator(domain: domain, stateDirectory: stateDirectory,
+            evidenceProvider: { box.value })
+        await recovered.installRecoveryHandler { _ in XCTFail("unknown root must never enter IO handler"); return .resolved }
+        let result = await recovered.recoverIfNeeded()
+        XCTAssertEqual(result.outcome, .blocked)
+        XCTAssertEqual(try Data(contentsOf: stateDirectory.appendingPathComponent("intent.json")), bytes)
+    }
+
     // MARK: - Cases
 
     func testPendingStartAndMaintenanceCannotBothWin() async throws {
@@ -259,8 +384,9 @@ final class RuntimeV2MaintenanceAuthorityTests: XCTestCase {
             updatedAt: Date(timeIntervalSinceNow: -365 * 24 * 3600),
             domainRoot: root.path
         )
-        record.domainDevice = 0
-        record.domainInode = 0
+        let physical = try RuntimeV2DiskIdentity.read(at: root)
+        record.domainDevice = physical.device
+        record.domainInode = physical.inode
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         try encoder.encode(record).write(

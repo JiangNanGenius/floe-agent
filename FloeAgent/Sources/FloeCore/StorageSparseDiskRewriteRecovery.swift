@@ -37,6 +37,7 @@ enum StorageSparseDiskRewriteRecovery {
         journalDirectoryURL: URL,
         jobID: String,
         fence: StorageSparseDiskMaintenanceFence,
+        recordedRootBinding: StorageSparseDiskRecoveryRootBinding? = nil,
         isCancelled: @escaping @Sendable () -> Bool,
         hooks: TestHooks = TestHooks()
     ) throws -> StorageSparseDiskRecoveryReport {
@@ -86,10 +87,27 @@ enum StorageSparseDiskRewriteRecovery {
         }
         guard record.schemaVersion == 2,
               record.jobID == jobID,
-              record.relativePath == relativePath,
-              record.rootPath == rootPath
+              record.relativePath == relativePath
         else {
             throw StorageSparseDiskRewriteError.journalConflict("record")
+        }
+        if let binding = recordedRootBinding {
+            // Old schema2 has no root inode. Only the owning native adapter's
+            // durable closure/intent pair may supply it; never infer from UUID.
+            guard binding.recordedRootPath == record.rootPath,
+                  binding.recordedRootPath.hasPrefix("/"), binding.recordedRootPath.utf8.count <= 4_096,
+                  !binding.recordedRootPath.utf8.contains(0),
+                  !binding.recordedRootPath.split(separator: "/").contains(where: { $0 == "." || $0 == ".." }),
+                  binding.device != 0, binding.inode != 0 else {
+                throw StorageSparseDiskRewriteError.journalConflict("root-binding")
+            }
+            let openedRoot = try StorageSparseDiskPOSIX.identity(of: rootFD)
+            guard openedRoot.mode & UInt32(S_IFMT) == UInt32(S_IFDIR),
+                  openedRoot.device == binding.device, openedRoot.inode == binding.inode else {
+                throw StorageSparseDiskRewriteError.journalConflict("root-identity")
+            }
+        } else if record.rootPath != rootPath {
+            throw StorageSparseDiskRewriteError.journalConflict("record-root")
         }
         guard parentIdentity.device == record.parentDevice,
               parentIdentity.inode == record.parentInode

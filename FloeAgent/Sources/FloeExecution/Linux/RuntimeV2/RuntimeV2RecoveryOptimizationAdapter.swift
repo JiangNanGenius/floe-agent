@@ -407,8 +407,8 @@ public actor RuntimeV2RecoveryOptimizationAdapter {
     private func recoverIntent(_ intent: RuntimeV2MaintenanceIntentRecord) async -> RuntimeV2MaintenanceRecoveryOutcome {
         do {
             guard intent.owner == Self.owner, intent.reason == Self.reason,
-                  intent.domainRoot == domain.root.path,
                   let rootDevice = intent.domainDevice, let rootInode = intent.domainInode,
+                  domain.matchesRecordedRoot(intent.domainRoot, device: rootDevice, inode: rootInode),
                   let relative = intent.targetRelativePath,
                   relative.hasPrefix("recovery/quarantine/runtime-vm-"),
                   relative.split(separator: "/").count == 4, relative.hasSuffix("/disk.img") else {
@@ -445,11 +445,11 @@ public actor RuntimeV2RecoveryOptimizationAdapter {
             }
             guard saved.version == 1, saved.intentID == intent.intentID,
                   saved.authorityGeneration == intent.holdGeneration,
-                  saved.domainKey == domain.domainKey, saved.relativePath == relative,
-                  saved.closure.intentID == intent.intentID,
+                  Self.isDomainKey(saved.domainKey), saved.domainKey == saved.closure.domainKey,
+                  saved.relativePath == relative,
+                  saved.closure.version == 1, saved.closure.intentID == intent.intentID,
                   saved.closure.holdGeneration == intent.holdGeneration,
                   !saved.closure.isConvergenceProof,
-                  saved.closure.domainKey == domain.domainKey,
                   saved.closure.rootDevice == intent.domainDevice,
                   saved.closure.rootInode == intent.domainInode else {
                 return .unresolved("adapter receipt generation mismatch")
@@ -476,6 +476,9 @@ public actor RuntimeV2RecoveryOptimizationAdapter {
                 }
                 return .resolved
             }
+            guard let recoveringHeader = header else { return .unresolved("Core journal disappeared") }
+            let rootBinding = StorageSparseDiskRecoveryRootBinding(
+                recordedRootPath: recoveringHeader.rootPath, device: rootDevice, inode: rootInode)
             let fingerprint = evidence.references.fingerprint
             let fence = StorageSparseDiskMaintenanceFence(
                 leaseID: intent.intentID, generation: intent.holdGeneration) { [self] in
@@ -506,7 +509,9 @@ public actor RuntimeV2RecoveryOptimizationAdapter {
             let result = try await core.run {
                 try StorageSparseDiskRewrite.recover(
                     rootURL: root, relativePath: relative, journalDirectoryURL: journals,
-                    jobID: intent.intentID, fence: fence, isCancelled: { false })
+                    jobID: intent.intentID, fence: fence,
+                    recordedRootBinding: rootBinding,
+                    isCancelled: { false })
             }
             guard result.sourceIdentityVerified,
                   result.resolution != .needsInspection, result.resolution != .noJournal else {
@@ -526,13 +531,13 @@ public actor RuntimeV2RecoveryOptimizationAdapter {
             for name in try Self.completedReceiptNames(directory: receipts) {
                 guard let saved = try RuntimeV2OptimizationJournalIO.read(
                     RuntimeV2OptimizationJobReceipt.self, directory: receipts, name: name),
-                      saved.version == 1, saved.domainKey == domain.domainKey,
+                      saved.version == 1, Self.isDomainKey(saved.domainKey),
+                      saved.domainKey == saved.closure.domainKey,
                       saved.relativePath == relative, saved.preservationFingerprint == preservation,
                       saved.intentID + ".json" == name,
                       saved.closure.version == 1, !saved.closure.isConvergenceProof,
                       saved.closure.intentID == saved.intentID,
                       saved.closure.holdGeneration == saved.authorityGeneration,
-                      saved.closure.domainKey == domain.domainKey,
                       saved.closure.rootDevice == closure.rootDevice,
                       saved.closure.rootInode == closure.rootInode,
                       let header = try RuntimeV2OptimizationJournalIO.read(
@@ -566,31 +571,15 @@ public actor RuntimeV2RecoveryOptimizationAdapter {
         }
     }
 
-    // realpath must actually succeed for both spellings, then both directory
-    // identities must agree with the authority's frozen root. Foundation may
-    // spell iOS /private/var as /var; removing a string prefix is not proof.
+    private static func isDomainKey(_ key: String) -> Bool {
+        key.utf8.count == 64 && key.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+    }
+
+    // Existing aliases still require realpath equality. A disappeared path
+    // additionally requires the exact durable physical directory identity.
     static func matchesPhysicalRoot(_ recorded: String, root: URL, device: UInt64, inode: UInt64) -> Bool {
-        guard recorded.hasPrefix("/"), recorded.utf8.count <= 4_096, !recorded.utf8.contains(0),
-              let first = recorded.withCString({ realpath($0, nil) }) else { return false }
-        defer { free(first) }
-        guard let second = root.path.withCString({ realpath($0, nil) }) else { return false }
-        defer { free(second) }
-        guard strcmp(first, second) == 0,
-              let recordedIdentity = try? RuntimeV2DiskIdentity.read(at: URL(fileURLWithPath: recorded)),
-              let rootIdentity = try? RuntimeV2DiskIdentity.read(at: root),
-              recordedIdentity.device == device, recordedIdentity.inode == inode,
-              rootIdentity.device == device, rootIdentity.inode == inode,
-              recordedIdentity.mode & UInt32(S_IFMT) == UInt32(S_IFDIR),
-              rootIdentity.mode & UInt32(S_IFMT) == UInt32(S_IFDIR) else { return false }
-        let fd = open(first, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-        guard fd >= 0 else { return false }; defer { close(fd) }
-        var opened = stat()
-        guard fstat(fd, &opened) == 0, UInt64(bitPattern: Int64(opened.st_dev)) == device,
-              UInt64(opened.st_ino) == inode else { return false }
-        guard let after = root.path.withCString({ realpath($0, nil) }) else { return false }
-        defer { free(after) }
-        return strcmp(first, after) == 0
-            && (try? RuntimeV2DiskIdentity.read(at: root)).map { $0.device == device && $0.inode == inode } == true
+        guard let domain = try? RuntimeV2MaintenanceDomain(trustedLegacyRoot: root) else { return false }
+        return domain.matchesRecordedRoot(recorded, device: device, inode: inode)
     }
 
     private static func completedReceiptNames(directory: URL) throws -> [String] {

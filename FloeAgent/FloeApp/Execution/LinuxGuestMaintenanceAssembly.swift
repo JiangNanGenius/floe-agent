@@ -227,8 +227,7 @@ enum LinuxGuestMaintenanceAssembly {
         do {
             let domain = try RuntimeV2MaintenanceDomain(trustedLegacyRoot: root)
             guard RuntimeV2MaintenanceRegistry.coordinator(forDomain: domain) == nil else { return nil }
-            let state = domain.root.deletingLastPathComponent().appendingPathComponent("MaintenanceAuthority", isDirectory: true)
-                .appendingPathComponent(domain.domainKey, isDirectory: true)
+            let state = try domain.authorityStateDirectory()
             return holder.install(try LinuxGuestMaintenanceRuntime(domain: domain, stateDirectory: state, database: database))
         } catch {
             FloeLogger(category: .tools).error("Legacy native maintenance bootstrap unavailable; no optimization admitted")

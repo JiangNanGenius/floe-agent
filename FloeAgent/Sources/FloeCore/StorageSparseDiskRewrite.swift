@@ -545,6 +545,17 @@ public struct StorageSparseDiskRecoveryReport: Sendable, Equatable {
     }
 }
 
+/// Explicit native caller proof for a root renamed since a schema2 journal.
+/// It never replaces parent/source/stage identities or the maintenance fence.
+public struct StorageSparseDiskRecoveryRootBinding: Sendable, Equatable {
+    public let recordedRootPath: String
+    public let device: UInt64
+    public let inode: UInt64
+    public init(recordedRootPath: String, device: UInt64, inode: UInt64) {
+        self.recordedRootPath = recordedRootPath; self.device = device; self.inode = inode
+    }
+}
+
 /// Narrow public entry point. Root/service integration must create the
 /// maintenance lease and durable intent before calling `rewrite`, and must
 /// call `recover` from the same service-owned lifecycle before any other
@@ -633,6 +644,7 @@ public enum StorageSparseDiskRewrite {
         journalDirectoryURL: URL,
         jobID: String,
         fence: StorageSparseDiskMaintenanceFence,
+        recordedRootBinding: StorageSparseDiskRecoveryRootBinding? = nil,
         isCancelled: @escaping @Sendable () -> Bool = { false }
     ) throws -> StorageSparseDiskRecoveryReport {
         #if canImport(Darwin)
@@ -642,6 +654,7 @@ public enum StorageSparseDiskRewrite {
             journalDirectoryURL: journalDirectoryURL,
             jobID: jobID,
             fence: fence,
+            recordedRootBinding: recordedRootBinding,
             isCancelled: isCancelled
         )
         #else
@@ -650,6 +663,7 @@ public enum StorageSparseDiskRewrite {
         _ = journalDirectoryURL
         _ = jobID
         _ = fence
+        _ = recordedRootBinding
         _ = isCancelled
         throw StorageSparseDiskRewriteError.unsupportedPlatform
         #endif

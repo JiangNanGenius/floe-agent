@@ -96,7 +96,8 @@ public enum RuntimeV2MaintenanceError: Error, LocalizedError, Equatable, Sendabl
 public struct RuntimeV2MaintenanceDomain: Sendable, Hashable {
     public let root: URL
     public let recoveryDirectory: URL
-    /// Stable, path-derived key used to bind the durable authority state.
+    /// Path-derived lookup hint. Cross-launch recovery uses durable physical
+    /// identity; an App container rename does not create a new domain.
     public let domainKey: String
 
     public init(trustedLegacyRoot: URL, fileManager: FileManager = .default) throws {
@@ -133,6 +134,40 @@ public struct RuntimeV2MaintenanceDomain: Sendable, Hashable {
             .appendingPathComponent("Floe", isDirectory: true)
             .appendingPathComponent("Runtime", isDirectory: true)
             .appendingPathComponent("v2", isDirectory: true)
+    }
+
+    /// A path is historical metadata, never an alternate IO root. A missing
+    /// old container may be accepted only with its durable device/inode pair.
+    /// An existing different path, a copied root or an unreadable path refuses.
+    func matchesRecordedRoot(_ recorded: String, device: UInt64?, inode: UInt64?) -> Bool {
+        guard let device, let inode, device != 0, inode != 0,
+              recorded.hasPrefix("/"), recorded.utf8.count <= 4_096,
+              !recorded.utf8.contains(0),
+              !recorded.split(separator: "/").contains(where: { $0 == "." || $0 == ".." }),
+              let canonical = root.path.withCString({ realpath($0, nil) }) else { return false }
+        defer { free(canonical) }
+        if let old = recorded.withCString({ realpath($0, nil) }) {
+            defer { free(old) }
+            guard strcmp(old, canonical) == 0 else { return false }
+        } else if errno != ENOENT { return false }
+        let fd = open(canonical, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { return false }; defer { close(fd) }
+        var opened = stat(); var named = stat()
+        guard fstat(fd, &opened) == 0, lstat(canonical, &named) == 0,
+              opened.st_mode & S_IFMT == S_IFDIR, named.st_mode & S_IFMT == S_IFDIR,
+              UInt64(bitPattern: Int64(opened.st_dev)) == device, UInt64(opened.st_ino) == inode,
+              opened.st_dev == named.st_dev, opened.st_ino == named.st_ino,
+              let after = root.path.withCString({ realpath($0, nil) }) else { return false }
+        defer { free(after) }
+        return strcmp(canonical, after) == 0
+            && (try? RuntimeV2DiskIdentity.read(at: root)).map { $0.device == device && $0.inode == inode } == true
+    }
+
+    /// Only the App-owned sibling authority directory is searched. Old path
+    /// hashes remain indexes; a unique durable physical identity chooses the
+    /// SAME state/lock and history. No record is rewritten or copied.
+    public func authorityStateDirectory() throws -> URL {
+        try RuntimeV2MaintenanceCoordinator.authorityStateDirectory(for: self)
     }
 
     public var environmentTracesDirectory: URL {
@@ -981,12 +1016,13 @@ public actor RuntimeV2MaintenanceCoordinator {
         // the service to call recoverIfNeeded before it closes the gate.
         if let state = Self.readIntent(intentURL: self.intentURL) {
             switch state {
-            case .record(let record) where record.phase.isBlocking:
-                self.recoveryPending = true
-                if record.domainRoot == domain.root.path {
+            case .record(let record):
+                if !domain.matchesRecordedRoot(record.domainRoot, device: record.domainDevice, inode: record.domainInode) {
+                    self.recoveryPending = true
+                    self.recoveryReason = "durable intent \(record.intentID) belongs to another physical domain"
+                } else if record.phase.isBlocking {
+                    self.recoveryPending = true
                     self.recoveryReason = "durable intent \(record.intentID) is \(record.phase.rawValue)"
-                } else {
-                    self.recoveryReason = "durable intent \(record.intentID) belongs to another domain"
                 }
             case .corrupt:
                 self.recoveryPending = true
@@ -1056,6 +1092,10 @@ public actor RuntimeV2MaintenanceCoordinator {
         switch state {
         case .record(let value):
             record = value
+            guard domain.matchesRecordedRoot(value.domainRoot, device: value.domainDevice, inode: value.domainInode) else {
+                recoveryPending = true; recoveryReason = "durable intent physical domain differs or is unknown"
+                return RuntimeV2MaintenanceRecoveryReport(outcome: .blocked, intentID: value.intentID, reason: recoveryReason)
+            }
             guard value.phase.isBlocking else {
                 recoveryPending = false
                 recoveryReason = nil
@@ -1154,9 +1194,8 @@ public actor RuntimeV2MaintenanceCoordinator {
               validation.record.holdGeneration == holdGeneration,
               fcntl(validation.descriptor, F_GETFD, 0) != -1,
               Self.lockFileIdentity(at: lockURL) == validation.lockIdentity,
-              let current = try? RuntimeV2DiskIdentity.read(at: domain.root),
-              current.device == validation.record.domainDevice,
-              current.inode == validation.record.domainInode else {
+              domain.matchesRecordedRoot(validation.record.domainRoot,
+                  device: validation.record.domainDevice, inode: validation.record.domainInode) else {
             throw RuntimeV2MaintenanceError.claimInvalidated("recovery authority is not held")
         }
     }
@@ -1567,12 +1606,99 @@ public actor RuntimeV2MaintenanceCoordinator {
         guard let state = Self.readIntent(intentURL: intentURL) else { return nil }
         switch state {
         case .record(let record):
+            guard domain.matchesRecordedRoot(record.domainRoot, device: record.domainDevice, inode: record.domainInode) else {
+                return "durable intent physical domain differs or is unknown"
+            }
             return record.phase.isBlocking
                 ? "durable intent \(record.intentID) is \(record.phase.rawValue)"
                 : nil
         case .corrupt:
             return "the durable intent is unreadable"
         }
+    }
+
+    /// Bounded, readonly discovery before any legacy owner is constructed.
+    /// A different/copy identity or ambiguous history blocks instead of opening
+    /// a fresh empty authority namespace under the new container UUID.
+    nonisolated static func authorityStateDirectory(for domain: RuntimeV2MaintenanceDomain) throws -> URL {
+        let parent = domain.root.deletingLastPathComponent().appendingPathComponent("MaintenanceAuthority", isDirectory: true)
+        let fresh = parent.appendingPathComponent(domain.domainKey, isDirectory: true)
+        let fd = open(parent.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        if fd < 0, errno == ENOENT { return fresh }
+        guard fd >= 0 else { throw RuntimeV2MaintenanceError.invalidDomain("authority directory unavailable") }
+        var parentIdentity = stat()
+        guard fstat(fd, &parentIdentity) == 0 else { close(fd); throw RuntimeV2MaintenanceError.invalidDomain("authority parent identity unavailable") }
+        guard let stream = fdopendir(fd) else { close(fd); throw RuntimeV2MaintenanceError.invalidDomain("authority enumeration unavailable") }
+        defer { closedir(stream) }
+        var matches: [URL] = []; var count = 0
+        while true {
+            errno = 0
+            guard let entry = readdir(stream) else {
+                guard errno == 0 else { throw RuntimeV2MaintenanceError.invalidDomain("authority enumeration changed") }
+                break
+            }
+            let name = withUnsafePointer(to: entry.pointee.d_name) {
+                String(cString: UnsafeRawPointer($0).assumingMemoryBound(to: CChar.self))
+            }
+            if name == "." || name == ".." { continue }
+            count += 1
+            guard count <= 128, name.utf8.count == 64,
+                  name.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
+                throw RuntimeV2MaintenanceError.invalidDomain("authority directory shape or budget unknown")
+            }
+            let child = openat(fd, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard child >= 0 else { throw RuntimeV2MaintenanceError.invalidDomain("authority entry is not a real directory") }
+            defer { close(child) }
+            let directory = parent.appendingPathComponent(name, isDirectory: true)
+            let record = readIntent(intentURL: directory.appendingPathComponent("intent.json"))
+            if let record {
+                guard case .record(let intent) = record,
+                      domain.matchesRecordedRoot(intent.domainRoot, device: intent.domainDevice, inode: intent.domainInode) else {
+                    throw RuntimeV2MaintenanceError.invalidDomain("retained authority has unknown or different physical identity")
+                }
+                matches.append(directory)
+            } else {
+                // Only an empty directory / old admission lock has no journal
+                // ownership to recover. Any other content remains protected.
+                let duplicate = dup(child)
+                guard duplicate >= 0, let children = fdopendir(duplicate) else {
+                    if duplicate >= 0 { close(duplicate) }
+                    throw RuntimeV2MaintenanceError.invalidDomain("authority contents unavailable")
+                }
+                defer { closedir(children) }
+                var entries = 0
+                while true {
+                    errno = 0
+                    guard let item = readdir(children) else {
+                        guard errno == 0 else { throw RuntimeV2MaintenanceError.invalidDomain("authority contents changed") }
+                        break
+                    }
+                    let value = withUnsafePointer(to: item.pointee.d_name) {
+                        String(cString: UnsafeRawPointer($0).assumingMemoryBound(to: CChar.self))
+                    }
+                    if value == "." || value == ".." { continue }
+                    entries += 1
+                    var info = stat()
+                    guard entries <= 1, value == "admission.lock",
+                          fstatat(child, value, &info, AT_SYMLINK_NOFOLLOW) == 0,
+                          info.st_mode & S_IFMT == S_IFREG, info.st_nlink == 1 else {
+                        throw RuntimeV2MaintenanceError.invalidDomain("authority history lacks its durable identity")
+                    }
+                }
+            }
+            var opened = stat(); var named = stat()
+            guard fstat(child, &opened) == 0, fstatat(fd, name, &named, AT_SYMLINK_NOFOLLOW) == 0,
+                  opened.st_dev == named.st_dev, opened.st_ino == named.st_ino else {
+                throw RuntimeV2MaintenanceError.invalidDomain("authority entry changed during discovery")
+            }
+        }
+        var parentNamed = stat()
+        guard lstat(parent.path, &parentNamed) == 0, parentNamed.st_mode & S_IFMT == S_IFDIR,
+              parentNamed.st_dev == parentIdentity.st_dev, parentNamed.st_ino == parentIdentity.st_ino else {
+            throw RuntimeV2MaintenanceError.invalidDomain("authority parent changed during discovery")
+        }
+        guard matches.count <= 1 else { throw RuntimeV2MaintenanceError.invalidDomain("multiple physical-domain authority histories") }
+        return matches.first ?? fresh
     }
 
     private enum IntentReadState {
@@ -1591,12 +1717,23 @@ public actor RuntimeV2MaintenanceCoordinator {
     }
 
     private static func readBoundedIntentData(_ url: URL) -> Data? {
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
-              let size = attributes[.size] as? NSNumber,
-              size.int64Value >= 0, size.int64Value <= 1 << 20 else { return nil }
-        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
-        defer { try? handle.close() }
-        return try? handle.read(upToCount: 1 << 20)
+        let fd = open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard fd >= 0 else { return nil }; defer { close(fd) }
+        var before = stat(); var after = stat()
+        guard fstat(fd, &before) == 0, before.st_mode & S_IFMT == S_IFREG,
+              before.st_nlink == 1, before.st_size > 0, before.st_size <= 1 << 20,
+              let named = try? RuntimeV2DiskIdentity.read(at: url),
+              named.device == UInt64(bitPattern: Int64(before.st_dev)), named.inode == UInt64(before.st_ino) else { return nil }
+        var bytes = [UInt8](repeating: 0, count: Int(before.st_size)); var offset = 0
+        while offset < bytes.count {
+            let remaining = bytes.count - offset
+            let result = bytes.withUnsafeMutableBytes { read(fd, $0.baseAddress!.advanced(by: offset), remaining) }
+            if result < 0 && errno == EINTR { continue }
+            guard result > 0 else { return nil }; offset += result
+        }
+        guard fstat(fd, &after) == 0, before.st_dev == after.st_dev, before.st_ino == after.st_ino,
+              before.st_size == after.st_size, (try? RuntimeV2DiskIdentity.read(at: url)) == named else { return nil }
+        return Data(bytes)
     }
 
     private static func readHoldGeneration(intentURL: URL) -> UInt64 {

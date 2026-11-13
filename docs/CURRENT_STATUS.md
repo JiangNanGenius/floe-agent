@@ -3,7 +3,19 @@
 
 这是带核实日期的渠道快照。各渠道独立更新；源码版本、公开下载、Apple 审核与测试组可用性分别核对。 / This is a dated channel snapshot. Source versions, public downloads, Apple review and beta-group availability are separate states.
 
-版本选择请先读[唯一版本依据](RELEASE_VERSION_AUTHORITY.zh-CN.md)：**最近核验交付为1.8.17（338），内部TestFlight可安装，GitHub及Feather已严格读回；338未提交公开TestFlight。** 冻结源 `67d30edb3bcfc9fa674f2762f096de533e13b427`／`v1.8.17`，详见[338交付记录](releases/builds/FLOE_1.8.17_BUILD338_DELIVERY.md)。M4实际回收约124.85GB但恢复收尾仍受阻，339继续；331与315安排保持。 / **The latest verified delivery is1.8.17 (338): internal TestFlight is installable, and GitHub plus Feather passed strict readback.** No public TestFlight submission. The M4 iPad reclaimed124.85GB, but recovery remains incomplete and continues in339; withdrawn331 and formal315 stay unchanged.
+版本选择请先读[唯一版本依据](RELEASE_VERSION_AUTHORITY.zh-CN.md)：**最近核验交付为1.8.18（339），内部TestFlight可安装，GitHub及Feather已严格读回，M4已实际更新。** 冻结源 `b1c062d75ffe07603a698e048109776a2d4707ba`／`v1.8.18`，详见[339交付记录](releases/builds/FLOE_1.8.18_BUILD339_DELIVERY.md)。本轮不提交公开TestFlight；331与315安排保持。 / **The latest verified delivery is1.8.18 (339): internally installable, GitHub/Feather verified, and actually installed on the M4.** No public TestFlight or formal App Store submission.
+
+## 2026-11-13 iOS 1.8.18（339）渠道核对 / iOS delivery snapshot
+
+悉尼时间14:33独立确认内部可安装，14:41完成正常安装包和实时Feather读回。 / Internal availability was independently confirmed at14:33 Sydney time; installer and live-feed readback completed at14:41.
+
+| 渠道 / Channel | 已核实结果 / Observed result | 来源与边界 / Source and limits |
+| --- | --- | --- |
+| 内部TestFlight / Internal TestFlight | Apple `VALID`、未过期，Floe QA `IN_BETA_TESTING` | [独立Apple GET](https://github.com/JiangNanGenius/floe-agent/actions/runs/43359648620)成功；M4单App独立查询与真实界面均为339。 / Independent GET and actual M4 installation confirmed. |
+| GitHub／Feather | [v1.8.18 stable/latest](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.8.18)及实时安装源严格读回通过 | [正常发布及awaited Feather](https://github.com/JiangNanGenius/floe-agent/actions/runs/43359937203)成功，实际IPA及来源匹配。 / Actual unsigned IPA and source matched; your signing is required. |
+| 公开TestFlight／正式App Store / Public TestFlight and App Store | 339未提交 / Not submitted | 315正式版与331撤回安排保持。 / Existing formal and withdrawn-public arrangements remain unchanged. |
+
+M4同一历史回执仅有两个真实文件快捷入口，TXT／HTML原生阅读完整2/2与8/8行；内部diff元数据误入文件路径已修。容量仍部分完成：此前实际回收124.85GB，本次没有重复计入；安装改变App数据目录地址，新空authority目录没有接续旧恢复记录，继续下一窄修。13份旧恢复盘和已有资料均保留。 / The same saved receipts now show only two real file shortcuts, with complete native TXT/HTML reading. Storage recovery remains incomplete: installation changed the data-container path and left the old recovery history behind. The next narrow repair addresses this; the earlier124.85GB gain is not counted again.
 
 ## 2026-11-13 iOS 1.8.17（338）渠道核对 / iOS delivery snapshot
 

@@ -445,6 +445,58 @@ final class StorageSparseDiskRewriteTests: XCTestCase {
         XCTAssertTrue(try stageNames(in: directory).isEmpty)
     }
 
+    func testRenamedRootRecoveryRequiresDurablePhysicalBindingAndPreservesBytes() throws {
+        let points: [StorageSparseDiskRewrite.CrashPoint] = [.afterVerified, .afterSwap]
+        for point in points {
+            let old = try makeRoot("rename-" + point.rawValue)
+            let file = try makeSource(in: old, name: "disk.img")
+            let bytes = try Data(contentsOf: file)
+            let fd = try StorageSparseDiskPOSIX.openDirectory(old)
+            let physical = try StorageSparseDiskPOSIX.identity(of: fd); close(fd)
+            let request = try makeRequest(root: old, name: "disk.img", mode: .cloneAndPunch)
+            var hooks = StorageSparseDiskRewrite.TestHooks()
+            hooks.crashAt = { if $0 == point { throw StorageSparseDiskRewriteError.crashInjected("relocation") } }
+            XCTAssertThrowsError(try perform(request, hooks: hooks))
+            let journalRoot = try readJournal(directory: old, jobID: request.jobID).rootPath
+            let moved = old.deletingLastPathComponent().appendingPathComponent(old.lastPathComponent + "-moved")
+            try FileManager.default.moveItem(at: old, to: moved)
+            let beforeRecovery = try Data(contentsOf: moved.appendingPathComponent("journal/" + request.jobID + ".json"))
+            XCTAssertThrowsError(try StorageSparseDiskRewrite.recover(rootURL: moved, relativePath: "disk.img",
+                journalDirectoryURL: moved.appendingPathComponent("journal"), jobID: request.jobID, fence: fence()))
+            XCTAssertEqual(try Data(contentsOf: moved.appendingPathComponent("journal/" + request.jobID + ".json")), beforeRecovery)
+            let result = try StorageSparseDiskRewrite.recover(rootURL: moved, relativePath: "disk.img",
+                journalDirectoryURL: moved.appendingPathComponent("journal"), jobID: request.jobID, fence: fence(),
+                recordedRootBinding: .init(recordedRootPath: journalRoot, device: physical.device, inode: physical.inode))
+            XCTAssertTrue(result.sourceIdentityVerified); XCTAssertNotEqual(result.resolution, .needsInspection)
+            XCTAssertEqual(try Data(contentsOf: moved.appendingPathComponent("disk.img")), bytes)
+            XCTAssertTrue(try stageNames(in: moved).isEmpty)
+            XCTAssertEqual(try readJournal(directory: moved, jobID: request.jobID).rootPath, journalRoot)
+        }
+    }
+
+    func testCopiedRootRejectsOldBindingWithoutMutatingSourceStageOrJournal() throws {
+        let old = try makeRoot("copy-root")
+        _ = try makeSource(in: old, name: "disk.img")
+        let fd = try StorageSparseDiskPOSIX.openDirectory(old)
+        let physical = try StorageSparseDiskPOSIX.identity(of: fd); close(fd)
+        let request = try makeRequest(root: old, name: "disk.img", mode: .cloneAndPunch)
+        var hooks = StorageSparseDiskRewrite.TestHooks()
+        hooks.crashAt = { if $0 == .afterVerified { throw StorageSparseDiskRewriteError.crashInjected("copy") } }
+        XCTAssertThrowsError(try perform(request, hooks: hooks))
+        let record = try readJournal(directory: old, jobID: request.jobID)
+        let copied = try makeRoot("copy-destination")
+        try FileManager.default.removeItem(at: copied)
+        try FileManager.default.copyItem(at: old, to: copied)
+        let names = ["disk.img", try XCTUnwrap(record.stageName), "journal/" + request.jobID + ".json"]
+        let before = try names.map { try Data(contentsOf: copied.appendingPathComponent($0)) }
+        XCTAssertThrowsError(try StorageSparseDiskRewrite.recover(rootURL: copied, relativePath: "disk.img",
+            journalDirectoryURL: copied.appendingPathComponent("journal"), jobID: request.jobID, fence: fence(),
+            recordedRootBinding: .init(recordedRootPath: record.rootPath, device: physical.device, inode: physical.inode)))
+        for (index,name) in names.enumerated() {
+            XCTAssertEqual(try Data(contentsOf: copied.appendingPathComponent(name)), before[index])
+        }
+    }
+
     // MARK: - Crash recovery
 
     func testCrashRecoveryAtEveryDurablePhase() throws {
