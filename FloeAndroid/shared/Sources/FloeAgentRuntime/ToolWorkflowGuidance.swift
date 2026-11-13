@@ -13,6 +13,9 @@ enum ToolWorkflowGuidance {
         if names.contains(where: { ["executor", "terminal", "hosts", "vnc"].contains(ToolCapabilityGroups.group($0)) || $0.hasPrefix("cloudWorkspace.") || $0.hasPrefix("remoteHosting.") }) {
             lines.append("Remote workflow: discover only the needed subgroup; optional guidance: skill.read id=floe-remote. Executor taskID and Terminal sessionID are distinct. Reuse returned IDs, honor the user's prerequisite order, never replay dispatched side effects, and publish shares only with explicit authority.")
         }
+        if names.contains("exec.shell") {
+            lines.append("Shell workflow: exec.shell runs non-interactively as /bin/sh -lc in the Debian guest (dash), not Bash. Brace expansion, arrays, [[ ]] and process substitution are unavailable; pass each path explicitly as a POSIX argument and check every setup step's exit status. A trailing echo or a later unrelated success does not prove an earlier step succeeded. A failed but recoverable setup mistake is corrected non-destructively; never delete files or directories the user did not ask to delete, and never use an unrequested rm/rmdir/cleanup to make a command pass. For complex or long work, prefer one checked script over a chain whose intermediate failures are discarded.")
+        }
         if names.contains("browser.observe") {
             lines.append("Browser workflow: prefer browser.observe DOM refs and reuse the current tabID/documentID; screenshots/OCR are the fallback with fresh evidence. Use refs for one action and verify its returned post-action state; observe again when needed for the next action. Optional strategy: skill.read id=floe-browser.")
         }

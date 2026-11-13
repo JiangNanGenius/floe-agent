@@ -207,6 +207,19 @@ public final class DynamicApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting,
         return try await policy.decide(action)
     }
 
+    /// Decides AND reports the exact wrapped policy that decided, from ONE
+    /// snapshot. A later `policyName` read (or a second snapshot in the
+    /// caller) could straddle a composer mode change between automatic and
+    /// manual Ask; the canonical runtime uses this pair to attribute the
+    /// decision it actually received. The plain `decide` contract is
+    /// unchanged.
+    public func decideWithPolicyName(_ action: ProposedAction) async throws
+        -> (policyName: String, decision: ApprovalDecision) {
+        let policy = snapshot()
+        let decision = try await policy.decide(action)
+        return (policy.policyName, decision)
+    }
+
     public func requiresModelReview(_ action: ProposedAction) -> Bool {
         let policy = snapshot()
         return (policy as? any ApprovalReviewRouting)?.requiresModelReview(action)

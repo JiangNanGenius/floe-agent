@@ -1,5 +1,15 @@
 # Floe Android 分目标实施记录
 
+## C02／N08 录像断点修复，1.0.6 源码准备（2026-11-14）
+
+下一候选版本为 1.0.6／114。现有执行核心已接通安全替代路径：普通自动审批父任务在实际解析的本地 Linux 环境中，若提出用户未请求的破坏性清理且原策略要求人工确认，该命令以“未执行”的拒绝结果结算，模型可以继续提出保留文件的做法。显式用户删除请求、手动审批、远程／原生目标、子任务、终端冲突与停止仍沿用原有边界；没有自动批准删除、扩大权限或新增执行工具。工具说明、操作指南和提示词同时明确非交互 `/bin/sh -lc`、POSIX 参数及逐步退出状态。
+
+真实 Swift 6 宿主对象编译与 24 项定向检查已闭合：首次 24 项实际执行为 23 通过、1 项指南短语大小写匹配失败；只修正该测试的大小写匹配后，单项实际复测通过，复用其余 23 项通过证据，零跳过。两轮生产输入一致，原失败及原断言要求保留。运行时用例实际验证了清理从未分派、安全替代完成、迟到批准无效、真实拒绝及手动审批。该证据属于宿主组件，不代替 ARM64 链接、APK 和三星行为。
+
+录像中的排队时间已从源码和事件对齐为模型审查及前序命令屏障等待；HTTP 的实际执行约半秒，本批没有调整网络轮询或超时。公开 1.0.5 的五项三星与更新发现证据保留。当前尚未构建／发布 1.0.6；下一步是固定源码、构建 Full、三星定向验收及全新任务录像，停止的 113 失败任务不恢复。原有 C/G/N/IOS-D 与增量差异编号继续沿用。
+
+English: The 1.0.6/code114 source adds a deny-only recovery path for an unexecuted, unrequested cleanup in a resolved local Linux automatic parent run, plus the actual POSIX shell contract. All 24 selected host cases are accounted for: 23 passed in the original run; a case-sensitive prose matcher was repaired and its single recheck passed. Production inputs matched, with the original failure retained and no skipped assertions. ARM64/APK, Samsung and fresh recording acceptance remain pending; this is not a new device or video verdict.
+
 ## 五项三星闭环，1.0.5 发行与新录像（2026-11-13）
 
 本批应用固定源码为 `d0c085f9ddda28e1d9a125389a020f618892d408`；Android 代码检查点 `0f2a0f5fc7013dc0a261bc9cd8dec04f151cde0f`、`3b9acf6e127020691ca56db95948448c029f4142` 已进入该快照。当前实际安装的是 Full08：1.0.5／113，166,427,659 字节，SHA-256 `61c29e8d182249f9493010ff50dddfba54271e02234d08649391ed69a91802f7`。主应用／运行组件字节与原 UID 保留均已读回；这是保留数据的同版本 ADB 修复安装，不是新的在线升级验收。

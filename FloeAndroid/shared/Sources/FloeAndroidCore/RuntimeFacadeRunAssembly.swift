@@ -276,6 +276,13 @@ extension FacadeRunDomain {
     /// resolved truth for this platform: G02 has no Linux-guest resolution,
     /// so it is false and never forced true. Temporary runs keep the frozen
     /// RAM-only/public-web-only narrowing.
+    ///
+    /// `localLinuxShellTarget` is a SEPARATE, additive route fact for the
+    /// optional-cleanup corrective path: true only when the app resolved this
+    /// run's execution target to the local Linux PRoot guest. It does not
+    /// change `localLinuxGuestEnvironment` or enable any deterministic
+    /// local-guest allow carve-out; an SSH target, no target, a temporary/
+    /// Notes run and every native backend stay false.
     static func runtimeConfiguration(conversationID: UUID,
                                      provider: ProviderProfile,
                                      model: ModelProfile,
@@ -283,7 +290,8 @@ extension FacadeRunDomain {
                                      ceiling: Set<String>?,
                                      toolsEnabled: Bool,
                                      temporary: Bool,
-                                     environmentID: String?) -> FloeAgentRuntime.Configuration {
+                                     environmentID: String?,
+                                     localLinuxShellTarget: Bool = false) -> FloeAgentRuntime.Configuration {
         FloeAgentRuntime.Configuration(
             conversationID: conversationID,
             provider: provider,
@@ -295,7 +303,8 @@ extension FacadeRunDomain {
             publicWebOnly: temporary,
             temporaryReadOnly: temporary,
             environmentID: environmentID,
-            localLinuxGuestEnvironment: false)
+            localLinuxGuestEnvironment: false,
+            localLinuxShellTarget: localLinuxShellTarget)
     }
 }
 
@@ -583,7 +592,10 @@ extension FacadeRunDomain {
         // immutable part of this service — never dropped. `localLinuxGuest`
         // stays the ACTUAL resolved truth: G02 resolves NO Linux guest, so it
         // is false; the ORIGINAL runtime child-binding guard still runs from
-        // the bound id (AgentRuntime.swift:3336-3351).
+        // the bound id (AgentRuntime.swift:3336-3351). The separate
+        // `localLinuxShellTarget` records whether THIS run's execution target
+        // resolved to `.localLinux`; it gates only the optional-cleanup
+        // corrective path, never a deterministic allow.
         var configuration = Self.runtimeConfiguration(
             conversationID: conversationID,
             provider: launch.provider,
@@ -593,7 +605,8 @@ extension FacadeRunDomain {
             toolsEnabled: toolsEnabled,
             temporary: temporary,
             environmentID: resolvedExecutionTarget?.target.kind == .localLinux
-                ? resolvedExecutionTarget?.target.environmentID : environmentID)
+                ? resolvedExecutionTarget?.target.environmentID : environmentID,
+            localLinuxShellTarget: resolvedExecutionTarget?.target.kind == .localLinux)
         if !temporary, !isNotes {
             configuration.userQuestionRecovery = UserQuestionHostAPI.shared.current(epoch: epoch)
             // Original persisted conversation/workspace ownership selects this

@@ -467,6 +467,16 @@ public actor FloeAgentRuntime {
         /// or a model-supplied environment label; false keeps the native host
         /// and every unknown environment on the existing approval policy.
         public var localLinuxGuestEnvironment: Bool
+        /// True when THIS run's resolved execution target is the local Linux
+        /// PRoot guest for `exec.shell` (the app resolved a `.localLinux`
+        /// target; an SSH target, no target, temporary/Notes run and any
+        /// native backend are false). This is a narrow, app-resolved route
+        /// fact used by the optional-cleanup corrective path only. It does
+        /// NOT assert guest ownership/disposability and does NOT enable the
+        /// deterministic local-guest allow carve-outs (that remains the
+        /// separate `localLinuxGuestEnvironment` contract). Never set from
+        /// model arguments, environment labels or tool text.
+        public var localLinuxShellTarget: Bool
         /// Trusted service-owned store roots keyed by the typed contract's
         /// store keys (today `TypedMutationContract.mediaProjectStoreKey` →
         /// the app-owned MediaProjectStore directory, supplied by the app).
@@ -523,6 +533,7 @@ public actor FloeAgentRuntime {
             environmentID: String? = nil,
             environmentLifecycleWait: TimeInterval = 30,
             localLinuxGuestEnvironment: Bool = false,
+            localLinuxShellTarget: Bool = false,
             serviceStorePaths: [String: String] = [:],
             outstandingDependencies: (@Sendable () async -> [RunDependencyLabel])? = nil,
             userQuestionRecovery: (any UserQuestionRuntimeRecovery)? = nil
@@ -563,6 +574,7 @@ public actor FloeAgentRuntime {
             self.environmentID = environmentID
             self.environmentLifecycleWait = max(0, environmentLifecycleWait)
             self.localLinuxGuestEnvironment = localLinuxGuestEnvironment
+            self.localLinuxShellTarget = localLinuxShellTarget
             self.serviceStorePaths = serviceStorePaths
             self.outstandingDependencies = outstandingDependencies
             self.userQuestionRecovery = userQuestionRecovery
@@ -3410,8 +3422,13 @@ public actor FloeAgentRuntime {
             return .approved(grant: reusableGrant)
         }
         let decision: ApprovalDecision
+        // Attribute the escalation to the policy that ACTUALLY decided this
+        // call. `DynamicApprovalPolicy` supplies its name and decision from
+        // one snapshot; a composer-driven mode change cannot retroactively
+        // reclassify an automatic escalation as manual Ask (or the reverse).
+        var approvalPolicyName = policy.policyName
         let requiresModelReview = (policy as? any ApprovalReviewRouting)?
-            .requiresModelReview(action) ?? (policy.policyName == "approval-model")
+            .requiresModelReview(action) ?? (approvalPolicyName == "approval-model")
         if engineSlotConflict != nil {
             // Typed conflict class on the existing escalation channel; the
             // host renders its own short localized copy and offers the
@@ -3435,10 +3452,22 @@ public actor FloeAgentRuntime {
                     )
                 )
             }
-            do {
-                decision = try await policy.decide(action)
-            } catch {
-                decision = .escalateToHuman(reason: "Policy error: \(error.localizedDescription)")
+            if let dynamicPolicy = policy as? DynamicApprovalPolicy {
+                do {
+                    let outcome = try await dynamicPolicy.decideWithPolicyName(action)
+                    approvalPolicyName = outcome.policyName
+                    decision = outcome.decision
+                } catch {
+                    decision = .escalateToHuman(
+                        reason: "Policy error: \(error.localizedDescription)")
+                }
+            } else {
+                do {
+                    decision = try await policy.decide(action)
+                } catch {
+                    decision = .escalateToHuman(
+                        reason: "Policy error: \(error.localizedDescription)")
+                }
             }
             if requiresModelReview {
                 let outcomeSummary: String = switch decision {
@@ -3458,7 +3487,11 @@ public actor FloeAgentRuntime {
                 )
             }
         }
-        logger.info("toolDecision run=\(runID.uuidString) tool=\(call.toolName) policy=\(policy.policyName) decision=\(decision.logLabel)")
+        logger.info("toolDecision run=\(runID.uuidString) tool=\(call.toolName) policy=\(approvalPolicyName) decision=\(decision.logLabel)")
+        // The corrective path belongs to the task's AUTOMATIC approval mode
+        // (with or without a configured reviewer). Manual Ask, Full Access
+        // and Full Control keep every existing escalation unchanged.
+        let isAutomaticApprovalPolicy = ["automatic", "approval-model"].contains(approvalPolicyName)
         switch decision {
         case .allow(let scope, let expiresAt):
             return .approved(grant: ApprovalGrant(
@@ -3469,6 +3502,36 @@ public actor FloeAgentRuntime {
         case .deny(let reason):
             return .denied(reason: reason, decision: "deny:\(reason)")
         case .escalateToHuman(let reason):
+            // Bounded corrective opportunity BEFORE parking an AUTO-ALLOW
+            // local-guest command. A model can attach an OPTIONAL destructive
+            // cleanup to an otherwise required, safe setup command. The
+            // reviewer (or the deterministic sensitive-action fallback) is
+            // right to ask about the delete, but parking the only
+            // continuation then strands the safe work: the model never gets
+            // the turn in which it could abandon the unexecuted cleanup and
+            // continue (`one-shot113`). The existing policy already decided
+            // this exact call needs review; `LocalGuestCleanupReplan` can only
+            // turn that decision into an honest NON-DISPATCHED denial with a
+            // replan instruction. It cannot allow anything, cannot execute the
+            // command, and it stays out of manual Ask, full access/control,
+            // reusable grants, engine-slot handoff, child calls, remote/native
+            // execution and user-authorized deletion, all of which keep the
+            // exact human card above unchanged. A Stop that raced the reviewer
+            // is consumed by the ordinary escalation path below
+            // (`approvalWaitInterrupted`), never converted into a replan or a
+            // new card.
+            if chargeParentBudget,
+               engineSlotConflict == nil,
+               isAutomaticApprovalPolicy,
+               !approvalWaitInterrupted,
+               let replan = LocalGuestCleanupReplan.denialReason(
+                   for: action,
+                   localLinuxShellTarget: configuration.localLinuxShellTarget) {
+                logger.info(
+                    "toolDecision run=\(runID.uuidString) tool=\(call.toolName) policy=\(approvalPolicyName) decision=deny:optional-cleanup-replan"
+                )
+                return .denied(reason: replan, decision: "deny:optional-cleanup-replan")
+            }
             // Concurrent children can reach the policy at the same time; the
             // parent itself resolves serially. Serialize the escalation so a
             // second card can never re-target the parked continuation.
