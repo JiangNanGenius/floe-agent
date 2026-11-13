@@ -3,7 +3,17 @@
 
 这是带核实日期的渠道快照。各渠道独立更新；源码版本、公开下载、Apple 审核与测试组可用性分别核对。 / This is a dated channel snapshot. Source versions, public downloads, Apple review and beta-group availability are separate states.
 
-版本选择请先读[唯一版本依据](RELEASE_VERSION_AUTHORITY.zh-CN.md)：**最近核验交付为1.8.21（342），内部TestFlight可安装，GitHub／Feather严格实际读回通过。** 冻结源 `1d599f35e97b46ea5798ac07359074480fa463a5`／`v1.8.21`，详见[342交付记录](releases/builds/FLOE_1.8.21_BUILD342_DELIVERY.md)。M4已实际安装342；更新后整理服务因关闭回执的历史识别受阻，未开始新的整理。343窄修已通过6项真实生产组件回归，设备归档进行中。 / **Latest verified delivery: 1.8.21 (342), internally installable, with actual GitHub/Feather readback passed. Build342 is installed on the M4, but bootstrap rejects retained closure receipts and no new optimization starts. Build343 has six real component passes; its device archive is in progress.**
+版本选择请先读[唯一版本依据](RELEASE_VERSION_AUTHORITY.zh-CN.md)：**最近核验交付为1.8.22（343），内部TestFlight可安装，GitHub／Feather严格实际读回通过。** 冻结源 `53c3b83625ec5f8e94690ae15f5a0f3881f85589`／`v1.8.22`，详见[343交付记录](releases/builds/FLOE_1.8.22_BUILD343_DELIVERY.md)。M4已实际更新，整理服务启动识别问题已修复；一次实际整理仍被原盘ctime与旧记录不符的恢复检查阻断，本次回收0，容量尚未结项。 / **Latest verified delivery: 1.8.22 (343), internally installable, with actual GitHub/Feather readback passed. The M4 update fixes optimization bootstrap. One real optimization remains blocked by a source-ctime mismatch; no new storage reclamation is confirmed.**
+
+## 2026-11-14 iOS 1.8.22（343）渠道与真机核对 / iOS delivery and device snapshot
+
+| 渠道 / Channel | 已核实结果 / Observed result |
+| --- | --- |
+| 内部TestFlight / Internal TestFlight | [独立Apple GET](https://github.com/JiangNanGenius/floe-agent/actions/runs/43483085373)确认VALID、未过期、Floe QA为IN_BETA_TESTING；M4通过TestFlight更新，CoreDevice独立确认为1.8.22（343）。 / Internal availability and actual M4 installation confirmed. |
+| GitHub／Feather | [v1.8.22 stable/latest](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.8.22)的实际unsigned IPA和在线当前／旧客户端条目严格匹配；[正常发布及awaited Feather](https://github.com/JiangNanGenius/floe-agent/actions/runs/43483448749)成功。 / Exact unsigned IPA and both live-feed heads verified; your own signing is required. |
+| 公开TestFlight／正式App Store / Public TestFlight and App Store | 均未提交。 / Neither submitted. |
+
+实际Darwin生产组件编译／链接及6项定向方法通过、跳过0；完整iOS归档980.37秒及严格封装通过，App与19份符号已保全。343真机启动为registered，两批历史与两项未完作业被接续；一次手动整理仍返回source-preserving-abort-source-ctime、blocked／recovery-pending，尝试0项、文件分配减少0。208.31GB是整理前文件分配估算，AFC系统剩余空间也未见新增收益。两份原盘及精确暂存副本仍在，未复制盘体；屏幕共享和键盘捕获已关闭。后续继续用旧完整内容摘要核实恢复，不改343冻结产物。 / Six focused production-component tests and the complete device archive/package passed. On-device bootstrap succeeds, but actual recovery is blocked by the original source-ctime check. The estimate is not reclaimed space; original disks remain and remote control has been released. Follow-up recovery work does not change the immutable343 source or artifact.
 
 ## 2026-11-14 iOS 1.8.21（342）渠道核对 / iOS delivery snapshot
 

@@ -3,7 +3,7 @@
 
 本文是 iOS／iPadOS 下一版版本选择的唯一维护入口；各渠道实际交付状态见[当前状态](CURRENT_STATUS.md)与[逐版交付记录](releases/README.md)。Android 版本独立管理。
 
-**最近已核验交付为1.8.21（342）：内部TestFlight可安装，正常GitHub stable/latest及awaited Feather严格实际读回通过。** 冻结源 `1d599f35e97b46ea5798ac07359074480fa463a5`／`v1.8.21`，见[342交付记录](releases/builds/FLOE_1.8.21_BUILD342_DELIVERY.md)。真实Darwin组件8方法及完整iOS归档、规范封装通过；M4已实际安装342；启动时因自行生成的关闭回执被判为未知历史而未建立整理服务，容量尚未结项。上次341实测整理受阻、收益0，208.14GB只是App估算；旧资料与13份恢复盘保留。未提交公开TestFlight或正式App Store，315／331安排保持。
+**最近已核验交付为1.8.22（343）：内部TestFlight可安装，正常GitHub stable/latest及awaited Feather严格实际读回通过。** 冻结源 `53c3b83625ec5f8e94690ae15f5a0f3881f85589`／`v1.8.22`，见[343交付记录](releases/builds/FLOE_1.8.22_BUILD343_DELIVERY.md)。真实Darwin组件6方法及完整iOS归档、规范封装通过；M4已实际安装，启动识别修复已确认，但一次整理仍受旧作业原盘ctime检查阻断，新增回收0。208.31GB只是整理前文件分配估算，原盘、资料与13份恢复盘保留。未提交公开TestFlight或正式App Store，315／331安排保持。
 
 ## 依据与判定
 
@@ -13,7 +13,9 @@
 
 ## 本轮版本记录
 
-**1.8.21（342）已交付三条授权渠道。** Apple独立GET确认VALID、未过期、既有Floe QA为IN_BETA_TESTING；GitHub stable/latest实际IPA及在线Feather源严格匹配。实际macOS-Darwin生产组件编译／链接与6新＋2既有恢复方法共8项通过，跳过0；完整iOS Release归档和规范封装通过，App及19份符号已保全。342已在M4实测，当前启动历史识别受阻，未开始新的整理；208.22GB为界面文件分配估算，本次新增回收0。下一拟用1.8.22（343）已通过实际只读Apple未占用核对，尚未冻结、构建或交付。不重计338旧回收或改写341失败，也不以放宽原盘身份保护结束恢复。
+**1.8.22（343）已交付三条授权渠道。** [独立Apple GET](https://github.com/JiangNanGenius/floe-agent/actions/runs/43483085373)确认VALID、未过期及Floe QA内部可安装；[正常发布及awaited Feather](https://github.com/JiangNanGenius/floe-agent/actions/runs/43483448749)和实际安装包／在线源严格读回通过。M4经真实TestFlight更新，bootstrap成功接续两批历史、两项未完作业；唯一一次整理为blocked／recovery-pending，明确原盘ctime检查拒绝、尝试0项／分配减少0。原source、摘要、资料和恢复盘保留。后续修复另用未占用版本，不改343源、标签或产物，不把内容摘要存在等同当前盘已验证。
+
+**1.8.21（342）已交付三条授权渠道。** Apple独立GET确认VALID、未过期、既有Floe QA为IN_BETA_TESTING；GitHub stable/latest实际IPA及在线Feather源严格匹配。实际macOS-Darwin生产组件编译／链接与6新＋2既有恢复方法共8项通过，跳过0；完整iOS Release归档和规范封装通过，App及19份符号已保全。342在M4实测启动历史识别受阻，未开始新的整理；208.22GB为界面文件分配估算，新增回收0。该启动问题在343实际修复，后续容量阻塞仍单独保留，不改342冻结来源和失败记录。
 
 **1.8.20（341）已交付三条授权渠道。** Apple独立GET为VALID、未过期、Floe QA可安装；GitHub stable/latest及awaited Feather严格读回通过，M4已安装。31项相关方法通过不等于容量真机验收：一次实际整理为blocked／recovery-pending，收益0，后续恢复窄修进入342源码候选。341源、标签和产物保持不变。
 
@@ -43,6 +45,7 @@
 | 1.8.19（340），标签 `v1.8.19` | 内部TestFlight可安装，正常GitHub stable/latest与awaited Feather严格读回通过，M4已装 | 冻结源 `ca7e39303404a3f6806006300165b248ad0cd967`。剩余多历史／迁移盘恢复尚未完成，不重复计算旧回收；录音素材和连续回放并行准备下一版。见[340交付记录](releases/builds/FLOE_1.8.19_BUILD340_DELIVERY.md)。 |
 | 1.8.20（341），标签 `v1.8.20` | 内部TestFlight可安装，正常GitHub stable/latest与awaited Feather严格读回通过，M4已装并交还 | 冻结源 `d0c085f9ddda28e1d9a125389a020f618892d408`。容量实测blocked／recovery-pending，本次0优化、0文件分配减少；不重复计入旧回收量。见[341交付记录](releases/builds/FLOE_1.8.20_BUILD341_DELIVERY.md)。 |
 | 1.8.21（342），标签 `v1.8.21` | 内部TestFlight可安装，正常GitHub stable/latest及awaited Feather严格读回通过 | 冻结源 `1d599f35e97b46ea5798ac07359074480fa463a5`。真实组件8方法与完整iOS归档通过；M4实测启动历史识别受阻，未开始新整理，仍保留资料与13份恢复盘。见[342交付记录](releases/builds/FLOE_1.8.21_BUILD342_DELIVERY.md)。 |
+| 1.8.22（343），标签 `v1.8.22` | 内部TestFlight可安装，正常GitHub stable/latest及awaited Feather严格读回通过，M4已实际更新 | 冻结源 `53c3b83625ec5f8e94690ae15f5a0f3881f85589`。启动识别已修复；一次整理明确被旧原盘ctime检查阻断，新增回收0，容量继续修复。见[343交付记录](releases/builds/FLOE_1.8.22_BUILD343_DELIVERY.md)。 |
 
 正式 App Store 构建 315 及其既有安排保持不变；本轮版本纠正不授权替换它。
 
