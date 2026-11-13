@@ -235,10 +235,15 @@ private fun ConversationDestination(
         )
         return
     }
-    // Load the durable thread once per holder binding; recomposition and
-    // rotation reuse the same holder and never restart the load.
-    androidx.compose.runtime.LaunchedEffect(holder.session) {
-        runtimeHost.conversations.loadThread(holder.session)
+    // A restored route can bind its holder before bootstrap admits reads.
+    // Load when that real domain becomes ready, including a notification
+    // returning to the already selected task. Ordinary recomposition keeps
+    // the same keys and never repeats the read.
+    val readiness by runtimeHost.readiness.collectAsState()
+    androidx.compose.runtime.LaunchedEffect(runtimeHost, holder.session, readiness.conversationDomainAdmitted) {
+        if (readiness.conversationDomainAdmitted) {
+            runtimeHost.conversations.loadThread(holder.session)
+        }
     }
     // Report the EXACT holder instance this surface bound so the shell can
     // prove visible ownership for the privacy-clear invalidation (a

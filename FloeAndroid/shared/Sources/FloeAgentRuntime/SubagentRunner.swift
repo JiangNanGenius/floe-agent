@@ -686,6 +686,11 @@ public struct SubagentRunner: Sendable {
         var iterationsUsed = 0
         var lastAssistantText = ""
         var evidence: [String] = []
+        /// Routes that were REQUESTED but not executed. A batch is executed
+        /// synchronously below, so this is cleared as soon as its real
+        /// results settle; only a wrap-up tool request (deliberately not
+        /// executed) may remain. The last EXECUTED batch is never reported as
+        /// unfinished.
         var pendingRoutes: [String] = []
         var peerMessagesDelivered = 0
 
@@ -892,6 +897,10 @@ public struct SubagentRunner: Sendable {
                         }
                     }
                     pendingSettled = executed
+                    // Every requested call in this batch now has a REAL
+                    // result (ok/denied/failed/cancelled). Only a call that
+                    // was never executed may be reported as unfinished.
+                    pendingRoutes.removeAll(keepingCapacity: true)
                     for item in executed {
                         let statusSuffix = item.result.status == .ok ? "" : " [\(item.result.status.rawValue)]"
                         evidence.append("\(item.call.toolName) \(Self.argumentsDigest(item.call))\(statusSuffix)")
@@ -1024,6 +1033,11 @@ public struct SubagentRunner: Sendable {
                 droppedAssistantMessages += boundedWrapUp.droppedAssistantMessages
                 truncatedResultOutputs += boundedWrapUp.truncatedResultOutputs
                 let wrapUpRequest = boundedWrapUp.request
+                // The wrap-up is tool-free by design: a tool request emitted
+                // anyway is NEVER executed. Record its route as the real
+                // unfinished work instead of reusing the last executed batch
+                // (which was falsely reported before this repair).
+                var wrapUpRequestedRoutes: [String] = []
                 try await providerStreamBoundary {
                     for try await event in adapter.stream(request: wrapUpRequest, credentials: credentials) {
                         switch event {
@@ -1032,6 +1046,10 @@ public struct SubagentRunner: Sendable {
                                 throw LocalGuardAbort(message: "Subagent response exceeds 64 KiB")
                             }
                             text += delta.text
+                        case .toolRequest(let call):
+                            wrapUpRequestedRoutes.append(
+                                "\(call.toolName) \(Self.argumentsDigest(call))")
+                            pendingRoutes = wrapUpRequestedRoutes
                         case .error(let error):
                             throw ProviderStreamAbort(message: error.providerMessage)
                         default:
@@ -1039,6 +1057,7 @@ public struct SubagentRunner: Sendable {
                         }
                     }
                 }
+                pendingRoutes = wrapUpRequestedRoutes
             } catch {
                 throw Termination(
                     status: Self.classify(error),
@@ -1064,6 +1083,7 @@ public struct SubagentRunner: Sendable {
                 evidence: evidence,
                 pendingRoutes: pendingRoutes,
                 finalizationUsed: true,
+                finalizationTextEmpty: trimmed.isEmpty,
                 droppedReplayedPairs: droppedSettledPairs,
                 droppedAssistantMessages: droppedAssistantMessages,
                 truncatedResultOutputs: truncatedResultOutputs
@@ -1253,13 +1273,16 @@ public struct SubagentRunner: Sendable {
         evidence: [String],
         pendingRoutes: [String],
         finalizationUsed: Bool = false,
+        finalizationTextEmpty: Bool = false,
         droppedReplayedPairs: Int = 0,
         droppedAssistantMessages: Int = 0,
         truncatedResultOutputs: Int = 0
     ) -> SubagentOutcome {
         let base = lastText.trimmingCharacters(in: .whitespacesAndNewlines)
         var unfinished = boundReferences(pendingRoutes)
-        if unfinished.isEmpty, !finalizationUsed {
+        if unfinished.isEmpty, finalizationUsed, finalizationTextEmpty {
+            unfinished = ["the subtask '\(Self.brief(request.task))' did not produce a final wrap-up summary"]
+        } else if unfinished.isEmpty, !finalizationUsed {
             unfinished = ["the subtask '\(Self.brief(request.task))' did not reach a final answer"]
         }
         let prefix: String
@@ -1267,9 +1290,13 @@ public struct SubagentRunner: Sendable {
         case .budgetExhausted:
             prefix = "Subagent iteration/shared budget exhausted before a final answer."
         default:
-            prefix = finalizationUsed
-                ? "Subagent reached its iteration limit; this is the reserved wrap-up summary."
-                : "Subagent reached its iteration limit without a final answer."
+            if finalizationUsed {
+                prefix = finalizationTextEmpty
+                    ? "Subagent reached its iteration limit; the reserved wrap-up produced no final text. Last assistant text before the limit:"
+                    : "Subagent reached its iteration limit; this is the reserved wrap-up summary."
+            } else {
+                prefix = "Subagent reached its iteration limit without a final answer."
+            }
         }
         let truncation = truncationSuffix(
             droppedReplayPairs: droppedReplayedPairs,

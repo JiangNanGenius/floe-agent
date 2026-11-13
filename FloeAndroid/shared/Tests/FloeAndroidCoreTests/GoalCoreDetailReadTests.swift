@@ -463,8 +463,12 @@ final class GoalCoreDetailReadTests: XCTestCase {
             .init(id: "read", title: "读取", status: .completed, evidence: ["tool:read"]),
             .init(id: "write", title: "写入", status: .cancelled),
         ])
-        let context = ToolContext(runID: runID, toolCallID: "same-tool-call",
-                                  cancellation: CancellationToken(), conversationID: record.id)
+        let context = ToolContext(
+            runID: runID, toolCallID: "same-tool-call",
+            cancellation: CancellationToken(), conversationID: record.id,
+            callOrigin: ToolCallOrigin(
+                kind: .mainRunDelegate, runID: runID,
+                callID: "same-tool-call", toolName: TaskUpdatePlanTool.name))
         let tool = TaskUpdatePlanTool(store: store)
         _ = try await tool.execute(update, context: context)
         _ = try await tool.execute(update, context: context) // same operation is idempotent
