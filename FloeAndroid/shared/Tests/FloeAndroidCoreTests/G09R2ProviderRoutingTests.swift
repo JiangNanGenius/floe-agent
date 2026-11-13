@@ -16,7 +16,11 @@
 // the coherent R2 batch because it would compile the full Core test target.
 
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import FloeCore
+import FloeTransport
 import Testing
 @testable import FloeProviders
 
@@ -540,4 +544,158 @@ struct G09R2ProviderRoutingTests {
                               capabilities: [.videoGeneration])
         #expect(!VideoModelRegistry.isUsable(model: planModel, provider: agentPlan))
     }
+}
+
+
+// MARK: - Provider-issued image URL download + bounded wire phases
+
+/// One provider-issued image URL is downloaded through the injectable seam
+/// (production uses `RemoteImageHTTP.makeImageDownloadSession`, which on
+/// Linux/Android is a `StreamingTransport` session — the previous custom
+/// `URLSession(configuration:delegate:)` failed closed with
+/// `sessionNotStreamable` AFTER the provider had generated and billed the
+/// image). These cases pin the URL branch and the non-secret phase trace used
+/// by the durable failure diagnostic.
+@Suite("G09R2ImageWireDiagnosticsTests")
+struct G09R2ImageWireDiagnosticsTests {
+    private final class PhaseBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var storage: [RemoteImageWirePhase] = []
+
+        func append(_ phase: RemoteImageWirePhase) {
+            lock.withLock { storage.append(phase) }
+        }
+
+        var values: [RemoteImageWirePhase] {
+            lock.withLock { storage }
+        }
+    }
+
+    private final class RequestBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var storage: URLRequest?
+
+        func store(_ request: URLRequest) {
+            lock.withLock { storage = request }
+        }
+
+        var value: URLRequest? {
+            lock.withLock { storage }
+        }
+    }
+
+    private let pngBytes = Data([
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D,
+        0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+        0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00,
+        0x0D, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0xF8, 0xDF, 0xC0, 0xF0,
+        0x1F, 0x00, 0x06, 0x80, 0x02, 0x7F, 0x10, 0x4C, 0x1B, 0xE1, 0x00, 0x00,
+        0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+    ])
+
+    private func urlResponse(
+        _ url: URL, mimeType: String, byteCount: Int
+    ) -> HTTPURLResponse {
+        HTTPURLResponse(
+            url: url, statusCode: 200, httpVersion: "HTTP/1.1",
+            headerFields: [
+                "Content-Type": mimeType,
+                "Content-Length": String(byteCount),
+            ])!
+    }
+
+    @Test("A provider URL result downloads through the seam and records bounded phases")
+    func providerURLResultDownloadsAndRecordsPhases() async throws {
+        let responseBody = Data(
+            #"{"data":[{"url":"https://cdn.example.com/generated.png"}]}"#.utf8)
+        let phases = PhaseBox()
+        let captured = RequestBox()
+        let images = try await RemoteImageDecoder.images(
+            from: responseBody,
+            b64Key: "b64_json",
+            urlKey: "url",
+            requestedCount: 1,
+            observer: { phases.append($0) },
+            downloader: { request in
+                captured.store(request)
+                let url = request.url ?? URL(string: "https://invalid.example")!
+                return (self.pngBytes, self.urlResponse(
+                    url, mimeType: "image/png",
+                    byteCount: self.pngBytes.count))
+            })
+        #expect(images == [pngBytes])
+        #expect(phases.values == [
+            .downloadStarted, .downloadCompleted, .imagesDecoded,
+        ])
+        #expect(captured.value?.url?.absoluteString
+            == "https://cdn.example.com/generated.png")
+        #expect(captured.value?.timeoutInterval
+            == RemoteImageHTTP.nonStreamingRequestTimeout)
+    }
+
+    @Test("A failed provider URL download records only downloadStarted and propagates the typed error")
+    func failedProviderURLDownloadRecordsStartedOnly() async throws {
+        let responseBody = Data(
+            #"{"data":[{"url":"https://cdn.example.com/generated.png"}]}"#.utf8)
+        let phases = PhaseBox()
+        await #expect(throws: IncrementalTransportError.self) {
+            _ = try await RemoteImageDecoder.images(
+                from: responseBody,
+                b64Key: "b64_json",
+                urlKey: "url",
+                requestedCount: 1,
+                observer: { phases.append($0) },
+                downloader: { _ in
+                    throw IncrementalTransportError.sessionNotStreamable(
+                        reason: "synthetic non-streamable download session")
+                })
+        }
+        #expect(phases.values == [.downloadStarted])
+    }
+
+    @Test("A non-image download response is rejected before any bytes are returned")
+    func nonImageDownloadIsRejected() async throws {
+        let responseBody = Data(
+            #"{"data":[{"url":"https://cdn.example.com/not-an-image"}]}"#.utf8)
+        let phases = PhaseBox()
+        await #expect(throws: RemoteImageError.self) {
+            _ = try await RemoteImageDecoder.images(
+                from: responseBody,
+                b64Key: "b64_json",
+                urlKey: "url",
+                requestedCount: 1,
+                observer: { phases.append($0) },
+                downloader: { request in
+                    let url = request.url ?? URL(string: "https://invalid.example")!
+                    return (Data("not an image".utf8), self.urlResponse(
+                        url, mimeType: "text/plain", byteCount: 12))
+                })
+        }
+        #expect(phases.values == [.downloadStarted])
+    }
+
+    @Test("A provider base64 result records imagesDecoded without any download")
+    func base64ResultRecordsDecodedOnly() async throws {
+        let responseBody = Data(
+            #"{"data":[{"b64_json":"\#(pngBytes.base64EncodedString())"}]}"#.utf8)
+        let phases = PhaseBox()
+        let images = try await RemoteImageDecoder.images(
+            from: responseBody,
+            b64Key: "b64_json",
+            urlKey: "url",
+            requestedCount: 1,
+            observer: { phases.append($0) })
+        #expect(images == [pngBytes])
+        #expect(phases.values == [.imagesDecoded])
+    }
+
+    #if os(Linux) || os(Android)
+    @Test("Shared image request and download sessions are real incremental transport sessions")
+    func sharedImageSessionsAreStreamable() {
+        #expect(StreamingTransport.isStreamable(RemoteImageHTTP.nonStreamingSession))
+        let download = RemoteImageHTTP.makeImageDownloadSession()
+        #expect(StreamingTransport.isStreamable(download))
+        download.invalidateAndCancel()
+    }
+    #endif
 }

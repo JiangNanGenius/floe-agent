@@ -1,5 +1,17 @@
 # Floe Android 分目标实施记录
 
+## 1.0.7／115 修复源码与定向宿主检查闭合（2026-11-14）
+
+1.0.6 的完整实机录像在云端生图阶段停止：四个任务结果不明，随后出现换提示提交第五个任务的行为；旧任务的实际提供商接收、交付和计费均未确认，原始失败保留，不恢复该运行。公开 1.0.6 已追加双语已知问题，原标签、安装包与附件不变。
+
+本批将 Android 生图请求及图片地址下载会话接入既有流式传输，保留下载大小、重定向和取消限制，并记录有界失败阶段。同一可信会话所有者／运行／媒体类型存在结果不明任务时，持久化事务拒绝换提示、模型、供应商或调用标识的替代请求，原任务仍可查询；持有提供商句柄也不等于已知结果。连接错误名称不再被当作“确定未发送”。独立初始请求、新用户运行和原 UI 通路保留。浏览器错误页结束不再清除已收到的页面加载错误，成功的新导航可恢复；不依据标题或空节点猜测失败。
+
+Swift 6.4.1 实际宿主对象编译及原定 29 个方法已逐项闭合：首次编译发现新测试辅助类的异步锁用法错误；修正后 29 项实际执行，24 项通过、五个数据库夹具因缺少供应商／模型外键目标失败；补齐真实合成配置后仅复测该五项，全部通过。没有关闭外键、跳过断言或重跑其余 24 项，生产输入在各次运行间一致，原始错误保留。Linux／Android 条件编译的额外会话用例没有在 macOS 冒充执行。
+
+已准备 1.0.7／115、双语说明及对应 Office 源码声明，尚未创建公开标签或 Release。下一步是固定源码、实际 ARM64／Full 构建、三星生图成果与浏览器定向验收，再交接同一精确 APK 做全新任务录像；当前结果不冒充 Android 原生、实机、云服务或完整视频通过。六个被替代的私有 113 安装包已按实际摘要退役，实测释放 332,877,824 字节；当前包、公开回滚、源代码、符号与故障记录保留。原功能和差异编号不变。
+
+English: The 1.0.7/code115 source repairs Android image transport, blocks changed replacement requests after an unknown outcome within the same trusted owner/run/media kind, and preserves browser load failures. All 29 selected host methods are accounted for through 24 original passes and five targeted fixture rechecks; original compiler and foreign-key failures remain recorded. ARM64, APK, real-provider, Samsung and fresh recording acceptance are still pending, and the original 1.0.6 image outcomes remain unconfirmed.
+
 ## 1.0.6／114 已公开，完整录像继续（2026-11-14）
 
 [Android 1.0.6 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v1.0.6) 的不可变应用源码为 `bfcbdda9667aea2000cac2bbe2103bcab31005b5`，标签 `android/v1.0.6`。实际 Full APK 为 166,432,319 字节，SHA-256 `f86fdb8f4f3fe14d0c51e293443f9552d4ac1a016501e36f63099bf2fdb556b6`。native52 仍保留真实生产来源 `11c241b9210837bc8eb427924fb559dd0f7dc214`；已证明规范原生输入与最终应用源一致，没有重标原生来源。

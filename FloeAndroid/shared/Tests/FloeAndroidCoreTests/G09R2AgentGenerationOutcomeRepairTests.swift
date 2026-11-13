@@ -20,8 +20,9 @@
 //    row never reports terminal (the model-visible symptom guard);
 //  * a post-dispatch transport failure stays durable `outcomeUnknown` under
 //    recovery/status churn — exactly ONE upstream submission, the original
-//    unknown preserved, never an automatic resubmission; a DISTINCT later
-//    request is a new job (anti-duplicate intact);
+//    unknown preserved, never an automatic resubmission; a changed-prompt
+//    retry in the SAME run is refused by the durable unknown-outcome guard
+//    instead of paying again, while a genuinely new run is a separate job;
 //  * a late local stop landing AFTER the verified bytes reached the pinned
 //    workspace keeps the artifact receipt (CAS publish boundary) — real
 //    delivered bytes are never stranded behind a no-artifact unknown row.
@@ -447,8 +448,9 @@ final class G09R2AgentGenerationOutcomeRepairTests: XCTestCase {
 
     /// A post-dispatch transport failure settles durable `outcomeUnknown`;
     /// status/recovery churn afterwards never resubmits and never rewrites
-    /// the original unknown settlement. A DISTINCT later request is a new
-    /// job with exactly one new upstream call (anti-duplicate preserved).
+    /// the original unknown settlement. A changed-prompt retry in the SAME
+    /// run must be refused by the durable unknown-outcome guard (the Full114
+    /// fifth-submission defect); a genuinely new run may submit once.
     func testPostDispatchTransportFailureStaysUnknownUnderRecoveryChurn() async throws {
         let fixture = try await makeFixture()
         let transport = URLError(.networkConnectionLost)
@@ -494,31 +496,60 @@ final class G09R2AgentGenerationOutcomeRepairTests: XCTestCase {
             G09R2AgentGenerationPayload.self, from: owned.job.requestJSON)
         XCTAssertNil(payload.artifacts)
 
-        // A distinct later request (new idempotency identity) is a NEW job.
+        // A changed prompt under a NEW submitting-operation identity in the
+        // SAME run is not new user intent: the unresolved paid submission
+        // still owns this run, so no replacement may be bought.
         fixture.imageAdapter.performHandler = nil
         fixture.imageAdapter.resultImages = [Self.pngBytes]
-        let retry = try await fixture.service.submitImage(
+        let blocked = try await fixture.service.submitImage(
             epoch: fixture.epoch,
             conversationID: fixture.conversationID,
             runID: fixture.runID,
             idempotencyKey: "key-\(UUID().uuidString)",
             workspaceRootURL: fixture.workspaceURL,
-            prompt: "draw a triangle", selection: nil, legacyModelID: nil,
+            prompt: "draw a purple triangle", selection: nil, legacyModelID: nil,
+            count: 1, size: nil, aspectRatio: nil, resolution: nil,
+            quality: nil, referenceRelativePath: nil)
+        XCTAssertEqual(blocked.jobID, summary.jobID,
+                       "the guard must return the ORIGINAL unknown row")
+        XCTAssertTrue(blocked.deduplicated)
+        XCTAssertEqual(blocked.blockedByUnresolvedUnknown, summary.jobID)
+        XCTAssertEqual(blocked.lastError, "outcomeUnknown")
+        XCTAssertEqual(fixture.imageAdapter.performCount, 1,
+                       "a changed prompt must never buy a replacement")
+        let jobs = try await fixture.jobStore.jobs(
+            owner: .conversation(fixture.conversationID))
+        XCTAssertEqual(jobs.count, 1, "no replacement row may be inserted")
+        // The original unknown job is untouched by the refused retry.
+        let original = try await fixture.jobStore.ownedJob(id: summary.jobID)
+        XCTAssertEqual(original?.job.state, .expired)
+        XCTAssertEqual(original?.job.lastError, "outcomeUnknown")
+
+        // A genuinely new user run is a separate trusted lineage and may
+        // submit normally: the guard is run-scoped, never global.
+        let retry = try await fixture.service.submitImage(
+            epoch: fixture.epoch,
+            conversationID: fixture.conversationID,
+            runID: UUID(),
+            idempotencyKey: "key-\(UUID().uuidString)",
+            workspaceRootURL: fixture.workspaceURL,
+            prompt: "draw a purple triangle", selection: nil, legacyModelID: nil,
             count: 1, size: nil, aspectRatio: nil, resolution: nil,
             quality: nil, referenceRelativePath: nil)
         XCTAssertNotEqual(retry.jobID, summary.jobID)
-        try await waitFor("retry ready", timeout: 10) {
+        XCTAssertNil(retry.blockedByUnresolvedUnknown)
+        try await waitFor("new-run retry ready", timeout: 10) {
             guard let owned = try await fixture.jobStore.ownedJob(id: retry.jobID)
             else { return false }
             return owned.job.state == .ready
         }
         try await waitForWorkerSettled(fixture, jobID: retry.jobID)
         XCTAssertEqual(fixture.imageAdapter.performCount, 2,
-                       "an explicit distinct retry performs exactly one new call")
-        // The original unknown job is untouched by the retry.
-        let original = try await fixture.jobStore.ownedJob(id: summary.jobID)
-        XCTAssertEqual(original?.job.state, .expired)
-        XCTAssertEqual(original?.job.lastError, "outcomeUnknown")
+                       "a new run performs exactly one new explicit call")
+        // The original unknown job stays untouched by the new-run request.
+        let preserved = try await fixture.jobStore.ownedJob(id: summary.jobID)
+        XCTAssertEqual(preserved?.job.state, .expired)
+        XCTAssertEqual(preserved?.job.lastError, "outcomeUnknown")
     }
 
     // MARK: - Late stop after delivered bytes keeps the artifact receipt

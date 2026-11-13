@@ -52,7 +52,7 @@ import FloeCore
 public struct KimiImageAdapter: ImageProviderAdapter {
     private let session: URLSession
 
-    public init() { session = .shared }
+    public init() { session = RemoteImageHTTP.nonStreamingSession }
 
     init(session: URLSession) { self.session = session }
 
@@ -140,11 +140,13 @@ public struct KimiImageAdapter: ImageProviderAdapter {
                 extraHeaders: provider.nonSecretHeaders,
                 body: body
             )
+            request.wirePhaseObserver?(.requestStarted)
             let (data, response) = try await BoundedHTTP.data(
                 for: urlRequest,
                 session: session,
                 maxBytes: 32 * 1_024 * 1_024
             )
+            request.wirePhaseObserver?(.responseReceived)
             let status = (response as? HTTPURLResponse)?.statusCode ?? -1
             if !didDropResponseFormat, status == 400, Self.rejectsResponseFormat(data) {
                 body.response_format = nil
@@ -217,11 +219,13 @@ public struct KimiImageAdapter: ImageProviderAdapter {
         }
         for (name, value) in provider.nonSecretHeaders { urlRequest.setValue(value, forHTTPHeaderField: name) }
         urlRequest.httpBody = body
+        request.wirePhaseObserver?(.requestStarted)
         let (data, response) = try await BoundedHTTP.data(
             for: urlRequest,
             session: session,
             maxBytes: 32 * 1_024 * 1_024
         )
+        request.wirePhaseObserver?(.responseReceived)
         try RemoteImageHTTP.validate(
             response,
             data: data,
@@ -282,7 +286,8 @@ public struct KimiImageAdapter: ImageProviderAdapter {
             from: data,
             b64Key: "b64_json",
             urlKey: "url",
-            requestedCount: request.count
+            requestedCount: request.count,
+            observer: request.wirePhaseObserver
         )
         guard !images.isEmpty else {
             throw RemoteImageError.invalidResponse("Kimi Code returned no images")

@@ -225,8 +225,22 @@ public struct G09R2AgentImageGenerateTool: AgentTool {
             "status=\(summary.deduplicated ? "existing-job" : "submitted") jobID=\(summary.jobID.uuidString)",
             "state=\(summary.state.rawValue) provider=\(summary.providerName) model=\(summary.remoteModelID)",
         ]
+        if let blocked = summary.blockedByUnresolvedUnknown {
+            lines.append("blocked=unresolvedUnknownOutcome existingJobID=\(blocked.uuidString)")
+        }
+        if let lastError = summary.lastError {
+            lines.append("lastError=\(lastError)")
+        }
         if let estimate = summary.estimatedCompletionAt {
             lines.append("estimatedCompletionAt=\(ISO8601DateFormatter().string(from: estimate))")
+        }
+        if summary.blockedByUnresolvedUnknown != nil {
+            // The changed prompt/model/provider/tool-call identity cannot
+            // bypass an unresolved paid outcome in this same run. Report the
+            // original unknown truth; never pretend a new image was started.
+            lines.append("note=No new generation was submitted. This run already has an unresolved outcome-unknown image submission (jobID above); a paid replacement is refused even with a changed prompt or model. Tell the user the outcome is unknown and use video.status on that jobID for its durable state. Do not switch providers or retry; a genuinely new user request starts a separate task/run.")
+            return ToolExecutionOutput(
+                digesting: lines.joined(separator: "\n"), exitStatus: 1)
         }
         lines.append(summary.deduplicated
             ? "note=An identical request already exists (possibly already finished); no second paid submission was made. Track the returned jobID with video.status; never resubmit it."
@@ -424,8 +438,21 @@ public struct G09R2AgentVideoGenerateTool: AgentTool {
         if let providerTaskID = summary.providerTaskID {
             lines.append("providerTaskID=\(providerTaskID)")
         }
+        if let blocked = summary.blockedByUnresolvedUnknown {
+            lines.append("blocked=unresolvedUnknownOutcome existingJobID=\(blocked.uuidString)")
+        }
+        if let lastError = summary.lastError {
+            lines.append("lastError=\(lastError)")
+        }
         if let estimate = summary.estimatedCompletionAt {
             lines.append("estimatedCompletionAt=\(ISO8601DateFormatter().string(from: estimate))")
+        }
+        if summary.blockedByUnresolvedUnknown != nil {
+            // Same run-scoped anti-resubmission contract as image.generate:
+            // the existing unknown submission must be reported, not replaced.
+            lines.append("note=No new generation was submitted. This run already has an unresolved outcome-unknown video submission (jobID above); a paid replacement is refused even with a changed prompt or model. Tell the user the outcome is unknown and use video.status on that jobID for its durable state. Do not switch providers or retry; a genuinely new user request starts a separate task/run.")
+            return ToolExecutionOutput(
+                digesting: lines.joined(separator: "\n"), exitStatus: 1)
         }
         lines.append(summary.deduplicated
             ? "note=An identical request already exists (possibly already finished); no second paid submission was made. Track the returned jobID with video.status; never resubmit it."

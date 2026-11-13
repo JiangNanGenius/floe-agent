@@ -71,6 +71,29 @@
 //    never triggers a second paid submission; a distinct request still
 //    creates a new job.
 //
+// Unknown-outcome anti-retry authority (Full114 fifth-submission defect):
+//  * A changed prompt/model/provider/tool call cannot buy a replacement in
+//    the same trusted conversation+origin run while a handle-less paid
+//    submission from that run is durable `outcomeUnknown`. The store checks
+//    and inserts in ONE write transaction; the generation worker re-checks
+//    before its first provider call so a retry inserted just BEFORE the
+//    unknown settlement cannot still dispatch. The original unknown row is
+//    preserved and returned; a new run or another conversation is unaffected,
+//    and initial independent concurrent submissions still all dispatch.
+//  * Source-confirmed provider/lifetime wiring repair: image requests and
+//    provider-issued result downloads use the bound non-streaming session
+//    (300 s request / 900 s resource, `StreamingTransport` on Android)
+//    instead of the generic `.shared` session and a custom download session
+//    that failed closed with `sessionNotStreamable` AFTER the provider had
+//    already returned a paid URL. The 16:39-16:44 Full114 settlement times
+//    alone do not prove which path failed on that run: actual provider
+//    dispatch/billing was never observed. Every failed image attempt now
+//    records a bounded non-secret stage trace (`requestStarted`,
+//    `responseReceived`, `imagesDecoded`, `downloadStarted`,
+//    `downloadCompleted`) plus a failure-class code in the durable payload,
+//    so the next focused run distinguishes dispatch/response/download/commit
+//    without logging prompts, keys, endpoints or provider bodies.
+//
 // Contract fidelity to the immutable iOS donors
 // (36f63bf400dfaa3a127259eac006b38d72516390:
 //  FloeApp/Files/RemoteImageTools.swift, FloeApp/Conversations/RemoteVideoTools.swift):
@@ -89,9 +112,13 @@
 //  * video.status separates "submitted/unknown" from a delivered readable
 //    artifact: a submit string alone never marks a task complete.
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import FloeCore
 import FloePersistence
 import FloeProviders
+import FloeTransport
 import FloeWorkspace
 
 // MARK: - Durable payload
@@ -192,6 +219,62 @@ public struct G09R2AgentGenerationProducerReceipt: Codable, Sendable, Equatable 
     }
 }
 
+/// Bounded, non-secret wire/settlement trace written ONLY when an image
+/// attempt fails or a changed submission is refused by the unknown guard. It closes the historic observability gap (`lastError` was a single
+/// `outcomeUnknown` string) by distinguishing:
+///  * `requestStarted` but no `responseReceived` — provider call/transport;
+///  * `responseReceived` without `imagesDecoded` — provider reply rejected or
+///    unusable;
+///  * `downloadStarted` without `downloadCompleted` — the paid result existed
+///    as a provider URL but the local image download failed;
+///  * `imagesDecoded` then a commit failure — verified bytes/commit.
+/// Stage names are fixed enum spellings; `failureCode` is a bounded class
+/// (HTTP status / URL error code / typed local reason), never a prompt, key,
+/// endpoint or provider body.
+public struct G09R2AgentGenerationDiagnostic: Codable, Sendable, Equatable {
+    public var schemaVersion: Int
+    public var stages: [String]
+    public var failureCode: String?
+    /// The earlier unknown job that blocked a replacement dispatch, when the
+    /// worker (not the insert transaction) caught the race.
+    public var relatedJobID: UUID?
+    public var recordedAt: Date
+
+    public init(schemaVersion: Int = 1, stages: [String],
+                failureCode: String? = nil, relatedJobID: UUID? = nil,
+                recordedAt: Date = Date()) {
+        self.schemaVersion = schemaVersion
+        self.stages = Array(stages.prefix(12))
+        self.failureCode = failureCode
+        self.relatedJobID = relatedJobID
+        self.recordedAt = recordedAt
+    }
+}
+
+/// Thread-safe ordered recorder for the bounded, non-secret adapter wire
+/// milestones. The observer is called from the provider adapter (and from
+/// the image download loop), so recording must be synchronous, lock-bounded
+/// and never block an `await`. Consecutive duplicates are collapsed and the
+/// list is hard-capped: a malformed/chatty adapter cannot amplify a durable
+/// diagnostic row.
+final class G09R2WirePhaseRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stages: [String] = []
+    private static let maximumStages = 12
+
+    func record(_ phase: RemoteImageWirePhase) {
+        lock.g04Locked {
+            guard stages.count < Self.maximumStages else { return }
+            guard stages.last != phase.rawValue else { return }
+            stages.append(phase.rawValue)
+        }
+    }
+
+    func snapshot() -> [String] {
+        lock.g04Locked { stages }
+    }
+}
+
 /// Exact request identity persisted BEFORE any provider call. Carried in the
 /// original `media_generation_jobs.request_json`; never contains secrets.
 public struct G09R2AgentGenerationPayload: Codable, Sendable, Equatable {
@@ -233,6 +316,10 @@ public struct G09R2AgentGenerationPayload: Codable, Sendable, Equatable {
     public var workspaceRelativePath: String?
     public var deliveredByteCount: Int64?
     public var deliveredSHA256: String?
+    /// Local (never provider) failure trace; excluded from every replay and
+    /// request identity so recording it can never turn a replay into a
+    /// conflict or a second paid submission.
+    public var diagnostics: G09R2AgentGenerationDiagnostic?
 
     public init(schemaVersion: Int = 1, surface: String = "chat",
                 prompt: String, routeID: String, providerID: UUID,
@@ -243,7 +330,8 @@ public struct G09R2AgentGenerationPayload: Codable, Sendable, Equatable {
                 watermark: Bool? = nil, seed: Int? = nil,
                 referenceRelativePath: String? = nil,
                 targetWorkspaceID: UUID? = nil,
-                targetWorkspaceRootPath: String? = nil) {
+                targetWorkspaceRootPath: String? = nil,
+                diagnostics: G09R2AgentGenerationDiagnostic? = nil) {
         self.schemaVersion = schemaVersion
         self.surface = surface
         self.prompt = prompt
@@ -264,6 +352,7 @@ public struct G09R2AgentGenerationPayload: Codable, Sendable, Equatable {
         self.targetWorkspaceID = targetWorkspaceID
         self.targetWorkspaceRootPath = targetWorkspaceRootPath
         self.producerReceipt = nil
+        self.diagnostics = diagnostics
     }
 
     /// The durable replay identity: everything except the local delivery
@@ -281,6 +370,8 @@ public struct G09R2AgentGenerationPayload: Codable, Sendable, Equatable {
         right.deliveredSHA256 = nil
         left.producerReceipt = nil
         right.producerReceipt = nil
+        left.diagnostics = nil
+        right.diagnostics = nil
         return left == right
     }
 
@@ -311,6 +402,7 @@ public struct G09R2AgentGenerationPayload: Codable, Sendable, Equatable {
         copy.deliveredByteCount = nil
         copy.deliveredSHA256 = nil
         copy.producerReceipt = nil
+        copy.diagnostics = nil
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         guard let data = try? encoder.encode(copy) else { return "" }
@@ -377,6 +469,11 @@ public struct G09R2AgentSubmissionSummary: Sendable, Equatable {
     public var remoteModelID: String
     public var deduplicated: Bool
     public var estimatedCompletionAt: Date?
+    public var lastError: String? = nil
+    /// Set only when NO new job was created because the same trusted
+    /// owner+run already has an unresolved outcome-unknown submission. The
+    /// jobID above is that existing unknown row (truthful recovery target).
+    public var blockedByUnresolvedUnknown: UUID? = nil
 }
 
 // MARK: - Status projection
@@ -630,12 +727,26 @@ public final class G09R2AgentGenerationService: @unchecked Sendable {
         do {
             creation = try await store.createJob(
                 job, owner: owner, originRunID: runID,
-                idempotencyKey: idempotencyKey)
+                idempotencyKey: idempotencyKey,
+                blockOnUnresolvedUnknownInRun: true)
         } catch MediaGenerationJobStoreError.idempotencyConflict {
             // The same submitting operation identity was reused for a
             // DIFFERENT request. Refuse; never attach wrong data and never
             // create a second paying job.
             throw FloeError.validationFailed("idempotencyConflict")
+        } catch MediaGenerationJobStoreError.unresolvedUnknownOutcome(
+            let existingJobID) {
+            // A changed prompt/model/provider/tool call is NOT a new user
+            // intent: the same trusted owner+run already paid for an
+            // outcome-unknown submission. Return that original row (no new
+            // row, no paid call) so the model must report the unknown truth
+            // instead of retrying around it.
+            guard let existing = try await store.ownedJob(id: existingJobID) else {
+                throw FloeError.validationFailed("unresolvedUnknownOutcome")
+            }
+            return await submissionSummary(
+                owned: existing, deduplicated: true, env: env,
+                blockedByUnresolvedUnknown: existingJobID)
         }
         if !creation.deduplicated {
             // The SAME bounded shared worker table as the UI flow: a full or
@@ -662,7 +773,8 @@ public final class G09R2AgentGenerationService: @unchecked Sendable {
             providerName: provider.displayName ?? provider.kind.rawValue,
             remoteModelID: model.remoteModelID,
             deduplicated: creation.deduplicated,
-            estimatedCompletionAt: creation.job.estimatedCompletionAt)
+            estimatedCompletionAt: creation.job.estimatedCompletionAt,
+            lastError: creation.job.lastError)
     }
 
     private func runImageJob(
@@ -670,12 +782,28 @@ public final class G09R2AgentGenerationService: @unchecked Sendable {
         referenceData: Data?
         ) async {
         var dispatched = false
+        let wireRecorder = G09R2WirePhaseRecorder()
         do {
             try throwIfCancelled(token: token)
             let env = try await requireEnvironment(epoch: epoch)
             let store = MediaGenerationJobStore(database: env.database)
             guard let owned = try await store.ownedJob(id: jobID),
                   !owned.job.state.isTerminal else { return }
+            // Second line of the anti-resubmission guard: the insert
+            // transaction already refuses a changed request once the unknown
+            // is durable, but a retry inserted just BEFORE that settlement
+            // can still reach its worker. It must not spend a paid call.
+            if let unknown = try await store.unresolvedUnknownJob(
+                owner: owned.owner, originRunID: owned.originRunID,
+                mediaKind: .image, excluding: jobID) {
+                await finishJob(
+                    epoch: epoch, jobID: jobID,
+                    code: "unresolvedUnknownOutcome", definite: true,
+                    diagnostic: G09R2AgentGenerationDiagnostic(
+                        stages: [], failureCode: "unresolvedUnknownOutcome",
+                        relatedJobID: unknown.job.id))
+                return
+            }
             let payload = try decodePayload(owned.job)
             // The durable payload carries the resolved internal route id; it
             // is re-resolved exactly, never re-interpreted as a public
@@ -714,7 +842,10 @@ public final class G09R2AgentGenerationService: @unchecked Sendable {
                     operation: operation, prompt: payload.prompt,
                     sourceImages: referenceData.map { [$0] } ?? [],
                     selection: selection, count: payload.count,
-                    modelRemoteID: model.remoteModelID),
+                    modelRemoteID: model.remoteModelID,
+                    wirePhaseObserver: { phase in
+                        wireRecorder.record(phase)
+                    }),
                 provider: provider, credentials: credentials)
             guard result.images.count == payload.count else {
                 throw FloeError.validationFailed("imageCountMismatch")
@@ -787,54 +918,91 @@ public final class G09R2AgentGenerationService: @unchecked Sendable {
                 // leave the delivered bytes at their pinned paths.
                 return
             }
-        } catch is CancellationError {
+        } catch let error as CancellationError {
             // A one-shot image carries no provider handle: before dispatch a
             // local stop is a definite `cancelled`; after dispatch the request
             // may have been accepted, so the durable state is ambiguous
             // `outcomeUnknown` — never a definite remote cancel.
-            await finishJob(epoch: epoch, jobID: jobID,
-                            code: dispatched ? "outcomeUnknown" : "cancelled",
-                            definite: !dispatched)
+            await finishJob(
+                epoch: epoch, jobID: jobID,
+                code: dispatched ? "outcomeUnknown" : "cancelled",
+                definite: !dispatched,
+                diagnostic: Self.imageFailureDiagnostic(
+                    wireRecorder, error: error,
+                    code: dispatched ? nil : "cancelled"))
         } catch AgentDeliveryFence.targetChanged {
             // The original output owner was migrated or revoked while the
             // provider worked: fail the delivery honestly, publish nothing.
-            await finishJob(epoch: epoch, jobID: jobID,
-                            code: "targetChanged", definite: true)
+            await finishJob(
+                epoch: epoch, jobID: jobID,
+                code: "targetChanged", definite: true,
+                diagnostic: G09R2AgentGenerationDiagnostic(
+                    stages: wireRecorder.snapshot(),
+                    failureCode: "delivery.targetChanged"))
         } catch let remote as RemoteImageError {
             switch remote {
             case .providerRejected, .requestFailed:
-                await finishJob(epoch: epoch, jobID: jobID,
-                                code: "providerRejected", definite: true)
+                await finishJob(
+                    epoch: epoch, jobID: jobID,
+                    code: "providerRejected", definite: true,
+                    diagnostic: Self.imageFailureDiagnostic(
+                        wireRecorder, error: remote))
             case .unsupportedOperation:
-                await finishJob(epoch: epoch, jobID: jobID,
-                                code: "modelUnavailable", definite: true)
+                await finishJob(
+                    epoch: epoch, jobID: jobID,
+                    code: "modelUnavailable", definite: true,
+                    diagnostic: Self.imageFailureDiagnostic(
+                        wireRecorder, error: remote))
             case .invalidResponse:
-                await finishJob(epoch: epoch, jobID: jobID,
-                                code: "outcomeUnknown", definite: false)
+                await finishJob(
+                    epoch: epoch, jobID: jobID,
+                    code: "outcomeUnknown", definite: false,
+                    diagnostic: Self.imageFailureDiagnostic(
+                        wireRecorder, error: remote))
             }
         } catch let typed as G09CreativeError {
             switch typed.code {
             case "assetTooLarge", "assetDigestMismatch", "assetReferenceInvalid",
                  "assetMissing":
-                await finishJob(epoch: epoch, jobID: jobID,
-                                code: typed.code, definite: true)
+                await finishJob(
+                    epoch: epoch, jobID: jobID,
+                    code: typed.code, definite: true,
+                    diagnostic: Self.imageFailureDiagnostic(
+                        wireRecorder, error: typed))
             default:
                 // Root-stop/stale-generation after dispatch is ambiguous —
                 // the paid request may have been accepted.
-                await finishJob(epoch: epoch, jobID: jobID,
-                                code: dispatched ? "outcomeUnknown" : typed.code,
-                                definite: !dispatched)
+                await finishJob(
+                    epoch: epoch, jobID: jobID,
+                    code: dispatched ? "outcomeUnknown" : typed.code,
+                    definite: !dispatched,
+                    diagnostic: Self.imageFailureDiagnostic(
+                        wireRecorder, error: typed,
+                        code: dispatched ? nil : typed.code))
             }
         } catch {
-            // Any other failure AFTER the paid request was dispatched is
-            // ambiguous (transport timeout, connection loss, task
-            // cancellation inside the adapter): durable `outcomeUnknown`,
-            // never a definite failure. Only a pre-dispatch failure is
-            // definite — the provider never saw the request.
-            await finishJob(epoch: epoch, jobID: jobID,
-                            code: dispatched ? "outcomeUnknown"
-                                : Self.boundedCode(error),
-                            definite: !dispatched)
+            // Only an explicit transport refusal before task creation proves
+            // that this attempt was not sent. Connection error names alone
+            // cannot rule out acceptance or a failure after a redirect.
+            let definitelyNotDispatched = dispatched
+                && Self.isDefinitePreDispatchTransportFailure(
+                    error, stages: wireRecorder.snapshot())
+            let code: String
+            if !dispatched {
+                code = Self.boundedCode(error)
+            } else if definitelyNotDispatched {
+                code = "requestNotDispatched"
+            } else {
+                code = "outcomeUnknown"
+            }
+            await finishJob(
+                epoch: epoch, jobID: jobID, code: code,
+                definite: !dispatched || definitelyNotDispatched,
+                // The durable `lastError` stays the settlement class above;
+                // the diagnostic records the underlying failure cause
+                // (e.g. `urlError.timedOut`), never an opaque "unknown".
+                diagnostic: Self.imageFailureDiagnostic(
+                    wireRecorder, error: error))
         }
     }
 
@@ -957,9 +1125,18 @@ public final class G09R2AgentGenerationService: @unchecked Sendable {
         do {
             creation = try await store.createJob(
                 job, owner: owner, originRunID: runID,
-                idempotencyKey: idempotencyKey)
+                idempotencyKey: idempotencyKey,
+                blockOnUnresolvedUnknownInRun: true)
         } catch MediaGenerationJobStoreError.idempotencyConflict {
             throw FloeError.validationFailed("idempotencyConflict")
+        } catch MediaGenerationJobStoreError.unresolvedUnknownOutcome(
+            let existingJobID) {
+            guard let existing = try await store.ownedJob(id: existingJobID) else {
+                throw FloeError.validationFailed("unresolvedUnknownOutcome")
+            }
+            return await submissionSummary(
+                owned: existing, deduplicated: true, env: env,
+                blockedByUnresolvedUnknown: existingJobID)
         }
         if !creation.deduplicated {
             guard startWorker(epoch: epoch,
@@ -983,7 +1160,8 @@ public final class G09R2AgentGenerationService: @unchecked Sendable {
             providerName: provider.displayName ?? provider.kind.rawValue,
             remoteModelID: model.remoteModelID,
             deduplicated: creation.deduplicated,
-            estimatedCompletionAt: creation.job.estimatedCompletionAt)
+            estimatedCompletionAt: creation.job.estimatedCompletionAt,
+            lastError: creation.job.lastError)
     }
 
     private func runVideoSubmit(
@@ -997,6 +1175,21 @@ public final class G09R2AgentGenerationService: @unchecked Sendable {
             let store = MediaGenerationJobStore(database: env.database)
             guard let owned = try await store.ownedJob(id: jobID),
                   !owned.job.state.isTerminal else { return }
+            // Second line of the anti-resubmission guard (same contract as
+            // the image worker): a changed-prompt/model/provider submission
+            // inserted just BEFORE an outcome-unknown settlement became
+            // durable must not spend a paid submit call.
+            if let unknown = try await store.unresolvedUnknownJob(
+                owner: owned.owner, originRunID: owned.originRunID,
+                mediaKind: .video, excluding: jobID) {
+                await finishJob(
+                    epoch: epoch, jobID: jobID,
+                    code: "unresolvedUnknownOutcome", definite: true,
+                    diagnostic: G09R2AgentGenerationDiagnostic(
+                        stages: [], failureCode: "unresolvedUnknownOutcome",
+                        relatedJobID: unknown.job.id))
+                return
+            }
             let payload = try decodePayload(owned.job)
             guard let routeUUID = UUID(uuidString: payload.routeID) else {
                 throw G09CreativeError.invalidPayload("corruptPayload")
@@ -1541,7 +1734,8 @@ public final class G09R2AgentGenerationService: @unchecked Sendable {
     /// submission or a delivered artifact.
     private func submissionSummary(
         owned: OwnedMediaGenerationJob, deduplicated: Bool,
-        env: G09R2GenerationEnvironment
+        env: G09R2GenerationEnvironment,
+        blockedByUnresolvedUnknown: UUID? = nil
     ) async -> G09R2AgentSubmissionSummary {
         let payload = try? decodePayload(owned.job)
         let providers = (try? await env.configuration.providers()) ?? []
@@ -1554,7 +1748,9 @@ public final class G09R2AgentGenerationService: @unchecked Sendable {
             providerName: providerName,
             remoteModelID: payload?.remoteModelID ?? "",
             deduplicated: deduplicated,
-            estimatedCompletionAt: owned.job.estimatedCompletionAt)
+            estimatedCompletionAt: owned.job.estimatedCompletionAt,
+            lastError: owned.job.lastError,
+            blockedByUnresolvedUnknown: blockedByUnresolvedUnknown)
     }
 
     /// Registers work on the ONE bounded shared generation worker table. The
@@ -2140,7 +2336,10 @@ public final class G09R2AgentGenerationService: @unchecked Sendable {
         }
     }
 
-    private func finishJob(epoch: UInt64, jobID: UUID, code: String, definite: Bool) async {
+    private func finishJob(
+        epoch: UInt64, jobID: UUID, code: String, definite: Bool,
+        diagnostic: G09R2AgentGenerationDiagnostic? = nil
+    ) async {
         // Runs in the non-cancelled hop: this is the honest terminal
         // settlement for transport/stop failures and is frequently reached
         // from a worker task that already received a local stop — a
@@ -2170,10 +2369,125 @@ public final class G09R2AgentGenerationService: @unchecked Sendable {
             let state: MediaGenerationJobState = definite
                 ? (code == "cancelled" ? .cancelled : .failed)
                 : .expired
+            // The bounded wire/settlement trace is part of the SAME durable
+            // terminal CAS: a failed job always carries its own local,
+            // non-secret evidence of how far the request got. It is excluded
+            // from the request/replay identity, so it can never turn a
+            // replay into a conflict or a paid second submission.
             _ = try await store.transition(id: jobID, to: state) {
                 $0.lastError = code
                 $0.nextPollAt = nil
+                if let diagnostic,
+                   let decoded = try? JSONDecoder().decode(
+                        G09R2AgentGenerationPayload.self, from: $0.requestJSON) {
+                    var current = decoded
+                    current.diagnostics = diagnostic
+                    if let encoded = try? self.encoder().encode(current) {
+                        $0.requestJSON = encoded
+                    }
+                }
             }
+        }
+    }
+
+    /// Bounded failure class for the durable diagnostic. Never contains a
+    /// prompt, key, endpoint or provider body: fixed class names, an HTTP
+    /// status code or a platform error-code identifier only.
+    static func imageFailureCode(for error: Error) -> String {
+        if let remote = error as? RemoteImageError {
+            switch remote {
+            case .unsupportedOperation: return "unsupportedOperation"
+            case .requestFailed: return "requestFailed"
+            case .providerRejected(let statusCode, _): return "http\(statusCode)"
+            case .invalidResponse: return "invalidResponse"
+            }
+        }
+        if error is CancellationError { return "cancelled" }
+        if let transport = error as? IncrementalTransportError {
+            switch transport {
+            case .responseTooLarge: return "transport.responseTooLarge"
+            case .pendingBufferSaturated:
+                return "transport.pendingBufferSaturated"
+            case .sessionNotStreamable:
+                return "transport.sessionNotStreamable"
+            case .noHTTPResponse: return "transport.noHTTPResponse"
+            }
+        }
+        if let code = urlErrorCode(error) {
+            return boundedCodeText("urlError.\(urlErrorCodeName(code))")
+                ?? "urlError.other"
+        }
+        if let typed = error as? G09CreativeError {
+            return boundedCodeText(typed.code) ?? "generationFailed"
+        }
+        return boundedCode(error)
+    }
+
+    /// Distinguishes a DEFINITE pre-dispatch failure (no HTTP request could
+    /// have been accepted, so no paid result can exist) from every ambiguous
+    /// post-dispatch failure. Once the adapter observed any response — or a
+    /// provider-issued image download started, which proves the paid
+    /// generation already returned a URL — nothing is definite: the local
+    /// download/commit failure must stay `outcomeUnknown`, never be reported
+    /// as a non-billed provider failure.
+    static func isDefinitePreDispatchTransportFailure(
+        _ error: Error, stages: [String]
+    ) -> Bool {
+        guard !stages.contains(RemoteImageWirePhase.responseReceived.rawValue),
+              !stages.contains(RemoteImageWirePhase.downloadStarted.rawValue),
+              !stages.contains(RemoteImageWirePhase.downloadCompleted.rawValue),
+              !stages.contains(RemoteImageWirePhase.imagesDecoded.rawValue)
+        else { return false }
+        if let transport = error as? IncrementalTransportError {
+            if case .sessionNotStreamable = transport { return true }
+            return false
+        }
+        // URL error names do not attest that no paid request was sent:
+        // a redirect or a later connection failure can follow acceptance,
+        // and a missing observer is not negative dispatch evidence. Retain
+        // the unknown result unless the transport itself proved refusal
+        // before creating a request task (sessionNotStreamable above).
+        return false
+    }
+
+    /// Provider-typed bound on the failure diagnostic for one image attempt.
+    static func imageFailureDiagnostic(
+        _ recorder: G09R2WirePhaseRecorder,
+        error: Error,
+        code: String? = nil
+    ) -> G09R2AgentGenerationDiagnostic {
+        let stages = recorder.snapshot()
+        let failureCode = code.map { boundedCodeText($0) ?? "generationFailed" }
+            ?? imageFailureCode(for: error)
+        return G09R2AgentGenerationDiagnostic(
+            stages: stages, failureCode: failureCode)
+    }
+
+    /// The platform URL error code, or nil when the error is not a URL
+    /// loading error. Handles both the Swift `URLError` value and a bridged
+    /// `NSError` without exposing any message text.
+    static func urlErrorCode(_ error: Error) -> URLError.Code? {
+        if let urlError = error as? URLError { return urlError.code }
+        let bridged = error as NSError
+        guard bridged.domain == NSURLErrorDomain else { return nil }
+        return URLError.Code(rawValue: bridged.code)
+    }
+
+    private static func urlErrorCodeName(_ code: URLError.Code) -> String {
+        switch code {
+        case .timedOut: return "timedOut"
+        case .cancelled: return "cancelled"
+        case .cannotFindHost: return "cannotFindHost"
+        case .cannotConnectToHost: return "cannotConnectToHost"
+        case .dnsLookupFailed: return "dnsLookupFailed"
+        case .networkConnectionLost: return "networkConnectionLost"
+        case .notConnectedToInternet: return "notConnectedToInternet"
+        case .secureConnectionFailed: return "secureConnectionFailed"
+        case .badURL: return "badURL"
+        case .unsupportedURL: return "unsupportedURL"
+        case .userAuthenticationRequired: return "userAuthenticationRequired"
+        case .resourceUnavailable: return "resourceUnavailable"
+        default: return "other"
         }
     }
 

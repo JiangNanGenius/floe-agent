@@ -9,6 +9,7 @@ import Foundation
 import FoundationNetworking
 #endif
 import FloeCore
+import FloeTransport
 
 // MARK: - Shared plumbing
 
@@ -18,6 +19,53 @@ enum RemoteImageHTTP {
     /// non-streaming request. Provider-side sequential batches routinely take
     /// longer than the generic 60–75 second networking defaults.
     static let nonStreamingRequestTimeout: TimeInterval = 300
+
+    /// Dedicated image-request session. Provider-side generation routinely
+    /// exceeds the generic networking defaults; the explicit bound is set on
+    /// BOTH the session configuration and each request so the effective
+    /// timeout does not depend on which layer FoundationNetworking honors.
+    /// On Linux/Android the session MUST be created through the incremental
+    /// transport factory: `BoundedHTTP.data` refuses a session without the
+    /// real delegate router instead of silently buffering.
+    static let nonStreamingSession: URLSession = {
+        let configuration = URLSessionConfiguration.default
+        configuration.timeoutIntervalForRequest =
+            RemoteImageHTTP.nonStreamingRequestTimeout
+        configuration.timeoutIntervalForResource = 900
+        #if os(Linux) || os(Android)
+        return StreamingTransport.makeSession(configuration: configuration)
+        #else
+        return URLSession(configuration: configuration)
+        #endif
+    }()
+
+    /// Result-image download session. A provider-issued URL is fetched with
+    /// no credential; the caller's redirect policy delegate stays the only
+    /// authority. On Linux/Android this MUST be a `StreamingTransport`
+    /// session because `BoundedHTTP.data` requires the incremental delegate
+    /// router — a directly constructed `URLSession(configuration:delegate:)`
+    /// fails closed with `sessionNotStreamable` even when the provider has
+    /// already returned an image URL. A failed download cannot prove that
+    /// generation or billing did not occur.
+    static func makeImageDownloadSession(
+        policyDelegate: (any URLSessionTaskDelegate)? = nil
+    ) -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = nonStreamingRequestTimeout
+        configuration.timeoutIntervalForResource = 900
+        configuration.urlCache = nil
+        configuration.httpShouldSetCookies = false
+        configuration.httpCookieStorage = nil
+        configuration.urlCredentialStorage = nil
+        #if os(Linux) || os(Android)
+        return StreamingTransport.makeSession(
+            configuration: configuration, policyDelegate: policyDelegate)
+        #else
+        return URLSession(
+            configuration: configuration, delegate: policyDelegate,
+            delegateQueue: nil)
+        #endif
+    }
 
     static func post(
         url: URL,
@@ -82,11 +130,18 @@ private enum RemoteImageOutputObservationPolicy {
 enum RemoteImageDecoder {
     private static let maximumImageBytes = 12 * 1_024 * 1_024
 
+    /// The one provider-issued image download. Injectable so the URL branch
+    /// is testable without a socket; production always uses the bounded
+    /// streaming session factory below.
+    typealias ImageDownloader = @Sendable (URLRequest) async throws -> (Data, URLResponse)
+
     static func images(
         from data: Data,
         b64Key: String,
         urlKey: String,
-        requestedCount: Int
+        requestedCount: Int,
+        observer: (@Sendable (RemoteImageWirePhase) -> Void)? = nil,
+        downloader: ImageDownloader? = nil
     ) async throws -> [Data] {
         let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         let items = object?["data"] as? [[String: Any]] ?? []
@@ -104,24 +159,34 @@ enum RemoteImageDecoder {
                 guard isAllowedRemoteImageURL(url) else {
                     throw RemoteImageError.invalidResponse("Provider returned an unsafe image URL")
                 }
-                let request = URLRequest(url: url)
-                let delegate = SafeImageRedirectDelegate()
-                let session = URLSession(configuration: .ephemeral, delegate: delegate, delegateQueue: nil)
-                defer { session.invalidateAndCancel() }
-                let (imageData, response) = try await BoundedHTTP.data(
-                    for: request,
-                    session: session,
-                    maxBytes: maximumImageBytes
-                )
+                var request = URLRequest(url: url)
+                request.timeoutInterval = RemoteImageHTTP.nonStreamingRequestTimeout
+                observer?(.downloadStarted)
+                let (imageData, response): (Data, URLResponse)
+                if let downloader {
+                    (imageData, response) = try await downloader(request)
+                } else {
+                    let delegate = SafeImageRedirectDelegate()
+                    let session = RemoteImageHTTP.makeImageDownloadSession(
+                        policyDelegate: delegate)
+                    defer { session.invalidateAndCancel() }
+                    (imageData, response) = try await BoundedHTTP.data(
+                        for: request,
+                        session: session,
+                        maxBytes: maximumImageBytes
+                    )
+                }
                 guard let http = response as? HTTPURLResponse,
                       (200..<300).contains(http.statusCode),
                       http.mimeType?.lowercased().hasPrefix("image/") == true else {
                     throw RemoteImageError.invalidResponse("Image download returned a non-image response")
                 }
+                observer?(.downloadCompleted)
                 images.append(imageData)
             }
             if images.count == observationLimit { break }
         }
+        if !images.isEmpty { observer?(.imagesDecoded) }
         return images
     }
 
@@ -204,7 +269,7 @@ enum ImageWireFormat {
 public struct OpenAIImageAdapter: ImageProviderAdapter {
     private let session: URLSession
 
-    public init() { session = .shared }
+    public init() { session = RemoteImageHTTP.nonStreamingSession }
 
     init(session: URLSession) { self.session = session }
 
@@ -280,11 +345,13 @@ public struct OpenAIImageAdapter: ImageProviderAdapter {
             url: url, apiKey: credentials.apiKey, authHeader: "Authorization",
             extraHeaders: provider.nonSecretHeaders, body: body
         )
+        request.wirePhaseObserver?(.requestStarted)
         let (data, response) = try await BoundedHTTP.data(
             for: urlRequest,
             session: session,
             maxBytes: 32 * 1_024 * 1_024
         )
+        request.wirePhaseObserver?(.responseReceived)
         try RemoteImageHTTP.validate(
             response,
             data: data,
@@ -295,7 +362,8 @@ public struct OpenAIImageAdapter: ImageProviderAdapter {
             from: data,
             b64Key: "b64_json",
             urlKey: "url",
-            requestedCount: request.count
+            requestedCount: request.count,
+            observer: request.wirePhaseObserver
         )
         return RemoteImageResult(images: images)
     }
@@ -360,17 +428,20 @@ public struct OpenAIImageAdapter: ImageProviderAdapter {
         }
         for (name, value) in provider.nonSecretHeaders { urlRequest.setValue(value, forHTTPHeaderField: name) }
         urlRequest.httpBody = body
+        request.wirePhaseObserver?(.requestStarted)
         let (data, response) = try await BoundedHTTP.data(
             for: urlRequest,
             session: session,
             maxBytes: 32 * 1_024 * 1_024
         )
+        request.wirePhaseObserver?(.responseReceived)
         try RemoteImageHTTP.validate(response, data: data, provider: "OpenAI", apiKey: credentials.apiKey, allowRouteFallback: true)
         return RemoteImageResult(images: try await RemoteImageDecoder.images(
             from: data,
             b64Key: "b64_json",
             urlKey: "url",
-            requestedCount: request.count
+            requestedCount: request.count,
+            observer: request.wirePhaseObserver
         ))
     }
 }
@@ -386,7 +457,7 @@ public struct GoogleGeminiImageAdapter: ImageProviderAdapter {
     private static let maximumImageBytes = 12 * 1_024 * 1_024
     private static let maximumRequestBytes = 48 * 1_024 * 1_024
 
-    public init() { session = .shared }
+    public init() { session = RemoteImageHTTP.nonStreamingSession }
 
     init(session: URLSession) { self.session = session }
 
@@ -468,11 +539,13 @@ public struct GoogleGeminiImageAdapter: ImageProviderAdapter {
             body: body
         )
         urlRequest.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
+        request.wirePhaseObserver?(.requestStarted)
         let (data, response) = try await BoundedHTTP.data(
             for: urlRequest,
             session: session,
             maxBytes: 48 * 1_024 * 1_024
         )
+        request.wirePhaseObserver?(.responseReceived)
         try RemoteImageHTTP.validate(
             response,
             data: data,
@@ -488,6 +561,7 @@ public struct GoogleGeminiImageAdapter: ImageProviderAdapter {
         guard !decoded.images.isEmpty else {
             throw RemoteImageError.invalidResponse("Google Gemini returned no image parts")
         }
+        request.wirePhaseObserver?(.imagesDecoded)
         return RemoteImageResult(
             images: decoded.images,
             revisedPrompt: decoded.text.isEmpty ? nil : decoded.text,
@@ -595,7 +669,7 @@ public struct VolcengineImageAdapter: ImageProviderAdapter {
     private let session: URLSession
 
     public init() {
-        session = .shared
+        session = RemoteImageHTTP.nonStreamingSession
     }
 
     init(session: URLSession) {
@@ -678,11 +752,13 @@ public struct VolcengineImageAdapter: ImageProviderAdapter {
             extraHeaders: provider.nonSecretHeaders,
             body: body
         )
+        request.wirePhaseObserver?(.requestStarted)
         let (data, response) = try await BoundedHTTP.data(
             for: urlRequest,
             session: session,
             maxBytes: 48 * 1_024 * 1_024
         )
+        request.wirePhaseObserver?(.responseReceived)
         try RemoteImageHTTP.validate(
             response, data: data, provider: "Volcengine Ark", apiKey: credentials.apiKey, allowRouteFallback: true
         )
@@ -690,7 +766,8 @@ public struct VolcengineImageAdapter: ImageProviderAdapter {
             from: data,
             b64Key: "b64_json",
             urlKey: "url",
-            requestedCount: request.count
+            requestedCount: request.count,
+            observer: request.wirePhaseObserver
         )
         guard !output.isEmpty else {
             throw RemoteImageError.invalidResponse("Volcengine returned no images")
@@ -712,7 +789,7 @@ public struct AlibabaImageAdapter: ImageProviderAdapter {
     private let session: URLSession
 
     public init() {
-        session = .shared
+        session = RemoteImageHTTP.nonStreamingSession
     }
 
     init(session: URLSession) {
@@ -798,7 +875,8 @@ public struct AlibabaImageAdapter: ImageProviderAdapter {
             let images = try await downloadImages(
                 imageURLs,
                 providerHost: root.host,
-                requestedCount: request.count
+                requestedCount: request.count,
+                observer: request.wirePhaseObserver
             )
             guard !images.isEmpty else {
                 throw RemoteImageError.invalidResponse("DashScope returned no images")
@@ -857,11 +935,13 @@ public struct AlibabaImageAdapter: ImageProviderAdapter {
             extraHeaders: provider.nonSecretHeaders,
             body: body
         )
+        request.wirePhaseObserver?(.requestStarted)
         let (data, response) = try await BoundedHTTP.data(
             for: urlRequest,
             session: session,
             maxBytes: 32 * 1_024 * 1_024
         )
+        request.wirePhaseObserver?(.responseReceived)
         try RemoteImageHTTP.validate(
             response, data: data, provider: "DashScope", apiKey: credentials.apiKey, allowRouteFallback: true
         )
@@ -869,7 +949,8 @@ public struct AlibabaImageAdapter: ImageProviderAdapter {
             from: data,
             b64Key: "b64_json",
             urlKey: "url",
-            requestedCount: request.count
+            requestedCount: request.count,
+            observer: request.wirePhaseObserver
         )
         guard !images.isEmpty else {
             throw RemoteImageError.invalidResponse("DashScope returned no images")
@@ -945,11 +1026,13 @@ public struct AlibabaImageAdapter: ImageProviderAdapter {
             extraHeaders: provider.nonSecretHeaders,
             body: body
         )
+        request.wirePhaseObserver?(.requestStarted)
         let (data, response) = try await BoundedHTTP.data(
             for: urlRequest,
             session: session,
             maxBytes: 2 * 1_024 * 1_024
         )
+        request.wirePhaseObserver?(.responseReceived)
         try RemoteImageHTTP.validate(
             response, data: data, provider: "DashScope", apiKey: credentials.apiKey, allowRouteFallback: true
         )
@@ -957,7 +1040,8 @@ public struct AlibabaImageAdapter: ImageProviderAdapter {
         let images = try await downloadImages(
             urls,
             providerHost: root.host,
-            requestedCount: request.count
+            requestedCount: request.count,
+            observer: request.wirePhaseObserver
         )
         guard !images.isEmpty else {
             throw RemoteImageError.invalidResponse("DashScope returned no images")
@@ -1035,7 +1119,8 @@ public struct AlibabaImageAdapter: ImageProviderAdapter {
                 url: apiRoot.appendingPathComponent("image-generation").appendingPathComponent("generation"),
                 body: body,
                 provider: provider,
-                credentials: credentials
+                credentials: credentials,
+                observer: request.wirePhaseObserver
             )
         }
 
@@ -1061,7 +1146,8 @@ public struct AlibabaImageAdapter: ImageProviderAdapter {
             url: apiRoot.appendingPathComponent("text2image").appendingPathComponent("image-synthesis"),
             body: body,
             provider: provider,
-            credentials: credentials
+            credentials: credentials,
+            observer: request.wirePhaseObserver
         )
     }
 
@@ -1069,7 +1155,8 @@ public struct AlibabaImageAdapter: ImageProviderAdapter {
         url: URL,
         body: some Encodable,
         provider: ProviderProfile,
-        credentials: ProviderCredentials
+        credentials: ProviderCredentials,
+        observer: (@Sendable (RemoteImageWirePhase) -> Void)? = nil
     ) async throws -> String {
         let urlRequest = try RemoteImageHTTP.post(
             url: url,
@@ -1080,11 +1167,13 @@ public struct AlibabaImageAdapter: ImageProviderAdapter {
             ),
             body: body
         )
+        observer?(.requestStarted)
         let (data, response) = try await BoundedHTTP.data(
             for: urlRequest,
             session: session,
             maxBytes: 1_048_576
         )
+        observer?(.responseReceived)
         try RemoteImageHTTP.validate(
             response, data: data, provider: "DashScope", apiKey: credentials.apiKey, allowRouteFallback: true
         )
@@ -1149,7 +1238,8 @@ public struct AlibabaImageAdapter: ImageProviderAdapter {
     private func downloadImages(
         _ urls: [URL],
         providerHost: String?,
-        requestedCount: Int
+        requestedCount: Int,
+        observer: (@Sendable (RemoteImageWirePhase) -> Void)? = nil
     ) async throws -> [Data] {
         var images: [Data] = []
         let observationLimit = RemoteImageOutputObservationPolicy.limit(
@@ -1160,23 +1250,30 @@ public struct AlibabaImageAdapter: ImageProviderAdapter {
             guard Self.isAllowedResultURL(url, providerHost: providerHost) else {
                 throw RemoteImageError.invalidResponse("DashScope returned an unsafe image URL")
             }
+            observer?(.downloadStarted)
             let request = URLRequest(url: url)
             let delegate = SafeImageRedirectDelegate(
                 allowedHosts: Set([providerHost].compactMap { $0 }),
                 allowedDomainSuffixes: ["aliyuncs.com"]
             )
-            let session = URLSession(configuration: .ephemeral, delegate: delegate, delegateQueue: nil)
+            let session = RemoteImageHTTP.makeImageDownloadSession(
+                policyDelegate: delegate)
             defer { session.invalidateAndCancel() }
+            var downloadRequest = request
+            downloadRequest.timeoutInterval = RemoteImageHTTP.nonStreamingRequestTimeout
             let (imageData, response) = try await BoundedHTTP.data(
-                for: request, session: session, maxBytes: Self.maximumImageBytes
+                for: downloadRequest, session: session,
+                maxBytes: Self.maximumImageBytes
             )
             guard let http = response as? HTTPURLResponse,
                   (200..<300).contains(http.statusCode),
                   http.mimeType?.lowercased().hasPrefix("image/") == true else {
                 throw RemoteImageError.invalidResponse("DashScope image download returned a non-image response")
             }
+            observer?(.downloadCompleted)
             images.append(imageData)
         }
+        if !images.isEmpty { observer?(.imagesDecoded) }
         return images
     }
 

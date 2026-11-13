@@ -106,6 +106,9 @@ public actor BrowserTaskSession {
         /// Last trusted platform facts (renderer getter values mirrored into
         /// Swift state; used for snapshot assembly and origin checks).
         public var surface: BrowserRendererTabState
+        // A platform error can be followed by loadFinished for its error page.
+        // Keep that fact per tab until a genuinely new navigation starts.
+        var navigationFailure: BrowserFailure?
 
         init(id: UUID, documentID: String) {
             self.id = id
@@ -115,6 +118,7 @@ public actor BrowserTaskSession {
             self.events = []
             self.visualFallbackEvidence = nil
             self.surface = BrowserRendererTabState()
+            self.navigationFailure = nil
         }
     }
 
@@ -263,10 +267,17 @@ public actor BrowserTaskSession {
         }
         guard let activeTabID else { return }
         do {
+            if let index = tabs.firstIndex(where: { $0.id == activeTabID }) {
+                tabs[index].navigationFailure = nil
+            }
             try await renderer.navigate(tabID: activeTabID, url: url)
             // Accepted navigation: clear a stale blocked/failure banner so
             // the lifecycle pump owns the state from loadStarted onward.
-            if case .failed = surfaceState { surfaceState = .loading }
+            if self.activeTabID == activeTabID,
+               let tab = tabs.first(where: { $0.id == activeTabID }),
+               tab.navigationFailure == nil, case .failed = surfaceState {
+                surfaceState = .loading
+            }
         } catch let error as BrowserRendererError {
             switch error {
             case .released, .unavailable:
@@ -396,6 +407,7 @@ public actor BrowserTaskSession {
         switch event {
         case .loadStarted(let tabID):
             guard let index = tabs.firstIndex(where: { $0.id == tabID }) else { return }
+            tabs[index].navigationFailure = nil
             tabs[index].surface.isLoading = true
             appendEvent(tabID: tabID, method: "Page.frameStartedLoading")
             surfaceState = .loading
@@ -412,18 +424,34 @@ public actor BrowserTaskSession {
             tabs[index].surface.url = url
             tabs[index].surface.title = title
             tabs[index].surface.isLoading = false
-            appendEvent(tabID: tabs[index].id, method: "Page.loadEventFired")
+            if tabs[index].navigationFailure == nil {
+                appendEvent(tabID: tabs[index].id, method: "Page.loadEventFired")
+            } else {
+                appendEvent(tabID: tabs[index].id, method: "Page.frameStoppedLoading", detail: "loadFailed")
+            }
             if tabs[index].id == activeTabID { refreshVisibleAddress() }
-            surfaceState = isUserControlling ? .needsUser("User takeover is active") : .ready
+            if tabs[index].id == activeTabID {
+                if let failure = tabs[index].navigationFailure {
+                    surfaceState = .failed(failure.message)
+                } else {
+                    surfaceState = isUserControlling ? .needsUser("User takeover is active") : .ready
+                }
+            }
         case .loadFailed(let tabID, let errorDomain, let errorCode, let errorDescription):
             guard let index = tabs.firstIndex(where: { $0.id == tabID }) else { return }
             tabs[index].surface.isLoading = false
+            tabs[index].navigationFailure = BrowserFailure(
+                code: "navigation-load-failed",
+                message: "\(errorDescription.prefix(512)) (\(errorDomain.prefix(64)):\(errorCode))"
+            )
             appendEvent(
                 tabID: tabs[index].id,
                 method: "Network.loadingFailed",
                 detail: "\(errorDomain):\(errorCode)"
             )
-            surfaceState = .failed("\(errorDescription) (\(errorCode))")
+            if tabs[index].id == activeTabID {
+                surfaceState = .failed("\(errorDescription) (\(errorCode))")
+            }
         }
     }
 
@@ -551,6 +579,9 @@ public actor BrowserTaskSession {
             switch command.action {
             case .navigate(let value):
                 let url = try policy.validate(value, conversationID: conversationID)
+                if let index = tabs.firstIndex(where: { $0.id == tabID }) {
+                    tabs[index].navigationFailure = nil
+                }
                 try await rendererCall(cancellation) { renderer in
                     try await renderer.navigate(tabID: tabID, url: url)
                 }
@@ -942,6 +973,10 @@ public actor BrowserTaskSession {
                 nextCursor: probe.nextCursor,
                 screenshotArtifact: nil
             )
+            if let failure = tab.navigationFailure, !surface.isLoading {
+                return BrowserResult(requestID: command.requestID, status: .failed,
+                                     page: snapshot, message: failure.message, error: failure)
+            }
             return BrowserResult(requestID: command.requestID, status: .ok, page: snapshot)
         } catch BrowserProbeError.timedOut {
             return failure(command, status: .timeout, code: "timeout", "Browser page observation timed out")

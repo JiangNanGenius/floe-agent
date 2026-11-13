@@ -19,6 +19,25 @@ public enum RemoteImageOperation: String, Sendable, Codable, CaseIterable, Hasha
     case removeBackground
 }
 
+/// Non-secret wire milestones reported by a concrete image adapter while it
+/// performs one request. Used only for the durable bounded failure
+/// diagnostic: it distinguishes "the provider call was never started", "the
+/// provider answered but no image arrived" and "the provider image URL was
+/// being downloaded". Phase names never carry prompts, keys, endpoints or
+/// provider bodies.
+public enum RemoteImageWirePhase: String, Sendable, Equatable, CaseIterable {
+    /// The adapter is about to hand the request to the HTTP transport.
+    case requestStarted
+    /// The provider HTTP response body was received (any status).
+    case responseReceived
+    /// The response decoded into at least one image (base64 or URL).
+    case imagesDecoded
+    /// A provider-issued image URL download started.
+    case downloadStarted
+    /// A provider-issued image download produced bytes.
+    case downloadCompleted
+}
+
 /// A request to run a remote image operation. Source images are supplied as
 /// data already loaded by the caller (never as security-scoped URLs, which
 /// the provider cannot reach). The optional mask applies to inpaint/edit.
@@ -38,6 +57,10 @@ public struct RemoteImageRequest: Sendable {
     /// The exact configured provider model/endpoint ID. Adapters must not
     /// silently replace a user-selected auxiliary model.
     public var modelRemoteID: String?
+    /// Optional observer for bounded, non-secret wire milestones. The
+    /// generation worker records them only when a job fails, so the next
+    /// focused run can distinguish dispatch/response/download/commit stages.
+    public var wirePhaseObserver: (@Sendable (RemoteImageWirePhase) -> Void)?
 
     public init(
         operation: RemoteImageOperation,
@@ -47,7 +70,8 @@ public struct RemoteImageRequest: Sendable {
         sizeHint: String? = nil,
         selection: ImageGenerationSelection? = nil,
         count: Int = 1,
-        modelRemoteID: String? = nil
+        modelRemoteID: String? = nil,
+        wirePhaseObserver: (@Sendable (RemoteImageWirePhase) -> Void)? = nil
     ) {
         self.operation = operation
         self.prompt = prompt
@@ -57,6 +81,7 @@ public struct RemoteImageRequest: Sendable {
         self.selection = selection ?? ImageGenerationSelection(nativeSizeOverride: sizeHint)
         self.count = count
         self.modelRemoteID = modelRemoteID
+        self.wirePhaseObserver = wirePhaseObserver
     }
 }
 

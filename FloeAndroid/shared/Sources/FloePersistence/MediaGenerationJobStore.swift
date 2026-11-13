@@ -12,6 +12,11 @@ public enum MediaGenerationJobStoreError: Error, Sendable, Equatable {
     /// for a DIFFERENT request. Refuse instead of silently attaching wrong
     /// data or inserting a second paying job.
     case idempotencyConflict(String)
+    /// The SAME trusted owner + run already has a paid
+    /// generation whose outcome is unknown. The new intent (even with a
+    /// changed prompt/model/provider/tool call id) must not become a second
+    /// paid replacement. The existing unknown row is preserved.
+    case unresolvedUnknownOutcome(existingJobID: UUID)
 }
 
 /// The outcome of `createJob`: either a newly inserted durable job or the
@@ -88,11 +93,20 @@ public actor MediaGenerationJobStore {
     /// Canvas/document jobs (and key-less legacy callers) keep the original
     /// active-only dedupe semantics exactly: terminal rows never match, so an
     /// explicit UI retry is not merged into an old record.
+    ///
+    /// Conversation agent submissions additionally pass
+    /// `blockOnUnresolvedUnknownInRun: true`. After exact-identity replay
+    /// (same operation key / same active request) has been checked, the same
+    /// trusted owner + origin run must not pay for a replacement while a
+    /// job from that run has an unknown paid outcome. The lookup
+    /// and the insert share THIS write transaction, so two changed-prompt
+    /// retries racing after an unknown settlement cannot both slip through.
     public func createJob(
         _ job: MediaGenerationJob,
         owner: MediaJobOwner,
         originRunID: UUID? = nil,
-        idempotencyKey: String? = nil
+        idempotencyKey: String? = nil,
+        blockOnUnresolvedUnknownInRun: Bool = false
     ) async throws -> MediaJobCreation {
         try await database.writer { db in
             if owner.kind == .conversation, let idempotencyKey,
@@ -113,6 +127,14 @@ public actor MediaGenerationJobStore {
                 requestJSON: job.requestJSON, idempotencyKey: idempotencyKey
             ) {
                 return MediaJobCreation(owned: existing, deduplicated: true)
+            }
+            if blockOnUnresolvedUnknownInRun, owner.kind == .conversation,
+               let originRunID,
+               let unknown = try Self.findUnresolvedUnknown(
+                    db, owner: owner, originRunID: originRunID,
+                    mediaKind: job.mediaKind) {
+                throw MediaGenerationJobStoreError.unresolvedUnknownOutcome(
+                    existingJobID: unknown.job.id)
             }
             let stored = try Self.insert(
                 db, job: job, owner: owner,
@@ -345,6 +367,27 @@ public actor MediaGenerationJobStore {
         }
     }
 
+    /// The paid submission from one trusted owner + origin run
+    /// whose outcome is unknown. The generation worker re-checks this before
+    /// its first provider call so a changed-prompt job inserted while the
+    /// unknown settlement was racing cannot still dispatch a paid retry.
+    /// Scoped to conversation ownership, the runtime-issued origin run and
+    /// the media kind; prompt/model/provider/tool-call identity are
+    /// deliberately absent so none of them can bypass the guard.
+    public func unresolvedUnknownJob(
+        owner: MediaJobOwner,
+        originRunID: UUID?,
+        mediaKind: MediaKind,
+        excluding jobID: UUID? = nil
+    ) async throws -> OwnedMediaGenerationJob? {
+        guard owner.kind == .conversation, let originRunID else { return nil }
+        return try await database.reader { db in
+            try Self.findUnresolvedUnknown(
+                db, owner: owner, originRunID: originRunID,
+                mediaKind: mediaKind, excluding: jobID)
+        }
+    }
+
     /// The newest row for one exact submitting-operation identity, in ANY
     /// state (including terminal). Used by the conversation-owned replay path.
     private static func findByKey(
@@ -384,13 +427,40 @@ public actor MediaGenerationJobStore {
         }
         for key in [
             "producerReceipt", "artifacts", "workspaceRelativePath",
-            "deliveredByteCount", "deliveredSHA256",
+            "deliveredByteCount", "deliveredSHA256", "diagnostics",
             "targetWorkspaceID", "targetWorkspaceRootPath",
         ] {
             object.removeValue(forKey: key)
         }
         return try? JSONSerialization.data(
             withJSONObject: object, options: [.sortedKeys])
+    }
+
+    /// One unresolved unknown paid submission for the trusted identity
+    /// `(conversation owner, origin run, media kind)`. A provider handle
+    /// permits querying the original request; it does not prove its outcome
+    /// or authorize a replacement. `ready` is excluded defensively.
+    private static func findUnresolvedUnknown(
+        _ db: Database,
+        owner: MediaJobOwner,
+        originRunID: UUID,
+        mediaKind: MediaKind,
+        excluding jobID: UUID? = nil
+    ) throws -> OwnedMediaGenerationJob? {
+        let row = try Row.fetchOne(db, sql: """
+            SELECT * FROM media_generation_jobs
+            WHERE owner_kind = ? AND owner_id = ? AND origin_run_id = ?
+              AND media_kind = ?
+              AND last_error = 'outcomeUnknown'
+              AND state != 'ready'
+              AND (? IS NULL OR id != ?)
+            ORDER BY created_at DESC
+            LIMIT 1
+            """, arguments: [
+                owner.kind.rawValue, owner.id.uuidString, originRunID.uuidString,
+                mediaKind.rawValue, jobID?.uuidString, jobID?.uuidString,
+            ])
+        return try row.map { try decodeOwned($0, decoder: JSONDecoder()) }
     }
 
     private static func findActive(
