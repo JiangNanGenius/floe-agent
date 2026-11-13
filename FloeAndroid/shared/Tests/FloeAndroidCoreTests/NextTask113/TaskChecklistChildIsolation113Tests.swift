@@ -18,7 +18,7 @@ import Foundation
 import GRDB
 import FloeCore
 import FloeModels
-import FloePersistence
+@testable import FloePersistence
 import FloeTools
 import FloeAgentRuntime
 @testable import FloeAndroidCore
