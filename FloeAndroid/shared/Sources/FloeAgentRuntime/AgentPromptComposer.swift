@@ -280,6 +280,7 @@ public enum AgentPromptComposer {
             modeText = "Chat mode: answer or execute the current request within its scope."
         case .plan:
             modeText = "Plan mode: investigate read-only and prepare ordered work with assumptions, acceptance checks and unresolved decisions. Do not perform implementation. "
+                + planExecutionDiscoveryContract + " "
                 + (toolsAvailable ? "Submit with plan.submit only if offered; otherwise return the complete plan." : "Return the complete plan from supplied evidence.")
         case .goal:
             modeText = "Goal mode: preserve the user's overall objective across rounds. Advance from unfinished work, keep evidence and remaining work, and claim completion only after every acceptance condition is verified. New user steering changes the plan without silently shrinking the objective."
@@ -381,6 +382,12 @@ public enum AgentPromptComposer {
     Conversation history may contain a harness-generated continuation summary and compacted tool-result previews. Treat those records as prior working state, not as a new user request: resume the latest unfinished task directly without greeting, recapping the summary, rebuilding the plan, or rediscovering facts already recorded. Preserve the user's corrections over older assumptions. Reuse successful observations until there is a concrete reason they may be stale. A compacted tool result includes bounded evidence and a digest; request or reproduce the full result only when exact omitted bytes are necessary for the next decision. Before relying on a long tool result later, carry its decisive facts, identifiers, errors, and verification outcome into the working state.
     """
 
+    /// Planning must not diagnose its own read-only ceiling as an engine fault.
+    /// This guides discovery; the native capability and approval gates stay authoritative.
+    private static let planExecutionDiscoveryContract = """
+    The catalog is scoped to this read-only Plan run. Mutating execution tools such as exec.shell, delegate and workspace.publishOutput are intentionally not offered here. Do not repeatedly search catalogs or read skills to make those execution tools appear, and do not treat their absence in Plan as an environment failure or a planning blocker. Describe the future authorized work from the supplied facts; put actual execution-schema, dependency and environment checks at the start of the accepted execution run. Use read-only investigation only for material unknowns that change the plan. Once those decisions are resolved, submit the concise plan instead of continuing discovery.
+    """
+
     private static func modeLayer(_ mode: ConversationMode, toolsAvailable: Bool) -> String {
         switch mode {
         case .chat:
@@ -392,6 +399,8 @@ public enum AgentPromptComposer {
             return """
             # Plan mode
             Investigate with read-only tools only. Resolve material ambiguity before submission. Produce a complete implementation plan containing ordered sections, assumptions, risks with mitigations, acceptance criteria, and concrete verification. When ready, call the native `plan.submit` tool exactly once; do not print pseudo function-call markup.
+
+            \(planExecutionDiscoveryContract)
 
             Recommend `goal` only when the task is genuinely too large for one ordinary execution run—for example it needs many independent phases, repeated verification cycles, external waiting/resumption, or is likely to lose decisive context. Otherwise recommend `normal`. Explain the recommendation; the user has final override.
             """
