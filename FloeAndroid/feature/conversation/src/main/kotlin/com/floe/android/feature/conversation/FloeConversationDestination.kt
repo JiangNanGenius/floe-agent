@@ -129,7 +129,9 @@ fun FloeConversationDestination(
             // important-files strip, divider, timeline, compaction, error
             // banner, continuation bar, composer.
             state.checklist?.let { ThreadChecklistSection(holder) }
-            if (state.plan != null || state.goal != null) ThreadIntelligenceSection(holder)
+            if (state.plan != null || state.goal != null ||
+                state.planAvailabilityRaw == "trimmed" || state.goalAvailabilityRaw == "trimmed"
+            ) ThreadIntelligenceSection(holder)
             FloeDivider()
             if (state.importantFiles.isNotEmpty()) {
                 ImportantFilesStrip(

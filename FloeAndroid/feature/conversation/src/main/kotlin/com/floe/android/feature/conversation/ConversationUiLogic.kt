@@ -667,7 +667,9 @@ object PlanPresentationRules {
             // Chat/Goal choices (including fail-closed Chat) remain untouched.
             if (mode == AgentExecutionModeUi.PLAN) mode = AgentExecutionModeUi.AGENT
         }
-        val modeChanged = mode != currentMode
+        // Restoring a saved choice updates RAM; only a new presentation's
+        // change from that restored choice needs another durable write.
+        val modeChanged = mode != restored
         val ackChanged = acknowledge != null && acknowledge != lastPresentedPlanRevision
         return Decision(
             mode = mode,

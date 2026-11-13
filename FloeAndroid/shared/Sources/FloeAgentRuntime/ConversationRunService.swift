@@ -1452,6 +1452,17 @@ public actor ConversationRunService {
                     completionCritical: false
                 )
             }
+            // The durable terminal is observed independently of the live
+            // stream. Commit the plan/goal result first, so that its very
+            // first terminal-driven reload can already read the result.
+            if conversationMode == .plan {
+                let planText = streamedText.isEmpty && verificationDraftPersisted
+                    ? lastCompletedAssistantStepText
+                    : streamedText
+                await persistPlanDraft(from: planText)
+            } else if conversationMode == .goal {
+                await moveGoalToVerification()
+            }
             if durabilityFailure == nil {
                 let terminalPersisted = await appendEventReliably(
                     runID: runID, kind: .terminal,
@@ -1463,14 +1474,6 @@ public actor ConversationRunService {
                     logger.info("terminalPersisted run=\(runID.uuidString) stopReason=\(completion.stopReason.rawValue)")
                     providerCompletionBoundaryReached = true
                 }
-            }
-            if conversationMode == .plan {
-                let planText = streamedText.isEmpty && verificationDraftPersisted
-                    ? lastCompletedAssistantStepText
-                    : streamedText
-                await persistPlanDraft(from: planText)
-            } else if conversationMode == .goal {
-                await moveGoalToVerification()
             }
             providerCompletionBoundaryReached = false
         }

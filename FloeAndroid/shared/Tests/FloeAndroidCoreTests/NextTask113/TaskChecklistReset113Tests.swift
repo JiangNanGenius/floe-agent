@@ -7,7 +7,7 @@ import XCTest
 import Foundation
 import FloeCore
 import FloeModels
-import FloePersistence
+@testable import FloePersistence
 import FloeTools
 import FloeAgentRuntime
 @testable import FloeAndroidCore
@@ -21,10 +21,13 @@ final class TaskChecklistReset113Tests: XCTestCase {
 
     override func setUp() async throws {
         database = try DatabaseManager.inMemory()
+        try await database.migrate()
         conversationID = UUID()
         runA = UUID()
         runB = UUID()
         let conversation = conversationID.uuidString
+        let firstRunID = runA.uuidString
+        let secondRunID = runB.uuidString
         let now = PersistenceCodec.encode(Date(timeIntervalSince1970: 1_760_000_000))
         try await database.writer { db in
             try db.execute(sql: """
@@ -34,12 +37,12 @@ final class TaskChecklistReset113Tests: XCTestCase {
             try db.execute(sql: """
                 INSERT INTO runs (id, conversation_id, state, goal, started_at, conversation_mode)
                 VALUES (?, ?, 'streamingModel', 'work', ?, 'chat')
-                """, arguments: [runA.uuidString, conversation,
+                """, arguments: [firstRunID, conversation,
                                  PersistenceCodec.encode(Date(timeIntervalSince1970: 1_760_000_100))])
             try db.execute(sql: """
                 INSERT INTO runs (id, conversation_id, state, goal, started_at, conversation_mode)
                 VALUES (?, ?, 'preparing', 'work', ?, 'chat')
-                """, arguments: [runB.uuidString, conversation,
+                """, arguments: [secondRunID, conversation,
                                  PersistenceCodec.encode(Date(timeIntervalSince1970: 1_760_000_200))])
         }
         store = TaskChecklistStore(database: database)
@@ -93,17 +96,18 @@ final class TaskChecklistReset113Tests: XCTestCase {
         let hiddenForRun = try await store.latest(runID: runB)
         XCTAssertNil(hiddenForRun)
         // The prior revision is preserved as history, not overwritten.
+        let conversation = conversationID.uuidString
         let revisions = try await database.reader { db in
             try Int.fetchAll(db, sql: """
                 SELECT revision FROM task_checklist_revisions
                 WHERE conversation_id = ? ORDER BY revision
-                """, arguments: [conversationID.uuidString])
+                """, arguments: [conversation])
         }
         XCTAssertEqual(revisions, [1, 2])
         // Reset creates no Goal (progress is never authorization).
         let goals = try await database.reader { db in
             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM conversation_goals WHERE conversation_id = ?",
-                             arguments: [conversationID.uuidString]) ?? -1
+                             arguments: [conversation]) ?? -1
         }
         XCTAssertEqual(goals, 0)
     }
@@ -160,12 +164,13 @@ final class TaskChecklistReset113Tests: XCTestCase {
     }
 
     func testResetRequiresCurrentExecutingMainRun() async throws {
+        let firstRunID = runA.uuidString
         _ = try await update("Release", steps: [
             .init(id: "one", title: "first", status: .inProgress),
         ], runID: runA)
         try await database.writer { db in
             try db.execute(sql: "UPDATE runs SET ended_at = ? WHERE id = ?",
-                arguments: [PersistenceCodec.encode(Date()), runA.uuidString])
+                arguments: [PersistenceCodec.encode(Date()), firstRunID])
         }
         let tool = TaskResetPlanTool(store: store)
         do {
@@ -178,7 +183,7 @@ final class TaskChecklistReset113Tests: XCTestCase {
         // The newest still-open run is B; resetting A is superseded.
         try await database.writer { db in
             try db.execute(sql: "UPDATE runs SET ended_at = NULL WHERE id = ?",
-                arguments: [runA.uuidString])
+                arguments: [firstRunID])
         }
         do {
             _ = try await tool.execute(.init(expectedRevision: 1),
@@ -190,6 +195,7 @@ final class TaskChecklistReset113Tests: XCTestCase {
     }
 
     func testResetRefusesTemporaryReadOnlyChildAndForgedOrigins() async throws {
+        let secondRunID = runB.uuidString
         _ = try await update("Release", steps: [
             .init(id: "one", title: "first", status: .inProgress),
         ], runID: runB)
@@ -222,7 +228,7 @@ final class TaskChecklistReset113Tests: XCTestCase {
         // perfectly forged main-origin context.
         try await database.writer { db in
             try db.execute(sql: "UPDATE runs SET conversation_mode = 'plan' WHERE id = ?",
-                arguments: [runB.uuidString])
+                arguments: [secondRunID])
         }
         do {
             _ = try await tool.execute(.init(expectedRevision: 1),

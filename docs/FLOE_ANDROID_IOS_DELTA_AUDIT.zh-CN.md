@@ -1,5 +1,19 @@
 # 安卓与 iOS 主线的增量差异记录
 
+## 2026-11-13 iOS 339–340 的有界增量与 Android 113 实测修复
+
+从上一固定 iOS 338 `67d30edb3bcfc9fa674f2762f096de533e13b427`，经 339 `b1c062d75ffe07603a698e048109776a2d4707ba`，比较到 340 `ca7e39303404a3f6806006300165b248ad0cd967`／`v1.8.19`。实际 Git 对象区间只有 15 条 `FloeAgent/` 唯一路径：7 条生产、5 条测试、3 条工程／版本／许可；339→340 子区间为 11 条。数量不作缺功能计数，不重启原 183 项核对或重置 IOS-D／C／G／N 编号。
+
+| 既有归属 | 实际增量与 Android 处理 |
+| --- | --- |
+| C01／C07 文件成果；IOS-D04 | iOS 339 限制旧快捷入口只接受原生回执行首字段，跳过代码围栏及资源元数据中的路径。Android 本批成果卡使用原生密封快照和经过 owner／请求校验的子任务回执；未发现同型摘要字符串提取器，不移入该 iOS UI 解析代码，也不凭模型文本创建可授权路径。大文本和子任务成果仍须以本机实际发布、打开及 EOF 结果验收。 |
+| C07／G11 存储与恢复；延续 S46 | iOS 339–340 补真实磁盘整理结果分类、目录改名后的稳定环境身份和中断恢复字节保护。Android 使用 PRoot 文件树，无 iOS RuntimeV2 稀疏磁盘根目录；不增加本机宿主执行别名、不整体移植 VM 整理。后续继续按已有 Android owner／任务、引用、停止、保留资料与实际回收回执维护。 |
+| C02 计划、清单与通知；S47–S54 | 本轮已接入获批五项，实际 Full113 已安装三星。实测暴露 Plan 完成后的首屏元数据漏刷新、无清单时错误状态，以及原生本地化键误入进度条；定向修复后必须经新包复测。原生文本修改保存重开及本轮 reset 回执已有三星证据。大文件实际发布又定位到 Android MIME 回退字典的重复键初始化崩溃，已窄修并补可在宿主触发的同表初始化回归，待新 ARM64／APK 实测；这些结果尚不等于大文件发布、终态通知或整轮录像通过。 |
+
+本次只读固定 Git 对象，并复核 Android 对应入口／投影来源，没有新增 iOS 构建、iPad 或独立存储验收。iOS 线的组件／App 测试不替代 Android；其后新增独立功能继续列后续维护，不扩大这次五项版本的冻结范围。
+
+English: The immutable iOS338→339→340 interval has 15 unique FloeAgent paths (7 production, 5 tests, 3 project/version/license); the last subinterval has 11. Android keeps its typed sealed-output/child-receipt contract and PRoot ownership, without importing the iOS summary parser or VM-disk maintenance. Full113 is installed on Samsung; native text save/reopen and a real reset receipt were observed. First-frame Plan refresh and checklist presentation repairs still need the next exact APK. A real Android publication SIGTRAP was symbolicated to a duplicate key in the MIME fallback table; the narrow repair and a host-exercisable initializer regression await new ARM64/APK qualification. Large-file delivery, terminal notices and the new autonomous recording remain separate acceptance results. Original item identities are preserved.
+
 ## 2026-11-13 iOS 338 冻结后的有界增量（源码登记）
 
 本次从上一固定 iOS 337 源码 `91c7cd935387f6d88bba2d660b282fb3a8dfa9bb` 对照到 iOS 338 固定源码 `67d30edb3bcfc9fa674f2762f096de533e13b427`／`v1.8.17`，标签实际解析一致。Android 对照点为已推送的 `f2f655823af40473b9e677ad8483e88b110949d6`；338 冻结提交中的 Android 文件树与该检查点相同，没有自动吸收 iOS 修复。区间内 `FloeAgent/` 共 82 条变化路径，其中 22 条测试路径；`Sources/` 变化 26 条，18 条有同名 Android 适配源、8 条没有同名源。数量只是源码索引，不是缺功能计数。

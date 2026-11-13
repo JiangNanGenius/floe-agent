@@ -1780,7 +1780,37 @@ class ConversationHostController internal constructor(
         }
         reconcileCommittedRows(entry, runID) { applied ->
             terminalReconcileInFlight.remove(key)
-            if (applied) terminalReconciled.add(key)
+            if (applied) {
+                terminalReconciled.add(key)
+                refreshTerminalIntelligence(entry, runID, streamGeneration)
+            }
+        }
+    }
+
+    /** One metadata read after this round's committed results are visible. */
+    private fun refreshTerminalIntelligence(
+        entry: ConversationFlowHolderEntry,
+        runID: String,
+        streamGeneration: Long,
+    ) {
+        val conversationId = entry.holder.session.conversationId
+        val sessionEpoch = entry.holder.session.sessionEpoch
+        host.trackOperation(
+            HostCommandRequest(
+                command = "conversation.get",
+                scope = HostScope.ConversationLifecycle(conversationId),
+                stateful = false,
+                correlationID = client().correlationID("cget-results"),
+            ),
+        ) { outcome ->
+            if (!ownCurrentEntry(entry, conversationId, sessionEpoch) ||
+                entry.builder.selectedRunId != runID ||
+                currentRunStreamGeneration(conversationId, runID) != streamGeneration
+            ) return@trackOperation
+            val reply = (outcome as? HostOperationOutcome.Completed)?.value
+                ?.let { ConversationWire.decodeSessionReply(it) } ?: return@trackOperation
+            entry.builder.applyIntelligenceFromSession(reply)
+            entry.holder.applyHostSnapshot(entry.builder.build())
         }
     }
 
@@ -6363,13 +6393,17 @@ class ConversationHostController internal constructor(
                 // while any other typed code (staleRevision, envelope
                 // refusals) stays a real failure with the code surfaced.
                 is HostOperationOutcome.Rejected -> flow.value =
-                    if (outcome.code == "notFound" && kind == "checklist") {
+                    if (offset == 0L && outcome.code == "notFound" && kind == "checklist") {
                         PlanGoalDetailStateUi.Absent
                     } else {
                         PlanGoalDetailStateUi.Failed(outcome.code)
                     }
-                is HostOperationOutcome.Failed ->
-                    flow.value = PlanGoalDetailStateUi.Failed(outcome.code)
+                is HostOperationOutcome.Failed -> flow.value =
+                    if (offset == 0L && outcome.code == "notFound" && kind == "checklist") {
+                        PlanGoalDetailStateUi.Absent
+                    } else {
+                        PlanGoalDetailStateUi.Failed(outcome.code)
+                    }
                 HostOperationOutcome.Cancelled, HostOperationOutcome.Superseded -> Unit
             }
         }

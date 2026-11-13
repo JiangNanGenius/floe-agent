@@ -319,8 +319,8 @@ public struct WorkspacePublishOutputTool: AgentTool {
 
     /// Bounded fallback table (ANDROID delta): keys are lowercase
     /// extensions, values are the same MIME strings `UTType` reports for
-    /// these common producers on Apple platforms.
-    #if !canImport(UniformTypeIdentifiers)
+    /// these common producers on Apple platforms. Keep the table compiled
+    /// on host platforms too, so its real initialization is regression-tested.
     static let fallbackMIMEByExtension: [String: String] = [
         "txt": "text/plain",
         "text": "text/plain",
@@ -436,7 +436,6 @@ public struct WorkspacePublishOutputTool: AgentTool {
         "gif": "image/gif",
         "webp": "image/webp",
         "heic": "image/heic",
-        "svg": "image/svg+xml",
         "tif": "image/tiff",
         "tiff": "image/tiff",
         "mp3": "audio/mpeg",
@@ -448,7 +447,6 @@ public struct WorkspacePublishOutputTool: AgentTool {
         "mov": "video/quicktime",
         "m4v": "video/x-m4v",
     ]
-    #endif
 }
 
 // MARK: - Registration entry (ANDROID mirror of WorkspaceToolRegistration)

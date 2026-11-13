@@ -610,6 +610,14 @@ class ThreadProjectionBuilder internal constructor(
         workspace = reply.workspace
     }
 
+    /** Refresh result metadata without rewinding live rows, queue or CAS. */
+    internal fun applyIntelligenceFromSession(reply: ConversationWire.SessionReply) {
+        plan = reply.plan
+        goal = reply.goal
+        planAvailabilityRaw = reply.planAvailabilityRaw
+        goalAvailabilityRaw = reply.goalAvailabilityRaw
+    }
+
     /**
      * Applies the ACTUAL typed `run.snapshot` page (F7 typed carrier). This
      * is the authoritative CAS source: the durable run state/revision, the
@@ -1883,7 +1891,8 @@ internal object ConversationWire {
         return ChecklistUi(
             title = obj.string("title") ?: "",
             currentStepTitle = obj.string("currentStepTitle"),
-            progressSummary = obj.string("progressSummary") ?: "",
+            // Native localized bundles are not the Android UI language source.
+            progressSummary = "${steps.count { it.status == ChecklistStepStatusUi.COMPLETED }}/${steps.size}",
             steps = steps,
             runId = runID,
             revision = revision,

@@ -33,6 +33,15 @@ final class WorkspaceTextPageAndStorageTests: XCTestCase {
 
     // MARK: - Policy / decode
 
+    func testAndroidPublicationMIMEFallbackTableInitializes() {
+        // The Android-only lookup once trapped on a duplicate dictionary
+        // key; Apple UTType tests never initialized this production table.
+        let types = WorkspacePublishOutputTool.fallbackMIMEByExtension
+        XCTAssertEqual(types["svg"], "image/svg+xml")
+        XCTAssertEqual(types["txt"], "text/plain")
+        XCTAssertNil(types["configx"])
+    }
+
     func testBroadTextPolicyKeepsNonTextFamiliesNative() {
         for path in [
             "script.py", "page.html", "data.csv", "notes.rst", "paper.tex",
@@ -92,9 +101,11 @@ final class WorkspaceTextPageAndStorageTests: XCTestCase {
                                          WorkspaceFileService.readChunkBytes - 4)
                 }
                 rebuilt.append(Data(page.text.utf8))
+                let pageEnd = page.byteOffset + page.bytesReturned
+                XCTAssertGreaterThan(pageEnd, offset)
+                offset = pageEnd
                 guard let next = page.nextOffset else { break }
-                XCTAssertGreaterThan(next, offset)
-                offset = next
+                XCTAssertEqual(next, pageEnd, "next page must start exactly after the bytes returned")
                 XCTAssertLessThanOrEqual(pages, 16)
             }
             XCTAssertEqual(rebuilt, bytes, "all 64 KiB pages must reassemble the exact file")
