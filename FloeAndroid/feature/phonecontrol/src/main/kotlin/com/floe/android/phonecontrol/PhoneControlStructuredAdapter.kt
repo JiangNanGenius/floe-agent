@@ -119,7 +119,6 @@ object PhoneControlStructuredAdapter {
                 truncated = false,
                 maxDepthReached = false,
                 navigationOnly = true,
-                hasSensitiveField = false,
                 backend = PhoneControlBackend.ADB_UI_AUTOMATION,
                 provenance = "adbUiAutomation",
                 ),
