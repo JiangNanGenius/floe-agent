@@ -2,6 +2,17 @@
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
   <channel>
     <item>
+      <title>1.1.4</title>
+      <pubDate>Fri, 13 Nov 2026 06:47:59 +0000</pubDate>
+      <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-bridge-v1.1.4</link>
+      <sparkle:version>7</sparkle:version>
+      <sparkle:shortVersionString>1.1.4</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <description>&lt;p&gt;支持读取已授权的工作区外文件和图片，并改进文件传输校验。&lt;/p&gt;&lt;p&gt;Supports authorized reads of files and images outside the workspace and improves file-transfer validation.&lt;/p&gt;</description>
+      <enclosure url="https://github.com/JiangNanGenius/floe-agent/releases/download/floe-bridge-v1.1.4/Floe-Bridge-1.1.4.dmg" length="4693845" type="application/octet-stream" sparkle:edSignature="9uA0eiQ/Crvc4l4VNBsfC2c9eFsD+tsjwmzNQUPIsDzTOBEeq0EXA+8KPX9m4ogQD2u/atrgCnd8e/FmzFAEBw==" />
+    </item>
+    <item>
       <title>1.1.3</title>
       <pubDate>Thu, 05 Nov 2026 07:44:26 +0000</pubDate>
       <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-bridge-v1.1.3</link>
