@@ -8,7 +8,7 @@ import java.util.Locale
  * (text reading space plus bounded image/audio/video playback).
  *
  * Text is deliberately broader than the old MIME/extension pair table: every
- * sealed output whose type facts say plain text (a `text/*` or text
+ * sealed output whose type facts say plain text (a text MIME family or text
  * application MIME, or the Android publisher's `application/octet-stream`
  * fallback for an uncommon text/code extension) is a TEXT candidate. The
  * viewer performs the bounded UTF-8/NUL content probe before rendering, so an
@@ -74,7 +74,7 @@ object RunOutputViewerSupport {
         "mobileprovision", "keystore", "ttf", "otf", "woff", "woff2",
     )
 
-    /** Non-`text/*` MIME families that are still plain-text source/config. */
+    /** Application MIME families that are still plain-text source/config. */
     private val TEXT_APPLICATION_MIMES: Set<String> = setOf(
         "application/json",
         "application/x-ndjson",
