@@ -17,6 +17,35 @@ import org.junit.Test
  */
 class RunOutputTextViewReaderTest {
 
+    @Test
+    fun layoutPagesKeepLargeTextAndEofWithoutOneHugeLayout() {
+        val text = "\uFEFF" + "line-中文-😀\r\n".repeat(30_000) + "EOF_410K\r\n"
+        val pages = RunOutputTextViewReader.displayPages(text)
+        assertTrue(pages.size > 1)
+        assertTrue(pages.all { it.length <= RunOutputTextViewReader.DISPLAY_PAGE_CHARS })
+        assertEquals(text, pages.joinToString(""))
+        assertTrue(pages.last().endsWith("EOF_410K\r\n"))
+    }
+
+    @Test
+    fun layoutPagesDoNotSplitEmojiOrCrlfOnVeryLongLines() {
+        val n = RunOutputTextViewReader.DISPLAY_PAGE_CHARS
+        for (boundary in listOf("😀", "\r\n")) {
+            val text = "x".repeat(n - 1) + boundary + "y".repeat(n * 2)
+            val pages = RunOutputTextViewReader.displayPages(text)
+            assertEquals(text, pages.joinToString(""))
+            assertTrue(pages.all { it.length <= n })
+            assertTrue(pages.none { it.firstOrNull()?.isLowSurrogate() == true })
+            assertTrue(pages.none { it.lastOrNull()?.isHighSurrogate() == true })
+            assertTrue(pages.dropLast(1).none { it.endsWith('\r') })
+        }
+    }
+
+    @Test
+    fun layoutKeepsAnEmptyFileReadable() {
+        assertEquals(listOf(""), RunOutputTextViewReader.displayPages(""))
+    }
+
     private fun tempFile(name: String = "document.txt"): File =
         File(System.getProperty("java.io.tmpdir"), "ro-text-${System.nanoTime()}-$name")
             .also { it.deleteOnExit() }

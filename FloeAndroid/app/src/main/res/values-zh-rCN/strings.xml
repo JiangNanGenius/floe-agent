@@ -509,6 +509,11 @@
     <string name="run_viewer_invalid_info">此文件格式不支持应用内预览。</string>
     <string name="run_viewer_render_info">无法显示或播放此文件，请重新打开重试。</string>
     <string name="run_viewer_text_truncated">仅显示文件开头部分。</string>
+    <string name="run_viewer_text_first">首页</string>
+    <string name="run_viewer_text_previous">上页</string>
+    <string name="run_viewer_text_next">下页</string>
+    <string name="run_viewer_text_last">末页</string>
+    <string name="run_viewer_text_page">%1$d/%2$d</string>
     <string name="run_viewer_image_cd">图片预览</string>
     <string name="run_viewer_audio_cd">音频</string>
     <string name="run_viewer_play">播放</string>

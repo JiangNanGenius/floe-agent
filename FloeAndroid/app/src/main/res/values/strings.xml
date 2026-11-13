@@ -509,6 +509,11 @@
     <string name="run_viewer_invalid_info">This file isn\'t in a supported format for in-App preview.</string>
     <string name="run_viewer_render_info">This file couldn\'t be displayed or played. Try opening it again.</string>
     <string name="run_viewer_text_truncated">Showing the beginning of the file.</string>
+    <string name="run_viewer_text_first">First</string>
+    <string name="run_viewer_text_previous">Prev</string>
+    <string name="run_viewer_text_next">Next</string>
+    <string name="run_viewer_text_last">Last</string>
+    <string name="run_viewer_text_page">%1$d/%2$d</string>
     <string name="run_viewer_image_cd">Image preview</string>
     <string name="run_viewer_audio_cd">Audio</string>
     <string name="run_viewer_play">Play</string>

@@ -1218,6 +1218,10 @@ internal object C07EntryFlowHost {
 
     private suspend fun resolveDurableTaskID(conversationID: String): String? {
         val host = runtimeHost ?: return null
+        // A cold notification can arrive before bootstrap registered the
+        // store/domain. Wait for that real signal before making ONE read;
+        // an early bridge refusal is not evidence that the task was deleted.
+        if (!awaitC07EntryReadiness(host.readiness, conversation = true) || runtimeHost !== host) return null
         val deferred = CompletableDeferred<String?>()
         host.trackOperation(
             request = HostCommandRequest(
@@ -1245,6 +1249,7 @@ internal object C07EntryFlowHost {
 
     private suspend fun durableScheduleExists(scheduleID: String): Boolean {
         val host = runtimeHost ?: return false
+        if (!awaitC07EntryReadiness(host.readiness, conversation = false) || runtimeHost !== host) return false
         val result = withTimeoutOrNull(20_000L) {
             TaskScheduleCommands(host).detail(scheduleID)
         } ?: return false

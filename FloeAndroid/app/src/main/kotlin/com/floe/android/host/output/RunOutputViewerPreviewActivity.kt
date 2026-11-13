@@ -37,9 +37,12 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.key
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -127,7 +130,7 @@ class RunOutputViewerPreviewActivity : ComponentActivity() {
     private val readerCompletions = Handler(Looper.getMainLooper())
 
     // ---- text content ----
-    private var textContent by mutableStateOf<String?>(null)
+    private var textPages by mutableStateOf<List<String>>(emptyList())
     private var textTruncated by mutableStateOf(false)
 
     // ---- image content ----
@@ -234,7 +237,7 @@ class RunOutputViewerPreviewActivity : ComponentActivity() {
                     stage = stage,
                     kind = kind,
                     failure = failure,
-                    text = textContent,
+                    textPages = textPages,
                     textTruncated = textTruncated,
                     image = imageBitmap,
                     mediaReady = mediaReady,
@@ -297,13 +300,16 @@ class RunOutputViewerPreviewActivity : ComponentActivity() {
         beginReader()
         val reader = lifecycleScope.launch(Dispatchers.IO) {
             val read = RunOutputTextViewReader.read(staged.file)
+            val pages = (read as? RunOutputTextViewReader.Result.Success)?.let {
+                RunOutputTextViewReader.displayPages(it.page.text)
+            }
             withContext(Dispatchers.Main) {
                 // A late completion after close owns no launch: it settles
                 // the reader count but never publishes content.
                 if (isDestroyed || isFinishing || settled) return@withContext
                 when (read) {
                     is RunOutputTextViewReader.Result.Success -> {
-                        textContent = read.page.text
+                        textPages = pages.orEmpty()
                         textTruncated = read.page.truncated
                         stage = Stage.READY
                     }
@@ -473,7 +479,7 @@ class RunOutputViewerPreviewActivity : ComponentActivity() {
         settled = true
         releaseMedia()
         liveStaged = null
-        textContent = null
+        textPages = emptyList()
         imageBitmap = null
         maybeQuiesce()
         super.onDestroy()
@@ -488,7 +494,7 @@ private fun RunOutputViewerScreen(
     stage: RunOutputViewerPreviewActivity.Stage,
     kind: RunOutputViewerKind,
     failure: RunOutputViewerPreviewActivity.Failure,
-    text: String?,
+    textPages: List<String>,
     textTruncated: Boolean,
     image: ImageBitmap?,
     mediaReady: Boolean,
@@ -553,7 +559,7 @@ private fun RunOutputViewerScreen(
 
             RunOutputViewerPreviewActivity.Stage.READY -> when (kind) {
                 RunOutputViewerKind.TEXT -> TextViewport(
-                    text = text.orEmpty(),
+                    pages = textPages,
                     truncated = textTruncated,
                 )
                 RunOutputViewerKind.IMAGE -> ImageViewport(image = image)
@@ -584,27 +590,59 @@ private fun RunOutputViewerScreen(
  * images, no script — so untrusted Markdown cannot reach network or script
  * execution. */
 @Composable
-private fun TextViewport(text: String, truncated: Boolean) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-    ) {
-        SelectionContainer {
-            FloeText(
-                text = text,
-                style = Floe.typography.evidence,
-                color = Floe.colors.label,
-            )
+private fun TextViewport(pages: List<String>, truncated: Boolean) {
+    var selectedPage by rememberSaveable { mutableIntStateOf(0) }
+    val lastPage = (pages.size - 1).coerceAtLeast(0)
+    val page = selectedPage.coerceIn(0, lastPage)
+    Column(modifier = Modifier.fillMaxSize()) {
+        if (pages.size > 1) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                TransportChip(stringResource(R.string.run_viewer_text_first), page > 0) {
+                    selectedPage = 0
+                }
+                TransportChip(stringResource(R.string.run_viewer_text_previous), page > 0) {
+                    selectedPage = page - 1
+                }
+                FloeText(
+                    text = stringResource(R.string.run_viewer_text_page, page + 1, pages.size),
+                    style = Floe.typography.evidence,
+                    color = Floe.colors.secondaryLabel,
+                )
+                TransportChip(stringResource(R.string.run_viewer_text_next), page < lastPage) {
+                    selectedPage = page + 1
+                }
+                TransportChip(stringResource(R.string.run_viewer_text_last), page < lastPage) {
+                    selectedPage = lastPage
+                }
+            }
         }
-        if (truncated) {
-            Spacer(Modifier.size(12.dp))
-            FloeText(
-                text = stringResource(R.string.run_viewer_text_truncated),
-                style = Floe.typography.evidence,
-                color = Floe.colors.tertiaryLabel,
-            )
+        // A new page starts at the top; only this bounded page is laid out.
+        key(page) {
+            Column(
+                modifier = Modifier.weight(1f).fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+            ) {
+                SelectionContainer {
+                    FloeText(
+                        text = pages.getOrElse(page) { "" },
+                        style = Floe.typography.evidence,
+                        color = Floe.colors.label,
+                    )
+                }
+                if (truncated && page == lastPage) {
+                    Spacer(Modifier.size(12.dp))
+                    FloeText(
+                        text = stringResource(R.string.run_viewer_text_truncated),
+                        style = Floe.typography.evidence,
+                        color = Floe.colors.tertiaryLabel,
+                    )
+                }
+            }
         }
     }
 }

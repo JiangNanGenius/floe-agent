@@ -28,6 +28,30 @@ internal object RunOutputTextViewReader {
     const val CHUNK_BYTES = 64 * 1024
     const val MAX_BYTES = 4L * 1024 * 1024
 
+    /** A read page is not a layout page. Keep each selectable Text small
+     * enough to measure on the UI thread, without dropping any content. */
+    const val DISPLAY_PAGE_CHARS = 4096
+
+    fun displayPages(text: String): List<String> {
+        if (text.isEmpty()) return listOf("")
+        val pages = ArrayList<String>()
+        var start = 0
+        while (start < text.length) {
+            var end = minOf(start + DISPLAY_PAGE_CHARS, text.length)
+            if (end < text.length) {
+                // Prefer a line boundary in the latter half of the page.
+                val newline = text.lastIndexOf('\n', end - 1)
+                if (newline >= start + DISPLAY_PAGE_CHARS / 2) end = newline + 1
+                // Neither a surrogate pair nor CRLF may straddle pages.
+                if (text[end - 1].isHighSurrogate() && text[end].isLowSurrogate()) end--
+                if (text[end - 1] == '\r' && text[end] == '\n') end--
+            }
+            pages.add(text.substring(start, end))
+            start = end
+        }
+        return pages
+    }
+
     data class Page(
         val text: String,
         val truncated: Boolean,
