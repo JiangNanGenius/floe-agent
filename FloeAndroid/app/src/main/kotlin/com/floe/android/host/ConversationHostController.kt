@@ -53,6 +53,12 @@ import com.floe.android.feature.conversation.ThreadUiState
 import com.floe.android.feature.conversation.TimelineRowUi
 import com.floe.android.feature.providers.ProviderCredentialStateUi
 import com.floe.android.FloeApplication
+import com.floe.android.feature.conversation.ChecklistDetailUi
+import com.floe.android.feature.conversation.ChecklistPresentationRules
+import com.floe.android.feature.conversation.asCurrentChecklistUi
+import com.floe.android.host.notification.RunTerminalNoticeKind
+import com.floe.android.host.notification.RunTerminalNoticePolicy
+import com.floe.android.host.notification.RunTerminalNotifications
 import com.floe.android.host.questions.UserQuestionHostController
 import com.floe.android.host.voice.C03DictationSink
 import com.floe.android.host.voice.C03StartOutcome
@@ -406,6 +412,15 @@ class ConversationHostController internal constructor(
         ConcurrentHashMap<Long, (admitted: Boolean, reason: String?) -> Unit>()
     private val eventPumps = ConcurrentHashMap<String, EventPumpHandle>()
 
+    /**
+     * Runs this host actually observed as LIVE at the given stream
+     * incarnation. Only an armed run may publish a whole-task result notice,
+     * so a cold read of an old terminal row never announces a stale failure.
+     * The generation fence drops a late delivery after retry/replacement.
+     */
+    private val terminalNoticeFence =
+        com.floe.android.host.notification.RunTerminalDeliveryFence()
+
     /** Bounded question-discovery windows keyed by conversation/run/call. */
     private val questionDiscoveryJobs = ConcurrentHashMap<String, Job>()
 
@@ -518,6 +533,17 @@ class ConversationHostController internal constructor(
      * a lost ack is settled by the native durable (id,revision) proofs, never
      * by an automatic App-side replay. */
     private val planAcceptInFlight = ConcurrentHashMap<String, Boolean>()
+
+    /** App-private durable composer mode/plan ack (see the store contract).
+     * Created lazily from the Application context; pure fixtures without a
+     * context keep the RAM behavior and never fabricate a durable row. */
+    @Volatile private var continuityPreferenceStore: com.floe.android.host.notification.TaskContinuityPreferences? = null
+    private fun continuityPreferences(): com.floe.android.host.notification.TaskContinuityPreferences? {
+        continuityPreferenceStore?.let { return it }
+        val context = host.appContextOrNull ?: return null
+        return com.floe.android.host.notification.TaskContinuityPreferences(context)
+            .also { continuityPreferenceStore = it }
+    }
 
     /**
      * Root/workspace surface owner: Home draft attachments (client-ram
@@ -1060,6 +1086,15 @@ class ConversationHostController internal constructor(
             // temporary truth (previously left at the ordinary defaults).
             it.isTemporary = isTemporary
             it.temporaryIncarnationId = incarnationId
+            // Durable next-input choice + exact plan presentation ack. A
+            // temporary session is RAM-only (no durable preference row is
+            // written for an ephemeral task).
+            if (!isTemporary) {
+                continuityPreferences()?.read(conversationId)?.let { pref ->
+                    it.applyContinuityPreferences(
+                        pref.modeRaw, pref.lastPresentedPlanRevision)
+                }
+            }
         }
         val created = ConversationFlowHolderEntry(
             holder = holder,
@@ -1084,6 +1119,7 @@ class ConversationHostController internal constructor(
         // native callback can never publish into another owner's surface.
         invalidatePlanGoalDetails(conversationId)
         invalidatePendingInputBodies(conversationId)
+        terminalNoticeFence.discardConversation(conversationId)
         holders.remove(conversationId)?.let { entry ->
             host.voiceOrNull()?.cancelForConversation(conversationId)
             retireHolderResources(conversationId, entry)
@@ -1230,6 +1266,8 @@ class ConversationHostController internal constructor(
                             }
                         }
                         entry.builder.applySession(reply)
+                        withdrawSupersededResultNotice(
+                            session.conversationId, reply.runs.firstOrNull()?.runID)
                         val projection = currentModels()
                         entry.builder.applyModels(projection.models, projection.needsProvider)
                         entry.holder.applyHostSnapshot(entry.builder.build())
@@ -1372,6 +1410,31 @@ class ConversationHostController internal constructor(
                             // single decision point. Latest terminal arm wins.
                             maybeArmQueueSettleWatch(entry, runID, generation)
                         }
+                        // N10: ONLY an authoritative durable page for a run
+                        // this host really observed live may publish a result
+                        // notice. A transient error event never reaches here.
+                        if (page.isTerminal || page.durableTerminal == true ||
+                            page.durableState == "waitingApproval" ||
+                            page.durableState == "paused"
+                        ) {
+                            publishRunTerminalNoticeIfArmed(
+                                entry = entry,
+                                page = page,
+                                conversationID = ownerConversation,
+                                runID = runID,
+                                generation = generation,
+                            )
+                        } else {
+                            // A live approval/paused notice (or an older
+                            // result notice for this run) is stale once the
+                            // same activation really resumes. This cancels a
+                            // notice only; the live owner and run are never
+                            // retired by a notification callback.
+                            clearActiveRunResultNotice(
+                                ownerConversation, runID,
+                                force = terminalNoticeFence.consumeWaitingNotice(
+                                    ownerConversation, runID))
+                        }
                     }
                     if (queueOwner == null) applyPage()
                     else synchronized(queueSettleGate) {
@@ -1447,6 +1510,108 @@ class ConversationHostController internal constructor(
             !entry.holder.retired &&
             entry.holder.session.conversationId == conversationId &&
             entry.holder.session.sessionEpoch == sessionEpoch
+    }
+
+    /** N10: publish AT MOST ONE result notice per exact armed live run. The
+     * durable page is the confirmation; a live owner, an unarmed cold read,
+     * a stale stream incarnation and a foreign task all stay silent. */
+    private fun publishRunTerminalNoticeIfArmed(
+        entry: ConversationFlowHolderEntry,
+        page: ConversationWire.SnapshotPage,
+        conversationID: String,
+        runID: String,
+        generation: Long,
+    ) {
+        if (!terminalNoticeFence.isArmed(conversationID, runID, generation)) return
+        if (!ownCurrentEntry(entry, conversationID, entry.holder.session.sessionEpoch)) return
+        // A temporary chat has no durable task to reopen; its RAM-only end
+        // state is shown in the thread and is never a deep-link target.
+        if (entry.isTemporary) {
+            terminalNoticeFence.discard(conversationID, runID, generation)
+            return
+        }
+        if (page.conversationID != null && !sameUUIDIdentity(page.conversationID, conversationID)) return
+        if (!sameUUIDIdentity(page.runID, runID)) return
+        val kind = RunTerminalNoticePolicy.kindFor(
+            durableState = page.durableState,
+            dispositionRaw = page.terminalDispositionRaw,
+            durableTerminal = page.durableTerminal,
+            liveOwner = page.liveOwner,
+        ) ?: run {
+            // A durable terminal row can be read one beat before the live
+            // service detaches. Keep the arm for the post-owner read so the
+            // real close still publishes once; a genuinely live/retrying
+            // owner (no durable terminal) is never announced.
+            if (!(page.liveOwner && page.durableTerminal == true)) {
+                terminalNoticeFence.discard(conversationID, runID, generation)
+            }
+            return
+        }
+        val context = host.appContextOrNull ?: return
+        val foreground = RunTerminalNotifications.appIsForeground(context)
+        val allowed = RunTerminalNoticePolicy.shouldPost(
+            kind = kind,
+            policyRaw = entry.holder.snapshot.value?.taskNotificationPolicyRaw,
+            appIsForeground = foreground,
+        )
+        if (kind == RunTerminalNoticeKind.WAITING) {
+            // Action-required while the run is still live: present once, but
+            // KEEP the fence armed so the same activation's real terminal can
+            // still announce later. No failure/ownership retirement occurs.
+            if (allowed && !terminalNoticeFence.hasWaitingNotice(conversationID, runID)) {
+                TaskResultNotifications.post(
+                    context = context, conversationID = conversationID,
+                    runID = runID, kind = kind, taskTitle = entry.builder.taskTitle)
+                continuityPreferences()?.recordNotifiedRun(conversationID, runID)
+                terminalNoticeFence.markWaitingNotice(conversationID, runID)
+            }
+            return
+        }
+        terminalNoticeFence.discard(conversationID, runID, generation)
+        if (!allowed) {
+            // A visible app already shows the terminal state. Still retire a
+            // same-run stale notice on a real recovery/new terminal so the
+            // shade cannot keep an obsolete failure/waiting/completion row.
+            continuityPreferences()?.clearNotifiedRun(conversationID, runID)
+            TaskResultNotifications.cancel(context, runID)
+            return
+        }
+        withdrawSupersededResultNotice(conversationID, keepRunID = runID)
+        continuityPreferences()?.recordNotifiedRun(conversationID, runID)
+        TaskResultNotifications.post(
+            context = context,
+            conversationID = conversationID,
+            runID = runID,
+            kind = kind,
+            taskTitle = entry.builder.taskTitle,
+        )
+    }
+
+    /** A genuinely active snapshot of an already-notified run withdraws its
+     * stale waiting/failure/completion notice. `force` also removes the
+     * action-required marker the resume just consumed. */
+    private fun clearActiveRunResultNotice(conversationID: String, runID: String, force: Boolean) {
+        val prefs = continuityPreferences()
+        val last = prefs?.lastNotifiedRun(conversationID)
+        val sameRun = last != null && last.equals(runID, ignoreCase = true)
+        if (!force && !sameRun) return
+        prefs?.clearNotifiedRun(conversationID, runID)
+        host.appContextOrNull?.let { context ->
+            TaskResultNotifications.cancel(context, runID)
+        }
+    }
+
+    /** A new invocation/retry supersedes a result notice this task displayed.
+     * Only the exact last notified run is withdrawn; other tasks and the
+     * durable task history are untouched. */
+    private fun withdrawSupersededResultNotice(conversationID: String, keepRunID: String?) {
+        val prefs = continuityPreferences() ?: return
+        val last = prefs.lastNotifiedRun(conversationID) ?: return
+        if (keepRunID != null && last.equals(keepRunID, ignoreCase = true)) return
+        host.appContextOrNull?.let { context ->
+            TaskResultNotifications.cancel(context, last)
+        }
+        prefs.clearNotifiedRun(conversationID, last)
     }
 
     private fun streamKey(conversationId: String, runID: String): String =
@@ -2415,6 +2580,7 @@ class ConversationHostController internal constructor(
 
     private fun admitForegroundLaunch(launch: ForegroundLaunch, conversationID: String, runID: String) {
         launch.runID.set(runID)
+        withdrawSupersededResultNotice(conversationID, keepRunID = runID)
         host.scope.launch(host.ioDispatcher) {
             host.runForeground?.agentLaunchAdmitted(launch.operationID, conversationID, runID)
             if (launch.stop.get()) cancelRunFromNotification(conversationID, runID)
@@ -2713,6 +2879,7 @@ class ConversationHostController internal constructor(
             },
         )
         eventPumps[runID] = handle
+        terminalNoticeFence.arm(conversationId, runID, streamGeneration)
     }
 
     /** Recover the READ subscription only after a fresh native ownership
@@ -2796,6 +2963,13 @@ class ConversationHostController internal constructor(
             val callID = frame.payload?.string("id") ?: frame.payload?.string("callID")
             if (callID != null) {
                 questionDiscoveryJobs.remove("$conversationId/$sessionEpoch/$runID/$callID")?.cancel()
+            }
+            // N10: a completed checklist mutation is the causal boundary for
+            // one bounded detail re-read. It updates the current-round strip
+            // only; nothing is re-executed and the durable row is untouched.
+            val tool = frame.payload?.string("tool")
+            if (tool == "checklist.updatePlan" || tool == "checklist.resetPlan") {
+                requestPlanGoalDetail(entry.holder.session, "checklist")
             }
         }
         if (ConversationWire.isTerminalFrame(frame)) {
@@ -3178,10 +3352,12 @@ class ConversationHostController internal constructor(
         ) { outcome ->
             val reply = (outcome as? HostOperationOutcome.Completed)?.value
                 ?.let { ConversationWire.decodeSessionReply(it) }
+            var latestRunID: String? = null
             val applied = synchronized(queueSettleGate) {
                 if (reply == null || !isCurrentQueueRead(run)) false else {
                     run.reply = reply
                     entry.builder.applySession(reply)
+                    latestRunID = reply.runs.firstOrNull()?.runID
                     val models = currentModels()
                     entry.builder.applyModels(models.models, models.needsProvider)
                     entry.holder.applyHostSnapshot(entry.builder.build())
@@ -3191,6 +3367,9 @@ class ConversationHostController internal constructor(
             if (!applied) {
                 finishQueueRead(run, false)
                 return@trackOperation
+            }
+            latestRunID?.let { runID ->
+                withdrawSupersededResultNotice(conversationId, runID)
             }
             if (!isCurrentQueueRead(run)) {
                 finishQueueRead(run, false)
@@ -3681,6 +3860,16 @@ class ConversationHostController internal constructor(
                 // snapshot reply that belonged to the previous incarnation.
                 val conversationId = entry.holder.session.conversationId
                 val sessionEpoch = entry.holder.session.sessionEpoch
+                if (ownCurrentEntry(entry, conversationId, sessionEpoch)) {
+                    // Real same-run recovery: withdraw the prior failure and
+                    // fence the old terminal delivery for THIS run even when
+                    // another run is currently selected.
+                    terminalNoticeFence.discard(conversationId, runId)
+                    continuityPreferences()?.clearNotifiedRun(conversationId, runId)
+                    host.appContextOrNull?.let { context ->
+                        TaskResultNotifications.cancel(context, runId)
+                    }
+                }
                 if (ownCurrentEntry(entry, conversationId, sessionEpoch) &&
                     entry.builder.selectedRunId == runId
                 ) {
@@ -4226,6 +4415,49 @@ class ConversationHostController internal constructor(
         return started
     }
 
+    /**
+     * Durable next-input mode + plan presentation acknowledgement. The
+     * acknowledgement is one atomic write with the mode; a temporary session
+     * stays RAM-only. This is a composer preference, never an execution or
+     * tool grant, and it does not touch the task policy row.
+     */
+    override fun recordExecutionModePreference(
+        session: ConversationSessionToken,
+        modeRaw: String,
+        lastPresentedPlanRevision: String?,
+    ): Boolean {
+        val entry = holders[session.conversationId]
+        val owned = entry != null &&
+            !entry.holder.retired &&
+            entry.holder.session.conversationId == session.conversationId &&
+            entry.holder.session.sessionEpoch == session.sessionEpoch
+        if (entry != null && entry.isTemporary) {
+            if (!owned) return false
+            entry.builder.applyContinuityPreferences(modeRaw, lastPresentedPlanRevision)
+            entry.holder.applyHostSnapshot(entry.builder.build())
+            return true
+        }
+        val store = continuityPreferences() ?: return false
+        val persisted = store.write(
+            session.conversationId, modeRaw, lastPresentedPlanRevision)
+        if (owned) {
+            // Publish the accepted RAM pair immediately even when the commit
+            // failed: the visible choice is kept and the next snapshot is
+            // consistent with what the user picked.
+            entry.builder.applyContinuityPreferences(modeRaw, lastPresentedPlanRevision)
+            entry.holder.applyHostSnapshot(entry.builder.build())
+            if (!persisted) {
+                host.appContextOrNull?.let { context ->
+                    runCatching {
+                        entry.holder.noteHostActionError(
+                            context.getString(com.floe.android.R.string.n113_mode_not_saved))
+                    }
+                }
+            }
+        }
+        return persisted
+    }
+
     private fun acceptPlanWithFreshRevision(
         entry: ConversationFlowHolderEntry,
         session: ConversationSessionToken,
@@ -4275,81 +4507,348 @@ class ConversationHostController internal constructor(
                 settlePlanAccept(entry, session, accepted = false, code = "cancelled")
                 return@trackOperation
             }
-            current.builder.applySession(reply)
+            val snapshotReply = reply ?: run {
+                host.runForeground?.agentLaunchDefinitelyNotAdmitted(foregroundLaunch.operationID)
+                settlePlanAccept(entry, session, accepted = false, code = "revision_unavailable")
+                return@trackOperation
+            }
+            current.builder.applySession(snapshotReply)
             current.holder.applyHostSnapshot(current.builder.build())
-            val members = mutableMapOf<String, JsonElement>(
-                "planID" to JsonPrimitive(planId),
-                "planRevision" to JsonPrimitive(planRevision),
-                "planDigest" to JsonPrimitive(planDigest),
-                "providerID" to JsonPrimitive(providerId),
-                "modelID" to JsonPrimitive(modelId),
-            )
-            // Absent key = the plan's OWN durable execution recommendation
-            // (never a locally materialized default).
-            execution?.let { members["execution"] = JsonPrimitive(it.swiftRaw) }
-            val acceptedRunID = java.util.concurrent.atomic.AtomicReference<String?>(null)
-            host.trackOperation(
-                request = HostCommandRequest(
-                    command = "plan.accept",
-                    scope = HostScope.LaunchExisting(session.conversationId),
-                    stateful = true,
-                    correlationID = client().correlationID("planaccept"),
-                    revision = HostRevision(row.resourceID, row.version),
-                    payload = JsonObject(members),
-                ),
-                onFrame = { frame ->
-                    // The accept's launch travels the SAME prepared/started
-                    // effect receipt as run.start (never a second launch).
-                    if (frame.kind == "prepared") {
-                        ConversationWire.preparedFromEffect(frame.detail)?.let { prepared ->
-                            if (acceptedRunID.compareAndSet(null, prepared.runID)) {
-                                admitForegroundLaunch(foregroundLaunch, session.conversationId, prepared.runID)
-                                applyPlanAcceptPrepared(current, prepared)
-                            }
+            val runs = snapshotReply.runs.map { run ->
+                com.floe.android.feature.conversation.RunRowUi(
+                    id = run.runID,
+                    stateName = run.state,
+                    modelId = run.modelName,
+                    startedAtLabel = run.startedAt,
+                    conversationModeRaw = run.conversationModeRaw,
+                )
+            }
+            val decision = com.floe.android.feature.conversation.PlanExecutionHandoffRules.decide(runs)
+            if (decision is com.floe.android.feature.conversation.PlanExecutionHandoffRules.Decision.RefuseBusy) {
+                host.runForeground?.agentLaunchDefinitelyNotAdmitted(foregroundLaunch.operationID)
+                settlePlanAccept(entry, session, accepted = false, code = planBusyCopy(finishCurrent = true))
+                return@trackOperation
+            }
+            if (decision is com.floe.android.feature.conversation.PlanExecutionHandoffRules.Decision.Proceed) {
+                dispatchPlanAccept(
+                    entry = current, session = session, row = row, planId = planId,
+                    planRevision = planRevision, planDigest = planDigest, execution = execution,
+                    modelId = modelId, providerId = providerId, foregroundLaunch = foregroundLaunch,
+                )
+                return@trackOperation
+            }
+            // A live earlier PLAN round (or rounds) must be stopped and
+            // durably settled BEFORE this distinct execution may start.
+            host.scope.launch(host.ioDispatcher) {
+                val refusal = try {
+                    settlePlanOwnersForExecution(
+                        entry = current, session = session,
+                        planRunIDs = (decision as com.floe.android.feature.conversation.PlanExecutionHandoffRules.Decision.Quiesce).planRunIDs,
+                    )
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (_: Throwable) {
+                    planBusyCopy()
+                }
+                if (refusal != null) {
+                    if (ownCurrentEntry(current, session.conversationId, session.sessionEpoch)) {
+                        host.runForeground?.agentLaunchDefinitelyNotAdmitted(foregroundLaunch.operationID)
+                        settlePlanAccept(current, session, accepted = false, code = refusal)
+                    } else {
+                        // The surface was replaced while the handoff was in
+                        // flight: release the per-conversation latch without
+                        // mutating the replacement holder.
+                        planAcceptInFlight.remove(session.conversationId)
+                    }
+                    return@launch
+                }
+                if (!ownCurrentEntry(current, session.conversationId, session.sessionEpoch) ||
+                    foregroundLaunch.stop.get()
+                ) {
+                    if (ownCurrentEntry(current, session.conversationId, session.sessionEpoch)) {
+                        host.runForeground?.agentLaunchDefinitelyNotAdmitted(foregroundLaunch.operationID)
+                        settlePlanAccept(current, session, accepted = false, code = "cancelled")
+                    } else {
+                        planAcceptInFlight.remove(session.conversationId)
+                    }
+                    return@launch
+                }
+                // Cancelling the old owners may persist final messages and
+                // advance the conversation row digest. Re-read the CAS the
+                // native accept will actually compare; a stale row would
+                // reject the exact plan for an unrelated reason.
+                val freshRow = readConversationRowRevision(session.conversationId)
+                if (freshRow == null || !ownCurrentEntry(
+                        current, session.conversationId, session.sessionEpoch)) {
+                    if (ownCurrentEntry(current, session.conversationId, session.sessionEpoch)) {
+                        host.runForeground?.agentLaunchDefinitelyNotAdmitted(foregroundLaunch.operationID)
+                        settlePlanAccept(current, session, accepted = false,
+                            code = planBusyCopy())
+                    } else {
+                        planAcceptInFlight.remove(session.conversationId)
+                    }
+                    return@launch
+                }
+                dispatchPlanAccept(
+                    entry = current, session = session, row = freshRow, planId = planId,
+                    planRevision = planRevision, planDigest = planDigest, execution = execution,
+                    modelId = modelId, providerId = providerId, foregroundLaunch = foregroundLaunch,
+                )
+            }
+        }
+    }
+
+    /** The ONE accept dispatch. It runs only after the earlier Plan owners
+     * are settled (or there were none); the native `plan.accept` remains the
+     * single launch and the App never sends a second run.start behind it. */
+    private fun dispatchPlanAccept(
+        entry: ConversationFlowHolderEntry,
+        session: ConversationSessionToken,
+        row: HostRevision,
+        planId: String,
+        planRevision: Int,
+        planDigest: String,
+        execution: PlanRecommendationUi?,
+        modelId: String,
+        providerId: String,
+        foregroundLaunch: ForegroundLaunch,
+    ) {
+        val members = mutableMapOf<String, JsonElement>(
+            "planID" to JsonPrimitive(planId),
+            "planRevision" to JsonPrimitive(planRevision),
+            "planDigest" to JsonPrimitive(planDigest),
+            "providerID" to JsonPrimitive(providerId),
+            "modelID" to JsonPrimitive(modelId),
+        )
+        // Absent key = the plan's OWN durable execution recommendation
+        // (never a locally materialized default).
+        execution?.let { members["execution"] = JsonPrimitive(it.swiftRaw) }
+        val acceptedRunID = java.util.concurrent.atomic.AtomicReference<String?>(null)
+        host.trackOperation(
+            request = HostCommandRequest(
+                command = "plan.accept",
+                scope = HostScope.LaunchExisting(session.conversationId),
+                stateful = true,
+                correlationID = client().correlationID("planaccept"),
+                revision = row,
+                payload = JsonObject(members),
+            ),
+            onFrame = { frame ->
+                // The accept's launch travels the SAME prepared/started
+                // effect receipt as run.start (never a second launch).
+                if (frame.kind == "prepared") {
+                    ConversationWire.preparedFromEffect(frame.detail)?.let { prepared ->
+                        if (acceptedRunID.compareAndSet(null, prepared.runID)) {
+                            admitForegroundLaunch(foregroundLaunch, session.conversationId, prepared.runID)
+                            applyPlanAcceptPrepared(entry, prepared)
                         }
                     }
-                },
-            ) { outcome2 ->
-                when (outcome2) {
-                    is HostOperationOutcome.Completed -> {
-                        val page = outcome2.value as? JsonObject
-                        val accepted = (page?.get("accepted") as? JsonPrimitive)?.booleanOrNull
-                        val runID = (page?.get("runID") as? JsonPrimitive)?.contentOrNull
-                        if (accepted == true && runID != null &&
-                            acceptedRunID.compareAndSet(null, runID)
-                        ) {
-                            admitForegroundLaunch(foregroundLaunch, session.conversationId, runID)
-                            // Forward-compatible value reply (the actual
-                            // producer carries identities in the effect).
-                            applyPlanAcceptPrepared(
-                                current,
-                                ConversationWire.Prepared(
-                                    conversationID = session.conversationId,
-                                    runID = runID,
-                                    resourceID = ConversationWire.runResourceID(runID),
-                                    version = "",
-                                ),
-                            )
-                        }
-                        settlePlanAccept(
-                            entry = current,
-                            session = session,
-                            accepted = acceptedRunID.get() != null,
-                            code = if (acceptedRunID.get() == null) "reply_malformed" else null,
+                }
+            },
+        ) { outcome2 ->
+            when (outcome2) {
+                is HostOperationOutcome.Completed -> {
+                    val page = outcome2.value as? JsonObject
+                    val accepted = (page?.get("accepted") as? JsonPrimitive)?.booleanOrNull
+                    val runID = (page?.get("runID") as? JsonPrimitive)?.contentOrNull
+                    if (accepted == true && runID != null &&
+                        acceptedRunID.compareAndSet(null, runID)
+                    ) {
+                        admitForegroundLaunch(foregroundLaunch, session.conversationId, runID)
+                        // Forward-compatible value reply (the actual
+                        // producer carries identities in the effect).
+                        applyPlanAcceptPrepared(
+                            entry,
+                            ConversationWire.Prepared(
+                                conversationID = session.conversationId,
+                                runID = runID,
+                                resourceID = ConversationWire.runResourceID(runID),
+                                version = "",
+                            ),
                         )
                     }
-                    is HostOperationOutcome.Rejected -> {
-                        if (acceptedRunID.get() == null) host.runForeground?.agentLaunchDefinitelyNotAdmitted(foregroundLaunch.operationID)
-                        settlePlanAccept(entry, session, accepted = false, code = outcome2.code)
-                    }
-                    is HostOperationOutcome.Failed ->
-                        settlePlanAccept(entry, session, accepted = false, code = outcome2.code)
-                    HostOperationOutcome.Cancelled ->
-                        settlePlanAccept(entry, session, accepted = false, code = "cancelled")
-                    HostOperationOutcome.Superseded ->
-                        settlePlanAccept(entry, session, accepted = false, code = "superseded")
+                    settlePlanAccept(
+                        entry = entry,
+                        session = session,
+                        accepted = acceptedRunID.get() != null,
+                        code = if (acceptedRunID.get() == null) "reply_malformed" else null,
+                    )
+                }
+                is HostOperationOutcome.Rejected -> {
+                    if (acceptedRunID.get() == null) host.runForeground?.agentLaunchDefinitelyNotAdmitted(foregroundLaunch.operationID)
+                    settlePlanAccept(
+                        entry, session, accepted = false,
+                        code = planAcceptRefusalCopy(outcome2.code))
+                }
+                is HostOperationOutcome.Failed ->
+                    settlePlanAccept(entry, session, accepted = false, code = outcome2.code)
+                HostOperationOutcome.Cancelled ->
+                    settlePlanAccept(entry, session, accepted = false, code = "cancelled")
+                HostOperationOutcome.Superseded ->
+                    settlePlanAccept(entry, session, accepted = false, code = "superseded")
+            }
+        }
+    }
+
+    /**
+     * Stop and AWAIT only the exact earlier Plan owners of this conversation.
+     * A durable terminal Plan row is left untouched (history preserved); a
+     * live Agent/Goal owner was already refused before this call. Every read
+     * and cancel re-proves the run's task/mode/state; a timeout or a failed
+     * durable settlement returns a localized refusal and NO accept is sent.
+     */
+    private suspend fun settlePlanOwnersForExecution(
+        entry: ConversationFlowHolderEntry,
+        session: ConversationSessionToken,
+        planRunIDs: List<String>,
+    ): String? {
+        if (planRunIDs.isEmpty()) return null
+        val conversationID = session.conversationId
+        if (planRunIDs.size > 32) return planBusyCopy()
+        val ordered = LinkedHashSet(planRunIDs)
+        for (runID in ordered) {
+            if (!ownCurrentEntry(entry, conversationID, session.sessionEpoch)) {
+                return planBusyCopy()
+            }
+            val page = readPlanOwnerSnapshot(conversationID, runID) ?: return planBusyCopy()
+            if (!sameUUIDIdentity(page.conversationID, conversationID)) return planBusyCopy()
+            if (page.conversationModeRaw != null && page.conversationModeRaw != "plan") {
+                return planBusyCopy(finishCurrent = true)
+            }
+            if (isDurablePlanTerminal(page)) continue
+            val cancelled = cancelPlanOwnerAwait(conversationID, page)
+            if (!cancelled) return planBusyCopy()
+        }
+        // The exact owner must release as well as persist its terminal row.
+        // A timeout refuses instead of overlapping an earlier run's drain.
+        val deadline = System.nanoTime() + 5_000_000_000L
+        while (System.nanoTime() < deadline) {
+            var allSettled = true
+            for (runID in ordered) {
+                val page = readPlanOwnerSnapshot(conversationID, runID) ?: return planBusyCopy()
+                if (!isDurablePlanTerminal(page) || page.liveOwner) { allSettled = false; break }
+            }
+            if (allSettled) return null
+            kotlinx.coroutines.delay(60)
+        }
+        return planBusyCopy()
+    }
+
+    private suspend fun readConversationRowRevision(
+        conversationID: String,
+    ): HostRevision? = kotlinx.coroutines.withTimeoutOrNull(12_000L) {
+        val deferred = kotlinx.coroutines.CompletableDeferred<HostRevision?>()
+        host.trackOperation(
+            HostCommandRequest(
+                command = "conversation.get",
+                scope = HostScope.ConversationLifecycle(conversationID),
+                stateful = false,
+                correlationID = client().correlationID("plan-cas"),
+            ),
+        ) { outcome ->
+            if (!deferred.isCompleted) {
+                val revision = (outcome as? HostOperationOutcome.Completed)?.value
+                    ?.let(ConversationWire::decodeSessionReply)
+                    ?.revision
+                deferred.complete(revision?.let { HostRevision(it.resourceID, it.version) })
+            }
+        }
+        deferred.await()
+    }
+
+    private suspend fun readPlanOwnerSnapshot(
+        conversationID: String,
+        runID: String,
+    ): ConversationWire.SnapshotPage? = kotlinx.coroutines.withTimeoutOrNull(12_000L) {
+        val deferred = kotlinx.coroutines.CompletableDeferred<ConversationWire.SnapshotPage?>()
+        host.trackOperation(
+            HostCommandRequest(
+                command = "run.snapshot",
+                scope = HostScope.TaskExecution(conversationID, runID),
+                stateful = false,
+                correlationID = client().correlationID("plan-owner"),
+                payload = JsonObject(mapOf("metadataOnly" to JsonPrimitive(true))),
+            ),
+        ) { outcome ->
+            if (!deferred.isCompleted) {
+                deferred.complete(
+                    (outcome as? HostOperationOutcome.Completed)?.value
+                        ?.let(ConversationWire::decodeSnapshotPage)
+                )
+            }
+        }
+        deferred.await()
+    }
+
+    private suspend fun cancelPlanOwnerAwait(
+        conversationID: String,
+        page: ConversationWire.SnapshotPage,
+    ): Boolean {
+        if (page.durableState.isBlank()) return false
+        return kotlinx.coroutines.withTimeoutOrNull(12_000L) {
+            val deferred = kotlinx.coroutines.CompletableDeferred<Boolean>()
+            host.trackOperation(
+                HostCommandRequest(
+                    command = "run.cancel",
+                    scope = HostScope.TaskExecution(conversationID, page.runID),
+                    stateful = true,
+                    correlationID = client().correlationID("plan-cancel"),
+                    revision = HostRevision(page.revision.resourceID, page.revision.version),
+                    payload = JsonObject(mapOf("expectedState" to JsonPrimitive(page.durableState))),
+                ),
+            ) { outcome ->
+                if (!deferred.isCompleted) {
+                    deferred.complete(
+                        when (outcome) {
+                            is HostOperationOutcome.Completed -> true
+                            // Already terminal / already requested: the
+                            // durable wait below proves the real outcome.
+                            is HostOperationOutcome.Rejected ->
+                                outcome.code in setOf("runNotRetryable", "staleRevision")
+                            is HostOperationOutcome.Failed -> false
+                            HostOperationOutcome.Cancelled,
+                            HostOperationOutcome.Superseded -> false
+                        }
+                    )
                 }
             }
+            deferred.await()
+        } ?: false
+    }
+
+    private fun isDurablePlanTerminal(page: ConversationWire.SnapshotPage): Boolean =
+        page.durableTerminal == true ||
+            page.terminalDispositionRaw?.let {
+                it in setOf("completed", "failed", "cancelled", "suspended")
+            } == true ||
+            page.durableState in setOf(
+                "completed", "failed", "cancelled", "checkpointed", "interrupted",
+            )
+
+    private fun planAcceptRefusalCopy(code: String): String = when (code) {
+        // A queued launch/parallel activation started behind the handoff (or
+        // an exact Plan owner is still live): this is not a plan-content
+        // failure, so show the same actionable finish-current line.
+        "conversationActive", "duplicateInFlight", "launchAlreadyInFlight" ->
+            planBusyCopy(finishCurrent = true)
+        "staleRevision", "revisionMismatch", "revisionAbsent" -> planBusyCopy()
+        else -> code
+    }
+
+    private fun planBusyCopy(finishCurrent: Boolean = false): String {
+        val context = host.appContextOrNull
+        if (context != null) {
+            val id = if (finishCurrent) {
+                com.floe.android.R.string.n113_plan_finish_current
+            } else {
+                com.floe.android.R.string.n113_plan_handoff_busy
+            }
+            runCatching { context.getString(id) }.getOrNull()?.let { return it }
+        }
+        return if (finishCurrent) {
+            "Finish or stop the current operation before running the plan."
+        } else {
+            "The plan is preparing to run. Try again shortly."
         }
     }
 
@@ -5836,7 +6335,9 @@ class ConversationHostController internal constructor(
                             flow.value = PlanGoalDetailStateUi.Failed(result.code)
                         }
                         is ConversationDetailAssembler.Result.Complete -> {
-                            publishAssembledDetail(flow, page, result.content)
+                            publishAssembledDetail(
+                                flow = flow, finalPage = page, assembled = result.content,
+                                conversationID = conversationId, entry = entry)
                         }
                         ConversationDetailAssembler.Result.Continue -> {
                             readDetailPage(
@@ -5877,6 +6378,8 @@ class ConversationHostController internal constructor(
         flow: MutableStateFlow<PlanGoalDetailStateUi>,
         finalPage: ConversationWire.DetailPage,
         assembled: String,
+        conversationID: String,
+        entry: ConversationFlowHolderEntry,
     ) {
         val root = runCatching {
             kotlinx.serialization.json.Json.parseToJsonElement(assembled.toString()) as? JsonObject
@@ -5893,14 +6396,51 @@ class ConversationHostController internal constructor(
             "plan" -> ConversationWire.decodePlanDetailRow(root)
                 ?.let(PlanGoalDetailStateUi::PlanReady)
                 ?: PlanGoalDetailStateUi.Failed("detailRowUnreadable")
-            else -> ConversationWire.decodeChecklistDetailRow(
-                root,
-                pageRunID = finalPage.id,
-                pageRevision = finalPage.revision,
-                pageStatusRaw = finalPage.statusRaw,
-            )?.let(PlanGoalDetailStateUi::ChecklistReady)
-                ?: PlanGoalDetailStateUi.Failed("detailRowUnreadable")
+            else -> {
+                val row = ConversationWire.decodeChecklistDetailRow(
+                    root,
+                    pageRunID = finalPage.id,
+                    pageRevision = finalPage.revision,
+                    pageStatusRaw = finalPage.statusRaw,
+                )
+                if (row != null) {
+                    // N10: the top strip keeps up with the REAL durable
+                    // checklist row after an update/reset tool result, but
+                    // only while this exact run is the selected active
+                    // round. A terminal/new/reset row never replaces it.
+                    publishChecklistSummaryIfCurrent(
+                        conversationID = conversationID, entry = entry, row = row)
+                    PlanGoalDetailStateUi.ChecklistReady(row)
+                } else {
+                    PlanGoalDetailStateUi.Failed("detailRowUnreadable")
+                }
+            }
         }
+    }
+
+    private fun publishChecklistSummaryIfCurrent(
+        conversationID: String,
+        entry: ConversationFlowHolderEntry,
+        row: ChecklistDetailUi,
+    ) {
+        if (!ownCurrentEntry(entry, conversationID, entry.holder.session.sessionEpoch)) return
+        val state = entry.holder.snapshot.value ?: return
+        val selectedRunID = state.selectedRunId ?: return
+        if (!sameUUIDIdentity(selectedRunID, row.runID)) return
+        val runState = state.runs.firstOrNull {
+            sameUUIDIdentity(it.id, row.runID)
+        }?.stateName
+        val retired = row.wasReset || row.statusRaw == "finished" ||
+            (runState != null && !ChecklistPresentationRules.isActiveRunState(runState))
+        if (retired) {
+            // A reset/finished/terminal round retires the top strip instead
+            // of leaving its last progress snapshot visible as current.
+            entry.builder.applyChecklistProjection(null)
+            entry.holder.applyHostSnapshot(entry.builder.build())
+            return
+        }
+        entry.builder.applyChecklistProjection(row.asCurrentChecklistUi())
+        entry.holder.applyHostSnapshot(entry.builder.build())
     }
 
     // ------------------------------ bounded pending-input body read (G04R2)

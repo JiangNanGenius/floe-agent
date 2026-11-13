@@ -63,9 +63,6 @@ import com.floe.android.design.FloeToolbar
 import com.floe.android.design.FloeUnavailableView
 import com.floe.android.feature.conversation.RunOutputViewerKind
 import com.floe.android.feature.conversation.RunOutputViewerSupport
-import java.io.FileInputStream
-import java.nio.ByteBuffer
-import java.nio.charset.CodingErrorAction
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -102,10 +99,6 @@ class RunOutputViewerPreviewActivity : ComponentActivity() {
         /** The ONLY extra this screen reads: the opaque live-launch token. */
         const val EXTRA_LAUNCH_TOKEN = "com.floe.android.runoutput.viewer.LAUNCH_TOKEN"
 
-        /** Bounded text read: 4 MiB of UTF-8 source is a generous reading
-         * space; larger sealed text shows an honest truncation note. */
-        private const val TEXT_READ_CAP_BYTES = 4L * 1024 * 1024
-
         /** Bounded raster decode: the sampled bitmap never exceeds this
          * pixel dimension on either axis (memory stays flat for 256 MiB
          * egress-capped sources). */
@@ -114,8 +107,11 @@ class RunOutputViewerPreviewActivity : ComponentActivity() {
 
     internal enum class Stage { VERIFYING, READY, FAILED }
 
-    /** Path-free failure identity (mapped to strings). */
-    internal enum class Failure { EXPIRED, GONE, TOO_LARGE, INVALID, RENDER }
+    /** Path-free failure identity (mapped to strings). BINARY is the
+     * content-probe refusal for an unknown/text-candidate snapshot whose
+     * bytes are not UTF-8 text: the sealed bytes are never decoded with
+     * replacement characters or presented as if they were text. */
+    internal enum class Failure { EXPIRED, GONE, TOO_LARGE, INVALID, BINARY, RENDER }
 
     private var stage: Stage by mutableStateOf(Stage.VERIFYING)
     private var failure: Failure by mutableStateOf(Failure.GONE)
@@ -292,43 +288,30 @@ class RunOutputViewerPreviewActivity : ComponentActivity() {
         }
     }
 
-    /** Bounded UTF-8 read of the immutable snapshot (manual read loop —
-     * minSdk 28 has no readNBytes). Malformed sequences become replacement
-     * characters (the bytes stay readable); a cap hit is disclosed, never
-     * hidden. */
+    /** Bounded UTF-8 read of the immutable snapshot. The reader walks real
+     * 64 KiB pages to EOF and reports the actual file byte count, so a page
+     * window is never mistaken for whole-file truncation. NUL or invalid
+     * UTF-8 is a typed BINARY refusal — never replacement characters. Only
+     * the reader's own 4 MiB display cap is disclosed as truncation. */
     private fun loadText(staged: RunOutputViewerStaged) {
         beginReader()
         val reader = lifecycleScope.launch(Dispatchers.IO) {
-            val result = runCatching {
-                FileInputStream(staged.file).use { input ->
-                    val cap = minOf(staged.bytes, TEXT_READ_CAP_BYTES + 1).toInt()
-                    val bytes = ByteArray(cap)
-                    var total = 0
-                    while (total < cap) {
-                        val read = input.read(bytes, total, cap - total)
-                        if (read < 0) break
-                        total += read
-                    }
-                    val truncated = total.toLong() > TEXT_READ_CAP_BYTES
-                    val usable = if (truncated) TEXT_READ_CAP_BYTES.toInt() else total
-                    val decoder = Charsets.UTF_8.newDecoder()
-                        .onMalformedInput(CodingErrorAction.REPLACE)
-                        .onUnmappableCharacter(CodingErrorAction.REPLACE)
-                    decoder.decode(ByteBuffer.wrap(bytes, 0, usable)).toString() to truncated
-                }
-            }
+            val read = RunOutputTextViewReader.read(staged.file)
             withContext(Dispatchers.Main) {
                 // A late completion after close owns no launch: it settles
                 // the reader count but never publishes content.
                 if (isDestroyed || isFinishing || settled) return@withContext
-                result.fold(
-                    onSuccess = { (text, truncated) ->
-                        textContent = text
-                        textTruncated = truncated
+                when (read) {
+                    is RunOutputTextViewReader.Result.Success -> {
+                        textContent = read.page.text
+                        textTruncated = read.page.truncated
                         stage = Stage.READY
-                    },
-                    onFailure = { showFailure(Failure.RENDER) },
-                )
+                    }
+                    RunOutputTextViewReader.Result.NotUTF8Text ->
+                        showFailure(Failure.BINARY)
+                    is RunOutputTextViewReader.Result.ReadFailure ->
+                        showFailure(Failure.RENDER)
+                }
             }
         }
         reader.invokeOnCompletion { readerCompletions.post { endReader() } }
@@ -559,6 +542,8 @@ private fun RunOutputViewerScreen(
                         stringResource(R.string.run_viewer_toolarge_info)
                     RunOutputViewerPreviewActivity.Failure.INVALID ->
                         stringResource(R.string.run_viewer_invalid_info)
+                    RunOutputViewerPreviewActivity.Failure.BINARY ->
+                        stringResource(R.string.run_viewer_binary_info)
                     RunOutputViewerPreviewActivity.Failure.RENDER ->
                         stringResource(R.string.run_viewer_render_info)
                     RunOutputViewerPreviewActivity.Failure.GONE ->

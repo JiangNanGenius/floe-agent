@@ -28,12 +28,13 @@ class RunOutputOfficeSnapshotStagerTest {
                          digest: String = sha(payload),
                          conv: String = conversation, runId: String = run,
                          outputId: String = output,
-                         relative: String? = null): String {
+                         relative: String? = null,
+                         mime: String = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"): String {
         val rel = relative ?: "RunOutputs/$runId/$outputId/$name"
         return """{"ok":1,"schema":"floe.run-output.egress.v1","conversationID":"$conv",
             "runID":"$runId","outputID":"$outputId","producerCallID":"call-1",
             "producerTool":"workspace.publishOutput","slot":"document","displayName":"$name",
-            "mimeType":"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "mimeType":"$mime",
             "byteCount":$bytes,"sha256":"$digest","relativePath":"$rel"}"""
     }
 
@@ -197,6 +198,45 @@ class RunOutputOfficeSnapshotStagerTest {
             assertEquals("ownerChanged", (failure as RunOutputOfficeSnapshotStager.Failure).code)
             assertEquals(1, channel.closes)
             assertEquals(0, root.walk().filter { it != root }.count())
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun textCandidatesStageUncommonAndExtensionlessNamesOnlyWhenAllowed() {
+        val root = tempRoot()
+        try {
+            val text = "print('hello')\r\n".toByteArray()
+            for ((name, mime) in listOf(
+                "script.py" to "application/octet-stream",
+                "README" to "application/octet-stream",
+                "notes.foobar" to "text/plain",
+            )) {
+                val channel = ScriptedChannel(
+                    infoJson(name = name, bytes = text.size.toLong(),
+                             digest = sha(text), mime = mime),
+                    text)
+                val stager = RunOutputOfficeSnapshotStager(
+                    root, channel, com.floe.android.feature.conversation.RunOutputViewerSupport.STAGED_EXTENSIONS,
+                    allowTextCandidates = true)
+                val snapshot = stager.stage(owner()) { true }
+                assertEquals(name, snapshot.displayName)
+                assertTrue(snapshot.file.readBytes().contentEquals(text))
+                assertEquals(1, channel.closes)
+            }
+            // The SAME candidate is honestly refused when the instance does
+            // not admit text candidates (the Office/PDF viewers keep their
+            // exact format gate).
+            val strict = ScriptedChannel(
+                infoJson(name = "script.py", bytes = text.size.toLong(),
+                         digest = sha(text), mime = "application/octet-stream"), text)
+            val failure = runCatching {
+                RunOutputOfficeSnapshotStager(root, strict).stage(owner()) { true }
+            }.exceptionOrNull()
+            assertEquals("invalidOfficeFormat",
+                (failure as RunOutputOfficeSnapshotStager.Failure).code)
+            assertEquals(1, strict.closes)
         } finally {
             root.deleteRecursively()
         }

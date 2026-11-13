@@ -52,23 +52,14 @@ enum WorkspaceTextEdit {
     }
 
     static func decode(_ data: Data) throws -> String {
-        guard !data.contains(0), let text = String(data: data, encoding: .utf8) else {
+        // ONE decode authority: `WorkspaceTextPolicy.decodeUTF8` rejects NUL
+        // bytes and invalid UTF-8 and re-attaches exactly one leading
+        // byte-order mark as U+FEFF (Foundation consumes it). The
+        // decode→encode round trip therefore stays byte-for-byte for BOM,
+        // double-BOM, CRLF/LF and emoji content, which the conflict guard's
+        // exact digest-of-current-bytes check depends on.
+        guard let text = WorkspaceTextPolicy.decodeUTF8(data) else {
             throw WorkspaceToolError.invalidArguments("Expected a UTF-8 text file; use a dedicated document or media tool for binary files")
-        }
-        // The strict UTF-8 decoding above is unchanged (invalid streams still
-        // refuse). But this toolchain family's `String(data:encoding:.utf8)`
-        // STRIPS a leading byte-order mark (host-proved: a 21-byte BOM file
-        // decodes and re-encodes to 18 bytes), which would silently recode a
-        // BOM'd file on save and break the conflict guard's exact
-        // digest-of-current-bytes check. Re-attach the signature ONLY when
-        // the raw stream carried it and the decode dropped it, so the
-        // decode→encode round trip stays byte-for-byte and the original
-        // BOM/CRLF/emoji preservation contract holds on every platform
-        // regardless of Foundation version (G04-R1 host cohort evidence:
-        // G04WorkspaceDocumentSessionTests/editingUndoSavePreservesBOMCRLFAndEmoji).
-        if data.starts(with: [0xEF, 0xBB, 0xBF]),
-           text.unicodeScalars.first?.value != 0xFEFF {
-            return "\u{FEFF}" + text
         }
         return text
     }

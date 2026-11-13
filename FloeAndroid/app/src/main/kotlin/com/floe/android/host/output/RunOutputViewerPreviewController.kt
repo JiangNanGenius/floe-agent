@@ -49,6 +49,7 @@ internal class RunOutputViewerPreviewController(
     private val viewerRoot = File(appContext.applicationInfo.dataDir, "files/RunOutputViewerPreview")
     private val stager = RunOutputOfficeSnapshotStager(
         viewerRoot, NativeRunOutputChannel, RunOutputViewerSupport.STAGED_EXTENSIONS,
+        allowTextCandidates = true,
     )
     private val registry = RunOutputViewerLaunchRegistry()
 

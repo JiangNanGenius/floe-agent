@@ -95,6 +95,27 @@ class ThreadProjectionBuilder internal constructor(
     var hasEarlierMessages: Boolean = false
     var selectedRunId: String? = null
     val childDetails = mutableMapOf<String, ChildRunDetailUi>()
+    /**
+     * Durable next-input mode + presentation acknowledgement for THIS task
+     * (⇄ ChatPreferenceStore preferredExecutionMode/lastPresentedPlanRevision).
+     * Written by the host from its app-private durable preference record;
+     * the builder only projects it. A plan presentation is acknowledged by
+     * exact `planID:revision`; it grants no execution or tool permission.
+     */
+    var preferredExecutionModeRaw: String? = null
+    var lastPresentedPlanRevision: String? = null
+    /** Current-round checklist summary from the session reply (never a
+     * historical round presented as current; the UI also scopes by run). */
+    private var checklistProjection: ChecklistUi? = null
+
+    fun applyContinuityPreferences(modeRaw: String?, lastPresentedPlanRevision: String?) {
+        preferredExecutionModeRaw = modeRaw
+        this.lastPresentedPlanRevision = lastPresentedPlanRevision
+    }
+
+    fun applyChecklistProjection(checklist: ChecklistUi?) {
+        checklistProjection = checklist
+    }
 
     private var missing: Boolean = false
     private var hasLoaded: Boolean = false
@@ -544,6 +565,7 @@ class ThreadProjectionBuilder internal constructor(
                 stateName = run.state,
                 modelId = run.modelName,
                 startedAtLabel = run.startedAt,
+                conversationModeRaw = run.conversationModeRaw,
             )
             if (run.state.isNotBlank() && run.state != "unknown") {
                 runRevisions[run.runID] =
@@ -579,6 +601,7 @@ class ThreadProjectionBuilder internal constructor(
         // TRIMMED page — the availability members record which it is).
         plan = reply.plan
         goal = reply.goal
+        checklistProjection = reply.checklist
         planAvailabilityRaw = reply.planAvailabilityRaw
         goalAvailabilityRaw = reply.goalAvailabilityRaw
         // The CURRENT page is the whole truth (same rule as plan/goal): an
@@ -597,7 +620,11 @@ class ThreadProjectionBuilder internal constructor(
     internal fun applySnapshot(page: ConversationWire.SnapshotPage) {
         runRows[page.runID] = (runRows[page.runID]
             ?: RunRowUi(page.runID, page.durableState, null, ""))
-            .copy(stateName = page.durableState)
+            .copy(
+                stateName = page.durableState,
+                conversationModeRaw = page.conversationModeRaw
+                    ?: runRows[page.runID]?.conversationModeRaw,
+            )
         runRevisions[page.runID] = page.revision
         recordRunReason(page.runID, page.durableState, page.checkpointReason,
             page.durableWatermark, preserveMissing = true)
@@ -1454,9 +1481,11 @@ class ThreadProjectionBuilder internal constructor(
             loadingEventRunIds = emptySet(),
             earlierMessageCursor = earlierCursor,
             importantFiles = emptyList(),
-            checklist = null,
+            checklist = checklistProjection,
             plan = plan,
             goal = goal,
+            preferredExecutionModeRaw = preferredExecutionModeRaw,
+            lastPresentedPlanRevision = lastPresentedPlanRevision,
             planAvailabilityRaw = planAvailabilityRaw,
             goalAvailabilityRaw = goalAvailabilityRaw,
             goalReviewByRun = goalReviewByRunValue.toMap(),
@@ -1561,6 +1590,9 @@ internal object ConversationWire {
          * null; never an empty-object reinterpretation). */
         val plan: PlanUi? = null,
         val goal: GoalUi? = null,
+        /** N10 task continuity: the current round's bounded checklist
+         * summary; null = absent/trimmed/terminal-previous round. */
+        val checklist: ChecklistUi? = null,
         /** Additive goal-core batch projections (ROUNDS 2/3): the
          * `projected|trimmed|absent` availability vocabulary, decoded
          * verbatim. TRIMMING (a summary squeezed out by page pressure) is
@@ -1592,6 +1624,8 @@ internal object ConversationWire {
         val state: String,
         val modelName: String?,
         val startedAt: String,
+        /** Durable `conversation_mode` for THIS run (`chat|plan|goal`). */
+        val conversationModeRaw: String? = null,
     )
 
     class MessagePage(
@@ -1708,6 +1742,7 @@ internal object ConversationWire {
                 state = obj.string("state") ?: "unknown",
                 modelName = obj.string("modelName"),
                 startedAt = obj.string("startedAt") ?: "",
+                conversationModeRaw = obj.string("conversationMode"),
             )
         } ?: emptyList()
         val pendingInputs = (root["pendingInputs"] as? JsonArray)?.mapNotNull { element ->
@@ -1768,6 +1803,7 @@ internal object ConversationWire {
             policyNotificationRaw = policy?.string("notificationPolicy"),
             plan = decodePlanSummary(root["plan"] as? JsonObject),
             goal = decodeGoalSummary(root["goal"] as? JsonObject),
+            checklist = decodeChecklistSummary(root["checklist"] as? JsonObject),
             planAvailabilityRaw = root.string("planAvailability"),
             goalAvailabilityRaw = root.string("goalAvailability"),
             workspace = decodeWorkspaceBinding(root["workspace"] as? JsonObject),
@@ -1812,6 +1848,43 @@ internal object ConversationWire {
             revisionNumber = revisionNumber,
             revision = Revision("plan.$id", revisionNumber.toString()),
             digest = obj.string("digest"),
+        )
+    }
+
+    /** N10 additive `conversation.get.checklist` summary. Strict: the
+     * owning run id, revision and every step status must decode; a partial
+     * or foreign document is honest absence, never a merged/progress-invented
+     * row. The full canonical row remains on the detail chain. */
+    fun decodeChecklistSummary(obj: JsonObject?): ChecklistUi? {
+        if (obj == null) return null
+        val runID = obj.string("runID") ?: return null
+        val revision = obj.long("revision")?.toInt() ?: return null
+        if (revision < 1) return null
+        val steps = (obj["steps"] as? JsonArray)?.mapNotNull { element ->
+            val step = element as? JsonObject ?: return@mapNotNull null
+            val id = step.string("id") ?: return@mapNotNull null
+            val title = step.string("title") ?: return@mapNotNull null
+            val statusRaw = step.string("status") ?: return@mapNotNull null
+            val status = ChecklistStepStatusUi.entries.firstOrNull { it.swiftRaw == statusRaw }
+                ?: return@mapNotNull null
+            ChecklistStepUi(
+                id = id,
+                title = title,
+                status = status,
+                evidence = (step["evidence"] as? JsonArray)
+                    ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+                    ?: emptyList(),
+            )
+        } ?: emptyList()
+        return ChecklistUi(
+            title = obj.string("title") ?: "",
+            currentStepTitle = obj.string("currentStepTitle"),
+            progressSummary = obj.string("progressSummary") ?: "",
+            steps = steps,
+            runId = runID,
+            revision = revision,
+            isFinished = obj.bool("isFinished") ?: false,
+            wasReset = obj.bool("wasReset") ?: false,
         )
     }
 
@@ -2128,6 +2201,9 @@ internal object ConversationWire {
             goalReviewRaw = root.string("goalReview"),
             checkpointReason = root.string("checkpointReason"),
             pendingInputsTruncated = root.bool("pendingInputsTruncated"),
+            conversationModeRaw = root.string("conversationMode"),
+            durableTerminal = root.bool("durableTerminal"),
+            terminalDispositionRaw = root.string("terminalDisposition"),
         )
     }
 
@@ -2399,6 +2475,7 @@ internal object ConversationWire {
             title = json.string("title") ?: "",
             statusRaw = pageStatusRaw,
             steps = steps,
+            wasReset = json.bool("wasReset") ?: false,
         )
     }
 

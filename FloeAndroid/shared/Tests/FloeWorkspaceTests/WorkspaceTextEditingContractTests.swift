@@ -74,7 +74,7 @@ final class WorkspaceTextEditingContractTests: XCTestCase {
 
         let chunked = try service.readFile("wide.txt")
         XCTAssertTrue(chunked.truncated, "64 KiB tool read of a 200 KB file must report truncation")
-        XCTAssertLessThan(chunked.text.utf8.count, WorkspaceFileService.readChunkBytes)
+        XCTAssertLessThanOrEqual(chunked.text.utf8.count, WorkspaceFileService.readChunkBytes)
         XCTAssertEqual(chunked.totalLines, WorkspaceFileService.lineCount(of: big))
 
         let editable = try service.readFileForEditing("wide.txt")

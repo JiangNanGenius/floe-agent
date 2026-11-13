@@ -1767,6 +1767,13 @@ public struct ConversationSessionReply: Sendable, Equatable {
     /// nil = honestly unbound (temporary session, or no ownership row
     /// committed yet). Never a first-workspace guess.
     public let workspace: ConversationWorkspaceWire?
+    /// N10 task continuity (additive): the current round's bounded checklist
+    /// summary. Present ONLY while its exact run is runtime-active and the
+    /// checklist is neither finished nor reset; nil is honest absence (no
+    /// checklist, a terminal/previous round, trimmed for page budget). The
+    /// full canonical row stays readable through the existing
+    /// `conversation.get.detail{kind:"checklist"}` chain.
+    public let checklist: ConversationChecklistWire?
 
     public init(conversationID: UUID, resourceID: String, revision: String,
                 title: String, createdAtRaw: String, updatedAtRaw: String,
@@ -1783,7 +1790,8 @@ public struct ConversationSessionReply: Sendable, Equatable {
                 goal: ConversationGoalWire? = nil,
                 planAvailability: String = "absent",
                 goalAvailability: String = "absent",
-                workspace: ConversationWorkspaceWire? = nil) {
+                workspace: ConversationWorkspaceWire? = nil,
+                checklist: ConversationChecklistWire? = nil) {
         self.conversationID = conversationID
         self.resourceID = resourceID
         self.revision = revision
@@ -1807,6 +1815,7 @@ public struct ConversationSessionReply: Sendable, Equatable {
         self.planAvailability = planAvailability
         self.goalAvailability = goalAvailability
         self.workspace = workspace
+        self.checklist = checklist
     }
 
     public var wireObject: [String: Any] {
@@ -1838,6 +1847,9 @@ public struct ConversationSessionReply: Sendable, Equatable {
         // lesson as archivedAt — never `Optional.none as Any`).
         object["plan"] = plan?.wireObject ?? NSNull()
         object["goal"] = goal?.wireObject ?? NSNull()
+        // Additive task-continuity summary. Explicit NSNull for absence keeps
+        // the same strict JSON boxed-Optional lesson as archivedAt/plan/goal.
+        object["checklist"] = checklist?.wireObject ?? NSNull()
         // Detail-read admission: availability is NEVER conflated with
         // absence — "projected" | "trimmed" (use the bounded detail read) |
         // "absent" (nothing durable resolves). The trim flags are computed
@@ -3226,6 +3238,23 @@ public actor FacadeConversationDomain {
         // (RunningInputStore:63-71). The queue is naturally small, but the
         // projection is still budget-trimmed from the tail with an honest
         // flag; `pendingInputsTotalCount` is the REAL full-store count.
+        // N10 task continuity: the current round's checklist summary. This
+        // read is secondary to the authoritative message/run pages; a store
+        // failure is honest absence (the bounded detail chain still answers)
+        // and can never fail the whole session page.
+        let latestChecklist = try? await TaskChecklistStore(database: database)
+            .latest(conversationID: conversationID)
+        let currentChecklistRun = latestChecklist.flatMap { checklist in
+            runRows.first { $0.runID == checklist.runID }
+        }
+        var checklistWire: ConversationChecklistWire? = latestChecklist.flatMap { checklist in
+            guard let run = currentChecklistRun else { return nil }
+            return ConversationChecklistWire.project(
+                checklist: checklist,
+                runID: run.runID,
+                runState: run.state,
+                runEnded: run.endedAtRaw != nil)
+        }
         let allPending = (try await runningInputStore.pending(conversationID: conversationID))
             .map(PendingUserInputWire.init(input:))
         let taskPolicy = try await workspaceStore.taskPolicy(conversationID: conversationID)
@@ -3290,7 +3319,8 @@ public actor FacadeConversationDomain {
                 goal: goalWire,
                 planAvailability: planWire != nil ? "projected" : (planTrimmed ? "trimmed" : "absent"),
                 goalAvailability: goalWire != nil ? "projected" : (goalTrimmed ? "trimmed" : "absent"),
-                workspace: workspaceWire
+                workspace: workspaceWire,
+                checklist: checklistWire
             )
         }
 
@@ -3299,11 +3329,12 @@ public actor FacadeConversationDomain {
                           runsTruncated: runsTruncated)
         while ConversationWireBudget.encodedObjectBytes(reply.wireObject)
                 > SettingsDomainV1.pageBudgetBytes {
-            // goal-core batch: the two derived reads yield FIRST (bounded
-            // summaries; `run.snapshot` still answers plan/goal durably),
-            // then the existing pending/run trims keep their exact prior
-            // order and semantics.
-            if goalWire != nil {
+            // N10: the checklist summary is the most derived, least
+            // authoritative member; it yields before plan/goal. Its full row
+            // remains available through the bounded detail read.
+            if checklistWire != nil {
+                checklistWire = nil
+            } else if goalWire != nil {
                 goalWire = nil
                 goalTrimmed = true
             } else if planWire != nil {
@@ -3388,9 +3419,21 @@ public actor FacadeConversationDomain {
         case .checklist:
             // This original store uses the SAME owned database. Its progress
             // evidence is model-authored and never Goal completion proof.
-            guard let checklist = try await TaskChecklistStore(database: database)
-                .latest(conversationID: conversationID),
-                  checklist.conversationID == conversationID,
+            // A reset tombstone is durable, inspectable history: the
+            // bounded detail read answers it (with its real reset status),
+            // while the session summary/top strip treats it as closed.
+            let checklistStore = TaskChecklistStore(database: database)
+            let checklist: TaskChecklist?
+            if let runID = query.id {
+                // Exact historical round: a newer round must not hide an
+                // older run's unfinished/failed checklist or reset marker.
+                checklist = try await checklistStore.latest(
+                    conversationID: conversationID, runID: runID, includeReset: true)
+            } else {
+                checklist = try await checklistStore.latest(
+                    conversationID: conversationID, includeReset: true)
+            }
+            guard let checklist, checklist.conversationID == conversationID,
                   query.id == nil || query.id == checklist.runID else {
                 throw ConversationDomainError.notFound
             }
@@ -3439,7 +3482,9 @@ public actor FacadeConversationDomain {
             rowID = checklist.runID
             // Finished includes cancelled steps; it does not mean completed
             // work or independently verified Goal completion.
-            rowStatus = checklist.isFinished ? "finished" : "inProgress"
+            rowStatus = checklist.wasReset == true
+                ? "reset"
+                : (checklist.isFinished ? "finished" : "inProgress")
             rowRevision = checklist.revision
         case .pendingInput(let input):
             // The durable queue row has NO integer revision column: `0` is

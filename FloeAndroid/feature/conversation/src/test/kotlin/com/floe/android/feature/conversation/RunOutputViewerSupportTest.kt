@@ -6,15 +6,15 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** The owned-output viewer agreement table: BOTH sealed facts (receipt MIME
- * + sealed display-name extension) must agree; a mismatch in either
- * direction is UNSUPPORTED (honest limitation, never a sniffed guess);
- * unknown types never reach a preview kind; and the staged-extension gate
- * exactly covers the union of the four agreement tables. */
+/** The owned-output viewer classification table: image/audio/video keep
+ * their exact MIME+extension agreement, while plain text, code and unknown
+ * UTF-8 candidates use the same broad policy as the workspace editor and
+ * are still content-probed before display. Non-text families and arbitrary
+ * binaries never fall through to a text or fake preview. */
 class RunOutputViewerSupportTest {
 
     @Test
-    fun textAndMarkdownRequireAgreement() {
+    fun textFamiliesCoverPlainTextAndCodeWithoutBinaryDrift() {
         assertEquals(RunOutputViewerKind.TEXT,
             RunOutputViewerSupport.classify("text/markdown", "qa_report.md"))
         assertEquals(RunOutputViewerKind.TEXT,
@@ -23,15 +23,36 @@ class RunOutputViewerSupportTest {
             RunOutputViewerSupport.classify("text/plain", "log.txt"))
         assertEquals(RunOutputViewerKind.TEXT,
             RunOutputViewerSupport.classify("text/plain; charset=utf-8", "app.log"))
-        // Agreement violations — either side alone is never a preview:
-        assertEquals(RunOutputViewerKind.UNSUPPORTED,
-            RunOutputViewerSupport.classify("text/plain", "notes.md"))
-        assertEquals(RunOutputViewerKind.UNSUPPORTED,
-            RunOutputViewerSupport.classify("text/markdown", "notes.txt"))
-        assertEquals(RunOutputViewerKind.UNSUPPORTED,
-            RunOutputViewerSupport.classify("text/html", "page.md"))
-        assertEquals(RunOutputViewerKind.UNSUPPORTED,
+        // The Android publisher's documented octet-stream fallback for
+        // uncommon text/code extensions is still a bounded TEXT candidate;
+        // the viewer strictly probes UTF-8/NUL before rendering.
+        assertEquals(RunOutputViewerKind.TEXT,
             RunOutputViewerSupport.classify("application/octet-stream", "notes.md"))
+        assertEquals(RunOutputViewerKind.TEXT,
+            RunOutputViewerSupport.classify("application/octet-stream", "script.py"))
+        assertEquals(RunOutputViewerKind.TEXT,
+            RunOutputViewerSupport.classify("application/octet-stream", "build.sh"))
+        assertEquals(RunOutputViewerKind.TEXT,
+            RunOutputViewerSupport.classify("application/octet-stream", "page.html"))
+        assertEquals(RunOutputViewerKind.TEXT,
+            RunOutputViewerSupport.classify("text/csv", "data.csv"))
+        assertEquals(RunOutputViewerKind.TEXT,
+            RunOutputViewerSupport.classify("application/json", "config.json"))
+        assertEquals(RunOutputViewerKind.TEXT,
+            RunOutputViewerSupport.classify("text/xml", "layout.xml"))
+        assertEquals(RunOutputViewerKind.TEXT,
+            RunOutputViewerSupport.classify("application/octet-stream", "README"))
+        assertEquals(RunOutputViewerKind.TEXT,
+            RunOutputViewerSupport.classify("application/octet-stream", "unknown.foobar"))
+        // Non-text families never fall through to a text or binary decode.
+        assertEquals(RunOutputViewerKind.UNSUPPORTED,
+            RunOutputViewerSupport.classify("text/plain", "notes.png"))
+        assertEquals(RunOutputViewerKind.UNSUPPORTED,
+            RunOutputViewerSupport.classify("text/plain", "report.docx"))
+        assertEquals(RunOutputViewerKind.UNSUPPORTED,
+            RunOutputViewerSupport.classify("application/octet-stream", "archive.zip"))
+        assertEquals(RunOutputViewerKind.UNSUPPORTED,
+            RunOutputViewerSupport.classify("application/octet-stream", "render.mp4"))
     }
 
     @Test
@@ -89,9 +110,12 @@ class RunOutputViewerSupportTest {
             RunOutputViewerSupport.classify("", "a.md"))
         assertEquals(RunOutputViewerKind.UNSUPPORTED,
             RunOutputViewerSupport.classify("text/plain", ""))
-        assertEquals(RunOutputViewerKind.UNSUPPORTED,
+        // A sealed display name never starts with a dot, and an
+        // extensionless/unknown name is a real text candidate once its MIME
+        // says text or the publisher fallback applies.
+        assertEquals(RunOutputViewerKind.TEXT,
             RunOutputViewerSupport.classify("text/plain", "noextension"))
-        assertEquals(RunOutputViewerKind.UNSUPPORTED,
+        assertEquals(RunOutputViewerKind.TEXT,
             RunOutputViewerSupport.classify("text/plain", ".hidden"))
     }
 
@@ -108,16 +132,19 @@ class RunOutputViewerSupportTest {
     }
 
     @Test
-    fun stagedExtensionsCoverExactlyTheAgreementTables() {
-        assertEquals(
-            sortedSetOf(
-                "3gp", "aac", "gif", "jpeg", "jpg", "log", "m4a", "markdown", "md",
-                "mp3", "mp4", "ogg", "png", "text", "txt", "wav", "webp", "webm",
-            ),
-            RunOutputViewerSupport.STAGED_EXTENSIONS,
-        )
-        // Office/PDF stay owned by their existing lanes — never restaged here.
-        assertFalse("pdf" in RunOutputViewerSupport.STAGED_EXTENSIONS)
-        assertFalse("docx" in RunOutputViewerSupport.STAGED_EXTENSIONS)
+    fun stagedExtensionsCoverTextAndMediaAgreementTables() {
+        for (extension in listOf(
+            "txt", "md", "log", "csv", "tsv", "html", "htm", "py", "js", "ts",
+            "rs", "swift", "tex", "rst", "json", "yaml", "toml", "xml",
+            "png", "jpg", "jpeg", "webp", "gif", "wav", "mp3", "m4a", "ogg",
+            "mp4", "webm", "3gp",
+        )) {
+            assertTrue(extension, extension in RunOutputViewerSupport.STAGED_EXTENSIONS)
+        }
+        // Office/PDF and arbitrary binaries stay owned by their native lanes
+        // — never restaged as a text preview.
+        for (extension in listOf("pdf", "docx", "xlsx", "pptx", "zip", "bin", "exe", "wasm")) {
+            assertFalse(extension, extension in RunOutputViewerSupport.STAGED_EXTENSIONS)
+        }
     }
 }

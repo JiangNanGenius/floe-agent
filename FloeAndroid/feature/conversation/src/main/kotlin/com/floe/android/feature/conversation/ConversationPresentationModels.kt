@@ -523,6 +523,8 @@ data class ChecklistDetailUi(
      * cancelled) or "inProgress". */
     val statusRaw: String,
     val steps: List<ChecklistStepUi>,
+    /** Native reset tombstone; a reset row is closed progress, not a result. */
+    val wasReset: Boolean = false,
 )
 
 sealed interface PlanGoalDetailStateUi {
@@ -558,7 +560,42 @@ data class ChecklistUi(
     val currentStepTitle: String?,
     val progressSummary: String,
     val steps: List<ChecklistStepUi>,
-)
+    /** The checklist's owning durable run. The top strip presents it ONLY
+     * while this equals the selected ACTIVE run; a prior round's unfinished
+     * or failed steps stay in durable history but are never shown as current. */
+    val runId: String? = null,
+    val revision: Int = 0,
+    val isFinished: Boolean = false,
+    /** Native reset tombstone: a reset round is closed, not progress. */
+    val wasReset: Boolean = false,
+) {
+    /** True only for the current visible round (retires at terminal/new round). */
+    fun isCurrent(selectedRunId: String?, selectedRunState: String?): Boolean {
+        if (runId == null || selectedRunId == null ||
+            !runId.equals(selectedRunId, ignoreCase = true)
+        ) return false
+        if (isFinished || wasReset) return false
+        return selectedRunState == null || ChecklistPresentationRules.isActiveRunState(selectedRunState)
+    }
+}
+
+/** Project one fully-read canonical checklist row into the top-strip summary.
+ * Used only after the bounded detail chain proves the row; the live/session
+ * summary remains the first-frame source. The progress fraction is deliberately
+ * numeric and language-neutral because this module has no Context. */
+fun ChecklistDetailUi.asCurrentChecklistUi(): ChecklistUi {
+    val completed = steps.count { it.status == ChecklistStepStatusUi.COMPLETED }
+    return ChecklistUi(
+        title = title,
+        currentStepTitle = steps.firstOrNull { it.status == ChecklistStepStatusUi.IN_PROGRESS }?.title,
+        progressSummary = "$completed/${steps.size}",
+        steps = steps,
+        runId = runID,
+        revision = revision,
+        isFinished = statusRaw == "finished",
+        wasReset = wasReset,
+    )
+}
 
 /* --------------------------- children & decisions --------------------------- */
 
@@ -753,6 +790,10 @@ data class RunRowUi(
     val stateName: String,
     val modelId: String?,
     val startedAtLabel: String,
+    /** `conversation.get` durable mode (`chat|plan|goal|agent`) for THIS run.
+     * Null = a legacy page without the member — never guessed. The Execute
+     * Plan handoff uses it to stop ONLY earlier Plan owners. */
+    val conversationModeRaw: String? = null,
 )
 
 /* ------------------------------- timeline rows ------------------------------ */
@@ -914,6 +955,13 @@ data class ThreadUiState(
     val checklist: ChecklistUi?,
     val plan: PlanUi?,
     val goal: GoalUi?,
+    /** Durable next-input mode raw (`agent|chat|plan|goal`); null = legacy
+     * data with no remembered choice (historical Agent default). */
+    val preferredExecutionModeRaw: String? = null,
+    /** The exact `planID:revision` already presented and acknowledged. A
+     * newer plan revision presents once; an explicit Plan selection at this
+     * same revision survives refreshes and process reopen. */
+    val lastPresentedPlanRevision: String? = null,
     val childRuns: List<ChildRunUi>,
     val decisions: List<ToolDecisionUi>,
     /** On-demand delegated-child transcripts, published per load request. */

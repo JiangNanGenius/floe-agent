@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- N10 task continuity: concise, actionable copy only. -->
+    <string name="n113_mode_not_saved">Couldn\'t save the composer mode.</string>
+    <string name="n113_plan_handoff_busy">The plan is preparing to run. Try again shortly.</string>
+    <string name="n113_plan_finish_current">Finish or stop the current operation before running the plan.</string>
+
+    <string name="n113_task_result_channel">Task results</string>
+    <string name="n113_task_result_channel_description">Tells you when a task finishes while Floe is in the background.</string>
+    <string name="n113_task_result_title_fallback">Floe task</string>
+    <string name="n113_task_result_completed">Task completed</string>
+    <string name="n113_task_result_failed">Task failed</string>
+    <string name="n113_task_result_cancelled">Task stopped</string>
+    <string name="n113_task_result_waiting">Task is waiting for your input</string>
+    <string name="n113_task_result_suspended">Task paused — open Floe to continue</string>
+</resources>

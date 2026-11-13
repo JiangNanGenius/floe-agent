@@ -556,9 +556,12 @@ object PendingInputQueueLogic {
     const val BODY_UNREAD = "__floe.queue_body_unread__"
 }
 
-/** ⇄ ThreadDetailViewModel plan-mode reconciliation: a session refresh must
- * restore Plan mode while an unfinished plan awaits review, but NEVER invent
- * an exit from a deliberate per-turn choice at the SAME revision. */
+/** ⇄ ThreadDetailViewModel plan-mode reconciliation: legacy 3-argument
+ * compatibility used by older fixtures. PRODUCTION uses
+ * [PlanPresentationRules], which presents a NEW plan once (leaving Plan for
+ * Agent), records its exact identity durably and preserves an explicit Plan
+ * choice at the same revision. This object is retained so existing callers/
+ * tests do not change signature; it must not be wired into the composer. */
 object PlanModeReconciler {
 
     /** ⇄ activePlanRevision: awaitingInput or ready plans pin the revision. */
@@ -578,6 +581,162 @@ object PlanModeReconciler {
     /** ⇄ selectAgentMode: an explicit switch records the active revision so
      * later refreshes respect it. */
     fun onExplicitModeSwitch(plan: PlanUi?): Int? = activePlanRevision(plan)
+}
+
+/* --------------------------- task continuity (N10) --------------------------- */
+
+/** ⇄ ThreadDetailViewModel.presentedTaskChecklist: the top strip belongs to
+ * the CURRENT live round, never to historical conversation metadata. It
+ * retires at an actual terminal/new round but the durable revisions remain
+ * readable through the bounded checklist detail read. */
+object ChecklistPresentationRules {
+    /** The ORIGINAL durable AgentState names that still have a live owner. */
+    val activeRunStates: Set<String> = setOf(
+        "preparing", "streamingModel", "waitingApproval", "executingTool",
+        "compacting", "paused", "interrupted", "verifying", "cancelling",
+    )
+
+    fun isActiveRunState(raw: String): Boolean = raw in activeRunStates
+
+    fun shouldPresent(
+        checklist: ChecklistUi?,
+        selectedRunId: String?,
+        selectedRunState: String?,
+    ): Boolean = checklist?.isCurrent(selectedRunId, selectedRunState) == true
+}
+
+/**
+ * ⇄ ChatReasoningPreference.preferredExecutionMode + lastPresentedPlanRevision
+ * and ThreadDetailViewModel.reconcilePlanComposerMode.
+ *
+ * A NEW pending plan is presented ONCE: it acknowledges that exact
+ * `id:revision` and, only when the composer is still on Plan, returns the
+ * next input to Agent. Showing a plan never executes it and never grants
+ * tools. The acknowledgement is durable, so an explicit return to Plan at
+ * the SAME revision survives refreshes and process reopen; a newer plan
+ * revision is a new presentation. Chat/Goal/corrupt preferences are never
+ * promoted.
+ */
+object PlanPresentationRules {
+    data class Decision(
+        val mode: AgentExecutionModeUi,
+        /** Exact `planID:revision` to persist with the mode (nil = no plan). */
+        val acknowledgement: String?,
+        /** True when the mode and/or acknowledgement changed and must be saved. */
+        val shouldPersist: Boolean,
+        /** A present-but-unrecognized saved mode fails closed to Chat. */
+        val needsRepairNotice: Boolean,
+    )
+
+    /** ⇄ presentedPlanRevision: awaitingInput/ready pin the exact identity. */
+    fun presentedPlanKey(plan: PlanUi?): String? {
+        if (plan == null || !PlanUi.isActiveAwaitingReview(plan.statusRaw)) return null
+        // UUID spelling is normalized so a native page returning the same
+        // identity in another case cannot re-present an already-seen plan.
+        return "${plan.id.lowercase()}:${plan.revisionNumber}"
+    }
+
+    fun parseStoredMode(raw: String?): AgentExecutionModeUi? =
+        AgentExecutionModeUi.entries.firstOrNull { it.swiftRaw == raw }
+
+    /**
+     * @param hasResolvedPreferredMode false only for the first host snapshot
+     *   of a session. Later snapshots keep the user's current in-RAM choice;
+     *   only a genuinely new plan presentation may change it.
+     */
+    fun decide(
+        plan: PlanUi?,
+        storedModeRaw: String?,
+        lastPresentedPlanRevision: String?,
+        currentMode: AgentExecutionModeUi,
+        hasResolvedPreferredMode: Boolean,
+    ): Decision {
+        val corrupt = storedModeRaw != null && parseStoredMode(storedModeRaw) == null
+        val restored = if (!hasResolvedPreferredMode) {
+            if (storedModeRaw == null) AgentExecutionModeUi.AGENT
+            else parseStoredMode(storedModeRaw) ?: AgentExecutionModeUi.CHAT
+        } else {
+            currentMode
+        }
+        val planKey = presentedPlanKey(plan)
+        var mode = restored
+        var acknowledge: String? = null
+        if (planKey != null && planKey != lastPresentedPlanRevision) {
+            acknowledge = planKey
+            // A new card completes Plan input, not the plan's authorization.
+            // Chat/Goal choices (including fail-closed Chat) remain untouched.
+            if (mode == AgentExecutionModeUi.PLAN) mode = AgentExecutionModeUi.AGENT
+        }
+        val modeChanged = mode != currentMode
+        val ackChanged = acknowledge != null && acknowledge != lastPresentedPlanRevision
+        return Decision(
+            mode = mode,
+            acknowledgement = acknowledge ?: lastPresentedPlanRevision,
+            shouldPersist = modeChanged || ackChanged || (corrupt && !hasResolvedPreferredMode),
+            needsRepairNotice = corrupt && !hasResolvedPreferredMode,
+        )
+    }
+
+    /** ⇄ selectAgentMode: an explicit choice pins the CURRENT presented plan
+     * revision (or keeps the prior marker when no active plan exists), so a
+     * later refresh cannot invent an exit from the same plan. */
+    fun explicitSelectionAcknowledgement(
+        plan: PlanUi?,
+        lastPresentedPlanRevision: String?,
+    ): String? = presentedPlanKey(plan) ?: lastPresentedPlanRevision
+}
+
+/**
+ * Exact Execute Plan handoff rules. A native `plan.accept` remains the ONE
+ * launch; these rules decide which earlier runs the gesture may stop first.
+ * It NEVER widens a live read-only run's tools or mode and NEVER stops an
+ * Agent/Goal/foreign owner: a non-Plan live owner refuses the gesture with
+ * honest copy instead.
+ */
+object PlanExecutionHandoffRules {
+    sealed interface Decision {
+        /** No live earlier owner: dispatch the accept immediately. */
+        data object Proceed : Decision
+        /** Only these exact live Plan owners must be stopped and awaited. */
+        data class Quiesce(val planRunIDs: List<String>) : Decision
+        /** A live non-Plan (or mode-less legacy) owner blocks the handoff. */
+        data object RefuseBusy : Decision
+    }
+
+    fun isActive(stateName: String): Boolean =
+        ChecklistPresentationRules.isActiveRunState(stateName)
+
+    fun decide(runs: List<RunRowUi>): Decision {
+        val active = runs.filter { isActive(it.stateName) }
+        if (active.isEmpty()) return Decision.Proceed
+        if (active.any { it.conversationModeRaw != "plan" }) return Decision.RefuseBusy
+        return Decision.Quiesce(active.map { it.id })
+    }
+
+    /** Fresh native proof: only the EXACT presented plan identity accepts. */
+    fun matchesPresentedPlan(
+        plan: PlanUi?,
+        latestPlanID: String?,
+        latestRevision: Int?,
+        latestStatusRaw: String?,
+        latestDigest: String?,
+    ): Boolean {
+        if (plan == null || latestPlanID == null || latestRevision == null) return false
+        if (!PlanUi.isActiveAwaitingReview(latestStatusRaw ?: "")) return false
+        if (plan.id != latestPlanID || plan.revisionNumber != latestRevision) return false
+        val seenDigest = plan.digest ?: return false
+        return latestDigest != null && seenDigest == latestDigest
+    }
+
+    /** A post-cancel terminal re-proof for exactly the plan owner ids. */
+    fun allSettled(runs: List<RunRowUi>, planRunIDs: List<String>): Boolean {
+        if (planRunIDs.isEmpty()) return true
+        val byID = runs.associateBy { it.id }
+        return planRunIDs.all { id ->
+            val run = byID[id] ?: return@all false // unknown is not settled
+            !isActive(run.stateName)
+        }
+    }
 }
 
 /* -------------------------------- token units -------------------------------- */

@@ -47,12 +47,21 @@ public struct FileContent: Sendable, Equatable {
     public var totalLines: Int
     /// Byte offset of the returned window within the file.
     public var byteOffset: Int
+    /// Whole-file byte count, independent from this page's decoded text.
+    /// A 64 KiB window is a page bound, never a whole-file truncation.
+    public var totalBytes: Int
+    /// Decoded bytes of this page (a leading BOM counts as its real bytes).
+    public var bytesReturned: Int { text.utf8.count }
+    /// Exact UTF-8 byte boundary for the next page, nil at EOF.
+    public var nextOffset: Int? { truncated ? byteOffset + bytesReturned : nil }
 
-    public init(text: String, truncated: Bool, totalLines: Int, byteOffset: Int) {
+    public init(text: String, truncated: Bool, totalLines: Int, byteOffset: Int,
+                totalBytes: Int? = nil) {
         self.text = text
         self.truncated = truncated
         self.totalLines = totalLines
         self.byteOffset = byteOffset
+        self.totalBytes = totalBytes ?? byteOffset + text.utf8.count
     }
 }
 
@@ -268,11 +277,15 @@ public struct WorkspaceFileService: Sendable {
     // MARK: - Reading
 
     /// Reads up to `readChunkBytes` from `path`, starting at byte `offset`
-    /// (0-based, clamped to the file size). Returns a truncation flag and
-    /// the file's total line count.
+    /// (0-based, clamped to the file size). Returns a truncation flag, the
+    /// whole-file byte count and the file's total line count. The page is
+    /// decoded on a real UTF-8 boundary; at most three incomplete suffix
+    /// bytes stay for the next page and no replacement characters are ever
+    /// produced.
     public func readFile(
         _ path: String,
         byteOffset: Int = 0,
+        limit: Int = WorkspaceFileService.readChunkBytes,
         cancellation: CancellationToken? = nil
     ) throws -> FileContent {
         try cancellation?.throwIfCancelled()
@@ -287,25 +300,27 @@ public struct WorkspaceFileService: Sendable {
         try guardResolver.assertReadableSize(url)
 
         let data = try Data(floeContentsOf: url)
+        guard data.count <= guardResolver.maxReadBytes else {
+            throw WorkspaceToolError.tooLarge(limit: guardResolver.maxReadBytes)
+        }
         // ANDROID C08 delta: an agent text read must never present invented
-        // text for binary bytes. A NUL-bearing (or otherwise non-text) file
-        // is a typed refusal; document/media/archive tools remain the
-        // supported surfaces for those bytes. Text reads keep the original
-        // 64 KiB window, truncation and total-line reporting unchanged.
-        guard Self.looksLikeText(data),
-              String(data: data, encoding: .utf8) != nil else {
+        // text for binary bytes. The complete file is classified with the
+        // shared UTF-8 policy (path extension alone never decides) so a
+        // NUL-bearing or invalid file is a typed refusal; document/media/
+        // archive tools remain the supported surfaces for those bytes. The
+        // 64 KiB window, truncation, totalBytes and nextOffset reporting are
+        // unchanged for real text.
+        guard let whole = WorkspaceTextPolicy.decodeUTF8(data) else {
             throw WorkspaceToolError.unsupportedContent(
                 "binary file is not readable as text; use a document, media or archive tool")
         }
         let clampedOffset = max(0, min(byteOffset, data.count))
-        let end = min(clampedOffset + Self.readChunkBytes, data.count)
-        let slice = data[clampedOffset..<end]
-        let truncated = end < data.count
-
-        let whole = String(decoding: data, as: UTF8.self)
-        let totalLines = Self.lineCount(of: whole)
-        let text = String(decoding: slice, as: UTF8.self)
-        return FileContent(text: text, truncated: truncated, totalLines: totalLines, byteOffset: clampedOffset)
+        let page = try WorkspaceTextPage.decode(
+            data: Data(data.dropFirst(clampedOffset).prefix(Self.readChunkBytes)),
+            offset: clampedOffset, totalBytes: data.count, limit: limit)
+        return FileContent(text: page.text, truncated: page.truncated,
+                           totalLines: Self.lineCount(of: whole),
+                           byteOffset: clampedOffset, totalBytes: data.count)
     }
 
     /// Reads a complete UTF-8-compatible text file for interactive editing.
@@ -333,16 +348,19 @@ public struct WorkspaceFileService: Sendable {
         guard data.count <= guardResolver.maxWriteBytes else {
             throw WorkspaceToolError.tooLarge(limit: guardResolver.maxWriteBytes)
         }
-        guard Self.looksLikeText(data) else {
+        // Content classification is bounded by the shared text policy (the
+        // read itself is already capped above). A leading UTF-8 BOM is kept
+        // as U+FEFF so read/modify/write remains byte-exact; invalid UTF-8 or
+        // NUL-bearing bytes are refused, never decoded lossily.
+        guard let text = WorkspaceTextPolicy.decodeUTF8(data) else {
             throw WorkspaceToolError.invalidArguments("file is not editable text: \(path)")
         }
-
-        let text = try WorkspaceTextEdit.decode(data)
         return FileContent(
             text: text,
             truncated: false,
             totalLines: Self.lineCount(of: text),
-            byteOffset: 0
+            byteOffset: 0,
+            totalBytes: data.count
         )
     }
 
@@ -444,8 +462,9 @@ public struct WorkspaceFileService: Sendable {
             guard let size = (try? fileManager.attributesOfItem(atPath: file.path)[.size] as? NSNumber)?
                 .intValue, size <= guardResolver.maxReadBytes else { continue }
             guard let data = try? Data(contentsOf: file) else { continue }
-            guard Self.looksLikeText(data),
-                  let text = String(data: data, encoding: .utf8) else { continue }
+            // Same UTF-8 policy as reads/saves: NUL bytes and invalid UTF-8
+            // are never coerced into a searchable document.
+            guard let text = WorkspaceTextPolicy.decodeUTF8(data) else { continue }
             let relative = Self.relativePath(of: file.path, under: basePath)
             var lineNumber = 0
             for line in text.components(separatedBy: .newlines) {
@@ -585,6 +604,72 @@ public struct WorkspaceFileService: Sendable {
         }
         try assertNotFrozen(url)
         return try performWrite(url, path: path, content: content)
+    }
+
+    /// Verify a real local/mounted draft before source finalization: the
+    /// complete decoded text must round-trip to the exact on-disk bytes and
+    /// the caller's observed digest must still match. A changed source, a
+    /// non-UTF-8 draft or an encoding that would recode bytes is refused
+    /// instead of writing a silently different document.
+    public func verifiedSourceText(
+        _ path: String,
+        expectedSHA256: String,
+        cancellation: CancellationToken? = nil
+    ) throws -> String {
+        try cancellation?.throwIfCancelled()
+        let content = try readFileForEditing(path, cancellation: cancellation)
+        let current = try metadata(path)
+        let digest = Self.sha256Hex(of: Data(content.text.utf8))
+        guard current.size == Int64(content.text.utf8.count), current.sha256 == digest else {
+            throw WorkspaceToolError.conflict(
+                expected: "stable byte-exact UTF-8 source",
+                actual: "source changed or encoding does not round-trip")
+        }
+        guard expectedSHA256.lowercased() == current.sha256 else {
+            throw WorkspaceToolError.conflict(expected: expectedSHA256, actual: current.sha256)
+        }
+        try cancellation?.throwIfCancelled()
+        return content.text
+    }
+
+    /// Finalize a verified local/mounted UTF-8 draft without a second
+    /// model-sized JSON body. The draft remains intact. Existing CAS,
+    /// freeze, path and size checks in `createFile`/`writeFile` stay the
+    /// only write authority: no target precondition means create-only (a
+    /// retry cannot replace a target whose version was never observed),
+    /// while observed target preconditions keep their conflict behavior and
+    /// leave failed/conflicted originals untouched.
+    @discardableResult
+    public func writeFileFromSource(
+        _ path: String,
+        sourcePath: String,
+        expectedSourceSHA256: String,
+        expectedMtime: Double? = nil,
+        expectedSHA256: String? = nil,
+        cancellation: CancellationToken? = nil
+    ) throws -> (outcome: WriteOutcome, content: String) {
+        let lock = WorkspaceMutationLocks.lock(for: guardResolver.rootURL)
+        lock.lock(); defer { lock.unlock() }
+        try cancellation?.throwIfCancelled()
+        guard try guardResolver.resolve(path) != guardResolver.resolve(sourcePath) else {
+            throw WorkspaceToolError.invalidArguments("sourcePath and path must identify different files")
+        }
+        let content = try verifiedSourceText(
+            sourcePath, expectedSHA256: expectedSourceSHA256, cancellation: cancellation)
+        // Revalidate after the optional target baseline work and immediately
+        // before the target writer.
+        _ = try verifiedSourceText(
+            sourcePath, expectedSHA256: expectedSourceSHA256, cancellation: cancellation)
+        try cancellation?.throwIfCancelled()
+        let outcome: WriteOutcome
+        if expectedMtime != nil || expectedSHA256 != nil {
+            outcome = try writeFile(path, content: content, expectedMtime: expectedMtime,
+                                    expectedSHA256: expectedSHA256, cancellation: cancellation)
+        } else {
+            outcome = try createFile(path, content: content, overwrite: false,
+                                     cancellation: cancellation)
+        }
+        return (outcome, content)
     }
 
     // MARK: - Patch

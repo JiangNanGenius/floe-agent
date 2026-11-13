@@ -31,13 +31,13 @@ public struct WorkspaceCreateFileTool: AgentTool {
 
     public static let name = "workspace.createFile"
     public static let toolDescription =
-        "Create a new workspace file with the given content. Fails without overwriting when the file already exists; pass overwrite=true to replace the existing file, or use writeFile for updates. Prefer the .md extension for documents, notes, and reports; use a different extension only when the caller explicitly requires a specific format."
+        "Create a new plain-text workspace file of any UTF-8 text type: TXT, CSV/TSV, Markdown, source code, scripts, HTML/CSS/JS, JSON/YAML/XML, LaTeX, configuration, or an extensionless/unknown-extension file. Fails without overwriting when the file already exists; pass overwrite=true to replace the existing file, or use writeFile for updates. Parent directories are created automatically for local/mounted workspace targets. For long text, create a new draft with empty content, append bounded chunks with the previous returned SHA as expectedSHA256, then use workspace.writeFile(sourcePath, expectedSourceSHA256) to finalize without resending the document. Keep the draft until final verification."
     public static let parametersJSON = #"""
     {
       "type": "object",
       "properties": {
-        "path": {"type": "string", "description": "Workspace-relative path for the new file"},
-        "content": {"type": "string", "description": "Full file content (UTF-8)"},
+        "path": {"type": "string", "description": "Workspace-relative path for the new plain-text file; any UTF-8 text extension, or no extension"},
+        "content": {"type": "string", "description": "Full UTF-8 text content"},
         "overwrite": {"type": "boolean", "description": "Replace the file when it already exists (default false)"}
       },
       "required": ["path", "content"],
@@ -110,45 +110,55 @@ public struct WorkspaceCreateFileTool: AgentTool {
 public struct WorkspaceWriteFileTool: AgentTool {
     public struct Arguments: Decodable, Sendable {
         public var path: String
-        public var content: String
+        /// New full text; nil when `sourcePath` supplies the verified bytes.
+        public var content: String?
         /// Modification time (seconds since 1970) the caller last observed;
         /// combined with expectedSHA256 for conflict detection.
         public var expectedMtime: Double?
         public var expectedSHA256: String?
         public var scope: String?
+        /// Local/mounted workspace draft, authorized independently from path.
+        public var sourcePath: String?
+        public var expectedSourceSHA256: String?
 
         public init(
             path: String,
-            content: String,
+            content: String? = nil,
             expectedMtime: Double? = nil,
             expectedSHA256: String? = nil,
-            scope: String? = nil
+            scope: String? = nil,
+            sourcePath: String? = nil,
+            expectedSourceSHA256: String? = nil
         ) {
             self.path = path
             self.content = content
             self.expectedMtime = expectedMtime
             self.expectedSHA256 = expectedSHA256
             self.scope = scope
+            self.sourcePath = sourcePath
+            self.expectedSourceSHA256 = expectedSourceSHA256
         }
     }
 
     public static let name = "workspace.writeFile"
     public static let toolDescription =
-        "Overwrite a workspace file. Pass expectedMtime/expectedSHA256 from inspectFileMetadata to detect external edits; conflicts fail without overwriting."
+        "Write any UTF-8 plain-text workspace file natively: source code, scripts, HTML/CSS/JS, JSON/YAML/CSV, LaTeX, TXT, configuration, or an extensionless/unknown-extension file. Supply exactly one of content or sourcePath. The commit preserves the exact UTF-8 bytes supplied, including a leading BOM and the original CRLF/LF newlines; local writes are atomic. For a long document, create a new draft, append bounded chunks with the previous SHA as expectedSHA256, then finalize using sourcePath and its final expectedSourceSHA256; no Linux or giant JSON body is needed. sourcePath is a local/mounted workspace text file and remains unchanged. Source finalization is create-only without a target precondition; for an existing target pass its observed expectedSHA256/expectedMtime. Conflicts and pre-commit cancellation leave the target untouched. saved=true means do not repeat the write even if preview=unavailable."
     public static let parametersJSON = #"""
     {
       "type": "object",
       "properties": {
-        "path": {"type": "string", "description": "Workspace-relative file path"},
-        "content": {"type": "string", "description": "New full file content (UTF-8)"},
-        "expectedMtime": {"type": "number", "description": "mtime (seconds since 1970) last observed by the caller"},
-        "expectedSHA256": {"type": "string", "description": "sha256 of the content last observed by the caller"}
+        "path": {"type": "string", "description": "Workspace-relative target path for any plain-text file"},
+        "content": {"type": "string", "description": "New full UTF-8 text; omit when sourcePath is supplied"},
+        "sourcePath": {"type": "string", "description": "Existing local/mounted workspace text draft of any text type; mutually exclusive with content; never deleted"},
+        "expectedSourceSHA256": {"type": "string", "pattern": "^[A-Fa-f0-9]{64}$", "description": "Required with sourcePath: exact final SHA returned by append/metadata"},
+        "expectedMtime": {"type": "number", "description": "Observed target mtime in seconds since 1970"},
+        "expectedSHA256": {"type": "string", "description": "Observed target SHA; stale values fail without overwrite"}
       },
-      "required": ["path", "content"],
+      "required": ["path"],
       "additionalProperties": false
     }
     """#
-    public static let riskLabels: Set<RiskLabel> = [.writesFiles]
+    public static let riskLabels: Set<RiskLabel> = [.readsFiles, .writesFiles]
     public static let isSideEffecting = true
 
     private let environment: WorkspaceToolEnvironment
@@ -157,38 +167,83 @@ public struct WorkspaceWriteFileTool: AgentTool {
     }
 
     public func validate(_ args: Arguments) throws {
-        if args.path.trimmingCharacters(in: .whitespaces).isEmpty {
-            throw WorkspaceToolError.invalidArguments("path must not be empty")
+        guard !args.path.trimmingCharacters(in: .whitespaces).isEmpty,
+              (args.content != nil) != (args.sourcePath != nil) else {
+            throw WorkspaceToolError.invalidArguments("path and exactly one of content or sourcePath are required")
         }
-        if let mtime = args.expectedMtime, mtime < 0 {
-            throw WorkspaceToolError.invalidArguments("expectedMtime must be >= 0")
+        if let mtime = args.expectedMtime, !mtime.isFinite || mtime < 0 {
+            throw WorkspaceToolError.invalidArguments("expectedMtime must be finite and >= 0")
+        }
+        if let source = args.sourcePath {
+            let digest = args.expectedSourceSHA256 ?? ""
+            guard !source.trimmingCharacters(in: .whitespaces).isEmpty,
+                  digest.count == 64,
+                  digest.unicodeScalars.allSatisfy({
+                      (0x30...0x39).contains($0.value)
+                          || (0x41...0x46).contains($0.value)
+                          || (0x61...0x66).contains($0.value)
+                  }) else {
+                throw WorkspaceToolError.invalidArguments(
+                    "sourcePath requires its complete 64-digit expectedSourceSHA256")
+            }
+        } else if args.expectedSourceSHA256 != nil {
+            throw WorkspaceToolError.invalidArguments("expectedSourceSHA256 requires sourcePath")
         }
     }
 
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try validate(args)
         try context.cancellation.throwIfCancelled()
         try WorkspaceToolSupport.rejectHostScope(context.scope)
         if let scope = args.scope, scope != "local" {
             throw WorkspaceToolError.unsupportedScope(scope)
         }
         try context.authorizeWorkspacePath(args.path)
+        // A draft source is local/mounted text authority, never a remote
+        // path: reading it through the local service keeps the same guard,
+        // size, UTF-8 and cancellation policy as every other text operation.
+        var sourceContent: String?
+        if let source = args.sourcePath, let expected = args.expectedSourceSHA256 {
+            try context.authorizeWorkspacePath(source)
+            guard try await environment.networkRoute(path: source, context: context) == nil else {
+                throw WorkspaceToolError.invalidArguments(
+                    "sourcePath finalization requires a local/mounted workspace text file; keep the network original and use a verified local draft")
+            }
+            sourceContent = try environment.makeService(context: context)
+                .verifiedSourceText(source, expectedSHA256: expected,
+                                    cancellation: context.cancellation)
+        }
         if let route = try await environment.networkRoute(path: args.path, context: context) {
+            let content = sourceContent ?? args.content ?? ""
+            if args.sourcePath != nil,
+               args.expectedSHA256 == nil, args.expectedMtime == nil {
+                throw WorkspaceToolError.invalidArguments(
+                    "Remote draft finalization needs an observed target precondition (expectedSHA256 or expectedMtime)")
+            }
             let previous = try await route.adapter.read(path: route.relativePath, offset: 0, limit: environment.maxReadBytes)
             if let expectedSHA256 = args.expectedSHA256,
                WorkspaceFileService.sha256Hex(of: previous) != expectedSHA256 {
                 throw WorkspaceToolError.conflict(expected: expectedSHA256, actual: WorkspaceFileService.sha256Hex(of: previous))
             }
             let metadata = try await route.adapter.metadata(path: route.relativePath)
+            if args.sourcePath != nil, metadata.entityTag?.isEmpty != false {
+                throw WorkspaceToolError.invalidArguments(
+                    "Remote draft finalization needs a server revision token; the target was not written")
+            }
             if let expectedMtime = args.expectedMtime,
                abs((metadata.modifiedAt?.timeIntervalSince1970 ?? 0) - expectedMtime) > 0.001 {
                 throw WorkspaceToolError.conflict(expected: String(expectedMtime), actual: String(metadata.modifiedAt?.timeIntervalSince1970 ?? 0))
             }
-            let data = Data(args.content.utf8)
+            let data = Data(content.utf8)
+            guard data.count <= environment.maxWriteBytes else {
+                throw WorkspaceToolError.tooLarge(limit: environment.maxWriteBytes)
+            }
+            try context.cancellation.throwIfCancelled()
             let result = try await route.adapter.write(path: route.relativePath, data: data, expectedEntityTag: metadata.entityTag)
             let diff = String(decoding: previous, as: UTF8.self)
             let localService = try environment.makeService(context: context)
             let artifact = try WorkspaceToolSupport.changeArtifact(
-                diff: localService.diff(original: diff, modified: args.content, label: args.path),
+                diff: localService.diff(original: diff, modified: content, label: args.path),
                 runID: context.runID
             )
             return WorkspaceToolSupport.output(
@@ -198,16 +253,30 @@ public struct WorkspaceWriteFileTool: AgentTool {
         }
         let service = try environment.makeService(context: context)
         let prior = try? service.readFile(args.path, cancellation: context.cancellation)
-        let outcome = try service.writeFile(
-            args.path,
-            content: args.content,
-            expectedMtime: args.expectedMtime,
-            expectedSHA256: args.expectedSHA256,
-            cancellation: context.cancellation
-        )
+        let outcome: WriteOutcome
+        let writtenContent: String
+        if let source = args.sourcePath, let expected = args.expectedSourceSHA256 {
+            let result = try service.writeFileFromSource(
+                args.path, sourcePath: source, expectedSourceSHA256: expected,
+                expectedMtime: args.expectedMtime, expectedSHA256: args.expectedSHA256,
+                cancellation: context.cancellation)
+            outcome = result.outcome
+            writtenContent = result.content
+        } else if let inline = args.content {
+            outcome = try service.writeFile(
+                args.path,
+                content: inline,
+                expectedMtime: args.expectedMtime,
+                expectedSHA256: args.expectedSHA256,
+                cancellation: context.cancellation
+            )
+            writtenContent = inline
+        } else {
+            throw WorkspaceToolError.invalidArguments("Missing text source")
+        }
         let diff: String
         if let prior, !prior.truncated {
-            diff = service.diff(original: prior.text, modified: args.content, label: args.path)
+            diff = service.diff(original: prior.text, modified: writtenContent, label: args.path)
         } else {
             diff = ""
         }
@@ -238,13 +307,13 @@ public struct WorkspaceApplyPatchTool: AgentTool {
 
     public static let name = "workspace.applyPatch"
     public static let toolDescription =
-        "Apply a single-file unified diff to a workspace file. Hunks apply sequentially; if any hunk fails, the file is left untouched. Multi-file patches are rejected."
+        "Apply a single-file unified diff to any UTF-8 plain-text workspace file: code, scripts, HTML/CSS/JS, JSON/YAML/CSV, LaTeX, TXT, configuration, or an extensionless/unknown-extension file. Hunks apply sequentially; if any hunk fails, the file is left untouched. Multi-file patches are rejected. BOM and CRLF bytes are preserved when the hunk context matches them."
     public static let parametersJSON = #"""
     {
       "type": "object",
       "properties": {
-        "path": {"type": "string", "description": "Workspace-relative file path to patch"},
-        "patch": {"type": "string", "description": "Unified diff (diff -u subset) for this one file"}
+        "path": {"type": "string", "description": "Workspace-relative plain-text file path to patch"},
+        "patch": {"type": "string", "description": "Unified diff (diff -u subset) for this one file; context must match the file's BOM/CRLF bytes"}
       },
       "required": ["path", "patch"],
       "additionalProperties": false

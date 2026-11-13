@@ -511,8 +511,13 @@ class ConversationFlowHolder(
     /** ⇄ agentMode with explicit per-turn Plan-choice pinning. */
     var agentMode: AgentExecutionModeUi by mutableStateOf(AgentExecutionModeUi.AGENT)
         private set
-    var explicitModePlanRevision: Int? by mutableStateOf(null)
-        private set
+    /** First host snapshot of this session restores the durable next-input
+     * mode; later snapshots keep the user's current in-RAM choice. */
+    private var hasResolvedPreferredMode: Boolean = false
+    /** The `planID:revision` marker this holder already acknowledged in RAM.
+     * It closes the window before the durable host echo lands, so a rapid
+     * snapshot cannot re-present the same plan and invent an Agent switch. */
+    private var lastAcknowledgedPlanRevision: String? = null
 
     /** ⇄ runningInputMode. The @set:JvmName avoids the Kotlin property
      * accessor clashing with the explicit setRunningInputMode() action (the
@@ -805,7 +810,8 @@ class ConversationFlowHolder(
         groupDefaultsApplied = mutableSetOf()
         groupWasLatest = mutableMapOf()
         agentMode = AgentExecutionModeUi.AGENT
-        explicitModePlanRevision = null
+        hasResolvedPreferredMode = false
+        lastAcknowledgedPlanRevision = null
         checklistExpanded = false
         showingGoalBuilder = false
         showsTemporaryAbout = false
@@ -878,8 +884,11 @@ class ConversationFlowHolder(
         selectedProjectId.value = next.boundWorkspaceId?.takeIf { id ->
             next.projects.any { it.id == id }
         }
-        // ⇄ reconcilePlanComposerMode after every plan refresh.
-        agentMode = PlanModeReconciler.reconcile(next.plan, explicitModePlanRevision, agentMode)
+        // ⇄ reconcilePlanComposerMode after every plan refresh. A NEW
+        // pending plan is presented once (durable exact id/revision ack) and
+        // leaves Plan for Agent; an explicit Plan choice at the same revision
+        // survives refresh/reopen. Showing a plan executes nothing.
+        applyContinuityMode(next)
 
         // Approvals that left the projection were resolved/expired
         // host-side; their dispatch latches are released with the card.
@@ -1077,6 +1086,9 @@ class ConversationFlowHolder(
         // inline guard (first JVM-run finding: a programmatic send must not
         // dispatch a launch the disabled send circle could never start).
         if (state.needsProvider) return rejected(ConversationRejectedReason.INPUT_INSUFFICIENT)
+        // Execute Plan owns one launch handoff; a concurrent Send/queue must
+        // not race the Plan owner cancellation or start behind the accept.
+        if (isAcceptingPlan) return rejected(ConversationRejectedReason.OPERATION_IN_FLIGHT)
         val goal = draft.value.text.trim()
         if (goal.isEmpty()) return rejected(ConversationRejectedReason.INPUT_INSUFFICIENT)
         val model = state.models.firstOrNull { it.modelId == selectedModelId.value && it.isUsable }
@@ -1528,11 +1540,43 @@ class ConversationFlowHolder(
         host.setRunningInputMode(session, mode)
     }
 
-    /** ⇄ selectAgentMode(mode): explicit choices pin the plan revision so a
-     * later refresh cannot invent an exit from the same plan. */
+    /** ⇄ selectAgentMode(mode): explicit choices pin the EXACT presented
+     * plan revision and persist atomically with the mode, so a later refresh
+     * or process reopen cannot invent an exit from the same plan. Temporary
+     * sessions stay RAM-only at the host. */
     fun selectAgentMode(mode: AgentExecutionModeUi) {
-        explicitModePlanRevision = PlanModeReconciler.onExplicitModeSwitch(snapshot.value?.plan)
+        if (retired) return
+        val state = snapshot.value
+        val ack = PlanPresentationRules.explicitSelectionAcknowledgement(
+            state?.plan, lastAcknowledgedPlanRevision ?: state?.lastPresentedPlanRevision)
         agentMode = mode
+        hasResolvedPreferredMode = true
+        lastAcknowledgedPlanRevision = ack
+        host.recordExecutionModePreference(session, mode.swiftRaw, ack)
+    }
+
+    /** One presentation reconciliation per host snapshot. */
+    private fun applyContinuityMode(next: ThreadUiState) {
+        if (!hasResolvedPreferredMode) {
+            // First snapshot of this session: the host's durable pair is the
+            // remembered explicit choice (nil = legacy Agent default).
+            lastAcknowledgedPlanRevision = next.lastPresentedPlanRevision
+        }
+        val decision = PlanPresentationRules.decide(
+            plan = next.plan,
+            storedModeRaw = next.preferredExecutionModeRaw,
+            lastPresentedPlanRevision = lastAcknowledgedPlanRevision
+                ?: next.lastPresentedPlanRevision,
+            currentMode = agentMode,
+            hasResolvedPreferredMode = hasResolvedPreferredMode,
+        )
+        agentMode = decision.mode
+        hasResolvedPreferredMode = true
+        decision.acknowledgement?.let { lastAcknowledgedPlanRevision = it }
+        if (decision.shouldPersist) {
+            host.recordExecutionModePreference(
+                session, decision.mode.swiftRaw, decision.acknowledgement)
+        }
     }
 
     /* -------------------------------- plan & goal -------------------------------- */
@@ -1545,7 +1589,12 @@ class ConversationFlowHolder(
         if (plan.statusRaw != "ready" || !plan.isDecisionComplete) {
             return rejected(ConversationRejectedReason.INPUT_INSUFFICIENT)
         }
-        if (isAcceptingPlan || state.isRunning) return rejected(ConversationRejectedReason.OPERATION_IN_FLIGHT)
+        // A live earlier Plan run is EXACTLY what the handoff stops; only a
+        // duplicate accept or a blocking Agent/Goal owner is refused locally.
+        if (isAcceptingPlan) return rejected(ConversationRejectedReason.OPERATION_IN_FLIGHT)
+        if (PlanExecutionHandoffRules.decide(state.runs) is PlanExecutionHandoffRules.Decision.RefuseBusy) {
+            return rejected(ConversationRejectedReason.OPERATION_IN_FLIGHT)
+        }
         if (state.needsProvider) return rejected(ConversationRejectedReason.INPUT_INSUFFICIENT)
         // The accept binds the EXACT durable plan members the user saw. A
         // wire without the real digest/revision is an honest refusal — the

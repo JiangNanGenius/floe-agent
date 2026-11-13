@@ -66,6 +66,13 @@ extension FacadeRunDomain {
         return owners.values.contains { $0.conversationID == conversationID }
     }
 
+    /// Owners remain registered until retire/abort has released the actual
+    /// work and unregistered them. A durable terminal row can precede that
+    /// release, so it cannot authorize overlapping execution.
+    func conversationHasLiveOwnedRun(_ conversationID: UUID) -> Bool {
+        owners.values.contains { $0.conversationID == conversationID }
+    }
+
     /// Generation fences shared by the lifecycle-scope controls (the SAME
     /// refusals the durable lanes already apply): retirement first, then the
     /// operation-owned global admission fence, then the per-conversation
@@ -259,6 +266,14 @@ extension FacadeRunDomain {
             goal.progress.startedAt = Date()
             goalFromPlan = goal
         }
+        // N10: no concurrent launch may slip behind the handoff. The App
+        // cancels/awaits the exact earlier Plan owners; a queued launch or a
+        // parallel Agent/Goal activation that started meanwhile makes this
+        // accept refuse (the saved plan and every history row remain).
+        if conversationHasLiveOwnedRun(conversationID) {
+            return RunDomainReply(.rejected(
+                RunDomainError(.invalidState, .conversationActive, phase: .conversationProof)))
+        }
         let prompt = Self.canonicalExecutionPrompt(accepted)
         let planID = accepted.id
         let seenRevision = seen.revision
@@ -270,6 +285,19 @@ extension FacadeRunDomain {
         // first durable write of the launch):
         let commit: @Sendable (Database) throws -> Void = { db in
             do {
+                // N10 atomic handoff fence: a queued launch or parallel
+                // activation that committed its run row between the App's
+                // preflight and this C1 transaction is visible HERE and
+                // refuses before the accepted plan mutation/residue.
+                let liveRuns = try Int.fetchOne(db, sql: """
+                    SELECT COUNT(*) FROM runs
+                    WHERE conversation_id = ?
+                      AND state NOT IN ('completed','failed','cancelled','checkpointed','interrupted','idle')
+                    """, arguments: [conversationForCommit.uuidString]) ?? 0
+                guard liveRuns == 0 else {
+                    throw RunDomainError(.invalidState, .conversationActive,
+                                         phase: .conversationProof)
+                }
                 guard let live = try SQLiteIntelligenceStore
                     .latestPlanInTransaction(conversationID: conversationForCommit, db: db),
                       live.id == planID, live.revision == seenRevision,

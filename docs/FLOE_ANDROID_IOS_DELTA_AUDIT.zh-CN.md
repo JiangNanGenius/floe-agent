@@ -1,5 +1,26 @@
 # 安卓与 iOS 主线的增量差异记录
 
+## 2026-11-13 iOS 338 冻结后的有界增量（源码登记）
+
+本次从上一固定 iOS 337 源码 `91c7cd935387f6d88bba2d660b282fb3a8dfa9bb` 对照到 iOS 338 固定源码 `67d30edb3bcfc9fa674f2762f096de533e13b427`／`v1.8.17`，标签实际解析一致。Android 对照点为已推送的 `f2f655823af40473b9e677ad8483e88b110949d6`；338 冻结提交中的 Android 文件树与该检查点相同，没有自动吸收 iOS 修复。区间内 `FloeAgent/` 共 82 条变化路径，其中 22 条测试路径；`Sources/` 变化 26 条，18 条有同名 Android 适配源、8 条没有同名源。数量只是源码索引，不是缺功能计数。
+
+以下沿用 iOS 稳定修复台账的 S43–S54 作为来源引用，关联既有 C/G/N 与 IOS-D 项，不新建一套编号，也不重新启动 183 项全量审计。
+
+| iOS 来源／既有归属 | Android 实际来源与差距 | 后续处理 |
+| --- | --- | --- |
+| S43–S45；C03 语音与媒体 | Android 继续现有系统识别／朗读及云端语音适配。338 的会议 PCM 分段、草稿与 final 隔离、停止补写、说话人能力判断及单播放器修复未整体移入 Android；iOS 的组件／App 测试不能当作 Android 质量证据。 | 后续只核对适用的云端／系统语音请求、时间轴、取消与保存合同；不引入本地语音模型或整套 iOS 会议工作台。 |
+| S46；C07／G11 存储与恢复 | Android 是任务所属 PRoot 文件环境，iOS RuntimeV2 恢复盘、只读 SQLite／WAL 副本和稀疏磁盘回收不直接适用。真实可用空间、引用完整度、独占 owner 与可删除性仍须分开。 | 延续 Android 文件所有权、真实占用／进度／取消／回执；引用不明时保留资料和可恢复环境，不以文件估算代替实际回收。 |
+| S47–S48；C02 计划与执行连续性 | Android `PlanModeReconciler` 当前仍在新待审计划出现时选择 Plan；已有 `RuntimeFacadeRunControls` 精确计划版本／摘要校验。338 的“首次呈现后回到 Agent并持久记录该版本”和“停止并等待确切旧 Plan owner，再启动独立执行”尚未完成对应移植。 | 列为下一维护包优先项；保留用户随后显式选择 Plan，不凭输入模式放宽权限，也不停止其他 Agent／Goal owner。 |
+| S49、S52；C02 进度清单 | Android 有 `checklist.readPlan`／`checklist.updatePlan` 和顶部清单；当前没有注册 `checklist.resetPlan`。338 的重置 revision CAS、run＋call 幂等和历史保留，以及顶部仅显示当前活跃 run 的完整呈现合同，仍待适配。 | 与计划交接一起补齐；重置保留历史，不改 Goal，也不把旧未完成步骤伪报完成。 |
+| S50；C01／C07 文件成果 | Android 已有任务文件、成果回执及预览通路；338 新增的子任务成功工具回执向主任务持久引用、重开时核对真实请求和 owner 的 `ChildReceipt` 合同未接入当前 Android 子任务链。没有同名 iOS 文件不能直接推定所有预览均缺失。 | 后续补主／子任务实际保存来源、旧历史降级入口和大文本 EOF 读回；不凭模型路径重造旧回执。 |
+| S51；既有 Linux 环境准备项 | Android 的组件／Linux 下载阶段、真实字节／百分比／速度、重试与诊断已分别有既有实现和版本证据。iOS 337 的管理菜单重新下载反馈及 338 图形内存文案不等于 Android 新缺口。 | 复用旧证据；当前候选只验证发生变化的运行归属和真实错误，不再增加一次无关重新下载验收。 |
+| S53；C01／C07 轻量文本 | Android 已支持原生文本读写、追加／替换与原件校验；`TextEditTools` 已有 BOM 保留处理。338 扩展名／无扩展 UTF-8 策略、统一解码覆盖各读写入口、原生 Reader 和远程审批不可用时的回退仍须逐合同适配，不能把已有能力全记成缺失。 | 与轻量成果预览组成下一维护包；保留 BOM／CRLF、CAS、取消、二进制拒绝和远程审批边界，不要求用户为简单编辑进入 Linux。 |
+| S54；C02 运行与通知连续性 | Android 有独立 `RunForegroundService`／controller、run 标识和通知策略，不直接使用 iOS `BackgroundRunCoordinator`。338 新增的持久终态核验、activation／投递代际隔离及恢复后撤销旧通知合同，尚未作为 Android 实际终态链完成验证。 | 后续沿 Android 实际生产通知链定向补齐；瞬时工具／网络错误不当作整轮失败，失败、取消、等待和恢复分别处理。 |
+
+用户随后已批准将计划转执行、进度重置、文件成果预览、轻量文本和通知恢复纳入**同一份下一候选**，并使用这份新包录制视频。两个写域分开的源码包已交回，54 份原始文件摘要一致；集成小修后的共享 Swift ARM64 对象／链接已通过。随后固定源码、完成 Kotlin／Full 包并到三星快速反馈；不先生产马上过期的旧范围113。其余语音和存储增量仍按 Android 现有架构随后接续，不扩大本次范围。此处的固定 Git 对账仍只是源码比较，代码实施、编译、设备、录像和发行证据分别追加；Root 报告的 iOS 检查结果不记给 Android。原编号和历史验收保留。
+
+English: This source-only delta compares immutable iOS337 source91c7cd935 with iOS338 source67d30edb3 / v1.8.17, against Android checkpointf2f655823. The 82 changed iOS paths are not missing-feature counts. S43–S54 retain their original source identities. The user has now approved plan handoff, checklist reset/current-run presentation, child file previews, lightweight UTF-8 text and terminal notification recovery for the SAME next Android candidate and new recording, with two disjoint source packages followed by compilation and Samsung feedback. Other system/cloud speech and PRoot storage maintenance remains separate. Existing C/G/N/IOS-D identities and evidence remain intact; implementation, compilation, APK, device, recording and publication results are recorded separately.
+
 ## 2026-11-13 设备工具链收口的增量登记（源码阶段）
 
 从上次登记的 `9225285c880d21c0e98cfe9ba8b38a5fa3161de5` 增量比较到已发行 iOS 337 固定源码 `91c7cd935387f6d88bba2d660b282fb3a8dfa9bb`。该区间涉及 `FloeAgent/` 下 328 条路径，包含测试、配置和专业工作台；路径数不等于安卓缺失功能数。Android 本次共享源码检查点为 `4d9d56102fc27ed3d9629d823edcb7cc9ac6b844`，实际 ARM64 对象编译及两库链接已通过，新增行为和设备验收分别记录，不据此关闭整体验收。

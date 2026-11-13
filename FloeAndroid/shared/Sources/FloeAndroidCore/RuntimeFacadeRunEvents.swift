@@ -355,6 +355,13 @@ enum RunSnapshotWireBuilder {
                 runID: record.id, conversationID: record.conversationID)
             let terminal = !FacadeRunDomain.activeRunStates.contains(record.state)
                 || liveSnapshot?.isTerminal == true
+            let liveOwner = stillOwned && liveSnapshot != nil
+            // N10: the ONE durable terminal classification the App may act
+            // on. A live owner overrides a transient error; only a durable
+            // completed/failed/cancelled/checkpointed/interrupted row (or an
+            // explicitly parked approval) is a terminal disposition.
+            let disposition = N113RunTerminal.disposition(
+                state: record.state, isLiveOwner: liveOwner)
             let page: [String: SettingsDomainV1.JSONValue] = [
                 "schema": .string(BridgeV3.commandSchema),
                 "conversationID": .string(record.conversationID.uuidString),
@@ -364,7 +371,10 @@ enum RunSnapshotWireBuilder {
                     "resourceID": .string(RunWireRevision.runResourceID(record.id)),
                     "version": .string(RunWireRevision.runVersion(state: record.state))]),
                 "isTerminal": .boolean(terminal),
-                "liveOwner": .boolean(stillOwned && liveSnapshot != nil),
+                "durableTerminal": .boolean(N113RunTerminal.isDurableTerminal(record.state)),
+                "terminalDisposition": .string(disposition.rawValue),
+                "conversationMode": record.conversationMode.map { .string($0) } ?? .null,
+                "liveOwner": .boolean(liveOwner),
                 "durableWatermark": .integer(Int64(watermark)),
             ]
             return RunDomainReply(.completedPage(
@@ -385,6 +395,13 @@ enum RunSnapshotWireBuilder {
         ])
         let isTerminal = !FacadeRunDomain.activeRunStates.contains(record.state)
         fields["isTerminal"] = .boolean(isTerminal)
+        // N10 durable terminal proof: emitted on the full page too so a host
+        // that only reads the ordinary snapshot never has to infer failure
+        // from a transient error row or a presentation state name.
+        fields["durableTerminal"] = .boolean(N113RunTerminal.isDurableTerminal(record.state))
+        fields["terminalDisposition"] = .string(
+            N113RunTerminal.disposition(
+                state: record.state, isLiveOwner: liveService != nil).rawValue)
         fields["conversationMode"] = record.conversationMode.map { .string($0) } ?? .null
         fields["goal"] = .string(bounded(record.goal, maxBytes: 2_048))
         fields["liveOwner"] = .boolean(liveService != nil)

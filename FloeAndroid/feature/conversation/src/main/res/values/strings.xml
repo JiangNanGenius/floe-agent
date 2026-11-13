@@ -204,6 +204,7 @@
     <string name="plan_suggest_goal">This plan suits goal execution</string>
     <string name="plan_suggest_normal">This plan suits normal execution</string>
     <string name="plan_execute_normal">Execute on the normal plan</string>
+    <string name="plan_execute_finish_current">Finish or stop the current operation before running this plan.</string>
     <string name="plan_convert_goal">Convert to goal</string>
     <string name="goal_title">Goal</string>
     <string name="goal_confirm_complete">Confirm complete</string>

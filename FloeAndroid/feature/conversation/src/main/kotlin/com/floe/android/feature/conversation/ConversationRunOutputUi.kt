@@ -75,6 +75,17 @@ internal object RunOutputCardPresentation {
     )
     private val OFFICE_EXTENSIONS = setOf("docx", "xlsx", "pptx")
 
+    /** The existing office viewer accepts exactly the OOXML triple. The
+     * Android publisher always records the matching MIME; its documented
+     * octet-stream fallback is tolerated so an otherwise valid sealed OOXML
+     * receipt still reaches the real viewer (which re-checks the extension). */
+    private fun supportsOfficeOpen(mimeType: String, displayName: String): Boolean {
+        val extension = displayName.substringAfterLast('.', "").lowercase()
+        if (extension !in OFFICE_EXTENSIONS) return false
+        val mime = mimeType.substringBefore(';').trim().lowercase()
+        return mime in OFFICE_MIMES || mime == "application/octet-stream"
+    }
+
     /** True only for an output whose LAST native availability answer was
      * "available": the sole state that may enable Save/Open. Every type
      * keeps Save; Open appears only where the host actually has a proven
@@ -89,8 +100,7 @@ internal object RunOutputCardPresentation {
      * video agreement table ([RunOutputViewerSupport]). Anything outside
      * every proven route keeps Save but never gets a fake Open. */
     fun supportsOpen(mimeType: String, displayName: String): Boolean =
-        mimeType in OFFICE_MIMES ||
-            displayName.substringAfterLast('.', "").lowercase() in OFFICE_EXTENSIONS ||
+        supportsOfficeOpen(mimeType, displayName) ||
             supportsPdfOpen(mimeType, displayName) ||
             RunOutputViewerSupport.supportsPreview(mimeType, displayName)
 

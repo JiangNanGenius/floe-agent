@@ -203,6 +203,7 @@
     <string name="plan_suggest_goal">此计划适合目标执行</string>
     <string name="plan_suggest_normal">此计划适合常规执行</string>
     <string name="plan_execute_normal">按常规计划执行</string>
+    <string name="plan_execute_finish_current">请先完成或停止当前操作，再执行这个计划。</string>
     <string name="plan_convert_goal">转为目标</string>
     <string name="goal_title">目标</string>
     <string name="goal_confirm_complete">确认完成</string>

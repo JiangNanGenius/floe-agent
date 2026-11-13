@@ -45,6 +45,11 @@ internal class RunOutputOfficeSnapshotStager(
     private val root: File,
     private val channel: RunOutputEgressChannel,
     private val formats: Set<String> = OFFICE_FORMAT_EXTENSIONS,
+    /** The owned text/media viewer lane accepts a bounded TEXT candidate
+     * with an uncommon or absent extension. The viewer re-derives the kind
+     * from the sealed facts and strictly probes UTF-8/NUL before rendering;
+     * this flag never admits Office/PDF/media agreement families. */
+    private val allowTextCandidates: Boolean = false,
 ) {
     data class Owner(
         val conversationID: String, val runID: String, val outputID: String,
@@ -106,11 +111,14 @@ internal class RunOutputOfficeSnapshotStager(
             if (bytes < 1) throw Failure("invalidSnapshotInfo")
             val fileExtension = facts.displayName.substringAfterLast('.', "")
                 .lowercase(Locale.ROOT)
+            val textCandidate = allowTextCandidates && isSafeTextCandidateExtension(fileExtension)
             if (fileExtension != extensionOf(facts.displayName) ||
-                fileExtension !in formats) {
+                (!textCandidate && fileExtension !in formats)) {
                 // extensionOf is the SAME derivation the engine's format
                 // detection uses; the second clause is the frozen R1 gate
-                // (now against the instance's accepted format set).
+                // (now against the instance's accepted format set). A text
+                // candidate only passes the staging format gate; the reader
+                // still proves the real UTF-8/NUL content before display.
                 throw Failure("invalidOfficeFormat")
             }
             // PDF identity agreement BEFORE any byte is staged: the native
@@ -127,7 +135,11 @@ internal class RunOutputOfficeSnapshotStager(
             directory = File(root.canonicalFile, sessionID)
             Files.createDirectory(directory.toPath())
             val part = File(directory, "document.part")
-            val file = File(directory, "document.$fileExtension")
+            // An extensionless text candidate still needs one safe internal
+            // filename; the display name (and therefore the sealed facts)
+            // stays unchanged and the viewer classifies from those facts.
+            val stagingExtension = fileExtension.ifEmpty { "txt" }
+            val file = File(directory, "document.$stagingExtension")
             val digest = MessageDigest.getInstance("SHA-256")
             var header: ByteArray? = null
             FileChannel.open(part.toPath(), StandardOpenOption.CREATE_NEW,
@@ -197,6 +209,16 @@ internal class RunOutputOfficeSnapshotStager(
 
     private fun extensionOf(name: String): String =
         name.substringAfterLast('.', "").lowercase(Locale.ROOT)
+
+    /** A bounded, filename-safe extension for the text candidate lane. An
+     * empty extension (README/CHANGELOG) is valid; path separators, control
+     * characters and overlong names were already refused by the native
+     * receipt's display-name contract, and the internal staging name never
+     * becomes a user-visible path. */
+    private fun isSafeTextCandidateExtension(extension: String): Boolean =
+        extension.length <= 16 && extension.all {
+            it in 'a'..'z' || it in '0'..'9' || it == '-' || it == '_'
+        }
 
     companion object {
         const val MAX_BYTES = 256L * 1024 * 1024

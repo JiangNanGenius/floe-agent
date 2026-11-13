@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 1.0.5 file-result preview and lightweight text copy. -->
+<resources>
+    <string name="run_viewer_binary_info">This file contains binary or non-UTF-8 bytes, so it can\'t be previewed as text.</string>
+</resources>

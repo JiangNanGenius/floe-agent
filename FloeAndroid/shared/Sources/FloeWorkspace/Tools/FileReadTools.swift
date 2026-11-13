@@ -132,12 +132,14 @@ enum WorkspaceToolSupport {
 
     static func output(
         _ summary: String,
-        artifacts: [ToolArtifactReference] = []
+        artifacts: [ToolArtifactReference] = [],
+        maximumSummaryCharacters: Int = 4096
     ) -> ToolExecutionOutput {
         ToolExecutionOutput(
             summary: summary,
             fullOutputSHA256: WorkspaceFileService.sha256Hex(of: Data(summary.utf8)),
-            artifacts: artifacts
+            artifacts: artifacts,
+            maximumSummaryCharacters: maximumSummaryCharacters
         )
     }
 
@@ -308,13 +310,13 @@ public struct WorkspaceReadFileTool: AgentTool {
 
     public static let name = "workspace.readFile"
     public static let toolDescription =
-        "Read up to 64 KiB of a workspace file. When the file is larger, the result is marked truncated and reports total line count; continue with offset."
+        "Read up to 64 KiB of any UTF-8 plain-text workspace file: source code, scripts, HTML/CSS/JS, JSON/YAML/CSV, LaTeX, TXT/logs, configuration, or an extensionless/unknown-extension file. Binary or otherwise non-text bytes (including Office/PDF/media containers) are refused here; use their dedicated tools. Returns a complete UTF-8 page with bytes, totalBytes and nextOffset; a leading UTF-8 BOM is included in the page text so a later write can reproduce it exactly. Pass nextOffset as offset until it is none. Do not guess offsets or count characters as bytes. Prefer this native tool for text reads rather than starting Linux."
     public static let parametersJSON = #"""
     {
       "type": "object",
       "properties": {
-        "path": {"type": "string", "description": "Workspace-relative file path"},
-        "offset": {"type": "integer", "description": "Byte offset to start reading at (0-based)"},
+        "path": {"type": "string", "description": "Workspace-relative plain-text file path"},
+        "offset": {"type": "integer", "description": "UTF-8 byte boundary (0-based); use the previous nextOffset"},
         "limit": {"type": "integer", "description": "Maximum bytes to read; clamped to 65536"}
       },
       "required": ["path"],
@@ -348,43 +350,23 @@ public struct WorkspaceReadFileTool: AgentTool {
             throw WorkspaceToolError.unsupportedScope(scope)
         }
         try context.authorizeWorkspacePath(args.path)
+        let limit = min(args.limit ?? WorkspaceFileService.readChunkBytes,
+                        WorkspaceFileService.readChunkBytes)
         if let route = try await environment.networkRoute(path: args.path, context: context) {
-            let offset = args.offset ?? 0
-            let limit = min(args.limit ?? WorkspaceFileService.readChunkBytes, WorkspaceFileService.readChunkBytes)
-            let data = try await route.adapter.read(path: route.relativePath, offset: offset, limit: limit + 1)
-            let truncated = data.count > limit
-            let visible = truncated ? data.prefix(limit) : data[...]
-            // ANDROID C08 delta: never turn binary network bytes into invented
-            // replacement text. The same 64 KiB window and truncation report
-            // stay unchanged for real UTF-8 text.
-            guard !visible.contains(0),
-                  let text = String(data: Data(visible), encoding: .utf8) else {
-                throw WorkspaceToolError.unsupportedContent(
-                    "network file is not readable as text; use a document, media or archive tool")
-            }
-            let totalLines = text.reduce(into: 1) { if $1 == "\n" { $0 += 1 } }
-            return WorkspaceToolSupport.output("path=\(args.path) offset=\(offset) truncated=\(truncated) totalLines=\(totalLines) network=true\n\(text)")
+            let page = try await WorkspaceTextPage.readNetwork(
+                route: route, offset: args.offset ?? 0, limit: limit,
+                cancellation: context.cancellation)
+            return WorkspaceTextPage.output(path: args.path, content: page,
+                                            extra: " network=true", totalLinesKnown: false)
         }
         let service = try environment.makeService(context: context)
         let content = try service.readFile(
             args.path,
             byteOffset: args.offset ?? 0,
+            limit: limit,
             cancellation: context.cancellation
         )
-        // Honor a caller-supplied limit below the service chunk size.
-        let limit = args.limit ?? WorkspaceFileService.readChunkBytes
-        var text = content.text
-        var truncated = content.truncated
-        if limit < WorkspaceFileService.readChunkBytes {
-            let bytes = Data(text.utf8)
-            if bytes.count > limit {
-                text = String(decoding: bytes.prefix(limit), as: UTF8.self)
-                truncated = true
-            }
-        }
-        var summary = "path=\(args.path) offset=\(content.byteOffset) truncated=\(truncated) totalLines=\(content.totalLines)\n"
-        summary += text
-        return WorkspaceToolSupport.output(summary)
+        return WorkspaceTextPage.output(path: args.path, content: content)
     }
 }
 

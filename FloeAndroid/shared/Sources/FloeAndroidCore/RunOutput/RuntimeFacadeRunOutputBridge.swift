@@ -391,6 +391,7 @@ public final class RunOutputBridgeFacade: @unchecked Sendable {
     /// session grammar without installing a full G02 generation.
     internal var liveEpochOverrideForTesting: UInt64?
     internal var storeProviderOverrideForTesting: ((UInt64) -> (any RunStore)?)?
+    internal var childStoreProviderOverrideForTesting: ((UInt64) -> (any ChildRunStoring)?)?
     internal var runOutputOverrideForTesting: RuntimeFacadeRunOutput?
     /// Lifetime-race seams: a one-shot pause point INSIDE a read's owned
     /// I/O window (between admission and the pread), a shortened open-hop
@@ -436,6 +437,20 @@ public final class RunOutputBridgeFacade: @unchecked Sendable {
         return bundle.runs
     }
 
+    /// The durable child graph of the CURRENT trusted generation. Child
+    /// outputs are sealed against the parent run/task, but their durable
+    /// transcript lives in the child store; the same owned component bundle
+    /// supplies it. Ordinary only (temporary bundles never reach this lane);
+    /// nil keeps the parent-only view honestly.
+    private func durableChildStore(epoch: UInt64) -> (any ChildRunStoring)? {
+        if let override = childStoreProviderOverrideForTesting { return override(epoch) }
+        guard liveEpoch() == epoch,
+              let (domain, _) = RunDomainFacade.current(epoch: epoch) else { return nil }
+        let bundle = domain.components.durable
+        guard bundle.identity == .ordinary else { return nil }
+        return bundle.childRuns
+    }
+
     private var runOutputAuthority: RuntimeFacadeRunOutput {
         runOutputOverrideForTesting ?? .shared
     }
@@ -475,7 +490,8 @@ public final class RunOutputBridgeFacade: @unchecked Sendable {
             // pretends the outputs do not exist.
             return (RunOutputBridgeStatus.leaseRefused, nil)
         }
-        let reader = RunOutputPersistedReader(runStore: store)
+        let reader = RunOutputPersistedReader(runStore: store,
+                                                   childRunStore: durableChildStore(epoch: epoch))
         let scan: RunOutputReceiptScan
         let box = RunOutputHopBox<RunOutputReceiptScan>()
         let gate = DispatchSemaphore(value: 0)
@@ -611,7 +627,8 @@ public final class RunOutputBridgeFacade: @unchecked Sendable {
         guard let store = durableRunStore(epoch: epoch) else {
             return refuse(RunOutputBridgeStatus.notInstalled)
         }
-        let reader = RunOutputPersistedReader(runStore: store)
+        let reader = RunOutputPersistedReader(runStore: store,
+                                                   childRunStore: durableChildStore(epoch: epoch))
         let box = RunOutputHopBox<OpenHopOutcome>()
         let gate = DispatchSemaphore(value: 0)
         let postVerifyPause = openHopPostVerifyPauseForTesting

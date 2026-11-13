@@ -62,7 +62,15 @@ import com.floe.android.design.IconGlyph
  * step plus the monospaced progress count. */
 @Composable
 fun ThreadChecklistSection(holder: ConversationFlowHolder, modifier: Modifier = Modifier) {
-    val checklist = holder.snapshot.value?.checklist ?: return
+    val state = holder.snapshot.value ?: return
+    val checklist = state.checklist ?: return
+    // N10: the strip belongs to the CURRENT selected active round only. A
+    // terminal/new-round/historical checklist is durable history, never
+    // presented as current progress.
+    val selected = state.runs.firstOrNull { it.id == state.selectedRunId }
+    if (!ChecklistPresentationRules.shouldPresent(
+            checklist, state.selectedRunId, selected?.stateName
+        )) return
     Column(modifier = modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp)) {
         Row(
             modifier = Modifier
@@ -193,18 +201,30 @@ fun ThreadIntelligenceSection(holder: ConversationFlowHolder, modifier: Modifier
                 }
             }
             if (plan.statusRaw == "ready" && plan.isDecisionComplete) {
+                // A live earlier PLAN owner is exactly what an explicit
+                // Execute Plan handoff stops; a live Agent/Goal owner is not
+                // ours to stop, so the gesture stays honestly unavailable.
+                val handoff = PlanExecutionHandoffRules.decide(state.runs)
+                val blockedByOtherOwner = handoff is PlanExecutionHandoffRules.Decision.RefuseBusy
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     PlanAction(
                         label = stringResource(R.string.plan_execute_normal),
                         prominent = true,
-                        enabled = !holder.isAcceptingPlan && !state.isRunning,
+                        enabled = !holder.isAcceptingPlan && !blockedByOtherOwner,
                         onClick = { holder.acceptPlan(PlanRecommendationUi.NORMAL) },
                     )
                     PlanAction(
                         label = stringResource(R.string.plan_convert_goal),
                         prominent = false,
-                        enabled = !holder.isAcceptingPlan && !state.isRunning,
+                        enabled = !holder.isAcceptingPlan && !blockedByOtherOwner,
                         onClick = { holder.acceptPlan(PlanRecommendationUi.GOAL) },
+                    )
+                }
+                if (blockedByOtherOwner) {
+                    FloeText(
+                        stringResource(R.string.plan_execute_finish_current),
+                        style = Floe.typography.metadata,
+                        color = Floe.colors.secondaryLabel,
                     )
                 }
             }

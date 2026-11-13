@@ -12,7 +12,7 @@ public struct WorkspaceAppendFileTool: AgentTool {
         }
     }
     public static let name = "workspace.appendFile"
-    public static let toolDescription = "Append UTF-8 text to an existing workspace text file, including HTML, Python, source, configuration and Markdown. Preserves the complete original file and rejects concurrent edits and binary input."
+    public static let toolDescription = "Append UTF-8 text to any existing plain-text workspace file: source code, scripts, HTML/CSS/JS, JSON/YAML/CSV, LaTeX, TXT, configuration, or an extensionless/unknown-extension file. Preserves the complete original bytes (including a UTF-8 BOM and CRLF newlines) and rejects concurrent edits and binary input. For long text, append bounded chunks to a new draft; always pass the previous returned SHA as expectedSHA256. Repeating a chunk with the SAME expectedSHA256 conflicts without appending twice. Never replace that precondition merely to retry. Finalize with workspace.writeFile(sourcePath, expectedSourceSHA256). Prefer this native tool over Linux for plain text."
     public static let parametersJSON = #"{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"},"expectedSHA256":{"type":"string"}},"required":["path","content"],"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = [.writesFiles]
     public static let isSideEffecting = true
@@ -39,7 +39,7 @@ public struct WorkspaceReplaceTextTool: AgentTool {
         }
     }
     public static let name = "workspace.replaceText"
-    public static let toolDescription = "Replace exact text in any UTF-8 workspace file (HTML, Python, source, config, Markdown). Use the complete old text of a range. Requires exactly expectedOccurrences matches (default 1); mismatches and concurrent edits leave the file untouched."
+    public static let toolDescription = "Replace exact text in any UTF-8 plain-text workspace file (source, scripts, HTML/CSS/JS, JSON/YAML/CSV, LaTeX, TXT, configuration, or an extensionless/unknown-extension file). Use the complete old text of a range. Requires exactly expectedOccurrences matches (default 1); mismatches and concurrent edits leave the file untouched. A leading BOM and CRLF bytes are preserved when the exact old text includes them."
     public static let parametersJSON = #"{"type":"object","properties":{"path":{"type":"string"},"oldText":{"type":"string","minLength":1},"newText":{"type":"string"},"expectedOccurrences":{"type":"integer","minimum":1},"expectedSHA256":{"type":"string"}},"required":["path","oldText","newText"],"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = [.writesFiles]
     public static let isSideEffecting = true

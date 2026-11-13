@@ -319,6 +319,24 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
     }
 
     public func decide(_ action: ProposedAction) async throws -> ApprovalDecision {
+        // A write through an existing network workspace mount is a REMOTE
+        // mutation even though it is addressed through the workspace tool.
+        // The local deterministic carve-out and the trusted automatic grant
+        // are statements about local task data, not about another server's
+        // files: route these through the configured reviewer, and escalate
+        // to the human when no reviewer exists.
+        if Self.isRemoteWorkspaceMutation(action) {
+            guard let backend else {
+                return .escalateToHuman(
+                    reason: "Remote workspace write requires review, but no approval model is configured")
+            }
+            do {
+                return try await backend.decide(action)
+            } catch {
+                return .escalateToHuman(
+                    reason: "Remote workspace write review failed: \(error.localizedDescription)")
+            }
+        }
         if Self.isDeterministicallyExempt(action) {
             return .allow(scope: Self.scope(for: action.toolCall), expiresAt: nil)
         }
@@ -358,10 +376,35 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
     }
 
     public func requiresModelReview(_ action: ProposedAction) -> Bool {
+        if Self.isRemoteWorkspaceMutation(action) { return true }
         if Self.isDeterministicallyExempt(action) { return false }
         if let trustedAutomaticGrant, trustedAutomaticGrant(action) { return false }
         if action.isSoftwareInstallRequest { return packageReviewBackend != nil }
         return backend != nil
+    }
+
+    /// Workspace tools that write user bytes through the shared workspace
+    /// file service. `moveFile` addresses endpoints as `from`/`to`, every
+    /// other writer uses `path`.
+    private static let remoteMutableWorkspaceTools: Set<String> = [
+        "workspace.createFile", "workspace.writeFile", "workspace.applyPatch",
+        "workspace.appendFile", "workspace.replaceText",
+        "workspace.createDirectory", "workspace.moveFile",
+        "workspace.deleteFile",
+    ]
+
+    /// True when the concrete call targets the virtual `Network/` workspace
+    /// root (an SMB/WebDAV mount). Both separator spellings normalize to the
+    /// same check; a call without any recognizable endpoint is not treated as
+    /// remote here (its own guard/schema refuses it before any write).
+    private static func isRemoteWorkspaceMutation(_ action: ProposedAction) -> Bool {
+        guard remoteMutableWorkspaceTools.contains(action.toolCall.toolName),
+              let object = action.argumentObject else { return false }
+        let endpoints = ["path", "from", "to"].compactMap { object[$0] as? String }
+        return endpoints.contains { value in
+            let normalized = value.replacingOccurrences(of: "\\", with: "/")
+            return normalized == "Network" || normalized.hasPrefix("Network/")
+        }
     }
 
     /// Built-in, bounded local inspection does not need a second model to

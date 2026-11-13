@@ -376,6 +376,56 @@ public struct SubagentRunner: Sendable {
             }
         }
 
+        /// Persist one real per-iteration toolResult. The typed file receipt
+        /// is added BEFORE the transcript budget shrinks the human-readable
+        /// summary: a nested receipt object is protected by the existing
+        /// bounded JSON codec, while `output` is clipped to fit. If the whole
+        /// row (receipt included) cannot fit one entry, the receipt is NOT
+        /// advertised and the ordinary result is stored with an explicit
+        /// incomplete-transcript failure — never a half-object or a silent
+        /// file drop.
+        func appendToolResult(call: ToolCall, result: ToolResult,
+                              identity: ChildExecutionIdentity?) async -> NativeChildFileReceipt? {
+            var object: [String: Any] = [
+                "tool": call.toolName,
+                "callID": call.id,
+                "status": result.status.rawValue,
+                "outcomeUnknown": result.status == .ok ? "false" : "true",
+                "digest": result.outputDigest,
+                "output": String(result.outputSummary.prefix(2 * 1024)),
+            ]
+            var receipt: NativeChildFileReceipt?
+            if let identity, identity.childID == record.id,
+               identity.parentRunID == record.parentRunID,
+               identity.rootTaskID == record.conversationID {
+                receipt = NativeChildFileArtifacts.receipt(
+                    result: result,
+                    parentRunID: record.parentRunID,
+                    taskID: record.conversationID,
+                    childID: record.id,
+                    callID: call.id,
+                    tool: call.toolName)
+            }
+            do {
+                if let receipt {
+                    let encoder = JSONEncoder()
+                    encoder.outputFormatting = [.sortedKeys]
+                    object[NativeChildFileArtifacts.receiptKey] =
+                        try JSONSerialization.jsonObject(with: encoder.encode(receipt))
+                }
+                let json = try ChildRunPayload.boundedObject(
+                    object,
+                    requiredKeys: ["tool", "callID", "status", "outcomeUnknown",
+                                   "digest", NativeChildFileArtifacts.receiptKey])
+                return await append(.toolResult, json) ? receipt : nil
+            } catch {
+                recordFailure("encode(toolResult.inlineContent)", error)
+                object.removeValue(forKey: NativeChildFileArtifacts.receiptKey)
+                _ = await append(.toolResult, SubagentRunner.jsonPayload(object))
+                return nil
+            }
+        }
+
         /// Result entry first, then the terminal row. The store's writer is
         /// serial and both calls are awaited, so a terminal child record
         /// implies the tail (including `.result`) is already committed. If any
@@ -831,13 +881,14 @@ public struct SubagentRunner: Sendable {
                             ]))
                         }
                         for item in executed {
-                            await persistence.append(.toolResult, Self.jsonPayload([
-                                "tool": item.call.toolName,
-                                "callID": item.call.id,
-                                "status": item.result.status.rawValue,
-                                "digest": item.result.outputDigest,
-                                "output": String(item.result.outputSummary.prefix(2 * 1024))
-                            ]))
+                            // Receipt metadata (trusted parent/task/child/
+                            // call/tool + real artifacts/outputs from a
+                            // successful known result) is written FIRST; the
+                            // transcript codec then bounds only its ordinary
+                            // text fields.
+                            _ = await persistence.appendToolResult(
+                                call: item.call, result: item.result,
+                                identity: context.childExecution?.identity)
                         }
                     }
                     pendingSettled = executed

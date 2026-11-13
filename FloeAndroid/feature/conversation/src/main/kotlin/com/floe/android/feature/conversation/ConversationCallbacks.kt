@@ -542,6 +542,20 @@ interface ConversationUiCallbacks {
         providerId: String?,
     ): Boolean
 
+    /**
+     * Persist the next-input execution mode and the exact plan presentation
+     * acknowledgement (`planID:revision`) in ONE durable write. The ack is a
+     * presentation fact only: it grants no execution or tool permission.
+     * The host publishes the stored pair on the next `ThreadUiState`; a
+     * fixture that does not host durable preferences may keep the default
+     * no-op (the visible RAM choice still applies for that session).
+     */
+    fun recordExecutionModePreference(
+        session: ConversationSessionToken,
+        modeRaw: String,
+        lastPresentedPlanRevision: String?,
+    ): Boolean = true
+
     /** ⇄ createGoal(...): the host starts the goal-mode run with the
      * structured `goalDefinition` (the native C1 owns the durable goal row). */
     fun createGoal(request: GoalCreateRequest): Boolean

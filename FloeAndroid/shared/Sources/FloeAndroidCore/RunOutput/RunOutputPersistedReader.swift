@@ -29,7 +29,13 @@
 //
 // Scan discipline: bounded paged reads over the ORIGINAL per-run append-only
 // sequence (`RunStore.events(runID:afterSequence:limit:)`, the same frozen
-// page shape the event pump uses). Legacy runs with no output payloads read
+// page shape the event pump uses). Delegated-child outputs live in the
+// child's own durable transcript, so an optional `ChildRunStoring` lets the
+// same reader recover the native `inlineContentReceipt` rows for children
+// whose `parentRunID` is this exact run. The receipt is checked against the
+// child's durable identity and an EARLIER toolRequest pair before it can join
+// the parent view; a child store read failure is `storeUnavailable`, never a
+// silently partial list. Legacy runs/children with no output payloads read
 // normally and yield nothing. A scan that hits its page ceiling NEVER
 // silently reports "no outputs": it reports `.scanTruncated` / the honest
 // `scanTruncated` flag so the consumer fails closed instead of pretending.
@@ -46,10 +52,24 @@ import FloeModels
 import FloePersistence
 
 /// One owned persisted receipt plus the durable event sequence that carries
-/// it (stable ordering for the bounded list wire).
+/// it (stable ordering for the bounded list wire). Parent-run receipts carry
+/// only `eventSequence`; a receipt recovered from a delegated child's own
+/// durable transcript also names that exact child and entry sequence so the
+/// provenance stays visible to diagnostics (the card identity remains the
+/// sealed receipt's run/output pair).
 public struct RunOutputPersistedReceipt: Sendable, Equatable {
     public let receipt: RunOutputFile
     public let eventSequence: Int
+    public let childRunID: UUID?
+    public let childSequence: Int?
+
+    public init(receipt: RunOutputFile, eventSequence: Int,
+                childRunID: UUID? = nil, childSequence: Int? = nil) {
+        self.receipt = receipt
+        self.eventSequence = eventSequence
+        self.childRunID = childRunID
+        self.childSequence = childSequence
+    }
 }
 
 /// Outcome of scanning one run's durable toolResult events for the sealed
@@ -106,13 +126,19 @@ public struct RunOutputPersistedReader: Sendable {
     public static let defaultMaximumScanPages = 100
 
     private let runStore: any RunStore
+    /// Optional durable child graph of the SAME trusted generation. nil keeps
+    /// the historical parent-only reader for fixtures/legacy wiring; the
+    /// production bridge supplies the generation's ordinary child store.
+    private let childRunStore: (any ChildRunStoring)?
     public let pageSize: Int
     public let maximumScanPages: Int
 
     public init(runStore: any RunStore,
+                childRunStore: (any ChildRunStoring)? = nil,
                 pageSize: Int = RunOutputPersistedReader.defaultPageSize,
                 maximumScanPages: Int = RunOutputPersistedReader.defaultMaximumScanPages) {
         self.runStore = runStore
+        self.childRunStore = childRunStore
         self.pageSize = max(1, pageSize)
         self.maximumScanPages = max(1, maximumScanPages)
     }
@@ -134,6 +160,27 @@ public struct RunOutputPersistedReader: Sendable {
         var contradictoryIDs: Set<String> = []
         var rejectedCount = 0
         var scanTruncated = false
+        // Idempotent duplicate (same sealed metadata) is a legitimate
+        // re-persistence; a DIFFERENT sealed body under one canonical
+        // identity is a forged contradiction. A contradiction removes BOTH
+        // copies from the owned view (never first- or last-wins laundering)
+        // and counts rejected.
+        func accept(_ receipt: RunOutputFile, eventSequence: Int,
+                    childRunID: UUID?, childSequence: Int?) {
+            if let previous = seen[receipt.outputID] {
+                if previous == receipt { return }
+                rejectedCount += 1
+                if contradictoryIDs.insert(receipt.outputID).inserted {
+                    items.removeAll { $0.receipt.outputID == receipt.outputID }
+                }
+                return
+            }
+            seen[receipt.outputID] = receipt
+            items.append(RunOutputPersistedReceipt(
+                receipt: receipt, eventSequence: eventSequence,
+                childRunID: childRunID, childSequence: childSequence))
+        }
+
         var afterSequence = 0
         var pageReadFailed = false
         var pages = 0
@@ -152,22 +199,8 @@ public struct RunOutputPersistedReader: Sendable {
                     from: event, runID: runID, conversationID: conversationID) {
                 case .items(let decoded):
                     for receipt in decoded {
-                        if let previous = seen[receipt.receipt.outputID] {
-                            if previous == receipt.receipt { continue }
-                            // Idempotent duplicate (same sealed metadata) is
-                            // a legitimate re-persistence; a DIFFERENT sealed
-                            // body under one canonical identity is a forged
-                            // contradiction. A contradiction removes BOTH
-                            // copies from the owned view (never first- or
-                            // last-wins laundering) and counts rejected.
-                            rejectedCount += 1
-                            if contradictoryIDs.insert(receipt.receipt.outputID).inserted {
-                                items.removeAll { $0.receipt.outputID == receipt.receipt.outputID }
-                            }
-                            continue
-                        }
-                        seen[receipt.receipt.outputID] = receipt.receipt
-                        items.append(receipt)
+                        accept(receipt.receipt, eventSequence: receipt.eventSequence,
+                               childRunID: nil, childSequence: nil)
                     }
                 case .malformed:
                     rejectedCount += 1
@@ -183,6 +216,75 @@ public struct RunOutputPersistedReader: Sendable {
             }
         }
         if pageReadFailed { return .storeUnavailable }
+
+        if let childRunStore {
+            let children: [ChildRunRecord]
+            do {
+                children = try await childRunStore.children(parentRunID: runID)
+            } catch {
+                return .storeUnavailable
+            }
+            let owned = children.filter { $0.parentRunID == runID }
+            if owned.count > N113FileArtifacts.maximumChildRunsPerParent {
+                scanTruncated = true
+            }
+            for child in owned.prefix(N113FileArtifacts.maximumChildRunsPerParent) {
+                guard child.conversationID == conversationID else {
+                    // A child relation pointing at another conversation can
+                    // never contribute a card to this task.
+                    rejectedCount += 1
+                    continue
+                }
+                var requestTools: [String: String] = [:]
+                var childAfter = 0
+                var childPages = 0
+                var childTruncated = false
+                var childPageFailed = false
+                while childPages < maximumScanPages {
+                    childPages += 1
+                    let page: ChildRunEntryPage
+                    do {
+                        page = try await childRunStore.entries(
+                            childRunID: child.id, afterSequence: childAfter,
+                            limit: pageSize)
+                    } catch {
+                        childPageFailed = true
+                        break
+                    }
+                    for entry in page.entries {
+                        if let request = N113FileArtifacts.requestTool(from: entry) {
+                            requestTools[request.callID] = request.tool
+                            continue
+                        }
+                        guard N113FileArtifacts.advertisesReceipt(entry) else {
+                            // Ordinary legacy/capture rows contribute nothing.
+                            continue
+                        }
+                        if let receipt = N113FileArtifacts.receipt(
+                            from: entry, parentRunID: runID, taskID: conversationID,
+                            childID: child.id, originalRequestTools: requestTools) {
+                            for output in receipt.outputs {
+                                accept(output, eventSequence: entry.sequence,
+                                       childRunID: child.id,
+                                       childSequence: entry.sequence)
+                            }
+                        } else {
+                            // A receipt-bearing row that fails any identity,
+                            // request-pairing or success check is rejected;
+                            // absence is never re-derived from it.
+                            rejectedCount += 1
+                        }
+                    }
+                    guard let last = page.entries.last else { break }
+                    childAfter = max(childAfter, last.sequence)
+                    if page.nextSequence == nil { break }
+                    if childPages == maximumScanPages { childTruncated = true }
+                }
+                if childPageFailed { return .storeUnavailable }
+                if childTruncated { scanTruncated = true }
+            }
+        }
+
         return .owned(items: items, scanTruncated: scanTruncated,
                       rejectedCount: rejectedCount)
     }

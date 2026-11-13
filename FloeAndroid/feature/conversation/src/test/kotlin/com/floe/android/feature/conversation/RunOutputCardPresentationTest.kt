@@ -67,10 +67,21 @@ class RunOutputCardPresentationTest {
         assertFalse(RunOutputCardPresentation.supportsOpen("application/pdf", "notes.txt"))
         assertFalse(RunOutputCardPresentation.supportsOpen("text/plain", "a.pdf"))
         assertFalse(RunOutputCardPresentation.supportsOpen("application/octet-stream", "a.pdf"))
-        // The owned viewer now supplies a real text route; an unknown MIME
-        // still cannot gain that route from a text extension alone.
+        // The owned viewer supplies the real lightweight-text route for
+        // plain text, code and unknown UTF-8 candidates. The publisher's
+        // octet-stream fallback is a candidate, never an automatic decode:
+        // the viewer still probes real UTF-8/NUL bytes before rendering.
         assertTrue(RunOutputCardPresentation.supportsOpen("text/plain", "notes.txt"))
-        assertFalse(RunOutputCardPresentation.supportsOpen("application/octet-stream", "notes.txt"))
+        assertTrue(RunOutputCardPresentation.supportsOpen("application/octet-stream", "notes.txt"))
+        assertTrue(RunOutputCardPresentation.supportsOpen("application/octet-stream", "script.py"))
+        assertTrue(RunOutputCardPresentation.supportsOpen("application/octet-stream", "page.html"))
+        assertTrue(RunOutputCardPresentation.supportsOpen("text/csv", "data.csv"))
+        assertTrue(RunOutputCardPresentation.supportsOpen("application/json", "data.json"))
+        assertTrue(RunOutputCardPresentation.supportsOpen("application/octet-stream", "README"))
+        assertTrue(RunOutputCardPresentation.supportsOpen("application/octet-stream", "unknown.foobar"))
+        assertFalse(RunOutputCardPresentation.supportsOpen("application/octet-stream", "notes.bin"))
+        assertFalse(RunOutputCardPresentation.supportsOpen("text/plain", "report.docx"))
+        assertFalse(RunOutputCardPresentation.supportsOpen("text/plain", "chart.png"))
         // The dedicated PDF predicate matches the host router rule exactly.
         assertTrue(RunOutputCardPresentation.supportsPdfOpen("application/pdf", "x.pdf"))
         assertFalse(RunOutputCardPresentation.supportsPdfOpen("application/pdf", "x.docx"))
@@ -94,8 +105,11 @@ class RunOutputCardPresentationTest {
         assertTrue(RunOutputCardPresentation.supportsOpen("audio/mpeg", "song.mp3"))
         assertTrue(RunOutputCardPresentation.supportsOpen("video/mp4", "render.mp4"))
         assertTrue(RunOutputCardPresentation.supportsOpen("video/webm", "render.webm"))
-        // Agreement violations and unknown types: no preview promise.
-        assertFalse(RunOutputCardPresentation.supportsOpen("text/plain", "notes.md"))
+        // Text is a broad UTF-8 candidate family, while non-text families
+        // keep their exact agreement (or no promise at all).
+        assertTrue(RunOutputCardPresentation.supportsOpen("text/plain", "notes.md"))
+        assertTrue(RunOutputCardPresentation.supportsOpen("text/markdown", "notes.txt"))
+        assertTrue(RunOutputCardPresentation.supportsOpen("text/html", "page.md"))
         assertFalse(RunOutputCardPresentation.supportsOpen("image/png", "chart.webp"))
         assertFalse(RunOutputCardPresentation.supportsOpen("audio/wav", "voice.mp3"))
         assertFalse(RunOutputCardPresentation.supportsOpen("application/octet-stream", "render.mp4"))
