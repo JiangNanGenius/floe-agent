@@ -491,12 +491,30 @@ final class ThreadDetailViewModel: ObservableObject {
             ("written=", [" bytes=", "\n"]),
             ("patched=", [" hunks=", "\n"])
         ]
-        for (marker, terminators) in candidates {
-            guard let range = summary.range(of: marker) else { continue }
-            let tail = summary[range.upperBound...]
-            let end = terminators.compactMap { tail.range(of: $0)?.lowerBound }.min() ?? tail.endIndex
-            let value = tail[..<end].trimmingCharacters(in: .whitespacesAndNewlines)
-            if !value.isEmpty { return value }
+        var fence: (marker: Character, length: Int)?
+        for rawLine in summary.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let marker = line.first, marker == "`" || marker == "~" {
+                let length = line.prefix(while: { $0 == marker }).count
+                if length >= 3 {
+                    if let open = fence {
+                        if marker == open.marker, length >= open.length,
+                           line.dropFirst(length).allSatisfy(\.isWhitespace) { fence = nil }
+                    } else { fence = (marker, length) }
+                    continue
+                }
+            }
+            guard fence == nil else { continue }
+            // The runtime prepends "resource artifacts: ... path=... mime=..."
+            // before the workspace receipt. Those bindings and quoted diff
+            // contents describe evidence, not workspace file shortcuts.
+            // Only a native receipt's leading field supplies the target.
+            for (marker, terminators) in candidates where line.hasPrefix(marker) {
+                let tail = line.dropFirst(marker.count)
+                let end = terminators.compactMap { tail.range(of: $0)?.lowerBound }.min() ?? tail.endIndex
+                let value = tail[..<end].trimmingCharacters(in: .whitespacesAndNewlines)
+                if !value.isEmpty { return value }
+            }
         }
         return nil
     }

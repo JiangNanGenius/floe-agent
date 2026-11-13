@@ -542,6 +542,106 @@ final class RuntimeV2RecoveryOptimizationTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.journals.path))
     }
 
+    func testVerifiedPreSwapReferenceChangeConvergesWithoutLosingTheSource() async throws {
+        let descriptorLimit = try SyntheticDescriptorLimitScope()
+        defer { XCTAssertEqual(descriptorLimit.restore(), 0) }
+        let fixture = try RecoveryOptimizationFixture(); defer { fixture.cleanup() }
+        _ = await fixture.adapter.recoverBeforeUse()
+        let preserved = try fixture.preservedMetadata()
+        let record = try await fixture.record()
+        let result = await fixture.adapter.optimize(record, cancellation: .init()) { progress in
+            if progress.phase == .verifying, progress.processedBytes == progress.totalBytes {
+                fixture.evidence.lock.withLock { fixture.evidence.referenceVersion = 2 }
+            }
+        }
+        XCTAssertEqual(result.code, "identity-changed")
+        XCTAssertEqual(result.diagnosticCodes, ["reference-projection-changed"])
+        XCTAssertFalse(result.recoveryPending)
+        XCTAssertEqual(try Data(contentsOf: fixture.disk), fixture.original)
+        XCTAssertEqual(try fixture.preservedMetadata(), preserved)
+        let names = try FileManager.default.contentsOfDirectory(atPath: fixture.journals.path)
+        XCTAssertEqual(names.count, 1)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf:
+            fixture.journals.appendingPathComponent(try XCTUnwrap(names.first)))) as? [String: Any])
+        XCTAssertEqual(object["phase"] as? String, "aborted")
+        XCTAssertEqual(object["sourceDigestSHA512"] as? String, object["stageDigestSHA512"] as? String)
+        XCTAssertEqual((object["sourceDigestSHA512"] as? String)?.count, 128)
+        XCTAssertEqual(object["resolution"] as? String, "source-unchanged")
+        let state = await fixture.coordinator.state()
+        XCTAssertEqual(state.phase, .open)
+        let again = await fixture.adapter.recoverBeforeUse()
+        XCTAssertEqual(again.outcome, .notNeeded)
+    }
+
+    func testPhysicalRootBindingResolvesAncestorAliasesAndRejectsWrongInodes() throws {
+        let fixture = try RecoveryOptimizationFixture(); defer { fixture.cleanup() }
+        let identity = try RuntimeV2DiskIdentity.read(at: fixture.root)
+        let alias = fixture.work.appendingPathComponent("ancestor-alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: fixture.work)
+        let aliasRoot = alias.appendingPathComponent("v2")
+        XCTAssertNotEqual(aliasRoot.path, fixture.root.path)
+        XCTAssertTrue(RuntimeV2RecoveryOptimizationAdapter.matchesPhysicalRoot(aliasRoot.path,
+            root: fixture.root, device: identity.device, inode: identity.inode))
+        XCTAssertFalse(RuntimeV2RecoveryOptimizationAdapter.matchesPhysicalRoot(fixture.state.path,
+            root: fixture.root, device: identity.device, inode: identity.inode))
+        let old = fixture.work.appendingPathComponent("old-root")
+        try FileManager.default.moveItem(at: fixture.root, to: old)
+        try FileManager.default.createDirectory(at: fixture.root, withIntermediateDirectories: false)
+        XCTAssertFalse(RuntimeV2RecoveryOptimizationAdapter.matchesPhysicalRoot(aliasRoot.path,
+            root: fixture.root, device: identity.device, inode: identity.inode))
+    }
+
+    func testCompletedJournalReusesExactCommittedInodeWithoutReadingDiskContentsAgain() async throws {
+        let descriptorLimit = try SyntheticDescriptorLimitScope()
+        defer { XCTAssertEqual(descriptorLimit.restore(), 0) }
+        let fixture = try RecoveryOptimizationFixture(); defer { fixture.cleanup() }
+        _ = await fixture.adapter.recoverBeforeUse()
+        let first = await fixture.adapter.optimize(try await fixture.record(), cancellation: .init())
+        XCTAssertEqual(first.code, "optimized")
+        let before = try StorageSparseDiskRewrite.inspectSource(rootURL: fixture.root, relativePath: fixture.relative + "/disk.img")
+        let preserved = try fixture.preservedMetadata()
+        let journalNames = try FileManager.default.contentsOfDirectory(atPath: fixture.journals.path)
+        let receiptNames = try FileManager.default.contentsOfDirectory(atPath: fixture.receipts.path)
+        let journal = try XCTUnwrap(journalNames.first)
+        let receipt = try XCTUnwrap(receiptNames.first)
+        let journalBytes = try Data(contentsOf: fixture.journals.appendingPathComponent(journal))
+        let receiptBytes = try Data(contentsOf: fixture.receipts.appendingPathComponent(receipt))
+        let second = await fixture.adapter.optimize(try await fixture.record(), cancellation: .init()) { _ in
+            XCTFail("A reused commit must never enter Core counting/staging/hash IO")
+        }
+        XCTAssertEqual(second.code, "already-optimized")
+        XCTAssertNil(second.report)
+        XCTAssertTrue(second.verifiedFirstDisk)
+        XCTAssertFalse(second.recoveryPending)
+        let after = try StorageSparseDiskRewrite.inspectSource(rootURL: fixture.root, relativePath: fixture.relative + "/disk.img")
+        XCTAssertTrue(after.identity.matchesFully(before.identity))
+        XCTAssertEqual(try Data(contentsOf: fixture.journals.appendingPathComponent(journal)), journalBytes)
+        XCTAssertEqual(try Data(contentsOf: fixture.receipts.appendingPathComponent(receipt)), receiptBytes)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: fixture.journals.path), journalNames)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: fixture.receipts.path), receiptNames)
+        XCTAssertEqual(try fixture.preservedMetadata(), preserved)
+        XCTAssertEqual(try Data(contentsOf: fixture.disk), fixture.original)
+        let state = await fixture.coordinator.state()
+        XCTAssertEqual(state.phase, .open)
+    }
+
+    func testChangedCommittedDiskCannotReuseAnEarlierSuccessJournal() async throws {
+        let descriptorLimit = try SyntheticDescriptorLimitScope()
+        defer { XCTAssertEqual(descriptorLimit.restore(), 0) }
+        let fixture = try RecoveryOptimizationFixture(); defer { fixture.cleanup() }
+        _ = await fixture.adapter.recoverBeforeUse()
+        let first = await fixture.adapter.optimize(try await fixture.record(), cancellation: .init())
+        XCTAssertEqual(first.code, "optimized")
+        var changed = fixture.original; changed[1] = 0x73
+        try changed.write(to: fixture.disk)
+        let second = await fixture.adapter.optimize(try await fixture.record(), cancellation: .init())
+        XCTAssertNotEqual(second.code, "already-optimized")
+        XCTAssertEqual(second.code, "optimized")
+        XCTAssertNotNil(second.report)
+        XCTAssertEqual(try Data(contentsOf: fixture.disk), changed)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: fixture.journals.path).count, 2)
+    }
+
     func testActualSharedUseAndRWRegistryConnectionBlockExclusiveUntilClosed() async throws {
         let fixture = try RecoveryOptimizationFixture(registry: false); defer { fixture.cleanup() }
         let layout = RuntimeV2Layout(root: fixture.root)

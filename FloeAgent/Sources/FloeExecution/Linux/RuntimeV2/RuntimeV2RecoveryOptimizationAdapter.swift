@@ -1,6 +1,11 @@
 import Foundation
 import Dispatch
 import FloeCore
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 public final class RuntimeV2OptimizationCancellation: @unchecked Sendable {
     private let lock = NSLock()
@@ -126,6 +131,16 @@ private struct RuntimeV2OptimizationCoreJournalBinding: Decodable, Sendable {
     let sourceDigestSHA512: String?
     let stageDigestSHA512: String?
     let phase: String
+    let parentDevice: UInt64?
+    let parentInode: UInt64?
+    let stageName: String?
+    let postSwapSource: StorageSparseDiskIdentity?
+    let stageRetired: Bool?
+    let stageRetained: Bool?
+    let requestedMode: StorageSparseDiskRewriteMode?
+    let modeUsed: StorageSparseDiskRewriteMode?
+    let fallbackReason: String?
+    let metadataFingerprint: String?
 }
 
 public struct RuntimeV2RecoveryOptimizationResult: Sendable {
@@ -255,6 +270,25 @@ public actor RuntimeV2RecoveryOptimizationAdapter {
             guard !closure.isConvergenceProof else {
                 throw RuntimeV2MaintenanceError.claimInvalidated("recovery proof cannot start optimization")
             }
+            // Reuse only a completed, byte-verified commit whose exact current
+            // inode/metadata and preserved sidecars still match. This is not
+            // owner admission: the fresh exclusive claim/closure above remains
+            // mandatory, and a missing/mismatched receipt falls through to Core.
+            if let completed = try? await completedJournal(
+                relative: relative, source: inspection.identity, preservation: preservation,
+                closure: closure) {
+                try await validate(claim: claim, relative: relative, preservation: preservation)
+                try claim.validateTargetIdentity()
+                let stillMatches = try await metadata.run {
+                    Self.matchesCommittedSource(completed, root: root, expected: inspection.identity,
+                                                rootDevice: closure.rootDevice, rootInode: closure.rootInode)
+                }
+                if stillMatches {
+                    try await claim.abortAndRelease(reason: "completed journal identity verified; no mutation")
+                    return .init(report: nil, code: "already-optimized", recoveryPending: false,
+                                 verifiedUnchanged: true)
+                }
+            }
             let receipt = RuntimeV2OptimizationJobReceipt(
                 version: 1, intentID: claim.intentID, authorityGeneration: claim.holdGeneration,
                 domainKey: domain.domainKey, relativePath: relative, expectedSource: inspection.identity,
@@ -373,7 +407,9 @@ public actor RuntimeV2RecoveryOptimizationAdapter {
     private func recoverIntent(_ intent: RuntimeV2MaintenanceIntentRecord) async -> RuntimeV2MaintenanceRecoveryOutcome {
         do {
             guard intent.owner == Self.owner, intent.reason == Self.reason,
-                  intent.domainRoot == domain.root.path, let relative = intent.targetRelativePath,
+                  intent.domainRoot == domain.root.path,
+                  let rootDevice = intent.domainDevice, let rootInode = intent.domainInode,
+                  let relative = intent.targetRelativePath,
                   relative.hasPrefix("recovery/quarantine/runtime-vm-"),
                   relative.split(separator: "/").count == 4, relative.hasSuffix("/disk.img") else {
                 return .unresolved("not an exact optimizer-owned intent")
@@ -426,7 +462,8 @@ public actor RuntimeV2RecoveryOptimizationAdapter {
                       header.jobGeneration == intent.holdGeneration,
                       header.holdGeneration == saved.repairHoldGeneration,
                       header.relativePath == relative,
-                      header.rootPath == RuntimeV2RecoveryAdmission.key(root),
+                      Self.matchesPhysicalRoot(header.rootPath, root: root,
+                          device: rootDevice, inode: rootInode),
                       header.source.matchesFully(saved.expectedSource) else {
                     return .unresolved("Core journal identity/generation mismatch")
                 }
@@ -480,6 +517,159 @@ public actor RuntimeV2RecoveryOptimizationAdapter {
         } catch { return .unresolved("native recovery requires inspection: " + Self.code(error)) }
     }
 
+    private func completedJournal(
+        relative: String, source: StorageSparseDiskIdentity, preservation: String,
+        closure: RuntimeV2RecoveryClosedReceipt
+    ) async throws -> RuntimeV2OptimizationCoreJournalBinding? {
+        let receipts = receipts, journals = journals, domain = domain
+        return try await metadata.run {
+            for name in try Self.completedReceiptNames(directory: receipts) {
+                guard let saved = try RuntimeV2OptimizationJournalIO.read(
+                    RuntimeV2OptimizationJobReceipt.self, directory: receipts, name: name),
+                      saved.version == 1, saved.domainKey == domain.domainKey,
+                      saved.relativePath == relative, saved.preservationFingerprint == preservation,
+                      saved.intentID + ".json" == name,
+                      saved.closure.version == 1, !saved.closure.isConvergenceProof,
+                      saved.closure.intentID == saved.intentID,
+                      saved.closure.holdGeneration == saved.authorityGeneration,
+                      saved.closure.domainKey == domain.domainKey,
+                      saved.closure.rootDevice == closure.rootDevice,
+                      saved.closure.rootInode == closure.rootInode,
+                      let header = try RuntimeV2OptimizationJournalIO.read(
+                        RuntimeV2OptimizationCoreJournalBinding.self, directory: journals, name: name),
+                      header.schemaVersion == 2, header.jobID == saved.intentID,
+                      header.maintenanceLeaseID == saved.intentID,
+                      header.jobGeneration == saved.authorityGeneration,
+                      header.holdGeneration == saved.repairHoldGeneration,
+                      header.source.matchesFully(saved.expectedSource), header.relativePath == relative,
+                      header.phase == "retired", header.stageRetired == true, header.stageRetained == false,
+                      header.requestedMode == .cloneAndPunch, header.modeUsed == .cloneAndPunch,
+                      header.fallbackReason == nil,
+                      let digest = header.sourceDigestSHA512, Self.isSHA512(digest),
+                      digest == header.stageDigestSHA512,
+                      let metadataFingerprint = header.metadataFingerprint,
+                      Self.isSHA512(metadataFingerprint),
+                      header.postSwapSource?.matchesFully(source) == true,
+                      Self.matchesPhysicalRoot(header.rootPath, root: domain.root,
+                          device: closure.rootDevice, inode: closure.rootInode),
+                      Self.matchesCommittedSource(header, root: domain.root, expected: source,
+                          rootDevice: closure.rootDevice, rootInode: closure.rootInode) else { continue }
+                return header
+            }
+            return nil
+        }
+    }
+
+    private static func isSHA512(_ value: String) -> Bool {
+        value.utf8.count == 128 && value.utf8.allSatisfy {
+            (48...57).contains($0) || (97...102).contains($0) || (65...70).contains($0)
+        }
+    }
+
+    // realpath must actually succeed for both spellings, then both directory
+    // identities must agree with the authority's frozen root. Foundation may
+    // spell iOS /private/var as /var; removing a string prefix is not proof.
+    static func matchesPhysicalRoot(_ recorded: String, root: URL, device: UInt64, inode: UInt64) -> Bool {
+        guard recorded.hasPrefix("/"), recorded.utf8.count <= 4_096, !recorded.utf8.contains(0),
+              let first = recorded.withCString({ realpath($0, nil) }) else { return false }
+        defer { free(first) }
+        guard let second = root.path.withCString({ realpath($0, nil) }) else { return false }
+        defer { free(second) }
+        guard strcmp(first, second) == 0,
+              let recordedIdentity = try? RuntimeV2DiskIdentity.read(at: URL(fileURLWithPath: recorded)),
+              let rootIdentity = try? RuntimeV2DiskIdentity.read(at: root),
+              recordedIdentity.device == device, recordedIdentity.inode == inode,
+              rootIdentity.device == device, rootIdentity.inode == inode,
+              recordedIdentity.mode & UInt32(S_IFMT) == UInt32(S_IFDIR),
+              rootIdentity.mode & UInt32(S_IFMT) == UInt32(S_IFDIR) else { return false }
+        let fd = open(first, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { return false }; defer { close(fd) }
+        var opened = stat()
+        guard fstat(fd, &opened) == 0, UInt64(bitPattern: Int64(opened.st_dev)) == device,
+              UInt64(opened.st_ino) == inode else { return false }
+        guard let after = root.path.withCString({ realpath($0, nil) }) else { return false }
+        defer { free(after) }
+        return strcmp(first, after) == 0
+            && (try? RuntimeV2DiskIdentity.read(at: root)).map { $0.device == device && $0.inode == inode } == true
+    }
+
+    private static func completedReceiptNames(directory: URL) throws -> [String] {
+        let fd = open(directory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        if fd < 0, errno == ENOENT { return [] }
+        guard fd >= 0 else { throw StorageSparseDiskRewriteError.needsInspection("receipt-directory") }
+        guard let stream = fdopendir(fd) else {
+            close(fd); throw StorageSparseDiskRewriteError.needsInspection("receipt-directory")
+        }
+        defer { closedir(stream) }
+        var names: [String] = [], count = 0
+        while true {
+            errno = 0
+            guard let entry = readdir(stream) else {
+                guard errno == 0 else { throw StorageSparseDiskRewriteError.needsInspection("receipt-enumeration") }
+                break
+            }
+            count += 1
+            guard count <= 512 else { throw StorageSparseDiskRewriteError.needsInspection("receipt-budget") }
+            let name = withUnsafePointer(to: entry.pointee.d_name) {
+                String(cString: UnsafeRawPointer($0).assumingMemoryBound(to: CChar.self))
+            }
+            guard name.hasSuffix(".json"), UUID(uuidString: String(name.dropLast(5))) != nil else { continue }
+            names.append(name)
+        }
+        return names.sorted()
+    }
+
+    private static func matchesCommittedSource(
+        _ header: RuntimeV2OptimizationCoreJournalBinding, root: URL,
+        expected: StorageSparseDiskIdentity, rootDevice: UInt64, rootInode: UInt64
+    ) -> Bool {
+        guard let parentDevice = header.parentDevice, let parentInode = header.parentInode,
+              let stage = header.stageName, !stage.isEmpty, stage != ".", stage != "..",
+              stage.utf8.count <= 255, !stage.contains("/"), !stage.utf8.contains(0),
+              matchesPhysicalRoot(header.rootPath, root: root, device: rootDevice, inode: rootInode),
+              let canonical = root.path.withCString({ realpath($0, nil) }) else { return false }
+        defer { free(canonical) }
+        var parent = open(canonical, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard parent >= 0 else { return false }; defer { close(parent) }
+        var identity = stat()
+        guard fstat(parent, &identity) == 0, UInt64(bitPattern: Int64(identity.st_dev)) == rootDevice,
+              UInt64(identity.st_ino) == rootInode else { return false }
+        let parts = header.relativePath.split(separator: "/").map(String.init)
+        guard parts.count == 4, parts.last == "disk.img",
+              parts.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." && !$0.utf8.contains(0) }) else { return false }
+        for name in parts.dropLast() {
+            let child = openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard child >= 0 else { return false }
+            close(parent); parent = child
+        }
+        guard fstat(parent, &identity) == 0, UInt64(bitPattern: Int64(identity.st_dev)) == parentDevice,
+              UInt64(identity.st_ino) == parentInode else { return false }
+        let sourceFD = openat(parent, "disk.img", O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+        guard sourceFD >= 0 else { return false }; defer { close(sourceFD) }
+        func matches(_ info: stat) -> Bool {
+            #if canImport(Darwin)
+            let modified = info.st_mtimespec, changed = info.st_ctimespec
+            let flags = UInt32(info.st_flags)
+            #else
+            let modified = info.st_mtim, changed = info.st_ctim
+            let flags: UInt32 = 0
+            #endif
+            return UInt64(bitPattern: Int64(info.st_dev)) == expected.device && UInt64(info.st_ino) == expected.inode
+                && Int64(info.st_size) == expected.sizeBytes && UInt32(info.st_nlink) == expected.linkCount
+                && UInt32(info.st_mode) == expected.mode && UInt32(info.st_uid) == expected.ownerUID
+                && UInt32(info.st_gid) == expected.ownerGID && flags == expected.fileFlags
+                && Int64(modified.tv_sec) == expected.modificationSeconds
+                && Int64(modified.tv_nsec) == expected.modificationNanoseconds
+                && Int64(changed.tv_sec) == expected.changeSeconds && Int64(changed.tv_nsec) == expected.changeNanoseconds
+                && info.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG)
+        }
+        guard fstat(sourceFD, &identity) == 0, matches(identity) else { return false }
+        var absent = stat()
+        guard fstatat(parent, stage, &absent, AT_SYMLINK_NOFOLLOW) == -1, errno == ENOENT else { return false }
+        return fstatat(parent, "disk.img", &identity, AT_SYMLINK_NOFOLLOW) == 0 && matches(identity)
+            && fstat(sourceFD, &identity) == 0 && matches(identity)
+    }
+
     static func runtimeIdentity(_ source: StorageSparseDiskIdentity) -> RuntimeV2DiskIdentity {
         .init(device: source.device, inode: source.inode, size: source.sizeBytes,
               linkCount: UInt64(source.linkCount), mode: source.mode,
@@ -509,6 +699,10 @@ public actor RuntimeV2RecoveryOptimizationAdapter {
         return "optimization-stopped"
     }
     static func diagnosticCodes(_ error: Error) -> [String] {
+        if case RuntimeV2MaintenanceError.claimInvalidated(let reason) = error,
+           reason == "the environment reference projection changed" {
+            return ["reference-projection-changed"]
+        }
         guard case RuntimeV2MaintenanceError.ownerEvidenceIncomplete(let codes) = error else { return [] }
         return Array(Set(codes.compactMap { value -> String? in
             // Remove attributed ids. The manual UI gets fixed reason codes,

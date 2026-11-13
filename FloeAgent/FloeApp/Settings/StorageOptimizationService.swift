@@ -9,7 +9,7 @@ import FloeExecution
 /// unknown strings are counted, never persisted or exported as text.
 enum StorageOptimizationDiagnosticVocabulary {
     static let resultCodes: Set<String> = [
-        "busy", "cancelled", "cancelled-after-swap",
+        "already-optimized", "busy", "cancelled", "cancelled-after-swap",
         "clone-unavailable", "compressed-source", "crash-injected",
         "directory-open-failed", "empty-source", "fsync-failed",
         "hard-linked", "identity-changed", "immutable-source",
@@ -44,6 +44,7 @@ enum StorageOptimizationDiagnosticVocabulary {
         "legacy_shm_shape_unknown", "legacy_wal_identity_unknown", "legacy_wal_not_in_snapshot",
         "legacy_wal_shape_unknown", "native_closed_receipt_unavailable", "native_owner_close_unproven",
         "native_owner_sources_changed", "owner_evidence_incomplete",
+        "reference-projection-changed",
         "reference_active_environment", "reference_active_unattributed", "reference_fingerprint_missing",
         "reference_live_unknown_unattributed", "reference_projection_incomplete", "reference_projection_threw",
         "reference_projection_unavailable", "reference_unknown_environment", "registry_evidence_incomplete",
@@ -120,7 +121,10 @@ struct StorageOptimizationState: Codable, Sendable {
                 ? .eligibilityBlocked : .stopped
         }
         if attempted > 0, optimized == 0, verifiedNoGainCount == attempted { return .verifiedNoGain }
-        if optimized > 0, attempted >= optimized, attempted - optimized == max(0, verifiedNoGainCount ?? 0) { return .optimized }
+        let alreadyVerified = safeDetails["already-optimized"] ?? 0
+        let completed = min(1_000_000, max(0, optimized)) + alreadyVerified
+        if completed > 0, attempted >= completed,
+           attempted - completed == max(0, verifiedNoGainCount ?? 0) { return .optimized }
         return .stopped
     }
     var terminalNotice: String? {

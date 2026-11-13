@@ -5,6 +5,7 @@ import Foundation
 import XCTest
 import FloeCore
 import FloeExecution
+import FloePersistence
 @testable import FloeApp
 
 @MainActor final class StorageOptimizationDiagnosticsTests: XCTestCase {
@@ -29,6 +30,90 @@ import FloeExecution
         var object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(report)) as? [String: Any])
         change(&object)
         return try JSONDecoder().decode(LegacyRecoveryInventoryReport.self, from: JSONSerialization.data(withJSONObject: object))
+    }
+
+    func testUnrelatedBoundNativeTaskDoesNotInvalidateLegacyReferenceClaim() async throws {
+        let directory = try root(), legacyRoot = directory.appendingPathComponent("v2")
+        try FileManager.default.createDirectory(at: legacyRoot.appendingPathComponent("environments/legacy-env"),
+                                               withIntermediateDirectories: true)
+        let domain = try RuntimeV2MaintenanceDomain(trustedLegacyRoot: legacyRoot)
+        let legacy = EnvironmentReference(source: .runBinding, ownerID: UUID(), conversationID: UUID(),
+            environmentID: "legacy-env", backend: .linuxVM, bindingGeneration: 3,
+            runtimeGeneration: "legacy-generation", state: "completed", classification: .retained, isLive: false)
+        let before = EnvironmentReferenceProjection(isComplete: true, blockers: [], references: [legacy])
+        // A native Workspace task still has a fully attributed resident Linux
+        // binding; it never owns this retired legacy root.
+        let nativeTask = EnvironmentReference(source: .taskBinding, ownerID: UUID(), conversationID: UUID(),
+            environmentID: "resident-current", backend: .linuxVM, bindingGeneration: 1,
+            runtimeGeneration: "resident-generation", state: "running", classification: .active, isLive: true)
+        let after = EnvironmentReferenceProjection(isComplete: true, blockers: [], references: [legacy, nativeTask])
+        XCTAssertNotEqual(before.fingerprint, after.fingerprint) // reproduces the old global invalidation
+        let first = makeLegacyMaintenanceReferenceEvidence(from: before, domain: domain)
+        let fresh = makeLegacyMaintenanceReferenceEvidence(from: after, domain: domain)
+        XCTAssertEqual(first.fingerprint, fresh.fingerprint)
+        XCTAssertEqual(fresh.activeEnvironmentIDs, ["resident-current"])
+        let evidence = RuntimeV2MaintenanceOwnerEvidence(isComplete: true,
+            integrator: .init(storeRootPath: domain.root.path), references: first)
+        let coordinator = try RuntimeV2MaintenanceCoordinator(domain: domain,
+            stateDirectory: directory.appendingPathComponent("authority"), evidenceProvider: { evidence })
+        let claim = try await coordinator.acquireExclusiveMaintenance(.init(owner: "synthetic-ref-test", reason: "fingerprint"))
+        XCTAssertNoThrow(try claim.validateReferenceFingerprint(fresh.fingerprint))
+        var refreshedEvidence = evidence; refreshedEvidence.references = fresh
+        XCTAssertTrue(refreshedEvidence.quiescenceBlockers(domain: domain).isEmpty)
+        try await claim.abortAndRelease(reason: "synthetic check; no mutation")
+
+        var state = StorageOptimizationState(phase: .completed)
+        state.coveredSourceCount = 13; state.total = 13; state.attempted = 13
+        state.optimized = 5; state.skipped = 8
+        for _ in 0..<8 { state.recordResult(code: "already-optimized", verifiedUnchanged: true) }
+        for _ in 0..<5 { state.recordResult(code: "optimized") }
+        XCTAssertEqual(state.safeDetails["already-optimized"], 8)
+        XCTAssertEqual(state.terminalDisposition, .optimized)
+        XCTAssertEqual(state.fileAllocationReduction, 0) // no old saving is added a second time
+    }
+
+    func testLegacyReferenceGenerationAndUnknownLiveOwnersStillInvalidateOrBlock() async throws {
+        let directory = try root(), legacyRoot = directory.appendingPathComponent("v2")
+        try FileManager.default.createDirectory(at: legacyRoot.appendingPathComponent("environments/legacy-env"),
+                                               withIntermediateDirectories: true)
+        let domain = try RuntimeV2MaintenanceDomain(trustedLegacyRoot: legacyRoot)
+        let legacy = EnvironmentReference(source: .runBinding, ownerID: UUID(), conversationID: UUID(),
+            environmentID: "legacy-env", backend: .linuxVM, bindingGeneration: 3,
+            runtimeGeneration: "old-generation", state: "completed", classification: .retained, isLive: false)
+        func project(_ row: EnvironmentReference) -> RuntimeV2MaintenanceReferenceEvidence {
+            makeLegacyMaintenanceReferenceEvidence(from: .init(isComplete: true, blockers: [], references: [row]), domain: domain)
+        }
+        let first = project(legacy)
+        let evidence = RuntimeV2MaintenanceOwnerEvidence(isComplete: true,
+            integrator: .init(storeRootPath: domain.root.path), references: first)
+        let coordinator = try RuntimeV2MaintenanceCoordinator(domain: domain,
+            stateDirectory: directory.appendingPathComponent("authority"), evidenceProvider: { evidence })
+        let claim = try await coordinator.acquireExclusiveMaintenance(.init(owner: "synthetic-ref-test", reason: "fingerprint"))
+        var variants: [EnvironmentReference] = []
+        var changed = legacy; changed.bindingGeneration = 4; variants.append(changed)
+        changed = legacy; changed.runtimeGeneration = "new-generation"; variants.append(changed)
+        changed = legacy; changed.ownerID = UUID(); variants.append(changed)
+        changed = legacy; changed.conversationID = UUID(); variants.append(changed)
+        changed = legacy; changed.state = "failed"; variants.append(changed)
+        for value in variants {
+            let fresh = project(value)
+            XCTAssertNotEqual(first.fingerprint, fresh.fingerprint)
+            XCTAssertThrowsError(try claim.validateReferenceFingerprint(fresh.fingerprint))
+        }
+        try await claim.abortAndRelease(reason: "synthetic check; no mutation")
+        changed = legacy; changed.classification = .unknown; changed.isLive = true
+        var unknown = evidence; unknown.references = project(changed)
+        XCTAssertFalse(unknown.quiescenceBlockers(domain: domain).isEmpty)
+        changed.environmentID = nil
+        let unattributed = project(changed)
+        XCTAssertEqual(unattributed.unattributedLiveUnknownCount, 1)
+        unknown.references = unattributed
+        XCTAssertFalse(unknown.quiescenceBlockers(domain: domain).isEmpty)
+        let incomplete = makeLegacyMaintenanceReferenceEvidence(from: .init(isComplete: false,
+            blockers: ["run_binding_unreadable"], references: [legacy]), domain: domain)
+        XCTAssertFalse(incomplete.isComplete)
+        XCTAssertEqual(incomplete.blockers, ["run_binding_unreadable"])
+        XCTAssertNotEqual(incomplete.fingerprint, first.fingerprint)
     }
 
     func testActualPartialInventoryKeepsCauseAndNeverAdmitsOptimization() throws {

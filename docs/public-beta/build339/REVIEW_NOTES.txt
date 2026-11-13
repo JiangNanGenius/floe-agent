@@ -1,0 +1,9 @@
+Floe Agent 1.8.18 (339) — focused internal repair candidate
+
+Scope: more reliable continuation of storage optimization for older execution environments; unrelated task/workspace activity no longer interrupts cleanup checks; important-file shortcuts distinguish real files from tool metadata. Actively used environments and original data remain protected.
+
+Use the existing internal Floe QA group and the standing unsigned GitHub/Feather channels. This delivery does not submit public TestFlight or formal App Store review and does not change Build315 or the withdrawn public Build331 arrangements.
+
+No claim is made that339 is already distributed, that all capacity has been reclaimed, or that new physical-device acceptance is complete. Verify actual completed work, source-data integrity and the new file shortcut on the device.
+
+本轮为窄范围内部修复候选，改善旧环境整理恢复及正常使用时的连续性，并避免将工具元数据作为文件。保留原资料、已安装软件与恢复盘。容量以实际完成结果为准，本稿不代表339已发布或设备验收已完成。

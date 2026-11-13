@@ -6,8 +6,8 @@ import FloeEnvironments
 import FloeExecution
 import FloePersistence
 
-private func makeReferenceEvidence(
-    from projection: EnvironmentReferenceProjection
+func makeLegacyMaintenanceReferenceEvidence(
+    from projection: EnvironmentReferenceProjection, domain: RuntimeV2MaintenanceDomain
 ) -> RuntimeV2MaintenanceReferenceEvidence {
     var active: [String] = []
     var unknown: [String] = []
@@ -35,6 +35,19 @@ private func makeReferenceEvidence(
             retained += 1
         }
     }
+    // The complete projection still supplies every blocker/unknown/live owner.
+    // Stability is scoped to this physical legacy domain: a new fully bound
+    // resident/native-file task must not revoke a legacy claim merely because
+    // the global DB set changed. Keep complete canonical reference rows (and
+    // their binding/runtime generations), not just active environment IDs.
+    let scoped = EnvironmentReferenceProjection(
+        isComplete: projection.isComplete, blockers: projection.blockers,
+        references: projection.references.filter { reference in
+            if let environmentID = reference.environmentID {
+                return domain.ownsEnvironmentTrace(environmentID)
+            }
+            return reference.isLive
+        })
     return RuntimeV2MaintenanceReferenceEvidence(
         isComplete: projection.isComplete,
         blockers: projection.blockers,
@@ -44,7 +57,7 @@ private func makeReferenceEvidence(
         unattributedLiveUnknownCount: liveUnknownUnattributed,
         unattributedIdleUnknownCount: idleUnknownUnattributed,
         retainedCount: retained,
-        fingerprint: projection.fingerprint
+        fingerprint: scoped.fingerprint
     )
 }
 
@@ -93,9 +106,10 @@ private final class LinuxGuestMaintenanceSources: @unchecked Sendable {
         let collector = RuntimeV2MaintenanceEvidenceCollector(domain: domain, sources: .init(
             registry: { [source] in await source.registry?.maintenanceOwnerEvidence() },
             integrator: { [source] in await source.integrator?.maintenanceOwnerEvidence() },
-            references: { [source] in
+            references: { [source, domain = self.domain] in
                 guard let database = source.database else { return nil }
-                return makeReferenceEvidence(from: try await EnvironmentReferenceProjectionStore(database: database).project())
+                return makeLegacyMaintenanceReferenceEvidence(
+                    from: try await EnvironmentReferenceProjectionStore(database: database).project(), domain: domain)
             }))
         var evidence = await collector.collect()
         do {
