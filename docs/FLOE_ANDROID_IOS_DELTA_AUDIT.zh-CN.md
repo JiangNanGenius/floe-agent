@@ -1,5 +1,15 @@
 # 安卓与 iOS 主线的增量差异记录
 
+## 2026-11-14 iOS342 固定增量与 Android1.0.6
+
+在上次完整登记的 iOS341 应用锚点 `d0c085f9ddda28e1d9a125389a020f618892d408` 之后，固定比较 iOS342／`v1.8.21` 的应用源 `1d599f35e97b46ea5798ac07359074480fa463a5`。`FloeAgent/` 共七条路径变化：四条生产／许可路径为 `StorageSparseDiskRewrite.swift`、`StorageSparseDiskRewriteRecovery.swift`、`RuntimeV2RecoveryOptimizationAdapter.swift` 和 `FloeSlirp-SOURCE-OFFER.txt`；另有 `project.yml`、生成的 Xcode 工程版本更新及一条配套恢复测试路径。这七条路径不是七项 Android 缺失功能；此前大区间的有限审计、原 183 项、G/C/N、IOS-D 和 S57–S60 身份继续保留。
+
+三个存储文件为中断整理新增“源未变才可放弃”的恢复判断，并在清理前后复核所有者、journal、文件身份／ctime 与引用代次，证据不明确时保留原件和恢复材料。继续归原 S58／C07／G11／S46 的存储与生命周期合同；Android PRoot 文件树继续使用其既有事务、环境归属、取消和原件保护，不能移植 iOS VM 磁盘算法。第四条仅更新 Slirp 源码提供记录，不引入新的 Android 编辑器或模型能力。
+
+这是固定 Git 对象的静态增量检查，没有运行 iOS 编译或设备测试，也不将主线自身证据记作 Android 通过。Android1.0.6／114 已按固定 `bfcbdda9667aea2000cac2bbe2103bcab31005b5` 完成针对性的 Full／三星／公开附件及更新发现验证；其 POSIX shell 与拒绝未请求清理后的安全替代修复继续归 C02／N08。原五项功能的 113 实机证据、当前 114 小任务和仍待验收的完整录像分别记账。下一增量比较从本次固定 342 源码继续，独立重型功能不扩张本批。
+
+English: The fixed341→342 delta has seven FloeAgent paths: three storage-recovery files, one Slirp source-offer record, two version/project files and one focused test file. Owner, file identity, journal and reference checks remain S58/C07/G11/S46 follow-ups; Android keeps its PRoot transaction contracts rather than importing VM disk algorithms. This is source review, not iOS or Android runtime acceptance. Android1.0.6 targeted qualification, prior113 feature evidence and pending full recording remain separate.
+
 ## 2026-11-13 iOS341 固定增量与 Android 五项实机闭环
 
 固定比较 iOS340 `ca7e39303404a3f6806006300165b248ad0cd967` → iOS341 `d0c085f9ddda28e1d9a125389a020f618892d408`／`v1.8.20`：`FloeAgent/` 共 32 条变化路径。相对已推送 Android 检查点 `3b9acf6e127020691ca56db95948448c029f4142` 的 App 区间也是 32 条；Android 应用使用该固定快照的 Full08。路径数不是缺功能数量，不重置原 183 项、G/C/N 或 IOS-D 编号。

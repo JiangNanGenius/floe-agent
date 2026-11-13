@@ -1,5 +1,19 @@
 # Floe Android 分目标实施记录
 
+## 1.0.6／114 已公开，完整录像继续（2026-11-14）
+
+[Android 1.0.6 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v1.0.6) 的不可变应用源码为 `bfcbdda9667aea2000cac2bbe2103bcab31005b5`，标签 `android/v1.0.6`。实际 Full APK 为 166,432,319 字节，SHA-256 `f86fdb8f4f3fe14d0c51e293443f9552d4ac1a016501e36f63099bf2fdb556b6`。native52 仍保留真实生产来源 `11c241b9210837bc8eb427924fb559dd0f7dc214`；已证明规范原生输入与最终应用源一致，没有重标原生来源。
+
+Full 实际编译、58 项包内原生绑定、ARM64／16 KiB 及 API28／29 主包与运行组件签名检查通过。此前的 24 项宿主检查按原 23 项通过加单个大小写匹配修复复测闭合，原失败保留；未改的 79 项输入及五项授权测试结果直接复用。首次 Office 源声明版本预检失败保留，两份声明更新后正常预检和最终封装通过。
+
+三星通过正常签名双包安装保留原 UID 和数据，主包及运行组件均为 114，实际字节读回一致。新任务仅发送一次，由已配置 Ark Plan／`ark-code-latest` 自行完成 Linux 建目录、写入和校验 14 字节文件、发布稳定成果，并在真实手机原生预览打开。运行正常结束，工作计数归零，没有人工业务接续。这个小用例没有发起清理，不冒充设备触发了可选删除拒绝；拒绝后安全替代的证据属于真实宿主运行时用例。1.0.5 的五项三星功能证据保留，不改称在 114 重跑了全部功能。
+
+五个附件共 295,698,201 字节的完整匿名下载、远端摘要和源码标签独立读回一致。保留的 114／113／108／65 实际生产解析器均从 65／81／1.0.0／1.0.5 发现 1.0.6 完整包，当前 1.0.6 无更新，已知问题与校验信息一致；仅编译一次微型读取驱动，随后清除临时 class。没有增量旁路附件；iOS Latest 保持独立 `v1.8.21`。本次 ADB 安装及更新发现不是新一轮 OTA 下载／安装验收。
+
+规范准备暂存、运行组件临时提取包及完全相同的内部安装包副本已清理，当前精确包、源码、回滚、符号和原始故障保留。录像线程已接收同一安装 114 的独占三星租约，按原自然目标重新进行唯一发送；完整跨应用成果和视频尚未验收，原 113 失败任务不续跑。固定 iOS341→342 的七条路径（其中四条生产／许可）已增量登记，继续原 S58／C07／G11／S46 边界，不增加 VM、重型编辑器或本地模型。详见[本版交付记录](android/FLOE_ANDROID_1_0_6_DELIVERY.zh-CN.md)。
+
+English: Android1.0.6/code114 is published from immutable bfcbdda9; native52 retains its actual11c241b source with equivalent production inputs. Full/package/signature checks,24 accounted host cases, unchanged grant checks, a fresh one-send Samsung Linux/output/native-preview task, all five public assets and four actual production update readers passed. Prior113 five-feature evidence and original failures remain distinct. The preserving-data ADB install is not a fresh OTA verdict. Exact114 recording remains independently pending, with disposable preparation duplicates retired.
+
 ## C02／N08 录像断点修复，1.0.6 源码准备（2026-11-14）
 
 下一候选版本为 1.0.6／114。现有执行核心已接通安全替代路径：普通自动审批父任务在实际解析的本地 Linux 环境中，若提出用户未请求的破坏性清理且原策略要求人工确认，该命令以“未执行”的拒绝结果结算，模型可以继续提出保留文件的做法。显式用户删除请求、手动审批、远程／原生目标、子任务、终端冲突与停止仍沿用原有边界；没有自动批准删除、扩大权限或新增执行工具。工具说明、操作指南和提示词同时明确非交互 `/bin/sh -lc`、POSIX 参数及逐步退出状态。
