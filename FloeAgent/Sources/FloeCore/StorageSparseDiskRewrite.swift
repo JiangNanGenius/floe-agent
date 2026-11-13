@@ -511,6 +511,13 @@ public struct StorageSparseDiskRewriteReport: Sendable, Equatable {
     }
 }
 
+/// Cleanup of an interrupted generated copy is distinct from permission to
+/// commit/rollback a user disk. The restricted policy never changes that disk.
+public enum StorageSparseDiskRecoveryPolicy: Sendable, Equatable {
+    case complete
+    case abortUnchangedSourceOnly
+}
+
 public struct StorageSparseDiskRecoveryReport: Sendable, Equatable {
     public enum Resolution: String, Sendable, Equatable {
         case noJournal
@@ -645,6 +652,7 @@ public enum StorageSparseDiskRewrite {
         jobID: String,
         fence: StorageSparseDiskMaintenanceFence,
         recordedRootBinding: StorageSparseDiskRecoveryRootBinding? = nil,
+        policy: StorageSparseDiskRecoveryPolicy = .complete,
         isCancelled: @escaping @Sendable () -> Bool = { false }
     ) throws -> StorageSparseDiskRecoveryReport {
         #if canImport(Darwin)
@@ -655,6 +663,7 @@ public enum StorageSparseDiskRewrite {
             jobID: jobID,
             fence: fence,
             recordedRootBinding: recordedRootBinding,
+            policy: policy,
             isCancelled: isCancelled
         )
         #else
@@ -664,6 +673,7 @@ public enum StorageSparseDiskRewrite {
         _ = jobID
         _ = fence
         _ = recordedRootBinding
+        _ = policy
         _ = isCancelled
         throw StorageSparseDiskRewriteError.unsupportedPlatform
         #endif

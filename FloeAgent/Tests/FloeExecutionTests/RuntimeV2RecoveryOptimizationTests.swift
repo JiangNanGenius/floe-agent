@@ -22,6 +22,7 @@ private final class RecoveryOptimizationEvidence: @unchecked Sendable {
     var referenceBlockers: [String] = []
     var referenceFingerprintAvailable = true
     var unattributedLiveUnknownCount = 0
+    var admissionObserver: (@Sendable (Int) throws -> Void)?
     init(domain: RuntimeV2MaintenanceDomain, state: URL) {
         self.domain = domain
         closure = RuntimeV2RecoveryClosureAuthority(domain: domain, stateDirectory: state)
@@ -53,10 +54,13 @@ private final class RecoveryOptimizationEvidence: @unchecked Sendable {
         }
     }
     func admitted() async -> RuntimeV2MaintenanceOwnerEvidence {
-        lock.withLock {
+        let observation = lock.withLock {
             admissions += 1
             if changeReferenceOnAdmission && admissions == 2 { referenceVersion += 1 }
+            return (admissionObserver, admissions)
         }
+        do { try observation.0?(observation.1) }
+        catch { return .init(isComplete: false, blockers: ["synthetic_admission_observer_failed"]) }
         var evidence = await raw()
         do {
             guard let coordinator else { throw StorageSparseDiskRewriteError.needsInspection("test-authority") }
@@ -288,6 +292,232 @@ private struct SyntheticDescriptorLimitScope {
 
 @MainActor
 final class RuntimeV2RecoveryOptimizationTests: XCTestCase {
+    private struct InterruptedCleanupJob {
+        let receipt: RuntimeV2OptimizationJobReceipt
+        let receiptURL: URL
+        let journalURL: URL
+        let stageURL: URL
+    }
+
+    private func prepareInterruptedCleanup(_ fixture: RecoveryOptimizationFixture,
+                                           stagePresent: Bool) async throws -> InterruptedCleanupJob {
+        _ = await fixture.adapter.recoverBeforeUse()
+        let record = try await fixture.record()
+        let relative = fixture.relative + "/disk.img"
+        let source = try StorageSparseDiskRewrite.inspectSource(rootURL: fixture.root, relativePath: relative)
+        let claim = try await fixture.coordinator.acquireExclusiveMaintenance(.init(
+            owner: "app-legacy-storage-optimization", reason: "lossless-legacy-recovery",
+            targetRelativePath: relative,
+            targetIdentity: RuntimeV2RecoveryOptimizationAdapter.runtimeIdentity(source.identity)))
+        let closed = try await fixture.evidence.closure.currentReceipt(intentID: claim.intentID)
+        let receipt = RuntimeV2OptimizationJobReceipt(version: 1, intentID: claim.intentID,
+            authorityGeneration: claim.holdGeneration, domainKey: fixture.domain.domainKey,
+            relativePath: relative, expectedSource: source.identity,
+            preservationFingerprint: try RuntimeV2OptimizationPreservation(record).fingerprint(),
+            repairHoldGeneration: 7, closure: closed)
+        try RuntimeV2OptimizationJournalIO.writeOnce(receipt, directory: fixture.receipts, name: claim.intentID + ".json")
+        try FileManager.default.createDirectory(at: fixture.journals, withIntermediateDirectories: true)
+        try await claim.markCommitting()
+        let fence = StorageSparseDiskMaintenanceFence(leaseID: claim.intentID, generation: claim.holdGeneration) {
+            try RuntimeV2OptimizationAsyncFence.check {
+                try await claim.validate()
+                let fresh = await fixture.evidence.admitted()
+                guard fresh.isComplete else { throw StorageSparseDiskRewriteError.needsInspection("synthetic-closure") }
+                try claim.validateReferenceFingerprint(fresh.references.fingerprint)
+            }
+        }
+        let request = StorageSparseDiskRewriteRequest(rootURL: fixture.root, relativePath: relative,
+            expectedSource: source.identity, journalDirectoryURL: fixture.journals,
+            jobID: claim.intentID, maintenanceLeaseID: claim.intentID,
+            holdGeneration: 7, jobGeneration: claim.holdGeneration,
+            mode: .cloneAndPunch, minimumReclaimBytes: 1, allowSparseCopyFallback: false)
+        var hooks = StorageSparseDiskRewrite.TestHooks()
+        hooks.crashAt = { point in
+            if stagePresent && point == .afterStaging {
+                throw StorageSparseDiskRewriteError.crashInjected("synthetic-staging-left")
+            }
+            if !stagePresent && point == .afterVerified {
+                throw StorageSparseDiskRewriteError.injectedFailure("synthetic-failed-cleaned-stage")
+            }
+        }
+        let capturedHooks = hooks
+        let worker = RuntimeV2OptimizationWorker("synthetic.precommit-cleanup", allowsSynchronousFence: true)
+        do {
+            _ = try await worker.run {
+                try StorageSparseDiskRewrite._rewrite(request, fence: fence, hooks: capturedHooks, isCancelled: { false })
+            }
+            XCTFail("The exact synthetic pre-swap stop must be reached")
+        } catch {
+            XCTAssertEqual(error as? StorageSparseDiskRewriteError, stagePresent
+                ? .crashInjected("synthetic-staging-left") : .injectedFailure("synthetic-failed-cleaned-stage"))
+        }
+        await claim.handoffToRecovery()
+        let journalURL = fixture.journals.appendingPathComponent(claim.intentID + ".json")
+        let header = try XCTUnwrap(RuntimeV2OptimizationJournalIO.read(
+            RuntimeV2OptimizationCoreJournalBinding.self, directory: fixture.journals, name: claim.intentID + ".json"))
+        XCTAssertEqual(header.phase, stagePresent ? "staging" : "failed")
+        let stageURL = fixture.disk.deletingLastPathComponent().appendingPathComponent(try XCTUnwrap(header.stageName))
+        XCTAssertEqual(FileManager.default.fileExists(atPath: stageURL.path), stagePresent)
+        XCTAssertTrue(try StorageSparseDiskRewrite.inspectSource(rootURL: fixture.root, relativePath: relative).identity.matchesFully(source.identity))
+        return .init(receipt: receipt, receiptURL: fixture.receipts.appendingPathComponent(claim.intentID + ".json"),
+                     journalURL: journalURL, stageURL: stageURL)
+    }
+
+    private nonisolated static func changeOnlyRetainedMetadata(_ fixture: RecoveryOptimizationFixture) throws {
+        let url = fixture.root.appendingPathComponent("environments/env-a/metadata.json")
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        object["syntheticUserAnnotation"] = "Keep this current metadata; do not restore the historical fingerprint."
+        try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]).write(to: url)
+    }
+
+    func testFailedJobWithoutStageClosesOnlyItsIntentAndKeepsV1Metadata() async throws {
+        let limit = try SyntheticDescriptorLimitScope(); defer { XCTAssertEqual(limit.restore(), 0) }
+        let fixture = try RecoveryOptimizationFixture(); defer { fixture.cleanup() }
+        let job = try await prepareInterruptedCleanup(fixture, stagePresent: false)
+        let originalReceipt = try Data(contentsOf: job.receiptURL)
+        try Self.changeOnlyRetainedMetadata(fixture)
+        let metadata = try fixture.preservedMetadata()
+        let changedRecord = try await fixture.record()
+        XCTAssertNotEqual(try RuntimeV2OptimizationPreservation(changedRecord).fingerprint(), job.receipt.preservationFingerprint)
+        let result = await fixture.adapter.recoverBeforeUse()
+        XCTAssertEqual(result.outcome, .resolved)
+        XCTAssertEqual(try fixture.preservedMetadata(), metadata)
+        XCTAssertEqual(try Data(contentsOf: job.receiptURL), originalReceipt)
+        XCTAssertEqual(try Data(contentsOf: fixture.disk), fixture.original)
+        XCTAssertTrue(try StorageSparseDiskRewrite.inspectSource(rootURL: fixture.root,
+            relativePath: job.receipt.relativePath).identity.matchesFully(job.receipt.expectedSource))
+        let header = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: job.journalURL)) as? [String: Any])
+        XCTAssertEqual(header["phase"] as? String, "aborted")
+        XCTAssertEqual(header["resolution"] as? String, "source-unchanged")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: job.stageURL.path))
+        let again = await fixture.adapter.recoverBeforeUse()
+        XCTAssertEqual(again.outcome, .notNeeded)
+        let state = await fixture.coordinator.state(); XCTAssertEqual(state.phase, .open)
+    }
+
+    func testStagingJobRemovesOnlyItsExactGeneratedCopyAndKeepsOriginal() async throws {
+        let limit = try SyntheticDescriptorLimitScope(); defer { XCTAssertEqual(limit.restore(), 0) }
+        let fixture = try RecoveryOptimizationFixture(); defer { fixture.cleanup() }
+        let job = try await prepareInterruptedCleanup(fixture, stagePresent: true)
+        let originalReceipt = try Data(contentsOf: job.receiptURL)
+        try Self.changeOnlyRetainedMetadata(fixture)
+        let retained = fixture.disk.deletingLastPathComponent().appendingPathComponent("user-kept.txt")
+        let retainedBytes = Data("not the generated stage\n".utf8); try retainedBytes.write(to: retained)
+        let metadata = try fixture.preservedMetadata()
+        let result = await fixture.adapter.recoverBeforeUse()
+        XCTAssertEqual(result.outcome, .resolved)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: job.stageURL.path))
+        XCTAssertEqual(try Data(contentsOf: fixture.disk), fixture.original)
+        XCTAssertTrue(try StorageSparseDiskRewrite.inspectSource(rootURL: fixture.root,
+            relativePath: job.receipt.relativePath).identity.matchesFully(job.receipt.expectedSource))
+        XCTAssertEqual(try Data(contentsOf: retained), retainedBytes)
+        XCTAssertEqual(try fixture.preservedMetadata(), metadata)
+        XCTAssertEqual(try Data(contentsOf: job.receiptURL), originalReceipt)
+        let header = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: job.journalURL)) as? [String: Any])
+        XCTAssertEqual(header["phase"] as? String, "aborted")
+        XCTAssertEqual(header["resolution"] as? String, "aborted-before-swap")
+    }
+
+    func testSourcePreservingAbortRejectsChangedSourceAndReplacedStage() async throws {
+        let limit = try SyntheticDescriptorLimitScope(); defer { XCTAssertEqual(limit.restore(), 0) }
+        for changeSource in [true, false] {
+            let fixture = try RecoveryOptimizationFixture(); defer { fixture.cleanup() }
+            let job = try await prepareInterruptedCleanup(fixture, stagePresent: true)
+            if changeSource {
+                var changed = fixture.original; changed[3] = 0xA5
+                try changed.write(to: fixture.disk)
+            } else {
+                let kept = job.stageURL.appendingPathExtension("kept-original")
+                try FileManager.default.moveItem(at: job.stageURL, to: kept)
+                try Data("replacement inode, not this job's stage".utf8).write(to: job.stageURL)
+            }
+            let source = try Data(contentsOf: fixture.disk), stage = try Data(contentsOf: job.stageURL)
+            let journal = try Data(contentsOf: job.journalURL), receipt = try Data(contentsOf: job.receiptURL)
+            let metadata = try fixture.preservedMetadata()
+            let result = await fixture.adapter.recoverBeforeUse()
+            XCTAssertEqual(result.outcome, .blocked)
+            XCTAssertEqual(try Data(contentsOf: fixture.disk), source)
+            XCTAssertEqual(try Data(contentsOf: job.stageURL), stage)
+            XCTAssertEqual(try Data(contentsOf: job.journalURL), journal)
+            XCTAssertEqual(try Data(contentsOf: job.receiptURL), receipt)
+            XCTAssertEqual(try fixture.preservedMetadata(), metadata)
+            let state = await fixture.coordinator.state(); XCTAssertNotEqual(state.phase, .open)
+        }
+    }
+
+    func testPostSwapMetadataCannotEnterRestrictedAbortOrBypassLegacyFingerprint() async throws {
+        let limit = try SyntheticDescriptorLimitScope(); defer { XCTAssertEqual(limit.restore(), 0) }
+        let fixture = try RecoveryOptimizationFixture(); defer { fixture.cleanup() }
+        let job = try await prepareInterruptedCleanup(fixture, stagePresent: true)
+        var journal = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: job.journalURL)) as? [String: Any])
+        journal["phase"] = "swapped"; journal["postSwapSource"] = journal["stage"]
+        try JSONSerialization.data(withJSONObject: journal, options: [.sortedKeys]).write(to: job.journalURL)
+        let journalBytes = try Data(contentsOf: job.journalURL)
+        // Core-only negative classification; this inert synthetic fence grants
+        // no production permission. Positive cleanup tests use the real owner.
+        let refused = try StorageSparseDiskRewrite.recover(rootURL: fixture.root,
+            relativePath: job.receipt.relativePath, journalDirectoryURL: fixture.journals,
+            jobID: job.receipt.intentID,
+            fence: .init(leaseID: job.receipt.intentID, generation: job.receipt.authorityGeneration, assertExclusive: {}),
+            policy: .abortUnchangedSourceOnly)
+        XCTAssertEqual(refused.resolution, .needsInspection); XCTAssertFalse(refused.stageRemoved)
+        XCTAssertEqual(try Data(contentsOf: job.journalURL), journalBytes)
+        try Self.changeOnlyRetainedMetadata(fixture)
+        let metadata = try fixture.preservedMetadata(), receipt = try Data(contentsOf: job.receiptURL)
+        let stage = try Data(contentsOf: job.stageURL)
+        let result = await fixture.adapter.recoverBeforeUse()
+        XCTAssertEqual(result.outcome, .blocked, "Post-swap work still requires the old strict v1 preservation proof")
+        XCTAssertEqual(try Data(contentsOf: job.journalURL), journalBytes)
+        XCTAssertEqual(try Data(contentsOf: job.receiptURL), receipt)
+        XCTAssertEqual(try Data(contentsOf: job.stageURL), stage)
+        XCTAssertEqual(try Data(contentsOf: fixture.disk), fixture.original)
+        XCTAssertEqual(try fixture.preservedMetadata(), metadata)
+    }
+
+    func testAbortCleanupStillFencesHoldGenerationAndConcurrentMetadataChanges() async throws {
+        let limit = try SyntheticDescriptorLimitScope(); defer { XCTAssertEqual(limit.restore(), 0) }
+        for changeDuringFence in [false, true] {
+            let fixture = try RecoveryOptimizationFixture(); defer { fixture.cleanup() }
+            let job = try await prepareInterruptedCleanup(fixture, stagePresent: true)
+            if changeDuringFence {
+                fixture.evidence.lock.withLock {
+                    fixture.evidence.admissions = 0
+                    fixture.evidence.admissionObserver = { number in
+                        if number == 2 { try RuntimeV2RecoveryOptimizationTests.changeOnlyRetainedMetadata(fixture) }
+                    }
+                }
+            } else {
+                try Data("8\n".utf8).write(to: fixture.root.appendingPathComponent("environments/env-a/repair-hold.generation"))
+            }
+            let journal = try Data(contentsOf: job.journalURL), receipt = try Data(contentsOf: job.receiptURL)
+            let stage = try Data(contentsOf: job.stageURL)
+            let result = await fixture.adapter.recoverBeforeUse()
+            fixture.evidence.lock.withLock { fixture.evidence.admissionObserver = nil }
+            XCTAssertEqual(result.outcome, .blocked)
+            XCTAssertEqual(try Data(contentsOf: job.journalURL), journal)
+            XCTAssertEqual(try Data(contentsOf: job.receiptURL), receipt)
+            XCTAssertEqual(try Data(contentsOf: job.stageURL), stage)
+            XCTAssertEqual(try Data(contentsOf: fixture.disk), fixture.original)
+            let state = await fixture.coordinator.state(); XCTAssertNotEqual(state.phase, .open)
+        }
+    }
+
+    func testRecoveryDiagnosticReasonsNeverEchoAttributedErrorText() {
+        let attributed = "/synthetic/private/owner-do-not-log"
+        XCTAssertEqual(RuntimeV2RecoveryOptimizationAdapter.recoveryDiagnosticReason(
+            RuntimeV2MaintenanceError.targetIdentityMismatch(attributed)), "target-identity-unverified")
+        XCTAssertEqual(RuntimeV2RecoveryOptimizationAdapter.recoveryDiagnosticReason(
+            RuntimeV2MaintenanceError.claimInvalidated(attributed)), "authority-generation-unverified")
+        XCTAssertEqual(RuntimeV2RecoveryOptimizationAdapter.recoveryDiagnosticReason(
+            RuntimeV2MaintenanceError.targetIdentityMismatch("repair preservation inventory incomplete")), "preservation-inventory-incomplete")
+        XCTAssertEqual(RuntimeV2RecoveryOptimizationAdapter.recoveryDiagnosticReason(
+            RuntimeV2MaintenanceError.targetIdentityMismatch("repair preservation could not be observed")), "preservation-record-unavailable")
+        XCTAssertEqual(RuntimeV2RecoveryOptimizationAdapter.recoveryDiagnosticReason(
+            RuntimeV2MaintenanceError.claimInvalidated("recovery authority is not held")), "recovery-session-changed")
+        XCTAssertEqual(RuntimeV2RecoveryOptimizationAdapter.recoveryDiagnosticReason(
+            RuntimeV2MaintenanceError.claimInvalidated("recovery references changed after metadata read")), "recovery-reference-changed-after-read")
+    }
+
     func testRegistryWALModeWithoutSidecarsReadsWithoutWritingSourceAndRetiresScratch() throws {
         let fixture = try RecoveryOptimizationFixture(); defer { fixture.cleanup() }
         let original = fixture.root.appendingPathComponent("registry/runtime.sqlite")
@@ -1091,6 +1321,10 @@ final class RuntimeV2RecoveryOptimizationTests: XCTestCase {
         await claim.handoffToRecovery()
         // A second original namespace remains terminal. Both histories and
         // the new empty current namespace must join the same native barrier.
+        let originalCoreRootPath = try XCTUnwrap(RuntimeV2OptimizationJournalIO.read(
+            RuntimeV2OptimizationCoreJournalBinding.self, directory: fixture.journals,
+            name: claim.intentID + ".json")).rootPath
+        XCTAssertEqual(originalCoreRootPath, fixture.root.standardizedFileURL.resolvingSymlinksInPath().path)
         let neighbor = fixture.work.appendingPathComponent("MaintenanceAuthority/" + String(repeating: "b", count: 64))
         try FileManager.default.createDirectory(at: neighbor, withIntermediateDirectories: true)
         let physical = try RuntimeV2DiskIdentity.read(at: fixture.root)
@@ -1121,7 +1355,7 @@ final class RuntimeV2RecoveryOptimizationTests: XCTestCase {
         let settled = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: savedJournal)) as? [String: Any])
         XCTAssertEqual(settled["phase"] as? String, "retired")
         XCTAssertEqual(settled["sourceDigestSHA512"] as? String, settled["stageDigestSHA512"] as? String)
-        XCTAssertEqual(settled["rootPath"] as? String, fixture.root.path)
+        XCTAssertEqual(settled["rootPath"] as? String, originalCoreRootPath)
         let closureDirectory = current.state.appendingPathComponent("closed-receipts")
         let closureNames = try FileManager.default.contentsOfDirectory(atPath: closureDirectory.path)
         var foundFresh = false

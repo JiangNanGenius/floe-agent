@@ -1,0 +1,4 @@
+{
+  "zh-Hans": "342 内部容量修复测试：\n请在数据管理中运行“优化占用”，检查旧整理是否能安全收尾并继续；原文件、已装软件和恢复盘应保持完整。\n\n若仍受阻，请上传日志，不要删除旧环境或重置磁盘。\n\n本轮不提交公开TestFlight或正式App Store审核；实际回收量以设备完成结果为准。",
+  "en-US": "Build342 internal storage-recovery testing:\nRun Optimize Storage in Data Management. Check that interrupted cleanup can finish safely and optimization can continue, preserving files, installed software and recovery disks.\n\nIf blocked, upload diagnostics without deleting the old environment or resetting disks.\n\nNo public TestFlight or formal App Store submission. Reclaimed space depends on completed device work."
+}

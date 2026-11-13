@@ -38,6 +38,7 @@ enum StorageSparseDiskRewriteRecovery {
         jobID: String,
         fence: StorageSparseDiskMaintenanceFence,
         recordedRootBinding: StorageSparseDiskRecoveryRootBinding? = nil,
+        policy: StorageSparseDiskRecoveryPolicy = .complete,
         isCancelled: @escaping @Sendable () -> Bool,
         hooks: TestHooks = TestHooks()
     ) throws -> StorageSparseDiskRecoveryReport {
@@ -127,6 +128,14 @@ enum StorageSparseDiskRewriteRecovery {
 
         try fence.assertExclusive()
         try checkCancelled(isCancelled)
+
+        if policy == .abortUnchangedSourceOnly {
+            // Restricted failures preserve the journal as well as both paths;
+            // they cannot fall through into the complete recovery machinery.
+            return try abortUnchangedSourceOnly(
+                parentFD: parentFD, sourceName: resolved.leaf, record: &record,
+                journal: journal, fence: fence, hooks: hooks)
+        }
 
         let sourceObservation = StorageSparseDiskPOSIX.observe(
             parentFD: parentFD,
@@ -424,6 +433,94 @@ enum StorageSparseDiskRewriteRecovery {
     }
 
     // MARK: - Helpers
+
+    private static func abortUnchangedSourceOnly(
+        parentFD: Int32, sourceName: String,
+        record: inout StorageSparseDiskRewriteJournalRecord,
+        journal: StorageSparseDiskRewriteJournalHandle,
+        fence: StorageSparseDiskMaintenanceFence, hooks: TestHooks
+    ) throws -> StorageSparseDiskRecoveryReport {
+        let admitted = record
+        func refused(_ detail: String) -> StorageSparseDiskRecoveryReport {
+            // A failed restricted classification does not rewrite even the
+            // journal, and never authorizes a less restrictive fallback.
+            .init(jobID: admitted.jobID, resolution: .needsInspection,
+                  phase: admitted.phase.rawValue, stageRemoved: false,
+                  sourceIdentityVerified: false, detail: detail)
+        }
+        let phases: Set<StorageSparseDiskRewritePhase> = [
+            .intent, .counting, .staging, .verified, .swapIntent, .aborted, .failed
+        ]
+        guard phases.contains(record.phase), record.postSwapSource == nil,
+              record.postSwapStage == nil, !record.stageRetired,
+              let stageName = record.stageName, stageName != sourceName,
+              record.maintenanceLeaseID == fence.leaseID, record.jobGeneration == fence.generation,
+              record.source.linkCount == 1,
+              record.source.mode & UInt32(S_IFMT) == UInt32(S_IFREG) else {
+            return refused("source-preserving-abort-phase")
+        }
+        let stagePrefix = "." + String(sourceName.prefix(40)) + ".sparse-" + record.jobID + "-"
+        guard stageName.hasPrefix(stagePrefix), stageName.hasSuffix(".stage") else {
+            return refused("source-preserving-abort-stage-name")
+        }
+        let token = stageName.dropFirst(stagePrefix.count).dropLast(".stage".count)
+        guard token.utf8.count == 12, token.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
+            return refused("source-preserving-abort-stage-name")
+        }
+        func pair() -> (valid: Bool, stagePresent: Bool, reason: String) {
+            let source = StorageSparseDiskPOSIX.observe(parentFD: parentFD, name: sourceName)
+            let stage = StorageSparseDiskPOSIX.observe(parentFD: parentFD, name: stageName)
+            guard source.errorErrno == nil, stage.errorErrno == nil,
+                  !source.isSymlink, !stage.isSymlink else { return (false, stage.exists, "source-preserving-abort-path-unverified") }
+            guard let original = source.identity, original.matchesStable(admitted.source) else {
+                return (false, stage.exists, "source-preserving-abort-source-identity")
+            }
+            guard original.matchesFully(admitted.source) else {
+                return (false, stage.exists, "source-preserving-abort-source-ctime")
+            }
+            if !stage.exists { return (true, false, "") }
+            guard let actual = stage.identity, let expected = admitted.stage,
+                  actual.matchesInode(expected), actual.inode != admitted.source.inode,
+                  actual.linkCount == 1,
+                  actual.mode & UInt32(S_IFMT) == UInt32(S_IFREG),
+                  actual.ownerUID == expected.ownerUID, actual.ownerGID == expected.ownerGID else {
+                return (false, true, "source-preserving-abort-stage-identity")
+            }
+            return (true, true, "")
+        }
+        let first = pair()
+        guard first.valid else { return refused(first.reason) }
+        // The async native/metadata fence may yield. Recheck the exact S/T
+        // paths and durable job AFTER it and immediately before any unlink.
+        try fence.assertExclusive()
+        guard try journal.read() == record else { return refused("source-preserving-abort-journal-changed") }
+        let last = pair()
+        guard last.valid else { return refused(last.reason) }
+        guard last.stagePresent == first.stagePresent else { return refused("source-preserving-abort-identity-changed") }
+        if last.stagePresent {
+            guard StorageSparseDiskPOSIX.unlinkName(directoryFD: parentFD, name: stageName) == 0 else {
+                return refused("source-preserving-abort-unlink")
+            }
+        }
+        // No operation above writes the source or sidecars. A failure now
+        // leaves the original S intact and the durable intent still blocking.
+        try fence.assertExclusive()
+        let after = pair()
+        guard after.valid else { return refused(after.reason) }
+        guard !after.stagePresent else { return refused("source-preserving-abort-postcheck") }
+        record.phase = .aborted
+        record.resolution = last.stagePresent ? "aborted-before-swap" : "source-unchanged"
+        record.lastError = nil
+        try finishResolution(parentFD: parentFD, record: record, journal: journal,
+                             hooks: hooks, point: last.stagePresent ? .abortStage : .abortWithoutStage)
+        try fence.assertExclusive()
+        let final = pair()
+        guard final.valid else { return refused(final.reason) }
+        guard !final.stagePresent else { return refused("source-preserving-abort-finalcheck") }
+        return .init(jobID: record.jobID, resolution: .abortedBeforeSwap,
+                     phase: record.phase.rawValue, stageRemoved: last.stagePresent,
+                     sourceIdentityVerified: true, detail: record.resolution ?? "source-unchanged")
+    }
 
     private static func matches(
         _ identity: StorageSparseDiskIdentity?,

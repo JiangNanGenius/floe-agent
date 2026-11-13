@@ -128,6 +128,7 @@ struct RuntimeV2OptimizationCoreJournalBinding: Decodable, Sendable {
     let rootPath: String
     let relativePath: String
     let source: StorageSparseDiskIdentity
+    let stage: StorageSparseDiskIdentity?
     let sourceDigestSHA512: String?
     let stageDigestSHA512: String?
     let phase: String
@@ -419,25 +420,71 @@ public actor RuntimeV2RecoveryOptimizationAdapter {
                                       evidence: RuntimeV2MaintenanceOwnerEvidence,
                                       forRecovery: Bool = false) async throws {
         let observed = try await scan(evidence: evidence)
-        guard !observed.summary.isPartial,
-              let record = observed.records.first(where: { $0.relativeDirectory + "/disk.img" == relative }) else {
+        guard !observed.summary.isPartial else {
+            throw RuntimeV2MaintenanceError.targetIdentityMismatch("repair preservation inventory incomplete")
+        }
+        guard let record = observed.records.first(where: { $0.relativeDirectory + "/disk.img" == relative }) else {
             throw RuntimeV2MaintenanceError.targetIdentityMismatch("repair preservation could not be observed")
         }
+        try Self.validatePreservationRecord(record, fingerprint: fingerprint, forRecovery: forRecovery)
+    }
+
+    // One predicate for normal admission and the existing recovery exception
+    // for future references. Diagnostic separation does not rebind metadata or
+    // turn a matching content digest into matching inode/ctime evidence.
+    static func validatePreservationRecord(_ record: LegacyRecoveryInventoryRecord,
+                                           fingerprint: String, forRecovery: Bool) throws {
         let futureReferenceOnly: Set<LegacyRecoveryPlanningBlocker> = [
             .currentReferencesUnknown, .currentReferenceExists, .currentReferenceActive
         ]
         let blockers = forRecovery ? record.planningBlockers.filter { !futureReferenceOnly.contains($0) }
             : record.planningBlockers
-        guard blockers.isEmpty,
-              try RuntimeV2OptimizationPreservation(record).fingerprint() == fingerprint else {
+        guard blockers.isEmpty else {
+            throw RuntimeV2MaintenanceError.targetIdentityMismatch("repair preservation metadata blocked")
+        }
+        guard try RuntimeV2OptimizationPreservation(record).fingerprint() == fingerprint else {
             throw RuntimeV2MaintenanceError.targetIdentityMismatch("repair preservation generation changed")
         }
+    }
+
+    private func captureAbortPreservation(relative: String, holdGeneration: Int64,
+                                          evidence: RuntimeV2MaintenanceOwnerEvidence) async throws -> String {
+        let observed = try await scan(evidence: evidence)
+        guard !observed.summary.isPartial else {
+            throw RuntimeV2MaintenanceError.targetIdentityMismatch("repair preservation inventory incomplete")
+        }
+        guard let record = observed.records.first(where: { $0.relativeDirectory + "/disk.img" == relative }) else {
+            throw RuntimeV2MaintenanceError.targetIdentityMismatch("repair preservation could not be observed")
+        }
+        let fingerprint = try RuntimeV2OptimizationPreservation(record).fingerprint()
+        try Self.validatePreservationRecord(record, fingerprint: fingerprint, forRecovery: true)
+        let observedGeneration = record.reviewSnapshot.observedRepairGeneration
+        let sameGeneration = observedGeneration.map { $0 == holdGeneration }
+            ?? (holdGeneration == 0 && record.reviewSnapshot.repairGeneration.state == .missing)
+        guard sameGeneration else {
+            throw RuntimeV2MaintenanceError.targetIdentityMismatch("repair hold generation changed")
+        }
+        // This is a temporary fence on CURRENT metadata for cleanup of a
+        // generated copy. It is never written over the old v1 receipt and
+        // grants no permission to commit, rollback or optimize the source.
+        return fingerprint
+    }
+
+    static func isSourcePreservingAbortPhase(_ phase: String) -> Bool {
+        ["intent", "counting", "staging", "verified", "swapIntent", "aborted", "failed"].contains(phase)
+    }
+
+    private enum RecoveryPhase: String {
+        case authority, nativeClosure = "native-closure", historyContext = "history-context"
+        case savedMetadata = "saved-metadata", preservation, journalBinding = "journal-binding"
+        case coreRecovery = "core-recovery", finalAuthority = "final-authority"
     }
 
     private func recoverIntent(_ intent: RuntimeV2MaintenanceIntentRecord) async -> RuntimeV2MaintenanceRecoveryOutcome {
         if RuntimeV2MigrationSparseOptimizer.owns(intent) {
             return await migrationOptimizer.recover(intent)
         }
+        var phase = RecoveryPhase.authority
         do {
             guard intent.owner == Self.owner, intent.reason == Self.reason,
                   let rootDevice = intent.domainDevice, let rootInode = intent.domainInode,
@@ -449,6 +496,7 @@ public actor RuntimeV2RecoveryOptimizationAdapter {
             }
             _ = try domain.validateTargetRelativePath(relative)
             try await coordinator.validateRecoverySession(intentID: intent.intentID, holdGeneration: intent.holdGeneration)
+            phase = .nativeClosure
             try await closureAuthority.beginRecovery(
                 coordinator: coordinator, intentID: intent.intentID, generation: intent.holdGeneration)
             let evidence = await admittedEvidence()
@@ -456,8 +504,10 @@ public actor RuntimeV2RecoveryOptimizationAdapter {
                   RuntimeV2RecoveryClosureAuthority.convergenceBlockers(evidence, domain: domain).isEmpty else {
                 return .unresolved("fresh native closure/reference proof unavailable")
             }
+            phase = .historyContext
             let recoveryDirectory = try await coordinator.recoveryStorageDirectory(
                 intentID: intent.intentID, holdGeneration: intent.holdGeneration)
+            phase = .savedMetadata
             let receipts = recoveryDirectory.appendingPathComponent("sparse-receipts", isDirectory: true)
             let saved = try await metadata.run {
                 try RuntimeV2OptimizationJournalIO.read(
@@ -490,8 +540,7 @@ public actor RuntimeV2RecoveryOptimizationAdapter {
                   saved.closure.rootInode == intent.domainInode else {
                 return .unresolved("adapter receipt generation mismatch")
             }
-            try await validatePreservation(relative: relative, fingerprint: saved.preservationFingerprint,
-                                           evidence: evidence, forRecovery: true)
+            phase = .journalBinding
             if let header {
                 guard header.schemaVersion == 2, header.jobID == intent.intentID,
                       header.maintenanceLeaseID == intent.intentID,
@@ -504,6 +553,11 @@ public actor RuntimeV2RecoveryOptimizationAdapter {
                     return .unresolved("Core journal identity/generation mismatch")
                 }
             } else {
+                // No Core journal is not proof of a classified S/T cleanup.
+                // Retain the original strict metadata/source checks here.
+                phase = .preservation
+                try await validatePreservation(relative: relative, fingerprint: saved.preservationFingerprint,
+                                               evidence: evidence, forRecovery: true)
                 let original = try await core.run {
                     try StorageSparseDiskRewrite.inspectSource(rootURL: root, relativePath: relative)
                 }
@@ -513,6 +567,35 @@ public actor RuntimeV2RecoveryOptimizationAdapter {
                 return .resolved
             }
             guard let recoveringHeader = header else { return .unresolved("Core journal disappeared") }
+            var policy: StorageSparseDiskRecoveryPolicy = .complete
+            if Self.isSourcePreservingAbortPhase(recoveringHeader.phase) {
+                policy = .abortUnchangedSourceOnly
+                if recoveringHeader.phase == "swapIntent", let staged = recoveringHeader.stage {
+                    // The atomic swap can finish before its next journal save.
+                    // A positively observed T at the original path must keep
+                    // the existing strict, byte-verified complete recovery.
+                    // Unknown/S/changed identities never fall back from the
+                    // restricted policy to this more capable path.
+                    let current = try await core.run {
+                        try StorageSparseDiskRewrite.inspectSource(rootURL: root, relativePath: relative)
+                    }
+                    if current.identity.matchesInode(staged),
+                       !current.identity.matchesInode(recoveringHeader.source) {
+                        policy = .complete
+                    }
+                }
+            }
+            let recoveryPolicy = policy
+            phase = .preservation
+            let preservationToFence: String
+            if policy == .abortUnchangedSourceOnly {
+                preservationToFence = try await captureAbortPreservation(
+                    relative: relative, holdGeneration: saved.repairHoldGeneration, evidence: evidence)
+            } else {
+                preservationToFence = saved.preservationFingerprint
+                try await validatePreservation(relative: relative, fingerprint: preservationToFence,
+                                               evidence: evidence, forRecovery: true)
+            }
             let rootBinding = StorageSparseDiskRecoveryRootBinding(
                 recordedRootPath: recoveringHeader.rootPath, device: rootDevice, inode: rootInode)
             let fingerprint = evidence.references.fingerprint
@@ -528,7 +611,7 @@ public actor RuntimeV2RecoveryOptimizationAdapter {
                         throw RuntimeV2MaintenanceError.claimInvalidated("recovery owner/reference generation changed")
                     }
                     try await self.validatePreservation(
-                        relative: relative, fingerprint: saved.preservationFingerprint, evidence: fresh,
+                        relative: relative, fingerprint: preservationToFence, evidence: fresh,
                         forRecovery: true)
                     let afterMetadata = await self.admittedEvidence()
                     guard afterMetadata.isComplete,
@@ -542,21 +625,53 @@ public actor RuntimeV2RecoveryOptimizationAdapter {
             }
             // Recovery is service-owned and must finish its bounded phase even
             // if the user's batch cancellation was requested.
+            phase = .coreRecovery
             let result = try await core.run {
                 try StorageSparseDiskRewrite.recover(
                     rootURL: root, relativePath: relative, journalDirectoryURL: journals,
                     jobID: intent.intentID, fence: fence,
                     recordedRootBinding: rootBinding,
+                    policy: recoveryPolicy,
                     isCancelled: { false })
             }
             guard result.sourceIdentityVerified,
                   result.resolution != .needsInspection, result.resolution != .noJournal else {
+                if policy == .abortUnchangedSourceOnly {
+                    FloeLogger(category: .tools).error("legacyHistoryRecovery code=needs-inspection phase=core-recovery reason="
+                        + Self.abortDiagnosticReason(result.detail))
+                }
                 return .unresolved("Core recovery retained ambiguous evidence")
             }
+            if policy == .abortUnchangedSourceOnly {
+                guard result.resolution == .abortedBeforeSwap, result.phase == "aborted" else {
+                    return .unresolved("restricted recovery did not prove an untouched source")
+                }
+            }
+            phase = .finalAuthority
             try await coordinator.validateRecoverySession(intentID: intent.intentID, holdGeneration: intent.holdGeneration)
+            if policy == .abortUnchangedSourceOnly {
+                let finalEvidence = await admittedEvidence()
+                guard finalEvidence.isComplete,
+                      RuntimeV2RecoveryClosureAuthority.convergenceBlockers(finalEvidence, domain: domain).isEmpty,
+                      finalEvidence.references.fingerprint == fingerprint else {
+                    throw RuntimeV2MaintenanceError.claimInvalidated("recovery owner/reference generation changed")
+                }
+                try await validatePreservation(relative: relative, fingerprint: preservationToFence,
+                                               evidence: finalEvidence, forRecovery: true)
+                let afterFinalMetadata = await admittedEvidence()
+                guard afterFinalMetadata.isComplete,
+                      RuntimeV2RecoveryClosureAuthority.convergenceBlockers(afterFinalMetadata, domain: domain).isEmpty,
+                      afterFinalMetadata.references.fingerprint == fingerprint else {
+                    throw RuntimeV2MaintenanceError.claimInvalidated("recovery references changed after metadata read")
+                }
+                try await coordinator.validateRecoverySession(intentID: intent.intentID, holdGeneration: intent.holdGeneration)
+            }
             return .resolved
         } catch {
-            FloeLogger(category: .tools).error("legacyHistoryRecovery code=" + Self.code(error))
+            // Only closed vocabulary: no errorDescription, path, owner, id,
+            // document text or sidecar contents enter normal logs or UI.
+            FloeLogger(category: .tools).error("legacyHistoryRecovery code=" + Self.code(error)
+                + " phase=" + phase.rawValue + " reason=" + Self.recoveryDiagnosticReason(error))
             return .unresolved("native recovery requires inspection: " + Self.code(error))
         }
     }
@@ -755,6 +870,42 @@ public actor RuntimeV2RecoveryOptimizationAdapter {
             }
         }
         return "optimization-stopped"
+    }
+    static func recoveryDiagnosticReason(_ error: Error) -> String {
+        guard let authority = error as? RuntimeV2MaintenanceError else { return "native-error" }
+        switch authority {
+        case .targetIdentityMismatch(let reason):
+            switch reason {
+            case "repair preservation inventory incomplete": return "preservation-inventory-incomplete"
+            case "repair preservation could not be observed": return "preservation-record-unavailable"
+            case "repair preservation metadata blocked": return "preservation-metadata-blocked"
+            case "repair preservation generation changed": return "preservation-fingerprint-changed"
+            case "repair hold generation changed": return "preservation-hold-generation-changed"
+            default: return "target-identity-unverified"
+            }
+        case .claimInvalidated(let reason):
+            switch reason {
+            case "recovery authority is not held": return "recovery-session-changed"
+            case "recovery owner/reference generation changed": return "recovery-owner-or-reference-changed"
+            case "recovery references changed after metadata read": return "recovery-reference-changed-after-read"
+            case "authority validation timed out": return "authority-validation-timeout"
+            case "authority reply absent": return "authority-reply-unavailable"
+            case "fence wait requires its owned GCD Core queue": return "core-worker-unverified"
+            default: return "authority-generation-unverified"
+            }
+        default: return "authority-refused"
+        }
+    }
+    private static func abortDiagnosticReason(_ detail: String) -> String {
+        let allowed: Set<String> = [
+            "source-preserving-abort-phase", "source-preserving-abort-stage-name",
+            "source-preserving-abort-path-unverified", "source-preserving-abort-source-identity",
+            "source-preserving-abort-source-ctime", "source-preserving-abort-stage-identity",
+            "source-preserving-abort-journal-changed", "source-preserving-abort-identity-changed",
+            "source-preserving-abort-unlink", "source-preserving-abort-postcheck",
+            "source-preserving-abort-finalcheck"
+        ]
+        return allowed.contains(detail) ? detail : "source-preserving-abort-unverified"
     }
     static func diagnosticCodes(_ error: Error) -> [String] {
         if case RuntimeV2MaintenanceError.claimInvalidated(let reason) = error,
