@@ -3,7 +3,17 @@
 
 这是带核实日期的渠道快照。各渠道独立更新；源码版本、公开下载、Apple 审核与测试组可用性分别核对。 / This is a dated channel snapshot. Source versions, public downloads, Apple review and beta-group availability are separate states.
 
-版本选择请先读[唯一版本依据](RELEASE_VERSION_AUTHORITY.zh-CN.md)：**最近核验交付为1.8.18（339），内部TestFlight可安装，GitHub及Feather已严格读回，M4已实际更新。** 冻结源 `b1c062d75ffe07603a698e048109776a2d4707ba`／`v1.8.18`，详见[339交付记录](releases/builds/FLOE_1.8.18_BUILD339_DELIVERY.md)。本轮不提交公开TestFlight；331与315安排保持。 / **The latest verified delivery is1.8.18 (339): internally installable, GitHub/Feather verified, and actually installed on the M4.** No public TestFlight or formal App Store submission.
+版本选择请先读[唯一版本依据](RELEASE_VERSION_AUTHORITY.zh-CN.md)：**最近核验交付为1.8.19（340），内部TestFlight可安装，GitHub／Feather严格读回通过，M4已实际安装。** 冻结源 `ca7e39303404a3f6806006300165b248ad0cd967`／`v1.8.19`；详见[340交付记录](releases/builds/FLOE_1.8.19_BUILD340_DELIVERY.md)。本轮没有公开TestFlight或正式App Store提交。 / **Latest verified delivery:1.8.19 (340), internally installable, GitHub/Feather verified, actually installed on the M4.**
+
+## 2026-11-13 iOS 1.8.19（340）渠道核对 / iOS delivery snapshot
+
+| 渠道 / Channel | 已核实结果 / Observed result |
+| --- | --- |
+| 内部TestFlight / Internal TestFlight | [独立Apple GET](https://github.com/JiangNanGenius/floe-agent/actions/runs/43371052587)确认VALID、未过期、Floe QA可安装；M4单App查询为340。 / Independent GET and actual installation confirmed. |
+| GitHub／Feather | [v1.8.19 stable/latest](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.8.19)、实际IPA与实时源均严格匹配；[正常发布及awaited Feather](https://github.com/JiangNanGenius/floe-agent/actions/runs/43371202738)通过。 / Exact unsigned IPA/source verified; your signing is required. |
+| 公开TestFlight／正式App Store / Public TestFlight and App Store | 均未提交，315与331安排保持。 / Neither submitted. |
+
+容量真机仍未完成：340维护入口暂不可用，面板0／2／11是339遗留快照；当前观察到两批未完成历史，还需统一恢复。另识别13盘以外的6份旧迁移盘，准备无损整理；不能把分配量相加当净回收。13盘／资料保留，不重复计算338已回收的124.85GB。用户复测录音已有改善，素材入口与连续回放按新指令和磁盘并行准备下一修复版。 / Physical recovery remains incomplete; old histories and six migration disks need follow-up. No new reclaim is claimed; recording improvements proceed in parallel.
 
 ## 2026-11-13 iOS 1.8.18（339）渠道核对 / iOS delivery snapshot
 
