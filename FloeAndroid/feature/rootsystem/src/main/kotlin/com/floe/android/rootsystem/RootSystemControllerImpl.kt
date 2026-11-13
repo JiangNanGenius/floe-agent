@@ -1291,13 +1291,18 @@ internal class RootSystemControllerImpl(
     }
 
     suspend fun uiCancel(claim: OperationClaim): AccessActionResult =
-        when (val result = dispatch(claim, SystemOperation.UI_CANCEL, null) { client ->
-            client.uiCancel(claim)
+        when (val result = dispatch<Unit>(claim, SystemOperation.UI_CANCEL, null) { client ->
+            when (val action = client.uiCancel(claim)) {
+                AccessActionResult.Ok -> RootResult.Ok(Unit)
+                is AccessActionResult.Denied -> RootResult.Denied(action.code)
+                is AccessActionResult.Unavailable -> RootResult.Unavailable(action.code)
+                is AccessActionResult.Failed -> RootResult.Failed(action.code, action.message)
+            }
         }) {
             is RootResult.Ok -> AccessActionResult.Ok
             is RootResult.Denied -> AccessActionResult.Denied(result.code)
             is RootResult.Unavailable -> AccessActionResult.Unavailable(result.code)
-            is RootResult.Failed -> AccessActionResult.Failed(result.code)
+            is RootResult.Failed -> AccessActionResult.Failed(result.code, result.message)
         }
 
     suspend fun readSetting(

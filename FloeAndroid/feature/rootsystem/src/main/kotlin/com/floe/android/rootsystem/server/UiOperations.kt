@@ -431,7 +431,7 @@ internal class UiOperations(
         }
     }
 
-    fun close() {
+    override fun close() {
         synchronized(gate) {
             observations.clear()
             latestByOwner.clear()
