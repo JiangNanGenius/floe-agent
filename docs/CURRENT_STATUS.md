@@ -3,7 +3,19 @@
 
 这是带核实日期的渠道快照。各渠道独立更新；源码版本、公开下载、Apple 审核与测试组可用性分别核对。 / This is a dated channel snapshot. Source versions, public downloads, Apple review and beta-group availability are separate states.
 
-版本选择请先读[唯一版本依据](RELEASE_VERSION_AUTHORITY.zh-CN.md)：**最近核验交付为1.8.16（337），内部TestFlight可安装，GitHub及Feather已严格读回；337未提交公开TestFlight。** 冻结源 `91c7cd935387f6d88bba2d660b282fb3a8dfa9bb`／`v1.8.16`，详见[337交付记录](releases/builds/FLOE_1.8.16_BUILD337_DELIVERY.md)。换机真机恢复和实际容量回收仍待验；331公测撤回和315正式版既有安排保持。 / **The latest verified delivery is1.8.16 (337): internal TestFlight is installable, and GitHub plus Feather passed strict readback.** Build337 was not submitted for public TestFlight. Device migration recovery and actual storage reduction remain unverified; public331 stays withdrawn and Build315's formal arrangements remain unchanged.
+版本选择请先读[唯一版本依据](RELEASE_VERSION_AUTHORITY.zh-CN.md)：**最近核验交付为1.8.17（338），内部TestFlight可安装，GitHub及Feather已严格读回；338未提交公开TestFlight。** 冻结源 `67d30edb3bcfc9fa674f2762f096de533e13b427`／`v1.8.17`，详见[338交付记录](releases/builds/FLOE_1.8.17_BUILD338_DELIVERY.md)。M4实际回收约124.85GB但恢复收尾仍受阻，339继续；331与315安排保持。 / **The latest verified delivery is1.8.17 (338): internal TestFlight is installable, and GitHub plus Feather passed strict readback.** No public TestFlight submission. The M4 iPad reclaimed124.85GB, but recovery remains incomplete and continues in339; withdrawn331 and formal315 stay unchanged.
+
+## 2026-11-13 iOS 1.8.17（338）渠道核对 / iOS delivery snapshot
+
+悉尼时间11:24独立确认内部可安装，11:32完成正常安装包与实时Feather源读回。 / Internal availability was independently confirmed at11:24 Sydney time; installer and live-feed readback completed at11:32.
+
+| 渠道 / Channel | 已核实结果 / Observed result | 来源与边界 / Source and limits |
+| --- | --- | --- |
+| 内部TestFlight / Internal TestFlight | Apple `VALID`、未过期，Floe QA `IN_BETA_TESTING` | [独立Apple GET](https://github.com/JiangNanGenius/floe-agent/actions/runs/43336682006)成功；M4已实际通过TestFlight安装338。 / Available internally and actually installed on the supplied M4. |
+| GitHub／Feather | [v1.8.17 stable/latest](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.8.17)及实时安装源严格读回通过 | [正常发布及awaited Feather](https://github.com/JiangNanGenius/floe-agent/actions/runs/43336958821)成功，实际IPA大小、摘要及来源一致。 / Actual IPA size, digest and source matched; your signing is required. |
+| 公开TestFlight／正式App Store / Public TestFlight and App Store | 338未提交 / Not submitted | 315正式版、331撤回及未变更的旧渠道安排保持。 / Existing formal and withdrawn-public arrangements remain unchanged. |
+
+M4的69秒旧录音回放／暂停／拖动／±15秒、新原生TXT和HTML完整阅读已通过。无损整理实际增加124,848,209,920B设备可用空间，但13份中8完成，第9项进入恢复保护，后4未处理；重点文件栏误读内部diff描述也已复现。339继续定向修补，不能将338写成所有设备问题通过。 / Saved-recording playback and complete native TXT/HTML reading passed. Storage reclaimed124.85GB, but recovery is partial;339 addresses the remaining recovery and shortcut-parsing defects. Live microphone and cloud speaker quality remain unverified.
 
 ## 2026-11-13 iOS 1.8.16（337）渠道核对 / iOS delivery snapshot
 
