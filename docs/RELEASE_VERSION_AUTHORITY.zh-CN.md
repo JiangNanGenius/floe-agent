@@ -13,6 +13,8 @@
 
 ## 本轮版本记录
 
+**1.8.23（344）正在准备。** 本次Apple只读清点确认版本及构建未占用。仅修复S63：限定在保留原盘、结束旧作业的恢复路径，完整核对旧SHA-512并持续校验当前文件身份与持锁状态，再允许重新整理。真实Darwin编译／链接及8项定向方法通过（首次7项通过、1项夹具断言修正后单独通过，原失败保留）；完整App归档、渠道交付和M4实际回收尚未验证。343源与产物保持不变。
+
 **1.8.22（343）已交付三条授权渠道。** [独立Apple GET](https://github.com/JiangNanGenius/floe-agent/actions/runs/43483085373)确认VALID、未过期及Floe QA内部可安装；[正常发布及awaited Feather](https://github.com/JiangNanGenius/floe-agent/actions/runs/43483448749)和实际安装包／在线源严格读回通过。M4经真实TestFlight更新，bootstrap成功接续两批历史、两项未完作业；唯一一次整理为blocked／recovery-pending，明确原盘ctime检查拒绝、尝试0项／分配减少0。原source、摘要、资料和恢复盘保留。后续修复另用未占用版本，不改343源、标签或产物，不把内容摘要存在等同当前盘已验证。
 
 **1.8.21（342）已交付三条授权渠道。** Apple独立GET确认VALID、未过期、既有Floe QA为IN_BETA_TESTING；GitHub stable/latest实际IPA及在线Feather源严格匹配。实际macOS-Darwin生产组件编译／链接与6新＋2既有恢复方法共8项通过，跳过0；完整iOS Release归档和规范封装通过，App及19份符号已保全。342在M4实测启动历史识别受阻，未开始新的整理；208.22GB为界面文件分配估算，新增回收0。该启动问题在343实际修复，后续容量阻塞仍单独保留，不改342冻结来源和失败记录。

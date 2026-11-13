@@ -1,0 +1,4 @@
+{
+  "zh-Hans": "344 内部容量修复测试：\n恢复换机或更新后因文件元数据变化而受阻的旧整理作业。原盘完整内容校验一致后才安全收尾，保留资料、已装软件和恢复盘。校验过程显示进度并可取消。\n\n请在数据管理中运行“优化占用”，核对整理结果及设备剩余空间。实际回收量需设备完成后确认。\n\n不提交公开TestFlight或正式App Store审核。",
+  "en-US": "Build344 internal storage testing:\nRecovers interrupted optimization after file metadata changes during migration or updates. Old work closes only after complete source-content verification; original files, installed software and recovery disks remain preserved. Verification reports progress and supports cancellation.\n\nRun Optimize Storage in Data Management and check completed results and device free space. Actual reclamation requires device verification.\n\nNo public TestFlight or formal App Store submission."
+}

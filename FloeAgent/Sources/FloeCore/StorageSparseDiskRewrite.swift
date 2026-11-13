@@ -533,6 +533,9 @@ public struct StorageSparseDiskRecoveryReport: Sendable, Equatable {
     public var phase: String
     public var stageRemoved: Bool
     public var sourceIdentityVerified: Bool
+    /// True only for the abort-only ctime recovery which read every current
+    /// source byte and matched the original journal's complete SHA-512.
+    public var sourceContentDigestVerified: Bool
     public var detail: String
 
     public init(
@@ -541,13 +544,15 @@ public struct StorageSparseDiskRecoveryReport: Sendable, Equatable {
         phase: String,
         stageRemoved: Bool,
         sourceIdentityVerified: Bool,
-        detail: String
+        detail: String,
+        sourceContentDigestVerified: Bool = false
     ) {
         self.jobID = jobID
         self.resolution = resolution
         self.phase = phase
         self.stageRemoved = stageRemoved
         self.sourceIdentityVerified = sourceIdentityVerified
+        self.sourceContentDigestVerified = sourceContentDigestVerified
         self.detail = detail
     }
 }
@@ -653,7 +658,8 @@ public enum StorageSparseDiskRewrite {
         fence: StorageSparseDiskMaintenanceFence,
         recordedRootBinding: StorageSparseDiskRecoveryRootBinding? = nil,
         policy: StorageSparseDiskRecoveryPolicy = .complete,
-        isCancelled: @escaping @Sendable () -> Bool = { false }
+        isCancelled: @escaping @Sendable () -> Bool = { false },
+        progress: (@Sendable (StorageSparseDiskRewriteProgress) -> Void)? = nil
     ) throws -> StorageSparseDiskRecoveryReport {
         #if canImport(Darwin)
         return try StorageSparseDiskRewriteRecovery.recover(
@@ -664,7 +670,8 @@ public enum StorageSparseDiskRewrite {
             fence: fence,
             recordedRootBinding: recordedRootBinding,
             policy: policy,
-            isCancelled: isCancelled
+            isCancelled: isCancelled,
+            progress: progress
         )
         #else
         _ = rootURL
@@ -675,6 +682,7 @@ public enum StorageSparseDiskRewrite {
         _ = recordedRootBinding
         _ = policy
         _ = isCancelled
+        _ = progress
         throw StorageSparseDiskRewriteError.unsupportedPlatform
         #endif
     }

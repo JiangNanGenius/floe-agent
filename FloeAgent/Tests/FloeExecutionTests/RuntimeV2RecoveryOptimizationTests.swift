@@ -290,6 +290,23 @@ private struct SyntheticDescriptorLimitScope {
     }
 }
 
+private final class RecoveryContentReadProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    private var processed: Int64 = 0
+    private var total: Int64 = 0
+    private var onMain = false
+    func record(_ value: StorageSparseDiskRewriteProgress) {
+        lock.withLock {
+            count += 1; processed = max(processed, value.processedBytes)
+            total = value.totalBytes; onMain = onMain || Thread.isMainThread
+        }
+    }
+    func snapshot() -> (count: Int, processed: Int64, total: Int64, onMain: Bool) {
+        lock.withLock { (count, processed, total, onMain) }
+    }
+}
+
 @MainActor
 final class RuntimeV2RecoveryOptimizationTests: XCTestCase {
     private struct InterruptedCleanupJob {
@@ -368,6 +385,137 @@ final class RuntimeV2RecoveryOptimizationTests: XCTestCase {
         var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
         object["syntheticUserAnnotation"] = "Keep this current metadata; do not restore the historical fingerprint."
         try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]).write(to: url)
+    }
+
+    private nonisolated static func changeOnlyDiskCtime(_ fixture: RecoveryOptimizationFixture) throws {
+        let before = try StorageSparseDiskRewrite.inspectSource(rootURL: fixture.root,
+            relativePath: fixture.relative + "/disk.img").identity
+        let fd = fixture.disk.path.withCString { open($0, O_RDONLY | O_NOFOLLOW) }
+        guard fd >= 0 else { throw POSIXError(.EIO) }; defer { close(fd) }
+        let mode = mode_t(before.mode & 0o7777)
+        guard fchmod(fd, mode ^ mode_t(0o100)) == 0, fchmod(fd, mode) == 0 else { throw POSIXError(.EIO) }
+        let after = try StorageSparseDiskRewrite.inspectSource(rootURL: fixture.root,
+            relativePath: fixture.relative + "/disk.img").identity
+        guard after.matchesStable(before), !after.matchesFully(before) else {
+            throw StorageSparseDiskRewriteError.injectedFailure("synthetic-disk-ctime-change-not-established")
+        }
+    }
+
+    func testCtimeContentRecoveryClosesOldIntentThenAdmitsFreshRewrite() async throws {
+        for stagePresent in [false, true] {
+            let fixture = try RecoveryOptimizationFixture(); defer { fixture.cleanup() }
+            let job = try await prepareInterruptedCleanup(fixture, stagePresent: stagePresent)
+            let receiptBytes = try Data(contentsOf: job.receiptURL)
+            let old = try JSONDecoder().decode(StorageSparseDiskRewriteJournalRecord.self,
+                from: Data(contentsOf: job.journalURL))
+            try Self.changeOnlyDiskCtime(fixture)
+            try Self.changeOnlyRetainedMetadata(fixture)
+            let currentMetadata = try fixture.preservedMetadata()
+            let before = try StorageSparseDiskRewrite.inspectSource(rootURL: fixture.root,
+                relativePath: job.receipt.relativePath).identity
+            XCTAssertTrue(before.matchesStable(old.source)); XCTAssertFalse(before.matchesFully(old.source))
+            let probe = RecoveryContentReadProbe()
+            let recovered = await fixture.adapter.recoverBeforeUse(cancellation: .init(), progress: { probe.record($0) })
+            XCTAssertEqual(recovered.outcome, .resolved)
+            let read = probe.snapshot()
+            XCTAssertGreaterThan(read.count, 0); XCTAssertFalse(read.onMain)
+            XCTAssertEqual(read.processed, Int64(fixture.original.count)); XCTAssertEqual(read.total, old.logicalBytes)
+            XCTAssertEqual(try Data(contentsOf: fixture.disk), fixture.original)
+            XCTAssertEqual(try Data(contentsOf: job.receiptURL), receiptBytes)
+            XCTAssertEqual(try fixture.preservedMetadata(), currentMetadata)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: job.stageURL.path))
+            let settledBytes = try Data(contentsOf: job.journalURL)
+            let settled = try JSONDecoder().decode(StorageSparseDiskRewriteJournalRecord.self, from: settledBytes)
+            XCTAssertEqual(settled.phase, .aborted); XCTAssertFalse(settled.stageRetired)
+            XCTAssertEqual(settled.source, old.source)
+            XCTAssertEqual(settled.sourceDigestSHA512, old.sourceDigestSHA512)
+            XCTAssertEqual(settled.resolution, stagePresent
+                ? "aborted-before-swap-content-verified" : "source-content-verified")
+            XCTAssertTrue(try StorageSparseDiskRewrite.inspectSource(rootURL: fixture.root,
+                relativePath: job.receipt.relativePath).identity.matchesFully(before))
+            let opened = await fixture.coordinator.state(); XCTAssertEqual(opened.phase, .open)
+            let fresh = try await fixture.record()
+            let optimized = await fixture.adapter.optimize(fresh, cancellation: .init())
+            XCTAssertEqual(optimized.code, "optimized", optimized.diagnosticCodes.joined(separator: ","))
+            XCTAssertTrue(optimized.verifiedFirstDisk); XCTAssertFalse(optimized.recoveryPending)
+            XCTAssertNotEqual(optimized.report?.jobID, old.jobID)
+            XCTAssertEqual(try Data(contentsOf: fixture.disk), fixture.original)
+            XCTAssertEqual(try fixture.preservedMetadata(), currentMetadata)
+            XCTAssertEqual(try Data(contentsOf: job.receiptURL), receiptBytes)
+            XCTAssertEqual(try Data(contentsOf: job.journalURL), settledBytes,
+                "Fresh work must not replace the historical source identity/hash or recount its aborted job")
+        }
+    }
+
+    func testCtimeRecoveryOwnedCancellationPreservesStageAndResumesSameIntent() async throws {
+        let fixture = try RecoveryOptimizationFixture(); defer { fixture.cleanup() }
+        let job = try await prepareInterruptedCleanup(fixture, stagePresent: true)
+        try Self.changeOnlyDiskCtime(fixture)
+        let journalBytes = try Data(contentsOf: job.journalURL), receiptBytes = try Data(contentsOf: job.receiptURL)
+        let stageBytes = try Data(contentsOf: job.stageURL), metadata = try fixture.preservedMetadata()
+        let cancellation = RuntimeV2OptimizationCancellation(), probe = RecoveryContentReadProbe()
+        let result = await fixture.adapter.recoverBeforeUse(cancellation: cancellation, progress: { value in
+            probe.record(value)
+            if value.processedBytes > 0 { cancellation.cancel() }
+        })
+        XCTAssertTrue(cancellation.isCancelled); XCTAssertEqual(result.outcome, .blocked)
+        XCTAssertGreaterThan(probe.snapshot().processed, 0); XCTAssertFalse(probe.snapshot().onMain)
+        XCTAssertEqual(try Data(contentsOf: job.journalURL), journalBytes)
+        XCTAssertEqual(try Data(contentsOf: job.receiptURL), receiptBytes)
+        XCTAssertEqual(try Data(contentsOf: job.stageURL), stageBytes)
+        XCTAssertEqual(try Data(contentsOf: fixture.disk), fixture.original)
+        XCTAssertEqual(try fixture.preservedMetadata(), metadata)
+        let pending = await fixture.coordinator.state(); XCTAssertEqual(pending.phase, .recoveryPending)
+        XCTAssertNil(pending.intentID, "No live exclusive claim remains while durable recovery is pending")
+        let durablePending = try XCTUnwrap(RuntimeV2MaintenanceCoordinator.readHistoryIntent(directory: fixture.state))
+        XCTAssertEqual(durablePending.intentID, job.receipt.intentID)
+        XCTAssertTrue(durablePending.phase.isBlocking)
+        let resumed = await fixture.adapter.recoverBeforeUse(cancellation: .init())
+        XCTAssertEqual(resumed.outcome, .resolved); XCTAssertEqual(resumed.intentID, job.receipt.intentID)
+        let durableResolved = try XCTUnwrap(RuntimeV2MaintenanceCoordinator.readHistoryIntent(directory: fixture.state))
+        XCTAssertEqual(durableResolved.intentID, job.receipt.intentID)
+        XCTAssertEqual(durableResolved.phase, .resolved)
+        XCTAssertEqual(try Data(contentsOf: fixture.disk), fixture.original)
+        XCTAssertEqual(try Data(contentsOf: job.receiptURL), receiptBytes)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: job.stageURL.path))
+    }
+
+    func testConcurrentRecoveryCallerCannotReplaceTheActiveCancellation() async throws {
+        let fixture = try RecoveryOptimizationFixture(); defer { fixture.cleanup() }
+        let job = try await prepareInterruptedCleanup(fixture, stagePresent: true)
+        try Self.changeOnlyDiskCtime(fixture)
+        let journalBytes = try Data(contentsOf: job.journalURL), stageBytes = try Data(contentsOf: job.stageURL)
+        let cancellation = RuntimeV2OptimizationCancellation()
+        let signal = AsyncStream<Void>.makeStream()
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal(); signal.continuation.finish() }
+        let first = Task {
+            let report = await fixture.adapter.recoverBeforeUse(cancellation: cancellation, progress: { value in
+                if value.processedBytes == 0 {
+                    signal.continuation.yield(())
+                    release.wait()
+                }
+            })
+            signal.continuation.finish()
+            return report
+        }
+        var reader = signal.stream.makeAsyncIterator()
+        guard await reader.next() != nil else {
+            let stopped = await first.value
+            XCTFail("The actual owned recovery never entered its content read: \(String(describing: stopped.reason))")
+            return
+        }
+        let second = await fixture.adapter.recoverBeforeUse(cancellation: .init())
+        XCTAssertEqual(second.outcome, .blocked)
+        XCTAssertEqual(second.reason, "optimizer recovery already in progress")
+        cancellation.cancel(); release.signal()
+        let stopped = await first.value
+        XCTAssertEqual(stopped.outcome, .blocked)
+        XCTAssertEqual(try Data(contentsOf: job.journalURL), journalBytes)
+        XCTAssertEqual(try Data(contentsOf: job.stageURL), stageBytes)
+        XCTAssertEqual(try Data(contentsOf: fixture.disk), fixture.original)
+        let resumed = await fixture.adapter.recoverBeforeUse(cancellation: .init())
+        XCTAssertEqual(resumed.outcome, .resolved)
     }
 
     func testFailedJobWithoutStageClosesOnlyItsIntentAndKeepsV1Metadata() async throws {

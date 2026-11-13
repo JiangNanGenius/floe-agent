@@ -184,6 +184,9 @@ public actor RuntimeV2RecoveryOptimizationAdapter {
     private let core = RuntimeV2OptimizationWorker("floe.legacy-recovery.core", allowsSynchronousFence: true)
     private let metadata = RuntimeV2OptimizationWorker("floe.legacy-recovery.metadata")
     private var installTask: Task<Void, Never>?
+    private var recoveryInProgress = false
+    private var recoveryCancellation: RuntimeV2OptimizationCancellation?
+    private var recoveryProgress: (@Sendable (StorageSparseDiskRewriteProgress) -> Void)?
     private static let owner = "app-legacy-storage-optimization"
     private static let reason = "lossless-legacy-recovery"
 
@@ -199,7 +202,22 @@ public actor RuntimeV2RecoveryOptimizationAdapter {
             closureAuthority: closureAuthority, admittedEvidence: admittedEvidence)
     }
 
-    public func recoverBeforeUse() async -> RuntimeV2MaintenanceRecoveryReport {
+    public func recoverBeforeUse(
+        cancellation: RuntimeV2OptimizationCancellation? = nil,
+        progress: (@Sendable (StorageSparseDiskRewriteProgress) -> Void)? = nil
+    ) async -> RuntimeV2MaintenanceRecoveryReport {
+        // One service invocation owns observation/cancellation for this batch.
+        // A later caller may not replace the token while an awaited handler
+        // is still hashing under the original recovery session.
+        guard !recoveryInProgress else {
+            return .init(outcome: .blocked, reason: "optimizer recovery already in progress")
+        }
+        recoveryInProgress = true
+        recoveryCancellation = cancellation; recoveryProgress = progress
+        defer {
+            recoveryInProgress = false
+            recoveryCancellation = nil; recoveryProgress = nil
+        }
         if installTask == nil {
             let coordinator = coordinator
             installTask = Task { [weak self] in
@@ -481,6 +499,8 @@ public actor RuntimeV2RecoveryOptimizationAdapter {
     }
 
     private func recoverIntent(_ intent: RuntimeV2MaintenanceIntentRecord) async -> RuntimeV2MaintenanceRecoveryOutcome {
+        let cancellation = recoveryCancellation
+        let progress = recoveryProgress
         if RuntimeV2MigrationSparseOptimizer.owns(intent) {
             return await migrationOptimizer.recover(intent)
         }
@@ -623,8 +643,9 @@ public actor RuntimeV2RecoveryOptimizationAdapter {
                         intentID: intent.intentID, holdGeneration: intent.holdGeneration)
                 }
             }
-            // Recovery is service-owned and must finish its bounded phase even
-            // if the user's batch cancellation was requested.
+            // Only the abort-only pre-mutation read accepts cancellation.
+            // Core finishes its short unlink/journal phase once begun; the
+            // existing complete/swap/rollback convergence stays service-owned.
             phase = .coreRecovery
             let result = try await core.run {
                 try StorageSparseDiskRewrite.recover(
@@ -632,7 +653,10 @@ public actor RuntimeV2RecoveryOptimizationAdapter {
                     jobID: intent.intentID, fence: fence,
                     recordedRootBinding: rootBinding,
                     policy: recoveryPolicy,
-                    isCancelled: { false })
+                    isCancelled: {
+                        recoveryPolicy == .abortUnchangedSourceOnly && (cancellation?.isCancelled ?? false)
+                    },
+                    progress: recoveryPolicy == .abortUnchangedSourceOnly ? progress : nil)
             }
             guard result.sourceIdentityVerified,
                   result.resolution != .needsInspection, result.resolution != .noJournal else {
@@ -645,6 +669,9 @@ public actor RuntimeV2RecoveryOptimizationAdapter {
             if policy == .abortUnchangedSourceOnly {
                 guard result.resolution == .abortedBeforeSwap, result.phase == "aborted" else {
                     return .unresolved("restricted recovery did not prove an untouched source")
+                }
+                if result.sourceContentDigestVerified {
+                    FloeLogger(category: .tools).info("legacyHistoryRecovery code=source-content-verified phase=core-recovery")
                 }
             }
             phase = .finalAuthority
@@ -901,6 +928,8 @@ public actor RuntimeV2RecoveryOptimizationAdapter {
             "source-preserving-abort-phase", "source-preserving-abort-stage-name",
             "source-preserving-abort-path-unverified", "source-preserving-abort-source-identity",
             "source-preserving-abort-source-ctime", "source-preserving-abort-stage-identity",
+            "source-preserving-abort-digest-unavailable", "source-preserving-abort-source-digest",
+            "source-preserving-abort-source-changed",
             "source-preserving-abort-journal-changed", "source-preserving-abort-identity-changed",
             "source-preserving-abort-unlink", "source-preserving-abort-postcheck",
             "source-preserving-abort-finalcheck"

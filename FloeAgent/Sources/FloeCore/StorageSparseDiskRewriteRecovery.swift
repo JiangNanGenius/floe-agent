@@ -40,6 +40,7 @@ enum StorageSparseDiskRewriteRecovery {
         recordedRootBinding: StorageSparseDiskRecoveryRootBinding? = nil,
         policy: StorageSparseDiskRecoveryPolicy = .complete,
         isCancelled: @escaping @Sendable () -> Bool,
+        progress: (@Sendable (StorageSparseDiskRewriteProgress) -> Void)? = nil,
         hooks: TestHooks = TestHooks()
     ) throws -> StorageSparseDiskRecoveryReport {
         try StorageSparseDiskPOSIX.validateJobID(jobID)
@@ -134,7 +135,8 @@ enum StorageSparseDiskRewriteRecovery {
             // they cannot fall through into the complete recovery machinery.
             return try abortUnchangedSourceOnly(
                 parentFD: parentFD, sourceName: resolved.leaf, record: &record,
-                journal: journal, fence: fence, hooks: hooks)
+                journal: journal, fence: fence, isCancelled: isCancelled,
+                progress: progress, hooks: hooks)
         }
 
         let sourceObservation = StorageSparseDiskPOSIX.observe(
@@ -438,7 +440,10 @@ enum StorageSparseDiskRewriteRecovery {
         parentFD: Int32, sourceName: String,
         record: inout StorageSparseDiskRewriteJournalRecord,
         journal: StorageSparseDiskRewriteJournalHandle,
-        fence: StorageSparseDiskMaintenanceFence, hooks: TestHooks
+        fence: StorageSparseDiskMaintenanceFence,
+        isCancelled: @escaping @Sendable () -> Bool,
+        progress: (@Sendable (StorageSparseDiskRewriteProgress) -> Void)?,
+        hooks: TestHooks
     ) throws -> StorageSparseDiskRecoveryReport {
         let admitted = record
         func refused(_ detail: String) -> StorageSparseDiskRecoveryReport {
@@ -467,6 +472,15 @@ enum StorageSparseDiskRewriteRecovery {
         guard token.utf8.count == 12, token.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
             return refused("source-preserving-abort-stage-name")
         }
+        let initial = StorageSparseDiskPOSIX.observe(parentFD: parentFD, name: sourceName)
+        guard initial.errorErrno == nil, !initial.isSymlink else {
+            return refused("source-preserving-abort-path-unverified")
+        }
+        guard let sourceAnchor = initial.identity, sourceAnchor.matchesStable(admitted.source) else {
+            return refused("source-preserving-abort-source-identity")
+        }
+        let needsContentProof = !sourceAnchor.matchesFully(admitted.source)
+        var contentVerified = false
         func pair() -> (valid: Bool, stagePresent: Bool, reason: String) {
             let source = StorageSparseDiskPOSIX.observe(parentFD: parentFD, name: sourceName)
             let stage = StorageSparseDiskPOSIX.observe(parentFD: parentFD, name: stageName)
@@ -475,8 +489,11 @@ enum StorageSparseDiskRewriteRecovery {
             guard let original = source.identity, original.matchesStable(admitted.source) else {
                 return (false, stage.exists, "source-preserving-abort-source-identity")
             }
-            guard original.matchesFully(admitted.source) else {
-                return (false, stage.exists, "source-preserving-abort-source-ctime")
+            // This fresh anchor is NEVER written over record.source. When its
+            // ctime differs, only the complete original-content proof below
+            // can admit this strictly abort-only path.
+            guard original.matchesFully(sourceAnchor) else {
+                return (false, stage.exists, "source-preserving-abort-source-changed")
             }
             if !stage.exists { return (true, false, "") }
             guard let actual = stage.identity, let expected = admitted.stage,
@@ -490,13 +507,55 @@ enum StorageSparseDiskRewriteRecovery {
         }
         let first = pair()
         guard first.valid else { return refused(first.reason) }
+        var sourceFD: Int32? = nil
+        defer { if let sourceFD { _ = Darwin.close(sourceFD) } }
+        if needsContentProof {
+            guard admitted.logicalBytes > 0,
+                  admitted.logicalBytes <= StorageSparseDiskRewrite.maximumSourceBytes,
+                  admitted.logicalBytes == admitted.source.sizeBytes,
+                  let expected = admitted.sourceDigestSHA512, expected.utf8.count == 128,
+                  expected.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
+                return refused("source-preserving-abort-digest-unavailable")
+            }
+            let fd = try StorageSparseDiskPOSIX.openRegular(
+                parentFD: parentFD, leaf: sourceName, flags: O_RDONLY, purpose: .source)
+            sourceFD = fd
+            guard try StorageSparseDiskPOSIX.identity(of: fd).matchesFully(sourceAnchor) else {
+                return refused("source-preserving-abort-source-changed")
+            }
+            try fence.assertExclusive()
+            guard try journal.read() == admitted else { return refused("source-preserving-abort-journal-changed") }
+            let beforeHash = pair()
+            guard beforeHash.valid, beforeHash.stagePresent == first.stagePresent else {
+                return refused(beforeHash.valid ? "source-preserving-abort-identity-changed" : beforeHash.reason)
+            }
+            try checkCancelled(isCancelled)
+            progress?(.init(phase: .verifying, processedBytes: 0, totalBytes: admitted.logicalBytes))
+            let digest = try StorageSparseDiskPOSIX.sha512(
+                fd: fd, size: admitted.logicalBytes, chunkBytes: 1_048_576,
+                phase: .verifying, isSource: true, isCancelled: isCancelled, progress: progress)
+            try checkCancelled(isCancelled)
+            guard try StorageSparseDiskPOSIX.identity(of: fd).matchesFully(sourceAnchor) else {
+                return refused("source-preserving-abort-source-changed")
+            }
+            guard digest == expected else { return refused("source-preserving-abort-source-digest") }
+            contentVerified = true
+        }
         // The async native/metadata fence may yield. Recheck the exact S/T
         // paths and durable job AFTER it and immediately before any unlink.
         try fence.assertExclusive()
         guard try journal.read() == record else { return refused("source-preserving-abort-journal-changed") }
         let last = pair()
         guard last.valid else { return refused(last.reason) }
+        if let sourceFD {
+            guard try StorageSparseDiskPOSIX.identity(of: sourceFD).matchesFully(sourceAnchor) else {
+                return refused("source-preserving-abort-source-changed")
+            }
+        }
         guard last.stagePresent == first.stagePresent else { return refused("source-preserving-abort-identity-changed") }
+        // Cancellation is cooperative only BEFORE the first mutation. Once
+        // unlink/terminal persistence starts, finish that short owned phase.
+        try checkCancelled(isCancelled)
         if last.stagePresent {
             guard StorageSparseDiskPOSIX.unlinkName(directoryFD: parentFD, name: stageName) == 0 else {
                 return refused("source-preserving-abort-unlink")
@@ -509,17 +568,25 @@ enum StorageSparseDiskRewriteRecovery {
         guard after.valid else { return refused(after.reason) }
         guard !after.stagePresent else { return refused("source-preserving-abort-postcheck") }
         record.phase = .aborted
-        record.resolution = last.stagePresent ? "aborted-before-swap" : "source-unchanged"
+        record.resolution = contentVerified
+            ? (last.stagePresent ? "aborted-before-swap-content-verified" : "source-content-verified")
+            : (last.stagePresent ? "aborted-before-swap" : "source-unchanged")
         record.lastError = nil
         try finishResolution(parentFD: parentFD, record: record, journal: journal,
                              hooks: hooks, point: last.stagePresent ? .abortStage : .abortWithoutStage)
         try fence.assertExclusive()
         let final = pair()
         guard final.valid else { return refused(final.reason) }
+        if let sourceFD {
+            guard try StorageSparseDiskPOSIX.identity(of: sourceFD).matchesFully(sourceAnchor) else {
+                return refused("source-preserving-abort-source-changed")
+            }
+        }
         guard !final.stagePresent else { return refused("source-preserving-abort-finalcheck") }
         return .init(jobID: record.jobID, resolution: .abortedBeforeSwap,
                      phase: record.phase.rawValue, stageRemoved: last.stagePresent,
-                     sourceIdentityVerified: true, detail: record.resolution ?? "source-unchanged")
+                     sourceIdentityVerified: true, detail: record.resolution ?? "source-unchanged",
+                     sourceContentDigestVerified: contentVerified)
     }
 
     private static func matches(

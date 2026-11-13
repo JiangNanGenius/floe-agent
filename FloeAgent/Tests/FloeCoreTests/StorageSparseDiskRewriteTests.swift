@@ -878,7 +878,150 @@ final class StorageSparseDiskRewriteTests: XCTestCase {
         }
     }
 
+    func testAbortOnlyCtimeDigestRejectsAbsentMalformedAndChangedContent() throws {
+        for fault in ["missing", "malformed", "content"] {
+            let directory = try makeRoot("ctime-digest-" + fault)
+            let url = try makeSource(in: directory)
+            let request = try prepareAbortOnlyJob(directory: directory, stagePresent: true)
+            var original = try readJournal(directory: directory, jobID: request.jobID)
+            let journalURL = directory.appendingPathComponent("journal/" + request.jobID + ".json")
+            if fault == "content" {
+                try corruptDataPreservingStableIdentity(at: url, expected: original.source)
+            } else {
+                original.sourceDigestSHA512 = fault == "missing" ? nil : String(repeating: "g", count: 128)
+                try JSONEncoder().encode(original).write(to: journalURL)
+                try Self.changeOnlySourceCtime(url)
+            }
+            let current = try sourceIdentity(in: directory, name: "disk.img")
+            XCTAssertTrue(current.matchesStable(original.source))
+            XCTAssertFalse(current.matchesFully(original.source))
+            let stage = directory.appendingPathComponent(try XCTUnwrap(original.stageName))
+            let sourceBytes = try Data(contentsOf: url), stageBytes = try Data(contentsOf: stage)
+            let journalBytes = try Data(contentsOf: journalURL)
+            let result = try StorageSparseDiskRewrite.recover(rootURL: directory, relativePath: "disk.img",
+                journalDirectoryURL: directory.appendingPathComponent("journal"), jobID: request.jobID,
+                fence: fence(), policy: .abortUnchangedSourceOnly)
+            XCTAssertEqual(result.resolution, .needsInspection)
+            XCTAssertEqual(result.detail, fault == "content"
+                ? "source-preserving-abort-source-digest" : "source-preserving-abort-digest-unavailable")
+            XCTAssertFalse(result.sourceContentDigestVerified); XCTAssertFalse(result.stageRemoved)
+            XCTAssertEqual(try Data(contentsOf: url), sourceBytes)
+            XCTAssertEqual(try Data(contentsOf: stage), stageBytes)
+            XCTAssertEqual(try Data(contentsOf: journalURL), journalBytes)
+        }
+    }
+
+    func testAbortOnlyCtimeDigestRefusesChangesDuringReadAndFinalFence() throws {
+        for boundary in ["during-read", "after-read", "journal-after-read"] {
+            let directory = try makeRoot("ctime-race-" + boundary)
+            let url = try makeSource(in: directory)
+            let request = try prepareAbortOnlyJob(directory: directory, stagePresent: true)
+            let original = try readJournal(directory: directory, jobID: request.jobID)
+            try Self.changeOnlySourceCtime(url)
+            let stage = directory.appendingPathComponent(try XCTUnwrap(original.stageName))
+            let sourceBytes = try Data(contentsOf: url), stageBytes = try Data(contentsOf: stage)
+            let journalURL = directory.appendingPathComponent("journal/" + request.jobID + ".json")
+            let journalBytes = try Data(contentsOf: journalURL)
+            var altered = original; altered.lastError = "synthetic-concurrent-journal-writer"
+            let alteredBytes = try JSONEncoder().encode(altered)
+            let calls = TestCounter()
+            let callbackFailed = TestFlag()
+            let testFence = StorageSparseDiskMaintenanceFence(leaseID: "lease-test", generation: 9) {
+                if calls.increment() == 3 && boundary != "during-read" {
+                    if boundary == "journal-after-read" { try alteredBytes.write(to: journalURL) }
+                    else { try Self.changeOnlySourceCtime(url) }
+                }
+            }
+            let result = try StorageSparseDiskRewrite.recover(rootURL: directory, relativePath: "disk.img",
+                journalDirectoryURL: directory.appendingPathComponent("journal"), jobID: request.jobID,
+                fence: testFence, policy: .abortUnchangedSourceOnly, progress: { value in
+                    if boundary == "during-read" && value.processedBytes == 0 {
+                        do { try Self.changeOnlySourceCtime(url) } catch { callbackFailed.set() }
+                    }
+                })
+            XCTAssertFalse(callbackFailed.isSet)
+            XCTAssertEqual(result.resolution, .needsInspection)
+            XCTAssertEqual(result.detail, boundary == "journal-after-read"
+                ? "source-preserving-abort-journal-changed" : "source-preserving-abort-source-changed")
+            XCTAssertFalse(result.stageRemoved); XCTAssertFalse(result.sourceContentDigestVerified)
+            XCTAssertEqual(try Data(contentsOf: url), sourceBytes)
+            XCTAssertEqual(try Data(contentsOf: stage), stageBytes)
+            XCTAssertEqual(try Data(contentsOf: journalURL), boundary == "journal-after-read" ? alteredBytes : journalBytes)
+        }
+    }
+
+    func testAbortOnlyFullIdentityFastPathSkipsHashAndFinishesOwnedMutation() throws {
+        for stagePresent in [false, true] {
+            let directory = try makeRoot("abort-fast-\(stagePresent)")
+            let url = try makeSource(in: directory)
+            let sourceBytes = try Data(contentsOf: url)
+            let request = try prepareAbortOnlyJob(directory: directory, stagePresent: stagePresent)
+            let original = try readJournal(directory: directory, jobID: request.jobID)
+            let hashProgress = TestFlag(), cancelled = TestFlag()
+            var hooks = StorageSparseDiskRewriteRecovery.TestHooks()
+            hooks.beforeJournalUpdate = { point in
+                if point == .abortStage || point == .abortWithoutStage { cancelled.set() }
+            }
+            let result = try StorageSparseDiskRewriteRecovery.recover(rootURL: directory,
+                relativePath: "disk.img", journalDirectoryURL: directory.appendingPathComponent("journal"),
+                jobID: request.jobID, fence: fence(), policy: .abortUnchangedSourceOnly,
+                isCancelled: { cancelled.isSet }, progress: { _ in hashProgress.set() }, hooks: hooks)
+            XCTAssertTrue(cancelled.isSet, "Cancellation arrives only after the first owned mutation")
+            XCTAssertFalse(hashProgress.isSet, "Unchanged full identity must keep the no-content-read fast path")
+            XCTAssertEqual(result.resolution, .abortedBeforeSwap); XCTAssertEqual(result.phase, "aborted")
+            XCTAssertFalse(result.sourceContentDigestVerified); XCTAssertEqual(result.stageRemoved, stagePresent)
+            let final = try readJournal(directory: directory, jobID: request.jobID)
+            XCTAssertEqual(final.source, original.source)
+            XCTAssertEqual(final.sourceDigestSHA512, original.sourceDigestSHA512)
+            XCTAssertEqual(try Data(contentsOf: url), sourceBytes)
+            XCTAssertTrue(try sourceIdentity(in: directory, name: "disk.img").matchesFully(original.source))
+            XCTAssertTrue(try stageNames(in: directory).isEmpty)
+        }
+    }
+
     // MARK: - Helpers
+
+    private final class TestCounter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = 0
+        func increment() -> Int { lock.lock(); defer { lock.unlock() }; value += 1; return value }
+    }
+
+    private static func changeOnlySourceCtime(_ url: URL) throws {
+        let fd = url.path.withCString { open($0, O_RDONLY | O_NOFOLLOW) }
+        guard fd >= 0 else { throw POSIXError(.EIO) }; defer { _ = Darwin.close(fd) }
+        let before = try StorageSparseDiskPOSIX.identity(of: fd)
+        let permissions = mode_t(before.mode & 0o7777)
+        guard fchmod(fd, permissions ^ mode_t(0o100)) == 0, fchmod(fd, permissions) == 0 else {
+            throw POSIXError(.EIO)
+        }
+        let after = try StorageSparseDiskPOSIX.identity(of: fd)
+        guard after.matchesStable(before), !after.matchesFully(before) else {
+            throw StorageSparseDiskRewriteError.injectedFailure("synthetic-ctime-change-not-established")
+        }
+    }
+
+    private func prepareAbortOnlyJob(directory: URL, stagePresent: Bool) throws -> StorageSparseDiskRewriteRequest {
+        let request = try makeRequest(root: directory, name: "disk.img", mode: .cloneAndPunch)
+        var hooks = StorageSparseDiskRewrite.TestHooks()
+        hooks.crashAt = { point in
+            if stagePresent && point == .afterStaging {
+                throw StorageSparseDiskRewriteError.crashInjected("synthetic-ctime-stage-left")
+            }
+            if !stagePresent && point == .afterVerified {
+                throw StorageSparseDiskRewriteError.injectedFailure("synthetic-ctime-stage-cleaned")
+            }
+        }
+        XCTAssertThrowsError(try perform(request, hooks: hooks)) { error in
+            XCTAssertEqual(error as? StorageSparseDiskRewriteError, stagePresent
+                ? .crashInjected("synthetic-ctime-stage-left") : .injectedFailure("synthetic-ctime-stage-cleaned"))
+        }
+        let record = try readJournal(directory: directory, jobID: request.jobID)
+        XCTAssertEqual(record.phase, stagePresent ? .staging : .failed)
+        XCTAssertEqual(record.sourceDigestSHA512?.utf8.count, 128)
+        XCTAssertEqual(try stageNames(in: directory).isEmpty, !stagePresent)
+        return request
+    }
 
     private final class TestFlag: @unchecked Sendable {
         private let lock = NSLock()

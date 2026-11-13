@@ -299,6 +299,7 @@ final class StorageOptimizationService: ObservableObject {
     private var operation: Task<Void, Never>?
     private var cancellation: RuntimeV2OptimizationCancellation?
     private var generation: UUID?
+    private var recoveryProgressGeneration: UUID?
     private var lastDiagnosticPersistUptime: TimeInterval = 0
     private static let savedResultKey = "floe.storage.legacyOptimization.lastResult.v1"
     private static let maximumSnapshotBytes = 16_384
@@ -321,13 +322,19 @@ final class StorageOptimizationService: ObservableObject {
         // Installs a REAL Core recovery handler on every process launch before
         // converging pending intent. No forever-nil recovery closure is shipped.
         let id = UUID(); generation = id
+        let cancellation = RuntimeV2OptimizationCancellation()
+        self.cancellation = cancellation
         let previousPhase = state.phase
         state.phase = .checking
         operation = Task { [weak self] in
             guard let self else { return }
-            let report = await adapter.recoverBeforeUse()
+            let report = await self.recover(adapter: adapter, cancellation: cancellation, generation: id)
             guard self.generation == id else { return }
-            if report.outcome == .blocked {
+            if cancellation.isCancelled {
+                self.state.phase = .cancelled
+                self.state.recordResult(code: "cancelled")
+                if report.outcome == .blocked { self.state.recordDiagnostic("recovery-pending") }
+            } else if report.outcome == .blocked {
                 self.state.phase = .blocked
                 self.state.recordStage("recovery-check")
                 self.state.recordResult(code: "recovery-pending")
@@ -344,7 +351,8 @@ final class StorageOptimizationService: ObservableObject {
                 default: self.state.phase = previousPhase
                 }
             }
-            self.operation = nil
+            self.cancellation = nil; self.operation = nil
+            self.state.corePhase = nil; self.state.fraction = nil
             self.persistResult()
             if report.outcome != .notNeeded, report.intentID != nil { await self.settled() }
         }
@@ -379,17 +387,19 @@ final class StorageOptimizationService: ObservableObject {
         do {
             state.recordStage("recovery-check")
             persistResult()
-            let recovery = await adapter.recoverBeforeUse()
+            let recovery = await recover(adapter: adapter, cancellation: cancellation, generation: generation)
             guard self.generation == generation else { return }
             refreshNeeded = recovery.outcome != .notNeeded && recovery.intentID != nil
-            guard recovery.outcome != .blocked else {
-                state.recordResult(code: "recovery-pending")
-                state.phase = .blocked; finish(generation: generation)
+            if cancellation.isCancelled {
+                state.recordResult(code: "cancelled")
+                if recovery.outcome == .blocked { state.recordDiagnostic("recovery-pending") }
+                state.phase = .cancelled; finish(generation: generation)
                 if refreshNeeded { await settled() }
                 return
             }
-            if cancellation.isCancelled {
-                state.phase = .cancelled; finish(generation: generation)
+            guard recovery.outcome != .blocked else {
+                state.recordResult(code: "recovery-pending")
+                state.phase = .blocked; finish(generation: generation)
                 if refreshNeeded { await settled() }
                 return
             }
@@ -511,8 +521,37 @@ final class StorageOptimizationService: ObservableObject {
         if refreshNeeded { await settled() }
     }
 
+    private func recover(adapter: RuntimeV2RecoveryOptimizationAdapter,
+                         cancellation: RuntimeV2OptimizationCancellation,
+                         generation: UUID) async -> RuntimeV2MaintenanceRecoveryReport {
+        recoveryProgressGeneration = generation
+        let gate = StorageOptimizationProgressGate()
+        let onProgress: @Sendable (StorageSparseDiskRewriteProgress) -> Void = { [weak self] value in
+            guard gate.accepts(value) else { return }
+            Task { @MainActor [weak self] in
+                guard let self, self.generation == generation, self.operation != nil,
+                      self.recoveryProgressGeneration == generation,
+                      (self.state.phase == .checking || self.state.phase == .cancelling) else { return }
+                self.state.corePhase = value.phase.rawValue
+                self.state.fraction = value.totalBytes > 0
+                    ? min(1, max(0, Double(value.processedBytes) / Double(value.totalBytes))) : nil
+                let changed = self.state.recordStage(value.phase.rawValue,
+                    processed: value.processedBytes, total: value.totalBytes)
+                if changed || ProcessInfo.processInfo.systemUptime - self.lastDiagnosticPersistUptime >= 5 {
+                    self.persistResult()
+                }
+            }
+        }
+        let report = await adapter.recoverBeforeUse(cancellation: cancellation, progress: onProgress)
+        // Enqueued progress from the completed read cannot overwrite the next
+        // inventory/disk admission, even within this same service generation.
+        if recoveryProgressGeneration == generation { recoveryProgressGeneration = nil }
+        return report
+    }
+
     private func finish(generation: UUID) {
         guard self.generation == generation else { return }
+        recoveryProgressGeneration = nil
         state.corePhase = nil; state.fraction = nil; state.finishedAt = Date()
         cancellation = nil; operation = nil
         persistResult()
