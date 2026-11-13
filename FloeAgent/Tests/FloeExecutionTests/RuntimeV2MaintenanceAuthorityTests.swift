@@ -949,6 +949,214 @@ final class RuntimeV2MaintenanceAuthorityTests: XCTestCase {
         }
     }
 
+    func testNativeReceiptOnlyNamespaceSurvivesRestartAndContainerRenameWithoutGrantingClosure() async throws {
+        let prepared = try await makeNativeReceiptOnlyHistory()
+        let fixture = prepared.fixture; defer { fixture.cleanup() }
+        let fm = FileManager.default
+        let oldLock = try RuntimeV2DiskIdentity.read(at: prepared.directory.appendingPathComponent("maintenance.lock"))
+        let moved = fixture.work.appendingPathExtension("relocated")
+        try fm.moveItem(at: fixture.work, to: moved)
+        let current = try RuntimeV2MaintenanceDomain(trustedLegacyRoot: moved.appendingPathComponent("Runtime/v2"))
+        defer {
+            RuntimeV2MaintenanceRegistry.unregister(domainRoot: current.root)
+            try? fm.removeItem(at: moved)
+        }
+        XCTAssertNotEqual(current.domainKey, fixture.domain.domainKey)
+        let receiptOnly = current.root.deletingLastPathComponent()
+            .appendingPathComponent("MaintenanceAuthority/" + prepared.directory.lastPathComponent)
+        let layout = try current.authorityHistoryLayout()
+        XCTAssertTrue(layout.directories.contains(receiptOnly))
+        XCTAssertFalse(layout.historicalDirectories.contains(receiptOnly), "Receipts must not manufacture a durable intent")
+        XCTAssertEqual(layout.pendingIntentCount, 2)
+        let box = EvidenceBox(closureEvidence(for: current))
+        let owner = try RuntimeV2MaintenanceCoordinator(domain: current, stateDirectory: layout.primaryDirectory,
+            evidenceProvider: { box.value }, historyLayout: layout)
+        RuntimeV2RecoveryAdmission.installSyntheticDomainForTests(domain: current,
+            stateDirectory: layout.primaryDirectory, historyLayout: owner.historyLayout)
+        let closure = RuntimeV2RecoveryClosureAuthority(domain: current, stateDirectory: layout.primaryDirectory)
+        do {
+            _ = try await closure.currentReceipt(intentID: fixture.secondID)
+            XCTFail("Old receipt bytes must never be installed as current native closure permission")
+        } catch RuntimeV2MaintenanceError.claimInvalidated {}
+        let beforeHandler = await owner.recoverIfNeeded()
+        XCTAssertEqual(beforeHandler.outcome, .blocked)
+        XCTAssertThrowsError(try RuntimeV2RecoveryAdmission.acquire(root: current.root))
+        let visits = HistoryVisits()
+        await owner.installRecoveryHandler { record in
+            do {
+                _ = try await owner.recoveryStorageDirectory(intentID: record.intentID, holdGeneration: record.holdGeneration)
+                try await closure.beginRecovery(coordinator: owner, intentID: record.intentID, generation: record.holdGeneration)
+                _ = try await closure.proveClosed(evidence: box.value, intent: record, coordinator: owner)
+                let fresh = try await closure.currentReceipt(intentID: record.intentID)
+                XCTAssertTrue(fresh.isConvergenceProof)
+                XCTAssertFalse(prepared.incarnations.contains(fresh.incarnation), "Restart requires a fresh native owner/FD proof")
+                visits.append(record.intentID)
+                return .resolved
+            } catch { return .unresolved("synthetic fresh closure failed") }
+        }
+        let report = await owner.recoverIfNeeded()
+        XCTAssertEqual(report.outcome, .resolved)
+        XCTAssertEqual(Set(visits.values), Set(fixture.directories.keys))
+        await owner.installRecoveryHandler(nil)
+        let afterLock = try RuntimeV2DiskIdentity.read(at: receiptOnly.appendingPathComponent("maintenance.lock"))
+        XCTAssertEqual(afterLock.device, oldLock.device); XCTAssertEqual(afterLock.inode, oldLock.inode)
+        for (name, bytes) in prepared.receipts {
+            XCTAssertEqual(try Data(contentsOf: receiptOnly.appendingPathComponent("closed-receipts/" + name)), bytes)
+        }
+        let use = try RuntimeV2RecoveryAdmission.acquire(root: current.root)
+        XCTAssertNotNil(use); use?.release()
+    }
+
+    func testReceiptOnlyNamespaceLiveLockBlocksEveryHistoryHandler() async throws {
+        let prepared = try await makeNativeReceiptOnlyHistory()
+        let fixture = prepared.fixture; defer { fixture.cleanup() }
+        let layout = try fixture.domain.authorityHistoryLayout()
+        let box = EvidenceBox(closureEvidence(for: fixture.domain))
+        let owner = try RuntimeV2MaintenanceCoordinator(domain: fixture.domain, stateDirectory: layout.primaryDirectory,
+            evidenceProvider: { box.value }, historyLayout: layout)
+        RuntimeV2RecoveryAdmission.installSyntheticDomainForTests(domain: fixture.domain,
+            stateDirectory: layout.primaryDirectory, historyLayout: owner.historyLayout)
+        let fd = open(prepared.directory.appendingPathComponent("maintenance.lock").path, O_RDWR | O_NOFOLLOW)
+        guard fd >= 0 else { return XCTFail("fixture receipt-only namespace lock missing") }
+        defer { close(fd) }
+        XCTAssertEqual(flock(fd, LOCK_EX | LOCK_NB), 0)
+        let visits = HistoryVisits()
+        await owner.installRecoveryHandler { record in visits.append(record.intentID); return .resolved }
+        let report = await owner.recoverIfNeeded()
+        XCTAssertEqual(report.outcome, .blocked); XCTAssertTrue(visits.values.isEmpty)
+        await owner.installRecoveryHandler(nil)
+        for (id, directory) in fixture.directories {
+            XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent("intent.json")), fixture.originals[id])
+        }
+        for (name, bytes) in prepared.receipts {
+            XCTAssertEqual(try Data(contentsOf: prepared.directory.appendingPathComponent("closed-receipts/" + name)), bytes)
+        }
+    }
+
+    func testReceiptOnlyNamespaceRejectsCorruptForeignLinkedAndUnknownContent() async throws {
+        for mutation in ["corrupt", "foreign-root", "wrong-domain", "wrong-name", "unknown-field",
+                         "wrong-proof-kind", "symlink-file", "hardlink-file", "symlink-directory", "unknown-journal", "oversized"] {
+            let prepared = try await makeNativeReceiptOnlyHistory()
+            let fixture = prepared.fixture; defer { fixture.cleanup() }
+            let fm = FileManager.default
+            let receipts = prepared.directory.appendingPathComponent("closed-receipts")
+            let name = try XCTUnwrap(prepared.receipts.keys.sorted().first)
+            let file = receipts.appendingPathComponent(name)
+            switch mutation {
+            case "corrupt": try Data("{".utf8).write(to: file)
+            case "foreign-root", "wrong-domain", "unknown-field", "wrong-proof-kind":
+                var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+                if mutation == "foreign-root" { object["rootInode"] = NSNumber(value: prepared.rootInode + 1) }
+                if mutation == "wrong-domain" { object["domainKey"] = String(repeating: "d", count: 64) }
+                if mutation == "unknown-field" { object["pretendPermission"] = true }
+                if mutation == "wrong-proof-kind" { object["isConvergenceProof"] = false }
+                try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]).write(to: file)
+            case "wrong-name":
+                try fm.moveItem(at: file, to: receipts.appendingPathComponent("closure-" + UUID().uuidString + "-" + UUID().uuidString + ".json"))
+            case "symlink-file", "hardlink-file":
+                let other = receipts.appendingPathComponent(try XCTUnwrap(prepared.receipts.keys.sorted().last))
+                try fm.removeItem(at: file)
+                if mutation == "symlink-file" { try fm.createSymbolicLink(at: file, withDestinationURL: other) }
+                else { XCTAssertEqual(link(other.path, file.path), 0) }
+            case "symlink-directory":
+                let moved = fixture.work.appendingPathComponent("kept-real-receipts")
+                try fm.moveItem(at: receipts, to: moved)
+                try fm.createSymbolicLink(at: receipts, withDestinationURL: moved)
+            case "unknown-journal":
+                try fm.createDirectory(at: prepared.directory.appendingPathComponent("sparse-journals"), withIntermediateDirectories: false)
+            case "oversized": try Data(repeating: 0x20, count: 65_537).write(to: file)
+            default: XCTFail("unhandled synthetic mutation")
+            }
+            do { _ = try fixture.domain.authorityHistoryLayout(); XCTFail("unknown receipt-only namespace accepted: " + mutation) }
+            catch let failure as RuntimeV2MaintenanceBootstrapFailure { XCTAssertEqual(failure.code, .historyShapeUnknown, mutation) }
+            for (id, directory) in fixture.directories {
+                XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent("intent.json")), fixture.originals[id], mutation)
+            }
+        }
+    }
+
+    func testReceiptOnlyNamespaceChangesAfterDiscoveryStillBlockTheCohort() async throws {
+        for unknownJournal in [true, false] {
+            let prepared = try await makeNativeReceiptOnlyHistory()
+            let fixture = prepared.fixture; defer { fixture.cleanup() }
+            let layout = try fixture.domain.authorityHistoryLayout()
+            let box = EvidenceBox(closureEvidence(for: fixture.domain))
+            let owner = try RuntimeV2MaintenanceCoordinator(domain: fixture.domain, stateDirectory: layout.primaryDirectory,
+                evidenceProvider: { box.value }, historyLayout: layout)
+            RuntimeV2RecoveryAdmission.installSyntheticDomainForTests(domain: fixture.domain,
+                stateDirectory: layout.primaryDirectory, historyLayout: owner.historyLayout)
+            if unknownJournal {
+                try FileManager.default.createDirectory(at: prepared.directory.appendingPathComponent("sparse-journals"), withIntermediateDirectories: false)
+            } else {
+                let name = try XCTUnwrap(prepared.receipts.keys.sorted().first)
+                let file = prepared.directory.appendingPathComponent("closed-receipts/" + name)
+                var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+                object["rootInode"] = NSNumber(value: prepared.rootInode + 1)
+                try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]).write(to: file)
+            }
+            let visits = HistoryVisits()
+            await owner.installRecoveryHandler { record in visits.append(record.intentID); return .resolved }
+            let result = await owner.recoverIfNeeded()
+            XCTAssertEqual(result.outcome, .blocked); XCTAssertTrue(visits.values.isEmpty)
+            await owner.installRecoveryHandler(nil)
+            for (id, directory) in fixture.directories {
+                XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent("intent.json")), fixture.originals[id])
+            }
+        }
+    }
+
+    private func closureEvidence(for domain: RuntimeV2MaintenanceDomain) -> RuntimeV2MaintenanceOwnerEvidence {
+        var value = cleanEvidence(for: domain)
+        value.filesystem.legacyRegistryFingerprint = FloeDigest.sha256Hex(Data("synthetic closed registry".utf8))
+        return value
+    }
+
+    /// Produce the receipt-only namespace using the real recovery session,
+    /// native FD audit and durable writer. Both original intents stay pending.
+    private func makeNativeReceiptOnlyHistory() async throws -> ReceiptOnlyHistoryFixture {
+        let fixture = try MultiHistoryFixture(parent: root)
+        var retained = false
+        defer { if !retained { fixture.cleanup() } }
+        let box = EvidenceBox(closureEvidence(for: fixture.domain))
+        let layout = try fixture.domain.authorityHistoryLayout()
+        let owner = try RuntimeV2MaintenanceCoordinator(domain: fixture.domain, stateDirectory: layout.primaryDirectory,
+            evidenceProvider: { box.value }, historyLayout: layout)
+        RuntimeV2RecoveryAdmission.installSyntheticDomainForTests(domain: fixture.domain,
+            stateDirectory: layout.primaryDirectory, historyLayout: owner.historyLayout)
+        let closure = RuntimeV2RecoveryClosureAuthority(domain: fixture.domain, stateDirectory: layout.primaryDirectory)
+        let visits = HistoryVisits()
+        await owner.installRecoveryHandler { record in
+            do {
+                _ = try await owner.recoveryStorageDirectory(intentID: record.intentID, holdGeneration: record.holdGeneration)
+                try await closure.beginRecovery(coordinator: owner, intentID: record.intentID, generation: record.holdGeneration)
+                _ = try await closure.proveClosed(evidence: box.value, intent: record, coordinator: owner)
+                visits.append(record.intentID)
+            } catch { XCTFail("real synthetic closure generation failed") }
+            return .unresolved("synthetic original history intentionally retained")
+        }
+        let report = await owner.recoverIfNeeded()
+        await owner.installRecoveryHandler(nil)
+        XCTAssertEqual(report.outcome, .blocked)
+        XCTAssertEqual(Set(visits.values), Set(fixture.directories.keys))
+        let directory = layout.primaryDirectory
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("intent.json").path))
+        let receipts = directory.appendingPathComponent("closed-receipts")
+        let names = try FileManager.default.contentsOfDirectory(atPath: receipts.path).sorted()
+        XCTAssertEqual(names.count, 2)
+        var bytes: [String: Data] = [:]; var incarnations = Set<String>()
+        for name in names {
+            let data = try Data(contentsOf: receipts.appendingPathComponent(name))
+            let proof = try JSONDecoder().decode(RuntimeV2RecoveryClosedReceipt.self, from: data)
+            XCTAssertTrue(proof.isConvergenceProof); XCTAssertEqual(proof.domainKey, directory.lastPathComponent)
+            XCTAssertEqual(name, "closure-" + proof.intentID + "-" + proof.proofID + ".json")
+            bytes[name] = data; incarnations.insert(proof.incarnation)
+        }
+        let physical = try RuntimeV2DiskIdentity.read(at: fixture.domain.root)
+        retained = true
+        return ReceiptOnlyHistoryFixture(fixture: fixture, directory: directory, receipts: bytes,
+            incarnations: incarnations, rootInode: physical.inode)
+    }
+
     // MARK: - Evidence helpers
 
     private func cleanEvidence() -> RuntimeV2MaintenanceOwnerEvidence {
@@ -1055,6 +1263,14 @@ private final class HistoryVisits: @unchecked Sendable {
     private var items: [String] = []
     func append(_ value: String) { lock.withLock { items.append(value) } }
     var values: [String] { lock.withLock { items } }
+}
+
+private struct ReceiptOnlyHistoryFixture: Sendable {
+    let fixture: MultiHistoryFixture
+    let directory: URL
+    let receipts: [String: Data]
+    let incarnations: Set<String>
+    let rootInode: UInt64
 }
 
 private final class MultiHistoryFixture: @unchecked Sendable {

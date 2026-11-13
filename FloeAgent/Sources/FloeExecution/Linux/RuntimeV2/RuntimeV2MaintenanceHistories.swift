@@ -100,6 +100,151 @@ public struct RuntimeV2MaintenanceHistoryLayout: Sendable {
 
 }
 
+/// Recognize only metadata which this native recovery service can leave in a
+/// namespace without its own intent. These receipts are historical CONTENT,
+/// never current closure permission; the namespace still joins every flock.
+private enum RuntimeV2IntentlessAuthorityMetadata {
+    struct Budget {
+        var receipts = 0
+        var bytes = 0
+    }
+
+    private static func refuse() -> RuntimeV2MaintenanceBootstrapFailure {
+        .init(.historyShapeUnknown, rootCheck: .verified)
+    }
+
+    private static func same(_ before: stat, _ after: stat) -> Bool {
+        guard before.st_dev == after.st_dev, before.st_ino == after.st_ino,
+              before.st_mode == after.st_mode, before.st_nlink == after.st_nlink,
+              before.st_uid == after.st_uid, before.st_gid == after.st_gid,
+              before.st_size == after.st_size else { return false }
+        #if canImport(Darwin)
+        return before.st_flags == after.st_flags
+            && before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec
+            && before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec
+            && before.st_ctimespec.tv_sec == after.st_ctimespec.tv_sec
+            && before.st_ctimespec.tv_nsec == after.st_ctimespec.tv_nsec
+        #else
+        return before.st_mtim.tv_sec == after.st_mtim.tv_sec
+            && before.st_mtim.tv_nsec == after.st_mtim.tv_nsec
+            && before.st_ctim.tv_sec == after.st_ctim.tv_sec
+            && before.st_ctim.tv_nsec == after.st_ctim.tv_nsec
+        #endif
+    }
+
+    private static func names(in directory: Int32, limit: Int) throws -> [String] {
+        // A separate open description avoids changing a held directory's
+        // readdir position when its cohort is revalidated more than once.
+        let fd = openat(directory, ".", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { throw refuse() }
+        guard let stream = fdopendir(fd) else { close(fd); throw refuse() }
+        defer { closedir(stream) }
+        var result: [String] = []
+        while true {
+            errno = 0
+            guard let entry = readdir(stream) else {
+                guard errno == 0 else { throw refuse() }
+                return result
+            }
+            let name = withUnsafePointer(to: entry.pointee.d_name) {
+                String(cString: UnsafeRawPointer($0).assumingMemoryBound(to: CChar.self))
+            }
+            if name == "." || name == ".." { continue }
+            guard result.count < limit else { throw refuse() }
+            result.append(name)
+        }
+    }
+
+    static func validate(namespaceFD: Int32, namespace: String,
+                         rootDevice: UInt64, rootInode: UInt64, budget: inout Budget) throws {
+        var before = stat(); var after = stat()
+        guard fstat(namespaceFD, &before) == 0 else { throw refuse() }
+        for name in try names(in: namespaceFD, limit: 3) {
+            if name == "closed-receipts" {
+                try receipts(namespaceFD: namespaceFD, namespace: namespace,
+                             rootDevice: rootDevice, rootInode: rootInode, budget: &budget)
+            } else {
+                var info = stat()
+                guard ["admission.lock", "maintenance.lock"].contains(name),
+                      fstatat(namespaceFD, name, &info, AT_SYMLINK_NOFOLLOW) == 0,
+                      info.st_mode & S_IFMT == S_IFREG, info.st_nlink == 1 else { throw refuse() }
+            }
+        }
+        guard fstat(namespaceFD, &after) == 0, same(before, after) else { throw refuse() }
+    }
+
+    private static func receipts(namespaceFD: Int32, namespace: String,
+                                 rootDevice: UInt64, rootInode: UInt64, budget: inout Budget) throws {
+        let fd = openat(namespaceFD, "closed-receipts", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { throw refuse() }
+        defer { close(fd) }
+        var before = stat(); var named = stat(); var after = stat()
+        guard fstat(fd, &before) == 0, before.st_mode & S_IFMT == S_IFDIR,
+              fstatat(namespaceFD, "closed-receipts", &named, AT_SYMLINK_NOFOLLOW) == 0,
+              same(before, named) else { throw refuse() }
+        for name in try names(in: fd, limit: 512) {
+            // UUID-shaped native names only, before opening any payload.
+            guard name.utf8.count == 86, name.hasPrefix("closure-"), name.hasSuffix(".json"),
+                  budget.receipts < 512 else { throw refuse() }
+            let receiptFD = openat(fd, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+            guard receiptFD >= 0 else { throw refuse() }
+            defer { close(receiptFD) }
+            var info = stat(); var second = stat(); var entry = stat()
+            guard fstat(receiptFD, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_nlink == 1,
+                  info.st_size > 0, info.st_size <= 65_536,
+                  budget.bytes <= 8 * 1_024 * 1_024 - Int(info.st_size) else { throw refuse() }
+            budget.receipts += 1; budget.bytes += Int(info.st_size)
+            var data = Data(count: Int(info.st_size))
+            try data.withUnsafeMutableBytes { (bytes: UnsafeMutableRawBufferPointer) in
+                var offset = 0
+                while offset < bytes.count {
+                    let count = read(receiptFD, bytes.baseAddress!.advanced(by: offset), bytes.count - offset)
+                    if count < 0 && errno == EINTR { continue }
+                    guard count > 0 else { throw refuse() }
+                    offset += count
+                }
+            }
+            guard fstat(receiptFD, &second) == 0, fstatat(fd, name, &entry, AT_SYMLINK_NOFOLLOW) == 0,
+                  same(info, second), same(info, entry) else { throw refuse() }
+            try validateReceipt(data, name: name, namespace: namespace, rootDevice: rootDevice, rootInode: rootInode)
+        }
+        guard fstat(fd, &after) == 0, fstatat(namespaceFD, "closed-receipts", &named, AT_SYMLINK_NOFOLLOW) == 0,
+              same(before, after), same(before, named) else { throw refuse() }
+    }
+
+    private static func validateReceipt(_ data: Data, name: String, namespace: String,
+                                        rootDevice: UInt64, rootInode: UInt64) throws {
+        let keys: Set<String> = ["version", "proofID", "isConvergenceProof", "domainKey", "rootDevice", "rootInode",
+            "incarnation", "sourceGeneration", "intentID", "holdGeneration", "historicalLeaseEnvironmentIDs",
+            "historicalRegistryLeaseEnvironmentIDs", "ownerEvidenceFingerprint", "legacyRegistryFingerprint",
+            "inspectedDescriptorSlots", "readOnlyMetadataDescriptors"]
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any], Set(object.keys) == keys else { throw refuse() }
+        let receipt = try JSONDecoder().decode(RuntimeV2RecoveryClosedReceipt.self, from: data)
+        func uuid(_ value: String) -> Bool {
+            value.utf8.count == 36 && UUID(uuidString: value)?.uuidString.lowercased() == value.lowercased()
+        }
+        func digest(_ value: String) -> Bool {
+            value.utf8.count == 64 && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+        }
+        let environments = receipt.historicalLeaseEnvironmentIDs + receipt.historicalRegistryLeaseEnvironmentIDs
+        guard receipt.version == 1, receipt.isConvergenceProof,
+              receipt.domainKey == namespace, digest(namespace),
+              receipt.rootDevice == rootDevice, receipt.rootInode == rootInode,
+              rootDevice != 0, rootInode != 0,
+              uuid(receipt.intentID), uuid(receipt.proofID), uuid(receipt.incarnation),
+              name == "closure-" + receipt.intentID + "-" + receipt.proofID + ".json",
+              receipt.holdGeneration > 0,
+              digest(receipt.ownerEvidenceFingerprint), digest(receipt.legacyRegistryFingerprint),
+              environments.count <= 2_048,
+              environments.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 512 && !$0.utf8.contains(0) && !$0.contains(where: { $0.isNewline }) }),
+              receipt.inspectedDescriptorSlots > 0, receipt.inspectedDescriptorSlots <= 16_384,
+              receipt.readOnlyMetadataDescriptors >= 0,
+              receipt.readOnlyMetadataDescriptors <= receipt.inspectedDescriptorSlots else { throw refuse() }
+        // Do NOT install this receipt in RuntimeV2RecoveryClosureAuthority.
+        // A new session still requires fresh live owner/FD/registry evidence.
+    }
+}
+
 extension RuntimeV2MaintenanceDomain {
     /// Unlike the strict single-history compatibility API, this does not pick
     /// a historical owner. Every matching history is returned and protected.
@@ -123,6 +268,7 @@ extension RuntimeV2MaintenanceDomain {
         var directories: [URL] = [], histories: [URL] = []
         var identities: [String: RuntimeV2MaintenanceLockIdentity] = [:]
         var ids = Set<String>(), pendingTargets = Set<String>(), pending = 0
+        var receiptBudget = RuntimeV2IntentlessAuthorityMetadata.Budget()
         let parentFD = open(parent.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         if parentFD >= 0 {
             var parentIdentity = stat()
@@ -182,32 +328,15 @@ extension RuntimeV2MaintenanceDomain {
                     }
                     histories.append(directory)
                 } else {
-                    // Locks alone are NOT idle/owner evidence. They join the
-                    // all-lock cohort; any journal/content without intent stays
-                    // protected as an unknown history, never silently ignored.
-                    let duplicate = dup(child)
-                    guard duplicate >= 0, let children = fdopendir(duplicate) else {
-                        if duplicate >= 0 { close(duplicate) }
-                        throw RuntimeV2MaintenanceBootstrapFailure(.historyUnreadable, rootCheck: .verified)
-                    }
-                    defer { closedir(children) }
-                    var entries = 0
-                    while true {
-                        errno = 0
-                        guard let item = readdir(children) else {
-                            guard errno == 0 else { throw RuntimeV2MaintenanceBootstrapFailure(.historyUnreadable, rootCheck: .verified) }
-                            break
-                        }
-                        let value = withUnsafePointer(to: item.pointee.d_name) {
-                            String(cString: UnsafeRawPointer($0).assumingMemoryBound(to: CChar.self))
-                        }
-                        if value == "." || value == ".." { continue }
-                        entries += 1; var lockInfo = stat()
-                        guard entries <= 2, ["admission.lock", "maintenance.lock"].contains(value),
-                              fstatat(child, value, &lockInfo, AT_SYMLINK_NOFOLLOW) == 0,
-                              lockInfo.st_mode & S_IFMT == S_IFREG, lockInfo.st_nlink == 1 else {
-                            throw RuntimeV2MaintenanceBootstrapFailure(.historyShapeUnknown, rootCheck: .verified, histories: histories.count, pending: pending)
-                        }
+                    // Service-produced convergence receipts can outlive the
+                    // history being recovered in another namespace. They are
+                    // only known metadata shape, never evidence of idleness.
+                    do {
+                        try RuntimeV2IntentlessAuthorityMetadata.validate(namespaceFD: child, namespace: name,
+                            rootDevice: device, rootInode: inode, budget: &receiptBudget)
+                    } catch {
+                        throw RuntimeV2MaintenanceBootstrapFailure(.historyShapeUnknown, rootCheck: .verified,
+                            histories: histories.count, pending: pending)
                     }
                 }
                 guard fstatat(parentFD, name, &after, AT_SYMLINK_NOFOLLOW) == 0,
@@ -312,6 +441,16 @@ final class RuntimeV2MaintenanceHistoryLocks: @unchecked Sendable {
                       UInt64(opened.st_ino) == row.identity.inode,
                       opened.st_dev == named.st_dev, opened.st_ino == named.st_ino else {
                     throw RuntimeV2MaintenanceBootstrapFailure(.historySetChanged, rootCheck: .verified)
+                }
+            }
+            var receiptBudget = RuntimeV2IntentlessAuthorityMetadata.Budget()
+            for row in directories {
+                if try RuntimeV2MaintenanceCoordinator.readHistoryIntent(directory: row.url) == nil {
+                    // Recheck beneath the actual held cohort as well. A new
+                    // unknown journal cannot arrive after discovery unnoticed.
+                    try RuntimeV2IntentlessAuthorityMetadata.validate(namespaceFD: row.fd,
+                        namespace: row.url.lastPathComponent, rootDevice: layout.rootDevice,
+                        rootInode: layout.rootInode, budget: &receiptBudget)
                 }
             }
             let fd = open(layout.parent.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)

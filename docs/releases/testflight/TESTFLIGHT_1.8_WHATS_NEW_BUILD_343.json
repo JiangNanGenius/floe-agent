@@ -1,0 +1,4 @@
+{
+  "zh-Hans": "343 内部容量修复测试：\n修复更新后“优化占用”不可用。请在数据管理中检查整理是否能启动并继续，原文件、已装软件和恢复盘应保持完整。\n\n若仍受阻，请上传日志，不要删除旧环境或重置磁盘。\n\n不提交公开TestFlight或正式App Store审核；实际回收量以设备完成结果为准。",
+  "en-US": "Build343 internal storage testing:\nFixes Optimize Storage being unavailable after an update. In Data Management, check that optimization starts and continues while preserving original files, installed software and recovery disks.\n\nIf blocked, upload diagnostics without deleting the old environment or resetting disks.\n\nNo public TestFlight or formal App Store submission. Reclaimed space depends on completed device work."
+}
