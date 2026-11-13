@@ -3,7 +3,7 @@
 
 这是带核实日期的渠道快照。各渠道独立更新；源码版本、公开下载、Apple 审核与测试组可用性分别核对。 / This is a dated channel snapshot. Source versions, public downloads, Apple review and beta-group availability are separate states.
 
-版本选择请先读[唯一版本依据](RELEASE_VERSION_AUTHORITY.zh-CN.md)：**最近核验交付为1.8.21（342），内部TestFlight可安装，GitHub／Feather严格实际读回通过。** 冻结源 `1d599f35e97b46ea5798ac07359074480fa463a5`／`v1.8.21`，详见[342交付记录](releases/builds/FLOE_1.8.21_BUILD342_DELIVERY.md)。本次未重新控制或安装M4，容量问题仍待设备复核。 / **Latest verified delivery: 1.8.21 (342), internally installable, with actual GitHub/Feather readback passed. Physical storage recovery remains unverified for build342.**
+版本选择请先读[唯一版本依据](RELEASE_VERSION_AUTHORITY.zh-CN.md)：**最近核验交付为1.8.21（342），内部TestFlight可安装，GitHub／Feather严格实际读回通过。** 冻结源 `1d599f35e97b46ea5798ac07359074480fa463a5`／`v1.8.21`，详见[342交付记录](releases/builds/FLOE_1.8.21_BUILD342_DELIVERY.md)。M4已实际安装342；更新后整理服务因关闭回执的历史识别受阻，未开始新的整理。343窄修已通过6项真实生产组件回归，设备归档进行中。 / **Latest verified delivery: 1.8.21 (342), internally installable, with actual GitHub/Feather readback passed. Build342 is installed on the M4, but bootstrap rejects retained closure receipts and no new optimization starts. Build343 has six real component passes; its device archive is in progress.**
 
 ## 2026-11-14 iOS 1.8.21（342）渠道核对 / iOS delivery snapshot
 
@@ -15,7 +15,7 @@
 | GitHub／Feather | [v1.8.21 stable/latest](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.8.21)实际unsigned IPA及在线源严格匹配；[正常发布及awaited Feather](https://github.com/JiangNanGenius/floe-agent/actions/runs/43446995796)成功。 / Actual unsigned IPA and live-feed readback passed; your signing is required. |
 | 公开TestFlight／正式App Store / Public TestFlight and App Store | 均未提交，315及331安排保持。 / Neither submitted; existing arrangements remain unchanged. |
 
-本次修旧磁盘整理作业在原盘未更换时的安全收尾，保留原盘、旧摘要、资料和软件。实际Darwin组件8方法与完整iOS归档、规范封装通过，App及19份符号已保存。342未安装到M4，不能记为真机容量验收：此前338释放约124.85GB，341整理前208.14GB为App估算、该次整理收益0；13份恢复盘保留，最终占用及342新增回收仍未知。 / This narrow repair safely closes interrupted storage work before source replacement while preserving data. Eight real Darwin-component tests and the complete iOS archive/package passed. Build342 has not been installed on the M4; physical reclaim and final usage remain unknown. The earlier124.85GB gain is not counted again.
+本次修旧磁盘整理作业在原盘未更换时的安全收尾，保留原盘、旧摘要、资料和软件。实际Darwin组件8方法与完整iOS归档、规范封装通过，App及19份符号已保存。342已在M4实测：启动时对旧关闭回执的识别失败，按钮未产生新整理作业；208.22GB为界面文件分配估算，本次新增回收0。13份恢复盘、资料和软件保留，此前338约124.85GB收益不重复计算。 / This narrow repair preserves original data. Eight real Darwin-component tests and the complete iOS archive/package passed. On the M4, build342 fails to register optimization because retained closure receipts are rejected. No new job starts or storage is reclaimed; 208.22GB is a file-allocation estimate. All recovery disks and data remain, and the earlier124.85GB gain is not counted again.
 
 ## 2026-11-13 iOS 1.8.20（341）渠道核对 / iOS delivery snapshot
 
