@@ -10,6 +10,8 @@
 
 English: The 1.0.6/code114 source adds a deny-only recovery path for an unexecuted, unrequested cleanup in a resolved local Linux automatic parent run, plus the actual POSIX shell contract. All 24 selected host cases are accounted for: 23 passed in the original run; a case-sensitive prose matcher was repaired and its single recheck passed. Production inputs matched, with the original failure retained and no skipped assertions. ARM64/APK, Samsung and fresh recording acceptance remain pending; this is not a new device or video verdict.
 
+后续实际结果：检查点 `11c241b9210837bc8eb427924fb559dd0f7dc214` 已推送并读回。native52 的 ARM64 Core／Authority 对象与链接于 211.48 秒完成，2,742 个规范输入与该提交及产后清单一致，原库与构建记录保全。首次 Full114 在启动 Gradle 前被 Office 源声明版本预检拒绝：本 App 的下载声明仍为 1.0.5。现仅更新两份发行声明 JSON 的 1.0.6 标签／URL及其关联内容摘要，固定上游来源、实际引擎、其余覆盖操作、许可和原生输入不变；原版源码预检的 208 项检查通过。首次零 APK 的失败保留，新 Full、三星和录像尚待实际执行；最终公开标签及源码附件仍须独立读回，声明更新不冒充已经发布。
+
 ## 五项三星闭环，1.0.5 发行与新录像（2026-11-13）
 
 本批应用固定源码为 `d0c085f9ddda28e1d9a125389a020f618892d408`；Android 代码检查点 `0f2a0f5fc7013dc0a261bc9cd8dec04f151cde0f`、`3b9acf6e127020691ca56db95948448c029f4142` 已进入该快照。当前实际安装的是 Full08：1.0.5／113，166,427,659 字节，SHA-256 `61c29e8d182249f9493010ff50dddfba54271e02234d08649391ed69a91802f7`。主应用／运行组件字节与原 UID 保留均已读回；这是保留数据的同版本 ADB 修复安装，不是新的在线升级验收。
