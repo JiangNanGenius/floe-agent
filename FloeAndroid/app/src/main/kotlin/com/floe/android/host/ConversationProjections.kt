@@ -1704,6 +1704,10 @@ internal object ConversationWire {
          * null = a legacy page without the member (never retirement
          * authority). */
         val pendingInputsTruncated: Boolean? = null,
+        /** Additive durable facts; legacy pages keep honest absence. */
+        val conversationModeRaw: String? = null,
+        val durableTerminal: Boolean? = null,
+        val terminalDispositionRaw: String? = null,
     )
 
     class PendingApprovalWire(

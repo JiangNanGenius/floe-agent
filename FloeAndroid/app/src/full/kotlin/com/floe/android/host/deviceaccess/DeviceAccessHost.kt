@@ -4124,7 +4124,7 @@ internal class DeviceAccessHost(
         armingOwner = owner
         val armRevision = phoneControlRevision.get()
         bindPhoneCall(call)
-        try {
+        return try {
             val screenAllowed = screenShare.allows(
                 owner, call.epoch, ownerRunLive = isOwnerRunLive(owner),
             )
@@ -4198,7 +4198,7 @@ internal class DeviceAccessHost(
                 "Device control was stopped by the user; allow it again in Settings",
             )
         }
-        if (armedOwner != ownerOf(call) || armedBackend?.backend != source.backend) {
+        if (armedOwner != ownerOf(call) || armedBackend != source.backend) {
             publish()
             return PlatformToolOutcome.Failure(
                 "device_arm_required",

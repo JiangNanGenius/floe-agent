@@ -58,7 +58,7 @@ import com.floe.android.feature.conversation.ChecklistPresentationRules
 import com.floe.android.feature.conversation.asCurrentChecklistUi
 import com.floe.android.host.notification.RunTerminalNoticeKind
 import com.floe.android.host.notification.RunTerminalNoticePolicy
-import com.floe.android.host.notification.RunTerminalNotifications
+import com.floe.android.host.notification.TaskResultNotifications
 import com.floe.android.host.questions.UserQuestionHostController
 import com.floe.android.host.voice.C03DictationSink
 import com.floe.android.host.voice.C03StartOutcome
@@ -1548,7 +1548,7 @@ class ConversationHostController internal constructor(
             return
         }
         val context = host.appContextOrNull ?: return
-        val foreground = RunTerminalNotifications.appIsForeground(context)
+        val foreground = TaskResultNotifications.appIsForeground(context)
         val allowed = RunTerminalNoticePolicy.shouldPost(
             kind = kind,
             policyRaw = entry.holder.snapshot.value?.taskNotificationPolicyRaw,
@@ -4531,7 +4531,8 @@ class ConversationHostController internal constructor(
             }
             if (decision is com.floe.android.feature.conversation.PlanExecutionHandoffRules.Decision.Proceed) {
                 dispatchPlanAccept(
-                    entry = current, session = session, row = row, planId = planId,
+                    entry = current, session = session,
+                    row = HostRevision(row.resourceID, row.version), planId = planId,
                     planRevision = planRevision, planDigest = planDigest, execution = execution,
                     modelId = modelId, providerId = providerId, foregroundLaunch = foregroundLaunch,
                 )

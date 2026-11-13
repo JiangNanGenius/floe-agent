@@ -120,6 +120,7 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
         val connectionLock = Mutex()
         val settlementLock = Mutex()
         private var settledProof: String? = null
+        suspend fun hasSettledProof(): Boolean = settlementLock.withLock { settledProof != null }
         val stop = AtomicBoolean()
         private val tracedStopTargets = ConcurrentHashMap.newKeySet<Stage>()
         @Volatile var sessionID: String? = null
@@ -959,7 +960,7 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
         }
         // The awaited receipt may have let another observer finish this exact
         // session. Never close a second time; ending the watcher is enough.
-        if (owned.finished.get() || work[owned.controlID] !== owned) return true
+        if (owned.hasSettledProof() || work[owned.controlID] !== owned) return true
         val admitted = owned.runtimeGeneration ?: return false
         val current = observed.optString("runtimeBootToken").takeIf { it.isNotEmpty() }
         if (!canRetireByGeneration(admitted, current,
