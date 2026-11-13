@@ -5,8 +5,7 @@ import FloeMeetings
 
 extension MeetingProjectSession {
     var visibleRecordings: [CaptureSessionSnapshot] {
-        let internalSessions = Set(liveTranscription?.chunks.compactMap(\.analysisSessionID) ?? [])
-        return recordings.filter { !internalSessions.contains($0.id) }
+        recordings.filter { !isAnalysisCapture($0) }
     }
     func configureLiveTranscription(resumeUnfinished: Bool = false) {
         liveTranscription?.configure(enabled: intelligence.liveTranscription != false,
@@ -118,6 +117,7 @@ extension MeetingProjectSession {
     }
     /// Host deletion/explicit-stop seam. Closing the editor does not call it.
     func stopOwnedProcessing() async -> Bool {
+        await stopPlaybackAndWait()
         let previousProcessing = cancelAnalysisForOwnedStop(), previousSummary = rollingSummaryTask
         rollingSummaryGeneration = UUID()
         previousSummary?.cancel(); rollingSummaryTask = nil; isUpdatingMinutes = false

@@ -1362,6 +1362,9 @@ final class ThreadDetailViewModel: ObservableObject {
                     executionMode: executionMode,
                     attachments: launchAttachments
                 )
+                if executionMode == .goal {
+                    finishExecutionComposerSetup(selection: modeSelectionAtSend)
+                }
                 if let commit, sendOriginAllowsDraftMutation(sendOrigin) {
                     consumeSentDraft(commit)
                 }

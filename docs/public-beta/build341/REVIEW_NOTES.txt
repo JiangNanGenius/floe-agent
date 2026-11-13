@@ -1,0 +1,4 @@
+Floe Agent 1.8.20 (341) — candidate copy, not frozen or published.
+Focused recording/media and legacy-environment recovery repairs. Exact final source scope remains subject to Root review; unfinished History/GoalSteer copy is deliberately not advertised here.
+Existing internal Floe QA, unsigned GitHub stable/latest and awaited Feather only. No public TestFlight, new groups, account permission expansion or formal App Store changes. Preserve340,315 and withdrawn331.
+Physical microphone/cloud transcription and actual completed storage reclaim must be described by real device results, not compilation or prepared fixtures.

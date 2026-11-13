@@ -1,0 +1,4 @@
+{
+  "zh-Hans": "341 内部修复测试：\n请检查会议页的录音按钮和素材入口；暂停、继续录音后能否按一次录音从头到尾播放和拖动，且转写与原片保持正确对应。\n\n请检查旧环境迁移后整理记录与恢复进度是否正确，原文件、软件和恢复盘是否保持完整。\n\n请检查运行中以“引导”发送目标：目标卡应出现，输入框应切回智能体；停止时只暂停对应的目标。\n\n本轮不提交公开TestFlight或正式App Store审核；不承诺全部容量已经释放。",
+  "en-US": "Build341 internal repair testing:\nCheck the meeting recording controls and media entry. After pausing and resuming, verify full-recording playback and seeking, with transcripts correctly linked to original audio.\n\nCheck cleanup records and recovery progress after legacy-environment migration, preserving existing files, software and recovery disks.\n\nCheck Goal mode with guidance during a running task: the Goal card appears, the composer returns to Agent mode, and Stop pauses only the corresponding Goal.\n\nNo public TestFlight or formal App Store submission. This does not promise that all capacity has been reclaimed."
+}

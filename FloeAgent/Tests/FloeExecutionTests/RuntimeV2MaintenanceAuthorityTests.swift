@@ -805,6 +805,150 @@ final class RuntimeV2MaintenanceAuthorityTests: XCTestCase {
         await use.release()
     }
 
+    func testAllHistoriesHoldOriginalLocksAndGateUntilLastContextResolves() async throws {
+        let fixture = try MultiHistoryFixture(parent: root); defer { fixture.cleanup() }
+        let box = EvidenceBox(cleanEvidence(for: fixture.domain))
+        let layout = try fixture.domain.authorityHistoryLayout()
+        let owner = try RuntimeV2MaintenanceCoordinator(domain: fixture.domain,
+            stateDirectory: layout.primaryDirectory, evidenceProvider: { box.value }, historyLayout: layout)
+        RuntimeV2RecoveryAdmission.installSyntheticDomainForTests(domain: fixture.domain,
+            stateDirectory: layout.primaryDirectory, historyLayout: owner.historyLayout)
+        let visits = HistoryVisits()
+        await owner.installRecoveryHandler { record in
+            let context = try? await owner.recoveryStorageDirectory(intentID: record.intentID, holdGeneration: record.holdGeneration)
+            XCTAssertEqual(context, fixture.directories[record.intentID])
+            let snapshot = try? RuntimeV2RecoveryAdmission.snapshot(root: fixture.domain.root)
+            XCTAssertEqual(snapshot?.intentID, record.intentID)
+            for directory in fixture.directories.values {
+                let fd = open(directory.appendingPathComponent("maintenance.lock").path, O_RDWR | O_NOFOLLOW)
+                guard fd >= 0 else { XCTFail("original namespace lock missing"); return .unresolved("fixture") }
+                XCTAssertNotEqual(flock(fd, LOCK_EX | LOCK_NB), 0, "Every original lock must remain held, including the other history")
+                close(fd)
+            }
+            do { _ = try RuntimeV2RecoveryAdmission.acquire(root: fixture.domain.root); XCTFail("gate opened between histories") }
+            catch {}
+            visits.append(record.intentID)
+            return .resolved
+        }
+        let report = await owner.recoverIfNeeded()
+        XCTAssertEqual(report.outcome, .resolved)
+        XCTAssertEqual(Set(visits.values), Set(fixture.directories.keys)); XCTAssertEqual(visits.values.count, 2)
+        for directory in fixture.directories.values {
+            let record = try XCTUnwrap(RuntimeV2MaintenanceCoordinator.readHistoryIntent(directory: directory))
+            XCTAssertEqual(record.phase, .resolved)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: directory.appendingPathComponent("origin-sentinel.json").path))
+        }
+        let use = try RuntimeV2RecoveryAdmission.acquire(root: fixture.domain.root)
+        XCTAssertNotNil(use); use?.release()
+        // An unaware new optimizer cannot bypass history lookup and reach Core.
+        let claim = try await owner.acquireExclusiveMaintenance(.init(owner: "synthetic-new", reason: "synthetic-history-lookup"))
+        do { try await claim.markCommitting(); XCTFail("all protected history contexts must be consulted before mutation") }
+        catch RuntimeV2MaintenanceError.claimNotCommitEligible {}
+        let contexts = try await owner.completedStorageDirectories(intentID: claim.intentID, holdGeneration: claim.holdGeneration)
+        XCTAssertEqual(Set(contexts), Set(layout.directories))
+        try await claim.abortAndRelease(reason: "synthetic lookup complete; no bytes touched")
+        await owner.installRecoveryHandler(nil)
+    }
+
+    func testBusyOriginalHistoryBlocksWholeCohortBeforeAnyHandler() async throws {
+        let fixture = try MultiHistoryFixture(parent: root); defer { fixture.cleanup() }
+        let layout = try fixture.domain.authorityHistoryLayout()
+        let box = EvidenceBox(cleanEvidence(for: fixture.domain))
+        let owner = try RuntimeV2MaintenanceCoordinator(domain: fixture.domain,
+            stateDirectory: layout.primaryDirectory, evidenceProvider: { box.value }, historyLayout: layout)
+        RuntimeV2RecoveryAdmission.installSyntheticDomainForTests(domain: fixture.domain,
+            stateDirectory: layout.primaryDirectory, historyLayout: owner.historyLayout)
+        let heldDirectory = try XCTUnwrap(fixture.directories[fixture.secondID])
+        let fd = open(heldDirectory.appendingPathComponent("maintenance.lock").path, O_CREAT | O_RDWR | O_NOFOLLOW, 0o600)
+        guard fd >= 0 else { return XCTFail("fixture lock open") }; defer { close(fd) }
+        XCTAssertEqual(flock(fd, LOCK_EX | LOCK_NB), 0)
+        let visits = HistoryVisits()
+        await owner.installRecoveryHandler { record in visits.append(record.intentID); return .resolved }
+        let blocked = await owner.recoverIfNeeded()
+        XCTAssertEqual(blocked.outcome, .blocked); XCTAssertTrue(visits.values.isEmpty)
+        for (id, directory) in fixture.directories {
+            XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent("intent.json")), fixture.originals[id])
+        }
+        await owner.installRecoveryHandler(nil)
+    }
+
+    func testPartialHistoryResolutionRetriesOnlyRemainingOriginalContext() async throws {
+        let fixture = try MultiHistoryFixture(parent: root); defer { fixture.cleanup() }
+        let box = EvidenceBox(cleanEvidence(for: fixture.domain))
+        let layout = try fixture.domain.authorityHistoryLayout()
+        let owner = try RuntimeV2MaintenanceCoordinator(domain: fixture.domain,
+            stateDirectory: layout.primaryDirectory, evidenceProvider: { box.value }, historyLayout: layout)
+        RuntimeV2RecoveryAdmission.installSyntheticDomainForTests(domain: fixture.domain,
+            stateDirectory: layout.primaryDirectory, historyLayout: owner.historyLayout)
+        await owner.installRecoveryHandler { record in
+            do { _ = try await owner.recoveryStorageDirectory(intentID: record.intentID, holdGeneration: record.holdGeneration) }
+            catch { return .unresolved("context") }
+            return record.intentID == fixture.secondID ? .unresolved("synthetic undecided S/T") : .resolved
+        }
+        let first = await owner.recoverIfNeeded()
+        XCTAssertEqual(first.outcome, .blocked)
+        let secondDirectory = try XCTUnwrap(fixture.directories[fixture.secondID])
+        XCTAssertEqual(try Data(contentsOf: secondDirectory.appendingPathComponent("intent.json")), fixture.originals[fixture.secondID])
+        do { _ = try RuntimeV2RecoveryAdmission.acquire(root: fixture.domain.root); XCTFail("unresolved history must keep whole domain closed") }
+        catch {}
+        await owner.installRecoveryHandler(nil)
+        let reloaded = try fixture.domain.authorityHistoryLayout()
+        let restart = try RuntimeV2MaintenanceCoordinator(domain: fixture.domain,
+            stateDirectory: reloaded.primaryDirectory, evidenceProvider: { box.value }, historyLayout: reloaded)
+        let visits = HistoryVisits()
+        await restart.installRecoveryHandler { record in
+            do {
+                let context = try await restart.recoveryStorageDirectory(intentID: record.intentID, holdGeneration: record.holdGeneration)
+                XCTAssertEqual(context, secondDirectory)
+            } catch { return .unresolved("context") }
+            visits.append(record.intentID); return .resolved
+        }
+        let final = await restart.recoverIfNeeded()
+        XCTAssertEqual(final.outcome, .resolved); XCTAssertEqual(visits.values, [fixture.secondID])
+        await restart.installRecoveryHandler(nil)
+    }
+
+    func testUnclaimedContextCannotResolveAndTypedDiscoveryNeverLogsIdentity() async throws {
+        let fixture = try MultiHistoryFixture(parent: root); defer { fixture.cleanup() }
+        do { _ = try fixture.domain.authorityStateDirectory(); XCTFail("single-history default stays strict") }
+        catch let failure as RuntimeV2MaintenanceBootstrapFailure {
+            XCTAssertEqual(failure.code, .historiesAmbiguous); XCTAssertEqual(failure.rootCheck, .verified)
+            XCTAssertEqual(failure.histories, 2)
+            XCTAssertFalse(failure.diagnosticText.contains(fixture.domain.root.path))
+            let identity = try RuntimeV2DiskIdentity.read(at: fixture.domain.root)
+            XCTAssertFalse(failure.diagnosticText.contains("inode=\(identity.inode)"))
+        }
+        let box = EvidenceBox(cleanEvidence(for: fixture.domain)); let layout = try fixture.domain.authorityHistoryLayout()
+        let owner = try RuntimeV2MaintenanceCoordinator(domain: fixture.domain,
+            stateDirectory: layout.primaryDirectory, evidenceProvider: { box.value }, historyLayout: layout)
+        RuntimeV2RecoveryAdmission.installSyntheticDomainForTests(domain: fixture.domain,
+            stateDirectory: layout.primaryDirectory, historyLayout: owner.historyLayout)
+        await owner.installRecoveryHandler { _ in .resolved } // deliberately old/unaware handler
+        let report = await owner.recoverIfNeeded()
+        XCTAssertEqual(report.outcome, .blocked)
+        for (id, directory) in fixture.directories {
+            XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent("intent.json")), fixture.originals[id])
+        }
+        await owner.installRecoveryHandler(nil)
+        let visits = HistoryVisits()
+        await owner.installRecoveryHandler { record in visits.append(record.intentID); return .resolved }
+        let added = fixture.domain.root.deletingLastPathComponent().appendingPathComponent("MaintenanceAuthority/" + String(repeating: "c", count: 64))
+        try FileManager.default.createDirectory(at: added, withIntermediateDirectories: false)
+        let changed = await owner.recoverIfNeeded()
+        XCTAssertEqual(changed.outcome, .blocked); XCTAssertTrue(visits.values.isEmpty,
+            "A namespace added after discovery must fail before invoking any handler")
+        await owner.installRecoveryHandler(nil)
+        let directory = try XCTUnwrap(fixture.directories[fixture.secondID])
+        var wrong = try XCTUnwrap(RuntimeV2MaintenanceCoordinator.readHistoryIntent(directory: directory))
+        wrong.domainInode = (wrong.domainInode ?? 0) + 1
+        let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(wrong).write(to: directory.appendingPathComponent("intent.json"))
+        do { _ = try fixture.domain.authorityHistoryLayout(); XCTFail("different physical identity must remain blocked") }
+        catch let failure as RuntimeV2MaintenanceBootstrapFailure {
+            XCTAssertEqual(failure.code, .rootIdentityMismatch); XCTAssertEqual(failure.rootCheck, .mismatch)
+        }
+    }
+
     // MARK: - Evidence helpers
 
     private func cleanEvidence() -> RuntimeV2MaintenanceOwnerEvidence {
@@ -901,5 +1045,59 @@ private actor EvidenceGate {
         let waiters = releaseWaiters
         releaseWaiters.removeAll()
         for waiter in waiters { waiter.resume() }
+    }
+}
+
+// Synthetic coordinator fixtures only. These do not certify Core convergence
+// or contain any device/container identifiers, disk bodies or real metadata.
+private final class HistoryVisits: @unchecked Sendable {
+    private let lock = NSLock()
+    private var items: [String] = []
+    func append(_ value: String) { lock.withLock { items.append(value) } }
+    var values: [String] { lock.withLock { items } }
+}
+
+private final class MultiHistoryFixture: @unchecked Sendable {
+    let work: URL
+    let domain: RuntimeV2MaintenanceDomain
+    let directories: [String: URL]
+    let originals: [String: Data]
+    let secondID: String
+    init(parent: URL) throws {
+        let work = parent.appendingPathComponent("synthetic-multi-" + UUID().uuidString)
+        let root = work.appendingPathComponent("Runtime/v2")
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("recovery/quarantine"), withIntermediateDirectories: true)
+        let domain = try RuntimeV2MaintenanceDomain(trustedLegacyRoot: root)
+        let physical = try RuntimeV2DiskIdentity.read(at: domain.root)
+        // A newer launch already created an empty current path-hash namespace.
+        // It must join the barrier, never hide either pending old namespace.
+        let empty = domain.root.deletingLastPathComponent().appendingPathComponent("MaintenanceAuthority/" + domain.domainKey, isDirectory: true)
+        try FileManager.default.createDirectory(at: empty, withIntermediateDirectories: true)
+        try Data().write(to: empty.appendingPathComponent("admission.lock"))
+        var directories: [String: URL] = [:], originals: [String: Data] = [:], ids: [String] = []
+        for (index, name) in [String(repeating: "a", count: 64), String(repeating: "b", count: 64)].enumerated() {
+            let directory = domain.root.deletingLastPathComponent().appendingPathComponent("MaintenanceAuthority/" + name, isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let relative = "recovery/quarantine/runtime-vm-synthetic-\(index)/disk.img"
+            let file = domain.root.appendingPathComponent(relative)
+            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data("synthetic-\(index)".utf8).write(to: file)
+            let record = RuntimeV2MaintenanceIntentRecord(intentID: UUID().uuidString,
+                holdGeneration: UInt64(index + 2), phase: index == 0 ? .recovering : .committing,
+                owner: "synthetic-recovery", reason: "synthetic-history",
+                createdAt: Date(), updatedAt: Date(), domainRoot: domain.root.path,
+                domainDevice: physical.device, domainInode: physical.inode,
+                targetRelativePath: relative, targetIdentity: try RuntimeV2DiskIdentity.read(at: file))
+            let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+            let bytes = try encoder.encode(record)
+            try bytes.write(to: directory.appendingPathComponent("intent.json"))
+            try Data("{\"synthetic_provenance\":true}".utf8).write(to: directory.appendingPathComponent("origin-sentinel.json"))
+            directories[record.intentID] = directory; originals[record.intentID] = bytes; ids.append(record.intentID)
+        }
+        self.work = work; self.domain = domain; self.directories = directories; self.originals = originals; self.secondID = ids[1]
+    }
+    func cleanup() {
+        RuntimeV2MaintenanceRegistry.unregister(domainRoot: domain.root)
+        try? FileManager.default.removeItem(at: work)
     }
 }

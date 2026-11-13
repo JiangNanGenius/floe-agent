@@ -44,6 +44,19 @@ struct CaptureSessionRecord: Codable, FetchableRecord, PersistableRecord {
     /// Analysis sessions imported from one original capture record that
     /// original's id here (trusted lineage; nil for standalone imports).
     var originSessionID: String? = nil
+    var recordingID: String? = nil
+    var partOrdinal: Int? = nil
+    var displayName: String? = nil
+}
+
+/// Project-owned recording grouping; shares the meeting database and cascade.
+struct MeetingRecordingRecord: Codable, FetchableRecord, PersistableRecord {
+    static let databaseTableName = "recording_takes"
+    var id: String
+    var meetingID: String
+    var state: String
+    var createdAt: Date
+    var updatedAt: Date
 }
 
 // MARK: - Speakers
@@ -314,6 +327,38 @@ public actor MeetingDatabase {
                 table.add(column: "liveKey", .text)
             }
             try db.create(index: "transcript_segments_livekey", on: "transcript_segments", columns: ["meetingID", "liveKey"])
+        }
+        migrator.registerMigration("v7-recording-materials") { db in
+            try db.create(table: "recording_takes") { table in
+                table.column("id", .text).primaryKey()
+                table.column("meetingID", .text).notNull().indexed()
+                    .references("meetings", onDelete: .cascade)
+                table.column("state", .text).notNull()
+                table.column("createdAt", .datetime).notNull()
+                table.column("updatedAt", .datetime).notNull()
+            }
+            try db.alter(table: "capture_sessions") { table in
+                table.add(column: "recordingID", .text).references("recording_takes", onDelete: .setNull)
+                table.add(column: "partOrdinal", .integer)
+                table.add(column: "displayName", .text)
+            }
+            try db.execute(sql: "CREATE UNIQUE INDEX capture_sessions_recording_part ON capture_sessions(recordingID, partOrdinal)")
+            // One old live original becomes one take. An analysis child must
+            // never be promoted, and timing cannot establish a pause relation.
+            try db.execute(sql: """
+                INSERT INTO recording_takes(id, meetingID, state, createdAt, updatedAt)
+                SELECT capture_sessions.id, capture_sessions.meetingID,
+                       CASE WHEN capture_sessions.state IN ('pending', 'capturing', 'stopping')
+                            THEN 'recording' ELSE 'finished' END,
+                       COALESCE(capture_sessions.startedAt, capture_sessions.endedAt, meetings.createdAt),
+                       COALESCE(capture_sessions.endedAt, capture_sessions.startedAt, meetings.updatedAt)
+                FROM capture_sessions JOIN meetings ON meetings.id = capture_sessions.meetingID
+                WHERE capture_sessions.kind = 'liveRecording' AND capture_sessions.originSessionID IS NULL
+                """)
+            try db.execute(sql: """
+                UPDATE capture_sessions SET recordingID = id, partOrdinal = 0
+                WHERE kind = 'liveRecording' AND originSessionID IS NULL
+                """)
         }
         try migrator.migrate(pool)
     }

@@ -105,6 +105,16 @@ struct MeetingProjectView: View {
                                   showsSectionPicker: false, available: geometry.size.width)
                     }
                 }
+                if session.preparingRecordingID != nil {
+                    HStack(spacing: 10) {
+                        ProgressView()
+                        Text(t("正在准备连续回放", "Preparing continuous playback"))
+                            .font(.callout).lineLimit(2)
+                        Spacer(minLength: 4)
+                        Button(t("取消", "Cancel")) { session.stopPlayback() }.frame(minHeight: 44)
+                    }.padding(.horizontal, 12).background(.bar)
+                        .accessibilityIdentifier("meeting.playback.preparing")
+                }
                 if let player = session.player {
                     MeetingAudioPlaybackView(player: player, title: playbackTitle,
                         onClose: { session.stopPlayback() })
@@ -145,7 +155,7 @@ struct MeetingProjectView: View {
                             compactInput: compactInput, wideSplit: wide,
                             notesWidth: notesWidth, sideWidth: sideWidth,
                             showsPlayer: session.player != nil, recording: session.isRecording,
-                            savedRecordingCount: session.visibleRecordings.count,
+                            savedRecordingCount: session.recordingMaterials.count,
                             transcriptBubbles: session.displayTranscriptBubbles.count)
                             .frame(width: 0, height: 0).accessibilityHidden(true)
                     }
@@ -172,6 +182,7 @@ struct MeetingProjectView: View {
                     .accessibilityValue(showsInspector ? t("已显示", "Shown") : t("已隐藏", "Hidden"))
                     .accessibilityIdentifier("meeting.inspector.toggle")
             }
+            materialsButton
             meetingActionsMenu
         }
         .font(.subheadline)
@@ -208,6 +219,7 @@ struct MeetingProjectView: View {
                     }
                 }
             }
+            materialsButton.labelStyle(.iconOnly)
             meetingActionsMenu
         }
         .font(.callout).padding(.horizontal, 12).frame(minHeight: 48).background(.bar)
@@ -277,6 +289,15 @@ struct MeetingProjectView: View {
         if section == 0 { compactNotes = true }
         else { compactNotes = false; inspector = section - 1; showsInspector = true }
     }
+    private var materialsButton: some View {
+        Button { recordings = true } label: {
+            Label(t("录音", "Recordings"), systemImage: "waveform")
+                .lineLimit(1).frame(minHeight: 44)
+        }
+        .accessibilityLabel(t("录音与素材", "Recordings and media"))
+        .accessibilityValue(String(session.recordingMaterials.count))
+        .accessibilityIdentifier("meeting.recordings.open")
+    }
     @ViewBuilder private var meetingActionsMenu: some View {
         Menu {
             Text(session.meeting.createdAt.formatted(date: .abbreviated, time: .omitted))
@@ -284,10 +305,9 @@ struct MeetingProjectView: View {
                 Text(t("\(session.speakers.count) 位发言人", "\(session.speakers.count) speakers"))
             }
             Divider()
-            Button(t("录音与素材", "Recordings and media"), systemImage: "waveform") { recordings = true }
             Button(t("标记重点", "Mark moment"), systemImage: "bookmark") { Task { await session.addMarker() } }
                 .disabled(!session.isRecording && session.playingSession == nil)
-            Button(t("导入音视频", "Import audio or video"), systemImage: "square.and.arrow.down") { importing = true }
+            Button(t("导入音视频", "Import audio or video"), systemImage: "plus") { importing = true }
             Button(t("会议设置", "Meeting settings"), systemImage: "slider.horizontal.3") { settings = true }
             templatesMenu
             exportMenu
@@ -498,28 +518,16 @@ struct MeetingProjectView: View {
             Divider()
             TimelineView(.periodic(from: .now, by: 1)) { context in
                 let presentation = capturePresentation(now: context.date)
-                HStack(alignment: .center, spacing: 12) {
-                    captureStatus(presentation)
-                    Spacer(minLength: 8)
-                    HStack(spacing: 4) {
-                        recorderButton(t("录音与素材", "Recordings and media"), systemImage: "waveform",
-                            identifier: "meeting.recorder.media") { recordings = true }
-                        if session.isRecording {
-                            recorderButton(t("暂停", "Pause"), systemImage: "pause",
-                                identifier: "meeting.record.pause") { Task { await session.pauseRecording() } }
-                            recorderButton(t("结束录音", "Finish recording"), systemImage: "stop.fill",
-                                identifier: "meeting.record.stop", prominent: true, tint: .red) { Task { await session.stopRecording() } }
-                        } else if session.isPaused {
-                            recorderButton(t("继续录音", "Resume recording"), systemImage: "record.circle",
-                                identifier: "meeting.record", prominent: true) { Task { await session.startRecording() } }
-                            recorderButton(t("结束录音", "Finish recording"), systemImage: "stop.fill",
-                                identifier: "meeting.record.stop") { finishPausedRecording() }
-                        } else {
-                            recorderButton(t("开始录音", "Start recording"), systemImage: "record.circle",
-                                identifier: "meeting.record", prominent: true) { Task { await session.startRecording() } }
-                        }
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .center, spacing: 16) {
+                        captureStatus(presentation).frame(minWidth: 170, alignment: .leading)
+                        Spacer(minLength: 8)
+                        recordingControls
                     }
-                    .disabled(session.changingCapture)
+                    VStack(alignment: .leading, spacing: 10) {
+                        captureStatus(presentation)
+                        HStack { recordingControls; Spacer(minLength: 0) }
+                    }
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
@@ -533,6 +541,41 @@ struct MeetingProjectView: View {
         .background(.bar)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("meeting.recorder")
+    }
+    private var recordingControls: some View {
+        HStack(spacing: 10) {
+            if session.isRecording {
+                Button { Task { await session.pauseRecording() } } label: {
+                    Label(t("暂停", "Pause"), systemImage: "pause.fill")
+                }.buttonStyle(.bordered).accessibilityIdentifier("meeting.record.pause")
+                primaryRecordingButton(t("结束录音", "Finish recording"), icon: "stop.fill",
+                    identifier: "meeting.record.stop") { Task { await session.stopRecording() } }
+            } else if session.isPaused {
+                primaryRecordingButton(t("继续录音", "Resume recording"), icon: "mic.fill",
+                    identifier: "meeting.record") { Task { await session.startRecording() } }
+                Button(t("结束", "Finish")) { finishPausedRecording() }
+                    .buttonStyle(.bordered).accessibilityIdentifier("meeting.record.stop")
+            } else {
+                primaryRecordingButton(t("开始录音", "Start recording"), icon: "mic.fill",
+                    identifier: "meeting.record") { Task { await session.startRecording() } }
+                if let latest = session.recordingMaterials.first(where: { $0.isLive && $0.canPlay }) {
+                    Button { session.play(latest) } label: {
+                        Label(t("回放", "Play recording"), systemImage: "play.fill")
+                    }.buttonStyle(.bordered).accessibilityIdentifier("meeting.recording.playLatest")
+                }
+            }
+        }
+        .controlSize(.large)
+        .font(.subheadline.weight(.semibold))
+        .lineLimit(1).minimumScaleFactor(0.85)
+        .frame(minHeight: 44)
+        .disabled(session.changingCapture)
+    }
+    private func primaryRecordingButton(_ title: String, icon: String, identifier: String,
+                                        action: @escaping () -> Void) -> some View {
+        Button(action: action) { Label(title, systemImage: icon).frame(minHeight: 28) }
+            .buttonStyle(.borderedProminent).tint(.red)
+            .accessibilityIdentifier(identifier)
     }
     private func captureStatus(_ presentation: MeetingCapturePresentation) -> some View {
         HStack(spacing: 10) {
@@ -594,99 +637,173 @@ struct MeetingProjectView: View {
             ProgressView().controlSize(.small).frame(width: 20, height: 20)
                 .accessibilityHidden(true)
         case .ready:
-            Image(systemName: "mic.circle").font(.title3).foregroundStyle(.secondary)
-                .frame(width: 20, height: 20).accessibilityHidden(true)
+            if session.recordingMaterials.contains(where: { $0.isLive && $0.canPlay }) {
+                Image(systemName: "checkmark.circle.fill").font(.title3).foregroundStyle(.green)
+                    .frame(width: 20, height: 20).accessibilityHidden(true)
+            } else {
+                Image(systemName: "mic.circle").font(.title3).foregroundStyle(.secondary)
+                    .frame(width: 20, height: 20).accessibilityHidden(true)
+            }
         }
     }
     private var recordingSheet: some View {
         NavigationStack {
             List {
-                if let diagnostic = session.diagnostic {
-                    Section {
-                        Text(diagnostic).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                        Button(t("清除提示", "Clear message")) { session.diagnostic = nil }
-                    } header: { Text(t("需要处理", "Needs attention")) }
+                if session.recordingMaterials.isEmpty {
+                    ContentUnavailableView {
+                        Label(t("还没有录音", "No recordings yet"), systemImage: "waveform")
+                    } description: {
+                        Text(t("开始一次录音，或导入已有音视频。", "Start a recording or import existing audio or video."))
+                    } actions: {
+                        Button(t("开始录音", "Start recording"), systemImage: "mic.fill") {
+                            recordings = false; Task { await session.startRecording() }
+                        }.buttonStyle(.borderedProminent).tint(.red)
+                    }
+                }
+                let live = session.recordingMaterials.filter(\.isLive)
+                if !live.isEmpty {
+                    Section(t("录音", "Recordings")) {
+                        ForEach(live) { material in recordingRow(material) }
+                    }
+                }
+                let imported = session.recordingMaterials.filter { !$0.isLive }
+                if !imported.isEmpty {
+                    Section(t("导入的素材", "Imported media")) {
+                        ForEach(imported) { material in recordingRow(material) }
+                    }
                 }
                 Section {
-                    if session.isRecording {
+                    if session.isRecording || session.isPaused {
                         Button(role: .destructive) {
-                            Task { await session.stopRecording() }
-                        } label: {
-                            Label(t("结束录音", "Finish recording"), systemImage: "stop.fill")
-                        }
-                        .accessibilityIdentifier("meeting.recordings.stop")
+                            if session.isRecording { Task { await session.stopRecording() } }
+                            else { finishPausedRecording() }
+                        } label: { Label(t("结束录音", "Finish recording"), systemImage: "stop.fill") }
+                            .frame(minHeight: 44).disabled(session.changingCapture)
+                            .accessibilityIdentifier("meeting.recordings.stop")
                     }
-                    Button(t("导入音视频", "Import audio or video"), systemImage: "square.and.arrow.down") {
+                    Button(t("导入音视频", "Import audio or video"), systemImage: "plus") {
                         recordings = false; importing = true
-                    }
+                    }.frame(minHeight: 44)
                     if session.isProcessing {
                         ProgressView(value: session.progress) { Text(t("正在转写录音", "Transcribing recording")) }
-                        Button(t("停止转写", "Stop transcription")) { session.cancelProcessing() }
+                        Button(t("停止转写", "Stop transcription")) { session.cancelProcessing() }.frame(minHeight: 44)
                     }
                 }
-                Section(t("录音", "Recordings")) {
-                    if session.visibleRecordings.isEmpty {
-                        Text(t("还没有录音。可以导入音视频，或在这里开始一段新录音。",
-                               "No recordings yet. Import audio or video, or start a new recording here."))
-                            .font(.callout).foregroundStyle(.secondary)
-                    }
-                    ForEach(session.visibleRecordings) { recording in
-                        VStack(alignment: .leading, spacing: 10) {
-                            HStack(spacing: 8) {
-                                Label(recording.sourceFile.map { URL(fileURLWithPath: $0).lastPathComponent }
-                                      ?? t("现场录音", "Recording"), systemImage: "waveform")
-                                    .lineLimit(1)
-                                Spacer(minLength: 4)
-                                Text(recordingStateLabel(recording.state))
-                                    .font(.caption)
-                                    .foregroundStyle(recording.state == .stopped ? Color.secondary : Color.red)
-                            }
-                            if let seconds = recording.durationSeconds {
-                                Text(time(seconds)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                            }
-                            HStack(spacing: 4) {
-                                Button(t("播放", "Play")) { session.play(recording); recordings = false }
-                                    .disabled(session.isRecording)
-                                Button(t("转写", "Transcribe")) {
-                                    session.transcribe(recording); inspector = 0; compactNotes = false
-                                }.disabled(session.isProcessing || session.isRecording)
-                                if let file = try? session.mediaFile(for: recording) {
-                                    ShareLink(item: file) { Text(t("导出原片", "Export source")) }
-                                }
-                                Spacer(minLength: 0)
-                            }
-                            .font(.callout)
-                            .disabled(recording.state != .stopped)
-                        }.padding(.vertical, 6)
-                    }
-                }
-                if let live = session.liveTranscription, !live.chunks.isEmpty || live.diagnostic != nil {
-                    Section(t("实时转写", "Live transcription")) {
-                        if live.requiresRetry || (!live.enabled && live.unfinishedCount > 0) {
+                if let live = session.liveTranscription, live.requiresRetry || live.isWorking {
+                    Section(t("转写", "Transcription")) {
+                        if live.requiresRetry {
                             Button(t("重试未完成转写", "Retry unfinished transcription")) { retryTranscription() }
-                                .disabled(live.isWorking)
+                                .disabled(live.isWorking).frame(minHeight: 44)
                         }
                         if live.isWorking {
-                            Button(t("停止转写", "Stop transcription")) { live.cancel() }
+                            Label(t("正在整理录音文字", "Processing the transcript"), systemImage: "text.bubble")
+                            Button(t("停止转写", "Stop transcription")) { live.cancel() }.frame(minHeight: 44)
                         }
-                        // Internal chunk scheduling detail: only inside the
-                        // explicitly opened diagnostics group.
-                        DisclosureGroup(t("诊断详情", "Diagnostics")) {
-                            HStack {
-                                Text(t("转写进度", "Transcription progress"))
-                                Spacer()
-                                Text("\(live.chunks.filter { $0.state == .complete }.count) / \(live.chunks.count)")
-                                    .font(.caption.monospacedDigit())
-                            }
-                            if let diagnostic = live.diagnostic {
-                                Text(diagnostic).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                            }
-                        }.font(.footnote)
                     }
                 }
-            }.navigationTitle(t("录音与素材", "Recordings and media"))
-                .toolbar { ToolbarItem(placement: .confirmationAction) { Button(t("完成", "Done")) { recordings = false } } }
+                if let diagnostic = session.diagnostic {
+                    Section {
+                        DisclosureGroup(t("有内容需要处理，查看详情", "Something needs attention. View details")) {
+                            Text(diagnostic).font(.caption).textSelection(.enabled)
+                            Button(t("清除提示", "Clear message")) { session.diagnostic = nil }
+                        }
+                    }
+                }
+            }
+            .navigationTitle(t("录音与素材", "Recordings and media"))
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button(t("完成", "Done")) { recordings = false } } }
         }
+        .presentationDetents([.large])
+        .presentationDragIndicator(.visible)
+    }
+    private func recordingRow(_ material: MeetingRecordingMaterial) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: material.kind == .importedVideo ? "film" : "waveform")
+                    .font(.title3).foregroundStyle(.secondary).frame(width: 26)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(material.title).font(.headline).lineLimit(2)
+                    if let date = material.createdAt {
+                        Text(date.formatted(date: .abbreviated, time: .shortened))
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                Spacer(minLength: 4)
+                Text(materialStateLabel(material)).font(.caption).foregroundStyle(.secondary)
+            }
+            if let seconds = session.measuredRecordingDurations[material.id] {
+                Text(durationText(seconds)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+            }
+            ViewThatFits(in: .horizontal) {
+                materialActions(material)
+                VStack(alignment: .leading, spacing: 8) { materialPlayButton(material); materialMenu(material) }
+            }
+            if let issue = session.playbackErrors[material.id] {
+                Text(issue).font(.callout).foregroundStyle(.secondary)
+            }
+            if material.parts.count > 1 || session.playbackErrors[material.id] != nil || !material.canPlay {
+                DisclosureGroup(t("原始片段", "Original parts")) {
+                    ForEach(Array(material.parts.enumerated()), id: \.element.id) { index, part in
+                        HStack(spacing: 8) {
+                            Text(t("片段 \(index + 1)", "Part \(index + 1)"))
+                            Spacer(minLength: 4)
+                            Button(t("播放", "Play"), systemImage: "play.fill") {
+                                session.playOriginalPart(part); recordings = false
+                            }.labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44)
+                                .disabled(session.isRecording || part.state != .stopped)
+                            if part.state == .stopped, let file = try? session.mediaFile(for: part) {
+                                ShareLink(item: file) { Image(systemName: "square.and.arrow.up").frame(width: 44, height: 44) }
+                                    .accessibilityLabel(t("分享原始片段", "Share original part"))
+                            }
+                        }.font(.callout)
+                    }
+                }.font(.callout)
+            }
+        }
+        .padding(.vertical, 8)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("meeting.material." + material.id.uuidString)
+    }
+    private func materialActions(_ material: MeetingRecordingMaterial) -> some View {
+        HStack(spacing: 10) { materialPlayButton(material); Spacer(minLength: 0); materialMenu(material) }
+    }
+    private func materialPlayButton(_ material: MeetingRecordingMaterial) -> some View {
+        Button {
+            session.play(material); recordings = false
+        } label: {
+            Label(session.playbackErrors[material.id] == nil ? t("播放整段", "Play full recording") : t("重试播放", "Retry playback"),
+                  systemImage: "play.fill")
+        }
+        .buttonStyle(.bordered).frame(minHeight: 44)
+        .disabled(session.isRecording || session.changingCapture || !material.canPlay)
+        .accessibilityIdentifier("meeting.material.play." + material.id.uuidString)
+    }
+    private func materialMenu(_ material: MeetingRecordingMaterial) -> some View {
+        Menu {
+            if material.state == .paused {
+                Button(t("继续这次录音", "Resume this recording"), systemImage: "mic.fill") {
+                    recordings = false; Task { await session.startRecording(continuing: material.id) }
+                }.disabled(session.isRecording || session.changingCapture)
+            }
+            ForEach(Array(material.parts.enumerated()), id: \.element.id) { index, part in
+                Button(material.parts.count == 1 ? t("转写录音", "Transcribe recording") : t("转写片段 \(index + 1)", "Transcribe part \(index + 1)"),
+                       systemImage: "text.bubble") {
+                    session.transcribe(part); inspector = 0; compactNotes = false
+                }.disabled(session.isRecording || session.isProcessing || part.state != .stopped)
+                if part.state == .stopped, let file = try? session.mediaFile(for: part) {
+                    ShareLink(item: file) {
+                        Label(material.canPlay && material.parts.count == 1 ? t("分享原录音", "Share original recording") : t("分享片段 \(index + 1)", "Share part \(index + 1)"),
+                              systemImage: "square.and.arrow.up")
+                    }
+                }
+            }
+        } label: { Label(t("更多", "More"), systemImage: "ellipsis").frame(minHeight: 44) }
+            .accessibilityLabel(t("录音操作", "Recording actions"))
+    }
+    private func materialStateLabel(_ material: MeetingRecordingMaterial) -> String {
+        if material.state == .recording { return t("录音中", "Recording") }
+        if material.state == .paused { return t("已暂停", "Paused") }
+        return material.canPlay ? t("已保存", "Saved") : t("未完整结束", "Not finalized")
     }
     private var settingsSheet: some View {
         NavigationStack {
@@ -773,7 +890,7 @@ struct MeetingProjectView: View {
                 isTranscribing = false
             }
         }
-        let spans = session.recordings.map { recording in
+        let spans = (session.currentRecordingMaterial?.parts ?? []).map { recording in
             MeetingRecordingSpan(
                 isLiveRecording: recording.kind == .liveRecording,
                 isActive: session.isRecording
@@ -797,7 +914,9 @@ struct MeetingProjectView: View {
     }
     private func captureTitle(_ presentation: MeetingCapturePresentation) -> String {
         switch presentation.phase {
-        case .ready: t("准备录音", "Ready to record")
+        case .ready:
+            session.recordingMaterials.contains(where: { $0.isLive && $0.canPlay })
+                ? t("录音已保存", "Recording saved") : t("准备录音", "Ready to record")
         case .preparing: t("正在准备录音", "Preparing recording")
         case .recording: t("录音中", "Recording")
         case .finishing: t("正在结束并保存", "Finishing and saving")
@@ -812,10 +931,10 @@ struct MeetingProjectView: View {
         case .idle:
             if presentation.phase == .recording || presentation.phase == .preparing
                 || presentation.phase == .finishing { return nil }
-            if presentation.savedRecordingCount > 0 {
-                return presentation.savedRecordingCount == 1
-                    ? t("1 段录音 · 可回放", "1 recording · Ready to play")
-                    : t("\(presentation.savedRecordingCount) 段录音 · 可回放", "\(presentation.savedRecordingCount) recordings · Ready to play")
+            let count = session.recordingMaterials.filter { $0.isLive && $0.canPlay }.count
+            if count > 0 {
+                return count == 1 ? t("录音已保存，可回放", "Recording saved and ready to play")
+                    : t("\(count) 次录音 · 可回放", "\(count) recordings · Ready to play")
             }
             return nil
         case .live:
@@ -842,10 +961,11 @@ struct MeetingProjectView: View {
         }
     }
     private var playbackTitle: String? {
-        guard let id = session.playingSession,
-              let recording = session.visibleRecordings.first(where: { $0.id == id }) else { return nil }
-        if let path = recording.sourceFile { return URL(fileURLWithPath: path).lastPathComponent }
-        return t("现场录音", "Recording")
+        if let id = session.playingRecordingID,
+           let material = session.recordingMaterials.first(where: { $0.id == id }) {
+            return material.title
+        }
+        return session.playingSession == nil ? nil : t("原始录音片段", "Original recording part")
     }
     private func retryTranscription() {
         session.diagnostic = nil
@@ -855,28 +975,7 @@ struct MeetingProjectView: View {
             session.liveTranscription?.retryUnfinished()
         }
     }
-    private func finishPausedRecording() { session.isPaused = false }
-    private func recorderButton(
-        _ title: String,
-        systemImage: String,
-        identifier: String,
-        prominent: Bool = false,
-        tint: Color = .accentColor,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            Image(systemName: systemImage)
-                .font(.system(size: 18, weight: prominent ? .semibold : .regular))
-                .foregroundStyle(prominent ? Color.white : Color.primary)
-                .frame(width: 32, height: 32)
-                .background(prominent ? tint : Color.clear, in: Circle())
-                .frame(width: 44, height: 44)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(title)
-        .accessibilityIdentifier(identifier)
-    }
+    private func finishPausedRecording() { Task { await session.finishPausedRecording() } }
     private func splitSideWidth(available: CGFloat) -> CGFloat {
         let preferred = sidePanelWidth ?? min(720, max(440, available * 0.56))
         return clampedSideWidth(preferred, available: available)

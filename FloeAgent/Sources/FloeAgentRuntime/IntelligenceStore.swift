@@ -500,6 +500,116 @@ public actor SQLiteIntelligenceStore: PlanDraftStore, ConversationGoalStore, Dur
         }
     }
 
+    /// Explicit composer Goal intent and its accepted message share the
+    /// existing writer transaction. A model response/tool call is not needed
+    /// to create it. The input's native UUID is also its Goal identity, so a
+    /// queued follow-up can never silently select a different current Goal.
+    public func enqueueGoalInput(_ input: PendingUserInput, expectedRunID: UUID) async throws -> PendingUserInput {
+        guard input.executionMode == "goal", input.status == .queued,
+              input.targetRunID == expectedRunID else { throw TaskGoalError.unauthorized }
+        let objective = input.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !objective.isEmpty, objective.utf8.count <= 128_000 else { throw TaskGoalError.invalidArguments }
+        return try await database.writer { db in
+            guard try Bool.fetchOne(db, sql: """
+                SELECT EXISTS(SELECT 1 FROM runs r JOIN conversations c ON c.id=r.conversation_id
+                    WHERE r.id=? AND r.conversation_id=? AND COALESCE(c.purpose,'chat')!='temporary'
+                    AND NOT EXISTS(SELECT 1 FROM runs newer WHERE newer.conversation_id=r.conversation_id
+                        AND (newer.started_at>r.started_at OR (newer.started_at=r.started_at AND newer.id>r.id))))
+                """, arguments: [expectedRunID.uuidString, input.conversationID.uuidString]) == true else {
+                throw TaskGoalError.staleRun
+            }
+            guard try Int.fetchOne(db, sql: """
+                SELECT COUNT(*) FROM conversation_goals WHERE conversation_id=?
+                    AND status NOT IN ('completed','cancelled','failed')
+                """, arguments: [input.conversationID.uuidString]) == 0,
+                  try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM conversation_goals WHERE id=?",
+                    arguments: [input.id.uuidString]) == 0 else { throw TaskGoalError.activeGoalExists }
+            let goal = ConversationGoal(id: input.id, conversationID: input.conversationID,
+                objective: objective,
+                acceptanceCriteria: [GoalCriterion(text: "The objective is satisfied with inspectable evidence")],
+                steps: [GoalStep(title: "Work toward the objective", status: .pending, order: 0)], status: .active)
+            try Self.writeGoal(goal, in: db)
+            // A full queue / FK / insert failure rolls back the Goal too.
+            return try SQLiteRunningInputStore.enqueue(input, in: db)
+        }
+    }
+
+    /// At actual steer consumption, attach the accepted Goal only to its
+    /// original run. Refuse a different admitted Goal, a Plan round or a
+    /// Goal stopped before admission; never rewrite that round or its ceiling.
+    public func admitGoalInputToRun(inputID: UUID, expectedRunID: UUID) async throws -> Bool {
+        try await database.writer { db in
+            guard let input = try Row.fetchOne(db, sql: """
+                SELECT * FROM pending_user_inputs WHERE id=? AND target_run_id=?
+                    AND execution_mode='goal' AND (status IN ('promoting','steerPending')
+                        OR (status='consumed' AND consumed_run_id=target_run_id))
+                """, arguments: [inputID.uuidString, expectedRunID.uuidString]),
+                  let owner = UUID(uuidString: input["conversation_id"]),
+                  let row = try Row.fetchOne(db, sql: "SELECT * FROM conversation_goals WHERE id=? AND conversation_id=?",
+                    arguments: [inputID.uuidString, owner.uuidString]) else { return false }
+            var goal = try Self.goal(row)
+            guard let run = try Row.fetchOne(db, sql: """
+                    SELECT r.* FROM runs r WHERE r.id=? AND r.conversation_id=? AND r.ended_at IS NULL
+                    AND r.state NOT IN ('completed','failed','cancelled','canceled','aborted')
+                    AND r.conversation_mode!='plan'
+                    AND NOT EXISTS(SELECT 1 FROM runs newer WHERE newer.conversation_id=r.conversation_id
+                        AND (newer.started_at>r.started_at OR (newer.started_at=r.started_at AND newer.id>r.id)))
+                    """, arguments: [expectedRunID.uuidString, owner.uuidString]) else { return false }
+            if let bound = run["goal_id"] as String? { return bound == goal.id.uuidString }
+            guard goal.status == .active else { return false }
+            try db.execute(sql: """
+                UPDATE runs SET goal_id=? WHERE id=? AND conversation_id=? AND goal_id IS NULL AND ended_at IS NULL
+                """, arguments: [goal.id.uuidString, expectedRunID.uuidString, owner.uuidString])
+            guard db.changesCount == 1 else { throw TaskGoalError.staleRun }
+            goal.progress.startedAt = goal.progress.startedAt ?? Date()
+            if !goal.steps.isEmpty, goal.steps[0].status == .pending { goal.steps[0].status = .inProgress }
+            goal.updatedAt = Date()
+            try Self.writeGoal(goal, in: db)
+            try Self.appendGoalRoundAdmission(goal, runID: expectedRunID, in: db)
+            return true
+        }
+    }
+
+    /// Stop before actual steer consumption must pause the accepted pending
+    /// Goal too. Only native same-ID input/Goal + exact target-run linkage is
+    /// eligible, never the conversation's latest unrelated Goal. Read and
+    /// pause in one transaction so a racing consumption cannot escape it.
+    public func pausePendingGoalInputsForComposerStop(runID: UUID, conversationID: UUID) async throws -> [UUID] {
+        try await database.writer { db in
+            guard let run = try Row.fetchOne(db, sql: "SELECT goal_id FROM runs WHERE id=? AND conversation_id=?",
+                arguments: [runID.uuidString, conversationID.uuidString]) else { throw TaskGoalError.staleRun }
+            let ids: [String]
+            if let bound = run["goal_id"] as String? {
+                // Consumption may have bound it after the caller's snapshot.
+                ids = [bound]
+            } else {
+                ids = try String.fetchAll(db, sql: """
+                    SELECT p.id FROM pending_user_inputs p JOIN conversation_goals g
+                        ON g.id=p.id AND g.conversation_id=p.conversation_id
+                    WHERE p.conversation_id=? AND p.target_run_id=? AND p.execution_mode='goal'
+                        AND p.status IN ('queued','promoting','steerPending')
+                    ORDER BY p.position,p.created_at,p.id LIMIT 101
+                    """, arguments: [conversationID.uuidString, runID.uuidString])
+                guard ids.count <= SQLiteRunningInputStore.maximumPendingPerConversation else { throw TaskGoalError.storageUnavailable }
+            }
+            var paused: [UUID] = []
+            for raw in ids {
+                guard let id = UUID(uuidString: raw),
+                      let row = try Row.fetchOne(db, sql: "SELECT * FROM conversation_goals WHERE id=? AND conversation_id=?",
+                        arguments: [raw, conversationID.uuidString]) else { throw TaskGoalError.staleRun }
+                let goal = try Self.goal(row)
+                if goal.status.isTerminal || goal.status == .paused { continue }
+                try db.execute(sql: """
+                    UPDATE conversation_goals SET status='paused', revision=COALESCE(revision,1)+1, updated_at=?
+                    WHERE id=? AND conversation_id=? AND COALESCE(revision,1)=?
+                    """, arguments: [Self.date(Date()), raw, conversationID.uuidString, goal.revision ?? 1])
+                guard db.changesCount == 1 else { throw TaskGoalError.staleRun }
+                paused.append(id)
+            }
+            return paused
+        }
+    }
+
     /// The model can refine its current task, never supply another task ID,
     /// change permissions/budgets, or replace unfinished user work. Creation
     /// and assignment to this exact executing run share one SQL transaction.

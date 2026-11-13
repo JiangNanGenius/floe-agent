@@ -956,12 +956,15 @@ public actor RuntimeV2MaintenanceCoordinator {
     public let stateDirectory: URL
     public let lockURL: URL
     public let intentURL: URL
+    nonisolated let historyLayout: RuntimeV2MaintenanceHistoryLayout?
+    public nonisolated let storageDirectories: [URL]
 
     private struct SharedRecord {
         var owner: String
         var purpose: String
         var descriptor: Int32
         var lockIdentity: RuntimeV2MaintenanceLockIdentity
+        var historyLocks: RuntimeV2MaintenanceHistoryLocks? = nil
     }
 
     private struct ExclusiveRecord {
@@ -974,6 +977,8 @@ public actor RuntimeV2MaintenanceCoordinator {
         var targetIdentity: RuntimeV2DiskIdentity?
         var phase: RuntimeV2MaintenanceIntentRecord.Phase
         var record: RuntimeV2MaintenanceIntentRecord
+        var historyLocks: RuntimeV2MaintenanceHistoryLocks? = nil
+        var completedHistoryLookupClaimed = false
     }
 
     private let fileManager: FileManager
@@ -982,12 +987,18 @@ public actor RuntimeV2MaintenanceCoordinator {
     private var shared: [String: SharedRecord] = [:]
     private var exclusive: ExclusiveRecord?
     private var intentInstalling = false
+    private var preparingHistoryLocks: RuntimeV2MaintenanceHistoryLocks?
     private var recoveryPending = false
     private var recoveryReason: String?
+    private var requiredIntentDirectories: Set<URL> = []
     private struct RecoveryValidation {
         let record: RuntimeV2MaintenanceIntentRecord
         let descriptor: Int32
         let lockIdentity: RuntimeV2MaintenanceLockIdentity
+        let directory: URL
+        let intentIdentity: RuntimeV2DiskIdentity
+        let historyLocks: RuntimeV2MaintenanceHistoryLocks?
+        var storageContextClaimed = false
     }
     private var recoveryValidation: RecoveryValidation?
     private var holdGeneration: UInt64
@@ -998,11 +1009,21 @@ public actor RuntimeV2MaintenanceCoordinator {
         stateDirectory: URL,
         evidenceProvider: @escaping RuntimeV2MaintenanceEvidenceProvider,
         recoveryHandler: RuntimeV2MaintenanceRecoveryHandler? = nil,
+        historyLayout: RuntimeV2MaintenanceHistoryLayout? = nil,
         fileManager: FileManager = .default
     ) throws {
+        let protectedLayout: RuntimeV2MaintenanceHistoryLayout?
+        if let historyLayout {
+            guard historyLayout.domain == domain, historyLayout.primaryDirectory == stateDirectory.standardizedFileURL else {
+                throw RuntimeV2MaintenanceError.invalidDomain("native history layout differs from the coordinator")
+            }
+            protectedLayout = try historyLayout.prepareNativeDirectories()
+        } else { protectedLayout = nil }
         self.domain = domain
+        self.historyLayout = protectedLayout
+        self.storageDirectories = protectedLayout?.directories ?? [stateDirectory.standardizedFileURL]
         self.stateDirectory = stateDirectory.standardizedFileURL
-        self.lockURL = stateDirectory.standardizedFileURL.appendingPathComponent("maintenance.lock")
+        self.lockURL = protectedLayout?.anchor ?? stateDirectory.standardizedFileURL.appendingPathComponent("maintenance.lock")
         self.intentURL = stateDirectory.standardizedFileURL.appendingPathComponent("intent.json")
         self.fileManager = fileManager
         self.evidenceProvider = evidenceProvider
@@ -1011,24 +1032,24 @@ public actor RuntimeV2MaintenanceCoordinator {
         var values = URLResourceValues()
         values.isExcludedFromBackup = true
         try? (stateDirectory as NSURL).setResourceValue(values.isExcludedFromBackup, forKey: .isExcludedFromBackupKey)
-        self.holdGeneration = Self.readHoldGeneration(intentURL: self.intentURL)
-        // A durable blocking intent is visible immediately; it never waits for
-        // the service to call recoverIfNeeded before it closes the gate.
-        if let state = Self.readIntent(intentURL: self.intentURL) {
-            switch state {
-            case .record(let record):
-                if !domain.matchesRecordedRoot(record.domainRoot, device: record.domainDevice, inode: record.domainInode) {
-                    self.recoveryPending = true
-                    self.recoveryReason = "durable intent \(record.intentID) belongs to another physical domain"
-                } else if record.phase.isBlocking {
-                    self.recoveryPending = true
-                    self.recoveryReason = "durable intent \(record.intentID) is \(record.phase.rawValue)"
+        self.holdGeneration = 0
+        // ALL durable histories close the gate immediately. Counts and old
+        // path indexes cannot waive a corrupt/mismatched/pending record.
+        for directory in self.storageDirectories {
+            let url = directory.appendingPathComponent("intent.json")
+            self.holdGeneration = max(self.holdGeneration, Self.readHoldGeneration(intentURL: url))
+            if let value = Self.readIntent(intentURL: url) {
+                self.requiredIntentDirectories.insert(directory)
+                switch value {
+                case .record(let record):
+                    if !domain.matchesRecordedRoot(record.domainRoot, device: record.domainDevice, inode: record.domainInode) {
+                        self.recoveryPending = true; self.recoveryReason = "durable history physical identity differs or is unknown"
+                    } else if record.phase.isBlocking {
+                        self.recoveryPending = true; self.recoveryReason = "durable history requires native convergence"
+                    }
+                case .corrupt:
+                    self.recoveryPending = true; self.recoveryReason = "durable history is unreadable"
                 }
-            case .corrupt:
-                self.recoveryPending = true
-                self.recoveryReason = "durable intent is unreadable"
-            default:
-                break
             }
         }
     }
@@ -1076,98 +1097,166 @@ public actor RuntimeV2MaintenanceCoordinator {
     /// recovery handler the domain stays closed FOREVER — there is no TTL and
     /// no "stale enough" default. The handler must prove the operation's final
     /// state; a mere elapsed-time answer is not accepted by this contract.
+    private struct PendingHistory {
+        let directory: URL
+        let record: RuntimeV2MaintenanceIntentRecord
+    }
+
+    private func pendingHistories() throws -> [PendingHistory] {
+        var pending: [PendingHistory] = []
+        var ids = Set<String>(), targets = Set<String>()
+        for directory in storageDirectories {
+            guard let value = Self.readIntent(intentURL: directory.appendingPathComponent("intent.json")) else {
+                guard !requiredIntentDirectories.contains(directory) else {
+                    throw RuntimeV2MaintenanceError.recoveryPending("a retained historical intent disappeared")
+                }
+                continue
+            }
+            guard case .record(let record) = value,
+                  domain.matchesRecordedRoot(record.domainRoot, device: record.domainDevice, inode: record.domainInode),
+                  ids.insert(record.intentID).inserted else {
+                throw RuntimeV2MaintenanceError.recoveryPending("a history is corrupt, duplicated or has unknown physical identity")
+            }
+            if record.phase.isBlocking {
+                if let target = record.targetRelativePath, !targets.insert(target).inserted {
+                    throw RuntimeV2MaintenanceError.recoveryPending("pending histories overlap the same target")
+                }
+                pending.append(PendingHistory(directory: directory, record: record))
+            }
+        }
+        return pending.sorted { $0.directory.path < $1.directory.path }
+    }
+
     public func recoverIfNeeded() async -> RuntimeV2MaintenanceRecoveryReport {
         guard exclusive == nil, recoveryValidation == nil, !intentInstalling, shared.isEmpty else {
-            return RuntimeV2MaintenanceRecoveryReport(
-                outcome: .blocked, reason: "a live claim is still installed"
-            )
+            return RuntimeV2MaintenanceRecoveryReport(outcome: .blocked, reason: "a live claim is still installed")
         }
-        guard let state = Self.readIntent(intentURL: intentURL) else {
-            recoveryPending = false
-            recoveryReason = nil
+        let pending: [PendingHistory]
+        do { pending = try pendingHistories() }
+        catch {
+            recoveryPending = true; recoveryReason = "durable histories cannot be verified"
+            return RuntimeV2MaintenanceRecoveryReport(outcome: .blocked, reason: recoveryReason)
+        }
+        guard let first = pending.first else {
+            if historyLayout != nil {
+                do {
+                    let probe = try openLock(operation: LOCK_SH)
+                    defer { _ = close(probe.descriptor); withExtendedLifetime(probe.historyLocks) {} }
+                    guard try pendingHistories().isEmpty else {
+                        throw RuntimeV2MaintenanceError.recoveryPending("history changed while checking terminal state")
+                    }
+                    try probe.historyLocks?.validate()
+                } catch {
+                    recoveryPending = true; recoveryReason = "native history membership or terminal state is unverified"
+                    return RuntimeV2MaintenanceRecoveryReport(outcome: .blocked, reason: recoveryReason)
+                }
+            }
+            recoveryPending = false; recoveryReason = nil
             RuntimeV2RecoveryAdmission.gate(domain.root)?.confirmNoBlockingIntent()
             return RuntimeV2MaintenanceRecoveryReport(outcome: .notNeeded)
         }
-        let record: RuntimeV2MaintenanceIntentRecord
-        switch state {
-        case .record(let value):
-            record = value
-            guard domain.matchesRecordedRoot(value.domainRoot, device: value.domainDevice, inode: value.domainInode) else {
-                recoveryPending = true; recoveryReason = "durable intent physical domain differs or is unknown"
-                return RuntimeV2MaintenanceRecoveryReport(outcome: .blocked, intentID: value.intentID, reason: recoveryReason)
-            }
-            guard value.phase.isBlocking else {
-                recoveryPending = false
-                recoveryReason = nil
-                RuntimeV2RecoveryAdmission.gate(domain.root)?.confirmNoBlockingIntent()
-                return RuntimeV2MaintenanceRecoveryReport(outcome: .notNeeded, intentID: value.intentID)
-            }
-        case .corrupt:
-            recoveryPending = true
-            recoveryReason = "durable intent is unreadable"
-            return RuntimeV2MaintenanceRecoveryReport(
-                outcome: .blocked, reason: "the durable intent is unreadable; it cannot be cleared by time"
-            )
-        }
         recoveryPending = true
-        recoveryReason = "intent \(record.intentID) is \(record.phase.rawValue)"
-        // A durable intent alone is not proof the owning process died. Take the
-        // exclusive flock for the convergence itself: a live cooperating
-        // process (the crashed-looking intent's real owner) still holds its
-        // description and this recovery refuses without changing anything.
+        var activeID = first.record.intentID
         let opened: OpenedLock
         do {
-            try RuntimeV2RecoveryAdmission.gate(domain.root)?.beginExclusive(record.intentID, recovery: true)
+            try RuntimeV2RecoveryAdmission.gate(domain.root)?.beginExclusive(activeID, recovery: true)
             opened = try openLock(operation: LOCK_EX)
         } catch {
-            RuntimeV2RecoveryAdmission.gate(domain.root)?.endExclusive(record.intentID, converged: false)
-            return RuntimeV2MaintenanceRecoveryReport(
-                outcome: .blocked, intentID: record.intentID,
-                reason: "a live process still holds the domain lock"
-            )
+            RuntimeV2RecoveryAdmission.gate(domain.root)?.endExclusive(activeID, converged: false)
+            return RuntimeV2MaintenanceRecoveryReport(outcome: .blocked, reason: "a native history lock is busy or changed")
         }
-        recoveryValidation = RecoveryValidation(record: record, descriptor: opened.descriptor,
-                                                lockIdentity: opened.identity)
-        func settle(_ report: RuntimeV2MaintenanceRecoveryReport) -> RuntimeV2MaintenanceRecoveryReport {
+        var allConverged = false
+        defer {
             recoveryValidation = nil
             _ = close(opened.descriptor)
-            RuntimeV2RecoveryAdmission.gate(domain.root)?.endExclusive(
-                record.intentID, converged: report.outcome == .resolved)
-            return report
+            // No between-job reopen. The cohort retains every namespace until
+            // this complete pass exits; any unresolved history stays blocking.
+            withExtendedLifetime(opened.historyLocks) {
+                RuntimeV2RecoveryAdmission.gate(domain.root)?.endExclusive(activeID, converged: allConverged)
+            }
         }
         guard let recoveryHandler else {
-            return settle(RuntimeV2MaintenanceRecoveryReport(
-                outcome: .blocked, intentID: record.intentID,
-                reason: "no trusted recovery handler is installed"
-            ))
+            return RuntimeV2MaintenanceRecoveryReport(outcome: .blocked, reason: "no trusted recovery handler is installed")
         }
-        switch await recoveryHandler(record) {
-        case .resolved:
-            var resolved = record
-            resolved.phase = .resolved
-            resolved.updatedAt = Date()
-            resolved.note = "interrupted maintenance converged by the trusted recovery handler"
-            do {
-                try persistIntent(resolved)
-            } catch {
-                // Bytes are converged but the durable marker could not be
-                // retired: stay closed rather than open on an unrecorded gate.
-                return settle(RuntimeV2MaintenanceRecoveryReport(
-                    outcome: .blocked, intentID: record.intentID,
-                    reason: "converged, but the resolution could not be persisted"
-                ))
+        do {
+            let locked = try pendingHistories()
+            guard locked.count == pending.count,
+                  try zip(locked, pending).allSatisfy({ left, right in
+                      guard left.directory == right.directory else { return false }
+                      return try Self.intentEncoder.encode(left.record) == Self.intentEncoder.encode(right.record)
+                  }) else {
+                throw RuntimeV2MaintenanceError.recoveryPending("history changed before all locks were held")
             }
-            recoveryPending = false
-            recoveryReason = nil
-            epoch &+= 1
-            return settle(RuntimeV2MaintenanceRecoveryReport(outcome: .resolved, intentID: record.intentID))
-        case .unresolved(let reason):
-            recoveryPending = true
-            recoveryReason = reason
-            return settle(RuntimeV2MaintenanceRecoveryReport(
-                outcome: .blocked, intentID: record.intentID, reason: reason
-            ))
+            var handlersConverged = true
+            for job in pending {
+                if Task.isCancelled { handlersConverged = false; break }
+                try opened.historyLocks?.validate()
+                try RuntimeV2RecoveryAdmission.gate(domain.root)?.advanceRecoveryIntent(from: activeID, to: job.record.intentID)
+                activeID = job.record.intentID
+                let intentIdentity = try RuntimeV2DiskIdentity.read(at: job.directory.appendingPathComponent("intent.json"))
+                guard intentIdentity.isRegularFile, intentIdentity.linkCount == 1 else {
+                    throw RuntimeV2MaintenanceError.recoveryPending("historical intent shape changed")
+                }
+                recoveryValidation = RecoveryValidation(record: job.record, descriptor: opened.descriptor,
+                    lockIdentity: opened.identity, directory: job.directory, intentIdentity: intentIdentity,
+                    historyLocks: opened.historyLocks)
+                switch await recoveryHandler(job.record) {
+                case .resolved:
+                    guard historyLayout == nil || recoveryValidation?.storageContextClaimed == true else {
+                        FloeLogger(category: .tools).error("legacyHistoryRecovery code=storage_context_unclaimed rootCheck=verified")
+                        handlersConverged = false
+                        recoveryValidation = nil
+                        continue
+                    }
+                    try validateRecoverySession(intentID: job.record.intentID, holdGeneration: job.record.holdGeneration)
+                    guard let current = try Self.readHistoryIntent(directory: job.directory),
+                          try Self.intentEncoder.encode(current) == Self.intentEncoder.encode(job.record) else {
+                        throw RuntimeV2MaintenanceError.recoveryPending("historical intent CAS changed")
+                    }
+                    var resolved = job.record
+                    resolved.phase = .resolved; resolved.updatedAt = Date()
+                    resolved.note = job.record.note ?? "interrupted maintenance converged under the native all-history barrier"
+                    try persistIntent(resolved, in: job.directory)
+                case .unresolved:
+                    handlersConverged = false
+                    try validateRecoverySession(intentID: job.record.intentID, holdGeneration: job.record.holdGeneration)
+                    FloeLogger(category: .tools).error("legacyHistoryRecovery code=handler_unresolved rootCheck=verified")
+                    // Other distinct pending targets may still converge. This
+                    // failure remains intact and the global gate never opens.
+                    break
+                }
+                recoveryValidation = nil
+            }
+            let remaining = try pendingHistories()
+            try opened.historyLocks?.validate()
+            allConverged = remaining.isEmpty && handlersConverged
+            recoveryPending = !allConverged
+            recoveryReason = allConverged ? nil : "one or more native histories still require convergence"
+            if allConverged { epoch &+= 1 }
+            return RuntimeV2MaintenanceRecoveryReport(outcome: allConverged ? .resolved : .blocked,
+                intentID: pending.count == 1 ? first.record.intentID : nil, reason: recoveryReason)
+        } catch {
+            recoveryPending = true; recoveryReason = "history lock, identity or durable resolution could not be verified"
+            return RuntimeV2MaintenanceRecoveryReport(outcome: .blocked, reason: recoveryReason)
         }
+    }
+
+    /// Native storage routing is valid ONLY under the actual held session.
+    public func recoveryStorageDirectory(intentID: String, holdGeneration: UInt64) throws -> URL {
+        try validateRecoverySession(intentID: intentID, holdGeneration: holdGeneration)
+        guard var active = recoveryValidation else { throw RuntimeV2MaintenanceError.claimInvalidated("no recovery context") }
+        active.storageContextClaimed = true; recoveryValidation = active
+        return active.directory
+    }
+
+    /// A list of protected provenance contexts, not an arbitrary-path API.
+    public func completedStorageDirectories(intentID: String, holdGeneration: UInt64) throws -> [URL] {
+        try validateExclusiveClaim(intentID: intentID)
+        guard var active = exclusive, active.holdGeneration == holdGeneration else {
+            throw RuntimeV2MaintenanceError.claimInvalidated("history lookup generation differs")
+        }
+        active.completedHistoryLookupClaimed = true; exclusive = active
+        return storageDirectories
     }
 
     /// An evidence collector can inspect only the intent currently protected by
@@ -1179,6 +1268,7 @@ public actor RuntimeV2MaintenanceCoordinator {
               case .record(let record) = value, record.phase == .preparing else {
             throw RuntimeV2MaintenanceError.claimInvalidated("no held native closure intent")
         }
+        try preparingHistoryLocks?.validate()
         return record
     }
 
@@ -1189,11 +1279,13 @@ public actor RuntimeV2MaintenanceCoordinator {
     /// Only the actor's actual held recovery lock can validate this session.
     /// A durable marker, dead pid, TTL or caller assertion cannot manufacture it.
     public func validateRecoverySession(intentID: String, holdGeneration: UInt64) throws {
+        try recoveryValidation?.historyLocks?.validate()
         guard let validation = recoveryValidation,
               validation.record.intentID == intentID,
               validation.record.holdGeneration == holdGeneration,
               fcntl(validation.descriptor, F_GETFD, 0) != -1,
               Self.lockFileIdentity(at: lockURL) == validation.lockIdentity,
+              (try? RuntimeV2DiskIdentity.read(at: validation.directory.appendingPathComponent("intent.json"))) == validation.intentIdentity,
               domain.matchesRecordedRoot(validation.record.domainRoot,
                   device: validation.record.domainDevice, inode: validation.record.domainInode) else {
             throw RuntimeV2MaintenanceError.claimInvalidated("recovery authority is not held")
@@ -1232,7 +1324,7 @@ public actor RuntimeV2MaintenanceCoordinator {
         let opened = try openLock(operation: LOCK_SH)
         shared[token] = SharedRecord(
             owner: owner, purpose: purpose,
-            descriptor: opened.descriptor, lockIdentity: opened.identity
+            descriptor: opened.descriptor, lockIdentity: opened.identity, historyLocks: opened.historyLocks
         )
         return RuntimeV2MaintenanceSharedUse(
             token: token, owner: owner, purpose: purpose,
@@ -1242,6 +1334,7 @@ public actor RuntimeV2MaintenanceCoordinator {
     }
 
     func validateSharedUse(token: String) throws {
+        try shared[token]?.historyLocks?.validate()
         guard let record = shared[token] else {
             throw RuntimeV2MaintenanceError.claimInvalidated("the shared use token is no longer active")
         }
@@ -1307,7 +1400,10 @@ public actor RuntimeV2MaintenanceCoordinator {
         }
 
         let intentID = UUID().uuidString
-        let generation = holdGeneration &+ 1
+        guard holdGeneration < UInt64.max else {
+            throw RuntimeV2MaintenanceError.invalidRequest("maintenance generation exhausted")
+        }
+        let generation = holdGeneration + 1
         let now = Date()
         var record = RuntimeV2MaintenanceIntentRecord(
             intentID: intentID, holdGeneration: generation, phase: .preparing,
@@ -1346,8 +1442,11 @@ public actor RuntimeV2MaintenanceCoordinator {
             throw RuntimeV2MaintenanceError.intentPersistenceFailed("preparing intent")
         }
 
+        preparingHistoryLocks = opened.historyLocks
+        defer { preparingHistoryLocks = nil }
         do {
             let evidence = await evidenceProvider()
+            try opened.historyLocks?.validate()
             var blockers = evidence.quiescenceBlockers(domain: domain)
             if evidence.references.fingerprint.isEmpty {
                 blockers.append("reference_fingerprint_missing")
@@ -1385,7 +1484,7 @@ public actor RuntimeV2MaintenanceCoordinator {
                 intentID: intentID, holdGeneration: generation, epoch: epoch,
                 descriptor: opened.descriptor, lockIdentity: opened.identity,
                 targetRelativePath: targetPath, targetIdentity: requestedIdentity,
-                phase: .active, record: record
+                phase: .active, record: record, historyLocks: opened.historyLocks
             )
             holdGeneration = generation
             epoch &+= 1
@@ -1414,6 +1513,7 @@ public actor RuntimeV2MaintenanceCoordinator {
     }
 
     func validateExclusiveClaim(intentID: String) throws {
+        try exclusive?.historyLocks?.validate()
         guard let record = exclusive, record.intentID == intentID else {
             throw RuntimeV2MaintenanceError.claimInvalidated("the exclusive claim is no longer installed")
         }
@@ -1448,8 +1548,12 @@ public actor RuntimeV2MaintenanceCoordinator {
     }
 
     func markExclusiveCommitting(intentID: String) throws {
+        try validateExclusiveClaim(intentID: intentID)
         guard var record = exclusive, record.intentID == intentID else {
             throw RuntimeV2MaintenanceError.claimInvalidated("the exclusive claim is no longer installed")
+        }
+        guard historyLayout == nil || record.completedHistoryLookupClaimed else {
+            throw RuntimeV2MaintenanceError.claimNotCommitEligible("protected history lookup was not performed")
         }
         guard record.phase == .active || record.phase == .committing else {
             throw RuntimeV2MaintenanceError.claimNotCommitEligible("the intent is \(record.phase.rawValue)")
@@ -1568,9 +1672,18 @@ public actor RuntimeV2MaintenanceCoordinator {
     private struct OpenedLock {
         var descriptor: Int32
         var identity: RuntimeV2MaintenanceLockIdentity
+        var historyLocks: RuntimeV2MaintenanceHistoryLocks? = nil
     }
 
     private func openLock(operation: Int32) throws -> OpenedLock {
+        if let historyLayout {
+            let locks = try RuntimeV2MaintenanceHistoryLocks.acquire(historyLayout, operation: operation)
+            let fd = try locks.duplicateAnchor()
+            guard let identity = Self.lockFileIdentity(at: lockURL) else {
+                close(fd); throw RuntimeV2MaintenanceError.crossProcessOwner("group anchor identity unavailable")
+            }
+            return OpenedLock(descriptor: fd, identity: identity, historyLocks: locks)
+        }
         let descriptor = open(lockURL.path, O_CREAT | O_RDWR, mode_t(0o600))
         guard descriptor >= 0 else {
             throw RuntimeV2MaintenanceError.crossProcessOwner("the domain lock could not be opened")
@@ -1603,18 +1716,16 @@ public actor RuntimeV2MaintenanceCoordinator {
     }
 
     private func blockingIntentOnDisk() -> String? {
-        guard let state = Self.readIntent(intentURL: intentURL) else { return nil }
-        switch state {
-        case .record(let record):
-            guard domain.matchesRecordedRoot(record.domainRoot, device: record.domainDevice, inode: record.domainInode) else {
-                return "durable intent physical domain differs or is unknown"
-            }
-            return record.phase.isBlocking
-                ? "durable intent \(record.intentID) is \(record.phase.rawValue)"
-                : nil
-        case .corrupt:
-            return "the durable intent is unreadable"
+        do { return try pendingHistories().isEmpty ? nil : "durable histories still require convergence" }
+        catch { return "durable histories are unreadable or have unknown physical identity" }
+    }
+
+    nonisolated static func readHistoryIntent(directory: URL) throws -> RuntimeV2MaintenanceIntentRecord? {
+        guard let value = readIntent(intentURL: directory.appendingPathComponent("intent.json")) else { return nil }
+        guard case .record(let record) = value else {
+            throw RuntimeV2MaintenanceError.recoveryPending("historical intent is unreadable")
         }
+        return record
     }
 
     /// Bounded, readonly discovery before any legacy owner is constructed.
@@ -1697,7 +1808,9 @@ public actor RuntimeV2MaintenanceCoordinator {
               parentNamed.st_dev == parentIdentity.st_dev, parentNamed.st_ino == parentIdentity.st_ino else {
             throw RuntimeV2MaintenanceError.invalidDomain("authority parent changed during discovery")
         }
-        guard matches.count <= 1 else { throw RuntimeV2MaintenanceError.invalidDomain("multiple physical-domain authority histories") }
+        guard matches.count <= 1 else {
+            throw RuntimeV2MaintenanceBootstrapFailure(.historiesAmbiguous, rootCheck: .verified, histories: matches.count)
+        }
         return matches.first ?? fresh
     }
 
@@ -1742,7 +1855,12 @@ public actor RuntimeV2MaintenanceCoordinator {
         return 0
     }
 
-    private func persistIntent(_ record: RuntimeV2MaintenanceIntentRecord) throws {
+    private func persistIntent(_ record: RuntimeV2MaintenanceIntentRecord, in storageDirectory: URL? = nil) throws {
+        let destination = storageDirectory ?? stateDirectory
+        guard storageDirectories.contains(destination) else {
+            throw RuntimeV2MaintenanceError.intentPersistenceFailed("unprotected native history context")
+        }
+        let intentURL = destination.appendingPathComponent("intent.json")
         let data: Data
         do {
             data = try Self.intentEncoder.encode(record)
@@ -1752,7 +1870,7 @@ public actor RuntimeV2MaintenanceCoordinator {
         guard data.count <= 1 << 20 else {
             throw RuntimeV2MaintenanceError.intentPersistenceFailed("record exceeds the bound")
         }
-        let temporary = stateDirectory.appendingPathComponent(".intent-\(UUID().uuidString).tmp")
+        let temporary = destination.appendingPathComponent(".intent-\(UUID().uuidString).tmp")
         let descriptor = open(temporary.path, O_CREAT | O_EXCL | O_WRONLY, mode_t(0o600))
         guard descriptor >= 0 else {
             throw RuntimeV2MaintenanceError.intentPersistenceFailed("temporary open")
@@ -1781,9 +1899,10 @@ public actor RuntimeV2MaintenanceCoordinator {
             _ = unlink(temporary.path)
             throw RuntimeV2MaintenanceError.intentPersistenceFailed("rename")
         }
-        guard Self.fsyncDirectory(stateDirectory) else {
+        guard Self.fsyncDirectory(destination) else {
             throw RuntimeV2MaintenanceError.intentPersistenceFailed("directory fsync")
         }
+        requiredIntentDirectories.insert(destination)
     }
 
     private static func fsyncDirectory(_ url: URL) -> Bool {
@@ -1855,7 +1974,8 @@ public enum RuntimeV2MaintenanceRegistry {
         let installed = table.install(coordinator, key: canonicalKey(for: coordinator.domain.root))
         RuntimeV2RecoveryAdmission.install(
             domain: installed.domain, stateDirectory: installed.stateDirectory,
-            recoveryBlocked: FileManager.default.fileExists(atPath: installed.intentURL.path))
+            recoveryBlocked: installed.storageDirectories.contains { FileManager.default.fileExists(atPath: $0.appendingPathComponent("intent.json").path) },
+            historyLayout: installed.historyLayout)
         return installed
     }
 

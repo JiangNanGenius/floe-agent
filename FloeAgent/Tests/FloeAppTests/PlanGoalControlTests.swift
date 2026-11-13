@@ -156,6 +156,19 @@ struct PlanGoalControlTests {
         try #require(request.diagnosticRunID != nil, "An auxiliary request cannot stand in for the admitted round")
         return request
     }
+    /// load() installs the same asynchronous live projection as the real
+    /// footer. Do not bypass that UI precondition by calling send while its
+    /// default isRunning=false still represents an unapplied first snapshot.
+    private func waitForRunningComposer(_ view: ThreadDetailViewModel, fixture f: Fixture, runID: UUID) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+        while (!view.isRunning || view.selectedRunID != runID), f.center.hasLiveOwner(runID: runID),
+              ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(2))
+        }
+        try #require(view.isRunning && view.selectedRunID == runID,
+            "The real running-input footer never observed its original active run")
+    }
+
     private func systemText(_ request: ProviderStreamRequest) -> String {
         request.effectiveMessages.filter { $0.role == "system" }
             .flatMap(\.content).compactMap { part -> String? in
@@ -1100,6 +1113,304 @@ struct PlanGoalControlTests {
         #expect(!hidden.contains(.init(otherTask)))
         var otherPlan = plan; otherPlan.id = UUID()
         #expect(!hidden.contains(.init(otherPlan)))
+    }
+
+
+    @Test("Goal-mode steering creates one real same-task Goal before model I/O and binds it at actual consumption")
+    func guidedGoalIntentPersistsAndBindsAtConsumedBoundary() async throws {
+        let f = try await fixture()
+        let conversation = try await f.center.createConversation(title: "Native guided Goal")
+        let started = try await f.center.startRun(goal: "Keep the original admitted round",
+            in: conversation.id, provider: f.provider, model: f.model, startOrigin: .explicitUserAction)
+        _ = try await waitForRequest(f, after: 0)
+        let view = ThreadDetailViewModel(conversationID: conversation.id, center: f.center)
+        await view.load(); view.selectedModelID = f.model.id
+        try await waitForRunningComposer(view, fixture: f, runID: started.runID)
+        view.selectAgentMode(.goal); view.selectRunningInputMode(.steer)
+        let objective = "Create the requested report and verify the actual saved evidence"
+        view.draft = objective
+        await view.send()
+        #expect(view.actionError == nil && view.agentMode == .agent && view.draft.isEmpty)
+        let goals = try await f.environment.intelligenceStore.goals(conversationID: conversation.id)
+        let goal = try #require(goals.first)
+        #expect(goals.count == 1 && goal.objective == objective && goal.conversationID == conversation.id)
+        #expect(goal.status == .active && goal.steps.first?.status == .pending)
+        let pending = try await f.environment.runningInputStore.pending(conversationID: conversation.id)
+        #expect(pending.count == 1 && pending[0].id == goal.id && pending[0].executionMode == "goal")
+        #expect(f.requests.all.count == 1, "Goal creation must not depend on an auxiliary/model call")
+        #expect(try await f.environment.runStore.run(id: started.runID)?.goalID == nil,
+            "Accepted intent is not a fabricated claim that the still-streaming round consumed it")
+        await view.load()
+        #expect(view.activeGoal?.id == goal.id, "The card projects the actual durable Goal")
+        try #require(f.requests.complete(at: 0))
+        let next = try await waitForRequest(f, after: 1)
+        #expect(next.diagnosticRunID == started.runID.uuidString)
+        let bound = try #require(try await f.environment.runStore.run(id: started.runID))
+        #expect(bound.goalID == goal.id && bound.goal == "Keep the original admitted round")
+        #expect(try await f.environment.runStore.runs(conversationID: conversation.id).count == 1)
+        #expect(try await f.environment.intelligenceStore.goals(conversationID: conversation.id).count == 1)
+        let messages = try await f.environment.conversationStore.messages(conversationID: conversation.id)
+        #expect(messages.filter { $0.role == "user" && $0.content == objective }.count == 1)
+        try await f.center.stopRunFromComposer(bound)
+        _ = await started.result.value
+        #expect(try await f.environment.intelligenceStore.goal(id: goal.id)?.status == .paused,
+            "Composer Stop still pauses the exact admitted Goal")
+    }
+
+    @Test("A failed native Goal+queue transaction preserves all draft text and the selected mode")
+    func guidedGoalInputInsertFailureRollsBackGoalAndKeepsDraft() async throws {
+        let f = try await fixture()
+        let conversation = try await f.center.createConversation(title: "Rejected guided Goal")
+        let started = try await f.center.startRun(goal: "Original round",
+            in: conversation.id, provider: f.provider, model: f.model, startOrigin: .explicitUserAction)
+        _ = try await waitForRequest(f, after: 0)
+        try await f.environment.database.writer { db in
+            try db.execute(sql: "CREATE TRIGGER reject_goal_input BEFORE INSERT ON pending_user_inputs BEGIN SELECT RAISE(ABORT, 'injected Goal input failure'); END;")
+        }
+        let view = ThreadDetailViewModel(conversationID: conversation.id, center: f.center)
+        await view.load(); view.selectedModelID = f.model.id
+        try await waitForRunningComposer(view, fixture: f, runID: started.runID)
+        view.selectAgentMode(.goal); view.selectRunningInputMode(.steer)
+        let draft = " \nPreserve this complete Goal request, including whitespace.\n "
+        view.draft = draft
+        await view.send()
+        #expect(view.actionError != nil && view.agentMode == .goal && view.draft == draft)
+        #expect(try await f.environment.intelligenceStore.goals(conversationID: conversation.id).isEmpty)
+        #expect(try await f.environment.runningInputStore.pending(conversationID: conversation.id).isEmpty)
+        #expect(f.requests.all.count == 1)
+        let original = try #require(try await f.environment.runStore.run(id: started.runID))
+        #expect(original.goalID == nil && original.endedAt == nil)
+        try await f.environment.database.writer { db in try db.execute(sql: "DROP TRIGGER reject_goal_input") }
+        try await f.center.stopRunFromComposer(original)
+        _ = await started.result.value
+    }
+
+    @Test("Late accepted guided Goal cannot overwrite a newer explicit mode or newly typed draft")
+    func guidedGoalAcceptancePreservesNewerModeAndDraft() async throws {
+        let f = try await fixture()
+        let conversation = try await f.center.createConversation(title: "Late guided Goal acceptance")
+        let started = try await f.center.startRun(goal: "Original round",
+            in: conversation.id, provider: f.provider, model: f.model, startOrigin: .explicitUserAction)
+        _ = try await waitForRequest(f, after: 0)
+        let gate = Gate()
+        f.center.launchTestHooks.afterRunningInputCommitted = { id in await gate.hold(id: id) }
+        let view = ThreadDetailViewModel(conversationID: conversation.id, center: f.center)
+        await view.load(); view.selectedModelID = f.model.id
+        try await waitForRunningComposer(view, fixture: f, runID: started.runID)
+        view.selectAgentMode(.goal); view.selectRunningInputMode(.steer)
+        view.draft = "The accepted long-term objective"
+        let send = Task { @MainActor in await view.send() }
+        try await waitForGate(gate)
+        view.selectAgentMode(.chat)
+        view.draft = "This is a new, unsent message"
+        await gate.release(); await send.value
+        f.center.launchTestHooks.afterRunningInputCommitted = nil
+        #expect(view.actionError == nil && view.agentMode == .chat)
+        #expect(view.draft == "This is a new, unsent message")
+        let goal = try #require(try await f.environment.intelligenceStore.goals(conversationID: conversation.id).first)
+        #expect(goal.objective == "The accepted long-term objective")
+        try await f.center.deleteGoal(conversationID: conversation.id, expectedGoalID: goal.id,
+                                      expectedRevision: goal.revision ?? 1)
+        let current = try #require(try await f.environment.runStore.run(id: started.runID))
+        try await f.center.stopRunFromComposer(current)
+        _ = await started.result.value
+        #expect(view.agentMode == .chat && view.draft == "This is a new, unsent message")
+    }
+
+    @Test("A cancelled queued Goal never adopts a newer Goal at queue launch")
+    func queuedGoalKeepsItsExactIdentityAfterDeleteAndReplacement() async throws {
+        let f = try await fixture()
+        let conversation = try await f.center.createConversation(title: "Exact queued Goal identity")
+        let started = try await f.center.startRun(goal: "Original round",
+            in: conversation.id, provider: f.provider, model: f.model, startOrigin: .explicitUserAction)
+        _ = try await waitForRequest(f, after: 0)
+        let view = ThreadDetailViewModel(conversationID: conversation.id, center: f.center)
+        await view.load(); view.selectedModelID = f.model.id
+        try await waitForRunningComposer(view, fixture: f, runID: started.runID)
+        view.selectAgentMode(.goal); view.selectRunningInputMode(.queue)
+        view.draft = "Queued Goal A"
+        await view.send()
+        #expect(view.actionError == nil && view.agentMode == .agent)
+        let a = try #require(try await f.environment.intelligenceStore.goals(conversationID: conversation.id).first)
+        let input = try #require(try await f.environment.runningInputStore.pending(conversationID: conversation.id).first)
+        #expect(input.id == a.id && input.status == .queued)
+        try await f.center.deleteGoal(conversationID: conversation.id, expectedGoalID: a.id, expectedRevision: a.revision ?? 1)
+        let b = ConversationGoal(conversationID: conversation.id, objective: "Different Goal B",
+            acceptanceCriteria: [.init(text: "Keep B independent")],
+            steps: [.init(title: "Work only toward B", status: .pending, order: 0)], status: .active)
+        try await f.environment.intelligenceStore.saveGoal(b)
+        try #require(f.requests.complete(at: 0))
+        _ = await started.result.value
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+        while f.center.hasLiveOwner(runID: started.runID), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(2))
+        }
+        try #require(!f.center.hasLiveOwner(runID: started.runID))
+        #expect(try await f.environment.runStore.runs(conversationID: conversation.id).count == 1)
+        #expect(f.requests.all.count == 1)
+        #expect(try await f.environment.runningInputStore.input(id: input.id)?.status == .queued)
+        #expect(try await f.environment.intelligenceStore.goal(id: a.id)?.status == .cancelled)
+        #expect(try await f.environment.intelligenceStore.goal(id: b.id)?.status == .active)
+    }
+
+    @Test("Explicit Goal acceptance preserves original Notes ownership and refuses another conversation's run")
+    func nativeGoalInputCannotCrossConversationOrAssistantOwnership() async throws {
+        let f = try await fixture()
+        let ordinary = try await f.center.createConversation(title: "Ordinary task")
+        let assistant = try await f.center.createConversation(title: "Notes-owned task", purpose: .notes)
+        let run = RunRecord(id: UUID(), conversationID: assistant.id, state: "preparing", goal: "Notes task",
+                            startedAt: Date(), conversationMode: "chat")
+        try await f.environment.runStore.saveRun(run)
+        let crossed = PendingUserInput(conversationID: ordinary.id, targetRunID: run.id,
+            content: "Wrong task", mode: .steer, executionMode: "goal")
+        await #expect(throws: TaskGoalError.staleRun) {
+            _ = try await f.environment.intelligenceStore.enqueueGoalInput(crossed, expectedRunID: run.id)
+        }
+        #expect(try await f.environment.intelligenceStore.goals(conversationID: ordinary.id).isEmpty)
+        let input = PendingUserInput(conversationID: assistant.id, targetRunID: run.id,
+            content: "Continue within the current Notes task", mode: .queue, executionMode: "goal")
+        let accepted = try await f.environment.intelligenceStore.enqueueGoalInput(input, expectedRunID: run.id)
+        let goal = try #require(try await f.environment.intelligenceStore.goal(id: accepted.id))
+        #expect(goal.conversationID == assistant.id && goal.objective == input.content)
+        #expect(try await f.environment.runStore.run(id: run.id)?.goalID == nil)
+        await f.center.reload()
+        #expect(!f.center.conversations.contains { $0.id == assistant.id })
+        #expect(f.center.conversations.contains { $0.id == ordinary.id })
+        #expect(try await f.environment.intelligenceStore.goals(conversationID: ordinary.id).isEmpty)
+    }
+
+    @Test("A preparing run queues the accepted Goal without a parallel launch or fabricated round binding")
+    func guidedGoalDuringPreparationWaitsForItsRealDelivery() async throws {
+        let f = try await fixture()
+        let conversation = try await f.center.createConversation(title: "Preparing Goal delivery")
+        let gate = Gate()
+        f.center.launchTestHooks.afterRunPrepared = { id in await gate.hold(id: id) }
+        let launch = Task { @MainActor in
+            try await f.center.startRun(goal: "Original preparing round", in: conversation.id,
+                provider: f.provider, model: f.model, startOrigin: .explicitUserAction)
+        }
+        try await waitForGate(gate)
+        let runID = try #require(await gate.identity)
+        try await f.center.submitRunningInput(content: "The accepted pending Goal", in: conversation.id,
+            expectedRunID: runID, mode: .steer, selectedModelID: f.model.id, workspaceID: nil,
+            executionMode: .goal, attachments: [])
+        let input = try #require(try await f.environment.runningInputStore.pending(conversationID: conversation.id).first)
+        #expect(input.status == .queued && input.executionMode == "goal")
+        #expect(try await f.environment.intelligenceStore.goal(id: input.id)?.objective == input.content)
+        #expect(try await f.environment.runStore.run(id: runID)?.goalID == nil)
+        #expect(try await f.environment.runStore.runs(conversationID: conversation.id).count == 1)
+        #expect(f.requests.all.isEmpty)
+        try await f.center.removePendingInput(id: input.id)
+        let goal = try #require(try await f.environment.intelligenceStore.goal(id: input.id))
+        try await f.center.deleteGoal(conversationID: conversation.id, expectedGoalID: goal.id,
+                                      expectedRevision: goal.revision ?? 1)
+        f.center.launchTestHooks.afterRunPrepared = nil
+        await gate.release()
+        let started = try await launch.value
+        _ = try await waitForRequest(f, after: 0)
+        let current = try #require(try await f.environment.runStore.run(id: started.runID))
+        try await f.center.stopRunFromComposer(current)
+        _ = await started.result.value
+    }
+
+
+    @Test("Composer Stop pauses only this run's accepted pending Goal before it reaches the consume boundary")
+    func stopPausesTheExactAcceptedPendingGoalBeforeConsumption() async throws {
+        let f = try await fixture()
+        let conversation = try await f.center.createConversation(title: "Stop pending Goal")
+        let started = try await f.center.startRun(goal: "Original active round", in: conversation.id,
+            provider: f.provider, model: f.model, startOrigin: .explicitUserAction)
+        _ = try await waitForRequest(f, after: 0)
+        let unrelated = try await f.center.createConversation(title: "Another task")
+        let otherGoal = ConversationGoal(conversationID: unrelated.id, objective: "Keep the other task independent",
+            acceptanceCriteria: [.init(text: "Unchanged")], steps: [.init(title: "Other work", order: 0)], status: .active)
+        try await f.environment.intelligenceStore.saveGoal(otherGoal)
+        let gate = Gate()
+        f.center.launchTestHooks.afterRunningInputCommitted = { id in await gate.hold(id: id) }
+        let view = ThreadDetailViewModel(conversationID: conversation.id, center: f.center)
+        await view.load(); view.selectedModelID = f.model.id
+        try await waitForRunningComposer(view, fixture: f, runID: started.runID)
+        view.selectAgentMode(.goal); view.selectRunningInputMode(.steer)
+        view.draft = "Keep this explicit Goal saved and pause it on Stop"
+        let send = Task { @MainActor in await view.send() }
+        try await waitForGate(gate)
+        let inputID = try #require(await gate.identity)
+        let original = try #require(try await f.environment.runStore.run(id: started.runID))
+        #expect(original.goalID == nil)
+        try await f.center.stopRunFromComposer(original)
+        _ = await started.result.value
+        #expect(try await f.environment.intelligenceStore.goal(id: inputID)?.status == .paused)
+        #expect(try await f.environment.intelligenceStore.goal(id: otherGoal.id)?.status == .active)
+        f.center.launchTestHooks.afterRunningInputCommitted = nil
+        await gate.release(); await send.value
+        let retained = try #require(try await f.environment.runningInputStore.input(id: inputID))
+        #expect(retained.status == .queued && retained.targetRunID == original.id)
+        #expect(retained.content == "Keep this explicit Goal saved and pause it on Stop")
+        #expect(view.actionError == nil && view.agentMode == .agent && view.draft.isEmpty)
+        #expect(try await f.environment.runStore.runs(conversationID: conversation.id).count == 1)
+        #expect(try await f.environment.runStore.run(id: original.id)?.goalID == nil,
+            "Stopping cannot fabricate an admission that never happened")
+        #expect(f.requests.all.count == 1)
+    }
+
+
+    @Test("Resuming a stopped pending Goal consumes its original input in the native launch transaction exactly once")
+    func stoppedPendingGoalResumeIsAtomicAndDoesNotRepeatItsInput() async throws {
+        let f = try await fixture()
+        let conversation = try await f.center.createConversation(title: "Resume accepted pending Goal")
+        let original = try await f.center.startRun(goal: "The original current round", in: conversation.id,
+            provider: f.provider, model: f.model, startOrigin: .explicitUserAction)
+        _ = try await waitForRequest(f, after: 0)
+        let view = ThreadDetailViewModel(conversationID: conversation.id, center: f.center)
+        await view.load(); view.selectedModelID = f.model.id
+        try await waitForRunningComposer(view, fixture: f, runID: original.runID)
+        view.selectAgentMode(.goal); view.selectRunningInputMode(.queue)
+        let objective = "Resume this exact accepted Goal without replaying its original input"
+        view.draft = objective; await view.send()
+        let input = try #require(try await f.environment.runningInputStore.pending(conversationID: conversation.id).first)
+        let activeRound = try #require(try await f.environment.runStore.run(id: original.runID))
+        try await f.center.stopRunFromComposer(activeRound)
+        _ = await original.result.value
+        let pausedGoal = try #require(try await f.environment.intelligenceStore.goal(id: input.id))
+        #expect(pausedGoal.status == .paused)
+        try await f.environment.database.writer { db in
+            try db.execute(sql: "CREATE TRIGGER reject_goal_resume_run BEFORE INSERT ON runs BEGIN SELECT RAISE(ABORT, 'injected first Goal delivery failure'); END;")
+        }
+        await #expect(throws: (any Error).self) {
+            _ = try await f.center.resumeGoal(conversationID: conversation.id,
+                expectedGoalID: pausedGoal.id, expectedRevision: pausedGoal.revision ?? 1,
+                provider: f.provider, model: f.model)
+        }
+        #expect(try await f.environment.runStore.runs(conversationID: conversation.id).count == 1)
+        let unconsumed = try #require(try await f.environment.runningInputStore.input(id: input.id))
+        #expect(unconsumed.status == .queued && unconsumed.consumedRunID == nil && unconsumed.content == objective)
+        #expect(try await f.environment.intelligenceStore.goal(id: pausedGoal.id)?.status == .paused)
+        #expect(f.requests.all.count == 1)
+        try await f.environment.database.writer { db in try db.execute(sql: "DROP TRIGGER reject_goal_resume_run") }
+        let goal = try #require(try await f.environment.intelligenceStore.goal(id: pausedGoal.id))
+        let resumed = try await f.center.resumeGoal(conversationID: conversation.id,
+            expectedGoalID: goal.id, expectedRevision: goal.revision ?? 1,
+            provider: f.provider, model: f.model)
+        let started = try #require(resumed.startedRun)
+        _ = try await waitForRequest(f, after: 1)
+        let consumed = try #require(try await f.environment.runningInputStore.input(id: input.id))
+        #expect(consumed.status == .consumed && consumed.consumedRunID == started.runID && consumed.content == objective)
+        #expect(try await f.environment.runningInputStore.pending(conversationID: conversation.id).isEmpty)
+        let run = try #require(try await f.environment.runStore.run(id: started.runID))
+        #expect(run.goalID == goal.id && run.goal == objective)
+        let history = try await f.environment.conversationStore.messages(conversationID: conversation.id)
+        #expect(history.filter { $0.role == "user" && $0.content == objective }.count == 1)
+        let current = try #require(try await f.environment.intelligenceStore.goal(id: goal.id))
+        let again = try await f.center.resumeGoal(conversationID: conversation.id,
+            expectedGoalID: current.id, expectedRevision: current.revision ?? 1,
+            provider: f.provider, model: f.model)
+        #expect(again.runID == started.runID && again.startedRun == nil)
+        #expect(try await f.environment.runStore.runs(conversationID: conversation.id).count == 2)
+        #expect(f.requests.all.count == 2)
+        try await f.center.stopRunFromComposer(run)
+        _ = await started.result.value
+        #expect(try await f.environment.runningInputStore.input(id: input.id)?.status == .consumed)
+        #expect(try await f.environment.intelligenceStore.goals(conversationID: conversation.id).count == 1)
     }
 
 }

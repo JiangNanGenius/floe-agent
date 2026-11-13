@@ -169,13 +169,14 @@ final class LinuxGuestMaintenanceRuntime: @unchecked Sendable {
     let optimizer: RuntimeV2RecoveryOptimizationAdapter
     private let sources: LinuxGuestMaintenanceSources
 
-    init(domain: RuntimeV2MaintenanceDomain, stateDirectory: URL, database: DatabaseManager?) throws {
+    init(domain: RuntimeV2MaintenanceDomain, stateDirectory: URL, database: DatabaseManager?,
+         historyLayout: RuntimeV2MaintenanceHistoryLayout? = nil) throws {
         self.domain = domain
         let sources = LinuxGuestMaintenanceSources(domain: domain, stateDirectory: stateDirectory, database: database)
         self.sources = sources
         let coordinator = try RuntimeV2MaintenanceCoordinator(
             domain: domain, stateDirectory: stateDirectory,
-            evidenceProvider: { await sources.collectAdmitted() })
+            evidenceProvider: { await sources.collectAdmitted() }, historyLayout: historyLayout)
         self.coordinator = coordinator
         guard RuntimeV2MaintenanceRegistry.install(coordinator) === coordinator else {
             throw RuntimeV2MaintenanceError.claimInvalidated("legacy authority already has another App owner")
@@ -227,10 +228,19 @@ enum LinuxGuestMaintenanceAssembly {
         do {
             let domain = try RuntimeV2MaintenanceDomain(trustedLegacyRoot: root)
             guard RuntimeV2MaintenanceRegistry.coordinator(forDomain: domain) == nil else { return nil }
-            let state = try domain.authorityStateDirectory()
-            return holder.install(try LinuxGuestMaintenanceRuntime(domain: domain, stateDirectory: state, database: database))
+            let histories = try domain.authorityHistoryLayout()
+            let runtime = try LinuxGuestMaintenanceRuntime(domain: domain,
+                stateDirectory: histories.primaryDirectory, database: database, historyLayout: histories)
+            FloeLogger(category: .tools).info("legacyMaintenanceBootstrap code=registered rootCheck=verified histories=\(histories.historicalDirectories.count) pending=\(histories.pendingIntentCount)")
+            return holder.install(runtime)
         } catch {
-            FloeLogger(category: .tools).error("Legacy native maintenance bootstrap unavailable; no optimization admitted")
+            if let failure = error as? RuntimeV2MaintenanceBootstrapFailure {
+                FloeLogger(category: .tools).error(failure.diagnosticText)
+            } else {
+                // Closed diagnostic vocabulary only; NSError/paths/IDs never
+                // become normal UI copy or an admission exception.
+                FloeLogger(category: .tools).error("legacyMaintenanceBootstrap code=native_bootstrap_failed rootCheck=unmeasured")
+            }
             return nil
         }
     }

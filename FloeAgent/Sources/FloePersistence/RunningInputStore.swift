@@ -31,27 +31,34 @@ public actor SQLiteRunningInputStore: RunningInputStore {
     public init(database: DatabaseManager) { self.database = database }
 
     public func enqueue(_ input: PendingUserInput) async throws -> PendingUserInput {
+        guard !input.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw FloeError.validationFailed("Input must not be empty")
+        }
+        return try await database.writer { db in try Self.enqueue(input, in: db) }
+    }
+
+    /// The same bounded queue insert, reusable by a native Goal acceptance
+    /// transaction. This does not open another writer or commit independently.
+    public static func enqueue(_ input: PendingUserInput, in db: Database) throws -> PendingUserInput {
         let trimmed = input.content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw FloeError.validationFailed("Input must not be empty") }
-        return try await database.writer { db in
-            let count = try Int.fetchOne(db, sql: """
-                SELECT COUNT(*) FROM pending_user_inputs
-                WHERE conversation_id = ? AND status IN ('queued', 'promoting', 'steerPending')
-                """, arguments: [input.conversationID.uuidString]) ?? 0
-            guard count < Self.maximumPendingPerConversation else {
-                throw FloeError.validationFailed("The running-input queue is full")
-            }
-            let position = (try Int64.fetchOne(db, sql: """
-                SELECT COALESCE(MAX(position), 0) + 1 FROM pending_user_inputs
-                WHERE conversation_id = ? AND status IN ('queued', 'promoting', 'steerPending')
-                """, arguments: [input.conversationID.uuidString])) ?? 1
-            var value = input
-            value.content = trimmed
-            value.position = position
-            value.updatedAt = Date()
-            try Self.insert(value, db: db)
-            return value
+        let count = try Int.fetchOne(db, sql: """
+            SELECT COUNT(*) FROM pending_user_inputs
+            WHERE conversation_id = ? AND status IN ('queued', 'promoting', 'steerPending')
+            """, arguments: [input.conversationID.uuidString]) ?? 0
+        guard count < Self.maximumPendingPerConversation else {
+            throw FloeError.validationFailed("The running-input queue is full")
         }
+        let position = (try Int64.fetchOne(db, sql: """
+            SELECT COALESCE(MAX(position), 0) + 1 FROM pending_user_inputs
+            WHERE conversation_id = ? AND status IN ('queued', 'promoting', 'steerPending')
+            """, arguments: [input.conversationID.uuidString])) ?? 1
+        var value = input
+        value.content = trimmed
+        value.position = position
+        value.updatedAt = Date()
+        try Self.insert(value, db: db)
+        return value
     }
 
     public func upsert(_ input: PendingUserInput) async throws {
@@ -181,7 +188,9 @@ public actor SQLiteRunningInputStore: RunningInputStore {
         try await database.writer { db in
             try db.execute(sql: """
                 UPDATE pending_user_inputs
-                SET status = 'queued', mode = 'queue', target_run_id = NULL, updated_at = ?
+                SET status = 'queued', mode = 'queue',
+                    target_run_id = CASE WHEN execution_mode = 'goal' THEN target_run_id ELSE NULL END,
+                    updated_at = ?
                 WHERE id = ? AND status IN ('promoting', 'steerPending')
                 """, arguments: [PersistenceCodec.encode(Date()), id.uuidString])
         }
@@ -193,7 +202,7 @@ public actor SQLiteRunningInputStore: RunningInputStore {
                 UPDATE pending_user_inputs
                 SET status = 'queued',
                     mode = CASE WHEN execution_mode = 'browserHandoff' THEN 'steer' ELSE 'queue' END,
-                    target_run_id = CASE WHEN execution_mode = 'browserHandoff' THEN target_run_id ELSE NULL END,
+                    target_run_id = CASE WHEN execution_mode IN ('browserHandoff','goal') THEN target_run_id ELSE NULL END,
                     updated_at = ?
                 WHERE status IN ('promoting', 'steerPending') AND consumed_run_id IS NULL
                 """, arguments: [PersistenceCodec.encode(Date())])

@@ -58,6 +58,7 @@ public actor MeetingService {
     private var committingPartials: Set<TranscriptSegmentID> = []
     private var startReservation: (session: CaptureSessionID, meeting: MeetingID)?
     private var startEpoch = 0
+    private var pauseRequests: Set<CaptureSessionID> = []
     private var finishingTasks: [CaptureSessionID: Task<Void, Error>] = [:]
     public private(set) var capturePersistenceFailure: MeetingError?
     /// Which meeting owns the active capture session.
@@ -108,7 +109,8 @@ public actor MeetingService {
     public func startCapture(
         meeting id: MeetingID,
         backend: any MeetingCaptureBackend,
-        configuration: CaptureConfiguration
+        configuration: CaptureConfiguration,
+        continuingRecording recordingID: UUID? = nil
     ) async throws -> CaptureSessionID {
         if let reserved = startReservation { throw MeetingError.captureAlreadyActive(reserved.session) }
         if let active = activeMeetings.keys.first { throw MeetingError.captureAlreadyActive(active) }
@@ -122,7 +124,12 @@ public actor MeetingService {
             if let active = await capture.activeSession { throw MeetingError.captureAlreadyActive(active) }
             _ = try await self.meeting(id)
             guard epoch == startEpoch else { throw MeetingError.captureSessionEnded(session.id) }
-            try await database.insertSession(session)
+            if configuration.kind == .liveRecording {
+                try await database.insertLiveSession(session, continuing: recordingID)
+            } else {
+                guard recordingID == nil else { throw MeetingError.captureSessionEnded(session.id) }
+                try await database.insertSession(session)
+            }
             inserted = true
             activeMeetings[session.id] = id
             guard epoch == startEpoch else { throw MeetingError.captureSessionEnded(session.id) }
@@ -144,6 +151,31 @@ public actor MeetingService {
             }
             throw error
         }
+    }
+
+    public func recordingTakes(meeting: MeetingID) async throws -> [MeetingRecordingSnapshot] {
+        _ = try await self.meeting(meeting)
+        return try await database.recordingTakes(meeting: meeting)
+    }
+
+    /// Pause intent is installed on this actor before the physical stop await.
+    /// The resulting capture terminal row and paused take commit atomically.
+    @discardableResult
+    public func pauseCapture() async throws -> CaptureSessionOutcome {
+        guard let session = activeMeetings.keys.first, !closedSessions.contains(session) else { throw MeetingError.noActiveCapture }
+        pauseRequests.insert(session)
+        return try await stopCapture()
+    }
+
+    public func recordCapturedDuration(_ seconds: Double, session: CaptureSessionID, meeting: MeetingID) async throws {
+        try await database.recordCapturedDuration(seconds, session: session, meeting: meeting)
+    }
+
+    public func finishPausedRecording(_ recordingID: UUID, meeting: MeetingID) async throws {
+        guard startReservation == nil, activeMeetings.isEmpty else {
+            throw MeetingError.captureAlreadyActive(startReservation?.session ?? activeMeetings.keys.first!)
+        }
+        try await database.finishPausedRecording(recordingID, meeting: meeting)
     }
 
     @discardableResult
@@ -198,7 +230,8 @@ public actor MeetingService {
             id,
             meeting: meeting,
             state: originalAvailable ? .stopped : .failed,
-            reason: originalAvailable ? .recovered : nil)
+            reason: originalAvailable ? .recovered : nil,
+            pauseRecording: originalAvailable)
         return true
     }
 
@@ -213,13 +246,16 @@ public actor MeetingService {
         if let existing = finishingTasks[outcome.session] { task = existing }
         else {
             let database = self.database
-            task = Task { try await database.finishCapture(outcome.session, meeting: meeting, state: outcome.state, reason: outcome.stopReason) }
+            let pauseRecording = pauseRequests.contains(outcome.session)
+            task = Task { try await database.finishCapture(outcome.session, meeting: meeting, state: outcome.state,
+                                                         reason: outcome.stopReason, pauseRecording: pauseRecording) }
             finishingTasks[outcome.session] = task
         }
         do {
             try await task.value
             activeMeetings[outcome.session] = nil
             finishingTasks[outcome.session] = nil
+            pauseRequests.remove(outcome.session)
             capturePersistenceFailure = nil
         } catch {
             finishingTasks[outcome.session] = nil
@@ -254,6 +290,7 @@ public actor MeetingService {
         file: URL,
         kind: CaptureKind,
         origin: CaptureSessionID? = nil,
+        displayName: String? = nil,
         duration: @Sendable (URL) async throws -> MediaTimeRange
     ) async throws -> CaptureSessionID {
         _ = try await self.meeting(id)
@@ -270,7 +307,8 @@ public actor MeetingService {
             durationSeconds: range.end - range.start,
             startedAt: Date(),
             endedAt: Date(),
-            stopReason: .finished
+            stopReason: .finished,
+            displayName: displayName.map { String($0.prefix(256)) }
         )
         try await database.insertSession(session, origin: origin?.description)
         return session.id

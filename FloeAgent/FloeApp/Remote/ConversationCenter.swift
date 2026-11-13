@@ -1434,6 +1434,9 @@ final class ConversationCenter: ObservableObject {
         /// After durable input/cadence recording, while the send still owns
         /// its pre-deferred preparation. No network/model request here.
         var afterRunPrepared: (@Sendable (UUID) async -> Void)?
+        /// After the durable running-input (and explicit Goal, if selected)
+        /// transaction, before delivery. Never set in production.
+        var afterRunningInputCommitted: (@Sendable (UUID) async -> Void)?
         /// After a long-term Goal control commits its advancement fence.
         /// Tests can prepare another Goal in this exact suspension.
         var afterGoalControlFence: (@Sendable (UUID) async -> Void)?
@@ -5557,6 +5560,7 @@ final class ConversationCenter: ObservableObject {
         /// Nil retains ordinary/temporary chat's existing ID allocation.
         newRunID: UUID? = nil,
         reusingUserMessageID: UUID? = nil,
+        consumingGoalInputID: UUID? = nil,
         executionEnvironmentID: String? = nil,
         expectedGoal: (id: UUID, revision: Int)? = nil,
         planExecutionHandoffID: UUID? = nil,
@@ -5590,7 +5594,7 @@ final class ConversationCenter: ObservableObject {
         // session afterwards. Store authority rides the session, which
         // forwards after Keep and closes at End.
         let launchIsTemporary = isTemporaryConversation(conversationID)
-        guard !launchIsTemporary || (newRunID == nil && executionEnvironmentID == nil && reusingUserMessageID == nil) else {
+        guard !launchIsTemporary || (newRunID == nil && executionEnvironmentID == nil && reusingUserMessageID == nil && consumingGoalInputID == nil) else {
             throw FloeError.validationFailed("A feature-owned launch cannot use temporary chat")
         }
         // Temporary chat is text-only at the ACTUAL launch boundary, not
@@ -5626,7 +5630,11 @@ final class ConversationCenter: ObservableObject {
         // finished. A send while it waits resumes the SAME run with the new
         // message instead of creating a second run; this holds regardless of
         // how the UI decided to send.
-        if !launchIsTemporary, !isGoalContinuation,
+        if consumingGoalInputID != nil, await awaitingDependencyRun(conversationID: conversationID) != nil {
+            throw FloeError.validationFailed(IDELanguageRunText.t(
+                "另一轮仍在等待后台工作，完成后可继续目标。", "Another round is awaiting background work. Resume the Goal after it finishes."))
+        }
+        if !launchIsTemporary, !isGoalContinuation, consumingGoalInputID == nil,
            let waiting = await awaitingDependencyRun(conversationID: conversationID) {
             guard newRunID == nil || newRunID == waiting.id else {
                 throw FloeError.validationFailed("A different run is still waiting in this conversation")
@@ -5682,6 +5690,7 @@ final class ConversationCenter: ObservableObject {
             ) ?? .ask),
             messageRole: isGoalContinuation ? "goalContinuation" : "user",
             reusingUserMessageID: reusingUserMessageID,
+            consumingGoalInputID: consumingGoalInputID,
             providerID: provider.id,
             modelID: model.id,
             providerName: provider.displayName ?? provider.kind.rawValue,
@@ -6627,7 +6636,7 @@ final class ConversationCenter: ObservableObject {
             // Its next owner rehydrates the saved native message references.
             if temporary { throw CancellationError() }
         }
-        let input = try await runningInputStore(for: conversationID).enqueue(PendingUserInput(
+        let candidate = PendingUserInput(
             id: inputID,
             conversationID: conversationID,
             targetRunID: expectedRunID,
@@ -6637,9 +6646,31 @@ final class ConversationCenter: ObservableObject {
             selectedModelID: selectedModelID,
             workspaceID: workspaceID,
             executionMode: executionMode.rawValue
-        ))
+        )
+        let input: PendingUserInput
+        if executionMode == .goal {
+            guard !temporary else { throw FloeError.unauthorized }
+            input = try await environment.intelligenceStore.enqueueGoalInput(candidate, expectedRunID: expectedRunID)
+        } else {
+            input = try await runningInputStore(for: conversationID).enqueue(candidate)
+        }
+        // Native durable acceptance is observable before runtime delivery;
+        // it cannot depend on the model choosing goal.create.
+        publishSession(conversationID)
+        await launchTestHooks.afterRunningInputCommitted?(input.id)
         if mode == .steer {
-            try await promoteToSteer(inputID: input.id, expectedRunID: expectedRunID)
+            do { try await promoteToSteer(inputID: input.id, expectedRunID: expectedRunID) }
+            catch {
+                // Once Goal+input committed, a rejected/stale steer remains
+                // an accepted queued message. Require the real owner/bytes,
+                // never clear the draft on an inferred delivery success.
+                guard executionMode == .goal,
+                      let saved = try? await runningInputStore(for: conversationID).input(id: input.id),
+                      saved.conversationID == conversationID, saved.content == input.content,
+                      saved.executionMode == AgentExecutionMode.goal.rawValue,
+                      let goal = try? await environment.intelligenceStore.goal(id: input.id),
+                      goal.conversationID == conversationID else { throw error }
+            }
         }
         publishSession(conversationID)
     }
@@ -6933,8 +6964,15 @@ final class ConversationCenter: ObservableObject {
         _ record: RunRecord,
         content: String,
         attachments: [AttachmentRef],
-        preparationID: UUID
+        preparationID: UUID,
+        acceptedGoalInput: PendingUserInput? = nil
     ) async throws -> StartedConversationRun {
+        if let acceptedGoalInput {
+            guard acceptedGoalInput.conversationID == record.conversationID,
+                  acceptedGoalInput.targetRunID == record.id,
+                  acceptedGoalInput.executionMode == AgentExecutionMode.goal.rawValue,
+                  acceptedGoalInput.content == content else { throw FloeError.unauthorized }
+        }
         let resolvedPair: (ProviderProfile, ModelProfile)
         if let modelID = record.modelID, let resolved = providerAndModel(modelID: modelID) {
             resolvedPair = resolved
@@ -6945,9 +6983,9 @@ final class ConversationCenter: ObservableObject {
         try await captureIngressSecrets(ingress.captures, owner: .conversation(record.conversationID))
         guard launchPreparations.mayExecute(preparationID) else { throw CancellationError() }
         let safeContent = ingress.sanitizedText
-        let messageID = UUID()
+        let messageID = acceptedGoalInput?.id ?? UUID()
         try modelInputProjection(for: record.id, conversationID: record.conversationID).register(id: messageID, safe: safeContent, live: content, captures: ingress.captures)
-        let createdAt = Date()
+        let createdAt = acceptedGoalInput?.createdAt ?? Date()
         try await conversationStore(for: record.conversationID).appendMessage(PersistedMessage(
             id: messageID,
             conversationID: record.conversationID,
@@ -6984,6 +7022,27 @@ final class ConversationCenter: ObservableObject {
         ) else {
             throw FloeError.validationFailed("The queued message changed before it could be guided")
         }
+        if input.executionMode == AgentExecutionMode.goal.rawValue {
+            do {
+                let goal = try await environment.intelligenceStore.goal(id: input.id)
+                let target = try await runStore(for: input.conversationID).run(id: expectedRunID)
+                let canDeliver = goal?.conversationID == input.conversationID && goal?.status == .active
+                    && target?.conversationID == input.conversationID && target?.endedAt == nil
+                    && target?.conversationMode != ConversationMode.plan.rawValue
+                    && (target?.goalID == nil || target?.goalID == goal?.id)
+                let parked = await isAwaitingDependency(runID: expectedRunID, conversationID: input.conversationID)
+                let readyOrParked = runServices[expectedRunID] != nil || parked
+                if !canDeliver || !readyOrParked {
+                    try await store.restoreQueued(id: input.id)
+                    if target?.endedAt != nil { await launchNextQueuedInput(conversationID: input.conversationID) }
+                    publishSession(input.conversationID)
+                    return
+                }
+            } catch {
+                try? await store.restoreQueued(id: input.id)
+                throw error
+            }
+        }
         guard let service = runServices[expectedRunID], service.conversationID == input.conversationID else {
             // A durably parked run waiting on required background work is NOT
             // finished. New input for it resumes the SAME run with that input
@@ -6998,7 +7057,8 @@ final class ConversationCenter: ObservableObject {
                     defer { finishLaunch(preparationID) }
                     let started = try await resumeRunWithInput(
                         record, content: input.content, attachments: input.attachments,
-                        preparationID: preparationID)
+                        preparationID: preparationID,
+                        acceptedGoalInput: input.executionMode == AgentExecutionMode.goal.rawValue ? input : nil)
                     try await store.markConsumed(id: inputID, runID: started.runID)
                     FloeLogger(category: .app).info(
                         "steerTargetAwaitingDependencyResumed conversation=\(input.conversationID.uuidString) run=\(started.runID.uuidString) input=\(input.id.uuidString)")
@@ -7080,9 +7140,32 @@ final class ConversationCenter: ObservableObject {
                 publishSession(conversationID)
                 return
             }
+            var expectedInputGoal: (id: UUID, revision: Int)?
+            if mode == .goal {
+                do {
+                    if let goal = try await environment.intelligenceStore.goal(id: input.id) {
+                        guard goal.conversationID == conversationID, goal.status == .active else {
+                            throw CancellationError()
+                        }
+                        expectedInputGoal = (goal.id, goal.revision ?? 1)
+                    }
+                } catch {
+                    try? await inputStore.restoreQueued(id: input.id)
+                    publishSession(conversationID)
+                    return
+                }
+            }
             // A parked-awaiting-dependency run owns the queued follow-up: it
             // resumes in place with this message instead of a new run.
             if let waiting = await awaitingDependencyRun(conversationID: conversationID) {
+                if expectedInputGoal != nil {
+                    // A queued Goal must not be consumed as ordinary text by
+                    // a differently admitted parked round. Its durable exact
+                    // Goal waits for that round to settle.
+                    try? await inputStore.restoreQueued(id: input.id)
+                    publishSession(conversationID)
+                    return
+                }
                 do {
                     let preparationID = beginLaunch(conversationID: conversationID)
                     defer { finishLaunch(preparationID) }
@@ -7106,9 +7189,13 @@ final class ConversationCenter: ObservableObject {
                     workspaceID: input.workspaceID,
                     attachments: input.attachments,
                     executionMode: mode,
+                    consumingGoalInputID: expectedInputGoal == nil ? nil : input.id,
+                    expectedGoal: expectedInputGoal,
                     startOrigin: .queuedInput
                 )
-                try await inputStore.markConsumed(id: input.id, runID: started.runID)
+                if expectedInputGoal == nil {
+                    try await inputStore.markConsumed(id: input.id, runID: started.runID)
+                }
             } catch {
                 try? await inputStore.restoreQueued(id: input.id)
             }
@@ -8193,9 +8280,17 @@ final class ConversationCenter: ObservableObject {
             }
         }
         do {
-            let started = try await startRun(goal: "Continue the existing authorized task goal: \(goal.objective)",
+            let savedInput = try await environment.runningInputStore.input(id: goal.id)
+            let pendingGoalInput = savedInput.flatMap { input -> PendingUserInput? in
+                guard input.conversationID == conversationID, input.executionMode == AgentExecutionMode.goal.rawValue,
+                      input.consumedRunID == nil, [.queued, .promoting, .steerPending].contains(input.status) else { return nil }
+                return input
+            }
+            let started = try await startRun(goal: pendingGoalInput?.content ?? "Continue the existing authorized task goal: \(goal.objective)",
                 in: conversationID, provider: provider, model: model, workspaceID: workspaceID,
-                executionMode: .goal, isGoalContinuation: true,
+                attachments: pendingGoalInput?.attachments ?? [],
+                executionMode: .goal, isGoalContinuation: pendingGoalInput == nil,
+                consumingGoalInputID: pendingGoalInput?.id,
                 expectedGoal: (goal.id, expectedRevision + 1), startOrigin: .explicitUserAction)
             publishSession(conversationID)
             goal.revision = expectedRevision + 1
@@ -8700,6 +8795,17 @@ final class ConversationCenter: ObservableObject {
                 guard persisted else { throw goalControlConflict() }
                 goalPresentationRevision &+= 1
                 publishSession(run.conversationID)
+            } else if (wasActive || actuallyActive), !isTemporaryConversation(run.conversationID) {
+                // An explicit Goal may already be durable while its steer is
+                // still waiting for the current step. Pause only its proven
+                // pending-input/run association, preserving other Goals.
+                let paused = try await environment.intelligenceStore.pausePendingGoalInputsForComposerStop(
+                    runID: run.id, conversationID: run.conversationID)
+                for id in paused { reserve(id) }
+                if !paused.isEmpty {
+                    goalPresentationRevision &+= 1
+                    publishSession(run.conversationID)
+                }
             }
         } catch { failure = error }
         if canCancel { await cancel(runID: snapshot.id) }

@@ -38,6 +38,9 @@ public struct RunLaunchRequest: Sendable, Hashable {
     public var messageRole: String
     /// Native confirmation message staged in this same conversation; consumed once.
     public var reusingUserMessageID: UUID?
+    /// Native first-delivery of this same-ID durable Goal input. Consumption
+    /// commits with run/message/admission, never as a later queue write.
+    public var consumingGoalInputID: UUID?
     public var providerID: UUID?
     public var modelID: UUID?
     public var providerName: String?
@@ -64,6 +67,7 @@ public struct RunLaunchRequest: Sendable, Hashable {
         initialPolicy: DraftTaskPolicy = DraftTaskPolicy(),
         messageRole: String = "user",
         reusingUserMessageID: UUID? = nil,
+        consumingGoalInputID: UUID? = nil,
         providerID: UUID? = nil,
         modelID: UUID? = nil,
         providerName: String? = nil,
@@ -87,6 +91,7 @@ public struct RunLaunchRequest: Sendable, Hashable {
         self.initialPolicy = initialPolicy
         self.messageRole = messageRole
         self.reusingUserMessageID = reusingUserMessageID
+        self.consumingGoalInputID = consumingGoalInputID
         self.providerID = providerID
         self.modelID = modelID
         self.providerName = providerName
@@ -165,6 +170,11 @@ public actor SQLiteRunLaunchStore: RunLaunchStore {
             throw FloeError.validationFailed(FloeL10n.isChinese
                 ? "目标启动信息不完整或不属于当前会话。请刷新目标后重试。"
                 : "The Goal launch binding is incomplete or does not belong to this conversation. Refresh the Goal before retrying.")
+        }
+        guard request.consumingGoalInputID == nil || (request.goalID == request.consumingGoalInputID
+            && request.goalID != nil && request.conversationID != nil && request.conversationMode == "goal"
+            && request.messageRole == "user" && request.reusingUserMessageID == nil) else {
+            throw FloeError.validationFailed(FloeL10n.isChinese ? "目标消息不属于此次执行，请刷新后重试。" : "The Goal input does not belong to this launch. Refresh and try again.")
         }
 
         return try await database.writer { db in
@@ -359,6 +369,19 @@ public actor SQLiteRunLaunchStore: RunLaunchStore {
                         : "The Goal changed or stopped, so this execution was not started. Refresh the Goal before retrying.")
                 }
             }
+            if let inputID = request.consumingGoalInputID {
+                guard let input = try Row.fetchOne(db, sql: """
+                    SELECT content,attachments_json FROM pending_user_inputs WHERE id=? AND conversation_id=?
+                        AND execution_mode='goal' AND status IN ('queued','promoting','steerPending')
+                        AND consumed_run_id IS NULL
+                    """, arguments: [inputID.uuidString, conversation.id.uuidString]),
+                      (input["content"] as String).trimmingCharacters(in: .whitespacesAndNewlines) == goal,
+                      let savedAttachments = try? JSONDecoder().decode([AttachmentRef].self,
+                        from: Data((input["attachments_json"] as String).utf8)),
+                      savedAttachments == request.attachments else {
+                    throw FloeError.validationFailed(FloeL10n.isChinese ? "待执行的目标消息已改变，请刷新后重试。" : "The pending Goal input changed. Refresh and try again.")
+                }
+            }
             var run = RunRecord(
                 id: request.runID,
                 conversationID: conversation.id,
@@ -527,6 +550,17 @@ public actor SQLiteRunLaunchStore: RunLaunchStore {
                 ]
             )
 
+            if let inputID = request.consumingGoalInputID {
+                try db.execute(sql: """
+                    UPDATE pending_user_inputs SET status='consumed', consumed_run_id=?, consumed_at=?, updated_at=?
+                    WHERE id=? AND conversation_id=? AND execution_mode='goal'
+                        AND status IN ('queued','promoting','steerPending') AND consumed_run_id IS NULL
+                    """, arguments: [run.id.uuidString, PersistenceCodec.encode(now), PersistenceCodec.encode(now),
+                        inputID.uuidString, conversation.id.uuidString])
+                guard db.changesCount == 1 else {
+                    throw FloeError.validationFailed(FloeL10n.isChinese ? "目标消息已被使用，请刷新后重试。" : "The Goal input was already used. Refresh and try again.")
+                }
+            }
             var updatedConversation = conversation
             updatedConversation.updatedAt = now
             return PreparedRun(

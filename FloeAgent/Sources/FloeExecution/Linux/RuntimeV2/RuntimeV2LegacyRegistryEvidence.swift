@@ -13,6 +13,12 @@ import Glibc
 public struct RuntimeV2LegacyRegistryEvidence: Sendable {
     public let leaseEnvironmentIDs: [String]
     public let fingerprint: String
+    public let migrationProjection: RuntimeV2MigrationSparseProjection?
+    init(leaseEnvironmentIDs: [String], fingerprint: String,
+         migrationProjection: RuntimeV2MigrationSparseProjection? = nil) {
+        self.leaseEnvironmentIDs = leaseEnvironmentIDs; self.fingerprint = fingerprint
+        self.migrationProjection = migrationProjection
+    }
 }
 
 public enum RuntimeV2LegacyRegistryReader {
@@ -24,6 +30,24 @@ public enum RuntimeV2LegacyRegistryReader {
             return try await worker.run {
                 try read(domain: domain, isCancelled: { cancellation.isCancelled }, afterSnapshot: nil)
             }
+        } onCancel: { cancellation.cancel() }
+    }
+    /// Explicit opt-in. Existing closure/owner reads retain their original
+    /// two-table contract and fingerprint; only migration maintenance requires
+    /// the additional transaction-consistent native binding tables.
+    public static func readMigrationProjectionAsync(domain: RuntimeV2MaintenanceDomain)
+        async throws -> RuntimeV2MigrationSparseProjection {
+        let cancellation = RuntimeV2OptimizationCancellation()
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            let result = try await worker.run {
+                try read(domain: domain, isCancelled: { cancellation.isCancelled },
+                         afterSnapshot: nil, includeMigrationBindings: true)
+            }
+            guard let projection = result.migrationProjection else {
+                throw RuntimeV2MaintenanceError.ownerEvidenceIncomplete(["migration_binding_unknown"])
+            }
+            return projection
         } onCancel: { cancellation.cancel() }
     }
     private final class Deadline {
@@ -51,7 +75,8 @@ public enum RuntimeV2LegacyRegistryReader {
 
     private static func read(domain: RuntimeV2MaintenanceDomain,
                              isCancelled: @escaping @Sendable () -> Bool,
-                             afterSnapshot: ((URL) throws -> Void)?) throws -> RuntimeV2LegacyRegistryEvidence {
+                             afterSnapshot: ((URL) throws -> Void)?,
+                             includeMigrationBindings: Bool = false) throws -> RuntimeV2LegacyRegistryEvidence {
         let deadline = Deadline(isCancelled: isCancelled)
         try deadline.check()
         let url = domain.root.appendingPathComponent("registry/runtime.sqlite")
@@ -59,6 +84,9 @@ public enum RuntimeV2LegacyRegistryReader {
         if lstat(url.path, &named) != 0 {
             guard errno == ENOENT else {
                 throw RuntimeV2MaintenanceError.ownerEvidenceIncomplete(["legacy_registry_identity_unknown"])
+            }
+            guard !includeMigrationBindings else {
+                throw RuntimeV2MaintenanceError.ownerEvidenceIncomplete(["migration_binding_unknown"])
             }
             return .init(leaseEnvironmentIDs: [], fingerprint: FloeDigest.sha256Hex(Data("no-registry".utf8)))
         }
@@ -123,7 +151,8 @@ public enum RuntimeV2LegacyRegistryReader {
             try afterSnapshot?(scratch)
             if let copiedWAL { try validateWAL(copiedWAL, databaseHeader: header, deadline: deadline) }
             let evidence = try querySnapshot(snapshot, hasWAL: (walBefore?.size ?? 0) > 0,
-                                             deadline: deadline, fixtureDiagnostics: afterSnapshot != nil)
+                                             deadline: deadline, fixtureDiagnostics: afterSnapshot != nil,
+                                             includeMigrationBindings: includeMigrationBindings)
             guard before == (try RuntimeV2DiskIdentity.read(at: url)), try walIdentity() == walBefore else {
                 throw RuntimeV2MaintenanceError.ownerEvidenceIncomplete(["legacy_registry_identity_changed"])
             }
@@ -273,7 +302,8 @@ public enum RuntimeV2LegacyRegistryReader {
         }
     }
 
-    private static func querySnapshot(_ url: URL, hasWAL: Bool, deadline: Deadline, fixtureDiagnostics: Bool)
+    private static func querySnapshot(_ url: URL, hasWAL: Bool, deadline: Deadline, fixtureDiagnostics: Bool,
+                                      includeMigrationBindings: Bool)
         throws -> RuntimeV2LegacyRegistryEvidence {
         var database: OpaquePointer?
         let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_NOMUTEX | SQLITE_OPEN_NOFOLLOW
@@ -373,7 +403,12 @@ public enum RuntimeV2LegacyRegistryReader {
         }
         // Tables must be ordinary native tables, not a view/virtual producer.
         var ordinaryTables: Set<String> = []
-        try rows("SELECT name,type,sql FROM sqlite_master WHERE name IN ('leases','queue_entries')") { statement in
+        let requiredTables: Set<String> = includeMigrationBindings
+            ? ["leases", "queue_entries", "migrations", "images", "environments", "blobs",
+               "software_templates", "software_template_packages", "template_references", "conversations", "workspaces"]
+            : ["leases", "queue_entries"]
+        let tableNames = requiredTables.sorted().map { "'" + $0 + "'" }.joined(separator: ",")
+        try rows("SELECT name,type,sql FROM sqlite_master WHERE name IN (\(tableNames))") { statement in
             let name = try column(statement, 0)
             let kind = try column(statement, 1)
             let sql = try column(statement, 2, bound: 4096)
@@ -382,7 +417,7 @@ public enum RuntimeV2LegacyRegistryReader {
             }
             ordinaryTables.insert(name)
         }
-        guard ordinaryTables == Set(["leases", "queue_entries"]) else {
+        guard ordinaryTables == requiredTables else {
             throw RuntimeV2MaintenanceError.ownerEvidenceIncomplete(["legacy_registry_table_missing"])
         }
         try rows("SELECT environment_id,runtime_id,incarnation,session_token,state FROM leases ORDER BY environment_id LIMIT 4097") { statement in
@@ -413,6 +448,108 @@ public enum RuntimeV2LegacyRegistryReader {
             bindings.append(FloeDigest.sha256Hex(Data(
                 ["queue", id, environment, state].joined(separator: "\0").utf8)))
         }
+        var migrationProjection: RuntimeV2MigrationSparseProjection?
+        if includeMigrationBindings {
+            func digestRow(_ statement: OpaquePointer) throws -> String {
+                var values: [String] = []
+                for index in 0..<sqlite3_column_count(statement) {
+                    switch sqlite3_column_type(statement, index) {
+                    case SQLITE_NULL: values.append("null")
+                    case SQLITE_TEXT:
+                        let bytes = Int(sqlite3_column_bytes(statement, index))
+                        guard bytes >= 0, bytes <= 8_192,
+                              let raw = sqlite3_column_text(statement, index),
+                              let value = String(data: Data(bytes: raw, count: bytes), encoding: .utf8),
+                              !value.utf8.contains(0) else {
+                            throw RuntimeV2MaintenanceError.ownerEvidenceIncomplete(["migration_binding_unknown"])
+                        }
+                        values.append("text:" + String(bytes) + ":" + value)
+                    case SQLITE_INTEGER: values.append("integer:" + String(sqlite3_column_int64(statement, index)))
+                    case SQLITE_FLOAT:
+                        let value = sqlite3_column_double(statement, index)
+                        guard value.isFinite else {
+                            throw RuntimeV2MaintenanceError.ownerEvidenceIncomplete(["migration_binding_unknown"])
+                        }
+                        values.append("float:" + String(value.bitPattern))
+                    default: throw RuntimeV2MaintenanceError.ownerEvidenceIncomplete(["migration_binding_unknown"])
+                    }
+                }
+                return FloeDigest.sha256Hex(Data(values.joined(separator: "\0").utf8))
+            }
+            let imageIDs = RuntimeV2MigrationSparseCatalog.imageIDs
+            let ids = imageIDs.map { "'" + $0 + "'" }.joined(separator: ",")
+            let migrationIDs = imageIDs.map { "'legacy-image-" + $0 + "'" }.joined(separator: ",")
+            var imageRows: [String: (fingerprint: String, rootfs: String)] = [:]
+            try rows("SELECT id,manifest_path,expanded_path,base_rootfs_digest,state,bytes,created_at,verified_at FROM images WHERE id IN (\(ids)) ORDER BY id LIMIT 5") { statement in
+                let id = try column(statement, 0, bound: 160)
+                let manifest = try column(statement, 1, bound: 512)
+                let state = try column(statement, 4, bound: 32)
+                let rootfs = try column(statement, 3, bound: 128)
+                guard rootfs.utf8.count == 128,
+                      rootfs.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }),
+                      imageIDs.contains(id), imageRows[id] == nil,
+                      manifest == "images/manifests/" + id + ".json",
+                      RuntimeV2Registry.ImageState(rawValue: state) != nil,
+                      sqlite3_column_type(statement, 5) == SQLITE_INTEGER,
+                      sqlite3_column_int64(statement, 5) > 0 else {
+                    throw RuntimeV2MaintenanceError.ownerEvidenceIncomplete(["migration_binding_unknown"])
+                }
+                imageRows[id] = (try digestRow(statement), rootfs)
+            }
+            var environmentRows: [String: [String]] = [:]
+            try rows("SELECT id,base_image_id,base_rootfs_digest,state,kind,owner_id,data_path,created_at,last_used_at,template_id,template_version,template_digest FROM environments WHERE base_image_id IN (\(ids)) ORDER BY id LIMIT 4097") { statement in
+                let id = try column(statement, 0, bound: 128)
+                let imageID = try column(statement, 1, bound: 160)
+                let state = try column(statement, 3, bound: 32)
+                try RuntimeV2Identifier.validate(id, kind: .environment)
+                guard imageIDs.contains(imageID), ["active", "stopped", "deleting", "interrupted", "repairRequired"].contains(state) else {
+                    throw RuntimeV2MaintenanceError.ownerEvidenceIncomplete(["migration_binding_unknown"])
+                }
+                environmentRows[imageID, default: []].append(try digestRow(statement))
+            }
+            // Preserve indirect template/software/workspace owners too. Only
+            // bounded native metadata is hashed: no bookmark, message, secret,
+            // manifest body or package URL is selected or exported. The actual
+            // worker/FD closure is still independently mandatory.
+            var auxiliaryRows: [String] = []
+            let auxiliaryQueries = [
+                "SELECT digest,bytes,refs,state,staged,created_at FROM blobs ORDER BY digest LIMIT 4097",
+                "SELECT template_id,version,digest,architecture,parent_kind,parent_id,parent_version,parent_digest,state,package_count,logical_bytes,allocated_bytes,download_bytes,build_mode,disk_digest,build_id,staging_path,created_at,verified_at FROM software_templates ORDER BY template_id,version LIMIT 4097",
+                "SELECT template_id,version,name,package_version,architecture,install_state,digest FROM software_template_packages ORDER BY template_id,version,name LIMIT 4097",
+                "SELECT template_id,version,ref_kind,ref_id,created_at FROM template_references ORDER BY template_id,version,ref_kind,ref_id LIMIT 4097",
+                "SELECT id,environment_id,workspace_id,created_at FROM conversations ORDER BY id LIMIT 4097",
+                "SELECT id,kind,path,change_generation,write_session_owner,relocation_pending,created_at,last_used_at FROM workspaces ORDER BY id LIMIT 4097"
+            ]
+            for (index, sql) in auxiliaryQueries.enumerated() {
+                try rows(sql) { auxiliaryRows.append(String(index) + ":" + (try digestRow($0))) }
+            }
+            let auxiliaryFingerprint = FloeDigest.sha256Hex(Data(auxiliaryRows.joined(separator: "\n").utf8))
+            var projected: [RuntimeV2MigrationSparseBinding] = []
+            try rows("SELECT id,kind,phase,source_path,target_path,created_at,updated_at FROM migrations WHERE id IN (\(migrationIDs)) ORDER BY id LIMIT 5") { statement in
+                let id = try column(statement, 0, bound: 192)
+                let kind = try column(statement, 1, bound: 32)
+                let phase = try column(statement, 2, bound: 32)
+                let imageID = String(id.dropFirst("legacy-image-".count))
+                guard id == "legacy-image-" + imageID, kind == "legacy-image", imageIDs.contains(imageID),
+                      !projected.contains(where: { $0.imageID == imageID }), let imageRow = imageRows[imageID] else {
+                    throw RuntimeV2MaintenanceError.ownerEvidenceIncomplete(["migration_binding_unknown"])
+                }
+                let binding = RuntimeV2MigrationSparseBinding(migrationID: id, imageID: imageID, phase: phase,
+                    sourcePath: try column(statement, 3, bound: 4_096),
+                    targetPath: try column(statement, 4, bound: 4_096),
+                    createdAt: try column(statement, 5, bound: 64), updatedAt: try column(statement, 6, bound: 64),
+                    migrationRowFingerprint: try digestRow(statement), imageRowFingerprint: imageRow.fingerprint,
+                    imageRootfsDigest: imageRow.rootfs,
+                    environmentRowFingerprints: (environmentRows[imageID] ?? []).sorted(),
+                    auxiliaryReferenceFingerprint: auxiliaryFingerprint)
+                try binding.validateHistoricalPaths()
+                projected.append(binding)
+            }
+            guard projected.count == imageIDs.count, imageRows.count == imageIDs.count else {
+                throw RuntimeV2MaintenanceError.ownerEvidenceIncomplete(["migration_binding_unknown"])
+            }
+            migrationProjection = .init(bindings: projected.sorted { $0.migrationID < $1.migrationID })
+        }
         try execute("ROLLBACK")
         sqlite3_progress_handler(database, 0, nil, nil)
         guard sqlite3_close(database) == SQLITE_OK else {
@@ -421,6 +558,7 @@ public enum RuntimeV2LegacyRegistryReader {
         connectionClosed = true
         try deadline.check()
         return .init(leaseEnvironmentIDs: environments.sorted(),
-                     fingerprint: FloeDigest.sha256Hex(Data(bindings.joined(separator: "\n").utf8)))
+                     fingerprint: FloeDigest.sha256Hex(Data(bindings.joined(separator: "\n").utf8)),
+                     migrationProjection: migrationProjection)
     }
 }

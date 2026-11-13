@@ -576,6 +576,7 @@
 		3B8E38A8F0D60AC49112D1FD /* HealthReadToolsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D18EA0C1F34B2F00628C0B3 /* HealthReadToolsTests.swift */; };
 		3B95CF55CCD1D8F7279E619B /* EDWorkbenchLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 698E114C4283FF697724E057 /* EDWorkbenchLayoutTests.swift */; };
 		3B9C61151DBDF65A67B112C4 /* FileInspectorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B411EDF873B55072F23B97F0 /* FileInspectorView.swift */; };
+		3BB151BDD199C8680AE4C110 /* MeetingRecordingMaterials.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9ECFC53537F58FC19CC1FEE /* MeetingRecordingMaterials.swift */; };
 		3BC1B79F32C6D694A8D94538 /* SourceControlOperationLease.swift in Sources */ = {isa = PBXBuildFile; fileRef = E230DA5637EA5523A3B512CF /* SourceControlOperationLease.swift */; };
 		3C49818CC0422F6C4B047C11 /* NotesDocumentEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4896739DCF1CC3D7F68DFA4 /* NotesDocumentEditor.swift */; };
 		3C5664A5FCA2E9D93F02E96C /* VoiceInputControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18C94A3850D88CA96343408E /* VoiceInputControllerTests.swift */; };
@@ -2299,6 +2300,7 @@
 		F6A7B6E2EAA3051F0ABB7525 /* DesignBuiltinNodeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC8C5A40016C7807C06F2065 /* DesignBuiltinNodeTests.swift */; };
 		F6C1A62BFEE0EAEC29EEB8BB /* ThreadActivityHistoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 364441B7895A3D62F3362541 /* ThreadActivityHistoryTests.swift */; };
 		F6CA0D4D3D58B0879F11B5E4 /* ComposerReturnField.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C41B8992C84C7B27CF73906 /* ComposerReturnField.swift */; };
+		F6E9A6B7FDAF9E9B2FD5D473 /* RuntimeV2MigrationSparseOptimizationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B52C9BC9474A886318DECAE6 /* RuntimeV2MigrationSparseOptimizationTests.swift */; };
 		F6EEEA719CC568BDF48A2DBC /* APNsInstallChannel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2BA43CED8CA06CAC49D6ACB1 /* APNsInstallChannel.swift */; };
 		F7016BFF6AA10B86497D07B9 /* IDEMarkdownOutline.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD0E5356A0696EE2140EA6BF /* IDEMarkdownOutline.swift */; };
 		F7370067516FD329F3E16404 /* ToolboxDiagnosticRequestTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44AE91EDAFFEE4825648F607 /* ToolboxDiagnosticRequestTests.swift */; };
@@ -2322,6 +2324,7 @@
 		F993EBC810DAFDBE10A5B939 /* GISObservationArtifact.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E1DFCC02738D590EBD76C59 /* GISObservationArtifact.swift */; };
 		F9AE89670E3EE68F7DB18F74 /* InfoPlist.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = 2E443E03594FBC95E4EB48E2 /* InfoPlist.xcstrings */; };
 		F9B1E72961708A6BD69E2C4C /* FileAssistantLifecycleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCDB9B557315C328741310B5 /* FileAssistantLifecycleTests.swift */; };
+		F9D61C0EA08592462A179BEE /* MeetingServiceCaptureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C80B4A2A059A5B59BFFCD44 /* MeetingServiceCaptureTests.swift */; };
 		F9F271C2849CC015823019A9 /* NativeToolboxIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2EA3BA4343F0CDDF7BA4FB5A /* NativeToolboxIntegrationTests.swift */; };
 		FA0B5DEF58CA269ECD890844 /* CanvasFrameworkProjection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B213E486DEDCF449CB25C9A /* CanvasFrameworkProjection.swift */; };
 		FA261AF3E25BFDF3992CD3EB /* TaskExecutionEnvironmentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5573EDABEC29DC726EB624CD /* TaskExecutionEnvironmentView.swift */; };
@@ -2735,6 +2738,7 @@
 		1C6B1EC019A21A34A766A7F0 /* CADPresentationUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CADPresentationUITests.swift; sourceTree = "<group>"; };
 		1C6BC21C486387EBE3A38BF8 /* LuaShellInstallTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LuaShellInstallTests.swift; sourceTree = "<group>"; };
 		1C801E16B941B45C62C279A9 /* ExecutionEnvironmentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExecutionEnvironmentView.swift; sourceTree = "<group>"; };
+		1C80B4A2A059A5B59BFFCD44 /* MeetingServiceCaptureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeetingServiceCaptureTests.swift; sourceTree = "<group>"; };
 		1C8CDF5B2FEEC818CF3EC7FA /* FloeCanvasKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = FloeCanvasKit; path = Modules/FloeCanvasKit; sourceTree = SOURCE_ROOT; };
 		1CC41879B19EA0F9BD859E89 /* StudioToolResultView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioToolResultView.swift; sourceTree = "<group>"; };
 		1CE2BE88459584335BECC6BA /* ThreadSearchScheduleUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThreadSearchScheduleUITests.swift; sourceTree = "<group>"; };
@@ -3995,6 +3999,7 @@
 		B46FEF7A1F2D0B57C904F716 /* SkillHubInstallService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillHubInstallService.swift; sourceTree = "<group>"; };
 		B506E531228784E598D7DEC2 /* ComposerOverflowRegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerOverflowRegressionTests.swift; sourceTree = "<group>"; };
 		B52255258EA1EE476256544E /* DocumentExportServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentExportServiceTests.swift; sourceTree = "<group>"; };
+		B52C9BC9474A886318DECAE6 /* RuntimeV2MigrationSparseOptimizationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuntimeV2MigrationSparseOptimizationTests.swift; sourceTree = "<group>"; };
 		B536F4DA6282AE9A983C8498 /* RemoteImageUnavailableView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteImageUnavailableView.swift; sourceTree = "<group>"; };
 		B5589EC3FC2DB86995309DDD /* VoicePlaybackControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoicePlaybackControls.swift; sourceTree = "<group>"; };
 		B5614234219ABD592DF539DC /* WorkbenchAIDrawer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkbenchAIDrawer.swift; sourceTree = "<group>"; };
@@ -4046,6 +4051,7 @@
 		B9D76098720E39A035D58387 /* DeferredConfigSyncTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeferredConfigSyncTests.swift; sourceTree = "<group>"; };
 		B9DBAB1DC003A8F02B0DA18E /* RuntimeDiagnosticStackTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuntimeDiagnosticStackTests.swift; sourceTree = "<group>"; };
 		B9DF4E9E35F90D6F8F932596 /* CADDeleteFaceHistoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CADDeleteFaceHistoryTests.swift; sourceTree = "<group>"; };
+		B9ECFC53537F58FC19CC1FEE /* MeetingRecordingMaterials.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeetingRecordingMaterials.swift; sourceTree = "<group>"; };
 		BA3A9BCA089DB1AE6175C315 /* DocumentConversionRouteContractTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentConversionRouteContractTests.swift; sourceTree = "<group>"; };
 		BA7346B8A189811458961810 /* SpeechRecognitionResidencyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechRecognitionResidencyTests.swift; sourceTree = "<group>"; };
 		BA905A9F6FB1F234B6952363 /* IOSBridgeIntegration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSBridgeIntegration.swift; sourceTree = "<group>"; };
@@ -6739,6 +6745,7 @@
 			isa = PBXGroup;
 			children = (
 				797B1517B3F11905092BEBC7 /* ContinuousLiveTranscriptionTests.swift */,
+				1C80B4A2A059A5B59BFFCD44 /* MeetingServiceCaptureTests.swift */,
 				68EDB899269AF70BC36BC9F2 /* TestServices.swift */,
 				CAC6FC2EB2B59823E8312A90 /* TestSupport.swift */,
 			);
@@ -7982,6 +7989,7 @@
 				A18F01187A61D26A89179760 /* MeetingProjectSession.swift */,
 				865C90C2A49C08E6DAFA81AE /* MeetingProjectView.swift */,
 				DCE26F31887849A12235F7F3 /* MeetingRecordingLeave.swift */,
+				B9ECFC53537F58FC19CC1FEE /* MeetingRecordingMaterials.swift */,
 				B6152F67F697FC2F9ED086A6 /* MeetingSharedPCMBackend.swift */,
 				662EE9D84BC644357C85859E /* MeetingSpeakerModelStore.swift */,
 				5B789B10CBCA771AE59A876C /* MeetingSpeakerRecognition.swift */,
@@ -8122,6 +8130,7 @@
 				B36C171177A4F1CF0D37953E /* RemoteSharedSkillMountTests.swift */,
 				205123F5107A1D17D8757D52 /* RuntimeV2CaptureRetryTests.swift */,
 				DD643917D45DAB7E52D80549 /* RuntimeV2MaintenanceAuthorityTests.swift */,
+				B52C9BC9474A886318DECAE6 /* RuntimeV2MigrationSparseOptimizationTests.swift */,
 				0DC9DE04B768AAFBFBF32592 /* RuntimeV2OfficialTemplateWiringTests.swift */,
 				CFC7584258403DE632938DEE /* RuntimeV2RecoveryOptimizationTests.swift */,
 				7CACC7AB097E832502440E22 /* RuntimeV2TemplateTests.swift */,
@@ -9406,6 +9415,7 @@
 				E759A5D0FDC21109A6E06173 /* MeetingProjectSession.swift in Sources */,
 				DE330277807BB83A58F55E96 /* MeetingProjectView.swift in Sources */,
 				0B0739AE5975780AAAC3ADF8 /* MeetingRecordingLeave.swift in Sources */,
+				3BB151BDD199C8680AE4C110 /* MeetingRecordingMaterials.swift in Sources */,
 				C72F34822204780156CC0DE9 /* MeetingSharedPCMBackend.swift in Sources */,
 				47C7158FF8DC1774CA95D66D /* MeetingSpeakerModelStore.swift in Sources */,
 				95DC88EB00256F31C1BE7FFB /* MeetingSpeakerRecognition.swift in Sources */,
@@ -10104,6 +10114,7 @@
 				0AC82B61ECFB993567AC4897 /* MeetingAudioPlaybackLifecycleTests.swift in Sources */,
 				1EA9382DE83F414C6555646B /* MeetingContinuousASRTests.swift in Sources */,
 				A503B84C35A9247220D8625E /* MeetingRecordingPresentationTests.swift in Sources */,
+				F9D61C0EA08592462A179BEE /* MeetingServiceCaptureTests.swift in Sources */,
 				67B44D5B63D546314C91A67A /* MeetingSpeakerIntegrationTests.swift in Sources */,
 				DD5D03D44C6513401A680E2E /* MemoryForgettingMaintenanceTests.swift in Sources */,
 				CB3EC3B7F20EA419FE37EFD1 /* MemoryForgettingTests.swift in Sources */,
@@ -10189,6 +10200,7 @@
 				316FDA5DC3A6362A51C1B4D9 /* RuntimeDiagnosticStackTests.swift in Sources */,
 				4DD64F5AC37CD29849EFA6EA /* RuntimeTestDoubles.swift in Sources */,
 				97727225B62CFECEA4C1150D /* RuntimeV2MaintenanceAuthorityTests.swift in Sources */,
+				F6E9A6B7FDAF9E9B2FD5D473 /* RuntimeV2MigrationSparseOptimizationTests.swift in Sources */,
 				30467B7A528C577CB6FE1F5C /* RuntimeV2RecoveryOptimizationTests.swift in Sources */,
 				46BF3CB941CB77A6DA36D3A4 /* SQLLiteralSearchIntegrationTests.swift in Sources */,
 				A7F7C31288ED118F090ED960 /* SVGChatRenderingTests.swift in Sources */,
@@ -11112,7 +11124,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeApp/Entitlements/Floe.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 340;
+				CURRENT_PROJECT_VERSION = 341;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_DEBUG_DYLIB = NO;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
@@ -11139,7 +11151,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.8.19;
+				MARKETING_VERSION = 1.8.20;
 				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
 					"-framework",
 					CPDFium,
@@ -11210,7 +11222,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FloeWidgets/FloeWidgets.entitlements;
-				CURRENT_PROJECT_VERSION = 340;
+				CURRENT_PROJECT_VERSION = 341;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -11221,7 +11233,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.8.19;
+				MARKETING_VERSION = 1.8.20;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.widgets;
 				PRODUCT_MODULE_NAME = FloeWidgets;
 				PRODUCT_NAME = "Floe Widgets";
@@ -11266,7 +11278,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeFileProvider/FloeFileProvider.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 340;
+				CURRENT_PROJECT_VERSION = 341;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -11277,7 +11289,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.8.19;
+				MARKETING_VERSION = 1.8.20;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.fileprovider;
 				PRODUCT_MODULE_NAME = FloeFileProvider;
 				PRODUCT_NAME = FloeFileProvider;
@@ -11351,7 +11363,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeShare/FloeShare.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 340;
+				CURRENT_PROJECT_VERSION = 341;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -11362,7 +11374,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.8.19;
+				MARKETING_VERSION = 1.8.20;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.share;
 				PRODUCT_MODULE_NAME = FloeShare;
 				PRODUCT_NAME = "Floe Share";
@@ -11397,7 +11409,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FloeScreenShare/FloeScreenShare.entitlements;
-				CURRENT_PROJECT_VERSION = 340;
+				CURRENT_PROJECT_VERSION = 341;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -11408,7 +11420,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.8.19;
+				MARKETING_VERSION = 1.8.20;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.screenshare;
 				PRODUCT_MODULE_NAME = FloeScreenShare;
 				PRODUCT_NAME = "Floe Screen Share";
@@ -11508,7 +11520,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeWidgets/FloeWidgets.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 340;
+				CURRENT_PROJECT_VERSION = 341;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -11519,7 +11531,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.8.19;
+				MARKETING_VERSION = 1.8.20;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.widgets;
 				PRODUCT_MODULE_NAME = FloeWidgets;
 				PRODUCT_NAME = "Floe Widgets";
@@ -11567,7 +11579,7 @@
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CODE_SIGN_ENTITLEMENTS = FloeApp/Entitlements/Floe.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 340;
+				CURRENT_PROJECT_VERSION = 341;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_DEBUG_DYLIB = NO;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
@@ -11594,7 +11606,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.8.19;
+				MARKETING_VERSION = 1.8.20;
 				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
 					"-framework",
 					CPDFium,
@@ -11624,7 +11636,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FloeFileProvider/FloeFileProvider.entitlements;
-				CURRENT_PROJECT_VERSION = 340;
+				CURRENT_PROJECT_VERSION = 341;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -11635,7 +11647,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.8.19;
+				MARKETING_VERSION = 1.8.20;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.fileprovider;
 				PRODUCT_MODULE_NAME = FloeFileProvider;
 				PRODUCT_NAME = FloeFileProvider;
@@ -11651,7 +11663,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeScreenShare/FloeScreenShare.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 340;
+				CURRENT_PROJECT_VERSION = 341;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -11662,7 +11674,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.8.19;
+				MARKETING_VERSION = 1.8.20;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.screenshare;
 				PRODUCT_MODULE_NAME = FloeScreenShare;
 				PRODUCT_NAME = "Floe Screen Share";
@@ -11706,7 +11718,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FloeShare/FloeShare.entitlements;
-				CURRENT_PROJECT_VERSION = 340;
+				CURRENT_PROJECT_VERSION = 341;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -11717,7 +11729,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.8.19;
+				MARKETING_VERSION = 1.8.20;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.share;
 				PRODUCT_MODULE_NAME = FloeShare;
 				PRODUCT_NAME = "Floe Share";

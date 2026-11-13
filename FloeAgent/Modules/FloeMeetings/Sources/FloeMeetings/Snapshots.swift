@@ -39,8 +39,14 @@ public struct CaptureSessionSnapshot: Sendable, Codable, Identifiable, Hashable 
     public var startedAt: Date?
     public var endedAt: Date?
     public var stopReason: CaptureStopReason?
+    /// Durable analysis ancestry; never a user-visible separate recording.
+    public var originSessionID: CaptureSessionID?
+    /// Explicit same-recording membership, independent of ASR ancestry.
+    public var recordingID: UUID?
+    public var partOrdinal: Int?
+    public var displayName: String?
 
-    public init(id: CaptureSessionID = CaptureSessionID(), meetingID: MeetingID, kind: CaptureKind, state: CaptureSessionState = .pending, directory: URL? = nil, sourceFile: String? = nil, durationSeconds: Double? = nil, startedAt: Date? = nil, endedAt: Date? = nil, stopReason: CaptureStopReason? = nil) {
+    public init(id: CaptureSessionID = CaptureSessionID(), meetingID: MeetingID, kind: CaptureKind, state: CaptureSessionState = .pending, directory: URL? = nil, sourceFile: String? = nil, durationSeconds: Double? = nil, startedAt: Date? = nil, endedAt: Date? = nil, stopReason: CaptureStopReason? = nil, originSessionID: CaptureSessionID? = nil, recordingID: UUID? = nil, partOrdinal: Int? = nil, displayName: String? = nil) {
         self.id = id
         self.meetingID = meetingID
         self.kind = kind
@@ -51,5 +57,28 @@ public struct CaptureSessionSnapshot: Sendable, Codable, Identifiable, Hashable 
         self.startedAt = startedAt
         self.endedAt = endedAt
         self.stopReason = stopReason
+        self.originSessionID = originSessionID
+        self.recordingID = recordingID
+        self.partOrdinal = partOrdinal
+        self.displayName = displayName
+    }
+}
+
+/// A logical recording can contain explicitly paused/resumed physical captures.
+/// Its media coordinates are derived from original files, never wall-clock gaps.
+public enum MeetingRecordingState: String, Sendable, Codable {
+    case recording, paused, finished
+}
+
+public struct MeetingRecordingSnapshot: Sendable, Identifiable, Hashable {
+    public let id: UUID
+    public let meetingID: MeetingID
+    public let state: MeetingRecordingState
+    public let createdAt: Date
+    public let parts: [CaptureSessionSnapshot]
+    public init(id: UUID, meetingID: MeetingID, state: MeetingRecordingState,
+                createdAt: Date, parts: [CaptureSessionSnapshot]) {
+        self.id = id; self.meetingID = meetingID; self.state = state
+        self.createdAt = createdAt; self.parts = parts
     }
 }

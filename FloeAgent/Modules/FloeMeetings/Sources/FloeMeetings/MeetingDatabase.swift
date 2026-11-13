@@ -77,6 +77,12 @@ extension MeetingDatabase {
     func insertSession(_ session: CaptureSessionSnapshot, origin: String? = nil) throws {
         do {
             try pool.write { db in
+                if let origin {
+                    guard let original = try CaptureSessionRecord.fetchOne(db, key: origin),
+                          original.meetingID == session.meetingID.description else {
+                        throw MeetingError.sessionNotFound(CaptureSessionID(UUID(uuidString: origin) ?? session.id.rawValue))
+                    }
+                }
                 try CaptureSessionRecord(
                     id: session.id.description,
                     meetingID: session.meetingID.description,
@@ -88,12 +94,120 @@ extension MeetingDatabase {
                     startedAt: session.startedAt,
                     endedAt: session.endedAt,
                     stopReason: session.stopReason?.rawValue,
-                    originSessionID: origin
+                    originSessionID: origin,
+                    displayName: session.displayName
                 ).insert(db)
             }
         } catch {
             throw MeetingError.persistenceFailed(String(describing: error))
         }
+    }
+
+    /// Physical capture row and logical recording admission commit together.
+    func insertLiveSession(_ session: CaptureSessionSnapshot, continuing recordingID: UUID?) throws {
+        do {
+            try pool.write { db in
+                let takeID = recordingID?.uuidString ?? session.id.description
+                let ordinal: Int
+                if let recordingID {
+                    guard let take = try MeetingRecordingRecord.fetchOne(db, key: takeID),
+                          take.meetingID == session.meetingID.description,
+                          take.state == MeetingRecordingState.paused.rawValue else {
+                        throw MeetingError.captureSessionEnded(CaptureSessionID(recordingID))
+                    }
+                    let parts = try CaptureSessionRecord.filter(Column("recordingID") == takeID)
+                        .order(Column("partOrdinal")).fetchAll(db)
+                    guard !parts.isEmpty, parts.count < 1024,
+                          parts.enumerated().allSatisfy({ index, row in
+                              row.meetingID == session.meetingID.description && row.kind == CaptureKind.liveRecording.rawValue
+                                  && row.originSessionID == nil && row.state == CaptureSessionState.stopped.rawValue
+                                  && row.partOrdinal == index
+                          }) else { throw MeetingError.captureSessionEnded(CaptureSessionID(recordingID)) }
+                    ordinal = parts.count
+                    try db.execute(sql: "UPDATE recording_takes SET state = ?, updatedAt = ? WHERE id = ?",
+                                   arguments: [MeetingRecordingState.recording.rawValue, Date(), takeID])
+                } else {
+                    ordinal = 0
+                    try MeetingRecordingRecord(id: takeID, meetingID: session.meetingID.description,
+                        state: MeetingRecordingState.recording.rawValue, createdAt: session.startedAt ?? Date(),
+                        updatedAt: Date()).insert(db)
+                }
+                try CaptureSessionRecord(id: session.id.description, meetingID: session.meetingID.description,
+                    kind: session.kind.rawValue, state: session.state.rawValue, directory: session.directory?.path,
+                    sourceFile: session.sourceFile, durationSeconds: session.durationSeconds,
+                    startedAt: session.startedAt, endedAt: session.endedAt, stopReason: session.stopReason?.rawValue,
+                    recordingID: takeID, partOrdinal: ordinal).insert(db)
+            }
+        } catch let error as MeetingError { throw error }
+        catch { throw MeetingError.persistenceFailed(String(describing: error)) }
+    }
+
+    /// Host-measured original duration; terminal ownership and first-write
+    /// equality are checked in the same transaction as the metadata update.
+    func recordCapturedDuration(_ seconds: Double, session: CaptureSessionID, meeting: MeetingID) throws {
+        guard seconds.isFinite, seconds > 0 else { throw MeetingError.invalidTimeRange(start: 0, end: seconds) }
+        do {
+            try pool.write { db in
+                guard let row = try CaptureSessionRecord.fetchOne(db, key: session.description),
+                      row.meetingID == meeting.description, row.kind == CaptureKind.liveRecording.rawValue,
+                      row.state == CaptureSessionState.stopped.rawValue else { throw MeetingError.sessionNotFound(session) }
+                if let previous = row.durationSeconds {
+                    guard abs(previous - seconds) < 0.000001 else { throw MeetingError.captureSessionEnded(session) }
+                    return
+                }
+                try db.execute(sql: "UPDATE capture_sessions SET durationSeconds = ? WHERE id = ? AND meetingID = ? AND durationSeconds IS NULL",
+                               arguments: [seconds, session.description, meeting.description])
+            }
+        } catch let error as MeetingError { throw error }
+        catch { throw MeetingError.persistenceFailed(String(describing: error)) }
+    }
+
+    func finishPausedRecording(_ recordingID: UUID, meeting: MeetingID) throws {
+        do {
+            try pool.write { db in
+                guard let row = try MeetingRecordingRecord.fetchOne(db, key: recordingID.uuidString),
+                      row.meetingID == meeting.description else { throw MeetingError.sessionNotFound(CaptureSessionID(recordingID)) }
+                if row.state == MeetingRecordingState.finished.rawValue { return }
+                guard row.state == MeetingRecordingState.paused.rawValue else {
+                    throw MeetingError.captureSessionEnded(CaptureSessionID(recordingID))
+                }
+                try db.execute(sql: "UPDATE recording_takes SET state = ?, updatedAt = ? WHERE id = ? AND state = ?",
+                    arguments: [MeetingRecordingState.finished.rawValue, Date(), recordingID.uuidString,
+                                MeetingRecordingState.paused.rawValue])
+            }
+        } catch let error as MeetingError { throw error }
+        catch { throw MeetingError.persistenceFailed(String(describing: error)) }
+    }
+
+    func recordingTakes(meeting: MeetingID) throws -> [MeetingRecordingSnapshot] {
+        do {
+            return try pool.read { db in
+                let takes = try MeetingRecordingRecord.filter(Column("meetingID") == meeting.description)
+                    .order(Column("createdAt"), Column("id")).fetchAll(db)
+                return try takes.map { take in
+                    guard let id = UUID(uuidString: take.id), let state = MeetingRecordingState(rawValue: take.state) else {
+                        throw MeetingError.persistenceFailed("Invalid recording identity.")
+                    }
+                    let rows = try CaptureSessionRecord.filter(Column("recordingID") == take.id)
+                        .order(Column("partOrdinal")).fetchAll(db)
+                    guard !rows.isEmpty, rows.enumerated().allSatisfy({ index, row in
+                        row.meetingID == meeting.description && row.originSessionID == nil
+                            && row.kind == CaptureKind.liveRecording.rawValue && row.partOrdinal == index
+                            && UUID(uuidString: row.id) != nil
+                    }) else { throw MeetingError.persistenceFailed("Invalid recording membership.") }
+                    let parts = rows.map { row in
+                        CaptureSessionSnapshot(id: CaptureSessionID(UUID(uuidString: row.id)!), meetingID: meeting,
+                            kind: .liveRecording, state: CaptureSessionState(rawValue: row.state) ?? .failed,
+                            directory: row.directory.map(URL.init(fileURLWithPath:)), sourceFile: row.sourceFile,
+                            durationSeconds: row.durationSeconds, startedAt: row.startedAt, endedAt: row.endedAt,
+                            stopReason: row.stopReason.flatMap(CaptureStopReason.init(rawValue:)),
+                            recordingID: id, partOrdinal: row.partOrdinal, displayName: row.displayName)
+                    }
+                    return MeetingRecordingSnapshot(id: id, meetingID: meeting, state: state, createdAt: take.createdAt, parts: parts)
+                }
+            }
+        } catch let error as MeetingError { throw error }
+        catch { throw MeetingError.persistenceFailed(String(describing: error)) }
     }
 
     func updateSessionState(_ id: CaptureSessionID, state: CaptureSessionState, endedAt: Date?, stopReason: CaptureStopReason?) throws {
@@ -123,7 +237,7 @@ extension MeetingDatabase {
         catch { throw MeetingError.persistenceFailed(String(describing: error)) }
     }
 
-    func finishCapture(_ id: CaptureSessionID, meeting: MeetingID, state: CaptureSessionState, reason: CaptureStopReason?) throws {
+    func finishCapture(_ id: CaptureSessionID, meeting: MeetingID, state: CaptureSessionState, reason: CaptureStopReason?, pauseRecording: Bool = false) throws {
         do {
             try pool.write { db in
                 guard let row = try CaptureSessionRecord.fetchOne(db, key: id.description), row.meetingID == meeting.description else {
@@ -133,6 +247,12 @@ extension MeetingDatabase {
                 guard row.state == CaptureSessionState.pending.rawValue || row.state == CaptureSessionState.capturing.rawValue || row.state == CaptureSessionState.stopping.rawValue else { return }
                 let status: MeetingStatus = state == .stopped ? .finished : (state == .cancelled ? .cancelled : .draft)
                 try db.execute(sql: "UPDATE capture_sessions SET state = ?, endedAt = ?, stopReason = ? WHERE id = ?", arguments: [state.rawValue, Date(), reason?.rawValue, id.description])
+                if let recordingID = row.recordingID {
+                    let paused = pauseRecording && state == .stopped && reason != .timeout
+                    try db.execute(sql: "UPDATE recording_takes SET state = ?, updatedAt = ? WHERE id = ? AND meetingID = ?",
+                                   arguments: [paused ? MeetingRecordingState.paused.rawValue : MeetingRecordingState.finished.rawValue,
+                                               Date(), recordingID, meeting.description])
+                }
                 try db.execute(sql: "UPDATE meetings SET status = ?, updatedAt = ? WHERE id = ? AND NOT EXISTS (SELECT 1 FROM capture_sessions WHERE meetingID = ? AND id != ? AND state IN ('pending', 'capturing', 'stopping'))", arguments: [status.rawValue, Date(), meeting.description, meeting.description, id.description])
             }
         } catch let error as MeetingError { throw error }
@@ -156,7 +276,11 @@ extension MeetingDatabase {
                             durationSeconds: row.durationSeconds,
                             startedAt: row.startedAt,
                             endedAt: row.endedAt,
-                            stopReason: row.stopReason.flatMap(CaptureStopReason.init(rawValue:))
+                            stopReason: row.stopReason.flatMap(CaptureStopReason.init(rawValue:)),
+                            originSessionID: row.originSessionID.flatMap(UUID.init(uuidString:)).map(CaptureSessionID.init),
+                            recordingID: row.recordingID.flatMap(UUID.init(uuidString:)),
+                            partOrdinal: row.partOrdinal,
+                            displayName: row.displayName
                         )
                     }
             }

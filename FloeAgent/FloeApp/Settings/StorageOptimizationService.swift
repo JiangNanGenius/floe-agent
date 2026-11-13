@@ -44,7 +44,9 @@ enum StorageOptimizationDiagnosticVocabulary {
         "legacy_shm_shape_unknown", "legacy_wal_identity_unknown", "legacy_wal_not_in_snapshot",
         "legacy_wal_shape_unknown", "native_closed_receipt_unavailable", "native_owner_close_unproven",
         "native_owner_sources_changed", "owner_evidence_incomplete",
-        "reference-projection-changed",
+        "migration_binding_unknown", "migration_preservation_unavailable", "migration_metadata_bound",
+        "migration_manifest_unknown", "migration_target_unknown", "migration_metadata_unknown",
+        "migration_inventory_unavailable", "reference-projection-changed",
         "reference_active_environment", "reference_active_unattributed", "reference_fingerprint_missing",
         "reference_live_unknown_unattributed", "reference_projection_incomplete", "reference_projection_threw",
         "reference_projection_unavailable", "reference_unknown_environment", "registry_evidence_incomplete",
@@ -63,6 +65,11 @@ enum StorageOptimizationDiagnosticVocabulary {
         let head = String(raw.split(separator: ":", maxSplits: 1).first ?? "")
         return resultCodes.contains(head) || ownerCodes.contains(head) || serviceCodes.contains(head) ? head : nil
     }
+}
+
+private enum StorageOptimizationCandidate: Sendable {
+    case repair(LegacyRecoveryInventoryRecord)
+    case migration(RuntimeV2MigrationSparseRecord)
 }
 
 struct StorageOptimizationState: Codable, Sendable {
@@ -95,6 +102,8 @@ struct StorageOptimizationState: Codable, Sendable {
     var coveredSourceCount: Int?
     var eligibleSourceCount: Int?
     var unrecognizedDiagnosticCodeCount: Int?
+    var migrationRecordCount: Int?
+    var migrationBlockedCount: Int?
 
     enum TerminalDisposition: String {
         case notCovered, eligibilityBlocked, methodUnavailable, verifiedNoGain, recoveryPending, recovered, busy, stopped, optimized
@@ -117,7 +126,8 @@ struct StorageOptimizationState: Codable, Sendable {
         if !codes.isDisjoint(with: ["unsupported-platform", "unsupported-mode", "clone-unavailable", "punch-unsupported", "swap-unsupported"]) { return .methodUnavailable }
         if coveredSourceCount == 0, attempted == 0 { return .notCovered }
         if phase == .blocked {
-            return !codes.isDisjoint(with: ["inventory-incomplete", "sources-not-eligible", "source-not-eligible", "owner-unknown"])
+            return !codes.isDisjoint(with: ["inventory-incomplete", "sources-not-eligible", "source-not-eligible", "owner-unknown",
+                "migration_inventory_unavailable", "migration_binding_unknown", "migration_preservation_unavailable"])
                 ? .eligibilityBlocked : .stopped
         }
         if attempted > 0, optimized == 0, verifiedNoGainCount == attempted { return .verifiedNoGain }
@@ -185,6 +195,8 @@ struct StorageOptimizationState: Codable, Sendable {
         copy.verifiedNoGainCount = verifiedNoGainCount.map { max(0, min(1_000_000, $0)) }
         copy.coveredSourceCount = coveredSourceCount.map { max(0, min(1_000_000, $0)) }
         copy.eligibleSourceCount = eligibleSourceCount.map { max(0, min(1_000_000, $0)) }
+        copy.migrationRecordCount = migrationRecordCount.map { max(0, min(6, $0)) }
+        copy.migrationBlockedCount = migrationBlockedCount.map { max(0, min(6, $0)) }
         if let value = lastProcessedBytes { copy.lastProcessedBytes = max(0, min(value, lastTotalBytes.map { max(0, $0) } ?? Int64.max)) }
         if let value = lastTotalBytes { copy.lastTotalBytes = max(0, value) }
         return copy
@@ -390,19 +402,37 @@ final class StorageOptimizationService: ObservableObject {
                 if refreshNeeded { await settled() }
                 return
             }
-            let candidates = report.records.filter {
+            let repairCandidates = report.records.filter {
                 $0.isReviewableForBytePreservingMaintenance
                     && $0.relativeDirectory.hasPrefix("recovery/quarantine/runtime-vm-")
+            }
+            var candidates = repairCandidates.map(StorageOptimizationCandidate.repair)
+            var migrationBlocked = 0
+            do {
+                let migrations = try await adapter.migrationInventory()
+                state.migrationRecordCount = migrations.records.count + migrations.blockedPaths
+                state.migrationBlockedCount = migrations.blockedPaths
+                migrationBlocked = migrations.blockedPaths
+                for code in migrations.codes { state.recordDiagnostic(code) }
+                candidates.append(contentsOf: migrations.records.map(StorageOptimizationCandidate.migration))
+            } catch {
+                // New migration proof is opt-in and does not turn existing
+                // repair records into fake migration records or erase their
+                // receipts. Unknown migration state stays untouched.
+                migrationBlocked = 6
+                state.migrationRecordCount = 6; state.migrationBlockedCount = 6
+                state.recordDiagnostic("migration_inventory_unavailable")
             }
             // Observation only: this does not broaden the existing candidate
             // filter or authorize retirement of other legacy environment data.
             state.coveredSourceCount = report.records.filter {
                 $0.relativeDirectory.hasPrefix("recovery/quarantine/runtime-vm-")
             }.count
+            state.coveredSourceCount = (state.coveredSourceCount ?? 0) + (state.migrationRecordCount ?? 0)
             state.eligibleSourceCount = candidates.count
             if state.coveredSourceCount == 0 { state.recordDiagnostic("no-covered-sources") }
-            state.total = report.records.count
-            state.skipped = report.records.count - candidates.count
+            state.total = report.records.count + (state.migrationRecordCount ?? 0)
+            state.skipped = report.records.count - repairCandidates.count + migrationBlocked
             if candidates.isEmpty && !report.records.isEmpty {
                 state.phase = .blocked
                 state.details["sources-not-eligible", default: 0] += report.records.count
@@ -417,7 +447,7 @@ final class StorageOptimizationService: ObservableObject {
                 persistResult()
                 refreshNeeded = true
                 let progressGate = StorageOptimizationProgressGate()
-                let result = await adapter.optimize(record, cancellation: cancellation) { [weak self] progress in
+                let onProgress: @Sendable (StorageSparseDiskRewriteProgress) -> Void = { [weak self] progress in
                     guard progressGate.accepts(progress) else { return }
                     Task { @MainActor [weak self] in
                         guard let self, self.generation == generation, self.operation != nil,
@@ -434,6 +464,13 @@ final class StorageOptimizationService: ObservableObject {
                             self.persistResult()
                         }
                     }
+                }
+                let result: RuntimeV2RecoveryOptimizationResult
+                switch record {
+                case .repair(let value):
+                    result = await adapter.optimize(value, cancellation: cancellation, progress: onProgress)
+                case .migration(let value):
+                    result = await adapter.optimizeMigration(value, cancellation: cancellation, progress: onProgress)
                 }
                 guard self.generation == generation else { return }
                 state.recordResult(code: result.code, diagnosticCodes: result.diagnosticCodes,
@@ -459,7 +496,7 @@ final class StorageOptimizationService: ObservableObject {
                 if !difference.overflow { state.observedHostFreeDelta = difference.partialValue }
             }
             if state.phase != .blocked {
-                state.phase = cancellation.isCancelled ? .cancelled : .completed
+                state.phase = cancellation.isCancelled ? .cancelled : (migrationBlocked > 0 ? .blocked : .completed)
             }
         } catch {
             state.phase = cancellation.isCancelled || error is CancellationError ? .cancelled : .blocked
@@ -539,6 +576,8 @@ final class StorageOptimizationService: ObservableObject {
         lines += ["optimization_inventory_at: \(date(inventory.capturedAt))",
             "optimization_inventory_partial: \(inventory.isPartial)", "optimization_root_available: \(inventory.rootAvailable)",
             "optimization_inventory_entries: \(count(inventory.directoryEntriesVisited))",
+            "optimization_migration_records: \(optionalCount(value.migrationRecordCount))",
+            "optimization_migration_blocked: \(optionalCount(value.migrationBlockedCount))",
             "optimization_inventory_sidecar_reads: \(count(inventory.sidecarReadsAttempted))",
             "optimization_inventory_sidecar_bytes: \(count(inventory.sidecarBytesRead))",
             "optimization_inventory_disk_content_bytes: \(count(inventory.diskContentBytesRead))",

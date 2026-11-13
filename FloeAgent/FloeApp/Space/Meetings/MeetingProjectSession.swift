@@ -43,6 +43,7 @@ import FloeTools
     private var playbackHeld = false
     private(set) var meeting: MeetingSnapshot
     private(set) var recordings: [CaptureSessionSnapshot] = []
+    private(set) var recordingTakes: [MeetingRecordingSnapshot] = []
     private(set) var transcript: [TranscriptSegment] = []
     private(set) var sourceReferences: [TranscriptSegmentID: TranscriptSegment] = [:]
     private(set) var transcriptPartials: [PartialTranscript] = []
@@ -72,6 +73,27 @@ import FloeTools
     var followups: MeetingFollowupCenter?
     var player: AVPlayer?
     var playingSession: CaptureSessionID?
+    private(set) var playingRecordingID: UUID?
+    private(set) var preparingRecordingID: UUID?
+    private(set) var playbackErrors: [UUID: String] = [:]
+    private(set) var measuredRecordingDurations: [UUID: Double] = [:]
+    private var playbackTimeline: MeetingPlaybackTimeline?
+    @ObservationIgnored private var playbackPreparation: Task<Void, Never>?
+    private var playbackIntent = UUID()
+    private var pausedRecordingID: UUID? {
+        let paused = recordingTakes.filter { $0.state == .paused }
+        return paused.count == 1 ? paused.first?.id : nil
+    }
+    var recordingMaterials: [MeetingRecordingMaterial] {
+        MeetingRecordingMaterial.project(takes: recordingTakes, visibleSources: visibleRecordings)
+    }
+    var currentRecordingMaterial: MeetingRecordingMaterial? {
+        if let active = captureEventSession,
+           let material = recordingMaterials.first(where: { $0.parts.contains(where: { $0.id == active }) }) { return material }
+        if let paused = pausedRecordingID, let material = recordingMaterials.first(where: { $0.id == paused }) { return material }
+        if let material = recordingMaterials.first(where: { $0.state == .recording && $0.isLive }) { return material }
+        return recordingMaterials.first(where: \.isLive)
+    }
     /// Internal live-recognition diagnostics (domain/reconnect/drop counts),
     /// surfaced only for explicit diagnostics; ordinary UI copy stays clean.
     var liveRecognitionDiagnostics = ""
@@ -100,6 +122,7 @@ import FloeTools
         // turn those rows into ordinary stopped recordings so replay, full-file
         // transcription and chunk retry remain reachable.
         var recoveryFailure: String?
+        var recoveredOriginals: [CaptureSessionID] = []
         do {
             let stale = try await service.sessions(meeting: MeetingID(id))
             for snapshot in stale where snapshot.kind == .liveRecording
@@ -119,8 +142,9 @@ import FloeTools
                 } else {
                     available = false
                 }
-                _ = try await service.recoverInterruptedLiveCapture(
+                let recovered = try await service.recoverInterruptedLiveCapture(
                     snapshot.id, meeting: MeetingID(id), originalAvailable: available)
+                if recovered, available { recoveredOriginals.append(snapshot.id) }
             }
         } catch { recoveryFailure = error.localizedDescription }
         let value = MeetingProjectSession(id: id, root: directory, service: service, meeting: meeting, environment: environment)
@@ -146,6 +170,7 @@ import FloeTools
             Task { @MainActor in await value?.receiveCaptureEvent(event) }
         }
         await value.refresh()
+        for original in recoveredOriginals { await value.refreshCapturedDuration(original) }
         await value.speakerRecognition?.resumeSavedWork()
         // A tool inspection must not create a replacement notebook or link.
         // The native meeting UI retains its existing first-open creation path.
@@ -165,6 +190,7 @@ import FloeTools
         do {
             meeting = try await service.meeting(MeetingID(id))
             recordings = try await service.sessions(meeting: MeetingID(id))
+            recordingTakes = try await service.recordingTakes(meeting: MeetingID(id))
             transcript = try await service.transcript(meeting: MeetingID(id))
             if !isStoppingForFileAction, try await speakerRecognition?.applyStored(rows: transcript.map { (originalCaptureSession(for: $0.sessionID), $0) }) == true {
                 transcript = try await service.transcript(meeting: MeetingID(id))
@@ -178,6 +204,7 @@ import FloeTools
             markers = try await service.markers(meeting: MeetingID(id))
             try await refreshSourceReferences()
             isRecording = await service.activeCaptureSession != nil
+            isPaused = !isRecording && pausedRecordingID != nil
             if !isRecording { releaseAudio() }
             if let failure = await service.capturePersistenceFailure { diagnostic = failure.localizedDescription }
         } catch { diagnostic = error.localizedDescription }
@@ -206,12 +233,14 @@ import FloeTools
     func sourceSegment(_ id: TranscriptSegmentID) -> TranscriptSegment? {
         transcript.first(where: { $0.id == id }) ?? sourceReferences[id]
     }
-    func startRecording() async {
+    func startRecording(continuing recordingID: UUID? = nil) async {
         guard !isStoppingForFileAction, !changingCapture, !isRecording else { return }
         // Any stopped/cancelled callback still queued for the previous
         // capture is stale once a new recording begins. The new .started
         // event installs its own session identity.
         captureEventSession = nil
+        captureSettlement?.cancel(); captureSettlement = nil
+        let continuation = recordingID ?? (isPaused ? pausedRecordingID : nil)
         let intent = UUID(); captureIntent = intent
         changingCapture = true; diagnostic = nil
         defer { changingCapture = false }
@@ -246,7 +275,7 @@ import FloeTools
             liveTranscription?.liveCaptureFinished = false
             liveTranscription?.reevaluate()
             _ = try await service.startCapture(meeting: MeetingID(id), backend: backend,
-                configuration: .init(directory: directory))
+                configuration: .init(directory: directory), continuingRecording: continuation)
             if isStoppingForFileAction || captureIntent != intent || Task.isCancelled {
                 _ = try? await service.stopCapture()
                 await refresh()
@@ -281,29 +310,39 @@ import FloeTools
                 self.diagnostic = message
             })
     }
-    @discardableResult func stopRecording() async -> Bool {
+    @discardableResult func stopRecording(pausing: Bool = false) async -> Bool {
         guard !changingCapture else { return false }
         changingCapture = true
         defer { changingCapture = false }
         var succeeded = false
+        var finalizedSession: CaptureSessionID?
         do {
-            let outcome = try await service.stopCapture()
+            let outcome: CaptureSessionOutcome
+            if pausing { outcome = try await service.pauseCapture() }
+            else { outcome = try await service.stopCapture() }
             succeeded = outcome.state == .stopped && outcome.stopReason != .timeout
+            if succeeded { finalizedSession = outcome.session }
             if !succeeded { diagnostic = IDELanguageRunText.t("录音结束未完成，请稍后重试。原文件已保留。", "Recording did not finish cleanly. Try again shortly. The original is preserved.") }
         }
         catch { diagnostic = error.localizedDescription }
         await refresh()
+        if let finalizedSession { await refreshCapturedDuration(finalizedSession) }
         captureSettlement?.cancel()
+        let settlementIntent = captureIntent
         captureSettlement = Task { [weak self] in
             guard let self else { return }
             for _ in 0..<400 {
-                if Task.isCancelled { return }
-                if await self.service.activeCaptureSession == nil { await self.refresh(); return }
+                if Task.isCancelled || self.captureIntent != settlementIntent { return }
+                if await self.service.activeCaptureSession == nil {
+                    guard self.captureIntent == settlementIntent else { return }
+                    await self.refresh(); return
+                }
                 try? await Task.sleep(for: .milliseconds(25))
             }
+            guard self.captureIntent == settlementIntent else { return }
             self.diagnostic = IDELanguageRunText.t("录音正在结束，原文件已保留。", "Recording is still finishing. Its original file was preserved.")
         }
-        isPaused = false
+        isPaused = !isRecording && pausedRecordingID != nil
         synchronizeSummaryTimer()
         return succeeded
     }
@@ -337,10 +376,33 @@ import FloeTools
     var hasRecordingToLeave: Bool { isRecording || changingCapture }
     var recordingDepartureIdentity: UUID { captureIntent }
 
+    private func refreshCapturedDuration(_ sessionID: CaptureSessionID) async {
+        guard let snapshot = recordings.first(where: { $0.id == sessionID && $0.state == .stopped }),
+              snapshot.durationSeconds == nil else { return }
+        do {
+            let file = try mediaFile(for: snapshot)
+            let range = try await AudioFileProbe.durationRange(file)
+            guard recordings.contains(where: { $0.id == sessionID && $0.state == .stopped }) else { return }
+            try await service.recordCapturedDuration(range.end - range.start, session: sessionID, meeting: MeetingID(id))
+            await refresh()
+        } catch {
+            // A duration-probe error never changes a successful recording
+            // into a failed capture or removes its original/part access.
+            diagnostic = error.localizedDescription
+        }
+    }
     func pauseRecording() async {
         guard isRecording else { return }
-        let stopped = await stopRecording()
-        if stopped, !isRecording { isPaused = true }
+        _ = await stopRecording(pausing: true)
+    }
+    func finishPausedRecording() async {
+        guard !changingCapture, !isRecording, let recordingID = pausedRecordingID else { return }
+        changingCapture = true
+        defer { changingCapture = false }
+        do {
+            try await service.finishPausedRecording(recordingID, meeting: MeetingID(id))
+            await refresh()
+        } catch { diagnostic = error.localizedDescription }
     }
     private func releaseAudio() {
         guard audioHeld else { return }
@@ -364,6 +426,7 @@ import FloeTools
             }.value
             _ = try await service.importFile(meeting: MeetingID(id), file: imported,
                 kind: ["mp4", "mov", "m4v"].contains(imported.pathExtension) ? .importedVideo : .importedAudio,
+                displayName: source.lastPathComponent,
                 duration: AudioFileProbe.durationRange)
             await refresh()
         } catch { diagnostic = error.localizedDescription }
@@ -396,31 +459,108 @@ import FloeTools
     }
 
     func play(_ session: CaptureSessionSnapshot, at time: Double = 0, until end: Double? = nil) {
-        guard !isRecording, session.state == .stopped else { return }
-        do {
-            let file = try mediaFile(for: session)
-            if !playbackHeld { try audio.acquirePlayback(); playbackHeld = true }
-            player?.pause()
-            let player = AVPlayer(url: file)
-            if let end, end.isFinite, end > max(0, time) {
-                player.currentItem?.forwardPlaybackEndTime = CMTime(seconds: end, preferredTimescale: 600)
+        guard session.meetingID.rawValue == id else { return }
+        if let material = recordingMaterials.first(where: { $0.parts.contains(where: { $0.id == session.id }) }) {
+            play(material, from: session.id, at: time, until: end)
+        }
+    }
+    func play(_ material: MeetingRecordingMaterial, from source: CaptureSessionID? = nil,
+              at time: Double = 0, until end: Double? = nil) {
+        guard !isRecording, !changingCapture, !isStoppingForFileAction, material.canPlay,
+              recordingMaterials.contains(material), material.parts.allSatisfy({ $0.meetingID.rawValue == id }),
+              time.isFinite else { return }
+        stopPlayback()
+        let intent = UUID(); playbackIntent = intent
+        preparingRecordingID = material.id; playbackErrors[material.id] = nil
+        playbackPreparation = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if self.playbackIntent == intent { self.preparingRecordingID = nil; self.playbackPreparation = nil }
             }
-            player.seek(to: CMTime(seconds: max(0, time), preferredTimescale: 600))
-            self.player = player; playingSession = session.id
+            do {
+                let sources = try material.parts.map {
+                    MeetingRecordingPlayback.Source(session: $0.id, file: try self.mediaFile(for: $0))
+                }
+                let prepared = try await MeetingRecordingPlayback.prepare(sources: sources, root: self.root)
+                try Task.checkCancellation()
+                guard self.playbackIntent == intent, !self.isRecording, !self.changingCapture,
+                      !self.isStoppingForFileAction, self.recordingMaterials.contains(material) else { return }
+                let first = source ?? material.parts[0].id
+                guard let start = prepared.timeline.time(session: first, localTime: time) else {
+                    throw PersonalContentError.changedDocument
+                }
+                if let end, end.isFinite, end > time,
+                   let limit = prepared.timeline.time(session: first, localTime: end), limit > start {
+                    prepared.item.forwardPlaybackEndTime = CMTime(seconds: limit, preferredTimescale: 600)
+                }
+                let player = AVPlayer(playerItem: prepared.item)
+                let didSeek = await player.seek(to: CMTime(seconds: start, preferredTimescale: 600),
+                                                toleranceBefore: .zero, toleranceAfter: .zero)
+                try Task.checkCancellation()
+                guard self.playbackIntent == intent, !self.isRecording, !self.changingCapture,
+                      !self.isStoppingForFileAction, self.recordingMaterials.contains(material) else { return }
+                guard didSeek else { throw PersonalContentError.changedDocument }
+                if !self.playbackHeld { try self.audio.acquirePlayback(); self.playbackHeld = true }
+                self.playbackTimeline = prepared.timeline
+                self.measuredRecordingDurations[material.id] = prepared.timeline.duration
+                self.player = player; self.playingSession = first; self.playingRecordingID = material.id
+                player.play()
+            } catch is CancellationError { }
+            catch {
+                guard self.playbackIntent == intent else { return }
+                self.playbackErrors[material.id] = IDELanguageRunText.t(
+                    "暂时无法播放整段录音。请重试，或展开查看原始片段。", "The full recording cannot be played right now. Retry or open its original parts.")
+                self.diagnostic = error.localizedDescription
+            }
+        }
+    }
+    /// Explicit fallback plays ONE original with an honest single-part title.
+    func playOriginalPart(_ source: CaptureSessionSnapshot) {
+        guard visibleRecordings.contains(source), source.state == .stopped else { return }
+        // A fallback is authorized by this exact persisted source, while the
+        // normal grouped path continues to reject incomplete full recordings.
+        playOriginalMaterial(source: source)
+    }
+    private func playOriginalMaterial(source: CaptureSessionSnapshot) {
+        guard !isRecording, !changingCapture, !isStoppingForFileAction,
+              source.meetingID.rawValue == id, visibleRecordings.contains(source) else { return }
+        stopPlayback()
+        do {
+            let file = try mediaFile(for: source)
+            if !playbackHeld { try audio.acquirePlayback(); playbackHeld = true }
+            let player = AVPlayer(url: file)
+            self.player = player; playingSession = source.id; playingRecordingID = nil
             player.play()
         } catch { diagnostic = error.localizedDescription }
     }
     func stopPlayback() {
-        player?.pause(); player = nil; playingSession = nil
+        playbackIntent = UUID(); playbackPreparation?.cancel(); playbackPreparation = nil
+        preparingRecordingID = nil; playbackTimeline = nil
+        player?.pause(); player = nil; playingSession = nil; playingRecordingID = nil
         if playbackHeld { playbackHeld = false; audio.releasePlayback() }
     }
+    func stopPlaybackAndWait() async {
+        let preparation = playbackPreparation
+        stopPlayback()
+        await preparation?.value
+    }
+    func isAnalysisCapture(_ candidate: CaptureSessionSnapshot) -> Bool {
+        if let origin = candidate.originSessionID,
+           recordings.contains(where: { $0.id == origin && $0.meetingID == candidate.meetingID }) { return true }
+        if liveTranscription?.chunks.contains(where: { $0.analysisSessionID == candidate.id }) == true { return true }
+        return analysisSessions.contains { original, analysis in
+            analysis == candidate.id.rawValue && recordings.contains(where: { $0.id.rawValue == original })
+        }
+    }
     func originalCaptureSession(for session: CaptureSessionID) -> CaptureSessionID {
+        if let origin = recordings.first(where: { $0.id == session })?.originSessionID,
+           recordings.contains(where: { $0.id == origin && $0.meetingID.rawValue == id }) { return origin }
         if let original = liveTranscription?.originalSession(for: session), original != session { return original }
         if let original = analysisSessions.first(where: { $0.value == session.rawValue })?.key { return CaptureSessionID(original) }
         return session
     }
     func play(_ segment: TranscriptSegment) {
-        let source = liveTranscription?.originalSession(for: segment.sessionID) ?? segment.sessionID
+        let source = originalCaptureSession(for: segment.sessionID)
         guard let session = recordings.first(where: { $0.id == source }) else { return }
         play(session, at: segment.range.start)
     }
@@ -431,7 +571,7 @@ import FloeTools
             return
         }
         if case .recording(let id, let range) = source,
-           let recording = recordings.first(where: { $0.id == (liveTranscription?.originalSession(for: id) ?? id) }) {
+           let recording = recordings.first(where: { $0.id == originalCaptureSession(for: id) }) {
             play(recording, at: range.start)
         }
     }
@@ -584,9 +724,11 @@ import FloeTools
            let range = try? MediaTimeRange(start: max(0, time), end: max(0, time) + 0.01) {
             return .recording(session: session, range: range)
         }
-        if let session = playingSession, let time = player?.currentTime().seconds, time.isFinite,
-           let range = try? MediaTimeRange(start: max(0, time), end: max(0, time) + 0.01) {
-            return .recording(session: session, range: range)
+        if let session = playingSession, let time = player?.currentTime().seconds, time.isFinite {
+            let location = playbackTimeline?.capture(at: time) ?? (session: session, time: max(0, time))
+            if let range = try? MediaTimeRange(start: location.time, end: location.time + 0.01) {
+                return .recording(session: location.session, range: range)
+            }
         }
         return .none
     }

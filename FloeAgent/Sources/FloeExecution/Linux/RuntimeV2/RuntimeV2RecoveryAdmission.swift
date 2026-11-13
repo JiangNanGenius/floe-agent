@@ -21,6 +21,8 @@ public enum RuntimeV2RecoveryAdmission {
         let root: URL
         let lockURL: URL
         let intentURL: URL
+        let intentURLs: [URL]
+        let historyLayout: RuntimeV2MaintenanceHistoryLayout?
         let incarnation = UUID().uuidString
         var generation: UInt64 = 0
         var liveUses = 0
@@ -28,10 +30,13 @@ public enum RuntimeV2RecoveryAdmission {
         var recoveryBlocked: Bool
         var coverageComplete: Bool
 
-        init(root: URL, stateDirectory: URL, recoveryBlocked: Bool, coverageComplete: Bool) {
+        init(root: URL, stateDirectory: URL, recoveryBlocked: Bool, coverageComplete: Bool,
+             historyLayout: RuntimeV2MaintenanceHistoryLayout? = nil) {
             self.root = root
-            self.lockURL = stateDirectory.appendingPathComponent("maintenance.lock")
+            self.historyLayout = historyLayout
+            self.lockURL = historyLayout?.anchor ?? stateDirectory.appendingPathComponent("maintenance.lock")
             self.intentURL = stateDirectory.appendingPathComponent("intent.json")
+            self.intentURLs = (historyLayout?.directories ?? [stateDirectory]).map { $0.appendingPathComponent("intent.json") }
             self.recoveryBlocked = recoveryBlocked
             self.coverageComplete = coverageComplete
         }
@@ -48,6 +53,16 @@ public enum RuntimeV2RecoveryAdmission {
                 throw RuntimeV2MaintenanceError.maintenanceActive("native recovery IO is still owned")
             }
             intentID = id
+        }
+
+        /// Atomically switch the active recovery intent while the SAME
+        /// all-history lock set remains held. There is no admission-open gap.
+        func advanceRecoveryIntent(from previous: String, to next: String) throws {
+            lock.lock(); defer { lock.unlock() }
+            guard intentID == previous, liveUses == 0 else {
+                throw RuntimeV2MaintenanceError.claimInvalidated("native recovery handoff changed")
+            }
+            if previous != next { intentID = next; generation &+= 1 }
         }
 
         func endExclusive(_ id: String, converged: Bool) {
@@ -80,6 +95,14 @@ public enum RuntimeV2RecoveryAdmission {
             guard intentID == nil, !recoveryBlocked else {
                 throw RuntimeV2MaintenanceError.maintenanceActive("legacy maintenance admission is closed")
             }
+            if let historyLayout {
+                let cohort = try RuntimeV2MaintenanceHistoryLocks.acquire(historyLayout, operation: LOCK_SH)
+                let fd = try cohort.duplicateAnchor()
+                do { try refuseBlockingIntents() }
+                catch { close(fd); throw error }
+                liveUses += 1; generation &+= 1
+                return RuntimeV2RecoveryUse(gate: self, descriptor: fd, historyLocks: cohort)
+            }
             // Same inode/flock as the coordinator; no second lock namespace.
             let fd = open(lockURL.path, O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC, mode_t(0o600))
             guard fd >= 0 else {
@@ -93,7 +116,7 @@ public enum RuntimeV2RecoveryAdmission {
                 close(fd)
                 throw RuntimeV2MaintenanceError.crossProcessOwner("native use lock changed or busy")
             }
-            do { try refuseBlockingIntent() }
+            do { try refuseBlockingIntents() }
             catch { close(fd); throw error }
             liveUses += 1
             generation &+= 1
@@ -103,11 +126,20 @@ public enum RuntimeV2RecoveryAdmission {
             #endif
         }
 
-        private func refuseBlockingIntent() throws {
+        private func refuseBlockingIntents() throws {
+            for url in intentURLs { try refuseBlockingIntent(at: url) }
+        }
+
+        private func refuseBlockingIntent(at intentURL: URL) throws {
             #if canImport(Darwin)
             let fd = open(intentURL.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
             if fd < 0 {
-                if errno == ENOENT { return }
+                if errno == ENOENT {
+                    guard historyLayout?.historicalDirectories.contains(intentURL.deletingLastPathComponent()) != true else {
+                        throw RuntimeV2MaintenanceError.recoveryPending("retained historical intent disappeared")
+                    }
+                    return
+                }
                 throw RuntimeV2MaintenanceError.recoveryPending("durable intent unreadable")
             }
             defer { close(fd) }
@@ -128,6 +160,15 @@ public enum RuntimeV2RecoveryAdmission {
                     throw RuntimeV2MaintenanceError.recoveryPending("durable intent changed")
                 }
                 offset += count
+            }
+            if let historyLayout {
+                let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+                guard let record = try? decoder.decode(RuntimeV2MaintenanceIntentRecord.self, from: Data(bytes)),
+                      record.version == RuntimeV2MaintenanceIntentRecord.currentVersion,
+                      historyLayout.domain.matchesRecordedRoot(record.domainRoot,
+                        device: record.domainDevice, inode: record.domainInode) else {
+                    throw RuntimeV2MaintenanceError.recoveryPending("historical intent identity is unverified")
+                }
             }
             struct Header: Decodable { let phase: RuntimeV2MaintenanceIntentRecord.Phase }
             guard let header = try? JSONDecoder().decode(Header.self, from: Data(bytes)),
@@ -175,25 +216,27 @@ public enum RuntimeV2RecoveryAdmission {
         if registry.gates[path] == nil { registry.rootsObservedBeforeInstall.insert(path) }
     }
 
-    static func install(domain: RuntimeV2MaintenanceDomain, stateDirectory: URL, recoveryBlocked: Bool) {
+    static func install(domain: RuntimeV2MaintenanceDomain, stateDirectory: URL, recoveryBlocked: Bool,
+                        historyLayout: RuntimeV2MaintenanceHistoryLayout? = nil) {
         guard RuntimeV2MaintenanceDomain.trustedLegacyRoot().map({ key($0) }) == key(domain.root) else { return }
-        installBoundDomain(domain: domain, stateDirectory: stateDirectory, recoveryBlocked: recoveryBlocked)
+        installBoundDomain(domain: domain, stateDirectory: stateDirectory, recoveryBlocked: recoveryBlocked, historyLayout: historyLayout)
     }
 
     #if DEBUG
-    static func installSyntheticDomainForTests(domain: RuntimeV2MaintenanceDomain, stateDirectory: URL) {
-        installBoundDomain(domain: domain, stateDirectory: stateDirectory, recoveryBlocked: false)
+    static func installSyntheticDomainForTests(domain: RuntimeV2MaintenanceDomain, stateDirectory: URL,
+                                              historyLayout: RuntimeV2MaintenanceHistoryLayout? = nil) {
+        installBoundDomain(domain: domain, stateDirectory: stateDirectory, recoveryBlocked: false, historyLayout: historyLayout)
     }
     #endif
 
     private static func installBoundDomain(domain: RuntimeV2MaintenanceDomain, stateDirectory: URL,
-                                          recoveryBlocked: Bool) {
+                                          recoveryBlocked: Bool, historyLayout: RuntimeV2MaintenanceHistoryLayout? = nil) {
         let path = key(domain.root)
         registry.lock.lock(); defer { registry.lock.unlock() }
         if registry.gates[path] != nil { return }
         registry.gates[path] = Gate(root: domain.root, stateDirectory: stateDirectory,
                                    recoveryBlocked: recoveryBlocked,
-                                   coverageComplete: !registry.rootsObservedBeforeInstall.contains(path))
+                                   coverageComplete: !registry.rootsObservedBeforeInstall.contains(path), historyLayout: historyLayout)
     }
 
     public static func snapshot(root: URL) throws -> RuntimeV2RecoveryAdmissionSnapshot {
@@ -223,13 +266,15 @@ final class RuntimeV2RecoveryUse: @unchecked Sendable {
     private let gate: RuntimeV2RecoveryAdmission.Gate
     private let lock = NSLock()
     private var descriptor: Int32
-    init(gate: RuntimeV2RecoveryAdmission.Gate, descriptor: Int32) {
-        self.gate = gate; self.descriptor = descriptor
+    private var historyLocks: RuntimeV2MaintenanceHistoryLocks?
+    init(gate: RuntimeV2RecoveryAdmission.Gate, descriptor: Int32, historyLocks: RuntimeV2MaintenanceHistoryLocks? = nil) {
+        self.gate = gate; self.descriptor = descriptor; self.historyLocks = historyLocks
     }
     deinit { release() }
     func release() {
         lock.lock()
         let fd = descriptor; descriptor = -1
+        historyLocks = nil
         lock.unlock()
         guard fd >= 0 else { return }
         #if canImport(Darwin)

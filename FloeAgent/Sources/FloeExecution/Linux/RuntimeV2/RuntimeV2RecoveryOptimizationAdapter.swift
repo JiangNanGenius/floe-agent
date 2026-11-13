@@ -119,7 +119,7 @@ struct RuntimeV2OptimizationJobReceipt: Codable, Sendable {
 
 // Decode only the public contract fields the adapter MUST bind. Core owns the
 // rest of schema v2 and is the sole code allowed to converge its S/T journal.
-private struct RuntimeV2OptimizationCoreJournalBinding: Decodable, Sendable {
+struct RuntimeV2OptimizationCoreJournalBinding: Decodable, Sendable {
     let schemaVersion: Int
     let jobID: String
     let maintenanceLeaseID: String
@@ -141,6 +141,12 @@ private struct RuntimeV2OptimizationCoreJournalBinding: Decodable, Sendable {
     let modeUsed: StorageSparseDiskRewriteMode?
     let fallbackReason: String?
     let metadataFingerprint: String?
+}
+
+private enum RuntimeV2CompletedHistoryDecision: Sendable {
+    case none
+    case verified(RuntimeV2OptimizationCoreJournalBinding)
+    case retainedUnverified
 }
 
 public struct RuntimeV2RecoveryOptimizationResult: Sendable {
@@ -173,6 +179,7 @@ public actor RuntimeV2RecoveryOptimizationAdapter {
     private let admittedEvidence: RuntimeV2MaintenanceEvidenceProvider
     private let journals: URL
     private let receipts: URL
+    private let migrationOptimizer: RuntimeV2MigrationSparseOptimizer
     private let core = RuntimeV2OptimizationWorker("floe.legacy-recovery.core", allowsSynchronousFence: true)
     private let metadata = RuntimeV2OptimizationWorker("floe.legacy-recovery.metadata")
     private var installTask: Task<Void, Never>?
@@ -187,6 +194,8 @@ public actor RuntimeV2RecoveryOptimizationAdapter {
         self.rawEvidence = rawEvidence; self.admittedEvidence = admittedEvidence
         self.journals = coordinator.stateDirectory.appendingPathComponent("sparse-journals", isDirectory: true)
         self.receipts = coordinator.stateDirectory.appendingPathComponent("sparse-receipts", isDirectory: true)
+        self.migrationOptimizer = RuntimeV2MigrationSparseOptimizer(domain: domain, coordinator: coordinator,
+            closureAuthority: closureAuthority, admittedEvidence: admittedEvidence)
     }
 
     public func recoverBeforeUse() async -> RuntimeV2MaintenanceRecoveryReport {
@@ -206,6 +215,16 @@ public actor RuntimeV2RecoveryOptimizationAdapter {
     public func inventory() async throws -> LegacyRecoveryInventoryReport {
         let evidence = await rawEvidence()
         return try await scan(evidence: evidence)
+    }
+
+    public func migrationInventory() async throws -> RuntimeV2MigrationSparseInventoryReport {
+        try await migrationOptimizer.inventory()
+    }
+    public func optimizeMigration(_ record: RuntimeV2MigrationSparseRecord,
+        cancellation: RuntimeV2OptimizationCancellation,
+        progress: (@Sendable (StorageSparseDiskRewriteProgress) -> Void)? = nil)
+        async -> RuntimeV2RecoveryOptimizationResult {
+        await migrationOptimizer.optimize(record, cancellation: cancellation, progress: progress)
     }
 
     private func scan(evidence: RuntimeV2MaintenanceOwnerEvidence) async throws -> LegacyRecoveryInventoryReport {
@@ -273,21 +292,32 @@ public actor RuntimeV2RecoveryOptimizationAdapter {
             // Reuse only a completed, byte-verified commit whose exact current
             // inode/metadata and preserved sidecars still match. This is not
             // owner admission: the fresh exclusive claim/closure above remains
-            // mandatory, and a missing/mismatched receipt falls through to Core.
-            if let completed = try? await completedJournal(
-                relative: relative, source: inspection.identity, preservation: preservation,
-                closure: closure) {
+            // mandatory. A known retired artifact without current complete
+            // proof is retained instead of falling through to Core.
+            let completedDecision = try await completedJournal(relative: relative,
+                source: inspection.identity, preservation: preservation, closure: closure)
+            switch completedDecision {
+            case .verified(let completed):
                 try await validate(claim: claim, relative: relative, preservation: preservation)
                 try claim.validateTargetIdentity()
                 let stillMatches = try await metadata.run {
                     Self.matchesCommittedSource(completed, root: root, expected: inspection.identity,
-                                                rootDevice: closure.rootDevice, rootInode: closure.rootInode)
+                        rootDevice: closure.rootDevice, rootInode: closure.rootInode)
                 }
+                try await claim.abortAndRelease(reason: "historical completed proof checked; no mutation")
                 if stillMatches {
-                    try await claim.abortAndRelease(reason: "completed journal identity verified; no mutation")
-                    return .init(report: nil, code: "already-optimized", recoveryPending: false,
-                                 verifiedUnchanged: true)
+                    return .init(report: nil, code: "already-optimized", recoveryPending: false, verifiedUnchanged: true)
                 }
+                return .init(report: nil, code: "needs-inspection", recoveryPending: false)
+            case .retainedUnverified:
+                // Retired provenance exists, but CURRENT complete identity /
+                // sidecar proof is insufficient. Keep it, never reread/rewrite
+                // the large body merely to refresh an older success receipt.
+                try await claim.abortAndRelease(reason: "historical success retained; current proof unverified")
+                FloeLogger(category: .tools).info("legacyHistoryReuse decision=retained_unverified")
+                return .init(report: nil, code: "needs-inspection", recoveryPending: false)
+            case .none:
+                break
             }
             let receipt = RuntimeV2OptimizationJobReceipt(
                 version: 1, intentID: claim.intentID, authorityGeneration: claim.holdGeneration,
@@ -405,6 +435,9 @@ public actor RuntimeV2RecoveryOptimizationAdapter {
     }
 
     private func recoverIntent(_ intent: RuntimeV2MaintenanceIntentRecord) async -> RuntimeV2MaintenanceRecoveryOutcome {
+        if RuntimeV2MigrationSparseOptimizer.owns(intent) {
+            return await migrationOptimizer.recover(intent)
+        }
         do {
             guard intent.owner == Self.owner, intent.reason == Self.reason,
                   let rootDevice = intent.domainDevice, let rootInode = intent.domainInode,
@@ -423,12 +456,15 @@ public actor RuntimeV2RecoveryOptimizationAdapter {
                   RuntimeV2RecoveryClosureAuthority.convergenceBlockers(evidence, domain: domain).isEmpty else {
                 return .unresolved("fresh native closure/reference proof unavailable")
             }
-            let receipts = receipts
+            let recoveryDirectory = try await coordinator.recoveryStorageDirectory(
+                intentID: intent.intentID, holdGeneration: intent.holdGeneration)
+            let receipts = recoveryDirectory.appendingPathComponent("sparse-receipts", isDirectory: true)
             let saved = try await metadata.run {
                 try RuntimeV2OptimizationJournalIO.read(
                     RuntimeV2OptimizationJobReceipt.self, directory: receipts, name: intent.intentID + ".json")
             }
-            let journals = journals; let root = domain.root
+            let journals = recoveryDirectory.appendingPathComponent("sparse-journals", isDirectory: true)
+            let root = domain.root
             let header = try await metadata.run {
                 try RuntimeV2OptimizationJournalIO.read(
                     RuntimeV2OptimizationCoreJournalBinding.self, directory: journals, name: intent.intentID + ".json")
@@ -519,59 +555,89 @@ public actor RuntimeV2RecoveryOptimizationAdapter {
             }
             try await coordinator.validateRecoverySession(intentID: intent.intentID, holdGeneration: intent.holdGeneration)
             return .resolved
-        } catch { return .unresolved("native recovery requires inspection: " + Self.code(error)) }
+        } catch {
+            FloeLogger(category: .tools).error("legacyHistoryRecovery code=" + Self.code(error))
+            return .unresolved("native recovery requires inspection: " + Self.code(error))
+        }
     }
 
     private func completedJournal(
         relative: String, source: StorageSparseDiskIdentity, preservation: String,
         closure: RuntimeV2RecoveryClosedReceipt
-    ) async throws -> RuntimeV2OptimizationCoreJournalBinding? {
-        let receipts = receipts, journals = journals, domain = domain
+    ) async throws -> RuntimeV2CompletedHistoryDecision {
+        let contexts = try await coordinator.completedStorageDirectories(
+            intentID: closure.intentID, holdGeneration: closure.holdGeneration)
+        let domain = domain
         return try await metadata.run {
-            for name in try Self.completedReceiptNames(directory: receipts) {
-                guard let saved = try RuntimeV2OptimizationJournalIO.read(
-                    RuntimeV2OptimizationJobReceipt.self, directory: receipts, name: name),
-                      saved.version == 1, Self.isDomainKey(saved.domainKey),
-                      saved.domainKey == saved.closure.domainKey,
-                      saved.relativePath == relative, saved.preservationFingerprint == preservation,
-                      saved.intentID + ".json" == name,
-                      saved.closure.version == 1, !saved.closure.isConvergenceProof,
-                      saved.closure.intentID == saved.intentID,
-                      saved.closure.holdGeneration == saved.authorityGeneration,
-                      saved.closure.rootDevice == closure.rootDevice,
-                      saved.closure.rootInode == closure.rootInode,
-                      let header = try RuntimeV2OptimizationJournalIO.read(
-                        RuntimeV2OptimizationCoreJournalBinding.self, directory: journals, name: name),
-                      header.schemaVersion == 2, header.jobID == saved.intentID,
-                      header.maintenanceLeaseID == saved.intentID,
-                      header.jobGeneration == saved.authorityGeneration,
-                      header.holdGeneration == saved.repairHoldGeneration,
-                      header.source.matchesFully(saved.expectedSource), header.relativePath == relative,
-                      header.phase == "retired", header.stageRetired == true, header.stageRetained == false,
-                      header.requestedMode == .cloneAndPunch, header.modeUsed == .cloneAndPunch,
-                      header.fallbackReason == nil,
-                      let digest = header.sourceDigestSHA512, Self.isSHA512(digest),
-                      digest == header.stageDigestSHA512,
-                      let metadataFingerprint = header.metadataFingerprint,
-                      Self.isSHA512(metadataFingerprint),
-                      header.postSwapSource?.matchesFully(source) == true,
-                      Self.matchesPhysicalRoot(header.rootPath, root: domain.root,
-                          device: closure.rootDevice, inode: closure.rootInode),
-                      Self.matchesCommittedSource(header, root: domain.root, expected: source,
-                          rootDevice: closure.rootDevice, rootInode: closure.rootInode) else { continue }
-                return header
+            var retiredTargetSeen = false
+            var verified: [RuntimeV2OptimizationCoreJournalBinding] = []
+            var totalReceipts = 0
+            for context in contexts {
+                let receipts = context.appendingPathComponent("sparse-receipts", isDirectory: true)
+                let journals = context.appendingPathComponent("sparse-journals", isDirectory: true)
+                for name in try Self.completedReceiptNames(directory: receipts) {
+                    totalReceipts += 1
+                    guard totalReceipts <= 512 else { throw StorageSparseDiskRewriteError.needsInspection("all-history-receipt-budget") }
+                    guard let saved = try RuntimeV2OptimizationJournalIO.read(
+                        RuntimeV2OptimizationJobReceipt.self, directory: receipts, name: name),
+                          saved.version == 1, Self.isDomainKey(saved.domainKey),
+                          saved.domainKey == saved.closure.domainKey, saved.relativePath == relative,
+                          saved.intentID + ".json" == name,
+                          saved.closure.version == 1, !saved.closure.isConvergenceProof,
+                          saved.closure.intentID == saved.intentID,
+                          saved.closure.holdGeneration == saved.authorityGeneration,
+                          saved.closure.rootDevice == closure.rootDevice,
+                          saved.closure.rootInode == closure.rootInode,
+                          let header = try RuntimeV2OptimizationJournalIO.read(
+                            RuntimeV2OptimizationCoreJournalBinding.self, directory: journals, name: name),
+                          header.schemaVersion == 2, header.jobID == saved.intentID,
+                          header.maintenanceLeaseID == saved.intentID,
+                          header.jobGeneration == saved.authorityGeneration,
+                          header.holdGeneration == saved.repairHoldGeneration,
+                          header.source.matchesFully(saved.expectedSource), header.relativePath == relative,
+                          header.phase == "retired", header.stageRetired == true, header.stageRetained == false,
+                          header.requestedMode == .cloneAndPunch, header.modeUsed == .cloneAndPunch,
+                          header.fallbackReason == nil,
+                          let digest = header.sourceDigestSHA512, Self.isSHA512(digest),
+                          digest == header.stageDigestSHA512,
+                          let metadataFingerprint = header.metadataFingerprint,
+                          Self.isSHA512(metadataFingerprint),
+                          Self.matchesPhysicalRoot(header.rootPath, root: domain.root,
+                            device: closure.rootDevice, inode: closure.rootInode) else { continue }
+                    // Later aborted/insufficient-reclaim records do not hide
+                    // this retired artifact, nor certify current bytes for it.
+                    if let old = header.postSwapSource,
+                       old.device == source.device, old.inode == source.inode,
+                       old.sizeBytes == source.sizeBytes,
+                       old.modificationSeconds == source.modificationSeconds,
+                       old.modificationNanoseconds == source.modificationNanoseconds {
+                        // Only classifies a historical inode for RETENTION.
+                        // It never certifies bytes or removes the full guards
+                        // below. A genuinely changed mtime/new inode keeps the
+                        // normal task-authorized new-source behavior.
+                        retiredTargetSeen = true
+                    }
+                    guard saved.preservationFingerprint == preservation,
+                          header.postSwapSource?.matchesFully(source) == true,
+                          Self.matchesCommittedSource(header, root: domain.root, expected: source,
+                            rootDevice: closure.rootDevice, rootInode: closure.rootInode) else { continue }
+                    verified.append(header)
+                }
             }
-            return nil
+            if verified.count == 1 { return .verified(verified[0]) }
+            // Multiple current proofs are not resolved by filename/date order.
+            if retiredTargetSeen { return .retainedUnverified }
+            return .none
         }
     }
 
-    private static func isSHA512(_ value: String) -> Bool {
+    static func isSHA512(_ value: String) -> Bool {
         value.utf8.count == 128 && value.utf8.allSatisfy {
             (48...57).contains($0) || (97...102).contains($0) || (65...70).contains($0)
         }
     }
 
-    private static func isDomainKey(_ key: String) -> Bool {
+    static func isDomainKey(_ key: String) -> Bool {
         key.utf8.count == 64 && key.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
     }
 
@@ -582,7 +648,7 @@ public actor RuntimeV2RecoveryOptimizationAdapter {
         return domain.matchesRecordedRoot(recorded, device: device, inode: inode)
     }
 
-    private static func completedReceiptNames(directory: URL) throws -> [String] {
+    static func completedReceiptNames(directory: URL) throws -> [String] {
         let fd = open(directory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         if fd < 0, errno == ENOENT { return [] }
         guard fd >= 0 else { throw StorageSparseDiskRewriteError.needsInspection("receipt-directory") }
@@ -608,7 +674,7 @@ public actor RuntimeV2RecoveryOptimizationAdapter {
         return names.sorted()
     }
 
-    private static func matchesCommittedSource(
+    static func matchesCommittedSource(
         _ header: RuntimeV2OptimizationCoreJournalBinding, root: URL,
         expected: StorageSparseDiskIdentity, rootDevice: UInt64, rootInode: UInt64
     ) -> Bool {
@@ -624,7 +690,10 @@ public actor RuntimeV2RecoveryOptimizationAdapter {
         guard fstat(parent, &identity) == 0, UInt64(bitPattern: Int64(identity.st_dev)) == rootDevice,
               UInt64(identity.st_ino) == rootInode else { return false }
         let parts = header.relativePath.split(separator: "/").map(String.init)
-        guard parts.count == 4, parts.last == "disk.img",
+        let repairPath = parts.count == 4 && parts[0] == "recovery" && parts[1] == "quarantine"
+            && parts[2].hasPrefix("runtime-vm-")
+        let migrationPath = RuntimeV2MigrationSparseCatalog.target(header.relativePath) != nil
+        guard repairPath || migrationPath, parts.last == "disk.img",
               parts.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." && !$0.utf8.contains(0) }) else { return false }
         for name in parts.dropLast() {
             let child = openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)

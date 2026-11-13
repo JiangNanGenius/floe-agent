@@ -1006,6 +1006,30 @@ public actor ConversationRunService {
             }
             break
         }
+        // Explicit Goal mode is native durable metadata on this accepted
+        // user input, never a model instruction to guess. The runtime awaits
+        // this consumed-input callback before continuing to its next step.
+        if let runningInputStore, let intelligenceStore {
+            do {
+                if let row = try await runningInputStore.input(id: input.id), row.executionMode == "goal" {
+                    guard row.conversationID == conversationID,
+                          row.targetRunID == runID || row.consumedRunID == runID,
+                          let goal = try await intelligenceStore.goal(id: input.id),
+                          goal.conversationID == conversationID else { throw TaskGoalError.unauthorized }
+                    if try await intelligenceStore.admitGoalInputToRun(inputID: input.id, expectedRunID: runID) {
+                        await adoptModelCreatedGoal()
+                    } else if goal.status == .active {
+                        throw TaskGoalError.staleRun
+                    }
+                    // Pause/delete controls only stop long-term advancement;
+                    // the already accepted user message remains this round's
+                    // instruction and cannot revive or replace that Goal.
+                }
+            } catch {
+                durabilityFailure = "The accepted Goal input could not be bound to its original task. Its saved message was kept."
+                return
+            }
+        }
         // Insert the text row first, then bind attachments, then upsert typed
         // parts. This respects both FK directions in the existing store API.
         let base = PersistedMessage(
