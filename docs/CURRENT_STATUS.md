@@ -3,7 +3,19 @@
 
 这是带核实日期的渠道快照。各渠道独立更新；源码版本、公开下载、Apple 审核与测试组可用性分别核对。 / This is a dated channel snapshot. Source versions, public downloads, Apple review and beta-group availability are separate states.
 
-版本选择请先读[唯一版本依据](RELEASE_VERSION_AUTHORITY.zh-CN.md)：**最近核验交付为1.8.20（341），内部TestFlight可安装，GitHub／Feather严格读回通过，M4已实际安装并已交还。** 冻结源 `d0c085f9ddda28e1d9a125389a020f618892d408`／`v1.8.20`；详见[341交付记录](releases/builds/FLOE_1.8.20_BUILD341_DELIVERY.md)。容量问题仍未完成。 / **Latest verified delivery: 1.8.20 (341), internally installable, GitHub/Feather verified and actually installed on the returned M4. Storage recovery remains incomplete.**
+版本选择请先读[唯一版本依据](RELEASE_VERSION_AUTHORITY.zh-CN.md)：**最近核验交付为1.8.21（342），内部TestFlight可安装，GitHub／Feather严格实际读回通过。** 冻结源 `1d599f35e97b46ea5798ac07359074480fa463a5`／`v1.8.21`，详见[342交付记录](releases/builds/FLOE_1.8.21_BUILD342_DELIVERY.md)。本次未重新控制或安装M4，容量问题仍待设备复核。 / **Latest verified delivery: 1.8.21 (342), internally installable, with actual GitHub/Feather readback passed. Physical storage recovery remains unverified for build342.**
+
+## 2026-11-14 iOS 1.8.21（342）渠道核对 / iOS delivery snapshot
+
+悉尼01:52独立确认内部可安装，01:59完成正常安装包及在线更新源严格读回。 / Internal availability was independently confirmed at01:52 Sydney time; actual installer and live-feed readback completed at01:59.
+
+| 渠道 / Channel | 已核实结果 / Observed result |
+| --- | --- |
+| 内部TestFlight / Internal TestFlight | [独立Apple GET](https://github.com/JiangNanGenius/floe-agent/actions/runs/43446740414)确认VALID、未过期、Floe QA为IN_BETA_TESTING。 / Independently verified as available internally. |
+| GitHub／Feather | [v1.8.21 stable/latest](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.8.21)实际unsigned IPA及在线源严格匹配；[正常发布及awaited Feather](https://github.com/JiangNanGenius/floe-agent/actions/runs/43446995796)成功。 / Actual unsigned IPA and live-feed readback passed; your signing is required. |
+| 公开TestFlight／正式App Store / Public TestFlight and App Store | 均未提交，315及331安排保持。 / Neither submitted; existing arrangements remain unchanged. |
+
+本次修旧磁盘整理作业在原盘未更换时的安全收尾，保留原盘、旧摘要、资料和软件。实际Darwin组件8方法与完整iOS归档、规范封装通过，App及19份符号已保存。342未安装到M4，不能记为真机容量验收：此前338释放约124.85GB，341整理前208.14GB为App估算、该次整理收益0；13份恢复盘保留，最终占用及342新增回收仍未知。 / This narrow repair safely closes interrupted storage work before source replacement while preserving data. Eight real Darwin-component tests and the complete iOS archive/package passed. Build342 has not been installed on the M4; physical reclaim and final usage remain unknown. The earlier124.85GB gain is not counted again.
 
 ## 2026-11-13 iOS 1.8.20（341）渠道核对 / iOS delivery snapshot
 
@@ -14,8 +26,6 @@
 | 公开TestFlight／正式App Store / Public TestFlight and App Store | 均未提交，315与331安排保持。 / Neither submitted; existing arrangements remain unchanged. |
 
 341有31项相关实际方法通过，但M4容量验收未通过：本次唯一一次整理被blocked／recovery-pending阻断，优化0项、文件分配减少0；整理前208.14GB为App估算，不是净可回收量。原盘、资料和软件保留，338此前约124.85GB收益不重复计算。iPad已交还，屏幕共享和键盘捕获已关闭。Goal／素材完整设备交互、物理语音及ASR仍未验收。 / The 31 focused method passes do not establish physical storage recovery. The single M4 optimization was blocked with zero files optimized and zero allocation reduction. The 208.14GB figure was an estimate. Original data remains; the iPad has been returned and remote control stopped. Full Goal/material interactions and physical voice/ASR remain unverified.
-
-**下一候选1.8.21（342）：**四文件恢复窄修已通过真实macOS-Darwin生产组件对象编译、链接和8项定向测试，跳过0；iOS App归档、分发和真机容量验收尚待完成。原编译失败及宿主配置／路径断言失败保留，不改生产身份保护，不把组件通过当作容量已清完。不提交公开TestFlight或正式App Store。 / **Next candidate 1.8.21 (342):** actual macOS-Darwin production-component object compilation, linking and all eight focused tests passed, with zero skips. iOS archiving, delivery and physical storage acceptance remain pending. Original failures are retained; component success is not a capacity-recovery claim. No public TestFlight or App Store submission.
 
 ## 2026-11-13 iOS 1.8.19（340）渠道核对 / iOS delivery snapshot
 
