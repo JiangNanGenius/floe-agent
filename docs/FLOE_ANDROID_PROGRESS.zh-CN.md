@@ -2,6 +2,10 @@
 
 ## 1.0.11／119 修复源码收口（2026-11-15）
 
+补充检查：native57 已从本批不可变源码实际完成 Android ARM64 生产对象／链接，2,743 项规范输入与保存的原始库一致；Full119及Office/CAD组件实际封装通过，58项原生库绑定、16KiB与四项API28／29签名检查通过。聊天四类相关JVM共72项：首轮71项通过，一项新测试夹具漏登记回调；补齐夹具并保留原断言后仅复测这一项通过，原失败保留，生产解析器未改。三星安装与实际行为验收、源码许可封装及公开下载仍分开记录，尚未发布119。
+
+English: Native57 ARM64 production, actual Full119/component packaging, 58 native bindings, 16KiB and four API28/29 signer checks passed. The 72 selected conversation methods are accounted for by 71 original passes plus one corrected fixture-only recheck with unchanged assertions. Samsung behavior and publication remain pending.
+
 本批修复终端连接重复注册引发的 JNI 引用耗尽、旧 Binder 回调影响新连接、重复拒绝后的轮询风暴，并集成屏幕控制结束／停止后的浮球清理。连接与权限继续按真实任务和会话归属，不重放结果不明的命令，不以空闲状态伪造终端释放。
 
 聊天补齐长回复／思考的任务所有者分页读取，真实原生 `content.read` 在消息读取未找到时接入运行快照读取；保留任务、句柄及原生代际校验。修正相同文本版本的乱序句柄回收、Markdown 解析丢弃后的等待清理，并明确未完整读回的部分记录。

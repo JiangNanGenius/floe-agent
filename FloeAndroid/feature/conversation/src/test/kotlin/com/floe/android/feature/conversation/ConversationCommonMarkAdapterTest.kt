@@ -446,7 +446,10 @@ class ConversationCommonMarkAdapterTest {
             maxPending = 4,
         )
         try {
-            service.schedule("block", 1) { _, _, _ -> }
+            service.schedule(
+                "block", 1,
+                onDiscard = { source, generation -> discarded.add(source to generation) },
+            ) { _, _, _ -> delivered.incrementAndGet() }
             assertTrue(gate.await(5, TimeUnit.SECONDS))
             service.schedule(
                 "queued", 2,
