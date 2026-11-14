@@ -1,0 +1,4 @@
+{
+  "zh-Hans": "在数据管理中打开「清理 Linux 环境缓存」，检查 apt、pip 和 npm 缓存。若设备正在核对上次中断的磁盘整理，可点一次「优化占用」，观察核对完成后是否开始整理。请分别核对 Linux 缓存结果和 iPad 设置中显示的可用空间变化。",
+  "en-US": "In Data Management, open Clean Linux Environment Cache and inspect the apt, pip, and npm caches. While an interrupted disk operation is being checked, tap Optimize Storage once and check that optimization starts after verification. Check the Linux cache result and the change in available storage in iPad Settings separately."
+}

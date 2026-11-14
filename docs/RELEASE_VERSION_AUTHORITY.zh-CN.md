@@ -3,7 +3,7 @@
 
 本文是 iOS／iPadOS 下一版版本选择的唯一维护入口；各渠道实际交付状态见[当前状态](CURRENT_STATUS.md)与[逐版交付记录](releases/README.md)。Android 版本独立管理。
 
-**最近已核验交付为1.8.25（346）：内部TestFlight可安装，正常GitHub stable/latest及awaited Feather严格实际读回通过。** 冻结源 `0a6dc46b9f5cbe78e02e1730be9b342a5557f879`／`v1.8.25`，见[346交付记录](releases/builds/FLOE_1.8.25_BUILD346_DELIVERY.md)。本机正式归档、严格封包、签名权限与实际安装包读回通过；原App与19份符号保留。本版未使用真机，容量整理、真实Linux清理及跨设备Keychain仍待验；无公开TestFlight或正式App Store变更。
+**最近已核验的内部测试为 1.8.26（347）。** Apple 返回 VALID、未过期，Floe QA 内部可安装，并已在迁移过资料的 iPad 上读回。签名与真机结果见[347 交付记录](releases/builds/FLOE_1.8.26_BUILD347_DELIVERY.md)。GitHub stable/latest 与 Feather 最近一次核验为 346。
 
 ## 依据与判定
 
@@ -12,6 +12,8 @@
 标签、源提交、候选目录、版本说明、构建／归档成功和签名流程启动，都不能单独证明上传、审核通过或可安装。不得从最高标签自动推算下一版，也不得把未交付尝试称为上一已交付版本。
 
 ## 本轮版本记录
+
+本轮内部修复候选使用 1.8.27（348）。已核对 Apple 构建列表及 Git 标签，选择时均未占用。
 
 **1.8.25（346）已交付三条授权渠道。** 冻结前完整Apple只读分页确认其未使用，随后实际归档925.43秒、规范封包和签名核验通过。独立Apple GET确认内部可装，实际公开IPA及在线Feather源严格匹配；独立Game预研未设为等待门槛。手动字体UI及真机容量等边界见[交付记录](releases/builds/FLOE_1.8.25_BUILD346_DELIVERY.md)。345不可变，本轮未提交公开TestFlight或正式App Store。
 

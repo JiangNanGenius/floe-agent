@@ -125,6 +125,14 @@ import FloePersistence
             environmentID: EnvironmentRegistry.sharedContainerID, descriptor: descriptor
         )
         XCTAssertNil(access)
+        let secondResolved = await f.provider.linuxGuestEnvironment(id: EnvironmentRegistry.sharedContainerID)
+        let second = try XCTUnwrap(secondResolved)
+        XCTAssertEqual(second.shares.first { $0.tag == LinuxGuestShare.workspaceTag }?.hostDirectory.standardizedFileURL,
+                       expected.standardizedFileURL, "A second descriptor read must reuse the existing workspace")
+        let secondAccess = try await f.provider.acquireShareAccess(
+            environmentID: EnvironmentRegistry.sharedContainerID, descriptor: second
+        )
+        XCTAssertNil(secondAccess)
         let projectResolved = await f.provider.linuxGuestEnvironment(id: f.recordID)
         let project = try XCTUnwrap(projectResolved)
         XCTAssertEqual(project.shares.first { $0.tag == LinuxGuestShare.workspaceTag }?.hostDirectory,

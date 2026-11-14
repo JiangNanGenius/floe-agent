@@ -131,6 +131,14 @@ struct LinuxCacheCleanupScriptContractTests {
         #expect(LinuxCacheCleanupEnvironmentRepair.guidance(forMessage: "network timeout") == nil)
     }
 
+    @Test("A missing maintenance workspace points back to cleanup, preserving the installed runtime")
+    func workspaceFailureGuidance() throws {
+        let message = "Linux guest configuration is invalid: The shared Linux maintenance workspace is unavailable"
+        let guidance = try #require(LinuxCacheCleanupEnvironmentRepair.guidance(forMessage: message))
+        #expect(guidance.contains("Data Management") || guidance.contains("数据管理"))
+        #expect(!guidance.contains("re-download") && !guidance.contains("重新下载"))
+    }
+
     @Test("Inspect engine failure is a failed card with unchanged job/error and unknown capacity")
     func inspectFailedReceiptIsFailure() throws {
         let jobID = UUID(uuidString: "11111111-2222-4333-8444-555555555555")!

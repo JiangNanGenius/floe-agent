@@ -17,8 +17,71 @@
 // then reports unavailable. No request falls back to a temporary directory or
 // a native interpreter because Linux image storage is unavailable.
 
-#if canImport(SwiftUI) && canImport(UIKit)
 import Foundation
+import Darwin
+
+/// Host-only directory backing /workspace for the app's shared Linux guest.
+/// Keep this small Foundation/Darwin seam outside the UI compile guard so the
+/// exact production path can be exercised by a native host regression.
+enum SharedLinuxMaintenanceWorkspace {
+    enum Failure: LocalizedError {
+        case invalidLayer
+        case unsafeDirectory
+
+        var errorDescription: String? {
+            switch self {
+            case .invalidLayer: "The shared Linux layer is not in the managed environment root"
+            case .unsafeDirectory: "The shared Linux maintenance workspace is not an owned directory"
+            }
+        }
+    }
+
+    static func prepare(nextTo layer: URL) throws -> URL {
+        let root = layer.deletingLastPathComponent()
+        guard layer.lastPathComponent == "Shared" else { throw Failure.invalidLayer }
+        let workspace = root.appendingPathComponent(".LinuxCacheCleanupWorkspace", isDirectory: true)
+
+        // createDirectory(..., withIntermediateDirectories: false) throws
+        // EEXIST on iOS even when the existing item is a valid directory.
+        // lstat checks the final component without following a symlink; a
+        // second caller winning creation is accepted only after the same
+        // validation. A file, symlink or unreadable path still fails closed.
+        if try !existingDirectory(at: workspace) {
+            do {
+                try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: false)
+            } catch {
+                let creationError = error
+                guard try existingDirectory(at: workspace) else { throw creationError }
+            }
+        }
+        guard try existingDirectory(at: workspace),
+              workspace.resolvingSymlinksInPath().deletingLastPathComponent().standardizedFileURL.path
+                == root.resolvingSymlinksInPath().standardizedFileURL.path else {
+            throw Failure.unsafeDirectory
+        }
+        var excluded = workspace
+        var backupValues = URLResourceValues()
+        backupValues.isExcludedFromBackup = true
+        try? excluded.setResourceValues(backupValues)
+        return workspace
+    }
+
+    private static func existingDirectory(at url: URL) throws -> Bool {
+        var metadata = stat()
+        let result = url.path.withCString { lstat($0, &metadata) }
+        if result == 0 {
+            guard metadata.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR) else {
+                throw Failure.unsafeDirectory
+            }
+            return true
+        }
+        let failure = errno
+        if failure == ENOENT { return false }
+        throw POSIXError(POSIXErrorCode(rawValue: failure) ?? .EIO)
+    }
+}
+
+#if canImport(SwiftUI) && canImport(UIKit)
 import FloeCore
 import FloeEnvironments
 import FloeExecution
@@ -119,7 +182,7 @@ struct AppLinuxGuestEnvironmentProvider: LinuxGuestEnvironmentProviding {
             // (which is mounted separately at /floe/env) or borrow a user's
             // project folder for a maintenance task.
             do {
-                let maintenance = try Self.prepareSharedMaintenanceWorkspace(nextTo: layer)
+                let maintenance = try SharedLinuxMaintenanceWorkspace.prepare(nextTo: layer)
                 shares.append(LinuxGuestShare(tag: LinuxGuestShare.workspaceTag,
                                                hostDirectory: maintenance))
             } catch {
@@ -169,27 +232,6 @@ struct AppLinuxGuestEnvironmentProvider: LinuxGuestEnvironmentProviding {
         )
     }
 
-    private static func prepareSharedMaintenanceWorkspace(nextTo layer: URL) throws -> URL {
-        let root = layer.deletingLastPathComponent()
-        guard layer.lastPathComponent == "Shared" else {
-            throw FloeError.invalidConfiguration("The shared Linux layer is not in the managed environment root")
-        }
-        let workspace = root.appendingPathComponent(".LinuxCacheCleanupWorkspace", isDirectory: true)
-        let manager = FileManager.default
-        try manager.createDirectory(at: workspace, withIntermediateDirectories: false)
-        let values = try workspace.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
-        guard values.isDirectory == true, values.isSymbolicLink != true,
-              workspace.resolvingSymlinksInPath().deletingLastPathComponent()
-                == root.resolvingSymlinksInPath() else {
-            throw FloeError.invalidConfiguration("The shared Linux maintenance workspace is not an owned directory")
-        }
-        var excluded = workspace
-        var backupValues = URLResourceValues()
-        backupValues.isExcludedFromBackup = true
-        try? excluded.setResourceValues(backupValues)
-        return workspace
-    }
-
     /// Durable access for the workspace 9P share. The registry only stores a
     /// plain path, and an iOS external Files folder is only reachable while a
     /// security-scoped grant is held; without this, a guest booted after a
@@ -210,15 +252,20 @@ struct AppLinuxGuestEnvironmentProvider: LinuxGuestEnvironmentProviding {
         else { return nil }
         if record?.id == EnvironmentRegistry.sharedContainerID, record?.kind == .shared {
             guard let layer = await registry.layerURL(for: environmentID),
-                  let expected = try? Self.prepareSharedMaintenanceWorkspace(nextTo: layer),
-                  workspace.hostDirectory.standardizedFileURL == expected.standardizedFileURL,
-                  WorkspaceCenter.isAppOwnedWorkspacePath(expected.path) else {
+                  let expected = try? SharedLinuxMaintenanceWorkspace.prepare(nextTo: layer),
+                  workspace.hostDirectory.standardizedFileURL == expected.standardizedFileURL else {
                 throw LinuxGuestError.shareAccessUnavailable(
                     environmentID: environmentID,
                     detail: "The shared Linux maintenance workspace is unavailable"
                 )
             }
-            return nil // This dedicated share lives inside the App container.
+            // AppEnvironment constructs this registry from EnvironmentRoots()
+            // under its own artifact store. The exact sibling of its Shared
+            // layer is not an external Files bookmark and needs no scope.
+            // NSHomeDirectory string-prefix checks are unsuitable here:
+            // /var and /private/var can name the same iOS container, and an
+            // App restore can relocate its UUID-named container entirely.
+            return nil
         }
         do {
             return try await WorkspaceCenter.acquireExternalWorkspaceAccess(

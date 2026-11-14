@@ -15,7 +15,9 @@ struct StorageOptimizationSection: View {
 
             HStack {
                 if service.isRunning { ProgressView().controlSize(.small) }
-                Text(status).font(.subheadline).foregroundStyle(.secondary)
+                Text(service.launchGate.queued
+                     ? (FloeL10n.isChinese ? "恢复完成后开始整理" : "Optimization will start after recovery")
+                     : status).font(.subheadline).foregroundStyle(.secondary)
             }
             if let fraction = service.state.fraction, service.isRunning {
                 ProgressView(value: fraction)
@@ -36,6 +38,17 @@ struct StorageOptimizationSection: View {
                         if let code = failure.posixErrno {
                             metric("settings.storage_optimization.failure_errno", value: String(code))
                         }
+                    } else if service.state.attempted == 0,
+                              service.state.inventoryEvidence == nil,
+                              service.state.lastStage == "recovery-check" {
+                        HStack {
+                            Text(FloeL10n.isChinese ? "恢复状态" : "Recovery status")
+                            Spacer()
+                            Text(recoveryStatus)
+                                .monospacedDigit().foregroundStyle(.secondary)
+                        }.font(.caption)
+                        Text(FloeL10n.isChinese ? "磁盘整理尚未开始" : "Disk optimization has not started")
+                            .font(.caption).foregroundStyle(.secondary)
                     } else {
                         metric("settings.storage_optimization.optimized", value: String(service.state.optimized))
                         metric("settings.storage_optimization.skipped", value: String(service.state.skipped))
@@ -90,6 +103,14 @@ struct StorageOptimizationSection: View {
             }
             return FloeL10n.l(service.hasLegacyRecoveryTree
                 ? "settings.storage_optimization.try_later" : "settings.storage_optimization.no_change")
+        }
+    }
+    private var recoveryStatus: String {
+        switch service.state.phase {
+        case .completed: return FloeL10n.isChinese ? "已恢复" : "Recovered"
+        case .blocked: return FloeL10n.isChinese ? "未完成" : "Incomplete"
+        case .cancelled: return FloeL10n.isChinese ? "已取消" : "Cancelled"
+        default: return FloeL10n.isChinese ? "检查中" : "Checking"
         }
     }
     private func metric(_ key: String, value: String) -> some View {

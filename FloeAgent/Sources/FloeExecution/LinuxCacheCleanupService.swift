@@ -253,6 +253,11 @@ public enum LinuxCacheCleanupScriptResult {
 public enum LinuxCacheCleanupEnvironmentRepair {
     public static func guidance(forMessage message: String) -> String? {
         let lower = message.lowercased()
+        if lower.contains("shared linux maintenance workspace") {
+            return FloeL10n.isChinese
+                ? "无法打开共享 Linux 的清理工作目录。请在数据管理中重新开始清理。若仍无法打开，请提交诊断日志。"
+                : "The shared Linux cleanup folder could not be opened. Start cleanup again from Data Management. If it still fails, send a diagnostic report."
+        }
         let signals = [
             "unverified", "origin", "runtime", "image", "rebuild",
             "environment", "guest", "linux", "start", "not available",

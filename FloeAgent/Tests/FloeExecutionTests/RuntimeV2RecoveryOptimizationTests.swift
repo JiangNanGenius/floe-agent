@@ -528,7 +528,11 @@ final class RuntimeV2RecoveryOptimizationTests: XCTestCase {
                            ["ambiguity", "late-journal-cas"].contains(fault) ? 2 : 1,
                            "Late CAS may leave only the fresh aborted intent journal; qualification failures create none. " + diagnostic)
             XCTAssertFalse(progress.snapshot().onMain, diagnostic)
-            if fault == "ambiguity" { XCTAssertEqual(progress.snapshot().count, 0, diagnostic); XCTAssertEqual(result.code, "needs-inspection", diagnostic) }
+            if fault == "ambiguity" {
+                XCTAssertEqual(progress.snapshot().count, 0, diagnostic)
+                XCTAssertEqual(result.code, "needs-inspection", diagnostic)
+                XCTAssertEqual(result.candidateDisposition, .retainedAndReleased, diagnostic)
+            }
             else { XCTAssertEqual(progress.phases().first, "verifying", diagnostic); XCTAssertTrue(once.isCancelled, diagnostic) }
             if fault == "cancel" { XCTAssertTrue(cancellation.isCancelled, diagnostic); XCTAssertEqual(result.code, "cancelled", diagnostic) }
             if fault == "sidecar" { XCTAssertNotEqual(try fixture.preservedMetadata(), metadata) }
@@ -985,6 +989,7 @@ final class RuntimeV2RecoveryOptimizationTests: XCTestCase {
         XCTAssertTrue(record.planningBlockers.contains(.currentReferencesUnknown))
         let incomplete = await fixture.adapter.optimize(record, cancellation: .init())
         XCTAssertEqual(incomplete.code, "source-not-eligible")
+        XCTAssertEqual(incomplete.candidateDisposition, .preclaimIneligible)
 
         fixture.evidence.lock.withLock {
             fixture.evidence.referenceComplete = true
@@ -1006,6 +1011,7 @@ final class RuntimeV2RecoveryOptimizationTests: XCTestCase {
         XCTAssertEqual(record.currentReferenceState, .unknown)
         let unattributed = await fixture.adapter.optimize(record, cancellation: .init())
         XCTAssertEqual(unattributed.code, "source-not-eligible")
+        XCTAssertEqual(unattributed.candidateDisposition, .preclaimIneligible)
         XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.journals.path))
         XCTAssertEqual(try Data(contentsOf: fixture.disk), fixture.original)
     }

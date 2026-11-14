@@ -86,6 +86,119 @@ import FloePersistence
         XCTAssertNil(StorageOptimizationService.readSnapshot(from: store), "A failed bootstrap never fabricates an operation")
     }
 
+    func testLaunchRecoveryOnlyContinuesAfterOneExplicitTapAndSuccessfulRecovery() {
+        var gate = StorageOptimizationLaunchGate()
+        gate.beginRecovery()
+        XCTAssertFalse(gate.completeRecovery(unblocked: true, cancelled: false),
+                       "Launch recovery alone cannot start optimization")
+
+        gate.beginRecovery()
+        XCTAssertTrue(gate.queueTap(operationActive: true, cancellationRequested: false))
+        XCTAssertFalse(gate.queueTap(operationActive: true, cancellationRequested: false),
+                       "Repeated taps must not queue another inventory")
+        XCTAssertTrue(gate.completeRecovery(unblocked: true, cancelled: false))
+        XCTAssertFalse(gate.completeRecovery(unblocked: true, cancelled: false),
+                       "The same tap must not be replayed")
+
+        gate.beginRecovery()
+        XCTAssertTrue(gate.queueTap(operationActive: true, cancellationRequested: false))
+        XCTAssertFalse(gate.completeRecovery(unblocked: false, cancelled: false))
+        gate.beginRecovery()
+        XCTAssertTrue(gate.queueTap(operationActive: true, cancellationRequested: false))
+        XCTAssertFalse(gate.completeRecovery(unblocked: true, cancelled: true))
+        gate.beginRecovery()
+        XCTAssertTrue(gate.queueTap(operationActive: true, cancellationRequested: false))
+        gate.cancelQueuedTap()
+        XCTAssertFalse(gate.completeRecovery(unblocked: true, cancelled: false))
+    }
+
+    func testLaunchRecoveryReceiptPreservesPreviousOperationMetrics() throws {
+        let store = try defaults()
+        var old = StorageOptimizationState(phase: .blocked, attempted: 2, optimized: 1, skipped: 1,
+                                           appBuildFingerprint: "1.8.25.346")
+        old.recordStage("disk-admission")
+        old.recordResult(code: "busy")
+        StorageOptimizationService.persistSnapshot(old, to: store)
+        let original = try XCTUnwrap(store.data(forKey: "floe.storage.legacyOptimization.lastResult.v1"))
+
+        var recovered = StorageOptimizationState(phase: .completed, startedAt: Date())
+        recovered.recordStage("recovery-check")
+        recovered.recordResult(code: "recovery-resolved")
+        recovered.finishedAt = Date()
+        StorageOptimizationService.persistLaunchRecoverySnapshot(recovered, to: store)
+
+        XCTAssertEqual(store.data(forKey: "floe.storage.legacyOptimization.lastResult.v1"), original)
+        XCTAssertEqual(StorageOptimizationService.readSnapshot(from: store)?.attempted, 2)
+        XCTAssertEqual(StorageOptimizationService.readLaunchRecoverySnapshot(from: store)?.attempted, 0)
+        let text = StorageOptimizationService.diagnosticText(defaults: store)
+        XCTAssertTrue(text.contains("optimization_launch_recovery_result: recovery-resolved"))
+        XCTAssertTrue(text.contains("optimization_launch_recovery_attempted: 0"))
+        XCTAssertTrue(text.contains("optimization_attempted: 2"))
+        XCTAssertTrue(text.contains("optimization_last_result_code: busy"))
+    }
+
+    func testMultiHistoryRecoveryRefreshesWithoutSingleIntentID() {
+        XCTAssertTrue(StorageOptimizationService.recoveryNeedsRefresh(
+            .init(outcome: .resolved, intentID: nil)))
+        XCTAssertTrue(StorageOptimizationService.recoveryNeedsRefresh(
+            .init(outcome: .blocked, intentID: nil)))
+        XCTAssertFalse(StorageOptimizationService.recoveryNeedsRefresh(
+            .init(outcome: .notNeeded, intentID: nil)))
+    }
+
+    func testBatchGateRetainedFirstAllowsSecondCandidateButSharedFailureStops() {
+        let outcomes: [(verified: Bool, retained: Bool, preclaim: Bool, pending: Bool)] = [
+            (false, true, false, false), (true, false, false, false)
+        ]
+        var attempted = 0
+        for outcome in outcomes {
+            attempted += 1
+            guard StorageOptimizationBatchGate.mayContinue(
+                verified: outcome.verified, retainedAndReleased: outcome.retained,
+                preclaimIneligible: outcome.preclaim, recoveryPending: outcome.pending,
+                cancelled: false) else { break }
+        }
+        XCTAssertEqual(attempted, 2, "A retained first disk does not certify it, but must not hide the second")
+        XCTAssertTrue(StorageOptimizationBatchGate.mayContinue(verified: false,
+            retainedAndReleased: false, preclaimIneligible: true, recoveryPending: false, cancelled: false))
+        XCTAssertFalse(StorageOptimizationBatchGate.mayContinue(verified: false,
+            retainedAndReleased: false, preclaimIneligible: false, recoveryPending: false, cancelled: false),
+            "Unknown, root, owner and busy failures are batch-wide regardless of prior success")
+        XCTAssertFalse(StorageOptimizationBatchGate.mayContinue(verified: true,
+            retainedAndReleased: false, preclaimIneligible: false, recoveryPending: true, cancelled: false))
+        XCTAssertFalse(StorageOptimizationBatchGate.mayContinue(verified: true,
+            retainedAndReleased: false, preclaimIneligible: false, recoveryPending: false, cancelled: true))
+    }
+
+    func testLocalNeedsInspectionStaysOriginalResultAndIsNotPendingRecovery() throws {
+        var retained = StorageOptimizationState(phase: .completed, attempted: 1, skipped: 1)
+        retained.recordResult(code: "needs-inspection")
+        retained.recordCandidateDisposition(.retainedAndReleased)
+        XCTAssertEqual(retained.lastResultCode, "needs-inspection")
+        XCTAssertEqual(retained.terminalDisposition, .retained)
+        XCTAssertEqual(retained.retainedCandidateCount, 1)
+        XCTAssertFalse(try XCTUnwrap(retained.terminalNotice).isEmpty)
+
+        var partial = retained
+        partial.attempted = 2; partial.optimized = 1
+        partial.recordResult(code: "optimized")
+        partial.recordCandidateDisposition(.ordinary)
+        XCTAssertEqual(partial.terminalDisposition, .partiallyOptimized)
+        XCTAssertTrue(try XCTUnwrap(partial.terminalNotice).contains("1"))
+
+        var sharedFailure = retained
+        sharedFailure.phase = .blocked; sharedFailure.attempted = 2; sharedFailure.skipped = 2
+        sharedFailure.recordResult(code: "busy")
+        sharedFailure.recordCandidateDisposition(.ordinary)
+        XCTAssertEqual(sharedFailure.terminalDisposition, .busy)
+        XCTAssertEqual(sharedFailure.lastResultCode, "busy")
+
+        var legacyPending = StorageOptimizationState(phase: .blocked, attempted: 1)
+        legacyPending.details["recovery-pending"] = 1
+        XCTAssertEqual(legacyPending.terminalDisposition, .recoveryPending,
+                       "Old receipts can carry only a recovery detail without a last-result field")
+    }
+
     func testBootstrapDiagnosticSnapshotOnlyExportsClosedValues() throws {
         let store = try defaults(), key = "floe.storage.legacyOptimization.bootstrapFailure.v1"
         let marker = "/synthetic-private/" + UUID().uuidString

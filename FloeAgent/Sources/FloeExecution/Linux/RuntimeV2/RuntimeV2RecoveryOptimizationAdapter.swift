@@ -163,16 +163,28 @@ private struct RuntimeV2CompletedHistoryCandidate: Sendable {
 }
 
 public struct RuntimeV2RecoveryOptimizationResult: Sendable {
+    public enum CandidateDisposition: Sendable, Equatable {
+        /// Normal result: failure still requires the service to stop the batch.
+        case ordinary
+        /// This specific disk was retained without mutation after its claim
+        /// was successfully aborted and released. Independent disks may run.
+        case retainedAndReleased
+        /// Inventory's reviewable shape changed before any claim was acquired.
+        case preclaimIneligible
+    }
     public let report: StorageSparseDiskRewriteReport?
     public let code: String
     public let recoveryPending: Bool
     public let verifiedUnchanged: Bool
     public let diagnosticCodes: [String]
+    public let candidateDisposition: CandidateDisposition
     init(report: StorageSparseDiskRewriteReport?, code: String, recoveryPending: Bool,
-         verifiedUnchanged: Bool = false, diagnosticCodes: [String] = []) {
+         verifiedUnchanged: Bool = false, diagnosticCodes: [String] = [],
+         candidateDisposition: CandidateDisposition = .ordinary) {
         self.report = report; self.code = code; self.recoveryPending = recoveryPending
         self.verifiedUnchanged = verifiedUnchanged
         self.diagnosticCodes = diagnosticCodes
+        self.candidateDisposition = candidateDisposition
     }
     public var verifiedFirstDisk: Bool {
         if verifiedUnchanged { return true }
@@ -284,7 +296,8 @@ public actor RuntimeV2RecoveryOptimizationAdapter {
         guard record.isReviewableForBytePreservingMaintenance,
               record.relativeDirectory.split(separator: "/").count == 3,
               record.relativeDirectory.hasPrefix("recovery/quarantine/runtime-vm-") else {
-            return .init(report: nil, code: "source-not-eligible", recoveryPending: false)
+            return .init(report: nil, code: "source-not-eligible", recoveryPending: false,
+                         candidateDisposition: .preclaimIneligible)
         }
         if cancellation.isCancelled { return .init(report: nil, code: "cancelled", recoveryPending: false) }
         let relative = record.relativeDirectory + "/disk.img"
@@ -340,14 +353,16 @@ public actor RuntimeV2RecoveryOptimizationAdapter {
                 if stillMatches {
                     return .init(report: nil, code: "already-optimized", recoveryPending: false, verifiedUnchanged: true)
                 }
-                return .init(report: nil, code: "needs-inspection", recoveryPending: false)
+                return .init(report: nil, code: "needs-inspection", recoveryPending: false,
+                             candidateDisposition: .retainedAndReleased)
             case .retainedUnverified:
                 // Retired provenance exists, but CURRENT complete identity /
                 // sidecar proof is insufficient. Keep it, never reread/rewrite
                 // the large body merely to refresh an older success receipt.
                 try await claim.abortAndRelease(reason: "historical success retained; current proof unverified")
                 FloeLogger(category: .tools).info("legacyHistoryReuse decision=retained_unverified")
-                return .init(report: nil, code: "needs-inspection", recoveryPending: false)
+                return .init(report: nil, code: "needs-inspection", recoveryPending: false,
+                             candidateDisposition: .retainedAndReleased)
             case .verifyCurrentContent(let candidate):
                 try await verifyCompletedContent(candidate, claim: claim, source: inspection.identity,
                     preservation: preservation, closure: closure, cancellation: cancellation, progress: progress)
