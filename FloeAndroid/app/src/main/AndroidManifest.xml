@@ -90,7 +90,9 @@
     <uses-feature android:name="android.hardware.nfc" android:required="false" />
     <application android:name=".FloeApplication" android:label="@string/app_name" android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher"
         android:theme="@style/Theme.Floe" android:allowBackup="false" android:supportsRtl="true"
-        android:usesCleartextTraffic="false" android:enableOnBackInvokedCallback="true">
+        android:usesCleartextTraffic="false"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:enableOnBackInvokedCallback="true">
         <receiver android:name="com.floe.android.schedule.TaskScheduleConditionReceiver" android:exported="false">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />

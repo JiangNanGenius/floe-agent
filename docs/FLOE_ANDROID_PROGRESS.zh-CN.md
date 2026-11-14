@@ -2,6 +2,8 @@
 
 ## 1.0.11／119 修复源码收口（2026-11-15）
 
+三星补充：真实模型终端已写入并核对30字节文件，网页预览遇到`ERR_CLEARTEXT_NOT_PERMITTED`，原失败保留并停止该测试。补上仅设备回环地址的网络策略，外部默认策略保持。此补丁仍待实际APK和三星重测，尚未将网页预览计为通过。
+
 补充检查：native57 已从本批不可变源码实际完成 Android ARM64 生产对象／链接，2,743 项规范输入与保存的原始库一致；Full119及Office/CAD组件实际封装通过，58项原生库绑定、16KiB与四项API28／29签名检查通过。聊天四类相关JVM共72项：首轮71项通过，一项新测试夹具漏登记回调；补齐夹具并保留原断言后仅复测这一项通过，原失败保留，生产解析器未改。三星安装与实际行为验收、源码许可封装及公开下载仍分开记录，尚未发布119。
 
 English: Native57 ARM64 production, actual Full119/component packaging, 58 native bindings, 16KiB and four API28/29 signer checks passed. The 72 selected conversation methods are accounted for by 71 original passes plus one corrected fixture-only recheck with unchanged assertions. Samsung behavior and publication remain pending.
