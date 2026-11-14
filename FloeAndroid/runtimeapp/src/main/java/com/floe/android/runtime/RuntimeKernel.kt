@@ -306,6 +306,9 @@ class RuntimeKernel(context: Context) {
                     // reach these keys, and nothing here is a new reader,
                     // registry or authority: it is the same transient receipt.
                     val failed = JSONObject().put("state", "failed").put("code", "operation_failed")
+                    RuntimeAuthorityRefusal.metadataCode(request.operation, failure)?.let {
+                        failed.put("metadataFailureCode", it)
+                    }
                     if (traceStart) startFailureCode(failure)?.let {
                         failed.put("startFailureCode", it)
                         // Optional bounded numeric errno (1..4095) from the

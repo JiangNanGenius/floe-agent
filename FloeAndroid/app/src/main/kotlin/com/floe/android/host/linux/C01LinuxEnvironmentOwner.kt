@@ -4,6 +4,7 @@ package com.floe.android.host.linux
 import android.content.Context
 import com.floe.android.runtimeipc.RuntimeConnection
 import com.floe.android.host.RuntimeMetadataRead
+import com.floe.android.host.RuntimeMetadataReadFailure
 import kotlinx.coroutines.CancellationException
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
@@ -105,6 +106,8 @@ object C01LinuxEnvironmentOwner {
             }
         } catch (_: java.util.concurrent.TimeoutException) {
             catalogRefusal("catalogTimeout")
+        } catch (failure: RuntimeMetadataReadFailure) {
+            catalogRefusal(failure.code)
         } catch (_: Exception) {
             catalogRefusal("catalogUnreachable")
         }

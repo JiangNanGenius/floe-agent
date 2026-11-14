@@ -78,4 +78,43 @@ class RuntimeMetadataReadTest {
         } catch (_: TimeoutCancellationException) { }
         assertEquals(1, submissions)
     }
+
+    @Test fun queuedFailureKeepsItsCodeAndNeverResubmits() = runBlocking {
+        val calls = mutableListOf<String>()
+        var original = ""
+        try {
+            RuntimeMetadataRead.read("environment.list") { op, payload, id ->
+                calls += op
+                if (op == "environment.list") {
+                    original = id
+                    envelope(JSONObject().put("requestID", id).put("state", "queued"))
+                } else {
+                    assertEquals(original, payload.getString("requestID"))
+                    envelope(JSONObject().put("requestID", original).put("state", "failed")
+                        .put("metadataFailureCode", "authority_replyTooLarge"))
+                }
+            }
+            fail("failed receipt accepted")
+        } catch (expected: RuntimeMetadataReadFailure) {
+            assertEquals("authority_replyTooLarge", expected.code)
+        }
+        assertEquals(listOf("environment.list", "request.status"), calls)
+    }
+
+    @Test fun malformedFailureCodeCannotLeakDiagnosticText() = runBlocking {
+        for (code in listOf("/data/private", "x".repeat(65), "路径", "two words")) {
+            var calls = 0
+            try {
+                RuntimeMetadataRead.read("environment.list") { _, _, id ->
+                    calls++
+                    envelope(JSONObject().put("requestID", id).put("state", "failed")
+                        .put("metadataFailureCode", code))
+                }
+                fail("failed receipt accepted")
+            } catch (expected: IllegalStateException) {
+                assertEquals("metadataRequestUnsettled", expected.message)
+            }
+            assertEquals(1, calls)
+        }
+    }
 }

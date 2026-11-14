@@ -8,6 +8,8 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
 
+internal class RuntimeMetadataReadFailure(val code: String) : IllegalStateException("metadataRequestFailed")
+
 /** Resolve one authenticated metadata request, never re-submit its operation.
  * Queue acceptance is not the requested metadata. Poll only the original receipt;
  * cancellation closes the caller's connection without stopping foreign work.
@@ -36,6 +38,13 @@ internal object RuntimeMetadataRead {
                 when (receipt.getString("state")) {
                     "completed" -> return@withTimeout receipt.getJSONObject("result")
                     "queued", "running" -> Unit
+                    "failed" -> {
+                        val code = receipt.optString("metadataFailureCode")
+                        if (code.length in 1..64 && code.all { it.code < 128 && (it.isLetterOrDigit() || it == '_') }) {
+                            throw RuntimeMetadataReadFailure(code)
+                        }
+                        error("metadataRequestUnsettled")
+                    }
                     else -> error("metadataRequestUnsettled")
                 }
                 delay(25)

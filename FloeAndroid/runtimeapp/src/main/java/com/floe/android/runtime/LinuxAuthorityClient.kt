@@ -13,6 +13,20 @@ import org.json.JSONObject
 import java.io.File
 import java.util.UUID
 
+/** Only the authority's bounded code crosses the metadata diagnostic seam. */
+internal class RuntimeAuthorityRefusal(rawCode: String) : IllegalStateException("Environment authority refused the request.") {
+    val code: String = rawCode.takeIf {
+        it.length in 1..48 && it.all { c -> c.isLetterOrDigit() && c.code < 128 }
+    } ?: "refused"
+
+    companion object {
+        fun metadataCode(operation: String, failure: Exception): String? =
+            if (operation == "environment.list" && failure is RuntimeAuthorityRefusal) {
+                "authority_" + failure.code
+            } else null
+    }
+}
+
 /** Private native lifecycle. These methods never appear in the Binder dispatch table. */
 internal class LinuxAuthorityClient(context: Context) {
     private val filesRoot = context.filesDir.canonicalFile
@@ -84,7 +98,9 @@ internal class LinuxAuthorityClient(context: Context) {
         val response = JSONObject(RuntimeWire.bounded(nativeResponse))
         check(response.getInt("version") == 1 && response.getString("requestID") == requestID)
         val outcome = response.getJSONObject("outcome")
-        check(!outcome.has("failure")) { "Environment authority refused $operation" }
+        if (outcome.has("failure")) {
+            throw RuntimeAuthorityRefusal(outcome.optJSONObject("failure")?.optString("code").orEmpty())
+        }
         // Frozen V1 uses named operation results, with no synthesized _0 wrapper.
         return outcome.getJSONObject("ok").getJSONObject(operation)
     }
