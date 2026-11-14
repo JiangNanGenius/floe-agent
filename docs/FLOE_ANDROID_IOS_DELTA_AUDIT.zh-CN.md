@@ -1,5 +1,23 @@
 # 安卓与 iOS 主线的增量差异记录
 
+## 2026-11-14 iOS342→345 固定增量与 Android1.0.7
+
+固定比较上一锚点iOS342 `1d599f35e97b46ea5798ac07359074480fa463a5` → iOS345／v1.8.24源 `663b1f8b78556c82d1112f01ef50d1d0c2105a34`：FloeAgent共97条路径，包括29条Sources、30条App生产界面、23条测试、3条资源／许可、6条资格宿主及6条工程／文档。路径数不是缺功能数，不重置183项或原C/G/N/IOS-D及S编号。Android115实际来源仍为 `908133880f0b3d722d98e2451567657a077d4e9f`，不冒充345已移植。
+
+| 固定增量 | 延续归属及Android处理 |
+| --- | --- |
+| 存储源内容重验、中断恢复、Linux清理任务与作用域 | 延续S58／C07／G11／S46及C02／N08。保持PRoot文件树、真实任务／环境、引用、停止和原件保护；不移植iOSVM稀疏盘算法。后续按实际故障定向维护，不重跑历史矩阵。 |
+| 旧语言执行／包工具退役、命令指导 | 延续C01／C02。Android固定源已通过LocalShellTool等注册exec.shell和持久会话，并围栏六个退役别名；软件安装继续走Linux，不恢复宿主解释器或平行包管理。此处仅源码核对。 |
+| 应用设置CloudKit与语音凭据同步 | 归C03／C07配置边界。Android继续系统／云语音、已有选择及本机安全凭据；双端实时同步仍排除，不因iOS新功能扩张本版。 |
+| 图像连续保存摘要、MediaV2预览布局及旧编辑器退役 | 延续C03／C07／IOS-D04的原件、成果与失败恢复合同。Android保留轻量编辑与原生外部应用，专业操作交外部App／Linux；适用的保存冲突、预览一致性继续定向维护，不宣称已验。 |
+| 字体去重、旧UI／CAD入口退役与工程整理 | 沿用Android设计系统及只读CAD边界，不将iOS删文件算作Android缺功能，不增加建模编辑或本地推理。 |
+
+当前优先仍为完整任务与录像：115一次真实生图、Linux成果读回、App预览及浏览器失败后恢复已通过；中途操作员授权仅算功能证据。旧114不明结果任务不续跑。多历史原上下文、Goal steer原子消费等上轮S57／S60待项继续保留，不能由本次5／5小测销账。
+
+本节只读取固定Git对象与Android对应注册，没有启动iOS／Android编译、设备或提供商矩阵；源码、原生、APK、三星、公开发布及录像证据分别保留。
+
+English: The fixed iOS342→345 interval has97FloeAgent paths, not97missing Android features. Storage/cleanup, retired execution routes, configuration/voice sync, image/media save contracts and resource retirement retain existing identities. Android keeps PRoot, exec.shell, lightweight/native editing, read-onlyCAD and system/cloud voice. iOSVM, local inference, live cross-platform sync and heavy workbenches do not expand this update.115functional evidence and pending autonomous recording remain separate;S57/S60 remain open.
+
 ## 2026-11-14 iOS342 固定增量与 Android1.0.6
 
 在上次完整登记的 iOS341 应用锚点 `d0c085f9ddda28e1d9a125389a020f618892d408` 之后，固定比较 iOS342／`v1.8.21` 的应用源 `1d599f35e97b46ea5798ac07359074480fa463a5`。`FloeAgent/` 共七条路径变化：四条生产／许可路径为 `StorageSparseDiskRewrite.swift`、`StorageSparseDiskRewriteRecovery.swift`、`RuntimeV2RecoveryOptimizationAdapter.swift` 和 `FloeSlirp-SOURCE-OFFER.txt`；另有 `project.yml`、生成的 Xcode 工程版本更新及一条配套恢复测试路径。这七条路径不是七项 Android 缺失功能；此前大区间的有限审计、原 183 项、G/C/N、IOS-D 和 S57–S60 身份继续保留。

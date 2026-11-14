@@ -1,5 +1,17 @@
 # Floe Android 分目标实施记录
 
+## 1.0.7／115 已公开，真实生图与浏览器恢复闭合（2026-11-14）
+
+[Android1.0.7预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v1.0.7) 固定实际生产源 `908133880f0b3d722d98e2451567657a077d4e9f`（包含N11检查点 `b7e8805374bb33d4229cca11e27241644c4a057c`），Full APK 166,456,567字节，SHA-256 `bbfdf80c9772272de07af26cf09af1909bfe02a2eb24b3e5066474a64a7534e7`。native53实际ARM64对象／链接、Full封装、58项原生绑定、16KiB对齐及四类包API28／29签名通过；29项宿主方法按原24项通过和五项夹具定向复测闭合，原失败保留。
+
+三星正常114→115签名双包覆盖安装保留UID和数据，字节读回准确。新Ark Plan／ark-code-latest任务只提交一次生图，真实84,830字节JPEG经Linux摘要校验并在App原生预览打开；浏览器真实DNS失败后恢复Example Domain，清单5／5、endTurn。该小测点过授权，不能作为零辅助录像；首次缺file命令由模型自行换用摘要与JPEG头校验。原113五项实机证据、旧114结果不明任务及115功能证据分别保留。
+
+五个公开附件共295,722,513字节的匿名完整下载、远端摘要与标签来源一致。115／114／113／108／65实际生产更新器从65／81／1.0.0／1.0.5／1.0.6发现完整1.0.7，当前1.0.7无更新；无增量旁路，iOSLatest独立保留。本次覆盖安装不冒充新OTA。源码打包暂存、重复大附件及运行组件提取副本已清理，当前／回滚、原始符号、失败与紧接缓存保留。
+
+精确115已交录像线程；原自然目标唯一Send前已确认自动允许及真实控制配置。完整海报／视频和日历闭环继续单独验收。固定iOS342→345的97条路径已分类，延续原C/G/N/IOS-D及S58等归属，不引入VM、重型工作台、本地模型或双端实时同步。详见[交付记录](android/FLOE_ANDROID_1_0_7_DELIVERY.zh-CN.md)。
+
+English: Android1.0.7/code115 is public from908133880 with actualnative53/Full evidence,29 accounted host methods and a Samsung single-image/file-preview/browser-recovery task. Operator approvals are disclosed; autonomous recording is separate. All five assets and five production update readers passed. ADB upgrade is not newOTA acceptance. Exact115 recording continues; original failures and113 feature evidence remain, and disposable preparation copies are retired.
+
 ## 1.0.7／115 修复源码与定向宿主检查闭合（2026-11-14）
 
 1.0.6 的完整实机录像在云端生图阶段停止：四个任务结果不明，随后出现换提示提交第五个任务的行为；旧任务的实际提供商接收、交付和计费均未确认，原始失败保留，不恢复该运行。公开 1.0.6 已追加双语已知问题，原标签、安装包与附件不变。
