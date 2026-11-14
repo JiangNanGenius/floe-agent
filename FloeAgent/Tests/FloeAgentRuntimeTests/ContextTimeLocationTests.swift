@@ -35,16 +35,16 @@ struct ContextTimeLocationTests {
         #expect(ordinary.contains("Current local date and time at run start: 2027-01-15T19:00:00"))
         #expect(ordinary.contains("Current time zone: Australia/Sydney (UTC+11:00)"))
         // The honesty instruction is present verbatim in the ordinary chat.
-        #expect(ordinary.contains("never infer a place from the time zone"))
-        #expect(ordinary.contains("current-location tool"))
+        #expect(ordinary.contains("time zone do not reveal"))
+        #expect(ordinary.contains("Ask for a location"))
 
         let temporary = ConversationRunService.buildContextMessage(
             ConversationRunService.RunContext(), mode: .chat, toolsAvailable: true,
             currentDate: date, timeZone: zone,
             chatFastMode: true, temporaryReadOnly: true)
-        #expect(temporary.contains("never infer a place from the time zone"))
-        #expect(temporary.contains("current-location tool"))
-        #expect(temporary.contains("basic on-device reads"))
+        #expect(temporary.contains("time zone do not reveal"))
+        #expect(temporary.contains("Ask for a location"))
+        #expect(temporary.contains("offered public web tools"))
 
         // The task-mode envelope is unchanged and also carries no location
         // claim beyond the clock/zone lines.

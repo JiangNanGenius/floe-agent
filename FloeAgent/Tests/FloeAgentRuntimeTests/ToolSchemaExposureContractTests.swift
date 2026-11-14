@@ -79,12 +79,13 @@ struct ToolSchemaExposureContractTests {
     }
     private func runtime(adapter: any ProviderAdapter, executor: MockExecutor, provider: ProviderProfile,
                          window: Int = 65_536, allowed: Set<String>? = nil,
-                         cloudAgentBase: Bool = false, store: MockCheckpointStore = MockCheckpointStore()) -> FloeAgentRuntime {
+                         cloudAgentBase: Bool = false, mode: ConversationMode = .chat, chat: Bool = false,
+                         store: MockCheckpointStore = MockCheckpointStore()) -> FloeAgentRuntime {
         let model = ModelProfile(providerID: provider.id, remoteModelID: "exposure-contract",
             displayName: "Exposure contract", limits: .init(contextTokens: window, maxOutputTokens: 2_048),
             capabilities: [.text, .tools])
-        var configuration = FloeAgentRuntime.Configuration(provider: provider, model: model,
-            allowedToolNames: allowed, maxProviderRetries: 0)
+        var configuration = FloeAgentRuntime.Configuration(provider: provider, model: model, conversationMode: mode,
+            allowedToolNames: allowed, maxProviderRetries: 0, chatFastMode: chat)
         configuration.offersCloudAgentBaseTools = cloudAgentBase
         return FloeAgentRuntime(configuration: configuration, adapter: adapter,
             policy: HumanApprovalPolicy(), executor: executor, checkpointStore: store,
@@ -111,6 +112,58 @@ struct ToolSchemaExposureContractTests {
                 .union([ToolDiscovery.name, ToolDiscovery.listName, ToolResultPagingTool.name])
             #expect(offered == expected)
         }
+    }
+
+    @Test func chatAndPlanExposeCompleteModeToolsOnTheFirstRealRequest() async throws {
+        let executor = MockExecutor()
+        let question = ToolCatalog.Descriptor(name: UserAskTool.name, toolDescription: UserAskTool.toolDescription,
+            parametersJSON: UserAskTool.parametersJSON, riskLabels: UserAskTool.riskLabels, isSideEffecting: false,
+            effect: UserAskTool.toolEffect, executionBoundary: UserAskTool.executionBoundary)
+        for name in ConversationToolAccess.planBaseNames {
+            executor.descriptors[name] = Self.descriptor(name)
+        }
+        executor.descriptors[question.name] = question
+        for name in ["memory.remember","memory.update","memory.forget"] {
+            executor.descriptors[name] = .init(name: name, riskLabels: [.persistsPersonalData],
+                                               isSideEffecting: true, effect: .internalState)
+        }
+        executor.descriptors["exec.shell"] = Self.descriptor("exec.shell")
+        for chat in [true, false] {
+            let adapter = ExposureRequestAdapter { _, _ in Self.done() }
+            let agent = runtime(adapter: adapter, executor: executor, provider: TestFixtures.localhostProvider(),
+                                mode: chat ? .chat : .plan, chat: chat)
+            try await agent.start(goal: "Hello")
+            let request = try #require(adapter.requests.first)
+            let names = request.toolSchemas.map(\.name)
+            let expected = chat ? ConversationToolAccess.chatNames :
+                ConversationToolAccess.planBaseNames.union([ToolDiscovery.name, ToolDiscovery.listName,
+                                                             ToolResultPagingTool.name, PlanSubmission.toolName])
+            #expect(Set(names) == expected)
+            #expect(names.count == (chat ? 12 : 24))
+        }
+    }
+
+    @Test func restoredChatRebuildsAnOlderBroaderRequest() async throws {
+        let executor = MockExecutor()
+        for name in ["workspace.readFile", "workspace.writeFile", "web.fetch"] {
+            executor.descriptors[name] = Self.descriptor(name)
+        }
+        let provider = TestFixtures.localhostProvider()
+        let original = ExposureRequestAdapter { _, _ in Self.done() }
+        let store = MockCheckpointStore()
+        let first = runtime(adapter: original, executor: executor, provider: provider, cloudAgentBase: true, store: store)
+        try await first.start(goal: "Hello")
+        var checkpoint = try #require(store.saved.first { $0.providerDispatchRequest != nil })
+        #expect(checkpoint.providerDispatchRequest?.toolSchemas.contains { $0.name == "workspace.writeFile" } == true)
+        // The original format had no explicit UI mode; the App resolves it before resuming.
+        checkpoint.toolAccess = nil
+        checkpoint.providerDispatchEnvelope = nil
+        let adapter = ExposureRequestAdapter { _, _ in Self.done() }
+        let restored = runtime(adapter: adapter, executor: executor, provider: provider, chat: true)
+        try await restored.resume(from: checkpoint)
+        let request = try #require(adapter.requests.first)
+        #expect(Set(request.toolSchemas.map(\.name)) == ["workspace.readFile","web.fetch"])
+        #expect(!request.allToolNames.contains("tools.search"))
     }
 
     @Test func finalReadmissionEvictionIsFalseInActualListResponse() async throws {

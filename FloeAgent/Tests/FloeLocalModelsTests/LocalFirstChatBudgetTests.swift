@@ -102,10 +102,8 @@ struct LocalFirstChatBudgetTests {
         // The current request is preserved exactly; the transcript carries
         // only the flattened user line.
         #expect(build.text == "USER: \(greeting)")
-        // The stable base file-tool set is still offered (Build229 parity).
-        #expect(build.selectedTools.contains { $0.name == "workspace.readFile" })
-        #expect(build.systemInstructions.contains("OFFERED TOOLS"))
-        #expect(build.systemInstructions.contains("workspace.readFile"))
+        #expect(build.selectedTools.isEmpty)
+        #expect(!build.systemInstructions.contains("OFFERED TOOLS"))
         // The envelope kept its essential identity and marked its clipping.
         #expect(build.systemInstructions.contains("# Floe local runtime contract"))
         #expect(build.systemInstructions.contains("# Project instructions (FLOE.md/AGENTS.md)"))
@@ -200,9 +198,10 @@ struct LocalFirstChatBudgetTests {
         #expect(turn3.text.contains("TOOL RESULT \(call2.id)"))
         #expect(turn3.text.contains(receipt2))
         #expect(turn3.text.contains("把两份内容合并成一句话"))
-        // The offered schema never disappears; both turns stay inside budget.
+        #expect(turn1.selectedTools.contains { $0.name == "workspace.readFile" })
+        #expect(turn2.selectedTools.contains { $0.name == "workspace.readFile" })
+        #expect(!turn3.selectedTools.contains { $0.name == "workspace.readFile" })
         for build in [turn1, turn2, turn3] {
-            #expect(build.selectedTools.contains { $0.name == "workspace.readFile" })
             #expect(build.estimatedPromptTokens < build.windowPromptTokenBudget)
             #expect(!build.exceedsContextWindow)
         }

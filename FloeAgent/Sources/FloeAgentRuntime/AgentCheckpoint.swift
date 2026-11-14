@@ -202,6 +202,7 @@ public struct ProviderDispatchRequestSnapshot: Sendable, Codable, Hashable {
     /// Optional so snapshots written before this field remain decodable; a nil
     /// value restores the previous conservative behavior.
     public var allToolNames: [String]?
+    public var exactLocalToolNames: [String]?
     public var reasoningDisabled: Bool
 
     public init(request: ProviderStreamRequest) {
@@ -230,11 +231,12 @@ public struct ProviderDispatchRequestSnapshot: Sendable, Codable, Hashable {
             Schema(name: $0.name, description: $0.description, parametersJSON: $0.parametersJSON)
         }
         allToolNames = request.allToolNames
+        exactLocalToolNames = request.exactLocalToolNames.isEmpty ? nil : request.exactLocalToolNames
         reasoningDisabled = request.reasoningPolicy == .disabled
     }
 
     public func request() -> ProviderStreamRequest {
-        ProviderStreamRequest(
+        var request = ProviderStreamRequest(
             provider: provider,
             model: model,
             contentMessages: messages.map { message in
@@ -261,6 +263,8 @@ public struct ProviderDispatchRequestSnapshot: Sendable, Codable, Hashable {
             allToolNames: allToolNames ?? [],
             reasoningPolicy: reasoningDisabled ? .disabled : .modelDefault
         )
+        request.exactLocalToolNames = exactLocalToolNames ?? []
+        return request
     }
 }
 
@@ -335,6 +339,7 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
     /// UserQuestionStore. Nil for runs without questions and for temporary
     /// conversations (RAM-only questions never enter a durable checkpoint).
     public var pendingUserQuestionRequestIDs: [String]?
+    public var toolAccess: ConversationToolAccess?
 
     /// Trusted task.wait identities/deadlines/receipts. Optional for older checkpoints.
     public var runtimeWaits: [AgentWaitRecord]?

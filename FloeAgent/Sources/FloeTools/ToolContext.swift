@@ -112,11 +112,12 @@ public struct ToolContext: Sendable {
     /// model-callable legacy alias or a live registry lookup. Children receive
     /// only the parent's value through the canonical dispatcher.
     public var professionalSearchAuthority: ProfessionalSearchAuthority.Frozen?
-    /// True for temporary (ephemeral) chat runs: outbound web retrieval is
-    /// public-only. Tools that can opt into LAN/diagnostic targets
-    /// (web.fetch localNetwork) must refuse that opt-in and every private
-    /// target here, regardless of ordinary policy. Set by the runtime from
-    /// the run configuration; never model-minted.
+    /// A restricted mode reads installed Skill instructions without staging resources.
+    public var readsInstructionsOnly = false
+    public var recallsDurableMemoryOnly = false
+    /// Restricted investigation can page evidence from the current run.
+    public var readsCurrentRunResultsOnly = false
+    /// Outbound web calls may only retrieve public sources without credentials.
     public var publicWebOnly: Bool
     /// Root assigned to this task. Workspace tools must prefer this over any
     /// UI-global workspace so concurrent tasks cannot leak into one another.

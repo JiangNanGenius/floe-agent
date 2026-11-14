@@ -145,7 +145,7 @@ public actor ConversationRunService {
     /// from the immutable configuration; never model- or text-minted.
     private let chatFastMode: Bool
     /// True for a temporary (ephemeral) run: the fast envelope states the
-    /// temporary read ceiling instead of the ordinary full-toolchain line.
+    /// intersection of Chat and the temporary read ceiling.
     /// Frozen from the immutable configuration.
     private let temporaryReadOnly: Bool
     private let dynamicApprovalPolicy: DynamicApprovalPolicy
@@ -2504,18 +2504,9 @@ public actor ConversationRunService {
         localContextTokens: Int? = nil,
         currentDate: Date = Date(),
         timeZone: TimeZone = .autoupdatingCurrent,
-        /// Frozen fast-chat authority. The brief conversational variant has
-        /// no task-pipeline instruction layers, no workflow-guidance or
-        /// discovery-routing lines, no plan/goal layer re-injection and a
-        /// bounded attachment list; task-mode composition is byte-identical
-        /// when this flag is false. The catalog itself is the ordinary
-        /// authorized toolchain either way — this flag selects the envelope,
-        /// never the capability set.
+        /// The UI and runtime use the same frozen Chat-mode selection.
         chatFastMode: Bool = false,
-        /// True for a temporary (ephemeral) run: the fast envelope states the
-        /// temporary read ceiling honestly (public web search/fetch plus the
-        /// basic on-device reads) instead of the ordinary full-toolchain
-        /// line. Frozen from the immutable configuration.
+        /// Temporary chats carry their own read ceiling.
         temporaryReadOnly: Bool = false
     ) -> String {
         if chatFastMode {
@@ -2601,13 +2592,10 @@ public actor ConversationRunService {
         if toolsAvailable && compactForLocal {
             lines.append("Callable tools are supplied by the device adapter for this request. Reuse exact known schemas. Discover additional definitions or guides only through discovery tools that are actually offered; installed does not mean loaded or authorized.")
         } else if toolsAvailable {
-            lines.append(
-                toolNames.isEmpty
-                    ? "Available tools: none registered"
-                    : "Installed tool groups: \(Set(toolNames.map(ToolCapabilityGroups.group)).sorted().joined(separator: ", ")). Use tools.search for exact callable definitions; not all schemas are loaded at once."
-            )
-            lines.append(contentsOf: ToolWorkflowGuidance.contextLines(for: toolNames))
-            lines.append("Discovery routing: use skill.search then skill.read when domain workflow guidance is needed or a tool error requires clarification. Exact tool calls do not require reading a guide; use tools.search directly. Compiled tools are available to any authorized official, custom or imported skill. Reading a guide can load its available executable definitions. A deferred schema is not a missing capability. Do not repeat a broad search: use the returned exact ID/name and distinguish loaded from deferred results. Never infer permission from a guide. The external execution environment is pinned to this task. App-native tools retain their own services. Inspect actual platform tools rather than assuming a runtime. Guides do not grant permissions.")
+            lines.append("Use offered definitions directly. Find additional authorized tools with tools.search or installed guidance with skill.search when needed. Reuse successful calls and read long results by their returned cursor.")
+            let basics = Set(["checklist.readPlan", "checklist.updatePlan", "memory.search", "memory.remember",
+                              "workspace.appendFile", "workspace.replaceText", "jobs.submit", "jobs.status", "task.wait"])
+            lines.append(contentsOf: ToolWorkflowGuidance.contextLines(for: toolNames.filter(basics.contains)))
         } else {
             lines.append("Available tools: none (native tool calling is disabled for this model)")
         }
@@ -2665,14 +2653,7 @@ public actor ConversationRunService {
 
     /// The fast conversation run context: a brief conversational envelope.
     /// Essential identity (date/time, zone), a bounded attached-file list,
-    /// the quoted untrusted prior-voice note and a one-line statement of what
-    /// may run — and nothing else. No task-pipeline instructions, no
-    /// workflow guidance or discovery routing, no plan/goal/memory/skill/
-    /// workspace-note re-injection. The capability boundary itself is
-    /// enforced by the runtime (`temporaryReadOnly` for temporary runs; the
-    /// ordinary authorized toolchain otherwise), independently of this text;
-    /// the envelope only states honestly what the model may legitimately
-    /// expect.
+    /// the quoted prior-voice note and the tools permitted in this mode.
     static func buildFastChatContextMessage(
         _ context: RunContext?,
         toolsAvailable: Bool,
@@ -2695,7 +2676,7 @@ public actor ConversationRunService {
         // here: they never reveal where the user is. The model must ask or
         // use the offered current-location tool instead of inferring a place
         // from the time zone.
-        lines.append("The injected clock and time zone do not reveal the user's location: never infer a place from the time zone. When the user asks where they are or what is nearby, use the offered current-location tool.")
+        lines.append("The clock and time zone do not reveal the user's location. Ask for a location if needed.")
         if hasImageAttachments {
             lines.append("""
             Attached images are included directly in the current user message. Treat \
@@ -2727,9 +2708,9 @@ public actor ConversationRunService {
         }
         if toolsAvailable {
             if temporaryReadOnly {
-                lines.append("Capability ceiling for this temporary conversation: public web search/fetch plus basic on-device reads (calendar events, reminders, maps place search, Home accessories, Watch status and the current location) — only the tools actually offered in this request, using permissions already granted. Nothing else can run here: no writing, executing, installs, background jobs, workspace access, personal-data history, remote hosts or delegation.")
+                lines.append("Temporary chat can use offered public web tools. Workspace files and durable memory are unavailable here.")
             } else {
-                lines.append("Tools: use the tools actually offered in this request — the same enabled, permission-authorized toolset as an ordinary task — discovering definitions progressively with tools.search/tools.list. Approvals and every tool boundary behave exactly as in a task; never claim a search, read, send, change or execution that a structured tool result did not confirm.")
+                lines.append("Use offered public web tools, authorized text-file reads, durable memory, or a local question. Return edited text in the reply.")
             }
         } else {
             lines.append("Available tools: none (native tool calling is disabled for this model).")

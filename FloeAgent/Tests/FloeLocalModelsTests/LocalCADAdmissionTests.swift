@@ -88,7 +88,7 @@ struct LocalCADAdmissionTests {
         #expect(qwenBuild.estimatedPromptTokens <= qwenBuild.windowPromptTokenBudget)
         #expect(qwenBuild.primaryRepairTool?.name == "cad.document")
         #expect(qwenBuild.fallbackTools.contains { $0.name == "ssh.execute" })
-        #expect(qwenBuild.systemInstructions.contains("AVAILABLE TOOL NAMES"))
+        #expect(!qwenBuild.systemInstructions.contains("AVAILABLE TOOL NAMES (authoritative):"))
         #expect(!qwenBuild.systemInstructions.contains("SCHEMA BUDGET"))
 
         // Native-schema path: the exact definition is handed to the chat

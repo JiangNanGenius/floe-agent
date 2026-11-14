@@ -4379,6 +4379,8 @@ final class ConversationCenter: ObservableObject {
         preparationStage("end:native_compositions")
         let catalogExecutor = CatalogToolExecutor()
         let availableDescriptors = catalogExecutor.allDescriptors
+        let toolAccess: ConversationToolAccess = requestedChatMode ? .chat
+            : (effectiveExecutionMode.conversationMode == .plan ? .plan : .task)
         let skills: SkillsCenter.RuntimeSelection
         let personalization: RuntimePersonalizationContext
         let activePlan: PlanDraft?
@@ -4402,10 +4404,10 @@ final class ConversationCenter: ObservableObject {
             let installed = await withTaskCancellationHandler {
                 await environment.skillsCenter.runtimeSelection(runID: runID,
                     resourceContext: SkillResourceContext(environmentID: runExecutionEnvironmentID,
-                        workspaceRootURL: runWorkspaceRoot, cancellation: skillPreparationCancellation))
+                        workspaceRootURL: toolAccess == .task ? runWorkspaceRoot : nil, cancellation: skillPreparationCancellation))
             } onCancel: { skillPreparationCancellation.cancel() }
             try Task.checkCancellation()
-            if runExecutionBinding?.target.backend == .macBridge {
+            if toolAccess == .task, runExecutionBinding?.target.backend == .macBridge {
                 let originals = (try? await MacOriginalSkillsCenter.shared.runtimeSelection(runID: runID)) ?? .none
                 skills = SkillsCenter.mergedRuntimeSelection([installed, originals])
             } else { skills = installed }
@@ -4415,7 +4417,7 @@ final class ConversationCenter: ObservableObject {
                 query: memoryQuery,
                 workspaceID: canonicalWorkspaceID,
                 conversationID: conversationID,
-                memoryUseLease: memoryUseLease
+                memoryUseLease: memoryUseLease, includeIndexedSources: toolAccess != .chat
             )
             preparationStage("end:personalization")
             preparationStage("begin:plan_goal_overlay")
@@ -4508,7 +4510,9 @@ final class ConversationCenter: ObservableObject {
             && runSurface == .ordinary && conversationRecord?.purpose == .ordinary
             && !isTemporary && linuxCacheCleanupProfile == nil
         if !Self.requestsAgentMemoryTools(memoryQuery) {
-            let retainedMemory = offersCloudAgentBaseTools ? ToolSchemaOfferPlanner.baseMemoryToolNames : []
+            let keepsBasicMemory = offersCloudAgentBaseTools || (toolAccess != .task && !isTemporary
+                && conversationRecord?.purpose == .ordinary && runSurface == .ordinary && linuxCacheCleanupProfile == nil)
+            let retainedMemory = keepsBasicMemory ? ToolSchemaOfferPlanner.baseMemoryToolNames : []
             let permittedNames = Set(availableDescriptors.lazy
                 .map(\.name)
                 .filter { !$0.hasPrefix("memory.") || retainedMemory.contains($0) })
@@ -4589,7 +4593,11 @@ final class ConversationCenter: ObservableObject {
         // web readiness is independent: temporary chat, plan, Canvas,
         // Notes, local models, network/remote-denied tasks and an explicit
         // allowlist without web.search receive no professional account access.
-        let allowsProfessionalSearch = Self.allowsNativeProfessionalSearch(
+        if toolAccess != .task {
+            let visible = Set(availableDescriptors.filter(toolAccess.allows).map(\.name))
+            allowedToolNames = allowedToolNames?.intersection(visible) ?? visible
+        }
+        let allowsProfessionalSearch = toolAccess == .task && Self.allowsNativeProfessionalSearch(
             runSurface: runSurface,
             isNotesAssistant: isNotesAssistant,
             isTemporary: isTemporary,
@@ -4889,7 +4897,7 @@ final class ConversationCenter: ObservableObject {
             .conversation(conversationID)
         }
         let credentialArgumentNormalizer: (@Sendable (ToolCall) async throws -> ToolCall)?
-        if isTemporary {
+        if isTemporary || toolAccess != .task {
             credentialArgumentNormalizer = nil
         } else {
             credentialArgumentNormalizer = { call in
@@ -6215,7 +6223,7 @@ final class ConversationCenter: ObservableObject {
         query: String,
         workspaceID: UUID?,
         conversationID: UUID,
-        memoryUseLease: MemoryRunUseLease
+        memoryUseLease: MemoryRunUseLease, includeIndexedSources: Bool
     ) async -> RuntimePersonalizationContext {
         try? await environment.intelligenceStore.maintainMemoryLifecycle()
         async let activeDocuments = environment.personalizationStore.liveSnapshot(workspaceID: workspaceID)
@@ -6239,8 +6247,8 @@ final class ConversationCenter: ObservableObject {
 
         let recalled = (try? await environment.globalSourceMemory.recallMemories(query,
             context: .init(workspaceID: workspaceID, conversationID: conversationID, limit: 8))) ?? []
-        let sourceHits = (try? await environment.globalSourceMemory.search(query,
-            context: .init(workspaceID: workspaceID, conversationID: conversationID, limit: 3))) ?? []
+        let sourceHits = includeIndexedSources ? (try? await environment.globalSourceMemory.search(query,
+            context: .init(workspaceID: workspaceID, conversationID: conversationID, limit: 3))) ?? [] : []
         let sourceLines = sourceHits.filter(\.sourceAvailable).map {
             "- Untrusted source excerpt [\($0.source.id), revision \($0.source.revision), offset \($0.offset)]: \(String($0.excerpt.prefix(1600)))"
         }
@@ -9841,9 +9849,12 @@ final class ConversationCenter: ObservableObject {
             case .goal: .goal
             case .chat: .agent
             }
-            if restoredConversationMode == .chat,
-               await Self.hasFrozenChatReasoning(runID: record.id, runStore: routedRunStore) {
-                mode = .chat
+            if restoredConversationMode == .chat {
+                if let access = checkpoint?.toolAccess {
+                    if access == .chat { mode = .chat }
+                } else if await Self.hasFrozenChatReasoning(runID: record.id, runStore: routedRunStore) {
+                    mode = .chat
+                }
             }
             FloeLogger(category: .runtime).info(
                 "runResumePrepared run=\(record.id.uuidString) conversation=\(record.conversationID.uuidString) originalState=\(record.state) providerKind=\(String(describing: provider.kind)) checkpoint=\(checkpoint == nil ? "fallback" : "loaded") checkpointFormat=\(checkpoint?.formatVersion ?? 0) checkpointMessages=\(checkpoint?.messages.count ?? 0) durableMessages=\(assembled.count) pendingCalls=\(checkpoint?.pendingToolCalls.count ?? 0) pendingResults=\(checkpoint?.pendingToolResults.count ?? 0)"

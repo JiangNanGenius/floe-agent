@@ -673,21 +673,14 @@ public actor FloeAgentRuntime {
         /// dispatcher revalidates every call against the cleanup scope before
         /// any effect. Never model-minted.
         public var linuxCacheCleanupProfile: LinuxCacheCleanupTaskProfile?
-        /// True for an ORDINARY fast conversation `.chat` run. This selects
-        /// ONLY the brief conversational envelope and the final-answer
-        /// verification skip: the offered catalog is exactly the ordinary
-        /// task toolchain — every tool this run's enabled integrations,
-        /// capability toggles, task policy, skills and provider ceilings
-        /// already authorize — discovered progressively with the same
-        /// `tools.search`/`tools.list` path as a task. Chat mode never narrows
-        /// the catalog and never mints authority; approvals and every tool
-        /// boundary behave exactly as in a task run. A temporary run may also
-        /// set this flag for its envelope; its stricter
-        /// `temporaryReadOnly` ceiling stays authoritative for the catalog.
-        /// Set once by the caller; never model-minted, never changed mid-run.
+        /// The user selected Chat. Its file-read ceiling also applies during tool dispatch.
         public var chatFastMode: Bool
         /// App-selected ordinary cloud agent. Only affects schema presentation inside the live ceiling.
         public var offersCloudAgentBaseTools = false
+        public var toolAccess: ConversationToolAccess {
+            if conversationMode == .plan { return .plan }
+            return chatFastMode ? .chat : .task
+        }
         /// Request-level reasoning policy for the run's provider dispatch
         /// (the frozen chat fast/level resolution). `.modelDefault` keeps
         /// today's behavior for every other run; `.disabled` transmits the
@@ -1271,13 +1264,14 @@ public actor FloeAgentRuntime {
             )
             let paging = ToolResultPagingTool(store: toolResultCaptures)
             try paging.validate(arguments)
-            let context = ToolContext(
+            var context = ToolContext(
                 runID: runID,
                 toolCallID: call.id,
                 workspaceRootURL: configuration.workspaceRootURL,
                 cancellation: cancellationToken,
                 conversationID: configuration.conversationID
             )
+            context.readsCurrentRunResultsOnly = configuration.toolAccess != .task
             let execution = try await paging.execute(arguments, context: context)
             result = ToolResult(
                 callID: call.id,
@@ -2045,7 +2039,7 @@ public actor FloeAgentRuntime {
         }
         sensitivePendingCallIDs = Set(checkpoint.sensitiveToolCallIDs ?? [])
         latestProviderDispatchRequest = checkpoint.providerDispatchRequest
-        if let snapshot = checkpoint.providerDispatchRequest {
+        if let snapshot = checkpoint.providerDispatchRequest, configuration.toolAccess == .task {
             var restoredRequest = snapshot.request()
             // Presentation hints only; the next preparation intersects them
             // with current executable descriptors and current permission limits.
@@ -2073,6 +2067,7 @@ public actor FloeAgentRuntime {
             // The execution ledger/lifecycle still prevent settled tools from
             // being replayed; start a fresh provider boundary from that
             // committed state and upgrade the next checkpoint to v5.
+            latestProviderDispatchRequest = nil
             latestProviderDispatchEnvelope = nil
             restoredProviderDispatchEnvelope = nil
             providerRetryRequest = nil
@@ -2474,7 +2469,7 @@ public actor FloeAgentRuntime {
                 TemporaryChatToolPolicy.readOnlyDescriptor($0)
             }
         }
-        return descriptors
+        return descriptors.compactMap(configuration.toolAccess.presented)
     }
 
     /// Frozen name identity of the run's real catalog, computed once.
@@ -2487,7 +2482,7 @@ public actor FloeAgentRuntime {
         if let cachedRuntimeCatalogNames { return cachedRuntimeCatalogNames }
         var names = Set(runtimeVisibleCatalogDescriptors(includeCurrentAvailability: false).map(\.name))
         for descriptor in executor.allDescriptors
-        where descriptor.executionBoundary == .childOnly {
+        where descriptor.executionBoundary == .childOnly && configuration.toolAccess == .task {
             if let allowed = configuration.allowedToolNames,
                !allowed.contains(descriptor.name) { continue }
             if configuration.temporaryReadOnly,
@@ -2732,7 +2727,14 @@ public actor FloeAgentRuntime {
         }
         // Refresh only at a real new turn. A transport/restart retry keeps
         // the committed canonical request and its exact schema envelope.
-        if providerRetryRequest == nil { await refreshCurrentToolAvailability() }
+        await refreshCurrentToolAvailability()
+        if let retry = providerRetryRequest, let available = currentAvailableToolNames {
+            let helpers: Set<String> = [ToolDiscovery.name, ToolDiscovery.listName, ToolResultPagingTool.name, "plan.submit"]
+            if retry.toolSchemas.contains(where: { !available.contains($0.name) && !helpers.contains($0.name) }) {
+                providerRetryRequest = nil
+                providerWireRetryRequest = nil
+            }
+        }
         switch state {
         case .cancelling, .paused, .checkpointed, .completed, .failed: return
         default: break
@@ -2953,8 +2955,12 @@ public actor FloeAgentRuntime {
             discoveryPriority = additionNames + discoveryPriority.filter { !seenAdditions.contains($0) }
         }
         let nativeBindingNames = nativeAdditions.map(\.name)
-        let coreNames = configuration.offersCloudAgentBaseTools
-            ? ToolDiscovery.cloudAgentCoreNames : ToolDiscovery.coreNames
+        let coreNames: Set<String>
+        switch configuration.toolAccess {
+        case .chat: coreNames = ConversationToolAccess.chatNames
+        case .plan: coreNames = isLocalProvider ? ToolDiscovery.coreNames : ConversationToolAccess.planBaseNames
+        case .task: coreNames = configuration.offersCloudAgentBaseTools ? ToolDiscovery.cloudAgentCoreNames : ToolDiscovery.coreNames
+        }
         // Restore recently used groups without replaying a discovery call.
         let recentGroups = Set(executionLedger.entries.suffix(6).map { ToolDiscovery.group($0.toolName) })
         catalogDescriptors = catalogDescriptors.filter {
@@ -2982,9 +2988,9 @@ public actor FloeAgentRuntime {
             pinned: pinned,
             coreNames: coreNames
         )
-        catalogDescriptors.append(contentsOf: ToolDiscovery.runtimeDescriptors(
-            publicWebOnly: configuration.temporaryReadOnly
-        ))
+        if configuration.toolAccess != .chat {
+            catalogDescriptors.append(contentsOf: ToolDiscovery.runtimeDescriptors(publicWebOnly: configuration.temporaryReadOnly))
+        }
         // Complete-schema admission for THIS model window. The allowance is
         // the real leftover request budget after system/history, images,
         // replayed pairs, the output reservation and a pending-result reserve.
@@ -3055,7 +3061,7 @@ public actor FloeAgentRuntime {
                 min(requestedSchemaCost, max(0, window / 2))
             )
             let deferredNames = plan.deferred + plan.oversized
-            if !deferredNames.isEmpty {
+            if !deferredNames.isEmpty, configuration.toolAccess != .chat {
                 let display = deferredNames
                     .prefix(24)
                     .map { CompatToolNames.wireName($0, for: configuration.provider) }
@@ -3120,6 +3126,12 @@ public actor FloeAgentRuntime {
             legacyMessages[index].content += "\n\n" + continuity
             contentMessages[index].content.append(.text(continuity))
         }
+        // Everything below the marker changes per turn; everything above it is
+        // stable within the run and eligible for provider prefix caching.
+        if let index = legacyMessages.firstIndex(where: { $0.role == "system" }) {
+            legacyMessages[index].content += "\n\n" + Self.liveStateMarker
+            contentMessages[index].content.append(.text(Self.liveStateMarker))
+        }
         if supportsTools, !prerequisiteNotes.isEmpty {
             let note = "Installed tools remain callable; satisfy these execution prerequisites first:\n"
                 + prerequisiteNotes.joined(separator: "\n")
@@ -3130,8 +3142,8 @@ public actor FloeAgentRuntime {
         }
         // Local adapters build their own admitted tool metadata. Keep runtime
         // state and receipts, without appending a second full cloud directory.
-        if supportsTools, configuration.provider.kind != .local {
-            deferredDiscoveryDirectory = ToolDiscovery.index(
+        if supportsTools, configuration.provider.kind != .local, configuration.toolAccess != .chat {
+            deferredDiscoveryDirectory = ToolDiscovery.compactIndex(
                 discoverableDescriptors,
                 wireSafeNames: CompatToolNames.usesWireSafeNames(configuration.provider)
             )
@@ -3144,7 +3156,10 @@ public actor FloeAgentRuntime {
         // run's live catalog; an unoffered capability is never named, and the
         // lines grant nothing.
         if supportsTools, let index = legacyMessages.firstIndex(where: { $0.role == "system" }) {
-            let taskLines = NativeAuthoringRouting.contextLines(
+            let activeNames = Set(nativeBindingNames + executionLedger.entries.suffix(3).map(\.toolName))
+                .intersection(catalogDescriptors.map(\.name))
+                .subtracting(coreNames)
+            let taskLines = ToolWorkflowGuidance.contextLines(for: activeNames.sorted()) + NativeAuthoringRouting.contextLines(
                 userTask: userTask,
                 taskContext: routingContext,
                 descriptors: discoverableDescriptors,
@@ -3156,12 +3171,6 @@ public actor FloeAgentRuntime {
                 legacyMessages[index].content += "\n\n" + note
                 contentMessages[index].content.append(.text(note))
             }
-        }
-        // Everything below the marker changes per turn; everything above it is
-        // stable within the run and eligible for provider prefix caching.
-        if let index = legacyMessages.firstIndex(where: { $0.role == "system" }) {
-            legacyMessages[index].content += "\n\n" + Self.liveStateMarker
-            contentMessages[index].content.append(.text(Self.liveStateMarker))
         }
         // Hermes-style budget pressure is ephemeral: it guides this provider
         // request but never pollutes durable conversation history.
@@ -3379,7 +3388,7 @@ public actor FloeAgentRuntime {
         // with its stable capture ref. The per-turn ceiling exists only to
         // bound the dispatch checkpoint's encoded size, not to cap ordinary
         // results arbitrarily.
-        let toolSchemasForRequest: [ToolSchemaDescriptor] = supportsTools
+        var toolSchemasForRequest: [ToolSchemaDescriptor] = supportsTools
             ? catalogDescriptors.map {
                 ToolSchemaDescriptor(
                     name: $0.name,
@@ -3388,6 +3397,13 @@ public actor FloeAgentRuntime {
                 )
             } + planSchemas
             : []
+        if !isLocalProvider {
+            let base = coreNames.union([ToolDiscovery.name, ToolDiscovery.listName, ToolResultPagingTool.name, PlanSubmission.toolName])
+            toolSchemasForRequest.sort { lhs, rhs in
+                let l = base.contains(lhs.name), r = base.contains(rhs.name)
+                return l == r ? lhs.name < rhs.name : l
+            }
+        }
         let selectionInputs = await makeToolResultSelectionInputs(
             pagingCallIDs: pendingPagingCallIDs
         )
@@ -3470,7 +3486,7 @@ public actor FloeAgentRuntime {
         // Receipts describe this one batch; a later call id must not inherit
         // stale retention provenance.
         toolCaptureReceipts.removeAll(keepingCapacity: true)
-        let freshRequest = ProviderStreamRequest(
+        var freshRequest = ProviderStreamRequest(
             provider: configuration.provider,
             model: configuration.model,
             messages: legacyMessages,
@@ -3492,7 +3508,7 @@ public actor FloeAgentRuntime {
             // schema was trimmed from this request. The discovery tools are
             // always callable, so they belong to that ceiling too.
             allToolNames: discoverableDescriptors.map(\.name)
-                + [ToolDiscovery.name, ToolDiscovery.listName, ToolResultPagingTool.name],
+                + (configuration.toolAccess == .chat ? [] : [ToolDiscovery.name, ToolDiscovery.listName, ToolResultPagingTool.name]),
             // Frozen per-run reasoning policy (chat fast/level resolution).
             // `.modelDefault` is today's behavior for every other run; the
             // dispatch snapshot already round-trips `reasoningDisabled`, so a
@@ -3503,6 +3519,14 @@ public actor FloeAgentRuntime {
         // A retry must replay the exact safe dispatch boundary. In particular,
         // do not rebuild a compacted prompt or regenerate a tool request after
         // the provider has already crossed the network boundary.
+        if isLocalProvider {
+            for call in pendingToolCalls where call.toolName == ToolDiscovery.name {
+                if let arguments = try? JSONDecoder().decode(DiscoveryQueries.self, from: call.argumentsJSON),
+                   let queries = try? arguments.validated() {
+                    freshRequest.exactLocalToolNames += ToolDiscovery.exactNameMatches(queries, descriptors: discoverableDescriptors).map(\.name)
+                }
+            }
+        }
         let request = providerRetryRequest ?? freshRequest
         let wireRequest = providerWireRetryRequest ?? modelInputWireRequest(request)
         let durableRequest = modelInputDurableRequest(request)
@@ -4640,6 +4664,15 @@ public actor FloeAgentRuntime {
     /// `chargeParentBudget` is false for delegated child calls: the child's
     /// own iteration budget already accounts for them, and charging the
     /// parent again would double-count one logical step.
+    private func applyToolAccess(to context: inout ToolContext, call: ToolCall) {
+        context.readsInstructionsOnly = configuration.toolAccess != .task
+        context.readsCurrentRunResultsOnly = configuration.toolAccess != .task
+        context.recallsDurableMemoryOnly = configuration.toolAccess == .chat
+        if context.readsInstructionsOnly && ["web.fetch", "web.search"].contains(call.toolName) {
+            context.publicWebOnly = true
+        }
+    }
+
     private func resolveToolCall(_ call: ToolCall, chargeParentBudget: Bool = true) async -> ToolResolution {
         await publishLiveness(
             phase: .resolvingTool,
@@ -4659,6 +4692,10 @@ public actor FloeAgentRuntime {
                 reason: "Unknown tool '\(call.toolName)' — not in catalog",
                 decision: "deny:not-in-catalog"
             )
+        }
+        guard configuration.toolAccess.allows(descriptor), configuration.toolAccess.permitsArguments(call) else {
+            return .denied(reason: "This tool or its requested operation is outside the conversation mode.",
+                           decision: "deny:conversation-mode")
         }
         // Temporary (ephemeral) chat runs re-validate the public-web policy at
         // this canonical resolution boundary — the same path every delegated
@@ -4701,10 +4738,6 @@ public actor FloeAgentRuntime {
                 decision: "deny:skill-capability"
             )
         }
-        // Fast chat runs the SAME authorized toolchain as a task: an ordinary
-        // chat turn is not a separate capability surface, so there is no chat
-        // ceiling to re-validate here. Only the temporary read-only boundary
-        // below narrows a run catalog.
         let statefulRouteGoal = messages.last(where: { $0.role == "user" })?.content ?? ""
         if let reason = executionLedger.statefulToolDenialReason(
             for: call.toolName,
@@ -5231,7 +5264,7 @@ public actor FloeAgentRuntime {
             ))
             : nil
 
-        let context = ToolContext(
+        var context = ToolContext(
             runID: runID,
             toolCallID: call.id,
             toolIdempotencyKey: call.idempotencyKey,
@@ -5275,6 +5308,7 @@ public actor FloeAgentRuntime {
                     return try await self.performRuntimeWait(call: call, request: request)
                 } : nil
         )
+        applyToolAccess(to: &context, call: call)
         // Parent + children on one workspace: a MAIN-run mutation takes the
         // same canonical target lease a child call takes, so concurrent
         // parent/child writes to one file (or an unknown-extent shell write)
@@ -5496,7 +5530,7 @@ public actor FloeAgentRuntime {
         identity: ChildExecutionIdentity,
         childContext: ToolContext
     ) async -> ToolResult {
-        guard childDispatchIsActive, !childContext.cancellation.isCancelled else {
+        guard configuration.toolAccess == .task, childDispatchIsActive, !childContext.cancellation.isCancelled else {
             return await childDenied(call, reason: "The owning task is no longer active.",
                                      decision: "deny:child-inactive-parent")
         }
@@ -5757,6 +5791,12 @@ public actor FloeAgentRuntime {
         // Phase 1 — resolve serially (approval escalation blocks).
         for call in calls {
             if resultsByID[call.id] != nil { continue }
+            if configuration.toolAccess == .chat && !ConversationToolAccess.chatNames.contains(call.toolName) {
+                let denial = ToolResult(callID: call.id, status: .denied, outputSummary: "Chat cannot use this tool.", outputDigest: "")
+                resultsByID[call.id] = denial
+                await audit(toolCall: call, result: denial, decision: "deny:chat-mode")
+                continue
+            }
             if call.toolName == ToolDiscovery.listName || call.toolName == ToolDiscovery.name {
                 // A provider/server may become unavailable while the model
                 // streams. Re-read readiness through the SAME filtered
@@ -7293,7 +7333,7 @@ public actor FloeAgentRuntime {
             let handoff: ChildExecutionHandoff? = call.toolName == DelegateTool.name
                 ? makeDelegateHandoff(for: call)
                 : nil
-            let context = ToolContext(
+            var context = ToolContext(
                 runID: runID,
                 toolCallID: call.id,
                 toolIdempotencyKey: call.idempotencyKey,
@@ -7319,6 +7359,7 @@ public actor FloeAgentRuntime {
                 clientSessionID: clientSessionID(for: nil),
                 frozenEffectiveCatalogNames: runtimeVisibleCatalogNameSet()
             )
+            applyToolAccess(to: &context, call: call)
             toRun.append((call, grant, context))
         }
 
@@ -7509,7 +7550,7 @@ public actor FloeAgentRuntime {
         resumeService: ChildResumeService,
         runner: SubagentRunner
     ) async -> SubagentOutcome {
-        guard childDispatchIsActive, acceptingChildResumes,
+        guard configuration.toolAccess == .task, childDispatchIsActive, acceptingChildResumes,
               resumedChildTasks[childID] == nil,
               resumedChildOutcomes.count + resumedChildTasks.count < 32 else {
             return SubagentOutcome(status: .toolError, iterationsUsed: 0,
@@ -8454,7 +8495,7 @@ public actor FloeAgentRuntime {
                 ? capturedProviderRetryRequest?.pendingAssistantReasoning
                 : capturedResponseReasoning
         )
-        let checkpoint = AgentCheckpoint(
+        var checkpoint = AgentCheckpoint(
             runID: runID,
             conversationID: configuration.conversationID,
             state: persistedState,
@@ -8489,6 +8530,7 @@ public actor FloeAgentRuntime {
             pendingUserQuestionRequestIDs: pendingUserQuestionRequestIDs,
             runtimeWaits: capturedWaits.isEmpty ? nil : capturedWaits
         )
+        checkpoint.toolAccess = configuration.toolAccess
         let invariantViolations = HarnessInvariantRegistry.validateCheckpoint(checkpoint)
         guard invariantViolations.isEmpty else {
             // Violation NAMES plus snapshot metadata only: actionable and

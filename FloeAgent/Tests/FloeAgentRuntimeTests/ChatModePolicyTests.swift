@@ -1,15 +1,4 @@
-// FloeAgentRuntimeTests — fast conversation (.chat) runtime integration.
-//
-// Pins the RUNTIME half of the chat contract after the chat ceiling lift:
-// an ordinary fast chat run offers and executes the SAME authorized
-// toolchain as an ordinary task — every tool the run's enabled integrations,
-// capability toggles, task policy, skills and provider ceilings already
-// allow — with the same progressive tools.search/tools.list discovery (no
-// pinned catalog on the wire); explicit per-run denials (allowedToolNames,
-// plan mode, the temporary read ceiling) keep denying exactly as before.
-// The brief conversational envelope, the verifyFinalAnswer skip and the
-// frozen reasoningPolicy are unchanged. The policy internals live in
-// FloeTools and are tested there.
+// Ordinary Chat, temporary sessions and agent execution boundaries.
 
 import Foundation
 import Testing
@@ -173,8 +162,8 @@ struct ChatModePolicyTests {
 
     // MARK: - Ordinary chat runs the full authorized toolchain
 
-    @Test("an ordinary chat executes every authorized tool, not a web/file subset")
-    func ordinaryChatExecutesAuthorizedCatalog() async throws {
+    @Test("chat allows public web and denies file writes, shell and device reads")
+    func chatRunsOnlyPermittedLookups() async throws {
         let executor = RecordingExecutor(descriptors: catalog())
         let adapter = MockAdapter()
         let shell = try TestFixtures.toolCall(
@@ -194,11 +183,8 @@ struct ChatModePolicyTests {
             allowedToolNames: Set(executor.allDescriptors.map(\.name)))
         try await runtime.start(goal: "chat: exec.shell workspace.writeFile")
 
-        for id in ["s-1", "w-1", "f-1", "c-1"] {
-            #expect(executor.entries.contains { $0.call.id == id }, Comment(rawValue: id))
-        }
-        // The chat run stays an ordinary boundary: a tool outside the run's
-        // explicit allowed set is still denied before any effect.
+        #expect(executor.entries.map(\.call.id) == ["f-1"])
+        #expect(executor.entries.first?.context.publicWebOnly == true)
         let adapter2 = MockAdapter()
         let outsider = try TestFixtures.toolCall(
             id: "o-1", toolName: "exec.shell", arguments: #"{"command":"id"}"#)
@@ -209,12 +195,12 @@ struct ChatModePolicyTests {
         try await narrowed.start(goal: "chat")
         #expect(!executor.entries.contains { $0.call.id == "o-1" })
         let denial = try #require(adapter2.requests[1].toolResults.first { $0.callID == "o-1" })
-        #expect(denial.output.contains("outside the active skill capability set"),
+        #expect(denial.output.contains("Chat cannot use this tool"),
                 Comment(rawValue: denial.output))
     }
 
-    @Test("chat discovery is progressive like a task: the wire is not the whole catalog")
-    func ordinaryChatDiscoveryIsProgressive() async throws {
+    @Test("chat denies general discovery and private tools")
+    func chatDeniesGeneralDiscovery() async throws {
         let executor = RecordingExecutor(descriptors: catalog())
         let adapter = MockAdapter()
         let search = try TestFixtures.toolCall(
@@ -231,25 +217,17 @@ struct ChatModePolicyTests {
             allowedToolNames: Set(executor.allDescriptors.map(\.name)))
         try await runtime.start(goal: "chat: exec.shell")
 
-        // First request: goal-matched schemas only. The old fast-chat pin put
-        // EVERY offered name on the wire; the lifted catalog must not.
-        let firstSchemas = Set(adapter.requests[0].toolSchemas.map(\.name))
-        #expect(firstSchemas.contains("exec.shell"))
-        #expect(!firstSchemas.contains("notes.read"),
-                "notes.read must stay deferred until discovered: \(firstSchemas)")
-        #expect(!firstSchemas.contains("delegate.collaborate"),
-                "child-only collaboration tools never reach the main-run wire")
-        // tools.search itself answered over the full authorized catalog.
-        let searchResult = try #require(adapter.requests[1].toolResults.first { $0.callID == "d-1" })
-        #expect(searchResult.output.contains("notes.read"))
-        // The discovered schema loads for the next request and executes.
-        let secondSchemas = Set(adapter.requests[1].toolSchemas.map(\.name))
-        #expect(secondSchemas.contains("notes.read"))
-        #expect(executor.entries.map(\.call.id) == ["n-1"])
+        for request in adapter.requests {
+            #expect(Set(request.toolSchemas.map(\.name)).isSubset(of: ConversationToolAccess.chatNames))
+            #expect(!request.allToolNames.contains("tools.search"))
+        }
+        #expect(executor.entries.isEmpty)
+        #expect(adapter.requests[1].toolResults.contains { $0.callID == "d-1" && $0.output.contains("Chat cannot") })
+
     }
 
-    @Test("a delegated child of an ordinary chat keeps the same authorized boundary")
-    func ordinaryChatChildDispatch() async throws {
+    @Test("an ordinary agent child keeps the parent authorization boundary")
+    func agentChildDispatch() async throws {
         let gate = ExecutionSuspensionGate()
         let executor = RecordingExecutor(
             descriptors: catalog(), gate: gate, gatedCallID: "hold")
@@ -259,7 +237,7 @@ struct ChatModePolicyTests {
         adapter.script = [[.toolRequest(hold)], completionEvents()]
         let runtime = makeRuntime(
             adapter: adapter, executor: executor,
-            allowedToolNames: Set(executor.allDescriptors.map(\.name)))
+            allowedToolNames: Set(executor.allDescriptors.map(\.name)), chatFastMode: false)
         let parentRun = Task {
             try await runtime.start(goal: "hold the chat open for delegation")
         }
@@ -336,7 +314,7 @@ struct ChatModePolicyTests {
         let runtime = makeRuntime(
             adapter: adapter, executor: executor,
             allowedToolNames: temporaryCeiling,
-            temporaryReadOnly: true)
+            chatFastMode: false, temporaryReadOnly: true)
         try await runtime.start(goal: "临时聊天：我现在在哪")
 
         // Approved calls dispatch through the concurrent task group, so the
@@ -381,7 +359,7 @@ struct ChatModePolicyTests {
         let runtime = makeRuntime(
             adapter: adapter, executor: executor,
             allowedToolNames: ["apple.calendar.list", "web.fetch"],
-            temporaryReadOnly: true)
+            chatFastMode: false, temporaryReadOnly: true)
         try await runtime.start(goal: "临时聊天：看下日历")
         #expect(executor.entries.isEmpty)
         let denial = try #require(adapter.requests[1].toolResults.first { $0.callID == "t-forged" })
@@ -477,8 +455,8 @@ struct ChatModePolicyTests {
 
     // MARK: - Fast-chat envelope
 
-    @Test("the ordinary fast envelope is conversational and states the full authorized toolchain")
-    func ordinaryFastEnvelopeIsFullToolchain() throws {
+    @Test("ordinary chat describes its actual lookup tools")
+    func chatEnvelopeMatchesLookupTools() throws {
         var paths = (1...12).map { "Attachments/att-\($0)/file\($0).txt" }
         let receipt = VoicePlaybackReceipt(
             runID: UUID(), status: .interrupted,
@@ -503,12 +481,12 @@ struct ChatModePolicyTests {
         #expect(fast.contains("conversation, not a task pipeline"))
         // The honest capability statement: the ordinary authorized toolset,
         // not the retired public-web/file-only ceiling.
-        #expect(fast.contains("the same enabled, permission-authorized toolset as an ordinary task"))
-        #expect(fast.contains("tools.search/tools.list"))
+        #expect(fast.contains("authorized workspace text reads"))
+        #expect(!fast.contains("tools.search/tools.list"))
         #expect(!fast.contains("Nothing else can run here"))
         // Location honesty: the clock/time zone never implies a place.
-        #expect(fast.contains("never infer a place from the time zone"))
-        #expect(fast.contains("current-location tool"))
+        #expect(fast.contains("time zone do not reveal"))
+        #expect(fast.contains("Ask for a location"))
         // The task-pipeline layers are absent.
         for absent in ["# Operating protocol", "# Capability routing",
                        "# Step settlement protocol", "# Delivering work",
@@ -534,12 +512,10 @@ struct ChatModePolicyTests {
             ConversationRunService.RunContext(), mode: .chat,
             toolsAvailable: true, chatFastMode: true, temporaryReadOnly: true)
         #expect(fast.contains("# Temporary conversation"))
-        #expect(fast.contains("basic on-device reads"))
-        #expect(fast.contains("calendar events"))
-        #expect(fast.contains("current location"))
-        #expect(fast.contains("using only permissions already granted"))
-        #expect(fast.contains("no writing, executing, installs"))
-        #expect(fast.contains("never infer a place from the time zone"))
+        #expect(fast.contains("offered public web"))
+        #expect(!fast.contains("on-device reads"))
+        #expect(fast.contains("durable memory are unavailable"))
+        #expect(fast.contains("time zone do not reveal"))
         #expect(!fast.contains("the same enabled, permission-authorized toolset as an ordinary task"))
 
         // Task-mode composition is byte-identical with the flags false, and

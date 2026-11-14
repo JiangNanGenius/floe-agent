@@ -528,6 +528,7 @@ public actor ToolResultCaptureStore {
     /// are UTF-8 byte offsets usable with `page`.
     public func search(
         conversationID: UUID,
+        runID: UUID? = nil,
         query: String,
         limit: Int = 10,
         maximumCaptures: Int = 32,
@@ -538,7 +539,7 @@ public actor ToolResultCaptureStore {
             return .search(.init(hits: [], searchedCaptures: 0, searchedBytes: 0, truncated: false))
         }
         loadDurableTaskIfNeeded(conversationID)
-        let ordered = (retained[conversationID] ?? []).sorted { $0.sequence > $1.sequence }
+        let ordered = (retained[conversationID] ?? []).filter { runID == nil || $0.capture.runID == runID }.sorted { $0.sequence > $1.sequence }
         var hits: [ToolResultCaptureRead.SearchHit] = []
         var scannedBytes = 0
         var scannedCaptures = 0

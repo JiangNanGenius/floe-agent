@@ -150,6 +150,19 @@ struct SkillManagementTests {
         #expect(row.resources?.reason == nil)
     }
 
+    @Test func instructionsOnlyReadSkipsResourcePreparation() async throws {
+        let fixture = ContextAwareSkillFixture()
+        var context = ToolContext(runID: UUID(), workspaceRootURL: URL(fileURLWithPath: "/tmp/ws"),
+                                  cancellation: CancellationToken(), environmentID: "env-local")
+        context.readsInstructionsOnly = true
+        let output = try await SkillReadTool(manager: fixture).execute(.init(id: "example"), context: context)
+        let rows = try JSONDecoder().decode([ManagedSkill].self, from: Data(output.summary.utf8))
+        #expect(rows.first?.markdown != nil)
+        #expect(rows.first?.resources == nil)
+        #expect(await fixture.contextReads == 0)
+        #expect(await fixture.legacyRunReads == 1)
+    }
+
     @Test func temporaryChatExactReadCarriesNoEnvironmentBinding() async throws {
         // Temporary chats are RAM-only: the exact read may not be bound to a
         // workspace, so the manager reports an honest unavailable status.

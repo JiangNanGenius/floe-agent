@@ -157,6 +157,7 @@ public struct ToolResultPagingTool: AgentTool {
         if let query = args.query?.trimmingCharacters(in: .whitespacesAndNewlines), !query.isEmpty {
             let read = await store.search(
                 conversationID: conversationID,
+                runID: context.readsCurrentRunResultsOnly ? context.runID : nil,
                 query: query,
                 limit: 10,
                 maximumCaptures: 32,
@@ -199,7 +200,7 @@ public struct ToolResultPagingTool: AgentTool {
         let explicitRef = args.ref?.trimmingCharacters(in: .whitespacesAndNewlines)
         let explicitCallID = args.callID?.trimmingCharacters(in: .whitespacesAndNewlines)
         guard (explicitRef?.isEmpty == false) || (explicitCallID?.isEmpty == false) else {
-            let index = await store.taskIndex(conversationID: conversationID, limit: 20)
+            let index = await store.taskIndex(conversationID: conversationID, runID: context.readsCurrentRunResultsOnly ? context.runID : nil, limit: 20)
             guard case .index(let rows, let evicted) = index else {
                 return Self.output("status=indexUnavailable", exitStatus: 66)
             }
@@ -239,7 +240,14 @@ public struct ToolResultPagingTool: AgentTool {
         let floor = args.length == nil ? 256 : 1
         let maxBytes = min(max(floor, requestedBytes), Self.maximumPageBytes)
         let read: ToolResultCaptureRead
-        if let ref = explicitRef, !ref.isEmpty {
+        if context.readsCurrentRunResultsOnly {
+            let ref = explicitRef ?? ToolResultCaptureStore.reference(runID: context.runID, callID: explicitCallID ?? "")
+            guard let capture = await store.retainedCapture(conversationID: conversationID, ref: ref),
+                  capture.runID == context.runID else {
+                return Self.output("status=missing reason=outside-current-run", exitStatus: 66)
+            }
+            read = await store.page(conversationID: conversationID, ref: ref, offset: offset, maxBytes: maxBytes)
+        } else if let ref = explicitRef, !ref.isEmpty {
             read = await store.page(
                 conversationID: conversationID,
                 ref: ref,

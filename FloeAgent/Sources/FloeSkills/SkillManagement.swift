@@ -180,7 +180,7 @@ public struct SkillSearchTool: AgentTool {
         var hubQueryMatches: [QueryMatch]?
         var catalogAvailability: SkillHubCatalogAvailability?
         var hubNextAction: String?
-        if let catalog {
+        if let catalog, !context.readsInstructionsOnly {
             let entries: [SkillHubCatalogEntry]
             do {
                 entries = Array(try await catalog.verifiedCatalogEntries(context: context)
@@ -283,10 +283,11 @@ public struct SkillReadTool: AgentTool {
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try validate(args); try context.cancellation.throwIfCancelled()
         if args.source == .hub {
+            guard !context.readsInstructionsOnly else { throw FloeError.unauthorized }
             return try await executeHubRead(args, context: context)
         }
         var rows: [ManagedSkill]
-        if let id = args.id {
+        if let id = args.id, !context.readsInstructionsOnly {
             // Exact reads carry the run's frozen local-execution binding so the
             // manager can prepare the task-owned resource cache. A temporary
             // (RAM-only) chat carries NO binding: the manager reports an honest

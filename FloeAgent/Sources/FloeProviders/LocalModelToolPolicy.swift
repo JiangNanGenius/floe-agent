@@ -76,9 +76,7 @@ public enum LocalModelToolPolicy {
     /// never spends its tight schema budget on a CAD schema. It does not
     /// change what the run is authorized to call.
     public static func pinnedToolNames(for text: String) -> Set<String> {
-        var names = pinnedToolNames
-        if requestsCadWork(text) { names.insert(cadToolName) }
-        return names
+        Set(pinnedAdmissionOrder(for: text))
     }
 
     /// File lookup admission order within the pinned set (read chain first).
@@ -111,13 +109,17 @@ public enum LocalModelToolPolicy {
         let liveWebIntent = requestsLiveWeb(text)
         // Explicit CAD/3D/modeling turns lead with the CAD schema; the
         // remaining order keeps the existing file-vs-web priority unchanged.
-        let base: [String]
-        if fileIntent && !liveWebIntent {
-            base = fileFirstAdmissionOrder
-        } else {
-            base = webFirstAdmissionOrder
+        var order: [String] = []
+        if requestsCadWork(text) { order.append(cadToolName) }
+        if requestsDirectFetch(text) { order.append("web.fetch") }
+        if liveWebIntent || (!fileIntent && requestsGenericSearch(text)) { order.append(webSearchToolName) }
+        if fileIntent { order.append(contentsOf: fileLookupAdmissionOrder) }
+        if ["记住", "記住", "以后默认", "以後預設", "今后默认", "from now on", "remember that", "remember my"].contains(where: text.contains) {
+            order += ["memory.search", "memory.remember", "memory.update"]
+        } else if ["忘记", "忘記", "forget my", "forget that"].contains(where: text.contains) {
+            order += ["memory.search", "memory.forget"]
         }
-        return requestsCadWork(text) ? [cadToolName] + base : base
+        return order
     }
 
     /// Terms that name a **live web** target (excludes the generic words
@@ -164,6 +166,7 @@ public enum LocalModelToolPolicy {
     /// True when `text` names a local file target.
     public static func requestsFileLookup(_ text: String) -> Bool {
         fileLookupIntentTerms.contains { text.contains($0) }
+            || (!requestsDirectFetch(text) && [".txt", ".md", ".json", ".csv", ".swift"].contains(where: text.contains))
     }
 
     /// Terms that explicitly name CAD/3D/modeling work rather than generic

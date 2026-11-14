@@ -34,7 +34,7 @@ nonisolated struct GlobalMemorySearchTool: AgentTool {
         else { workspaceID = nil }
         let target = GlobalSourceSearchContext(workspaceID: workspaceID,
             conversationID: conversationID, limit: args.limit ?? 10)
-        async let sources = service.search(args.query, context: target)
+        async let sources: [GlobalSourceHit] = context.recallsDurableMemoryOnly ? [] : service.search(args.query, context: target)
         async let memories = service.recallMemories(args.query, context: target)
         struct Output: Encodable { var untrusted = true; var sources: [GlobalSourceHit]; var memories: [HybridMemoryRecallItem] }
         let recalled = try await memories

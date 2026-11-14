@@ -94,14 +94,20 @@ struct LocalModelToolPolicyTests {
         }
     }
 
+    @Test func localPreferenceAndKnownPathCanBeHandledWithoutDiscovery() {
+        #expect(LocalModelToolPolicy.pinnedAdmissionOrder(for: "以后默认用繁体") == ["memory.search", "memory.remember", "memory.update"])
+        #expect(LocalModelToolPolicy.pinnedAdmissionOrder(for: "read notes/today.md").first == "workspace.readFile")
+        #expect(LocalModelToolPolicy.pinnedAdmissionOrder(for: "hello").isEmpty)
+    }
+
     @Test("Generic file and web priorities are unchanged")
     func genericPrioritiesPreserved() {
         let file = LocalModelToolPolicy.pinnedAdmissionOrder(for: "读取工作区的文件")
         #expect(file.first == "workspace.readFile")
-        #expect(file.contains("web.search"))
+        #expect(!file.contains("web.search"))
         let web = LocalModelToolPolicy.pinnedAdmissionOrder(for: "搜索今天的新闻")
         #expect(web.first == "web.search")
-        #expect(web.contains("workspace.readFile"))
+        #expect(!web.contains("workspace.readFile"))
 
         // A CAD turn leads with CAD but keeps the rest of the existing order.
         let cadFile = LocalModelToolPolicy.pinnedAdmissionOrder(for: "读取 cad 图纸文件")

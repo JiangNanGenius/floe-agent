@@ -73,6 +73,19 @@ struct LocalBaseToolSchemaTests {
         )
     }
 
+    @Test("An exact lookup survives admission even when the latest message has no matching keywords")
+    @available(macOS 15.4, *)
+    func exactLookupSurvivesLocalAdmission() {
+        var request = Self.request(userText: "Continue")
+        let tool = ToolSchemaDescriptor(name: "thirdparty.analyze", description: "Inspect a value.",
+            parametersJSON: #"{"type":"object","properties":{"value":{"type":"integer"}}}"#)
+        request.toolSchemas.append(tool)
+        request.exactLocalToolNames = [tool.name]
+        let build = LocalProviderAdapter.buildPrompt(for: request)
+        #expect(build.selectedTools.contains(tool))
+        #expect(!build.systemInstructions.contains("AVAILABLE TOOL NAMES (authoritative):"))
+    }
+
     /// The exact Build 235 failure: an explicit news-search request must
     /// already see web.search (first in admission), with no tools.list call,
     /// and never the Linux preparation capability.
@@ -87,9 +100,7 @@ struct LocalBaseToolSchemaTests {
         #expect(selectedNames.contains("web.search"), "web.search must be offered on the first run")
         // The intended forced tool is the scored primary repair tool.
         #expect(build.primaryRepairTool?.name == "web.search")
-        for name in LocalModelToolPolicy.pinnedToolNames {
-            #expect(selectedNames.contains(name), "\(name) belongs to the pinned base set")
-        }
+        #expect(!selectedNames.contains("workspace.inspectFileMetadata"))
         // Hidden complex tools never enter via the base set.
         #expect(!selectedNames.contains("environment.prepareLinux"))
         // Complete schemas travel, not just names.

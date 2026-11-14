@@ -338,6 +338,8 @@ public struct ProviderStreamRequest: Sendable {
     /// be total over this set, not just over the budget-trimmed schemas,
     /// because the runtime legitimately invites calls to evicted tools.
     public var allToolNames: [String]
+    /// Local prompt admission hint for an exact lookup in the preceding tool batch.
+    public var exactLocalToolNames: [String] = []
     public var reasoningPolicy: ProviderReasoningPolicy
     /// Transient liveness only. Partial arguments are never dispatched,
     /// persisted as a tool call, or exposed as model text.

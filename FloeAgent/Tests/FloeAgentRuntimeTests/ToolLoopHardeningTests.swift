@@ -2031,7 +2031,7 @@ struct ToolLoopHardeningTests {
         #expect(first.content.contains("Execution target: local"))
         #expect(first.content.contains("Current local date and time at run start:"))
         #expect(first.content.contains("Current time zone:"))
-        #expect(first.content.contains("Installed tool groups:"))
+        #expect(first.content.contains("Use offered definitions directly."))
         #expect(first.content.contains("tools.search"))
         // The user goal follows the system message.
         #expect(request.messages.count == 2)

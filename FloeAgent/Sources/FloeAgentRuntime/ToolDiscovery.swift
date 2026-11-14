@@ -330,8 +330,12 @@ enum ToolDiscovery {
         let summary = groups.keys.sorted().map { "\($0) (\(groups[$0]!.count))" }.joined(separator: ", ")
         let list = wireSpelling(listName, wireSafe: wireSafeNames)
         let search = wireSpelling(name, wireSafe: wireSafeNames)
+        let names = Set(visible.map(\.name))
+        let progress = names.isSuperset(of: ["checklist.readPlan", "checklist.updatePlan"])
+            ? " For multi-step work, track progress with \(wireSpelling("checklist.updatePlan", wireSafe: wireSafeNames))."
+            : ""
         return "Available tool groups (metadata only): " + (summary.isEmpty ? "none" : summary)
-            + ". Use \(list) for the complete authorized inventory and \(search) to request exact definitions. Schema activation is budgeted; permissions still apply."
+            + ". Use \(list) for the complete authorized inventory and \(search) to request exact definitions. Schema activation is budgeted; permissions still apply." + progress
     }
 
     static func index(_ descriptors: [ToolCatalog.Descriptor], wireSafeNames: Bool = false) -> String {

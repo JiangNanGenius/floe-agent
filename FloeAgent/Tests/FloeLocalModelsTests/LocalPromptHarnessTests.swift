@@ -79,10 +79,8 @@ struct LocalPromptHarnessTests {
             #expect(local.systemInstructions.contains("Prior result: revision seven"))
             #expect(local.systemInstructions.contains("Current runtime time:"))
             #expect(local.systemInstructions.contains("Runtime clock at dispatch:"))
-            // Discovery/paging metadata helpers are admissible in fallback
-            // mode so weak models can find names and page retained results;
-            // the authoritative directory is exactly this run's supplied set.
-            #expect(local.systemInstructions.contains("AVAILABLE TOOL NAMES (authoritative): tools.list, tools.readResult, tools.search, workspace.readFile"))
+            #expect(!local.systemInstructions.contains("AVAILABLE TOOL NAMES (authoritative):"))
+            #expect(local.selectedTools.contains { $0.name == "workspace.readFile" })
             #expect(local.text.contains(user))
             #expect(!local.text.contains("Prior result: revision seven"))
             if let path = ProcessInfo.processInfo.environment["FLOE_SYNTHETIC_LOCAL_PROMPT_AUDIT_DIR"] {
@@ -432,7 +430,8 @@ struct LocalPromptPressureTests {
         // The current request is protected: CJK clipping must never cut the
         // correction the user just typed.
         #expect(local.text.contains(current))
-        #expect(local.selectedTools.contains { $0.name == "web.search" })
+        #expect(local.selectedTools.contains { $0.name == "conversation.search" })
+        #expect(!local.selectedTools.contains { $0.name == "web.search" })
     }
 
     @Test("An oversized current request is refused before any model allocation")
