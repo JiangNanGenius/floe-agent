@@ -18,9 +18,17 @@ public actor RuntimeV2BlobStore {
     /// in tests on volumes where clonefile cannot be exercised directly.
     public struct Seams: Sendable {
         public var cloneFile: @Sendable (String, String) -> Bool
+        public var availableBytes: @Sendable (URL) throws -> Int64?
 
-        public init(cloneFile: @escaping @Sendable (String, String) -> Bool) {
+        public init(
+            cloneFile: @escaping @Sendable (String, String) -> Bool,
+            availableBytes: @escaping @Sendable (URL) throws -> Int64? = { directory in
+                try directory.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+                    .volumeAvailableCapacityForImportantUsage
+            }
+        ) {
             self.cloneFile = cloneFile
+            self.availableBytes = availableBytes
         }
 
         public static let production = Seams(cloneFile: { source, destination in
@@ -156,14 +164,8 @@ public actor RuntimeV2BlobStore {
         restoreBlobFromQuarantine(digest: normalized, canonical: canonical)
         if fileManager.fileExists(atPath: canonical.path) { return }
         // No quarantine copy: re-place from the caller's own verified source.
-        try fileManager.createDirectory(at: canonical.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try fileManager.copyItem(at: sourceURL, to: canonical)
-        let actual = try FloeDigest.sha512Hex(ofFileAt: canonical)
-        guard actual == normalized else {
-            try? fileManager.removeItem(at: canonical)
-            throw RuntimeV2Error.blobDigestMismatch(expected: normalized, actual: actual)
-        }
-        try fileManager.setAttributes([.posixPermissions: 0o444], ofItemAtPath: canonical.path)
+        let bytes = try sourceURL.resourceValues(forKeys: [.fileSizeKey]).fileSize
+        _ = try await place(sourceURL: sourceURL, expectedSHA512: normalized, expectedBytes: Int64(bytes ?? -1))
     }
 
     /// Restores a reclaimed blob's bytes from the deterministic quarantine
@@ -215,8 +217,7 @@ public actor RuntimeV2BlobStore {
             try? fileManager.moveItem(at: destination, to: quarantine)
         }
 
-        try requireFreeSpace(bytes: expectedBytes * 2 + (32 << 20))
-        try fileManager.copyItem(at: sourceURL, to: staged)
+        _ = try copyArtifact(from: sourceURL, to: staged)
         let stagedSize = (try fileManager.attributesOfItem(atPath: staged.path)[.size] as? Int64) ?? -1
         guard stagedSize == expectedBytes else {
             throw RuntimeV2Error.blobDigestMismatch(
@@ -386,13 +387,7 @@ public actor RuntimeV2BlobStore {
         if fileManager.fileExists(atPath: destination.path) {
             try fileManager.removeItem(at: destination)
         }
-        let mode: MaterializeReport.Mode
-        if seams.cloneFile(blob.path, destination.path) {
-            mode = .clone
-        } else {
-            try fileManager.copyItem(at: blob, to: destination)
-            mode = .copy
-        }
+        let mode = try copyArtifact(from: blob, to: destination)
         try fileManager.setAttributes(
             [.posixPermissions: writable ? 0o644 : 0o444],
             ofItemAtPath: destination.path
@@ -449,11 +444,45 @@ public actor RuntimeV2BlobStore {
         return reclaimed
     }
 
-    private func requireFreeSpace(bytes: Int64) throws {
-        let values = try layout.root.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
-        let available = values.volumeAvailableCapacityForImportantUsage ?? Int64.max
-        guard available >= bytes else {
-            throw RuntimeV2Error.insufficientSpace(required: bytes, available: available)
+    /// The source already exists and promotion of the staged file is a rename.
+    /// Charge only the additional allocation of the copy method that runs.
+    private func copyArtifact(from source: URL, to destination: URL) throws -> MaterializeReport.Mode {
+        var info = stat()
+        guard lstat(source.path, &info) == 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+        guard (info.st_mode & S_IFMT) == S_IFREG else {
+            throw RuntimeV2Error.layoutCorrupt("the image artifact is not a regular file")
+        }
+        let directory = destination.deletingLastPathComponent()
+        try requireFreeSpace(forAdditionalBytes: 0, in: directory)
+        if seams.cloneFile(source.path, destination.path) { return .clone }
+
+        let logical = Int64(info.st_size)
+        #if canImport(Darwin)
+        let allocated = Int64(info.st_blocks).multipliedReportingOverflow(by: 512)
+        if !allocated.overflow, allocated.partialValue >= 0, allocated.partialValue < logical {
+            try requireFreeSpace(forAdditionalBytes: allocated.partialValue, in: directory)
+            // Excluding COPYFILE_DATA prevents a silent dense fallback under a sparse budget.
+            let flags = copyfile_flags_t(COPYFILE_DATA_SPARSE | COPYFILE_EXCL | COPYFILE_NOFOLLOW)
+            if copyfile(source.path, destination.path, nil, flags) == 0 { return .copy }
+            let failure = errno
+            if failure != EEXIST { try? fileManager.removeItem(at: destination) }
+            guard failure == ENOTSUP || failure == EOPNOTSUPP || failure == EINVAL else {
+                throw NSError(domain: NSPOSIXErrorDomain, code: Int(failure))
+            }
+        }
+        #endif
+        try requireFreeSpace(forAdditionalBytes: logical, in: directory)
+        try fileManager.copyItem(at: source, to: destination)
+        return .copy
+    }
+
+    private func requireFreeSpace(forAdditionalBytes bytes: Int64, in directory: URL) throws {
+        let sum = bytes.addingReportingOverflow(32 << 20)
+        let required = sum.overflow ? Int64.max : sum.partialValue
+        if let available = try seams.availableBytes(directory), available < required {
+            throw RuntimeV2Error.insufficientSpace(required: required, available: available)
         }
     }
 }
