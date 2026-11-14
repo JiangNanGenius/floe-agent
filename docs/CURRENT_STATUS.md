@@ -3,7 +3,17 @@
 
 这是带核实日期的渠道快照。各渠道独立更新；源码版本、公开下载、Apple 审核与测试组可用性分别核对。 / This is a dated channel snapshot. Source versions, public downloads, Apple review and beta-group availability are separate states.
 
-版本选择请先读[唯一版本依据](RELEASE_VERSION_AUTHORITY.zh-CN.md)：**最近核验交付为1.8.24（345），内部TestFlight可安装，GitHub／Feather严格实际读回通过。** 冻结源 `663b1f8b78556c82d1112f01ef50d1d0c2105a34`／`v1.8.24`，详见[345交付记录](releases/builds/FLOE_1.8.24_BUILD345_DELIVERY.md)。M4已实际安装，原13盘及资料保留；尚无新的345整理结果，容量未结项。 / **Latest verified delivery: 1.8.24 (345), internally installable, with actual GitHub/Feather readback passed. Installed on M4; all 13 recovery disks remain. No fresh345 optimization result or storage-reclamation acceptance is available.**
+版本选择请先读[唯一版本依据](RELEASE_VERSION_AUTHORITY.zh-CN.md)：**最近核验交付为1.8.25（346），内部TestFlight可安装，GitHub／Feather严格实际读回通过。** 冻结源 `0a6dc46b9f5cbe78e02e1730be9b342a5557f879`／`v1.8.25`，见[346交付记录](releases/builds/FLOE_1.8.25_BUILD346_DELIVERY.md)。本版未使用真机，容量整理等设备验收保留。 / **Latest verified delivery: 1.8.25 (346), internally installable, with strict actual GitHub/Feather readback passed. No physical device was used; storage recovery and other device checks remain unaccepted.**
+
+## 2026-11-14 iOS 1.8.25（346）渠道核对 / iOS delivery snapshot
+
+| 渠道 / Channel | 已核实结果 / Observed result |
+| --- | --- |
+| 内部TestFlight / Internal TestFlight | [签名及内部分发](https://github.com/JiangNanGenius/floe-agent/actions/runs/43575682995)成功；另经独立Apple GET确认VALID／未过期／Floe QA IN_BETA_TESTING。 / Signing/upload succeeded; independent GET confirmed internal availability. |
+| GitHub／Feather | [v1.8.25 stable/latest](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.8.25)的实际unsigned IPA及在线源严格匹配；[正常发布与awaited Feather](https://github.com/JiangNanGenius/floe-agent/actions/runs/43577549220)通过。 / Actual unsigned IPA and live feed verified; your own signing is required. |
+| 公开TestFlight／正式App Store / Public TestFlight and App Store | 本轮均未提交。 / Neither submitted this round. |
+
+本机正式归档925.43秒和严格封包通过，App与全部19份符号已保存；14项字体App方法和78项工具策略宿主方法复用既有通过证据。手动字体页面、换机容量整理、真实Linux客户机清理及跨设备Keychain仍待验，不计历史回收为本版收益。 / The full local archive/package passed; the App and all 19 symbol bundles were retained. Existing 14 font App tests and 78 tool-policy host tests were reused. Manual font UI, physical storage recovery, real guest cleanup and cross-device Keychain arrival remain unverified.
 
 ## 2026-11-14 iOS 1.8.24（345）渠道与设备核对 / iOS delivery and device snapshot
 
