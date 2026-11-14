@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 package com.floe.android.host.deviceaccess
 
+import com.floe.android.phonecontrol.PhoneControlOwner
 import com.floe.android.swiftbridge.PlatformToolsNative
 import java.security.MessageDigest
 import java.util.UUID
@@ -449,6 +450,18 @@ internal class PlatformToolHostPump(
         val current = session ?: return
         publishAvailabilityNow(current)
         current.inFlight.get()?.let { call -> runCatching { onCancelBackend(call) } }
+    }
+
+    /**
+     * Cancel only the in-flight platform work owned by [owner]. A Stop of one
+     * actual task must not abort a different live task's claimed call.
+     */
+    fun cancelInFlight(owner: PhoneControlOwner) {
+        val current = session ?: return
+        val call = current.inFlight.get() ?: return
+        if (call.taskID == owner.taskID && call.runID == owner.runID) {
+            runCatching { onCancelBackend(call) }
+        }
     }
 
     /**

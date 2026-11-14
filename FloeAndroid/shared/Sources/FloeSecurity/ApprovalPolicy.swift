@@ -353,11 +353,11 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
         if Self.isDeterministicallyExempt(action) {
             return .allow(scope: Self.scope(for: action.toolCall), expiresAt: nil)
         }
-        if let trustedAutomaticGrant, trustedAutomaticGrant(action) {
-            return .allow(
-                scope: Self.scope(for: action.toolCall),
-                expiresAt: Date().addingTimeInterval(Self.trustedAutomaticGrantTTL))
-        }
+        // A software-install request ALWAYS reaches its dedicated reviewer
+        // before any trusted automatic grant. The production grant's closed
+        // vocabulary never includes an installer, so this changes no current
+        // decision; it makes the "no grant bypass" invariant structural
+        // rather than dependent on that vocabulary staying closed.
         if action.isSoftwareInstallRequest {
             guard let packageReviewBackend else {
                 return .escalateToHuman(reason: "No software package review model is configured")
@@ -366,6 +366,11 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
             catch {
                 return .escalateToHuman(reason: "Software package review failed: \(error.localizedDescription)")
             }
+        }
+        if let trustedAutomaticGrant, trustedAutomaticGrant(action) {
+            return .allow(
+                scope: Self.scope(for: action.toolCall),
+                expiresAt: Date().addingTimeInterval(Self.trustedAutomaticGrantTTL))
         }
 
         if let backend {
@@ -391,8 +396,8 @@ public struct AutomaticApprovalPolicy: ApprovalPolicy, ApprovalReviewRouting {
     public func requiresModelReview(_ action: ProposedAction) -> Bool {
         if Self.isRemoteWorkspaceMutation(action) { return true }
         if Self.isDeterministicallyExempt(action) { return false }
-        if let trustedAutomaticGrant, trustedAutomaticGrant(action) { return false }
         if action.isSoftwareInstallRequest { return packageReviewBackend != nil }
+        if let trustedAutomaticGrant, trustedAutomaticGrant(action) { return false }
         return backend != nil
     }
 
@@ -765,8 +770,17 @@ extension ProposedAction {
 
     /// True when the call asks to acquire, remove or fetch software through a
     /// reviewed installer path: managed pure-Python packages (exec.localPython),
-    /// the apt capability catalog, or exec.shell with an inline package list.
-    /// These always route to the package-review backend.
+    /// the apt capability catalog, exec.shell with an inline package list or
+    /// installer command, or an exact admitted `jobs.submit` wrapper around
+    /// `exec.shell` that declares the same work. These always route to the
+    /// package-review backend.
+    ///
+    /// The background wrapper inspection is bounded and fail-closed: only the
+    /// published schema string shape for exactly `jobs.submit` → `exec.shell`
+    /// is read (one level, no service mode, no unknown outer keys). A
+    /// malformed/unknown/multilevel wrapper stays on the ordinary policy; it
+    /// never reaches the package reviewer under a false declaration and never
+    /// inherits a broader allow.
     var isSoftwareInstallRequest: Bool {
         if toolCall.toolName == "exec.localPython" {
             guard let object = argumentObject else { return false }
@@ -781,12 +795,13 @@ extension ProposedAction {
         }
         if toolCall.toolName == "exec.shell" {
             guard let object = argumentObject else { return false }
-            if let packages = object["packages"] as? [Any], !packages.isEmpty { return true }
-            if let command = object["command"] as? String,
-               command.range(of: #"(?i)(^|[\s;&|])(apt|apt-get|pkg|pip3?|python3?\s+-m\s+pip)\s+(install|remove|uninstall|upgrade)"#, options: .regularExpression) != nil {
-                return true
-            }
-            return false
+            return SoftwarePackageRequest.shellDeclaresPackageOperation(in: object)
+        }
+        if toolCall.toolName == "jobs.submit" {
+            guard case .local = toolCall.scope else { return false }
+            return SoftwarePackageRequest.backgroundExecShellDeclaration(
+                argumentsJSON: toolCall.argumentsJSON
+            )?.declaresSoftwareInstall == true
         }
         return false
     }

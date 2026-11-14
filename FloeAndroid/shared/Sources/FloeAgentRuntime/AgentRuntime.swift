@@ -471,8 +471,11 @@ public actor FloeAgentRuntime {
         /// PRoot guest for `exec.shell` (the app resolved a `.localLinux`
         /// target; an SSH target, no target, temporary/Notes run and any
         /// native backend are false). This is a narrow, app-resolved route
-        /// fact used by the optional-cleanup corrective path only. It does
-        /// NOT assert guest ownership/disposability and does NOT enable the
+        /// fact used by the optional-cleanup corrective path and by the
+        /// trusted package-review environment class for a real direct
+        /// `exec.shell` or an exact admitted `jobs.submit`→`exec.shell`
+        /// wrapper. It does NOT assert guest ownership/disposability, is NOT
+        /// a `.linuxVM` environment record, and does NOT enable the
         /// deterministic local-guest allow carve-outs (that remains the
         /// separate `localLinuxGuestEnvironment` contract). Never set from
         /// model arguments, environment labels or tool text.
@@ -2893,7 +2896,16 @@ public actor FloeAgentRuntime {
                 // records stay resumable without advertising the old names.
                 canonicalCall.toolName = DeviceToolNames.canonical(
                     ToolAliasTable.canonical(call.toolName))
-                let normalized = try await toolCallNormalizer?(canonicalCall) ?? canonicalCall
+                // One narrow shape normalization at the canonical ingress,
+                // BEFORE approval/checkpoint/persistence/provider replay: an
+                // exact jobs.submit→exec.shell wrapper whose nested
+                // `arguments` was emitted as a JSON object becomes the
+                // schema's JSON string form. The schema string form is
+                // byte-identical; every other tool/shape is untouched and
+                // still refused by the tool's strict decoder. Approved and
+                // dispatched payload identity therefore stays the same.
+                let shapeNormalized = try SoftwarePackageRequest.normalizedJobSubmitCall(canonicalCall)
+                let normalized = try await toolCallNormalizer?(shapeNormalized) ?? shapeNormalized
                 pendingToolBatch.append(normalized.withIDContext(runID: runID))
             } catch {
                 pendingToolBatch.removeAll(keepingCapacity: true)
@@ -3245,7 +3257,10 @@ public actor FloeAgentRuntime {
     ///   unresolved (workspace wildcard) and recorded as such, so a carve-out
     ///   can never pretend an unresolved batch/redirect target was resolved;
     /// - the environment class comes from the app-resolved guest binding for
-    ///   the frozen `environmentID`; a host-scoped call is remote regardless.
+    ///   the frozen `environmentID`, with the separate app-resolved PRoot
+    ///   shell route reported for a real direct `exec.shell` or an exact
+    ///   admitted `jobs.submit`→`exec.shell` wrapper; a host-scoped call is
+    ///   remote regardless.
     private static func trustedExecutionContext(
         call: ToolCall,
         descriptor: ToolCatalog.Descriptor,
@@ -3269,12 +3284,19 @@ public actor FloeAgentRuntime {
             .resolvingSymlinksInPath()
             .standardizedFileURL
             .path
-        let environmentClass: ApprovalEnvironmentClass = {
-            if case .local = call.scope {
-                return configuration.localLinuxGuestEnvironment ? .localLinuxVM : .localNative
-            }
-            return .remote
-        }()
+        // Runtime-owned route fact. A local `.linuxVM` guest keeps its
+        // ORIGINAL class and deterministic carve-outs. The separate
+        // app-resolved PRoot shell route is reported only for a real shell
+        // command that consumes that route (direct exec.shell or the exact
+        // bounded jobs.submit→exec.shell wrapper); native, remote and
+        // unresolved calls keep their existing class. The PRoot class does
+        // NOT satisfy the deterministic local-guest carve-outs.
+        let environmentClass = SoftwarePackageRequest.trustedEnvironmentClass(
+            for: call,
+            localLinuxGuestEnvironment: configuration.localLinuxGuestEnvironment,
+            localLinuxShellTarget: configuration.localLinuxShellTarget,
+            environmentID: configuration.environmentID
+        )
         return TrustedExecutionContext(
             environmentClass: environmentClass,
             mutableTargetPaths: mutableTargets,
@@ -3845,6 +3867,13 @@ public actor FloeAgentRuntime {
         // a model field such as `confirmed: true` can never produce one.
         // Effectful tools consume it at their own boundary; the model cannot
         // mint or replay it.
+        // Mint the authority over the EXACT approved call bytes. The canonical
+        // main/child ingress already normalized the one supported wrapper
+        // shape BEFORE approval, so the reviewed bytes ARE these bytes. There
+        // is deliberately no dispatch-time re-normalization: a restored/edge
+        // call that somehow bypassed the canonical ingress must bind (and
+        // then fail against the consumer's strict schema) rather than have its
+        // authority digest silently changed after review.
         let runtimeAuthority: RuntimeTaskAuthority? = descriptor.isSideEffecting
             ? await runtimeAuthorities.issue(RuntimeAuthorityEvidence(
                 runID: runID,
@@ -4084,10 +4113,11 @@ public actor FloeAgentRuntime {
     /// executor under a canonical mutation lease. `identity` is runtime-issued
     /// for this run, so a cross-run or forged identity is refused.
     public func dispatchChildTool(
-        _ call: ToolCall,
+        _ rawCall: ToolCall,
         identity: ChildExecutionIdentity,
         childContext: ToolContext
     ) async -> ToolResult {
+        var call = rawCall
         guard identity.parentRunID == runID else {
             return await childDenied(
                 call,
@@ -4100,6 +4130,20 @@ public actor FloeAgentRuntime {
                 call,
                 reason: "Nested delegation is not permitted: a delegated subagent cannot create another subagent.",
                 decision: "deny:child-nested"
+            )
+        }
+        // Same canonical ingress normalization as the main run: the child's
+        // exact jobs.submit→exec.shell object shape becomes the schema string
+        // before approval and execution. Unsupported shapes stay unchanged
+        // and are refused by the tool's strict decoder.
+        do {
+            call = try SoftwarePackageRequest.normalizedJobSubmitCall(call)
+        } catch {
+            return ToolResult(
+                callID: call.id,
+                status: .failed,
+                outputSummary: error.localizedDescription,
+                outputDigest: ""
             )
         }
         guard let descriptor = executor.descriptor(named: call.toolName) else {

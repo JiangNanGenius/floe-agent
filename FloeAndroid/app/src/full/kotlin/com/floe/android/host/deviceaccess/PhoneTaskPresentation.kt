@@ -26,6 +26,8 @@ import java.util.UUID
  *  - A user stop does not suppress a DIFFERENT fresh run; it only marks the
  *    exact stopped owner as STOPPED. That retained stopped row is display
  *    only: it never receives a fresh grant (Continue creates a new live run).
+ *    Callers must therefore pass the CANDIDATE's own stopped state, never a
+ *    host-wide boolean or another owner's retained stop.
  *  - No live run and no retained stopped/armed owner means no card. A recent
  *    owner whose run already ended is never resurrected as a live task.
  *
@@ -116,7 +118,9 @@ internal object PhoneTaskPresentation {
      * Resolve the only owner an explicit user arm may target.
      *
      * An arm is a grant for a CURRENTLY LIVE run, never a way to restore a
-     * grant to a cancelled/dead owner. After a user stop the retained task
+     * grant to a cancelled/dead owner. The host passes this candidate's own
+     * stopped owner/settled state, so another owner's stop cannot refuse it.
+     * After a user stop the retained task
      * only DISPLAYS its stopped state; the user must Continue, which resumes
      * the run as a new live incarnation, and then arm that live candidate.
      *
