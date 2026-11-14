@@ -1093,20 +1093,87 @@ public actor RuntimeV2RecoveryOptimizationAdapter {
         ]
         return allowed.contains(detail) ? detail : "source-preserving-abort-unverified"
     }
-    static func diagnosticCodes(_ error: Error) -> [String] {
-        if case RuntimeV2MaintenanceError.claimInvalidated(let reason) = error,
-           reason == "the environment reference projection changed" {
+    /// Persist only fixed diagnostic tokens. Never carry an NSError description,
+    /// target path, owner label or a caller-controlled maintenance reason into
+    /// the App's saved optimization receipt.
+    public static func diagnosticCodes(_ error: Error) -> [String] {
+        guard let authority = error as? RuntimeV2MaintenanceError else { return [] }
+        switch authority {
+        case .claimInvalidated(let reason) where reason == "the environment reference projection changed":
             return ["reference-projection-changed"]
+        case .invalidDomain(let reason):
+            switch reason {
+            case "native history layout differs from the coordinator": return ["maintenance-domain-layout-mismatch"]
+            case "the trusted legacy root does not exist": return ["maintenance-domain-root-missing"]
+            case "the trusted root is not a directory": return ["maintenance-domain-root-not-directory"]
+            default: return ["maintenance-domain-unavailable"]
+            }
+        case .invalidRequest:
+            return ["maintenance-request-invalid"]
+        case .invalidTarget(let reason):
+            switch reason {
+            case "the target escapes the trusted domain through a symlink": return ["maintenance-target-symlink"]
+            case "the target is not a regular file": return ["maintenance-target-not-regular"]
+            case "the path is empty, absolute or too long": return ["maintenance-target-path-invalid"]
+            case "only a relative path under recovery/ is allowed": return ["maintenance-target-scope-invalid"]
+            default: return ["maintenance-target-invalid"]
+            }
+        case .targetMissing(let reason):
+            switch reason {
+            case "the target does not exist": return ["maintenance-target-absent"]
+            case "stat failed": return ["maintenance-target-stat-failed"]
+            default: return ["maintenance-target-missing"]
+            }
+        case .targetIdentityMismatch(let reason):
+            switch reason {
+            case "preflight identity does not match the target": return ["maintenance-target-preflight-mismatch"]
+            case "the target changed during preflight": return ["maintenance-target-changed-during-preflight"]
+            default: return ["maintenance-target-identity-unverified"]
+            }
+        case .claimNotCommitEligible:
+            return ["maintenance-claim-not-committable"]
+        case .claimAlreadyCommitted:
+            return ["maintenance-claim-already-committed"]
+        case .intentPersistenceFailed(let stage, let posixErrno):
+            let stageCode: String
+            switch stage {
+            case "unprotected native history context": stageCode = "maintenance-intent-context"
+            case "encoding": stageCode = "maintenance-intent-encoding"
+            case "record exceeds the bound": stageCode = "maintenance-intent-size"
+            case "temporary open": stageCode = "maintenance-intent-temporary-open"
+            case "write": stageCode = "maintenance-intent-write"
+            case "file fsync": stageCode = "maintenance-intent-file-sync"
+            case "rename": stageCode = "maintenance-intent-rename"
+            case "directory open": stageCode = "maintenance-intent-directory-open"
+            case "directory fsync": stageCode = "maintenance-intent-directory-sync"
+            default: stageCode = "maintenance-intent-other"
+            }
+            guard let posixErrno else { return [stageCode] }
+            let errnoCode: String
+            switch posixErrno {
+            case ENOSPC, EDQUOT: errnoCode = "maintenance-errno-space"
+            case EACCES, EPERM: errnoCode = "maintenance-errno-permission"
+            case EROFS: errnoCode = "maintenance-errno-readonly"
+            case ENOENT: errnoCode = "maintenance-errno-missing"
+            case EIO: errnoCode = "maintenance-errno-io"
+            case EEXIST: errnoCode = "maintenance-errno-exists"
+            case EBUSY: errnoCode = "maintenance-errno-busy"
+            case EMFILE, ENFILE: errnoCode = "maintenance-errno-fd-limit"
+            default: errnoCode = "maintenance-errno-other"
+            }
+            return [stageCode, errnoCode]
+        case .ownerEvidenceIncomplete(let codes):
+            return Array(Set(codes.compactMap { value -> String? in
+                // Remove attributed ids. The App admits only its fixed
+                // vocabulary, never this untrusted raw suffix.
+                let head = String(value.split(separator: ":", maxSplits: 1).first ?? "")
+                guard !head.isEmpty, head.utf8.count <= 64,
+                      head.utf8.allSatisfy({ (48...57).contains($0) || (65...90).contains($0)
+                          || (97...122).contains($0) || $0 == 45 || $0 == 95 }) else { return nil }
+                return head
+            })).sorted().prefix(32).map { $0 }
+        default:
+            return []
         }
-        guard case RuntimeV2MaintenanceError.ownerEvidenceIncomplete(let codes) = error else { return [] }
-        return Array(Set(codes.compactMap { value -> String? in
-            // Remove attributed ids. The manual UI gets fixed reason codes,
-            // never owner names, paths or diagnostic strings from NSError.
-            let head = String(value.split(separator: ":", maxSplits: 1).first ?? "")
-            guard !head.isEmpty, head.utf8.count <= 64,
-                  head.utf8.allSatisfy({ (48...57).contains($0) || (65...90).contains($0)
-                      || (97...122).contains($0) || $0 == 45 || $0 == 95 }) else { return nil }
-            return head
-        })).sorted().prefix(32).map { $0 }
     }
 }

@@ -192,6 +192,17 @@ private final class RecoveryOptimizationFixture: @unchecked Sendable {
     }
 }
 
+private final class SyntheticRecoveryApplicationSupportFileManager: FileManager {
+    let support: URL
+    init(support: URL) { self.support = support; super.init() }
+
+    override func url(for directory: SearchPathDirectory, in domain: SearchPathDomainMask,
+                      appropriateFor url: URL?, create shouldCreate: Bool) throws -> URL {
+        if directory == .applicationSupportDirectory && domain == .userDomainMask { return support }
+        return try super.url(for: directory, in: domain, appropriateFor: url, create: shouldCreate)
+    }
+}
+
 
 private struct RelocatedOptimizationSession {
     let work: URL
@@ -1034,19 +1045,154 @@ final class RuntimeV2RecoveryOptimizationTests: XCTestCase {
     }
 
     func testSingleNativeDiskPreservesAllBytesAnd57HistoricalLeases() async throws {
+        let descriptorLimit = try SyntheticDescriptorLimitScope()
+        defer { XCTAssertEqual(descriptorLimit.restore(), 0) }
         let fixture = try RecoveryOptimizationFixture(); defer { fixture.cleanup() }
         _ = await fixture.adapter.recoverBeforeUse()
         let metadata = try fixture.preservedMetadata()
+        let before = try StorageSparseDiskRewrite.inspectSource(
+            rootURL: fixture.root, relativePath: fixture.relative + "/disk.img")
         let record = try await fixture.record()
         let result = await fixture.adapter.optimize(record, cancellation: .init())
         XCTAssertEqual(result.code, "optimized", result.diagnosticCodes.joined(separator: ","))
         XCTAssertTrue(result.verifiedFirstDisk)
+        let measured = try XCTUnwrap(result.report)
+        let after = try StorageSparseDiskRewrite.inspectSource(
+            rootURL: fixture.root, relativePath: fixture.relative + "/disk.img")
+        XCTAssertEqual(before.identity.sizeBytes, Int64(fixture.original.count))
+        XCTAssertEqual(after.identity.sizeBytes, before.identity.sizeBytes)
+        XCTAssertEqual(measured.logicalBytes, before.identity.sizeBytes)
+        XCTAssertEqual(measured.sourceAllocatedBytesBefore, before.allocatedBytes)
+        XCTAssertLessThan(measured.stageAllocatedBytesAtVerification, measured.sourceAllocatedBytesBefore)
+        print("Synthetic disk logical=\(measured.logicalBytes) allocatedBefore=\(measured.sourceAllocatedBytesBefore) "
+            + "allocatedStage=\(measured.stageAllocatedBytesAtVerification) "
+            + "observedVolumeFreeDelta=\(measured.volumeAvailableDeltaBytes)")
         XCTAssertEqual(try Data(contentsOf: fixture.disk), fixture.original)
         XCTAssertEqual(try fixture.preservedMetadata(), metadata)
         let rows = try RuntimeV2LegacyRegistryReader.read(domain: fixture.domain)
         XCTAssertEqual(rows.leaseEnvironmentIDs.count, 57)
         let state = await fixture.coordinator.state()
         XCTAssertEqual(state.phase, .open)
+    }
+
+    func testTrustedPrivateVarMultiHistoryInventoryCommitsSparseDiskAndReusesAfterRestart() async throws {
+        let descriptorLimit = try SyntheticDescriptorLimitScope()
+        defer { XCTAssertEqual(descriptorLimit.restore(), 0) }
+        let fixture = try RecoveryOptimizationFixture(); defer { fixture.cleanup() }
+        let fm = FileManager.default
+        let preserved = try fixture.preservedMetadata()
+        let originalDigest = FloeDigest.sha256Hex(fixture.original)
+        RuntimeV2MaintenanceRegistry.unregister(domainRoot: fixture.root)
+
+        let support = fixture.work.appendingPathComponent("Library/Application Support", isDirectory: true)
+        let migratedRoot = support.appendingPathComponent("Floe/Runtime/v2", isDirectory: true)
+        try fm.createDirectory(at: migratedRoot.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try fm.moveItem(at: fixture.root, to: migratedRoot)
+        let manager = SyntheticRecoveryApplicationSupportFileManager(support: support)
+        let domain = try RuntimeV2MaintenanceDomain(trustedLegacyRoot: migratedRoot, fileManager: manager)
+        XCTAssertTrue(domain.root.path.hasPrefix("/private/var/"),
+                      "Exercise the trusted realpath branch that produced the first-intent alias failure")
+        defer { RuntimeV2MaintenanceRegistry.unregister(domainRoot: domain.root) }
+        let disk = domain.root.appendingPathComponent(fixture.relative + "/disk.img")
+        let physical = try RuntimeV2DiskIdentity.read(at: domain.root)
+        let authority = domain.root.deletingLastPathComponent()
+            .appendingPathComponent("MaintenanceAuthority", isDirectory: true)
+        try fm.createDirectory(at: authority, withIntermediateDirectories: true)
+        let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+        var retainedHistories: [URL: Data] = [:]
+        for (index, symbol) in ["a", "b"].enumerated() {
+            let directory = authority.appendingPathComponent(String(repeating: symbol, count: 64), isDirectory: true)
+            try fm.createDirectory(at: directory, withIntermediateDirectories: false)
+            let record = RuntimeV2MaintenanceIntentRecord(
+                intentID: UUID().uuidString, holdGeneration: UInt64(index + 3), phase: .resolved,
+                owner: "synthetic-old", reason: "retained-history", createdAt: Date(), updatedAt: Date(),
+                domainRoot: domain.root.path, domainDevice: physical.device, domainInode: physical.inode)
+            let bytes = try encoder.encode(record)
+            let path = directory.appendingPathComponent("intent.json")
+            try bytes.write(to: path)
+            retainedHistories[path] = bytes
+        }
+        let layout = try domain.authorityHistoryLayout()
+        XCTAssertEqual(layout.historicalDirectories.count, 2)
+        XCTAssertEqual(layout.pendingIntentCount, 0)
+        XCTAssertFalse(fm.fileExists(atPath: layout.primaryDirectory.path))
+        let source = RecoveryOptimizationEvidence(domain: domain, state: layout.primaryDirectory)
+        let coordinator = try RuntimeV2MaintenanceCoordinator(domain: domain,
+            stateDirectory: layout.primaryDirectory, evidenceProvider: { await source.admitted() },
+            historyLayout: layout)
+        RuntimeV2RecoveryAdmission.installSyntheticDomainForTests(domain: domain,
+            stateDirectory: layout.primaryDirectory, historyLayout: coordinator.historyLayout)
+        source.coordinator = coordinator
+        _ = RuntimeV2MaintenanceRegistry.install(coordinator)
+        let adapter = RuntimeV2RecoveryOptimizationAdapter(domain: domain, coordinator: coordinator,
+            closureAuthority: source.closure, rawEvidence: { await source.raw() },
+            admittedEvidence: { await source.admitted() })
+        let recovery = await adapter.recoverBeforeUse()
+        XCTAssertEqual(recovery.outcome, .notNeeded)
+        let inventory = try await adapter.inventory()
+        let candidate = try XCTUnwrap(inventory.records.first)
+        XCTAssertEqual(inventory.records.count, 1)
+        let before = try StorageSparseDiskRewrite.inspectSource(
+            rootURL: domain.root, relativePath: fixture.relative + "/disk.img")
+        let result = await adapter.optimize(candidate, cancellation: .init())
+        XCTAssertEqual(result.code, "optimized", result.diagnosticCodes.joined(separator: ","))
+        XCTAssertTrue(result.verifiedFirstDisk)
+        let report = try XCTUnwrap(result.report)
+        XCTAssertTrue(report.stageRetired)
+        XCTAssertEqual(report.sourceDigestSHA512, report.stageDigestSHA512)
+        XCTAssertLessThan(report.stageAllocatedBytesAtVerification, report.sourceAllocatedBytesBefore)
+        XCTAssertEqual(FloeDigest.sha256Hex(try Data(contentsOf: disk)), originalDigest)
+        let after = try StorageSparseDiskRewrite.inspectSource(
+            rootURL: domain.root, relativePath: fixture.relative + "/disk.img")
+        XCTAssertEqual(after.identity.sizeBytes, before.identity.sizeBytes)
+        XCTAssertLessThan(after.allocatedBytes, before.allocatedBytes,
+                          "The committed source, not only the temporary stage, must be sparse")
+        let journals = layout.primaryDirectory.appendingPathComponent("sparse-journals")
+        let receipts = layout.primaryDirectory.appendingPathComponent("sparse-receipts")
+        let journalName = try XCTUnwrap(fm.contentsOfDirectory(atPath: journals.path).first)
+        let journalBytes = try Data(contentsOf: journals.appendingPathComponent(journalName))
+        let receiptBytes = try Data(contentsOf: receipts.appendingPathComponent(journalName))
+        let journal = try XCTUnwrap(JSONSerialization.jsonObject(with: journalBytes) as? [String: Any])
+        XCTAssertEqual(journal["phase"] as? String, "retired")
+        XCTAssertEqual(journal["sourceDigestSHA512"] as? String, journal["stageDigestSHA512"] as? String)
+        let boundJournal = try JSONDecoder().decode(RuntimeV2OptimizationCoreJournalBinding.self, from: journalBytes)
+        XCTAssertTrue(boundJournal.postSwapSource?.matchesFully(after.identity) ?? false)
+        for (path, bytes) in retainedHistories { XCTAssertEqual(try Data(contentsOf: path), bytes) }
+        let rows = try RuntimeV2LegacyRegistryReader.read(domain: domain)
+        XCTAssertEqual(rows.leaseEnvironmentIDs.count, 57)
+        for (name, bytes) in preserved {
+            let relative = name == "runtime.json" ? fixture.relative + "/runtime.json"
+                : (name == "registry" ? "registry/runtime.sqlite" : "environments/env-a/" + name)
+            XCTAssertEqual(try Data(contentsOf: domain.root.appendingPathComponent(relative)), bytes)
+        }
+
+        RuntimeV2MaintenanceRegistry.unregister(domainRoot: domain.root)
+        let reopenedLayout = try domain.authorityHistoryLayout()
+        XCTAssertEqual(reopenedLayout.historicalDirectories.count, 3)
+        XCTAssertEqual(reopenedLayout.pendingIntentCount, 0)
+        let reopenedSource = RecoveryOptimizationEvidence(domain: domain, state: reopenedLayout.primaryDirectory)
+        let reopened = try RuntimeV2MaintenanceCoordinator(domain: domain,
+            stateDirectory: reopenedLayout.primaryDirectory,
+            evidenceProvider: { await reopenedSource.admitted() }, historyLayout: reopenedLayout)
+        reopenedSource.coordinator = reopened
+        _ = RuntimeV2MaintenanceRegistry.install(reopened)
+        let reopenedAdapter = RuntimeV2RecoveryOptimizationAdapter(domain: domain, coordinator: reopened,
+            closureAuthority: reopenedSource.closure, rawEvidence: { await reopenedSource.raw() },
+            admittedEvidence: { await reopenedSource.admitted() })
+        let reopenedRecovery = await reopenedAdapter.recoverBeforeUse()
+        XCTAssertEqual(reopenedRecovery.outcome, .notNeeded)
+        let reopenedInventory = try await reopenedAdapter.inventory()
+        let reopenedCandidate = try XCTUnwrap(reopenedInventory.records.first)
+        let reused = await reopenedAdapter.optimize(reopenedCandidate, cancellation: .init()) { _ in
+            XCTFail("A retired commit must be reused without a second Core rewrite")
+        }
+        XCTAssertEqual(reused.code, "already-optimized", reused.diagnosticCodes.joined(separator: ","))
+        XCTAssertTrue(reused.verifiedUnchanged)
+        XCTAssertNil(reused.report)
+        XCTAssertEqual(FloeDigest.sha256Hex(try Data(contentsOf: disk)), originalDigest)
+        XCTAssertEqual(try Data(contentsOf: journals.appendingPathComponent(journalName)), journalBytes)
+        XCTAssertEqual(try Data(contentsOf: receipts.appendingPathComponent(journalName)), receiptBytes)
+        for (path, bytes) in retainedHistories { XCTAssertEqual(try Data(contentsOf: path), bytes) }
     }
 
     func testStalePreservedPathAndBaseDriftRemainUnchangedThroughOptimization() async throws {
@@ -1132,6 +1278,38 @@ final class RuntimeV2RecoveryOptimizationTests: XCTestCase {
         XCTAssertEqual(state.phase, .open)
         let again = await fixture.adapter.recoverBeforeUse()
         XCTAssertEqual(again.outcome, .notNeeded)
+    }
+
+    func testMaintenanceFailureDiagnosticsAreClosedAndPreserveExactStage() {
+        let adapter = RuntimeV2RecoveryOptimizationAdapter.self
+        let persistence = RuntimeV2MaintenanceError.intentPersistenceFailed(
+            "temporary open", posixErrno: ENOSPC)
+        XCTAssertEqual(adapter.code(persistence), "maintenance-unavailable")
+        XCTAssertEqual(adapter.diagnosticCodes(persistence),
+                       ["maintenance-intent-temporary-open", "maintenance-errno-space"])
+        XCTAssertEqual(adapter.diagnosticCodes(RuntimeV2MaintenanceError.intentPersistenceFailed(
+            "directory fsync", posixErrno: EACCES)),
+            ["maintenance-intent-directory-sync", "maintenance-errno-permission"])
+        XCTAssertEqual(adapter.diagnosticCodes(RuntimeV2MaintenanceError.intentPersistenceFailed(
+            "unprotected native history context")), ["maintenance-intent-context"])
+        XCTAssertEqual(adapter.diagnosticCodes(RuntimeV2MaintenanceError.invalidTarget(
+            "the target escapes the trusted domain through a symlink")), ["maintenance-target-symlink"])
+        XCTAssertEqual(adapter.diagnosticCodes(RuntimeV2MaintenanceError.targetMissing("the target does not exist")),
+                       ["maintenance-target-absent"])
+        XCTAssertEqual(adapter.diagnosticCodes(RuntimeV2MaintenanceError.invalidDomain(
+            "native history layout differs from the coordinator")), ["maintenance-domain-layout-mismatch"])
+        XCTAssertEqual(adapter.code(RuntimeV2MaintenanceError.targetIdentityMismatch(
+            "preflight identity does not match the target")), "identity-changed")
+        XCTAssertEqual(adapter.diagnosticCodes(RuntimeV2MaintenanceError.targetIdentityMismatch(
+            "preflight identity does not match the target")), ["maintenance-target-preflight-mismatch"])
+
+        let attributed = "private/path/to/secret-document"
+        let unknownStage = RuntimeV2MaintenanceError.intentPersistenceFailed(
+            attributed, posixErrno: 12_345)
+        XCTAssertEqual(adapter.diagnosticCodes(unknownStage),
+                       ["maintenance-intent-other", "maintenance-errno-other"])
+        XCTAssertFalse(adapter.diagnosticCodes(unknownStage).joined().contains("secret"))
+        XCTAssertEqual(adapter.diagnosticCodes(RuntimeV2MaintenanceError.invalidTarget(attributed)), ["maintenance-target-invalid"])
     }
 
     func testPhysicalRootBindingResolvesAncestorAliasesAndRejectsWrongInodes() throws {

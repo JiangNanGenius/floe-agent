@@ -43,6 +43,7 @@ struct ToolboxRootView: View {
                 .accessibilityIdentifier("toolbox.home")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar { Button(IDELanguageRunText.t("记录与抓包", "Captures"), systemImage: "list.bullet.rectangle") { showingCaptures = true } }
+                .task { await center.purgeStaleAssistantsIfNeeded() }
                 .navigationDestination(item: $selection) { tool in
                     destination(tool).navigationTitle(tool.title(in: locale))
                 }
@@ -52,6 +53,10 @@ struct ToolboxRootView: View {
             guard let old, old != new else { return }
             if old == .hash { center.checksum.cancel() }
             if old == .browser { environment.toolboxBrowser.leave() }
+            // Real route change (Back or another tool), never a sheet,
+            // inspector, full-screen file view, rotation or reconstruction.
+            // Ownership is revoked synchronously before any deletion await.
+            center.disposeAssistantsNow(for: old)
             center.disconnectNow(old); environment.toolboxDiagnostics.closeNow(old)
             if old == .terminal || old == .vnc { environment.toolboxRemote.closeNow() }
         }

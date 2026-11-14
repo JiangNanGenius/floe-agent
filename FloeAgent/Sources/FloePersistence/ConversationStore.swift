@@ -369,16 +369,13 @@ public actor SQLiteConversationStore: ConversationStore {
     }
 
     private static func writeConversation(_ conversation: ConversationRecord, in db: Database) throws {
-        // The FIRST INSERT carries `pinned_at` so a supplied new record
-        // round-trips its public field. The ON CONFLICT update
-        // deliberately NEVER writes `pinned_at`: a save from a
-        // reconstructed record whose pin was not loaded (nil) therefore
-        // cannot erase an existing pin. User-driven pin changes go
-        // through `setPinned`, the only UPDATE that touches the column.
+        // Establish archive and pin state on first insert. Later saves can
+        // carry stale presentation state, so only their dedicated setters
+        // update these two fields on an existing conversation.
         try db.execute(
             sql: """
-                INSERT INTO conversations (id, title, created_at, updated_at, purpose, visibility, pinned_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO conversations (id, title, created_at, updated_at, purpose, visibility, pinned_at, archived_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     title = excluded.title,
                     updated_at = excluded.updated_at
@@ -390,7 +387,8 @@ public actor SQLiteConversationStore: ConversationStore {
                 PersistenceCodec.encode(conversation.updatedAt),
                 conversation.purpose.rawValue,
                 conversation.visibility.rawValue,
-                conversation.pinnedAt.map { PersistenceCodec.encode($0) }
+                conversation.pinnedAt.map { PersistenceCodec.encode($0) },
+                conversation.archivedAt.map { PersistenceCodec.encode($0) }
             ]
         )
         if let owner = conversation.editorOwnership {

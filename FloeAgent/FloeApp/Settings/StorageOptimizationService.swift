@@ -93,12 +93,34 @@ enum StorageOptimizationDiagnosticVocabulary {
         "inventory-incomplete", "sources-not-eligible", "no-covered-sources", "recovery-resolved", "recovery-not-needed",
         "retained-disk", "preclaim-ineligible"
     ]
+    /// Fixed technical subcodes for the saved diagnostics export. These do
+    /// not appear as ordinary UI copy and cannot contain an input path/stage.
+    static let maintenanceCodes: Set<String> = [
+        "maintenance-domain-layout-mismatch", "maintenance-domain-root-missing",
+        "maintenance-domain-root-not-directory", "maintenance-domain-unavailable",
+        "maintenance-request-invalid", "maintenance-target-symlink",
+        "maintenance-target-not-regular", "maintenance-target-path-invalid",
+        "maintenance-target-scope-invalid", "maintenance-target-invalid",
+        "maintenance-target-absent", "maintenance-target-stat-failed",
+        "maintenance-target-missing", "maintenance-target-preflight-mismatch",
+        "maintenance-target-changed-during-preflight", "maintenance-target-identity-unverified",
+        "maintenance-claim-not-committable", "maintenance-claim-already-committed",
+        "maintenance-intent-context", "maintenance-intent-encoding", "maintenance-intent-size",
+        "maintenance-intent-temporary-open", "maintenance-intent-write",
+        "maintenance-intent-file-sync", "maintenance-intent-rename",
+        "maintenance-intent-directory-open", "maintenance-intent-directory-sync",
+        "maintenance-intent-other", "maintenance-errno-space", "maintenance-errno-permission",
+        "maintenance-errno-readonly", "maintenance-errno-missing", "maintenance-errno-io",
+        "maintenance-errno-exists", "maintenance-errno-busy", "maintenance-errno-fd-limit",
+        "maintenance-errno-other"
+    ]
     static let stages: Set<String> = [
         "recovery-check", "inventory", "disk-admission", "counting", "staging", "verifying", "committing", "retiring"
     ]
     static func code(_ raw: String) -> String? {
         let head = String(raw.split(separator: ":", maxSplits: 1).first ?? "")
-        return resultCodes.contains(head) || ownerCodes.contains(head) || serviceCodes.contains(head) ? head : nil
+        return resultCodes.contains(head) || ownerCodes.contains(head) || serviceCodes.contains(head)
+            || maintenanceCodes.contains(head) ? head : nil
     }
 }
 
@@ -629,10 +651,8 @@ final class StorageOptimizationService: ObservableObject {
             }
         } catch {
             state.phase = cancellation.isCancelled || error is CancellationError ? .cancelled : .blocked
-            let ownerCodes: [String]
-            if case RuntimeV2MaintenanceError.ownerEvidenceIncomplete(let codes) = error { ownerCodes = codes }
-            else { ownerCodes = [] }
-            state.recordResult(code: RuntimeV2RecoveryOptimizationAdapter.code(error), diagnosticCodes: ownerCodes)
+            state.recordResult(code: RuntimeV2RecoveryOptimizationAdapter.code(error),
+                diagnosticCodes: RuntimeV2RecoveryOptimizationAdapter.diagnosticCodes(error))
         }
         finish(generation: generation)
         // Exactly one mutation invalidation/refresh after this owned operation,

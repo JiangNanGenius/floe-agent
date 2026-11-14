@@ -133,6 +133,18 @@ nonisolated struct ToolboxConnectionSetup: Sendable {
     private init(tool: ToolboxTool, lease: SessionLease, journal: CaptureJournal, redactor: CaptureRedactor) {
         id = lease.ownerID; self.tool = tool; self.lease = lease; self.journal = journal; self.redactor = redactor
     }
+    /// One safe identity string for the assistant header. It is display-only
+    /// and is never used to resolve a target.
+    var endpointSummary: String {
+        if let serial {
+            if let host = serial.endpoint.host {
+                return serial.endpoint.port.map { "\(host):\($0)" } ?? host
+            }
+            return serial.endpoint.title
+        }
+        if let http { return http.endpoint.host ?? http.endpoint.title }
+        return tool.rawValue
+    }
     static func open(tool: ToolboxTool, setup: ToolboxConnectionSetup, environment: AppEnvironment,
                      workbenchModels: Bool = true,
                      onUSBFailure: (@MainActor @Sendable (ToolboxUSBFailure) -> Void)? = nil,

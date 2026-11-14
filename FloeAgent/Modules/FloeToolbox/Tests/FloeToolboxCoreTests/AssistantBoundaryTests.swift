@@ -101,6 +101,22 @@ private actor TerminalObserver: TerminalAnalysisProvider {
     await #expect(throws: ToolboxError.staleSession) { try await task.value }
     #expect(await host.inputs.isEmpty)
 }
+@Test func terminalRunWritesOneReviewedCommandToTheExactHost() async throws {
+    let lease = SessionLease(ownerID:UUID()), host = TerminalFixture()
+    let assistant = TerminalAssistant(lease:lease,target:.temporary(connectionID:UUID()),host:host)
+    try await assistant.run(command:"printf reviewed",expected:lease)
+    #expect(await host.inputs == [Data("printf reviewed\n".utf8)])
+}
+@Test func terminalRunRejectsMultilineOrControlInputBeforeApproval() async throws {
+    let lease = SessionLease(ownerID:UUID()), host = TerminalFixture()
+    let assistant = TerminalAssistant(lease:lease,target:.builtIn(environmentID:"fixture-linux"),host:host)
+    for command in ["pwd\nwhoami", "pwd\r", "pwd\u{0}", "   ", String(repeating:"x",count:TerminalAssistant.maximumCommandBytes + 1)] {
+        await #expect(throws: ToolboxError.self) { try await assistant.run(command:command,expected:lease) }
+    }
+    #expect(await host.inputs.isEmpty)
+    try await assistant.run(command:String(repeating:"x",count:TerminalAssistant.maximumCommandBytes),expected:lease)
+    #expect(await host.inputs.last?.count == TerminalAssistant.maximumCommandBytes + 1)
+}
 @Test func terminalDeniedOrWrongLeaseNeverWrites() async throws {
     let lease = SessionLease(ownerID:UUID()), host = TerminalFixture()
     let assistant = TerminalAssistant(lease:lease,target:.toolboxMachine(hostID:UUID()),host:host)

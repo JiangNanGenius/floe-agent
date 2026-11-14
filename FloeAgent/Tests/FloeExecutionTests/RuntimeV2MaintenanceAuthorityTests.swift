@@ -850,6 +850,101 @@ final class RuntimeV2MaintenanceAuthorityTests: XCTestCase {
         await owner.installRecoveryHandler(nil)
     }
 
+    func testTrustedPrivateVarPrimaryWritesFirstIntentAndSurvivesSecondBootstrap() async throws {
+        let fm = FileManager.default
+        let support = root.appendingPathComponent("alias-case/Library/Application Support", isDirectory: true)
+        let rawRoot = support.appendingPathComponent("Floe/Runtime/v2", isDirectory: true)
+        let targetRelative = "recovery/quarantine/runtime-vm-synthetic/disk.img"
+        let target = rawRoot.appendingPathComponent(targetRelative)
+        try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("synthetic disk only".utf8).write(to: target)
+        let manager = SyntheticApplicationSupportFileManager(support: support)
+        let legacy = try RuntimeV2MaintenanceDomain(trustedLegacyRoot: rawRoot, fileManager: manager)
+        XCTAssertTrue(legacy.root.path.hasPrefix("/private/var/"),
+                      "This exercises the production realpath branch, not Foundation's /var rewrite")
+        let authority = legacy.root.deletingLastPathComponent()
+            .appendingPathComponent("MaintenanceAuthority", isDirectory: true)
+        try fm.createDirectory(at: authority, withIntermediateDirectories: true)
+        let physical = try RuntimeV2DiskIdentity.read(at: legacy.root)
+        let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+        var oldIntents: [URL: Data] = [:]
+        for (ordinal, symbol) in ["a", "b"].enumerated() {
+            let directory = authority.appendingPathComponent(String(repeating: symbol, count: 64), isDirectory: true)
+            try fm.createDirectory(at: directory, withIntermediateDirectories: false)
+            let record = RuntimeV2MaintenanceIntentRecord(
+                intentID: UUID().uuidString, holdGeneration: UInt64(ordinal + 3), phase: .resolved,
+                owner: "synthetic-old", reason: "retained-history", createdAt: Date(), updatedAt: Date(),
+                domainRoot: legacy.root.path, domainDevice: physical.device, domainInode: physical.inode)
+            let bytes = try encoder.encode(record)
+            let url = directory.appendingPathComponent("intent.json")
+            try bytes.write(to: url)
+            oldIntents[url] = bytes
+        }
+        let firstLayout = try legacy.authorityHistoryLayout()
+        XCTAssertEqual(firstLayout.historicalDirectories.count, 2)
+        XCTAssertEqual(firstLayout.pendingIntentCount, 0)
+        XCTAssertEqual(firstLayout.primaryDirectory.lastPathComponent, legacy.domainKey)
+        XCTAssertFalse(fm.fileExists(atPath: firstLayout.primaryDirectory.path),
+                       "The newly selected primary must not exist before coordinator initialization")
+        let evidence = cleanEvidence(for: legacy)
+        let observed = HistoryVisits()
+        let first = try RuntimeV2MaintenanceCoordinator(
+            domain: legacy, stateDirectory: firstLayout.primaryDirectory,
+            evidenceProvider: {
+                let phase = try? RuntimeV2MaintenanceCoordinator
+                    .readHistoryIntent(directory: firstLayout.primaryDirectory)?.phase.rawValue
+                observed.append(phase ?? "missing")
+                return evidence
+            },
+            historyLayout: firstLayout)
+        let firstStateDirectory = await first.stateDirectory
+        XCTAssertEqual(firstStateDirectory, firstLayout.primaryDirectory)
+        XCTAssertTrue(first.storageDirectories.contains(firstStateDirectory))
+        XCTAssertTrue(fm.fileExists(atPath: firstStateDirectory.path))
+        let unrelated = root.appendingPathComponent("unrelated-authority", isDirectory: true)
+        XCTAssertThrowsError(try RuntimeV2MaintenanceCoordinator(
+            domain: legacy, stateDirectory: unrelated, evidenceProvider: { evidence },
+            historyLayout: firstLayout))
+        XCTAssertFalse(fm.fileExists(atPath: unrelated.path))
+
+        let identity = try RuntimeV2DiskIdentity.read(at: legacy.root.appendingPathComponent(targetRelative))
+        let request = RuntimeV2MaintenanceRequest(owner: "synthetic-new", reason: "first-write",
+            targetRelativePath: targetRelative, targetIdentity: identity)
+        let firstClaim = try await first.acquireExclusiveMaintenance(request)
+        XCTAssertEqual(observed.values, ["preparing"],
+                       "The durable preparing intent must exist before owner evidence is awaited")
+        let firstIntent = try XCTUnwrap(RuntimeV2MaintenanceCoordinator
+            .readHistoryIntent(directory: firstStateDirectory))
+        XCTAssertEqual(firstIntent.intentID, firstClaim.intentID)
+        XCTAssertEqual(firstIntent.targetRelativePath, targetRelative)
+        XCTAssertEqual(firstIntent.phase, .active)
+        try await firstClaim.abortAndRelease(reason: "synthetic first claim; source untouched")
+        XCTAssertEqual(try Data(contentsOf: target), Data("synthetic disk only".utf8))
+        for (url, bytes) in oldIntents { XCTAssertEqual(try Data(contentsOf: url), bytes) }
+
+        let secondLayout = try legacy.authorityHistoryLayout()
+        XCTAssertEqual(secondLayout.historicalDirectories.count, 3)
+        XCTAssertEqual(secondLayout.pendingIntentCount, 0)
+        let second = try RuntimeV2MaintenanceCoordinator(
+            domain: legacy, stateDirectory: secondLayout.primaryDirectory,
+            evidenceProvider: { evidence }, historyLayout: secondLayout)
+        let secondStateDirectory = await second.stateDirectory
+        XCTAssertEqual(secondStateDirectory, firstStateDirectory)
+        XCTAssertTrue(second.storageDirectories.contains(secondStateDirectory))
+        let secondClaim = try await second.acquireExclusiveMaintenance(request)
+        XCTAssertEqual(try RuntimeV2MaintenanceCoordinator
+            .readHistoryIntent(directory: secondStateDirectory)?.intentID, secondClaim.intentID)
+        try await secondClaim.abortAndRelease(reason: "synthetic second claim; source untouched")
+        do {
+            _ = try await second.acquireExclusiveMaintenance(.init(owner: "synthetic-new", reason: "escape-denied",
+                targetRelativePath: "../outside/disk.img", targetIdentity: identity))
+            XCTFail("A different directory must not become a maintenance target")
+        } catch RuntimeV2MaintenanceError.invalidTarget {}
+        XCTAssertFalse(fm.fileExists(atPath: root.appendingPathComponent("outside").path))
+        XCTAssertEqual(try Data(contentsOf: target), Data("synthetic disk only".utf8))
+        for (url, bytes) in oldIntents { XCTAssertEqual(try Data(contentsOf: url), bytes) }
+    }
+
     func testBusyOriginalHistoryBlocksWholeCohortBeforeAnyHandler() async throws {
         let fixture = try MultiHistoryFixture(parent: root); defer { fixture.cleanup() }
         let layout = try fixture.domain.authorityHistoryLayout()
@@ -1258,6 +1353,17 @@ private actor EvidenceGate {
 
 // Synthetic coordinator fixtures only. These do not certify Core convergence
 // or contain any device/container identifiers, disk bodies or real metadata.
+private final class SyntheticApplicationSupportFileManager: FileManager {
+    let support: URL
+    init(support: URL) { self.support = support; super.init() }
+
+    override func url(for directory: SearchPathDirectory, in domain: SearchPathDomainMask,
+                      appropriateFor url: URL?, create shouldCreate: Bool) throws -> URL {
+        if directory == .applicationSupportDirectory && domain == .userDomainMask { return support }
+        return try super.url(for: directory, in: domain, appropriateFor: url, create: shouldCreate)
+    }
+}
+
 private final class HistoryVisits: @unchecked Sendable {
     private let lock = NSLock()
     private var items: [String] = []

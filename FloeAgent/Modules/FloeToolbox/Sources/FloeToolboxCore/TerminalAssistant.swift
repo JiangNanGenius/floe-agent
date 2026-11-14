@@ -22,6 +22,9 @@ public protocol TerminalAssistantHost: Sendable {
     func sendInput(_ bytes: Data, lease: SessionLease) async throws
 }
 public actor TerminalAssistant {
+    /// The command itself. The host adds one LF, so the actual PTY write is
+    /// at most 8192 bytes, matching the native send bound.
+    public static let maximumCommandBytes = 8191
     public nonisolated let lease: SessionLease
     public nonisolated let target: MachineReference
     private let host: any TerminalAssistantHost
@@ -51,7 +54,13 @@ public actor TerminalAssistant {
     }
     public func run(command: String, expected: SessionLease) async throws {
         try check(expected)
-        guard !executing, !command.isEmpty, command.utf8.count <= 8192, !command.contains("\0") else { throw ToolboxError.invalid("terminal command or busy") }
+        // One reviewed shell command only. A newline would smuggle a second
+        // unreviewed command past the approval that displayed this string.
+        guard !executing, !command.trimmingCharacters(in: .whitespaces).isEmpty,
+              command.utf8.count <= Self.maximumCommandBytes, !command.contains("\0"),
+              !command.contains("\n"), !command.contains("\r") else {
+            throw ToolboxError.invalid("terminal command or busy")
+        }
         executing = true; defer { executing = false }
         guard try await host.authorize(command:command,lease:lease,target:target) else { throw ToolboxError.denied }
         try check(expected); try await host.sendInput(Data((command+"\n").utf8),lease:lease); try check(expected)

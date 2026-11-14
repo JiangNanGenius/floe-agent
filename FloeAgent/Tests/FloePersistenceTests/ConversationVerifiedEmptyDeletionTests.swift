@@ -222,6 +222,26 @@ struct ConversationVerifiedEmptyDeletionTests {
         #expect(row.titleOrigin == .automatic)
     }
 
+    @Test("A toolbox conversation starts archived and later saves preserve the archive decision")
+    func archivedAtCreationSurvivesOrdinaryUpserts() async throws {
+        let (_, store) = try await makeStore()
+        let now = Date(timeIntervalSince1970: 1_750_000_000)
+        var conversation = ConversationRecord(id: UUID(), title: "Toolbox assistant",
+            createdAt: now, updatedAt: now, archivedAt: now)
+        try await store.saveConversation(conversation)
+        let initial = try #require(try await store.conversation(id: conversation.id))
+        #expect(initial.archivedAt == now)
+        #expect(!initial.isVisibleInOrdinaryList)
+
+        conversation.archivedAt = nil
+        try await store.saveConversation(conversation)
+        #expect(try await store.conversation(id: conversation.id)?.archivedAt == now)
+        try await store.setArchived(id: conversation.id, archived: false)
+        try await store.saveConversation(initial)
+        let reopened = try #require(try await store.conversation(id: conversation.id))
+        #expect(reopened.isVisibleInOrdinaryList)
+    }
+
     @Test("An archived conversation refuses the removal and stays archived")
     func archivedRefusesRemoval() async throws {
         let (_, store) = try await makeStore()

@@ -10,28 +10,56 @@ struct ToolboxTerminalAssistantView: View {
     @ObservedObject var session: ToolboxTerminalSession
     @EnvironmentObject private var environment: AppEnvironment
     @State private var conversationID: UUID?
-    @State private var command = ""
     @State private var failure: String?
     var body: some View {
         VStack(spacing: 0) {
-            HStack { Label(IDELanguageRunText.t("终端助手", "Terminal assistant"), systemImage: "sparkles").font(.headline); Spacer(); Text(session.title).font(.caption).foregroundStyle(.secondary).lineLimit(1) }.padding(12)
+            HStack(spacing: 8) {
+                Label(IDELanguageRunText.t("终端助手", "Terminal assistant"), systemImage: "sparkles")
+                    .font(.subheadline.weight(.semibold))
+                    .accessibilityIdentifier("toolbox.terminal.assistant")
+                Spacer(minLength: 8)
+                Text(session.title).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Circle().fill(session.active ? FloeTheme.success : FloeTheme.destructive)
+                    .frame(width: 8, height: 8)
+                    .accessibilityLabel(session.active
+                        ? IDELanguageRunText.t("已连接", "Connected")
+                        : IDELanguageRunText.t("连接已结束", "Connection ended"))
+            }.padding(.horizontal, 12).padding(.vertical, 8)
+            if !session.active {
+                assistantNotice(IDELanguageRunText.t("连接已结束。此助手不能再写入终端。", "The connection ended. This assistant can no longer write to the terminal."), symbol: "bolt.horizontal.circle")
+            }
+            if let captureFailure = session.captureFailure {
+                assistantNotice(captureFailure, symbol: "exclamationmark.triangle")
+            }
             Divider()
-            if let conversationID { ThreadDetailView(conversationID: conversationID, center: environment.conversationCenter, embedded: true, documentAssistant: true) }
-            else if let failure { ContentUnavailableView { Label(IDELanguageRunText.t("助手未能打开", "Unable to open assistant"), systemImage: "exclamationmark.bubble") } description: { Text(failure) } }
-            else { ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity) }
-            Divider()
-            VStack(alignment: .leading, spacing: 8) {
-                TextField(IDELanguageRunText.t("粘贴要填入终端的命令", "Paste a command to fill in the terminal"), text: $command).textInputAutocapitalization(.never).autocorrectionDisabled().textFieldStyle(.roundedBorder)
-                Button(IDELanguageRunText.t("填入终端", "Fill terminal"), systemImage: "arrow.turn.down.left") {
-                    Task { do { try await session.fillCommand(command); command = "" } catch { failure = IDELanguageRunText.t("未能填入，请检查终端连接。", "Unable to fill the command. Check the terminal connection.") } }
-                }.frame(minHeight: 44).disabled(command.isEmpty || !session.active)
-                Text(IDELanguageRunText.t("填入后可在终端检查，再按回车执行。", "Review the command in the terminal, then press Return to run it.")).font(.caption).foregroundStyle(.secondary)
-                if let captureFailure = session.captureFailure { Text(captureFailure).font(.caption).foregroundStyle(.secondary) }
-            }.padding(12)
-        }.task(id: session.id) {
-            do { await session.flush(); conversationID = try await environment.toolboxCenter.assistant(for: session) }
-            catch { failure = IDELanguageRunText.t("连接已结束或当前任务不可用。", "The connection ended or the task is unavailable.") }
-        }.accessibilityIdentifier("toolbox.terminal.assistant")
+            if let conversationID {
+                ThreadDetailView(conversationID: conversationID, center: environment.conversationCenter,
+                    embedded: true, documentAssistant: true, ownsNavigationTitle: false)
+            } else if let failure {
+                ContentUnavailableView {
+                    Label(IDELanguageRunText.t("助手未能打开", "Unable to open assistant"), systemImage: "exclamationmark.bubble")
+                } description: { Text(failure) } actions: {
+                    Button(IDELanguageRunText.t("重试", "Retry")) { Task { await openAssistant() } }
+                }
+            } else { ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity) }
+        }.task(id: session.id) { await openAssistant() }
+    }
+    private func openAssistant() async {
+        failure = nil
+        do {
+            await session.flush()
+            conversationID = try await environment.toolboxCenter.assistant(for: session)
+        } catch {
+            conversationID = nil
+            failure = IDELanguageRunText.t("连接已结束或当前任务不可用。", "The connection ended or the task is unavailable.")
+        }
+    }
+    private func assistantNotice(_ text: String, symbol: String) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: symbol); Text(text)
+        }.font(.caption).foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 12).padding(.bottom, 6)
     }
 }
 

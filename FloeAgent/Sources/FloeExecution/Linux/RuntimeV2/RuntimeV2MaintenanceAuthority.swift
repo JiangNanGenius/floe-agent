@@ -51,7 +51,7 @@ public enum RuntimeV2MaintenanceError: Error, LocalizedError, Equatable, Sendabl
     case claimInvalidated(String)
     case claimNotCommitEligible(String)
     case claimAlreadyCommitted
-    case intentPersistenceFailed(String)
+    case intentPersistenceFailed(String, posixErrno: Int32? = nil)
     case recoveryHandlerUnavailable(String)
 
     public var errorDescription: String? {
@@ -80,7 +80,7 @@ public enum RuntimeV2MaintenanceError: Error, LocalizedError, Equatable, Sendabl
             return "the maintenance claim cannot commit in its current state: \(reason)"
         case .claimAlreadyCommitted:
             return "the maintenance claim has already committed"
-        case .intentPersistenceFailed(let reason):
+        case .intentPersistenceFailed(let reason, _):
             return "the durable maintenance intent could not be written: \(reason); nothing was opened"
         case .recoveryHandlerUnavailable(let reason):
             return "interrupted legacy recovery maintenance cannot converge without its owning recovery handler: \(reason)"
@@ -102,7 +102,7 @@ public struct RuntimeV2MaintenanceDomain: Sendable, Hashable {
 
     public init(trustedLegacyRoot: URL, fileManager: FileManager = .default) throws {
         let resolved: URL
-        if Self.trustedLegacyRoot().map({ RuntimeV2RecoveryAdmission.key($0) })
+        if Self.trustedLegacyRoot(fileManager: fileManager).map({ RuntimeV2RecoveryAdmission.key($0) })
             == RuntimeV2RecoveryAdmission.key(trustedLegacyRoot) {
             resolved = URL(fileURLWithPath: RuntimeV2RecoveryAdmission.key(trustedLegacyRoot), isDirectory: true)
         } else {
@@ -1014,24 +1014,29 @@ public actor RuntimeV2MaintenanceCoordinator {
     ) throws {
         let protectedLayout: RuntimeV2MaintenanceHistoryLayout?
         if let historyLayout {
-            guard historyLayout.domain == domain, historyLayout.primaryDirectory == stateDirectory.standardizedFileURL else {
+            guard historyLayout.domain == domain,
+                  (historyLayout.primaryDirectory == stateDirectory ||
+                   historyLayout.primaryDirectory == stateDirectory.standardizedFileURL) else {
                 throw RuntimeV2MaintenanceError.invalidDomain("native history layout differs from the coordinator")
             }
             protectedLayout = try historyLayout.prepareNativeDirectories()
         } else { protectedLayout = nil }
+        // Foundation can change an existing /private/var URL to /var only
+        // after mkdir. Use the very entry whose inode and locks were verified.
+        let primary = protectedLayout?.primaryDirectory ?? stateDirectory.standardizedFileURL
         self.domain = domain
         self.historyLayout = protectedLayout
-        self.storageDirectories = protectedLayout?.directories ?? [stateDirectory.standardizedFileURL]
-        self.stateDirectory = stateDirectory.standardizedFileURL
-        self.lockURL = protectedLayout?.anchor ?? stateDirectory.standardizedFileURL.appendingPathComponent("maintenance.lock")
-        self.intentURL = stateDirectory.standardizedFileURL.appendingPathComponent("intent.json")
+        self.storageDirectories = protectedLayout?.directories ?? [primary]
+        self.stateDirectory = primary
+        self.lockURL = protectedLayout?.anchor ?? primary.appendingPathComponent("maintenance.lock")
+        self.intentURL = primary.appendingPathComponent("intent.json")
         self.fileManager = fileManager
         self.evidenceProvider = evidenceProvider
         self.recoveryHandler = recoveryHandler
-        try fileManager.createDirectory(at: stateDirectory, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: primary, withIntermediateDirectories: true)
         var values = URLResourceValues()
         values.isExcludedFromBackup = true
-        try? (stateDirectory as NSURL).setResourceValue(values.isExcludedFromBackup, forKey: .isExcludedFromBackupKey)
+        try? (primary as NSURL).setResourceValue(values.isExcludedFromBackup, forKey: .isExcludedFromBackupKey)
         self.holdGeneration = 0
         // ALL durable histories close the gate immediately. Counts and old
         // path indexes cannot waive a corrupt/mismatched/pending record.
@@ -1439,7 +1444,7 @@ public actor RuntimeV2MaintenanceCoordinator {
             RuntimeV2RecoveryAdmission.gate(domain.root)?.endExclusive(intentID, converged: false)
             recoveryPending = true
             recoveryReason = "preparing intent persistence is uncertain"
-            throw RuntimeV2MaintenanceError.intentPersistenceFailed("preparing intent")
+            throw error
         }
 
         preparingHistoryLocks = opened.historyLocks
@@ -1475,11 +1480,7 @@ public actor RuntimeV2MaintenanceCoordinator {
             record.domainInode = domainIdentity.inode
             record.evidenceFingerprint = evidence.fingerprint(domain: domain)
             record.referenceFingerprint = evidence.references.fingerprint
-            do {
-                try persistIntent(record)
-            } catch {
-                throw RuntimeV2MaintenanceError.intentPersistenceFailed("active intent")
-            }
+            try persistIntent(record)
             exclusive = ExclusiveRecord(
                 intentID: intentID, holdGeneration: generation, epoch: epoch,
                 descriptor: opened.descriptor, lockIdentity: opened.identity,
@@ -1561,9 +1562,7 @@ public actor RuntimeV2MaintenanceCoordinator {
         record.record.phase = .committing
         record.record.updatedAt = Date()
         record.phase = .committing
-        do { try persistIntent(record.record) } catch {
-            throw RuntimeV2MaintenanceError.intentPersistenceFailed("committing intent")
-        }
+        try persistIntent(record.record)
         exclusive = record
     }
 
@@ -1582,9 +1581,7 @@ public actor RuntimeV2MaintenanceCoordinator {
         record.targetIdentity = identity
         record.record.targetIdentity = identity
         record.record.updatedAt = Date()
-        do { try persistIntent(record.record) } catch {
-            throw RuntimeV2MaintenanceError.intentPersistenceFailed("post-commit identity")
-        }
+        try persistIntent(record.record)
         exclusive = record
         return identity
     }
@@ -1602,9 +1599,7 @@ public actor RuntimeV2MaintenanceCoordinator {
         if record.phase == .committing {
             record.record.phase = .committed
             record.record.updatedAt = Date()
-            do { try persistIntent(record.record) } catch {
-                throw RuntimeV2MaintenanceError.intentPersistenceFailed("committed intent")
-            }
+            try persistIntent(record.record)
             record.phase = .committed
             exclusive = record
         }
@@ -1614,9 +1609,7 @@ public actor RuntimeV2MaintenanceCoordinator {
         record = committed
         record.record.phase = .resolved
         record.record.updatedAt = Date()
-        do { try persistIntent(record.record) } catch {
-            throw RuntimeV2MaintenanceError.intentPersistenceFailed("resolved intent")
-        }
+        try persistIntent(record.record)
         record.phase = .resolved
         exclusive = record
     }
@@ -1641,9 +1634,7 @@ public actor RuntimeV2MaintenanceCoordinator {
         aborted.phase = .aborted
         aborted.updatedAt = Date()
         aborted.note = String(reason.prefix(256))
-        do { try persistIntent(aborted) } catch {
-            throw RuntimeV2MaintenanceError.intentPersistenceFailed("aborted intent")
-        }
+        try persistIntent(aborted)
         exclusive = nil
         recoveryPending = false
         recoveryReason = nil
@@ -1945,46 +1936,45 @@ public actor RuntimeV2MaintenanceCoordinator {
             throw RuntimeV2MaintenanceError.intentPersistenceFailed("record exceeds the bound")
         }
         let temporary = destination.appendingPathComponent(".intent-\(UUID().uuidString).tmp")
-        let descriptor = open(temporary.path, O_CREAT | O_EXCL | O_WRONLY, mode_t(0o600))
+        let descriptor = open(temporary.path, O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, mode_t(0o600))
         guard descriptor >= 0 else {
-            throw RuntimeV2MaintenanceError.intentPersistenceFailed("temporary open")
+            throw RuntimeV2MaintenanceError.intentPersistenceFailed("temporary open", posixErrno: errno)
         }
-        var wroteAll = true
-        data.withUnsafeBytes { raw in
-            guard let base = raw.baseAddress else { return }
-            var offset = 0
-            while offset < raw.count {
-                let written = write(descriptor, base.advanced(by: offset), raw.count - offset)
-                if written <= 0 {
-                    if errno == EINTR { continue }
-                    wroteAll = false
-                    return
+        do {
+            defer { close(descriptor) }
+            try data.withUnsafeBytes { raw in
+                guard let base = raw.baseAddress else { return }
+                var offset = 0
+                while offset < raw.count {
+                    let written = write(descriptor, base.advanced(by: offset), raw.count - offset)
+                    if written < 0 && errno == EINTR { continue }
+                    guard written > 0 else {
+                        throw RuntimeV2MaintenanceError.intentPersistenceFailed("write", posixErrno: written == 0 ? EIO : errno)
+                    }
+                    offset += written
                 }
-                offset += written
             }
-        }
-        guard wroteAll, fsync(descriptor) == 0 else {
-            _ = close(descriptor)
+            guard fsync(descriptor) == 0 else {
+                throw RuntimeV2MaintenanceError.intentPersistenceFailed("file fsync", posixErrno: errno)
+            }
+        } catch {
             _ = unlink(temporary.path)
-            throw RuntimeV2MaintenanceError.intentPersistenceFailed("write/fsync")
+            throw error
         }
-        _ = close(descriptor)
         guard rename(temporary.path, intentURL.path) == 0 else {
+            let code = errno
             _ = unlink(temporary.path)
-            throw RuntimeV2MaintenanceError.intentPersistenceFailed("rename")
+            throw RuntimeV2MaintenanceError.intentPersistenceFailed("rename", posixErrno: code)
         }
-        guard Self.fsyncDirectory(destination) else {
-            throw RuntimeV2MaintenanceError.intentPersistenceFailed("directory fsync")
+        let directoryFD = open(destination.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard directoryFD >= 0 else {
+            throw RuntimeV2MaintenanceError.intentPersistenceFailed("directory open", posixErrno: errno)
+        }
+        defer { close(directoryFD) }
+        guard fsync(directoryFD) == 0 else {
+            throw RuntimeV2MaintenanceError.intentPersistenceFailed("directory fsync", posixErrno: errno)
         }
         requiredIntentDirectories.insert(destination)
-    }
-
-    private static func fsyncDirectory(_ url: URL) -> Bool {
-        let descriptor = open(url.path, O_RDONLY)
-        guard descriptor >= 0 else { return false }
-        let result = fsync(descriptor)
-        _ = close(descriptor)
-        return result == 0
     }
 
     private static let intentEncoder: JSONEncoder = {

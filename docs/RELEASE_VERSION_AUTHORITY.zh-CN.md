@@ -13,7 +13,9 @@
 
 ## 本轮版本记录
 
-1.8.27（348）已完成内部 TestFlight 交付。目标 iPad 的容量及 Linux 缓存验收待真机读回。上一版的历史恢复和目录错误见[347 真机记录](releases/builds/FLOE_1.8.26_BUILD347_DELIVERY.md)。
+1.8.28（349）为本轮内部 TestFlight 候选。范围包括换机后的旧磁盘整理、工具箱助手操作当前连接，以及工具页面内的助手会话生命周期。
+
+1.8.27（348）已完成内部 TestFlight 交付，用户确认共享 Linux 清理会话已恢复。换机 iPad 的最新整理回执记录了 19 个候选，在第一个磁盘的维护准备阶段停止，文件分配量减少了 0 字节。两份旧恢复记录均已结束。[348 交付记录](releases/builds/FLOE_1.8.27_BUILD348_DELIVERY.md)
 
 **1.8.25（346）已交付三条授权渠道。** 冻结前完整Apple只读分页确认其未使用，随后实际归档925.43秒、规范封包和签名核验通过。独立Apple GET确认内部可装，实际公开IPA及在线Feather源严格匹配；独立Game预研未设为等待门槛。手动字体UI及真机容量等边界见[交付记录](releases/builds/FLOE_1.8.25_BUILD346_DELIVERY.md)。345不可变，本轮未提交公开TestFlight或正式App Store。
 

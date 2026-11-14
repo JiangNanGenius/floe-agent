@@ -8,7 +8,11 @@ public enum TerminalSidePanel: String, Hashable, Sendable { case assistant, file
 /// Wrap the existing terminal feature. System inspector adapts to sheets on compact screens.
 public struct TerminalToolboxWorkspace<Terminal: View, Assistant: View, Files: View>: View {
     @Environment(\.locale) private var toolboxLocale
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     private func fileText(_ zh: String,_ en: String) -> String { toolboxLocale.language.languageCode?.identifier == "zh" ? zh : en }
+    private var inspectorWidths: (min: CGFloat, ideal: CGFloat, max: CGFloat) {
+        horizontalSizeClass == .regular ? (360, 440, 560) : (280, 320, 420)
+    }
     @Binding private var panel: TerminalSidePanel?
     private let terminal: Terminal
     private let assistant: Assistant
@@ -30,7 +34,7 @@ public struct TerminalToolboxWorkspace<Terminal: View, Assistant: View, Files: V
                 case .files: files
                 case nil: EmptyView()
                 }
-            }.inspectorColumnWidth(min:280,ideal:320,max:420)
+            }.inspectorColumnWidth(min: inspectorWidths.min, ideal: inspectorWidths.ideal, max: inspectorWidths.max)
         }
     }
 }
