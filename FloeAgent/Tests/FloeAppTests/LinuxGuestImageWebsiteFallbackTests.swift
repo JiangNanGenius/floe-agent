@@ -254,7 +254,8 @@ struct LinuxGuestImageWebsiteFallbackTests {
 @Suite("Execution environment GPU setting availability")
 @MainActor
 struct ExecutionEnvironmentGPUSettingTests {
-    @Test func pickerRequiresVerifiedImageAndLiveGPUDevice() {
+    @Test func graphicsStatusSeparatesInstalledImagesFromLiveDeviceReports() {
+        typealias Graphics = ExecutionEnvironmentView.GraphicsStatus
         let cpu = LinuxGuestImage(id: "resident", biosPath: "firmware.fd", qualified: true)
         let gpu = LinuxGuestImage(id: "resident", biosPath: "firmware.fd", qualified: true,
             deviceCapabilities: .init(vulkanGPU: true))
@@ -263,12 +264,16 @@ struct ExecutionEnvironmentGPUSettingTests {
             .init(id: "resident", installed: installed, verificationIssue: issue,
                   image: image, distributable: true)
         }
-        #expect(!ExecutionEnvironmentView.supportsVerifiedResidentGPU(nil, liveDeviceAvailable: true))
-        #expect(!ExecutionEnvironmentView.supportsVerifiedResidentGPU(status(cpu), liveDeviceAvailable: true))
-        #expect(!ExecutionEnvironmentView.supportsVerifiedResidentGPU(status(gpu, installed: false), liveDeviceAvailable: true))
-        #expect(!ExecutionEnvironmentView.supportsVerifiedResidentGPU(status(gpu, issue: .artifactMissing(role: "disk")), liveDeviceAvailable: true))
-        #expect(!ExecutionEnvironmentView.supportsVerifiedResidentGPU(status(gpu), liveDeviceAvailable: false))
-        #expect(ExecutionEnvironmentView.supportsVerifiedResidentGPU(status(gpu), liveDeviceAvailable: true))
+        #expect(Graphics.resolve(image: nil, running: false, present: nil, needsReset: false) == .idle)
+        #expect(Graphics.resolve(image: status(cpu), running: false, present: nil, needsReset: false) == .updateComponent)
+        #expect(Graphics.resolve(image: status(cpu, installed: false), running: false, present: nil, needsReset: false) == .idle)
+        #expect(Graphics.resolve(image: status(cpu, issue: .artifactMissing(role: "disk")), running: false, present: nil, needsReset: false) == .idle)
+        #expect(Graphics.resolve(image: status(gpu), running: false, present: true, needsReset: false) == .idle)
+        #expect(Graphics.resolve(image: status(gpu), running: true, present: nil, needsReset: false) == .idle)
+        #expect(Graphics.resolve(image: status(gpu), running: true, present: false, needsReset: false) == .unavailable)
+        #expect(Graphics.resolve(image: status(gpu), running: true, present: true, needsReset: true) == .restart)
+        #expect(Graphics.resolve(image: status(gpu), running: true, present: true, needsReset: false) == .active)
+        #expect(Graphics.resolve(image: nil, running: true, present: true, needsReset: false) == .active)
     }
 }
 #endif

@@ -35,7 +35,6 @@ struct ExecutionEnvironmentView: View {
     @State private var linuxGuestStatus: LinuxGuestStatus?
     @State private var linuxBusy = false
     @State private var linuxError: String?
-    @State private var linuxUpdateNotice: String?
     /// Shared background-work record for the Linux session (state + the
     /// bounded metrics sample). Read from the app-wide registry so this screen
     /// shows the same numbers as notifications and the status surface.
@@ -64,20 +63,30 @@ struct ExecutionEnvironmentView: View {
     @State private var sharedRuntimeRunning = false
     @State private var sharedRunningIDs: Set<String> = []
 
-    static func supportsVerifiedResidentGPU(_ status: LinuxGuestImageInstallationService.ImageStatus?, liveDeviceAvailable: Bool) -> Bool {
-        guard liveDeviceAvailable, let status, status.installed, status.verificationIssue == nil,
-              let image = status.image, image.id == status.id, image.qualified else { return false }
-        return image.deviceCapabilities?.vulkanGPU == true
-    }
+    enum GraphicsStatus {
+        case idle, updateComponent, unavailable, restart, active
 
-    private var verifiedResidentGPUAvailable: Bool {
-        Self.supportsVerifiedResidentGPU(linuxImageStatus, liveDeviceAvailable: sharedRuntimeRunning
-            && sharedGPUStatus?.present == true && sharedGPUStatus?.needsReset == false)
+        static func resolve(image status: LinuxGuestImageInstallationService.ImageStatus?,
+                            running: Bool, present: Bool?, needsReset: Bool) -> Self {
+            if running, let present {
+                if needsReset { return .restart }
+                if present { return .active }
+            }
+            if let status, status.installed, status.verificationIssue == nil, let image = status.image,
+               image.id == status.id, image.qualified, image.deviceCapabilities?.vulkanGPU != true {
+                return .updateComponent
+            }
+            return running && present == false ? .unavailable : .idle
+        }
     }
 
     private var proposedSharedConfiguration: LinuxGuestLifecycleConfig {
-        .init(vcpus: sharedCPUs, memoryMB: sharedMemoryMB,
-              gpuMemoryMB: verifiedResidentGPUAvailable ? sharedGPUMemoryMB : sharedConfiguration?.gpuMemoryMB)
+        .init(vcpus: sharedCPUs, memoryMB: sharedMemoryMB, gpuMemoryMB: sharedGPUMemoryMB)
+    }
+
+    private var graphicsStatus: GraphicsStatus {
+        .resolve(image: linuxImageStatus, running: sharedRuntimeRunning, present: sharedGPUStatus?.present,
+                 needsReset: sharedGPUStatus?.needsReset == true)
     }
 
     private var runtimeRecoveryRunning: Bool {
@@ -133,12 +142,14 @@ struct ExecutionEnvironmentView: View {
                                 .foregroundStyle(FloeTheme.pending)
                         }
                     }
-                    if verifiedResidentGPUAvailable {
-                        Picker("execution.shared.gpu_memory", selection: $sharedGPUMemoryMB) {
-                            ForEach([256, 512, 768, 1024, 1536, 2048], id: \.self) { value in
-                                Text(value == 1024 ? "1 GB" : value == 2048 ? "2 GB" : "\(value) MB").tag(value)
-                            }
+                    Picker("execution.shared.gpu_memory", selection: $sharedGPUMemoryMB) {
+                        ForEach([256, 512, 768, 1024, 1536, 2048], id: \.self) { value in
+                            Text(value == 1024 ? "1 GB" : value == 2048 ? "2 GB" : "\(value) MB").tag(value)
                         }
+                    }
+                    .accessibilityIdentifier("execution.shared.gpu_memory")
+                    switch graphicsStatus {
+                    case .active:
                         if let gpu = sharedGPUStatus {
                             LabeledContent("execution.shared.gpu_current", value: gpuMemoryLabel(gpu.effectiveBytes))
                             if gpu.pending {
@@ -149,13 +160,21 @@ struct ExecutionEnvironmentView: View {
                                 Text("execution.shared.gpu_limited").font(.subheadline).foregroundStyle(.secondary)
                             }
                         }
+                    case .updateComponent:
+                        Text("execution.shared.gpu_update_image").font(.footnote).foregroundStyle(.secondary)
+                    case .unavailable:
+                        Text("execution.shared.gpu_not_active").font(.footnote).foregroundStyle(.secondary)
+                    case .restart:
+                        Text("execution.shared.gpu_unavailable").font(.footnote).foregroundStyle(.secondary)
+                    case .idle:
+                        EmptyView()
                     }
                     if sharedRuntimeRunning {
                         LabeledContent("execution.shared.projects", value: String(sharedRunningIDs.count))
                         Button("execution.shared.stop", role: .destructive) { runtimeRecovery = .stopShared }
                     }
                     if sharedConfiguration != proposedSharedConfiguration
-                        || (verifiedResidentGPUAvailable && sharedGPUStatus?.clamped == true) {
+                        || (graphicsStatus == .active && sharedGPUStatus?.clamped == true) {
                         Button("execution.shared.save") { Task { await saveSharedConfiguration() } }
                             .disabled(linuxBusy)
                     }
@@ -261,7 +280,7 @@ struct ExecutionEnvironmentView: View {
         }
         .task(id: linuxEnvironmentID) { await observeLinuxBackgroundWork() }
         .task(id: linuxGuestStatus?.running) { await pollServiceCount() }
-        .task(id: sharedRuntimeRunning) { await pollSharedResources() }
+        .task(id: sharedConfiguration != nil) { await pollSharedResources() }
     }
 
     // MARK: - Linux background session (explicit user control)
@@ -410,6 +429,7 @@ struct ExecutionEnvironmentView: View {
         if let model = linuxImageModel {
             LinuxImageInstallCard(
                 model: model,
+                onInstalled: { await refreshActiveImage(force: true) },
                 allowsManualStart: false,
                 embeddedInForm: true
             )
@@ -528,12 +548,26 @@ struct ExecutionEnvironmentView: View {
         return mib == 1024 ? "1 GB" : mib == 2048 ? "2 GB" : "\(mib) MB"
     }
 
-    @MainActor private func pollSharedResources() async {
-        guard sharedRuntimeRunning, let service = center.environment.linuxGuestService else { return }
-        while !Task.isCancelled {
+    @MainActor private func refreshSharedResources(_ service: LinuxGuestCommandService) async {
+        let phase = await service.sharedMachinePhase()
+        let runningIDs = phase == nil || phase == .running
+            ? Set(await service.runtimeStates().filter(\.running).map(\.environmentID)) : []
+        sharedRuntimeRunning = phase.map { $0 == .running } ?? !runningIDs.isEmpty
+        sharedRunningIDs = runningIDs
+        if sharedRuntimeRunning {
             sharedMemoryStatus = await service.sharedMemoryStatus()
             sharedGPUStatus = await service.sharedGPUStatus()
+        } else {
+            sharedMemoryStatus = nil
+            sharedGPUStatus = nil
+        }
+    }
+
+    @MainActor private func pollSharedResources() async {
+        guard sharedConfiguration != nil, let service = center.environment.linuxGuestService else { return }
+        while !Task.isCancelled {
             do { try await Task.sleep(for: .seconds(3)) } catch { return }
+            await refreshSharedResources(service)
         }
     }
 
@@ -559,6 +593,16 @@ struct ExecutionEnvironmentView: View {
         }
     }
 
+    @MainActor private func refreshActiveImage(force: Bool) async {
+        do {
+            let id = try await FloePlatformServices.shared.activeLinuxImageID()
+            linuxImageStatus = await FloePlatformServices.shared.linuxImageStatus(id: id, force: force)
+        } catch {
+            linuxImageStatus = nil
+            linuxError = error.localizedDescription
+        }
+    }
+
     /// Reads the App-shared image state, finds the first Linux environment and
     /// reports the real guest state. No state is invented when the service is
     /// unavailable. `force` (start/stop and other explicit actions) bypasses
@@ -569,34 +613,19 @@ struct ExecutionEnvironmentView: View {
         // No storage guard: the install model performs recoverable init and
         // reports its own real state; environment reports below are
         // independent of image storage.
-        let imageID: String?
-        do { imageID = try await FloePlatformServices.shared.activeLinuxImageID(); linuxError = nil }
-        catch { imageID = nil; linuxError = error.localizedDescription }
-        if linuxImageModel == nil {
-            linuxImageModel = LinuxImageInstallModel()
-        }
-        await linuxImageModel?.probeOnce()
-        if let imageID {
-            linuxImageStatus = await FloePlatformServices.shared.linuxImageStatus(id: imageID, force: force)
-            linuxUpdateNotice = await FloePlatformServices.shared.linuxComponentUpdateNeeded(id: imageID)
-        } else {
-            linuxImageStatus = nil
-            linuxUpdateNotice = nil
-        }
+        linuxError = nil
         if let service = center.environment.linuxGuestService {
             sharedConfiguration = await service.sharedGuestConfiguration()
             sharedCPUs = sharedConfiguration?.vcpus ?? 2
             sharedMemoryMB = sharedConfiguration?.memoryMB ?? 512
             sharedGPUMemoryMB = sharedConfiguration?.resolvedGPUMemoryMB ?? 1024
-            sharedMemoryStatus = await service.sharedMemoryStatus()
-            sharedGPUStatus = await service.sharedGPUStatus()
-            sharedRunningIDs = Set(await service.runtimeStates().filter(\.running).map(\.environmentID))
-            if let phase = await service.sharedMachinePhase() {
-                sharedRuntimeRunning = phase == .running
-            } else {
-                sharedRuntimeRunning = !sharedRunningIDs.isEmpty
-            }
+            await refreshSharedResources(service)
         }
+        if linuxImageModel == nil {
+            linuxImageModel = LinuxImageInstallModel()
+        }
+        await linuxImageModel?.probeOnce()
+        await refreshActiveImage(force: force)
         guard let reports = try? await FloePlatformServices.shared.environmentReports() else { return }
         let linuxReports = reports.filter {
             $0.record.effectiveExecutionBackend == .linuxVM && $0.record.state != .deleting

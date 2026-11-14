@@ -142991,13 +142991,29 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Update the runtime component to use graphics memory settings."
+            "value": "Update the Linux component to use graphics acceleration."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "更新运行组件以使用图形内存设置。"
+            "value": "更新 Linux 组件后可使用图形加速。"
+          }
+        }
+      }
+    },
+    "execution.shared.gpu_not_active": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Graphics acceleration is unavailable in this session."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本次运行未启用图形加速。"
           }
         }
       }
