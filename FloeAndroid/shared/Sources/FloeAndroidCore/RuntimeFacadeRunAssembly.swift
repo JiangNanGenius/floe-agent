@@ -278,11 +278,14 @@ extension FacadeRunDomain {
     /// RAM-only/public-web-only narrowing.
     ///
     /// `localLinuxShellTarget` is a SEPARATE, additive route fact for the
-    /// optional-cleanup corrective path: true only when the app resolved this
-    /// run's execution target to the local Linux PRoot guest. It does not
-    /// change `localLinuxGuestEnvironment` or enable any deterministic
-    /// local-guest allow carve-out; an SSH target, no target, a temporary/
-    /// Notes run and every native backend stay false.
+    /// optional-cleanup corrective path AND the trusted package-review
+    /// environment class: true only when the app resolved this run's
+    /// execution target to the local Linux PRoot guest. It does not change
+    /// `localLinuxGuestEnvironment` or enable any deterministic local-guest
+    /// allow carve-out; an SSH target, no target, a temporary/Notes run and
+    /// every native backend stay false. The runtime uses it only for a real
+    /// direct `exec.shell` or an exact `jobs.submit`→`exec.shell` wrapper, so
+    /// native/remote/unknown and malformed calls keep their existing class.
     static func runtimeConfiguration(conversationID: UUID,
                                      provider: ProviderProfile,
                                      model: ModelProfile,
@@ -594,8 +597,9 @@ extension FacadeRunDomain {
         // is false; the ORIGINAL runtime child-binding guard still runs from
         // the bound id (AgentRuntime.swift:3336-3351). The separate
         // `localLinuxShellTarget` records whether THIS run's execution target
-        // resolved to `.localLinux`; it gates only the optional-cleanup
-        // corrective path, never a deterministic allow.
+        // resolved to `.localLinux`; it gates the optional-cleanup corrective
+        // path and the trusted PRoot package-review class for real shell
+        // calls, never a deterministic allow or a `.linuxVM` guest claim.
         var configuration = Self.runtimeConfiguration(
             conversationID: conversationID,
             provider: launch.provider,

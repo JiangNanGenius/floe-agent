@@ -427,7 +427,12 @@ private func parseJobID(_ raw: String) throws -> UUID {
 public struct JobsSubmitTool: AgentTool {
     public struct Arguments: Decodable, Sendable {
         public var tool: String
-        /// JSON-encoded arguments object for the target tool.
+        /// JSON-encoded arguments object for the target tool. This decoder
+        /// stays STRICT on the published schema: the runtime's canonical
+        /// ingress may normalize the one supported jobs.submit→exec.shell
+        /// nested-object shape into this string BEFORE approval/dispatch, but
+        /// an object/scalar that reaches the raw tool is still refused here
+        /// rather than silently re-interpreted.
         public var arguments: String
         public var purpose: String?
         /// Required by default: this task stays open (nonterminal) until the

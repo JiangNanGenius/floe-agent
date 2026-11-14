@@ -1274,10 +1274,14 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
                     // the original reconciliation retention (no timer release).
                     if await retireIfRuntimeGenerationChanged(sessionKey: sessionKey) { return }
                     await markReconciledFenced(sessionKey: sessionKey)
-                    return
+                    // A transient read failure is not a terminal engine
+                    // result. Keep the exact retained session observable and
+                    // retry its read within the existing observation budget;
+                    // a later real release receipt can still settle it.
                 }
                 if Date().timeIntervalSince(started) > configuration.reconcileObservation { return }
-                try? await Task.sleep(nanoseconds: configuration.reconcileIntervalNanos)
+                do { try await Task.sleep(nanoseconds: configuration.reconcileIntervalNanos) }
+                catch { return } // retain ownership; never spin after cancellation
             }
         }
     }

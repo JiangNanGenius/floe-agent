@@ -1329,3 +1329,27 @@ Stop/Takeover before backend cleanup, and queued presentation callbacks recheck
 the existing live owner. The existing task observer also follows approval phases
 so a wait for the user overrides the previous operation's visual completion.
 The presentation remains separate from authority and cannot approve or restart work.
+
+## 2026-11-14 — task-scoped stops and Linux background package review
+
+Device Stop/Takeover state and asynchronous cleanup are bound to the exact
+task/run and stop generation. A separately authorized live owner uses the
+existing automatic admission path without inheriting another owner's stop or
+grant. Global phone-service cleanup is serialized with admission; screenshot
+consent remains independent from structured UI availability.
+
+The package reviewer receives a distinct, app-resolved `localLinuxPRoot` route
+for actual task shell work, including the bounded `jobs.submit` wrapper around
+`exec.shell`. This route is not a VM or disposability claim and enables none of
+the existing deterministic VM carve-outs. Supported argument normalization
+occurs before review; authority retains the exact approved payload digest.
+
+Shell reconciliation continues reading an exact retained session after a
+transient read failure, within its original observation budget. Only a real
+engine release receipt or proven runtime-generation replacement settles it;
+errors, EOF and elapsed time do not.
+
+Twenty focused methods passed in the actual Swift host modules, with unchanged
+source inputs and package locks. The original missing-fixture compiler failure
+was retained before completing the host inputs. ARM64 production, Kotlin and
+Samsung evidence are recorded separately with the final candidate delivery.

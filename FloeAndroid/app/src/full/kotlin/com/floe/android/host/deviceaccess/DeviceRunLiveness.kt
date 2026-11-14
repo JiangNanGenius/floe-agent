@@ -45,6 +45,13 @@ internal interface DeviceRunReadPort {
  */
 internal class DeviceRunLiveness(
     private val source: DeviceRunReadPort,
+    /**
+     * The host's exact-owner stop fence. It is checked after the asynchronous
+     * native snapshot and before an observation is installed, so a Stop that
+     * lands while [confirm] is awaiting cannot revive that owner. A different
+     * owner is never affected.
+     */
+    private val ownerStopped: (PhoneControlOwner) -> Boolean = { false },
     private val onChanged: () -> Unit,
 ) {
     private enum class State { CHECKING, LIVE, ENDED }
@@ -67,9 +74,23 @@ internal class DeviceRunLiveness(
             current.get() === observed
     }
 
-    suspend fun confirm(owner: PhoneControlOwner, epoch: Long): Boolean = admission.withLock {
+    suspend fun confirm(
+        owner: PhoneControlOwner,
+        epoch: Long,
+        /**
+         * True ONLY for the explicit user re-allow/Continue gesture already
+         * validated by the host's stop-settle rule. Automatic admission never
+         * sets this, so a stop remains fail-closed outside that gesture.
+         */
+        allowStopped: Boolean = false,
+    ): Boolean = admission.withLock {
         if (epoch <= 0 || source.currentEpoch() != epoch) {
             refusalCode = "epoch_changed"
+            return@withLock false
+        }
+        if (!allowStopped && ownerStopped(owner)) {
+            refusalCode = "control_stopped"
+            current.get()?.takeIf { it.owner == owner }?.let(::end)
             return@withLock false
         }
         if (answer(owner, epoch) == true) return@withLock true
@@ -82,13 +103,15 @@ internal class DeviceRunLiveness(
             null
         }
         if (stopFence.get() != fence || source.currentEpoch() != epoch ||
+            (!allowStopped && ownerStopped(owner)) ||
             proof == null || proof.terminal || !proof.liveOwner ||
             proof.watermark < 0 ||
             !owner.taskID.toString().equals(proof.taskID, ignoreCase = true) ||
             !owner.runID.toString().equals(proof.runID, ignoreCase = true)
         ) {
             refusalCode = when {
-                stopFence.get() != fence -> "control_stopped"
+                stopFence.get() != fence || (!allowStopped && ownerStopped(owner)) ->
+                    "control_stopped"
                 source.currentEpoch() != epoch -> "epoch_changed"
                 proof == null -> source.snapshotFailureCode() ?: "snapshot_unavailable"
                 proof.terminal -> "run_terminal"
@@ -125,6 +148,7 @@ internal class DeviceRunLiveness(
         }
         observed.stream.set(handle)
         if (current.get() !== observed || stopFence.get() != fence || source.currentEpoch() != epoch ||
+            (!allowStopped && ownerStopped(owner)) ||
             !observed.state.compareAndSet(State.CHECKING, State.LIVE)
         ) {
             refusalCode = refusalCode ?: "observation_lost"
@@ -141,6 +165,17 @@ internal class DeviceRunLiveness(
     fun stop() {
         stopFence.incrementAndGet()
         current.get()?.let(::end)
+    }
+
+    /**
+     * End ONLY this exact owner's proof. Old asynchronous stop/takeover
+     * cleanup must not tear down a different owner's newer observation.
+     */
+    fun stop(owner: PhoneControlOwner) {
+        val observed = current.get() ?: return
+        if (observed.owner != owner) return
+        end(observed)
+        current.compareAndSet(observed, null)
     }
 
     private fun end(observed: Observation) {

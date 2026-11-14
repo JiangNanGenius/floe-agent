@@ -15,7 +15,11 @@
 
 import Foundation
 
-/// Trusted class of the execution environment a call routes to.
+/// Trusted class of the execution environment a call routes to. Classes are
+/// RUNTIME-RESOLVED ROUTE FACTS, not model labels: a broader carve-out must
+/// require its own exact class (today the deterministic local-guest
+/// carve-outs require `.localLinuxVM` and are never satisfied by the PRoot
+/// route class).
 public enum ApprovalEnvironmentClass: String, Sendable, Codable, Hashable {
     /// The run's execution environment resolves to a local Linux guest: the
     /// environment record is explicitly `executionBackend == .linuxVM` and
@@ -27,8 +31,20 @@ public enum ApprovalEnvironmentClass: String, Sendable, Codable, Hashable {
     /// any backend dispatch, and the user's reduced-review policy for this
     /// guest does not change deletion/reset or persistent-data safeguards.
     case localLinuxVM
-    /// Any other local execution (native compatibility backend, or an
-    /// environment the runtime could not classify as a guest).
+    /// The app-resolved local Linux PRoot shell route for THIS task: a direct
+    /// `exec.shell` with a real command, or an admitted `jobs.submit` wrapper
+    /// whose exact target is `exec.shell` and whose bounded declaration is a
+    /// real one-shot shell command. This is a ROUTE fact, not a guest record:
+    /// PRoot is not a VM, it makes no ownership/disposability/data-protection
+    /// claim, and it deliberately does NOT satisfy the deterministic
+    /// local-guest carve-outs (those require the separate `.localLinuxVM`
+    /// environment class). It exists so the software-package reviewer can
+    /// judge scoped dependency preparation in the task's actual resolved
+    /// Linux engine instead of assuming the Android host or a remote target.
+    case localLinuxPRoot
+    /// Any other local execution: the native compatibility backend, a shell
+    /// call whose app-resolved route was not positively the task PRoot target,
+    /// or an environment the runtime could not classify as a guest.
     case localNative
     /// A remote target reached through a host-scoped call.
     case remote
