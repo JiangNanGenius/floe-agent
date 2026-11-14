@@ -462,7 +462,7 @@ struct LocalTerminalView: View {
                 onSend: { data in owner.enqueue(data) },
                 onResize: { columns, rows in Task { await owner.resize(columns: columns, rows: rows) } })
             if owner.waitingForLinuxUpgrade {
-                LocalTerminalUpgradeProgress()
+                LinuxRuntimeUpgradeProgress()
                     .padding()
             } else if let missingID = owner.missingImageID,
                let model = installModel, model.imageID == missingID {
@@ -504,25 +504,5 @@ struct LocalTerminalView: View {
             await owner.startIfNeeded()
             await owner.pollWhileVisible()
         }
-    }
-}
-
-private struct LocalTerminalUpgradeProgress: View {
-    @ObservedObject private var jobs = EnvironmentPackageJobs.shared
-
-    var body: some View {
-        let id = FloePlatformServices.residentRecoveryJobID
-        let phase = jobs.phases[id] ?? .checking
-        VStack(alignment: .leading, spacing: 4) {
-            ProgressView(value: phase == .downloading ? jobs.fractions[id] : nil) {
-                Text(LinuxImageInstallCard.phaseText(phase))
-            }
-            if phase == .downloading, let transfer = jobs.transfers[id] {
-                Text(LinuxImageInstallCard.recoveryByteText(transfer))
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

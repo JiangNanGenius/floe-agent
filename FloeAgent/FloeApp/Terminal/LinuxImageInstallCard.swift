@@ -527,15 +527,10 @@ struct LinuxImageInstallCard: View {
     @ViewBuilder
     private var content: some View {
         if model.recoveryRunning {
-            let phase = jobs.phases[model.recoveryJobID] ?? .checking
             if model.recoveryCancelling || jobs.isCancelling(id: model.recoveryJobID) {
                 ProgressView("envmgr.cancelling")
             } else {
-                Text(Self.phaseText(phase)).font(.caption).foregroundStyle(.secondary)
-                ProgressView(value: phase == .downloading ? jobs.fractions[model.recoveryJobID] : nil)
-                if phase == .downloading, let transfer = jobs.transfers[model.recoveryJobID] {
-                    Text(Self.recoveryByteText(transfer)).font(.caption2.monospacedDigit())
-                }
+                LinuxRuntimeUpgradeProgress()
             }
             Button("terminal.linux_image_install_card.cancel") { model.cancelPreservingRecovery() }
                 .buttonStyle(.bordered).disabled(model.recoveryCancelling || jobs.isCancelling(id: model.recoveryJobID))
@@ -824,5 +819,28 @@ struct LinuxImageInstallCard: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
+    }
+}
+
+struct LinuxRuntimeUpgradeProgress: View {
+    @ObservedObject private var jobs = EnvironmentPackageJobs.shared
+
+    var body: some View {
+        let id = FloePlatformServices.residentRecoveryJobID
+        let phase = jobs.phases[id] ?? .checking
+        VStack(alignment: .leading, spacing: 4) {
+            Text(LinuxImageInstallCard.phaseText(phase))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            ProgressView(value: phase == .downloading ? jobs.fractions[id] : nil)
+                .progressViewStyle(.linear)
+            if phase == .downloading, let transfer = jobs.transfers[id] {
+                Text(LinuxImageInstallCard.recoveryByteText(transfer))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
     }
 }

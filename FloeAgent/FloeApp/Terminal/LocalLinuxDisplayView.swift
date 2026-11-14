@@ -60,7 +60,12 @@ struct LocalLinuxDisplayView: View {
             ContentUnavailableView {
                 Label(statusTitle, systemImage: statusImage)
             } description: {
-                Text(statusDetail)
+                if owner.upgradingComponent {
+                    LinuxRuntimeUpgradeProgress()
+                        .frame(maxWidth: 360)
+                } else {
+                    Text(statusDetail)
+                }
             } actions: {
                 if owner.canStart {
                     Button(IDELanguageRunText.t("打开屏幕", "Open screen")) {
@@ -68,17 +73,13 @@ struct LocalLinuxDisplayView: View {
                     }
                     .buttonStyle(.borderedProminent)
                 }
-                if owner.requiresComponentUpgrade {
+                if owner.requiresComponentUpgrade && !owner.upgradingComponent {
                     Button(IDELanguageRunText.t("升级 Linux 环境", "Upgrade Linux environment")) {
                         showsUpgradeConfirmation = true
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(owner.upgradingComponent)
                 }
-                if owner.upgradingComponent {
-                    ProgressView(IDELanguageRunText.t("正在升级 Linux 环境…", "Upgrading the Linux environment…"))
-                }
-                if case .failed(let message) = owner.state {
+                if !owner.upgradingComponent, case .failed(let message) = owner.state {
                     DisclosureGroup(IDELanguageRunText.t("详情", "Details")) {
                         Text(message).font(.caption.monospaced()).textSelection(.enabled)
                     }
@@ -134,6 +135,7 @@ struct LocalLinuxDisplayView: View {
     }
 
     private var statusColor: Color {
+        if owner.upgradingComponent { return .orange }
         switch owner.state {
         case .ready: return .green
         case .starting, .connecting, .stopping, .resolving: return .orange
@@ -143,6 +145,7 @@ struct LocalLinuxDisplayView: View {
     }
 
     private var statusImage: String {
+        if owner.upgradingComponent { return "arrow.triangle.2.circlepath" }
         switch owner.state {
         case .failed, .ended: return "display.trianglebadge.exclamationmark"
         case .unavailable: return "display.slash"
@@ -151,6 +154,7 @@ struct LocalLinuxDisplayView: View {
     }
 
     private var statusTitle: String {
+        if owner.upgradingComponent { return IDELanguageRunText.t("正在升级 Linux 环境…", "Upgrading Linux environment…") }
         switch owner.state {
         case .resolving: return IDELanguageRunText.t("正在解析环境…", "Resolving environment…")
         case .unavailable: return IDELanguageRunText.t("此环境不支持屏幕", "Screen unavailable for this environment")
