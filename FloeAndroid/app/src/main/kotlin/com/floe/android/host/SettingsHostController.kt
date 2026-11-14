@@ -840,6 +840,7 @@ class SettingsHostController internal constructor(
                             ),
                         )
                     }
+                    host.conversations.rootWorkspace.refreshDraftApprovalFromGlobalDefault()
                 }
                 is HostOperationOutcome.Rejected -> update {
                     it.copy(defaultsStatus = SurfaceStatus(error = outcome.code))
