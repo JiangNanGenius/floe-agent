@@ -342,6 +342,50 @@ class HomeLaunchpadHostTest {
     }
 
     @Test
+    fun blankNewTaskAdoptsSavedDefaultOnItsFirstSend() = runBlocking {
+        assertFreshTaskDefaultReachesFirstSend(viaCreateButton = true)
+    }
+
+    @Test
+    fun directConversationCreateAdoptsSavedDefaultOnItsFirstSend() = runBlocking {
+        assertFreshTaskDefaultReachesFirstSend(viaCreateButton = false)
+    }
+
+    private suspend fun assertFreshTaskDefaultReachesFirstSend(viaCreateButton: Boolean) {
+        val script = Script().apply { defaultAgentMode = "fullControl" }
+        val exchange = buildExchange(script)
+        val host = readyHost(script, exchange)
+        try {
+            host.settings.refreshDefaults()
+            assertTrue(awaitUntil {
+                host.conversations.rootWorkspace.draftApprovalMode.value ==
+                    com.floe.android.feature.conversation.ApprovalModeUi.FULL_ACCESS
+            })
+            if (viaCreateButton) {
+                host.home.createFreshTask("", onDraftConsumed = { _, _ -> }) { _, _ -> }
+            } else {
+                assertTrue(host.conversations.createConversation())
+            }
+            assertTrue(awaitUntil { host.conversations.navigationRequest.value != null })
+            val holder = host.conversations.holderFor(createdId, isTemporary = false, incarnationId = null)
+            host.conversations.loadThread(holder.session)
+            assertTrue(awaitUntil { holder.snapshot.value?.hasLoaded == true })
+            assertEquals(
+                com.floe.android.feature.conversation.ApprovalModeUi.FULL_ACCESS,
+                holder.draftTaskApprovalMode,
+            )
+            holder.selectedModelId.value = modelId
+            holder.onDraftChange(androidx.compose.ui.text.input.TextFieldValue("Use the new task default"))
+            holder.send()
+            assertTrue(awaitUntil { exchange.envelopesOf("run.start").size == 1 })
+            val payload = exchange.envelopesOf("run.start").single()["payload"]!!.jsonObject
+            assertEquals("fullAccess", payload["approvalMode"]!!.jsonPrimitive.content)
+        } finally {
+            host.stop()
+        }
+    }
+
+    @Test
     fun savedFullControlDefaultReachesTheFirstRunPayload() = runBlocking {
         val script = Script().apply { defaultAgentMode = "fullControl" }
         val exchange = buildExchange(script)

@@ -352,10 +352,14 @@ class RootWorkspaceController internal constructor(
      * unedited draft; a user's task-specific choice stays authoritative. */
     internal fun refreshDraftApprovalFromGlobalDefault() = synchronized(attachmentLock) {
         if (draftApprovalExplicitlySelected) return@synchronized
+        draftApprovalModeState.value = globalDefaultApprovalMode()
+    }
+
+    internal fun globalDefaultApprovalMode(): ApprovalModeUi {
         val defaultsMode = runCatching {
             host.settings.state.value.defaults.defaultAgentMode
         }.getOrNull()
-        draftApprovalModeState.value = when (defaultsMode) {
+        return when (defaultsMode) {
             "approvalModel" -> ApprovalModeUi.AUTOMATIC
             "fullControl" -> ApprovalModeUi.FULL_ACCESS
             else -> ApprovalModeUi.ASK

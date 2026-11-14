@@ -7066,11 +7066,25 @@ class ConversationHostController internal constructor(
         }
     }
 
+    /** Called only for an owned, newly-created ordinary header, before its
+     * route is published. The first run adopts this choice atomically. */
+    internal fun seedCreatedDraftApprovalMode(id: String, mode: ApprovalModeUi) {
+        val holder = holderFor(id, isTemporary = false, incarnationId = null)
+        val entry = holders[id] ?: return
+        if (holder.hasPendingLaunch || entry.builder.selectedRunId != null ||
+            entry.builder.policyRevision != null
+        ) return
+        holder.setDraftTaskApprovalMode(mode)
+        entry.builder.applyDraftApprovalMode(mode)
+        holder.applyHostSnapshot(entry.builder.build())
+    }
+
     override fun createConversation(): Boolean {
         var started = false
         createConversationForLaunch(
             title = null,
             onCreated = { id ->
+                seedCreatedDraftApprovalMode(id, rootWorkspace.globalDefaultApprovalMode())
                 navigationRequest.value = SidebarSelection.Conversation(id)
             },
             onFailure = { },
