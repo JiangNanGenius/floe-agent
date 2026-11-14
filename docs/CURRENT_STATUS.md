@@ -7,7 +7,7 @@
 
 ## 2026-11-15 iOS 内部测试 / Internal TestFlight
 
-Floe QA 已可安装 1.8.30（351）。此构建整理旧 Linux 镜像、改进换机后容量估算，并在 GPU 初始化失败时保持 Linux 可启动。换机 iPad 的实际释放量仍待测量。 / The internal build retires old Linux disks, improves storage estimates after migration and starts Linux on the CPU if GPU initialization fails. Reclaimed space on the migrated iPad is pending measurement. [交付记录 / Delivery](releases/builds/FLOE_1.8.30_BUILD351_DELIVERY.md)
+Floe QA 已可安装 1.8.30（351）。此构建整理旧 Linux 镜像、改进换机后容量估算，并在 GPU 初始化失败时保持 Linux 可启动。用户已在此前出现容量异常的换机 iPad 上确认清理完成。 / The internal build retires old Linux disks, improves storage estimates after migration and starts Linux on the CPU if GPU initialization fails. The user confirmed that cleanup completed on the migrated iPad that had shown excessive storage use. [交付记录 / Delivery](releases/builds/FLOE_1.8.30_BUILD351_DELIVERY.md)
 
 Floe QA 已可安装 1.8.29（350）。本版修复换机后的磁盘整理启动失败，并调整工具箱助手的终端绑定和退出行为。该 iPad 更新后的实际释放量待核对。 / The build is installable by the internal Floe QA group. Actual free-space recovery on the migrated iPad is pending. [交付记录 / Delivery](releases/builds/FLOE_1.8.29_BUILD350_DELIVERY.md)
 
