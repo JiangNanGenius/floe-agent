@@ -71,20 +71,49 @@ object C01LinuxEnvironmentOwner {
         }
     }
 
-    /** Metadata only, scoped by the original runtime workspace identity. */
-    private suspend fun catalog(attached: Attachment, control: JSONObject): JSONObject = try {
-        val projectID = java.util.UUID.fromString(control.getString("projectID")).toString()
-        RuntimeConnection(attached.context).use { connection ->
-            connection.connect().get(5, TimeUnit.SECONDS)
-            RuntimeMetadataRead.read("environment.list", JSONObject().put("projectID", projectID)) {
-                    operation, payload, requestID -> connection.exchange(operation, payload, requestID)
-            }.put("phase", "ready")
+    /** Metadata only, scoped by the original runtime workspace identity.
+     *
+     *  Every failure answers a SHAPED typed refusal
+     *  (`phase=unavailable`, one bounded `code`) instead of an object Core
+     *  cannot decode. Core maps that to a typed
+     *  `environmentCatalogUnavailable` and can retry/explain it; the old
+     *  `phase=refused`-without-rows shape surfaced as an undiagnosable
+     *  generic target failure. Nothing is cached, substituted or widened.
+     *
+     *  End-to-end budget: ONE attempt, 8 s connect + 8 s metadata read =
+     *  16 s, inside the single 18 s Core mailbox wait. The Core route layer
+     *  owns the only retry (fast transients only), so no nested/stacked
+     *  timeout can exceed that one budget or leave a late retained claim. */
+    private suspend fun catalog(attached: Attachment, control: JSONObject): JSONObject {
+        val requested = runCatching {
+            java.util.UUID.fromString(control.getString("projectID")).toString()
+        }.getOrNull() ?: return catalogRefusal("requestInvalid")
+        return try {
+            RuntimeConnection(attached.context).use { connection ->
+                connection.connect().get(8, TimeUnit.SECONDS)
+                RuntimeMetadataRead.read(
+                    "environment.list", JSONObject().put("projectID", requested),
+                ) { operation, payload, requestID ->
+                    connection.exchange(operation, payload, requestID)
+                }.put("phase", "ready")
+            }
+        } catch (cancelled: CancellationException) {
+            if (cancelled is kotlinx.coroutines.TimeoutCancellationException) {
+                catalogRefusal("catalogTimeout")
+            } else {
+                throw cancelled
+            }
+        } catch (_: java.util.concurrent.TimeoutException) {
+            catalogRefusal("catalogTimeout")
+        } catch (_: Exception) {
+            catalogRefusal("catalogUnreachable")
         }
-    } catch (cancelled: CancellationException) {
-        throw cancelled
-    } catch (_: Exception) {
-        refusal("The runtime environment catalog is unavailable.")
     }
+
+    /** The one shaped non-ready catalog reply (no path, payload or host prose). */
+    private fun catalogRefusal(code: String): JSONObject = JSONObject()
+        .put("phase", "unavailable")
+        .put("code", code.take(32))
 
     private suspend fun status(attached: Attachment, control: JSONObject): JSONObject {
         val state = attached.setup.state.value

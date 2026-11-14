@@ -52,6 +52,9 @@
     <string name="executiontarget_notice_trusted">SSH host key trusted.</string>
     <string name="executiontarget_notice_rejected">SSH host key rejected. Nothing was changed.</string>
     <string name="executiontarget_error_generic">The execution target operation failed.</string>
+    <string name="executiontarget_diagnostic_details">Diagnostic details</string>
+    <string name="executiontarget_error_catalog">Could not read the environment list. Try again.</string>
+    <string name="executiontarget_error_workspace">Could not verify the workspace for this task. Open diagnostic details.</string>
     <string name="executiontarget_error_drain">The old location still owns running work. Nothing was switched. Stop it and try again.</string>
     <string name="executiontarget_error_stale">The target changed. Refresh and try again.</string>
     <string name="executiontarget_error_remote_off">Remote execution is disabled for this task.</string>

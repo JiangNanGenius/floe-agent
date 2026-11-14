@@ -59,12 +59,23 @@ public enum C02ExecutionTargetError: Error, Sendable, Equatable {
     case environmentMissing(String)
     case environmentUnavailable(String)
     case environmentNotOwned
+    /// The live runtime environment catalog could not be read (host/runtime
+    /// generation settling, transport refusal or an unreadable reply). A
+    /// transient read never means "this task has no environment": callers
+    /// keep the route retryable and must not widen or fabricate a target.
+    case environmentCatalogUnavailable(String)
     case remoteHostMissing
     case remoteHostNotFound
     case remoteNotExecutionEnvironment
     case remoteExecutionNotAllowed
     case temporaryTaskRefused
     case workspaceOwnershipMismatch
+    /// The task's persisted workspace ownership could not be resolved to the
+    /// exact managed project/private-task root this platform requires. The
+    /// associated token is a closed, secret-free branch name so the trusted
+    /// host can distinguish `unassigned` from `projectRootMissing`/unsafe
+    /// instead of an opaque mismatch.
+    case workspaceOwnershipUnresolved(String)
     case runtimeIdentityUnavailable
     case rootEpochUnavailable
     case migrationAlreadyActive
@@ -93,12 +104,14 @@ public enum C02ExecutionTargetError: Error, Sendable, Equatable {
         case .environmentMissing: return "environmentMissing"
         case .environmentUnavailable: return "environmentUnavailable"
         case .environmentNotOwned: return "environmentNotOwned"
+        case .environmentCatalogUnavailable: return "environmentCatalogUnavailable"
         case .remoteHostMissing: return "remoteHostMissing"
         case .remoteHostNotFound: return "remoteHostNotFound"
         case .remoteNotExecutionEnvironment: return "remoteNotExecutionEnvironment"
         case .remoteExecutionNotAllowed: return "remoteExecutionNotAllowed"
         case .temporaryTaskRefused: return "temporaryTaskRefused"
         case .workspaceOwnershipMismatch: return "workspaceOwnershipMismatch"
+        case .workspaceOwnershipUnresolved(let reason): return "workspaceOwnershipUnresolved:\(reason)"
         case .runtimeIdentityUnavailable: return "runtimeIdentityUnavailable"
         case .rootEpochUnavailable: return "rootEpochUnavailable"
         case .migrationAlreadyActive: return "migrationAlreadyActive"
@@ -129,12 +142,14 @@ public enum C02ExecutionTargetError: Error, Sendable, Equatable {
         case .environmentMissing(let id): return "The execution environment \(id) no longer exists."
         case .environmentUnavailable(let id): return "The execution environment \(id) is stopped, rebuilding or unavailable."
         case .environmentNotOwned: return "The environment belongs to another task or workspace."
+        case .environmentCatalogUnavailable: return "The environment list could not be read, so no execution target was bound."
         case .remoteHostMissing: return "No SSH host is selected."
         case .remoteHostNotFound: return "The configured SSH host no longer exists."
         case .remoteNotExecutionEnvironment: return "The selected host is not configured as an SSH execution environment."
         case .remoteExecutionNotAllowed: return "Remote execution is disabled for this task."
         case .temporaryTaskRefused: return "Temporary chats cannot pin an execution target or open SSH sessions."
         case .workspaceOwnershipMismatch: return "The task workspace ownership could not be verified."
+        case .workspaceOwnershipUnresolved: return "This task is not bound to a usable managed project workspace."
         case .runtimeIdentityUnavailable: return "The runtime identity is not available yet."
         case .rootEpochUnavailable: return "The native runtime generation is not active."
         case .migrationAlreadyActive: return "Another move is already in progress for this task."
@@ -155,7 +170,8 @@ public enum C02ExecutionTargetError: Error, Sendable, Equatable {
 
     public var retryable: Bool {
         switch self {
-        case .staleRevision, .environmentUnavailable, .rootEpochUnavailable, .drainTimedOut:
+        case .staleRevision, .environmentUnavailable, .rootEpochUnavailable,
+             .environmentCatalogUnavailable, .drainTimedOut:
             return true
         default:
             return false

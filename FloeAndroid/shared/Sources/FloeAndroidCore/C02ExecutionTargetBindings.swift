@@ -525,19 +525,39 @@ public struct C02SQLiteTargetOwnershipProvider: C02ExecutionTargetOwnershipProvi
         self.rootEpoch = rootEpoch
     }
 
+    /// Each nil branch is a TYPED, bounded refusal. The old `nil` collapsed
+    /// "never assigned", "the managed leaf is missing", "the row is not a
+    /// managed project" and an unsafe root into one opaque
+    /// `workspaceOwnershipMismatch`, which a real device probe cannot
+    /// distinguish. The persisted row/root is still the ONLY authority; this
+    /// adds no fallback and never creates a directory or ownership row.
     public func ownership(taskID: UUID) async throws -> C02TargetOwnership? {
-        guard let conversation = try await conversationStore.conversation(id: taskID),
-              conversation.purpose == .ordinary,
-              let workspaceID = try await workspaceStore.workspaceID(conversationID: taskID),
-              let workspace = try await workspaceStore.workspace(id: workspaceID) else {
-            return nil
+        guard let conversation = try await conversationStore.conversation(id: taskID) else {
+            throw C02ExecutionTargetError.workspaceOwnershipUnresolved("conversationMissing")
+        }
+        guard conversation.purpose == .ordinary else {
+            throw C02ExecutionTargetError.workspaceOwnershipUnresolved("purposeNotOrdinary")
+        }
+        guard let workspaceID = try await workspaceStore.workspaceID(conversationID: taskID) else {
+            throw C02ExecutionTargetError.workspaceOwnershipUnresolved("unassigned")
+        }
+        guard let workspace = try await workspaceStore.workspace(id: workspaceID) else {
+            throw C02ExecutionTargetError.workspaceOwnershipUnresolved("workspaceRowMissing")
         }
         let root: URL
         let projectID: UUID?
         if C01ProjectRootLayout.isManagedProject(workspace) {
             let state = C01ProjectRootLayout.inspectProjectDirectory(
                 rootPath: storageRoot.path, projectID: workspace.id)
-            guard state == .available else { return nil }
+            switch state {
+            case .available:
+                break
+            case .missing:
+                throw C02ExecutionTargetError.workspaceOwnershipUnresolved("projectRootMissing")
+            case .unsafe(let reason):
+                throw C02ExecutionTargetError.workspaceOwnershipUnresolved(
+                    "projectRootUnsafe:" + Self.boundedToken(reason))
+            }
             root = URL(fileURLWithPath: C01ProjectRootLayout.projectDirectory(
                 rootPath: storageRoot.path, projectID: workspace.id), isDirectory: true)
             projectID = workspace.id
@@ -545,14 +565,18 @@ public struct C02SQLiteTargetOwnershipProvider: C02ExecutionTargetOwnershipProvi
                   workspace.internalRelativePath == "PrivateTasks/\(taskID.uuidString)" {
             let candidate = storageRoot
                 .appendingPathComponent("Workspace/PrivateTasks/\(taskID.uuidString)", isDirectory: true)
-            guard FileManager.default.fileExists(atPath: candidate.path) else { return nil }
+            guard FileManager.default.fileExists(atPath: candidate.path) else {
+                throw C02ExecutionTargetError.workspaceOwnershipUnresolved("privateTaskRootMissing")
+            }
             root = candidate
             projectID = nil
         } else {
-            return nil
+            throw C02ExecutionTargetError.workspaceOwnershipUnresolved("workspaceShape")
         }
         let canonical = root.standardizedFileURL
-        guard canonical.path.hasPrefix("/") else { return nil }
+        guard canonical.path.hasPrefix("/") else {
+            throw C02ExecutionTargetError.workspaceOwnershipUnresolved("rootPathInvalid")
+        }
         let shellHash = FloeDigest.sha256Hex(Data(canonical.path.utf8))
         let engineProject = LinuxShellProjectMapping.projectID(
             forCanonicalCoreWorkspaceRoot: canonical)
@@ -570,6 +594,15 @@ public struct C02SQLiteTargetOwnershipProvider: C02ExecutionTargetOwnershipProvi
             engineOwnerHash: engineHash,
             rootEpoch: rootEpoch
         )
+    }
+
+    /// Closed, secret-free suffix for the typed ownership refusal.
+    private static func boundedToken(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.utf8.count <= 40,
+              trimmed.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_" || $0 == "-") })
+        else { return "unsafe" }
+        return trimmed
     }
 }
 
@@ -634,7 +667,19 @@ public struct C02MetadataTargetEnvironmentProvider: C02ExecutionTargetEnvironmen
         ownership: C02TargetOwnership
     ) async throws -> [C02LocalEnvironmentFacts] {
         if let liveCatalog {
-            return try await liveCatalog(ownership).filter { row in
+            let rows: [C02RuntimeEnvironmentCatalog.Row]
+            do {
+                rows = try await liveCatalog(ownership)
+            } catch let error as C02ExecutionTargetError {
+                throw error
+            } catch {
+                // Any non-domain failure from a live metadata source is a
+                // CATALOG read failure, never a foreign error that the trusted
+                // target bridge would report as a generic internal failure.
+                // Nothing is cached, substituted or guessed.
+                throw C02ExecutionTargetError.environmentCatalogUnavailable("readFailed")
+            }
+            return rows.filter { row in
                 row.kind == "project" || (row.kind == "session" &&
                     row.ownerID?.lowercased() == taskID.uuidString.lowercased())
             }.map { $0.targetFacts(projectOwner: ownership.workspaceID.uuidString) }

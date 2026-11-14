@@ -267,6 +267,169 @@ public final class RunPersonalizationFeedBinder: @unchecked Sendable {
     }
 }
 
+// MARK: - Bounded Linux route admission for one prepared run
+
+/// The typed outcome of THIS run's execution-target admission. It exists so an
+/// ordinary run never silently collapses a real target refusal into "no
+/// Linux": a definitive absence, a transient catalog read and a host refusal
+/// stay distinguishable in the run context and in focused regressions.
+///
+/// It never widens authority. There is no optimistic/lazy shell route: a run
+/// whose admission is not `.resolved` keeps the six-name shell subtraction, so
+/// `exec.shell`, `jobs.submit` and the four interactive `shell.*` names are
+/// still not offered. Execution-time guards (the C02 shell bridge pin check and
+/// the backend readiness gate) remain authoritative regardless.
+enum LinuxRouteAdmission: Sendable, Equatable {
+    /// Temporary/Notes runs and compositions without a target domain: the
+    /// legacy ceiling is used unchanged (temporary/Notes already narrow it).
+    case notAttempted
+    /// The exact task target was adopted (or an existing pin re-validated).
+    case resolved(C02ResolvedExecutionTarget)
+    /// The runtime authoritatively listed no environment this task may adopt.
+    case noAdoptableEnvironment
+    /// The read/validation itself failed. `reason` is a bounded,
+    /// secret-free closed token (never a path, payload or host prose).
+    case unavailable(String)
+
+    var target: C02ResolvedExecutionTarget? {
+        if case .resolved(let value) = self { return value }
+        return nil
+    }
+
+    /// Bounded diagnostic token for the run context. Nil means "no route
+    /// statement" (temporary/Notes runs and pre-Linux compositions).
+    var contextToken: String? {
+        switch self {
+        case .notAttempted: return nil
+        case .resolved: return nil
+        case .noAdoptableEnvironment: return "unavailable:noEnvironment"
+        case .unavailable(let reason): return "unavailable:" + reason
+        }
+    }
+}
+
+extension FacadeRunDomain {
+    /// Bounded retry spacing before the ONE re-read of a transient admission.
+    static let linuxRouteRetryDelay = Duration.milliseconds(150)
+
+    /// Resolve THIS run's execution target with a bounded retry. A transient
+    /// catalog read immediately after the first-use preflight is retried once
+    /// (the preflight has already produced/committed the task environment);
+    /// everything else is returned as a typed admission. No target is created
+    /// here that the domain would not itself adopt from an existing,
+    /// task/project-owned qualified environment.
+    static func linuxRoute(
+        attempts: Int = 2,
+        sleep: @Sendable (Duration) async -> Void = { delay in
+            try? await Task.sleep(for: delay)
+        },
+        resolve: @Sendable () async throws -> C02ResolvedExecutionTarget?
+    ) async -> LinuxRouteAdmission {
+        let rounds = max(1, min(attempts, 3))
+        var lastReason = "targetUnavailable"
+        for round in 1...rounds {
+            if Task.isCancelled { return .unavailable("cancelled") }
+            let attemptStarted = ContinuousClock.now
+            do {
+                if let resolved = try await resolve() {
+                    return .resolved(resolved)
+                }
+                // An authoritative empty/ambiguous catalog result: retry once
+                // because the preflight may have just committed this task's
+                // environment and the host listing can lag the commit.
+                lastReason = "noEnvironment"
+            } catch let error as C02ExecutionTargetError {
+                // ONLY the catalog read is retryable (and only when it failed
+                // FAST, below). Ownership, purpose, epoch, migration, cancel
+                // and pin refusals are DETERMINISTIC facts about this task;
+                // retrying them would add latency and imply a different
+                // authority. They are returned immediately with their typed
+                // code.
+                switch error {
+                case .environmentCatalogUnavailable(let reason):
+                    lastReason = Self.routeReason(reason, prefix: "catalog")
+                    if reason == "timeout" {
+                        return .unavailable(lastReason)
+                    }
+                case .rootEpochUnavailable:
+                    return .unavailable("rootEpochUnavailable")
+                case .temporaryTaskRefused:
+                    return .unavailable("temporaryTaskRefused")
+                case .workspaceOwnershipUnresolved(let reason):
+                    return .unavailable(Self.routeReason(reason, prefix: "ownership"))
+                case .workspaceOwnershipMismatch:
+                    return .unavailable("workspaceOwnershipMismatch")
+                case .migrationAlreadyActive:
+                    return .unavailable("migrationAlreadyActive")
+                default:
+                    return .unavailable(Self.routeReason(error.code, prefix: "target"))
+                }
+            } catch {
+                return .unavailable("targetUnavailable")
+            }
+            // Only a FAST transient is retried. A real bounded-wait timeout
+            // already spent the whole budget, and retrying it would stall the
+            // first provider request for no new evidence.
+            let elapsed = ContinuousClock.now - attemptStarted
+            if round < rounds, elapsed < .seconds(2) {
+                await sleep(Self.linuxRouteRetryDelay)
+            } else {
+                break
+            }
+        }
+        if lastReason == "noEnvironment" { return .noAdoptableEnvironment }
+        return .unavailable(lastReason)
+    }
+
+    /// The exact per-run ceiling narrowing. This is the ONLY place the six
+    /// shell names are removed, and the decision is made from the typed
+    /// admission above:
+    ///  * `.resolved(.ssh)` keeps `exec.shell` (the remote router owns it) and
+    ///    removes the local interactive `shell.*` sessions, exactly as before;
+    ///  * `.resolved(.localLinux)` keeps the legacy ceiling unchanged;
+    ///  * every non-resolved ordinary admission removes the shared
+    ///    execution names, including the transient refusals (a real route was
+    ///    not proven, so no shell may be offered).
+    /// Temporary/Notes runs and compositions without a target domain are
+    /// byte-identical to the previous behavior.
+    static func narrowedToolCeiling(
+        _ ceiling: Set<String>?,
+        universe: Set<String>,
+        admission: LinuxRouteAdmission,
+        hasTargetDomain: Bool,
+        temporary: Bool,
+        isNotes: Bool
+    ) -> Set<String>? {
+        guard !temporary, !isNotes, hasTargetDomain else { return ceiling }
+        let executableNames: Set<String> = ["exec.shell", "jobs.submit",
+            "shell.open", "shell.exchange", "shell.signal", "shell.close"]
+        let localSessions: Set<String> = ["shell.open", "shell.exchange",
+            "shell.signal", "shell.close"]
+        switch admission {
+        case .resolved(let resolved) where resolved.target.kind == .ssh:
+            return (ceiling ?? universe).subtracting(localSessions)
+        case .resolved:
+            return ceiling
+        case .notAttempted, .noAdoptableEnvironment, .unavailable:
+            return (ceiling ?? universe).subtracting(executableNames)
+        }
+    }
+
+    /// Bounded, secret-free reason token for the run context / diagnostics.
+    /// Keeps only a short closed-vocabulary suffix so a host string can never
+    /// carry a path, payload or command into the model context.
+    static func routeReason(_ raw: String, prefix: String) -> String {
+        let token = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let allowed = token.allSatisfy {
+            $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_" || $0 == "-")
+        }
+        guard !token.isEmpty, token.utf8.count <= 40, allowed else {
+            return prefix + ":unavailable"
+        }
+        return prefix + ":" + token
+    }
+}
+
 // MARK: - Exact runtime configuration for one prepared service
 
 extension FacadeRunDomain {
@@ -458,9 +621,21 @@ extension FacadeRunDomain {
         // pair returns instantly, so non-Linux chat is never delayed and a
         // refused/unsettled preflight simply keeps this run's Linux discovery
         // honestly unqualified — never a failed run, never assumed success.
+        var savedTargetReadFailure: String?
         let savedExecutionTarget: C02ExecutionTarget?
         if !temporary, !isNotes, let targets = components.executionTargets {
-            savedExecutionTarget = try? await targets.domain.executionTarget(taskID: conversationID)
+            do {
+                savedExecutionTarget = try await targets.domain.executionTarget(
+                    taskID: conversationID)
+            } catch {
+                // A durable read failure is retained as typed evidence instead
+                // of being indistinguishable from "no target". It never
+                // selects a first-project or temporary fallback.
+                savedExecutionTarget = nil
+                savedTargetReadFailure = Self.routeReason(
+                    (error as? C02ExecutionTargetError)?.code ?? "unreadable",
+                    prefix: "targetRead")
+            }
         } else {
             savedExecutionTarget = nil
         }
@@ -470,16 +645,26 @@ extension FacadeRunDomain {
                                                   environmentID: savedExecutionTarget?.kind == .localLinux
                                                     ? savedExecutionTarget?.environmentID : environmentID)
         }
-        // Bind only an existing, verified task environment. Failure narrows
-        // executable discovery; it does not prevent ordinary text chat.
-        let resolvedExecutionTarget: C02ResolvedExecutionTarget?
+        // Bind only an existing, verified task environment. The admission is
+        // TYPED and bounded: a transient host/catalog read is retried once
+        // (the first-use preflight above may have just committed this task's
+        // environment) instead of being silently collapsed into "no Linux".
+        // A non-resolved admission still narrows the ceiling below, so this
+        // never offers a shell route that was not actually proven.
+        let routeAdmission: LinuxRouteAdmission
         if !temporary, !isNotes, let targets = components.executionTargets,
            savedExecutionTarget != nil || RuntimeFacadeLinuxBindings.shared.isCapabilityQualified {
-            resolvedExecutionTarget = try? await targets.domain.resolveUsingExistingEnvironment(
-                taskID: conversationID, runID: runID, preferredEnvironmentID: environmentID)
+            routeAdmission = await Self.linuxRoute {
+                try await targets.domain.resolveUsingExistingEnvironment(
+                    taskID: conversationID, runID: runID,
+                    preferredEnvironmentID: environmentID)
+            }
         } else {
-            resolvedExecutionTarget = nil
+            routeAdmission = savedTargetReadFailure.map {
+                LinuxRouteAdmission.unavailable($0)
+            } ?? .notAttempted
         }
+        let resolvedExecutionTarget = routeAdmission.target
         // The persisted task policy row was committed by the ORIGINAL
         // prepare (or an earlier turn); the service policy is rebuilt from
         // THAT truth, never from envelope/model text. A TEMPORARY session
@@ -514,20 +699,17 @@ extension FacadeRunDomain {
             hostCeiling: hostToolCeiling,
             mode: modeRaw,
             temporary: temporary)
-        if !temporary, !isNotes, components.executionTargets != nil, resolvedExecutionTarget == nil {
-            // Every shell route needs the same pinned execution target. Leaving
-            // shell.* visible here would bypass the missing-target ceiling.
-            let executableNames: Set<String> = ["exec.shell", "jobs.submit",
-                "shell.open", "shell.exchange", "shell.signal", "shell.close"]
-            let available = ceiling ?? Set(components.registry.allDescriptors.map(\.name))
-            ceiling = available.subtracting(executableNames)
-        } else if resolvedExecutionTarget?.target.kind == .ssh {
-            // Interactive shell sessions are local PRoot sessions; the SSH
-            // target owns exec.shell through its existing remote router.
-            let localSessions: Set<String> = ["shell.open", "shell.exchange", "shell.signal", "shell.close"]
-            let available = ceiling ?? Set(components.registry.allDescriptors.map(\.name))
-            ceiling = available.subtracting(localSessions)
-        }
+        // Every shell route needs the same proven execution target. The typed
+        // admission (never a swallowed `try?`) decides the exact narrowing:
+        // a definitive no-environment, a transient refusal and an SSH route
+        // stay distinguishable while the offered names remain conservative.
+        ceiling = Self.narrowedToolCeiling(
+            ceiling,
+            universe: Set(components.registry.allDescriptors.map(\.name)),
+            admission: routeAdmission,
+            hasTargetDomain: components.executionTargets != nil,
+            temporary: temporary,
+            isNotes: isNotes)
         if !temporary, !isNotes,
            let installed = G02RuntimeComposition.shared.installedComposition, installed.epoch == epoch {
             let root = await LinuxWorkspaceAuthority.trustedWorkspaceRoot(
@@ -706,7 +888,7 @@ extension FacadeRunDomain {
                 workspaceName: (temporary || isNotes) ? nil : workspaceName,
                 executionTarget: resolvedExecutionTarget.map {
                     "\($0.target.kind.rawValue):\($0.target.environmentID) revision=\($0.target.revision)"
-                },
+                } ?? routeAdmission.contextToken,
                 availableToolNames: ceiling,
                 skillInstructions: isNotes ? notes?.contextText : nil,
                 taskResources: mediaTaskContext,

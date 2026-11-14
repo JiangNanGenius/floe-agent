@@ -1,5 +1,13 @@
 # Floe Android 分目标实施记录
 
+## 1.0.12／120 首次执行绑定诊断源码候选（2026-11-15）
+
+真实任务出现 Linux 状态已就绪、但本轮目录缺少终端执行工具的断点。现有原始记录保留；旧任务不继续。执行目标解析现在保留可区分的工作区归属、环境目录和原生代际失败；目录拒绝有完整类型，短暂读取失败仅作一次有界恢复，权限、迁移及取消拒绝不会自动重试。没有真实任务环境绑定时继续拒绝执行。
+
+执行位置页面增加主动展开的诊断详情；已有失败时不再额外显示笼统的“运行时就绪后可用”。主机组件的实际对象编译与 57 项定向测试通过，包括真实项目／SQLite 归属适配；Android ARM64、Kotlin、Full APK 和新项目首次发送仍待本轮候选实测。以上是组件交接，不代表原始断点已闭合，也没有发布新安装包。公开1.0.11／119、原始故障、原片及必要回滚保持不变。
+
+English: This source candidate preserves typed workspace/target/catalog failures instead of silently freezing a run without shell tools, and keeps bounded recovery within one catalog budget. Ownership, migration and cancellation refusals remain authoritative. Target errors have opt-in diagnostic details. Actual host object compilation and 57 focused tests passed; Android native/Kotlin/Full and natural first-Send acceptance remain pending. The original stopped run is preserved and never resumed; no new APK publication is claimed.
+
 ## 1.0.11／119 已公开，屏幕控制收尾通过（2026-11-15）
 
 [Android1.0.11预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v1.0.11) 固定实际App源`f42933643b0c9d8a21c428ab6ee5d36f08f3c1ab`，Full APK摘要`e67b6c2f…d80433a`。实际Full构建107秒，58项原生封装／排除、16KiB和API28／29主包签名通过；native57保持真实生产源`d43b1984…`，3174项规范输入与最终App一致。两个窗口事件suite实际编译执行29项通过，旧终端、聊天、默认值及文件／网页证据按未改输入复用。

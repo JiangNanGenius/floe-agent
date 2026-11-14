@@ -27,6 +27,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.floe.android.design.Floe
@@ -126,6 +127,7 @@ public fun ExecutionTargetSheet(
             state.errorCode?.let { code ->
                 ErrorCard(
                     code = code,
+                    message = state.errorMessage,
                     retryable = state.retryable,
                     onRetry = onRefresh,
                     onDismiss = onDismissError,
@@ -137,11 +139,13 @@ public fun ExecutionTargetSheet(
 
             val snapshot = state.snapshot
             if (snapshot == null) {
-                FloeText(
-                    stringResource(R.string.executiontarget_runtime_unavailable),
-                    style = Floe.typography.metadata,
-                    color = Floe.colors.secondaryLabel,
-                )
+                if (state.errorCode == null) {
+                    FloeText(
+                        stringResource(R.string.executiontarget_runtime_unavailable),
+                        style = Floe.typography.metadata,
+                        color = Floe.colors.secondaryLabel,
+                    )
+                }
                 return@Column
             }
 
@@ -509,10 +513,12 @@ private fun MigrationCard(
 @Composable
 private fun ErrorCard(
     code: String,
+    message: String?,
     retryable: Boolean,
     onRetry: () -> Unit,
     onDismiss: () -> Unit,
 ) {
+    var showDetails by rememberSaveable(code, message) { mutableStateOf(false) }
     FloeSettingsSectionCard(title = stringResource(R.string.executiontarget_title)) {
         SectionItem(title = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -521,6 +527,19 @@ private fun ErrorCard(
                     style = Floe.typography.metadata,
                     color = Floe.colors.destructive,
                 )
+                FloeText(
+                    stringResource(R.string.executiontarget_diagnostic_details),
+                    modifier = Modifier.clickable(role = Role.Button) { showDetails = !showDetails },
+                    style = Floe.typography.metadata,
+                    color = Floe.colors.accent,
+                )
+                if (showDetails) {
+                    FloeText(
+                        listOfNotNull(code, message?.takeIf { it.isNotBlank() }).joinToString("\n").take(4096),
+                        style = Floe.typography.metadata,
+                        color = Floe.colors.secondaryLabel,
+                    )
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     if (retryable) {
                         FloeCapsuleAction(
@@ -633,6 +652,10 @@ private fun phaseLabel(phase: String): String = when (phase) {
 
 @Composable
 private fun errorCopy(code: String): String = when {
+    code == "environmentCatalogUnavailable" ->
+        stringResource(R.string.executiontarget_error_catalog)
+    code.startsWith("workspaceOwnershipUnresolved:") || code == "workspaceOwnershipMismatch" ->
+        stringResource(R.string.executiontarget_error_workspace)
     code.contains("drainTimedOut", ignoreCase = true) ->
         stringResource(R.string.executiontarget_error_drain)
     code.contains("staleRevision", ignoreCase = true) ->
