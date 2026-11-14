@@ -1,6 +1,6 @@
 # README installation buttons
 
-These four project-authored SVG buttons share a 180 × 70 canvas, dark navy surface, border, typography and icon size. Both README editions display them at 144 × 56 so a wide GitHub article can show all four together and narrow articles can wrap them. The canvas includes vertical breathing room between wrapped rows. Each button keeps its own channel-specific action and accessible link label.
+The current README row has three entries: App Store, TestFlight, and a shared Self-signing stores entry for Feather and AltStore. The shared entry opens the existing source page without selecting a signing client in advance. English and Chinese combined buttons use both original channel icons. All buttons share a 180 × 70 canvas, navy surface, border and typography, displayed at 144 × 56 with vertical breathing room when wrapped.
 
 Channel icons are the original upstream artwork, embedded without recolouring or raster changes so the SVG has no remote image dependency:
 

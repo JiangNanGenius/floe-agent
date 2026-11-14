@@ -10,8 +10,7 @@
 <p align="center">
   <a href="https://apps.apple.com/app/id6801209053"><img src="docs/images/install/app-store.svg" alt="Download Floe Agent on the App Store" width="144" height="56"></a>
   <a href="https://www.floe-agent.com/en?utm_source=github&amp;utm_medium=referral&amp;utm_campaign=beta_readme_en#beta"><img src="docs/images/install/testflight.svg" alt="Apply for TestFlight on the website" width="144" height="56"></a>
-  <a href="https://altdirect.app/?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json&amp;r=feather"><img src="docs/images/install/feather.svg" alt="Add Floe Agent to Feather" width="144" height="56"></a>
-  <a href="https://altdirect.app/?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json&amp;r=altstore"><img src="docs/images/install/altstore.svg" alt="Add Floe Agent to AltStore" width="144" height="56"></a>
+  <a href="https://altdirect.app/?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json"><img src="docs/images/install/self-signing.svg" alt="Self-signing stores: Feather and AltStore" width="144" height="56"></a>
 </p>
 
 [![iOS / iPadOS 26+](https://img.shields.io/badge/iOS%20%2F%20iPadOS-26%2B-0A84FF)](FloeAgent/project.yml)
@@ -42,9 +41,9 @@ Choose a product in the [release centre](https://www.floe-agent.com/en/releases?
 App Store, TestFlight and GitHub releases update independently. Use the selected release notes and [dated channel status](docs/CURRENT_STATUS.md) to choose a build; publication on GitHub does not establish availability in an Apple channel.
 
 <details>
-<summary>Install the iOS IPA with Feather or AltStore</summary>
+<summary>Self-signing stores: setup and source URL</summary>
 
-Use the Feather or AltStore button above to add the source, then follow your signing method.
+Use the Self-signing button above, choose Feather or AltStore on the shared page, then follow your signing method.
 
 Or copy the source URL manually:
 
@@ -124,4 +123,5 @@ Gitee synchronizes source and release records. See the [mirror guide](docs/FLOE_
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before contributing. Report vulnerabilities privately through [SECURITY.md](SECURITY.md).
 
 Original Floe code is licensed under [MPL 2.0](LICENSE). Third-party components retain their own licenses and notices, available in the app under Settings → Diagnostics & About → Third-Party Licenses.
+
 
