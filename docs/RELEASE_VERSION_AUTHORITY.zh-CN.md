@@ -3,9 +3,7 @@
 
 本文是 iOS／iPadOS 下一版版本选择的唯一维护入口；各渠道实际交付状态见[当前状态](CURRENT_STATUS.md)与[逐版交付记录](releases/README.md)。Android 版本独立管理。
 
-**最近已核验的内部测试为 1.8.29（350）。** Apple 返回 VALID、未过期，Floe QA 为 IN_BETA_TESTING。签名 IPA 与本地构建匹配，见[350 交付记录](releases/builds/FLOE_1.8.29_BUILD350_DELIVERY.md)。GitHub stable/latest 与 Feather 最近一次核验为 346。
-
-正在准备内部候选 1.8.30（351），用于旧 Linux 镜像退役和换机后容量核算。分配前已核对 Apple 构建、预发布版本及 Git 标签。
+**最近已核验的内部测试为 1.8.30（351）。** Apple 返回 `VALID`，构建未过期，Floe QA 为 `IN_BETA_TESTING`。签名 IPA 与本地构建匹配。GitHub stable/latest 与 Feather 最近一次核验为 346。[351 交付记录](releases/builds/FLOE_1.8.30_BUILD351_DELIVERY.md)
 
 ## 依据与判定
 
@@ -14,6 +12,8 @@
 标签、源提交、候选目录、版本说明、构建／归档成功和签名流程启动，都不能单独证明上传、审核通过或可安装。不得从最高标签自动推算下一版，也不得把未交付尝试称为上一已交付版本。
 
 ## 本轮版本记录
+
+1.8.30（351）已交付 Floe QA。范围包括旧 Linux 安装镜像和 RISC-V 运行文件退役、共享文件占用估算、客机缓存清理及图形设备初始化失败时的 CPU 回退。
 
 1.8.28（349）在本地预检发现随包开源许可的源码标签仍指向上一构件，已保留原标签，未上传。
 
