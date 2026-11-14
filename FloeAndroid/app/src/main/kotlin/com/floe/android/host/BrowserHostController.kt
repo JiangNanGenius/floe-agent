@@ -590,7 +590,7 @@ internal class BrowserHostController(private val host: RuntimeHost) {
                 // never a fabricated probe answer.
                 renderer.evaluate(tabId, expression, timeout.toInt()) { result ->
                     if (result == null) fail("evaluateFailed")
-                    else settle(0, result.toByteArray(Charsets.UTF_8))
+                    else settle(0, browserProtocolReply(result).toByteArray(Charsets.UTF_8))
                 }
             }
             "renderer.screenshot" -> {
