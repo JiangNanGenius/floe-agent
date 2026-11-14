@@ -3,7 +3,7 @@
 
 本文是 iOS／iPadOS 下一版版本选择的唯一维护入口；各渠道实际交付状态见[当前状态](CURRENT_STATUS.md)与[逐版交付记录](releases/README.md)。Android 版本独立管理。
 
-**最近已核验交付为1.8.22（343）：内部TestFlight可安装，正常GitHub stable/latest及awaited Feather严格实际读回通过。** 冻结源 `53c3b83625ec5f8e94690ae15f5a0f3881f85589`／`v1.8.22`，见[343交付记录](releases/builds/FLOE_1.8.22_BUILD343_DELIVERY.md)。真实Darwin组件6方法及完整iOS归档、规范封装通过；M4已实际安装，启动识别修复已确认，但一次整理仍受旧作业原盘ctime检查阻断，新增回收0。208.31GB只是整理前文件分配估算，原盘、资料与13份恢复盘保留。未提交公开TestFlight或正式App Store，315／331安排保持。
+**最近已核验交付为1.8.24（345）：内部TestFlight可安装，正常GitHub stable/latest及awaited Feather严格实际读回通过。** 冻结源 `663b1f8b78556c82d1112f01ef50d1d0c2105a34`／`v1.8.24`，见[345交付记录](releases/builds/FLOE_1.8.24_BUILD345_DELIVERY.md)。真实生产组件4方法、63项定向App方法、完整iOS归档与规范封装通过；M4已实际安装，13盘及资料保留，但尚无新的345整理结果，不能把旧343失败或338历史收益计入本版。未提交公开TestFlight或正式App Store，315／331安排保持。
 
 ## 依据与判定
 
@@ -15,7 +15,7 @@
 
 **1.8.23（344）仅完成本地归档，未交付。** 冻结源 `908133880f0b3d722d98e2451567657a077d4e9f`／`v1.8.23` 保持不变。8项定向检查及完整iOS归档通过，App与19份符号已保全；首次归档仅因开发机容量线取消，用户允许继续后同源归档成功，原失败保留。并行核对发现后续S64，故没有上传或分发这个仍有已知容量关口的候选。
 
-**1.8.24（345）正在准备，尚未冻结或交付。** 新Apple只读清点确认版本及构建未占用。S63／S64完整内容恢复与历史盘重新整理在合并后232源闭包中已真实编译、链接并执行4项定向方法，全过／0跳过；首次夹具失败及旧证据保持。字体去重、旧组件退役、iCloud设置补漏、终端Linux清理与现代图片候选已精确集成；同步4项边界独立复核闭环，实际App／测试对象与严格封装通过；63项定向行为按62＋1两批通过，0跳过。设备归档、IPA体积与M4实际回收、内部TestFlight和正常GitHub／Feather交付仍待完成。不提交公开TestFlight或正式App Store。
+**1.8.24（345）已交付三条授权渠道。** 冻结源与tag object见[交付记录](releases/builds/FLOE_1.8.24_BUILD345_DELIVERY.md)。本机生产组件4方法、定向App方法63项、实际iphoneos Release归档及严格封装通过，App与19份符号保全；Apple独立GET确认VALID／未过期／Floe QA内部可装，正常GitHub stable/latest和awaited Feather实际读回通过。raw App ZIP较343实际减少268,554,477字节，不等于用户数据回收。M4已安装345，原13份恢复盘保留；UI读回仍是343旧blocked回执，未启动新的345整理，容量、真实Linux客户机清理及跨设备Keychain仍待验。新增字体管理反馈另批修复，不修改本版标签或产物；不提交公开TestFlight或正式App Store。
 
 **1.8.22（343）已交付三条授权渠道。** [独立Apple GET](https://github.com/JiangNanGenius/floe-agent/actions/runs/43483085373)确认VALID、未过期及Floe QA内部可安装；[正常发布及awaited Feather](https://github.com/JiangNanGenius/floe-agent/actions/runs/43483448749)和实际安装包／在线源严格读回通过。M4经真实TestFlight更新，bootstrap成功接续两批历史、两项未完作业；唯一一次整理为blocked／recovery-pending，明确原盘ctime检查拒绝、尝试0项／分配减少0。原source、摘要、资料和恢复盘保留。后续修复另用未占用版本，不改343源、标签或产物，不把内容摘要存在等同当前盘已验证。
 

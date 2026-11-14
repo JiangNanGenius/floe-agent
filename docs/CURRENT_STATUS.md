@@ -3,7 +3,17 @@
 
 这是带核实日期的渠道快照。各渠道独立更新；源码版本、公开下载、Apple 审核与测试组可用性分别核对。 / This is a dated channel snapshot. Source versions, public downloads, Apple review and beta-group availability are separate states.
 
-版本选择请先读[唯一版本依据](RELEASE_VERSION_AUTHORITY.zh-CN.md)：**最近核验交付为1.8.22（343），内部TestFlight可安装，GitHub／Feather严格实际读回通过。** 冻结源 `53c3b83625ec5f8e94690ae15f5a0f3881f85589`／`v1.8.22`，详见[343交付记录](releases/builds/FLOE_1.8.22_BUILD343_DELIVERY.md)。M4已实际更新，整理服务启动识别问题已修复；一次实际整理仍被原盘ctime与旧记录不符的恢复检查阻断，本次回收0，容量尚未结项。 / **Latest verified delivery: 1.8.22 (343), internally installable, with actual GitHub/Feather readback passed. The M4 update fixes optimization bootstrap. One real optimization remains blocked by a source-ctime mismatch; no new storage reclamation is confirmed.**
+版本选择请先读[唯一版本依据](RELEASE_VERSION_AUTHORITY.zh-CN.md)：**最近核验交付为1.8.24（345），内部TestFlight可安装，GitHub／Feather严格实际读回通过。** 冻结源 `663b1f8b78556c82d1112f01ef50d1d0c2105a34`／`v1.8.24`，详见[345交付记录](releases/builds/FLOE_1.8.24_BUILD345_DELIVERY.md)。M4已实际安装，原13盘及资料保留；尚无新的345整理结果，容量未结项。 / **Latest verified delivery: 1.8.24 (345), internally installable, with actual GitHub/Feather readback passed. Installed on M4; all 13 recovery disks remain. No fresh345 optimization result or storage-reclamation acceptance is available.**
+
+## 2026-11-14 iOS 1.8.24（345）渠道与设备核对 / iOS delivery and device snapshot
+
+| 渠道 / Channel | 已核实结果 / Observed result |
+| --- | --- |
+| 内部TestFlight / Internal TestFlight | [独立Apple GET](https://github.com/JiangNanGenius/floe-agent/actions/runs/43541088705)确认VALID、未过期、Floe QA为IN_BETA_TESTING；M4实际安装345。 / Internal availability and actual M4 installation confirmed. |
+| GitHub／Feather | [v1.8.24 stable/latest](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.8.24)实际unsigned IPA及在线更新源严格匹配；[正常发布及awaited Feather](https://github.com/JiangNanGenius/floe-agent/actions/runs/43541546475)通过。 / Exact unsigned IPA and live-feed readback passed; your own signing is required. |
+| 公开TestFlight／正式App Store / Public TestFlight and App Store | 本线程均未提交。 / Neither submitted by this thread. |
+
+4项生产组件和63项定向App方法实际通过，完整iOS归档及严格封装通过。raw App ZIP较343减少268,554,477字节；这是软件包变化，不是用户数据回收。设备UI仍显示343旧blocked回执，未开始新的345整理；真实Linux客户机清理及跨设备Keychain到达也待验。屏幕共享与键盘捕获已关闭，iPad归还用户。 / Four focused production-component tests,63 App tests and the full device archive/package passed. The raw App ZIP is268,554,477 bytes smaller. This is package reduction, not reclaimed user data. Device storage optimization, real guest cleanup and cross-device Keychain arrival remain unaccepted; remote control has been released.
 
 ## 2026-11-14 iOS 1.8.22（343）渠道与真机核对 / iOS delivery and device snapshot
 
