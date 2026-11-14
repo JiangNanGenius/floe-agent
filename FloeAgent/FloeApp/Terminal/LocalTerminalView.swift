@@ -78,6 +78,7 @@ final class LocalTerminalOwner: Identifiable {
     private(set) var status = String(localized: "terminal.status.not_started")
     private(set) var alive = false
     private(set) var opening = false
+    private(set) var waitingForLinuxUpgrade = false
     /// Set when the Linux image is missing or fails qualification; drives the
     /// authoritative Linux component card (never shown for an installed or
     /// running guest).
@@ -100,6 +101,7 @@ final class LocalTerminalOwner: Identifiable {
         let generation = UUID()
         openingGeneration = generation
         opening = true
+        waitingForLinuxUpgrade = false
         token = CancellationToken()
         let openingToken = token
         sessionID = nil
@@ -130,10 +132,37 @@ final class LocalTerminalOwner: Identifiable {
             if openingGeneration == generation {
                 openingTask = nil
                 opening = false
+                waitingForLinuxUpgrade = false
             }
         }
         do {
-            let result = try await sessions.open(command: "", cwd: ".", environment: [:], columns: columns, rows: rows, runID: id, rootURL: root, cancellation: token, forTerminal: true, conversationID: conversationID)
+            let result: ShellOpenResult
+            do {
+                // Maintenance can cancel this attempt's lease independently of
+                // the user's terminal. Closing the terminal still cancels both.
+                result = try await openEmptyShell(token: token.derived())
+            } catch let upgrade as LinuxGuestImageUpgradePending {
+                // ShellSessionCenter.open released the previous environment lease
+                // before throwing. The upgrade can now finish without waiting on us.
+                guard openingGeneration == generation, !token.isCancelled, !Task.isCancelled else { return }
+                waitingForLinuxUpgrade = true
+                status = IDELanguageRunText.t("正在升级 Linux 环境…", "Upgrading Linux environment…")
+                let services = FloePlatformServices.shared
+                await services.waitForLinuxStartupUpgrade()
+                guard openingGeneration == generation, !token.isCancelled, !Task.isCancelled else { return }
+                let active = try? await services.linuxResidentImageSource.imageID(requireExistingDisk: true)
+                guard openingGeneration == generation, !token.isCancelled, !Task.isCancelled else { return }
+                guard active == upgrade.currentImageID else {
+                    status = EnvironmentPackageJobs.shared.messages[FloePlatformServices.residentRecoveryJobID]
+                        ?? IDELanguageRunText.t("升级未完成，请在执行环境中重试。", "Upgrade incomplete. Retry in Execution Environment.")
+                    return
+                }
+                waitingForLinuxUpgrade = false
+                status = String(localized: "terminal.status.starting")
+                // Only reopen the empty interactive shell, with a fresh lease and
+                // the original task/workspace. No previous command is replayed.
+                result = try await openEmptyShell(token: token.derived())
+            }
             guard openingGeneration == generation, !token.isCancelled, !Task.isCancelled else {
                 await sessions.close(sessionID: result.sessionID, runID: id)
                 return
@@ -154,8 +183,13 @@ final class LocalTerminalOwner: Identifiable {
             }
         } catch {
             guard openingGeneration == generation, !token.isCancelled else { return }
-            status = String(describing: error)
+            status = error.localizedDescription
         }
+    }
+
+    private func openEmptyShell(token: CancellationToken) async throws -> ShellOpenResult {
+        try await sessions.open(command: "", cwd: ".", environment: [:], columns: columns, rows: rows,
+            runID: id, rootURL: root, cancellation: token, forTerminal: true, conversationID: conversationID)
     }
 
     /// The IDE embeds this view and expects a started shell; an already-live
@@ -237,6 +271,7 @@ final class LocalTerminalOwner: Identifiable {
         openingTask?.cancel()
         openingTask = nil
         opening = false
+        waitingForLinuxUpgrade = false
         pendingInput.removeAll()
         let closingSession = sessionID
         alive = false
@@ -426,7 +461,10 @@ struct LocalTerminalView: View {
                 presentation: owner.presentation, isInteractive: owner.alive,
                 onSend: { data in owner.enqueue(data) },
                 onResize: { columns, rows in Task { await owner.resize(columns: columns, rows: rows) } })
-            if let missingID = owner.missingImageID,
+            if owner.waitingForLinuxUpgrade {
+                LocalTerminalUpgradeProgress()
+                    .padding()
+            } else if let missingID = owner.missingImageID,
                let model = installModel, model.imageID == missingID {
                 LinuxImageInstallCard(
                     model: model,
@@ -466,5 +504,25 @@ struct LocalTerminalView: View {
             await owner.startIfNeeded()
             await owner.pollWhileVisible()
         }
+    }
+}
+
+private struct LocalTerminalUpgradeProgress: View {
+    @ObservedObject private var jobs = EnvironmentPackageJobs.shared
+
+    var body: some View {
+        let id = FloePlatformServices.residentRecoveryJobID
+        let phase = jobs.phases[id] ?? .checking
+        VStack(alignment: .leading, spacing: 4) {
+            ProgressView(value: phase == .downloading ? jobs.fractions[id] : nil) {
+                Text(LinuxImageInstallCard.phaseText(phase))
+            }
+            if phase == .downloading, let transfer = jobs.transfers[id] {
+                Text(LinuxImageInstallCard.recoveryByteText(transfer))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

@@ -17,6 +17,7 @@ import FloeModels
 import FloePersistence
 import FloeLocalModelCatalog
 import FloeCAD
+import FloeExecution
 #if canImport(AppIntents)
 import AppIntents
 #endif
@@ -925,6 +926,11 @@ struct RootView: View {
             }
         } message: {
             Text("app.floe_agent_app.the_task_private_workspace_and_temporary")
+        }
+        .task {
+            #if DEBUG
+            LinuxStartupImagePromptUITestFixture.runIfEnabled()
+            #endif
         }
         .confirmationDialog("settings.files_settings_view.remove_workspace_2",
             isPresented: Binding(
@@ -2365,5 +2371,32 @@ private struct SidebarObservationHost<Content: View>: View {
     @ViewBuilder var content: () -> Content
     var body: some View { content() }
 }
+
+#if DEBUG
+/// Deterministic UI-test entry for the real cold-start consent prompt. It
+/// calls the production decision path with synthetic ids, so tapping either
+/// button exercises the actual alert/resolution, while the subsequent
+/// provenance re-read still compares the REAL resident disk and therefore
+/// never triggers an upgrade during the test.
+private enum LinuxStartupImagePromptUITestFixture {
+    @MainActor private static var started = false
+
+    static func runIfEnabled() {
+        let arguments = ProcessInfo.processInfo.arguments
+        guard arguments.contains("-ui-testing"),
+              arguments.contains("--ui-test-linux-upgrade-prompt") else { return }
+        Task { @MainActor in
+            guard !started else { return }
+            started = true
+            let context = LinuxGuestStartupImageContext(
+                environmentID: "ui-test-linux-upgrade",
+                installedImageID: "ui-test-installed-image",
+                currentImageID: LinuxGuestImageDistributionCatalog.defaultImageID
+            )
+            _ = await FloePlatformServices.shared.decideLinuxStartupImage(context)
+        }
+    }
+}
+#endif
 
 #endif

@@ -21,6 +21,58 @@ import Foundation
 import FloeCore
 import FloeTools
 
+/// One COLD start whose resident disk resolves to a known older trusted
+/// catalog image while this build's catalog default is newer. Both ids are
+/// provenance (`LinuxResidentImageResolver` selected `installedImageID` from
+/// the disk's own origin, `currentImageID` is the pinned catalog default),
+/// never a comparison of free-form name/version text.
+public struct LinuxGuestStartupImageContext: Sendable, Equatable {
+    public let environmentID: String
+    public let installedImageID: String
+    public let currentImageID: String
+
+    public init(environmentID: String, installedImageID: String, currentImageID: String) {
+        self.environmentID = environmentID
+        self.installedImageID = installedImageID
+        self.currentImageID = currentImageID
+    }
+}
+
+/// The app's answer for one cold start. `upgrade` means the user explicitly
+/// chose the preserving rebuild: this start is refused so the rebuild runs
+/// with no start lease, and the caller retries once it finishes.
+public enum LinuxGuestStartupImageDecision: Sendable, Equatable {
+    case useInstalled
+    case upgrade
+}
+
+/// App-injected consent seam, called by `LinuxGuestRegistry` BEFORE any start
+/// lease or admission. A nil handler keeps the previous behavior (focused
+/// tests, non-app embeddings); the app installs the real foreground decision.
+public typealias LinuxGuestStartupImageDecisionHandler =
+    @Sendable (LinuxGuestStartupImageContext) async -> LinuxGuestStartupImageDecision
+
+/// Thrown instead of booting an older guest once the user chose the preserving
+/// upgrade. Deliberately NOT a `LinuxGuestError`: the generic prepare-and-retry
+/// paths only retry `imageNotQualified`, so this refusal is surfaced as-is.
+public struct LinuxGuestImageUpgradePending: Error, LocalizedError, Sendable, Equatable {
+    public let environmentID: String
+    public let installedImageID: String
+    public let currentImageID: String
+
+    public init(environmentID: String, installedImageID: String, currentImageID: String) {
+        self.environmentID = environmentID
+        self.installedImageID = installedImageID
+        self.currentImageID = currentImageID
+    }
+
+    public var errorDescription: String? {
+        FloeL10n.isChinese
+            ? "正在把 Linux 环境升级到当前版本，本次启动未执行。工作区和已有文件会保留，旧运行盘也会保留以便恢复；新环境是全新的系统，旧 Linux 里安装的软件需要重新安装。升级完成后请再次启动；如果任务提示运行位置已变化，请按提示确认新的 Linux 运行位置。"
+            : "Linux is upgrading to the current environment, so this start was not performed. The workspace and files are kept, and the old runtime disk is preserved for recovery; the new environment is a fresh system, so software installed inside the old Linux must be reinstalled. Start it again when the upgrade finishes. If a task reports that its runtime location changed, confirm the new Linux location when prompted."
+    }
+}
+
 public enum LinuxGuestError: Error, LocalizedError, Sendable, Equatable {
     case notOwned(environmentID: String)
     case notRunning(environmentID: String)

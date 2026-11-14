@@ -422,6 +422,10 @@ public actor LinuxGuestRegistry {
     /// `BootAssetAutoAdoptionHook`). Read-only after init, so there is no
     /// post-publication reconfiguration window.
     private let bootAssetAutoAdoption: BootAssetAutoAdoptionHook?
+    /// Installs-eligible cold-start image decision seam, injected IMMUTABLY at
+    /// construction (nil in focused tests/non-app embeddings). Read-only after
+    /// publication, so a start can never observe a half-published hook.
+    private let startupImageDecision: LinuxGuestStartupImageDecisionHandler?
     private var lastErrors: [String: String] = [:]
     private var lastImpacts: [String: String] = [:]
     /// Per-environment failure of the in-guest ext4 resize after the host
@@ -522,7 +526,8 @@ public actor LinuxGuestRegistry {
         runtimeV2: (any LinuxGuestRuntimeV2Integrating)? = nil,
         releasePolicy: GuestReleaseShapePolicy = .production,
         bootAssetGate: LinuxGuestBootAssetGate = .default,
-        bootAssetAutoAdoption: BootAssetAutoAdoptionHook? = nil
+        bootAssetAutoAdoption: BootAssetAutoAdoptionHook? = nil,
+        startupImageDecision: LinuxGuestStartupImageDecisionHandler? = nil
     ) {
         self.environments = environments
         self.images = images
@@ -533,6 +538,7 @@ public actor LinuxGuestRegistry {
         self.releasePolicy = releasePolicy
         self.bootAssetGate = bootAssetGate
         self.bootAssetAutoAdoption = bootAssetAutoAdoption
+        self.startupImageDecision = startupImageDecision
     }
 
     /// Environments with a registered session (running, starting, stopping
@@ -542,6 +548,67 @@ public actor LinuxGuestRegistry {
     /// could observe a half-committed state appears here.
     public var registeredEnvironmentIDs: [String] {
         sessions.keys.sorted()
+    }
+
+    /// Provenance-only "newer catalog default exists" check. Both ids must be
+    /// entries of this build's pinned catalog (the same table the resident
+    /// resolver trusts) and differ; retired and arbitrary ids never prompt.
+    /// A fresh install resolves to the catalog default and never reaches here.
+    static func startupImageUpgrade(
+        environmentID: String, imageID: String
+    ) -> LinuxGuestStartupImageContext? {
+        let current = LinuxGuestImageDistributionCatalog.defaultImageID
+        guard !imageID.isEmpty, imageID != current,
+              !LinuxGuestImageDistributionCatalog.isRetiredImage(id: imageID),
+              !LinuxGuestImageDistributionCatalog.isRetiredImage(id: current),
+              LinuxGuestImageDistributionCatalog.bundled.contains(where: { $0.id == imageID }),
+              LinuxGuestImageDistributionCatalog.bundled.contains(where: { $0.id == current })
+        else { return nil }
+        return LinuxGuestStartupImageContext(
+            environmentID: environmentID,
+            installedImageID: imageID,
+            currentImageID: current
+        )
+    }
+
+    /// Asks the app before booting an old guest. Runs BEFORE the boot-asset
+    /// lease and before any admission, so an upgrade choice leaves nothing for
+    /// the rebuild's own maintenance to drain. An already-running guest is
+    /// reused without asking: a resident machine another project booted keeps
+    /// its current image and its work, and the upgrade option stays in
+    /// Settings. `repairPending` marks a disk whose exact older image is
+    /// currently absent (the v1 origin adopted by v2): `.useInstalled` then
+    /// keeps the existing exact-image repair/download route instead of booting.
+    private func requestStartupImageDecision(
+        environmentID: String, imageID: String, repairPending: Bool = false
+    ) async throws {
+        guard let handler = startupImageDecision,
+              let context = Self.startupImageUpgrade(environmentID: environmentID, imageID: imageID)
+        else { return }
+        if Task.isCancelled { return }
+        if let existing = sessions[environmentID], await existing.handle.isRunning() { return }
+        if factory.usesResidentMachine, let phase = await factory.sharedMachinePhase(),
+           phase == .starting || phase == .running || phase == .stopping {
+            return
+        }
+        let decision = await handler(context)
+        if Task.isCancelled { throw CancellationError() }
+        switch decision {
+        case .useInstalled:
+            lastImpacts[environmentID] = repairPending
+                ? "kept the installed Linux image and its existing repair route; a newer catalog image is available in Settings"
+                : "started the installed Linux image; a newer catalog image is available in Settings"
+        case .upgrade:
+            // The app owns the preserving rebuild. This start must unwind so
+            // the rebuild never waits inside its own start lease or admission.
+            lastErrors[environmentID] =
+                "Linux is upgrading to the current environment; this start was deferred"
+            throw LinuxGuestImageUpgradePending(
+                environmentID: environmentID,
+                installedImageID: context.installedImageID,
+                currentImageID: context.currentImageID
+            )
+        }
     }
 
     /// Conservative LinuxGuestStoppedReconciliation translated from this
@@ -1182,10 +1249,23 @@ public actor LinuxGuestRegistry {
     ) async throws -> Bool {
         let selected = await environments.linuxGuestEnvironment(id: environmentID)
         if let failure = selected?.imageResolutionFailure {
+            // A valid retained disk whose exact older trusted component is
+            // currently absent (v1 adopted by v2) is still a KNOWN old
+            // environment: ask before re-downloading that old component. An
+            // unknown origin keeps the existing repair route with no prompt of
+            // its own (its imageID is not a catalog entry).
+            try await requestStartupImageDecision(
+                environmentID: environmentID,
+                imageID: selected?.imageID ?? "",
+                repairPending: true
+            )
             lastErrors[environmentID] = failure
             throw LinuxGuestError.imageNotQualified(environmentID: environmentID, reason: failure)
         }
         let imageID = selected?.imageID
+        // Cold-start consent happens before the boot-asset lease and before
+        // any admission, so a chosen upgrade never waits inside this start.
+        try await requestStartupImageDecision(environmentID: environmentID, imageID: imageID ?? "")
         return try await bootAssetStart(imageID: imageID, environmentID: environmentID) {
             try await self.startGated(
                 environmentID: environmentID,

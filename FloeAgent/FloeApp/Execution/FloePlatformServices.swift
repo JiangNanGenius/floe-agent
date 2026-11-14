@@ -3,6 +3,7 @@
 // command registry dispatches to them afterwards.
 
 import Foundation
+import Combine
 import FloeCore
 import FloeEnvironments
 import FloeExecution
@@ -11,6 +12,9 @@ import FloePackages
 import FloeTools
 #if canImport(AVFoundation)
 import AVFoundation
+#endif
+#if canImport(UIKit)
+import UIKit
 #endif
 
 struct LinuxImageRetirementResult: Sendable {
@@ -25,6 +29,150 @@ struct LinuxImageRetirementResult: Sendable {
         }
         incomplete = incomplete || !result.failures.isEmpty || result.trigger == .deferred || result.cancelled
     }
+}
+
+/// One foreground consent for a cold start whose verified resident disk is a
+/// KNOWN older trusted catalog image. Concurrent cold starts JOIN one dialog
+/// and receive the same answer, so a second loader never stacks and no start
+/// blocks another. A cancelled waiter, the last waiter leaving, a dismissal or
+/// the app leaving the foreground resolves `.useInstalled`: never an
+/// unconsented upgrade, never a dangling wait, never an orphaned alert.
+///
+/// Presented with a UIKit alert from the topmost controller of the active
+/// scene's key window, so a start from inside an existing SwiftUI sheet or a
+/// second scene is still clickable instead of being hidden behind that sheet.
+@MainActor
+final class LinuxImageUpgradeConsentCenter: ObservableObject {
+    static let shared = LinuxImageUpgradeConsentCenter()
+
+    @Published private(set) var pending: LinuxGuestStartupImageContext?
+    private var waiters: [UUID: CheckedContinuation<LinuxGuestStartupImageDecision, Never>] = [:]
+    private var alert: AnyObject?
+
+    init() {
+        #if canImport(UIKit)
+        // A backgrounded app cannot answer a foreground prompt: resolve the
+        // safe non-destructive choice instead of holding a waiting start.
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard UIApplication.shared.applicationState == .background else { return }
+                self?.resolve(.useInstalled)
+            }
+        }
+        #endif
+    }
+
+    var promptTitle: String {
+        IDELanguageRunText.t("升级 Linux 环境？", "Upgrade Linux environment?")
+    }
+
+    var promptMessage: String {
+        IDELanguageRunText.t(
+            "这个设备的 Linux 运行环境是较早的已验证版本。升级会保留工作区和已有文件，并保留旧运行盘以便恢复；但新环境是全新的系统，请在升级后重新安装旧 Linux 里安装过的软件（apt、pip、npm 等）。当前版本可能还需要先下载。升级期间 Linux 会停止，完成后需要重新启动相关任务。也可以本次继续使用当前版本。",
+            "This device runs an earlier verified Linux environment. Upgrading keeps your workspace and files and preserves the old runtime disk for recovery, but the new environment is a fresh system: software installed inside Linux (apt, pip, npm and similar) must be reinstalled afterwards. The current version may need to download first. Linux stays stopped during the upgrade, and related tasks must start again afterwards. You can also keep the current version for this start."
+        )
+    }
+
+    var upgradeTitle: String {
+        IDELanguageRunText.t("升级 Linux 环境", "Upgrade Linux environment")
+    }
+
+    var keepTitle: String {
+        IDELanguageRunText.t("本次继续使用当前版本", "Use current version for this start")
+    }
+
+    /// Suspends until the one visible decision settles. Joining callers share
+    /// it; a cancelled caller leaves without cancelling the visible answer.
+    func request(_ context: LinuxGuestStartupImageContext) async -> LinuxGuestStartupImageDecision {
+        guard !Task.isCancelled else { return .useInstalled }
+        let waiterID = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                if Task.isCancelled {
+                    continuation.resume(returning: .useInstalled)
+                    return
+                }
+                waiters[waiterID] = continuation
+                if pending == nil {
+                    pending = context
+                    presentPrompt()
+                }
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in self?.cancelWaiter(waiterID) }
+        }
+    }
+
+    /// Settles every waiter once. Idempotent: a late dismissal after the
+    /// button action cannot resume the same continuation twice.
+    func resolve(_ decision: LinuxGuestStartupImageDecision) {
+        let all = waiters
+        waiters.removeAll()
+        pending = nil
+        dismissPrompt()
+        for continuation in all.values { continuation.resume(returning: decision) }
+    }
+
+    private func cancelWaiter(_ id: UUID) {
+        guard let continuation = waiters.removeValue(forKey: id) else { return }
+        continuation.resume(returning: .useInstalled)
+        if waiters.isEmpty {
+            pending = nil
+            dismissPrompt()
+        }
+    }
+
+    private func presentPrompt() {
+        #if canImport(UIKit)
+        guard let presenter = Self.topmostPresenter() else {
+            // No foreground window can host the alert: keep the installed
+            // version rather than holding the start or upgrading unseen.
+            resolve(.useInstalled)
+            return
+        }
+        let controller = UIAlertController(
+            title: promptTitle, message: promptMessage, preferredStyle: .alert
+        )
+        controller.addAction(UIAlertAction(title: upgradeTitle, style: .default) { [weak self] _ in
+            Task { @MainActor in self?.resolve(.upgrade) }
+        })
+        controller.addAction(UIAlertAction(title: keepTitle, style: .cancel) { [weak self] _ in
+            Task { @MainActor in self?.resolve(.useInstalled) }
+        })
+        alert = controller
+        presenter.present(controller, animated: true)
+        #endif
+    }
+
+    private func dismissPrompt() {
+        #if canImport(UIKit)
+        guard let controller = alert as? UIAlertController else { return }
+        alert = nil
+        if controller.presentingViewController != nil {
+            controller.dismiss(animated: true)
+        }
+        #endif
+    }
+
+    #if canImport(UIKit)
+    private static func topmostPresenter() -> UIViewController? {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let scene = scenes.first(where: { $0.activationState == .foregroundActive })
+            ?? scenes.first(where: { $0.activationState == .foregroundInactive })
+        guard let window = scene?.windows.first(where: \.isKeyWindow) ?? scene?.windows.first,
+              let root = window.rootViewController else { return nil }
+        var presenter: UIViewController = root
+        while let presented = presenter.presentedViewController {
+            // Another alert owns the visible slot; presenting over it can fail
+            // silently, so report no presenter and keep the installed version.
+            if presented is UIAlertController { return nil }
+            presenter = presented
+        }
+        return presenter
+    }
+    #endif
 }
 
 final class FloePlatformServices: @unchecked Sendable {
@@ -57,6 +205,10 @@ final class FloePlatformServices: @unchecked Sendable {
     private var imageResidueCleanupTask: Task<Void, Never>?
     private var imageResidueCleanupReport: LinuxGuestUpgradeResidueReport?
     private var legacyImageRetirementTask: Task<LinuxImageRetirementResult, Never>?
+    /// One service-owned preserving upgrade started from the cold-start
+    /// consent prompt. It outlives the waiting start (which unwinds) and never
+    /// duplicates the shared rebuild job.
+    private var linuxRuntimeUpgradeTask: Task<Void, Never>?
     /// Runtime v2 verified-image truth, injected by the Linux backend
     /// assembly. Once the v2 migration moves the legacy image directory into
     /// its rollback point, the legacy-only status below would wrongly report
@@ -828,6 +980,89 @@ final class FloePlatformServices: @unchecked Sendable {
         return (phase, bytes)
     }
 
+    /// Single app decision point for a cold start on a KNOWN older trusted
+    /// shared image. Called by `LinuxGuestRegistry` before any start lease or
+    /// admission. Noninteractive/background starts never hang and never
+    /// upgrade: they keep the installed version, and Settings already offers
+    /// the explicit upgrade. A delayed confirmation re-reads the disk's own
+    /// provenance and the shared machine's phase before anything is rebuilt.
+    func decideLinuxStartupImage(
+        _ context: LinuxGuestStartupImageContext
+    ) async -> LinuxGuestStartupImageDecision {
+        guard !Task.isCancelled else { return .useInstalled }
+        guard await linuxUpgradePromptIsAvailable() else {
+            FloeLogger(category: .tools).info(
+                "Linux startup image is older than the catalog default; noninteractive start keeps the installed version")
+            return .useInstalled
+        }
+        let choice = await LinuxImageUpgradeConsentCenter.shared.request(context)
+        guard choice == .upgrade, !Task.isCancelled else { return .useInstalled }
+        // A delayed confirmation (or a concurrent Settings upgrade) must not
+        // rebuild a disk that is already current, and must never stop work
+        // that started while the prompt was open.
+        let resolved: String?
+        do {
+            resolved = try await linuxResidentImageSource.imageID(requireExistingDisk: true)
+        } catch let error as LinuxResidentImageResolutionError {
+            // The known v1-derived disk whose exact v2 component is absent is
+            // still provably the same old disk: its repair target is the id
+            // the prompt was for. Unknown provenance is not.
+            guard error.recoverableImageID == context.installedImageID else { return .useInstalled }
+            resolved = context.installedImageID
+        } catch {
+            return .useInstalled
+        }
+        guard resolved == context.installedImageID else {
+            FloeLogger(category: .tools).info(
+                "Linux startup image changed while the upgrade prompt was open; the installed disk is used for this start")
+            return .useInstalled
+        }
+        if let guests = currentLinuxCommandService() as? any LinuxGuestControlling,
+           let phase = await guests.sharedMachinePhase(),
+           phase == .starting || phase == .running || phase == .stopping {
+            return .useInstalled
+        }
+        startLinuxRuntimeUpgradeInBackground()
+        return .upgrade
+    }
+
+    private func linuxUpgradePromptIsAvailable() async -> Bool {
+        #if canImport(UIKit)
+        return await MainActor.run { UIApplication.shared.applicationState == .active }
+        #else
+        return false
+        #endif
+    }
+
+    /// Read-only join of the upgrade that is already in flight. It snapshots
+    /// the current task under the lock and awaits that value outside it; it
+    /// never starts, restarts or cancels a rebuild. Returns immediately when no
+    /// upgrade is running.
+    func waitForLinuxStartupUpgrade() async {
+        let task = lock.withLock { linuxRuntimeUpgradeTask }
+        await task?.value
+    }
+
+    /// Service-owned upgrade for an explicit prompt choice. `runShared` joins
+    /// an already-running rebuild job, so repeated confirmations (and the
+    /// Settings action) never start a second download/rebuild.
+    func startLinuxRuntimeUpgradeInBackground() {
+        lock.lock()
+        guard linuxRuntimeUpgradeTask == nil else { lock.unlock(); return }
+        let task = Task { [weak self] in
+            guard let self else { return }
+            do {
+                _ = try await self.rebuildLinuxRuntimePreservingData(cancellation: CancellationToken())
+            } catch {
+                FloeLogger(category: .tools).error(
+                    "Linux preserving upgrade failed: \(error.localizedDescription)")
+            }
+            self.lock.withLock { self.linuxRuntimeUpgradeTask = nil }
+        }
+        linuxRuntimeUpgradeTask = task
+        lock.unlock()
+    }
+
     /// A new environment, explicitly requested after unresolved provenance.
     /// Downloads the trusted default without adopting the retained disk as that
     /// image. Old disk bytes and host environment metadata are kept unchanged.
@@ -842,17 +1077,50 @@ final class FloePlatformServices: @unchecked Sendable {
             let report = Self.residentRecoveryProgress(jobID: Self.residentRecoveryJobID, epoch: epoch)
             report.phase(.checking)
             let replacementImageID = LinuxGuestImageDistributionCatalog.defaultImageID
+            // Reuse an already verified current image (the normal prepare is
+            // integrity-verified and repairs damaged bytes); only a missing or
+            // damaged image transfers bytes. A previous attempt's download is
+            // therefore never repeated by this explicit rebuild.
             _ = try await self.prepareLinuxImage(imageID: replacementImageID, cancellation: cancellation,
-                onProgress: report.bytes, forceDownload: true, onPhase: report.phase)
+                onProgress: report.bytes, forceDownload: false, onPhase: report.phase)
             try cancellation.throwIfCancelled()
             try Task.checkCancellation()
+            try await registry.prepare()
+            // A delayed confirmation (or a concurrent upgrade) may have
+            // already replaced the disk while this pass prepared the image.
+            // NO-OP BEFORE the admission fence: beginLinuxRuntimeMaintenance
+            // cancels every active Linux lease, so a stale confirmation must
+            // not disturb unrelated work just because it arrived late.
+            if let active = try? await self.linuxResidentImageSource.imageID(requireExistingDisk: true),
+               active == replacementImageID {
+                self.linuxImageStatusCache.bumpRevision()
+                // Converge a previous pass's deferred cleanup; the retirement
+                // records make this idempotent.
+                await self.retireSupersededFactoryImagesAfterRebuild(replacementImageID)
+                return FloeL10n.isChinese
+                    ? "Linux 环境已经是当前版本，未再次重建；已有资料保留。"
+                    : "Linux is already on the current environment; nothing was rebuilt and existing data was kept."
+            }
             // Fence ALL Linux admissions, including future IDs, then cancel
             // and join the already-owned sessions/jobs/tools. Their SH guards
-            // are released only by real finish callbacks, never a timeout.
-            try await registry.prepare()
+            // are released by real finish callbacks, never a timeout.
             report.phase(.stoppingRuntime)
             let maintenance = try await coordinator.beginLinuxRuntimeMaintenance()
             do {
+                // Recheck under the replacement fence: only the tiny window
+                // between the pre-fence read and the fence can still race a
+                // concurrent commit. The destructive rebuild must never run
+                // twice for one target.
+                let activeImageID = try? await self.linuxResidentImageSource.imageID(requireExistingDisk: true)
+                if activeImageID == replacementImageID {
+                    await coordinator.endLinuxRuntimeMaintenance(maintenance)
+                    self.linuxImageStatusCache.bumpRevision()
+                    StorageMutationHooks.invalidate(.environmentChanged)
+                    await self.retireSupersededFactoryImagesAfterRebuild(replacementImageID)
+                    return FloeL10n.isChinese
+                        ? "Linux 环境已经是当前版本，未再次重建；已有资料保留。"
+                        : "Linux is already on the current environment; nothing was rebuilt and existing data was kept."
+                }
                 let records = await registry.all().filter { $0.effectiveExecutionBackend == .linuxVM && $0.kind != .template }
                 try await lifecycle.quiesceLinuxRuntime(containerIDs: records.map(\.id))
                 try await coordinator.waitForLinuxRuntimeMaintenance(maintenance)
@@ -867,11 +1135,40 @@ final class FloePlatformServices: @unchecked Sendable {
                 self.linuxImageStatusCache.bumpRevision()
                 StorageMutationHooks.invalidate(.environmentChanged)
                 await coordinator.endLinuxRuntimeMaintenance(maintenance)
+                // The swap and generation commit are real. Run the existing
+                // reference-aware factory cleanup in THIS pass, after the
+                // admission fence is released so it can take its own shared
+                // use. Its failure is logged, never reported as an upgrade
+                // failure: the committed environment is already usable.
+                await self.retireSupersededFactoryImagesAfterRebuild(replacementImageID)
                 return String(localized: "execution.runtime_rebuild.complete")
             } catch {
                 await coordinator.endLinuxRuntimeMaintenance(maintenance)
                 throw error
             }
+        }
+    }
+
+    /// Retires factory images superseded by a committed preserving rebuild.
+    /// Runs ONLY when the re-read active boot image is the replacement, so the
+    /// disk the app will boot is never retired. The existing pass is
+    /// metadata/plan-based (no whole-disk scan), preserves old writable disks,
+    /// environment records and still-referenced dependencies, and is
+    /// idempotent through its durable retirement rows.
+    private func retireSupersededFactoryImagesAfterRebuild(_ replacementImageID: String) async {
+        guard let retire = linuxImageRuntimeV2Snapshot()?.retireFactoryImages,
+              let active = try? await linuxResidentImageSource.imageID(requireExistingDisk: true),
+              active == replacementImageID else { return }
+        let cleanup = await retire(active, { false })
+        if cleanup.deletedFiles > 0 || cleanup.releasedBlobs > 0 {
+            StorageMutationHooks.invalidate(.environmentChanged)
+        }
+        if cleanup.trigger == .deferred || !cleanup.failures.isEmpty {
+            FloeLogger(category: .tools).warning(
+                "Linux superseded-image cleanup stayed retryable: trigger=\(cleanup.trigger.rawValue) retained=\(cleanup.retainedImages.count) failures=\(cleanup.failures.count)")
+        } else if !cleanup.retiredImages.isEmpty {
+            FloeLogger(category: .tools).info(
+                "Linux superseded-image cleanup retired \(cleanup.retiredImages.count) image(s), \(cleanup.deletedFiles) file(s), \(cleanup.releasedBlobs) blob(s)")
         }
     }
 

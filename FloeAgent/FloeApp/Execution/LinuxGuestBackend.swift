@@ -414,7 +414,13 @@ enum LinuxGuestBackendAssembly {
             factory: artifactRoot.map { ARM64ResidentGuestSessionFactory(
                 root: $0.appendingPathComponent("LinuxGuest/ResidentARM64", isDirectory: true)
             ) as any LinuxGuestSessionCreating } ?? UnavailableLinuxGuestSessionFactory(),
-            runtimeV2: wiring.runtimeV2
+            runtimeV2: wiring.runtimeV2,
+            // The single cold-start consent seam: consulted before any start
+            // lease or admission, so a chosen preserving upgrade runs outside
+            // the start. Injected at construction (the registry is an actor).
+            startupImageDecision: { context in
+                await FloePlatformServices.shared.decideLinuxStartupImage(context)
+            }
         )
         let service = LinuxGuestCommandService(registry: guestRegistry)
         // The fixed legacy-recovery-domain authority is assembled from the SAME

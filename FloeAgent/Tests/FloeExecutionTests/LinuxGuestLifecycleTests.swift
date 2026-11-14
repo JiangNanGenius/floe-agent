@@ -1622,3 +1622,312 @@ final class LinuxSharedPowerTests: XCTestCase {
         XCTAssertTrue(active)
     }
 }
+
+// MARK: - cold-start image consent gate
+
+/// One scripted answer for every cold-start consent request. The decision and
+/// the shared-machine phase are mutable so one test can script "continue",
+/// "upgrade" and "another project already booted the machine".
+private final class StartupImageGateLedger: @unchecked Sendable {
+    private let lock = NSLock()
+    private var contexts: [LinuxGuestStartupImageContext] = []
+    private var sessions = 0
+    private var phase: LinuxSharedMachinePhase = .poweredOff
+    private var decision: LinuxGuestStartupImageDecision = .useInstalled
+
+    func record(_ context: LinuxGuestStartupImageContext) -> LinuxGuestStartupImageDecision {
+        lock.lock(); defer { lock.unlock() }
+        contexts.append(context)
+        return decision
+    }
+    func setDecision(_ value: LinuxGuestStartupImageDecision) {
+        lock.lock(); decision = value; lock.unlock()
+    }
+    func setPhase(_ value: LinuxSharedMachinePhase) {
+        lock.lock(); phase = value; lock.unlock()
+    }
+    var requested: [LinuxGuestStartupImageContext] { lock.withLock { contexts } }
+    func recordSession() { lock.lock(); sessions += 1; lock.unlock() }
+    var sessionCount: Int { lock.withLock { sessions } }
+    var sharedPhase: LinuxSharedMachinePhase { lock.withLock { phase } }
+}
+
+/// A resident shared-machine factory. It performs the real runner handshake so
+/// the registry's start path completes, and records exactly one boot per
+/// session creation.
+private struct StartupImageGateFactory: LinuxGuestSessionCreating {
+    let ledger: StartupImageGateLedger
+
+    var usesResidentMachine: Bool { true }
+    func sharedMachinePhase() async -> LinuxSharedMachinePhase? { ledger.sharedPhase }
+
+    func makeSession(
+        descriptor: LinuxGuestEnvironmentDescriptor,
+        image: LinuxGuestImage,
+        limits: LinuxGuestLimits
+    ) throws -> LinuxGuestSessionHandle {
+        ledger.recordSession()
+        let console = TestLinuxGuestConsole { token in
+            token.hasPrefix("hello-") ? caps(token) : reply(token, stdout: "ok", stderr: "", exit: 0)
+        }
+        let running = FakeSessionState()
+        return LinuxGuestSessionHandle(
+            transport: console,
+            start: { await running.didStart() },
+            stop: { await running.didStop() },
+            close: { await running.didStop() },
+            isRunning: { await running.running },
+            addForward: { _ in },
+            removeForward: { _ in }
+        )
+    }
+}
+
+final class LinuxGuestStartupImageGateTests: XCTestCase {
+    private let environmentID = "env-gate"
+    private let oldImageID = "floe-debian13-arm64-basic-resident-20261105-v2"
+    private let currentImageID = LinuxGuestImageDistributionCatalog.defaultImageID
+
+    private struct Fixture {
+        let registry: LinuxGuestRegistry
+        let service: LinuxGuestCommandService
+        let ledger: StartupImageGateLedger
+    }
+
+    private func fixture(imageID: String,
+                         environmentIDs: [String] = ["env-gate"]) -> Fixture {
+        let ledger = StartupImageGateLedger()
+        var descriptors: [String: LinuxGuestEnvironmentDescriptor] = [:]
+        for id in environmentIDs {
+            descriptors[id] = LinuxGuestEnvironmentDescriptor(id: id, ownerID: "owner", imageID: imageID)
+        }
+        let registry = LinuxGuestRegistry(
+            environments: FakeEnvironmentProvider(descriptors: descriptors),
+            images: FakeImageResolver(images: [imageID: makeImage()]),
+            limits: .standard,
+            factory: StartupImageGateFactory(ledger: ledger),
+            startupImageDecision: { context in ledger.record(context) }
+        )
+        return Fixture(registry: registry,
+                       service: LinuxGuestCommandService(registry: registry),
+                       ledger: ledger)
+    }
+
+    /// The decision input is the disk's own provenance id and the pinned
+    /// catalog default — nothing is derived from the id's spelling.
+    func testKnownOlderImageAsksExactlyOnceAndStartsWithCurrentVersion() async throws {
+        let fixture = fixture(imageID: oldImageID)
+        fixture.ledger.setDecision(.useInstalled)
+        let started = try await fixture.service.startGuest(environmentID: environmentID, taskID: nil)
+        XCTAssertTrue(started)
+        XCTAssertEqual(fixture.ledger.requested, [
+            LinuxGuestStartupImageContext(
+                environmentID: environmentID,
+                installedImageID: oldImageID,
+                currentImageID: currentImageID
+            )
+        ])
+        XCTAssertEqual(fixture.ledger.sessionCount, 1)
+    }
+
+    /// Choosing the upgrade refuses THIS start before any lease/admission; the
+    /// app performs the preserving rebuild outside it. No VM is created.
+    func testUpgradeChoiceRefusesBeforeBootAndLeavesARetryableState() async throws {
+        let fixture = fixture(imageID: oldImageID)
+        fixture.ledger.setDecision(.upgrade)
+        do {
+            _ = try await fixture.service.startGuest(environmentID: environmentID, taskID: nil)
+            XCTFail("the old guest must not boot after an upgrade choice")
+        } catch let pending as LinuxGuestImageUpgradePending {
+            XCTAssertEqual(pending.environmentID, environmentID)
+            XCTAssertEqual(pending.installedImageID, oldImageID)
+            XCTAssertEqual(pending.currentImageID, currentImageID)
+        }
+        XCTAssertEqual(fixture.ledger.sessionCount, 0)
+        let running = await fixture.registry.status(environmentID: environmentID).running
+        XCTAssertFalse(running)
+
+        // The refusal is not sticky: after the rebuild the next start reuses
+        // the now-current disk (scripted as "continue") without a deadlock.
+        fixture.ledger.setDecision(.useInstalled)
+        let started = try await fixture.service.startGuest(environmentID: environmentID, taskID: nil)
+        XCTAssertTrue(started)
+        XCTAssertEqual(fixture.ledger.sessionCount, 1)
+    }
+
+    /// Fresh installs/current disks never ask. The scripted answer is
+    /// `upgrade` on purpose: a prompt for a current image would refuse here.
+    func testFreshCurrentImageNeverPrompts() async throws {
+        let fixture = fixture(imageID: currentImageID)
+        fixture.ledger.setDecision(.upgrade)
+        let started = try await fixture.service.startGuest(environmentID: environmentID, taskID: nil)
+        XCTAssertTrue(started)
+        XCTAssertTrue(fixture.ledger.requested.isEmpty)
+        XCTAssertEqual(fixture.ledger.sessionCount, 1)
+    }
+
+    /// An id outside the pinned catalog is NOT a known older environment: no
+    /// name/version guessing, no prompt, and the ordinary start path decides.
+    func testUnknownImageIDNeverPrompts() async throws {
+        let fixture = fixture(imageID: "unknown-legacy-image")
+        fixture.ledger.setDecision(.upgrade)
+        let started = try await fixture.service.startGuest(environmentID: environmentID, taskID: nil)
+        XCTAssertTrue(started)
+        XCTAssertTrue(fixture.ledger.requested.isEmpty)
+        XCTAssertEqual(fixture.ledger.sessionCount, 1)
+    }
+
+    /// Reusing the already-active guest neither asks again nor interrupts it.
+    func testRunningGuestIsReusedWithoutPrompt() async throws {
+        let fixture = fixture(imageID: oldImageID)
+        fixture.ledger.setDecision(.useInstalled)
+        _ = try await fixture.service.startGuest(environmentID: environmentID, taskID: nil)
+        XCTAssertEqual(fixture.ledger.requested.count, 1)
+
+        fixture.ledger.setDecision(.upgrade)
+        let reused = try await fixture.service.startGuest(environmentID: environmentID, taskID: nil)
+        XCTAssertTrue(reused)
+        XCTAssertEqual(fixture.ledger.requested.count, 1)
+        XCTAssertEqual(fixture.ledger.sessionCount, 1)
+    }
+
+    /// Another project's cold start on an already-running shared machine boots
+    /// its own project session without a prompt: its running work stays up.
+    func testActiveSharedMachineSkipsPromptForAnotherEnvironment() async throws {
+        let fixture = fixture(imageID: oldImageID, environmentIDs: ["env-gate", "env-other"])
+        fixture.ledger.setPhase(.running)
+        fixture.ledger.setDecision(.upgrade)
+        let started = try await fixture.service.startGuest(environmentID: "env-other", taskID: nil)
+        XCTAssertTrue(started)
+        XCTAssertTrue(fixture.ledger.requested.isEmpty)
+        XCTAssertEqual(fixture.ledger.sessionCount, 1)
+    }
+
+    /// Concurrent cold starts share the registry's start and boot ONE guest;
+    /// both waiters resolve, so no start is left hanging.
+    func testConcurrentColdStartsBootExactlyOnce() async throws {
+        let fixture = fixture(imageID: oldImageID)
+        fixture.ledger.setDecision(.useInstalled)
+        // Detached from self (XCTestCase is not Sendable): only the service
+        // and the id cross into the two concurrent starts.
+        let service = fixture.service
+        let id = environmentID
+        let first = Task { try await service.startGuest(environmentID: id, taskID: "task-a") }
+        let second = Task { try await service.startGuest(environmentID: id, taskID: "task-b") }
+        let results = [try await first.value, try await second.value]
+        XCTAssertEqual(results, [true, true])
+        XCTAssertEqual(fixture.ledger.sessionCount, 1)
+        XCTAssertLessThanOrEqual(fixture.ledger.requested.count, 2)
+    }
+
+    /// A v1-origin disk adopted by v2, whose exact v2 component is currently
+    /// absent, is a KNOWN old image: ask before re-downloading v2.
+    func testKnownOldRepairPendingImageAsksBeforeRepair() async throws {
+        let ledger = StartupImageGateLedger()
+        let descriptor = LinuxGuestEnvironmentDescriptor(
+            id: environmentID, ownerID: "owner", imageID: oldImageID,
+            imageResolutionFailure: "A verified runtime component for this environment is unavailable. Download it again."
+        )
+        let registry = LinuxGuestRegistry(
+            environments: FakeEnvironmentProvider(descriptors: [environmentID: descriptor]),
+            images: FakeImageResolver(images: [oldImageID: makeImage()]),
+            limits: .standard,
+            factory: StartupImageGateFactory(ledger: ledger),
+            startupImageDecision: { context in ledger.record(context) }
+        )
+        ledger.setDecision(.upgrade)
+        let service = LinuxGuestCommandService(registry: registry)
+        do {
+            _ = try await service.startGuest(environmentID: environmentID, taskID: nil)
+            XCTFail("a repair-pending old disk must not start after an upgrade choice")
+        } catch let pending as LinuxGuestImageUpgradePending {
+            XCTAssertEqual(pending.installedImageID, oldImageID)
+        }
+        XCTAssertEqual(ledger.requested.map(\.installedImageID), [oldImageID])
+        XCTAssertEqual(ledger.sessionCount, 0)
+    }
+
+    /// "Keep the current version" on that same disk keeps the existing exact
+    /// v2 repair/download route (imageNotQualified), not a silent boot.
+    func testKnownOldRepairPendingKeepsExistingRepairRoute() async throws {
+        let ledger = StartupImageGateLedger()
+        let descriptor = LinuxGuestEnvironmentDescriptor(
+            id: environmentID, ownerID: "owner", imageID: oldImageID,
+            imageResolutionFailure: "A verified runtime component for this environment is unavailable. Download it again."
+        )
+        let registry = LinuxGuestRegistry(
+            environments: FakeEnvironmentProvider(descriptors: [environmentID: descriptor]),
+            images: FakeImageResolver(images: [oldImageID: makeImage()]),
+            limits: .standard,
+            factory: StartupImageGateFactory(ledger: ledger),
+            startupImageDecision: { context in ledger.record(context) }
+        )
+        ledger.setDecision(.useInstalled)
+        let service = LinuxGuestCommandService(registry: registry)
+        do {
+            _ = try await service.startGuest(environmentID: environmentID, taskID: nil)
+            XCTFail("a repair-pending disk cannot boot before its component is repaired")
+        } catch LinuxGuestError.imageNotQualified(environmentID: let id, reason: _) {
+            XCTAssertEqual(id, environmentID)
+        }
+        XCTAssertEqual(ledger.requested.count, 1)
+        XCTAssertEqual(ledger.sessionCount, 0)
+    }
+
+    /// Unknown provenance (no trusted repair target) is never treated as a
+    /// known old environment: no prompt, the existing repair route decides.
+    func testUnknownProvenanceRepairPendingNeverPrompts() async throws {
+        let ledger = StartupImageGateLedger()
+        let descriptor = LinuxGuestEnvironmentDescriptor(
+            id: environmentID, ownerID: "owner", imageID: "",
+            imageResolutionFailure: "The current runtime's origin could not be confirmed. Existing data was retained."
+        )
+        let registry = LinuxGuestRegistry(
+            environments: FakeEnvironmentProvider(descriptors: [environmentID: descriptor]),
+            images: FakeImageResolver(images: [:]),
+            limits: .standard,
+            factory: StartupImageGateFactory(ledger: ledger),
+            startupImageDecision: { context in ledger.record(context) }
+        )
+        ledger.setDecision(.upgrade)
+        let service = LinuxGuestCommandService(registry: registry)
+        do {
+            _ = try await service.startGuest(environmentID: environmentID, taskID: nil)
+            XCTFail("unknown provenance cannot boot")
+        } catch LinuxGuestError.imageNotQualified(environmentID: _, reason: _) {
+        }
+        XCTAssertTrue(ledger.requested.isEmpty)
+        XCTAssertEqual(ledger.sessionCount, 0)
+    }
+
+    /// The real model-facing lifecycle caller (`environment.startLinux`) sees
+    /// the upgrade refusal as an honest error, not a fabricated running guest.
+    func testLifecycleManagerSurfacesUpgradeChoice() async throws {
+        let fixture = fixture(imageID: oldImageID)
+        fixture.ledger.setDecision(.upgrade)
+        let manager = LinuxGuestLifecycleManager(controller: fixture.service)
+        do {
+            _ = try await manager.start(environmentID: environmentID)
+            XCTFail("an upgrade choice must not report a started guest")
+        } catch is LinuxGuestImageUpgradePending {
+        }
+        XCTAssertEqual(fixture.ledger.sessionCount, 0)
+    }
+
+    /// The lazy activator used by shell/package paths surfaces the same
+    /// refusal and never starts the old guest.
+    func testActivatorSurfacesUpgradeChoice() async throws {
+        let fixture = fixture(imageID: oldImageID)
+        fixture.ledger.setDecision(.upgrade)
+        do {
+            try await LinuxGuestActivator.ensureRunning(
+                environmentID: environmentID,
+                guests: fixture.service,
+                controller: fixture.service
+            )
+            XCTFail("the activator must not start the old guest after an upgrade choice")
+        } catch is LinuxGuestImageUpgradePending {
+        }
+        XCTAssertEqual(fixture.ledger.sessionCount, 0)
+    }
+}
