@@ -3,7 +3,7 @@
 
 本文是 iOS／iPadOS 下一版版本选择的唯一维护入口；各渠道实际交付状态见[当前状态](CURRENT_STATUS.md)与[逐版交付记录](releases/README.md)。Android 版本独立管理。
 
-**最近已核验的内部测试为 1.8.27（348）。** Apple 返回 VALID、未过期，Floe QA 为 IN_BETA_TESTING。签名 IPA 与本地构建匹配，见[348 交付记录](releases/builds/FLOE_1.8.27_BUILD348_DELIVERY.md)。GitHub stable/latest 与 Feather 最近一次核验为 346。
+**最近已核验的内部测试为 1.8.29（350）。** Apple 返回 VALID、未过期，Floe QA 为 IN_BETA_TESTING。签名 IPA 与本地构建匹配，见[350 交付记录](releases/builds/FLOE_1.8.29_BUILD350_DELIVERY.md)。GitHub stable/latest 与 Feather 最近一次核验为 346。
 
 ## 依据与判定
 
@@ -15,7 +15,7 @@
 
 1.8.28（349）在本地预检发现随包开源许可的源码标签仍指向上一构件，已保留原标签，未上传。
 
-1.8.29（350）为修正源码引用后的内部 TestFlight 候选。范围包括换机后的旧磁盘整理、工具箱助手操作当前连接，以及工具页面内的助手会话生命周期。
+1.8.29（350）已交付 Floe QA 内部测试组。范围包括换机后的旧磁盘整理、工具箱助手操作当前连接，以及工具页面内的助手会话生命周期。
 
 1.8.27（348）已完成内部 TestFlight 交付，用户确认共享 Linux 清理会话已恢复。换机 iPad 的最新整理回执记录了 19 个候选，在第一个磁盘的维护准备阶段停止，文件分配量减少了 0 字节。两份旧恢复记录均已结束。[348 交付记录](releases/builds/FLOE_1.8.27_BUILD348_DELIVERY.md)
 
