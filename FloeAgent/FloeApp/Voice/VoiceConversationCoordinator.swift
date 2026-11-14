@@ -403,6 +403,10 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
     /// text — the stream's observed age, used to tell a healthy long-silence
     /// Apple auto-end (RENEWAL) from a rapid dying backend.
     private var observedSecondsWithoutText: Double = 0
+    /// Previous sample's bounded-recovery state. A completed recovery episode
+    /// gets a fresh speech-without-text window; a flag that merely expires
+    /// still fails within the ordinary bound.
+    private var wasRecoveringRecognition = false
     /// Consecutive restarts that had speech but no text (capped).
     private var textlessSpeechRestarts = 0
     /// Consecutive rapid no-speech no-text terminations (capped). A healthy
@@ -517,6 +521,7 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
         transcriptTextSeen = false
         voicedSecondsWithoutText = 0
         observedSecondsWithoutText = 0
+        wasRecoveringRecognition = false
         textlessSpeechRestarts = 0
         rapidEmptyRestarts = 0
         state = .requestingPermission
@@ -871,6 +876,7 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
             // recognition-health clocks for the new capture stretch.
             voicedSecondsWithoutText = 0
             observedSecondsWithoutText = 0
+            wasRecoveringRecognition = false
             // No endpoint timer for a pre-mute draft: only NEW transcript
             // activity continues automatic endpointing ("no auto-submit
             // muted draft" — the draft waits for the user to speak or send).
@@ -1102,14 +1108,29 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
         }
         if !isMuted, state.hasSession {
             observedSecondsWithoutText += sampleSeconds
-            if level.isSpeech { voicedSecondsWithoutText += sampleSeconds }
+            // A live cloud reconnect/replay is active, bounded work: the
+            // current speech is still being captured and will be replayed, so
+            // pausing the voiced clock here avoids failing a session that is
+            // recovering. The flag is self-expiring in the transcriber, and
+            // stop/cancel/true-dead paths turn it off, so this can never
+            // disable the bound indefinitely.
+            let recoveringRecognition = stack?.recognitionRecoveryActive == true
+            if wasRecoveringRecognition, !recoveringRecognition {
+                voicedSecondsWithoutText = 0
+                observedSecondsWithoutText = 0
+            }
+            wasRecoveringRecognition = recoveringRecognition
+            if level.isSpeech, !recoveringRecognition {
+                voicedSecondsWithoutText += sampleSeconds
+            }
             // Per-utterance batch routes (for example Alibaba Token Plan)
             // legitimately emit no partials while the user is speaking; the
             // partial-cadence health bound must not kill that session. The
             // batch request keeps its own bounded transport/final deadline,
             // and dead capture is still covered by the capture stall proof.
             let streamingPartials = stack?.recognitionProgressMode != .batchFile
-            if streamingPartials, state == .listening, round == nil,
+            if streamingPartials, !recoveringRecognition,
+               state == .listening, round == nil,
                voicedSecondsWithoutText >= timing.voicedWithoutTextLimit {
                 report("voicedWithoutText", "seconds=\(Int(voicedSecondsWithoutText))")
                 failCurrentSession(.recognizerFailed)

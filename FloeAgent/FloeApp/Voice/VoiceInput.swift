@@ -172,6 +172,11 @@ protocol SpeechTranscribing: Sendable {
     func cancelAudio() async
     /// Streaming vs per-utterance batch behavior for health policy.
     var recognitionProgressMode: VoiceRecognitionProgressMode { get }
+    /// True only while this transcriber is inside a bounded reconnect/replay
+    /// window. The continuous-voice health watchdog pauses its
+    /// speech-without-text clock during that window; a truly dead path still
+    /// resumes and fails within the existing bound.
+    var recognitionRecoveryActive: Bool { get }
     /// Bounded ordinary-stop drain. Local recognizers finalize quickly; a
     /// cloud/file route needs a real network window.
     var finalDrainTimeout: Duration { get }
@@ -180,6 +185,7 @@ protocol SpeechTranscribing: Sendable {
 extension SpeechTranscribing {
     var failure: VoiceInputFailure? { nil }
     var recognitionProgressMode: VoiceRecognitionProgressMode { .streaming }
+    var recognitionRecoveryActive: Bool { false }
     var finalDrainTimeout: Duration { .milliseconds(900) }
     func cancelAudio() async { await finishAudio() }
 }

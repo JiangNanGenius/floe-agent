@@ -457,6 +457,11 @@ protocol VoiceConversationStack: AnyObject, Sendable {
     /// not treat a batch route's legitimate silence-during-speech as a dead
     /// recognizer; the batch request's own bounded final deadline stays.
     var recognitionProgressMode: VoiceRecognitionProgressMode { get }
+    /// True only while the active transcriber is in its bounded reconnect /
+    /// replay window. The coordinator pauses the speech-without-text clock
+    /// during recovery; stop, cancellation and a genuinely dead path still
+    /// resume the clock and fail within the ordinary bound.
+    var recognitionRecoveryActive: Bool { get }
     func transcriptionFailureSnapshot() -> VoiceConversationFailure?
 
     /// Enqueue one PCM chunk on the shared player output. The result carries
@@ -499,6 +504,7 @@ extension VoiceConversationStack {
     /// an immediate cancel on teardown.
     func cancelTranscription() async { await finishTranscription() }
     var recognitionProgressMode: VoiceRecognitionProgressMode { .streaming }
+    var recognitionRecoveryActive: Bool { false }
     /// Old stacks/test doubles simply carry no controls and no output clock.
     func applySpeechControls(_ controls: VoicePlaybackControls, for unitID: UUID) {}
     var outputRenderedFrames: Int { 0 }

@@ -102,6 +102,17 @@ final class VoiceTestStack: VoiceConversationStack, @unchecked Sendable {
     private var epoch = 0
     private var scheduled = 0
     private var completed = 0
+    private var recoveringRecognition = false
+
+    /// Scripted replacement for the live stack's bounded reconnect/replay
+    /// flag. The coordinator must pause only the speech-without-text clock.
+    var recognitionRecoveryActive: Bool {
+        lock.withLock { recoveringRecognition }
+    }
+
+    func setRecognitionRecoveryActive(_ active: Bool) {
+        lock.withLock { recoveringRecognition = active }
+    }
 
     let outputSampleRate: Double = 8_000
 
@@ -909,6 +920,36 @@ struct VoiceConversationTests {
         await rig.settle(30)
         #expect(rig.coordinator.state == .failed(.recognizerFailed))
         #expect(rig.stack.count("begin") == 1)   // failed, not silently restarted
+    }
+
+    @Test("A bounded reconnect longer than 8 s does not kill a speaking session")
+    func boundedRecoveryBeyondEightSecondsSurvives() async {
+        let rig = VoiceRig()
+        await rig.coordinator.start()
+        // 5 s voiced before the outage.
+        for _ in 0..<25 { rig.stack.yieldLevel(0.5, speech: true, duration: 0.2) }
+        rig.stack.yieldLevel(0.42, speech: true, duration: 0.2)   // 5 s sentinel
+        #expect(await rig.waitUntil { rig.coordinator.audioLevel == 0.42 })
+
+        // 5 more seconds while the cloud path is in its bounded reconnect/
+        // replay window: total voiced speech is 10 s > 8 s, but this is
+        // active recovery, not a dead recognizer.
+        rig.stack.setRecognitionRecoveryActive(true)
+        for _ in 0..<25 { rig.stack.yieldLevel(0.5, speech: true, duration: 0.2) }
+        rig.stack.yieldLevel(0.41, speech: true, duration: 0.2)   // 10 s sentinel
+        #expect(await rig.waitUntil { rig.coordinator.audioLevel == 0.41 })
+        #expect(rig.coordinator.state == .listening,
+                "bounded recovery must pause the speech-without-text failure")
+
+        // Recovery ends and real text arrives: the session continues.
+        rig.stack.setRecognitionRecoveryActive(false)
+        await rig.say("继续")
+        #expect(await rig.waitUntil { rig.coordinator.stagedTranscript == "继续" })
+        for _ in 0..<25 { rig.stack.yieldLevel(0.5, speech: true, duration: 0.2) }
+        rig.stack.yieldLevel(0.40, speech: true, duration: 0.2)   // 5 s after text
+        #expect(await rig.waitUntil { rig.coordinator.audioLevel == 0.40 })
+        #expect(rig.coordinator.state == .listening,
+                "the post-recovery clock restarts from the new transcript")
     }
 
     @Test("Transcript text resets the speech-without-recognition clock")

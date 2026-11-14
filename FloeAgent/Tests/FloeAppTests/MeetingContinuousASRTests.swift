@@ -31,14 +31,14 @@ struct MeetingContinuousASRTests {
     private func fixture(
         limitBytes: Int64 = MeetingContinuousASR.domainWireLimitBytes,
         startEngine: Bool = true,
-        profile: ASRProfile = .volcengine(billingRoute: .agentPlan)
+        profile: ASRProfile = .volcengine(billingRoute: .agentPlan),
+        adapter: MeetingFakeLiveAdapter = MeetingFakeLiveAdapter()
     ) async throws -> Fixture {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("meeting-continuous-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let service = MeetingService(database: try MeetingDatabase(path: root.appendingPathComponent("meeting.sqlite").path))
         let meetingID = try await service.createMeeting(title: "Continuous")
-        let adapter = MeetingFakeLiveAdapter()
         let route = MeetingLiveTranscriptionRoute(
             profile: profile,
             credential: "synthetic-plan-key",
@@ -124,6 +124,77 @@ struct MeetingContinuousASRTests {
                 "rotation starts at the next queued batch's true original frame")
         #expect(rows[0].speakerID != rows[1].speakerID,
                 "the rotated request restarts numbering; label 1 is a new person")
+    }
+
+    @Test func earlyFinalThenFeedFailureSealsImmediatelyAndReconnectsWithoutDuplicates() async throws {
+        let fixture = try await fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let frame = try sineFrame(seconds: 1)
+        fixture.asr.offer(frame)
+        let first = try await fixture.adapter.onlyDomain()
+        try await first.deliverEarlyFinal(
+            text: "head",
+            utterances: [
+                .init(startMilliseconds: 0, endMilliseconds: 1_000, text: "head", speaker: nil),
+            ])
+        // Let the domain event consumer observe the provider final before the
+        // next write fails; the real adapter is already terminal at this point.
+        try await Task.sleep(for: .milliseconds(100))
+        first.failNextFeed()
+        let started = Date()
+        fixture.asr.offer(frame)   // rejected by the dead domain; a real gap
+        fixture.asr.offer(frame)   // continued speech goes to the next domain
+        let second = try await fixture.adapter.domain(at: 1)
+        try await second.deliverFinal(utterances: [
+            .init(startMilliseconds: 0, endMilliseconds: 900, text: "tail", speaker: nil),
+        ])
+        await fixture.asr.captureDidStop()
+        await fixture.asr.waitUntilFinished()
+        let elapsed = Date().timeIntervalSince(started)
+
+        let rows = try await fixture.service.transcript(meeting: fixture.meetingID)
+        #expect(elapsed < 5, "a dead feed seals without the old 30 s final wait")
+        #expect(fixture.adapter.openedSessionCount == 2,
+                "the buffered frame continues in a fresh domain")
+        #expect(rows.map(\.text) == ["head", "tail"])
+        let head = try #require(rows.first?.range)
+        let tail = try #require(rows.last?.range)
+        #expect(abs(head.start) < 0.01 && abs(head.end - 1) < 0.02,
+                "the provider final keeps its original 0–1 s range")
+        #expect(abs(tail.start - 2) < 0.01 && abs(tail.end - 2.9) < 0.02,
+                "continued speech keeps its true original media coordinate")
+        #expect(rows.filter { $0.text == "head" }.count == 1,
+                "the provider early final commits once")
+    }
+
+    @Test func unavailableEndpointWithPendingAudioFinishesPromptlyAtStop() async throws {
+        let adapter = MeetingFakeLiveAdapter()
+        adapter.startFailure = .transport(.notReachable)
+        let fixture = try await fixture(startEngine: false, adapter: adapter)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let frame = try sineFrame(seconds: 0.5)
+        for _ in 0..<4 { fixture.asr.offer(frame) }   // retained pending audio
+        await fixture.asr.start(captureSession: fixture.captureSession)
+        // Wait for the first open to actually fail and enter the retry wait;
+        // a blind delay could stop before the engine attempted it.
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline, adapter.openAttempts == 0 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(adapter.openAttempts == 1)
+        let started = Date()
+        await fixture.asr.captureDidStop()
+        await fixture.asr.waitUntilFinished()
+        let elapsed = Date().timeIntervalSince(started)
+
+        #expect(elapsed < 5, "stop must not busy-loop behind a dead endpoint")
+        #expect(adapter.openAttempts == 1,
+                "no new request after the initial failure and stop")
+        #expect(fixture.asr.coveredSnapshot().isEmpty,
+                "buffered audio stays uncovered for the existing file queue")
+        let rows = try await fixture.service.transcript(meeting: fixture.meetingID)
+        #expect(rows.isEmpty, "a failed live request creates no fake transcript rows")
+        #expect(!fixture.asr.isLiveActive)
     }
 
     @Test func cancellationLeavesNoRowsAndNoLateWrites() async throws {
@@ -447,6 +518,8 @@ private final class MeetingFakeLiveAdapter: ASRLiveTranscribing, @unchecked Send
         let lock = NSLock()
         var pendingFinal: ASRLiveEvent?
         var partialSink: (@Sendable (String, Bool) async -> Void)?
+        var finalSink: (@Sendable (ASRLiveEvent) async throws -> Void)?
+        var failNextFeed = false
     }
     final class MeetingFakeSession: ASRLiveSession, @unchecked Sendable {
         nonisolated let turnID: UUID
@@ -459,7 +532,20 @@ private final class MeetingFakeLiveAdapter: ASRLiveTranscribing, @unchecked Send
             self.turnID = domain.request.turnID
             self.events = ASRBoundedEventStream(capacity: 64)
         }
-        func feed(_ audio: Data) async throws { fed += audio.count }
+        func feed(_ audio: Data) async throws {
+            let shouldFail = domain.box.lock.withLock { () -> Bool in
+                guard domain.box.failNextFeed else { return false }
+                domain.box.failNextFeed = false
+                return true
+            }
+            if shouldFail {
+                throw ASRTranscriptionError.transport(.notReachable)
+            }
+            fed += audio.count
+        }
+        func deliverEarlyFinal(_ event: ASRLiveEvent) async throws {
+            try await events.send(event)
+        }
         func deliverPartial(_ text: String, replacesPartial: Bool) async throws {
             sequence += 1
             if replacesPartial {
@@ -490,6 +576,13 @@ private final class MeetingFakeLiveAdapter: ASRLiveTranscribing, @unchecked Send
     private let lock = NSLock()
     private var domains: [ScriptedDomain] = []
     private var domainWaiters: [Int: [CheckedContinuation<MeetingFakeDomainHandle, Never>]] = [:]
+    private var attempts = 0
+    var startFailure: ASRTranscriptionError?
+
+    var openAttempts: Int {
+        lock.lock(); defer { lock.unlock() }
+        return attempts
+    }
 
     var openedSessionCount: Int {
         lock.lock(); defer { lock.unlock() }
@@ -497,11 +590,20 @@ private final class MeetingFakeLiveAdapter: ASRLiveTranscribing, @unchecked Send
     }
 
     func startLiveSession(_ request: ASRLiveSessionRequest, credential: String) async throws -> any ASRLiveSession {
+        lock.lock()
+        attempts += 1
+        let failure = startFailure
+        lock.unlock()
+        if let failure { throw failure }
         let domain = ScriptedDomain(request: request)
         let session = MeetingFakeSession(domain: domain)
         domain.box.partialSink = { [weak session] text, replaces in
             guard let session else { return }
             try? await session.deliverPartial(text, replacesPartial: replaces)
+        }
+        domain.box.finalSink = { [weak session] event in
+            guard let session else { return }
+            try await session.deliverEarlyFinal(event)
         }
         let waiters = lock.withLock {
             let index = domains.count
@@ -550,6 +652,19 @@ private struct MeetingFakeDomainHandle: Sendable {
                 turnID: UUID(), itemID: nil, transcript: text,
                 speaker: speaker, utterances: nil, sequence: 1)
         }
+    }
+    func deliverEarlyFinal(
+        text: String,
+        utterances: [ASRLiveUtterance]
+    ) async throws {
+        let event = ASRLiveEvent.final(
+            turnID: UUID(), itemID: nil, transcript: text,
+            speaker: nil, utterances: utterances, sequence: 1)
+        let sink = box.lock.withLock { box.finalSink }
+        try await sink?(event)
+    }
+    func failNextFeed() {
+        box.lock.withLock { box.failNextFeed = true }
     }
 }
 #endif

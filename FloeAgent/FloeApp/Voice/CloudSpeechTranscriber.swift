@@ -20,10 +20,17 @@
 //   `recognitionProgressMode == .batchFile` lets the conversation watchdog
 //   use a batch-aware health bound instead of treating quiet partials as a
 //   dead recognizer.
-// - A cloud failure replays ONLY the uncommitted utterance through a
-//   local-only factory (Whisper then Apple as supplied). The partial cloud
-//   text is replaced, never appended, and the wrapper never recursively
-//   selects another cloud route.
+// - A transient cloud live failure is retried for the SAME uncommitted
+//   utterance with bounded, cancellable backoff. Capture keeps queueing new
+//   frames while the worker waits, and the complete captured utterance is
+//   replayed into the fresh request before new audio continues, so a socket
+//   blip cannot drop the middle of a sentence. A committed final is never
+//   replayed, stale events from a failed request never reach the transcript,
+//   and a permanent auth/config error or an ordinary stop never loops.
+// - If live recovery is exhausted (or the failure is permanent), ONLY the
+//   uncommitted utterance is replayed through a local-only factory (Whisper
+//   then Apple as supplied). The partial cloud text is replaced, never
+//   appended, and the wrapper never recursively selects another cloud route.
 // - Cancellation is not a provider failure and never triggers local fallback.
 
 #if canImport(AVFoundation)
@@ -49,6 +56,119 @@ private enum CloudSpeechFailure: Error, Equatable {
     case cancelled
 }
 
+/// Bounded reconnect policy for ONE live utterance. Production values keep a
+/// transient network blip inside the same dictation without turning a dead
+/// endpoint into an unbounded reconnect loop. Tests may inject an immediate
+/// policy; production callers use `.standard`.
+struct CloudSpeechRecoveryPolicy: Sendable, Equatable {
+    /// Fresh request attempts allowed AFTER a transient failure. The initial
+    /// request is always attempted and is not charged to this budget; zero
+    /// therefore disables reconnection but still allows one initial request.
+    var maximumReconnects: Int
+    var initialBackoffSeconds: Double
+    var maximumBackoffSeconds: Double
+
+    static let standard = CloudSpeechRecoveryPolicy(
+        maximumReconnects: 2,
+        initialBackoffSeconds: 0.35,
+        maximumBackoffSeconds: 1.5)
+
+    static let immediate = CloudSpeechRecoveryPolicy(
+        maximumReconnects: 2,
+        initialBackoffSeconds: 0,
+        maximumBackoffSeconds: 0)
+}
+
+/// Conservative classification: only a genuine transient transport/provider
+/// condition may start another request. Authentication, configuration,
+/// malformed requests/results and local cancellation never loop.
+private enum CloudLiveRetry {
+    static func isTransient(_ failure: ASRTranscriptionError) -> Bool {
+        switch failure {
+        case .transport(let reason):
+            switch reason {
+            case .cannotResolveHost, .cannotConnect, .timedOut,
+                 .notReachable, .unknown:
+                return true
+            case .tlsFailure, .cancelled:
+                return false
+            }
+        case .quotaOrRateLimited:
+            return true
+        case .httpStatus(let code):
+            return code == 408 || code == 425 || code == 429
+                || (500...599).contains(code)
+        case .invalidConfiguration, .credentialMissing, .authentication,
+             .providerRejected, .emptyResult, .responseTooLarge:
+            return false
+        }
+    }
+}
+
+/// Redacted mapping for errors that escape a session seam. Provider adapters
+/// already map their own failures; this preserves that category and gives a
+/// safe transient class to anything else.
+private enum CloudSpeechErrorMapping {
+    static func failure(from error: Error) -> ASRTranscriptionError {
+        if let error = error as? ASRTranscriptionError { return error }
+        if error is CancellationError { return .transport(.cancelled) }
+        if let failure = error as? CloudSpeechFailure {
+            switch failure {
+            case .configuration:
+                return .invalidConfiguration("cloud speech configuration is unavailable")
+            case .credential:
+                return .credentialMissing
+            case .transport:
+                return .transport(.notReachable)
+            case .rejected:
+                return .providerRejected
+            case .emptyFinal:
+                return .emptyResult
+            case .finalTimeout:
+                return .transport(.timedOut)
+            case .audioOverflow:
+                return .invalidConfiguration("captured audio exceeds the live limit")
+            case .cancelled:
+                return .transport(.cancelled)
+            }
+        }
+        let ns = error as NSError
+        if ns.domain == NSURLErrorDomain {
+            switch ns.code {
+            case NSURLErrorCannotFindHost, NSURLErrorDNSLookupFailed:
+                return .transport(.cannotResolveHost)
+            case NSURLErrorCannotConnectToHost, NSURLErrorNetworkConnectionLost:
+                return .transport(.cannotConnect)
+            case NSURLErrorTimedOut:
+                return .transport(.timedOut)
+            case NSURLErrorNotConnectedToInternet, NSURLErrorDataNotAllowed:
+                return .transport(.notReachable)
+            case NSURLErrorCancelled:
+                return .transport(.cancelled)
+            default:
+                return .transport(.unknown)
+            }
+        }
+        return .transport(.unknown)
+    }
+
+    /// Prefer the session's own terminal failure. An adapter that rejects a
+    /// write because its receive side already ended reports a configuration
+    /// message, but the real cause is the transport failure carried by the
+    /// event stream; only when that is absent is the ended session transient.
+    static func failure(
+        from error: Error,
+        snapshot: CloudLiveUtterance.Snapshot?
+    ) -> ASRTranscriptionError {
+        if let existing = snapshot?.failure { return existing }
+        let mapped = Self.failure(from: error)
+        if case .invalidConfiguration = mapped, snapshot?.ended == true {
+            return .transport(.notReachable)
+        }
+        return mapped
+    }
+}
+
 /// One converted PCM16 frame with the real measured RMS/duration used by the
 /// client VAD. `pcm` is mono little-endian PCM16 at `sampleRate`.
 struct CloudAudioFrame: Sendable {
@@ -58,6 +178,33 @@ struct CloudAudioFrame: Sendable {
     var duration: Double
 
     var isVoiced: Bool { rms >= CloudSpeechTranscriber.voiceGate }
+}
+
+/// Thread-safe, self-expiring recovery flag read by the continuous-voice
+/// health watchdog. A single episode is reported for at most
+/// `maximumSeconds`, so a hung open/backoff can never disable the watchdog
+/// indefinitely; a genuinely dead path resumes the ordinary failure bound.
+private final class CloudRecoveryStatusBox: @unchecked Sendable {
+    private static let maximumSeconds: Double = 15
+    private let lock = NSLock()
+    private var startedAt: Date?
+
+    func begin() {
+        lock.withLock {
+            if startedAt == nil { startedAt = Date() }
+        }
+    }
+
+    func end() {
+        lock.withLock { startedAt = nil }
+    }
+
+    var isActive: Bool {
+        lock.withLock {
+            guard let startedAt else { return false }
+            return Date().timeIntervalSince(startedAt) < Self.maximumSeconds
+        }
+    }
 }
 
 private final class CloudTranscriptBox: @unchecked Sendable {
@@ -107,6 +254,10 @@ final class CloudLiveEventBox: @unchecked Sendable {
 
     func markEnded() {
         lock.withLock { ended = true }
+    }
+
+    func store(failure: ASRTranscriptionError) {
+        lock.withLock { if self.failure == nil { self.failure = failure } }
     }
 
     func snapshot() -> (partial: String, final: String?, failure: ASRTranscriptionError?, ended: Bool) {
@@ -287,15 +438,24 @@ private final class CloudPCMConverter: @unchecked Sendable {
 }
 
 private struct CloudUtteranceState {
-    var frames: [Data] = []
+    var frames: [CloudAudioFrame] = []
     var bytes = 0
     var duration: Double = 0
     var voicedDuration: Double = 0
     var quietRun: Double = 0
     var sampleRate: Int
 
+    init(sampleRate: Int) {
+        self.sampleRate = sampleRate
+    }
+
+    init(frames: [CloudAudioFrame]) {
+        self.init(sampleRate: frames.last?.sampleRate ?? 16_000)
+        for frame in frames { append(frame) }
+    }
+
     mutating func append(_ frame: CloudAudioFrame) {
-        frames.append(frame.pcm)
+        frames.append(frame)
         bytes += frame.pcm.count
         duration += frame.duration
         if frame.isVoiced {
@@ -307,9 +467,27 @@ private struct CloudUtteranceState {
     }
 
     var wavData: Data {
-        CloudPCMCodec.wav(pcm16: frames.reduce(into: Data()) { $0.append($1) },
-                          sampleRate: sampleRate)
+        CloudPCMCodec.wav(
+            pcm16: frames.reduce(into: Data()) { $0.append($1.pcm) },
+            sampleRate: sampleRate)
     }
+}
+
+/// Per-utterance live recovery accounting. `retries` counts only fresh
+/// requests started AFTER a failure; the initial request is not a retry, so
+/// `maximumReconnects == 2` still means one initial request plus two real
+/// reconnects. Reset when a new utterance/segment starts.
+private struct CloudLiveRecoveryState {
+    var retries = 0
+    var lastFailure: ASRTranscriptionError?
+}
+
+private struct CloudLiveStart {
+    let session: CloudLiveUtterance
+    /// Number of frames the fresh request actually accepted. An early server
+    /// final can stop a replay before every frame was sent; those unsent
+    /// frames stay with the next segment and are never sent twice.
+    let fedFrames: Int
 }
 
 private final class CloudLocalTranscriptBox: @unchecked Sendable {
@@ -342,6 +520,9 @@ final class CloudSpeechTranscriber: SpeechTranscribing, @unchecked Sendable {
 
     var failure: VoiceInputFailure? { box.failure }
 
+    /// Bounded reconnect/replay visibility for the continuous-voice watchdog.
+    var recognitionRecoveryActive: Bool { recoveryStatus.isActive }
+
     private let profile: ASRProfile
     private let language: VoiceRecognitionLanguage
     private let credentialProvider: @Sendable () async throws -> String
@@ -349,6 +530,8 @@ final class CloudSpeechTranscriber: SpeechTranscribing, @unchecked Sendable {
     private let liveAdapter: (any ASRLiveTranscribing)?
     private let localFallback: @Sendable () async throws -> (any SpeechTranscribing)?
     private let diagnostics: (any VoiceInputDiagnostics)?
+    private let recoveryPolicy: CloudSpeechRecoveryPolicy
+    private let recoveryStatus = CloudRecoveryStatusBox()
     private let continuation: AsyncStream<String>.Continuation
     private let queue = CloudFrameQueue(capacityBytes: CloudSpeechTranscriber.maximumQueueBytes)
     private let converter: CloudPCMConverter?
@@ -364,13 +547,15 @@ final class CloudSpeechTranscriber: SpeechTranscribing, @unchecked Sendable {
         adapters: CloudSpeechAdapters,
         credentialProvider: @escaping @Sendable () async throws -> String,
         localFallback: @escaping @Sendable () async throws -> (any SpeechTranscribing)?,
-        diagnostics: (any VoiceInputDiagnostics)? = nil
+        diagnostics: (any VoiceInputDiagnostics)? = nil,
+        recoveryPolicy: CloudSpeechRecoveryPolicy = .standard
     ) throws {
         self.profile = profile
         self.language = language
         self.credentialProvider = credentialProvider
         self.localFallback = localFallback
         self.diagnostics = diagnostics
+        self.recoveryPolicy = recoveryPolicy
         self.fileAdapter = try adapters.file(profile)
         let live = try adapters.live(profile)
         self.liveAdapter = live
@@ -432,11 +617,18 @@ final class CloudSpeechTranscriber: SpeechTranscribing, @unchecked Sendable {
 
     // MARK: - Producer
 
+    private var isStopRequested: Bool {
+        lifecycleLock.withLock { finishRequested }
+    }
+
     private func run() async {
         var committed: [String] = []
         var utterance: CloudUtteranceState?
         var preroll: [CloudAudioFrame] = []
         var live: CloudLiveUtterance?
+        var fedFrames = 0
+        var recovery = CloudLiveRecoveryState()
+        var pendingFailure: ASRTranscriptionError?
         var lastEmitted = ""
 
         func emit(partial: String = "") {
@@ -449,47 +641,408 @@ final class CloudSpeechTranscriber: SpeechTranscribing, @unchecked Sendable {
             }
         }
 
-        func startUtterance(with frames: [CloudAudioFrame]) {
-            let sampleRate = frames.last?.sampleRate ?? 16_000
-            var state = CloudUtteranceState(sampleRate: sampleRate)
-            for frame in frames { state.append(frame) }
-            utterance = state
+        func recordFinal(_ text: String) {
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return }
+            committed.append(trimmed)
+            completedFinals += 1
+            emit()
         }
 
-        func commit(_ state: CloudUtteranceState) async throws -> String {
-            if mode == .batch {
-                return try await transcribeBatch(state)
+        func startUtterance(with frames: [CloudAudioFrame]) {
+            var state = CloudUtteranceState(sampleRate: frames.last?.sampleRate ?? 16_000)
+            for frame in frames { state.append(frame) }
+            utterance = state
+            fedFrames = 0
+            recovery = CloudLiveRecoveryState()
+            pendingFailure = nil
+        }
+
+        /// Fresh request for the SAME profile/credential route. The caller
+        /// replays the captured segment into it before any new live frame.
+        func makeLiveSession() async throws -> CloudLiveUtterance {
+            guard mode == .live, let adapter = liveAdapter else {
+                throw ASRTranscriptionError.invalidConfiguration(
+                    "cloud live transcription is unavailable for this profile")
             }
-            guard let live else { throw CloudSpeechFailure.configuration }
-            return try await transcribeLive(state, session: live)
+            let credential: String
+            do {
+                credential = try await credentialProvider()
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                // A keychain/read failure is a configuration state, not a
+                // reason to loop against the provider.
+                throw ASRTranscriptionError.credentialMissing
+            }
+            try Task.checkCancellation()
+            let request = ASRLiveSessionRequest(
+                profile: profile,
+                turnID: UUID(),
+                inputSampleRate: profile.provider == .openaiCompatible ? 24_000 : 16_000,
+                languages: language.recognitionCode.map { [$0] } ?? [],
+                finishTimeoutSeconds: Self.finalTimeoutSeconds)
+            do {
+                let session = try await adapter.startLiveSession(
+                    request, credential: credential)
+                return CloudLiveUtterance(session: session)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                throw CloudSpeechErrorMapping.failure(from: error)
+            }
+        }
+
+        func waitBeforeReconnect(attempt: Int) async -> Bool {
+            let exponent = max(0, attempt - 1)
+            let base = recoveryPolicy.initialBackoffSeconds
+                * pow(2, Double(exponent))
+            let seconds = max(0, min(base, recoveryPolicy.maximumBackoffSeconds))
+            guard seconds > 0 else { return true }
+            let steps = max(1, Int((seconds / 0.1).rounded(.up)))
+            for _ in 0..<steps {
+                if Task.isCancelled || box.isCancelled || isStopRequested {
+                    return false
+                }
+                do { try await Task.sleep(for: .milliseconds(100)) }
+                catch { return false }
+            }
+            return true
+        }
+
+        /// Bounded fresh request with replay. Capture keeps queueing on the
+        /// audio thread while this awaits. The initial request is NOT charged
+        /// to `maximumReconnects`; only requests after a failure are retries.
+        func recoverLive(frames: [CloudAudioFrame]) async -> CloudLiveStart? {
+            recoveryStatus.begin()
+            defer { recoveryStatus.end() }
+            var initial = recovery.lastFailure == nil && recovery.retries == 0
+            while true {
+                if Task.isCancelled || box.isCancelled { return nil }
+                if let failure = recovery.lastFailure,
+                   !CloudLiveRetry.isTransient(failure) {
+                    return nil
+                }
+                if !initial {
+                    guard !isStopRequested,
+                          recovery.retries < max(0, recoveryPolicy.maximumReconnects) else {
+                        return nil
+                    }
+                    guard await waitBeforeReconnect(
+                        attempt: recovery.retries + 1) else { return nil }
+                    recovery.retries += 1
+                }
+                initial = false
+                do {
+                    let session = try await makeLiveSession()
+                    var accepted = 0
+                    do {
+                        for frame in frames {
+                            try Task.checkCancellation()
+                            if session.hasFinal {
+                                return CloudLiveStart(
+                                    session: session, fedFrames: accepted)
+                            }
+                            try await session.session.feed(frame.pcm)
+                            accepted += 1
+                            // The provider can finalize before every frame is
+                            // sent; unsent frames stay with the next segment.
+                            if session.hasFinal {
+                                return CloudLiveStart(
+                                    session: session, fedFrames: accepted)
+                            }
+                        }
+                        recovery.lastFailure = nil
+                        return CloudLiveStart(session: session, fedFrames: accepted)
+                    } catch is CancellationError {
+                        let snapshot = await session.settledSnapshot()
+                        if snapshot.final != nil {
+                            return CloudLiveStart(
+                                session: session, fedFrames: accepted)
+                        }
+                        await session.cancelTransport()
+                        if Task.isCancelled || box.isCancelled { return nil }
+                        recovery.lastFailure = snapshot.failure
+                            ?? .transport(.cancelled)
+                    } catch {
+                        let snapshot = await session.settledSnapshot()
+                        if snapshot.final != nil {
+                            // A normal early server final is a complete
+                            // result even if the adapter then refuses audio.
+                            return CloudLiveStart(
+                                session: session, fedFrames: accepted)
+                        }
+                        await session.cancelTransport()
+                        recovery.lastFailure = CloudSpeechErrorMapping.failure(
+                            from: error, snapshot: snapshot)
+                    }
+                } catch is CancellationError {
+                    return nil
+                } catch {
+                    recovery.lastFailure = CloudSpeechErrorMapping.failure(
+                        from: error, snapshot: nil)
+                }
+            }
+        }
+
+        func dropLive(_ failure: ASRTranscriptionError?) async {
+            if let failure {
+                pendingFailure = failure
+                recovery.lastFailure = failure
+            }
+            fedFrames = 0
+            guard let session = live else { return }
+            live = nil
+            await session.cancelTransport()
+        }
+
+        /// One shared failure path for feed and commit: preserve a real final,
+        /// otherwise map and release the failed socket, then use the single
+        /// bounded reconnect budget.
+        func handleLiveFailure(
+            _ error: Error,
+            session: CloudLiveUtterance,
+            state: CloudUtteranceState
+        ) async -> Bool {
+            let snapshot = await session.settledSnapshot()
+            if snapshot.final != nil { return true }
+            let failure = CloudSpeechErrorMapping.failure(
+                from: error, snapshot: snapshot)
+            await dropLive(failure)
+            guard !Task.isCancelled, !box.isCancelled,
+                  CloudLiveRetry.isTransient(failure), !isStopRequested,
+                  recovery.retries < max(0, recoveryPolicy.maximumReconnects),
+                  let start = await recoverLive(frames: state.frames) else {
+                return false
+            }
+            live = start.session
+            fedFrames = start.fedFrames
+            pendingFailure = nil
+            return true
+        }
+
+        /// Settle a provider final exactly once. Only frames the finalizing
+        /// request actually accepted are consumed. Every unfed frame — the
+        /// rejected current frame included — remains in a fresh utterance and
+        /// is replayed once to the next controlled request.
+        func settleEarlyFinal(
+            _ session: CloudLiveUtterance,
+            state: CloudUtteranceState
+        ) async -> Bool {
+            guard let final = session.snapshot.final else { return false }
+            let trimmed = final.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else {
+                await dropLive(.providerRejected)
+                return false
+            }
+            let accepted = min(fedFrames, state.frames.count)
+            guard accepted > 0 else {
+                await dropLive(.providerRejected)
+                return false
+            }
+            await session.cancelTransport()
+            if live === session { live = nil }
+            fedFrames = 0
+            recordFinal(trimmed)
+            let remaining = Array(state.frames.dropFirst(accepted))
+            recovery = CloudLiveRecoveryState()
+            pendingFailure = nil
+            if remaining.isEmpty {
+                utterance = nil
+                return true
+            }
+            utterance = CloudUtteranceState(frames: remaining)
+            return true
+        }
+
+        /// Feed newly captured frames and settle any provider early final.
+        /// Returns true when `utterance` was replaced/closed, so the caller
+        /// must re-read it instead of using its stale local copy.
+        func syncLive(_ initialState: CloudUtteranceState) async -> Bool {
+            guard mode == .live else { return false }
+            var state = initialState
+            var changed = false
+            var settlements = 0
+            syncLoop: while true {
+                if Task.isCancelled || box.isCancelled { return changed }
+                if live == nil {
+                    if let failure = pendingFailure,
+                       !CloudLiveRetry.isTransient(failure) {
+                        return changed
+                    }
+                    if state.voicedDuration < Self.minimumVoicedSeconds {
+                        return changed
+                    }
+                    let isInitial = recovery.lastFailure == nil
+                        && recovery.retries == 0
+                    guard isInitial || (!isStopRequested
+                        && recovery.retries < max(0, recoveryPolicy.maximumReconnects)) else {
+                        return changed
+                    }
+                    guard let start = await recoverLive(frames: state.frames) else {
+                        pendingFailure = recovery.lastFailure ?? pendingFailure
+                            ?? .transport(.notReachable)
+                        return changed
+                    }
+                    live = start.session
+                    fedFrames = start.fedFrames
+                    pendingFailure = nil
+                }
+                guard let session = live else { return changed }
+                if session.hasFinal {
+                    guard await settleEarlyFinal(session, state: state) else {
+                        return changed
+                    }
+                    changed = true
+                    settlements += 1
+                    guard settlements <= 8 else { return changed }
+                    guard let updated = utterance else { return true }
+                    state = updated
+                    continue
+                }
+                while fedFrames < state.frames.count {
+                    if Task.isCancelled || box.isCancelled { return changed }
+                    do {
+                        try await session.session.feed(state.frames[fedFrames].pcm)
+                        fedFrames += 1
+                    } catch {
+                        if await handleLiveFailure(
+                            error, session: session, state: state) {
+                            continue syncLoop
+                        }
+                        return changed
+                    }
+                    if session.hasFinal { break }
+                }
+                if session.hasFinal { continue }
+                return changed
+            }
+        }
+
+        func commit(_ initialState: CloudUtteranceState) async throws -> String {
+            if mode == .batch {
+                return try await transcribeBatch(initialState)
+            }
+            var state = initialState
+            var settlements = 0
+            while true {
+                if Task.isCancelled || box.isCancelled { throw CancellationError() }
+                if let session = live, session.hasFinal {
+                    guard await settleEarlyFinal(session, state: state) else {
+                        throw pendingFailure ?? ASRTranscriptionError.providerRejected
+                    }
+                    settlements += 1
+                    guard settlements <= 8 else {
+                        throw ASRTranscriptionError.providerRejected
+                    }
+                    guard let updated = utterance else { return "" }
+                    state = updated
+                    if state.voicedDuration < Self.minimumVoicedSeconds {
+                        // Only silence followed the provider's endpoint.
+                        utterance = nil
+                        return ""
+                    }
+                    if isStopRequested {
+                        // Ordinary stop never starts another request. The
+                        // remaining tail still goes through local fallback
+                        // when one exists; the settled final is never lost.
+                        if let text = await recoverLocally(state) {
+                            recordFinal(text)
+                        }
+                        utterance = nil
+                        return ""
+                    }
+                    continue
+                }
+                if live == nil {
+                    let isInitial = recovery.lastFailure == nil
+                        && recovery.retries == 0
+                    let retryable = recovery.lastFailure
+                        .map(CloudLiveRetry.isTransient) ?? true
+                    let hasBudget = recovery.retries
+                        < max(0, recoveryPolicy.maximumReconnects)
+                    if isStopRequested, !isInitial {
+                        throw pendingFailure ?? recovery.lastFailure
+                            ?? ASRTranscriptionError.transport(.notReachable)
+                    }
+                    guard retryable, isInitial || hasBudget else {
+                        throw pendingFailure ?? recovery.lastFailure
+                            ?? ASRTranscriptionError.transport(.notReachable)
+                    }
+                    guard let start = await recoverLive(frames: state.frames) else {
+                        throw recovery.lastFailure ?? pendingFailure
+                            ?? ASRTranscriptionError.transport(.notReachable)
+                    }
+                    live = start.session
+                    fedFrames = start.fedFrames
+                    pendingFailure = nil
+                    if start.session.hasFinal { continue }
+                }
+                guard let session = live else {
+                    throw recovery.lastFailure ?? pendingFailure
+                        ?? ASRTranscriptionError.transport(.notReachable)
+                }
+                do {
+                    return try await transcribeLive(session: session)
+                } catch is CancellationError {
+                    await dropLive(nil)
+                    throw CancellationError()
+                } catch {
+                    let snapshot = await session.settledSnapshot()
+                    if snapshot.final != nil {
+                        continue
+                    }
+                    let failure = CloudSpeechErrorMapping.failure(
+                        from: error, snapshot: snapshot)
+                    await dropLive(failure)
+                    guard !Task.isCancelled, !box.isCancelled,
+                          CloudLiveRetry.isTransient(failure),
+                          !isStopRequested,
+                          recovery.retries < max(0, recoveryPolicy.maximumReconnects),
+                          let start = await recoverLive(frames: state.frames) else {
+                        throw recovery.lastFailure ?? failure
+                    }
+                    live = start.session
+                    fedFrames = start.fedFrames
+                    pendingFailure = nil
+                }
+            }
         }
 
         func endUtterance(_ state: CloudUtteranceState) async {
-            guard state.voicedDuration >= Self.minimumVoicedSeconds else {
-                if let live { await live.cancel() }
+            // An early-final split can replace the utterance after the caller
+            // captured its argument; always commit the current one.
+            let current = utterance ?? state
+            guard current.voicedDuration >= Self.minimumVoicedSeconds else {
+                if let session = live { await session.cancel() }
+                live = nil
+                fedFrames = 0
                 utterance = nil
                 emit()
                 return
             }
             do {
-                let text = try await commit(state)
+                let text = try await commit(current)
                 try Task.checkCancellation()
-                if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    committed.append(text.trimmingCharacters(in: .whitespacesAndNewlines))
-                    completedFinals += 1
-                }
+                if !text.isEmpty { recordFinal(text) }
                 utterance = nil
-                if let live { await live.cancel() }
+                if let session = live { await session.cancel() }
+                live = nil
+                fedFrames = 0
                 emit()
             } catch is CancellationError {
-                if let live { await live.cancel() }
+                if let session = live { await session.cancel() }
+                live = nil
+                fedFrames = 0
                 utterance = nil
             } catch {
-                if let live { await live.cancel() }
+                if let session = live { await session.cancel() }
+                live = nil
+                fedFrames = 0
+                let fallbackState = utterance ?? current
                 utterance = nil
-                if let text = await recoverLocally(state) {
-                    committed.append(text)
-                    emit()
+                if let text = await recoverLocally(fallbackState) {
+                    recordFinal(text)
                 } else if !box.isCancelled {
                     box.store(.recognizerFailed)
                     continuation.finish()
@@ -503,16 +1056,23 @@ final class CloudSpeechTranscriber: SpeechTranscribing, @unchecked Sendable {
                 if frame.isVoiced {
                     // Start with the bounded pre-roll plus the first voiced
                     // frame. Every captured frame enters the utterance ONCE,
-                    // and the same ordered frames are fed to the live session
-                    // (the session may have opened after the pre-roll).
+                    // and the complete ordered frame list is what a reconnect
+                    // replays, so the opening is never duplicated.
                     preroll.append(frame)
                     let opening = preroll
                     preroll = []
                     startUtterance(with: opening)
-                    live = await openLiveIfNeeded()
-                    if mode == .live, let live {
-                        for captured in opening {
-                            await feedLiveFrame(captured, session: live)
+                    if mode == .live {
+                        // Open the initial request immediately. Even a stop
+                        // that arrives before the worker drains the queue can
+                        // still commit this short dictation.
+                        if let start = await recoverLive(frames: opening) {
+                            live = start.session
+                            fedFrames = start.fedFrames
+                            pendingFailure = nil
+                        } else {
+                            pendingFailure = recovery.lastFailure
+                                ?? .transport(.notReachable)
                         }
                     }
                     // Do NOT append the current frame again below.
@@ -527,77 +1087,53 @@ final class CloudSpeechTranscriber: SpeechTranscribing, @unchecked Sendable {
             } else if var state = utterance {
                 state.append(frame)
                 utterance = state
-                if mode == .live, let live {
-                    await feedLiveFrame(frame, session: live)
-                }
             }
             guard let state = utterance else { continue }
-            if state.bytes > Self.maximumUtteranceBytes {
+            if mode == .live {
+                if await syncLive(state) { continue }
+            }
+            guard let current = utterance else { continue }
+            if current.bytes > Self.maximumUtteranceBytes {
                 // Bounded speculation: commit what was actually captured
                 // rather than growing without limit or dropping audio.
-                await endUtterance(state)
-                live = nil
+                await endUtterance(current)
                 continue
             }
-            if mode == .live, let live {
-                let partial = live.partial
+            if mode == .live, let session = live {
+                let partial = session.partial
                 if !partial.isEmpty { emit(partial: partial) }
             }
-            if state.quietRun >= Self.vadSilenceSeconds,
-               state.voicedDuration >= Self.minimumVoicedSeconds {
-                await endUtterance(state)
-                live = nil
+            if current.quietRun >= Self.vadSilenceSeconds,
+               current.voicedDuration >= Self.minimumVoicedSeconds {
+                await endUtterance(current)
             }
         }
 
         if let state = utterance, !Task.isCancelled, !box.isCancelled {
             await endUtterance(state)
         }
-        if let live { await live.cancel() }
+        if let session = live { await session.cancel() }
         emit()
     }
 
-    private func openLiveIfNeeded() async -> CloudLiveUtterance? {
-        guard mode == .live, let adapter = liveAdapter else { return nil }
-        do {
-            let credential = try await credentialProvider()
-            try Task.checkCancellation()
-            let request = ASRLiveSessionRequest(
-                profile: profile,
-                turnID: UUID(),
-                inputSampleRate: profile.provider == .openaiCompatible ? 24_000 : 16_000,
-                languages: language.recognitionCode.map { [$0] } ?? [],
-                finishTimeoutSeconds: Self.finalTimeoutSeconds)
-            let session = try await adapter.startLiveSession(request, credential: credential)
-            return CloudLiveUtterance(session: session)
-        } catch is CancellationError {
-            return nil
-        } catch {
-            return nil
-        }
-    }
-
-    private func feedLiveFrame(_ frame: CloudAudioFrame, session: CloudLiveUtterance) async {
-        do {
-            try await session.session.feed(frame.pcm)
-        } catch is CancellationError {
-            return
-        } catch {
-            session.note(error: .transport(.notReachable))
-        }
-    }
-
-    private func transcribeLive(
-        _ state: CloudUtteranceState,
-        session: CloudLiveUtterance
-    ) async throws -> String {
-        if let failure = session.snapshot.failure { throw failure }
+    /// Commit one live request and wait for its single final. An early final
+    /// is returned as-is instead of forcing a second commit (which the
+    /// adapter correctly rejects once its stream is terminal).
+    private func transcribeLive(session: CloudLiveUtterance) async throws -> String {
+        recoveryStatus.begin()
+        defer { recoveryStatus.end() }
+        var snapshot = session.snapshot
+        if let final = snapshot.final { return final }
+        if let failure = snapshot.failure { throw failure }
         do {
             try await session.session.endUtterance()
         } catch is CancellationError {
             throw CancellationError()
         } catch {
-            throw CloudSpeechFailure.transport
+            snapshot = await session.settledSnapshot()
+            if let final = snapshot.final { return final }
+            if let failure = snapshot.failure { throw failure }
+            throw CloudSpeechErrorMapping.failure(from: error, snapshot: snapshot)
         }
         let finished = await withTaskGroup(of: Bool.self) { group in
             group.addTask {
@@ -618,11 +1154,17 @@ final class CloudSpeechTranscriber: SpeechTranscribing, @unchecked Sendable {
         }
         await session.cancelTransport()
         try Task.checkCancellation()
-        guard finished else { throw CloudSpeechFailure.finalTimeout }
-        let snapshot = session.snapshot
+        guard finished else { throw ASRTranscriptionError.transport(.timedOut) }
+        snapshot = session.snapshot
+        if let final = snapshot.final { return final }
         if let failure = snapshot.failure { throw failure }
-        guard let final = snapshot.final else { throw CloudSpeechFailure.rejected }
-        return final
+        if snapshot.ended {
+            // The server closed without the documented final event. Treat it
+            // as a lost request, not a provider rejection, so one bounded
+            // reconnect can still recover the utterance.
+            throw ASRTranscriptionError.transport(.notReachable)
+        }
+        throw ASRTranscriptionError.providerRejected
     }
 
     private func transcribeBatch(_ state: CloudUtteranceState) async throws -> String {
@@ -648,10 +1190,12 @@ final class CloudSpeechTranscriber: SpeechTranscribing, @unchecked Sendable {
         _ state: CloudUtteranceState
     ) async -> String? {
         guard !box.isCancelled, !Task.isCancelled else { return nil }
+        recoveryStatus.begin()
+        defer { recoveryStatus.end() }
         do {
             guard let local = try await localFallback() else { return nil }
             try Task.checkCancellation()
-            let pcm = state.frames.reduce(into: Data()) { $0.append($1) }
+            let pcm = state.frames.reduce(into: Data()) { $0.append($1.pcm) }
             guard let buffer = CloudPCMCodec.buffer(pcm16: pcm, sampleRate: state.sampleRate) else {
                 await local.cancelAudio()
                 return nil
@@ -683,11 +1227,16 @@ final class CloudSpeechTranscriber: SpeechTranscribing, @unchecked Sendable {
 }
 
 private final class CloudLiveUtterance: @unchecked Sendable {
+    struct Snapshot: Sendable {
+        let partial: String
+        let final: String?
+        let failure: ASRTranscriptionError?
+        let ended: Bool
+    }
+
     let session: any ASRLiveSession
     let eventTask: Task<Void, Never>
     private let box = CloudLiveEventBox()
-    private let lock = NSLock()
-    private var storedFailure: ASRTranscriptionError?
 
     init(session: any ASRLiveSession) {
         self.session = session
@@ -698,33 +1247,55 @@ private final class CloudLiveUtterance: @unchecked Sendable {
                     box.apply(event)
                     if event.kind == .failed { break }
                 }
+            } catch is CancellationError {
+                // Cancellation is not a provider failure.
             } catch {
-                box.markEnded()
+                box.store(failure: CloudSpeechErrorMapping.failure(from: error))
             }
             box.markEnded()
         }
     }
 
-    func note(error: ASRTranscriptionError) {
-        lock.withLock { if storedFailure == nil { storedFailure = error } }
-    }
-
     var partial: String { box.snapshot().partial }
 
-    var snapshot: (final: String?, failure: ASRTranscriptionError?) {
+    var hasFinal: Bool { box.snapshot().final != nil }
+
+    var snapshot: Snapshot {
         let snapshot = box.snapshot()
-        let stored = lock.withLock { storedFailure }
-        return (snapshot.final, snapshot.failure ?? stored)
+        return Snapshot(
+            partial: snapshot.partial,
+            final: snapshot.final,
+            failure: snapshot.failure,
+            ended: snapshot.ended)
     }
 
+    /// Terminal event delivery is asynchronous relative to a failing
+    /// `feed`/`endUtterance` call. Give the event task a short, bounded moment
+    /// to publish the real final/failure instead of guessing from the write
+    /// error ("the session has already ended").
+    func settledSnapshot() async -> Snapshot {
+        let deadline = Date().addingTimeInterval(0.1)
+        while true {
+            let value = snapshot
+            if value.final != nil || value.failure != nil || value.ended {
+                return value
+            }
+            if Date() >= deadline { return value }
+            do { try await Task.sleep(for: .milliseconds(10)) }
+            catch { return value }
+        }
+    }
+
+    /// Release the failed request and its event task. Awaiting the event task
+    /// here keeps stale callbacks from outliving the request they belong to.
     func cancel() async {
-        eventTask.cancel()
-        await session.cancel()
+        await cancelTransport()
     }
 
     func cancelTransport() async {
         eventTask.cancel()
         await session.cancel()
+        _ = await eventTask.value
     }
 }
 

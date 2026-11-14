@@ -16,6 +16,9 @@ import FloeMeetingsAV
 /// transcription path — the pump, the lossless original and the AAC chunks
 /// are never backpressured; uncovered ranges are transcribed later by the
 /// existing file-chunk queue, deduplicated against the committed coverage.
+/// After capture stops no NEW live domain is opened; buffered but unfed audio
+/// stays an uncovered gap for that same file queue, and a permanently rejected
+/// route suspends live work instead of retrying forever.
 final class MeetingContinuousASR: @unchecked Sendable {
     enum SealReason: Sendable, Equatable {
         case rotation, overflow, failure, stop
@@ -95,6 +98,11 @@ final class MeetingContinuousASR: @unchecked Sendable {
     private let wireLimitBytes: Int64
     private var consecutiveOpenFailures = 0
     private var reportedDegraded = false
+    /// A rejected credential/configuration is not a transient condition:
+    /// reopening the same request forever would only burn battery and log
+    /// noise. The engine drains the capture and lets the existing file queue
+    /// cover every span; only a transient failure keeps retrying.
+    private var liveSuspended = false
 
     init(
         meetingID: MeetingID,
@@ -256,13 +264,32 @@ final class MeetingContinuousASR: @unchecked Sendable {
             // audio instead of idling before the microphone produces frames;
             // after a seal the loop top reopens exactly once per iteration.
             if currentDomain == nil {
-                // A stopped pump with nothing left to feed must not open a
-                // pointless provider request just to close it again.
-                if pumpIsFinished, peekFrame() == nil, !overflowSealPending {
+                if liveSuspended {
+                    // Permanent rejection: keep the pump lossless and stop
+                    // retaining audio that no live request will receive. The
+                    // recorder and the file queue remain authoritative.
+                    discardSuspendedInput()
+                    if cancellationRequested || pumpIsFinished {
+                        await finishEngine(lease: lease)
+                        return
+                    }
+                    await park()
+                    continue
+                }
+                // Once capture has stopped, never open another request.
+                // Any buffered frames are an uncovered span for the existing
+                // file queue, not a reason to keep retrying a dead endpoint
+                // (the old pauseWhileDegraded returned immediately when the
+                // pump was finished, busy-looping here forever).
+                if pumpIsFinished {
+                    discardSuspendedInput()
                     await finishEngine(lease: lease)
                     return
                 }
                 guard await openDomain(lease: lease) else {
+                    if liveSuspended {
+                        continue
+                    }
                     if lockAnchorForDomain().sourceRate == nil {
                         await park()
                     } else {
@@ -377,6 +404,15 @@ final class MeetingContinuousASR: @unchecked Sendable {
         buffer.removeAll(keepingCapacity: true)
     }
 
+    /// Suspended live path: drop queued audio and clear the seal request so
+    /// `park()` waits for the next offered frame instead of spinning on an
+    /// already-consumed overflow marker.
+    private func discardSuspendedInput() {
+        lock.lock(); defer { lock.unlock() }
+        buffer.removeAll(keepingCapacity: true)
+        overflowSealRequested = false
+    }
+
     private var cancellationRequested: Bool {
         lock.lock(); defer { lock.unlock() }
         return cancelled
@@ -485,6 +521,8 @@ final class MeetingContinuousASR: @unchecked Sendable {
                 startFrame: anchor.startFrame,
                 wireLimitBytes: wireLimitBytes)
             consecutiveOpenFailures = 0
+            reportedDegraded = false
+            liveSuspended = false
             lock.withLock {
                 metrics.domains += 1
                 liveActive = true
@@ -493,35 +531,66 @@ final class MeetingContinuousASR: @unchecked Sendable {
             return true
         } catch {
             consecutiveOpenFailures += 1
-            if consecutiveOpenFailures == 3 {
-                reportDegraded(error: error)
+            if Self.isPermanentOpenFailure(error) {
+                liveSuspended = true
+                lock.withLock { liveActive = false }
+                reportDegraded(error: error, permanent: true)
+            } else if consecutiveOpenFailures == 3 {
+                reportDegraded(error: error, permanent: false)
             }
+            return false
+        }
+    }
+
+    private static func isPermanentOpenFailure(_ error: Error) -> Bool {
+        guard let error = error as? ASRTranscriptionError else { return false }
+        switch error {
+        case .credentialMissing, .authentication, .invalidConfiguration,
+             .responseTooLarge:
+            return true
+        case .transport(let reason):
+            return reason == .tlsFailure
+        case .httpStatus(let code):
+            return (400...499).contains(code)
+                && code != 408 && code != 425 && code != 429
+        case .providerRejected, .emptyResult, .quotaOrRateLimited:
             return false
         }
     }
 
     private func pauseWhileDegraded() async {
         lock.withLock { liveActive = false }
-        // Cancellation/stop-aware bounded wait. A single unstructured sleep
-        // would make cancel/deletion wait the full backoff; this loop observes
-        // the flags every 100 ms.
-        let steps = max(1, Int(Self.degradedRetryDelaySeconds * 10))
+        // Bounded, cancellation/stop-aware exponential retry. A permanent
+        // rejection never reaches this path (the engine suspends instead).
+        let exponent = max(0, consecutiveOpenFailures - 1)
+        let delay = min(
+            Self.degradedRetryDelaySeconds * pow(2, Double(exponent)),
+            60)
+        let steps = max(1, Int((delay * 10).rounded(.up)))
         for _ in 0..<steps {
             if cancellationRequested || pumpIsFinished { return }
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
     }
 
-    private func reportDegraded(error: Error) {
+    private func reportDegraded(error: Error, permanent: Bool) {
         guard !reportedDegraded else { return }
         reportedDegraded = true
         lock.lock()
         metrics.lastError = String(describing: error)
         lock.unlock()
-        Task { [onDiagnostic] in
-            await onDiagnostic(IDELanguageRunText.t(
+        let message: String
+        if permanent {
+            message = IDELanguageRunText.t(
+                "实时转写服务配置或凭据不可用，未覆盖的片段将稍后继续转写；原录音不受影响。",
+                "Live transcription is unavailable because its service configuration or credential was rejected; uncovered chunks will be transcribed later. The recording is unaffected.")
+        } else {
+            message = IDELanguageRunText.t(
                 "实时转写暂时不可用，未覆盖的片段将稍后继续转写；原录音不受影响。",
-                "Live transcription is temporarily unavailable; uncovered chunks will be transcribed later. The recording is unaffected."))
+                "Live transcription is temporarily unavailable; uncovered chunks will be transcribed later. The recording is unaffected.")
+        }
+        Task { [onDiagnostic] in
+            await onDiagnostic(message)
         }
     }
 
@@ -579,27 +648,41 @@ final class MeetingContinuousASR: @unchecked Sendable {
         guard let session = currentSession, let domain = currentDomain else { return }
         let box = eventBoxes[domain.scope]
         if domain.framesFed > 0 {
-            try? await session.endUtterance()
-            let timeout = reason == .stop
-                ? Self.stopTailTimeoutSeconds : Self.domainFinishTimeoutSeconds
-            let deadline = Date().addingTimeInterval(timeout)
-            var final: ASRLiveEvent?
-            var failure: ASRTranscriptionError?
-            while Date() < deadline {
-                // Cancellation/deletion must not wait for a dead provider's
-                // finish deadline. Stop is NOT cancellation: it keeps waiting
-                // for the genuine tail within the bounded stop-tail budget.
-                if cancellationRequested { break }
-                let snapshot = box?.snapshot()
-                if let value = snapshot?.final { final = value; break }
-                if let value = snapshot?.failure { failure = value; break }
-                try? await Task.sleep(nanoseconds: 50_000_000)
+            // A failed feed already proves the request socket is gone; there
+            // is no point sending a commit or waiting the full finish budget
+            // for a final that cannot arrive. The uncovered span stays a real
+            // gap for the file queue instead of stalling the next domain.
+            var commitRequested = false
+            if reason != .failure {
+                do {
+                    try await session.endUtterance()
+                    commitRequested = true
+                } catch {
+                    // Keep any terminal event that already arrived; do not
+                    // wait for a provider that cannot answer.
+                }
             }
-            if let final, !cancellationRequested {
+            if commitRequested {
+                let timeout = reason == .stop
+                    ? Self.stopTailTimeoutSeconds : Self.domainFinishTimeoutSeconds
+                let deadline = Date().addingTimeInterval(timeout)
+                while Date() < deadline {
+                    // Cancellation/deletion must not wait for a dead provider's
+                    // finish deadline. Stop is NOT cancellation: it keeps waiting
+                    // for the genuine tail within the bounded stop-tail budget.
+                    if cancellationRequested { break }
+                    let snapshot = box?.snapshot()
+                    if snapshot?.final != nil || snapshot?.failure != nil { break }
+                    try? await Task.sleep(nanoseconds: 50_000_000)
+                }
+            }
+            let snapshot = box?.snapshot()
+            if let final = snapshot?.final, !cancellationRequested {
                 await commitFinal(final, domain: domain, lease: lease)
-            } else if reason != .stop {
+            } else if reason != .stop, reason != .failure {
                 lock.withLock {
-                    metrics.lastError = failure.map { String(describing: $0) } ?? "final timed out"
+                    metrics.lastError = snapshot?.failure.map { String(describing: $0) }
+                        ?? (commitRequested ? "final timed out" : "commit send failed")
                 }
             }
         }

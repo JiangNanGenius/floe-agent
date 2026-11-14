@@ -848,6 +848,12 @@ final class VoiceConversationLiveStack: VoiceConversationStack, @unchecked Senda
         backendLock.withLock { backend?.recognitionProgressMode ?? .streaming }
     }
 
+    /// The live backend exposes its own bounded recovery window; a batch/local
+    /// backend leaves this false and the ordinary watchdog applies.
+    var recognitionRecoveryActive: Bool {
+        backendLock.withLock { backend?.recognitionRecoveryActive ?? false }
+    }
+
     func transcriptionFailureSnapshot() -> VoiceConversationFailure? {
         backendLock.withLock { terminalFailure }
     }
