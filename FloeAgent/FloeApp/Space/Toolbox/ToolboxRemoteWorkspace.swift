@@ -42,15 +42,23 @@ private actor ToolboxMemorySessionRegistry: RemoteSessionRegistry {
     private var operation: Task<Void, Never>?
     private var localConversationID: UUID?
     init(environment: AppEnvironment) { self.environment = environment }
-    func load() async {
+    func load(kind: ToolboxRemoteTargetKind) async {
         guard let environment else { return }
         await environment.remoteSessionCenter.loadHosts()
-        let containers = await environment.environmentRegistry.all()
         var choices: [ToolboxMachineChoice] = []
-        if containers.contains(where: { $0.id == EnvironmentRegistry.sharedContainerID && $0.state != .deleting }) {
-            choices.append(.init(id: .builtIn(environmentID: EnvironmentRegistry.sharedContainerID),
-                title: IDELanguageRunText.t("内置 Linux 环境", "Built-in Linux environment"), detail: "",
-                supportsTerminal: true, supportsVNC: false))
+        if kind == .terminal {
+            let registry = environment.environmentRegistry
+            do {
+                try await registry.prepare()
+                failed = false
+                if let shared = await registry.record(id: EnvironmentRegistry.sharedContainerID), shared.state != .deleting {
+                    choices.append(.init(id: .builtIn(environmentID: shared.id),
+                        title: IDELanguageRunText.t("内置 Linux 环境", "Built-in Linux environment"), detail: "",
+                        supportsTerminal: true, supportsVNC: false))
+                }
+            } catch {
+                failed = true
+            }
         }
         for host in environment.remoteSessionCenter.hosts {
             choices.append(.init(id: host.isRemoteExecutionEnvironment ? .systemEnvironment(hostID: host.id) : .toolboxMachine(hostID: host.id),
@@ -238,8 +246,8 @@ private struct ToolboxRemotePage: View {
             else if center.failed { Text(IDELanguageRunText.t("连接未完成，请检查配置后重试。", "Unable to connect. Check the configuration and retry.")).padding().background(.regularMaterial) }
         }
         .toolbar { Button(IDELanguageRunText.t("断开", "Disconnect")) { Task { await center.close() } } }
-        .task { await center.load() }
-        .sheet(isPresented: $settings, onDismiss: { Task { await center.load() } }) { NavigationStack { HostListView(center: environment.remoteSessionCenter) } }
+        .task { await center.load(kind: kind) }
+        .sheet(isPresented: $settings, onDismiss: { Task { await center.load(kind: kind) } }) { NavigationStack { HostListView(center: environment.remoteSessionCenter) } }
         .sheet(isPresented: $temporary) {
             NavigationStack {
                 Form {
