@@ -3,9 +3,11 @@
 
 这是带核实日期的渠道快照。各渠道独立更新；源码版本、公开下载、Apple 审核与测试组可用性分别核对。 / This is a dated channel snapshot. Source versions, public downloads, Apple review and beta-group availability are separate states.
 
-最新内部 TestFlight 为 1.8.30（351），GitHub／Feather 最近一次已核验的稳定版为 346。[发布版本依据](RELEASE_VERSION_AUTHORITY.zh-CN.md)
+最新内部 TestFlight 为 1.8.31（352），GitHub／Feather 最近一次已核验的稳定版为 346。[发布版本依据](RELEASE_VERSION_AUTHORITY.zh-CN.md)
 
 ## 2026-11-15 iOS 内部测试 / Internal TestFlight
+
+Floe QA 已可安装 1.8.31（352）。共享 Linux 可在启动前或「设置 → 执行环境」中升级。iPad 模拟器从旧磁盘升级后，原终端重新连接，虚拟屏幕显示了新系统的终端。云端语音输入在两次模拟断线后恢复，最终文字仅提交一次。 / Floe QA can install build 352. The iPad Simulator upgraded an existing Linux environment, reconnected its terminal and displayed the new guest’s console. Cloud dictation recovered across two forced disconnects and committed the final transcript once. [352 交付记录 / Delivery](releases/builds/FLOE_1.8.31_BUILD352_DELIVERY.md)
 
 Floe QA 已可安装 1.8.30（351）。此构建整理旧 Linux 镜像、改进换机后容量估算，并在 GPU 初始化失败时保持 Linux 可启动。用户已在此前出现容量异常的换机 iPad 上确认清理完成。 / The internal build retires old Linux disks, improves storage estimates after migration and starts Linux on the CPU if GPU initialization fails. The user confirmed that cleanup completed on the migrated iPad that had shown excessive storage use. [交付记录 / Delivery](releases/builds/FLOE_1.8.30_BUILD351_DELIVERY.md)
 
