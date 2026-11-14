@@ -3,7 +3,7 @@
 
 本文是 iOS／iPadOS 下一版版本选择的唯一维护入口；各渠道实际交付状态见[当前状态](CURRENT_STATUS.md)与[逐版交付记录](releases/README.md)。Android 版本独立管理。
 
-**最近已核验的内部测试为 1.8.26（347）。** Apple 返回 VALID、未过期，Floe QA 内部可安装，并已在迁移过资料的 iPad 上读回。签名与真机结果见[347 交付记录](releases/builds/FLOE_1.8.26_BUILD347_DELIVERY.md)。GitHub stable/latest 与 Feather 最近一次核验为 346。
+**最近已核验的内部测试为 1.8.27（348）。** Apple 返回 VALID、未过期，Floe QA 为 IN_BETA_TESTING。签名 IPA 与本地构建匹配，见[348 交付记录](releases/builds/FLOE_1.8.27_BUILD348_DELIVERY.md)。GitHub stable/latest 与 Feather 最近一次核验为 346。
 
 ## 依据与判定
 
@@ -13,7 +13,7 @@
 
 ## 本轮版本记录
 
-本轮内部修复候选使用 1.8.27（348）。已核对 Apple 构建列表及 Git 标签，选择时均未占用。
+1.8.27（348）已完成内部 TestFlight 交付。目标 iPad 的容量及 Linux 缓存验收待真机读回。上一版的历史恢复和目录错误见[347 真机记录](releases/builds/FLOE_1.8.26_BUILD347_DELIVERY.md)。
 
 **1.8.25（346）已交付三条授权渠道。** 冻结前完整Apple只读分页确认其未使用，随后实际归档925.43秒、规范封包和签名核验通过。独立Apple GET确认内部可装，实际公开IPA及在线Feather源严格匹配；独立Game预研未设为等待门槛。手动字体UI及真机容量等边界见[交付记录](releases/builds/FLOE_1.8.25_BUILD346_DELIVERY.md)。345不可变，本轮未提交公开TestFlight或正式App Store。
 

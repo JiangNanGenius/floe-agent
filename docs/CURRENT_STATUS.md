@@ -3,7 +3,11 @@
 
 这是带核实日期的渠道快照。各渠道独立更新；源码版本、公开下载、Apple 审核与测试组可用性分别核对。 / This is a dated channel snapshot. Source versions, public downloads, Apple review and beta-group availability are separate states.
 
-版本选择请先读[唯一版本依据](RELEASE_VERSION_AUTHORITY.zh-CN.md)：**最近核验交付为1.8.25（346），内部TestFlight可安装，GitHub／Feather严格实际读回通过。** 冻结源 `0a6dc46b9f5cbe78e02e1730be9b342a5557f879`／`v1.8.25`，见[346交付记录](releases/builds/FLOE_1.8.25_BUILD346_DELIVERY.md)。本版未使用真机，容量整理等设备验收保留。 / **Latest verified delivery: 1.8.25 (346), internally installable, with strict actual GitHub/Feather readback passed. No physical device was used; storage recovery and other device checks remain unaccepted.**
+版本选择见[发布版本依据](RELEASE_VERSION_AUTHORITY.zh-CN.md)。最新内部 TestFlight 为 1.8.27（348），GitHub／Feather 最近一次已核验的稳定版为 346。
+
+## 2026-11-14 iOS 内部 TestFlight
+
+Floe QA 已可安装 348，签名成品与本地构建匹配。设置中的 Linux 清理目录复用和旧磁盘整理接续已进入内部测试，iPad 的实际容量变化待实测。[348 交付记录](releases/builds/FLOE_1.8.27_BUILD348_DELIVERY.md)
 
 ## 2026-11-14 iOS 1.8.25（346）渠道核对 / iOS delivery snapshot
 
