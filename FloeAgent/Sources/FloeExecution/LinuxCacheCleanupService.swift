@@ -142,9 +142,10 @@ public struct LinuxCacheCleanupReceipt: Codable, Sendable, Hashable {
         if cancelled { lines.append("cancelled=true") }
         if partial { lines.append("partial=true") }
         if let dfPath { lines.append("guest_df_path=\(dfPath)") }
-        if let before = dfAvailableBeforeBytes { lines.append("guest_available_before_bytes=\(before)") }
-        if let after = dfAvailableAfterBytes { lines.append("guest_available_after_bytes=\(after)") }
-        if !awaitingCompletion, dfAvailableBeforeBytes == nil { lines.append("guest_available_before_bytes=unknown (measurement unavailable)") }
+        let measurement = dfPath == "/floe/env" || dfPath == "/workspace" ? "shared_mount" : "guest"
+        if let before = dfAvailableBeforeBytes { lines.append("\(measurement)_available_before_bytes=\(before)") }
+        if let after = dfAvailableAfterBytes { lines.append("\(measurement)_available_after_bytes=\(after)") }
+        if !awaitingCompletion, dfAvailableBeforeBytes == nil { lines.append("\(measurement)_available_before_bytes=unknown (measurement unavailable)") }
         for item in categoryResults {
             var line = "category \(item.category): status=\(item.status)"
             if let before = item.bytesBefore { line += " bytes_before=\(before)" }
@@ -716,7 +717,7 @@ public actor LinuxCacheCleanupService {
               let object = try? JSONSerialization.jsonObject(with: job.payloadJSON) as? [String: Any],
               Set(object.keys) == Set(["script", "env", "maxOutputBytes", "timeoutPolicy"]),
               let body = object["script"] as? String,
-              body == script || FloeDigest.sha256Hex(Data(body.utf8)) == LinuxCacheCleanupScript.previousSourceSHA256,
+              body == script || LinuxCacheCleanupScript.previousSourceDigests.contains(FloeDigest.sha256Hex(Data(body.utf8))),
               object["maxOutputBytes"] as? Int == 262_144, object["timeoutPolicy"] as? String == "advisory",
               let env = object["env"] as? [String: Any],
               Set(env.keys).isSubset(of: ["FLOE_CLEANUP_SCHEMA", "FLOE_CLEANUP_NATIVE", "FLOE_CLEANUP_MODE", "FLOE_CLEANUP_CATEGORIES", "FLOE_CLEANUP_INSPECTION_JOB_ID"]),

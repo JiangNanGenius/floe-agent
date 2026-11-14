@@ -102,6 +102,9 @@ public struct ARM64MachineConfig: Sendable, Equatable {
     /// in explicitly per image capability.
     public var onlineMemoryEnabled: Bool
     public var gpuEnabled: Bool
+    /// A resident Linux environment can use its CPU when its optional renderer is unavailable.
+    /// Callers that require GPU execution keep the default strict behavior.
+    public var gpuAllowsCPUFallback: Bool
     public var gpuBudgetMiB: Int
     public var gpuAppGroupIdentifier: String?
     /// Immutable possible vCPU count, 1...FLOE_AE_MAX_VCPUS. The engine may
@@ -133,6 +136,7 @@ public struct ARM64MachineConfig: Sendable, Equatable {
         possibleVCPUs: Int,
         onlineMemoryEnabled: Bool = false,
         gpuEnabled: Bool = false,
+        gpuAllowsCPUFallback: Bool = false,
         gpuBudgetMiB: Int = 1024,
         gpuAppGroupIdentifier: String? = nil,
         virtioConsoles: Int = 0,
@@ -152,6 +156,7 @@ public struct ARM64MachineConfig: Sendable, Equatable {
         self.possibleVCPUs = possibleVCPUs
         self.onlineMemoryEnabled = onlineMemoryEnabled
         self.gpuEnabled = gpuEnabled
+        self.gpuAllowsCPUFallback = gpuAllowsCPUFallback
         self.gpuBudgetMiB = gpuBudgetMiB
         self.gpuAppGroupIdentifier = gpuAppGroupIdentifier
         self.virtioConsoles = virtioConsoles
@@ -327,6 +332,9 @@ final class ARM64StagedConfig: @unchecked Sendable {
         cConfig.memory.boot_ram_mib = 0   /* engine default: min(ramMiB, 256) */
         cConfig.gpu.struct_size = UInt32(MemoryLayout<floe_ae_gpu_config>.size)
         cConfig.gpu.enabled = config.gpuEnabled ? 1 : 0
+        if config.gpuEnabled && config.gpuAllowsCPUFallback {
+            cConfig.gpu.reserved.0 = UInt64(FLOE_AE_GPU_ALLOW_CPU_FALLBACK)
+        }
         cConfig.gpu.budget_bytes = UInt64(config.gpuBudgetMiB) * 1_048_576
         cConfig.gpu.app_group_identifier = config.gpuAppGroupIdentifier.map { stage($0) }
 

@@ -346,6 +346,7 @@ struct LinuxGuestRuntimeV2ImageStatus: Sendable {
     /// reported (nil before any pass). Diagnostic progress truth for the
     /// storage-initializing presentation; never a state machine.
     let preparationStage: @Sendable () async -> RuntimeV2Store.RecoveryStage?
+    var retireFactoryImages: (@Sendable (String?, CancellationCheck?) async -> RuntimeV2FactoryImageRetirementReport)?
 
     /// The verified legacy manifest of an already-migrated image, or nil when
     /// the v2 store does not hold this image verified.
@@ -545,6 +546,10 @@ enum LinuxGuestBackendAssembly {
             },
             preparationStage: {
                 await integrator.preparationStage()
+            },
+            retireFactoryImages: { imageID, cancelled in
+                await store.images.retireFactoryImages(afterUsableImage: imageID,
+                    legacyImagesRoot: legacyRoot, protectedActiveImageID: imageID, isCancelled: cancelled)
             }
         )
         // Pinned environments boot their immutable template's own image; the

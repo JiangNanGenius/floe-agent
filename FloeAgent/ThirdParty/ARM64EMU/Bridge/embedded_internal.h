@@ -65,6 +65,7 @@ struct AESession {
     uint32_t mem_enabled;
     uint32_t mem_boot_mib;
     uint32_t gpu_requested;
+    uint32_t gpu_optional;
     uint64_t gpu_budget_bytes;
     char *gpu_app_group;
     fenv_t guest_environment[A64_MAX_CPUS];

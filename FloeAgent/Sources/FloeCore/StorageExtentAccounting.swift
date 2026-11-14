@@ -28,10 +28,18 @@
 //     reclaimable number.
 //   * Raw device offsets are opaque comparison keys: never persisted, logged,
 //     shown, or exported. Only aggregated bytes leave this file.
-//   * Any per-file failure, unsupported filesystem, anomalous mapping or
-//     budget overflow withholds the WHOLE union for the snapshot
-//     (``StorageExtentProbeResult``); callers keep the accepted allocated
-//     basis and never subtract a partial union.
+//   * A file whose extents cannot be mapped (compressed mapping, extra fork,
+//     raced replacement, budget) does NOT discard the union of every file that
+//     did answer. Its measured `st_blocks` allocation is retained as a
+//     residual allowance (``StorageExtentUnionSummary/residualBytes``) and the
+//     snapshot publishes BOTH: the exact union for the measured files and the
+//     bounded residual, yielding an upper-bound total. The residual is never
+//     subtracted, never presented as measured, and may overlap the union (for
+//     example a partial clone), so the total can overstate the footprint.
+//   * Only when no counted file could be measured is the extent basis withheld
+//     (``StorageExtentBasisState/unavailable``); callers then keep the accepted
+//     allocated basis. A partial basis is always labelled ``partial`` and the
+//     exact and residual shares stay separately inspectable.
 //
 // `st_blocks` cross-check (measured on APFS): a coherent data-fork walk
 // returns exactly `st_blocks * 512` bytes for regular files of every size,
@@ -66,8 +74,11 @@ public struct StoragePhysicalRun: Sendable, Equatable {
     }
 }
 
-/// Why a file's extents could not be mapped coherently. A single failure
-/// withholds the whole union for the snapshot.
+/// Why a file's extents could not be mapped coherently. The file's allocated
+/// bytes stay in the snapshot as a bounded residual allowance (a ``partial``
+/// basis) instead of discarding the union of every file that answered. When NO
+/// counted file can be measured, the extent basis is withheld and the accepted
+/// allocated basis is kept.
 public enum StorageExtentProbeFailure: String, Sendable, Equatable, Codable, Error {
     /// `open` failed for a reason other than a raced replacement.
     case openFailed
@@ -260,9 +271,13 @@ struct StorageExtentUnionBuilder {
         self.maxIntervals = max(1, maxIntervals)
     }
 
+    /// Collected physical intervals before the sweep (drives the snapshot's
+    /// interval budget).
+    var intervalCount: Int { intervals.count }
+
     /// Adds one file's runs under `owner`. Returns false without changing the
     /// collected set when the interval budget would be exceeded (the caller
-    /// treats it as a withheld union).
+    /// treats it as an unmeasured residual).
     mutating func add(runs: [StoragePhysicalRun], owner: Int32) -> Bool {
         guard !runs.isEmpty else { return true }
         if intervals.count + runs.count > maxIntervals { return false }
@@ -315,16 +330,41 @@ struct StorageExtentUnionBuilder {
 /// Persisted aggregate of one snapshot's measured extent union. `nil` union on
 /// the report means the basis is not available; a present union with a `nil`
 /// `bundleBytes` means the bundle was not part of the measured set.
+///
+/// Two byte figures are always kept apart:
+/// * ``measuredBytes`` is the EXACT union of the files whose extents answered.
+/// * ``residualBytes`` is the allocated size of counted files that could not be
+///   measured, kept as a conservative allowance. It is not measured, may
+///   overlap ``measuredBytes`` through partial clones, and must never be
+///   presented as an exact physical figure.
+/// ``totalBytes`` is the published total (`measuredBytes + residualBytes`) and
+/// the per-owner/category shares reconcile with it. `residualBytes == 0` and
+/// `unmeasuredFileCount == 0` mean the published basis is fully measured.
 public struct StorageExtentUnionSummary: Codable, Equatable, Sendable {
-    /// Global union bytes of every measured set (data roots, unattributed
-    /// remainder and, when requested, the app bundle).
+    /// Published total on the extent basis: ``measuredBytes`` plus the bounded
+    /// ``residualBytes`` allowance.
     public var totalBytes: Int64
-    /// Bundle-owned share of the union; `nil` when the bundle was not
-    /// measured in this snapshot.
+    /// Exact union of every successfully measured file.
+    public var measuredBytes: Int64
+    /// Allocated bytes of counted files whose extents could not be measured.
+    /// A conservative upper allowance for those files; may overlap
+    /// ``measuredBytes`` (partial clones), so it is never subtracted or called
+    /// exclusive.
+    public var residualBytes: Int64
+    /// Counted files that could not be measured (their allocation is in
+    /// ``residualBytes``).
+    public var unmeasuredFileCount: Int
+    /// First per-file failure that made this basis partial. Aggregate token
+    /// only — never a path, offset or file name.
+    public var firstUnmeasuredReason: StorageExtentProbeFailure?
+    /// Bundle-owned share of the published basis (measured share plus any
+    /// bounded residual); `nil` when the bundle was not measured in this
+    /// snapshot.
     public var bundleBytes: Int64?
-    /// Unattributed-remainder share of the union.
+    /// Unattributed-remainder share of the published basis.
     public var unattributedBytes: Int64
-    /// Bucket-id → owned share. Only buckets with owned bytes appear.
+    /// Bucket-id → owned share of the published basis. Only buckets with owned
+    /// bytes appear.
     public var categoryBytes: [String: Int64]
     /// Regular files measured into the union.
     public var measuredFileCount: Int
@@ -335,6 +375,10 @@ public struct StorageExtentUnionSummary: Codable, Equatable, Sendable {
 
     public init(
         totalBytes: Int64,
+        measuredBytes: Int64? = nil,
+        residualBytes: Int64 = 0,
+        unmeasuredFileCount: Int = 0,
+        firstUnmeasuredReason: StorageExtentProbeFailure? = nil,
         bundleBytes: Int64?,
         unattributedBytes: Int64,
         categoryBytes: [String: Int64],
@@ -343,6 +387,10 @@ public struct StorageExtentUnionSummary: Codable, Equatable, Sendable {
         intervalCount: Int
     ) {
         self.totalBytes = totalBytes
+        self.measuredBytes = measuredBytes ?? max(0, totalBytes - residualBytes)
+        self.residualBytes = max(0, residualBytes)
+        self.unmeasuredFileCount = max(0, unmeasuredFileCount)
+        self.firstUnmeasuredReason = firstUnmeasuredReason
         self.bundleBytes = bundleBytes
         self.unattributedBytes = unattributedBytes
         self.categoryBytes = categoryBytes
@@ -350,16 +398,27 @@ public struct StorageExtentUnionSummary: Codable, Equatable, Sendable {
         self.callCount = callCount
         self.intervalCount = intervalCount
     }
+
+    /// True when every counted file was measured and the published total is
+    /// the exact physical union.
+    public var isComplete: Bool { residualBytes == 0 && unmeasuredFileCount == 0 }
 }
 
 /// Whether the measured extent basis could be collected in a scan.
 public enum StorageExtentBasisState: String, Sendable, Codable, Equatable {
     /// The caller did not request the extent probe (legacy callers/tests).
     case notRequested
-    /// Every measured file answered coherently; the union is published.
+    /// Every counted file answered coherently; the published total is the
+    /// exact physical union.
     case available
-    /// At least one file/volume failed or a budget was hit; the accepted
-    /// allocated basis is retained and no union is published.
+    /// A union was published for every file that answered, but at least one
+    /// counted file could not be measured. ``StorageExtentUnionSummary`` keeps
+    /// the exact ``StorageExtentUnionSummary/measuredBytes`` and the bounded
+    /// ``StorageExtentUnionSummary/residualBytes`` allowance separate; the
+    /// published total is an upper bound, not an exact union.
+    case partial
+    /// No counted file could be measured (or the bundle root was unreadable);
+    /// the accepted allocated basis is retained and no union is published.
     case unavailable
 }
 

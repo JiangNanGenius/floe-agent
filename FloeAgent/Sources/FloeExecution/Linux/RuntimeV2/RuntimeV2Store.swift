@@ -1259,6 +1259,104 @@ public actor RuntimeV2Store {
         }
     }
 
+    // MARK: obsolete RISC-V runtime disposal
+    //
+    // Direct, metadata-ownership-gated deletion of the retired RISC-V test
+    // runtime. No archive, copy, restore entry or full-disk digest is created.
+    // Non-RISC-V content is never deleted by these entry points; it answers
+    // `preservationRequired` and stays with the existing restore/migration
+    // flows. Every call participates in the same shared legacy-maintenance
+    // gate as repair/optimization.
+
+    public func scanObsoleteRISCVRuntime(
+        limits: RuntimeV2RecoveredDiskRetirement.Limits = .init()
+    ) async -> RuntimeV2RecoveredDiskRetirement.ScanReport {
+        do {
+            return try await withMaintenanceSharedUse(
+                owner: "runtime-v2-store", purpose: "scan-obsolete-riscv-runtime"
+            ) {
+                await RuntimeV2RecoveredDiskRetirement(store: self).scan(limits: limits)
+            }
+        } catch {
+            var report = RuntimeV2RecoveredDiskRetirement.ScanReport()
+            report.notes.append("maintenanceUnavailable")
+            report.truncated = true
+            return report
+        }
+    }
+
+    public func disposeObsoleteRISCVRuntime(
+        candidateID: String,
+        limits: RuntimeV2RecoveredDiskRetirement.Limits = .init()
+    ) async -> RuntimeV2RecoveredDiskRetirement.DisposalResult {
+        do {
+            return try await withMaintenanceSharedUse(
+                owner: "runtime-v2-store", purpose: "dispose-obsolete-riscv-runtime"
+            ) {
+                await RuntimeV2RecoveredDiskRetirement(store: self).dispose(
+                    candidateID: candidateID, limits: limits
+                )
+            }
+        } catch {
+            return RuntimeV2RecoveredDiskRetirement.DisposalResult(
+                candidateID: candidateID, outcome: .blocked,
+                reasonCode: "maintenanceUnavailable"
+            )
+        }
+    }
+
+    public func disposeEligibleObsoleteRISCVRuntime(
+        limits: RuntimeV2RecoveredDiskRetirement.Limits = .init()
+    ) async -> RuntimeV2RecoveredDiskRetirement.BatchReport {
+        do {
+            return try await withMaintenanceSharedUse(
+                owner: "runtime-v2-store", purpose: "dispose-eligible-obsolete-riscv-runtime"
+            ) {
+                await RuntimeV2RecoveredDiskRetirement(store: self).disposeEligible(limits: limits)
+            }
+        } catch {
+            var report = RuntimeV2RecoveredDiskRetirement.BatchReport()
+            report.notes.append("maintenanceUnavailable")
+            report.scanNotes.append("maintenanceUnavailable")
+            report.scanTruncated = true
+            report.isComplete = false
+            return report
+        }
+    }
+
+    public func resumeObsoleteRISCVRuntimeDisposals(
+        limits: RuntimeV2RecoveredDiskRetirement.Limits = .init()
+    ) async -> RuntimeV2RecoveredDiskRetirement.BatchReport {
+        do {
+            return try await withMaintenanceSharedUse(
+                owner: "runtime-v2-store", purpose: "resume-obsolete-riscv-disposals"
+            ) {
+                await RuntimeV2RecoveredDiskRetirement(store: self).resumeInterrupted(limits: limits)
+            }
+        } catch {
+            var report = RuntimeV2RecoveredDiskRetirement.BatchReport()
+            report.notes.append("maintenanceUnavailable")
+            report.scanNotes.append("maintenanceUnavailable")
+            report.scanTruncated = true
+            report.isComplete = false
+            return report
+        }
+    }
+
+    public func obsoleteRISCVRuntimeDisposalRecords(
+        limit: Int = 128
+    ) async -> [RuntimeV2RecoveredDiskRetirement.DisposalRecord] {
+        do {
+            return try await withMaintenanceSharedUse(
+                owner: "runtime-v2-store", purpose: "list-obsolete-riscv-disposals"
+            ) {
+                RuntimeV2RecoveredDiskRetirement(store: self).records(limit: limit)
+            }
+        } catch {
+            return []
+        }
+    }
+
     // MARK: storage truth
 
     /// Separated disk usage: shared base blobs, rebuildable expanded views,

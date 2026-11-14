@@ -28,7 +28,7 @@ struct StorageOptimizationSection: View {
                 }.disabled(!service.canCancel)
             }
 
-            if service.bootstrapFailure != nil || service.state.attempted > 0 || !service.state.details.isEmpty {
+            if service.bootstrapFailure != nil || service.state.attempted > 0 || (service.state.removedObsoleteItems ?? 0) > 0 || !service.state.details.isEmpty {
                 DisclosureGroup(isExpanded: $showsDetails) {
                     if let failure = service.bootstrapFailure {
                         metric("settings.storage_optimization.failure_code", value: failure.code.rawValue)
@@ -50,6 +50,13 @@ struct StorageOptimizationSection: View {
                         Text(FloeL10n.isChinese ? "磁盘整理尚未开始" : "Disk optimization has not started")
                             .font(.caption).foregroundStyle(.secondary)
                     } else {
+                        if let count = service.state.removedObsoleteItems, count > 0 {
+                            HStack {
+                                Text(FloeL10n.isChinese ? "已移除旧运行文件" : "Obsolete runtime items removed")
+                                Spacer()
+                                Text(String(count)).monospacedDigit()
+                            }.font(.caption)
+                        }
                         metric("settings.storage_optimization.optimized", value: String(service.state.optimized))
                         metric("settings.storage_optimization.skipped", value: String(service.state.skipped))
                         let remaining = max(0, service.state.total - service.state.optimized - service.state.skipped)
@@ -87,7 +94,11 @@ struct StorageOptimizationSection: View {
     private var status: String {
         switch service.state.phase {
         case .idle: return FloeL10n.l("settings.storage_optimization.ready")
-        case .checking: return FloeL10n.l("settings.storage_optimization.checking")
+        case .checking:
+            if service.state.lastStage == "retire-images" {
+                return FloeL10n.isChinese ? "正在整理旧运行文件…" : "Cleaning up obsolete runtime files…"
+            }
+            return FloeL10n.l("settings.storage_optimization.checking")
         case .optimizing:
             return FloeL10n.l("settings.storage_optimization.progress", service.state.attempted, service.state.total)
         case .cancelling: return FloeL10n.l("settings.storage_optimization.stopping")

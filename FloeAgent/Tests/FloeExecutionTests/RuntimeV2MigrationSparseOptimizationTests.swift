@@ -58,7 +58,7 @@ private final class MigrationSparseFixture: @unchecked Sendable {
     var journals: URL { state.appendingPathComponent("image-sparse-journals") }
     var receipts: URL { state.appendingPathComponent("image-sparse-receipts") }
 
-    init() async throws {
+    init(denseFirstDisk: Bool = false) async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("migration-sparse-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         guard let canonical = directory.path.withCString({ realpath($0, nil) }) else { throw POSIXError(.ENOENT) }
@@ -74,7 +74,7 @@ private final class MigrationSparseFixture: @unchecked Sendable {
         for (index, target) in RuntimeV2MigrationSparseCatalog.targets.enumerated() {
             let parent = root.appendingPathComponent(target.parent)
             try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
-            var data = Data(repeating: 0, count: 4 << 20)
+            var data = Data(repeating: denseFirstDisk && index == 0 ? 43 : 0, count: 4 << 20)
             data[0] = UInt8(index + 11); data[data.count - 1] = 0xBA
             // The two branches deliberately contain different nonzero bytes.
             // This is lossless sparsification, never presumed deduplication.
@@ -195,6 +195,24 @@ private struct MovedMigrationSparseFixture {
 }
 
 @MainActor final class RuntimeV2MigrationSparseOptimizationTests: XCTestCase {
+    func testUnchangedMigrationWithVerifiedNoGainSkipsAllContentReads() async throws {
+        let descriptorLimit = try SyntheticDescriptorLimitScope()
+        defer { XCTAssertEqual(descriptorLimit.restore(), 0) }
+        let fixture = try await MigrationSparseFixture(denseFirstDisk: true)
+        defer { fixture.cleanup() }
+        _ = await fixture.adapter.recoverBeforeUse()
+        let records = try await fixture.records()
+        let record = try XCTUnwrap(records.first)
+        let first = await fixture.adapter.optimizeMigration(record, cancellation: .init())
+        XCTAssertEqual(first.code, "insufficient-reclaim")
+        XCTAssertTrue(first.verifiedUnchanged)
+        let repeatResult = await fixture.adapter.optimizeMigration(record, cancellation: .init()) { _ in
+            XCTFail("An unchanged no-gain migration must skip the byte scan")
+        }
+        XCTAssertEqual(repeatResult.code, "insufficient-reclaim")
+        XCTAssertTrue(repeatResult.verifiedUnchanged)
+        XCTAssertNil(repeatResult.report)
+    }
     // Same explicit synthetic-host condition as the existing real-Core suite.
     // Production audit is unchanged and no high descriptor may be ignored.
     private var originalLimit: rlimit?

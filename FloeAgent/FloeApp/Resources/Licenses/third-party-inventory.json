@@ -1322,9 +1322,9 @@
     },
     {
       "name": "Floe shared Linux component (Debian 13 ARM64)",
-      "version": "resident-20261105-v1",
-      "license": "Debian package licenses; kernel GPL-2.0; EDK2 BSD/MIT; static glibc LGPL-2.1",
-      "source": "https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-linux-arm64-20261105.1",
+      "version": "gpu-resident-20261111-v8",
+      "license": "Debian package licenses; kernel GPL-2.0; EDK2 BSD/MIT; static glibc LGPL-2.1; Mesa/libglvnd MIT/X11 and per-file notices",
+      "source": "https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-linux-arm64-20261111.1",
       "section": "engines",
       "noteKey": "settings.licenses.note.guest_image",
       "evidence": null

@@ -434,6 +434,23 @@ create_backend(const char *app_group, char *err, size_t err_size)
         free(a);
         return NULL;
     }
+    /* Renderer initialization alone does not prove a usable physical GPU.
+     * Identity probing can fail independently and leave zeroed fields; never
+     * publish a guest device whose Venus capset or host device is unknown. */
+    const bool physical_device = info &&
+        (!strcmp(info->device_type, "integrated") ||
+         !strcmp(info->device_type, "discrete") ||
+         !strcmp(info->device_type, "virtual"));
+    if (!physical_device || !info->device_name[0] || !info->api_version ||
+        !info->host_heap_size_bytes || !info->venus_enabled ||
+        !info->num_capsets || !info->venus_capset_size ||
+        !info->venus_capset_version) {
+        if (err && err_size) snprintf(err, err_size,
+            "no usable physical Vulkan device or Venus capset");
+        floe_gpu_session_destroy(a->session);
+        free(a);
+        return NULL;
+    }
     a->base = (FloeVirtioGPUBackend){
         .opaque = a,
         .bind_transport = fvgpu_ad_bind_transport,

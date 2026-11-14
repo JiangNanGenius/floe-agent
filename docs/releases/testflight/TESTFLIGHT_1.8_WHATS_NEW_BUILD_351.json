@@ -1,0 +1,4 @@
+{
+  "zh-Hans": "请在换机或升级过的设备上打开「设置 → 数据管理 → 优化占用」。完成后用系统设置核对可用空间，再点一次查看是否跳过已检查的磁盘。重新下载 Linux 后，检查工作区和已安装的软件。在数据管理中启动「清理 Linux 环境缓存」，检查它能否识别你安装的工具、清理缓存并报告 Linux 系统盘的剩余空间。 打开 Linux 终端并运行一条命令。使用图形程序的设备也请检查画面和显存设置。",
+  "en-US": "On a migrated or upgraded device, open Settings → Data Management → Optimize Storage. Compare free space with system Settings, then run it again to check that unchanged disks are skipped. After downloading Linux again, check that workspace files and installed software are still available. Start Clean Linux Environment Cache in Data Management and check whether the assistant finds caches for your installed tools and reports free space on the Linux system disk. Open the Linux terminal and run a command. If you use graphical Linux apps, check their display and the graphics memory setting."
+}

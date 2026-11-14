@@ -130,7 +130,7 @@ enum RuntimeV2MigrationSparseInventory {
     #if canImport(Darwin)
     private static let worker = RuntimeV2OptimizationWorker("floe.legacy-migration.metadata")
     static func scan(domain: RuntimeV2MaintenanceDomain) async throws -> RuntimeV2MigrationSparseInventoryReport {
-        let present = try await worker.run {
+        let (present, inaccessible) = try await worker.run {
             guard let canonical = domain.root.path.withCString({ realpath($0, nil) }) else {
                 throw RuntimeV2MaintenanceError.targetMissing("migration root unavailable")
             }
@@ -138,20 +138,28 @@ enum RuntimeV2MigrationSparseInventory {
             let fd = open(canonical, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
             guard fd >= 0 else { throw RuntimeV2MaintenanceError.targetMissing("migration root unavailable") }
             defer { close(fd) }
-            var found = false
-            for id in RuntimeV2MigrationSparseCatalog.imageIDs {
-                if let group = try optionalDirectory(fd, "recovery/migrations/legacy-image-" + id) {
-                    close(group); found = true
+            var present: [RuntimeV2MigrationSparseTarget] = []
+            var inaccessible = 0
+            for target in RuntimeV2MigrationSparseCatalog.targets {
+                do {
+                    guard let parent = try optionalDirectory(fd, target.parent) else { continue }
+                    defer { close(parent) }
+                    if try LinuxImageStageIO.observe("disk.img", in: parent) != nil {
+                        present.append(target)
+                    }
+                } catch {
+                    inaccessible += 1
                 }
             }
-            return found
+            return (present, inaccessible)
         }
-        guard present else { return .init(records: [], blockedPaths: 0, codes: []) }
+        let initialCodes = inaccessible == 0 ? [] : ["migration_preservation_unavailable"]
+        guard !present.isEmpty else { return .init(records: [], blockedPaths: inaccessible, codes: initialCodes) }
         let projection = try await RuntimeV2LegacyRegistryReader.readMigrationProjectionAsync(domain: domain)
         return try await worker.run {
-            var records: [RuntimeV2MigrationSparseRecord] = [], blocked = 0
-            var codes: Set<String> = []
-            for target in RuntimeV2MigrationSparseCatalog.targets {
+            var records: [RuntimeV2MigrationSparseRecord] = [], blocked = inaccessible
+            var codes = Set(initialCodes)
+            for target in present {
                 do { records.append(try inspect(domain: domain, target: target, projection: projection)) }
                 catch {
                     blocked += 1

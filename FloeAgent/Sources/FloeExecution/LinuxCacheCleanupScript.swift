@@ -13,9 +13,11 @@ import Foundation
 
 public enum LinuxCacheCleanupScript {
     public static let schema = "floe.linux-cache-cleanup.v1"
-    /// The preceding shipped bundle, accepted only for truthful historical
-    /// readback/deduplication; arbitrary model-marked scripts are not receipts.
-    static let previousSourceSHA256 = "cf468f5e76abd35db71d292c7ae6e739d773986df8b965cd86f92227a427c55b"
+    /// Exact previously shipped scripts, for historical readback and job ownership.
+    static let previousSourceDigests: Set<String> = [
+        "cf468f5e76abd35db71d292c7ae6e739d773986df8b965cd86f92227a427c55b",
+        "f54f7af00623f93ebe9055b0483aa4e7fe8be94fcc5ce5ea001c5ce3011aaa79"
+    ]
     public static let source = #"""
 #!/bin/sh
 # Floe bundled Linux cache cleanup (trusted, no model, no network).
@@ -135,24 +137,50 @@ path_in_use() {
   return 1
 }
 
-# Prints safe|missing|symlink|unresolved|escaped|unsearchable.
-command_running() {
-  _needle=$1
+package_manager_running() {
+  _manager=$1
   [ -d /proc ] || return 1
   for _proc in /proc/[0-9]*; do
-    [ -r "$_proc/cmdline" ] || continue
-    _cmdline=$(tr '\000' ' ' < "$_proc/cmdline" 2>/dev/null || true)
-    case "$_cmdline" in
-      *"$_needle"*) return 0 ;;
+    [ "$_proc" != "/proc/$$" ] && [ -r "$_proc/comm" ] || continue
+    IFS= read -r _comm < "$_proc/comm" || continue
+    case "$_manager:$_comm" in
+      pip:pip|pip:pip[0-9]*|npm:npm|npm:npm\ *|npm:pnpm|npm:yarn) return 0 ;;
+      pip:python*|npm:node|npm:nodejs)
+        # Examine the interpreter's entry point, never text inside 'sh -c'.
+        # Otherwise the cleanup script itself looks like a running package manager.
+        if tr '\000' '\n' < "$_proc/cmdline" 2>/dev/null | awk -v manager="$_manager" '
+          NR == 2 {
+            module = ($0 == "-m")
+            path = $0; sub(/^.*\//, "", path)
+            if (manager == "pip" && path ~ /^pip([0-9]+([.][0-9]+)*)?$/) found = 1
+            if (manager == "npm" && path ~ /^(npm|npx|pnpm|yarn)(-cli)?([.]c?js)?$/) found = 1
+          }
+          NR == 3 && manager == "pip" && module && $0 == "pip" { found = 1 }
+          END { exit !found }
+        '; then return 0; fi
+        ;;
     esac
   done
   return 1
 }
 
+# Prints safe|missing|symlink|unresolved|escaped|unsearchable.
 safe_root() {
   _root=$1
   [ ! -L "$_root" ] || { printf 'symlink'; return; }
-  [ -d "$_root" ] || { printf 'missing'; return; }
+  if [ ! -d "$_root" ]; then
+    [ ! -e "$_root" ] || { printf 'unsearchable'; return; }
+    _parent=${_root%/*}
+    while [ -n "$_parent" ] && [ ! -d "$_parent" ]; do
+      [ ! -L "$_parent" ] || { printf 'symlink'; return; }
+      _parent=${_parent%/*}
+    done
+    [ -x "${_parent:-/}" ] || { printf 'unsearchable'; return; }
+    _physical=$(cd -P "${_parent:-/}" 2>/dev/null && pwd -P) || { printf 'unsearchable'; return; }
+    [ "$_physical" = "${_parent:-/}" ] || { printf 'escaped'; return; }
+    printf 'missing'; return
+  fi
+  [ -r "$_root" ] && [ -x "$_root" ] || { printf 'unsearchable'; return; }
   _resolved=$(cd -P "$_root" 2>/dev/null && pwd -P) || { printf 'unresolved'; return; }
   [ "$_resolved" = "$_root" ] || { printf 'escaped'; return; }
   command -v find >/dev/null 2>&1 || { printf 'unsearchable'; return; }
@@ -171,7 +199,7 @@ emit_category() {
     "$_category" "$_status" "$_before" "$_after" "$_note"
   case "$_status" in
     cleaned|observed) CLEANED_CATEGORIES=$((CLEANED_CATEGORIES + 1)) ;;
-    failed|partial) FAILED_CATEGORIES=$((FAILED_CATEGORIES + 1)) ;;
+    failed|partial|unavailable|skipped-unsearchable|skipped-unresolved) FAILED_CATEGORIES=$((FAILED_CATEGORIES + 1)) ;;
     *) SKIPPED_CATEGORIES=$((SKIPPED_CATEGORIES + 1)) ;;
   esac
 }
@@ -258,20 +286,10 @@ clean_cache_root() {
     emit_category "$_category" skipped-busy "$_before" "$_before" cache_in_use
     return
   fi
-  case "$_category" in
-    pip)
-      if command_running "pip" || command_running "python3 -m pip"; then
-        emit_category "$_category" skipped-busy "$_before" "$_before" pip_running
-        return
-      fi
-      ;;
-    npm)
-      if command_running "npm" || command_running "pnpm" || command_running "yarn"; then
-        emit_category "$_category" skipped-busy "$_before" "$_before" npm_running
-        return
-      fi
-      ;;
-  esac
+  if package_manager_running "$_category"; then
+    emit_category "$_category" skipped-busy "$_before" "$_before" "${_category}_running"
+    return
+  fi
   if remove_children "$_root"; then
     _after=$(du_bytes "$_root")
     emit_category "$_category" cleaned "$_before" "$_after" none
@@ -288,8 +306,7 @@ clean_scratch() {
 }
 
 banner
-DF_PATH=$ENV_ROOT
-[ -e "$DF_PATH" ] || DF_PATH=/
+DF_PATH=/
 DF_BEFORE=$(df_available_bytes "$DF_PATH")
 printf 'df_path=%s\n' "$DF_PATH"
 printf 'df_available_before_bytes=%s\n' "$DF_BEFORE"

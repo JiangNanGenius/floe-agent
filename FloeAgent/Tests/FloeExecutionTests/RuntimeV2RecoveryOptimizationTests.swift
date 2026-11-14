@@ -248,7 +248,7 @@ private struct RelocatedOptimizationSession {
 
 /// Explicit macOS qualification-host setup only. The production owner audit
 /// stays untouched. XCTest may raise its inherited soft FD limit at startup.
-private struct SyntheticDescriptorLimitScope {
+struct SyntheticDescriptorLimitScope {
     private let original: rlimit?
     init() throws {
         guard ProcessInfo.processInfo.environment["FLOE_SYNTHETIC_FD_BOUND"] == "16384" else {
@@ -323,6 +323,29 @@ private final class RecoveryContentReadProbe: @unchecked Sendable {
 
 @MainActor
 final class RuntimeV2RecoveryOptimizationTests: XCTestCase {
+    func testSecondPassReadsNoDiskContentAfterVerifiedNoGainAndRescansChangedDisk() async throws {
+        let descriptorLimit = try SyntheticDescriptorLimitScope()
+        defer { XCTAssertEqual(descriptorLimit.restore(), 0) }
+        let fixture = try RecoveryOptimizationFixture()
+        defer { fixture.cleanup() }
+        _ = await fixture.adapter.recoverBeforeUse()
+        try Data(repeating: 43, count: 1 << 20).write(to: fixture.disk)
+        let first = await fixture.adapter.optimize(try await fixture.record(), cancellation: .init())
+        XCTAssertEqual(first.code, "insufficient-reclaim")
+        XCTAssertTrue(first.verifiedUnchanged)
+        let entries = try FileManager.default.contentsOfDirectory(atPath: fixture.journals.path).sorted()
+        let reused = await fixture.adapter.optimize(try await fixture.record(), cancellation: .init()) { _ in
+            XCTFail("An unchanged no-gain disk must skip the byte scan")
+        }
+        XCTAssertEqual(reused.code, "insufficient-reclaim")
+        XCTAssertTrue(reused.verifiedUnchanged)
+        XCTAssertNil(reused.report)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: fixture.journals.path).sorted(), entries)
+        try Data(repeating: 0, count: 2 << 20).write(to: fixture.disk)
+        let changed = await fixture.adapter.optimize(try await fixture.record(), cancellation: .init())
+        XCTAssertEqual(changed.code, "optimized")
+        XCTAssertNotNil(changed.report)
+    }
     private struct InterruptedCleanupJob {
         let receipt: RuntimeV2OptimizationJobReceipt
         let receiptURL: URL
@@ -1409,6 +1432,8 @@ final class RuntimeV2RecoveryOptimizationTests: XCTestCase {
     }
 
     func testCrossHistoryAbortedReceiptCannotHideRetiredSuccessOrRecountGain() async throws {
+        let descriptorLimit = try SyntheticDescriptorLimitScope()
+        defer { XCTAssertEqual(descriptorLimit.restore(), 0) }
         let fixture = try RecoveryOptimizationFixture(); defer { fixture.cleanup() }
         _ = await fixture.adapter.recoverBeforeUse()
         let first = await fixture.adapter.optimize(try await fixture.record(), cancellation: .init())
@@ -1551,8 +1576,14 @@ final class RuntimeV2RecoveryOptimizationTests: XCTestCase {
         let fixture = try RecoveryOptimizationFixture(); defer { fixture.cleanup() }
         let alias = fixture.work.appendingPathComponent("outside-selected-alias")
         try FileManager.default.linkItem(at: fixture.disk, to: alias)
-        let fd = open(alias.path, O_RDONLY | O_CLOEXEC)
+        var fd = open(alias.path, O_RDONLY | O_CLOEXEC)
         XCTAssertGreaterThanOrEqual(fd, 0); defer { if fd >= 0 { close(fd) } }
+        var limit = rlimit()
+        if getrlimit(RLIMIT_NOFILE, &limit) == 0, limit.rlim_cur > 32_768 {
+            let high = fcntl(fd, F_DUPFD, 32_768)
+            XCTAssertGreaterThanOrEqual(high, 32_768)
+            if high >= 0 { close(fd); fd = high }
+        }
         let identity = try RuntimeV2DiskIdentity.read(at: fixture.disk)
         do {
             _ = try await fixture.coordinator.acquireExclusiveMaintenance(.init(
@@ -1711,6 +1742,13 @@ final class RuntimeV2RecoveryOptimizationTests: XCTestCase {
         } catch { XCTAssertEqual(error as? StorageSparseDiskRewriteError, .crashInjected("adapter-after-swap")) }
         fixture.evidence.lock.withLock { fixture.evidence.active = true }
         await claim.handoffToRecovery()
+        let originalCoreRootPath = try XCTUnwrap(RuntimeV2OptimizationJournalIO.read(
+            RuntimeV2OptimizationCoreJournalBinding.self, directory: fixture.journals,
+            name: claim.intentID + ".json")).rootPath
+        let recordedRoot = try RuntimeV2DiskIdentity.read(at: URL(fileURLWithPath: originalCoreRootPath, isDirectory: true))
+        let originalRoot = try RuntimeV2DiskIdentity.read(at: fixture.root)
+        XCTAssertEqual(recordedRoot.device, originalRoot.device)
+        XCTAssertEqual(recordedRoot.inode, originalRoot.inode)
         let current = try RelocatedOptimizationSession(fixture); defer { current.cleanup() }
         XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.root.path))
         current.evidence.lock.withLock { current.evidence.active = true }
@@ -1721,7 +1759,10 @@ final class RuntimeV2RecoveryOptimizationTests: XCTestCase {
         let settled = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: savedJournal)) as? [String: Any])
         XCTAssertEqual(settled["phase"] as? String, "retired")
         XCTAssertEqual(settled["sourceDigestSHA512"] as? String, settled["stageDigestSHA512"] as? String)
-        XCTAssertEqual(settled["rootPath"] as? String, fixture.root.path)
+        XCTAssertEqual(settled["rootPath"] as? String, originalCoreRootPath)
+        XCTAssertNotEqual(settled["rootPath"] as? String, current.domain.root.path)
+        XCTAssertNotEqual(settled["rootPath"] as? String,
+                          current.domain.root.standardizedFileURL.resolvingSymlinksInPath().path)
         let closureDirectory = current.state.appendingPathComponent("closed-receipts")
         let closureNames = try FileManager.default.contentsOfDirectory(atPath: closureDirectory.path)
         var foundFresh = false

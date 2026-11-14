@@ -175,6 +175,73 @@ struct StorageSnapshotStoreTests {
         #expect(!json.contains(secretRoot.path))
         #expect(json.contains("\"id\":\"models\""))
     }
+
+    /// A mixed basis must persist both shares, its aggregate reason and the
+    /// partial state; an old schema/accounting snapshot is discarded instead
+    /// of being served with the superseded all-or-nothing semantics.
+    @Test func partialExtentBasisRoundTripsAndInvalidatesOlderSnapshots() throws {
+        let directory = try snapshotFixtureRoot("partial")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = StorageSnapshotStore(directory: directory)
+        let request = snapshotFixtureRequest(roots: [StorageCensusRoot(id: "runtimeV2", url: directory)])
+        var diagnostics = StorageScanDiagnostics(regularFileCount: 3, metricLabel: "test")
+        diagnostics.extentBasis = .partial
+        let census = StorageCensusReport(
+            buckets: [
+                StorageCensusBucket(
+                    id: "runtimeV2", attribution: .shared, exists: true,
+                    size: StorageSize(logicalBytes: 300_000, allocatedBytes: 9_000),
+                    fileCount: 3, isCloneCapable: true
+                )
+            ],
+            diagnostics: diagnostics,
+            unattributedSize: .zero,
+            unattributedCount: 0,
+            isSharedAllocationEstimate: true,
+            extentUnion: StorageExtentUnionSummary(
+                totalBytes: 5_042,
+                measuredBytes: 5_000,
+                residualBytes: 42,
+                unmeasuredFileCount: 1,
+                firstUnmeasuredReason: .compressedMapping,
+                bundleBytes: nil,
+                unattributedBytes: 0,
+                categoryBytes: ["runtimeV2": 5_042],
+                measuredFileCount: 2,
+                callCount: 4,
+                intervalCount: 2
+            )
+        )
+        let snapshot = StorageSnapshot(
+            rootsFingerprint: request.key.rootsFingerprint,
+            contextFingerprint: request.contextFingerprint,
+            metricLabel: request.metricLabel,
+            generatedAt: Date(timeIntervalSince1970: 1_800_000_000),
+            bundleBytes: 0,
+            census: census,
+            scanTrigger: "test"
+        )
+        try store.save(snapshot)
+        let loaded = try #require(store.load(key: request.key))
+        #expect(loaded.schemaVersion == StorageSnapshot.currentSchemaVersion)
+        #expect(loaded.census.diagnostics.extentBasis == .partial)
+        let union = try #require(loaded.census.extentUnion)
+        #expect(union.measuredBytes == 5_000)
+        #expect(union.residualBytes == 42)
+        #expect(union.unmeasuredFileCount == 1)
+        #expect(union.firstUnmeasuredReason == .compressedMapping)
+        #expect(union.totalBytes == 5_042)
+        #expect(union.isComplete == false)
+
+        // The previous accounting version (all-or-nothing union) must not be
+        // served after this build's semantics change.
+        let oldKey = StorageSnapshotKey(
+            schemaVersion: request.key.schemaVersion,
+            accountingVersion: "2026-10-16.extent-union.v4",
+            rootsFingerprint: request.key.rootsFingerprint
+        )
+        #expect(store.load(key: oldKey) == nil)
+    }
 }
 
 @Suite("Storage refresh policy")

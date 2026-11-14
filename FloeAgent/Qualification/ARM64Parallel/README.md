@@ -35,3 +35,13 @@ CPU and Machine are internal layouts, so rebuild all engine translation units
 and source-including qualification hosts together after changing this header.
 Retain concurrent worker, memory, cache, stop, hotplug and sanitizer checks;
 this layout regression alone does not establish Linux or physical-iPad speed.
+
+## Optional guest GPU fallback
+
+`GPUFallbackTests.c` links the production ARM64 engine objects, replacing only
+the GPU backend factory with a deterministic failure. Compile it with
+assertions enabled and pass a new writable fixture directory. The test checks
+that existing strict GPU callers still fail, while callers setting
+`FLOE_AE_GPU_ALLOW_CPU_FALLBACK` start a real CPU machine, expose no guest GPU,
+and retain CPU, disk and network failures. Success prints
+`ARM64_GPU_OPTIONAL_CPU_FALLBACK_OK`.

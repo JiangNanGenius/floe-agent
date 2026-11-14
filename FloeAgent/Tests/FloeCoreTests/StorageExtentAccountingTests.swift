@@ -444,7 +444,7 @@ struct StorageExtentAccountingTests {
         )
         #expect(base.key.rootsFingerprint != withBundle.key.rootsFingerprint)
         #expect(base.key.accountingVersion == StorageAccountingVersion.current)
-        #expect(StorageAccountingVersion.current.contains("v4"))
+        #expect(StorageAccountingVersion.current.contains("v5"))
     }
 
     // MARK: - zero-length inodes and in-loop bounds
@@ -526,6 +526,351 @@ struct StorageExtentAccountingTests {
         )
         if case .measured = ok { } else {
             Issue.record("bounded reader should measure within budget, got \(ok)")
+        }
+    }
+
+    // MARK: - mixed compressed + measured coverage
+
+    private final class ExtentProbeLog: @unchecked Sendable {
+        private let lock = NSLock()
+        private var paths: [String] = []
+
+        func record(_ path: String) {
+            lock.lock(); paths.append(path); lock.unlock()
+        }
+
+        func count(suffix: String) -> Int {
+            lock.lock(); defer { lock.unlock() }
+            return paths.filter { $0.hasSuffix(suffix) }.count
+        }
+
+        func contains(_ path: String) -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            return paths.contains(path)
+        }
+    }
+
+    /// The Build 347 device case: a migrated iPad has huge runtime/VM images
+    /// that share most of their blocks, but one unrelated compressed file made
+    /// the all-or-nothing union disappear, so the UI fell back to the raw
+    /// allocated sum. The compressed file must now stay a tiny bounded
+    /// residual while the large overlapping streams remain exactly deduped.
+    @Test func compressedFileKeepsMeasuredPartialCloneUnionBounded() throws {
+        let root = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let linux = root.appendingPathComponent("linux", isDirectory: true)
+        let runtime = root.appendingPathComponent("runtime", isDirectory: true)
+        let misc = root.appendingPathComponent("misc", isDirectory: true)
+        for directory in [linux, runtime, misc] {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+
+        let disk = try write("disk.img", bytes: 1 << 20, at: linux, seed: 0x11)
+        let hard = linux.appendingPathComponent("hard.img")
+        #expect(link(disk.path, hard.path) == 0)
+        let clone = linux.appendingPathComponent("clone.img")
+        guard clonefile(disk.path, clone.path, 0) == 0 else {
+            Issue.record("clonefile is required to model a full-clone family")
+            return
+        }
+        // Independent file in another bucket whose runs overlap the disk by
+        // half. Its allocated bytes are counted in full by the allocated
+        // basis; only the measured union resolves the sharing.
+        let view = try write("view.img", bytes: 1 << 20, at: runtime, seed: 0x22)
+        let compressed = try write("tiny.plist", bytes: 8_192, at: misc, seed: 0x01)
+        let compressedAllocated = allocatedBlockBytes(compressed)
+        let diskAllocated = allocatedBlockBytes(disk)
+        let viewAllocated = allocatedBlockBytes(view)
+
+        let diskStream: [StoragePhysicalRun] = [
+            .init(device: 41, deviceOffset: 1 << 30, length: 1 << 20)
+        ]
+        let viewStream: [StoragePhysicalRun] = [
+            .init(device: 41, deviceOffset: (1 << 30) + 512 * 1024, length: 1 << 20)
+        ]
+        let log = ExtentProbeLog()
+        let probe = StorageExtentProbe { path, _, _, _, _ in
+            log.record(path)
+            if path.hasSuffix("tiny.plist") { return .failed(.compressedMapping) }
+            if path.hasSuffix("view.img") {
+                return .measured(StorageExtentMeasurement(runs: viewStream, callCount: 1))
+            }
+            return .measured(StorageExtentMeasurement(runs: diskStream, callCount: 1))
+        }
+        let census = try StorageCensus(
+            roots: [
+                StorageCensusRoot(id: "linuxDisks", url: linux, potentiallyCloned: true),
+                StorageCensusRoot(id: "runtimeV2", url: runtime, potentiallyCloned: true),
+                StorageCensusRoot(id: "misc", url: misc)
+            ],
+            metricLabel: "test.extent.mixed",
+            extentProbe: probe
+        ).run()
+
+        let union = try #require(census.extentUnion)
+        #expect(census.diagnostics.extentBasis == .partial)
+        #expect(census.diagnostics.extentUnavailableReason == nil)
+        #expect(union.isComplete == false)
+        // One full 1 MiB stream for the disk family plus the 512 KiB of the
+        // independent view that is not physically shared. The hard link and
+        // the full clone add no bytes, and the compressed file is only its
+        // own allocation.
+        #expect(union.measuredBytes == Int64((1 << 20) + 512 * 1024))
+        #expect(union.residualBytes == compressedAllocated)
+        #expect(union.unmeasuredFileCount == 1)
+        #expect(union.firstUnmeasuredReason == .compressedMapping)
+        #expect(union.totalBytes == Int64((1 << 20) + 512 * 1024) + compressedAllocated)
+        #expect(union.totalBytes < census.totalAllocatedBytes)
+        // Identity dedup (hard link) and the exact full-clone family (clone-id
+        // SHARES_ALL_BLOCKS) still contribute exactly one measured file. The
+        // compressed file is not measured and never becomes a second member.
+        #expect(census.diagnostics.dedupedFileCount == 1)
+        #expect(census.diagnostics.dedupedCloneFileCount == 1)
+        #expect(union.measuredFileCount == 2)
+        #expect(log.count(suffix: "tiny.plist") == 1)
+
+        // Category shares on the mixed basis reconcile with the total, and the
+        // raw allocated total stays available unchanged.
+        #expect(union.categoryBytes.values.reduce(Int64(0), +) + union.unattributedBytes == union.totalBytes)
+        let linuxShare = (union.categoryBytes["linuxDisks"] ?? 0)
+        let runtimeShare = (union.categoryBytes["runtimeV2"] ?? 0)
+        #expect(linuxShare + runtimeShare == Int64((1 << 20) + 512 * 1024))
+        #expect(union.categoryBytes["misc"] == compressedAllocated)
+        #expect(census.totalAllocatedBytes == diskAllocated + viewAllocated + compressedAllocated)
+        #expect(census.totalAllocatedBytes == Int64((2 << 20) + 8_192))
+
+        let report = StorageReportBuilder.build(census: census, bundleBytes: 0)
+        #expect(report.totals.basis == .measuredExtents)
+        #expect(report.totals.totalBytes == union.totalBytes)
+        #expect(report.totals.dataBytes == union.totalBytes)
+        let categorySum = report.categories.reduce(Int64(0)) { $0 + $1.basisBytes }
+            + (report.unattributed?.basisBytes ?? 0)
+        #expect(categorySum == report.totals.dataBytes)
+        #expect(report.totalAllocatedBytes == census.totalAllocatedBytes)
+    }
+
+    @Test func compressedBundleFileKeepsDataUnionAndBoundsInstallerShare() throws {
+        let root = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let data = root.appendingPathComponent("data", isDirectory: true)
+        let bundle = root.appendingPathComponent("App.bundle", isDirectory: true)
+        try FileManager.default.createDirectory(at: data, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: bundle, withIntermediateDirectories: true)
+        let disk = try write("disk.img", bytes: 1 << 20, at: data)
+        let info = try write("Info.plist", bytes: 4_096, at: bundle)
+        let infoAllocated = allocatedBlockBytes(info)
+        let diskAllocated = allocatedBlockBytes(disk)
+        let diskStream: [StoragePhysicalRun] = [
+            .init(device: 12, deviceOffset: 8_192, length: 1 << 20)
+        ]
+        let probe = StorageExtentProbe { path, _, _, _, _ in
+            if path.hasSuffix("Info.plist") { return .failed(.compressedMapping) }
+            return .measured(StorageExtentMeasurement(runs: diskStream, callCount: 1))
+        }
+        let census = try StorageCensus(
+            roots: [StorageCensusRoot(id: "documents", url: data)],
+            metricLabel: "test.extent.bundle-mixed",
+            extentProbe: probe,
+            bundleMeasurementURL: bundle
+        ).run()
+
+        let union = try #require(census.extentUnion)
+        #expect(census.diagnostics.extentBasis == .partial)
+        #expect(census.diagnostics.extentUnavailableReason == nil)
+        #expect(union.measuredBytes == diskAllocated)
+        #expect(union.residualBytes == infoAllocated)
+        // The installer share is the measured bundle share (zero new blocks)
+        // plus its own bounded residual — never the raw bundle size.
+        #expect(union.bundleBytes == infoAllocated)
+        #expect(union.totalBytes == diskAllocated + infoAllocated)
+
+        let report = StorageReportBuilder.build(census: census, bundleBytes: 999_999)
+        #expect(report.totals.basis == .measuredExtents)
+        #expect(report.totals.totalBytes == union.totalBytes)
+        #expect(report.totals.bundleBytes == infoAllocated)
+        #expect(report.totals.dataBytes == diskAllocated)
+        #expect(report.totals.bundleBytes + report.totals.dataBytes == report.totals.totalBytes)
+        let categorySum = report.categories.reduce(Int64(0)) { $0 + $1.basisBytes }
+            + (report.unattributed?.basisBytes ?? 0)
+        #expect(categorySum == report.totals.dataBytes)
+    }
+
+    /// A cross-root full clone (bundle resource cloned into user data) is one
+    /// physical stream. The bundle pass must not add a second candidate or a
+    /// residual for a stream the data walk already counted.
+    @Test func bundleCloneOfMeasuredDataFileCountsOneStream() throws {
+        let root = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let data = root.appendingPathComponent("data", isDirectory: true)
+        let bundle = root.appendingPathComponent("App.bundle", isDirectory: true)
+        try FileManager.default.createDirectory(at: data, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: bundle, withIntermediateDirectories: true)
+        let disk = try write("disk.img", bytes: 1 << 20, at: data, seed: 0x66)
+        let clone = bundle.appendingPathComponent("disk-clone.img")
+        guard clonefile(disk.path, clone.path, 0) == 0 else {
+            Issue.record("clonefile is required to model a bundle clone")
+            return
+        }
+        let diskAllocated = allocatedBlockBytes(disk)
+        let diskStream: [StoragePhysicalRun] = [
+            .init(device: 23, deviceOffset: 1 << 20, length: diskAllocated)
+        ]
+        let probe = StorageExtentProbe { _, _, _, _, _ in
+            .measured(StorageExtentMeasurement(runs: diskStream, callCount: 1))
+        }
+        let census = try StorageCensus(
+            roots: [StorageCensusRoot(id: "data", url: data)],
+            metricLabel: "test.extent.bundle-clone",
+            extentProbe: probe,
+            bundleMeasurementURL: bundle
+        ).run()
+        let union = try #require(census.extentUnion)
+        #expect(census.diagnostics.extentBasis == .available)
+        #expect(union.measuredBytes == diskAllocated)
+        #expect(union.residualBytes == 0)
+        #expect(union.totalBytes == diskAllocated)
+        // Whichever owner the union sweep assigns the shared stream to, the
+        // total is one stream: never the data file plus the bundle clone.
+        #expect((union.bundleBytes ?? 0) + (union.categoryBytes["data"] ?? 0) == diskAllocated)
+    }
+
+    /// The size-ordered pass keeps the costly disk measured when the snapshot
+    /// budget cannot cover every unrelated small file. Small files that do not
+    /// fit become a labelled residual; they never displace the disk.
+    @Test func extentPassPrioritizesLargeDisksOverTinyFilesWithinBudget() throws {
+        let root = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let large = root.appendingPathComponent("large", isDirectory: true)
+        let small = root.appendingPathComponent("small", isDirectory: true)
+        try FileManager.default.createDirectory(at: large, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: small, withIntermediateDirectories: true)
+        // Larger than the 8 MiB priority threshold; deliberately deferred.
+        let disk = try write("disk.img", bytes: 9 << 20, at: large, seed: 0x33)
+        let diskAllocated = allocatedBlockBytes(disk)
+        var smallPaths: [String] = []
+        for index in 0..<10 {
+            let url = try write("tiny-\(index).bin", bytes: 4_096, at: small, seed: 0x44)
+            smallPaths.append(url.path)
+        }
+        let smallAllocated = smallPaths.reduce(Int64(0)) { total, path in
+            var info = stat()
+            guard lstat(path, &info) == 0 else { return total }
+            return total + Int64(info.st_blocks) * 512
+        }
+
+        let log = ExtentProbeLog()
+        let probe = StorageExtentProbe { path, _, _, _, _ in
+            log.record(path)
+            let length: Int64 = path.hasSuffix("disk.img") ? Int64(9 << 20) : 4_096
+            return .measured(StorageExtentMeasurement(
+                runs: [.init(device: 77, deviceOffset: path.hasSuffix("disk.img") ? 0 : 1 << 40,
+                             length: length)],
+                callCount: 1
+            ))
+        }
+        let census = try StorageCensus(
+            roots: [
+                StorageCensusRoot(id: "large", url: large, potentiallyCloned: true),
+                StorageCensusRoot(id: "small", url: small)
+            ],
+            metricLabel: "test.extent.priority",
+            extentProbe: probe,
+            extentBudget: StorageExtentBudget(maxTotalCalls: 4, maxIntervals: 1_000_000, maxDuration: 60)
+        ).run()
+
+        let union = try #require(census.extentUnion)
+        #expect(census.diagnostics.extentBasis == .partial)
+        #expect(log.count(suffix: "disk.img") == 1, "the large disk must be measured")
+        #expect(union.categoryBytes["large"] == diskAllocated)
+        // At most two inline probes are allowed before the deferred large-file
+        // pass (half of the 4-call budget is reserved).
+        #expect(smallPaths.filter { log.contains($0) }.count <= 2)
+        #expect(union.measuredBytes >= diskAllocated)
+        #expect(union.residualBytes > 0)
+        #expect(union.unmeasuredFileCount > 0)
+        #expect(union.totalBytes == union.measuredBytes + union.residualBytes)
+        #expect(union.categoryBytes.values.reduce(Int64(0), +) + union.unattributedBytes == union.totalBytes)
+        // The small category is a mixed estimate: a few exact probes plus the
+        // bounded residual of the rest.
+        #expect((union.categoryBytes["small"] ?? 0) > 0)
+        #expect(union.totalBytes <= census.totalAllocatedBytes)
+        #expect(union.totalBytes <= diskAllocated + smallAllocated)
+    }
+
+    @Test func partialBasisRequiresAtLeastOneMeasuredFile() throws {
+        let root = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try write("only.bin", bytes: 4_096, at: root)
+        let census = try StorageCensus(
+            roots: [StorageCensusRoot(id: "data", url: root)],
+            metricLabel: "test.extent.nothing-measured",
+            extentProbe: StorageExtentProbe { _, _, _, _, _ in .failed(.compressedMapping) }
+        ).run()
+        // Nothing was measured: the accepted allocated basis is kept instead
+        // of publishing a "union" that is only an allocation residual.
+        #expect(census.extentUnion == nil)
+        #expect(census.diagnostics.extentBasis == .unavailable)
+        #expect(census.diagnostics.extentUnavailableReason == .compressedMapping)
+        let report = StorageReportBuilder.build(census: census, bundleBytes: 5)
+        #expect(report.totals.basis == .allocatedEstimate)
+        #expect(report.totals.totalBytes == 5 + census.totalAllocatedBytes)
+    }
+
+    /// If the FIRST member of a full-clone family is unmeasurable, the later
+    /// measured member is still the same stream and must not add its allocated
+    /// bytes again. With nothing measurable the snapshot keeps the allocated
+    /// fallback, which already deduplicated the family once.
+    @Test func unmeasurableFirstCloneMemberDoesNotDoubleSumTheFamily() throws {
+        let root = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let first = root.appendingPathComponent("first", isDirectory: true)
+        let second = root.appendingPathComponent("second", isDirectory: true)
+        try FileManager.default.createDirectory(at: first, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: second, withIntermediateDirectories: true)
+        let base = try write("base.img", bytes: 256 * 1024, at: first, seed: 0x55)
+        let clone = second.appendingPathComponent("clone.img")
+        guard clonefile(base.path, clone.path, 0) == 0 else {
+            Issue.record("clonefile is required to model a full-clone family")
+            return
+        }
+        let baseAllocated = allocatedBlockBytes(base)
+        let probe = StorageExtentProbe { path, _, _, _, _ in
+            if path.hasSuffix("base.img") { return .failed(.compressedMapping) }
+            return .measured(StorageExtentMeasurement(
+                runs: [.init(device: 5, deviceOffset: 4_096, length: baseAllocated)],
+                callCount: 1
+            ))
+        }
+        let census = try StorageCensus(
+            roots: [
+                StorageCensusRoot(id: "first", url: first, potentiallyCloned: true),
+                StorageCensusRoot(id: "second", url: second, potentiallyCloned: true)
+            ],
+            metricLabel: "test.extent.clone-unmeasurable-first",
+            extentProbe: probe
+        ).run()
+        // The later clone is skipped as the same clone stream, so its bytes
+        // are not added to the residual either. Nothing was measured, so the
+        // allocated fallback is kept and already counts the family once.
+        #expect(census.diagnostics.dedupedCloneFileCount == 1)
+        #expect(census.diagnostics.dedupedCloneBytes == baseAllocated)
+        #expect(census.extentUnion == nil)
+        #expect(census.diagnostics.extentBasis == .unavailable)
+        #expect(census.diagnostics.extentUnavailableReason == .compressedMapping)
+        #expect(census.totalAllocatedBytes == baseAllocated)
+    }
+
+    @Test func cancellationDuringTheDeferredLargeFilePassThrows() throws {
+        let root = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        // Above the priority threshold: measured in the deferred pass.
+        try write("disk.img", bytes: 9 << 20, at: root)
+        #expect(throws: StorageCensusError.cancelled) {
+            _ = try StorageCensus(
+                roots: [StorageCensusRoot(id: "data", url: root)],
+                metricLabel: "test.extent.priority-cancel",
+                extentProbe: StorageExtentProbe { _, _, _, _, _ in .failed(.cancelled) }
+            ).run()
         }
     }
 }

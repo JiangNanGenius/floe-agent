@@ -170,8 +170,10 @@ static int valid_memory(const floe_ae_memory_config *d,AESession *s) {
 }
 static int valid_gpu(const floe_ae_gpu_config *d,AESession *s) {
     if(d->enabled>1)return FLOE_AE_INVALID;
-    for(unsigned i=0;i<4;i++)if(d->reserved[i])return FLOE_AE_UNSUPPORTED;
+    if(d->reserved[0]&~(uint64_t)FLOE_AE_GPU_ALLOW_CPU_FALLBACK)return FLOE_AE_UNSUPPORTED;
+    for(unsigned i=1;i<4;i++)if(d->reserved[i])return FLOE_AE_UNSUPPORTED;
     if(!d->enabled) {
+        if(d->reserved[0])return FLOE_AE_INVALID;
         return d->struct_size&&d->struct_size<sizeof(*d)?FLOE_AE_VERSION:0;
     }
     if(d->struct_size<sizeof(*d))return FLOE_AE_VERSION;
@@ -187,7 +189,8 @@ static int valid_gpu(const floe_ae_gpu_config *d,AESession *s) {
         s->gpu_app_group=ae_strdup_bounded(group,29);
         if(!s->gpu_app_group)return FLOE_AE_NOMEM;
     }
-    s->gpu_requested=1;s->gpu_budget_bytes=budget;return 0;
+    s->gpu_requested=1;s->gpu_optional=(d->reserved[0]&FLOE_AE_GPU_ALLOW_CPU_FALLBACK)!=0;
+    s->gpu_budget_bytes=budget;return 0;
 }
 static int valid_config(const floe_ae_config *c,AESession *s) {
     if(!c||c->struct_size<sizeof(*c))return FLOE_AE_VERSION;
@@ -282,9 +285,16 @@ int floe_ae_create(const floe_ae_config *c,floe_ae_handle *handle) {
     if(s->gpu_requested) {
         char message[512]={0};
         s->machine.gpu_backend=floe_virtual_gpu_backend_create_in_app_group(s->gpu_app_group,message,sizeof(message));
-        if(!s->machine.gpu_backend) {fprintf(stderr,"GPU create: %s\n",message);error=FLOE_AE_UNSUPPORTED;goto finished;}
-        s->machine.gpu_enabled=true;
-        s->machine.gpu_budget_bytes=s->gpu_budget_bytes;
+        if(!s->machine.gpu_backend) {
+            const char *reason=message[0]?message:"backend unavailable";
+            fprintf(stderr,"GPU create: %s\n",reason);
+            if(!s->gpu_optional) {error=FLOE_AE_UNSUPPORTED;goto finished;}
+            ae_vendor_printf("Guest GPU unavailable; continuing on CPU: %s\n",reason);
+            s->gpu_requested=0;
+        } else {
+            s->machine.gpu_enabled=true;
+            s->machine.gpu_budget_bytes=s->gpu_budget_bytes;
+        }
     }
     if(machine_configure_cpus(&s->machine,c->requested_vcpus)){error=FLOE_AE_UNSUPPORTED;goto finished;}
     s->endpoint.owner=s;s->endpoint.channel=0;

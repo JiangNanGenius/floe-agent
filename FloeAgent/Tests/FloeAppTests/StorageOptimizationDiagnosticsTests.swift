@@ -9,6 +9,23 @@ import FloePersistence
 @testable import FloeApp
 
 @MainActor final class StorageOptimizationDiagnosticsTests: XCTestCase {
+    func testOptimizeCanRetireImagesWithoutALegacyDiskStore() async throws {
+        let store = try defaults()
+        var refreshes = 0
+        let service = StorageOptimizationService(adapter: nil, defaults: store, retireImages: { _ in
+            LinuxImageRetirementResult(removed: 3, incomplete: false, hostAvailableBefore: 800, hostAvailableAfter: 920)
+        }, settled: { refreshes += 1 })
+        XCTAssertTrue(service.canStart)
+        service.start()
+        let deadline = ContinuousClock.now + .seconds(5)
+        while service.isRunning && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(service.state.phase, .completed)
+        XCTAssertEqual(service.state.removedObsoleteItems, 3)
+        XCTAssertEqual(service.state.observedHostFreeDelta, 120)
+        XCTAssertEqual(refreshes, 1)
+        XCTAssertEqual(StorageOptimizationService.readSnapshot(from: store)?.removedObsoleteItems, 3)
+    }
+
     private func root() throws -> URL {
         let support = try XCTUnwrap(FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first)
         let value = support.appendingPathComponent("StorageOptimizationDiagnosticTests-" + UUID().uuidString, isDirectory: true)

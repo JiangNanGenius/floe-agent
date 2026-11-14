@@ -294,6 +294,23 @@ public actor RuntimeV2RepairHoldStore {
         return .recoverable(preservedPath: preservedPath)
     }
 
+    /// The VALID exclusion (marker or physical evidence) that names exactly
+    /// this preserved path. A valid marker for a DIFFERENT path is never
+    /// treated as this evidence's hold, and a corrupt marker answers nil
+    /// (the caller must keep it: it cannot be instance-bound to any path).
+    /// Inspection only.
+    public func hold(matchingPreservedPath preservedPath: String, environmentID: String) -> Hold? {
+        if let marker = markerHold(environmentID: environmentID),
+           marker.preservedPath == preservedPath {
+            return marker
+        }
+        if let evidence = quarantineEvidence(environmentID: environmentID),
+           evidence.preservedPath == preservedPath {
+            return evidence
+        }
+        return nil
+    }
+
     // MARK: writing
 
     /// Places (or refreshes) the durable marker exclusion. The write happens
@@ -554,6 +571,29 @@ public actor RuntimeV2RepairHoldStore {
     /// If step 1 throws, nothing on disk has changed: the exclusion (and the
     /// preserved physical evidence) remains fully in place and the resolution
     /// can be retried idempotently after the fault heals.
+
+    /// Durable completion of a verified obsolete-RISC-V disposal. This is a
+    /// distinct, named resolution ("retired") next to explicit restore and
+    /// discard: it accounts for the exact preserved path after the bytes were
+    /// removed by the caller's already-verified metadata/lease checks. No
+    /// digest is taken (the retired architecture does not require a full-disk
+    /// read), and a corrupt marker is never passed here — callers must keep it
+    /// in place because it cannot be instance-bound to this path.
+    public func recordObsoleteDisposalResolution(
+        environmentID: String, preservedPath: String, resolvedHoldID: String?
+    ) throws {
+        guard (try? layout.preservedRuntimeDirectory(preservedPath)) != nil else {
+            throw RuntimeV2Error.pathEscapesRoot(preservedPath)
+        }
+        try recordResolution(
+            environmentID: environmentID, preservedPath: preservedPath,
+            resolution: Self.obsoleteDisposalResolution,
+            diskDigestSHA512: nil, resolvedHoldID: resolvedHoldID
+        )
+    }
+
+    public static let obsoleteDisposalResolution = "retired"
+
     public func recordResolution(
         environmentID: String, preservedPath: String?, resolution: String,
         diskDigestSHA512: String? = nil, resolvedHoldID: String? = nil,

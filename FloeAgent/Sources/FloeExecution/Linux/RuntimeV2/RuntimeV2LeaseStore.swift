@@ -18,6 +18,9 @@
 
 import Foundation
 import FloeCore
+#if canImport(Darwin)
+import Darwin
+#endif
 
 public actor RuntimeV2LeaseStore {
     public struct Lease: Codable, Sendable, Equatable {
@@ -484,7 +487,27 @@ public actor RuntimeV2LeaseStore {
     /// In-process proofs (no live session/thread/handle) are supplied by the
     /// integration through StaleProof; both must hold before reclaim.
     public static func processLiveness(lease: Lease) -> Bool {
-        kill(pid_t(lease.pid), 0) != 0 && errno == ESRCH
+        guard let pid = pid_t(exactly: lease.pid), pid > 0 else { return false }
+        return kill(pid, 0) != 0 && errno == ESRCH
+    }
+
+    /// A restored lease can have the same PID as an unrelated process on this device.
+    /// Only expiry before the kernel's current boot proves that owner cannot still run.
+    static func blocksRetirement(_ lease: Lease, now: Date = Date()) -> Bool {
+        guard lease.isExpired(now: now) else { return true }
+        if processLiveness(lease: lease) { return false }
+        #if canImport(Darwin)
+        var boot = timeval()
+        var length = MemoryLayout<timeval>.size
+        if lease.ttlSeconds > 0, lease.acquiredAt <= lease.renewedAt,
+           sysctlbyname("kern.boottime", &boot, &length, nil, 0) == 0,
+           length == MemoryLayout<timeval>.size, boot.tv_sec > 0 {
+            let bootTime = Date(timeIntervalSince1970: Double(boot.tv_sec))
+            let expiry = lease.renewedAt.addingTimeInterval(TimeInterval(lease.ttlSeconds))
+            if expiry < bootTime && bootTime <= now { return false }
+        }
+        #endif
+        return true
     }
 
     static let encoder: JSONEncoder = {

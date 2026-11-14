@@ -18,6 +18,7 @@ struct RuntimeV2MigrationSparseReceipt: Codable, Sendable {
 private enum RuntimeV2MigrationCompletedHistoryDecision: Sendable {
     case none
     case verified(RuntimeV2OptimizationCoreJournalBinding)
+    case noGain(RuntimeV2OptimizationCoreJournalBinding)
     case retainedUnverified
 }
 
@@ -103,16 +104,18 @@ actor RuntimeV2MigrationSparseOptimizer {
                 throw RuntimeV2MaintenanceError.claimInvalidated("migration requires fresh exclusive closure")
             }
             switch try await completed(record: record, preservation: preservation, closure: closed) {
-            case .verified(let previous):
+            case .verified(let previous), .noGain(let previous):
                 try await validate(claim: claim, record: record, preservation: preservation)
                 try claim.validateTargetIdentity()
                 let current = try await metadata.run {
                     RuntimeV2RecoveryOptimizationAdapter.matchesCommittedSource(previous, root: root,
-                        expected: record.source, rootDevice: closed.rootDevice, rootInode: closed.rootInode)
+                        expected: record.source, rootDevice: closed.rootDevice, rootInode: closed.rootInode,
+                        allocatedBytes: previous.phase == "aborted" ? previous.sourceAllocatedBytesBefore : nil)
                 }
                 try await claim.abortAndRelease(reason: "completed migration sparse proof checked; no mutation")
                 if current {
-                    return .init(report: nil, code: "already-optimized", recoveryPending: false, verifiedUnchanged: true)
+                    return .init(report: nil, code: previous.phase == "aborted" ? "insufficient-reclaim" : "already-optimized",
+                                 recoveryPending: false, verifiedUnchanged: true)
                 }
                 return .init(report: nil, code: "needs-inspection", recoveryPending: false)
             case .retainedUnverified:
@@ -334,6 +337,7 @@ actor RuntimeV2MigrationSparseOptimizer {
         return try await metadata.run {
             var retiredTargetSeen = false
             var verified: [RuntimeV2OptimizationCoreJournalBinding] = []
+            var noGain: RuntimeV2OptimizationCoreJournalBinding?
             var totalReceipts = 0
             for context in contexts {
                 let receipts = context.appendingPathComponent("image-sparse-receipts", isDirectory: true)
@@ -354,7 +358,6 @@ actor RuntimeV2MigrationSparseOptimizer {
                           header.jobID == saved.intentID, header.maintenanceLeaseID == saved.intentID,
                           header.jobGeneration == saved.authorityGeneration, header.holdGeneration == saved.coreHoldGeneration,
                           header.source.matchesFully(saved.record.source), header.relativePath == record.target.relativePath,
-                          header.phase == "retired", header.stageRetired == true, header.stageRetained == false,
                           header.requestedMode == .cloneAndPunch, header.modeUsed == .cloneAndPunch, header.fallbackReason == nil,
                           let digest = header.sourceDigestSHA512, RuntimeV2RecoveryOptimizationAdapter.isSHA512(digest),
                           digest == header.stageDigestSHA512,
@@ -362,6 +365,14 @@ actor RuntimeV2MigrationSparseOptimizer {
                           RuntimeV2RecoveryOptimizationAdapter.isSHA512(metadataFingerprint),
                           RuntimeV2RecoveryOptimizationAdapter.matchesPhysicalRoot(header.rootPath, root: domain.root,
                             device: closure.rootDevice, inode: closure.rootInode) else { continue }
+                    if saved.preservationFingerprint == preservation, header.verifiedNoGain(for: record.source),
+                       RuntimeV2RecoveryOptimizationAdapter.matchesCommittedSource(header, root: domain.root,
+                            expected: record.source, rootDevice: closure.rootDevice, rootInode: closure.rootInode,
+                            allocatedBytes: header.sourceAllocatedBytesBefore) {
+                        noGain = header
+                    }
+                    guard header.phase == "retired", header.stageRetired == true,
+                          header.stageRetained == false else { continue }
                     // Classification for retention only: complete identity and
                     // preserved metadata remain mandatory for verified reuse.
                     if let old = header.postSwapSource,
@@ -379,6 +390,7 @@ actor RuntimeV2MigrationSparseOptimizer {
                 }
             }
             if verified.count == 1 { return .verified(verified[0]) }
+            if let noGain { return .noGain(noGain) }
             if retiredTargetSeen { return .retainedUnverified }
             return .none
         }

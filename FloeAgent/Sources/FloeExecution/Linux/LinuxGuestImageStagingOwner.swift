@@ -44,6 +44,7 @@ struct LinuxImageStageRecord: Codable, Sendable {
     var payloadIdentity: LinuxImageStageIdentity
     var publicationImageID: String?
     var publicationIdentity: LinuxImageStageIdentity?
+    var replacedPayloadIdentity: LinuxImageStageIdentity?
     var publicationLeaf: String?
 }
 
@@ -238,14 +239,31 @@ actor LinuxGuestImageStagingOwner {
                   let digest = record.archiveSHA512, digest.count == 128,
                   digest.allSatisfy({ $0.isHexDigit }) else { return false }
         }
-        // payload may already have moved out only after a journaled promotion.
+        // RENAME_SWAP can leave the previous image in the job's payload.
         if let payload = try? LinuxImageStageIO.observe("payload", in: directory) {
-            return payload.sameInode(as: record.payloadIdentity)
+            if payload.sameInode(as: record.payloadIdentity) { return true }
+            return record.publicationLeaf == "payload" && containsDisplacedImage(record, directory: directory)
         }
         return record.state == .promoting || record.state == .discardable
     }
 
-    func markPromotion(_ stage: LinuxImageOwnedStage, candidate: URL, imageID: String) throws {
+    /// A successful exchange leaves the exact previous installation at the
+    /// candidate's private name. This receipt survives another same-ID install.
+    private func containsDisplacedImage(_ record: LinuxImageStageRecord, directory: Int32) -> Bool {
+        guard record.state == .promoting || record.state == .discardable,
+              let old = record.replacedPayloadIdentity, let new = record.publicationIdentity,
+              !old.sameInode(as: new), let leaf = record.publicationLeaf,
+              let id = record.publicationImageID, !id.hasPrefix(".") else { return false }
+        if leaf == "payload" {
+            return (try? LinuxImageStageIO.observe(leaf, in: directory))?.sameInode(as: old) == true
+        }
+        guard let payload = try? LinuxImageStageIO.directory("payload", in: directory, create: false) else { return false }
+        defer { _ = Darwin.close(payload) }
+        return (try? LinuxImageStageIO.observe(leaf, in: payload))?.sameInode(as: old) == true
+    }
+
+    func markPromotion(_ stage: LinuxImageOwnedStage, candidate: URL, imageID: String,
+                       replacing previous: LinuxImageStageIdentity? = nil) throws {
         try LinuxImageStageIO.validate(imageID)
         guard !imageID.hasPrefix("."),
               candidate == stage.payloadURL || candidate.deletingLastPathComponent() == stage.payloadURL else {
@@ -262,6 +280,7 @@ actor LinuxGuestImageStagingOwner {
         record.state = .promoting
         record.publicationImageID = imageID
         record.publicationIdentity = try LinuxImageStageIO.identity(fd: candidateFD)
+        record.replacedPayloadIdentity = previous
         record.publicationLeaf = candidate == stage.payloadURL ? "payload" : candidate.lastPathComponent
         try LinuxImageStageIO.writeRecord(record, in: directory)
     }
@@ -291,7 +310,7 @@ actor LinuxGuestImageStagingOwner {
                           fsync(payload) == 0 else { throw LinuxImageStageError.io(errno) }
                 }
             }
-            var mayDiscard = record.kind != .localImport
+            var mayDiscard = record.kind != .localImport || containsDisplacedImage(record, directory: directory)
             if !mayDiscard, record.state == .promoting,
                let id = record.publicationImageID, !id.hasPrefix("."),
                let published = record.publicationIdentity,
@@ -334,14 +353,23 @@ actor LinuxGuestImageStagingOwner {
             guard let images = try LinuxImageStageIO.images(root: root, create: false) else { return report }
             defer { _ = Darwin.close(images) }
             let before = LinuxImageStageIO.availableBytes(fd: images)
-            // Historical names are diagnostic only. No old .download/.import/
-            // .trash, installed component, environment, resident or recovery is deleted.
+            // Older builds owned transfer scratch directly in images/. The
+            // current producer uses the separate journaled namespace below.
             do {
                 let legacyNames = try LinuxImageStageIO.names(in: images, limit: limits.maxNamespaceEntries, allowPartial: true)
                 if legacyNames.count >= limits.maxNamespaceEntries { report.budgetReached = true }
                 for name in legacyNames {
                     if stop() { break }
-                    guard [".download-", ".import-", ".trash-", ".shards-"].contains(where: { name.hasPrefix($0) }) else { continue }
+                    guard Self.isLegacyTransferName(name) || LinuxGuestImageDistributionCatalog.isRetiredImage(id: name) else { continue }
+                    do {
+                        if try await retireLegacy(name, in: images, cancelled: stop, report: &report) { continue }
+                    } catch LinuxImageStageError.busy {
+                        report.skippedBusy += 1
+                    } catch is CancellationError {
+                        break
+                    } catch {
+                        report.failedJobs += 1
+                    }
                     report.retainedLegacyEntries += 1
                     if let entry = try LinuxImageStageIO.observe(name, in: images) {
                         if entry.isDirectory { report.unmeasuredLegacyDirectories += 1 }
@@ -350,6 +378,9 @@ actor LinuxGuestImageStagingOwner {
                 }
             } catch { report.budgetReached = true }
             guard let namespace = try LinuxImageStageIO.directory(LinuxImageStageIO.namespace, in: images, create: false) else {
+                if let before, let after = LinuxImageStageIO.availableBytes(fd: images) {
+                    report.volumeAvailableDeltaBytes = after - before
+                }
                 report.wasCancelled = isCancelled() || Task.isCancelled
                 latestReport = report
                 return report
@@ -402,6 +433,82 @@ actor LinuxGuestImageStagingOwner {
         return report
     }
 
+    private static func isLegacyTransferName(_ name: String) -> Bool {
+        [".download-", ".import-", ".trash-", ".shards-"].contains { name.hasPrefix($0) }
+    }
+
+    private static func hasUUID(_ name: String, prefix: String, suffix: String = "") -> Bool {
+        guard name.hasPrefix(prefix), name.hasSuffix(suffix),
+              name.utf8.count == prefix.utf8.count + 36 + suffix.utf8.count else { return false }
+        return UUID(uuidString: String(name.dropFirst(prefix.count).dropLast(suffix.count))) != nil
+    }
+
+    private func retireLegacy(_ name: String, in images: Int32, cancelled: () -> Bool,
+                              report: inout LinuxGuestUpgradeResidueReport) async throws -> Bool {
+        let isArchive = Self.hasUUID(name, prefix: ".download-", suffix: ".zip")
+        let isImport = Self.hasUUID(name, prefix: ".import-")
+        let isRollback = Self.hasUUID(name, prefix: ".trash-")
+        let isRetiredImage = LinuxGuestImageDistributionCatalog.isRetiredImage(id: name)
+        guard isArchive || isImport || isRollback || isRetiredImage else { return false }
+        guard let claim = await center.claimForDeletion(path: imagesURL.appendingPathComponent(name).path)
+        else { throw LinuxImageStageError.busy }
+        do {
+            let retired = try retireClaimedLegacy(name, in: images, isArchive: isArchive, isRollback: isRollback,
+                isRetiredImage: isRetiredImage, cancelled: cancelled, report: &report)
+            await center.releaseClaim(claim.id)
+            return retired
+        } catch {
+            await center.releaseClaim(claim.id)
+            throw error
+        }
+    }
+
+    private func retireClaimedLegacy(_ name: String, in images: Int32, isArchive: Bool, isRollback: Bool,
+                                     isRetiredImage: Bool, cancelled: () -> Bool,
+                                     report: inout LinuxGuestUpgradeResidueReport) throws -> Bool {
+        guard !cancelled() else { throw CancellationError() }
+        guard let entry = try LinuxImageStageIO.observe(name, in: images) else { return true }
+        guard entry.uid == UInt32(geteuid()) else { return false }
+        if isArchive {
+            guard entry.isRegular, entry.links == 1 else { return false }
+            try LinuxImageStageIO.remove(nodes: [.init(components: [name], identity: entry)],
+                from: images, cancelled: cancelled, report: &report)
+        } else {
+            guard entry.isDirectory, let directory = try LinuxImageStageIO.directory(name, in: images, create: false)
+            else { return false }
+            defer { _ = Darwin.close(directory) }
+            guard entry.sameInode(as: try LinuxImageStageIO.identity(fd: directory)) else { return false }
+            if isRetiredImage || isRollback {
+                let id = try LinuxImageStageIO.manifestID(in: directory)
+                if id == nil {
+                    // A prior pass may have removed the last manifest just
+                    // before interruption. An empty producer directory is safe to unlink.
+                    guard try LinuxImageStageIO.names(in: directory, limit: 1, allowPartial: true).isEmpty else { return false }
+                } else if isRetiredImage {
+                    guard id == name else { return false }
+                } else if let id, !LinuxGuestImageDistributionCatalog.isRetiredImage(id: id) {
+                    // Older publication used two renames. The first could
+                    // leave this as the only installed copy after a crash.
+                    guard let installed = try LinuxImageStageIO.directory(id, in: images, create: false) else { return false }
+                    defer { _ = Darwin.close(installed) }
+                    guard try LinuxImageStageIO.manifestID(in: installed) == id else { return false }
+                }
+            }
+            let nodes = try LinuxImageStageIO.snapshot(in: directory, limit: limits.maxEntriesPerJob, cancelled: cancelled)
+            // Preserve the ownership evidence for the next pass after an interruption.
+            let payload = nodes.filter { $0.components != ["manifest.json"] }
+            let manifest = nodes.filter { $0.components == ["manifest.json"] }
+            try LinuxImageStageIO.remove(nodes: payload, from: directory, cancelled: cancelled, report: &report)
+            guard try LinuxImageStageIO.observe(name, in: images)?.sameInode(as: entry) == true else { return false }
+            try LinuxImageStageIO.remove(nodes: manifest, from: directory, cancelled: { false }, report: &report)
+            guard unlinkat(images, name, AT_REMOVEDIR) == 0, fsync(images) == 0 else {
+                throw LinuxImageStageError.io(errno)
+            }
+        }
+        report.deletedJobs += 1
+        return true
+    }
+
     private func cleanJob(_ name: String, namespace: Int32, images: Int32, build: String,
                           stop: () -> Bool, report: inout LinuxGuestUpgradeResidueReport) throws {
         guard let directory = try LinuxImageStageIO.directory(name, in: namespace, create: false) else { throw LinuxImageStageError.unsafe }
@@ -421,7 +528,8 @@ actor LinuxGuestImageStagingOwner {
         report.isUpgradePass = report.isUpgradePass || record.producerBuild != build
         guard let current = try LinuxImageStageIO.observe(name, in: namespace),
               current.sameInode(as: record.directoryIdentity) else { throw LinuxImageStageError.unsafe }
-        var discard = record.state == .discardable
+        let displacedImage = containsDisplacedImage(record, directory: directory)
+        var discard = record.state == .discardable || displacedImage
         if !discard, record.kind != .localImport, record.session != session {
             if record.kind == .catalogImport || record.producerBuild != build { discard = true }
             else { report.retainedCurrentResume += 1; return }
@@ -445,7 +553,20 @@ actor LinuxGuestImageStagingOwner {
             guard !overflow else { throw LinuxImageStageError.limit }
             allocated = sum
         }
-        guard allocated <= limits.maxAllocatedBytes - report.summedDeletedAllocatedBytes else { throw LinuxImageStageError.limit }
+        // After a verified atomic exchange the old image is owned solely by
+        // the job. Its size can exceed the transfer-cache budget on migrated
+        // devices. Applying that budget to this indivisible image would leave
+        // the same retired disk in place on every pass.
+        let isVerifiedReplacement: Bool
+        if record.replacedPayloadIdentity != nil, let published = record.publicationIdentity,
+           let id = record.publicationImageID, !id.hasPrefix("."),
+           let actual = try LinuxImageStageIO.observe(id, in: images) {
+            isVerifiedReplacement = actual.sameInode(as: published)
+        } else {
+            isVerifiedReplacement = false
+        }
+        guard displacedImage || isVerifiedReplacement || allocated <= limits.maxAllocatedBytes - report.summedDeletedAllocatedBytes
+        else { throw LinuxImageStageError.limit }
         try LinuxImageStageIO.remove(nodes: nodes, from: directory, cancelled: stop, report: &report)
         guard let final = try LinuxImageStageIO.observe(name, in: namespace), final.sameInode(as: record.directoryIdentity) else {
             throw LinuxImageStageError.unsafe

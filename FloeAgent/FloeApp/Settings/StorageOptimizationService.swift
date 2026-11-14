@@ -91,7 +91,7 @@ enum StorageOptimizationDiagnosticVocabulary {
     ]
     static let serviceCodes: Set<String> = [
         "inventory-incomplete", "sources-not-eligible", "no-covered-sources", "recovery-resolved", "recovery-not-needed",
-        "retained-disk", "preclaim-ineligible"
+        "retained-disk", "preclaim-ineligible", "image-retirement-incomplete"
     ]
     /// Fixed technical subcodes for the saved diagnostics export. These do
     /// not appear as ordinary UI copy and cannot contain an input path/stage.
@@ -115,7 +115,7 @@ enum StorageOptimizationDiagnosticVocabulary {
         "maintenance-errno-other"
     ]
     static let stages: Set<String> = [
-        "recovery-check", "inventory", "disk-admission", "counting", "staging", "verifying", "committing", "retiring"
+        "recovery-check", "retire-images", "inventory", "disk-admission", "counting", "staging", "verifying", "committing", "retiring"
     ]
     static func code(_ raw: String) -> String? {
         let head = String(raw.split(separator: ":", maxSplits: 1).first ?? "")
@@ -161,6 +161,7 @@ struct StorageOptimizationState: Codable, Sendable {
     var unrecognizedDiagnosticCodeCount: Int?
     var migrationRecordCount: Int?
     var migrationBlockedCount: Int?
+    var removedObsoleteItems: Int?
     /// Closed per-candidate scope; older operation receipts simply omit it.
     var lastCandidateDisposition: String?
 
@@ -188,7 +189,7 @@ struct StorageOptimizationState: Codable, Sendable {
         if optimized > 0 && (retained > 0 || phase == .blocked) { return .partiallyOptimized }
         if codes.contains("busy") { return .busy }
         if !codes.isDisjoint(with: ["unsupported-platform", "unsupported-mode", "clone-unavailable", "punch-unsupported", "swap-unsupported"]) { return .methodUnavailable }
-        if coveredSourceCount == 0, attempted == 0 { return .notCovered }
+        if phase == .completed, coveredSourceCount == 0, attempted == 0 { return .notCovered }
         if phase == .blocked {
             return !codes.isDisjoint(with: ["inventory-incomplete", "sources-not-eligible", "source-not-eligible", "owner-unknown",
                 "migration_inventory_unavailable", "migration_binding_unknown", "migration_preservation_unavailable"])
@@ -207,6 +208,16 @@ struct StorageOptimizationState: Codable, Sendable {
         min(1_000_000, (safeDetails["retained-disk"] ?? 0) + (safeDetails["preclaim-ineligible"] ?? 0))
     }
     var terminalNotice: String? {
+        if let removedObsoleteItems, removedObsoleteItems > 0, attempted == 0 {
+            if phase == .blocked {
+                return FloeL10n.isChinese ? "已移除 \(removedObsoleteItems) 项旧运行文件，其余项目尚待整理。"
+                    : "Removed \(removedObsoleteItems) obsolete runtime items. Some items still need attention."
+            }
+            if phase == .completed {
+                return FloeL10n.isChinese ? "已移除 \(removedObsoleteItems) 项旧运行文件。"
+                    : "Removed \(removedObsoleteItems) obsolete runtime items."
+            }
+        }
         switch terminalDisposition {
         case .notCovered:
             return FloeL10n.isChinese ? "此入口未发现可整理的历史磁盘，其他资料未改动。" : "This tool found no historical disks it can optimize. Other data was left unchanged."
@@ -285,6 +296,7 @@ struct StorageOptimizationState: Codable, Sendable {
         copy.eligibleSourceCount = eligibleSourceCount.map { max(0, min(1_000_000, $0)) }
         copy.migrationRecordCount = migrationRecordCount.map { max(0, min(6, $0)) }
         copy.migrationBlockedCount = migrationBlockedCount.map { max(0, min(6, $0)) }
+        copy.removedObsoleteItems = removedObsoleteItems.map { min(1_000_000, max(0, $0)) }
         if let lastCandidateDisposition,
            !["ordinary", "retained-and-released", "preclaim-ineligible"].contains(lastCandidateDisposition) {
             copy.lastCandidateDisposition = nil
@@ -387,6 +399,9 @@ final class StorageOptimizationService: ObservableObject {
     @Published private(set) var launchGate = StorageOptimizationLaunchGate()
     let bootstrapFailure: RuntimeV2MaintenanceBootstrapFailure?
     private let adapter: RuntimeV2RecoveryOptimizationAdapter?
+    typealias RetireImages = @Sendable (RuntimeV2OptimizationCancellation) async -> LinuxImageRetirementResult
+    private let retireImages: RetireImages?
+    private let cancelRetiringImages: (@Sendable () -> Void)?
     private let defaults: UserDefaults
     private let settled: @MainActor @Sendable () async -> Void
     let hasLegacyRecoveryTree: Bool
@@ -402,18 +417,21 @@ final class StorageOptimizationService: ObservableObject {
 
     var isRunning: Bool { operation != nil }
     var canStart: Bool {
-        adapter != nil && (!isRunning || (launchGate.recoveryActive && !launchGate.queued
+        (adapter != nil || retireImages != nil) && (!isRunning || (launchGate.recoveryActive && !launchGate.queued
                                          && cancellation?.isCancelled != true))
     }
     var canCancel: Bool { cancellation != nil && isRunning && state.phase != .cancelling }
 
     init(adapter: RuntimeV2RecoveryOptimizationAdapter?,
          bootstrapFailure: RuntimeV2MaintenanceBootstrapFailure? = nil, defaults: UserDefaults = .standard,
+         retireImages: RetireImages? = nil,
+         cancelRetiringImages: (@Sendable () -> Void)? = nil,
          settled: @escaping @MainActor @Sendable () async -> Void = {
              StorageDiagnosticService.shared.invalidate(.other("legacyRecoveryOptimization"))
              _ = await StorageDiagnosticService.shared.refresh(explicit: true)
          }) {
-        self.adapter = adapter; self.defaults = defaults; self.settled = settled
+        self.adapter = adapter; self.retireImages = retireImages; self.defaults = defaults; self.settled = settled
+        self.cancelRetiringImages = cancelRetiringImages
         self.bootstrapFailure = adapter == nil ? bootstrapFailure : nil
         Self.persistBootstrapFailure(self.bootstrapFailure, to: defaults)
         self.hasLegacyRecoveryTree = RuntimeV2MaintenanceDomain.trustedLegacyRoot().map {
@@ -421,7 +439,10 @@ final class StorageOptimizationService: ObservableObject {
         } ?? false
         let previousOperation = Self.readSnapshot(from: defaults)
         defaults.removeObject(forKey: Self.launchRecoveryKey)
-        guard let adapter else { state.phase = .unavailable; return }
+        guard let adapter else {
+            state.phase = retireImages == nil || bootstrapFailure != nil ? .unavailable : .idle
+            return
+        }
         // Installs a REAL Core recovery handler on every process launch before
         // converging pending intent. No forever-nil recovery closure is shipped.
         let id = UUID(); generation = id
@@ -477,7 +498,7 @@ final class StorageOptimizationService: ObservableObject {
     }
 
     func start() {
-        guard let adapter else { return }
+        guard adapter != nil || retireImages != nil else { return }
         if operation != nil {
             _ = launchGate.queueTap(operationActive: true, cancellationRequested: cancellation?.isCancelled == true)
             return
@@ -489,7 +510,7 @@ final class StorageOptimizationService: ObservableObject {
             appBuildFingerprint: StorageDiagnosticService.appBuildFingerprint())
         operation = Task { [weak self] in
             guard let self else { return }
-            await self.run(adapter: adapter, cancellation: cancellation, generation: id)
+            await self.run(adapter: self.adapter, cancellation: cancellation, generation: id)
         }
     }
 
@@ -497,6 +518,7 @@ final class StorageOptimizationService: ObservableObject {
         guard operation != nil, let cancellation else { return }
         launchGate.cancelQueuedTap()
         cancellation.cancel()
+        if state.lastStage == "retire-images" { cancelRetiringImages?() }
         state.phase = .cancelling
         // Do not cancel the service task/authority/recovery. Core's cooperative
         // flag stops its bounded phase; the service still converges its journal.
@@ -506,12 +528,28 @@ final class StorageOptimizationService: ObservableObject {
         report.outcome != .notNeeded
     }
 
-    private func run(adapter: RuntimeV2RecoveryOptimizationAdapter,
+    private func run(adapter: RuntimeV2RecoveryOptimizationAdapter?,
                      cancellation: RuntimeV2OptimizationCancellation, generation: UUID,
                      completedRecovery: RuntimeV2MaintenanceRecoveryReport? = nil) async {
-        var refreshNeeded = false
-        var firstHostFree: Int64?
-        var lastHostFree: Int64?
+        if retireImages != nil { state.recordStage("retire-images"); persistResult() }
+        let retirement = await retireImages?(cancellation)
+        guard self.generation == generation else { return }
+        state.removedObsoleteItems = retirement?.removed
+        if let before = retirement?.hostAvailableBefore, let after = retirement?.hostAvailableAfter {
+            state.observedHostFreeDelta = after - before
+        }
+        if retirement?.incomplete == true { state.recordDiagnostic("image-retirement-incomplete") }
+        var refreshNeeded = (retirement?.removed ?? 0) > 0
+        guard let adapter else {
+            state.coveredSourceCount = 0
+            state.phase = cancellation.isCancelled ? .cancelled
+                : (retirement?.incomplete == true || bootstrapFailure != nil ? .blocked : .completed)
+            finish(generation: generation)
+            if refreshNeeded { await settled() }
+            return
+        }
+        var firstHostFree = retirement?.hostAvailableBefore
+        var lastHostFree = retirement?.hostAvailableAfter
         do {
             let recovery: RuntimeV2MaintenanceRecoveryReport
             if let completedRecovery {
@@ -522,7 +560,7 @@ final class StorageOptimizationService: ObservableObject {
                 recovery = await recover(adapter: adapter, cancellation: cancellation, generation: generation)
             }
             guard self.generation == generation else { return }
-            refreshNeeded = Self.recoveryNeedsRefresh(recovery)
+            refreshNeeded = refreshNeeded || Self.recoveryNeedsRefresh(recovery)
             if cancellation.isCancelled {
                 state.recordResult(code: "cancelled")
                 if recovery.outcome == .blocked { state.recordDiagnostic("recovery-pending") }
@@ -550,22 +588,28 @@ final class StorageOptimizationService: ObservableObject {
             let repairCandidates = report.records.filter {
                 $0.isReviewableForBytePreservingMaintenance
                     && $0.relativeDirectory.hasPrefix("recovery/quarantine/runtime-vm-")
+                    && (retirement == nil || !RuntimeV2ObsoleteRISCVCatalog.isObsoleteImageID($0.recordedBaseImageID ?? ""))
             }
             var candidates = repairCandidates.map(StorageOptimizationCandidate.repair)
             var migrationBlocked = 0
+            var migrationInventoryFailed = false
             do {
                 let migrations = try await adapter.migrationInventory()
                 state.migrationRecordCount = migrations.records.count + migrations.blockedPaths
                 state.migrationBlockedCount = migrations.blockedPaths
                 migrationBlocked = migrations.blockedPaths
                 for code in migrations.codes { state.recordDiagnostic(code) }
-                candidates.append(contentsOf: migrations.records.map(StorageOptimizationCandidate.migration))
+                let eligible = migrations.records.filter {
+                    retirement == nil || !RuntimeV2ObsoleteRISCVCatalog.isObsoleteImageID($0.target.imageID)
+                }
+                migrationBlocked += migrations.records.count - eligible.count
+                candidates.append(contentsOf: eligible.map(StorageOptimizationCandidate.migration))
             } catch {
                 // New migration proof is opt-in and does not turn existing
                 // repair records into fake migration records or erase their
                 // receipts. Unknown migration state stays untouched.
-                migrationBlocked = 6
-                state.migrationRecordCount = 6; state.migrationBlockedCount = 6
+                migrationInventoryFailed = true
+                state.migrationRecordCount = nil; state.migrationBlockedCount = nil
                 state.recordDiagnostic("migration_inventory_unavailable")
             }
             // Observation only: this does not broaden the existing candidate
@@ -589,7 +633,6 @@ final class StorageOptimizationService: ObservableObject {
                 let attempt = state.attempted
                 state.recordStage("disk-admission")
                 persistResult()
-                refreshNeeded = true
                 let progressGate = StorageOptimizationProgressGate()
                 let onProgress: @Sendable (StorageSparseDiskRewriteProgress) -> Void = { [weak self] progress in
                     guard progressGate.accepts(progress) else { return }
@@ -617,6 +660,7 @@ final class StorageOptimizationService: ObservableObject {
                     result = await adapter.optimizeMigration(value, cancellation: cancellation, progress: onProgress)
                 }
                 guard self.generation == generation else { return }
+                refreshNeeded = refreshNeeded || result.report != nil || result.recoveryPending
                 state.recordResult(code: result.code, diagnosticCodes: result.diagnosticCodes,
                     verifiedUnchanged: result.verifiedUnchanged)
                 state.recordCandidateDisposition(result.candidateDisposition)
@@ -647,7 +691,8 @@ final class StorageOptimizationService: ObservableObject {
                 if !difference.overflow { state.observedHostFreeDelta = difference.partialValue }
             }
             if state.phase != .blocked {
-                state.phase = cancellation.isCancelled ? .cancelled : (migrationBlocked > 0 ? .blocked : .completed)
+                state.phase = cancellation.isCancelled ? .cancelled
+                    : (migrationBlocked > 0 || migrationInventoryFailed || retirement?.incomplete == true ? .blocked : .completed)
             }
         } catch {
             state.phase = cancellation.isCancelled || error is CancellationError ? .cancelled : .blocked
@@ -805,6 +850,7 @@ final class StorageOptimizationService: ObservableObject {
             "optimization_finished_at: \(date(value.finishedAt))", "optimization_phase: \(value.phase.rawValue)",
             "optimization_attempted: \(count(value.attempted))", "optimization_optimized: \(count(value.optimized))",
             "optimization_skipped: \(count(value.skipped))"]
+        lines.append("optimization_removed_obsolete_items: " + optionalCount(value.removedObsoleteItems))
         // Include pre-inventory and adapter failures before the early return.
         // All strings come from the closed vocabulary; attributed values,
         // NSError text, paths and disk identities are never exported.

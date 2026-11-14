@@ -203,5 +203,54 @@ struct StorageExtentAppProbeTests {
         )
         #expect(result == .failed(.notRegularFile))
     }
+
+    /// Build 347 device shape: the real runtime answers for the large image
+    /// while ONE unrelated file reports a compressed mapping. The union must
+    /// keep the measured stream and label the compressed file's allocation as
+    /// a bounded residual instead of discarding every mapping.
+    @Test func compressedFixtureKeepsMeasuredUnionAsPartial() throws {
+        let root = try fixturesRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let base = root.appendingPathComponent("base.img")
+        let clone = root.appendingPathComponent("clone.img")
+        let compressed = root.appendingPathComponent("tiny.plist")
+        try writePattern(base, size: 1 << 20, seed: 0x21)
+        #expect(clonefile(base.path, clone.path, 0) == 0)
+        try writePattern(compressed, size: 4_096, seed: 0x01)
+        let compressedAllocated = allocatedBytes(compressed)
+
+        let probe = StorageExtentProbe { path, device, inode, remaining, cancelled in
+            if path.hasSuffix("tiny.plist") { return .failed(.compressedMapping) }
+            return StorageExtentProbeReader.read(
+                path: path,
+                expectedDevice: device,
+                expectedInode: inode,
+                remaining: remaining,
+                isCancelled: cancelled
+            )
+        }
+        let census = try StorageCensus(
+            roots: [StorageCensusRoot(id: "linuxDisks", url: root, potentiallyCloned: true)],
+            metricLabel: "test.app-extent.partial",
+            extentProbe: probe
+        ).run()
+        let union = try #require(census.extentUnion)
+        #expect(census.diagnostics.extentBasis == .partial)
+        #expect(census.diagnostics.extentUnavailableReason == nil)
+        #expect(union.firstUnmeasuredReason == .compressedMapping)
+        #expect(union.unmeasuredFileCount == 1)
+        #expect(union.residualBytes == compressedAllocated)
+        // The full clone is deduplicated before probing, so exactly one
+        // 1 MiB stream is measured and the compressed file only adds its own
+        // allocation.
+        #expect(union.measuredBytes == allocatedBytes(base))
+        #expect(union.totalBytes == union.measuredBytes + compressedAllocated)
+        #expect(union.categoryBytes.values.reduce(Int64(0), +) + union.unattributedBytes == union.totalBytes)
+        let report = StorageReportBuilder.build(census: census, bundleBytes: 0)
+        let categorySum = report.categories.reduce(Int64(0)) { $0 + $1.basisBytes }
+            + (report.unattributed?.basisBytes ?? 0)
+        #expect(categorySum == report.totals.dataBytes)
+        #expect(report.totals.totalBytes == union.totalBytes)
+    }
 }
 #endif

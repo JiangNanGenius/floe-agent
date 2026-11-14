@@ -694,6 +694,11 @@ public struct LinuxGuestTrustedImage: Sendable, Equatable {
 }
 
 public enum LinuxGuestImageDistributionCatalog {
+    /// This guest architecture was retired before the store release. These
+    /// identifiers remain readable solely to retire historical installations.
+    public static func isRetiredImage(id: String) -> Bool {
+        RuntimeV2ObsoleteRISCVCatalog.isObsoleteImageID(id)
+    }
     /// New resident disks use the current release. Retained disks resolve
     /// their original, separately pinned image instead of following this preference.
     ///
@@ -920,6 +925,9 @@ public actor LinuxGuestImageInstallationService {
     /// `CancellationError` and caches nothing; `status(id:)` keeps the
     /// non-throwing contract for UI/CLI readers that have no cancel signal.
     public func status(id: String, isCancelled: (@Sendable () -> Bool)?) async throws -> ImageStatus {
+        if LinuxGuestImageDistributionCatalog.isRetiredImage(id: id) {
+            return ImageStatus(id: id, installed: false, verificationIssue: nil, image: nil, distributable: false)
+        }
         let image = loadManifest(id: id)
         var issue: LinuxImageVerificationIssue?
         if let image {
@@ -1324,10 +1332,9 @@ public actor LinuxGuestImageInstallationService {
         }
     }
 
-    /// Fixed App-owned launch/upgrade maintenance, independent of model tools.
-    /// Never visits installed images, environments, resident or recovery disks.
-    public func cleanupUpgradeResidue() async -> LinuxGuestUpgradeResidueReport {
-        await stagingOwner.cleanup(build: LinuxGuestImageStagingOwner.currentBuild)
+    /// Retires transfer scratch and retired-architecture installer images.
+    public func cleanupUpgradeResidue(isCancelled: @escaping @Sendable () -> Bool = { Task.isCancelled }) async -> LinuxGuestUpgradeResidueReport {
+        await stagingOwner.cleanup(build: LinuxGuestImageStagingOwner.currentBuild, isCancelled: isCancelled)
     }
 
     public func latestUpgradeResidueReport() async -> LinuxGuestUpgradeResidueReport? {
@@ -1364,7 +1371,7 @@ public actor LinuxGuestImageInstallationService {
         fileManager: FileManager,
         onPhase: (@Sendable (LinuxGuestImageTransferPhase) -> Void)? = nil,
         isCancelled: (@Sendable () -> Bool)? = nil,
-        ownedStage: LinuxImageOwnedStage? = nil
+        ownedStage: LinuxImageOwnedStage
     ) async throws -> LinuxGuestImage {
         let candidate: URL
         if fileManager.fileExists(atPath: staging.appendingPathComponent("manifest.json").path) {
@@ -1383,6 +1390,11 @@ public actor LinuxGuestImageInstallationService {
         guard let data = try? Data(contentsOf: manifestURL),
               let image = try? JSONDecoder().decode(LinuxGuestImage.self, from: data) else {
             throw LinuxGuestImageInstallError.manifestMissing(manifestURL.path)
+        }
+        try LinuxImageStageIO.validate(image.id)
+        guard !image.id.hasPrefix("."),
+              !LinuxGuestImageDistributionCatalog.isRetiredImage(id: image.id) else {
+            throw LinuxGuestImageInstallError.noDistributableImage(id: image.id, detail: "unsupported guest image")
         }
         // Reject symlinks anywhere in the staged image: an artifact symlink
         // could otherwise make the verified bytes differ from the booted ones.
@@ -1423,20 +1435,28 @@ public actor LinuxGuestImageInstallationService {
             throw LinuxGuestImageInstallError.cancelled
         }
         onPhase?(.finalizing)
-        if let ownedStage {
-            try await stagingOwner.markPromotion(ownedStage, candidate: candidate, imageID: image.id)
+        guard let images = try LinuxImageStageIO.images(root: root, create: false) else {
+            throw LinuxImageStageError.unsafe
         }
-        let destination = imagesRoot.appendingPathComponent(image.id, isDirectory: true)
-        let trash = imagesRoot.appendingPathComponent(".trash-\(UUID().uuidString)", isDirectory: true)
-        let hadPrevious = fileManager.fileExists(atPath: destination.path)
-        if hadPrevious { try fileManager.moveItem(at: destination, to: trash) }
-        do {
-            try fileManager.moveItem(at: candidate, to: destination)
-        } catch {
-            if hadPrevious { try? fileManager.moveItem(at: trash, to: destination) }
-            throw error
+        defer { _ = Darwin.close(images) }
+        let previous = try LinuxImageStageIO.observe(image.id, in: images)
+        guard previous == nil || previous?.isDirectory == true else { throw LinuxImageStageError.unsafe }
+        try await stagingOwner.markPromotion(ownedStage, candidate: candidate, imageID: image.id, replacing: previous)
+        let parent = open(candidate.deletingLastPathComponent().path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard parent >= 0 else { throw LinuxImageStageError.io(errno) }
+        defer { _ = Darwin.close(parent) }
+        guard flock(images, LOCK_EX | LOCK_NB) == 0 else { throw LinuxImageStageError.busy }
+        defer { _ = flock(images, LOCK_UN) }
+        if isCancelled?() == true { throw LinuxGuestImageInstallError.cancelled }
+        guard try LinuxImageStageIO.observe(image.id, in: images) == previous else { throw LinuxImageStageError.busy }
+        // The verified candidate and previous installation swap in one atomic
+        // operation. The displaced image now belongs to the journaled job and
+        // can be removed by finish(), including after an interrupted launch.
+        let flags = UInt32(previous == nil ? RENAME_EXCL : RENAME_SWAP)
+        guard renameatx_np(parent, candidate.lastPathComponent, images, image.id, flags) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
-        if hadPrevious { try? fileManager.removeItem(at: trash) }
+        guard fsync(parent) == 0, fsync(images) == 0 else { throw LinuxImageStageError.io(errno) }
         await verifier.invalidate(id: image.id)
         FloeLogger(category: .tools).info("Linux guest image imported id=\(image.id) qualifiedRun=\(image.qualificationRun ?? "-")")
         return image

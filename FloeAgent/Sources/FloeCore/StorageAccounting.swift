@@ -113,8 +113,10 @@ public struct StorageScanDiagnostics: Sendable, Equatable, Codable {
     public var measuredPrivateBytes: Int64
     /// Whether the measured physical-extent basis was collected in this scan.
     public var extentBasis: StorageExtentBasisState
-    /// First failure that withheld the extent basis. Aggregate token only —
-    /// never a path, offset or file name.
+    /// Why the extent basis was withheld entirely. Aggregate token only —
+    /// never a path, offset or file name. This stays nil on a
+    /// ``StorageExtentBasisState/partial`` basis; the first per-file
+    /// unmeasured reason is carried by the published union summary.
     public var extentUnavailableReason: StorageExtentProbeFailure?
     /// Wall-clock duration of the scan.
     public var duration: TimeInterval
@@ -263,11 +265,14 @@ public struct StorageCensusReport: Sendable, Equatable, Codable {
     /// True when clone-backed roots were walked; allocated bytes are an upper
     /// estimate rather than an exact figure.
     public var isSharedAllocationEstimate: Bool
-    /// Measured union of the physical blocks referenced by the counted files
-    /// (public `fcntl(F_LOG2PHYS_EXT)` extents), present only when every
-    /// measured file — including the optional bundle root — answered
-    /// coherently. Nil keeps the accepted allocated basis; a partial union is
-    /// never published or subtracted.
+    /// Measured physical-block accounting for the counted files (public
+    /// `fcntl(F_LOG2PHYS_EXT)` extents). Present when at least one counted file
+    /// could be measured: it carries the exact union for every file that
+    /// answered plus a bounded residual allowance for files that could not be
+    /// measured (``StorageExtentBasisState/partial``). Nil when the basis was
+    /// not requested or no counted file could be measured; callers then keep
+    /// the accepted allocated basis. The union is never subtracted from the
+    /// allocated totals.
     public var extentUnion: StorageExtentUnionSummary? = nil
 
     /// True when the report's numeric totals may switch to the measured
@@ -535,20 +540,75 @@ public struct StorageCensus: Sendable {
         var dedupedCloneBytes: Int64 = 0
         var dedupedCloneFileCount = 0
 
-        // Measured physical-extent union (public fcntl F_LOG2PHYS_EXT). The
-        // union is all-or-nothing: any per-file failure, unsupported volume,
-        // anomalous mapping or budget overflow withholds it for the WHOLE
-        // snapshot, so the accepted allocated basis is kept unchanged and no
-        // partial union is ever subtracted.
+        // Measured physical-extent accounting (public fcntl F_LOG2PHYS_EXT).
+        // The exact union is kept for every file that answers; a file whose
+        // extents cannot be mapped contributes its measured allocation as a
+        // bounded residual allowance instead of discarding every successful
+        // mapping in the snapshot. `.available` therefore means the published
+        // total is the exact physical union, while `.partial` means it is the
+        // exact union plus an explicitly labelled upper allowance.
         var extentUnionBuilder = StorageExtentUnionBuilder(maxIntervals: extentBudget.maxIntervals)
-        var extentFailure: StorageExtentProbeFailure?
+        /// First per-file failure. It withholds the basis only when nothing
+        /// could be measured; otherwise it labels/annotates a partial basis.
+        var extentFirstFailure: StorageExtentProbeFailure?
+        /// Set when the optional bundle root could not be enumerated: the
+        /// installer share cannot be bounded, so the basis is withheld.
+        var extentBundleUnreadable = false
         var extentMeasuredFileCount = 0
         var extentTotalCalls = 0
         var extentBundleRequested = false
+        /// Allocated bytes of counted files whose extents were not measured,
+        /// kept per owner so category shares still reconcile with the total.
+        /// Never measured, never subtracted, may overlap the union.
+        var extentResidualBytes: Int64 = 0
+        var extentResidualByOwner: [Int32: Int64] = [:]
+        var extentUnmeasuredFileCount = 0
         let extentPassStart = Date()
 
-        func degradeExtentBasis(_ failure: StorageExtentProbeFailure) {
-            if extentFailure == nil { extentFailure = failure }
+        /// Files at or above this allocated size are probed in a deferred,
+        /// size-ordered pass so a few huge VM disks/images are measured before
+        /// an unbounded tail of unrelated small files can spend the budget.
+        let extentPriorityThresholdBytes: Int64 = 8 * 1024 * 1024
+        /// Bounded queue (~a few MB at the cap) so a pathological tree cannot
+        /// hold an unbounded path list; overflow becomes a labelled residual.
+        let extentDeferredCandidateLimit = 16_384
+        struct ExtentCandidate {
+            let path: String
+            let owner: Int32
+            let device: UInt64?
+            let inode: UInt64?
+            let allocatedBytes: Int64
+        }
+        var deferredExtentCandidates: [ExtentCandidate] = []
+
+        /// Inline small-file probing may use the whole budget until a large
+        /// file is seen; from then on it is capped so half of the remaining
+        /// calls/time/intervals stays reserved for the size-ordered pass.
+        var inlineCallLimit: Int?
+        var inlineDeadline: Date?
+        var inlineIntervalLimit: Int?
+
+        func reserveExtentBudgetForPrioritizedFiles() {
+            guard inlineCallLimit == nil else { return }
+            let now = Date()
+            let remainingCalls = max(0, extentBudget.maxTotalCalls - extentTotalCalls)
+            inlineCallLimit = extentTotalCalls + max(1, remainingCalls / 2)
+            let remainingTime = max(0, extentBudget.maxDuration - now.timeIntervalSince(extentPassStart))
+            inlineDeadline = now.addingTimeInterval(remainingTime / 2)
+            let remainingIntervals = max(0, extentBudget.maxIntervals - extentUnionBuilder.intervalCount)
+            inlineIntervalLimit = extentUnionBuilder.intervalCount + max(1, remainingIntervals / 2)
+        }
+
+        func noteUnmeasuredExtent(
+            owner: Int32,
+            allocatedBytes: Int64,
+            failure: StorageExtentProbeFailure
+        ) {
+            if extentFirstFailure == nil { extentFirstFailure = failure }
+            extentUnmeasuredFileCount += 1
+            let bytes = max(0, allocatedBytes)
+            extentResidualBytes += bytes
+            extentResidualByOwner[owner, default: 0] += bytes
         }
 
         /// Snapshot-level bounds for the NEXT file's walk. The reader enforces
@@ -561,16 +621,91 @@ public struct StorageCensus: Sendable {
             )
         }
 
-        func extentBudgetAllowsAnotherCall() -> Bool {
-            if Date().timeIntervalSince(extentPassStart) > extentBudget.maxDuration {
-                degradeExtentBasis(.budgetExceeded)
-                return false
-            }
-            if extentTotalCalls >= extentBudget.maxTotalCalls {
-                degradeExtentBasis(.budgetExceeded)
+        func extentBudgetExhausted() -> Bool {
+            if Date().timeIntervalSince(extentPassStart) > extentBudget.maxDuration { return true }
+            if extentTotalCalls >= extentBudget.maxTotalCalls { return true }
+            return false
+        }
+
+        /// Bounds for one inline small-file probe under the reserved budget.
+        func inlineExtentRemainingBudget() -> StorageExtentRemainingBudget {
+            let callCap = min(extentBudget.maxTotalCalls, inlineCallLimit ?? Int.max)
+            let deadlineCap = min(
+                extentPassStart.addingTimeInterval(extentBudget.maxDuration),
+                inlineDeadline ?? .distantFuture
+            )
+            return StorageExtentRemainingBudget(
+                maxCalls: max(0, callCap - extentTotalCalls),
+                deadline: deadlineCap
+            )
+        }
+
+        func inlineExtentProbeAllowed() -> Bool {
+            if let inlineCallLimit, extentTotalCalls >= inlineCallLimit { return false }
+            if let inlineDeadline, Date() > inlineDeadline { return false }
+            if let inlineIntervalLimit, extentUnionBuilder.intervalCount >= inlineIntervalLimit {
                 return false
             }
             return true
+        }
+
+        // The app bundle is measured into the same union whenever requested:
+        // reserve half of the budget for its size-ordered pass even when no
+        // large data file is seen, so the installer share is not the part that
+        // starves.
+        if extentProbe != nil, bundleMeasurementURL != nil {
+            reserveExtentBudgetForPrioritizedFiles()
+        }
+
+        /// Measures one counted file and either adds its runs to the exact
+        /// union or records its allocation as a bounded residual. Throws only
+        /// on cancellation. `chargesGlobalBudget` is false for the inline
+        /// small-file allowance: a file that exceeds its reserved share must
+        /// not consume the budget kept for the size-ordered large-file pass.
+        func measureExtent(
+            path: String,
+            owner: Int32,
+            device: UInt64?,
+            inode: UInt64?,
+            allocatedBytes: Int64,
+            remaining: StorageExtentRemainingBudget,
+            chargesGlobalBudget: Bool
+        ) throws {
+            guard let extentProbe else { return }
+            switch extentProbe.read(path, device, inode, remaining, isCancelled) {
+            case .measured(let measurement):
+                extentTotalCalls += measurement.callCount
+                if extentUnionBuilder.add(runs: measurement.runs, owner: owner) {
+                    extentMeasuredFileCount += 1
+                } else {
+                    noteUnmeasuredExtent(
+                        owner: owner, allocatedBytes: allocatedBytes, failure: .budgetExceeded
+                    )
+                }
+            case .unsupported:
+                noteUnmeasuredExtent(
+                    owner: owner, allocatedBytes: allocatedBytes, failure: .unsupportedFilesystem
+                )
+            case .failed(.cancelled):
+                throw StorageCensusError.cancelled
+            case .failed(let failure):
+                if failure == .budgetExceeded {
+                    if chargesGlobalBudget {
+                        // The reader stopped inside its per-offset loop; the
+                        // calls it consumed are unknown. Charge the whole
+                        // remaining allowance so a run of partially consumed
+                        // walks cannot exceed the snapshot budget.
+                        extentTotalCalls = extentBudget.maxTotalCalls
+                    } else {
+                        // The reserved inline share is spent; stop spending it
+                        // and leave the rest for large files.
+                        inlineCallLimit = extentTotalCalls
+                    }
+                }
+                noteUnmeasuredExtent(
+                    owner: owner, allocatedBytes: allocatedBytes, failure: failure
+                )
+            }
         }
 
         for tree in trees {
@@ -712,35 +847,49 @@ public struct StorageCensus: Sendable {
 
                 // Measured physical extents for every counted regular file,
                 // including zero-length ones: a zero-length inode that still
-                // holds allocated blocks (resource fork) must fail the basis
-                // instead of being silently omitted from the union. Pure
-                // full-clone duplicates are skipped because their runs are
-                // identical to the stream already claimed, so the union is
-                // unchanged. Hard links never reach this point twice (identity
-                // dedup above), and even if identity were unavailable the
-                // union would still deduplicate their identical runs by
-                // physical overlap — the allocated basis and the extent basis
-                // each count every block once and neither subtracts the other.
-                if let extentProbe, !dedupedCloneStream, extentFailure == nil,
-                   extentBudgetAllowsAnotherCall() {
-                    switch extentProbe.read(
-                        path, identity?.device, identity?.inode,
-                        extentRemainingBudget(), isCancelled
-                    ) {
-                    case .measured(let measurement):
-                        extentMeasuredFileCount += 1
-                        extentTotalCalls += measurement.callCount
-                        if !extentUnionBuilder.add(
-                            runs: measurement.runs, owner: Int32(attributionIndex)
-                        ) {
-                            degradeExtentBasis(.budgetExceeded)
-                        }
-                    case .unsupported:
-                        degradeExtentBasis(.unsupportedFilesystem)
-                    case .failed(.cancelled):
-                        throw StorageCensusError.cancelled
-                    case .failed(let failure):
-                        degradeExtentBasis(failure)
+                // holds allocated blocks (resource fork) becomes a residual
+                // instead of being silently omitted. Pure full-clone
+                // duplicates are skipped because their runs are identical to
+                // the stream already claimed, so neither the union nor the
+                // residual double sums that family. Hard links never reach
+                // this point twice (identity dedup above).
+                if extentProbe != nil, !dedupedCloneStream {
+                    if allocated.bytes >= extentPriorityThresholdBytes,
+                       deferredExtentCandidates.count < extentDeferredCandidateLimit {
+                        // Large files are measured in the size-ordered pass;
+                        // reserve half of what is left for them now.
+                        reserveExtentBudgetForPrioritizedFiles()
+                        deferredExtentCandidates.append(ExtentCandidate(
+                            path: path,
+                            owner: Int32(attributionIndex),
+                            device: identity?.device,
+                            inode: identity?.inode,
+                            allocatedBytes: allocated.bytes
+                        ))
+                    } else if extentBudgetExhausted() {
+                        noteUnmeasuredExtent(
+                            owner: Int32(attributionIndex),
+                            allocatedBytes: allocated.bytes,
+                            failure: .budgetExceeded
+                        )
+                    } else if inlineExtentProbeAllowed() {
+                        try measureExtent(
+                            path: path,
+                            owner: Int32(attributionIndex),
+                            device: identity?.device,
+                            inode: identity?.inode,
+                            allocatedBytes: allocated.bytes,
+                            remaining: inlineExtentRemainingBudget(),
+                            chargesGlobalBudget: false
+                        )
+                    } else {
+                        // The inline allowance is reserved for the large-file
+                        // pass; this small file joins the bounded residual.
+                        noteUnmeasuredExtent(
+                            owner: Int32(attributionIndex),
+                            allocatedBytes: allocated.bytes,
+                            failure: .budgetExceeded
+                        )
                     }
                 }
                 if dedupedCloneStream {
@@ -767,96 +916,170 @@ public struct StorageCensus: Sendable {
             diagnostics.errorCount += errorCounter.value
         }
 
-        // Optional app-bundle measurement into the SAME union. The bundle
-        // lives outside every data root, so a resource cloned from the bundle
-        // into Documents would otherwise be counted twice once the installer
-        // figure is added to a data-only union. Only runs while the basis is
-        // still coherent; any unreadable bundle entry withholds the union
-        // instead of publishing a known-double-counted total.
-        if let extentProbe, extentFailure == nil, let bundleMeasurementURL {
-            extentBundleRequested = true
-            if isCancelled() { throw StorageCensusError.cancelled }
-            if !manager.fileExists(atPath: bundleMeasurementURL.path) {
-                degradeExtentBasis(.bundleUnreadable)
-            } else {
-                let bundleErrorCounter = ErrorCounter()
-                if let bundleEnumerator = manager.enumerator(
-                    at: bundleMeasurementURL,
-                    includingPropertiesForKeys: Array(Self.resourceKeys),
-                    options: [],
-                    errorHandler: { _, _ in
-                        bundleErrorCounter.increment()
-                        return true
-                    }
-                ) {
-                    for case let itemURL as URL in bundleEnumerator {
-                        if isCancelled() { throw StorageCensusError.cancelled }
-                        guard extentFailure == nil else { break }
-                        guard let values = try? itemURL.resourceValues(forKeys: Self.resourceKeys) else {
-                            degradeExtentBasis(.bundleUnreadable)
-                            break
-                        }
-                        if values.isSymbolicLink == true || values.isDirectory == true { continue }
-                        guard values.isRegularFile == true else { continue }
-                        // Zero-length entries are probed too: an inode that
-                        // still holds allocated blocks must fail the basis
-                        // rather than be silently omitted.
-                        guard extentBudgetAllowsAnotherCall() else { break }
-                        switch extentProbe.read(
-                            itemURL.standardizedFileURL.path, nil, nil,
-                            extentRemainingBudget(), isCancelled
-                        ) {
-                        case .measured(let measurement):
-                            extentMeasuredFileCount += 1
-                            extentTotalCalls += measurement.callCount
-                            if !extentUnionBuilder.add(
-                                runs: measurement.runs, owner: StorageExtentOwner.bundle
-                            ) {
-                                degradeExtentBasis(.budgetExceeded)
-                            }
-                        case .unsupported:
-                            degradeExtentBasis(.unsupportedFilesystem)
-                        case .failed(.cancelled):
-                            throw StorageCensusError.cancelled
-                        case .failed(let failure):
-                            degradeExtentBasis(failure)
-                        }
-                    }
-                    if bundleErrorCounter.value > 0 {
-                        degradeExtentBasis(.bundleUnreadable)
-                    }
+        // Size-ordered extent pass. Large data files were deferred during the
+        // walk, and the optional app bundle is enumerated into the same queue
+        // so the installer and the data share are owned slices of ONE union.
+        // Probing largest-first keeps the costly VM disk/image sharing measured
+        // even when the CPU/time budget cannot cover every file; the rest is a
+        // bounded residual rather than a reason to discard every mapping.
+        if extentProbe != nil {
+            if let bundleMeasurementURL {
+                extentBundleRequested = true
+                if isCancelled() { throw StorageCensusError.cancelled }
+                let bundleURL = bundleMeasurementURL
+                if !manager.fileExists(atPath: bundleURL.path) {
+                    extentBundleUnreadable = true
                 } else {
-                    degradeExtentBasis(.bundleUnreadable)
+                    let bundleErrorCounter = ErrorCounter()
+                    if let bundleEnumerator = manager.enumerator(
+                        at: bundleURL,
+                        includingPropertiesForKeys: Array(Self.resourceKeys),
+                        options: [],
+                        errorHandler: { _, _ in
+                            bundleErrorCounter.increment()
+                            return true
+                        }
+                    ) {
+                        for case let itemURL as URL in bundleEnumerator {
+                            if isCancelled() { throw StorageCensusError.cancelled }
+                            guard let values = try? itemURL.resourceValues(forKeys: Self.resourceKeys) else {
+                                // An unreadable bundle entry means its
+                                // allocation cannot be bounded; the installer
+                                // share cannot be claimed.
+                                extentBundleUnreadable = true
+                                break
+                            }
+                            if values.isSymbolicLink == true || values.isDirectory == true { continue }
+                            guard values.isRegularFile == true else { continue }
+                            let bundlePath = itemURL.standardizedFileURL.path
+                            let bundleIdentity = Self.fileIdentity(at: itemURL)
+                            // The installer and the data container share ONE
+                            // counted set: an inode already counted by the
+                            // data walk (hard link / overlapping root) or an
+                            // earlier bundle entry must not add its
+                            // allocation again.
+                            if let bundleIdentity {
+                                if claimedIdentity[bundleIdentity] != nil { continue }
+                                claimedIdentity[bundleIdentity] = Int(StorageExtentOwner.bundle)
+                            }
+                            // Apply the same full-clone-stream dedup used for
+                            // data files so an unmeasured bundle clone cannot
+                            // add a residual for a family already counted.
+                            // Provider failures are ignored here: bundle files
+                            // are not part of the data total or the private
+                            // lower bound, and the union still deduplicates
+                            // measured runs by physical overlap.
+                            if let cloneAttributeProvider,
+                               case .attributes(let attributes) = cloneAttributeProvider(bundlePath),
+                               attributes.sharesAllBlocks, attributes.cloneID != 0,
+                               let volumeIdentity = cloneStreamVolumeProvider?(bundlePath)
+                                   ?? bundleIdentity?.device {
+                                let streamKey = CloneStreamKey(
+                                    device: volumeIdentity, cloneID: attributes.cloneID
+                                )
+                                if claimedCloneStreams.contains(streamKey) { continue }
+                                claimedCloneStreams.insert(streamKey)
+                            }
+                            let allocated = Self.allocatedMeasurement(at: itemURL, values: values)
+                            if deferredExtentCandidates.count >= extentDeferredCandidateLimit {
+                                noteUnmeasuredExtent(
+                                    owner: StorageExtentOwner.bundle,
+                                    allocatedBytes: allocated.bytes,
+                                    failure: .budgetExceeded
+                                )
+                                continue
+                            }
+                            deferredExtentCandidates.append(ExtentCandidate(
+                                path: bundlePath,
+                                owner: StorageExtentOwner.bundle,
+                                device: bundleIdentity?.device,
+                                inode: bundleIdentity?.inode,
+                                allocatedBytes: allocated.bytes
+                            ))
+                        }
+                        if bundleErrorCounter.value > 0 {
+                            extentBundleUnreadable = true
+                        }
+                    } else {
+                        extentBundleUnreadable = true
+                    }
                 }
+            }
+
+            // Largest first. The path is used only as a deterministic tiebreak;
+            // it is never retained in a snapshot, log or export.
+            deferredExtentCandidates.sort {
+                if $0.allocatedBytes != $1.allocatedBytes {
+                    return $0.allocatedBytes > $1.allocatedBytes
+                }
+                return $0.path < $1.path
+            }
+            for candidate in deferredExtentCandidates {
+                if isCancelled() { throw StorageCensusError.cancelled }
+                if extentBudgetExhausted() {
+                    noteUnmeasuredExtent(
+                        owner: candidate.owner,
+                        allocatedBytes: candidate.allocatedBytes,
+                        failure: .budgetExceeded
+                    )
+                    continue
+                }
+                try measureExtent(
+                    path: candidate.path,
+                    owner: candidate.owner,
+                    device: candidate.device,
+                    inode: candidate.inode,
+                    allocatedBytes: candidate.allocatedBytes,
+                    remaining: extentRemainingBudget(),
+                    chargesGlobalBudget: true
+                )
             }
         }
 
-        // Publish the union only when every measured file answered
-        // coherently; otherwise the accepted allocated basis is retained and
-        // the reason is kept as an internal aggregate flag.
+        // Publish the exact union for every file that answered, plus the
+        // bounded residual of files that did not. The basis is withheld only
+        // when nothing could be measured (or the bundle share is unbounded);
+        // callers then keep the accepted allocated basis unchanged.
         var extentSummary: StorageExtentUnionSummary?
+        var withheldExtentFailure: StorageExtentProbeFailure?
         if extentProbe == nil {
             diagnostics.extentBasis = .notRequested
-        } else if let extentFailure {
-            diagnostics.extentBasis = .unavailable
-            diagnostics.extentUnavailableReason = extentFailure
+        } else if extentBundleUnreadable {
+            withheldExtentFailure = .bundleUnreadable
+        } else if extentMeasuredFileCount == 0, extentUnmeasuredFileCount > 0 {
+            withheldExtentFailure = extentFirstFailure ?? .unsupportedFilesystem
         } else {
             let union = extentUnionBuilder.finalize()
             var categoryBytes: [String: Int64] = [:]
             var unattributedExtentBytes: Int64 = 0
             var bundleExtentBytes: Int64? = extentBundleRequested ? 0 : nil
-            for (owner, bytes) in union.bytesByOwner where bytes > 0 {
+            func credit(owner: Int32, bytes: Int64) {
+                guard bytes > 0 else { return }
                 if owner >= 0, Int(owner) < buckets.count {
-                    categoryBytes[buckets[Int(owner)].id] = bytes
+                    categoryBytes[buckets[Int(owner)].id, default: 0] += bytes
                 } else if owner == StorageExtentOwner.unattributed {
                     unattributedExtentBytes += bytes
                 } else if owner == StorageExtentOwner.bundle {
                     bundleExtentBytes = (bundleExtentBytes ?? 0) + bytes
                 }
             }
-            diagnostics.extentBasis = .available
+            for (owner, bytes) in union.bytesByOwner {
+                credit(owner: owner, bytes: bytes)
+            }
+            // The residual is credited to the same owners so category shares
+            // and the published total reconcile on the mixed basis.
+            for (owner, bytes) in extentResidualByOwner {
+                credit(owner: owner, bytes: bytes)
+            }
+            diagnostics.extentBasis = (extentResidualBytes > 0 || extentUnmeasuredFileCount > 0)
+                ? .partial
+                : .available
             extentSummary = StorageExtentUnionSummary(
-                totalBytes: union.totalBytes,
+                totalBytes: union.totalBytes + extentResidualBytes,
+                measuredBytes: union.totalBytes,
+                residualBytes: extentResidualBytes,
+                unmeasuredFileCount: extentUnmeasuredFileCount,
+                firstUnmeasuredReason: extentFirstFailure,
                 bundleBytes: bundleExtentBytes,
                 unattributedBytes: unattributedExtentBytes,
                 categoryBytes: categoryBytes,
@@ -864,6 +1087,10 @@ public struct StorageCensus: Sendable {
                 callCount: extentTotalCalls,
                 intervalCount: union.intervalCount
             )
+        }
+        if let withheldExtentFailure {
+            diagnostics.extentBasis = .unavailable
+            diagnostics.extentUnavailableReason = withheldExtentFailure
         }
 
         diagnostics.dedupedCloneFileCount = dedupedCloneFileCount

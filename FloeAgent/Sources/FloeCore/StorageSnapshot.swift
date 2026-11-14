@@ -16,22 +16,30 @@
 //    discarded instead of serving flawed historical values.
 // 3. Byte semantics stay measured and honest: pure full-clone APFS streams are
 //    deduplicated exactly (public-SDK getattrlist clone-id +
-//    SHARES_ALL_BLOCKS), measured private bytes provide a lower bound, and
-//    clone-capable bytes that remain shared are an explicit non-additive
-//    figure — never silently subtracted, never presented as the app footprint.
+//    SHARES_ALL_BLOCKS), measured private bytes provide a lower bound, and the
+//    public `fcntl F_LOG2PHYS_EXT` union is exact for every file that answers.
+//    A file whose extents cannot be mapped keeps its allocated bytes as a
+//    bounded residual allowance (labelled, never subtracted), so one
+//    compressed file can no longer discard the sharing measured for huge VM
+//    disks. Clone-capable bytes that remain shared are an explicit
+//    non-additive figure — never silently subtracted, never presented as the
+//    app footprint.
 
 import Foundation
 
 /// Version of the accounting semantics. Bump whenever the meaning of the
 /// persisted numbers changes so older cached snapshots are discarded.
 public enum StorageAccountingVersion {
-    /// v4: measured physical-block union (public `fcntl F_LOG2PHYS_EXT`)
-    /// becomes the numeric basis when every measured file reconciles with
-    /// `st_blocks`, including the optional app-bundle root; the v3 clone-id
-    /// figure stays the fallback when the union cannot be collected. Snapshots
-    /// from v3 and earlier (allocated estimates only) are discarded ONCE so a
-    /// build upgrade cannot keep serving the old inflated total.
-    public static let current = "2026-10-16.extent-union.v4"
+    /// v5: a file whose extents cannot be mapped (compressed mapping, extra
+    /// fork, race, budget) no longer discards every successful mapping. The
+    /// snapshot keeps the exact physical union for measured files and adds a
+    /// bounded, explicitly labelled residual allowance for unmeasured ones;
+    /// the published total is then an upper bound rather than an exact union.
+    /// Large files are measured in a size-ordered pass before unrelated small
+    /// files can consume the budget. v4 snapshots (all-or-nothing union, which
+    /// fell back to the raw allocated sum on any compressed file) are
+    /// discarded ONCE so an upgraded device cannot keep serving them.
+    public static let current = "2026-11-15.extent-mixed.v5"
 }
 
 /// Resolved base directories. Injectable so tests (and other Floe components)
@@ -294,10 +302,11 @@ public struct StorageSnapshotKey: Sendable, Equatable {
 /// again. Contains category ids, counts and byte figures only — never file
 /// names, paths or contents.
 public struct StorageSnapshot: Codable, Equatable, Sendable {
-    /// 2: the census carries the optional measured-extent union and the
-    /// extent-basis diagnostics; schema 1 snapshots are discarded by
+    /// 3: the snapshot's extent union carries the mixed coverage (exact
+    /// measured union + bounded residual allowance) and its first unmeasured
+    /// reason. Schema 1/2 snapshots are discarded by
     /// ``StorageSnapshotStore/load(key:)`` (decoding fails closed).
-    public static let currentSchemaVersion = 2
+    public static let currentSchemaVersion = 3
 
     public let schemaVersion: Int
     public let accountingVersion: String

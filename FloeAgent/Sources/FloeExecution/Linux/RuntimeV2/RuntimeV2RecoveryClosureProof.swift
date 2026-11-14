@@ -164,23 +164,27 @@ public actor RuntimeV2RecoveryClosureAuthority {
         domain: RuntimeV2MaintenanceDomain, selected: RuntimeV2DiskIdentity?
     ) throws -> (slots: Int, metadata: Int) {
         #if canImport(Darwin)
-        // Public APIs only. A large/unsupported table or a slow/unreadable
-        // observation is UNKNOWN, never an empty-success answer.
         let maximumSlots = 16_384
         let maximumSeconds: TimeInterval = 3
         var limit = rlimit()
-        guard getrlimit(RLIMIT_NOFILE, &limit) == 0,
-              limit.rlim_cur > 0, limit.rlim_cur <= UInt64(maximumSlots) else {
+        guard getrlimit(RLIMIT_NOFILE, &limit) == 0, limit.rlim_cur > 0 else {
             throw RuntimeV2MaintenanceError.ownerEvidenceIncomplete(["fd_table_bound_unknown"])
         }
         let started = ProcessInfo.processInfo.systemUptime
+        // A high process limit is common on macOS and in Simulator. The kernel's
+        // descriptor directory enumerates open slots even when their numbers are sparse.
+        let descriptors: [Int32]
+        if limit.rlim_cur > UInt64(maximumSlots) {
+            descriptors = try openDescriptors(maximum: maximumSlots, deadline: started + maximumSeconds)
+        } else {
+            descriptors = Array(0..<Int32(limit.rlim_cur))
+        }
         let prefix = RuntimeV2RecoveryAdmission.key(domain.root) + "/"
         var metadata = 0
-        for number in 0..<Int(limit.rlim_cur) {
+        for fd in descriptors {
             guard ProcessInfo.processInfo.systemUptime - started < maximumSeconds else {
                 throw RuntimeV2MaintenanceError.ownerEvidenceIncomplete(["fd_audit_time_budget"])
             }
-            let fd = Int32(number)
             var info = stat()
             if fstat(fd, &info) != 0 {
                 if errno == EBADF { continue }
@@ -228,11 +232,34 @@ public actor RuntimeV2RecoveryClosureAuthority {
             }
             throw RuntimeV2MaintenanceError.ownerEvidenceIncomplete(["legacy_native_fd_still_open"])
         }
-        return (Int(limit.rlim_cur), metadata)
+        return (descriptors.count, metadata)
         #else
         throw RuntimeV2MaintenanceError.ownerEvidenceIncomplete(["fd_audit_unsupported"])
         #endif
     }
+
+    #if canImport(Darwin)
+    private static func openDescriptors(maximum: Int, deadline: TimeInterval) throws -> [Int32] {
+        let incomplete = RuntimeV2MaintenanceError.ownerEvidenceIncomplete(["fd_table_bound_unknown"])
+        guard let directory = opendir("/dev/fd") else { throw incomplete }
+        defer { closedir(directory) }
+        var result: [Int32] = []
+        while ProcessInfo.processInfo.systemUptime < deadline {
+            errno = 0
+            guard let entry = readdir(directory) else {
+                guard errno == 0, result.contains(dirfd(directory)) else { throw incomplete }
+                return result
+            }
+            let name = withUnsafeBytes(of: entry.pointee.d_name) {
+                String(decoding: $0.prefix(Int(entry.pointee.d_namlen)), as: UTF8.self)
+            }
+            if name == "." || name == ".." { continue }
+            guard let fd = Int32(name), fd >= 0, result.count < maximum else { throw incomplete }
+            result.append(fd)
+        }
+        throw RuntimeV2MaintenanceError.ownerEvidenceIncomplete(["fd_audit_time_budget"])
+    }
+    #endif
 }
 
 // Small service-owned receipts live OUTSIDE maintained bytes. No enumeration,

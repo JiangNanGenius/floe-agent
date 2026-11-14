@@ -86,7 +86,7 @@
     },
     {
       "path": "Bridge/embedded_internal.h",
-      "sha256": "be0613c94218db18c6a95bb69c76827e4c3703a6d08bcd048b5de25f9a4cb773"
+      "sha256": "f8b4b91b33c903b7eb85d999a2913a6a88e435495a2d10b0b718a734ed1dbba4"
     },
     {
       "path": "Bridge/host_hooks.h",
@@ -114,7 +114,7 @@
     },
     {
       "path": "Bridge/runtime.c",
-      "sha256": "a937c38947f0d8e3d8a8f0cf53d999beb07269f0e9c13e637538a7d4b31bcf8c"
+      "sha256": "52f428bd298755375736c0bfcb8b413888c98eec6dd1f6a767a534305a684bf3"
     },
     {
       "path": "Bridge/virtio_gpu_backend.h",
@@ -494,11 +494,11 @@
     },
     {
       "path": "include/floe_arm64emu.h",
-      "sha256": "676163ea865e64568cce3d9d32012e4b2031e05cd4cff56de0f0ed78ca7c8a08"
+      "sha256": "2bfb84fd20a627a20de4424a87e19050e98d03096b34c0da098d7aefaf532501"
     },
     {
       "path": "Bridge/fvgpu_virtio_backend_adapter.c",
-      "sha256": "5805104d58cef619d1f268616e89ff59af2837560a24cab5c9b98734015384b4"
+      "sha256": "c7f6d7f68eb2f1e73e69cc828474561775340381ebeeee306c7e7bf8eca76e9e"
     },
     {
       "path": "Sources/33_gpu_backend_adapter.c",
@@ -759,7 +759,7 @@
     "adapterOwner": "FloeARM64Engine",
     "adapterPath": "Bridge/fvgpu_virtio_backend_adapter.c",
     "wrapperPath": "Sources/33_gpu_backend_adapter.c",
-    "adapterSHA256": "5805104d58cef619d1f268616e89ff59af2837560a24cab5c9b98734015384b4",
+    "adapterSHA256": "c7f6d7f68eb2f1e73e69cc828474561775340381ebeeee306c7e7bf8eca76e9e",
     "sessionAPIOwner": "FloeVirtualGPU",
     "adapterLicense": "Apache-2.0",
     "existingComponentQualification": "The 33-unit qualification below predates adapter ownership migration and remains historical evidence."

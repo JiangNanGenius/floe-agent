@@ -46,20 +46,32 @@ final class LinuxGuestUpgradeResidueTests: XCTestCase {
         return try XCTUnwrap(LinuxImageStageIO.observe(name, in: directory))
     }
 
-    func testHistoricalDownloadsImportsTrashAndAllInstalledDataAreRetained() async throws {
+    func testHistoricalTransferScratchAndRetiredGuestAreUnlinkedOnce() async throws {
         try FileManager.default.createDirectory(at: images, withIntermediateDirectories: true)
         var sentinels: [URL: Data] = [:]
+        var retired: [URL] = []
         for index in 0..<5 {
             let url = images.appendingPathComponent(".download-\(UUID().uuidString).zip")
             let bytes = Data(repeating: UInt8(index + 1), count: 4_096)
-            try bytes.write(to: url); sentinels[url] = bytes
+            try bytes.write(to: url); retired.append(url)
         }
         for index in 0..<3 {
             let directory = images.appendingPathComponent(".import-\(UUID().uuidString)")
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let url = directory.appendingPathComponent("disk.img")
-            let bytes = Data([UInt8(index)]); try bytes.write(to: url); sentinels[url] = bytes
+            let bytes = Data([UInt8(index)]); try bytes.write(to: url); retired.append(directory)
         }
+        let obsolete = images.appendingPathComponent("floe-debian13-riscv64-test")
+        try FileManager.default.createDirectory(at: obsolete, withIntermediateDirectories: true)
+        try Data(#"{"id":"floe-debian13-riscv64-test"}"#.utf8).write(to: obsolete.appendingPathComponent("manifest.json"))
+        try Data([1, 2, 3]).write(to: obsolete.appendingPathComponent("disk.img"))
+        retired.append(obsolete)
+        let unrelated = images.appendingPathComponent("custom-riscv64-examples")
+        try FileManager.default.createDirectory(at: unrelated, withIntermediateDirectories: true)
+        let metadata = Data(#"{"id":"custom-riscv64-examples"}"#.utf8)
+        let manifest = unrelated.appendingPathComponent("manifest.json")
+        try metadata.write(to: manifest)
+        sentinels[manifest] = metadata
         for path in ["LinuxGuest/images/.trash-old/disk.img", "LinuxGuest/images/installed/disk.img",
                      "Floe/Runtime/v2/recovery/repair/disk.img", "environments/retained/user.bin",
                      "LinuxGuest/ResidentARM64/LinuxGuest/disks/resident-arm64/disk.img"] {
@@ -68,10 +80,13 @@ final class LinuxGuestUpgradeResidueTests: XCTestCase {
             let bytes = Data(path.utf8); try bytes.write(to: url); sentinels[url] = bytes
         }
         let result = await owner().cleanup(build: "new")
-        XCTAssertEqual(result.deletedJobs, 0)
-        XCTAssertEqual(result.retainedLegacyEntries, 9)
-        XCTAssertEqual(result.unmeasuredLegacyDirectories, 4)
+        XCTAssertEqual(result.deletedJobs, retired.count)
+        XCTAssertEqual(result.retainedLegacyEntries, 1)
+        XCTAssertEqual(result.unmeasuredLegacyDirectories, 1)
+        for url in retired { XCTAssertFalse(FileManager.default.fileExists(atPath: url.path)) }
         for (url, bytes) in sentinels { XCTAssertEqual(try Data(contentsOf: url), bytes) }
+        let repeated = await owner().cleanup(build: "new")
+        XCTAssertEqual(repeated.deletedJobs, 0)
         XCTAssertFalse(FileManager.default.fileExists(atPath: images.appendingPathComponent(LinuxImageStageIO.namespace).path))
     }
 

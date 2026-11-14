@@ -28,6 +28,11 @@
 
 import Foundation
 import FloeCore
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 public actor RuntimeV2DeltaStore {
     public static let blockSize: Int64 = 1 << 20 // 1 MiB
@@ -94,6 +99,45 @@ public actor RuntimeV2DeltaStore {
         public var presentBlocks: Int
         public var deltaBytes: Int64
     }
+
+    /// Metadata-only observation of the three delta files for the obsolete
+    /// RISC-V disposal path. It never decodes, validates, quarantines or reads
+    /// any delta byte: `loadDelta` is deliberately not used here because it
+    /// quarantines a partial set, while direct disposal stages `delta.header`
+    /// first so a crashed disposal is indistinguishable from a pristine
+    /// environment (no header = no delta).
+    public struct ObsoleteDisposalFile: Sendable, Equatable {
+        public var name: String
+        public var device: UInt64
+        public var inode: UInt64
+        public var logicalBytes: Int64
+        public var allocatedBytes: Int64?
+        public var linkCount: UInt64
+        public var mode: UInt32
+        public var modificationSeconds: Int64
+        public var modificationNanoseconds: Int64
+        public var changeSeconds: Int64
+        public var changeNanoseconds: Int64
+
+        public var isRegularFile: Bool {
+            #if canImport(Darwin) || canImport(Glibc)
+            return mode & UInt32(S_IFMT) == UInt32(S_IFREG)
+            #else
+            return false
+            #endif
+        }
+    }
+
+    public struct ObsoleteDisposalObservation: Sendable, Equatable {
+        public var files: [ObsoleteDisposalFile]
+        public var totalAllocatedBytes: Int64?
+        public var allocationComplete: Bool
+    }
+
+    /// Fixed set and order. `delta.header` is staged FIRST: once it is gone,
+    /// `loadDelta` answers nil (pristine) instead of quarantining a partial
+    /// set. The remaining files can then be removed by an interrupted retry.
+    public static let obsoleteDisposalFileNames = ["delta.header", "delta.bitmap", "delta.data"]
 
     private let layout: RuntimeV2Layout
     private var fileManager: FileManager { .default }
@@ -602,6 +646,151 @@ public actor RuntimeV2DeltaStore {
         let url = try layout.environmentLastShutdownURL(environmentID: environmentID)
         guard let data = try? Data(contentsOf: url) else { return nil }
         return try? Self.decoder.decode(ShutdownRecord.self, from: data)
+    }
+
+    // MARK: obsolete RISC-V delta disposal
+
+    /// Metadata-only observation for the direct obsolete-RISC-V disposal
+    /// path. Never reads delta contents (`loadDelta` is not used because it
+    /// would quarantine a half-staged set).
+    public func observeObsoleteDisposal(environmentID: String) -> ObsoleteDisposalObservation {
+        #if canImport(Darwin) || canImport(Glibc)
+        guard let system = try? layout.environmentSystemDirectory(environmentID: environmentID)
+        else { return ObsoleteDisposalObservation(files: [], totalAllocatedBytes: nil, allocationComplete: false) }
+        var files: [ObsoleteDisposalFile] = []
+        var total: Int64 = 0
+        var allocationComplete = true
+        for name in Self.obsoleteDisposalFileNames {
+            var info = stat()
+            guard lstat(system.appendingPathComponent(name).path, &info) == 0 else { continue }
+            let blocks = Int64(info.st_blocks)
+            let allocated: Int64?
+            if blocks >= 0, blocks <= Int64.max / 512 {
+                allocated = blocks * 512
+                let sum = total.addingReportingOverflow(allocated ?? 0)
+                if sum.overflow {
+                    allocationComplete = false
+                } else {
+                    total = sum.partialValue
+                }
+            } else {
+                allocated = nil
+                allocationComplete = false
+            }
+            #if canImport(Darwin)
+            let modified = info.st_mtimespec
+            let changed = info.st_ctimespec
+            let device = UInt64(bitPattern: Int64(info.st_dev))
+            #else
+            let modified = info.st_mtim
+            let changed = info.st_ctim
+            let device = UInt64(info.st_dev)
+            #endif
+            files.append(ObsoleteDisposalFile(
+                name: name, device: device, inode: UInt64(info.st_ino),
+                logicalBytes: Int64(info.st_size), allocatedBytes: allocated,
+                linkCount: UInt64(info.st_nlink), mode: UInt32(info.st_mode),
+                modificationSeconds: Int64(modified.tv_sec),
+                modificationNanoseconds: Int64(modified.tv_nsec),
+                changeSeconds: Int64(changed.tv_sec),
+                changeNanoseconds: Int64(changed.tv_nsec)
+            ))
+        }
+        return ObsoleteDisposalObservation(
+            files: files, totalAllocatedBytes: allocationComplete ? total : nil,
+            allocationComplete: allocationComplete
+        )
+        #else
+        _ = environmentID
+        return ObsoleteDisposalObservation(files: [], totalAllocatedBytes: nil, allocationComplete: false)
+        #endif
+    }
+
+    /// Stages exactly one fixed delta file by atomic rename into the caller's
+    /// disposal staging directory. Returns false when the file is already
+    /// staged or absent. Only a single-link regular file is ever moved; a
+    /// symlink, directory or linked file refuses. No byte is read.
+    @discardableResult
+    public func stageObsoleteDeltaFileForDisposal(
+        environmentID: String, name: String, stagingDirectory: URL
+    ) throws -> Bool {
+        try Self.validateObsoleteDisposalName(name)
+        guard Self.isInsideRecovery(stagingDirectory, layout: layout) else {
+            throw RuntimeV2Error.layoutCorrupt("obsolete delta staging is outside the recovery directory")
+        }
+        let system = try layout.environmentSystemDirectory(environmentID: environmentID)
+        let source = system.appendingPathComponent(name)
+        let staged = stagingDirectory.appendingPathComponent(name)
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(at: stagingDirectory, withIntermediateDirectories: true)
+        let sourceExists = fileManager.fileExists(atPath: source.path)
+        let stagedExists = fileManager.fileExists(atPath: staged.path)
+        if stagedExists {
+            guard !sourceExists else {
+                throw RuntimeV2Error.layoutCorrupt(
+                    "obsolete delta file \(name) exists both in system and in disposal staging"
+                )
+            }
+            return false
+        }
+        guard sourceExists else { return false }
+        #if canImport(Darwin) || canImport(Glibc)
+        var info = stat()
+        guard lstat(source.path, &info) == 0,
+              info.st_mode & S_IFMT == S_IFREG,
+              info.st_nlink == 1 else {
+            throw RuntimeV2Error.layoutCorrupt(
+                "obsolete delta file \(name) is not a single regular file; it was not moved"
+            )
+        }
+        guard rename(source.path, staged.path) == 0 else {
+            throw RuntimeV2Error.layoutCorrupt(
+                "obsolete delta file \(name) could not be staged (errno \(errno))"
+            )
+        }
+        return true
+        #else
+        throw RuntimeV2Error.layoutCorrupt("obsolete delta disposal is unsupported on this platform")
+        #endif
+    }
+
+    /// Unlinks exactly one staged fixed delta file. Refuses anything but a
+    /// single regular file so a crafted staging entry can never delete a
+    /// directory, device or linked file.
+    public func removeStagedObsoleteDeltaFile(name: String, in stagingDirectory: URL) throws {
+        try Self.validateObsoleteDisposalName(name)
+        guard Self.isInsideRecovery(stagingDirectory, layout: layout) else {
+            throw RuntimeV2Error.layoutCorrupt("obsolete delta staging is outside the recovery directory")
+        }
+        #if canImport(Darwin) || canImport(Glibc)
+        let staged = stagingDirectory.appendingPathComponent(name)
+        var info = stat()
+        guard lstat(staged.path, &info) == 0 else { return }
+        guard info.st_mode & S_IFMT == S_IFREG, info.st_nlink == 1 else {
+            throw RuntimeV2Error.layoutCorrupt(
+                "staged obsolete delta file \(name) is not a single regular file; it was not unlinked"
+            )
+        }
+        guard unlink(staged.path) == 0 else {
+            throw RuntimeV2Error.layoutCorrupt(
+                "staged obsolete delta file \(name) could not be unlinked (errno \(errno))"
+            )
+        }
+        #else
+        throw RuntimeV2Error.layoutCorrupt("obsolete delta disposal is unsupported on this platform")
+        #endif
+    }
+
+    private static func validateObsoleteDisposalName(_ name: String) throws {
+        guard obsoleteDisposalFileNames.contains(name) else {
+            throw RuntimeV2Error.layoutCorrupt("not a fixed delta file name: \(name)")
+        }
+    }
+
+    private static func isInsideRecovery(_ url: URL, layout: RuntimeV2Layout) -> Bool {
+        let root = layout.recoveryDirectory.standardizedFileURL.path
+        let path = url.standardizedFileURL.path
+        return path == root || path.hasPrefix(root + "/")
     }
 
     // MARK: block file + extent helpers

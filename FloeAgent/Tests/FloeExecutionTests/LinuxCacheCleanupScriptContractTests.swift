@@ -16,6 +16,7 @@ struct LinuxCacheCleanupScriptContractTests {
         let source = LinuxCacheCleanupScript.source
         #expect(source.hasPrefix("#!/bin/sh\n"))
         #expect(source.contains("FLOE_LINUX_CLEANUP_V1"))
+        #expect(source.contains("\nDF_PATH=/\n"))
         #expect(source.contains("/floe/env/cache/pip"))
         #expect(source.contains("/floe/env/cache/npm"))
         #expect(source.contains("/var/tmp/floe-runtime"))

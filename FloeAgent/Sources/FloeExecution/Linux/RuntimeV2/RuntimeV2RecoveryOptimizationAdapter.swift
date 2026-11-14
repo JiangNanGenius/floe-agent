@@ -142,11 +142,29 @@ struct RuntimeV2OptimizationCoreJournalBinding: Decodable, Sendable {
     let modeUsed: StorageSparseDiskRewriteMode?
     let fallbackReason: String?
     let metadataFingerprint: String?
+    let sourceAllocatedBytesBefore: Int64?
+    let stageAllocatedBytesAtVerification: Int64?
+    let resolution: String?
+
+    /// Recovery clears the original error, including in older journals. The
+    /// verified allocations and terminal pre-swap disposition establish the
+    /// no-gain result without relying on an error string.
+    func verifiedNoGain(for current: StorageSparseDiskIdentity) -> Bool {
+        guard phase == "aborted", stageRetained == false, postSwapSource == nil,
+              resolution == "source-unchanged" || resolution == "aborted-before-swap"
+                || resolution == "source-content-verified" || resolution == "aborted-before-swap-content-verified",
+              source.matchesFully(current), let stage, !stage.matchesInode(source),
+              stage.sizeBytes == current.sizeBytes,
+              let before = sourceAllocatedBytesBefore, let after = stageAllocatedBytesAtVerification,
+              before >= 0, after >= before else { return false }
+        return true
+    }
 }
 
 private enum RuntimeV2CompletedHistoryDecision: Sendable {
     case none
     case verified(RuntimeV2OptimizationCoreJournalBinding)
+    case noGain(RuntimeV2OptimizationCoreJournalBinding)
     case verifyCurrentContent(RuntimeV2CompletedHistoryCandidate)
     case retainedUnverified
 }
@@ -342,16 +360,18 @@ public actor RuntimeV2RecoveryOptimizationAdapter {
                 source: inspection.identity, preservation: preservation, closure: closure)
             var contentHistory: RuntimeV2CompletedHistoryCandidate?
             switch completedDecision {
-            case .verified(let completed):
+            case .verified(let completed), .noGain(let completed):
                 try await validate(claim: claim, relative: relative, preservation: preservation)
                 try claim.validateTargetIdentity()
                 let stillMatches = try await metadata.run {
                     Self.matchesCommittedSource(completed, root: root, expected: inspection.identity,
-                        rootDevice: closure.rootDevice, rootInode: closure.rootInode)
+                        rootDevice: closure.rootDevice, rootInode: closure.rootInode,
+                        allocatedBytes: completed.phase == "aborted" ? completed.sourceAllocatedBytesBefore : nil)
                 }
                 try await claim.abortAndRelease(reason: "historical completed proof checked; no mutation")
                 if stillMatches {
-                    return .init(report: nil, code: "already-optimized", recoveryPending: false, verifiedUnchanged: true)
+                    return .init(report: nil, code: completed.phase == "aborted" ? "insufficient-reclaim" : "already-optimized",
+                                 recoveryPending: false, verifiedUnchanged: true)
                 }
                 return .init(report: nil, code: "needs-inspection", recoveryPending: false,
                              candidateDisposition: .retainedAndReleased)
@@ -808,6 +828,7 @@ public actor RuntimeV2RecoveryOptimizationAdapter {
             var retiredTargetSeen = false
             var matchingRetiredRecords = 0
             var verified: [RuntimeV2OptimizationCoreJournalBinding] = []
+            var noGain: RuntimeV2OptimizationCoreJournalBinding?
             var candidates: [RuntimeV2CompletedHistoryCandidate] = []
             var totalReceipts = 0
             for context in contexts {
@@ -845,7 +866,6 @@ public actor RuntimeV2RecoveryOptimizationAdapter {
                           header.jobGeneration == saved.authorityGeneration,
                           header.holdGeneration == saved.repairHoldGeneration,
                           header.source.matchesFully(saved.expectedSource), header.relativePath == relative,
-                          header.phase == "retired", header.stageRetired == true, header.stageRetained == false,
                           header.requestedMode == .cloneAndPunch, header.modeUsed == .cloneAndPunch,
                           header.fallbackReason == nil,
                           let digest = header.sourceDigestSHA512, Self.isSHA512(digest),
@@ -854,6 +874,14 @@ public actor RuntimeV2RecoveryOptimizationAdapter {
                           Self.isSHA512(metadataFingerprint),
                           Self.matchesPhysicalRoot(header.rootPath, root: domain.root,
                             device: closure.rootDevice, inode: closure.rootInode) else { continue }
+                    if saved.preservationFingerprint == preservation, header.verifiedNoGain(for: source),
+                       Self.matchesCommittedSource(header, root: domain.root, expected: source,
+                            rootDevice: closure.rootDevice, rootInode: closure.rootInode,
+                            allocatedBytes: header.sourceAllocatedBytesBefore) {
+                        noGain = header
+                    }
+                    guard header.phase == "retired", header.stageRetired == true,
+                          header.stageRetained == false else { continue }
                     // Later aborted/insufficient-reclaim records do not hide
                     // this retired artifact, nor certify current bytes for it.
                     if matchesRetiredTarget {
@@ -872,6 +900,7 @@ public actor RuntimeV2RecoveryOptimizationAdapter {
                 }
             }
             if verified.count == 1 && matchingRetiredRecords == 1 { return .verified(verified[0]) }
+            if let noGain { return .noGain(noGain) }
             if verified.isEmpty, matchingRetiredRecords == 1, candidates.count == 1, let candidate = candidates.first,
                candidate.header.postSwapSource?.matchesStable(source) == true {
                 return .verifyCurrentContent(candidate)
@@ -975,7 +1004,8 @@ public actor RuntimeV2RecoveryOptimizationAdapter {
 
     static func matchesCommittedSource(
         _ header: RuntimeV2OptimizationCoreJournalBinding, root: URL,
-        expected: StorageSparseDiskIdentity, rootDevice: UInt64, rootInode: UInt64
+        expected: StorageSparseDiskIdentity, rootDevice: UInt64, rootInode: UInt64,
+        allocatedBytes: Int64? = nil
     ) -> Bool {
         guard let parentDevice = header.parentDevice, let parentInode = header.parentInode,
               let stage = header.stageName, !stage.isEmpty, stage != ".", stage != "..",
@@ -1004,6 +1034,8 @@ public actor RuntimeV2RecoveryOptimizationAdapter {
         let sourceFD = openat(parent, "disk.img", O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
         guard sourceFD >= 0 else { return false }; defer { close(sourceFD) }
         func matches(_ info: stat) -> Bool {
+            if let allocatedBytes,
+               Int64(info.st_blocks) != allocatedBytes / 512 || allocatedBytes % 512 != 0 { return false }
             #if canImport(Darwin)
             let modified = info.st_mtimespec, changed = info.st_ctimespec
             let flags = UInt32(info.st_flags)

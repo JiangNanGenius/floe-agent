@@ -13,6 +13,10 @@ import Foundation
 import FloeModels
 
 public enum LinuxCacheCleanupScope {
+    // The App creates this purpose only for EnvironmentRegistry.sharedContainerID.
+    // FloeTools cannot depend on FloeEnvironments, so keep the frozen ID here
+    // and require the persisted binding to agree before rewriting a call.
+    private static let sharedGuestEnvironmentID = "shared"
     public static let inspectToolName = "linux.cache.inspect"
     public static let cleanToolName = "linux.cache.clean"
     public static let statusToolName = "linux.cache.status"
@@ -95,6 +99,73 @@ public enum LinuxCacheCleanupScope {
             }
         }
         return argumentDenialReason(tool: descriptor.name, arguments: arguments)
+    }
+
+    /// The shell's ordinary cwd validator deliberately accepts only paths
+    /// relative to its workspace. A cleanup task may inspect caches anywhere
+    /// inside its pinned Linux guest, so translate an absolute guest cwd into
+    /// a quoted `cd` in that same guest process. This is a data-only rewrite:
+    /// it never selects a host, changes the frozen environment, or bypasses
+    /// the shell validator and command approval. Nil leaves the call intact.
+    public static func normalizedGuestAbsoluteCWD(
+        profile: LinuxCacheCleanupTaskProfile?,
+        conversationID: UUID,
+        environmentID: String?,
+        executionBinding: TaskExecutionBinding?,
+        localLinuxGuestEnvironment: Bool,
+        remoteExecutionEnvironment: Bool,
+        descriptor: ToolCatalog.Descriptor?,
+        toolName: String,
+        scope: ToolScope,
+        arguments: Data
+    ) -> Data? {
+        guard let profile, let executionBinding, let descriptor,
+              profile.environmentID == sharedGuestEnvironmentID,
+              executionBinding.conversationID == conversationID,
+              executionBinding.target.environmentID == profile.environmentID,
+              executionBinding.target.backend == .linuxVM,
+              executionBinding.target.remoteHostID == nil,
+              executionBinding.target.remoteRootPath == nil,
+              localLinuxGuestEnvironment, !remoteExecutionEnvironment,
+              descriptor.name == toolName,
+              (toolName == "exec.shell" || toolName == "jobs.submit"),
+              denialReason(profile: profile, conversationID: conversationID,
+                           environmentID: environmentID, descriptor: descriptor,
+                           arguments: arguments, scope: scope) == nil,
+              var object = try? JSONSerialization.jsonObject(with: arguments) as? [String: Any]
+        else { return nil }
+
+        if toolName == "jobs.submit" {
+            guard let nested = object["arguments"] as? String,
+                  let rewritten = normalizeShellAbsoluteCWD(Data(nested.utf8)) else { return nil }
+            object["arguments"] = String(decoding: rewritten, as: UTF8.self)
+        } else {
+            guard let rewritten = normalizeShellAbsoluteCWD(arguments),
+                  let shell = try? JSONSerialization.jsonObject(with: rewritten) as? [String: Any] else { return nil }
+            object = shell
+        }
+        return try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+    }
+
+    private static func normalizeShellAbsoluteCWD(_ arguments: Data) -> Data? {
+        guard var object = try? JSONSerialization.jsonObject(with: arguments) as? [String: Any],
+              let cwd = object["cwd"] as? String, cwd.hasPrefix("/"),
+              !cwd.hasPrefix("//"), cwd.utf8.count <= 4096,
+              cwd.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) })
+        else { return nil }
+        let commandKey: String
+        if let command = object["command"] as? String,
+           !command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            commandKey = "command"
+        } else if let script = object["script"] as? String,
+                  !script.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            commandKey = "script"
+        } else { return nil }
+        let literal = "'" + cwd.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        guard let body = object[commandKey] as? String else { return nil }
+        object[commandKey] = "cd \(literal) || exit $?\n\(body)"
+        object.removeValue(forKey: "cwd")
+        return try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
     }
 
     private static func expectedDescriptor(

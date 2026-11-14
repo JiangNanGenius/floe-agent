@@ -108,6 +108,91 @@ struct LinuxCacheCleanupScopeTests {
                    sideEffecting: true, effect: .mutating)
     }
 
+    private func sharedBinding(conversationID: UUID? = nil, environmentID: String = "shared",
+                               backend: TaskExecutionTarget.Backend = .linuxVM) -> TaskExecutionBinding {
+        TaskExecutionBinding(conversationID: conversationID ?? self.conversationID,
+            target: TaskExecutionTarget(environmentID: environmentID, backend: backend,
+                                        operatingSystem: "Linux", architecture: "aarch64"))
+    }
+
+    private func normalized(_ name: String, arguments: Data,
+                            purpose: LinuxCacheCleanupTaskProfile? = nil,
+                            binding: TaskExecutionBinding? = nil,
+                            liveConversationID: UUID? = nil,
+                            liveEnvironmentID: String? = "shared",
+                            localGuest: Bool = true,
+                            remote: Bool = false,
+                            scope: ToolScope = .local) -> Data? {
+        LinuxCacheCleanupScope.normalizedGuestAbsoluteCWD(
+            profile: purpose ?? profile,
+            conversationID: liveConversationID ?? conversationID,
+            environmentID: liveEnvironmentID,
+            executionBinding: binding ?? sharedBinding(),
+            localLinuxGuestEnvironment: localGuest,
+            remoteExecutionEnvironment: remote,
+            descriptor: name == "jobs.submit" ? descriptor(name, risks: shellDescriptor().riskLabels,
+                sideEffecting: true, effect: .mutating) : shellDescriptor(),
+            toolName: name, scope: scope, arguments: arguments)
+    }
+
+    @Test("Only pinned shared Linux cleanup rewrites an absolute guest cwd into literal cd")
+    func absoluteGuestCWDIsQuotedAndKeepsShellValidator() throws {
+        let guestPath = "/var/cache/build's $HOME; echo never"
+        let payload = args(["command": "printf '%s' ready", "cwd": guestPath])
+        let data = try #require(normalized("exec.shell", arguments: payload))
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(object["cwd"] == nil)
+        #expect(object["command"] as? String == "cd '/var/cache/build'\\''s $HOME; echo never' || exit $?\nprintf '%s' ready")
+        #expect(denial("exec.shell", arguments: object, descriptor: shellDescriptor()) == nil)
+        #expect(normalized("exec.shell", arguments: args(["script": "pwd", "cwd": "relative/subdir"])) == nil)
+        #expect(normalized("exec.shell", arguments: args(["script": "pwd", "cwd": "/var/line\nfeed"])) == nil)
+        #expect(normalized("exec.shell", arguments: args(["script": "pwd", "cwd": "//ambiguous"])) == nil)
+    }
+
+    @Test("A nested shell job uses the same guest cwd rewrite without changing its target or wait")
+    func nestedJobAbsoluteGuestCWD() throws {
+        let inner = String(decoding: args(["script": "du -sk .", "cwd": "/opt/go cache"]), as: UTF8.self)
+        let outer = args(["tool": "exec.shell", "arguments": inner, "wait": true])
+        #expect(normalized("jobs.submit", arguments: outer, scope: .host(UUID())) == nil)
+        #expect(normalized("jobs.submit", arguments: outer, remote: true) == nil)
+        let data = try #require(normalized("jobs.submit", arguments: outer))
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(object["tool"] as? String == "exec.shell")
+        #expect(object["wait"] as? Bool == true)
+        let nested = try #require((object["arguments"] as? String)?.data(using: .utf8))
+        let shell = try #require(JSONSerialization.jsonObject(with: nested) as? [String: Any])
+        #expect(shell["cwd"] == nil)
+        #expect(shell["script"] as? String == "cd '/opt/go cache' || exit $?\ndu -sk .")
+        #expect(denial("jobs.submit", arguments: object, descriptor: descriptor("jobs.submit",
+            risks: shellDescriptor().riskLabels, sideEffecting: true, effect: .mutating)) == nil)
+    }
+
+    @Test("Ordinary, remote, host, foreign and malformed calls never receive a guest cwd rewrite")
+    func guestCWDRewriteHasClosedAuthority() {
+        let shell = args(["command": "pwd", "cwd": "/var/cache"])
+        let absentPurpose = LinuxCacheCleanupScope.normalizedGuestAbsoluteCWD(
+            profile: nil, conversationID: conversationID, environmentID: "shared",
+            executionBinding: sharedBinding(), localLinuxGuestEnvironment: true,
+            remoteExecutionEnvironment: false, descriptor: shellDescriptor(),
+            toolName: "exec.shell", scope: .local, arguments: shell)
+        #expect(absentPurpose == nil)
+        #expect(normalized("exec.shell", arguments: shell, binding: sharedBinding(backend: .remoteSSH)) == nil)
+        #expect(normalized("exec.shell", arguments: shell, binding: sharedBinding(environmentID: "project")) == nil)
+        let projectPurpose = LinuxCacheCleanupTaskProfile(conversationID: conversationID, environmentID: "project")
+        #expect(normalized("exec.shell", arguments: shell, purpose: projectPurpose,
+            binding: sharedBinding(environmentID: "project"), liveEnvironmentID: "project") == nil)
+        #expect(normalized("exec.shell", arguments: shell, binding: sharedBinding(conversationID: UUID())) == nil)
+        #expect(normalized("exec.shell", arguments: shell, liveConversationID: UUID()) == nil)
+        #expect(normalized("exec.shell", arguments: shell, liveEnvironmentID: "project") == nil)
+        #expect(normalized("exec.shell", arguments: shell, localGuest: false) == nil)
+        #expect(normalized("exec.shell", arguments: shell, remote: true) == nil)
+        #expect(normalized("exec.shell", arguments: shell, scope: .host(UUID())) == nil)
+        #expect(normalized("exec.shell", arguments: args(["command": "pwd", "cwd": "/var", "hostID": UUID().uuidString])) == nil)
+        #expect(normalized("exec.shell", arguments: args(["command": "pwd", "cwd": 4])) == nil)
+        #expect(normalized("jobs.submit", arguments: args(["tool": "ssh.execute", "arguments": String(decoding: shell, as: UTF8.self)])) == nil)
+        #expect(normalized("jobs.submit", arguments: args(["tool": "exec.shell", "arguments": "{broken"])) == nil)
+    }
+
     @Test("The existing guest terminal does not require a black-box inspect first")
     func terminalAndJobLifecycleAreOfferedWithoutInspectPrerequisite() {
         #expect(denial("exec.shell", arguments: ["command": "df -Pk /; du -sk /floe/env/cache/pip"],

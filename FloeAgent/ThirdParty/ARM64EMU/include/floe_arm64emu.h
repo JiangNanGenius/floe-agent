@@ -140,11 +140,14 @@ typedef struct {
  * may select the app's existing entitled shared-memory namespace. */
 #define FLOE_AE_GPU_DEFAULT_BUDGET_BYTES UINT64_C(1073741824)
 #define FLOE_AE_GPU_MAX_BUDGET_BYTES UINT64_C(2147483648)
+/* ABI-compatible opt-in in reserved[0]. Zero keeps the historical strict
+ * contract: a requested GPU that cannot start fails machine creation. */
+#define FLOE_AE_GPU_ALLOW_CPU_FALLBACK 1U
 typedef struct {
     uint32_t struct_size, enabled;
     uint64_t budget_bytes; /* 0 selects 1 GiB; lazy budget, not eager VRAM */
     const char *app_group_identifier; /* copied during create; NULL for host fixtures */
-    uint64_t reserved[4];
+    uint64_t reserved[4]; /* [0]: FLOE_AE_GPU_ALLOW_CPU_FALLBACK; [1..3]: zero */
 } floe_ae_gpu_config;
 
 typedef struct {

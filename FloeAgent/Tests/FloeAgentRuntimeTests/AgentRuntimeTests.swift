@@ -382,6 +382,46 @@ struct AgentRuntimeTests {
         )
     }
 
+    @Test("Runtime rewrites an absolute cwd only for a bound local shared Linux cleanup call")
+    func cleanupGuestCWDNormalizationKeepsOtherRunsUnchanged() throws {
+        let conversationID = UUID()
+        let provider = TestFixtures.localhostProvider()
+        let model = TestFixtures.testModel(providerID: provider.id)
+        let target = TaskExecutionTarget(environmentID: "shared", backend: .linuxVM,
+                                         operatingSystem: "Linux", architecture: "aarch64")
+        let binding = TaskExecutionBinding(conversationID: conversationID, target: target)
+        let profile = LinuxCacheCleanupTaskProfile(conversationID: conversationID, environmentID: "shared")
+        let shell = ToolCatalog.Descriptor(name: "exec.shell",
+            riskLabels: [.executesLocalCode, .readsFiles, .writesFiles, .deletesFiles, .networkAccess],
+            isSideEffecting: true, effect: .mutating)
+        let call = try ToolCall(id: "guest-cwd", toolName: "exec.shell",
+            argumentsJSON: Data(#"{"command":"du -sk .","cwd":"/var/cache"}"#.utf8), scope: .local)
+        let cleanup = FloeAgentRuntime.Configuration(conversationID: conversationID,
+            provider: provider, model: model, linuxCacheCleanupProfile: profile,
+            environmentID: "shared", executionBinding: binding, localLinuxGuestEnvironment: true)
+        let rewritten = FloeAgentRuntime.normalizedCleanupGuestCWD(call, configuration: cleanup, descriptor: shell)
+        let object = try #require(JSONSerialization.jsonObject(with: rewritten.argumentsJSON) as? [String: Any])
+        #expect(object["cwd"] == nil)
+        #expect(object["command"] as? String == "cd '/var/cache' || exit $?\ndu -sk .")
+        #expect(rewritten.id == call.id && rewritten.scope == call.scope && rewritten.toolName == call.toolName)
+
+        let ordinary = FloeAgentRuntime.Configuration(conversationID: conversationID,
+            provider: provider, model: model, environmentID: "shared",
+            executionBinding: binding, localLinuxGuestEnvironment: true)
+        #expect(FloeAgentRuntime.normalizedCleanupGuestCWD(call, configuration: ordinary,
+            descriptor: shell).argumentsJSON == call.argumentsJSON)
+        let remote = FloeAgentRuntime.Configuration(conversationID: conversationID,
+            provider: provider, model: model, linuxCacheCleanupProfile: profile,
+            environmentID: "shared", executionBinding: binding,
+            remoteExecutionEnvironment: true, localLinuxGuestEnvironment: true)
+        #expect(FloeAgentRuntime.normalizedCleanupGuestCWD(call, configuration: remote,
+            descriptor: shell).argumentsJSON == call.argumentsJSON)
+        let hostCall = try ToolCall(id: "host-cwd", toolName: "exec.shell",
+            argumentsJSON: call.argumentsJSON, scope: .host(UUID()))
+        #expect(FloeAgentRuntime.normalizedCleanupGuestCWD(hostCall, configuration: cleanup,
+            descriptor: shell).argumentsJSON == hostCall.argumentsJSON)
+    }
+
     // MARK: Happy path
 
     @Test("A valid finely fragmented stream is not a task budget")

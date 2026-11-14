@@ -5,6 +5,8 @@
 
 **最近已核验的内部测试为 1.8.29（350）。** Apple 返回 VALID、未过期，Floe QA 为 IN_BETA_TESTING。签名 IPA 与本地构建匹配，见[350 交付记录](releases/builds/FLOE_1.8.29_BUILD350_DELIVERY.md)。GitHub stable/latest 与 Feather 最近一次核验为 346。
 
+正在准备内部候选 1.8.30（351），用于旧 Linux 镜像退役和换机后容量核算。分配前已核对 Apple 构建、预发布版本及 Git 标签。
+
 ## 依据与判定
 
 读取顺序为：最新用户指令 → 本文记录的版本决定 → 各渠道真实读回。用户后续明确指令优先；各渠道是否交付始终须由该渠道读回确认，文档不能替代实际状态。

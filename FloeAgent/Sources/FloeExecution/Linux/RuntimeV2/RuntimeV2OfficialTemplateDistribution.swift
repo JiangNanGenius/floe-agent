@@ -790,7 +790,7 @@ public actor RuntimeV2OfficialTemplateService {
         }
         let provenance = "cloud-template-qualification \(artifact.qualificationRunURL) "
             + "image=\(artifact.imageID) recipe=\(artifact.recipeSHA512)"
-        return try await store.templates.registerOfficialTemplate(
+        let registration = try await store.templates.registerOfficialTemplate(
             RuntimeV2TemplateStore.OfficialTemplateArtifact(
                 templateID: artifact.templateID, version: artifact.version,
                 recipe: recipe,
@@ -804,6 +804,16 @@ public actor RuntimeV2OfficialTemplateService {
                 provenance: provenance
             )
         )
+        // Deliberately NO retirement call here. A template install is not
+        // authority to announce a supersession: the resident ARM64 machine's
+        // mutable disk and its origin.json live outside this layout, so no
+        // environment row here can prove which image is actually booting. The
+        // App coordinator drives the lifecycle after it has bound its native
+        // `activeLinuxImageID`
+        // (`RuntimeV2ImageStore.retireFactoryImages(afterUsableImage:legacyImagesRoot:protectedActiveImageID:)`)
+        // and can call `retireRetiredArchitectureFactoryImages()` for the
+        // architecture backlog.
+        return registration
     }
 
     /// Decodes the pinned recipe and checks its digest against the pin.

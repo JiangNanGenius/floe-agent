@@ -82,6 +82,16 @@ final class ARM64MachineConfigurationTests: XCTestCase {
               privateWritableDiskPath: "/missing-private-disk", ramMiB: 32, possibleVCPUs: 1)
     }
 
+    func testOptionalRendererPolicyOnlyAppliesWhenADeviceIsRequested() {
+        var config = configuration()
+        config.gpuAllowsCPUFallback = true
+        XCTAssertEqual(ARM64StagedConfig(config).cConfig.gpu.reserved.0, 0)
+        config.gpuEnabled = true
+        XCTAssertNotEqual(ARM64StagedConfig(config).cConfig.gpu.reserved.0, 0)
+        config.gpuAllowsCPUFallback = false
+        XCTAssertEqual(ARM64StagedConfig(config).cConfig.gpu.reserved.0, 0)
+    }
+
     func testInvalidMachineShapeIsRefusedWithoutClamping() throws {
         var config = configuration()
         for cores in [0, 6] {

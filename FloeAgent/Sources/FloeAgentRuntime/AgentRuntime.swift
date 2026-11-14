@@ -4105,6 +4105,11 @@ public actor FloeAgentRuntime {
                 var canonicalCall = call
                 canonicalCall.toolName = ToolAliasTable.canonical(call.toolName)
                 var normalized = try await toolCallNormalizer?(canonicalCall) ?? canonicalCall
+                if case .local = canonicalCall.scope {
+                    normalized = Self.normalizedCleanupGuestCWD(
+                        normalized, configuration: configuration,
+                        descriptor: executor.descriptor(named: normalized.toolName))
+                }
                 if normalized.toolName == UserAskTool.name {
                     // Question text is durable derived conversation data.
                     normalized.argumentsJSON = modelInputProjection?.redactedJSON(normalized.argumentsJSON) ?? normalized.argumentsJSON
@@ -4671,6 +4676,32 @@ public actor FloeAgentRuntime {
         if context.readsInstructionsOnly && ["web.fetch", "web.search"].contains(call.toolName) {
             context.publicWebOnly = true
         }
+    }
+
+    /// Keep the general shell's workspace-relative cwd contract unchanged.
+    /// Only the App-persisted cleanup purpose on its pinned shared local Linux
+    /// guest can express a guest-absolute cwd, as a quoted cd in the command
+    /// that still crosses the ordinary validator and approval boundary.
+    static func normalizedCleanupGuestCWD(
+        _ call: ToolCall,
+        configuration: Configuration,
+        descriptor: ToolCatalog.Descriptor?
+    ) -> ToolCall {
+        guard let arguments = LinuxCacheCleanupScope.normalizedGuestAbsoluteCWD(
+            profile: configuration.linuxCacheCleanupProfile,
+            conversationID: configuration.conversationID,
+            environmentID: configuration.environmentID,
+            executionBinding: configuration.executionBinding,
+            localLinuxGuestEnvironment: configuration.localLinuxGuestEnvironment,
+            remoteExecutionEnvironment: configuration.remoteExecutionEnvironment,
+            descriptor: descriptor,
+            toolName: call.toolName,
+            scope: call.scope,
+            arguments: call.argumentsJSON
+        ) else { return call }
+        var normalized = call
+        normalized.argumentsJSON = arguments
+        return normalized
     }
 
     private func resolveToolCall(_ call: ToolCall, chargeParentBudget: Bool = true) async -> ToolResolution {

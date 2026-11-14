@@ -1069,6 +1069,84 @@ public actor RuntimeV2ImageStore {
         return replacedAny
     }
 
+    // MARK: factory image retirement
+
+    private var factoryImageRetirement: RuntimeV2FactoryImageRetirement?
+
+    private func factoryRetirement() -> RuntimeV2FactoryImageRetirement {
+        if let factoryImageRetirement { return factoryImageRetirement }
+        let engine = RuntimeV2FactoryImageRetirement(
+            layout: layout, registry: registry, blobs: blobs
+        )
+        factoryImageRetirement = engine
+        return engine
+    }
+
+    /// The ONE production hook for the automatic factory-image lifecycle. The
+    /// same call serves every domain because the store is bound to its own
+    /// layout root (the legacy `Floe/Runtime/v2` tree and the live `arm64-v1`
+    /// root each use their own store).
+    ///
+    /// - `afterUsableImage`: the image that just proved usable (verified row +
+    ///   v2 manifest + expanded rootfs at its recorded size). Its superseded
+    ///   predecessor closure and its own prior migration backup are retired.
+    /// - `nil`: reconciles the discontinued-architecture backlog. Nothing of a
+    ///   retired architecture can boot here, so no replacement is required.
+    ///
+    /// Everything is durable and idempotent: the first call writes
+    /// `image_retirements` rows (phase `planned`), records physical progress
+    /// after every unlink, and a repeated/relaunched call resumes the stored
+    /// plan or reports the completed rows instead of repeating work. A not-yet
+    /// usable image retires nothing and writes no plan.
+    @discardableResult
+    public func retireFactoryImages(
+        afterUsableImage imageID: String?,
+        legacyImagesRoot: URL? = nil,
+        protectedActiveImageID: String? = nil,
+        isCancelled: (@Sendable () -> Bool)? = nil
+    ) async -> RuntimeV2FactoryImageRetirementReport {
+        let engine = factoryRetirement()
+        if let imageID {
+            return await engine.retireSupersededFactoryImages(
+                afterUsableImage: imageID, legacyImagesRoot: legacyImagesRoot,
+                protectedActiveImageID: protectedActiveImageID, isCancelled: isCancelled
+            )
+        }
+        return await engine.retireRetiredArchitectureFactoryImages(
+            legacyImagesRoot: legacyImagesRoot,
+            protectedActiveImageID: protectedActiveImageID, isCancelled: isCancelled
+        )
+    }
+
+    @discardableResult
+    public func retireFactoryImagesAfterUsableImage(
+        _ imageID: String,
+        protectedActiveImageID: String? = nil,
+        isCancelled: (@Sendable () -> Bool)? = nil
+    ) async -> RuntimeV2FactoryImageRetirementReport {
+        await retireFactoryImages(
+            afterUsableImage: imageID, legacyImagesRoot: nil,
+            protectedActiveImageID: protectedActiveImageID, isCancelled: isCancelled
+        )
+    }
+
+    @discardableResult
+    public func retireRetiredArchitectureFactoryImages(
+        legacyImagesRoot: URL? = nil,
+        protectedActiveImageID: String? = nil,
+        isCancelled: (@Sendable () -> Bool)? = nil
+    ) async -> RuntimeV2FactoryImageRetirementReport {
+        await retireFactoryImages(
+            afterUsableImage: nil, legacyImagesRoot: legacyImagesRoot,
+            protectedActiveImageID: protectedActiveImageID, isCancelled: isCancelled
+        )
+    }
+
+    /// Durable retirement records for status/UI composition.
+    public func retirementRecords() async throws -> [RuntimeV2Registry.ImageRetirementRow] {
+        try await factoryRetirement().retirementRecords()
+    }
+
     // MARK: helpers
 
     private func moveLegacyAside(legacyDirectory: URL, migrationID: String, kind: String) async throws {

@@ -66,6 +66,27 @@ enum LinuxImageStageIO {
         return identity(info)
     }
 
+    /// Read a small installer manifest through the held directory. Never
+    /// follow a symlink or infer its identity from the name of the directory.
+    static func manifestID(in directory: Int32) throws -> String? {
+        guard let entry = try observe("manifest.json", in: directory) else { return nil }
+        guard entry.isRegular, entry.uid == UInt32(geteuid()), entry.links == 1,
+              entry.size > 0, entry.size <= 256 * 1024 else { throw LinuxImageStageError.unsafe }
+        let fd = openat(directory, "manifest.json", O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
+        guard fd >= 0 else { throw LinuxImageStageError.io(errno) }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        guard try identity(fd: fd) == entry,
+              let bytes = try handle.read(upToCount: Int(entry.size) + 1), bytes.count == Int(entry.size),
+              try identity(fd: fd) == entry, try observe("manifest.json", in: directory) == entry else {
+            throw LinuxImageStageError.unsafe
+        }
+        struct Identifier: Decodable { let id: String }
+        let id = try JSONDecoder().decode(Identifier.self, from: bytes).id
+        try validate(id)
+        guard !id.hasPrefix(".") else { throw LinuxImageStageError.unsafe }
+        return id
+    }
+
     static func validate(_ name: String) throws {
         guard !name.isEmpty, name != ".", name != "..", !name.contains("/"),
               !name.utf8.contains(0), name.utf8.count <= 240 else { throw LinuxImageStageError.unsafe }

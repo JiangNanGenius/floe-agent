@@ -13,6 +13,25 @@ struct ResidentRuntimeGenerationTests {
         return (root, EnvironmentRoots(rootURL: root.appendingPathComponent("environments")), workspace)
     }
 
+    @Test func settingsCleanupFindsTheInstalledSharedContainerBeforeFirstShell() async throws {
+        let (root, roots, _) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let setup = EnvironmentRegistry(roots: roots, baseRevision: "arm64")
+        #expect(try await setup.existingSharedContainer() == nil)
+        #expect(!FileManager.default.fileExists(atPath: roots.rootURL.path))
+
+        try await setup.prepare()
+        let saved = try Data(contentsOf: roots.registryURL)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let snapshot = try decoder.decode(EnvironmentRegistry.Snapshot.self, from: saved)
+        let expected = try #require(snapshot.containers.first { $0.id == EnvironmentRegistry.sharedContainerID })
+        let cold = EnvironmentRegistry(roots: roots, baseRevision: "arm64")
+        #expect(try await cold.existingSharedContainer() == expected)
+        #expect(try Data(contentsOf: roots.registryURL) == saved)
+        #expect(await cold.record(id: EnvironmentRegistry.sharedContainerID) == nil)
+    }
+
     @Test func committedGenerationPreservesAllHostSoftwareRecordsAndFiles() async throws {
         let (root, roots, workspace) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
         let registry = EnvironmentRegistry(roots: roots, baseRevision: "arm64")

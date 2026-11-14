@@ -458,6 +458,33 @@ public actor RuntimeV2Registry {
         // took it.
         (3, "blob-staging-claims", """
         ALTER TABLE blobs ADD COLUMN staged INTEGER NOT NULL DEFAULT 0;
+        """),
+        // v4: durable factory-image retirements. One row per image generation
+        // records the trigger that authorized retiring it, the exact
+        // metadata-derived plan (layout-relative anchors + recorded file
+        // identities — never a path prefix or an age), the physical progress
+        // already made and the blob references the retirement released. The
+        // row is the resume point across app restarts: a `done` row is never
+        // reopened and a `retiring`/`failed` row is retried from the stored
+        // plan, so repeated launches/installs converge instead of repeating.
+        (4, "factory-image-retirements", """
+        CREATE TABLE image_retirements (
+          image_id TEXT PRIMARY KEY,
+          reason TEXT NOT NULL,
+          phase TEXT NOT NULL,
+          trigger_image_id TEXT,
+          trigger_rootfs_digest TEXT,
+          architecture TEXT NOT NULL,
+          evidence TEXT NOT NULL,
+          plan_json TEXT NOT NULL,
+          released_digests TEXT,
+          retained_notes TEXT,
+          retired_bytes INTEGER NOT NULL DEFAULT 0,
+          attempts INTEGER NOT NULL DEFAULT 0,
+          last_error TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
         """)
     ]
 
@@ -1353,6 +1380,341 @@ public actor RuntimeV2Registry {
             text($0, 0) ?? ""
         }
         return try ids.compactMap { try migration(id: $0) }
+    }
+
+    // MARK: factory image retirements (retired architecture + superseded generations)
+    //
+    // The retirement record is the durable progress of a host-owned factory
+    // image teardown. It is deliberately NOT a deletion log: it binds the
+    // trigger (the usable replacement image generation), the metadata-derived
+    // plan and the exact file instances the plan observed. Bytes are removed
+    // only through that plan, never by scanning a path prefix. A `done` row is
+    // terminal; a `retiring` row resumes the stored plan after a restart; a
+    // `failed` row is retried by the next pass.
+
+    public enum ImageRetirementPhase: String, Sendable, CaseIterable {
+        case planned, retiring, done, failed
+    }
+
+    public struct ImageRetirementRow: Sendable, Equatable {
+        public var imageID: String
+        /// `retired-architecture` (the runtime was discontinued) or
+        /// `superseded` (a verified usable replacement generation exists and
+        /// nothing live references this one).
+        public var reason: String
+        public var phase: ImageRetirementPhase
+        public var triggerImageID: String?
+        public var triggerRootfsDigest: String?
+        public var architecture: String
+        public var evidence: String
+        public var planJSON: String
+        public var releasedDigests: [String]
+        public var retainedNotes: [String]
+        public var retiredBytes: Int64
+        public var attempts: Int
+        public var lastError: String?
+        public var createdAt: Date
+        public var updatedAt: Date
+
+        public init(
+            imageID: String, reason: String, phase: ImageRetirementPhase,
+            triggerImageID: String?, triggerRootfsDigest: String?,
+            architecture: String, evidence: String, planJSON: String,
+            releasedDigests: [String] = [], retainedNotes: [String] = [],
+            retiredBytes: Int64 = 0, attempts: Int = 0, lastError: String? = nil,
+            createdAt: Date = Date(), updatedAt: Date = Date()
+        ) {
+            self.imageID = imageID
+            self.reason = reason
+            self.phase = phase
+            self.triggerImageID = triggerImageID
+            self.triggerRootfsDigest = triggerRootfsDigest
+            self.architecture = architecture
+            self.evidence = evidence
+            self.planJSON = planJSON
+            self.releasedDigests = releasedDigests
+            self.retainedNotes = retainedNotes
+            self.retiredBytes = retiredBytes
+            self.attempts = attempts
+            self.lastError = lastError
+            self.createdAt = createdAt
+            self.updatedAt = updatedAt
+        }
+    }
+
+    /// Every image id the registry knows, in any state. A quarantined image is
+    /// still a host-owned generation whose factory copies may need retiring;
+    /// the state decides boot eligibility, not ownership.
+    public func allImageIDs() throws -> [String] {
+        try query("SELECT id FROM images ORDER BY id") { text($0, 0) ?? "" }
+    }
+
+    public func imageRetirement(imageID: String) throws -> ImageRetirementRow? {
+        try query(
+            "SELECT \(Self.retirementColumns) FROM image_retirements WHERE image_id=?",
+            bind: { Self.bindText(imageID, to: $0, index: 1) },
+            map: { self.retirementRow($0) }
+        ).first
+    }
+
+    public func imageRetirements() throws -> [ImageRetirementRow] {
+        try query(
+            "SELECT \(Self.retirementColumns) FROM image_retirements ORDER BY created_at, image_id",
+            map: { self.retirementRow($0) }
+        )
+    }
+
+    /// Records (or refreshes) the durable plan for one image generation. A
+    /// completed retirement is never reopened, and a retired-architecture
+    /// reason is never downgraded to the weaker `superseded` one.
+    @discardableResult
+    public func planImageRetirement(_ row: ImageRetirementRow) throws -> ImageRetirementRow {
+        let now = Self.iso(Date())
+        try transaction {
+            try run(
+                """
+                INSERT INTO image_retirements (
+                  image_id, reason, phase, trigger_image_id, trigger_rootfs_digest,
+                  architecture, evidence, plan_json, released_digests, retained_notes,
+                  retired_bytes, attempts, last_error, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+                ON CONFLICT(image_id) DO UPDATE SET
+                  reason=CASE
+                    WHEN image_retirements.reason='retired-architecture' THEN image_retirements.reason
+                    ELSE excluded.reason END,
+                  trigger_image_id=excluded.trigger_image_id,
+                  trigger_rootfs_digest=excluded.trigger_rootfs_digest,
+                  architecture=excluded.architecture,
+                  evidence=excluded.evidence,
+                  plan_json=excluded.plan_json,
+                  updated_at=excluded.updated_at
+                WHERE image_retirements.phase != 'done'
+                """,
+                bind: { statement in
+                    Self.bindText(row.imageID, to: statement, index: 1)
+                    Self.bindText(row.reason, to: statement, index: 2)
+                    Self.bindText(row.phase.rawValue, to: statement, index: 3)
+                    Self.bindOptionalText(row.triggerImageID, to: statement, index: 4)
+                    Self.bindOptionalText(row.triggerRootfsDigest, to: statement, index: 5)
+                    Self.bindText(row.architecture, to: statement, index: 6)
+                    Self.bindText(row.evidence, to: statement, index: 7)
+                    Self.bindText(row.planJSON, to: statement, index: 8)
+                    Self.bindOptionalText(Self.encodeStrings(row.releasedDigests), to: statement, index: 9)
+                    Self.bindOptionalText(Self.encodeStrings(row.retainedNotes), to: statement, index: 10)
+                    sqlite3_bind_int64(statement, 11, row.retiredBytes)
+                    sqlite3_bind_int64(statement, 12, Int64(row.attempts))
+                    Self.bindText(Self.iso(row.createdAt), to: statement, index: 13)
+                    Self.bindText(now, to: statement, index: 14)
+                }
+            )
+        }
+        guard let stored = try imageRetirement(imageID: row.imageID) else {
+            throw RuntimeV2Error.registryCorrupt("the image retirement plan for '\(row.imageID)' did not persist")
+        }
+        return stored
+    }
+
+    /// Enters the physical phase. False means the row is already `done` (or
+    /// unexpectedly absent), so the caller must not touch any bytes.
+    @discardableResult
+    public func beginImageRetirementAttempt(imageID: String) throws -> Bool {
+        var entered = false
+        try transaction {
+            try run(
+                """
+                UPDATE image_retirements
+                SET phase='retiring', attempts=attempts+1, last_error=NULL, updated_at=?
+                WHERE image_id=? AND phase IN ('planned','failed','retiring')
+                """,
+                bind: { statement in
+                    Self.bindText(Self.iso(Date()), to: statement, index: 1)
+                    Self.bindText(imageID, to: statement, index: 2)
+                }
+            )
+            entered = sqlite3_changes(db) > 0
+        }
+        return entered
+    }
+
+    /// Adds the bytes actually removed. Called after each verified unlink so a
+    /// kill mid-pass never loses the physical progress already made.
+    public func addImageRetirementBytes(imageID: String, delta: Int64) throws {
+        try transaction {
+            try run(
+                """
+                UPDATE image_retirements SET retired_bytes=MAX(0, retired_bytes + ?), updated_at=?
+                WHERE image_id=?
+                """,
+                bind: { statement in
+                    sqlite3_bind_int64(statement, 1, delta)
+                    Self.bindText(Self.iso(Date()), to: statement, index: 2)
+                    Self.bindText(imageID, to: statement, index: 3)
+                }
+            )
+        }
+    }
+
+    /// Records bytes/entries the plan refused to touch (a changed file
+    /// instance, an undeclared entry, an unreadable manifest). Notes are
+    /// deduplicated and bounded to the facts the pass observed.
+    public func recordImageRetirementRetained(imageID: String, notes: [String]) throws {
+        guard !notes.isEmpty else { return }
+        var existing = try imageRetirement(imageID: imageID)?.retainedNotes ?? []
+        for note in notes where !existing.contains(note) { existing.append(note) }
+        try transaction {
+            try run(
+                "UPDATE image_retirements SET retained_notes=?, updated_at=? WHERE image_id=?",
+                bind: { statement in
+                    Self.bindOptionalText(Self.encodeStrings(existing), to: statement, index: 1)
+                    Self.bindText(Self.iso(Date()), to: statement, index: 2)
+                    Self.bindText(imageID, to: statement, index: 3)
+                }
+            )
+        }
+    }
+
+    /// Terminal success. `releasedDigests` is written in the same statement
+    /// that flips the phase, so a crash can never lose which blob rows this
+    /// retirement released: the next pass unlinks exactly those digests.
+    public func finishImageRetirement(imageID: String, releasedDigests: [String]) throws {
+        try transaction {
+            try run(
+                """
+                UPDATE image_retirements
+                SET phase='done', last_error=NULL, released_digests=COALESCE(?, released_digests), updated_at=?
+                WHERE image_id=?
+                """,
+                bind: { statement in
+                    Self.bindOptionalText(Self.encodeStrings(releasedDigests), to: statement, index: 1)
+                    Self.bindText(Self.iso(Date()), to: statement, index: 2)
+                    Self.bindText(imageID, to: statement, index: 3)
+                }
+            )
+        }
+    }
+
+    public func failImageRetirement(imageID: String, error: String) throws {
+        try transaction {
+            try run(
+                "UPDATE image_retirements SET phase='failed', last_error=?, updated_at=? WHERE image_id=? AND phase != 'done'",
+                bind: { statement in
+                    Self.bindText(String(error.prefix(512)), to: statement, index: 1)
+                    Self.bindText(Self.iso(Date()), to: statement, index: 2)
+                    Self.bindText(imageID, to: statement, index: 3)
+                }
+            )
+        }
+    }
+
+    /// Reopens a completed retirement because the SAME image generation is
+    /// physically present again (an identical re-download, a same-id
+    /// reinstall, or factory bytes that reappeared). This is what makes the
+    /// lifecycle converge across repeated generations instead of treating the
+    /// first success as a permanent exemption. Physical and blob progress of
+    /// the previous generation is reset; the new pass re-plans from the live
+    /// metadata.
+    @discardableResult
+    public func reopenImageRetirement(imageID: String) throws -> ImageRetirementRow? {
+        try transaction {
+            try run(
+                """
+                UPDATE image_retirements
+                SET phase='planned', released_digests=NULL, retained_notes=NULL,
+                    retired_bytes=0, last_error=NULL, attempts=0, updated_at=?
+                WHERE image_id=? AND phase='done'
+                """,
+                bind: { statement in
+                    Self.bindText(Self.iso(Date()), to: statement, index: 1)
+                    Self.bindText(imageID, to: statement, index: 2)
+                }
+            )
+        }
+        return try imageRetirement(imageID: imageID)
+    }
+
+    /// A cancelled/interrupted attempt returns to `planned` so the next pass
+    /// resumes the STORED plan (never a freshly guessed one) and keeps the
+    /// physical bytes/notes already recorded.
+    public func releaseImageRetirementForResume(imageID: String) throws {
+        try transaction {
+            try run(
+                "UPDATE image_retirements SET phase='planned', last_error=NULL, updated_at=? WHERE image_id=? AND phase='retiring'",
+                bind: { statement in
+                    Self.bindText(Self.iso(Date()), to: statement, index: 1)
+                    Self.bindText(imageID, to: statement, index: 2)
+                }
+            )
+        }
+    }
+
+    /// The ONE place a retired image's registry identity and blob references
+    /// are released. The row delete and every reference decrement commit in a
+    /// single transaction, then the digests that reached `refs=0, staged=0`
+    /// (inside that transaction) are returned for physical removal. A digest
+    /// still referenced by any other image manifest, template disk or in-flight
+    /// staging claim is never returned: content shared with a live generation
+    /// stays. Returns the digests whose row this call removed.
+    public func retireImageArtifacts(imageID: String, digests: [String]) throws -> [String] {
+        var collected: [String] = []
+        try transaction {
+            try run(
+                "DELETE FROM images WHERE id=?",
+                bind: { Self.bindText(imageID, to: $0, index: 1) }
+            )
+            var unique = Set<String>()
+            for digest in digests.map({ $0.lowercased() }) where unique.insert(digest).inserted {
+                try run(
+                    "UPDATE blobs SET refs=CASE WHEN refs > 0 THEN refs - 1 ELSE 0 END WHERE digest=?",
+                    bind: { Self.bindText(digest, to: $0, index: 1) }
+                )
+                guard let row = try blob(digest: digest) else { continue }
+                guard row.refs == 0, row.staged == 0 else { continue }
+                try run(
+                    "DELETE FROM blobs WHERE digest=? AND refs=0 AND staged=0",
+                    bind: { Self.bindText(digest, to: $0, index: 1) }
+                )
+                if sqlite3_changes(db) > 0 { collected.append(digest) }
+            }
+        }
+        return collected
+    }
+
+    private static let retirementColumns = """
+    image_id, reason, phase, trigger_image_id, trigger_rootfs_digest, architecture, \
+    evidence, plan_json, released_digests, retained_notes, retired_bytes, attempts, \
+    last_error, created_at, updated_at
+    """
+
+    private func retirementRow(_ statement: OpaquePointer?) -> ImageRetirementRow {
+        ImageRetirementRow(
+            imageID: text(statement, 0) ?? "",
+            reason: text(statement, 1) ?? "",
+            phase: ImageRetirementPhase(rawValue: text(statement, 2) ?? "") ?? .failed,
+            triggerImageID: text(statement, 3),
+            triggerRootfsDigest: text(statement, 4),
+            architecture: text(statement, 5) ?? "",
+            evidence: text(statement, 6) ?? "",
+            planJSON: text(statement, 7) ?? "",
+            releasedDigests: Self.decodeStrings(text(statement, 8)),
+            retainedNotes: Self.decodeStrings(text(statement, 9)),
+            retiredBytes: sqlite3_column_int64(statement, 10),
+            attempts: Int(sqlite3_column_int64(statement, 11)),
+            lastError: text(statement, 12),
+            createdAt: Self.date(text(statement, 13)) ?? Date.distantPast,
+            updatedAt: Self.date(text(statement, 14)) ?? Date.distantPast
+        )
+    }
+
+    private static func encodeStrings(_ values: [String]) -> String? {
+        guard !values.isEmpty else { return nil }
+        guard let data = try? JSONEncoder().encode(values) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    private static func decodeStrings(_ text: String?) -> [String] {
+        guard let text, let data = text.data(using: .utf8),
+              let values = try? JSONDecoder().decode([String].self, from: data) else { return [] }
+        return values
     }
 
     // MARK: software templates (immutable versions; never mutated in place)

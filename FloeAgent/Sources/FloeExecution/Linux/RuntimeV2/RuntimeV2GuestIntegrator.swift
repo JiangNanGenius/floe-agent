@@ -175,6 +175,22 @@ public protocol LinuxGuestRuntimeV2Integrating: Sendable {
     /// booting damaged bytes. Observed `isCancelled` stops between blobs and
     /// before the switch; quarantined evidence is preserved either way.
     func repairImageFromLegacyInstall(imageID: String, isCancelled: (@Sendable () -> Bool)?) async throws
+    /// Automatic factory-image lifecycle for the store this substrate owns.
+    /// `imageID` is the generation that just proved usable (its superseded
+    /// predecessor closure and its own prior backup are retired); `nil`
+    /// reconciles the discontinued-architecture backlog. Durable and
+    /// idempotent: repeated calls resume `image_retirements` rows instead of
+    /// repeating work. Never throws: an unusable trigger or a closed
+    /// maintenance domain is reported as `.notUsable`/`.deferred`.
+    func retireFactoryImages(afterUsableImage imageID: String?) async -> RuntimeV2FactoryImageRetirementReport
+    /// Same lifecycle, with the App's bound native `activeLinuxImageID`. The
+    /// resident machine's mutable disk/origin live outside every
+    /// RuntimeV2Layout, so that pin can only come from the caller; it is never
+    /// retired here even when no environment row names it. Conformers that
+    /// cannot carry the pin must defer instead of guessing.
+    func retireFactoryImages(
+        afterUsableImage imageID: String?, protectedActiveImageID: String?
+    ) async -> RuntimeV2FactoryImageRetirementReport
     /// Runner capability ledger (system/runner.json in v2).
     func recordedRunnerCapabilities(environmentID: String) async -> String?
     func recordRunnerCapabilities(_ capabilities: String, environmentID: String) async
@@ -277,6 +293,27 @@ public extension LinuxGuestRuntimeV2Integrating {
 
     func repairImageFromLegacyInstall(imageID: String, isCancelled: (@Sendable () -> Bool)?) async throws {
         throw RuntimeV2Error.imageNotFound(imageID)
+    }
+
+    /// Conservative default for conformers that do not own factory image
+    /// storage: nothing is retired and the caller can tell why.
+    func retireFactoryImages(afterUsableImage imageID: String?) async -> RuntimeV2FactoryImageRetirementReport {
+        .init(
+            trigger: .deferred, triggerImageID: imageID,
+            triggerDetail: "this Runtime v2 substrate does not own factory image storage"
+        )
+    }
+
+    func retireFactoryImages(
+        afterUsableImage imageID: String?, protectedActiveImageID: String?
+    ) async -> RuntimeV2FactoryImageRetirementReport {
+        guard protectedActiveImageID == nil else {
+            return .init(
+                trigger: .deferred, triggerImageID: imageID,
+                triggerDetail: "this substrate cannot bind the active resident image; nothing was retired"
+            )
+        }
+        return await retireFactoryImages(afterUsableImage: imageID)
     }
 
     /// Conservative default for conformers without a repair substrate: the
@@ -1535,6 +1572,28 @@ public actor RuntimeV2GuestIntegrator: LinuxGuestRuntimeV2Integrating {
         guard let legacyImagesRoot else { throw RuntimeV2Error.imageNotFound(imageID) }
         _ = try await store.images.repairImageFromLegacyInstall(
             imageID: imageID, legacyImagesRoot: legacyImagesRoot, isCancelled: isCancelled
+        )
+    }
+
+    /// Production forwarder for the automatic factory-image lifecycle. The
+    /// store's layout root decides the domain, so the same call works for the
+    /// legacy `Floe/Runtime/v2` tree and the live `arm64-v1` root. It does not
+    /// prepare/migrate anything and never throws: retirement is maintenance,
+    /// never a boot prerequisite.
+    public func retireFactoryImages(
+        afterUsableImage imageID: String?
+    ) async -> RuntimeV2FactoryImageRetirementReport {
+        await store.images.retireFactoryImages(
+            afterUsableImage: imageID, legacyImagesRoot: legacyImagesRoot
+        )
+    }
+
+    public func retireFactoryImages(
+        afterUsableImage imageID: String?, protectedActiveImageID: String?
+    ) async -> RuntimeV2FactoryImageRetirementReport {
+        await store.images.retireFactoryImages(
+            afterUsableImage: imageID, legacyImagesRoot: legacyImagesRoot,
+            protectedActiveImageID: protectedActiveImageID
         )
     }
 

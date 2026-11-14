@@ -15,12 +15,12 @@ enum LinuxCacheCleanupText {
     static var title: String { t("清理 Linux 缓存", "Clean Linux cache") }
     static var entryTitle: String { t("清理 Linux 环境缓存", "Clean Linux environment cache") }
     static var entryDetail: String {
-        t("打开清理任务，保留文件与已安装软件。",
-          "Open a cleanup task while keeping files and installed software.")
+        t("检查系统和已安装软件的缓存，保留项目与软件。",
+          "Check caches used by Linux and your installed tools. Keep projects and software.")
     }
     static var sectionFooter: String {
-        t("没有可用模型时，自动使用内置清理方式。",
-          "Uses built-in cleanup when no model is available.")
+        t("没有可用模型时，内置脚本会清理 apt、pip 和 npm 缓存。",
+          "When no model is available, the built-in script cleans apt, pip and npm caches.")
     }
     static var starting: String { t("正在创建清理任务…", "Creating cleanup task…") }
     static var prepareFailed: String {
@@ -34,8 +34,11 @@ enum LinuxCacheCleanupText {
 
     static func fallbackCompleted(_ receipt: LinuxCacheCleanupReceipt) -> String {
         var lines: [String] = []
-        lines.append(t("内置 Linux 清理脚本已完成（未使用模型）。",
-                       "The bundled Linux cleanup script finished (no model was used)."))
+        if receipt.mode == "clean" {
+            lines.append(t("内置脚本已完成清理。", "The built-in cleanup finished."))
+        } else {
+            lines.append(t("本次仅完成缓存检查。", "Only the cache inspection completed."))
+        }
         lines.append(spaceLine(receipt))
         lines.append(contentsOf: categoryLines(receipt))
         if receipt.partial {
@@ -94,18 +97,23 @@ enum LinuxCacheCleanupText {
     }
 
     private static var outerSpaceNote: String {
-        t("说明：上面是 Linux 客户机内的可用空间，不等于 iPad 物理空间；删除客户机文件可能不会让外层磁盘占用立即变小。",
-          "Note: the numbers above are free space inside the Linux guest, not iPad physical storage. Deleting guest files may not shrink the outer disk immediately.")
+        t("设备容量请在「数据管理」查看。", "For device storage, open Data Management.")
     }
 
     private static func spaceLine(_ receipt: LinuxCacheCleanupReceipt) -> String {
         let before = receipt.dfAvailableBeforeBytes.map(bytes) ?? t("未知", "unknown")
         let after = receipt.dfAvailableAfterBytes.map(bytes) ?? t("未知", "unknown")
-        return t("Linux 客户机可用空间：清理前 ", "Linux guest available space: ")
+        let sharedMount = receipt.dfPath == "/floe/env" || receipt.dfPath == "/workspace"
+        let label = sharedMount
+            ? t("共享目录所在卷", "Shared folder volume")
+            : t("Linux 系统盘", "Linux system disk")
+        if receipt.mode == "inspect" {
+            return label + t("可用空间：", " free space: ") + before
+        }
+        return label + t("可用空间，清理前 ", " free space before cleanup ")
             + before
-            + t("，清理后 ", " before, ")
+            + t("，清理后 ", ", after cleanup ")
             + after
-            + "."
     }
 
     private static func categoryLines(_ receipt: LinuxCacheCleanupReceipt) -> [String] {

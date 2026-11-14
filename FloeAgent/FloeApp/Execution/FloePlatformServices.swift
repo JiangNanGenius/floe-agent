@@ -13,6 +13,20 @@ import FloeTools
 import AVFoundation
 #endif
 
+struct LinuxImageRetirementResult: Sendable {
+    var removed = 0
+    var incomplete = false
+    var hostAvailableBefore: Int64?
+    var hostAvailableAfter: Int64?
+    mutating func include(_ result: RuntimeV2FactoryImageRetirementReport) {
+        removed += result.retiredImages.count
+        if result.retiredImages.isEmpty, result.deletedFiles > 0 || result.releasedBlobs > 0 {
+            removed += 1
+        }
+        incomplete = incomplete || !result.failures.isEmpty || result.trigger == .deferred || result.cancelled
+    }
+}
+
 final class FloePlatformServices: @unchecked Sendable {
     static let shared = FloePlatformServices()
     // Bump only when bundled runtime ABI/layer compatibility changes, never for an App build.
@@ -42,6 +56,7 @@ final class FloePlatformServices: @unchecked Sendable {
     private var imageResidueCleanupDidRun = false
     private var imageResidueCleanupTask: Task<Void, Never>?
     private var imageResidueCleanupReport: LinuxGuestUpgradeResidueReport?
+    private var legacyImageRetirementTask: Task<LinuxImageRetirementResult, Never>?
     /// Runtime v2 verified-image truth, injected by the Linux backend
     /// assembly. Once the v2 migration moves the legacy image directory into
     /// its rollback point, the legacy-only status below would wrongly report
@@ -332,7 +347,14 @@ final class FloePlatformServices: @unchecked Sendable {
     }
 
     func cancelAutomaticLinuxImageResidueCleanup() {
-        lock.withLock { imageResidueCleanupTask?.cancel() }
+        lock.withLock {
+            imageResidueCleanupTask?.cancel()
+            legacyImageRetirementTask?.cancel()
+        }
+    }
+
+    func cancelLegacyImageRetirement() {
+        lock.withLock { legacyImageRetirementTask?.cancel() }
     }
 
     func automaticLinuxImageResidueCleanupReport() -> LinuxGuestUpgradeResidueReport? {
@@ -346,9 +368,15 @@ final class FloePlatformServices: @unchecked Sendable {
             imageResidueCleanupDidRun = true
             imageResidueCleanupTask = Task.detached(priority: .utility) { [weak self, service] in
                 let report = await service.cleanupUpgradeResidue()
-                self?.lock.withLock {
-                    self?.imageResidueCleanupReport = report
-                    self?.imageResidueCleanupTask = nil
+                guard let self else { return }
+                let retirement = await self.retireObsoleteLinuxImages(cleanTransfers: false,
+                    isCancelled: { Task.isCancelled })
+                if report.deletedJobs > 0 || retirement.removed > 0 {
+                    StorageMutationHooks.invalidate(.environmentChanged)
+                }
+                self.lock.withLock {
+                    self.imageResidueCleanupReport = report
+                    self.imageResidueCleanupTask = nil
                 }
                 let volumeChange = report.volumeAvailableDeltaBytes.map { String($0) } ?? "unknown"
                 FloeLogger(category: .tools).info(
@@ -359,6 +387,88 @@ final class FloePlatformServices: @unchecked Sendable {
                     + "bounded=\(report.budgetReached) cancelled=\(report.wasCancelled)")
             }
         }
+    }
+
+    /// Only opens old metadata when its actual registry exists. It must close
+    /// before the old sparse-rewrite authority audits native file descriptors.
+    private static func retireLegacyLinuxImages() async -> LinuxImageRetirementResult {
+        var result = LinuxImageRetirementResult()
+        guard let root = RuntimeV2MaintenanceDomain.trustedLegacyRoot() else { return result }
+        let layout = RuntimeV2Layout(root: root)
+        guard FileManager.default.fileExists(atPath: layout.registryDatabaseURL.path) else { return result }
+        guard LinuxGuestMaintenanceAssembly.currentRuntime() != nil else {
+            result.incomplete = true
+            return result
+        }
+        let store = RuntimeV2Store(layout: layout)
+        // Working disks must be classified while their source image records
+        // still exist. Only the discontinued architecture is discarded here.
+        // An upgraded device can have more legacy environments than one
+        // metadata batch. Keep advancing while that batch actually removes
+        // something. A busy or unreadable item must not create a retry loop.
+        let limits = RuntimeV2RecoveredDiskRetirement.Limits(maximumCandidates: 128)
+        while !Task.isCancelled {
+            let disks = await store.disposeEligibleObsoleteRISCVRuntime(limits: limits)
+            result.removed += disks.disposedCount
+            result.incomplete = !disks.isComplete
+            if disks.isComplete || disks.disposedCount == 0 || !(disks.scanTruncated || disks.limitsReached) {
+                break
+            }
+            await Task.yield()
+        }
+        if Task.isCancelled { result.incomplete = true }
+        if !result.incomplete, !Task.isCancelled {
+            result.include(await store.images.retireRetiredArchitectureFactoryImages(isCancelled: { Task.isCancelled }))
+        }
+        do { try await store.registry.close() } catch { result.incomplete = true }
+        return result
+    }
+
+    private func sharedLegacyImageRetirement(isCancelled: @Sendable () -> Bool) async -> LinuxImageRetirementResult {
+        let job: Task<LinuxImageRetirementResult, Never>? = lock.withLock {
+            guard !isCancelled() else { return nil }
+            if let existing = legacyImageRetirementTask { return existing }
+            let task = Task.detached(priority: .utility) { [weak self] in
+                let result = await Self.retireLegacyLinuxImages()
+                self?.lock.withLock { self?.legacyImageRetirementTask = nil }
+                return result
+            }
+            legacyImageRetirementTask = task
+            return task
+        }
+        guard let job else { return LinuxImageRetirementResult() }
+        return await job.value
+    }
+
+    func retireObsoleteLinuxImages(cleanTransfers: Bool = true,
+                                   isCancelled: @escaping @Sendable () -> Bool) async -> LinuxImageRetirementResult {
+        var result = LinuxImageRetirementResult()
+        guard !isCancelled() else { return result }
+        func availableBytes() -> Int64? {
+            guard let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first,
+                  let values = try? support.resourceValues(forKeys: [.volumeAvailableCapacityKey]),
+                  let capacity = values.volumeAvailableCapacity else { return nil }
+            return Int64(capacity)
+        }
+        result.hostAvailableBefore = availableBytes()
+        if cleanTransfers, let images = linuxImageBox.value {
+            let transfers = await images.cleanupUpgradeResidue(isCancelled: isCancelled)
+            result.removed += transfers.deletedJobs
+            result.incomplete = transfers.failedJobs > 0 || transfers.budgetReached || transfers.wasCancelled
+        }
+        if !isCancelled() {
+            let legacy = await sharedLegacyImageRetirement(isCancelled: isCancelled)
+            result.removed += legacy.removed
+            result.incomplete = result.incomplete || legacy.incomplete
+        }
+        if !isCancelled(), let status = linuxImageRuntimeV2Snapshot(), let retire = status.retireFactoryImages,
+           FileManager.default.fileExists(atPath: status.expandedImagesRoot.path) {
+            // Only the actual resident disk can authorize replacing its boot source.
+            let current = try? await linuxResidentImageSource.imageID(requireExistingDisk: true)
+            if !isCancelled() { result.include(await retire(current, isCancelled)) }
+        }
+        result.hostAvailableAfter = availableBytes()
+        return result
     }
 
     /// Runtime v2 verified-image truth for install-state composition. Set by
@@ -444,7 +554,8 @@ final class FloePlatformServices: @unchecked Sendable {
         }
         let ticket = linuxImageStatusCache.currentRevision
         let legacy = await images.status(id: id)
-        guard let v2 = lock.withLock({ linuxImageRuntimeV2 }),
+        guard !LinuxGuestImageDistributionCatalog.isRetiredImage(id: id),
+              let v2 = lock.withLock({ linuxImageRuntimeV2 }),
               let check = await v2.health(id, nil),
               case .health(let health) = check else {
             linuxImageStatusCache.storeIfRevisionUnchanged(legacy, id: id, ticket: ticket)
@@ -504,7 +615,8 @@ final class FloePlatformServices: @unchecked Sendable {
         // THIS caller but never enters the cache.
         let ticket = linuxImageStatusCache.currentRevision
         let legacy = try await images.status(id: id, isCancelled: isCancelled)
-        guard let v2 = lock.withLock({ linuxImageRuntimeV2 }),
+        guard !LinuxGuestImageDistributionCatalog.isRetiredImage(id: id),
+              let v2 = lock.withLock({ linuxImageRuntimeV2 }),
               let check = await v2.health(id, isCancelled) else {
             // No v2 substrate: the legacy answer is the whole truth. Only a
             // completed read is cached; a cancelled read threw above.
@@ -633,7 +745,8 @@ final class FloePlatformServices: @unchecked Sendable {
             // rather than a fabricated one.
             return nil
         }
-        guard let v2 = lock.withLock({ linuxImageRuntimeV2 }),
+        guard !LinuxGuestImageDistributionCatalog.isRetiredImage(id: id),
+              let v2 = lock.withLock({ linuxImageRuntimeV2 }),
               let check = await v2.reverifyHealth(id, cancelCheck),
               case .health(let health) = check else {
             return legacy
@@ -663,11 +776,14 @@ final class FloePlatformServices: @unchecked Sendable {
     /// image does not need to resolve successfully before it can be downloaded.
     /// Unknown provenance still requires the separate preserve-and-rebuild path.
     func linuxImageIDForRedownload() async throws -> String {
-        do { return try await activeLinuxImageID() }
+        let id: String
+        do { id = try await activeLinuxImageID() }
         catch let error as LinuxResidentImageResolutionError {
-            if let id = error.recoverableImageID { return id }
-            throw error
+            guard let recoverable = error.recoverableImageID else { throw error }
+            id = recoverable
         }
+        return LinuxGuestImageDistributionCatalog.isRetiredImage(id: id)
+            ? LinuxGuestImageDistributionCatalog.defaultImageID : id
     }
 
     func redownloadLinuxImage(imageID: String) async throws {
@@ -1150,6 +1266,9 @@ final class FloePlatformServices: @unchecked Sendable {
         forceDownload: Bool = false,
         onPhase: @escaping @Sendable (LinuxGuestImageTransferPhase) -> Void = { _ in }
     ) async throws -> String {
+        guard !LinuxGuestImageDistributionCatalog.isRetiredImage(id: imageID) else {
+            throw LinuxGuestImageInstallError.noDistributableImage(id: imageID, detail: "unsupported guest architecture")
+        }
         let jobID = "linux-image:" + imageID
         // Register this waiter BEFORE any awaits: a settings-level global
         // cancel in the small window before the shared attempt exists must
@@ -1289,6 +1408,14 @@ final class FloePlatformServices: @unchecked Sendable {
                     throw FloeError.validationFailed(
                         "Linux image \(imageID) did not verify after the install: \(SecretRedactor.redact(detail))"
                     )
+                }
+                if !cancelCheck(), let retire = self.linuxImageRuntimeV2Snapshot()?.retireFactoryImages,
+                   let active = try? await self.linuxResidentImageSource.imageID(requireExistingDisk: true),
+                   active == image.id {
+                    let cleanup = await retire(active, cancelCheck)
+                    if cleanup.deletedFiles > 0 || cleanup.releasedBlobs > 0 {
+                        StorageMutationHooks.invalidate(.environmentChanged)
+                    }
                 }
                 return "Linux image \(image.id) installed and verified"
             } onCancel: {

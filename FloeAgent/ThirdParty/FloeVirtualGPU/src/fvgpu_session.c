@@ -147,7 +147,7 @@ create_session(const FloeGPUDeviceInfo **info,const char *app_group,char *err,si
         free(s);renderer_owned=false;pthread_mutex_unlock(&lifecycle_lock);return NULL;
     }
     s->info.venus_enabled=true;s->info.num_capsets=1;
-    struct virgl_renderer_capset_venus venus;
+    struct virgl_renderer_capset_venus venus={0};
     s->info.venus_capset_size=(uint32_t)vkr_get_capset(&venus,0);
     s->info.venus_capset_version=venus.wire_format_version;
     fvgpu_fill_device_identity(s);

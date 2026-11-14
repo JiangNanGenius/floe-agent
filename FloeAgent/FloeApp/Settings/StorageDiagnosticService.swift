@@ -25,8 +25,10 @@ struct StorageCategoryDiagnostic: Identifiable, Sendable {
     let name: String
     let systemImage: String
     /// Host-allocated bytes (sparse-aware) on the report's active basis: the
-    /// measured extent union when it was collected, otherwise the allocated
-    /// size with identity + full-clone dedup. The two are never mixed.
+    /// measured extent union when it was collected (exact for measured files
+    /// plus any bounded residual for unmeasured files), otherwise the
+    /// allocated size with identity + full-clone dedup. The two are never
+    /// mixed silently; ``StorageDiagnosticReport/extentBasis`` says which.
     let allocatedBytes: Int64
     /// Apparent/logical bytes. For VM disks this is the *configured guest
     /// capacity*, not the host cost.
@@ -50,13 +52,14 @@ let vmDiskMixedCategoryIDs: Set<String> = ["environments", "linuxDisks"]
 /// category/count/size/error metrics — never file paths, names or contents.
 struct StorageDiagnosticReport: Sendable {
     /// Installer bytes on the report's active basis: the installed bundle's
-    /// owned share of the measured union when available, otherwise the raw
-    /// allocated bundle size.
+    /// owned share of the measured extent basis (exact measured share plus any
+    /// bounded residual) when available, otherwise the raw allocated bundle
+    /// size.
     let bundleBytes: Int64
     let categories: [StorageCategoryDiagnostic]
     let unattributed: StorageCategoryDiagnostic?
     /// User-data bytes on the SAME active basis as ``bundleBytes``: the data
-    /// side of the union when available, otherwise the allocated total.
+    /// side of the extent basis when available, otherwise the allocated total.
     let totalAllocatedBytes: Int64
     let totalLogicalBytes: Int64
     let isSharedAllocationEstimate: Bool
@@ -85,12 +88,23 @@ struct StorageDiagnosticReport: Sendable {
     let totalBasis: StorageTotalBasis
     /// Whether the extent probe could be collected (internal diagnostic).
     let extentBasis: StorageExtentBasisState
-    /// Aggregate reason when the extent basis was withheld; never a path.
+    /// Aggregate reason when the extent basis was withheld entirely; never a
+    /// path. Nil on a partial basis.
     let extentUnavailableReason: StorageExtentProbeFailure?
+    /// Exact extent-union bytes of the files that answered. Zero when the
+    /// basis was not collected.
+    let extentMeasuredBytes: Int64
+    /// Allocated bytes of counted files whose extents could not be measured.
+    /// A bounded allowance included in the totals; it may overlap the measured
+    /// union and is never presented as measured.
+    let extentResidualBytes: Int64
+    /// Counted files whose allocation is in ``extentResidualBytes``.
+    let extentUnmeasuredFileCount: Int
 
-    /// Overview total on the ACTIVE basis: the measured extent union when it
-    /// was collected, otherwise installer + allocated. Never a mix, and the
-    /// category rows sum to `totalAllocatedBytes` on either basis.
+    /// Overview total on the ACTIVE basis: the measured extent basis when it
+    /// was collected (exact for measured files plus any bounded residual),
+    /// otherwise installer + allocated. Category rows sum to
+    /// `totalAllocatedBytes` on every basis, including the mixed one.
     var combinedBytes: Int64 { bundleBytes + totalAllocatedBytes }
     var dataBytes: Int64 { totalAllocatedBytes }
     /// Some measurement was unavailable; the UI must label the figures as
@@ -98,6 +112,10 @@ struct StorageDiagnosticReport: Sendable {
     var isPartial: Bool {
         scanErrorCount > 0 || allocatedUnavailableCount > 0 || identityUnavailableCount > 0
     }
+    /// The extent basis is a mixed upper bound: exact for the measured files,
+    /// plus a bounded allocation allowance for the ones that could not be
+    /// measured. The UI must say so instead of calling the total exact.
+    var isMixedExtentEstimate: Bool { extentBasis == .partial }
     /// True when file figures may share APFS clone blocks and must not be
     /// presented as the app's accounted footprint. On the measured-extent
     /// basis the sharing is already resolved in the totals; the flag stays
@@ -364,7 +382,10 @@ final class StorageDiagnosticService: ObservableObject {
             filesScanned: report.filesScanned,
             totalBasis: report.totals.basis,
             extentBasis: snapshot.census.diagnostics.extentBasis,
-            extentUnavailableReason: snapshot.census.diagnostics.extentUnavailableReason
+            extentUnavailableReason: snapshot.census.diagnostics.extentUnavailableReason,
+            extentMeasuredBytes: snapshot.census.extentUnion?.measuredBytes ?? 0,
+            extentResidualBytes: snapshot.census.extentUnion?.residualBytes ?? 0,
+            extentUnmeasuredFileCount: snapshot.census.extentUnion?.unmeasuredFileCount ?? 0
         )
     }
 

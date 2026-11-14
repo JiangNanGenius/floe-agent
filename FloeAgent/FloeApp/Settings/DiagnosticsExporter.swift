@@ -235,13 +235,19 @@ enum DiagnosticsExporter {
         }
         let report = StorageReportBuilder.build(census: snapshot.census, bundleBytes: snapshot.bundleBytes)
         let diagnostics = snapshot.census.diagnostics
-        let extentAvailable = snapshot.census.extentUnion != nil && diagnostics.extentBasis == .available
+        let extentUnion = snapshot.census.extentUnion
+        // A union is published for both an exact (`available`) and a mixed
+        // (`partial`) basis; only `unavailable` withholds it.
+        let extentAvailable = extentUnion != nil
+            && (diagnostics.extentBasis == .available || diagnostics.extentBasis == .partial)
         let extentReason = diagnostics.extentUnavailableReason?.rawValue
             ?? (extentAvailable ? "none" : (diagnostics.extentBasis == .notRequested ? "not_requested" : "not_recorded_or_union_absent"))
+        let privateLowerBound = report.measuredExclusiveLowerBoundBytes.map { String($0) } ?? "unavailable"
         lines += ["cache_status: loaded", "cache_age_seconds: \(String(format: "%.0f", age))",
             "cache_freshness: \(age <= 600 ? "fresh_by_age" : "stale")",
             "figures_available: true", "figures_are_cached_observations: true",
             "schema_version: \(snapshot.schemaVersion)", "basis: \(report.totals.basis.rawValue)",
+            "basis_semantics: \(Self.basisSemantics(diagnostics.extentBasis))",
             "total_basis_bytes: \(report.totals.totalBytes)", "bundle_basis_bytes: \(report.totals.bundleBytes)",
             "data_basis_bytes: \(report.totals.dataBytes)", "data_allocated_bytes: \(report.totalAllocatedBytes)",
             "data_logical_bytes: \(report.totalLogicalBytes)", "measurement_gaps: \(diagnostics.hasMeasurementGaps)",
@@ -250,7 +256,16 @@ enum DiagnosticsExporter {
             "allocated_unavailable: \(diagnostics.allocatedUnavailableCount)",
             "identity_unavailable: \(diagnostics.identityUnavailableCount)",
             "extent_basis: \(diagnostics.extentBasis.rawValue)", "extent_union_available: \(extentAvailable)",
-            "extent_unavailable_reason: \(extentReason)", "clone_sharing_estimate: \(report.hasSharedEstimates)"]
+            "extent_unavailable_reason: \(extentReason)",
+            "extent_measured_bytes: \(extentUnion?.measuredBytes ?? 0)",
+            "extent_residual_bytes: \(extentUnion?.residualBytes ?? 0)",
+            "extent_unmeasured_files: \(extentUnion?.unmeasuredFileCount ?? 0)",
+            "extent_first_unmeasured_reason: \(extentUnion?.firstUnmeasuredReason?.rawValue ?? "none")",
+            "deduped_clone_bytes: \(diagnostics.dedupedCloneBytes)",
+            "deduped_clone_files: \(diagnostics.dedupedCloneFileCount)",
+            "clone_capable_allocated_bytes: \(report.cloneCapableAllocatedBytes)",
+            "measured_private_lower_bound_bytes: \(privateLowerBound)",
+            "clone_sharing_estimate: \(report.hasSharedEstimates)"]
         let allowedIDs: Set<String> = ["models", "workspaces", "fonts", "attachments", "generated", "browser",
             "checkpoints", "materials", "canvases", "mediaProjects", "cad", "environments", "linuxDisks",
             "runtimeV2", "runtimeARM64", "floeOther", "library", "documents", "caches", "temporary"]
@@ -267,6 +282,22 @@ enum DiagnosticsExporter {
                 + " logical_bytes=\(other.logicalBytes) files=\(other.fileCount)")
         }
         return lines.joined(separator: "\n")
+    }
+
+    /// Explicit meaning of the numeric basis for the export. The FloeCore
+    /// report basis stays `measuredExtents` for both the exact union and the
+    /// mixed upper bound, so the distinction is carried here and in
+    /// `extent_measured_bytes` / `extent_residual_bytes`.
+    ///
+    /// `nonisolated`: called from the nonisolated cache-only summary path
+    /// above; the function is pure and reads no actor state.
+    private nonisolated static func basisSemantics(_ basis: StorageExtentBasisState) -> String {
+        switch basis {
+        case .available: return "measured_exact"
+        case .partial: return "measured_plus_residual_upper_bound"
+        case .unavailable: return "allocated_estimate"
+        case .notRequested: return "allocated_estimate_no_extent_probe"
+        }
     }
 
     // MARK: - System runtime evidence (previous exit, MetricKit)

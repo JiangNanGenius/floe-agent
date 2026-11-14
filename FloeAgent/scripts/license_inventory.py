@@ -419,7 +419,7 @@ EXCEPTIONS = {
         "ThirdParty/FloeCADKit/OCCT_RELINK.md and relink/SOURCE_OFFER.md. "
         "This is an engineering record, not a legal certification."
     ),
-    "Debian package licenses; kernel GPL-2.0; EDK2 BSD/MIT; static glibc LGPL-2.1": (
+    "Debian package licenses; kernel GPL-2.0; EDK2 BSD/MIT; static glibc LGPL-2.1; Mesa/libglvnd MIT/X11 and per-file notices": (
         "the Linux guest is a separately distributed downloadable image; its "
         "source and license texts are recorded in the pinned image manifest"
     ),
@@ -627,9 +627,9 @@ STATIC_COMPONENTS = (
         "engines", None,
     ),
     (
-        "Floe shared Linux component (Debian 13 ARM64)", "resident-20261105-v1",
-        "Debian package licenses; kernel GPL-2.0; EDK2 BSD/MIT; static glibc LGPL-2.1",
-        "https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-linux-arm64-20261105.1",
+        "Floe shared Linux component (Debian 13 ARM64)", "gpu-resident-20261111-v8",
+        "Debian package licenses; kernel GPL-2.0; EDK2 BSD/MIT; static glibc LGPL-2.1; Mesa/libglvnd MIT/X11 and per-file notices",
+        "https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-linux-arm64-20261111.1",
         "engines", "settings.licenses.note.guest_image",
     ),
     (

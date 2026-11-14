@@ -504,6 +504,28 @@ final class LinuxGuestImageRecoveryTests: XCTestCase {
         XCTAssertTrue(samples.allSatisfy { $0.received <= $0.expected })
     }
 
+    func testRepeatedRedownloadPublishesOneImageAndActuallyUnlinksItsPredecessor() async throws {
+        let id = "floe-redownload-retirement-test"
+        let archive = try makePinnedZipFixture(id: id)
+        let service = LinuxGuestImageInstallationService(root: workRoot.appendingPathComponent("redownload"))
+        let installed = service.imagesDirectory.appendingPathComponent(id)
+        let downloader = PhaseFixtureDownloader(archive: archive)
+        for round in 0..<3 {
+            if round > 0 {
+                try Data([UInt8(round)]).write(to: installed.appendingPathComponent("previous-install-only"))
+            }
+            let image = try await service.installTrustedImage(id: id, downloader: downloader, forceDownload: true)
+            XCTAssertEqual(image.id, id)
+            let status = await service.status(id: id)
+            XCTAssertTrue(status.installed)
+            XCTAssertNil(status.verificationIssue)
+            let entries = try XCTUnwrap(FileManager.default.enumerator(atPath: service.imagesDirectory.path))
+            let paths = entries.allObjects.compactMap { $0 as? String }
+            XCTAssertEqual(paths.filter { $0.hasSuffix("manifest.json") }, [id + "/manifest.json"])
+            XCTAssertFalse(paths.contains { $0.contains(".trash-") || $0.contains("previous-install-only") })
+        }
+    }
+
     /// Owner cancellation that arrives at the archive-hash boundary stops the
     /// install (the bounded hasher checks the token before every read) and
     /// never promotes a candidate or leaves staging behind.

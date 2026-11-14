@@ -428,6 +428,7 @@ private actor ARM64ResidentGuestOwner {
             ramMiB: requested.memoryMB ?? 512, possibleVCPUs: 4,
             onlineMemoryEnabled: imageSupportsOnlineMemory(image),
             gpuEnabled: image.deviceCapabilities?.vulkanGPU == true,
+            gpuAllowsCPUFallback: true,
             gpuBudgetMiB: requested.resolvedGPUMemoryMB,
             gpuAppGroupIdentifier: FloeL10n.appGroupIdentifier,
             virtioConsoles: 9, networkEnabled: true)

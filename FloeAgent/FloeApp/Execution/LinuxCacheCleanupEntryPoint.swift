@@ -121,11 +121,7 @@ enum LinuxCacheCleanupEntryPoint {
     /// `.shared` prevents a first-project/session or temporary environment
     /// from becoming the cleanup target by accident.
     private static func resolveSharedEnvironment(_ environment: AppEnvironment) async throws -> ContainerRecord {
-        // Cleanup only reads the already-loaded registry. Never initialize,
-        // migrate or prepare a missing environment to remove its caches.
-        guard let record = await environment.environmentRegistry.record(
-            id: EnvironmentRegistry.sharedContainerID
-        ) else {
+        guard let record = try await environment.environmentRegistry.existingSharedContainer() else {
             throw FloeError.notFound("The shared Linux environment")
         }
         guard record.kind == .shared,

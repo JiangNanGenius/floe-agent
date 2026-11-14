@@ -58,19 +58,9 @@ public actor EnvironmentRegistry {
         guard !loaded else { return }
         if fileManager.fileExists(atPath: roots.registryURL.path) {
             let data = try Data(floeContentsOf: roots.registryURL)
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            let snapshot = try decoder.decode(Snapshot.self, from: data)
-            guard snapshot.schemaVersion == Self.schemaVersion,
-                  Set(snapshot.containers.map(\.id)).count == snapshot.containers.count else {
-                throw FloeError.validationFailed("Unsupported or duplicate environment records")
-            }
+            let snapshot = try Self.decodeSnapshot(data)
             records = Dictionary(uniqueKeysWithValues: snapshot.containers.map { ($0.id, $0) })
             quota = snapshot.quota
-            guard snapshot.residentRuntimeGeneration == nil
-                || LinuxResidentRuntimeGeneration.recoveryID(from: snapshot.residentRuntimeGeneration) != nil else {
-                throw FloeError.validationFailed("Invalid retained resident generation")
-            }
             residentRuntimeGeneration = snapshot.residentRuntimeGeneration
             for (id, var record) in records where record.baseRevision != baseRevision && record.effectiveExecutionBackend != .macBridge && record.effectiveExecutionBackend != .remoteSSH {
                 if compatibleBaseRevisions.contains(record.baseRevision), record.state != .deleting,
@@ -250,6 +240,34 @@ public actor EnvironmentRegistry {
     }
 
     public func record(id: String) -> ContainerRecord? { records[id] }
+
+    /// A settings action can arrive before the first ordinary shell has loaded this actor.
+    /// Reading the saved identity must not initialize or migrate an environment.
+    public func existingSharedContainer() throws -> ContainerRecord? {
+        if loaded { return records[Self.sharedContainerID] }
+        let data: Data
+        do {
+            data = try Data(floeContentsOf: roots.registryURL)
+        } catch FloeError.notFound {
+            return nil
+        }
+        return try Self.decodeSnapshot(data).containers.first { $0.id == Self.sharedContainerID }
+    }
+
+    private static func decodeSnapshot(_ data: Data) throws -> Snapshot {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let snapshot = try decoder.decode(Snapshot.self, from: data)
+        guard snapshot.schemaVersion == Self.schemaVersion,
+              Set(snapshot.containers.map(\.id)).count == snapshot.containers.count else {
+            throw FloeError.validationFailed("Unsupported or duplicate environment records")
+        }
+        guard snapshot.residentRuntimeGeneration == nil
+            || LinuxResidentRuntimeGeneration.recoveryID(from: snapshot.residentRuntimeGeneration) != nil else {
+            throw FloeError.validationFailed("Invalid retained resident generation")
+        }
+        return snapshot
+    }
 
     /// The newest committed version of a template. Existing callers keep
     /// working; containers that pinned an earlier version resolve that exact

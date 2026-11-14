@@ -1200,7 +1200,11 @@ final class AppEnvironment: ObservableObject {
         self.linuxGuestService = linuxGuests
         self.storageOptimizationService = StorageOptimizationService(
             adapter: LinuxGuestMaintenanceAssembly.currentRuntime()?.optimizer,
-            bootstrapFailure: LinuxGuestMaintenanceAssembly.currentBootstrapFailure())
+            bootstrapFailure: LinuxGuestMaintenanceAssembly.currentBootstrapFailure(),
+            retireImages: { cancellation in
+                await FloePlatformServices.shared.retireObsoleteLinuxImages(isCancelled: { cancellation.isCancelled })
+            },
+            cancelRetiringImages: { FloePlatformServices.shared.cancelLegacyImageRetirement() })
         // Optional guest → host archive bridge: a `floe-host archive …`
         // command inside an environment's guest delegates to the host's
         // native archive engine over bounded console control frames. The

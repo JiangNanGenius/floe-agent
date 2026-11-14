@@ -38,12 +38,48 @@ struct DataManagementView: View {
     }
 
     private func fileUsageTitle(_ report: StorageDiagnosticReport) -> String {
+        if report.isMixedExtentEstimate {
+            // Exact for the measured files, plus a bounded allocation
+            // allowance for the ones that could not be measured. It is an
+            // upper bound, not the exact union and not iOS's app size.
+            return FloeL10n.isChinese
+                ? "文件占用估算（上限）"
+                : "Estimated file usage (upper bound)"
+        }
         if report.isPartial || report.changedOrVanishedCount > 0 {
             return FloeL10n.l("settings.data_management_view.partial_file_estimate")
         }
         return FloeL10n.l(report.totalBasis == .measuredExtents
             ? "settings.data_management_view.floe_total_usage"
             : "settings.data_management_view.file_usage_estimate")
+    }
+
+    /// Plain-language bound for the mixed extent basis: what was measured
+    /// exactly and what is only a conservative allowance. Kept inline (not a
+    /// shared-catalog key) because it is specific to this transient state.
+    private func mixedExtentNote(_ report: StorageDiagnosticReport) -> String {
+        let measured = ByteCountFormatter.string(
+            fromByteCount: report.extentMeasuredBytes, countStyle: .file
+        )
+        let count = report.extentUnmeasuredFileCount
+        if FloeL10n.isChinese {
+            return "精确实测：\(measured)。另有 \(count) 个文件无法测量，已按分配大小计入（可能包含共享块），因此总计为上限。"
+        }
+        let files = count == 1 ? "1 file" : "\(count) files"
+        return "Measured exactly: \(measured). \(files) couldn't be measured and are counted at allocated size, which may include shared blocks; this total is an upper bound."
+    }
+
+    /// Shareable-file figure on the report's active basis. When the physical
+    /// extent basis was collected, the overview already resolves shared
+    /// blocks, so this is the measured share of clone-capable buckets. On the
+    /// allocated estimate basis it stays the accepted raw capacity.
+    private func shareableFileBytes(_ report: StorageDiagnosticReport) -> Int64 {
+        if report.extentBasis == .available || report.extentBasis == .partial {
+            return report.categories
+                .filter(\.isCloneCapable)
+                .reduce(Int64(0)) { $0 + $1.allocatedBytes }
+        }
+        return report.cloneCapableAllocatedBytes
     }
 
     var body: some View {
@@ -138,6 +174,10 @@ struct DataManagementView: View {
                             "settings.data_management_view.updated_at",
                             Self.scanTimestampFormatter.string(from: report.generatedAt)
                         )).font(.caption2).foregroundStyle(.secondary)
+                        if report.isMixedExtentEstimate {
+                            Text(mixedExtentNote(report))
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
                         if storage.isScanning {
                             Text("settings.data_management_view.refreshing")
                                 .font(.caption2).foregroundStyle(.secondary)
@@ -152,31 +192,47 @@ struct DataManagementView: View {
                 }
             }
 
-            if let report = storage.report, report.hasSharedEstimates {
-                // This is the allocated size of sharing-capable file buckets,
-                // including their private blocks, not a measured shared-block
-                // footprint. It is already included in the overview once.
+            if let report = storage.report, report.hasSharedEstimates,
+               shareableFileBytes(report) > 0 {
+                // On a measured (exact or partial) basis the overview already
+                // resolves shared blocks, so show the measured share of
+                // clone-capable buckets — their raw allocated capacity can
+                // exceed the whole total and would read as double counting.
+                // On the allocated estimate basis keep that raw capacity: it
+                // is the only signal that the estimate is non-additive.
                 Section {
                     StorageUsageRow(
                         title: FloeL10n.l("settings.data_management_view.shared_file_capacity"),
                         icon: "doc.on.doc",
-                        bytes: report.cloneCapableAllocatedBytes
+                        bytes: shareableFileBytes(report)
                     )
                 } header: {
                     Text("settings.data_management_view.shared_files")
                 } footer: {
-                    Text("settings.data_management_view.shared_files_included")
+                    switch report.extentBasis {
+                    case .available:
+                        Text(FloeL10n.isChinese
+                            ? "可能包含共享块的文件实测占用；共享块已在上方总计中只计一次。"
+                            : "Measured usage of files that may share storage blocks; shared blocks are already counted once in the total above.")
+                    case .partial:
+                        Text(FloeL10n.isChinese
+                            ? "可能包含共享块的文件在同一估算基础上计入；共享块已在上方总计中只计一次。"
+                            : "Files that may share storage blocks are included on the same estimated basis; shared blocks are already counted once in the total above.")
+                    default:
+                        Text("settings.data_management_view.shared_files_included")
+                    }
                 }
             }
 
             if let report = storage.report {
                 Section {
                     if report.hasSharedEstimates {
-                        // The file categories are the same snapshot's measured
-                        // per-category capacities; they sum to the App total
-                        // shown above (shared/clone-capable data is counted
-                        // once there and listed again only as its own
-                        // non-additive section). They stay one tap away.
+                        // The file categories are the same snapshot's
+                        // per-category basis; they sum to the App total shown
+                        // above. The shareable-files row is a subset of that
+                        // total (on the measured basis) or the non-additive
+                        // allocated capacity (on the allocated estimate), and
+                        // stays one tap away.
                         DisclosureGroup(isExpanded: $showsFileCapacityDetails) {
                             fileCapacityDetails(report, showsTotal: true)
                         } label: {
