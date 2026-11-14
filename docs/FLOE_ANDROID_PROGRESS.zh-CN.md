@@ -1,5 +1,17 @@
 # Floe Android 分目标实施记录
 
+## 1.0.11／119 已公开，屏幕控制收尾通过（2026-11-15）
+
+[Android1.0.11预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v1.0.11) 固定实际App源`f42933643b0c9d8a21c428ab6ee5d36f08f3c1ab`，Full APK摘要`e67b6c2f…d80433a`。实际Full构建107秒，58项原生封装／排除、16KiB和API28／29主包签名通过；native57保持真实生产源`d43b1984…`，3174项规范输入与最终App一致。两个窗口事件suite实际编译执行29项通过，旧终端、聊天、默认值及文件／网页证据按未改输入复用。
+
+三星新C任务9组设备工具请求／回执全部成功，8个界面动作实际读到`777`；初始使用中确认有人工协助，不冒充零辅助录像。任务结束时无障碍仍连接、浮球及控制通知均清除。独立D任务停在真实阻塞提问，通知暂停后静态浮球可见、面板自动收起；点接管后首次304毫秒采样中两浮窗与控制通知1→0，无障碍仍启用。D已checkpointed且未续，原A/B失败、完整导出及录像保留。
+
+五附件295867454字节匿名完整下载和远端摘要／标签来源均通过，119／118／Alpha65实际生产更新器共9个版本样本通过：旧版发现完整1.0.11、119自身不重复升级、已知问题和校验一致，无增量旁路；iOSLatest独立保持。本次ADB保留数据安装不冒充新OTA。临时测试配置已恢复，10份手机端自建导出／录屏副本及已完成staging、49处Debug生成叶目录已清理，原件和当前／回滚／符号保留。
+
+通用Linux常驻服务及环境容器回收继续列为代码缺口，完整跨App宣传录像独立继续；不标记C01–C08全项完成。详见[本版交付记录](releases/builds/FLOE_ANDROID_1.0.11_BUILD119_DELIVERY.md)。
+
+English: Exact Full119 is public fromf42933643, with native57 provenance preserved,29 selected window tests and actual Samsung Calculator completion/explicit takeover. Five public assets and three production readers passed; original failures, assisted-confirmation and recording boundaries remain explicit. Temporary settings and task-owned duplicates/staging were cleaned. Managed services and container reclamation remain open code gaps.
+
 ## 1.0.11／119 修复源码收口（2026-11-15）
 
 候选05增量：三星“新建任务”首次发送已显示已保存的完全访问权限。新的计算器B任务真实启动、观察并清空旧结果；下一次点击被`device_stale_observation`拒绝，模型按失败即停结束，未读到本次计算结果。原47行完整任务导出、原录屏和日志保留，不续跑。日志证明新观察在生成132毫秒后被无包名的窗口事件误清除，仍远在120秒有效期内。本批添加按实际观察代际维护的有界窗口身份归属，仅在明确识别无关窗口时保留观察，真实目标变化及未知事件继续拒绝旧引用；显式观察中的元数据扫描最多32个窗口，单个已消失窗口不破坏目标观察。实际模块编译及原窗口事件、新身份归属两组JVM共29项通过；首轮选中了本仓库未启用的Release单测任务，原零执行错误保留，随后使用现有Debug单测变体。新Full候选06和三星行为尚待验证，119仍未公开。
