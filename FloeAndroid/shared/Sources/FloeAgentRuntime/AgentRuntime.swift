@@ -6284,10 +6284,18 @@ struct ToolLoopGuard {
     private var lastObservationInEpoch: String?
     private var nonretryableRoutesInEpoch: Set<String> = []
     private var blockedNonretryableRouteCounts: [String: Int] = [:]
-    /// Catalog enumeration results stay valid for the whole user turn; only
-    /// schemaLoaded flags drift. Counting them per route without the outcome
-    /// and across progress epochs stops wasteful re-listing loops.
+    /// Whole-turn duplicate detector for catalog enumeration. It only drives
+    /// the non-fatal warning: the inventory stays valid for the user turn and
+    /// only schemaLoaded flags drift, so a repeat still deserves a hint.
     private var catalogEnumerationCounts: [String: Int] = [:]
+    /// Fatal-stop detector for catalog enumeration, scoped to the current
+    /// progress epoch. The existing trusted progress boundaries (committed
+    /// side-effecting success or explicit wait, pause-resume, checkpoint
+    /// restore, accepted steer) reset it; an ordinary different read-only
+    /// observation does not. A long productive turn must not fatal merely
+    /// because it re-listed the same catalog page twice before doing real
+    /// work and once afterwards.
+    private var catalogEnumerationCountsSinceProgress: [String: Int] = [:]
     /// Consecutive-failure circuit breaker. Unlike the unchanged-outcome
     /// guard, this tracks a TOOL's failure streak across differing arguments:
     /// a model flailing at one contract (e.g. checklist validation storms)
@@ -6311,12 +6319,17 @@ struct ToolLoopGuard {
 
     mutating func advanceProgressEpoch() {
         clearEpochCounters()
+        // Catalog stop budget is progress-scoped, not observation-scoped:
+        // only an existing trusted progress boundary opens a fresh window.
+        catalogEnumerationCountsSinceProgress.removeAll(keepingCapacity: true)
         resetActionCycle()
     }
 
     /// Clears only the within-epoch counters. Called when a differing
     /// observation arrives: that is a new fact, but not progress, so the
-    /// batch-level cycle history must survive to catch A,B,A,B alternation.
+    /// batch-level cycle history and the catalog progress-epoch stop budget
+    /// must survive to catch A,B,A,B alternation and catalog re-listing that
+    /// a changing read-only observation would otherwise wash clean.
     private mutating func clearEpochCounters() {
         outcomeCountsInEpoch.removeAll(keepingCapacity: true)
         lastObservationInEpoch = nil
@@ -6466,14 +6479,20 @@ struct ToolLoopGuard {
         if result.status == .ok, Self.isCatalogEnumerationTool(call.toolName) {
             let route = "\(call.toolName)|\(arguments)"
             catalogEnumerationCounts[route, default: 0] += 1
-            let repeats = catalogEnumerationCounts[route, default: 0]
-            if repeats >= 3 {
+            let turnRepeats = catalogEnumerationCounts[route, default: 0]
+            catalogEnumerationCountsSinceProgress[route, default: 0] += 1
+            let progressEpochRepeats = catalogEnumerationCountsSinceProgress[route, default: 0]
+            // Stop only within the current progress epoch. Real committed
+            // progress earns a fresh enumeration window, while the whole-turn
+            // count still warns because the inventory has not materially
+            // changed for this user turn.
+            if progressEpochRepeats >= 3 {
                 return ToolLoopGuardrailDecision(
                     shouldStop: true,
-                    message: "This exact catalog enumeration was already issued repeatedly in the current user turn. The inventory has not materially changed; reuse the earlier results and load any specific tool schema by exact name with tools.search."
+                    message: "This exact catalog enumeration was already issued \(progressEpochRepeats) times without new committed progress since the last real step. The inventory has not materially changed; reuse the earlier results and load any specific tool schema by exact name with tools.search."
                 )
             }
-            if repeats == 2 {
+            if turnRepeats >= 2 {
                 return ToolLoopGuardrailDecision(
                     shouldStop: false,
                     message: "This exact catalog enumeration was already performed earlier in this turn. Reuse those results; only schemaLoaded flags drift between identical catalog calls. Load a specific schema by exact name with tools.search instead of re-listing."
