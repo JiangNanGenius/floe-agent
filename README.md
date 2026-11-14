@@ -1,16 +1,17 @@
 <div align="center">
   <img src="docs/images/floe-agent-icon.png" width="88" alt="Floe Agent app icon">
   <h1>Floe Agent</h1>
-  <p><strong>An on-device AI workspace, built for iPad.</strong></p>
+  <p><strong>An on-device AI workspace for iOS, iPadOS and Android.</strong></p>
   <p>Your models. Your files. Your machines.</p>
-  <p>Floe Agent is an open-source AI agent for iOS, iPadOS and Android. Work with documents, code and creative projects in one place, with a real Linux environment running on your device. Designed around iPad and Apple Pencil, with native iPhone support and Android-specific device workflows.</p>
+  <p>Floe Agent is an open-source AI agent for iOS, iPadOS and Android. Work with documents, code and creative projects in one place, with a real Linux environment running on your device. Designed primarily for iPadOS and Apple Pencil, with native iPhone support and Android-specific device workflows.</p>
   <p><a href="README.zh-CN.md">简体中文</a> · <a href="https://www.floe-agent.com/en?utm_source=github&amp;utm_medium=referral&amp;utm_campaign=readme_en">floe-agent.com</a> · <a href="https://www.floe-agent.com/en/releases?utm_source=github&amp;utm_medium=referral&amp;utm_campaign=readme_en">Releases &amp; updates</a> · <a href="docs/README.md">Documentation</a> · <a href="docs/DISCLAIMER.md">Disclaimer</a></p>
 </div>
 
 <p align="center">
-  <a href="https://apps.apple.com/app/id6801209053"><img src="docs/images/badge-app-store.svg" alt="Download Floe Agent on the App Store" height="52"></a>
-  &nbsp;
-  <a href="https://www.floe-agent.com/en?utm_source=github&amp;utm_medium=referral&amp;utm_campaign=beta_readme_en#beta"><img src="docs/images/badge-apply-testflight.svg" alt="Apply for TestFlight on the website" height="52"></a>
+  <a href="https://apps.apple.com/app/id6801209053"><img src="docs/images/install/app-store.svg" alt="Download Floe Agent on the App Store" width="144" height="56"></a>
+  <a href="https://www.floe-agent.com/en?utm_source=github&amp;utm_medium=referral&amp;utm_campaign=beta_readme_en#beta"><img src="docs/images/install/testflight.svg" alt="Apply for TestFlight on the website" width="144" height="56"></a>
+  <a href="https://altdirect.app/?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json&amp;r=feather"><img src="docs/images/install/feather.svg" alt="Add Floe Agent to Feather" width="144" height="56"></a>
+  <a href="https://altdirect.app/?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json&amp;r=altstore"><img src="docs/images/install/altstore.svg" alt="Add Floe Agent to AltStore" width="144" height="56"></a>
 </p>
 
 [![iOS / iPadOS 26+](https://img.shields.io/badge/iOS%20%2F%20iPadOS-26%2B-0A84FF)](FloeAgent/project.yml)
@@ -43,13 +44,7 @@ App Store, TestFlight and GitHub releases update independently. Use the selected
 <details>
 <summary>Install the iOS IPA with Feather or AltStore</summary>
 
-Use your own signing setup, then add the source with the corresponding button:
-
-<p>
-  <a href="https://altdirect.app/?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json&amp;r=feather"><img src="docs/images/badge-add-to-feather.png" alt="Add Floe Agent to Feather" height="52"></a>
-  &nbsp;
-  <a href="https://altdirect.app/?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json&amp;r=altstore"><img src="docs/images/badge-add-to-altstore.png" alt="Add Floe Agent to AltStore" height="52"></a>
-</p>
+Use the Feather or AltStore button above to add the source, then follow your signing method.
 
 Or copy the source URL manually:
 
@@ -129,3 +124,4 @@ Gitee synchronizes source and release records. See the [mirror guide](docs/FLOE_
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before contributing. Report vulnerabilities privately through [SECURITY.md](SECURITY.md).
 
 Original Floe code is licensed under [MPL 2.0](LICENSE). Third-party components retain their own licenses and notices, available in the app under Settings → Diagnostics & About → Third-Party Licenses.
+

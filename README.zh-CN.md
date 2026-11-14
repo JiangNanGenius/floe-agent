@@ -1,16 +1,17 @@
 <div align="center">
   <img src="docs/images/floe-agent-icon.png" width="88" alt="Floe Agent 应用图标">
   <h1>Floe Agent</h1>
-  <p><strong>iPad 优先的设备端 AI 工作台。</strong></p>
+  <p><strong>面向 iOS、iPadOS 和 Android 的设备端 AI 工作台。</strong></p>
   <p>你的模型，你的文件，你的电脑。</p>
-  <p>Floe Agent 是面向 iOS、iPadOS 和 Android 的开源 AI 智能体。把文档、代码与创作项目放进同一处，在自己的设备上运行真实的 Linux 环境。围绕 iPad 和 Apple Pencil 设计，原生支持 iPhone，并提供 Android 特有的设备协作流程。</p>
+  <p>Floe Agent 是面向 iOS、iPadOS 和 Android 的开源 AI 智能体。把文档、代码与创作项目放进同一处，在自己的设备上运行真实的 Linux 环境。以 iPadOS 与 Apple Pencil 体验为核心，原生支持 iPhone，并提供 Android 特有的设备协作流程。</p>
   <p><a href="README.md">English</a> · <a href="https://www.floe-agent.com/?utm_source=github&amp;utm_medium=referral&amp;utm_campaign=readme_zh">floe-agent.com</a> · <a href="https://www.floe-agent.com/releases?utm_source=github&amp;utm_medium=referral&amp;utm_campaign=readme_zh">版本与更新</a> · <a href="docs/README.md">文档中心</a> · <a href="docs/DISCLAIMER.zh-CN.md">免责声明</a></p>
 </div>
 
 <p align="center">
-  <a href="https://apps.apple.com/app/id6801209053"><img src="docs/images/badge-app-store.svg" alt="从 App Store 获取 Floe Agent 正式版" height="52"></a>
-  &nbsp;
-  <a href="https://www.floe-agent.com/?utm_source=github&amp;utm_medium=referral&amp;utm_campaign=beta_readme_zh#beta"><img src="docs/images/badge-apply-testflight.svg" alt="前往官网申请 TestFlight 内测" height="52"></a>
+  <a href="https://apps.apple.com/app/id6801209053"><img src="docs/images/install/app-store.svg" alt="从 App Store 获取 Floe Agent 正式版" width="144" height="56"></a>
+  <a href="https://www.floe-agent.com/?utm_source=github&amp;utm_medium=referral&amp;utm_campaign=beta_readme_zh#beta"><img src="docs/images/install/testflight.svg" alt="前往官网申请 TestFlight 内测" width="144" height="56"></a>
+  <a href="https://altdirect.app/?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json&amp;r=feather"><img src="docs/images/install/feather.svg" alt="添加 Floe Agent 软件源到 Feather" width="144" height="56"></a>
+  <a href="https://altdirect.app/?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json&amp;r=altstore"><img src="docs/images/install/altstore.svg" alt="添加 Floe Agent 软件源到 AltStore" width="144" height="56"></a>
 </p>
 
 [![iOS / iPadOS 26+](https://img.shields.io/badge/iOS%20%2F%20iPadOS-26%2B-0A84FF)](FloeAgent/project.yml)
@@ -43,13 +44,7 @@ App Store、TestFlight 和 GitHub 各自更新。请结合所选发布说明及[
 <details>
 <summary>通过 Feather 或 AltStore 安装 iOS IPA</summary>
 
-按自己的签名方式准备，再点击对应按钮添加软件源：
-
-<p>
-  <a href="https://altdirect.app/?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json&amp;r=feather"><img src="docs/images/badge-add-to-feather.png" alt="添加 Floe Agent 到 Feather" height="52"></a>
-  &nbsp;
-  <a href="https://altdirect.app/?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json&amp;r=altstore"><img src="docs/images/badge-add-to-altstore.png" alt="添加 Floe Agent 到 AltStore" height="52"></a>
-</p>
+点击顶部 Feather 或 AltStore 按钮添加软件源，再按所用签名方式完成安装。
 
 也可以手动复制软件源地址：
 
@@ -129,3 +124,4 @@ Gitee 同步源码与发布记录，详见[镜像说明](docs/FLOE_GITEE_RELEASE
 参与开发前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)，安全漏洞请通过 [SECURITY.md](SECURITY.md) 私下报告。
 
 Floe 原创代码采用 [MPL 2.0](LICENSE)。第三方组件保留各自许可证与声明，可在 App 的“设置 → 诊断与关于 → 第三方许可”中查看。
+
