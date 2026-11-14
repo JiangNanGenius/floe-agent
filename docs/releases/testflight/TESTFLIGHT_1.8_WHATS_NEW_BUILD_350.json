@@ -1,0 +1,4 @@
+{
+  "zh-Hans": "在换机后的设备上打开「设置 → 数据管理 → 优化占用」，观察第一份旧磁盘能否开始整理。完成后核对整理详情和系统设置中的可用空间。打开工具箱中的终端助手，让它显示当前目录，再从终端核对输出。收起再展开助手应回到原对话；离开工具后再次进入应打开新对话。",
+  "en-US": "On a migrated device, open Settings → Data Management → Optimize Storage and check that the first legacy disk starts processing. After completion, compare the result with available space in system Settings. Open the Toolbox terminal assistant, ask for the current directory, and check the output in your terminal. Hiding and reopening the assistant should keep the conversation. Leaving the tool and returning should start a new one."
+}
