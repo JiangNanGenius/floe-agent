@@ -39,9 +39,9 @@ import kotlinx.serialization.json.JsonPrimitive
  *
  * 2. DRAFT-TASK APPROVAL MODE (⇄ DraftTaskPermissionsSheet). Seeded from
  *    the ORIGINAL global default rule: `settings.defaults.defaultAgentMode
- *    == "approvalModel"` seeds AUTOMATIC, otherwise ASK (the native
- *    `run.start` default). A human tap on the Home permissions surface is
- *    the only writer; the value travels as the optional `approvalMode` key
+ *    maps human / approvalModel / fullControl to ASK / AUTOMATIC /
+ *    FULL_ACCESS. A human tap on the Home permissions surface can override
+ *    that default; the value travels as the optional `approvalMode` key
  *    on the FIRST fresh ordinary launch only (persisted atomically by the
  *    native C1) and is never sent for temporary sessions. Recovery and
  *    notification policies keep their existing native defaults (never
@@ -334,9 +334,9 @@ class RootWorkspaceController internal constructor(
     private val draftApprovalModeState = MutableStateFlow(ApprovalModeUi.ASK)
     val draftApprovalMode: StateFlow<ApprovalModeUi> = draftApprovalModeState
 
-    /** ORIGINAL global-default seeding (⇄ HomeLaunchpadViewModel: default
-     * agent mode "approvalModel" seeds automatic; otherwise the ORIGINAL
-     * DraftTaskPolicy default is ask). Android is cloud-only, so the iOS
+    /** Seed the actual persisted global default, including full control.
+     * A missing or unrecognized value retains the native ask default.
+     * Android is cloud-only, so the iOS
      * local-model fullAccess restriction has no rows here; the native
      * parser's actual raw vocabulary (ask/automatic/fullAccess) is what the
      * producer sends — never a guessed enum string. */
@@ -346,6 +346,7 @@ class RootWorkspaceController internal constructor(
         }.getOrNull()
         draftApprovalModeState.value = when (defaultsMode) {
             "approvalModel" -> ApprovalModeUi.AUTOMATIC
+            "fullControl" -> ApprovalModeUi.FULL_ACCESS
             else -> ApprovalModeUi.ASK
         }
     }

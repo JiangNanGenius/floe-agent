@@ -68,6 +68,7 @@ class HomeLaunchpadHostTest {
     }
 
     private class Script {
+        var defaultAgentMode = "human"
         var rejectRunStart = false
         var rejectTempStart = false
         var rejectCreate = false
@@ -138,6 +139,10 @@ class HomeLaunchpadHostTest {
                     )
                     "op:v1:preferences" -> effectPage(
                         correlation, "preferences", accepted(preferencesValue()),
+                    )
+                    "op:v1:defaults" -> effectPage(
+                        correlation, "defaults",
+                        accepted("""{"values":{"defaultAgentMode":"${script.defaultAgentMode}"},"revision":"defaults-1"}"""),
                     )
                     "op:v1:prefsave" -> effectPage(
                         correlation, "prefsave",
@@ -225,6 +230,8 @@ class HomeLaunchpadHostTest {
                 """{"version":3,"ok":true,"queued":true,"correlationID":"$correlation","operationReceiptID":"op:v1:models"}"""
             raw.contains("\"command\":\"config.preferences.get\"") ->
                 """{"version":3,"ok":true,"queued":true,"correlationID":"$correlation","operationReceiptID":"op:v1:preferences"}"""
+            raw.contains("\"command\":\"config.defaults.get\"") ->
+                """{"version":3,"ok":true,"queued":true,"correlationID":"$correlation","operationReceiptID":"op:v1:defaults"}"""
             raw.contains("\"command\":\"config.preferences.save\"") ->
                 """{"version":3,"ok":true,"queued":true,"correlationID":"$correlation","operationReceiptID":"op:v1:prefsave"}"""
             raw.contains("\"command\":\"conversation.create\"") ->
@@ -332,6 +339,28 @@ class HomeLaunchpadHostTest {
         assertEquals(secondModelId, payload["defaultAgentModelID"]!!.jsonPrimitive.content)
         assertEquals("1", payload["syncRevision"]!!.jsonPrimitive.content)
         host.stop()
+    }
+
+    @Test
+    fun savedFullControlDefaultReachesTheFirstRunPayload() = runBlocking {
+        val script = Script().apply { defaultAgentMode = "fullControl" }
+        val exchange = buildExchange(script)
+        val host = readyHost(script, exchange)
+        try {
+            host.settings.refreshDefaults()
+            assertTrue(awaitUntil { host.settings.state.value.defaults.defaultAgentMode == "fullControl" })
+            host.conversations.rootWorkspace.seedDraftApprovalFromGlobalDefault()
+            assertEquals(
+                com.floe.android.feature.conversation.ApprovalModeUi.FULL_ACCESS,
+                host.conversations.rootWorkspace.draftApprovalMode.value,
+            )
+            host.home.send("Use the saved full control default", "agent", temporary = false) {}
+            assertTrue(awaitUntil { exchange.envelopesOf("run.start").size == 1 })
+            val payload = exchange.envelopesOf("run.start").single()["payload"]!!.jsonObject
+            assertEquals("fullAccess", payload["approvalMode"]!!.jsonPrimitive.content)
+        } finally {
+            host.stop()
+        }
     }
 
     @Test
