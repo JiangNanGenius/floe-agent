@@ -2,6 +2,7 @@
 #if canImport(UIKit)
 import Foundation
 import CryptoKit
+import Darwin
 import FloeFontKit
 import FloeHeavyEditorSupport
 
@@ -45,8 +46,15 @@ struct FontDesignShareItem: Identifiable, Sendable {
     var id: UUID { output.id }
 }
 
+struct FontDesignDeletion: Codable, Equatable, Sendable {
+    let designID: UUID
+    let sourceRevision: UInt64
+    let assistantID: UUID?
+    var completed: Bool
+}
+
 enum FontDesignError: LocalizedError {
-    case unavailable, invalidProject, invalidOutput, nameInUse(String), registrationFailed
+    case unavailable, invalidProject, invalidOutput, nameInUse(String), registrationFailed, editorOpen, saving
     var errorDescription: String? {
         switch self {
         case .unavailable: EditorText.t("无法打开字体设计库。", "The font design library could not be opened.")
@@ -54,6 +62,8 @@ enum FontDesignError: LocalizedError {
         case .invalidOutput: EditorText.t("导出的字体未能通过保存核验。请重新导出。", "The exported font could not be verified. Export it again.")
         case .nameInUse(let name): EditorText.t("已有字体使用名称“", "A font already uses the name “") + name + EditorText.t("”。请为编辑版本使用不同的家族名称。", "”. Use a different family name for the edited version.")
         case .registrationFailed: EditorText.t("新字体未能注册为当前可用版本。草稿和原件已保留。", "The new font could not be activated. The draft and original have been retained.")
+        case .editorOpen: EditorText.t("请先关闭此字体的编辑窗口，再删除。", "Close this typeface’s editor window before deleting it.")
+        case .saving: EditorText.t("字体正在保存，请稍后再试。", "This typeface is being saved. Try again shortly.")
         }
     }
 }
@@ -62,7 +72,9 @@ enum FontDesignError: LocalizedError {
 /// Paths and fontLibrary ownership are never accepted from imported documents.
 actor FontDesignLibrary {
     static let shared = FontDesignLibrary()
-    private init() {}
+    private let rootURL: URL?
+    private var presentations: [UUID: UUID] = [:]
+    init(rootURL: URL? = nil) { self.rootURL = rootURL }
 
     func list() async throws -> [FontDesignProject] {
         let projects = try projectsDirectory()
@@ -79,6 +91,7 @@ actor FontDesignLibrary {
         var record = try metadata(id)
         let store = try HeavyEditorProjectStore(directory: projectDirectory(id), documentID: id, kind: .font)
         let document = try await store.read()
+        try requireNotDeleted(id)
         record.title = document.title; record.revision = document.revision; record.modifiedAt = document.modifiedAt
         return record
     }
@@ -118,6 +131,7 @@ actor FontDesignLibrary {
     /// a staged original moves into the fixed library only after a fresh check.
     func createForTask(id: UUID, title: String, authorize: @Sendable () async throws -> Void) async throws -> FontDesignProject {
         try await authorize()
+        try requireNotDeleted(id)
         if let existing = try? await project(id) { return existing }
         guard !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, title.count <= 200 else { throw FontDesignError.invalidProject }
         let projects = try projectsDirectory(), destination = projects.appendingPathComponent(id.uuidString, isDirectory: true)
@@ -134,6 +148,7 @@ actor FontDesignLibrary {
         guard try await store.read() == document,
               try JSONDecoder().decode(FontDesignProject.self, from: Data(contentsOf: staging.appendingPathComponent("Project.json"))) == record else { throw FontDesignError.invalidProject }
         try await authorize(); try Task.checkCancellation()
+        try requireNotDeleted(id)
         // FileManager's move fails if another creator already committed. Never
         // overwrite a different or partially present original on replay.
         try FileManager.default.moveItem(at: staging, to: destination)
@@ -144,6 +159,82 @@ actor FontDesignLibrary {
     func taskAuthorityDirectory() throws -> URL { try baseDirectory().appendingPathComponent("TaskAuthority", isDirectory: true) }
 
     func directory(for id: UUID) throws -> URL { _ = try metadata(id); return try projectDirectory(id) }
+
+    func retainPresentation(_ id: UUID) throws -> UUID {
+        _ = try metadata(id)
+        let token = UUID(); presentations[token] = id; return token
+    }
+
+    func releasePresentation(_ token: UUID) { presentations[token] = nil }
+
+    /// Deletion uses the very same lock as HeavyEditorProjectStore. An old
+    /// controller can neither commit through the move nor recreate the draft.
+    /// The small intent survives a process exit until its assistant is cleaned.
+    func stageDeletion(_ project: FontDesignProject, assistantID: UUID?) throws -> FontDesignDeletion {
+        if let saved = try deletion(project.id) { return saved }
+        guard !presentations.values.contains(project.id) else { throw FontDesignError.editorOpen }
+        let directory = try projectDirectory(project.id)
+        let fd = Darwin.open(directory.appendingPathComponent(".document.lock").path,
+            O_CREAT | O_RDWR | O_NOFOLLOW, S_IRUSR | S_IWUSR)
+        guard fd >= 0 else { throw FontDesignError.unavailable }
+        defer { Darwin.close(fd) }
+        guard flock(fd, LOCK_EX | LOCK_NB) == 0 else { throw FontDesignError.saving }
+        defer { _ = flock(fd, LOCK_UN) }
+        let metadata = try self.metadata(project.id)
+        let documentURL = directory.appendingPathComponent("Document.json"); try requireFile(documentURL)
+        let document = try JSONDecoder().decode(HeavyEditorDocument.self, from: Data(contentsOf: documentURL))
+        guard metadata.id == project.id, document.id == project.id, document.kind == .font,
+              document.revision == project.revision else { throw HeavyEditorError.revisionConflict }
+        try Task.checkCancellation()
+        let intent = FontDesignDeletion(designID: project.id, sourceRevision: document.revision,
+            assistantID: assistantID, completed: false)
+        let target = try deletionDirectory(project.id)
+        try encode(intent, to: target.appendingPathComponent("Intent.json"))
+        // Only this exact App-owned project is moved; source/installed fonts
+        // live in DeviceFontStore and are never part of the deletion.
+        try FileManager.default.moveItem(at: directory, to: target.appendingPathComponent("Project", isDirectory: true))
+        return intent
+    }
+
+    func pendingDeletions() throws -> [FontDesignDeletion] {
+        let root = try deletionsDirectory()
+        return try FileManager.default.contentsOfDirectory(at: root,
+            includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey], options: [.skipsHiddenFiles])
+            .compactMap { url in
+                guard let id = UUID(uuidString: url.lastPathComponent) else { return nil }
+                return try deletion(id)
+            }.filter { !$0.completed }
+    }
+
+    func finishDeletion(_ intent: FontDesignDeletion) throws {
+        guard try deletion(intent.designID) == intent else { throw FontDesignError.invalidProject }
+        let target = try deletionDirectory(intent.designID)
+        let original = try projectsDirectory().appendingPathComponent(intent.designID.uuidString, isDirectory: true)
+        // Recover an exit between writing the durable intent and moving the
+        // directory. Never delete a newly changed or ambiguous original.
+        if FileManager.default.fileExists(atPath: original.path) {
+            try requireDirectory(original)
+            let fd = Darwin.open(original.appendingPathComponent(".document.lock").path,
+                O_CREAT | O_RDWR | O_NOFOLLOW, S_IRUSR | S_IWUSR)
+            guard fd >= 0 else { throw FontDesignError.unavailable }
+            defer { Darwin.close(fd) }
+            guard flock(fd, LOCK_EX | LOCK_NB) == 0 else { throw FontDesignError.saving }
+            defer { _ = flock(fd, LOCK_UN) }
+            let file = original.appendingPathComponent("Document.json"); try requireFile(file)
+            let document = try JSONDecoder().decode(HeavyEditorDocument.self, from: Data(contentsOf: file))
+            guard document.id == intent.designID, document.kind == .font,
+                  document.revision == intent.sourceRevision else { throw HeavyEditorError.revisionConflict }
+            try FileManager.default.moveItem(at: original, to: target.appendingPathComponent("Project", isDirectory: true))
+        }
+        let staged = target.appendingPathComponent("Project", isDirectory: true)
+        if FileManager.default.fileExists(atPath: staged.path) {
+            try requireDirectory(staged)
+            try FileManager.default.removeItem(at: staged)
+        }
+        var completed = intent; completed.completed = true
+        try encode(completed, to: target.appendingPathComponent("Intent.json"))
+        guard try deletion(intent.designID) == completed else { throw FontDesignError.invalidProject }
+    }
 
     func sourceForImport(_ id: UUID) throws -> (name: String, data: Data)? {
         let record = try metadata(id)
@@ -178,6 +269,7 @@ actor FontDesignLibrary {
         let project = try await project(designID)
         guard project.revision == sourceRevision else { throw HeavyEditorError.revisionConflict }
         try await authorize?(); try Task.checkCancellation()
+        try requireNotDeleted(designID)
         let outputID = UUID(), outputs = try outputsDirectory(designID)
         let directory = outputs.appendingPathComponent(outputID.uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
@@ -237,7 +329,7 @@ actor FontDesignLibrary {
 
     private func baseDirectory() throws -> URL {
         guard let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { throw FontDesignError.unavailable }
-        let root = support.appendingPathComponent("FloeAgent", isDirectory: true).appendingPathComponent("FontDesign", isDirectory: true)
+        let root = rootURL ?? support.appendingPathComponent("FloeAgent", isDirectory: true).appendingPathComponent("FontDesign", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         try requireDirectory(root)
         return root.standardizedFileURL.resolvingSymlinksInPath()
@@ -255,12 +347,14 @@ actor FontDesignLibrary {
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true); try requireDirectory(url); return url
     }
     private func metadata(_ id: UUID) throws -> FontDesignProject {
+        try requireNotDeleted(id)
         let url = try projectDirectory(id).appendingPathComponent("Project.json")
         try requireFile(url)
         let record = try JSONDecoder().decode(FontDesignProject.self, from: Data(contentsOf: url))
         guard record.id == id else { throw FontDesignError.invalidProject }; return record
     }
     private func writeMetadata(_ record: FontDesignProject) throws {
+        try requireNotDeleted(record.id)
         let url = try projectDirectory(record.id).appendingPathComponent("Project.json")
         try encode(record, to: url)
         guard try metadata(record.id) == record else { throw FontDesignError.invalidProject }
@@ -292,6 +386,29 @@ actor FontDesignLibrary {
     private func requireFile(_ url: URL) throws {
         let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
         guard values.isRegularFile == true, values.isSymbolicLink != true else { throw FontDesignError.invalidProject }
+    }
+    private func deletionsDirectory() throws -> URL {
+        let url = try baseDirectory().appendingPathComponent("Deletions", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        try requireDirectory(url); return url
+    }
+    private func deletionDirectory(_ id: UUID) throws -> URL {
+        let url = try deletionsDirectory().appendingPathComponent(id.uuidString, isDirectory: true)
+        if !FileManager.default.fileExists(atPath: url.path) {
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
+        }
+        try requireDirectory(url); return url
+    }
+    private func deletion(_ id: UUID) throws -> FontDesignDeletion? {
+        let directory = try deletionsDirectory().appendingPathComponent(id.uuidString, isDirectory: true)
+        guard FileManager.default.fileExists(atPath: directory.path) else { return nil }
+        try requireDirectory(directory)
+        let url = directory.appendingPathComponent("Intent.json"); try requireFile(url)
+        let record = try JSONDecoder().decode(FontDesignDeletion.self, from: Data(contentsOf: url))
+        guard record.designID == id else { throw FontDesignError.invalidProject }; return record
+    }
+    private func requireNotDeleted(_ id: UUID) throws {
+        guard try deletion(id) == nil else { throw FontDesignError.invalidProject }
     }
     private func encode<T: Encodable>(_ value: T, to url: URL) throws {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]

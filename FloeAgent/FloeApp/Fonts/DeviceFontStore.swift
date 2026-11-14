@@ -91,6 +91,7 @@ enum DeviceFontError: LocalizedError {
     case tooLarge
     case badResponse(Int)
     case notFound
+    case protectedFont
 
     var errorDescription: String? {
         switch self {
@@ -99,6 +100,7 @@ enum DeviceFontError: LocalizedError {
         case .tooLarge: FloeL10n.l("fonts.device_font_store.the_font_file_exceeds_the_32")
         case .badResponse(let code): FloeL10n.l("fonts.device_font_store.font_download_failed_http", code)
         case .notFound: FloeL10n.l("fonts.device_font_store.this_floe_global_font_cannot_be")
+        case .protectedFont: FontDesignText.t("内置字体不能删除。", "Included fonts cannot be deleted.")
         }
     }
 }
@@ -249,12 +251,25 @@ actor DeviceFontStore {
     }
 
     func remove(id: String) throws {
+        // Only the writable managed store is a deletion source. A caller
+        // cannot delete a bundled font by supplying a different identifier,
+        // injected root or a symlink to its registered URL.
+        let root = rootURL.standardizedFileURL.resolvingSymlinksInPath()
+        let bundled = Bundle.main.bundleURL.standardizedFileURL.resolvingSymlinksInPath().path
+        guard root.path != bundled, !root.path.hasPrefix(bundled + "/") else { throw DeviceFontError.protectedFont }
+        let rootValues = try rootURL.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+        guard rootValues.isDirectory == true, rootValues.isSymbolicLink != true else { throw DeviceFontError.invalidFont }
         guard id.count == 64, id.allSatisfy({ $0.isHexDigit }) else {
             throw DeviceFontError.notFound
         }
         guard let url = fontFiles().first(where: { $0.deletingPathExtension().lastPathComponent == id }) else {
             throw DeviceFontError.notFound
         }
+        let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+        guard values.isRegularFile == true, values.isSymbolicLink != true,
+              let size = values.fileSize, size <= Self.maximumFontBytes,
+              url.resolvingSymlinksInPath().deletingLastPathComponent() == root,
+              FloeDigest.sha256Hex(try Data(contentsOf: url)) == id else { throw DeviceFontError.invalidFont }
         var error: Unmanaged<CFError>?
         _ = CTFontManagerUnregisterFontsForURL(url as CFURL, .process, &error)
         try FileManager.default.removeItem(at: url)
@@ -323,7 +338,11 @@ actor DeviceFontStore {
             at: rootURL,
             includingPropertiesForKeys: [.isRegularFileKey],
             options: [.skipsHiddenFiles]
-        ))?.filter { ["ttf", "otf", "ttc", "otc"].contains($0.pathExtension.lowercased()) } ?? []
+        ))?.filter {
+            guard ["ttf", "otf", "ttc", "otc"].contains($0.pathExtension.lowercased()) else { return false }
+            let values = try? $0.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+            return values?.isRegularFile == true && values?.isSymbolicLink != true
+        } ?? []
     }
 
     private func validatedExtension(_ value: String) throws -> String {

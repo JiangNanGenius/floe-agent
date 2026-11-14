@@ -7,6 +7,7 @@
 import XCTest
 import Foundation
 import CoreText
+import Darwin
 import FloeCore
 import FloeModels
 import FloeTools
@@ -18,6 +19,142 @@ import FloeTestSupport
 @testable import FloeApp
 
 @MainActor final class FontDesignAIAppContractTests: XCTestCase {
+    func testDraftDeletionRemovesOnlyOwnedDraftAndExports() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("font-library-delete-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = FontDesignLibrary(rootURL: root.appendingPathComponent("Library"))
+        // This fixture exercises file ownership, not font compilation.
+        let sourceData = Data("original-font-input".utf8), sourceID = FontDesignLibrary.digest(sourceData)
+        let external = root.appendingPathComponent("Installed.ttf")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try sourceData.write(to: external)
+        let source = FontDesignManagedSource(record: .init(id: sourceID, fileName: sourceID + ".ttf",
+            displayName: "Original", familyNames: ["Original"], postScriptNames: ["Original"], byteCount: Int64(sourceData.count)), data: sourceData)
+        let project = try await library.create(source: source), other = try await library.create()
+        let directory = try await library.directory(for: project.id)
+        _ = try await library.export(designID: project.id, sourceRevision: project.revision,
+            artifact: HeavyEditorArtifact(name: "preview.svg", mediaType: "image/svg+xml", data: Data("<svg/>".utf8)))
+        let intent = try await library.stageDeletion(project, assistantID: nil)
+        try await library.finishDeletion(intent)
+        let listed = try await library.list()
+        XCTAssertEqual(listed.map(\.id), [other.id])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
+        XCTAssertEqual(try Data(contentsOf: external), sourceData)
+        let pending = try await library.pendingDeletions()
+        XCTAssertTrue(pending.isEmpty)
+        let reopened = FontDesignLibrary(rootURL: root.appendingPathComponent("Library"))
+        let reopenedProjects = try await reopened.list(), reopenedPending = try await reopened.pendingDeletions()
+        XCTAssertEqual(reopenedProjects.map(\.id), [other.id])
+        XCTAssertTrue(reopenedPending.isEmpty)
+    }
+
+    func testDraftDeletionRejectsOpenEditorAndChangedRevision() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("font-library-cas-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = FontDesignLibrary(rootURL: root)
+        let project = try await library.create()
+        let token = try await library.retainPresentation(project.id)
+        do { _ = try await library.stageDeletion(project, assistantID: nil); XCTFail("An open editor was deleted") }
+        catch FontDesignError.editorOpen { }
+        await library.releasePresentation(token)
+        let store = try HeavyEditorProjectStore(directory: await library.directory(for: project.id), documentID: project.id, kind: .font)
+        let current = try await store.read()
+        _ = try await store.commit(content: current.content, expectedRevision: current.revision)
+        do { _ = try await library.stageDeletion(project, assistantID: nil); XCTFail("A changed original was deleted") }
+        catch HeavyEditorError.revisionConflict { }
+        let retained = try await library.project(project.id)
+        XCTAssertEqual(retained.revision, 1)
+        let pending = try await library.pendingDeletions()
+        XCTAssertTrue(pending.isEmpty)
+    }
+
+    func testDraftDeletionDoesNotWaitForAnExistingSaveLock() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("font-library-save-lock-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = FontDesignLibrary(rootURL: root), project = try await library.create()
+        let directory = try await library.directory(for: project.id)
+        let fd = Darwin.open(directory.appendingPathComponent(".document.lock").path, O_CREAT | O_RDWR | O_NOFOLLOW, S_IRUSR | S_IWUSR)
+        XCTAssertGreaterThanOrEqual(fd, 0)
+        guard fd >= 0 else { return }
+        defer { _ = flock(fd, LOCK_UN); Darwin.close(fd) }
+        XCTAssertEqual(flock(fd, LOCK_EX | LOCK_NB), 0)
+        do { _ = try await library.stageDeletion(project, assistantID: nil); XCTFail("Deletion ignored an active save") }
+        catch FontDesignError.saving { }
+        let pending = try await library.pendingDeletions()
+        XCTAssertTrue(pending.isEmpty)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directory.path))
+    }
+
+    func testDraftDeletionRecoversIntentAndRejectsLateCreationAndSave() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("font-library-recover-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = FontDesignLibrary(rootURL: root)
+        let authority = try StudioDocumentAccess(root: root.appendingPathComponent("TaskAuthority"))
+        let operation = "font-delete-replay-" + UUID().uuidString
+        let id = try await authority.reserveCreation(operationKey: operation, digest: "test-payload")
+        let project = try await library.createForTask(id: id, title: "Replay fixture", authorize: {})
+        let oldDirectory = try await library.directory(for: id)
+        let oldStore = try HeavyEditorProjectStore(directory: oldDirectory, documentID: id, kind: .font)
+        let oldDocument = try await oldStore.read()
+        let intent = try await library.stageDeletion(project, assistantID: nil)
+        // Crash injection: intent is durable, but the directory move has not
+        // committed yet. A fresh service must resume that exact deletion.
+        try FileManager.default.moveItem(at: root.appendingPathComponent("Deletions/" + id.uuidString + "/Project"), to: oldDirectory)
+        let reopened = FontDesignLibrary(rootURL: root)
+        let pending = try await reopened.pendingDeletions()
+        XCTAssertEqual(pending, [intent])
+        try await authority.revokeDeletedFontAuthority(projectID: id)
+        try await reopened.finishDeletion(intent)
+        let reservedAfterDeletion = try await authority.reserveCreation(operationKey: operation, digest: "test-payload")
+        XCTAssertEqual(reservedAfterDeletion, id)
+        do { _ = try await reopened.createForTask(id: id, title: "Replay fixture", authorize: {}); XCTFail("Late create revived a deleted draft") }
+        catch FontDesignError.invalidProject { }
+        do { _ = try await oldStore.commit(content: oldDocument.content, expectedRevision: oldDocument.revision); XCTFail("Late save revived a deleted draft") }
+        catch { }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: oldDirectory.path))
+        let listed = try await reopened.list()
+        XCTAssertTrue(listed.isEmpty)
+    }
+
+    func testFontAssistantDeletionPurgesOnlyItsBoundConversationAndGrants() async throws {
+        let environment = FloeAgentApp.liveEnvironment
+        try await environment.ensureDurableAutomationReady()
+        let library = FontDesignLibrary.shared
+        let project = try await library.create()
+        let assistant = try await environment.fontDesignAIHost.assistant(for: project.id)
+        let preservedFonts = await environment.fontStore.list()
+        try await environment.fontDesignAIHost.removeDesign(project)
+        let deletedConversation = try await environment.conversationStore.conversation(id: assistant)
+        XCTAssertNil(deletedConversation)
+        let access = try StudioDocumentAccess(root: await library.taskAuthorityDirectory())
+        let deletedBinding = try await access.assistant(projectID: project.id)
+        let staleAccess = try await access.canAccess(conversationID: assistant, projectID: project.id, editing: false)
+        let fontsAfterDeletion = await environment.fontStore.list()
+        let projectsAfterDeletion = try await library.list()
+        XCTAssertNil(deletedBinding)
+        XCTAssertFalse(staleAccess)
+        XCTAssertEqual(fontsAfterDeletion, preservedFonts)
+        XCTAssertFalse(projectsAfterDeletion.contains { $0.id == project.id })
+    }
+
+    func testBatchDeletionSkipsIncludedFontsAndRetainsFailedOrUnselectedDrafts() async throws {
+        let environment = FloeAgentApp.liveEnvironment
+        try await environment.ensureDurableAutomationReady()
+        let library = FontDesignLibrary.shared
+        let removable = try await library.create(), busy = try await library.create(), untouched = try await library.create()
+        let busyToken = try await library.retainPresentation(busy.id)
+        let result = await FontManagementRemovalService.remove([.design(removable.id), .design(busy.id), .bundled("MiSans")],
+            projects: [removable, busy, untouched], fonts: [], store: environment.fontStore, host: environment.fontDesignAIHost)
+        XCTAssertEqual(result.removed, [.design(removable.id)])
+        XCTAssertEqual(result.failures.map(\.item), [.design(busy.id)])
+        let retainedBusy = try await library.project(busy.id), retainedOther = try await library.project(untouched.id)
+        XCTAssertEqual(retainedBusy, busy)
+        XCTAssertEqual(retainedOther, untouched)
+        await library.releasePresentation(busyToken)
+        try await environment.fontDesignAIHost.removeDesign(busy)
+        try await environment.fontDesignAIHost.removeDesign(untouched)
+    }
+
     private func call(_ id: String, _ tool: String, _ arguments: EditorJSON) throws -> ToolCall {
         try ToolCall(id: id, toolName: tool, argumentsJSON: arguments.data(), scope: .local)
     }

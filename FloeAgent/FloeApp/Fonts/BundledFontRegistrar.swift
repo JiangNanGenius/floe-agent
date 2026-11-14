@@ -25,6 +25,41 @@
 import Foundation
 import CoreText
 
+struct BundledFontFace: Identifiable, Hashable, Sendable {
+    let id: String
+    let displayName: String
+}
+
+struct BundledFontFamily: Identifiable, Hashable, Sendable {
+    let id: String
+    let displayName: String
+    let faces: [BundledFontFace]
+    let byteCount: Int64
+}
+
+enum FontManagementItemID: Hashable, Sendable {
+    case design(UUID), imported(String), bundled(String)
+    var canDelete: Bool {
+        if case .bundled = self { return false }
+        return true
+    }
+}
+
+struct FontManagementSelection: Equatable, Sendable {
+    private(set) var items = Set<FontManagementItemID>()
+    mutating func toggle(_ item: FontManagementItemID) {
+        guard item.canDelete else { return }
+        if !items.insert(item).inserted { items.remove(item) }
+    }
+    mutating func selectAll(_ available: Set<FontManagementItemID>) {
+        items = available.filter(\.canDelete)
+    }
+    mutating func retainAvailable(_ available: Set<FontManagementItemID>) {
+        items.formIntersection(available.filter(\.canDelete))
+    }
+    mutating func clear() { items.removeAll() }
+}
+
 enum BundledFontRegistrar {
     private static let extensions: Set<String> = ["ttf", "otf", "ttc", "otc"]
 
@@ -48,6 +83,35 @@ enum BundledFontRegistrar {
             return FileManager.default.fileExists(atPath: root.path, isDirectory: &isDirectory)
                 && isDirectory.boolValue
         }
+    }
+
+    /// The same real files the process registers, grouped into families. Never
+    /// enumerate all system fonts or treat the old fallback copy as another
+    /// installed typeface. PostScript identity deduplicates files/collections.
+    static func families(in appRoot: URL) -> [BundledFontFamily] {
+        var seen = Set<String>()
+        var faces: [String: [BundledFontFace]] = [:]
+        var names: [String: String] = [:]
+        var files: [String: [URL: Int64]] = [:]
+        for url in existingFontRoots(in: appRoot).flatMap({ stagedFontURLs(in: $0).sorted { $0.path < $1.path } }) {
+            guard let descriptors = CTFontManagerCreateFontDescriptorsFromURL(url as CFURL) as? [CTFontDescriptor] else { continue }
+            for descriptor in descriptors {
+                guard let postScript = CTFontDescriptorCopyAttribute(descriptor, kCTFontNameAttribute) as? String,
+                      !postScript.isEmpty, seen.insert(postScript.lowercased()).inserted,
+                      let family = CTFontDescriptorCopyAttribute(descriptor, kCTFontFamilyNameAttribute) as? String,
+                      !family.isEmpty else { continue }
+                let key = family.lowercased()
+                let name = CTFontDescriptorCopyAttribute(descriptor, kCTFontDisplayNameAttribute) as? String ?? postScript
+                faces[key, default: []].append(.init(id: postScript, displayName: name))
+                names[key] = family
+                files[key, default: [:]][url] = Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+            }
+        }
+        return faces.keys.map { key in
+            BundledFontFamily(id: key, displayName: names[key] ?? key,
+                faces: (faces[key] ?? []).sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending },
+                byteCount: (files[key] ?? [:]).values.reduce(0, +))
+        }.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
     }
 
     /// Content-free discovery summary for one staged font root. Counts and

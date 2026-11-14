@@ -10,6 +10,49 @@ enum FontDesignText {
     static func t(_ chinese: String, _ english: String) -> String { EditorText.t(chinese, english) }
 }
 
+struct FontManagementRemovalResult: Sendable {
+    struct Failure: Sendable {
+        let item: FontManagementItemID
+        let title: String
+        let message: String
+    }
+    var removed = Set<FontManagementItemID>()
+    var failures: [Failure] = []
+}
+
+@MainActor enum FontManagementRemovalService {
+    static func remove(_ requested: Set<FontManagementItemID>, projects: [FontDesignProject],
+                       fonts: [ManagedFontRecord], store: DeviceFontStore, host: FontDesignAIHost) async -> FontManagementRemovalResult {
+        let projects = Dictionary(uniqueKeysWithValues: projects.map { ($0.id, $0) })
+        let fonts = Dictionary(uniqueKeysWithValues: fonts.map { ($0.id, $0) })
+        var result = FontManagementRemovalResult()
+        // A mixed selection never forwards an included typeface to a delete
+        // API. Each selected original has its own stop/CAS/result, so one
+        // failure cannot remove an unselected or still-open draft.
+        for item in requested.filter(\.canDelete) {
+            do {
+                switch item {
+                case .design(let id):
+                    guard let project = projects[id] else { throw FontDesignError.invalidProject }
+                    try await host.removeDesign(project)
+                case .imported(let id): try await store.remove(id: id)
+                case .bundled: continue
+                }
+                result.removed.insert(item)
+            } catch {
+                let name: String
+                switch item {
+                case .design(let id): name = projects[id]?.title ?? FontDesignText.t("字体草稿", "Typeface draft")
+                case .imported(let id): name = fonts[id]?.displayName ?? FontDesignText.t("用户字体", "Added font")
+                case .bundled: continue
+                }
+                result.failures.append(.init(item: item, title: name, message: error.localizedDescription))
+            }
+        }
+        return result
+    }
+}
+
 /// Retains opening, saving, compilation and installation independently of the
 /// Settings view. Each manager window owns its own controllers and presenter;
 /// only the authoritative on-disk library and DeviceFontStore are shared.
@@ -52,6 +95,9 @@ enum FontDesignText {
                     presented = existing
                 } else {
                     let id = project.id, directory = try await library.directory(for: id)
+                    let presentationToken = try await library.retainPresentation(id)
+                    var handedOff = false
+                    defer { if !handedOff { Task { await self.library.releasePresentation(presentationToken) } } }
                     let scope = FontDesignAccessSession(designID: id, library: library)
                     let hooks = HeavyEditorHostHooks(
                         authorize: { request in try await scope.authorize(request) },
@@ -73,6 +119,7 @@ enum FontDesignText {
                     let installed = await store.list()
                     let family = controller.presentation["info"]["familyName"].string ?? project.title
                     let session = FontDesignSession(projectID: id, controller: controller, library: library, store: store,
+                        presentationToken: presentationToken,
                         installFamily: Self.suggestedFamily(family, installed: installed),
                         onClose: { [weak self] id in
                             guard let self else { return }
@@ -83,7 +130,7 @@ enum FontDesignText {
                             self.sessions[id] = nil
                             Task { @MainActor [weak self] in await self?.reload() }
                         })
-                    sessions[id] = session; presented = session
+                    sessions[id] = session; presented = session; handedOff = true
                 }
                 await reload()
             } catch { errorMessage = error.localizedDescription; await reload() }
@@ -123,12 +170,18 @@ enum FontDesignInstallFormat: String, CaseIterable, Identifiable, Hashable {
     @ObservationIgnored private let library: FontDesignLibrary
     @ObservationIgnored private let store: DeviceFontStore
     @ObservationIgnored private let onClose: @MainActor (UUID) -> Void
+    @ObservationIgnored private var presentationToken: UUID?
     @ObservationIgnored private var operation: Task<Void, Never>?
 
     init(projectID: UUID, controller: HeavyEditorController, library: FontDesignLibrary, store: DeviceFontStore,
+         presentationToken: UUID,
          installFamily: String, onClose: @escaping @MainActor (UUID) -> Void) {
         id = projectID; self.controller = controller; self.library = library; self.store = store
         self.installFamily = installFamily; self.onClose = onClose
+        self.presentationToken = presentationToken
+    }
+    deinit {
+        if let presentationToken { let library = library; Task { await library.releasePresentation(presentationToken) } }
     }
     func refreshOriginal() {
         guard operation == nil, !controller.isWorking else { return }
@@ -156,6 +209,7 @@ enum FontDesignInstallFormat: String, CaseIterable, Identifiable, Hashable {
             do {
                 try await controller.save()
                 await controller.endPresentation()
+                if let presentationToken { await library.releasePresentation(presentationToken); self.presentationToken = nil }
                 onClose(id)
             } catch is CancellationError { status = FontDesignText.t("已取消", "Cancelled") }
               catch { errorMessage = error.localizedDescription; status = nil }

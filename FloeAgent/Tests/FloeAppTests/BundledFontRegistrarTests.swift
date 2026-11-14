@@ -18,6 +18,98 @@ import PDFKit
 @testable import FloeApp
 
 final class BundledFontRegistrarTests: XCTestCase {
+    func testManagementSelectionNeverIncludesBuiltInFonts() {
+        let first = FontManagementItemID.design(UUID()), second = FontManagementItemID.imported(String(repeating: "a", count: 64))
+        let builtIn = FontManagementItemID.bundled("MiSans")
+        var selection = FontManagementSelection()
+        selection.toggle(builtIn)
+        XCTAssertTrue(selection.items.isEmpty)
+        selection.selectAll([first, second, builtIn])
+        XCTAssertEqual(selection.items, [first, second])
+        selection.toggle(first)
+        XCTAssertEqual(selection.items, [second])
+        selection.retainAvailable([first, builtIn])
+        XCTAssertTrue(selection.items.isEmpty)
+        selection.selectAll([first, second]); selection.clear()
+        XCTAssertTrue(selection.items.isEmpty)
+    }
+
+    func testManagementCatalogListsEveryCuratedFaceOnce() throws {
+        let families = BundledFontRegistrar.families(in: Bundle.main.bundleURL)
+        let actual = families.flatMap(\.faces).map(\.id)
+        let expected = try XCTUnwrap(BundledFontRegistrar.existingFontRoots(in: Bundle.main.bundleURL).first)
+        for file in Self.curatedFontFiles {
+            for name in CoreTextFontRegistration.declaredPostScriptNames(at: expected.appendingPathComponent(file)) {
+                XCTAssertEqual(actual.filter { $0 == name }.count, 1, "Missing or repeated management entry: \(name)")
+            }
+        }
+        XCTAssertGreaterThanOrEqual(families.count, 9)
+        XCTAssertGreaterThanOrEqual(actual.count, 23)
+        XCTAssertEqual(Set(actual).count, actual.count)
+    }
+
+    func testManagementCatalogDeduplicatesTheLegacyFallbackCopy() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("font-catalog-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let roots = BundledFontRegistrar.fontRoots(in: root)
+        for directory in roots { try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true) }
+        let original = try XCTUnwrap(BundledFontRegistrar.existingFontRoots(in: Bundle.main.bundleURL).first)
+            .appendingPathComponent("MiSans-Regular.ttf")
+        for directory in roots {
+            try FileManager.default.linkItem(at: original, to: directory.appendingPathComponent("MiSans-Regular.ttf"))
+        }
+        let families = BundledFontRegistrar.families(in: root)
+        XCTAssertEqual(families.flatMap(\.faces).count, CoreTextFontRegistration.declaredPostScriptNames(at: original).count)
+    }
+
+    func testManagedDeletionRejectsBundleRootsAndFontSymlinks() async throws {
+        let engine = try XCTUnwrap(BundledFontRegistrar.existingFontRoots(in: Bundle.main.bundleURL).first)
+        let protectedStore = DeviceFontStore(rootURL: engine)
+        do {
+            try await protectedStore.remove(id: String(repeating: "a", count: 64))
+            XCTFail("An included-font root reached deletion")
+        } catch DeviceFontError.protectedFont { }
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("font-delete-boundary-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = engine.appendingPathComponent("MiSans-Regular.ttf")
+        let before = try Data(contentsOf: source)
+        let link = root.appendingPathComponent(String(repeating: "a", count: 64) + ".ttf")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: source)
+        let store = DeviceFontStore(rootURL: root)
+        let listed = await store.list()
+        XCTAssertTrue(listed.isEmpty)
+        do {
+            try await store.remove(id: String(repeating: "a", count: 64))
+            XCTFail("A symlink to an included font reached deletion")
+        } catch DeviceFontError.notFound { }
+        XCTAssertEqual(try Data(contentsOf: source), before)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: link.path))
+    }
+
+    func testRemovingAnImportedDuplicateKeepsTheIncludedFontResolvable() async throws {
+        _ = BundledFontRegistrar.activateBundledFonts()
+        defer { _ = BundledFontRegistrar.activateBundledFonts() }
+        let engine = try XCTUnwrap(BundledFontRegistrar.existingFontRoots(in: Bundle.main.bundleURL).first)
+        let included = engine.appendingPathComponent("MiSans-Regular.ttf")
+        let originalBytes = try Data(contentsOf: included)
+        let names = CoreTextFontRegistration.declaredPostScriptNames(at: included)
+        XCTAssertFalse(names.isEmpty)
+        XCTAssertTrue(names.allSatisfy(CoreTextFontRegistration.resolves(postScriptName:)))
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("font-duplicate-delete-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = DeviceFontStore(rootURL: root)
+        let imported = try await store.importFont(from: included)
+        let installed = await store.list()
+        XCTAssertEqual(installed.map(\.id), [imported.id])
+        try await store.remove(id: imported.id)
+        let afterRemoval = await store.list()
+        XCTAssertTrue(afterRemoval.isEmpty)
+        XCTAssertEqual(try Data(contentsOf: included), originalBytes)
+        XCTAssertTrue(names.allSatisfy(CoreTextFontRegistration.resolves(postScriptName:)),
+                      "Deleting an added copy unregistered its included counterpart")
+    }
+
     /// The 23 curated files staged from FloeApp/Resources/Fonts/Bundled.
     /// Keep this explicit: a count-only assertion would hide a deleted family
     /// or a newly duplicated copy.

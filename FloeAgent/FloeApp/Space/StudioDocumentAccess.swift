@@ -307,4 +307,13 @@ actor StudioDocumentAccess {
             }
         }
     }
+
+    /// Font drafts keep their original creation reservation after deletion.
+    /// A delayed/replayed create must resolve the tombstoned UUID, never mint
+    /// a replacement draft. Other document lifecycles keep their own policy.
+    func revokeDeletedFontAuthority(projectID: UUID) throws {
+        try pool.write { db in
+            try db.execute(sql: "DELETE FROM document_access WHERE project_id=?", arguments: [projectID.uuidString])
+        }
+    }
 }

@@ -19,6 +19,7 @@ import FloeHeavyEditorsHostAdapter
     private let library = FontDesignLibrary.shared
     private var access: StudioDocumentAccess?
     private var preparing: [UUID: Task<UUID, Error>] = [:]
+    private var deletingDesigns = Set<UUID>()
     init(environment: AppEnvironment) { self.environment = environment }
 
     lazy var bridge = HeavyEditorToolBridge(
@@ -140,10 +141,54 @@ import FloeHeavyEditorsHostAdapter
     /// Settings is the native binding source. This does not create a Space
     /// record or share its selection/undo/controller with another window.
     func assistant(for designID: UUID) async throws -> UUID {
+        guard !deletingDesigns.contains(designID) else { throw FontDesignError.invalidProject }
         if let task = preparing[designID] { return try await task.value }
         let task = Task { @MainActor [self] in try await prepareAssistant(designID) }
         preparing[designID] = task; defer { preparing[designID] = nil }
         return try await task.value
+    }
+
+    /// Uses ConversationCenter's existing stop/join fence. The durable library
+    /// intent lets the same cleanup finish after an interruption, without
+    /// reviving the draft or touching a separately installed font.
+    func removeDesign(_ project: FontDesignProject) async throws {
+        guard deletingDesigns.insert(project.id).inserted else { throw FontDesignError.unavailable }
+        defer { deletingDesigns.remove(project.id) }
+        if let task = preparing[project.id] { task.cancel(); _ = try? await task.value }
+        guard let environment else { throw FontDesignError.unavailable }
+        let access = try await authority()
+        let assistantID = try await access.assistant(projectID: project.id)
+        let bindings = assistantID.map { [StudioAssistantBinding(projectID: project.id, conversationID: $0)] } ?? []
+        let lease = try await environment.conversationCenter.stopFileAssistants(bindings)
+        defer { lease.finish() }
+        let intent = try await library.stageDeletion(project, assistantID: assistantID)
+        try await finishRemoval(intent, access: access, lease: lease, environment: environment)
+    }
+
+    func resumePendingDeletions() async throws {
+        guard let environment else { throw FontDesignError.unavailable }
+        for intent in try await library.pendingDeletions() where deletingDesigns.insert(intent.designID).inserted {
+            defer { deletingDesigns.remove(intent.designID) }
+            let access = try await authority()
+            let current = try await access.assistant(projectID: intent.designID)
+            guard current == nil || current == intent.assistantID else { throw FontDesignError.invalidProject }
+            let bindings = intent.assistantID.map { [StudioAssistantBinding(projectID: intent.designID, conversationID: $0)] } ?? []
+            let lease = try await environment.conversationCenter.stopFileAssistants(bindings)
+            defer { lease.finish() }
+            try await finishRemoval(intent, access: access, lease: lease, environment: environment)
+        }
+    }
+
+    private func finishRemoval(_ intent: FontDesignDeletion, access: StudioDocumentAccess,
+                               lease: PersonalFileAssistantStopLease, environment: AppEnvironment) async throws {
+        if let id = intent.assistantID {
+            try await environment.conversationCenter.deleteConversation(id: id, fileLifecycleToken: lease.id,
+                includeEditorHistory: false)
+            try await access.finishPurgedAssistant(.init(projectID: intent.designID, conversationID: id))
+        }
+        try await access.revokeDeletedFontAuthority(projectID: intent.designID)
+        try await library.finishDeletion(intent)
+        StorageDiagnosticService.shared.invalidate(.other("fontStore"))
     }
     private func prepareAssistant(_ designID: UUID) async throws -> UUID {
         guard let environment else { throw FontDesignError.unavailable }

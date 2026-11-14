@@ -584,195 +584,282 @@ private struct StorageUsageRow: View {
 }
 
 struct FontManagementView: View {
+    @EnvironmentObject private var environment: AppEnvironment
     let store: DeviceFontStore
     @State private var designer = FontDesignCoordinator()
     @State private var records: [ManagedFontRecord] = []
+    @State private var bundledFamilies: [BundledFontFamily] = []
+    @State private var selection = FontManagementSelection()
+    @State private var isSelecting = false
+    @State private var pendingDeletion = Set<FontManagementItemID>()
     @State private var remoteURL = ""
     @State private var isWorking = false
     @State private var showsImporter = false
     @State private var errorMessage: String?
     @State private var successMessage: String?
-    @State private var pendingRemoval: ManagedFontRecord?
+
+    private var deletableItems: Set<FontManagementItemID> {
+        Set(designer.projects.map { .design($0.id) } + records.map { .imported($0.id) })
+    }
+    private var allSelected: Bool { !deletableItems.isEmpty && selection.items == deletableItems }
 
     var body: some View {
         Form {
-            Section(FontDesignText.t("字体设计", "Font design")) {
-                Button {
-                    successMessage = nil
-                    designer.newProject(store: store)
-                } label: { Label(FontDesignText.t("新建字体", "New typeface"), systemImage: "plus") }
-                    .disabled(designer.isOpening).accessibilityIdentifier("fontManagement.newDesign")
-                if designer.isOpening { HStack { ProgressView(); Text(FontDesignText.t("正在打开…", "Opening…")) } }
-                ForEach(designer.projects) { project in
-                    Button {
-                        successMessage = nil
-                        designer.open(project, store: store)
-                    } label: {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(project.title)
-                            Text(project.modifiedAt, format: .dateTime.month().day().hour().minute()).font(.caption).foregroundStyle(.secondary)
-                        }.frame(minHeight: FloeTheme.minimumTarget)
-                    }.disabled(designer.isOpening)
-                }
-            }
-            Section("settings.data_management_view.floe_global_fonts") {
-                if records.isEmpty {
-                    ContentUnavailableView("settings.data_management_view.no_floe_global_fonts_yet",
-                        systemImage: "textformat",
-                        description: Text("settings.data_management_view.after_importing_or_downloading_once_word")
-                    )
-                } else {
-                    ForEach(records) { record in
-                        HStack {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(record.displayName)
-                                Text(record.familyNames.joined(separator: " · "))
-                                    .font(.caption).foregroundStyle(.secondary)
-                                Text(ByteCountFormatter.string(fromByteCount: record.byteCount, countStyle: .file))
-                                    .font(.caption2).foregroundStyle(.tertiary)
-                            }
-                            Spacer(minLength: 8)
-                            if ["ttf", "otf"].contains(URL(fileURLWithPath: record.fileName).pathExtension.lowercased()) {
-                                Button {
-                                    successMessage = nil
-                                    designer.edit(record, store: store)
-                                } label: { Label(FontDesignText.t("编辑", "Edit"), systemImage: "pencil") }
-                                    .buttonStyle(.borderless).disabled(designer.isOpening)
-                                    .accessibilityIdentifier("fontManagement.editManagedFont")
-                            } else {
-                                Text(FontDesignText.t("字体集合", "Font collection")).font(.caption).foregroundStyle(.secondary)
-                            }
-                        }
-                        .frame(minHeight: FloeTheme.minimumTarget)
-                        .swipeActions {
-                            Button(role: .destructive) { pendingRemoval = record } label: {
-                                Label("workspace.workspace_canvas_view.delete", systemImage: "trash")
-                            }
-                        }
-                    }
-                }
-            }
-
-            Section {
-                Button { showsImporter = true } label: {
-                    Label("settings.data_management_view.import_from_files", systemImage: "folder.badge.plus")
-                }
-                TextField("settings.data_management_view.public_https_direct_font_link", text: $remoteURL)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .keyboardType(.URL)
-                Button {
-                    Task { await installRemote() }
-                } label: {
-                    HStack {
-                        Label("settings.data_management_view.download_and_add_to_the_global", systemImage: "arrow.down.circle")
-                        Spacer()
-                        if isWorking { ProgressView() }
-                    }
-                }
-                .disabled(isWorking || remoteURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            } header: {
-                Text("settings.data_management_view.add_font")
-            } footer: {
-                Text("settings.data_management_view.only_public_https_links_and_genuine")
-            }
-
+            designSection
+            importedSection
+            bundledSection
+            addSection
             Section("settings.data_management_view.scope") {
                 Text("settings.data_management_view.fonts_installed_here_are_available_globally")
                     .font(.footnote).foregroundStyle(.secondary)
             }
-
             if let message = successMessage ?? designer.installedMessage {
                 Section { Text(message).foregroundStyle(.green) }
             }
         }
         .navigationTitle(FloeL10n.l("settings.data_management_view.font_resources"))
-        .task { await reload(); await designer.reload() }
-        .fullScreenCover(item: $designer.presented, onDismiss: {
-            Task { await reload(); await designer.reload() }
-        }) { session in
-            FontDesignEditorView(session: session)
+        .toolbar {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                if isSelecting {
+                    Button(FontDesignText.t(allSelected ? "取消全选" : "全选", allSelected ? "Deselect all" : "Select all")) {
+                        if allSelected { selection.clear() } else { selection.selectAll(deletableItems) }
+                    }.disabled(isWorking || deletableItems.isEmpty).accessibilityIdentifier("fontManagement.selectAll")
+                }
+                Button(FontDesignText.t(isSelecting ? "完成" : "选择", isSelecting ? "Done" : "Select")) {
+                    isSelecting.toggle(); selection.clear()
+                }.disabled(isWorking || designer.isOpening || (!isSelecting && deletableItems.isEmpty))
+                    .accessibilityIdentifier("fontManagement.select")
+            }
         }
+        .safeAreaInset(edge: .bottom) {
+            if isSelecting {
+                HStack {
+                    if isWorking { ProgressView().controlSize(.small) }
+                    Text(FontDesignText.t("已选 \(selection.items.count) 项", "\(selection.items.count) selected"))
+                        .font(.subheadline).foregroundStyle(.secondary)
+                    Spacer()
+                    Button(FontDesignText.t("删除", "Delete"), role: .destructive) { pendingDeletion = selection.items }
+                        .disabled(isWorking || selection.items.isEmpty).accessibilityIdentifier("fontManagement.deleteSelected")
+                }.padding().background(.bar)
+            }
+        }
+        .task {
+            do { try await environment.fontDesignAIHost.resumePendingDeletions() }
+            catch { errorMessage = error.localizedDescription }
+            await designer.reload(); await reload()
+        }
+        .fullScreenCover(item: $designer.presented, onDismiss: {
+            Task { await designer.reload(); await reload() }
+        }) { session in FontDesignEditorView(session: session) }
         .sheet(isPresented: $showsImporter) {
             DocumentPickerView(contentTypes: Self.fontTypes) { url in
                 showsImporter = false
                 Task { await importFont(url) }
             }
         }
-        .alert("settings.data_management_view.could_not_add_the_font", isPresented: Binding(
+        .alert(FontDesignText.t("未能完成操作", "Unable to complete action"), isPresented: Binding(
             get: { errorMessage != nil || designer.errorMessage != nil },
             set: { if !$0 { errorMessage = nil; designer.errorMessage = nil } }
         )) {
             Button("workspace.office_document_editor_view.ok") { errorMessage = nil; designer.errorMessage = nil }
-        } message: {
-            Text(errorMessage ?? designer.errorMessage ?? "common.unknown_error")
-        }
-        .confirmationDialog("settings.data_management_view.remove_this_font_from_all_floe",
-            isPresented: Binding(
-                get: { pendingRemoval != nil },
-                set: { if !$0 { pendingRemoval = nil } }
-            ),
+        } message: { Text(errorMessage ?? designer.errorMessage ?? "") }
+        .confirmationDialog(FontDesignText.t("删除所选的 \(pendingDeletion.count) 项？", "Delete \(pendingDeletion.count) selected items?"),
+            isPresented: Binding(get: { !pendingDeletion.isEmpty }, set: { if !$0 { pendingDeletion.removeAll() } }),
             titleVisibility: .visible
         ) {
-            Button("settings.data_management_view.remove_permanently", role: .destructive) {
-                guard let record = pendingRemoval else { return }
-                pendingRemoval = nil
-                Task { await remove(record) }
+            Button(FontDesignText.t("删除", "Delete"), role: .destructive) {
+                let requested = pendingDeletion; pendingDeletion.removeAll()
+                Task { await remove(requested) }
             }
-            Button("workspace.workspace_canvas_view.cancel", role: .cancel) { pendingRemoval = nil }
+            Button("workspace.workspace_canvas_view.cancel", role: .cancel) { pendingDeletion.removeAll() }
+        } message: {
+            Text(FontDesignText.t("删除草稿会一并删除其导出文件和助手会话；已安装的字体会保留，除非也选中了它。内置字体无法删除。",
+                "Deleting drafts also removes their exports and assistant conversations. Installed fonts are kept unless selected separately. Included fonts cannot be deleted."))
         }
     }
 
-    private static var fontTypes: [UTType] {
-        ["ttf", "otf", "ttc", "otc"].compactMap { UTType(filenameExtension: $0) }
+    private var designSection: some View {
+        Section(FontDesignText.t("字体设计", "Font design")) {
+            if !isSelecting {
+                Button { successMessage = nil; designer.newProject(store: store) } label: {
+                    Label(FontDesignText.t("新建字体", "New typeface"), systemImage: "plus")
+                }.disabled(isWorking || designer.isOpening).accessibilityIdentifier("fontManagement.newDesign")
+            }
+            if designer.isOpening { HStack { ProgressView(); Text(FontDesignText.t("正在打开…", "Opening…")) } }
+            ForEach(designer.projects) { project in
+                HStack {
+                    Button {
+                        if isSelecting { selection.toggle(.design(project.id)) }
+                        else { successMessage = nil; designer.open(project, store: store) }
+                    } label: {
+                        HStack(spacing: 12) {
+                            if isSelecting { selectionMark(.design(project.id)) }
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(project.title).foregroundStyle(.primary)
+                                Text(project.modifiedAt, format: .dateTime.month().day().hour().minute())
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer(minLength: 0)
+                        }.frame(minHeight: FloeTheme.minimumTarget).contentShape(Rectangle())
+                    }.buttonStyle(.plain).disabled(isWorking || designer.isOpening)
+                    if !isSelecting {
+                        Menu {
+                            Button(FontDesignText.t("打开", "Open"), systemImage: "pencil") { designer.open(project, store: store) }
+                            Button(FontDesignText.t("删除", "Delete"), systemImage: "trash", role: .destructive) {
+                                pendingDeletion = [.design(project.id)]
+                            }
+                        } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }
+                            .disabled(isWorking || designer.isOpening)
+                            .accessibilityLabel(FontDesignText.t("字体草稿选项", "Typeface draft options"))
+                    }
+                }
+                .swipeActions {
+                    if !isSelecting {
+                        Button(role: .destructive) { pendingDeletion = [.design(project.id)] } label: {
+                            Label(FontDesignText.t("删除", "Delete"), systemImage: "trash")
+                        }.disabled(isWorking || designer.isOpening)
+                    }
+                }
+            }
+        }
     }
 
+    private var importedSection: some View {
+        Section(FontDesignText.t("用户字体", "Your fonts")) {
+            if records.isEmpty {
+                Text(FontDesignText.t("尚未添加字体", "No added fonts yet")).foregroundStyle(.secondary)
+            }
+            ForEach(records) { record in
+                HStack(spacing: 12) {
+                    if isSelecting {
+                        Button { selection.toggle(.imported(record.id)) } label: { selectionMark(.imported(record.id)).frame(width: 44, height: 44) }
+                            .buttonStyle(.plain).disabled(isWorking)
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(record.displayName)
+                        HStack(spacing: 8) {
+                            Text(FontDesignText.t("用户字体", "Added"))
+                            Text(ByteCountFormatter.string(fromByteCount: record.byteCount, countStyle: .file))
+                        }.font(.caption).foregroundStyle(.secondary)
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                    if !isSelecting {
+                        Menu {
+                            if ["ttf", "otf"].contains(URL(fileURLWithPath: record.fileName).pathExtension.lowercased()) {
+                                Button(FontDesignText.t("编辑副本", "Edit a copy"), systemImage: "pencil") {
+                                    successMessage = nil; designer.edit(record, store: store)
+                                }
+                            }
+                            Button(FontDesignText.t("删除", "Delete"), systemImage: "trash", role: .destructive) {
+                                pendingDeletion = [.imported(record.id)]
+                            }
+                        } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }
+                            .disabled(isWorking || designer.isOpening)
+                            .accessibilityLabel(FontDesignText.t("用户字体选项", "Added font options"))
+                    }
+                }.frame(minHeight: FloeTheme.minimumTarget)
+                    .swipeActions {
+                        if !isSelecting {
+                            Button(role: .destructive) { pendingDeletion = [.imported(record.id)] } label: {
+                                Label(FontDesignText.t("删除", "Delete"), systemImage: "trash")
+                            }.disabled(isWorking)
+                        }
+                    }
+            }
+        }
+    }
+
+    private var bundledSection: some View {
+        Section {
+            ForEach(bundledFamilies) { family in
+                DisclosureGroup {
+                    ForEach(family.faces) { face in
+                        Text(face.displayName).font(.custom(face.id, size: 17, relativeTo: .body))
+                            .frame(minHeight: 32)
+                    }
+                } label: {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(family.displayName)
+                        HStack(spacing: 8) {
+                            Label(FontDesignText.t("内置", "Included"), systemImage: "lock")
+                            Text(FontDesignText.t("\(family.faces.count) 款", "\(family.faces.count) styles"))
+                        }.font(.caption).foregroundStyle(.secondary)
+                    }.frame(minHeight: FloeTheme.minimumTarget)
+                }
+            }
+        } header: {
+            HStack {
+                Text(FontDesignText.t("内置字体", "Included fonts"))
+                Spacer()
+                Text(String(bundledFamilies.count)).monospacedDigit()
+            }
+        } footer: {
+            Text(FontDesignText.t("内置字体供所有工作区使用，随 App 更新，不能删除。", "Included fonts are available in every workspace and updated with the App. They cannot be deleted."))
+        }
+    }
+
+    private var addSection: some View {
+        Section {
+            Button { showsImporter = true } label: {
+                Label("settings.data_management_view.import_from_files", systemImage: "folder.badge.plus")
+            }.disabled(isWorking || isSelecting)
+            TextField("settings.data_management_view.public_https_direct_font_link", text: $remoteURL)
+                .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
+                .disabled(isWorking || isSelecting)
+            Button { Task { await installRemote() } } label: {
+                HStack {
+                    Label("settings.data_management_view.download_and_add_to_the_global", systemImage: "arrow.down.circle")
+                    Spacer()
+                    if isWorking { ProgressView() }
+                }
+            }.disabled(isWorking || isSelecting || remoteURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        } header: { Text("settings.data_management_view.add_font") }
+          footer: { Text("settings.data_management_view.only_public_https_links_and_genuine") }
+    }
+
+    private func selectionMark(_ item: FontManagementItemID) -> some View {
+        Image(systemName: selection.items.contains(item) ? "checkmark.circle.fill" : "circle")
+            .font(.title3).foregroundStyle(selection.items.contains(item) ? Color.accentColor : Color.secondary)
+            .accessibilityLabel(FontDesignText.t(selection.items.contains(item) ? "已选择" : "未选择", selection.items.contains(item) ? "Selected" : "Not selected"))
+    }
+    private static var fontTypes: [UTType] { ["ttf", "otf", "ttc", "otc"].compactMap { UTType(filenameExtension: $0) } }
     private func reload() async {
         records = await store.list()
+        bundledFamilies = await Task.detached(priority: .utility) { BundledFontRegistrar.families(in: Bundle.main.bundleURL) }.value
+        selection.retainAvailable(deletableItems)
     }
-
     private func installRemote() async {
         guard let url = URL(string: remoteURL.trimmingCharacters(in: .whitespacesAndNewlines)) else {
-            errorMessage = FloeL10n.l("settings.data_management_view.invalid_font_url")
-            return
+            errorMessage = FloeL10n.l("settings.data_management_view.invalid_font_url"); return
         }
-        isWorking = true
-        defer { isWorking = false }
+        isWorking = true; defer { isWorking = false }
         do {
-            let record = try await store.install(from: url)
-            remoteURL = ""
+            let record = try await store.install(from: url); remoteURL = ""
             successMessage = FloeL10n.l("settings.data_management_view.installed_available_in_all_floe_workspaces", record.displayName)
-            // Fonts live under a scanned root: the shared snapshot is stale.
-            StorageDiagnosticService.shared.invalidate(.other("fontStore"))
-            await reload()
-        } catch {
-            errorMessage = error.localizedDescription
-        }
+            StorageDiagnosticService.shared.invalidate(.other("fontStore")); await reload()
+        } catch { errorMessage = error.localizedDescription }
     }
-
     private func importFont(_ url: URL) async {
-        isWorking = true
-        defer { isWorking = false }
+        isWorking = true; defer { isWorking = false }
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         do {
             let record = try await store.importFont(from: url)
             successMessage = FloeL10n.l("settings.data_management_view.imported_available_in_all_floe_workspaces", record.displayName)
-            StorageDiagnosticService.shared.invalidate(.other("fontStore"))
-            await reload()
-        } catch {
-            errorMessage = error.localizedDescription
-        }
+            StorageDiagnosticService.shared.invalidate(.other("fontStore")); await reload()
+        } catch { errorMessage = error.localizedDescription }
     }
-
-    private func remove(_ record: ManagedFontRecord) async {
-        do {
-            try await store.remove(id: record.id)
-            successMessage = FloeL10n.l("settings.data_management_view.removed", record.displayName)
-            StorageDiagnosticService.shared.invalidate(.other("fontStore"))
-            await reload()
-        } catch {
-            errorMessage = error.localizedDescription
+    private func remove(_ requested: Set<FontManagementItemID>) async {
+        guard !isWorking else { return }
+        isWorking = true; defer { isWorking = false }
+        let result = await FontManagementRemovalService.remove(requested, projects: designer.projects,
+            fonts: records, store: store, host: environment.fontDesignAIHost)
+        StorageDiagnosticService.shared.invalidate(.other("fontStore"))
+        await designer.reload(); await reload()
+        if !result.removed.isEmpty { successMessage = FontDesignText.t("已删除 \(result.removed.count) 项", "Deleted \(result.removed.count) items") }
+        if result.failures.isEmpty { isSelecting = false; selection.clear() }
+        else {
+            errorMessage = FontDesignText.t("\(result.failures.count) 项未能删除。", "\(result.failures.count) items could not be deleted.")
+                + "\n" + result.failures.prefix(3).map { $0.title + "：" + $0.message }.joined(separator: "\n")
         }
     }
 }
