@@ -332,6 +332,7 @@ class RootWorkspaceController internal constructor(
     // -------------------------------------------------- draft task policy
 
     private val draftApprovalModeState = MutableStateFlow(ApprovalModeUi.ASK)
+    private var draftApprovalExplicitlySelected = false
     val draftApprovalMode: StateFlow<ApprovalModeUi> = draftApprovalModeState
 
     /** Seed the actual persisted global default, including full control.
@@ -341,6 +342,16 @@ class RootWorkspaceController internal constructor(
      * parser's actual raw vocabulary (ask/automatic/fullAccess) is what the
      * producer sends — never a guessed enum string. */
     fun seedDraftApprovalFromGlobalDefault() {
+        synchronized(attachmentLock) {
+            draftApprovalExplicitlySelected = false
+            refreshDraftApprovalFromGlobalDefault()
+        }
+    }
+
+    /** Defaults may finish loading after Home opens. Refresh only an
+     * unedited draft; a user's task-specific choice stays authoritative. */
+    internal fun refreshDraftApprovalFromGlobalDefault() = synchronized(attachmentLock) {
+        if (draftApprovalExplicitlySelected) return@synchronized
         val defaultsMode = runCatching {
             host.settings.state.value.defaults.defaultAgentMode
         }.getOrNull()
@@ -355,7 +366,10 @@ class RootWorkspaceController internal constructor(
      * sessions never consume this value (their launches carry no approval
      * key and the native ceiling is frozen). */
     fun selectDraftApprovalMode(mode: ApprovalModeUi) {
-        draftApprovalModeState.value = mode
+        synchronized(attachmentLock) {
+            draftApprovalExplicitlySelected = true
+            draftApprovalModeState.value = mode
+        }
     }
 
     // ------------------------------------------------ reasoning effort chip

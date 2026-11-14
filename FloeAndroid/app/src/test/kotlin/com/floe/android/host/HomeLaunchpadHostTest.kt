@@ -348,8 +348,10 @@ class HomeLaunchpadHostTest {
         val host = readyHost(script, exchange)
         try {
             host.settings.refreshDefaults()
-            assertTrue(awaitUntil { host.settings.state.value.defaults.defaultAgentMode == "fullControl" })
-            host.conversations.rootWorkspace.seedDraftApprovalFromGlobalDefault()
+            assertTrue(awaitUntil {
+                host.conversations.rootWorkspace.draftApprovalMode.value ==
+                    com.floe.android.feature.conversation.ApprovalModeUi.FULL_ACCESS
+            })
             assertEquals(
                 com.floe.android.feature.conversation.ApprovalModeUi.FULL_ACCESS,
                 host.conversations.rootWorkspace.draftApprovalMode.value,
@@ -358,6 +360,27 @@ class HomeLaunchpadHostTest {
             assertTrue(awaitUntil { exchange.envelopesOf("run.start").size == 1 })
             val payload = exchange.envelopesOf("run.start").single()["payload"]!!.jsonObject
             assertEquals("fullAccess", payload["approvalMode"]!!.jsonPrimitive.content)
+        } finally {
+            host.stop()
+        }
+    }
+
+    @Test
+    fun lateGlobalDefaultsPreserveAnExplicitDraftPermissionChoice() = runBlocking {
+        val script = Script().apply { defaultAgentMode = "fullControl" }
+        val exchange = buildExchange(script)
+        val host = readyHost(script, exchange)
+        try {
+            host.conversations.rootWorkspace.selectDraftApprovalMode(
+                com.floe.android.feature.conversation.ApprovalModeUi.ASK,
+            )
+            host.settings.refreshDefaults()
+            assertTrue(awaitUntil { host.settings.state.value.defaults.defaultAgentMode == "fullControl" })
+            host.conversations.rootWorkspace.refreshDraftApprovalFromGlobalDefault()
+            host.home.send("Keep my explicit per-task permission choice", "agent", temporary = false) {}
+            assertTrue(awaitUntil { exchange.envelopesOf("run.start").size == 1 })
+            val payload = exchange.envelopesOf("run.start").single()["payload"]!!.jsonObject
+            assertEquals("ask", payload["approvalMode"]!!.jsonPrimitive.content)
         } finally {
             host.stop()
         }
