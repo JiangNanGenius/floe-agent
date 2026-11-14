@@ -627,19 +627,6 @@
       "noteKey": null
     },
     {
-      "id": "zlimageeditor",
-      "repositoryPath": "FloeApp/Resources/ZLImageEditor-LICENSE.txt",
-      "bundlePath": "ZLImageEditor-LICENSE.txt",
-      "titleKey": "settings.licenses.document.zlimageeditor.title",
-      "titleFallback": "ZLImageEditor",
-      "titleArgument": null,
-      "license": "MIT",
-      "kindKey": "settings.licenses.kind.full_text",
-      "required": false,
-      "section": "media",
-      "noteKey": null
-    },
-    {
       "id": "royalvnc",
       "repositoryPath": "ThirdParty/RoyalVNCKit/LICENSE",
       "bundlePath": "LICENSE",
@@ -1343,15 +1330,6 @@
       "evidence": null
     },
     {
-      "name": "VideoEditorKit",
-      "version": "c917b1e99ddc631b754a43704c05dfe3836e8183",
-      "license": "MIT",
-      "source": "https://github.com/didisouzacosta/VideoEditorKit",
-      "section": "engines",
-      "noteKey": null,
-      "evidence": "ThirdParty/VideoEditorKit/FLOE_PROVENANCE.md pinned commit"
-    },
-    {
       "name": "FloeShellEngine (BSD shell core)",
       "version": "upstream + Floe patch",
       "license": "BSD-3-Clause",
@@ -1721,51 +1699,6 @@
       "evidence": null
     },
     {
-      "name": "lodash (JavaScriptCore package)",
-      "version": "bundled UMD build",
-      "license": "MIT",
-      "source": "https://www.npmjs.com/package/lodash",
-      "section": "web",
-      "noteKey": null,
-      "evidence": "bundled UMD banner (MIT)"
-    },
-    {
-      "name": "dayjs (JavaScriptCore package)",
-      "version": "bundled UMD build",
-      "license": "MIT",
-      "source": "https://www.npmjs.com/package/dayjs",
-      "section": "web",
-      "noteKey": null,
-      "evidence": "upstream repository LICENSE (MIT); bundled build carries no banner"
-    },
-    {
-      "name": "marked (JavaScriptCore package)",
-      "version": "12.0.0",
-      "license": "MIT",
-      "source": "https://www.npmjs.com/package/marked",
-      "section": "web",
-      "noteKey": null,
-      "evidence": "bundled UMD banner (MIT, v12.0.0)"
-    },
-    {
-      "name": "uuid (JavaScriptCore package)",
-      "version": "8.3.2",
-      "license": "MIT",
-      "source": "https://www.npmjs.com/package/uuid",
-      "section": "web",
-      "noteKey": null,
-      "evidence": "bundled UMD banner (MIT, 8.3.2)"
-    },
-    {
-      "name": "zod (JavaScriptCore package)",
-      "version": "bundled UMD build",
-      "license": "MIT",
-      "source": "https://www.npmjs.com/package/zod",
-      "section": "web",
-      "noteKey": null,
-      "evidence": "upstream repository LICENSE (MIT); bundled build carries no banner"
-    },
-    {
       "name": "pdf-lib (JavaScriptCore package)",
       "version": "1.17.1",
       "license": "MIT",
@@ -1881,15 +1814,6 @@
       "section": "engineering",
       "noteKey": "settings.licenses.note.occt",
       "evidence": "FloeApp/Resources/EngineeringViewers/license.occt-import-js.txt"
-    },
-    {
-      "name": "ZLImageEditor",
-      "version": "upstream + Floe integration",
-      "license": "MIT",
-      "source": "https://github.com/longitachi/ZLPhotoBrowser",
-      "section": "media",
-      "noteKey": null,
-      "evidence": "FloeApp/Resources/ZLImageEditor-LICENSE.txt"
     },
     {
       "name": "FloeDocumentSans (modified Noto Sans SC)",
@@ -3199,8 +3123,8 @@
     }
   ],
   "counts": {
-    "components": 247,
-    "documents": 64,
+    "components": 240,
+    "documents": 63,
     "pins": 40
   }
 }

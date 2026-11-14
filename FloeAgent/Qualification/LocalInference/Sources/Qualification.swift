@@ -757,9 +757,7 @@ import Synchronization
             ToolSchemaDescriptor(name: URLDownloadTool.name, description: URLDownloadTool.toolDescription,
                                  parametersJSON: URLDownloadTool.parametersJSON),
             ToolSchemaDescriptor(name: OCRTool.name, description: OCRTool.toolDescription,
-                                 parametersJSON: OCRTool.parametersJSON),
-            ToolSchemaDescriptor(name: LocalPythonTool.name, description: LocalPythonTool.toolDescription,
-                                 parametersJSON: LocalPythonTool.parametersJSON)
+                                 parametersJSON: OCRTool.parametersJSON)
         ]
         let systemEnvelope = AgentPromptComposer.compose(
             mode: .chat,
@@ -996,9 +994,7 @@ import Synchronization
             ToolSchemaDescriptor(name: URLDownloadTool.name, description: URLDownloadTool.toolDescription,
                                  parametersJSON: URLDownloadTool.parametersJSON),
             ToolSchemaDescriptor(name: OCRTool.name, description: OCRTool.toolDescription,
-                                 parametersJSON: OCRTool.parametersJSON),
-            ToolSchemaDescriptor(name: LocalPythonTool.name, description: LocalPythonTool.toolDescription,
-                                 parametersJSON: LocalPythonTool.parametersJSON)
+                                 parametersJSON: OCRTool.parametersJSON)
         ]
         let envelope = AgentPromptComposer.compose(
             mode: .chat,

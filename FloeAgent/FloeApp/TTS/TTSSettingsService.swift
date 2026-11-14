@@ -4,6 +4,7 @@ import Foundation
 import Combine
 import FloeCore
 import FloeSecurity
+import FloeSync
 import FloeProviders
 
 /// A voice the user chose that is not playable yet, kept with the same
@@ -48,6 +49,8 @@ final class TTSSettingsService: ObservableObject {
     @Published private(set) var pendingVoice: TTSPendingVoice?
     private let defaults: UserDefaults
     private let keychain: any KeychainProbeStore
+    private let legacyKeychain: any KeychainProbeStore
+    private var syncObserver: AnyCancellable?
     private let modelStore: LocalSpeechModelStore
     private let resolveConnection: @MainActor (UUID) async throws -> String
     private let localPackValidator: @Sendable (LocalSpeechModel, String?) async -> LocalPackValidation
@@ -76,13 +79,14 @@ final class TTSSettingsService: ObservableObject {
     private var pendingLocalMigration: Bool?
 
     init(defaults: UserDefaults = .standard,
-         keychain: any KeychainProbeStore = KeychainStore(service: "org.floeagent.ios.tts", synchronizable: false),
+         keychain: (any KeychainProbeStore)? = nil,
          resolveConnection: @escaping @MainActor (UUID) async throws -> String = { _ in throw TTSSettingsFailure.missingCredential },
          modelStore: LocalSpeechModelStore = .shared,
          loadValidator: (@Sendable (LocalSpeechModel, String?) async -> LocalPackValidation)? = nil) {
         self.defaults = defaults
         self.modelStore = modelStore
-        self.keychain = keychain
+        self.keychain = keychain ?? SpeechCredentialStore(service: SpeechCredentialBinding.ttsService, defaults: defaults)
+        self.legacyKeychain = keychain ?? KeychainStore(service: SpeechCredentialBinding.ttsService, synchronizable: false)
         self.resolveConnection = resolveConnection
         self.localPackValidator = loadValidator ?? { model, voiceID in
             await LocalSpeechRuntime.validateLocalPack(modelID: model.id, voiceID: voiceID)
@@ -90,6 +94,7 @@ final class TTSSettingsService: ObservableObject {
         profiles = defaults.data(forKey: Self.profilesKey).flatMap { try? JSONDecoder().decode([String: TTSSettingsSnapshot].self, from: $0) } ?? [:]
         snapshot = defaults.data(forKey: Self.storageKey)
             .flatMap { try? JSONDecoder().decode(TTSSettingsSnapshot.self, from: $0) } ?? .systemDefault
+        SpeechCredentialStore.captureLocalTTSOrigins(defaults: defaults)
         installationObserver = NotificationCenter.default.publisher(for: .localSpeechInstallationCompleted)
             .receive(on: DispatchQueue.main).sink { [weak self] _ in
                 Task { @MainActor [weak self] in
@@ -102,6 +107,16 @@ final class TTSSettingsService: ObservableObject {
                     await self?.syncLocalSelection()
                 }
             }
+        syncObserver = NotificationCenter.default.publisher(for: SpeechCredentialBinding.settingsApplied)
+            .receive(on: DispatchQueue.main).sink { [weak self] _ in
+                Task { @MainActor [weak self] in self?.reloadSynchronizedPreferences() }
+            }
+        Task { [weak self] in
+            guard let self else { return }
+            _ = await SpeechCredentialStore.prepareTTSLegacyBindings(defaults: self.defaults,
+                local: self.legacyKeychain, destination: self.keychain)
+            self.objectWillChange.send()
+        }
         Task { [weak self] in await self?.syncLocalSelection() }
         localStatePump = Task { [weak self] in
             while !Task.isCancelled {
@@ -166,7 +181,7 @@ final class TTSSettingsService: ObservableObject {
         profiles[binding(provider, route)] ?? TTSSettingsSnapshot(provider: provider, billingRoute: route)
     }
     func hasCredential(for value: TTSSettingsSnapshot) -> Bool {
-        (try? keychain.read(account: account(value)))?.isEmpty == false
+        (try? readDedicatedCredential(for: value))?.isEmpty == false
     }
     func saveProfile(_ value: TTSSettingsSnapshot, credential: String) throws {
         var saved = value
@@ -189,7 +204,7 @@ final class TTSSettingsService: ObservableObject {
                from: profiles[profileID(saved)]?.openAIBaseURL, to: saved.openAIBaseURL) {
             throw TTSSettingsFailure.credentialChangedRequiresNewKey
         }
-        if !key.isEmpty { try keychain.store(account: account(saved), secret: Data(key.utf8)); saved.connectionProviderID = nil }
+        if !key.isEmpty { try storeDedicatedCredential(key, for: saved); saved.connectionProviderID = nil }
         guard hasCredential(for: saved) || saved.connectionProviderID != nil else { throw TTSSettingsFailure.missingCredential }
         objectWillChange.send()
         profiles[profileID(saved)] = saved
@@ -203,7 +218,8 @@ final class TTSSettingsService: ObservableObject {
         }
     }
     func removeProfile(_ value: TTSSettingsSnapshot) throws {
-        try keychain.delete(account: account(value))
+        try SpeechCredentialStore.deleteExplicit(account: account(value), service: SpeechCredentialBinding.ttsService,
+            defaults: defaults, destination: keychain)
         objectWillChange.send()
         profiles.removeValue(forKey: profileID(value))
         defaults.set(try JSONEncoder().encode(profiles), forKey: Self.profilesKey)
@@ -760,13 +776,17 @@ final class TTSSettingsService: ObservableObject {
     func saveCredential(_ value: String) throws {
         let value = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { throw TTSSettingsFailure.missingCredential }
-        try keychain.store(account: account(snapshot), secret: Data(value.utf8))
+        try storeDedicatedCredential(value, for: snapshot)
         update { $0.connectionProviderID = nil }
     }
 
-    func deleteCredential() throws { try keychain.delete(account: account(snapshot)) }
+    func deleteCredential() throws {
+        try SpeechCredentialStore.deleteExplicit(account: account(snapshot), service: SpeechCredentialBinding.ttsService,
+            defaults: defaults, destination: keychain)
+        objectWillChange.send()
+    }
 
-    var hasDedicatedCredential: Bool { (try? keychain.read(account: account(snapshot)))?.isEmpty == false }
+    var hasDedicatedCredential: Bool { (try? readDedicatedCredential(for: snapshot))?.isEmpty == false }
 
     func credential(for settings: TTSSettingsSnapshot) async throws -> String {
         guard settings.provider.requiresCloudCredential else { return "" }
@@ -779,15 +799,47 @@ final class TTSSettingsService: ObservableObject {
             throw TTSSettingsFailure.credentialChangedRequiresNewKey
         }
         if let id = settings.connectionProviderID { return try await resolveConnection(id) }
-        guard let data = try? keychain.read(account: account(settings)),
+        guard let data = try? readDedicatedCredential(for: settings),
               let value = String(data: data, encoding: .utf8), !value.isEmpty else {
             throw TTSSynthesisError.credentialMissing(provider: settings.provider, route: settings.billingRoute)
         }
         return value
     }
 
-    private func account(_ settings: TTSSettingsSnapshot) -> String {
-        "tts.\(settings.provider.rawValue).\(settings.billingRoute.rawValue)"
+    private func account(_ settings: TTSSettingsSnapshot) -> String { SpeechCredentialBinding.ttsAccount(settings) }
+
+    private func storeDedicatedCredential(_ key: String, for value: TTSSettingsSnapshot) throws {
+        try SpeechCredentialStore.storeExplicit(account: account(value), secret: Data(key.utf8),
+            service: SpeechCredentialBinding.ttsService, defaults: defaults, destination: keychain)
+    }
+    private func readDedicatedCredential(for value: TTSSettingsSnapshot) throws -> Data {
+        let account = account(value), source = keychain, legacy = legacyKeychain
+        let legacyAccount = "tts." + profileID(value)
+        let known = defaults.dictionary(forKey: SpeechCredentialStore.ttsLegacyOriginsKey) as? [String: String] ?? [:]
+        let mayReadLegacy = known[profileID(value)] == account
+        return try SpeechCredentialStore.readUnlessDeleted(account: account,
+            service: SpeechCredentialBinding.ttsService, defaults: defaults) {
+                do { return try source.read(account: account) }
+                catch KeychainStoreError.itemNotFound {
+                    guard mayReadLegacy else { throw KeychainStoreError.itemNotFound }
+                    return try legacy.read(account: legacyAccount)
+                }
+            }
+    }
+
+    private func reloadSynchronizedPreferences() {
+        let latest = defaults.data(forKey: Self.storageKey)
+            .flatMap { try? JSONDecoder().decode(TTSSettingsSnapshot.self, from: $0) } ?? .systemDefault
+        profiles = defaults.data(forKey: Self.profilesKey)
+            .flatMap { try? JSONDecoder().decode([String: TTSSettingsSnapshot].self, from: $0) } ?? [:]
+        if latest != snapshot {
+            // A late local-pack callback cannot restore a superseded choice.
+            defaults.set(defaults.integer(forKey: Self.selectionRevisionKey) + 1, forKey: Self.selectionRevisionKey)
+            pendingVoiceGeneration += 1; pendingVoice = nil
+            defaults.removeObject(forKey: Self.pendingVoiceKey)
+            snapshot = latest
+        }
+        objectWillChange.send() // includes independently arriving Keychain keys
     }
 }
 

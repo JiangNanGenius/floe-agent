@@ -444,8 +444,8 @@ final class LinuxGuestLanguagePackageTests: XCTestCase {
         runner.supports = false
         let service = ManagedPythonInstallService(linux: LinuxGuestLanguagePackages(runner: runner))
         let environment = makeEnvironment(environmentID, layer: layer)
-        // Ownership answers without touching the guest, so exec.localPython
-        // can skip native script policy before the guest is started.
+        // Ownership answers without touching the guest, so the exec.shell
+        // pip route can choose the guest installer before the guest starts.
         let owned = await service.isLinuxGuestEnvironment(environment)
         XCTAssertTrue(owned)
         XCTAssertTrue(runner.calls.isEmpty)
@@ -656,18 +656,6 @@ final class LinuxGuestLanguagePackageTests: XCTestCase {
             XCTAssertTrue(error.localizedDescription.contains("pnpm"), error.localizedDescription)
         }
         XCTAssertFalse(runner.calls.contains { $0.argv.contains("apt-get") && $0.argv.contains("pnpm") })
-    }
-
-    // MARK: exec.localPython gate
-
-    func testValidateNoLongerAppliesNativePolicyBeforeBackendIsKnown() throws {
-        let python = LocalPythonService(version: "host") { _, _ in return .cancelled }
-        let tool = LocalPythonTool(service: python)
-        // The bundled-interpreter restriction now runs in execute(), where the
-        // environment ownership is known; the Linux guest's Python may use
-        // pip/subprocess like the native python3 it replaces.
-        XCTAssertNoThrow(try tool.validate(LocalPythonTool.Arguments(script: "import subprocess; subprocess.run(['true'])")))
-        XCTAssertThrowsError(try tool.validate(LocalPythonTool.Arguments(script: "")))
     }
 
     func testForgetDropsCachedGuestEnvironment() async throws {        let (environmentID, layer) = try makeLayer()

@@ -13,6 +13,9 @@ import Foundation
 
 public enum LinuxCacheCleanupScript {
     public static let schema = "floe.linux-cache-cleanup.v1"
+    /// The preceding shipped bundle, accepted only for truthful historical
+    /// readback/deduplication; arbitrary model-marked scripts are not receipts.
+    static let previousSourceSHA256 = "cf468f5e76abd35db71d292c7ae6e739d773986df8b965cd86f92227a427c55b"
     public static let source = #"""
 #!/bin/sh
 # Floe bundled Linux cache cleanup (trusted, no model, no network).
@@ -103,9 +106,10 @@ df_available_bytes() {
 du_bytes() {
   _path=$1
   [ -e "$_path" ] || { printf '0'; return; }
-  set -- $(du -sk "$_path" 2>/dev/null)
+  _usage=$(du -sk "$_path" 2>/dev/null) || { printf 'unknown'; return; }
+  set -- $_usage
   case "${1:-}" in
-    ''|*[!0-9]*) printf '0' ;;
+    ''|*[!0-9]*) printf 'unknown' ;;
     *) printf '%s' $(( $1 * 1024 )) ;;
   esac
 }
@@ -147,12 +151,12 @@ command_running() {
 
 safe_root() {
   _root=$1
-  [ -d "$_root" ] || { printf 'missing'; return; }
   [ ! -L "$_root" ] || { printf 'symlink'; return; }
+  [ -d "$_root" ] || { printf 'missing'; return; }
   _resolved=$(cd -P "$_root" 2>/dev/null && pwd -P) || { printf 'unresolved'; return; }
   [ "$_resolved" = "$_root" ] || { printf 'escaped'; return; }
   command -v find >/dev/null 2>&1 || { printf 'unsearchable'; return; }
-  _link=$(find "$_root" -type l -print -quit 2>/dev/null)
+  _link=$(find "$_root" -type l -print -quit 2>/dev/null) || { printf 'unsearchable'; return; }
   [ -z "$_link" ] || { printf 'symlink'; return; }
   printf 'safe'
 }
@@ -187,13 +191,32 @@ remove_children() {
   find "$_root" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + 2>/dev/null
 }
 
+inspect_root() {
+  _inspect_category=$1
+  _inspect_root=$2
+  _safe=$(safe_root "$_inspect_root")
+  case "$_safe" in
+    safe)
+      _observed=$(du_bytes "$_inspect_root")
+      if [ "$_observed" = unknown ]; then
+        emit_category "$_inspect_category" unavailable unknown unknown measurement_unavailable
+      else
+        emit_category "$_inspect_category" observed "$_observed" "$_observed" allocated_bytes
+      fi
+      ;;
+    missing) emit_category "$_inspect_category" skipped-missing 0 0 missing ;;
+    *) emit_category "$_inspect_category" "$(skip_root_status "$_safe")" unknown unknown unsafe_root ;;
+  esac
+}
+
 clean_apt() {
-  _before=$(du_bytes "$APT_ROOT")
   if [ "$MODE" = inspect ]; then
-    emit_category apt observed "$_before" "$_before" observed
+    inspect_root apt "$APT_ROOT"
     return
   fi
   _safe=$(safe_root "$APT_ROOT")
+  _before=unknown
+  [ "$_safe" != safe ] || _before=$(du_bytes "$APT_ROOT")
   case "$_safe" in safe|missing) ;; *) emit_category apt "$(skip_root_status "$_safe")" "$_before" "$_before" unsafe_root; return ;; esac
   if [ "$_safe" = missing ]; then
     emit_category apt skipped-missing 0 0 missing
@@ -219,12 +242,13 @@ clean_apt() {
 clean_cache_root() {
   _category=$1
   _root=$2
-  _before=$(du_bytes "$_root")
   if [ "$MODE" = inspect ]; then
-    emit_category "$_category" observed "$_before" "$_before" observed
+    inspect_root "$_category" "$_root"
     return
   fi
   _safe=$(safe_root "$_root")
+  _before=unknown
+  [ "$_safe" != safe ] || _before=$(du_bytes "$_root")
   case "$_safe" in
     safe) ;;
     missing) emit_category "$_category" skipped-missing 0 0 missing; return ;;
@@ -300,7 +324,7 @@ if [ "$MODE" = clean ]; then
       printf 'error=lock_unavailable\n'
       exit 65
     fi
-    printf 'category=all status=skipped-busy bytes_before=0 bytes_after=0 note=cleanup_already_running\n'
+    printf 'category=all status=skipped-busy bytes_before=unknown bytes_after=unknown note=cleanup_already_running\n'
     printf 'cancelled=0\n'
     printf 'summary cleaned_categories=0 skipped_categories=1 failed_categories=0\n'
     printf 'error=cleanup_already_running\n'

@@ -1,8 +1,15 @@
-# Native media workbench qualification
+# Native media player qualification
 
-This minimal iOS App compiles the production media editor/player against FloeMedia,
-FloeTools and FloeCore. It avoids the full App/Office/MLX build. It does not test
-workspace navigation, chat attachment integration, shared jobs or a physical device.
+This minimal iOS App compiles the remaining production media consumer,
+`MediaPlayerView`, against FloeMedia, FloeTools and FloeCore. It avoids the full
+App/Office/MLX build. It does not test workspace navigation, chat attachment
+integration, shared jobs or a physical device.
+
+The retired single-asset editor, its model/export smoke, the old image editor
+(`FloeImageEditorView`) and the ZLImageEditor/VideoEditorKit dependencies were
+removed from this host with the main App's retirement. Historical qualification
+evidence for those retired components stays in the dated docs and release
+records; it is not a current acceptance claim.
 
 Generate the project with `xcodegen generate --spec FloeAgent/Qualification/NativeMedia/project.yml`.
 Build the `FloeMediaUISmoke` scheme with a full Xcode, an explicit booted test simulator,
@@ -18,12 +25,5 @@ ffmpeg -f lavfi -i testsrc2=size=640x360:rate=30 \
   -c:v libx264 -pix_fmt yuv420p -c:a aac input.mov
 ```
 
-Launch with `--model-smoke`. The App exercises the production editor model:
-source inspection, save/reopen, a 1–5 second trim at 2x speed, volume 0.5,
-320×180 output at 15 fps, and output metadata/playability inspection. Results are
-written to `Documents/media-model-results.json`. Every boolean, including `passed`,
-must be true. Rendering the screen alone does not establish these checks.
-
-Launch without the argument for manual playback, editing, cancel/retry and VoiceOver
-checks. Preserve UI and model-test evidence separately. No automated touch/gesture
-acceptance is implied by the model smoke test.
+Launch the App for manual playback, scrub, speed, PiP, fullscreen and VoiceOver
+checks. No automated touch/gesture acceptance is implied by installing it.

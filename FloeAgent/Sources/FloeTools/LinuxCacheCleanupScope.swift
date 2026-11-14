@@ -2,11 +2,11 @@
 // task.
 //
 // The persisted LinuxCacheCleanupTaskProfile narrows the ordinary catalog to
-// the four native cleanup actions plus the native user-question interaction
-// and tool discovery. This policy is re-evaluated at the canonical dispatch
+// the existing guest shell/job lifecycle, optional fixed cleanup actions,
+// native user questions and discovery. This policy is re-evaluated at dispatch
 // boundary, not only at schema composition, so a stale/forged descriptor,
-// alias, batch wrapper or conversation text cannot widen it. It never grants
-// host files, arbitrary shell, installs, network, sends, project/document
+// alias, wrapper or conversation text cannot change its target. It never grants
+// host/remote execution, installs, external sends, project/document
 // deletion, package/toolchain/model deletion or service shutdown.
 
 import Foundation
@@ -18,10 +18,10 @@ public enum LinuxCacheCleanupScope {
     public static let statusToolName = "linux.cache.status"
     public static let cancelToolName = "linux.cache.cancel"
 
-    /// The entire model-facing ceiling. `tools.*` are discovery plumbing, and
-    /// `user.ask` is the native ambiguity question. No exec.shell/jobs/apt/
-    /// workspace/delegate/network/host tool can enter this set.
-    public static let allowedToolNames: Set<String> = [
+    /// Retained purpose v1 rows used this exact projection. Expanding the
+    /// means of an already-authorized cache task does not change its owner,
+    /// environment or deletion scope. User-narrowed policies stay narrower.
+    public static let legacyToolNames: Set<String> = [
         inspectToolName,
         cleanToolName,
         statusToolName,
@@ -31,6 +31,21 @@ public enum LinuxCacheCleanupScope {
         "tools.list",
         "tools.readResult"
     ]
+    public static let guestExecutionToolNames: Set<String> = [
+        "exec.shell", "jobs.submit", "jobs.status", "jobs.result", "jobs.cancel"
+    ]
+    public static let allowedToolNames = legacyToolNames.union(guestExecutionToolNames)
+
+    public static func projectedToolNames(_ saved: Set<String>?) -> Set<String>? {
+        saved == legacyToolNames ? allowedToolNames : saved
+    }
+
+    /// Shell/submit declare a conservative union including network risk even
+    /// for `df`/`du`. Keep the existing command review; do not expose any
+    /// separate network capability or change the task's network flag.
+    public static func usesGuestCommandReview(_ name: String) -> Bool {
+        name == "exec.shell" || name == "jobs.submit"
+    }
 
     /// Intersecting with the actually offered names keeps the ceiling truthful
     /// when a build does not provide a tool.
@@ -51,8 +66,12 @@ public enum LinuxCacheCleanupScope {
         conversationID: UUID,
         environmentID: String?,
         descriptor: ToolCatalog.Descriptor,
-        arguments: Data
+        arguments: Data,
+        scope: ToolScope = .local
     ) -> String? {
+        guard case .local = scope else {
+            return "Linux cache cleanup runs only in its saved on-device shared guest; host and remote scopes are refused."
+        }
         guard profile.isValid,
               profile.profile == LinuxCacheCleanupTaskProfile.currentProfile,
               profile.backend == .linuxVM,
@@ -61,9 +80,9 @@ public enum LinuxCacheCleanupScope {
             return "This task's stored Linux cleanup purpose does not match its live conversation/environment binding. Create a new cleanup task from Data Management; conversation text cannot widen or rebind it."
         }
         guard allowedToolNames.contains(descriptor.name) else {
-            return "The '\(descriptor.name)' tool is outside this Linux cache-cleanup task. Only the dedicated cleanup actions, the native user question and tool discovery are available."
+            return "The '\(descriptor.name)' tool is outside this Linux cache-cleanup task. Use the saved guest's exec.shell/jobs lifecycle, optional cache actions, native questions and discovery."
         }
-        if isCleanupToolName(descriptor.name) {
+        if isCleanupToolName(descriptor.name) || guestExecutionToolNames.contains(descriptor.name) {
             guard let expected = expectedDescriptor(for: descriptor.name) else {
                 return "The cleanup tool identity is unknown; the call was refused."
             }
@@ -90,19 +109,45 @@ public enum LinuxCacheCleanupScope {
             return (.readOnly, false, [])
         case cancelToolName:
             return (.mutating, true, [])
+        case "exec.shell", "jobs.submit":
+            return (.mutating, true, [.executesLocalCode, .readsFiles, .writesFiles, .deletesFiles, .networkAccess])
+        case "jobs.status", "jobs.result":
+            return (.readOnly, false, [])
+        case "jobs.cancel":
+            return (.internalState, true, [])
         default:
             return nil
         }
     }
 
-    /// Argument surface. The cleanup tools take NO path, command or free-form
-    /// text: only category ids and, for status/cancel, a job UUID. Extra keys
-    /// are refused so a model cannot smuggle a future parameter.
+    /// Convenience tools take category ids/job IDs only. The ordinary shell
+    /// keeps its existing command validator and approval; no caller target or
+    /// installation/receipt fields can be smuggled through a wrapper.
     private static func argumentDenialReason(tool: String, arguments: Data) -> String? {
         guard let object = try? JSONSerialization.jsonObject(with: arguments) as? [String: Any] else {
             return "The '\(tool)' call requires a JSON object with only its documented fields."
         }
         switch tool {
+        case "exec.shell":
+            let keys: Set<String> = ["command", "script", "cwd", "env", "stdin", "timeout", "timeoutSeconds", "timeoutPolicy", "maxOutputBytes"]
+            guard Set(object.keys).isSubset(of: keys),
+                  ["command", "script"].contains(where: { (object[$0] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false }) else {
+                return "Use exec.shell command/script in this task's saved guest. Target overrides, package/skill installers and extra fields are not part of cache cleanup."
+            }
+            if let env = object["env"] {
+                guard let values = env as? [String: String],
+                      !values.keys.contains(where: { $0.hasPrefix("FLOE_CLEANUP_") }) else {
+                    return "Cleanup receipt markers are app-owned; model commands cannot mint native-script receipts."
+                }
+            }
+            return nil // The registered shell validator and ordinary approval still run.
+        case "jobs.submit":
+            guard Set(object.keys).isSubset(of: ["tool", "arguments", "purpose", "wait"]),
+                  object["tool"] as? String == "exec.shell",
+                  let nested = object["arguments"] as? String else {
+                return "This cleanup task may submit only exec.shell to the existing job lifecycle in the same saved guest."
+            }
+            return argumentDenialReason(tool: "exec.shell", arguments: Data(nested.utf8))
         case inspectToolName, cleanToolName:
             let allowedKeys: Set<String> = ["categories"]
             guard Set(object.keys).isSubset(of: allowedKeys) else {
@@ -117,8 +162,9 @@ public enum LinuxCacheCleanupScope {
                 }
             }
             return nil
-        case statusToolName, cancelToolName:
-            guard Set(object.keys) == Set(["jobID"]),
+        case statusToolName, cancelToolName, "jobs.status", "jobs.result", "jobs.cancel":
+            let keys: Set<String> = tool == "jobs.result" ? ["jobID", "offset", "maxBytes"] : ["jobID"]
+            guard Set(object.keys).isSubset(of: keys),
                   let raw = object["jobID"] as? String,
                   UUID(uuidString: raw) != nil else {
                 return "The '\(tool)' call requires exactly one jobID UUID."

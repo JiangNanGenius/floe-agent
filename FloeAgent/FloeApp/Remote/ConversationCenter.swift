@@ -4454,7 +4454,8 @@ final class ConversationCenter: ObservableObject {
                 || taskPolicy.credentialsAllowed == false
                 || taskPolicy.remoteExecutionAllowed == false
             guard hasExplicitRestriction else { return nil }
-            var names = taskPolicy.allowedToolNames
+            var names = (linuxCacheCleanupProfile == nil ? taskPolicy.allowedToolNames
+                : LinuxCacheCleanupScope.projectedToolNames(taskPolicy.allowedToolNames))
                 ?? Set(availableDescriptors.map(\.name))
             for descriptor in availableDescriptors {
                 if runExecutionBinding?.target.backend == .remoteSSH,
@@ -4463,7 +4464,10 @@ final class ConversationCenter: ObservableObject {
                     names.remove(descriptor.name)
                 }
                 let risks = Set(descriptor.riskLabels)
-                let denied = (taskPolicy.networkAllowed == false && risks.contains(.networkAccess))
+                let guestCommandReview = linuxCacheCleanupProfile != nil
+                    && runExecutionBinding?.target.backend == .linuxVM
+                    && LinuxCacheCleanupScope.usesGuestCommandReview(descriptor.name)
+                let denied = (taskPolicy.networkAllowed == false && risks.contains(.networkAccess) && !guestCommandReview)
                     || (taskPolicy.approvalMode == "readOnly" && descriptor.effect != .readOnly)
                     || (taskPolicy.browserControlAllowed == false && descriptor.name.hasPrefix("browser."))
                     || (taskPolicy.credentialsAllowed == false && risks.contains(.accessesCredentials))
@@ -4692,7 +4696,7 @@ final class ConversationCenter: ObservableObject {
         if linuxCacheCleanupProfile != nil {
             // Final, outer ceiling: an edited task policy, a saved skill, a
             // provider route or conversation text cannot add a host/file/
-            // shell/jobs/delegation/network tool to this purpose.
+            // delegation/network tool; shell/jobs use the explicit guest path.
             let offered = allowedToolNames ?? Set(availableDescriptors.map(\.name))
             allowedToolNames = LinuxCacheCleanupScope.allowedToolNames(from: offered)
         }

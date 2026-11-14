@@ -67,7 +67,11 @@ import FloeTools
     var colorHex = "#166F74"
     var playhead = 0.0
     var zoom = 1.0
+    var viewportResetID = UUID()
     private(set) var saving = false
+    private var sourceSaveRevision: Int64?
+    private var sourceSaveMessage: String?
+    var sourceSaveFeedback: String? { sourceSaveRevision == document.revision ? sourceSaveMessage : nil }
     private(set) var preview: CGImage?
     var colorPreview: CGImage?
     var colorShowsOriginal = false
@@ -94,7 +98,8 @@ import FloeTools
         id = project.id; self.project = project; self.root = root; self.store = store; self.coordinator = coordinator
         selectedLayerID = project.prepared?.layers.last?.id
         selectedTrackID = project.prepared?.trackGraph.tracks.first?.id
-        tool = project.kind == .video ? "video.trim" : "image.brush"
+        tool = project.kind == .video ? "video.trim"
+            : project.prepared?.layers.last?.contentKind == .strokes ? "image.brush" : "move"
     }
     static func open(projectID: UUID, root: URL, store: MediaProjectStore, upgrade: Bool = false) async throws -> MediaV2Session {
         let key = store.storeRootPath + "/" + projectID.uuidString
@@ -151,6 +156,28 @@ import FloeTools
     func submit(_ actions: [MediaPreparedAction]) {
         let base = document.revision
         Task { do { _ = try await apply(actions.map { .init(action: $0) }, expectedRevision: base) } catch { diagnostic = error.localizedDescription } }
+    }
+    /// Source writeback uses the same busy fence as project persistence, so
+    /// edits, replacement, Close and deletion cannot race an entrance's commit.
+    /// Keep the project and original failure available for an explicit retry.
+    func saveToSource(message: String, operation: @escaping @MainActor () async throws -> Void) {
+        guard !saving, !processingTool, !rendering, !canvasLayoutInProgress, imageWarpDraft == nil else { return }
+        saving = true
+        diagnostic = nil
+        sourceSaveMessage = nil
+        let revision = document.revision
+        Task {
+            defer { saving = false }
+            do {
+                try await operation()
+                sourceSaveRevision = revision
+                sourceSaveMessage = message
+            } catch { diagnostic = error.localizedDescription }
+        }
+    }
+    func fitCanvas() {
+        zoom = 1
+        viewportResetID = UUID()
     }
     func undo() {
         if let draft = imageWarpDraft { draft.undo(); return }

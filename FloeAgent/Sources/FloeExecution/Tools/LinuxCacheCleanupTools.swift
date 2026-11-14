@@ -60,7 +60,7 @@ public struct LinuxCacheCleanupInspectTool: AgentTool {
     }
 
     public static let name = LinuxCacheCleanupScope.inspectToolName
-    public static let toolDescription = "Inspect the shared Linux guest's known cache categories without deleting anything. Returns real category bytes and guest free space. Accepts only category ids (apt, pip, npm, no scratch) and never a path, command or arbitrary directory."
+    public static let toolDescription = "Optional convenience: inspect shared Linux apt/pip/npm cache usage without deleting. Returns verified native-script category bytes, explicit unavailable reasons and guest free space. Not a prerequisite for the user's exec.shell cleanup workflow: use the pinned guest terminal if this helper is unavailable. queued/running is an acknowledgment only; keep jobID and wait with linux.cache.status before claiming a result. Accepts category ids only, never a path or command."
     public static let parametersJSON = #"{"type":"object","properties":{"categories":{"type":"array","items":{"type":"string","enum":["apt","pip","npm"]},"description":"Known regenerable caches. Omit for apt,pip,npm. Unknown scratch is always retained."}},"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = [.readsFiles, .executesLocalCode]
     public static let isSideEffecting = false
@@ -90,7 +90,7 @@ public struct LinuxCacheCleanupInspectTool: AgentTool {
 
     static func output(_ receipt: LinuxCacheCleanupReceipt) -> ToolExecutionOutput {
         ToolExecutionOutput(digesting: receipt.modelSummary,
-            exitStatus: receipt.state == "failed" ? 1 : 0, capturedOutput: receipt.jsonString)
+            exitStatus: ["failed", "interrupted"].contains(receipt.state) ? 1 : 0, capturedOutput: receipt.jsonString)
     }
 }
 
@@ -105,7 +105,7 @@ public struct LinuxCacheCleanupCleanTool: AgentTool {
     }
 
     public static let name = LinuxCacheCleanupScope.cleanToolName
-    public static let toolDescription = "Clean only known regenerable caches inside the shared Linux guest: apt downloaded archives (through the real package-manager lock), pip download/wheel cache, npm content cache. It uses the app's bundled trusted script through the existing Linux job route and accepts no path, command, environment or arbitrary directory. It never removes projects, documents, installed packages/toolchains/models, user configuration/credentials or unrelated services. It waits for the actual terminal result and reports guest available bytes before/after; guest deletion may not shrink outer iPad storage."
+    public static let toolDescription = "Optional fixed-cache cleaner for shared Linux apt archives, pip download/wheel cache and npm content cache. It first obtains a fresh verified inspection in the same saved environment, then uses the bundled script through the existing job route. The normal exec.shell workflow does not require this helper. Preserve projects/documents/software/settings/toolchains/models and unrelated services. Takes category ids only. queued/running must be read with linux.cache.status until terminal, never treated as cleaned. Reports real guest bytes; guest deletion may not shrink iPad allocation."
     public static let parametersJSON = #"{"type":"object","properties":{"categories":{"type":"array","items":{"type":"string","enum":["apt","pip","npm"]},"description":"Known regenerable caches. Omit for apt,pip,npm. Unknown scratch is always retained."}},"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = [.executesLocalCode, .readsFiles, .writesFiles, .deletesFiles]
     public static let isSideEffecting = true
@@ -132,7 +132,7 @@ public struct LinuxCacheCleanupCleanTool: AgentTool {
         let receipt = try await support.service.clean(context: cleanup, categories: categories)
         return ToolExecutionOutput(
             digesting: receipt.modelSummary,
-            exitStatus: receipt.state == "failed" ? 1 : 0,
+            exitStatus: ["failed", "interrupted"].contains(receipt.state) ? 1 : 0,
             capturedOutput: receipt.jsonString
         )
     }
@@ -171,7 +171,7 @@ public struct LinuxCacheCleanupStatusTool: AgentTool {
         let receipt = try await support.service.status(context: cleanup, jobID: jobID)
         return ToolExecutionOutput(
             digesting: receipt.modelSummary,
-            exitStatus: receipt.state == "failed" ? 1 : 0,
+            exitStatus: ["failed", "interrupted"].contains(receipt.state) ? 1 : 0,
             capturedOutput: receipt.jsonString
         )
     }

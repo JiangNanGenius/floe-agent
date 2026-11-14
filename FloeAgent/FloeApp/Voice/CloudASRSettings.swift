@@ -20,6 +20,7 @@ import Foundation
 import Combine
 import FloeCore
 import FloeSecurity
+import FloeSync
 
 @MainActor
 final class CloudASRSettingsStore: ObservableObject {
@@ -69,20 +70,28 @@ final class CloudASRSettingsStore: ObservableObject {
     private let defaults: UserDefaults
     private let keychain: any KeychainProbeStore
     private let legacyKeychain: any KeychainProbeStore
+    private let scopedLegacyKeychain: any KeychainProbeStore
+    private var syncObserver: AnyCancellable?
     private var persisted = PersistedState.empty
 
     init(
         defaults: UserDefaults = .standard,
-        keychain: any KeychainProbeStore = KeychainStore(
-            service: CloudASRSettingsStore.keychainService, synchronizable: false),
+        keychain: (any KeychainProbeStore)? = nil,
         legacyKeychain: any KeychainProbeStore = KeychainStore(
             service: CloudASRSettingsStore.legacyKeychainService, synchronizable: false)
     ) {
         self.defaults = defaults
-        self.keychain = keychain
+        self.keychain = keychain ?? SpeechCredentialStore(service: Self.keychainService, defaults: defaults)
+        self.scopedLegacyKeychain = keychain ?? KeychainStore(service: Self.keychainService, synchronizable: false)
         self.legacyKeychain = legacyKeychain
         load()
+        syncObserver = NotificationCenter.default.publisher(for: SpeechCredentialBinding.settingsApplied)
+            .receive(on: DispatchQueue.main).sink { [weak self] _ in
+                Task { @MainActor [weak self] in self?.load(); self?.objectWillChange.send() }
+            }
     }
+
+    func reloadSynchronizedPreferences() { load(); objectWillChange.send() }
 
     // MARK: - Read surface
 
@@ -129,7 +138,7 @@ final class CloudASRSettingsStore: ObservableObject {
 
     func hasCredential(for profile: ASRProfile) -> Bool {
         guard let reference = profile.credentialReference else { return false }
-        guard let data = try? keychain(for: reference).read(account: reference.account) else {
+        guard let data = try? readCredential(for: profile, reference: reference) else {
             return false
         }
         guard let value = String(data: data, encoding: .utf8) else { return false }
@@ -144,7 +153,7 @@ final class CloudASRSettingsStore: ObservableObject {
         }
         let data: Data
         do {
-            data = try keychain(for: reference).read(account: reference.account)
+            data = try readCredential(for: profile, reference: reference)
         } catch {
             throw StoreError.credentialMissing
         }
@@ -167,7 +176,7 @@ final class CloudASRSettingsStore: ObservableObject {
             return try updateProfile(profile, credential: credential)
         }
         var next = try normalized(profile)
-        next.credentialReference = reference(for: next.id)
+        next.credentialReference = reference(for: next)
         try storeCredential(credential, for: next)
         profiles.append(next)
         if primaryProfileID == nil { primaryProfileID = next.id }
@@ -184,7 +193,7 @@ final class CloudASRSettingsStore: ObservableObject {
             throw StoreError.profileNotFound
         }
         var next = try normalized(profile)
-        next.credentialReference = existing.credentialReference ?? reference(for: next.id)
+        next.credentialReference = existing.credentialReference ?? reference(for: next)
         let originChanged = Self.originChanged(from: existing, to: next)
         let trimmedKey = credential?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if originChanged, trimmedKey.isEmpty {
@@ -205,10 +214,10 @@ final class CloudASRSettingsStore: ObservableObject {
 
     func removeProfile(id: UUID) {
         guard let existing = profile(id: id) else { return }
-        if let reference = existing.credentialReference,
-           reference.service == Self.keychainService {
-            try? keychain.delete(account: reference.account)
-        }
+        // Old raw legacy items are deliberately retained, but this origin's
+        // deletion must also fence a worker that already read those bytes.
+        try? SpeechCredentialStore.deleteExplicit(account: SpeechCredentialBinding.asrAccount(existing),
+            service: Self.keychainService, defaults: defaults, destination: keychain)
         profiles.removeAll { $0.id == id }
         if primaryProfileID == id {
             primaryProfileID = profiles.first?.id
@@ -228,6 +237,44 @@ final class CloudASRSettingsStore: ObservableObject {
         guard profile(id: id) != nil else { return }
         primaryProfileID = id
         persist()
+    }
+
+    /// Called before first CloudKit fetch / explicit local sync. Only legacy
+    /// references already present in the LOCAL snapshot are candidates. A
+    /// remote apply always materializes an origin-bound reference instead.
+    func prepareLocalCredentialBindings() async -> Int {
+        let entries = profiles.filter { profile in
+            guard let reference = profile.credentialReference else { return false }
+            return (reference.service == Self.keychainService && reference.account == Self.scopedAccount(for: profile.id))
+                || (profile.id == legacyAliasProfileID && reference.service == Self.legacyKeychainService
+                    && reference.account == Self.legacyKeychainAccount)
+        }
+        let destination = keychain, oldScoped = scopedLegacyKeychain, oldLegacy = legacyKeychain
+        let legacyService = Self.legacyKeychainService
+        let policy = SpeechCredentialStore(service: Self.keychainService, defaults: defaults)
+        let outcomes = await Task.detached(priority: .utility) {
+            var results: [(ASRProfile, ASRCredentialReference?)] = []
+            for profile in entries {
+                guard let old = profile.credentialReference else { continue }
+                do {
+                    let source = old.service == legacyService ? oldLegacy : oldScoped
+                    let data = try source.read(account: old.account)
+                    let account = SpeechCredentialBinding.asrAccount(profile)
+                    try policy.copyRetainedLegacy(data, account: account, destination: destination)
+                    guard try source.read(account: old.account) == data else { throw KeychainStoreError.unexpectedStatus("speech legacy source changed") }
+                    results.append((profile, ASRCredentialReference(service: SpeechCredentialBinding.asrService, account: account)))
+                } catch { results.append((profile, nil)) }
+            }
+            return results
+        }.value
+        var changed = false, failed = 0
+        for (old, reference) in outcomes {
+            guard let reference else { failed += 1; continue }
+            guard let index = profiles.firstIndex(where: { $0 == old }) else { continue }
+            profiles[index].credentialReference = reference; changed = true
+        }
+        if changed { persist() }
+        return failed
     }
 
     // MARK: - Legacy compatibility
@@ -359,7 +406,11 @@ final class CloudASRSettingsStore: ObservableObject {
     private func load() {
         guard let data = defaults.data(forKey: Self.storageKey),
               let decoded = try? JSONDecoder().decode(PersistedState.self, from: data) else {
-            migrateLegacyIfNeeded()
+            // A metadata/late-key refresh does not repeat the one-time legacy
+            // Keychain probe on an otherwise empty installation.
+            if persisted.migrationCompleted {
+                profiles = []; primaryProfileID = nil; legacyAliasProfileID = nil
+            } else { migrateLegacyIfNeeded() }
             return
         }
         persisted = decoded
@@ -403,7 +454,7 @@ final class CloudASRSettingsStore: ObservableObject {
                 // still usable rather than silently losing configurability.
                 if !key.isEmpty {
                     do {
-                        try keychain.store(account: reference.account, secret: Data(key.utf8))
+                        try scopedLegacyKeychain.store(account: reference.account, secret: Data(key.utf8))
                     } catch {
                         reference = ASRCredentialReference(
                             service: Self.legacyKeychainService,
@@ -444,10 +495,8 @@ final class CloudASRSettingsStore: ObservableObject {
 
     private static let defaultLegacyProfileName = "OpenAI"
 
-    private func reference(for id: UUID) -> ASRCredentialReference {
-        ASRCredentialReference(
-            service: Self.keychainService,
-            account: Self.scopedAccount(for: id))
+    private func reference(for profile: ASRProfile) -> ASRCredentialReference {
+        ASRCredentialReference(service: Self.keychainService, account: SpeechCredentialBinding.asrAccount(profile))
     }
 
     private static func scopedAccount(for id: UUID) -> String {
@@ -455,7 +504,15 @@ final class CloudASRSettingsStore: ObservableObject {
     }
 
     private func keychain(for reference: ASRCredentialReference) -> any KeychainProbeStore {
-        reference.service == Self.legacyKeychainService ? legacyKeychain : keychain
+        if reference.service == Self.legacyKeychainService { return legacyKeychain }
+        if !SpeechCredentialStore.valid(account: reference.account, service: Self.keychainService) { return scopedLegacyKeychain }
+        return keychain
+    }
+
+    private func readCredential(for profile: ASRProfile, reference: ASRCredentialReference) throws -> Data {
+        let source = keychain(for: reference), rawAccount = reference.account
+        return try SpeechCredentialStore.readUnlessDeleted(account: SpeechCredentialBinding.asrAccount(profile),
+            service: Self.keychainService, defaults: defaults) { try source.read(account: rawAccount) }
     }
 
     /// Writes a newly supplied secret for an edit. If the existing profile
@@ -468,17 +525,19 @@ final class CloudASRSettingsStore: ObservableObject {
         for profile: ASRProfile,
         existing: ASRProfile
     ) throws -> ASRCredentialReference {
-        let scoped = reference(for: profile.id)
+        let scoped = reference(for: profile)
         if existing.credentialReference?.service == Self.keychainService {
             do {
-                try keychain.store(account: scoped.account, secret: Data(key.utf8))
+                try SpeechCredentialStore.storeExplicit(account: scoped.account, secret: Data(key.utf8),
+                    service: Self.keychainService, defaults: defaults, destination: keychain)
                 return scoped
             } catch {
                 throw StoreError.keychainUnavailable
             }
         }
         do {
-            try keychain.store(account: scoped.account, secret: Data(key.utf8))
+            try SpeechCredentialStore.storeExplicit(account: scoped.account, secret: Data(key.utf8),
+                    service: Self.keychainService, defaults: defaults, destination: keychain)
             return scoped
         } catch {
             // The scoped store is unavailable; keep the already-working
@@ -499,7 +558,8 @@ final class CloudASRSettingsStore: ObservableObject {
         let key = credential?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !key.isEmpty, let reference = profile.credentialReference else { return }
         do {
-            try keychain(for: reference).store(account: reference.account, secret: Data(key.utf8))
+            try SpeechCredentialStore.storeExplicit(account: reference.account, secret: Data(key.utf8),
+                service: Self.keychainService, defaults: defaults, destination: keychain(for: reference))
         } catch {
             throw StoreError.keychainUnavailable
         }

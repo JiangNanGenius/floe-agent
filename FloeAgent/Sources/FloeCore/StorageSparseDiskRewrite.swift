@@ -533,8 +533,9 @@ public struct StorageSparseDiskRecoveryReport: Sendable, Equatable {
     public var phase: String
     public var stageRemoved: Bool
     public var sourceIdentityVerified: Bool
-    /// True only for the abort-only ctime recovery which read every current
-    /// source byte and matched the original journal's complete SHA-512.
+    /// True only when the current complete source was actually read and
+    /// matched its historical journal's SHA-512. Reclaimed bytes require a
+    /// separate, actually measured rewrite report.
     public var sourceContentDigestVerified: Bool
     public var detail: String
 
@@ -683,6 +684,30 @@ public enum StorageSparseDiskRewrite {
         _ = policy
         _ = isCancelled
         _ = progress
+        throw StorageSparseDiskRewriteError.unsupportedPlatform
+        #endif
+    }
+
+    /// Read-only qualification of one historical retired target under a NEW
+    /// caller-owned exclusive fence. It never mutates the old journal/source,
+    /// and does not claim its current allocation is still sparse. A caller may
+    /// then enter the ordinary fresh rewrite with this exact current identity.
+    public static func verifyRetiredSource(
+        rootURL: URL, relativePath: String, expectedSource: StorageSparseDiskIdentity,
+        journalDirectoryURL: URL, jobID: String,
+        fence: StorageSparseDiskMaintenanceFence,
+        recordedRootBinding: StorageSparseDiskRecoveryRootBinding,
+        isCancelled: @escaping @Sendable () -> Bool = { false },
+        progress: (@Sendable (StorageSparseDiskRewriteProgress) -> Void)? = nil
+    ) throws -> StorageSparseDiskRecoveryReport {
+        #if canImport(Darwin)
+        return try StorageSparseDiskRewriteRecovery.recover(
+            rootURL: rootURL, relativePath: relativePath, journalDirectoryURL: journalDirectoryURL,
+            jobID: jobID, fence: fence, recordedRootBinding: recordedRootBinding,
+            isCancelled: isCancelled, progress: progress, verifyRetiredSourceIdentity: expectedSource)
+        #else
+        _ = rootURL; _ = relativePath; _ = expectedSource; _ = journalDirectoryURL; _ = jobID
+        _ = fence; _ = recordedRootBinding; _ = isCancelled; _ = progress
         throw StorageSparseDiskRewriteError.unsupportedPlatform
         #endif
     }

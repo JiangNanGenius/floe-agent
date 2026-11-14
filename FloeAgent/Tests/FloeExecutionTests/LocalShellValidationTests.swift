@@ -72,7 +72,7 @@ struct LocalShellValidationTests {
         #expect(search.summary.contains("floe/py-marko"))
     }
 
-    @Test func pythonPackageToolRejectsOtherFamilies() async throws {
+    @Test func retiredPackageShimGuidesEachFamily() async throws {
         let backend = RecordingShellBackend(), registry = ToolRunnerRegistry()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -86,17 +86,20 @@ struct LocalShellValidationTests {
             shell: LocalShellService(backend: backend, rootProvider: { root }),
             sessions: ShellSessionCenter(backend: backend), capabilityInstaller: installer)
         #expect(registry.runner(named: "python.packages") == nil)
-        let tool = AnyAgentTool(PythonPackageTool(installer: installer))
+        let apt = try #require(registry.runner(named: "apt"))
         let context = ToolContext(runID: UUID(), scope: .local, cancellation: CancellationToken())
-        let wrong = try await tool.execute(
-            argumentsJSON: Data(#"{"action":"install","ids":["floe/lua"],"purpose":"test"}"#.utf8),
+        let wasm = try await apt.execute(
+            argumentsJSON: Data(#"{"action":"install","ids":["floe/lua"],"purpose":"legacy"}"#.utf8),
             context: context)
-        #expect(wrong.exitStatus == 1)
-        #expect(wrong.summary.contains("Settings"))
-        // list only surfaces the Python family.
-        let list = try await tool.execute(argumentsJSON: Data(#"{"action":"list"}"#.utf8), context: context)
-        #expect(list.summary.contains("floe/py-marko"))
-        #expect(!list.summary.contains("floe/lua"))
+        #expect(wasm.exitStatus == 1)
+        #expect(wasm.summary.contains("signed WASI command"))
+        #expect(wasm.summary.contains("Settings"))
+        let python = try await apt.execute(
+            argumentsJSON: Data(#"{"action":"install","ids":["floe/py-marko"],"purpose":"legacy"}"#.utf8),
+            context: context)
+        #expect(python.exitStatus == 1)
+        #expect(python.summary.contains("python3 -m pip"))
+        #expect(python.summary.contains("exec.shell"))
     }
 
     @Test func unavailableCommandNamesInsideDataDoNotBlockScripts() {

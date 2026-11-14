@@ -2244,35 +2244,6 @@ private struct CanvasDestinationCover: ViewModifier {
     }
 }
 
-/// iPad Chat detail with nothing selected: quiet empty state plus a real
-/// "new conversation" entry. Never the Home launchpad.
-private struct ChatDetailEmptyView: View {
-    @EnvironmentObject private var environment: AppEnvironment
-    @EnvironmentObject private var router: AppRouter
-
-    var body: some View {
-        ContentUnavailableView {
-            Label("tab.chat", systemImage: "bubble.left.and.bubble.right")
-        } description: {
-            Text("chat.select_or_new")
-        } actions: {
-            Button("chat.new") {
-                Task {
-                    if let conversation = try? await environment.conversationCenter
-                        .createConversation(title: nil) {
-                        router.openConversation(conversation.id)
-                    }
-                }
-            }
-            .buttonStyle(.borderedProminent)
-            .frame(minHeight: FloeTheme.minimumTarget)
-            .accessibilityIdentifier("chat.detail.new")
-        }
-        .background(FloeTheme.readingSurface)
-        .navigationTitle("tab.chat")
-    }
-}
-
 /// The More list: Runs, Providers, Settings, and Diagnostics. As the iPhone
 /// More tab root it pushes sub-screens; as the
 /// iPad content column it renders the sidebar-selected section directly.
@@ -2339,23 +2310,6 @@ private struct MoreDestinationView: View {
         case .diagnostics:
             DiagnosticsAboutView(center: environment.settingsCenter)
         }
-    }
-}
-
-/// A structural empty state used when the split view has no selected detail.
-private struct ShellPlaceholderView: View {
-    let title: LocalizedStringKey
-    let systemImage: String
-    let messageKey: LocalizedStringKey
-
-    var body: some View {
-        ContentUnavailableView {
-            Label(title, systemImage: systemImage)
-        } description: {
-            Text(messageKey)
-        }
-        .background(FloeTheme.readingSurface)
-        .navigationTitle(title)
     }
 }
 

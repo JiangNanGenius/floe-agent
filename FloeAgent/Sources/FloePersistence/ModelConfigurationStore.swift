@@ -4,6 +4,14 @@ import Foundation
 import GRDB
 import FloeCore
 
+public struct ApplicationSettingDatabaseSnapshot: Sendable, Equatable {
+    public var record: ApplicationSettingRecord?
+    public var metadata: ConfigSyncMetadata?
+    public init(record: ApplicationSettingRecord?, metadata: ConfigSyncMetadata?) {
+        self.record = record; self.metadata = metadata
+    }
+}
+
 /// Persists provider and model metadata in the local database.
 ///
 /// API-key bodies never enter this store. `ProviderProfile.secretRef` contains
@@ -13,6 +21,61 @@ public actor ModelConfigurationStore {
 
     public init(database: DatabaseManager) {
         self.database = database
+    }
+
+    public func applicationSetting(key: String) async throws -> ApplicationSettingRecord? {
+        try await applicationSettingSnapshot(key: key).record
+    }
+
+    public func applicationSettingSnapshot(key: String) async throws -> ApplicationSettingDatabaseSnapshot {
+        guard ApplicationSettingPolicy.isAllowed(key) else { throw FloeError.invalidConfiguration("Invalid application setting key") }
+        return try await database.reader { db in
+            try Self.applicationSettingSnapshot(in: db, key: key)
+        }
+    }
+
+    public func applicationSettings() async throws -> [ApplicationSettingRecord] {
+        try await database.reader { db in
+            try Row.fetchAll(db, sql: "SELECT key, value_json FROM app_settings WHERE key LIKE ? ORDER BY key",
+                arguments: [ApplicationSettingRecord.storagePrefix + "%"]).map { row in
+                    let key: String = row["key"], json: String = row["value_json"]
+                    let record = try JSONDecoder().decode(ApplicationSettingRecord.self, from: Data(json.utf8)).validated()
+                    guard record.storageKey == key else { throw FloeError.storageCorrupted("Application setting identity mismatch") }
+                    return record
+                }
+        }
+    }
+
+    /// CAS includes absence. A remote apply/local save that yielded while
+    /// reading cannot overwrite a later committed value or acknowledge it.
+    public func commitApplicationSetting(_ value: ApplicationSettingRecord, metadata: ConfigSyncMetadata,
+                                        expecting expected: ApplicationSettingDatabaseSnapshot) async throws {
+        let record = try value.validated()
+        guard metadata.recordType == ApplicationSettingRecord.cloudRecordType,
+              metadata.recordID == record.recordID else { throw FloeError.invalidConfiguration("Application setting metadata identity mismatch") }
+        let bytes = try ApplicationSettingRecord.encodeValue(record)
+        guard let json = String(data: bytes, encoding: .utf8) else { throw FloeError.storageCorrupted("Invalid application setting JSON") }
+        try await database.writer { db in
+            guard try Self.applicationSettingSnapshot(in: db, key: record.key) == expected else {
+                throw FloeError.invalidConfiguration("Application setting changed; retry synchronization")
+            }
+            try db.execute(sql: """
+                INSERT INTO app_settings(key,value_json,updated_at) VALUES(?,?,?)
+                ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at
+                """, arguments: [record.storageKey, json, PersistenceCodec.encode(record.updatedAt)])
+            try ConfigSyncMetadataStore.write(metadata, to: db)
+        }
+    }
+
+    private static func applicationSettingSnapshot(in db: Database, key: String) throws -> ApplicationSettingDatabaseSnapshot {
+        let json = try String.fetchOne(db, sql: "SELECT value_json FROM app_settings WHERE key = ?",
+            arguments: [ApplicationSettingRecord.storagePrefix + key])
+        let record = try json.map { try JSONDecoder().decode(ApplicationSettingRecord.self, from: Data($0.utf8)).validated() }
+        guard record == nil || record?.key == key else { throw FloeError.storageCorrupted("Application setting identity mismatch") }
+        let metadata = try Row.fetchOne(db, sql: "SELECT * FROM config_sync_metadata WHERE record_type=? AND record_id=?",
+            arguments: [ApplicationSettingRecord.cloudRecordType, ApplicationSettingRecord.recordPrefix + key])
+            .map(ConfigSyncMetadataStore.decode)
+        return .init(record: record, metadata: metadata)
     }
 
     public func saveProvider(_ provider: ProviderProfile) async throws {

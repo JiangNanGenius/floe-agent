@@ -1,9 +1,12 @@
 // FloeExecution — Shell tool registration.
-// Dual-registration seam (descriptor + runner) for exec.shell, shell.*, the
-// signed capability packages and a
+// Dual-registration seam (descriptor + runner) for exec.shell, shell.* and the
 // history-only apt compatibility shim. The app injects the resolved Linux guest
 // service; an unavailable backend still registers exec.shell so the catalog
 // honestly reports a failed engine instead of hiding the capability.
+//
+// The retired signed-WASM package tool is no longer constructed: signed WASI capability
+// management stays available in Settings through SignedWasmCapabilityStore,
+// but ``wasm.packages`` is a fenced historical name with no model runner.
 
 import Foundation
 import FloeTools
@@ -16,7 +19,6 @@ public func registerShellTools(
     sessions: ShellSessionCenter,
     pythonInstaller: ManagedPythonInstallService? = nil,
     capabilityInstaller: CapabilityInstaller? = nil,
-    wasmStore: SignedWasmCapabilityStore? = nil,
     dependencyGate: (any SkillDependencyInvocationGating)? = nil,
     configurationProvider: (any SkillProcessConfigurationProviding)? = nil
 ) -> Bool {
@@ -35,10 +37,6 @@ public func registerShellTools(
     if let capabilityInstaller {
         ToolCatalog.register(ManagedPackageTool.self, compatibilityOnly: true)
         registry.register(ManagedPackageTool(installer: capabilityInstaller), compatibilityOnly: true)
-    }
-    if let wasmStore {
-        ToolCatalog.register(WasmPackageTool.self)
-        registry.register(WasmPackageTool(store: wasmStore))
     }
     return true
 }

@@ -129,7 +129,8 @@ extension MediaV2Session {
         "video.trim", "video.split", "video.slip", "video.speed", "video.transition", "video.pip",
         "video.video-mask", "video.video-feather", "video.video-transform", "video.keyframes", "video.easing", "video.caption", "video.caption-time", "video.mix", "video.fades", "video.audio-sync", "video.ripple", "video.roll", "video.srt", "image.align", "image.blend-mode"
     ]
-    var catalog: [MediaPreparedToolDescriptor] { (try? MediaPreparedBundledCatalog.load().entries) ?? [] }
+    private static let bundledTools = (try? MediaPreparedBundledCatalog.load().entries) ?? []
+    var catalog: [MediaPreparedToolDescriptor] { Self.bundledTools }
     var applicableTools: [MediaPreparedToolDescriptor] { catalog.filter { $0.kind.rawValue == project.kind.rawValue && (compoundScopeID == nil || $0.id != "video.nest") } }
 
     /// Called only after the existing task authority has admitted the edit.

@@ -179,7 +179,7 @@ final class LinuxCacheCleanupFallbackRunner {
             cancellation: entry.cancellation
         )
         do {
-            let receipt = try await entry.service.clean(
+            var receipt = try await entry.service.clean(
                 context: context,
                 categories: LinuxCacheCleanupCategory.defaultSafe,
                 onJobSubmitted: { [weak self] jobID in
@@ -190,6 +190,25 @@ final class LinuxCacheCleanupFallbackRunner {
                     }
                 }
             )
+            // Reconciliation can return an already-running native inspect or
+            // clean. A queued acknowledgment is never fallback completion.
+            // Do not submit another operation until its real terminal readback.
+            while receipt.awaitingCompletion {
+                try entry.cancellation.throwIfCancelled(); try Task.checkCancellation()
+                guard let jobID = receipt.jobID else { throw FloeError.storageCorrupted("Pending cleanup has no job ID") }
+                try await Task.sleep(nanoseconds: 500_000_000)
+                receipt = try await entry.service.status(context: context, jobID: jobID)
+                if !receipt.awaitingCompletion, receipt.mode == "inspect", receipt.state == "completed", receipt.error == nil {
+                    receipt = try await entry.service.clean(context: context,
+                        categories: LinuxCacheCleanupCategory.defaultSafe,
+                        onJobSubmitted: { [weak self] jobID in
+                            await MainActor.run {
+                                guard var entry = self?.active[runID] else { return }
+                                entry.jobID = jobID; self?.active[runID] = entry
+                            }
+                        })
+                }
+            }
             let message: String
             let state: String
             if receipt.cancelled {

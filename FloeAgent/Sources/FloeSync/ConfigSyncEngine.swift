@@ -12,6 +12,7 @@ public enum ConfigSyncRecordType: String, Sendable, CaseIterable {
     case providerProfile = "ProviderProfile"
     case modelProfile = "ModelProfile"
     case preference = "Preference"
+    case applicationSetting = "ApplicationSetting"
     case remoteHostProfile = "RemoteHostProfile"
     /// Secret-free metadata for credentials the user explicitly promoted to
     /// the vault. Secret bytes remain exclusively in synchronizable Keychain.
@@ -659,7 +660,8 @@ public actor ConfigSyncEngine {
             return
         }
         let zoneID = CKRecordZone.ID(zoneName: Self.zoneName, ownerName: CKCurrentUserDefaultName)
-        let stateData = try await metadataStore.engineState()
+        let stateData = try await metadataStore.engineState(
+            supportedRecordTypes: ConfigSyncRecordType.allCases.map(\.rawValue))
         try requireCurrentConfiguration(generation)
         let serialization = stateData.flatMap { try? JSONDecoder().decode(CKSyncEngine.State.Serialization.self, from: $0) }
         // Finish every throwing/suspending preparation BEFORE publishing a
@@ -793,6 +795,109 @@ public actor ConfigSyncEngine {
             value: preferences,
             changedFields: changedFields
         )
+    }
+
+    /// One portable setting per stable ID; nil values are retained tombstones.
+    /// Value and pending metadata commit atomically, including CAS of absence.
+    public func saveApplicationSetting(_ input: ApplicationSettingRecord) async throws {
+        guard let configurationStore else { throw FloeError.invalidConfiguration("Configuration store unavailable") }
+        let value = try input.validated()
+        let before = try await configurationStore.applicationSettingSnapshot(key: value.key)
+        // Imported legacy defaults cannot overwrite a previously synchronized
+        // value restored with the database on this device.
+        if value.updatedAt == Date(timeIntervalSince1970: 0),
+           let existing = before.record, existing.updatedAt > value.updatedAt { return }
+        guard before.record?.value != value.value || before.record == nil else { return }
+        var metadata = before.metadata ?? ConfigSyncMetadata(
+            recordType: ConfigSyncRecordType.applicationSetting.rawValue, recordID: value.recordID)
+        for field in ["value", "updatedAt", "schemaVersion", "key"] { metadata.fieldTimestamps[field] = value.updatedAt }
+        metadata.pendingAction = .save; metadata.deletedAt = nil; metadata.updatedAt = value.updatedAt
+        try await configurationStore.commitApplicationSetting(value, metadata: metadata, expecting: before)
+        stageApplicationSettingSave(value.recordID)
+    }
+
+    public func applicationSettings() async throws -> [ApplicationSettingRecord] {
+        guard let configurationStore else { throw FloeError.invalidConfiguration("Configuration store unavailable") }
+        return try await configurationStore.applicationSettings()
+    }
+
+    public func reportApplicationSettingsFailure() {
+        publishConfigurationFailure(FloeError.invalidConfiguration("Application settings unavailable"),
+            phase: .configuration, generation: configurationLifecycle)
+    }
+
+    private func stageApplicationSettingSave(_ id: String) {
+        capturePendingConfigurationChange(id: id, action: .save)
+        guard synchronizationEnabled, let syncEngine, let zoneID else { status = .paused; return }
+        syncEngine.state.add(pendingRecordZoneChanges: [.saveRecord(CKRecord.ID(recordName: id, zoneID: zoneID))])
+        status = .syncing; scheduleSynchronization()
+    }
+
+    private func applyRemoteApplicationSetting(_ record: CKRecord, payload: Data,
+        timestamps: [String: Date]) async throws -> Bool {
+        guard let configurationStore,
+              let key = ApplicationSettingRecord.key(recordID: record.recordID.recordName) else { return false }
+        let before = try await configurationStore.applicationSettingSnapshot(key: key)
+        let oldTimestamps = before.metadata?.fieldTimestamps ?? [:]
+        let local = try before.record.map { try ApplicationSettingRecord.encodeValue($0) }
+        let merged = try Self.mergeJSON(local: local, remote: payload,
+            localTimestamps: oldTimestamps, remoteTimestamps: timestamps)
+        let value: ApplicationSettingRecord
+        do {
+            value = try JSONDecoder().decode(ApplicationSettingRecord.self, from: merged)
+                .validated(recordID: record.recordID.recordName)
+        } catch {
+            rejectedRemoteRecordIDs.insert(record.recordID.recordName)
+            status = .error(Self.rejectedRemoteMessage)
+            FloeLogger(category: .sync).warning("applicationSettingsRejected code=invalid_payload")
+            return false
+        }
+        var dates = oldTimestamps
+        for (field, date) in timestamps where date > (dates[field] ?? .distantPast) { dates[field] = date }
+        let retainsLocal = before.metadata?.pendingAction == .save && oldTimestamps.contains {
+            $0.value >= (timestamps[$0.key] ?? .distantPast)
+        }
+        let metadata = ConfigSyncMetadata(recordType: ConfigSyncRecordType.applicationSetting.rawValue,
+            recordID: value.recordID, fieldTimestamps: dates, cloudChangeTag: record.recordChangeTag,
+            cloudSystemFields: Self.archiveSystemFields(record), pendingAction: retainsLocal ? .save : nil,
+            updatedAt: record.modificationDate ?? Date())
+        try await configurationStore.commitApplicationSetting(value, metadata: metadata, expecting: before)
+        rejectedRemoteRecordIDs.remove(record.recordID.recordName)
+        if retainsLocal { stageApplicationSettingSave(value.recordID) }
+        let changed = before.record?.value != value.value || before.record == nil
+        if changed { signalRemoteConfigurationApplied() }
+        return changed
+    }
+
+    private func applyRemoteApplicationSettingDeletion(_ id: CKRecord.ID) async throws -> Bool {
+        guard let configurationStore, let key = ApplicationSettingRecord.key(recordID: id.recordName) else { return false }
+        let before = try await configurationStore.applicationSettingSnapshot(key: key)
+        // A user edit committed while the delete was in flight remains queued.
+        if before.metadata?.pendingAction == .save { stageApplicationSettingSave(id.recordName); return false }
+        let now = Date(), value = ApplicationSettingRecord(key: key, value: nil)
+        let metadata = ConfigSyncMetadata(recordType: ConfigSyncRecordType.applicationSetting.rawValue,
+            recordID: id.recordName, fieldTimestamps: ["value": now, "updatedAt": now],
+            deletedAt: now, updatedAt: now)
+        try await configurationStore.commitApplicationSetting(value, metadata: metadata, expecting: before)
+        let changed = before.record?.value != nil
+        if changed { signalRemoteConfigurationApplied() }
+        return changed
+    }
+
+    // Internal actual-engine seam, exercised with real CKRecord/SQLite fixtures.
+    // An older send acknowledgement cannot clear a newer local pending edit.
+    func acknowledgeApplicationSetting(_ record: CKRecord) async throws {
+        guard let configurationStore, let key = ApplicationSettingRecord.key(recordID: record.recordID.recordName),
+              let data = record.encryptedValues["fieldTimestamps"] as? Data else { return }
+        let sent = try JSONDecoder().decode([String: Date].self, from: data)
+        let before = try await configurationStore.applicationSettingSnapshot(key: key)
+        guard let value = before.record, var metadata = before.metadata else { return }
+        let newer = metadata.fieldTimestamps.contains { $0.value > (sent[$0.key] ?? .distantPast) }
+        metadata.cloudChangeTag = record.recordChangeTag
+        metadata.cloudSystemFields = Self.archiveSystemFields(record)
+        metadata.pendingAction = newer ? .save : nil
+        try await configurationStore.commitApplicationSetting(value, metadata: metadata, expecting: before)
+        if newer { stageApplicationSettingSave(value.recordID) }
     }
 
     public func deleteProvider(id: UUID) async throws {
@@ -1044,6 +1149,11 @@ public actor ConfigSyncEngine {
                 )
             }
         }
+        for value in try await configurationStore.applicationSettings() {
+            try await stageIfUntracked(type: .applicationSetting, id: value.recordID,
+                value: value, timestamp: value.updatedAt, metadataStore: metadataStore,
+                syncEngine: syncEngine, zoneID: zoneID)
+        }
         let preferences = try await configurationStore.preferences()
         if preferences.updatedAt > Date(timeIntervalSince1970: 1) {
             try await stageIfUntracked(
@@ -1132,9 +1242,11 @@ public actor ConfigSyncEngine {
         do {
             switch event {
             case .stateUpdate(let update):
-                guard let metadataStore else { return }
+                guard let metadataStore, let current = self.syncEngine, current === syncEngine else { return }
+                try requireCurrentConfiguration(generation)
                 let data = try JSONEncoder().encode(update.stateSerialization)
-                try await metadataStore.saveEngineState(data)
+                try await metadataStore.saveEngineState(data,
+                    supportedRecordTypes: ConfigSyncRecordType.allCases.map(\.rawValue))
 
             case .accountChange(let change):
                 // A freshly constructed engine reports its initial sign-in.
@@ -1208,7 +1320,7 @@ public actor ConfigSyncEngine {
         }
     }
 
-    private func recordToSave(_ recordID: CKRecord.ID) async -> CKRecord? {
+    func recordToSave(_ recordID: CKRecord.ID) async -> CKRecord? {
         guard let metadataStore,
               let metadata = try? await metadataStore.metadata(
                 recordType: await recordType(for: recordID.recordName)?.rawValue ?? "",
@@ -1222,15 +1334,17 @@ public actor ConfigSyncEngine {
         let record = Self.restoreRecord(from: metadata.cloudSystemFields)
             ?? CKRecord(recordType: type.rawValue, recordID: recordID)
         record.encryptedValues["payload"] = payload as CKRecordValue
-        if let timestamps = try? Self.encode(metadata.fieldTimestamps) {
-            record.encryptedValues["fieldTimestamps"] = timestamps as CKRecordValue
-        }
+        let timestamps = type == .applicationSetting
+            ? try? ApplicationSettingRecord.encodeValue(metadata.fieldTimestamps)
+            : try? Self.encode(metadata.fieldTimestamps)
+        if let timestamps { record.encryptedValues["fieldTimestamps"] = timestamps as CKRecordValue }
         record["updatedAt"] = metadata.updatedAt as CKRecordValue
         return record
     }
 
     private func recordType(for id: String) async -> ConfigSyncRecordType? {
         if id == "default" { return .preference }
+        if ApplicationSettingRecord.key(recordID: id) != nil { return .applicationSetting }
         if let configurationStore, let uuid = UUID(uuidString: id) {
             if (try? await configurationStore.provider(id: uuid)) != nil { return .providerProfile }
             if (try? await configurationStore.model(id: uuid)) != nil { return .modelProfile }
@@ -1256,6 +1370,12 @@ public actor ConfigSyncEngine {
             throw FloeError.invalidConfiguration("ConfigSyncEngine requires a configuration store")
         }
         switch type {
+        case .applicationSetting:
+            guard let key = ApplicationSettingRecord.key(recordID: id),
+                  let value = try await configurationStore.applicationSetting(key: key) else {
+                throw FloeError.storageCorrupted("Missing application setting")
+            }
+            return try ApplicationSettingRecord.encodeValue(value.validated(recordID: id))
         case .preference:
             guard id == "default" else {
                 throw FloeError.storageCorrupted("Invalid preference record identifier")
@@ -1313,7 +1433,12 @@ public actor ConfigSyncEngine {
               let configurationStore
         else { return false }
 
-        let remoteTimestamps = try JSONDecoder.floe.decode([String: Date].self, from: timestampsData)
+        let remoteTimestamps = type == .applicationSetting
+            ? try JSONDecoder().decode([String: Date].self, from: timestampsData)
+            : try JSONDecoder.floe.decode([String: Date].self, from: timestampsData)
+        if type == .applicationSetting {
+            return try await applyRemoteApplicationSetting(record, payload: payload, timestamps: remoteTimestamps)
+        }
         let existing = try await metadataStore.metadata(recordType: type.rawValue, recordID: record.recordID.recordName)
         let localTimestamps = existing?.fieldTimestamps ?? [:]
         let localPayload = try? await self.payload(type: type, id: record.recordID.recordName)
@@ -1326,6 +1451,7 @@ public actor ConfigSyncEngine {
 
         var repairedCapabilityDecisions = false
         switch type {
+        case .applicationSetting: return false // handled atomically above
         case .providerProfile:
             let provider: ProviderProfile
             do {
@@ -1637,9 +1763,13 @@ public actor ConfigSyncEngine {
               let configurationStore,
               let metadataStore
         else { return false }
+        if type == .applicationSetting {
+            return try await applyRemoteApplicationSettingDeletion(recordID)
+        }
         var didStore = false
         defer { if didStore { signalRemoteConfigurationApplied() } }
         switch type {
+        case .applicationSetting: return false // handled atomically above
         case .providerProfile:
             if let uuid = UUID(uuidString: recordID.recordName) {
                 try await configurationStore.deleteProvider(id: uuid)
@@ -1679,6 +1809,9 @@ public actor ConfigSyncEngine {
     }
 
     private func acknowledge(_ record: CKRecord) async throws {
+        if record.recordType == ConfigSyncRecordType.applicationSetting.rawValue {
+            try await acknowledgeApplicationSetting(record); return
+        }
         guard let metadataStore,
               var metadata = try await metadataStore.metadata(
                 recordType: record.recordType,
@@ -1737,7 +1870,8 @@ public actor ConfigSyncEngine {
         case .preference: 2
         case .remoteHostProfile: 3
         case .credentialDescriptor: 4
-        case nil: 5
+        case .applicationSetting: 5
+        case nil: 6
         }
     }
 
@@ -1763,6 +1897,28 @@ public actor ConfigSyncEngine {
                     account: reference.keychainAccount,
                     synchronizable: true
                 )) {
+                    return .waitingForSecret
+                }
+            }
+        }
+
+        if preferences.overallEnabled, preferences.savedCredentialsEnabled, let configurationStore,
+           let settings = try? await configurationStore.applicationSettings() {
+            var accounts: Set<String> = []
+            for record in settings {
+                guard let data = record.value else { continue }
+                let pair: (String, String)?
+                if ApplicationSettingPolicy.profileID(record.key) != nil,
+                   let profile = try? JSONDecoder().decode(ASRProfile.self, from: data) {
+                    pair = (SpeechCredentialBinding.asrService, SpeechCredentialBinding.asrAccount(profile))
+                } else if (record.key.hasPrefix(ApplicationSettingPolicy.ttsProfilePrefix)
+                            || record.key == ApplicationSettingPolicy.ttsSelection),
+                          let value = try? JSONDecoder().decode(TTSSettingsSnapshot.self, from: data),
+                          value.provider.requiresCloudCredential, value.connectionProviderID == nil {
+                    pair = (SpeechCredentialBinding.ttsService, SpeechCredentialBinding.ttsAccount(value))
+                } else { pair = nil }
+                guard let (service, account) = pair, accounts.insert(service + "/" + account).inserted else { continue }
+                if !(await secretPresent(service: service, account: account, synchronizable: true)) {
                     return .waitingForSecret
                 }
             }

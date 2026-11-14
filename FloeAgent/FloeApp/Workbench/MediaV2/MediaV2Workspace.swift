@@ -24,31 +24,35 @@ struct MediaV2Workspace: View {
     @State private var text = ""
     @State private var number = 12.0
     @State private var property = "scale"
-    @State private var paintColor: Color = .teal
     @State private var showingDiagnostic = false
     @State private var showingProviderSettings = false
     @State private var showingImageExport = false
+    @State private var showingToolPicker = false
+    @State private var pickedTool: String?
+    @State private var inspectorIsInline = false
+    @AppStorage(MediaDrawingInputPolicy.preferenceKey) private var fingerDrawing = false
     var body: some View {
         GeometryReader { geometry in
             let wide = geometry.size.width >= 1050
             VStack(spacing: 0) {
-                toolbar(wide: wide)
+                toolbar(wide: wide, compact: geometry.size.width < 600)
                 Divider()
                 toolCategories(wide: wide)
                 Divider()
                 HStack(alignment: .top, spacing: 0) {
                     toolRail(wide: wide)
-                    if wide && objectsVisible { objectPanel.frame(width: 190); Divider() }
+                    if wide && objectsVisible { objectPanel.frame(width: 224); Divider() }
                     VStack(spacing: 0) {
                         MediaV2Preview(session: session)
                         previewControls
                         if session.project.kind == .video { Divider(); MediaV2Timeline(session: session).frame(height: max(190, min(260, geometry.size.height * 0.32))) }
                     }.frame(maxWidth: .infinity, maxHeight: .infinity)
-                    if wide && inspectorVisible { Divider(); propertiesPanel.frame(width: 280) }
+                    if wide && inspectorVisible { Divider(); propertiesPanel.frame(width: 288) }
                 }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top).clipped()
                 Divider()
                 status
             }.frame(width: geometry.size.width, height: geometry.size.height, alignment: .top).clipped()
+                .onChange(of: wide, initial: true) { _, value in inspectorIsInline = value }
         }
         .ignoresSafeArea(.keyboard, edges: ownsTextInput ? [] : .bottom)
         .background(Color(uiColor: .systemBackground))
@@ -81,6 +85,15 @@ struct MediaV2Workspace: View {
         }
         .sheet(isPresented: $showingProviderSettings) { MediaV2ProviderConfigurationView() }
         .sheet(isPresented: $showingImageExport) { MediaV2ImageExportSheet(session: session) }
+        .sheet(isPresented: $showingToolPicker, onDismiss: {
+            if let pickedTool {
+                self.pickedTool = nil
+                selectTool(pickedTool, wide: inspectorIsInline)
+            }
+        }) {
+            MediaV2ToolPicker(tools: session.applicableTools, selectedTool: session.tool,
+                categoryTitle: categoryTitle) { pickedTool = $0 }
+        }
         .fullScreenCover(item:$session.compoundEditorRoute) { route in
             MediaV2CompoundEditor(rootSession:session,route:route,onAssistant:onAssistant)
         }
@@ -90,14 +103,14 @@ struct MediaV2Workspace: View {
             if let layer = session.selectedLayer, case .text(let content) = layer.content { text = content.text }
         }
     }
-    private func toolbar(wide: Bool) -> some View {
-        HStack(spacing: 4) {
+    private func toolbar(wide: Bool, compact: Bool) -> some View {
+        HStack(spacing: compact ? 2 : 4) {
             MusicIconButton("sidebar.left", WorkbenchText.t("图层与素材", "Layers and assets")) {
                 if wide { objectsVisible.toggle() } else { compactPanel = "objects" }
             }
-            Divider().frame(height: 22).padding(.horizontal, 4)
+            if !compact { Divider().frame(height: 22).padding(.horizontal, 4) }
             MusicIconButton("arrow.uturn.backward", WorkbenchText.t("撤销", "Undo")) { session.undo() }.disabled(!session.canUndo)
-            MusicIconButton("arrow.uturn.forward", WorkbenchText.t("重做", "Redo")) { session.redo() }.disabled(!session.canRedo)
+            if !compact { MusicIconButton("arrow.uturn.forward", WorkbenchText.t("重做", "Redo")) { session.redo() }.disabled(!session.canRedo) }
             Menu {
                 if !wide { Button(WorkbenchText.t("导入素材", "Import media"), systemImage: "square.and.arrow.down") { beginImport() } }
                 if session.project.kind == .image {
@@ -127,9 +140,10 @@ struct MediaV2Workspace: View {
             } label: { Image(systemName: "plus").frame(width: 44, height: 44) }
                 .accessibilityLabel(WorkbenchText.t("添加", "Add"))
                 .disabled(session.saving || session.processingTool)
-            Divider().frame(height: 22).padding(.horizontal, 4)
+            if !compact { Divider().frame(height: 22).padding(.horizontal, 4) }
             if wide { MusicIconButton("square.and.arrow.down", WorkbenchText.t("导入素材", "Import media")) { beginImport() } }
             Menu {
+                if compact { Button(WorkbenchText.t("重做", "Redo"), systemImage: "arrow.uturn.forward") { session.redo() }.disabled(!session.canRedo) }
                 if session.project.kind == .image {
                     Button(WorkbenchText.t("导出图片…", "Export image…")) { showingImageExport = true }
                 } else { Button(WorkbenchText.t("导出 MP4", "Export MP4")) { session.export() } }
@@ -138,22 +152,51 @@ struct MediaV2Workspace: View {
                 if session.project.kind == .image {
                     Button("OpenRaster (.ora)") { exchange(.ora) }
                     Button("Photoshop (.psd)") { exchange(.psd) }
-                    if let onSaveToSource { Button(WorkbenchText.t("更新来源", "Update source")) { Task { do { try await onSaveToSource(.init(format: .png)) } catch { session.diagnostic = error.localizedDescription } } } }
-                    if let onMakeVariant { Button(WorkbenchText.t("另存一版", "Make variant")) { Task { do { try await onMakeVariant(.init(format: .png)) } catch { session.diagnostic = error.localizedDescription } } } }
+                    if let onSaveToSource {
+                        Button(WorkbenchText.t("更新原图", "Update original"), systemImage: "arrow.triangle.2.circlepath") {
+                            session.saveToSource(message: WorkbenchText.t("已更新原图", "Original updated")) {
+                                try await onSaveToSource(.init(format: .png))
+                            }
+                        }
+                    }
+                    if let onMakeVariant {
+                        Button(WorkbenchText.t("另存一版", "Make variant"), systemImage: "square.on.square") {
+                            session.saveToSource(message: WorkbenchText.t("已另存一版", "Variant saved")) {
+                                try await onMakeVariant(.init(format: .png))
+                            }
+                        }
+                    }
                 } else { Button("OpenTimelineIO (.otio)") { exchange(.otio) } }
             } label: {
-                if wide { Label(WorkbenchText.t("导出", "Export"), systemImage: "square.and.arrow.up").frame(minHeight: 44) }
+                if session.project.kind == .image { Image(systemName: "ellipsis.circle").frame(width: 44, height: 44) }
+                else if wide { Label(WorkbenchText.t("导出", "Export"), systemImage: "square.and.arrow.up").frame(minHeight: 44) }
                 else { Image(systemName: "square.and.arrow.up").frame(width: 44, height: 44) }
-            }.accessibilityLabel(WorkbenchText.t("导出", "Export")).disabled(session.rendering || session.processingTool || session.saving)
+            }.accessibilityLabel(session.project.kind == .image ? WorkbenchText.t("文件操作", "File actions") : WorkbenchText.t("导出", "Export"))
+                .accessibilityIdentifier("media.v2.fileActions")
+                .disabled(session.rendering || session.processingTool || session.saving || session.imageWarpDraft != nil)
             Spacer(minLength: 8)
             if wide {
-                Text(session.saving ? WorkbenchText.t("正在保存…", "Saving…") : WorkbenchText.t("已保存", "Saved"))
+                Label(session.saving ? WorkbenchText.t("正在保存…", "Saving…")
+                    : session.sourceSaveFeedback ?? WorkbenchText.t("工程已保存", "Project saved"),
+                    systemImage: session.saving ? "arrow.triangle.2.circlepath" : "checkmark.circle")
                     .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    .accessibilityIdentifier("media.v2.saveStatus")
             }
             MusicIconButton("sidebar.right", WorkbenchText.t("属性", "Properties")) {
                 if wide { inspectorVisible.toggle() } else { compactPanel = "properties" }
             }
-        }.padding(.horizontal, 10).background(Color(uiColor: .secondarySystemBackground))
+            if session.project.kind == .image {
+                Button { showingImageExport = true } label: {
+                    Group {
+                        if compact { Image(systemName: "square.and.arrow.up").frame(minWidth: 24) }
+                        else { Label(WorkbenchText.t("导出", "Export"), systemImage: "square.and.arrow.up") }
+                    }.font(.callout.weight(.semibold)).frame(minHeight: 32)
+                }.buttonStyle(.borderedProminent)
+                    .accessibilityLabel(WorkbenchText.t("导出图片", "Export image"))
+                    .accessibilityIdentifier("media.v2.export")
+                    .disabled(session.rendering || session.processingTool || session.saving || session.imageWarpDraft != nil)
+            }
+        }.padding(.horizontal, compact ? 6 : 10).background(Color(uiColor: .secondarySystemBackground))
     }
     private func toolCategories(wide: Bool) -> some View {
         HStack(spacing: 0) {
@@ -186,7 +229,14 @@ struct MediaV2Workspace: View {
                 Divider().frame(height: 22)
                 MediaDrawingInputMenu()
             }
-        }.accessibilityIdentifier("media.v2.toolbox")
+            if session.project.kind == .image {
+                Divider().frame(height: 22)
+                Button { showingToolPicker = true } label: {
+                    Image(systemName: "magnifyingglass").frame(width: 44, height: 44)
+                }.accessibilityLabel(WorkbenchText.t("查找全部工具", "Find all tools"))
+                    .accessibilityIdentifier("media.v2.tools.search")
+            }
+        }.accessibilityIdentifier("media.v2.toolbox").disabled(session.saving || session.processingTool)
     }
     private var categories: [String] {
         var values: [String] = []
@@ -202,6 +252,7 @@ struct MediaV2Workspace: View {
         }
     }
     private func selectTool(_ id: String, wide: Bool) {
+        guard !session.saving, !session.processingTool else { return }
         session.tool = id
         // Ink and selection stay on the canvas. Parameter tools reveal the
         // same inspector in both layouts instead of leaving compact taps inert.
@@ -219,6 +270,7 @@ struct MediaV2Workspace: View {
         }
     }
     private func categoryTitle(_ category: String) -> String {
+        if category == "assets" { return WorkbenchText.t("素材", "Assets") }
         let names: [String: (String, String)] = ["selection": ("选区", "Selection"), "paint": ("绘画", "Paint"), "mask": ("图层与蒙版", "Layers and masks"), "transform": ("几何与画布", "Geometry"), "vector": ("文字与路径", "Text and paths"), "repair": ("修复", "Retouch"), "adjust": ("调色", "Color"), "edit": ("剪辑", "Editing"), "composite": ("合成", "Compositing"), "animation": ("动画", "Animation"), "captions": ("字幕", "Captions"), "sound": ("声音", "Audio"), "video-color": ("调色", "Color")]
         let value = names[category] ?? (category, category)
         return WorkbenchText.t(value.0, value.1)
@@ -232,15 +284,15 @@ struct MediaV2Workspace: View {
                             Image(systemName: value.1).frame(width: 44, height: 44)
                                 .background(session.tool == value.0 ? Color.accentColor.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 5))
                         }.buttonStyle(.plain).accessibilityLabel(value.2).help(value.2)
+                            .accessibilityIdentifier("media.v2.tool.\(value.0)")
+                            .accessibilityAddTraits(session.tool == value.0 ? .isSelected : [])
                     }
                 }
             }
-            ColorPicker(WorkbenchText.t("颜色", "Color"), selection: $paintColor, supportsOpacity: false).labelsHidden().frame(width: 44, height: 44)
-                .onChange(of: paintColor) { _, color in
-                    var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-                    UIColor(color).getRed(&r, green: &g, blue: &b, alpha: &a)
-                    session.colorHex = String(format: "#%02X%02X%02X", Int(r * 255), Int(g * 255), Int(b * 255))
-                }
+            Divider()
+            ColorPicker(session.project.kind == .image ? WorkbenchText.t("绘画颜色", "Paint color") : WorkbenchText.t("颜色", "Color"), selection: paintColor, supportsOpacity: false)
+                .labelsHidden().frame(width: 44, height: 44)
+                .accessibilityIdentifier("media.v2.paintColor")
         }.frame(width: 48).padding(.top, 4).overlay(alignment: .trailing) { Divider() }
     }
     private var railTools: [(String, String, String)] {
@@ -248,12 +300,30 @@ struct MediaV2Workspace: View {
             ? [("move", "cursorarrow", WorkbenchText.t("移动", "Move")), ("image.rectangle", "rectangle.dashed", WorkbenchText.t("选区", "Selection")), ("image.brush", "paintbrush.pointed", WorkbenchText.t("画笔", "Brush")), ("image.eraser", "eraser", WorkbenchText.t("橡皮", "Eraser")), ("image.crop", "crop", WorkbenchText.t("裁剪", "Crop")), ("image.pen", "point.topleft.down.to.point.bottomright.curvepath", WorkbenchText.t("钢笔", "Pen")), ("image.text", "character.cursor.ibeam", WorkbenchText.t("文字", "Text")), ("image.eyedropper", "eyedropper", WorkbenchText.t("吸管", "Eyedropper"))]
             : [("video.trim", "cursorarrow", WorkbenchText.t("剪辑", "Edit")), ("video.split", "scissors", WorkbenchText.t("分割", "Split")), ("video.video-transform", "arrow.up.left.and.down.right.and.arrow.up.right.and.down.left", WorkbenchText.t("变换", "Transform")), ("video.keyframes", "diamond", WorkbenchText.t("关键帧", "Keyframes")), ("video.caption", "captions.bubble", WorkbenchText.t("字幕", "Captions")), ("video.mix", "speaker.wave.2", WorkbenchText.t("混音", "Mix"))]
     }
+    private var paintColor: Binding<Color> {
+        Binding(get: {
+            let hex = session.colorHex.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
+            let rgb = (UInt64(hex, radix: 16) ?? 0x166F74) >> (hex.count == 8 ? 8 : 0)
+            return Color(.sRGB, red: Double((rgb >> 16) & 255) / 255,
+                         green: Double((rgb >> 8) & 255) / 255, blue: Double(rgb & 255) / 255)
+        }, set: { color in
+            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+            guard UIColor(color).getRed(&r, green: &g, blue: &b, alpha: &a) else { return }
+            session.colorHex = String(format: "#%02X%02X%02X", Int((r * 255).rounded()), Int((g * 255).rounded()), Int((b * 255).rounded()))
+        })
+    }
     private var objectPanel: some View {
         VStack(spacing: 0) {
             HStack {
                 Text(session.project.kind == .image ? WorkbenchText.t("图层", "Layers") : WorkbenchText.t("素材与轨道", "Assets and tracks")).font(.caption.weight(.semibold)).lineLimit(1)
                 Spacer(minLength: 0)
                 if session.project.kind == .image {
+                    Menu {
+                        if let layer = session.selectedLayer { layerActions(layer) }
+                    } label: { Image(systemName: "ellipsis.circle").frame(width: 44, height: 44) }
+                        .accessibilityLabel(WorkbenchText.t("图层操作", "Layer actions"))
+                        .accessibilityIdentifier("media.v2.layerActions")
+                        .disabled(session.selectedLayer == nil || session.saving || session.processingTool)
                     MusicIconButton(session.multipleLayerSelection ? "checkmark.circle.fill" : "checklist", WorkbenchText.t("多选图层", "Select multiple layers")) {
                         session.multipleLayerSelection.toggle(); session.selectedLayerIDs = session.selectedLayerID.map { [$0] } ?? []
                     }
@@ -321,17 +391,21 @@ struct MediaV2Workspace: View {
                     Spacer(minLength: 0)
                 }.frame(minHeight: 50)
             }.buttonStyle(.plain)
-            Button { session.submit([.updateLayerFlags(id: layer.id, expectedRevision: layer.revision, name: nil, isVisible: !layer.isVisible, isLocked: nil, opacity: nil)]) } label: { Image(systemName: layer.isVisible ? "eye" : "eye.slash").frame(width: 34, height: 44) }.buttonStyle(.plain)
+            Button { session.submit([.updateLayerFlags(id: layer.id, expectedRevision: layer.revision, name: nil, isVisible: !layer.isVisible, isLocked: nil, opacity: nil)]) } label: { Image(systemName: layer.isVisible ? "eye" : "eye.slash").frame(width: 44, height: 44) }.buttonStyle(.plain)
+                .accessibilityLabel((layer.isVisible ? WorkbenchText.t("隐藏图层：", "Hide layer: ") : WorkbenchText.t("显示图层：", "Show layer: ")) + layer.name)
         }.padding(.leading, CGFloat(min(8, session.layerDepth(layer))) * 8).padding(.horizontal, 7)
+            .disabled(session.saving || session.processingTool)
             .background((session.multipleLayerSelection ? session.selectedLayerIDs.contains(layer.id) : session.selectedLayerID == layer.id) ? Color.accentColor.opacity(0.1) : .clear)
-            .contextMenu {
-                Button(layer.isLocked ? WorkbenchText.t("解锁", "Unlock") : WorkbenchText.t("锁定", "Lock")) { session.submit([.updateLayerFlags(id: layer.id, expectedRevision: layer.revision, name: nil, isVisible: nil, isLocked: !layer.isLocked, opacity: nil)]) }
-                Button(WorkbenchText.t("复制图层", "Duplicate layer")) { objectAction("image.duplicate-layer", layer: layer) }
-                if layer.contentKind == .group { Button(WorkbenchText.t("取消编组", "Ungroup")) { objectAction("image.group-layer", layer: layer, flag: false) } }
-                Button(WorkbenchText.t("上移", "Move up")) { session.shiftLayer(layer, by: 1) }
-                Button(WorkbenchText.t("下移", "Move down")) { session.shiftLayer(layer, by: -1) }
-                Button(WorkbenchText.t("删除", "Delete"), role: .destructive) { session.submit([.removeLayer(id: layer.id, expectedRevision: layer.revision)]) }
-            }
+            .contextMenu { layerActions(layer) }
+    }
+    @ViewBuilder private func layerActions(_ layer: MediaPreparedLayer) -> some View {
+        Button(layer.isLocked ? WorkbenchText.t("解锁", "Unlock") : WorkbenchText.t("锁定", "Lock"), systemImage: layer.isLocked ? "lock.open" : "lock") { session.submit([.updateLayerFlags(id: layer.id, expectedRevision: layer.revision, name: nil, isVisible: nil, isLocked: !layer.isLocked, opacity: nil)]) }
+        Button(WorkbenchText.t("复制图层", "Duplicate layer"), systemImage: "square.on.square") { objectAction("image.duplicate-layer", layer: layer) }
+        if layer.contentKind == .group { Button(WorkbenchText.t("取消编组", "Ungroup"), systemImage: "folder.badge.minus") { objectAction("image.group-layer", layer: layer, flag: false) } }
+        Button(WorkbenchText.t("上移", "Move up"), systemImage: "arrow.up") { session.shiftLayer(layer, by: 1) }
+        Button(WorkbenchText.t("下移", "Move down"), systemImage: "arrow.down") { session.shiftLayer(layer, by: -1) }
+        Button(WorkbenchText.t("删除图层", "Delete layer"), systemImage: "trash", role: .destructive) { session.submit([.removeLayer(id: layer.id, expectedRevision: layer.revision)]) }
+            .disabled(layer.isLocked)
     }
     private var propertiesPanel: some View {
         VStack(spacing: 0) {
@@ -347,7 +421,12 @@ struct MediaV2Workspace: View {
                 VStack(alignment: .leading, spacing: 16) {
                     toolProperties
                     Divider()
-                    if let layer = session.selectedLayer { layerProperties(layer) }
+                    if let layer = session.selectedLayer {
+                        if session.tool == "move" { layerProperties(layer) }
+                        else {
+                            DisclosureGroup(WorkbenchText.t("图层属性", "Layer properties")) { layerProperties(layer).padding(.top, 12) }
+                        }
+                    }
                     if let selected = session.selectedClip { clipProperties(track: selected.track, clip: selected.clip) }
                     if let file = session.exportedFile {
                         Divider()
@@ -477,11 +556,23 @@ struct MediaV2Workspace: View {
                 Text(MusicWorkbenchFormat.time(session.playhead)).font(.caption.monospacedDigit())
             }
             Spacer()
-            Button(WorkbenchText.t("适应画布", "Fit canvas")) { session.zoom = 1 }.font(.caption).frame(minHeight: 44)
+            if session.project.kind == .image {
+                Text(session.applicableTools.first(where: { $0.id == session.tool })?.localizedTitle(languageCode: WorkbenchText.isChinese ? "zh" : "en") ?? WorkbenchText.t("移动", "Move"))
+                    .font(.caption.weight(.medium)).lineLimit(1)
+                    .accessibilityIdentifier("media.v2.currentTool")
+            }
+            Button(WorkbenchText.t("适应画布", "Fit canvas")) { session.fitCanvas() }.font(.caption).frame(minHeight: 44)
+                .accessibilityIdentifier("media.v2.fitCanvas")
             MusicIconButton("minus.magnifyingglass", WorkbenchText.t("缩小", "Zoom out")) { session.zoom = max(0.25, session.zoom / 1.25) }
             Text("\(Int(session.zoom * 100))%").font(.caption.monospacedDigit())
             MusicIconButton("plus.magnifyingglass", WorkbenchText.t("放大", "Zoom in")) { session.zoom = min(4, session.zoom * 1.25) }
             }.padding(.horizontal, 8)
+            if session.project.kind == .image, MediaDrawingInputPolicy.isStrokeTool(session.tool) {
+                Text(fingerDrawing ? WorkbenchText.t("单指绘画，双指移动与缩放。", "Draw with one finger; use two to pan and zoom.")
+                    : WorkbenchText.t("用 Pencil 或鼠标绘画；手指移动画布，双指缩放。", "Draw with Pencil or a pointer; drag to pan and pinch to zoom."))
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12).padding(.bottom, 8)
+            }
         }.background(Color(uiColor: .secondarySystemBackground))
     }
     private var status: some View {
@@ -492,11 +583,17 @@ struct MediaV2Workspace: View {
                         .frame(maxWidth: .infinity, alignment: .leading).foregroundStyle(.orange)
                 }.buttonStyle(.plain).accessibilityHint(WorkbenchText.t("打开操作详情", "Open action details"))
                 Button(WorkbenchText.t("详情", "Details")) { showingDiagnostic = true }
-            } else { Text(session.project.kind == .image ? WorkbenchText.t("分层原件", "Layered original") : WorkbenchText.t("多轨工程", "Multi-track project")) }
+            } else if session.saving {
+                Label(WorkbenchText.t("正在保存…", "Saving…"), systemImage: "arrow.triangle.2.circlepath")
+            } else if let feedback = session.sourceSaveFeedback {
+                Label(feedback, systemImage: "checkmark.circle")
+            } else if let file = session.exportedFile {
+                ShareLink(item: file) { Label(WorkbenchText.t("分享导出文件", "Share exported file"), systemImage: "square.and.arrow.up").frame(minHeight: 44) }
+            } else { Text(session.project.kind == .image ? WorkbenchText.t("工程自动保存", "Project saves automatically") : WorkbenchText.t("多轨工程", "Multi-track project")) }
             Spacer()
             if session.rendering { ProgressView(value: session.exportProgress).frame(width: 70); Button(WorkbenchText.t("取消", "Cancel")) { session.cancelExport() } }
             else if session.processingTool { ProgressView(); Button(WorkbenchText.t("取消", "Cancel")) { session.cancelToolProcessing() } }
-            Text("\(session.document.canvas?.width ?? 0) × \(session.document.canvas?.height ?? 0)")
+            Text("\(session.document.canvas?.width ?? 0) × \(session.document.canvas?.height ?? 0)").monospacedDigit().lineLimit(1)
         }.font(.caption2).foregroundStyle(.secondary).padding(.horizontal, 10).frame(minHeight: session.diagnostic == nil ? 28 : 44)
             .accessibilityIdentifier("media.v2.status")
     }
@@ -540,6 +637,77 @@ extension MediaV2Session {
         selectedLayerIDs = [layer.id]
         multipleLayerSelection = false
         return layer.id
+    }
+}
+
+private struct MediaV2ToolPicker: View {
+    let tools: [MediaPreparedToolDescriptor]
+    let selectedTool: String
+    let categoryTitle: (String) -> String
+    let onSelect: (String) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var search = ""
+
+    private var showsMove: Bool {
+        let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        return query.isEmpty || "移动".localizedCaseInsensitiveContains(query) || "Move".localizedCaseInsensitiveContains(query)
+    }
+
+    private var matches: [MediaPreparedToolDescriptor] {
+        let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return tools }
+        return tools.filter {
+            $0.localizedTitle(languageCode: "zh").localizedCaseInsensitiveContains(query)
+                || $0.localizedTitle(languageCode: "en").localizedCaseInsensitiveContains(query)
+                || categoryTitle($0.category).localizedCaseInsensitiveContains(query)
+        }
+    }
+    private var categories: [String] {
+        matches.reduce(into: []) { if !$0.contains($1.category) { $0.append($1.category) } }
+    }
+    var body: some View {
+        NavigationStack {
+            List {
+                if showsMove {
+                    Section {
+                        Button {
+                            onSelect("move")
+                            dismiss()
+                        } label: {
+                            HStack {
+                                Label(WorkbenchText.t("移动", "Move"), systemImage: "cursorarrow").foregroundStyle(.primary)
+                                Spacer()
+                                if selectedTool == "move" { Image(systemName: "checkmark").foregroundStyle(Color.accentColor) }
+                            }.frame(minHeight: 44)
+                        }.accessibilityIdentifier("media.v2.pickTool.move")
+                            .accessibilityAddTraits(selectedTool == "move" ? .isSelected : [])
+                    }
+                }
+                ForEach(categories, id: \.self) { category in
+                    Section(categoryTitle(category)) {
+                        ForEach(matches.filter { $0.category == category }) { tool in
+                            Button {
+                                onSelect(tool.id)
+                                dismiss()
+                            } label: {
+                                HStack {
+                                    Text(tool.localizedTitle(languageCode: WorkbenchText.isChinese ? "zh" : "en"))
+                                        .foregroundStyle(.primary)
+                                    Spacer()
+                                    if tool.id == selectedTool { Image(systemName: "checkmark").foregroundStyle(Color.accentColor) }
+                                }.frame(minHeight: 44)
+                            }.accessibilityIdentifier("media.v2.pickTool.\(tool.id)")
+                                .accessibilityAddTraits(tool.id == selectedTool ? .isSelected : [])
+                        }
+                    }
+                }
+            }
+            .overlay { if matches.isEmpty && !showsMove { ContentUnavailableView.search(text: search) } }
+            .searchable(text: $search, prompt: WorkbenchText.t("搜索裁剪、画笔、调色…", "Search crop, brush, color…"))
+            .navigationTitle(WorkbenchText.t("全部工具", "All tools"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button(WorkbenchText.t("完成", "Done")) { dismiss() } } }
+        }
     }
 }
 

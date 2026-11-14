@@ -59,8 +59,8 @@ public enum IDENativeTextEditing {
     }
 
     /// Case-insensitive forward/backward search that wraps once. Mirrors the
-    /// pre-existing native editor behavior (`TextFileEditorView.find`) so the
-    /// IDE pane and the inspector editor stay identical.
+    /// former workspace text editor's find behavior so the IDE pane and the
+    /// inspector editor stay identical.
     public static func find(
         in text: String,
         query: String,

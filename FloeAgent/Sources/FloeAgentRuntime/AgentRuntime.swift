@@ -4679,14 +4679,15 @@ public actor FloeAgentRuntime {
         }
         // Purpose scope is revalidated at the canonical dispatch boundary,
         // not just in the offered schema. A stale/forged descriptor, alias or
-        // wrapper cannot widen a cleanup task into shell/jobs/host tools.
+        // wrapper cannot widen a cleanup task beyond its guest shell/jobs scope.
         if let cleanupProfile = configuration.linuxCacheCleanupProfile,
            let reason = LinuxCacheCleanupScope.denialReason(
                profile: cleanupProfile,
                conversationID: configuration.conversationID,
                environmentID: configuration.environmentID,
                descriptor: descriptor,
-               arguments: call.argumentsJSON
+               arguments: call.argumentsJSON,
+               scope: call.scope
            ) {
             return .denied(
                 reason: "Denied: \(reason)",

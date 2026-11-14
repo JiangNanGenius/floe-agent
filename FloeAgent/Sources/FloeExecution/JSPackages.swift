@@ -1,10 +1,11 @@
-// FloeExecution — Pre-installed pure-JS npm packages for the agent.
+// FloeExecution — Internal JavaScript package resources.
 //
-// Bundles a curated set of high-frequency, pure-JavaScript npm packages
-// (lodash, dayjs, marked, uuid, zod) as resource files so the agent can
-// use them in exec.javascript without network access. Packages are loaded
-// from the app bundle and injected into the JSContext before the user
-// script runs.
+// The model-facing `exec.javascript` tool is retired. The remaining production
+// JavaScript consumer is the PDF form processor (PDFFillFormTool), which needs
+// pdf-lib. The five generic packages that were bundled only for the retired
+// tool (lodash, dayjs, marked, uuid, zod) are no longer packaged; keeping their
+// resources would ship dead payload. Packages are still loaded from the app
+// bundle and injected into the JSContext before the internal script runs.
 
 import Foundation
 
@@ -29,15 +30,10 @@ public struct JSPackage: Sendable {
 
 /// Pre-installed packages, keyed by package name.
 public enum JSPackages {
-    /// The curated set of pre-installed packages. Each is a pure-JS,
-    /// zero-dependency (or dependency-bundled) UMD build that works in
-    /// JavaScriptCore without Node APIs.
+    /// The internal PDF processor's package set. The generic language
+    /// packages were retired with exec.javascript and are deliberately not
+    /// listed here anymore.
     public static let preInstalled: [JSPackage] = [
-        JSPackage(name: "lodash", globalName: "_", resourceName: "lodash.min"),
-        JSPackage(name: "dayjs", globalName: "dayjs", resourceName: "dayjs.min"),
-        JSPackage(name: "marked", globalName: "marked", resourceName: "marked.min"),
-        JSPackage(name: "uuid", globalName: "uuid", resourceName: "uuid.min"),
-        JSPackage(name: "zod", globalName: "z", resourceName: "zod.min"),
         JSPackage(name: "pdf-lib", globalName: "PDFLib", resourceName: "pdf-lib.min")
     ]
 
@@ -57,8 +53,8 @@ public enum JSPackages {
         into context: JSContext,
         sourceProvider: (JSPackage) -> String? = { source(for: $0) }
     ) {
-        // UUID's browser build needs secure entropy, not Node's module system.
-        // Expose only a bounded byte source; no native objects cross the bridge.
+        // Expose only a bounded native byte source for package code that
+        // probes WebCrypto; no native objects cross the bridge.
         let randomBytes: @convention(block) (Int) -> [UInt8]? = { count in
             guard (0...65_536).contains(count) else { return nil }
             var bytes = [UInt8](repeating: 0, count: count)

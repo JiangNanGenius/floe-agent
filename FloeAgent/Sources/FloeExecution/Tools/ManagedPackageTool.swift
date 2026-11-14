@@ -107,7 +107,7 @@ public struct ManagedPackageTool: AgentTool {
                      "The mixed apt tool is retired; no changes were made. Use the entry that owns each family:"]
         for id in ids {
             if let entry = installer.catalog.entry(id: id) {
-                lines.append("id=\(id) kind=\(entry.kind.rawValue) use=\(PythonPackageTool.wrongFamilyMessage(entry))")
+                lines.append("id=\(id) kind=\(entry.kind.rawValue) use=\(PackageFamilyGuidance.message(for: entry))")
             } else {
                 lines.append("id=\(id) use=not in the reviewed catalog; Debian packages install with apt inside a Linux environment")
             }

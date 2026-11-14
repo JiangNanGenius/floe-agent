@@ -1044,7 +1044,7 @@ struct FilePreviewView: View {
                             "This file is not writable in its current location; adjust permissions or copy it somewhere writable first."
                         ))
                     }
-                    return WorkspaceImageEditRequest(
+                    return await WorkspaceImageEditRequest(
                         relativePath: path,
                         sourceURL: url,
                         baselineSHA256: metadata.sha256,
@@ -1062,20 +1062,18 @@ struct FilePreviewView: View {
     /// raster container, then commits it atomically through the workspace
     /// file service against the pre-edit digest.
     private func saveEditedImage(_ request: WorkspaceImageEditRequest, editorPNG: Data) async throws {
-        guard request.relativePath == displayedPath,
+        guard imageEditRequest?.id == request.id,
+              request.relativePath == displayedPath,
               let service = center.fileService,
               service.guardResolver.rootURL == request.rootURL else {
             throw CocoaError(.fileReadNoPermission)
         }
         do {
+            let format = request.format
             let payload = try await Task.detached(priority: .userInitiated) {
-                try ImageFileEncoder.reencode(editorPNG, as: request.format)
+                try ImageFileEncoder.reencode(editorPNG, as: format)
             }.value
-            let path = request.relativePath
-            let baseline = request.baselineSHA256
-            _ = try await Task.detached(priority: .userInitiated) {
-                try service.commitBinaryEdit(path: path, data: payload, expectedSHA256: baseline)
-            }.value
+            try await request.commit(payload, using: service)
         } catch let error as WorkspaceToolError {
             if case .tooLarge(let limit) = error {
                 let mebibytes = limit / (1024 * 1024)
@@ -1975,13 +1973,37 @@ private enum ImageEditAvailability: Equatable {
 /// Everything one image edit session needs to commit back to the exact file
 /// it opened: the guard-resolved URL, the pre-edit digest, the workspace
 /// root it belongs to and the raster container matching the path.
-private struct WorkspaceImageEditRequest: Sendable, Identifiable {
+@MainActor
+final class WorkspaceImageEditRequest: Identifiable {
     let id = UUID()
     let relativePath: String
     let sourceURL: URL
-    let baselineSHA256: String
+    private(set) var baselineSHA256: String
     let rootURL: URL
     let format: ImageFileFormat
+
+    init(relativePath: String, sourceURL: URL, baselineSHA256: String,
+         rootURL: URL, format: ImageFileFormat) {
+        self.relativePath = relativePath
+        self.sourceURL = sourceURL
+        self.baselineSHA256 = baselineSHA256
+        self.rootURL = rootURL
+        self.format = format
+    }
+
+    /// Advance only after a real guarded commit. A later external change must
+    /// still conflict; refreshing from the current file would hide that change.
+    func commit(_ payload: Data, using service: WorkspaceFileService) async throws {
+        guard service.guardResolver.rootURL == rootURL,
+              try service.guardResolver.resolve(relativePath).standardizedFileURL == sourceURL.standardizedFileURL else {
+            throw CocoaError(.fileWriteNoPermission)
+        }
+        let path = relativePath, baseline = baselineSHA256
+        let outcome = try await Task.detached(priority: .userInitiated) {
+            try service.commitBinaryEdit(path: path, data: payload, expectedSHA256: baseline)
+        }.value
+        baselineSHA256 = outcome.write.sha256
+    }
 }
 
 /// Bilingual save failure raised inside the editor's save closure; the

@@ -21,6 +21,7 @@ import FloeCore
 import FloeModels
 import FloeProviders
 import FloeSecurity
+import FloeSync
 import FloeTools
 
 enum AssistantAudioCapability: String, Codable, Sendable, Hashable {
@@ -283,6 +284,7 @@ final class AssistantAudioService: ObservableObject {
     private let defaults: UserDefaults
     private let recognitionMethod: @MainActor () -> VoiceRecognitionPreferences.Method
     private var sourceByID: [String: SpeechOutputSource] = [:]
+    private var settingsSyncObserver: AnyCancellable?
     private static let storageKey = "voice.assistantAudio.v1"
     private static let asrAccount = "asr.openai-compatible.payAsYouGo"
 
@@ -308,6 +310,16 @@ final class AssistantAudioService: ObservableObject {
         self.preferences = defaults.data(forKey: Self.storageKey)
             .flatMap { try? JSONDecoder().decode(AssistantAudioPreferences.self, from: $0) }
             ?? AssistantAudioPreferences()
+        settingsSyncObserver = NotificationCenter.default.publisher(for: SpeechCredentialBinding.settingsApplied)
+            .receive(on: DispatchQueue.main).sink { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    self.preferences = self.defaults.data(forKey: Self.storageKey)
+                        .flatMap { try? JSONDecoder().decode(AssistantAudioPreferences.self, from: $0) }
+                        ?? AssistantAudioPreferences()
+                    await self.refreshAvailability()
+                }
+            }
         Task { [weak self] in await self?.refreshAvailability() }
     }
 

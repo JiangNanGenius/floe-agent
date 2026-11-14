@@ -88,6 +88,20 @@ struct AgentPromptLayerTests {
         }
     }
 
+    @Test func cleanupGuidanceUsesTerminalJobsAndKeepsInspectOptional() throws {
+        let original = LinuxCacheCleanupTaskProfile(conversationID: UUID(), environmentID: "shared")
+        let saved = try JSONDecoder().decode(LinuxCacheCleanupTaskProfile.self, from: JSONEncoder().encode(original))
+        #expect(saved.profile == "linuxCacheCleanup.v1" && saved.conversationID == original.conversationID)
+        #expect(saved.environmentID == "shared" && saved.backend == .linuxVM && saved.revision == 1)
+        for chinese in [false, true] {
+            let guide = LinuxCacheCleanupPrompt.systemGuidance(chinese: chinese)
+            for tool in ["exec.shell", "jobs.submit", "jobs.status", "jobs.result", "jobs.cancel", "nextOffset"] { #expect(guide.contains(tool)) }
+            #expect(guide.contains("不是必经") || guide.contains("never prerequisites"))
+            #expect(guide.contains("/var/tmp/floe-runtime"))
+            #expect(guide.contains("物理回收") || guide.contains("iPad physical space"))
+        }
+    }
+
     @Test func durableCleanupPurposeSurvivesCloudLocalAndFastComposition() throws {
         let saved = LinuxCacheCleanupTaskProfile(conversationID: UUID(), environmentID: "shared")
         let restored = try JSONDecoder().decode(LinuxCacheCleanupTaskProfile.self,

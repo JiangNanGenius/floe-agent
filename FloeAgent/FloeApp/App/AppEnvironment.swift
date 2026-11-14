@@ -401,6 +401,8 @@ final class AppEnvironment: ObservableObject {
             .appendingPathComponent("GitHubTransport", isDirectory: true)
             .appendingPathComponent("mirrors-state.v1.json"))
     private lazy var _settingsCenter = SettingsCenter(environment: self)
+    lazy var applicationSettingsSync = ApplicationSettingsSyncCoordinator(
+        sync: configurationSync, settings: SQLiteSettingsStore(database: database))
     private lazy var skillDependencies: SkillDependencyPreparationCenter = {
         let guests = linuxGuestService
         let wheelRoot: URL?
@@ -2331,7 +2333,6 @@ final class AppEnvironment: ObservableObject {
             sessions: shellSessionCenter,
             pythonInstaller: managedPythonInstaller,
             capabilityInstaller: capabilityInstaller,
-            wasmStore: wasmCapabilities,
             dependencyGate: skillsCenter,
             // The same App-owned Skill configuration service resolves ordinary
             // and sensitive per-process environment values. Without this the
@@ -3032,6 +3033,8 @@ final class AppEnvironment: ObservableObject {
             // after launch. Restore them before `persistenceReady` exposes the
             // composer; settings-screen visitation must never be required.
             await settingsCenter.loadLaunchPreferences()
+            await applicationSettingsSync.start()
+            await settingsCenter.reloadSynchronizedPreferences()
             await configurationSync.setCredentialStore(credentialStore)
             await credentialVault.drainDeletionQueue()
             _ = await workspaceCenter.retryPendingLocalCleanup()
@@ -3332,6 +3335,8 @@ final class AppEnvironment: ObservableObject {
                     let changes = await sync.remoteConfigurationChanges
                     for await _ in changes {
                         guard !Task.isCancelled, let self else { return }
+                        await self.applicationSettingsSync.flush()
+                        await self.settingsCenter.reloadSynchronizedPreferences()
                         await self.conversationCenter.reload()
                     }
                 }

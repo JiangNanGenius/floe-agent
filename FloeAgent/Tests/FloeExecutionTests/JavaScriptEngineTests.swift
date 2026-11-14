@@ -231,10 +231,10 @@ struct JavaScriptEngineTests {
 #if canImport(JavaScriptCore)
 import JavaScriptCore
 
-@Suite("FloeExecution.BundledJavaScriptPackages")
-struct BundledJavaScriptPackageTests {
-    @Test("All production packages load together, UUID has secure entropy, and PDF remains usable")
-    func allPackages() throws {
+@Suite("FloeExecution.InternalJavaScriptPackages")
+struct InternalJavaScriptPackageTests {
+    @Test("The internal PDF package loads and remains usable")
+    func internalPDFPackage() throws {
         let context = try #require(JSContext())
         var errors: [String] = []
         context.exceptionHandler = { _, value in errors.append(value?.toString() ?? "unknown") }
@@ -248,8 +248,8 @@ struct BundledJavaScriptPackageTests {
             return source
         }
         #expect(loaded == JSPackages.preInstalled.count)
+        #expect(JSPackages.preInstalled.map(\.name) == ["pdf-lib"])
         #expect(errors.isEmpty, "Package injection failed: \(errors)")
-        #expect(context.evaluateScript("uuid.validate(uuid.v4()) && uuid.version(uuid.v4()) === 4")?.toBool() == true)
         #expect(context.evaluateScript("typeof PDFLib.PDFDocument.load === 'function'")?.toBool() == true)
         context.evaluateScript("var pdfCreated = false; PDFLib.PDFDocument.create().then(function(doc) { doc.addPage(); return doc.save(); }).then(function(bytes) { pdfCreated = bytes.length > 0; });")
         #expect(context.evaluateScript("pdfCreated")?.toBool() == true)

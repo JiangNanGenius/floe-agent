@@ -83,6 +83,22 @@ public actor SQLiteSettingsStore: SettingsStore {
         }
     }
 
+    /// Remote preference materialization must not overwrite a UI edit that
+    /// committed after the coordinator took its local baseline.
+    public func compareAndSetValue(_ json: String?, forKey key: String, expecting expected: String?) async throws -> Bool {
+        try await database.writer { db in
+            let current = try String.fetchOne(db, sql: "SELECT value_json FROM app_settings WHERE key = ?", arguments: [key])
+            guard current == expected else { return false }
+            if let json {
+                try db.execute(sql: """
+                    INSERT INTO app_settings(key,value_json,updated_at) VALUES(?,?,?)
+                    ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at
+                    """, arguments: [key, json, PersistenceCodec.encode(Date())])
+            } else { try db.execute(sql: "DELETE FROM app_settings WHERE key = ?", arguments: [key]) }
+            return true
+        }
+    }
+
     public func allValues() async throws -> [String: String] {
         try await database.reader { db in
             let rows = try Row.fetchAll(

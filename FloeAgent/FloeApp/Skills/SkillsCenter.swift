@@ -3016,7 +3016,7 @@ final class SkillsCenter: ObservableObject {
             capabilities.insert(.localPython)
         }
         var tools = Set(ToolCatalog.allDescriptors.map(\.name))
-        if !capabilities.contains(.localPython) { tools.remove(LocalPythonTool.name) }
+        if !capabilities.contains(.localPython) { tools.remove(RetiredExecutionTools.localPythonName) }
         return (capabilities, tools)
     }
 
@@ -3151,7 +3151,7 @@ final class SkillsCenter: ObservableObject {
 
             if manifest.scriptRuntime == .localPython,
                effective.contains(SkillCapability.localPython.rawValue),
-               manifest.tools.contains(LocalPythonTool.name) {
+               manifest.tools.contains(RetiredExecutionTools.localPythonName) {
                 let scripts = snapshot.package.files
                     .filter { $0.relativePath.hasPrefix("scripts/") && $0.relativePath.hasSuffix(".py") }
                     .sorted { $0.relativePath < $1.relativePath }
@@ -4337,7 +4337,7 @@ final class SkillsCenter: ObservableObject {
         if descriptor.name.hasPrefix("browser.") && descriptor.isSideEffecting {
             result.insert(SkillCapability.browserInteract.rawValue)
         }
-        if descriptor.name == LocalPythonTool.name {
+        if descriptor.name == RetiredExecutionTools.localPythonName {
             result.insert(SkillCapability.localPython.rawValue)
         }
         return result

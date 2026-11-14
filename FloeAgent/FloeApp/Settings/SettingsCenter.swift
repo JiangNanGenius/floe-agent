@@ -221,6 +221,23 @@ final class SettingsCenter: ObservableObject {
         )
     }
 
+    /// Inbound refresh only: no permission probes or background-policy mutation.
+    func reloadSynchronizedPreferences() async {
+        guard let values = try? await settingsStore.allValues() else { return }
+        appearance = .system; languageOverride = .system; dateTimeStyle = .relative
+        hapticsEnabled = true; reduceMotionOverride = nil
+        defaultStartPage = .home; runningInputMode = .queue
+        let executionDefaults = ExecutionSettings()
+        execution.timeoutSeconds = executionDefaults.timeoutSeconds
+        execution.maxOutputBytes = executionDefaults.maxOutputBytes
+        execution.savesArtifacts = executionDefaults.savesArtifacts
+        sshDefaults = RemoteSessionDefaults(); vncDefaults = RemoteSessionDefaults()
+        idleDisconnectMinutes = 15; verifyFinalAnswer = false; semanticContextCompaction = true
+        speechRate = 0.5; speechPitch = 1.0; speechVoiceIdentifier = nil
+        loadUserDefaults()
+        applyStoredValues(values)
+    }
+
     /// Loads every settings source in parallel and refreshes the snapshot.
     /// Probe results are recomputed on every load (never persisted).
     func load() async {
@@ -296,7 +313,13 @@ final class SettingsCenter: ObservableObject {
     /// turned into a false "Synced" result.
     func synchronizeConfiguration() async {
         do {
+            await environment.applicationSettingsSync.prepareLegacyCredentials()
+            guard await environment.applicationSettingsSync.flush() else {
+                throw FloeError.invalidConfiguration("Application settings unavailable")
+            }
             try await environment.configurationSync.synchronize(container: CKContainer.default())
+            await environment.applicationSettingsSync.flush()
+            await reloadSynchronizedPreferences()
             await environment.conversationCenter.reload()
         } catch {
             // ConfigSyncEngine owns the redacted, user-presentable error state.
@@ -539,6 +562,10 @@ final class SettingsCenter: ObservableObject {
             guard let self else { return }
             do {
                 let providers = try await environment.configurationStore.providers()
+                let speechOutcome = savedCredentialsSyncEnabled
+                    ? await SpeechCredentialStore.prepareAllSynchronization(enabled: enabled, defaults: defaults)
+                    : SpeechCredentialMigrationOutcome()
+                if enabled && speechOutcome.failed > 0 { throw SpeechCredentialStore.Failure.migrationUnavailable }
                 try await KeychainSecretStore().setGlobalSyncEnabled(
                     enabled,
                     providerIDs: providers.map(\.id)
@@ -555,7 +582,11 @@ final class SettingsCenter: ObservableObject {
                         .setSavedCredentialSyncEnabled(false)
                     savedCredentialsSyncEnabled = outcome.preferenceCommitted
                         ? false : savedCredentialsSyncEnabled
-                    credentialOutcome = outcome
+                    credentialOutcome = SavedCredentialSyncOutcome(
+                        migrated: outcome.migrated + speechOutcome.migrated,
+                        missingOnDevice: outcome.missingOnDevice + speechOutcome.missing,
+                        failed: outcome.failed + speechOutcome.failed,
+                        preferenceCommitted: outcome.preferenceCommitted)
                 }
                 // Keychain migration commits the production device-wide
                 // preference only after every secret was verified at its
@@ -671,6 +702,10 @@ final class SettingsCenter: ObservableObject {
         credentialSyncRetryDirection = enabled
         defer { syncControlBusy = false }
         do {
+            await environment.applicationSettingsSync.prepareLegacyCredentials()
+            let speechOutcome = await SpeechCredentialStore.prepareAllSynchronization(
+                enabled: overallSyncEnabled && enabled, defaults: defaults)
+            if enabled && speechOutcome.failed > 0 { throw SpeechCredentialStore.Failure.migrationUnavailable }
             if !enabled {
                 let existingVault = try await environment.credentialStore.records(owner: .vault)
                 for credential in existingVault where credential.synchronizable {
@@ -679,7 +714,12 @@ final class SettingsCenter: ObservableObject {
                     )
                 }
             }
-            let outcome = try await environment.credentialVault.setSavedCredentialSyncEnabled(enabled)
+            let vaultOutcome = try await environment.credentialVault.setSavedCredentialSyncEnabled(enabled)
+            let outcome = SavedCredentialSyncOutcome(
+                migrated: vaultOutcome.migrated + speechOutcome.migrated,
+                missingOnDevice: vaultOutcome.missingOnDevice + speechOutcome.missing,
+                failed: vaultOutcome.failed + speechOutcome.failed,
+                preferenceCommitted: vaultOutcome.preferenceCommitted)
             // Publish the committed truth, not the request: a fully failed
             // enable leaves the switch honestly off.
             savedCredentialsSyncEnabled = outcome.preferenceCommitted ? enabled : savedCredentialsSyncEnabled
@@ -717,6 +757,9 @@ final class SettingsCenter: ObservableObject {
     private func persist<T: Encodable & Sendable>(_ value: T, forKey key: String) async {
         do {
             try await settingsStore.setValue(value, forKey: key)
+            if ApplicationSettingPolicy.databaseKeys.contains(key) {
+                NotificationCenter.default.post(name: SpeechCredentialBinding.localSettingsChanged, object: nil)
+            }
             settingsSaveError = nil
         } catch {
             // Restore the complete stored snapshot so optimistic controls do

@@ -2,6 +2,7 @@
 #if canImport(UIKit)
 import AVKit
 import SwiftUI
+import UIKit
 import FloeWorkbench
 
 struct MediaV2Preview: View {
@@ -17,35 +18,51 @@ struct MediaV2Preview: View {
             let size = CGSize(width: CGFloat(canvas.width) * fit, height: CGFloat(canvas.height) * fit)
             ZStack {
                 Color(uiColor: .secondarySystemBackground)
-                ZStack {
-                    checkerboard
-                    if let player = session.player { VideoPlayer(player: player) }
-                    else if let image = session.imageWarpPreview ?? (session.colorShowsOriginal ? session.preview : session.colorPreview ?? session.preview) { Image(decorative: image, scale: 1).allowedDynamicRange(session.project.kind == .video && session.document.canvas?.videoColorProfile?.isHDR == true ? .high : nil).resizable().aspectRatio(contentMode: .fit) }
-                    else if session.project.kind == .video {
-                        VStack(spacing: 12) { Image(systemName: "film").font(.largeTitle); Text(WorkbenchText.t("导入素材开始剪辑", "Import media to start editing")).font(.callout) }.foregroundStyle(.secondary)
+                if session.project.kind == .image {
+                    MediaV2CanvasViewport(canvasSize: size, zoom: $session.zoom,
+                        resetID: session.viewportResetID, fingerDrawing: fingerDrawing,
+                        onNavigationBegan: cancelInteraction) {
+                        canvasSurface(size: size, canvas: canvas)
                     }
-                    if session.project.kind == .image {
-                        Group {
-                            if MediaV2Session.imageWarpToolIDs.contains(session.tool) { MediaV2ImageWarpCanvasOverlay(session: session) }
-                            else { interaction(size: size, canvas: canvas) }
-                        }.allowsHitTesting(!session.canvasLayoutInProgress && !session.processingTool)
-                    }
-                    else if session.tool == "video.motion-path" { MediaV2MotionPathOverlay(session:session) }
-                    if session.project.kind == .video,session.tool == "video.tracking" { MediaV2TrackingOverlay(session:session) }
+                } else {
+                    canvasSurface(size: size, canvas: canvas).scaleEffect(session.zoom)
                 }
-                .frame(width: size.width, height: size.height)
-                .scaleEffect(session.zoom)
-                .overlay { Rectangle().stroke(Color.secondary.opacity(0.25), lineWidth: 1) }
             }.clipped().overlay(alignment: .bottom) {
                 if session.project.kind == .image, MediaV2Session.imageWarpToolIDs.contains(session.tool) { MediaV2ImageWarpActionBar(session: session) }
             }
         }
         .onChange(of:session.selectedLayerID) { _,_ in session.cloneSourcePoint = nil;session.cloneDestinationOrigin = nil;session.clonePickSource = false }
         .onChange(of: session.tool) { _, tool in
-            points = []; originalLayer = nil; strokeRevision = nil
+            cancelInteraction()
             if !MediaV2Session.imageWarpToolIDs.contains(tool) { session.discardImageWarpDraft() }
         }
+        .onChange(of: session.viewportResetID) { _, _ in cancelInteraction() }
         .accessibilityIdentifier("media.v2.canvas")
+    }
+    private func canvasSurface(size: CGSize, canvas: MediaCanvas) -> some View {
+        ZStack {
+            checkerboard
+            if let player = session.player { VideoPlayer(player: player) }
+            else if let image = session.imageWarpPreview ?? (session.colorShowsOriginal ? session.preview : session.colorPreview ?? session.preview) {
+                Image(decorative: image, scale: 1)
+                    .allowedDynamicRange(session.project.kind == .video && session.document.canvas?.videoColorProfile?.isHDR == true ? .high : nil)
+                    .resizable().aspectRatio(contentMode: .fit)
+            } else if session.project.kind == .video {
+                VStack(spacing: 12) {
+                    Image(systemName: "film").font(.largeTitle)
+                    Text(WorkbenchText.t("导入素材开始剪辑", "Import media to start editing")).font(.callout)
+                }.foregroundStyle(.secondary)
+            }
+            if session.project.kind == .image {
+                Group {
+                    if MediaV2Session.imageWarpToolIDs.contains(session.tool) { MediaV2ImageWarpCanvasOverlay(session: session) }
+                    else { interaction(size: size, canvas: canvas) }
+                }.allowsHitTesting(!session.saving && !session.canvasLayoutInProgress && !session.processingTool)
+            } else if session.tool == "video.motion-path" { MediaV2MotionPathOverlay(session: session) }
+            if session.project.kind == .video, session.tool == "video.tracking" { MediaV2TrackingOverlay(session: session) }
+        }
+        .frame(width: size.width, height: size.height)
+        .overlay { Rectangle().stroke(Color.secondary.opacity(0.25), lineWidth: 1).allowsHitTesting(false) }
     }
     private var checkerboard: some View {
         SwiftUI.Canvas { context, size in
@@ -121,7 +138,7 @@ struct MediaV2Preview: View {
                     defer { points = []; originalLayer = nil;strokeRevision = nil }
                     guard !points.isEmpty, MediaV2Session.usesDirectStroke(session.tool) else { return }
                     submitToolPoints()
-                }, onCancelled: { points = []; originalLayer = nil;strokeRevision = nil })
+                }, onCancelled: cancelInteraction)
             }
         }
         .gesture(MediaV2Session.usesDirectStroke(session.tool) ? nil : DragGesture(minimumDistance: 3).onChanged { value in
@@ -149,6 +166,11 @@ struct MediaV2Preview: View {
                 Task { do { _ = try await session.performTool("image.eyedropper", input: input) } catch { session.diagnostic = error.localizedDescription } }
             }
         })
+    }
+    private func cancelInteraction() {
+        points = []
+        originalLayer = nil
+        strokeRevision = nil
     }
     private func submitToolPoints() {
         guard let first = points.first, let last = points.last else { return }
@@ -192,6 +214,134 @@ struct MediaV2Preview: View {
         if kind == .ellipse { return Path(ellipseIn: rect) }
         if kind == .rectangle { return Path(rect) }
         return Path { path in path.move(to: a); for point in points.dropFirst() { path.addLine(to: CGPoint(x: point.x * size.width, y: point.y * size.height)) }; if close { path.closeSubpath() } }
+    }
+}
+
+/// UIKit owns pinch and pan so Pencil/mouse edits retain their original
+/// coordinate space. Finger drawing reserves a single finger for ink.
+struct MediaV2CanvasViewport<Content: View>: UIViewControllerRepresentable {
+    let canvasSize: CGSize
+    @Binding var zoom: Double
+    let resetID: UUID
+    let fingerDrawing: Bool
+    var onNavigationBegan: () -> Void = {}
+    @ViewBuilder let content: () -> Content
+
+    func makeUIViewController(context: Context) -> MediaV2CanvasViewportController<Content> {
+        MediaV2CanvasViewportController(content: content())
+    }
+    func updateUIViewController(_ controller: MediaV2CanvasViewportController<Content>, context: Context) {
+        controller.update(content: content(), canvasSize: canvasSize, zoom: zoom,
+            resetID: resetID, fingerDrawing: fingerDrawing, onNavigationBegan: onNavigationBegan) { zoom = $0 }
+    }
+}
+
+@MainActor
+final class MediaV2CanvasViewportController<Content: View>: UIViewController, UIScrollViewDelegate {
+    let scrollView = UIScrollView()
+    private let host: UIHostingController<Content>
+    private var canvasSize = CGSize(width: 1, height: 1)
+    private var resetID: UUID?
+    private var updating = false
+    private var onZoom: ((Double) -> Void)?
+    private var onNavigationBegan: (() -> Void)?
+    private var viewportSize = CGSize.zero
+
+    init(content: Content) { host = UIHostingController(rootView: content); super.init(nibName: nil, bundle: nil) }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .clear
+        scrollView.frame = view.bounds
+        scrollView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        scrollView.minimumZoomScale = 0.25
+        scrollView.maximumZoomScale = 4
+        scrollView.bouncesZoom = false
+        scrollView.showsHorizontalScrollIndicator = false
+        scrollView.showsVerticalScrollIndicator = false
+        scrollView.contentInsetAdjustmentBehavior = .never
+        scrollView.delaysContentTouches = false
+        scrollView.delegate = self
+        // Pencil and pointer input go directly to the existing editing surface.
+        scrollView.panGestureRecognizer.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+        view.addSubview(scrollView)
+        addChild(host)
+        host.safeAreaRegions = []
+        host.view.backgroundColor = .clear
+        scrollView.addSubview(host.view)
+        host.didMove(toParent: self)
+    }
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        let size = scrollView.bounds.size
+        guard size.width > 0, size.height > 0 else { return }
+        let previous = viewportSize
+        let scale = max(0.25, scrollView.zoomScale)
+        let center = previous == .zero ? CGPoint(x: 0.5, y: 0.5) : CGPoint(
+            x: (scrollView.contentOffset.x + previous.width / 2) / scale / canvasSize.width,
+            y: (scrollView.contentOffset.y + previous.height / 2) / scale / canvasSize.height)
+        centerCanvas()
+        if previous != size {
+            viewportSize = size
+            scrollView.setContentOffset(clampedOffset(CGPoint(
+                x: center.x * canvasSize.width * scale - size.width / 2,
+                y: center.y * canvasSize.height * scale - size.height / 2)), animated: false)
+        }
+    }
+    func update(content: Content, canvasSize: CGSize, zoom: Double, resetID: UUID,
+                fingerDrawing: Bool, onNavigationBegan: @escaping () -> Void = {}, onZoom: @escaping (Double) -> Void) {
+        loadViewIfNeeded()
+        updating = true
+        defer { updating = false }
+        self.onZoom = onZoom
+        self.onNavigationBegan = onNavigationBegan
+        host.rootView = content
+        scrollView.panGestureRecognizer.minimumNumberOfTouches = fingerDrawing ? 2 : 1
+        let oldScale = max(0.25, scrollView.zoomScale)
+        let center = CGPoint(
+            x: (scrollView.contentOffset.x + scrollView.bounds.width / 2) / oldScale / self.canvasSize.width,
+            y: (scrollView.contentOffset.y + scrollView.bounds.height / 2) / oldScale / self.canvasSize.height)
+        let resized = self.canvasSize != canvasSize
+        if resized {
+            scrollView.setZoomScale(1, animated: false)
+            self.canvasSize = CGSize(width: max(1, canvasSize.width), height: max(1, canvasSize.height))
+            host.view.frame = CGRect(origin: .zero, size: self.canvasSize)
+            scrollView.contentSize = self.canvasSize
+        }
+        let scale = CGFloat(zoom.isFinite ? min(4, max(0.25, zoom)) : 1)
+        if abs(scrollView.zoomScale - scale) > 0.001 { scrollView.setZoomScale(scale, animated: false) }
+        centerCanvas()
+        if self.resetID != resetID {
+            scrollView.setContentOffset(CGPoint(x: -scrollView.contentInset.left, y: -scrollView.contentInset.top), animated: false)
+        } else if resized {
+            let offset = CGPoint(x: center.x * self.canvasSize.width * scale - scrollView.bounds.width / 2,
+                                 y: center.y * self.canvasSize.height * scale - scrollView.bounds.height / 2)
+            scrollView.setContentOffset(clampedOffset(offset), animated: false)
+        }
+        self.resetID = resetID
+    }
+    private func centerCanvas() {
+        let horizontal = max(0, (scrollView.bounds.width - canvasSize.width * scrollView.zoomScale) / 2)
+        let vertical = max(0, (scrollView.bounds.height - canvasSize.height * scrollView.zoomScale) / 2)
+        let inset = UIEdgeInsets(top: vertical, left: horizontal, bottom: vertical, right: horizontal)
+        if scrollView.contentInset != inset { scrollView.contentInset = inset }
+    }
+    private func clampedOffset(_ offset: CGPoint) -> CGPoint {
+        let inset = scrollView.contentInset
+        return CGPoint(
+            x: min(max(-inset.left, offset.x), max(-inset.left, scrollView.contentSize.width - scrollView.bounds.width + inset.right)),
+            y: min(max(-inset.top, offset.y), max(-inset.top, scrollView.contentSize.height - scrollView.bounds.height + inset.bottom)))
+    }
+    func viewForZooming(in scrollView: UIScrollView) -> UIView? { host.view }
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) { if !updating { onNavigationBegan?() } }
+    func scrollViewWillBeginZooming(_ scrollView: UIScrollView, with view: UIView?) { if !updating { onNavigationBegan?() } }
+    func scrollViewDidZoom(_ scrollView: UIScrollView) {
+        centerCanvas()
+        if !updating { onZoom?(Double(scrollView.zoomScale)) }
+    }
+    func scrollViewDidEndZooming(_ scrollView: UIScrollView, with view: UIView?, atScale scale: CGFloat) {
+        if !updating { onZoom?(Double(scale)) }
     }
 }
 

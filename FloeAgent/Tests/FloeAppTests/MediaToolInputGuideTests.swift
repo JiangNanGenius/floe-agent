@@ -3,11 +3,177 @@
 import Foundation
 import Testing
 import UIKit
+import SwiftUI
 import FloeWorkbench
+import FloeWorkspace
 @testable import FloeApp
 
 @Suite("Native media example payloads",.serialized)
 @MainActor struct MediaToolInputGuideTests {
+    @Test func sourceFileWriteAdvancesOnlyCommittedBaselineAndPreservesExternalEdits() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("image-source-cas-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = WorkspaceFileService(guard: WorkspacePathGuard(rootURL: root))
+        let url = root.appendingPathComponent("source.png")
+        func png(_ color: UIColor) -> Data {
+            UIGraphicsImageRenderer(size: CGSize(width: 4, height: 4)).pngData { context in
+                color.setFill()
+                context.fill(CGRect(x: 0, y: 0, width: 4, height: 4))
+            }
+        }
+        try png(.white).write(to: url)
+        let original = try service.metadata("source.png").sha256
+        let request = WorkspaceImageEditRequest(relativePath: "source.png",
+            sourceURL: try service.guardResolver.resolve("source.png"),
+            baselineSHA256: original, rootURL: service.guardResolver.rootURL, format: .png)
+        let first = png(.red), second = png(.blue)
+        try await request.commit(first, using: service)
+        let firstSHA = request.baselineSHA256
+        #expect(firstSHA != original)
+        try await request.commit(second, using: service)
+        let secondSHA = request.baselineSHA256
+        #expect(secondSHA != firstSHA)
+        #expect(secondSHA == (try service.metadata("source.png").sha256))
+        #expect(try Data(contentsOf: url) == second)
+
+        let external = png(.green), draft = png(.black)
+        try external.write(to: url, options: .atomic)
+        do {
+            try await request.commit(draft, using: service)
+            Issue.record("An external edit must not be overwritten by the image editor")
+        } catch let conflict as WorkspaceBinaryEditConflict {
+            #expect(request.baselineSHA256 == secondSHA)
+            #expect(try Data(contentsOf: url) == external)
+            #expect(try Data(contentsOf: root.appendingPathComponent(conflict.recoveryPath)) == draft)
+        }
+    }
+
+    @Test func photoStartsWithMoveAndDrawingStartsWithBrush() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("image-default-tool-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let photo = try await interactionSession(root: root, drawing: false)
+        let drawing = try await interactionSession(root: root, drawing: true)
+        #expect(photo.tool == "move")
+        #expect(drawing.tool == "image.brush")
+    }
+
+    @Test func sourceWriteFencesDuplicateSavesAndDocumentEditsUntilCommit() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("image-source-write-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let session = try await interactionSession(root: root, drawing: true)
+        _ = try await session.apply([.init(action: .insertLayer(layer: .init(name: "Earlier edit", content: .strokes(.init())), parentID: nil, index: nil))])
+        #expect(session.canUndo)
+        var continuation: CheckedContinuation<Void, Never>?
+        var secondWriteRan = false
+        let output = root.appendingPathComponent("source-write.txt")
+        session.saveToSource(message: "Original updated") {
+            await withCheckedContinuation { continuation = $0 }
+            try Data("committed".utf8).write(to: output, options: .atomic)
+        }
+        #expect(session.saving)
+        #expect(!session.canUndo && !session.canRedo)
+        session.saveToSource(message: "Duplicate") { secondWriteRan = true }
+        let deadline = ContinuousClock.now + .seconds(2)
+        while continuation == nil && ContinuousClock.now < deadline { await Task.yield() }
+        let gate = try #require(continuation)
+        var editWasFenced = false
+        do {
+            _ = try await session.apply([.init(action: .insertLayer(layer: .init(name: "Blocked", content: .strokes(.init())), parentID: nil, index: nil))])
+            Issue.record("Editing must be fenced during source writeback")
+        } catch MediaPreparedCoreError.conflict(_) { editWasFenced = true }
+        catch { Issue.record("Unexpected edit failure: \(error)") }
+        #expect(editWasFenced && session.saving)
+        #expect(!session.document.layers.contains { $0.name == "Blocked" })
+        #expect(!FileManager.default.fileExists(atPath: output.path))
+        gate.resume()
+        try await waitForSourceWrite(session)
+        #expect(!secondWriteRan)
+        #expect(try String(contentsOf: output, encoding: .utf8) == "committed")
+        #expect(session.sourceSaveFeedback == "Original updated")
+        #expect(session.canUndo)
+        session.stopPlayback()
+    }
+
+    @Test func failedSourceWriteCanRetryAndSuccessExpiresAfterAnotherEdit() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("image-source-retry-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let session = try await interactionSession(root: root, drawing: true)
+        let revision = session.document.revision
+        session.saveToSource(message: "Must not appear") { throw CocoaError(.fileWriteNoPermission) }
+        try await waitForSourceWrite(session)
+        #expect(session.diagnostic != nil && session.sourceSaveFeedback == nil)
+        #expect(session.document.revision == revision)
+        session.saveToSource(message: "Original updated") { }
+        try await waitForSourceWrite(session)
+        #expect(session.diagnostic == nil && session.sourceSaveFeedback == "Original updated")
+        _ = try await session.apply([.init(action: .insertLayer(layer: .init(name: "Later edit", content: .strokes(.init())), parentID: nil, index: nil))])
+        #expect(session.sourceSaveFeedback == nil)
+        session.stopPlayback()
+    }
+
+    @Test func canvasPanSurvivesViewUpdatesAndFitRecenters() {
+        let content = Color.white
+        let controller = MediaV2CanvasViewportController(content: content)
+        controller.loadViewIfNeeded()
+        controller.view.frame = CGRect(x: 0, y: 0, width: 600, height: 400)
+        controller.view.layoutIfNeeded()
+        let resetID = UUID()
+        controller.update(content: content, canvasSize: CGSize(width: 560, height: 360), zoom: 2,
+            resetID: resetID, fingerDrawing: false) { _ in }
+        controller.scrollView.setContentOffset(CGPoint(x: 180, y: 120), animated: false)
+        controller.update(content: content, canvasSize: CGSize(width: 560, height: 360), zoom: 2,
+            resetID: resetID, fingerDrawing: false) { _ in }
+        #expect(abs(controller.scrollView.contentOffset.x - 180) < 0.5)
+        #expect(abs(controller.scrollView.contentOffset.y - 120) < 0.5)
+        let centerX = (controller.scrollView.contentOffset.x + controller.scrollView.bounds.width / 2) / controller.scrollView.zoomScale
+        let centerY = (controller.scrollView.contentOffset.y + controller.scrollView.bounds.height / 2) / controller.scrollView.zoomScale
+        controller.view.frame = CGRect(x: 0, y: 0, width: 400, height: 600)
+        controller.view.layoutIfNeeded()
+        #expect(abs((controller.scrollView.contentOffset.x + controller.scrollView.bounds.width / 2) / controller.scrollView.zoomScale - centerX) < 0.5)
+        #expect(abs((controller.scrollView.contentOffset.y + controller.scrollView.bounds.height / 2) / controller.scrollView.zoomScale - centerY) < 0.5)
+        controller.update(content: content, canvasSize: CGSize(width: 560, height: 360), zoom: 1,
+            resetID: UUID(), fingerDrawing: false) { _ in }
+        #expect(abs(controller.scrollView.zoomScale - 1) < 0.001)
+        #expect(abs(controller.scrollView.contentOffset.x + controller.scrollView.contentInset.left) < 0.5)
+        #expect(abs(controller.scrollView.contentOffset.y + controller.scrollView.contentInset.top) < 0.5)
+    }
+
+    @Test func canvasNavigationReservesOneFingerForInkWhenEnabled() {
+        let controller = MediaV2CanvasViewportController(content: Color.white)
+        let resetID = UUID()
+        var navigations = 0
+        controller.update(content: .white, canvasSize: CGSize(width: 600, height: 400), zoom: 1,
+            resetID: resetID, fingerDrawing: true, onNavigationBegan: { navigations += 1 }) { _ in }
+        #expect(controller.scrollView.panGestureRecognizer.minimumNumberOfTouches == 2)
+        controller.scrollViewWillBeginDragging(controller.scrollView)
+        controller.scrollViewWillBeginZooming(controller.scrollView, with: nil)
+        #expect(navigations == 2)
+        controller.update(content: .white, canvasSize: CGSize(width: 600, height: 400), zoom: 1,
+            resetID: resetID, fingerDrawing: false) { _ in }
+        #expect(controller.scrollView.panGestureRecognizer.minimumNumberOfTouches == 1)
+        #expect(controller.scrollView.panGestureRecognizer.allowedTouchTypes == [NSNumber(value: UITouch.TouchType.direct.rawValue)])
+    }
+
+    private func interactionSession(root: URL, drawing: Bool) async throws -> MediaV2Session {
+        let store = MediaProjectStore(directory: root.appendingPathComponent("Projects"))
+        var project = MediaProject(kind: .image, name: "Interaction", canvas: .init(width: 64, height: 48))
+        if drawing { project.imageLayers = [.init(kind: .freehand, name: "Drawing", freehand: .init())] }
+        else {
+            let asset = try imageAsset(at: root)
+            project.assets = [asset]
+            project.imageLayers = [.init(kind: .image, name: "Photo", assetID: asset.id)]
+        }
+        project = try MediaPreparedUpgrade.upgrade(project)
+        try await store.save(project)
+        return MediaV2Session(project: project, root: root, store: store, coordinator: MediaPreparedCoordinator(store: store))
+    }
+    private func waitForSourceWrite(_ session: MediaV2Session) async throws {
+        let deadline = ContinuousClock.now + .seconds(2)
+        while session.saving && ContinuousClock.now < deadline { await Task.yield() }
+        #expect(!session.saving)
+    }
+
     @Test func newMediaExamplesDecodeAgainstTheActualAppToolContract() async throws {
         let root=FileManager.default.temporaryDirectory.appendingPathComponent("media-tool-guides-\(UUID())")
         defer { try? FileManager.default.removeItem(at:root) }

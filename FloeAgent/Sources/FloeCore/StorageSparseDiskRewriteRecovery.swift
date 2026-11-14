@@ -41,6 +41,7 @@ enum StorageSparseDiskRewriteRecovery {
         policy: StorageSparseDiskRecoveryPolicy = .complete,
         isCancelled: @escaping @Sendable () -> Bool,
         progress: (@Sendable (StorageSparseDiskRewriteProgress) -> Void)? = nil,
+        verifyRetiredSourceIdentity: StorageSparseDiskIdentity? = nil,
         hooks: TestHooks = TestHooks()
     ) throws -> StorageSparseDiskRecoveryReport {
         try StorageSparseDiskPOSIX.validateJobID(jobID)
@@ -129,6 +130,12 @@ enum StorageSparseDiskRewriteRecovery {
 
         try fence.assertExclusive()
         try checkCancelled(isCancelled)
+
+        if let expected = verifyRetiredSourceIdentity {
+            return try verifyRetiredSourceOnly(parentFD: parentFD, sourceName: resolved.leaf,
+                expected: expected, record: record, journal: journal, fence: fence,
+                isCancelled: isCancelled, progress: progress)
+        }
 
         if policy == .abortUnchangedSourceOnly {
             // Restricted failures preserve the journal as well as both paths;
@@ -435,6 +442,89 @@ enum StorageSparseDiskRewriteRecovery {
     }
 
     // MARK: - Helpers
+
+    private static func verifyRetiredSourceOnly(
+        parentFD: Int32, sourceName: String, expected: StorageSparseDiskIdentity,
+        record: StorageSparseDiskRewriteJournalRecord,
+        journal: StorageSparseDiskRewriteJournalHandle, fence: StorageSparseDiskMaintenanceFence,
+        isCancelled: @escaping @Sendable () -> Bool,
+        progress: (@Sendable (StorageSparseDiskRewriteProgress) -> Void)?
+    ) throws -> StorageSparseDiskRecoveryReport {
+        func refused(_ reason: String) -> StorageSparseDiskRecoveryReport {
+            // This branch has NO journal update/unlink/rename fallback.
+            .init(jobID: record.jobID, resolution: .needsInspection, phase: record.phase.rawValue,
+                  stageRemoved: false, sourceIdentityVerified: false, detail: reason)
+        }
+        func digestIsValid(_ value: String) -> Bool {
+            value.utf8.count == 128 && value.utf8.allSatisfy {
+                (48...57).contains($0) || (97...102).contains($0)
+            }
+        }
+        guard record.phase == .retired, record.stageRetired, !record.stageRetained,
+              record.requestedMode == .cloneAndPunch, record.modeUsed == .cloneAndPunch,
+              record.fallbackReason == nil, record.maintenanceLeaseID == record.jobID,
+              let retired = record.postSwapSource, retired.matchesStable(expected),
+              let staged = record.stage, staged.matchesStable(retired), staged.inode != record.source.inode,
+              expected.linkCount == 1, expected.mode & UInt32(S_IFMT) == UInt32(S_IFREG),
+              record.logicalBytes > 0, record.logicalBytes <= StorageSparseDiskRewrite.maximumSourceBytes,
+              record.logicalBytes == expected.sizeBytes,
+              let digest = record.sourceDigestSHA512, digestIsValid(digest),
+              record.stageDigestSHA512 == digest,
+              let historicalMetadata = record.metadataFingerprint, digestIsValid(historicalMetadata),
+              let stageName = record.stageName, stageName != sourceName else {
+            return refused("completed-content-history-unverified")
+        }
+        let prefix = "." + String(sourceName.prefix(40)) + ".sparse-" + record.jobID + "-"
+        guard stageName.hasPrefix(prefix), stageName.hasSuffix(".stage") else {
+            return refused("completed-content-stage-unverified")
+        }
+        let suffix = stageName.dropFirst(prefix.count).dropLast(".stage".count)
+        guard suffix.utf8.count == 12,
+              suffix.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
+            return refused("completed-content-stage-unverified")
+        }
+        func pathsMatch() -> Bool {
+            let source = StorageSparseDiskPOSIX.observe(parentFD: parentFD, name: sourceName)
+            let stage = StorageSparseDiskPOSIX.observe(parentFD: parentFD, name: stageName)
+            return source.errorErrno == nil && !source.isSymlink
+                && source.identity?.matchesFully(expected) == true
+                && stage.errorErrno == nil && !stage.exists && !stage.isSymlink
+        }
+        guard pathsMatch() else { return refused("completed-content-identity-changed") }
+        let fd = try StorageSparseDiskPOSIX.openRegular(parentFD: parentFD, leaf: sourceName,
+            flags: O_RDONLY, purpose: .source)
+        defer { _ = Darwin.close(fd) }
+        guard try StorageSparseDiskPOSIX.identity(of: fd).matchesFully(expected) else {
+            return refused("completed-content-identity-changed")
+        }
+        let metadata = try StorageSparseDiskPOSIX.metadataFingerprint(StorageSparseDiskPOSIX.captureMetadata(fd: fd))
+        try fence.assertExclusive()
+        guard try journal.read() == record, pathsMatch(),
+              try StorageSparseDiskPOSIX.identity(of: fd).matchesFully(expected) else {
+            return refused("completed-content-evidence-changed")
+        }
+        try checkCancelled(isCancelled)
+        progress?(.init(phase: .verifying, processedBytes: 0, totalBytes: record.logicalBytes))
+        let actual = try StorageSparseDiskPOSIX.sha512(fd: fd, size: record.logicalBytes,
+            chunkBytes: 1_048_576, phase: .verifying, isSource: true,
+            isCancelled: isCancelled, progress: progress)
+        try checkCancelled(isCancelled)
+        guard actual == digest else { return refused("completed-content-digest-mismatch") }
+        guard try StorageSparseDiskPOSIX.identity(of: fd).matchesFully(expected), pathsMatch(),
+              try StorageSparseDiskPOSIX.metadataFingerprint(StorageSparseDiskPOSIX.captureMetadata(fd: fd)) == metadata else {
+            return refused("completed-content-identity-changed")
+        }
+        try fence.assertExclusive()
+        guard try journal.read() == record, pathsMatch(),
+              try StorageSparseDiskPOSIX.identity(of: fd).matchesFully(expected),
+              try StorageSparseDiskPOSIX.metadataFingerprint(StorageSparseDiskPOSIX.captureMetadata(fd: fd)) == metadata else {
+            return refused("completed-content-evidence-changed")
+        }
+        try checkCancelled(isCancelled)
+        return .init(jobID: record.jobID, resolution: .alreadyCommitted, phase: "retired",
+            stageRemoved: false, sourceIdentityVerified: true, detail: "completed-current-content-verified",
+            sourceContentDigestVerified: true)
+    }
 
     private static func abortUnchangedSourceOnly(
         parentFD: Int32, sourceName: String,

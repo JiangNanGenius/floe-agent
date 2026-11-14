@@ -285,23 +285,14 @@ struct DesignGuestWriteGateTests {
         DesignGuestWriteGateTesting.removeRegistryOverride()
     }
 
-    @Test("localPython and interactive session tools refuse while frozen, before any dispatch")
-    func arbitraryCodeToolsRefuseFrozenRuns() async throws {
+    @Test("interactive session tools refuse while frozen, before any dispatch")
+    func interactiveSessionToolsRefuseFrozenRuns() async throws {
         let conversationID = UUID()
         let file = makeFile()
         let registry = makeRegistry(conversationID: conversationID, file: file)
         DesignGuestWriteGateTesting.installRegistryOverride(registry)
         defer { DesignGuestWriteGateTesting.removeRegistryOverride() }
         let frozen = makeContext(conversationID: conversationID)
-
-        let python = LocalPythonTool(service: LocalPythonService(
-            version: "test",
-            runner: { _, _ in .ok(resultJSON: nil, stdout: "", stderr: "", truncated: false, stderrTruncated: false, durationMs: 0) }))
-        let denied = try await python.execute(
-            LocalPythonTool.Arguments(script: "open('/workspace/index.html','w').write('x')"),
-            context: frozen)
-        #expect(denied.exitStatus == 126)
-        #expect(denied.summary.contains("status=unsupported"))
 
         let open = ShellOpenTool(center: ShellSessionCenter(
             backend: UnavailableShellBackend(), policy: ShellCommandPolicy()))

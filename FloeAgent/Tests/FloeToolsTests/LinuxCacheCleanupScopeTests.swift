@@ -72,7 +72,7 @@ struct LinuxCacheCleanupScopeTests {
         )
     }
 
-    @Test("Offer intersection can never add a shell, jobs, workspace, host or delegate tool")
+    @Test("Offer intersection includes guest terminal/jobs but never workspace, remote or unrelated tools")
     func ceilingIsClosed() {
         let offered: Set<String> = [
             LinuxCacheCleanupScope.inspectToolName,
@@ -86,6 +86,8 @@ struct LinuxCacheCleanupScopeTests {
             "exec.shell",
             "jobs.submit",
             "jobs.status",
+            "jobs.result",
+            "jobs.cancel",
             "workspace.writeFile",
             "ssh.execute",
             "delegate",
@@ -93,24 +95,63 @@ struct LinuxCacheCleanupScopeTests {
         ]
         let narrowed = LinuxCacheCleanupScope.allowedToolNames(from: offered)
         #expect(narrowed == LinuxCacheCleanupScope.allowedToolNames)
-        #expect(!narrowed.contains("exec.shell"))
-        #expect(!narrowed.contains("jobs.submit"))
+        #expect(narrowed.contains("exec.shell"))
+        #expect(narrowed.contains("jobs.submit") && narrowed.contains("jobs.result"))
         #expect(!narrowed.contains("workspace.writeFile"))
         #expect(!narrowed.contains("delegate"))
         #expect(!narrowed.contains("ssh.execute"))
         #expect(!narrowed.contains("web.search"))
     }
 
-    @Test("A generic shell call is denied at dispatch even if a forged wrapper reaches the runtime")
-    func shellDeniedAtDispatch() {
+    private func shellDescriptor() -> ToolCatalog.Descriptor {
+        descriptor("exec.shell", risks: [.executesLocalCode, .readsFiles, .writesFiles, .deletesFiles, .networkAccess],
+                   sideEffecting: true, effect: .mutating)
+    }
+
+    @Test("The existing guest terminal does not require a black-box inspect first")
+    func terminalAndJobLifecycleAreOfferedWithoutInspectPrerequisite() {
+        #expect(denial("exec.shell", arguments: ["command": "df -Pk /; du -sk /floe/env/cache/pip"],
+                       descriptor: shellDescriptor()) == nil)
+        let submit = descriptor("jobs.submit", risks: shellDescriptor().riskLabels,
+                                sideEffecting: true, effect: .mutating)
+        #expect(denial("jobs.submit", arguments: ["tool": "exec.shell", "arguments": #"{"script":"df -Pk /"}"#, "wait": true], descriptor: submit) == nil)
+        for tool in ["network.download", "exec.localService", "ssh.execute"] {
+            #expect(denial("jobs.submit", arguments: ["tool": tool, "arguments": "{}"], descriptor: submit) != nil)
+        }
+        #expect(LinuxCacheCleanupScope.usesGuestCommandReview("exec.shell"))
+        #expect(!LinuxCacheCleanupScope.usesGuestCommandReview("network.http"))
+    }
+
+    @Test("Host scope and model target/installer/receipt overrides are refused before dispatch")
+    func hostAndEnvironmentOverridesDeniedAtDispatch() {
         let shell = descriptor(
             "exec.shell",
-            risks: [.executesLocalCode, .readsFiles, .writesFiles, .deletesFiles],
+            risks: [.executesLocalCode, .readsFiles, .writesFiles, .deletesFiles, .networkAccess],
             sideEffecting: true,
             effect: .mutating
         )
-        let reason = denial("exec.shell", arguments: ["command": "rm -rf /"], descriptor: shell)
-        #expect(reason?.contains("outside this Linux cache-cleanup task") == true)
+        let scopes: [ToolScope] = [.host(UUID()), .hostPath(hostID: UUID(), path: "/")]
+        for scope in scopes {
+            let remote = LinuxCacheCleanupScope.denialReason(profile: profile, conversationID: conversationID,
+                environmentID: environmentID, descriptor: shell, arguments: args(["command": "df -Pk /"]), scope: scope)
+            #expect(remote?.contains("host and remote scopes are refused") == true)
+        }
+        let extras: [[String: Any]] = [
+            ["environmentID": "shared"], ["hostID": UUID().uuidString], ["skillID": "installer"],
+            ["packages": ["missing-package"]], ["env": ["FLOE_CLEANUP_NATIVE": "1"]]
+        ]
+        for extra in extras {
+            var input: [String: Any] = ["command": "df -Pk /"]; input.merge(extra) { _, value in value }
+            #expect(denial("exec.shell", arguments: input, descriptor: shell) != nil)
+        }
+    }
+
+    @Test("Old exact helper policies project to the authorized terminal; user restrictions are retained")
+    func legacyProjectionPreservesExplicitRestrictions() {
+        #expect(LinuxCacheCleanupScope.projectedToolNames(LinuxCacheCleanupScope.legacyToolNames) == LinuxCacheCleanupScope.allowedToolNames)
+        let narrowed: Set<String> = ["linux.cache.inspect", "user.ask"]
+        #expect(LinuxCacheCleanupScope.projectedToolNames(narrowed) == narrowed)
+        #expect(LinuxCacheCleanupScope.projectedToolNames(nil) == nil)
     }
 
     @Test("A forged cleanup name with broader metadata is refused")

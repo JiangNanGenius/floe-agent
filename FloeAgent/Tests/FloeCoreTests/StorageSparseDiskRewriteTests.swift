@@ -979,12 +979,85 @@ final class StorageSparseDiskRewriteTests: XCTestCase {
         }
     }
 
+    func testRetiredCurrentContentVerificationIsReadOnlyAndFailsClosed() throws {
+        for fault in ["none", "digest", "identity", "journal", "stage", "missing-digest", "cancel"] {
+            let directory = try makeRoot("retired-current-" + fault)
+            let url = try makeSource(in: directory)
+            var request = try makeRequest(root: directory, name: "disk.img", mode: .cloneAndPunch)
+            // Real App jobs bind their old lease and job to the same UUID;
+            // the generic Core fixture deliberately uses a separate lease.
+            request.maintenanceLeaseID = request.jobID
+            let originalFence = StorageSparseDiskMaintenanceFence(
+                leaseID: request.jobID, generation: request.jobGeneration) {}
+            _ = try StorageSparseDiskRewrite.rewrite(request, fence: originalFence)
+            let journalURL = directory.appendingPathComponent("journal/" + request.jobID + ".json")
+            var record = try readJournal(directory: directory, jobID: request.jobID)
+            XCTAssertEqual(record.phase, .retired)
+            if fault == "digest" {
+                try corruptDataPreservingStableIdentity(at: url, expected: XCTUnwrap(record.postSwapSource))
+            } else { try Self.changeOnlySourceCtime(url) }
+            if fault == "missing-digest" {
+                record.sourceDigestSHA512 = nil
+                try JSONEncoder().encode(record).write(to: journalURL)
+            }
+            let journalBytes = try Data(contentsOf: journalURL), currentBytes = try Data(contentsOf: url)
+            let current = try sourceIdentity(in: directory, name: "disk.img")
+            let stage = directory.appendingPathComponent(try XCTUnwrap(record.stageName))
+            let stageBytes = Data("unknown new occupant; never remove it".utf8)
+            var changed = record; changed.lastError = "synthetic-later-journal"
+            let changedJournal = try JSONEncoder().encode(changed)
+            let cancelled = TestFlag(), mutationFailed = TestFlag(), reads = TestFlag(), calls = TestCounter()
+            let rootFD = try StorageSparseDiskPOSIX.openDirectory(directory)
+            let rootIdentity = try StorageSparseDiskPOSIX.identity(of: rootFD); _ = Darwin.close(rootFD)
+            // Core-only isolated fence; adapter tests below use real admission.
+            let currentFence = StorageSparseDiskMaintenanceFence(leaseID: "fresh-content-check", generation: 10) {
+                _ = calls.increment()
+            }
+            let operation = {
+                try StorageSparseDiskRewrite.verifyRetiredSource(rootURL: directory, relativePath: "disk.img",
+                    expectedSource: current, journalDirectoryURL: directory.appendingPathComponent("journal"),
+                    jobID: request.jobID, fence: currentFence,
+                    recordedRootBinding: .init(recordedRootPath: record.rootPath,
+                        device: rootIdentity.device, inode: rootIdentity.inode),
+                    isCancelled: { cancelled.isSet }, progress: { value in
+                        reads.set()
+                        if value.processedBytes == 0 {
+                            do {
+                                if fault == "identity" { try Self.changeOnlySourceCtime(url) }
+                                if fault == "journal" { try changedJournal.write(to: journalURL) }
+                                if fault == "stage" { try stageBytes.write(to: stage) }
+                            } catch { mutationFailed.set() }
+                        }
+                        if fault == "cancel" && value.processedBytes > 0 { cancelled.set() }
+                    })
+            }
+            if fault == "cancel" {
+                XCTAssertThrowsError(try operation(), "fault=" + fault) { XCTAssertTrue($0 is CancellationError) }
+                XCTAssertTrue(cancelled.isSet, "fault=" + fault)
+            } else {
+                let result = try operation()
+                let diagnostic = "fault=\(fault) detail=\(result.detail) fences=\(calls.count())"
+                XCTAssertEqual(result.resolution, fault == "none" ? .alreadyCommitted : .needsInspection, diagnostic)
+                XCTAssertEqual(result.sourceContentDigestVerified, fault == "none", diagnostic)
+                XCTAssertFalse(result.stageRemoved, diagnostic)
+                if fault == "none" { XCTAssertGreaterThanOrEqual(calls.count(), 3, diagnostic) }
+            }
+            XCTAssertFalse(mutationFailed.isSet, "fault=" + fault)
+            XCTAssertEqual(reads.isSet, fault != "missing-digest", "fault=" + fault)
+            XCTAssertEqual(try Data(contentsOf: url), currentBytes, "fault=" + fault)
+            XCTAssertEqual(try Data(contentsOf: journalURL), fault == "journal" ? changedJournal : journalBytes, "fault=" + fault)
+            XCTAssertEqual(FileManager.default.fileExists(atPath: stage.path), fault == "stage", "fault=" + fault)
+            if fault == "stage" { XCTAssertEqual(try Data(contentsOf: stage), stageBytes) }
+        }
+    }
+
     // MARK: - Helpers
 
     private final class TestCounter: @unchecked Sendable {
         private let lock = NSLock()
         private var value = 0
         func increment() -> Int { lock.lock(); defer { lock.unlock() }; value += 1; return value }
+        func count() -> Int { lock.lock(); defer { lock.unlock() }; return value }
     }
 
     private static func changeOnlySourceCtime(_ url: URL) throws {

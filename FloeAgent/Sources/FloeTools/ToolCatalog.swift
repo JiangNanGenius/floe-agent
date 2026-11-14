@@ -5,10 +5,22 @@ import FloeCore
 import Crypto
 
 /// Removed execution names cannot be reactivated by stale or dynamic registration.
+///
+/// The concrete tool implementations were deleted in the 2026-11-14 slimming
+/// pass; these stable strings remain the single compatibility surface for old
+/// conversations, skill manifests, the approval policy and the retirement
+/// fences. Nothing may register a runner or descriptor under them.
 public enum RetiredExecutionTools {
+    public static let localPythonName = "exec.localPython"
+    public static let javascriptName = "exec.javascript"
+    public static let compatEvaluatorName = "exec.compatEvaluator"
+    public static let wasmName = "exec.wasm"
+    public static let pythonPackagesName = "python.packages"
+    public static let wasmPackagesName = "wasm.packages"
+
     public static let names: Set<String> = [
-        "exec.localPython", "exec.javascript", "exec.compatEvaluator", "exec.wasm",
-        "python.packages", "wasm.packages"
+        localPythonName, javascriptName, compatEvaluatorName, wasmName,
+        pythonPackagesName, wasmPackagesName
     ]
 
     public static func contains(_ name: String) -> Bool {

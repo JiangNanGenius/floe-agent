@@ -85,10 +85,6 @@ packages:
     path: Modules/FloeDiagramKit/Vendor/SwiftMath
   FloeToolbox:
     path: Modules/FloeToolbox
-  ZLImageEditor:
-    path: ThirdParty/ZLImageEditor
-  VideoEditorKit:
-    path: ThirdParty/VideoEditorKit
   FloeShellEngine:
     path: ThirdParty/FloeShellEngine
   FloeCADKit:
@@ -139,6 +135,13 @@ targets:
           - Resources/LibArchiveLicenses
           - Resources/DocumentConversion
           - Resources/Fonts/Bundled
+          # The retired exec.javascript tool's generic packages are no longer
+          # shipped; pdf-lib remains for the internal PDF form processor.
+          - Resources/js-packages/lodash.min.js
+          - Resources/js-packages/dayjs.min.js
+          - Resources/js-packages/marked.min.js
+          - Resources/js-packages/uuid.min.js
+          - Resources/js-packages/zod.min.js
           - Resources/IDE
           - Resources/EngineeringViewers
           - Resources/Licenses
@@ -554,8 +557,6 @@ targets:
         product: FloeEnvironments
       - package: FloeAgentPackages
         product: FloePackages
-      - package: VideoEditorKit
-      - package: ZLImageEditor
       - package: FloeAgentPackages
         product: FloeMedia
       - package: FloeAgentPackages
@@ -616,6 +617,13 @@ targets:
       - name: Seal Simulator runpaths and embedded code
         script: |
           if [ "${PLATFORM_NAME:-}" = "iphonesimulator" ]; then
+            if [ "${FLOE_DEFER_SIMULATOR_SEAL:-NO}" = "YES" ]; then
+              # Hosted tests populate PlugIns before their executable is linked.
+              # The qualified test producer seals the complete App and test
+              # bundle after build-for-testing has finished.
+              echo "Simulator sealing deferred to the complete test-product finalizer."
+              exit 0
+            fi
             /usr/bin/python3 -B "${SRCROOT}/scripts/normalize_simulator_runpaths.py" \
               --app "${TARGET_BUILD_DIR}/${WRAPPER_NAME}" \
               --owner-root "${TARGET_BUILD_DIR}" --seal-bundle
@@ -637,8 +645,8 @@ targets:
         # Xcode's debug dylib moves those callbacks out of that image.
         ENABLE_DEBUG_DYLIB: NO
         SWIFT_STRICT_CONCURRENCY: complete
-        MARKETING_VERSION: "1.8.23"
-        CURRENT_PROJECT_VERSION: "344"
+        MARKETING_VERSION: "1.8.24"
+        CURRENT_PROJECT_VERSION: "345"
         FLOE_GITHUB_OAUTH_CLIENT_ID: "Ov23litEyLPjXVLEDzWW"
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: FloeApp/Entitlements/Floe.entitlements
@@ -721,8 +729,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeScreenShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.8.23"
-        CURRENT_PROJECT_VERSION: "344"
+        MARKETING_VERSION: "1.8.24"
+        CURRENT_PROJECT_VERSION: "345"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -772,8 +780,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.8.23"
-        CURRENT_PROJECT_VERSION: "344"
+        MARKETING_VERSION: "1.8.24"
+        CURRENT_PROJECT_VERSION: "345"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -816,8 +824,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeWidgets
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.8.23"
-        CURRENT_PROJECT_VERSION: "344"
+        MARKETING_VERSION: "1.8.24"
+        CURRENT_PROJECT_VERSION: "345"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -869,8 +877,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeFileProvider
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.8.23"
-        CURRENT_PROJECT_VERSION: "344"
+        MARKETING_VERSION: "1.8.24"
+        CURRENT_PROJECT_VERSION: "345"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -1002,6 +1010,7 @@ targets:
       - path: Tests/FloeAppTests/BiologyAssistantIntegrationTests.swift
       - path: Tests/FloeAppTests/SkillRuntimeTargetTests.swift
       - path: Tests/FloeAppTests/CADBasicMachiningTests.swift
+      - path: Tests/FloeAppTests/BundledFontRegistrarTests.swift
       - path: Tests/FloeAppTests/CADNativeStudyReceiptTests.swift
       - path: Tests/FloeAppTests/CADDirectModelImportTests.swift
       - path: Tests/FloeAppTests/CADUnifiedDrawingBridgeTests.swift
@@ -1853,6 +1862,18 @@ targets:
       Debug: Vendor/Office/native-host.xcconfig
       Release: Vendor/Office/native-host.xcconfig
     sources:
+      # 345: focused cloud-settings, font and retired-tool regressions.
+      - path: Tests/FloeAppTests/ApplicationSettingsSyncCoordinatorTests.swift
+      - path: Tests/FloeCoreTests/ApplicationSettingPolicyTests.swift
+      - path: Tests/FloeSyncTests/ApplicationSettingsSyncTests.swift
+      - path: Tests/FloeSyncTests/SpeechCredentialStoreTests.swift
+      - path: Tests/FloeAppTests/BundledFontRegistrarTests.swift
+      - path: Tests/FloeAppTests/TTSSettingsServiceTests.swift
+      - path: Tests/FloeAppTests/CloudASRPreloadIntegrationTests.swift
+      - path: Tests/FloePersistenceTests/ConfigSyncMetadataStoreTests.swift
+      - path: Tests/FloeExecutionTests/RetiredExecutionNamesTests.swift
+      - path: Tests/FloeExecutionTests/ManagedPythonPackageSpecParserTests.swift
+      - path: Tests/FloeExecutionTests/LocalPythonServiceTests.swift
       - path: Tests/FloeExecutionTests/RuntimeV2MaintenanceAuthorityTests.swift
       - path: Tests/FloeExecutionTests/RuntimeV2RecoveryOptimizationTests.swift
       - path: Tests/FloeExecutionTests/RuntimeV2MigrationSparseOptimizationTests.swift

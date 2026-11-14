@@ -21,7 +21,7 @@ public enum MigrationSupport {
     }
 
     /// Migrates the legacy single-asset parameter JSON shape (`VideoEditPlan`
-    /// persisted by MediaEditorView) into the unified project. Only operations
+    /// persisted by the retired single-asset media editor) into the unified project. Only operations
     /// this build understands are translated; anything else is recorded as an
     /// `UnknownOperation` and reported, never silently dropped. The migration
     /// is intentionally decoupled from FloeMedia types so it stays testable.

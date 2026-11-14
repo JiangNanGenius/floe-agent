@@ -296,15 +296,18 @@ private final class RecoveryContentReadProbe: @unchecked Sendable {
     private var processed: Int64 = 0
     private var total: Int64 = 0
     private var onMain = false
+    private var phaseOrder: [String] = []
     func record(_ value: StorageSparseDiskRewriteProgress) {
         lock.withLock {
             count += 1; processed = max(processed, value.processedBytes)
             total = value.totalBytes; onMain = onMain || Thread.isMainThread
+            if phaseOrder.last != value.phase.rawValue, phaseOrder.count < 32 { phaseOrder.append(value.phase.rawValue) }
         }
     }
     func snapshot() -> (count: Int, processed: Int64, total: Int64, onMain: Bool) {
         lock.withLock { (count, processed, total, onMain) }
     }
+    func phases() -> [String] { lock.withLock { phaseOrder } }
 }
 
 @MainActor
@@ -398,6 +401,138 @@ final class RuntimeV2RecoveryOptimizationTests: XCTestCase {
             relativePath: fixture.relative + "/disk.img").identity
         guard after.matchesStable(before), !after.matchesFully(before) else {
             throw StorageSparseDiskRewriteError.injectedFailure("synthetic-disk-ctime-change-not-established")
+        }
+    }
+
+    private nonisolated static func overwriteDiskKeepingStableIdentity(
+        _ fixture: RecoveryOptimizationFixture, bytes: Data
+    ) throws {
+        let relative = fixture.relative + "/disk.img"
+        let before = try StorageSparseDiskRewrite.inspectSource(rootURL: fixture.root, relativePath: relative).identity
+        guard Int64(bytes.count) == before.sizeBytes else { throw POSIXError(.EINVAL) }
+        let fd = fixture.disk.path.withCString { open($0, O_RDWR | O_NOFOLLOW) }
+        guard fd >= 0 else { throw POSIXError(.EIO) }; defer { close(fd) }
+        var info = stat(); guard fstat(fd, &info) == 0 else { throw POSIXError(.EIO) }
+        try bytes.withUnsafeBytes { buffer in
+            var offset = 0
+            while offset < buffer.count {
+                let count = pwrite(fd, buffer.baseAddress!.advanced(by: offset), buffer.count - offset, off_t(offset))
+                if count < 0 && errno == EINTR { continue }
+                guard count > 0 else { throw POSIXError(.EIO) }; offset += count
+            }
+        }
+        var times = [info.st_atimespec, info.st_mtimespec]
+        guard times.withUnsafeBufferPointer({ futimens(fd, $0.baseAddress) }) == 0, fsync(fd) == 0 else {
+            throw POSIXError(.EIO)
+        }
+        let after = try StorageSparseDiskRewrite.inspectSource(rootURL: fixture.root, relativePath: relative).identity
+        guard after.matchesStable(before), !after.matchesFully(before) else {
+            throw StorageSparseDiskRewriteError.injectedFailure("synthetic-stable-overwrite-not-established")
+        }
+    }
+
+    private func duplicateRetiredEvidence(_ fixture: RecoveryOptimizationFixture, name: String) throws {
+        var receipt = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf:
+            fixture.receipts.appendingPathComponent(name))) as? [String: Any])
+        var journal = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf:
+            fixture.journals.appendingPathComponent(name))) as? [String: Any])
+        let oldID = try XCTUnwrap(receipt["intentID"] as? String), id = UUID().uuidString
+        let generation = ((receipt["authorityGeneration"] as? NSNumber)?.uint64Value ?? 0) + 1
+        receipt["intentID"] = id; receipt["authorityGeneration"] = generation
+        var closure = try XCTUnwrap(receipt["closure"] as? [String: Any])
+        closure["intentID"] = id; closure["holdGeneration"] = generation; closure["proofID"] = UUID().uuidString
+        receipt["closure"] = closure
+        journal["jobID"] = id; journal["maintenanceLeaseID"] = id; journal["jobGeneration"] = generation
+        if let stage = journal["stageName"] as? String { journal["stageName"] = stage.replacingOccurrences(of: oldID, with: id) }
+        try JSONSerialization.data(withJSONObject: receipt, options: [.sortedKeys])
+            .write(to: fixture.receipts.appendingPathComponent(id + ".json"))
+        try JSONSerialization.data(withJSONObject: journal, options: [.sortedKeys])
+            .write(to: fixture.journals.appendingPathComponent(id + ".json"))
+    }
+
+    func testRetiredContentRevalidationMeasuresFreshGainAfterZeroReallocation() async throws {
+        let fixture = try RecoveryOptimizationFixture(); defer { fixture.cleanup() }
+        _ = await fixture.adapter.recoverBeforeUse()
+        let first = await fixture.adapter.optimize(try await fixture.record(), cancellation: .init())
+        XCTAssertEqual(first.code, "optimized")
+        let name = try XCTUnwrap(FileManager.default.contentsOfDirectory(atPath: fixture.journals.path).first)
+        let oldJournal = try Data(contentsOf: fixture.journals.appendingPathComponent(name))
+        let oldReceipt = try Data(contentsOf: fixture.receipts.appendingPathComponent(name))
+        let sparse = try StorageSparseDiskRewrite.inspectSource(rootURL: fixture.root, relativePath: fixture.relative + "/disk.img")
+        // A migration/copy can allocate former zero holes without changing
+        // logical bytes. Keep the actual inode/mtime, and measure the result.
+        try Self.overwriteDiskKeepingStableIdentity(fixture, bytes: fixture.original)
+        try Self.changeOnlyRetainedMetadata(fixture)
+        let dense = try StorageSparseDiskRewrite.inspectSource(rootURL: fixture.root, relativePath: fixture.relative + "/disk.img")
+        XCTAssertGreaterThan(dense.allocatedBytes, sparse.allocatedBytes)
+        XCTAssertTrue(dense.identity.matchesStable(sparse.identity))
+        let metadata = try fixture.preservedMetadata(), progress = RecoveryContentReadProbe()
+        let result = await fixture.adapter.optimize(try await fixture.record(), cancellation: .init()) { progress.record($0) }
+        XCTAssertEqual(progress.phases().first, "verifying"); XCTAssertFalse(progress.snapshot().onMain)
+        XCTAssertTrue(progress.phases().contains("counting")); XCTAssertTrue(progress.phases().contains("staging"))
+        XCTAssertEqual(result.code, "optimized"); XCTAssertTrue(result.verifiedFirstDisk)
+        let report = try XCTUnwrap(result.report)
+        XCTAssertNotEqual(report.jobID + ".json", name)
+        XCTAssertGreaterThan(report.sourceAllocatedBytesBefore, report.stageAllocatedBytesAtVerification)
+        XCTAssertEqual(try Data(contentsOf: fixture.disk), fixture.original)
+        XCTAssertEqual(try fixture.preservedMetadata(), metadata)
+        XCTAssertEqual(try Data(contentsOf: fixture.journals.appendingPathComponent(name)), oldJournal)
+        XCTAssertEqual(try Data(contentsOf: fixture.receipts.appendingPathComponent(name)), oldReceipt)
+    }
+
+    func testRetiredContentRevalidationRejectsDigestRaceCASAmbiguityAndCancellation() async throws {
+        for fault in ["digest", "references", "sidecar", "receipt-cas", "journal-cas", "late-journal-cas", "ambiguity", "cancel"] {
+            let fixture = try RecoveryOptimizationFixture(); defer { fixture.cleanup() }
+            _ = await fixture.adapter.recoverBeforeUse()
+            let first = await fixture.adapter.optimize(try await fixture.record(), cancellation: .init())
+            XCTAssertEqual(first.code, "optimized")
+            let name = try XCTUnwrap(FileManager.default.contentsOfDirectory(atPath: fixture.journals.path).first)
+            let journalURL = fixture.journals.appendingPathComponent(name), receiptURL = fixture.receipts.appendingPathComponent(name)
+            let oldJournal = try Data(contentsOf: journalURL), oldReceipt = try Data(contentsOf: receiptURL)
+            if fault == "digest" {
+                var changed = fixture.original; changed[3] = 0xA5
+                try Self.overwriteDiskKeepingStableIdentity(fixture, bytes: changed)
+            } else { try Self.changeOnlyDiskCtime(fixture) }
+            if fault == "ambiguity" { try duplicateRetiredEvidence(fixture, name: name) }
+            let bytes = try Data(contentsOf: fixture.disk), metadata = try fixture.preservedMetadata()
+            let cancellation = RuntimeV2OptimizationCancellation(), once = RuntimeV2OptimizationCancellation()
+            let failedMutation = RuntimeV2OptimizationCancellation(), progress = RecoveryContentReadProbe()
+            let result = await fixture.adapter.optimize(try await fixture.record(), cancellation: cancellation) { value in
+                progress.record(value)
+                // countSource emits progress AFTER bytes are read, never a
+                // zero-byte counting event. Inject at its first real event,
+                // after qualification and before Core's pre-clone fence.
+                let injectNow = fault == "late-journal-cas"
+                    ? value.phase == .counting : value.processedBytes == 0
+                if injectNow, !once.isCancelled {
+                    once.cancel()
+                    do {
+                        if fault == "references" { fixture.evidence.lock.withLock { fixture.evidence.referenceVersion += 1 } }
+                        if fault == "sidecar" { try RuntimeV2RecoveryOptimizationTests.changeOnlyRetainedMetadata(fixture) }
+                        if fault == "receipt-cas" { try (oldReceipt + Data([32])).write(to: receiptURL) }
+                        if fault == "journal-cas" || fault == "late-journal-cas" { try (oldJournal + Data([32])).write(to: journalURL) }
+                    } catch { failedMutation.cancel() }
+                }
+                if fault == "cancel", value.processedBytes > 0 { cancellation.cancel() }
+            }
+            let diagnostic = "fault=\(fault) code=\(result.code) phases=\(progress.phases()) injected=\(once.isCancelled)"
+            XCTAssertFalse(failedMutation.isCancelled, diagnostic)
+            XCTAssertNil(result.report, diagnostic)
+            XCTAssertFalse(result.verifiedFirstDisk, diagnostic); XCTAssertFalse(result.verifiedUnchanged, diagnostic)
+            XCTAssertNotEqual(result.code, "optimized", diagnostic); XCTAssertNotEqual(result.code, "already-optimized", diagnostic)
+            XCTAssertFalse(result.recoveryPending, diagnostic)
+            XCTAssertEqual(try Data(contentsOf: fixture.disk), bytes, diagnostic)
+            XCTAssertEqual(try Data(contentsOf: journalURL), ["journal-cas", "late-journal-cas"].contains(fault) ? oldJournal + Data([32]) : oldJournal, diagnostic)
+            XCTAssertEqual(try Data(contentsOf: receiptURL), fault == "receipt-cas" ? oldReceipt + Data([32]) : oldReceipt, diagnostic)
+            XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: fixture.journals.path).count,
+                           ["ambiguity", "late-journal-cas"].contains(fault) ? 2 : 1,
+                           "Late CAS may leave only the fresh aborted intent journal; qualification failures create none. " + diagnostic)
+            XCTAssertFalse(progress.snapshot().onMain, diagnostic)
+            if fault == "ambiguity" { XCTAssertEqual(progress.snapshot().count, 0, diagnostic); XCTAssertEqual(result.code, "needs-inspection", diagnostic) }
+            else { XCTAssertEqual(progress.phases().first, "verifying", diagnostic); XCTAssertTrue(once.isCancelled, diagnostic) }
+            if fault == "cancel" { XCTAssertTrue(cancellation.isCancelled, diagnostic); XCTAssertEqual(result.code, "cancelled", diagnostic) }
+            if fault == "sidecar" { XCTAssertNotEqual(try fixture.preservedMetadata(), metadata) }
+            else { XCTAssertEqual(try fixture.preservedMetadata(), metadata) }
         }
     }
 
@@ -1113,10 +1248,10 @@ final class RuntimeV2RecoveryOptimizationTests: XCTestCase {
         let oldContext = current.work.appendingPathComponent("MaintenanceAuthority/" + fixture.domain.domainKey)
         XCTAssertEqual(try Data(contentsOf: oldContext.appendingPathComponent("sparse-receipts/" + oldName)), oldReceiptBytes)
         XCTAssertEqual(try Data(contentsOf: oldContext.appendingPathComponent("sparse-journals/" + oldName)), oldJournalBytes)
-        try await verifyCrossHistoryUnverifiedPreservationRetainsWithoutCoreFallback()
+        try await verifyCrossHistoryPreservationChangeRequiresCurrentReadAndNoGainRecheck()
     }
 
-    private func verifyCrossHistoryUnverifiedPreservationRetainsWithoutCoreFallback() async throws {
+    private func verifyCrossHistoryPreservationChangeRequiresCurrentReadAndNoGainRecheck() async throws {
         let fixture = try RecoveryOptimizationFixture(); defer { fixture.cleanup() }
         _ = await fixture.adapter.recoverBeforeUse()
         let first = await fixture.adapter.optimize(try await fixture.record(), cancellation: .init())
@@ -1124,8 +1259,9 @@ final class RuntimeV2RecoveryOptimizationTests: XCTestCase {
         let name = try XCTUnwrap(FileManager.default.contentsOfDirectory(atPath: fixture.receipts.path).first)
         let path = fixture.receipts.appendingPathComponent(name)
         var originalReceipt = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: path)) as? [String: Any])
-        // Synthetic metadata mismatch. Do NOT remove a production fingerprint
-        // or relax identity; lookup must preserve this historical artifact.
+        // Changed requirement: an old opaque FP cannot authorize reuse. A
+        // fresh complete content proof plus today's full fences must precede
+        // ordinary gain rechecking. Keep the old V1 bytes untouched.
         originalReceipt["preservationFingerprint"] = String(repeating: "c", count: 64)
         try JSONSerialization.data(withJSONObject: originalReceipt, options: [.sortedKeys]).write(to: path)
         _ = try makeSyntheticLaterAbortedHistory(fixture)
@@ -1135,10 +1271,11 @@ final class RuntimeV2RecoveryOptimizationTests: XCTestCase {
         let current = try RelocatedOptimizationSession(fixture, grouped: true); defer { current.cleanup() }
         _ = await current.adapter.recoverBeforeUse()
         let records = try await current.adapter.inventory()
-        let result = await current.adapter.optimize(try XCTUnwrap(records.records.first), cancellation: .init()) { _ in
-            XCTFail("Unverified historical success must not fall through to Core")
-        }
-        XCTAssertEqual(result.code, "needs-inspection"); XCTAssertFalse(result.verifiedUnchanged)
+        let progress = RecoveryContentReadProbe()
+        let result = await current.adapter.optimize(try XCTUnwrap(records.records.first), cancellation: .init()) { progress.record($0) }
+        XCTAssertEqual(progress.phases().first, "verifying"); XCTAssertFalse(progress.snapshot().onMain)
+        XCTAssertTrue(progress.phases().contains("counting")); XCTAssertTrue(progress.phases().contains("staging"))
+        XCTAssertEqual(result.code, "insufficient-reclaim"); XCTAssertTrue(result.verifiedUnchanged)
         XCTAssertNil(result.report); XCTAssertFalse(result.recoveryPending)
         XCTAssertEqual(try Data(contentsOf: current.domain.root.appendingPathComponent(fixture.relative + "/disk.img")), fixture.original)
         let oldContext = current.work.appendingPathComponent("MaintenanceAuthority/" + fixture.domain.domainKey)

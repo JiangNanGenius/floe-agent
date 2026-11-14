@@ -1,14 +1,21 @@
 // FloeApp — Bundled font registration.
 //
 // scripts/fonts/fetch_fonts.py stages the curated open-license families into
-// FloeApp/Resources/Fonts/Bundled, which project.yml embeds as a folder
-// reference. Registering them process-wide makes the families available to
-// every CoreText/WebKit surface (PDF editing, image drawing, HTML preview) and
-// to the embedded Office engine, whose quartz backend asks CoreText for the
+// FloeApp/Resources/Fonts/Bundled. The App build's post-build step
+// (scripts/embed_office_host.py) then places exactly one physical copy of each
+// font in the engine-scanned program/resource/common/fonts directory and
+// removes the packaged font binaries from Bundled/; only the per-family
+// LICENSE.txt/provenance.json files stay there.
+//
+// This registrar therefore registers the same single copy the engine discovers
+// itself. Registering process-wide makes the families available to every
+// CoreText/WebKit surface (PDF editing, image drawing, HTML preview) and to
+// the embedded Office engine, whose quartz backend asks CoreText for the
 // process's available fonts (GetCoretextFontList) and can not see files by
-// existence alone. scripts/embed_office_host.py additionally stages the same
-// families into the engine-scanned internal font directory so the engine
-// registers them itself at font-discovery time.
+// existence alone. The old Bundled/ root remains a fallback for hosts built
+// without the post-build step (for example a narrow developer harness); the
+// shipping App build must contain no font binaries there and the
+// verify_font_single_copy.py gate checks that.
 //
 // Registration success is verified by real resolution — not by the font file
 // yielding descriptors, which is true even for a font that was never
@@ -20,6 +27,28 @@ import CoreText
 
 enum BundledFontRegistrar {
     private static let extensions: Set<String> = ["ttf", "otf", "ttc", "otc"]
+
+    /// The engine-scanned directory first, then the historical App-resource
+    /// folder. `existingFontRoots` is what the App actually registers; the
+    /// order is part of the packaging contract (and is asserted by the font
+    /// packaging contract test).
+    static func fontRoots(in appRoot: URL) -> [URL] {
+        [
+            appRoot.appendingPathComponent("program/resource/common/fonts", isDirectory: true),
+            appRoot.appendingPathComponent("Bundled", isDirectory: true),
+        ]
+    }
+
+    /// Existing candidate roots, in registration order. Missing directories
+    /// are not an error: local developer builds may legitimately skip the font
+    /// fetch, while CI/release builds enforce presence via --check.
+    static func existingFontRoots(in appRoot: URL) -> [URL] {
+        fontRoots(in: appRoot).filter { root in
+            var isDirectory: ObjCBool = false
+            return FileManager.default.fileExists(atPath: root.path, isDirectory: &isDirectory)
+                && isDirectory.boolValue
+        }
+    }
 
     /// Content-free discovery summary for one staged font root. Counts and
     /// file names only: never document text or file contents.
@@ -58,8 +87,8 @@ enum BundledFontRegistrar {
     /// resolve after the attempt — a registration failure whose font is truly
     /// unusable — never a font that merely reported a duplicate registration.
     static func activateBundledFonts() -> [String] {
-        let root = Bundle.main.bundleURL.appendingPathComponent("Bundled", isDirectory: true)
-        let staged = stagedFontURLs(in: root)
+        let roots = existingFontRoots(in: Bundle.main.bundleURL)
+        let staged = roots.flatMap(stagedFontURLs)
         guard !staged.isEmpty else { return [] }
         var failures = Set<String>()
         for url in staged {
@@ -69,7 +98,7 @@ enum BundledFontRegistrar {
         // Independently verify discovery: a font that still does not resolve
         // after its registration attempt is a real failure for every surface
         // that asks CoreText for available fonts.
-        for name in discoveryReport(in: root).unresolvedFiles {
+        for name in roots.flatMap({ discoveryReport(in: $0).unresolvedFiles }) {
             failures.insert(name)
         }
         return failures.sorted()
