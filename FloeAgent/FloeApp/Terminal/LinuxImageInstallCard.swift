@@ -30,10 +30,39 @@ final class LinuxImageInstallModel: ObservableObject {
     private var recoveryCancellation: CancellationToken?
 
     var canRebuildPreservingData: Bool {
-        requestedImageID == nil && resolutionIssue?.permitsPreservingRebuild == true
+        requestedImageID == nil &&
+            (resolutionIssue?.permitsPreservingRebuild == true || canUpgradeKnownOldImage)
+    }
+    /// A valid retained disk stays pinned to its original component. A plain
+    /// re-download repairs that old image and cannot add newer screen/service
+    /// capabilities; only an explicit preserving replacement switches the
+    /// active disk while retaining the complete old one for recovery.
+    var canUpgradeKnownOldImage: Bool {
+        guard requestedImageID == nil,
+              !imageID.isEmpty,
+              imageID != LinuxGuestImageDistributionCatalog.defaultImageID,
+              LinuxGuestImageDistributionCatalog.entry(id: imageID) != nil else { return false }
+        if let resolutionIssue {
+            // A v1 origin whose exact reviewed predecessor is v2 remains a
+            // known old disk even if that v2 component is currently absent.
+            // Do not force a download of v2 before offering the explicit
+            // preserving replacement with the current component.
+            guard resolutionIssue.recoverableImageID == imageID else { return false }
+            if case .imageRepairRequired = state { return true }
+            return false
+        }
+        switch state {
+        case .running, .installedStopped, .updateAvailable: return true
+        default: return false
+        }
     }
     var recoveryJobID: String { FloePlatformServices.residentRecoveryJobID }
     var recoveryRunning: Bool { rebuilding || jobs.running.contains(recoveryJobID) }
+    var currentImageJobID: String { Self.jobPrefix + LinuxGuestImageDistributionCatalog.defaultImageID }
+    var currentImageDownloadRunning: Bool { jobs.running.contains(currentImageJobID) }
+    var canStartPreservingRebuild: Bool {
+        canRebuildPreservingData && !recoveryRunning && !running && !currentImageDownloadRunning
+    }
     /// Immediate local feedback after a cancel request, until the shared job
     /// task actually unwinds and reports its terminal state.
     @Published private(set) var cancelling = false
@@ -280,7 +309,7 @@ final class LinuxImageInstallModel: ObservableObject {
     }
 
     func rebuildPreservingData() {
-        guard canRebuildPreservingData, !recoveryRunning else { return }
+        guard canStartPreservingRebuild else { return }
         rebuilding = true
         recoveryNotice = nil; recoveryCancelling = false
         recoveryError = nil
@@ -424,6 +453,11 @@ struct LinuxImageInstallCard: View {
             // component title.
             Label(Self.title(for: model.state), systemImage: statusSymbol)
                 .font(.subheadline.weight(.semibold))
+            if model.canUpgradeKnownOldImage {
+                Text(knownUpgradeDetail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             content
         }
         .controlSize(.small)
@@ -436,8 +470,8 @@ struct LinuxImageInstallCard: View {
             }
         }
         .accessibilityElement(children: .contain)
-        .confirmationDialog("execution.runtime_rebuild.title", isPresented: $showsPreservingRecovery, titleVisibility: .visible) {
-            Button("execution.runtime_rebuild.title") { model.rebuildPreservingData() }
+        .confirmationDialog(preservingRecoveryTitle, isPresented: $showsPreservingRecovery, titleVisibility: .visible) {
+            Button(preservingRecoveryTitle) { model.rebuildPreservingData() }
             Button("action.cancel", role: .cancel) { }
         } message: {
             Text("execution.runtime_rebuild.confirm")
@@ -474,6 +508,22 @@ struct LinuxImageInstallCard: View {
         }
     }
 
+    private var preservingRecoveryTitle: String {
+        model.canUpgradeKnownOldImage
+            ? IDELanguageRunText.t("升级 Linux 环境", "Upgrade Linux environment")
+            : String(localized: "execution.runtime_rebuild.title")
+    }
+
+    private var knownUpgradeDetail: String {
+        let old = model.imageID.split(separator: "-").last.map(String.init) ?? "old"
+        let current = LinuxGuestImageDistributionCatalog.defaultImageID
+            .split(separator: "-").last.map(String.init) ?? "current"
+        return IDELanguageRunText.t(
+            "已识别旧环境（对应 \(old) 组件），可升级至 \(current)。旧运行盘和资料会保留。",
+            "Older environment identified (\(old) component). Upgrade to \(current); the old runtime disk and data are retained."
+        )
+    }
+
     @ViewBuilder
     private var content: some View {
         if model.recoveryRunning {
@@ -489,6 +539,11 @@ struct LinuxImageInstallCard: View {
             }
             Button("terminal.linux_image_install_card.cancel") { model.cancelPreservingRecovery() }
                 .buttonStyle(.bordered).disabled(model.recoveryCancelling || jobs.isCancelling(id: model.recoveryJobID))
+        } else if model.canUpgradeKnownOldImage && model.currentImageDownloadRunning {
+            ProgressView(value: jobs.fractions[model.currentImageJobID]) {
+                Text(IDELanguageRunText.t("正在准备新版 Linux 环境…", "Preparing the new Linux environment…"))
+            }
+            .font(.caption)
         } else if model.running {
             downloadingContent(cancelling: model.cancelling)
         } else {
@@ -605,7 +660,7 @@ struct LinuxImageInstallCard: View {
                 .foregroundStyle(FloeTheme.destructive)
                 .textSelection(.enabled)
             if model.imageID.isEmpty {
-                if model.canRebuildPreservingData {
+                if model.canStartPreservingRebuild {
                     Button {
                         showsPreservingRecovery = true
                     } label: {
@@ -634,6 +689,14 @@ struct LinuxImageInstallCard: View {
                 .font(.caption)
                 .foregroundStyle(FloeTheme.success)
             if model.running { downloadingContent(cancelling: model.cancelling) }
+        }
+        if model.canUpgradeKnownOldImage && model.canStartPreservingRebuild {
+            Button {
+                showsPreservingRecovery = true
+            } label: {
+                Label(preservingRecoveryTitle, systemImage: "arrow.up.circle")
+            }
+            .buttonStyle(.bordered)
         }
         }
     }

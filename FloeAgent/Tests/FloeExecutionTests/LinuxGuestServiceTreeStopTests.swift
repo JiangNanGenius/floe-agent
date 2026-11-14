@@ -234,8 +234,9 @@ final class LinuxGuestServiceTreeStopTests: XCTestCase {
             do {
                 _ = try await channel.spawnService(argv: ["/bin/sh", "owned.sh"], logPath: "/dev/null", timeout: 2)
                 XCTFail("legacy or ambiguous capability must refuse before SPAWN")
-            } catch let error as FloeError {
-                guard case .validationFailed(let message) = error else { throw error }
+            } catch let error as LinuxGuestLocalServiceCapabilityError {
+                XCTAssertEqual(error, .wholeTreeUnavailable)
+                let message = error.localizedDescription
                 XCTAssertEqual(message, NSLocalizedString("linux_service.update_required", bundle: .main,
                     value: "Update the Linux component, then try again.", comment: ""))
                 XCTAssertFalse(message.contains("serviceTree="))

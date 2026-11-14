@@ -2,6 +2,7 @@
 import Foundation
 import Darwin
 import Testing
+import FloeCore
 import FloeExecution
 import FloeTools
 import FloePersistence
@@ -186,5 +187,111 @@ struct LocalShellRuntimeTests {
         guard case .timedOut = result else { Issue.record("Loop did not report timeout"); return }
     }
 
+}
+
+private actor ScreenUpgradeProbe {
+    private(set) var imageID = "floe-debian13-arm64-basic-resident-20261108-v3"
+    private(set) var spawnCount = 0
+    private(set) var upgradeCount = 0
+    func attemptedSpawn() { spawnCount += 1 }
+    func upgrade() {
+        upgradeCount += 1
+        imageID = LinuxGuestImageDistributionCatalog.defaultImageID
+    }
+}
+
+@Suite("FloeApp.LocalLinuxScreenUpgrade")
+@MainActor struct LocalLinuxScreenUpgradeTests {
+    @Test(.timeLimit(.minutes(1))) func reviewedV1OriginWithMissingV2OffersUpgradeWithoutOldDownload() async throws {
+        let layer = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: layer, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: layer) }
+        let probe = ScreenUpgradeProbe()
+        let v2 = "floe-debian13-arm64-basic-resident-20261105-v2"
+        let old = LocalLinuxDisplayOwner(conversationID: UUID(), workspaceRoot: layer,
+            resolver: { _, _ in .init(environmentID: "shared", writableLayerURL: layer,
+                isLinuxGuest: true, leaseCancellation: CancellationToken(), endLease: { }) },
+            services: LocalLinuxDisplayServices(
+                startLocalService: { _, _, _ in
+                    await probe.attemptedSpawn()
+                    throw LinuxGuestLocalServiceCapabilityError.wholeTreeUnavailable
+                },
+                stopLocalService: { _ in },
+                serviceSnapshot: { _ in .init(state: "notFound") },
+                activateGuest: { _, _ in throw LinuxResidentImageResolutionError.sourceUnavailable(imageID: v2) },
+                environmentOwned: { _ in true },
+                guestImageID: { _ in nil },
+                rebuildPreservingData: { await probe.upgrade() },
+                lifecycleEvents: { nil }
+            ))
+        await old.startDisplay()
+        #expect(old.requiresComponentUpgrade)
+        #expect(await probe.spawnCount == 0)
+        await old.upgradeComponentAndRetry()
+        #expect(await probe.upgradeCount == 1)
+        let unknown = LocalLinuxDisplayOwner(conversationID: UUID(), workspaceRoot: layer,
+            resolver: { _, _ in .init(environmentID: "shared", writableLayerURL: layer,
+                isLinuxGuest: true, leaseCancellation: CancellationToken(), endLease: { }) },
+            services: LocalLinuxDisplayServices(
+                startLocalService: { _, _, _ in
+                    throw LinuxGuestLocalServiceCapabilityError.wholeTreeUnavailable
+                },
+                stopLocalService: { _ in },
+                serviceSnapshot: { _ in .init(state: "notFound") },
+                activateGuest: { _, _ in throw LinuxResidentImageResolutionError.unknownOrigin },
+                environmentOwned: { _ in true },
+                guestImageID: { _ in nil },
+                lifecycleEvents: { nil }
+            ))
+        await unknown.startDisplay()
+        #expect(!unknown.requiresComponentUpgrade)
+    }
+
+    @Test(.timeLimit(.minutes(1))) func oldRunnerOffersOnePreservingUpgradeAndCurrentRunnerDoesNotLoop() async throws {
+        let layer = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: layer, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: layer) }
+        let probe = ScreenUpgradeProbe()
+        let owner = LocalLinuxDisplayOwner(conversationID: UUID(), workspaceRoot: layer,
+            resolver: { _, _ in .init(environmentID: "shared", writableLayerURL: layer,
+                isLinuxGuest: true, leaseCancellation: CancellationToken(), endLease: { }) },
+            services: LocalLinuxDisplayServices(
+                startLocalService: { _, _, _ in
+                    await probe.attemptedSpawn()
+                    throw LinuxGuestLocalServiceCapabilityError.wholeTreeUnavailable
+                },
+                stopLocalService: { _ in },
+                serviceSnapshot: { _ in .init(state: "notFound") },
+                activateGuest: { _, _ in },
+                environmentOwned: { _ in true },
+                guestImageID: { _ in await probe.imageID },
+                rebuildPreservingData: { await probe.upgrade() },
+                lifecycleEvents: { nil }
+            ))
+        await owner.startDisplay()
+        #expect(owner.requiresComponentUpgrade)
+        #expect(!owner.canStart)
+        #expect(await probe.spawnCount == 1)
+
+        // Reopening the viewer against the same old disk must not repeat an
+        // already-proven pre-SPAWN refusal or create a second service.
+        await owner.startDisplay()
+        #expect(await probe.spawnCount == 1)
+        await owner.upgradeComponentAndRetry()
+        #expect(await probe.upgradeCount == 1)
+        #expect(!owner.requiresComponentUpgrade)
+
+        // A CURRENT image with a missing cgroup is a runtime fault. The UI
+        // must not offer a second preserving replacement of that same image.
+        await owner.startDisplay()
+        #expect(await probe.spawnCount == 2)
+        #expect(!owner.requiresComponentUpgrade)
+        if case .failed(let message) = owner.state {
+            #expect(message.contains(FloeL10n.isChinese ? "停止" : "restart"))
+        } else {
+            Issue.record("Current-image service capability failure was not visible")
+        }
+        await owner.stopDisplay()
+    }
 }
 #endif

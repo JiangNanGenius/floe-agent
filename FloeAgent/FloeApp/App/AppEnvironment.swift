@@ -288,6 +288,12 @@ final class AppEnvironment: ObservableObject {
                 environmentOwned: { environmentID in
                     await FloePlatformServices.shared.linuxEnvironmentOwned(id: environmentID)
                 },
+                guestImageID: { environmentID in
+                    await FloePlatformServices.shared.linuxGuestStatus(id: environmentID)?.imageID
+                },
+                rebuildPreservingData: {
+                    try await FloePlatformServices.shared.rebuildLinuxRuntimePreservingData()
+                },
                 lifecycleEvents: {
                     guard let reporter = await FloePlatformServices.shared.linuxLocalServiceController() as? LinuxGuestLocalServiceLifecycleReporting else {
                         return nil

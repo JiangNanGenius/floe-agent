@@ -55,6 +55,16 @@ struct LocalLinuxDisplayServices: Sendable {
     /// platform service, never by a view lifetime.
     var activateGuest: @Sendable (_ environmentID: String, _ cancellation: CancellationToken?) async throws -> Void
     var environmentOwned: @Sendable (_ environmentID: String) async -> Bool
+    /// The image backing this exact environment, read from guest status after
+    /// activation. A missing service-tree proof on the current image is a
+    /// runtime fault, not a reason to repeatedly download that same image.
+    var guestImageID: @Sendable (_ environmentID: String) async -> String? = { _ in nil }
+    /// Existing serialized, data-preserving runtime replacement. Never run
+    /// automatically on screen open: it stops running Linux work and switches
+    /// the active disk, so the user must confirm it explicitly.
+    var rebuildPreservingData: @Sendable () async throws -> Void = {
+        throw FloeError.invalidConfiguration("Linux runtime upgrade is unavailable")
+    }
     /// Observed service ends (process exit / environment gone). Optional so
     /// scripted controllers stay source-compatible.
     var lifecycleEvents: @Sendable () async -> AsyncStream<LinuxGuestLocalServiceLifecycleEvent>?
@@ -122,6 +132,8 @@ final class LocalLinuxDisplayOwner {
     private(set) var ownerID: String
     private(set) var state: State = .resolving
     private(set) var isLinuxGuest = false
+    private(set) var requiresComponentUpgrade = false
+    private(set) var upgradingComponent = false
 
     /// One client session serves the viewer and the model tools as separate
     /// demand clients of the same display.
@@ -139,6 +151,7 @@ final class LocalLinuxDisplayOwner {
     /// The Screen button starts a display from these states; from `.ready`
     /// without a client it reconnects the retained running service.
     var canStart: Bool {
+        if requiresComponentUpgrade || upgradingComponent { return false }
         switch state {
         case .idle, .failed, .ended: return true
         case .ready: return clientSession == nil
@@ -336,6 +349,9 @@ final class LocalLinuxDisplayOwner {
     func startDisplay(allowServiceLaunch: Bool = true) async {
         if let stopTask { await stopTask.value }
         guard !Task.isCancelled else { return }
+        // A newly opened viewer joins the ongoing explicit replacement. The
+        // upgrade completion starts one display for all waiting viewers.
+        guard !upgradingComponent else { return }
         if allowServiceLaunch { onLocalDemand?() }
         if let startTask { await startTask.value; return }
         let generation = UUID()
@@ -372,8 +388,20 @@ final class LocalLinuxDisplayOwner {
                 state = .failed(Self.truncated(String(localized: "display.error.not_linux")))
                 return
             }
+            if requiresComponentUpgrade {
+                // A repeated viewer open must not cold-start the same known
+                // old image only to hit the identical pre-SPAWN refusal.
+                if let imageID = await services.guestImageID(environmentID),
+                   Self.isKnownOldImage(imageID) {
+                    state = .failed(Self.componentCapabilityMessage(legacyImage: true))
+                    await cleanupService()
+                    return
+                }
+                requiresComponentUpgrade = false
+            }
             guard await services.environmentOwned(environmentID) else {
                 state = .failed(Self.truncated(String(localized: "display.error.environment_unavailable")))
+                await cleanupService()
                 return
             }
             state = .starting
@@ -430,9 +458,71 @@ final class LocalLinuxDisplayOwner {
             return
         } catch {
             guard generation == startGeneration else { return }
-            state = .failed(Self.truncated(error.localizedDescription))
+            let missingOldComponent = (error as? LinuxResidentImageResolutionError)?.recoverableImageID
+            let knownOldMissingComponent = missingOldComponent.map(Self.isKnownOldImage) ?? false
+            if error is LinuxGuestLocalServiceCapabilityError || knownOldMissingComponent {
+                let imageID: String?
+                if let environmentID { imageID = await services.guestImageID(environmentID) }
+                else { imageID = nil }
+                requiresComponentUpgrade = knownOldMissingComponent ||
+                    (imageID.map(Self.isKnownOldImage) ?? false)
+                state = .failed(Self.componentCapabilityMessage(legacyImage: requiresComponentUpgrade))
+            } else {
+                state = .failed(Self.truncated(error.localizedDescription))
+            }
             await cleanupService()
         }
+    }
+
+    /// Explicit old-image migration. The platform service verifies/downloads
+    /// the new image, joins every Linux owner, and retains the old disk before
+    /// publishing the new one. Reopen only while this viewer still demands a
+    /// screen; leaving the view during a long download must not launch one.
+    func upgradeComponentAndRetry() async {
+        guard requiresComponentUpgrade, !upgradingComponent else { return }
+        upgradingComponent = true
+        let cleaned = await cleanupService()
+        guard cleaned else {
+            upgradingComponent = false
+            state = .failed(Self.truncated(String(localized: "display.error.stop_pending")))
+            return
+        }
+        do {
+            // Settings or another owning screen may have completed the same
+            // replacement while this confirmation was open.
+            let alreadyCurrent: Bool
+            if let environmentID {
+                alreadyCurrent = await services.guestImageID(environmentID) == LinuxGuestImageDistributionCatalog.defaultImageID
+            } else {
+                alreadyCurrent = false
+            }
+            if !alreadyCurrent {
+                try await services.rebuildPreservingData()
+            }
+            requiresComponentUpgrade = false
+            state = .idle
+            upgradingComponent = false
+            if viewerClients > 0 { await startDisplay() }
+        } catch {
+            upgradingComponent = false
+            state = .failed(Self.truncated(error.localizedDescription))
+        }
+    }
+
+    private static func componentCapabilityMessage(legacyImage: Bool) -> String {
+        if legacyImage {
+            return FloeL10n.isChinese
+                ? "当前 Linux 环境缺少安全启动屏幕所需的能力。请升级环境后再打开屏幕。"
+                : "This Linux environment cannot safely start a screen. Upgrade it before reopening the screen."
+        }
+        return FloeL10n.isChinese
+            ? "当前 Linux 环境无法安全管理屏幕进程。请在执行环境中停止并重新启动 Linux；若问题仍在，请修复运行组件。"
+            : "This Linux runtime cannot safely manage the screen process. Stop and restart Linux in Execution Environment; repair the component if it continues."
+    }
+
+    private static func isKnownOldImage(_ id: String) -> Bool {
+        id != LinuxGuestImageDistributionCatalog.defaultImageID &&
+            LinuxGuestImageDistributionCatalog.entry(id: id) != nil
     }
 
     private func awaitRunningSnapshot(

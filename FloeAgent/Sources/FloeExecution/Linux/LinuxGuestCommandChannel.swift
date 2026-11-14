@@ -104,6 +104,19 @@ import Foundation
 import FloeCore
 import FloeTools
 
+/// A service cannot be safely released when the live guest runner cannot
+/// prove that its complete process tree ended. Keep this distinct from a
+/// missing image: the App can offer a preserving upgrade for an older image,
+/// while a current image needs runtime repair instead of another download.
+public enum LinuxGuestLocalServiceCapabilityError: Error, LocalizedError, Sendable, Equatable {
+    case wholeTreeUnavailable
+
+    public var errorDescription: String? {
+        NSLocalizedString("linux_service.update_required", bundle: .main,
+            value: "Update the Linux component, then try again.", comment: "Guest service supervision requires an updated Linux component")
+    }
+}
+
 // MARK: - Per-process sensitive environment
 //
 // General Skill secrets need a delivery channel that is distinct from
@@ -2794,8 +2807,7 @@ public actor LinuxGuestCommandChannel {
         do {
             try await requireServiceTreeProof(generation: routerGeneration)
         } catch LinuxGuestError.runnerUpgradeRequired(_, _) {
-            throw FloeError.validationFailed(NSLocalizedString("linux_service.update_required", bundle: .main,
-                value: "Update the Linux component, then try again.", comment: "Guest service supervision requires an updated Linux component"))
+            throw LinuxGuestLocalServiceCapabilityError.wholeTreeUnavailable
         }
         let outcome = try await performControl(
             name: "SPAWN",

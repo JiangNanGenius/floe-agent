@@ -15,6 +15,7 @@ import FloeVNC
 struct LocalLinuxDisplayView: View {
     let owner: LocalLinuxDisplayOwner
     @Environment(\.dismiss) private var dismiss
+    @State private var showsUpgradeConfirmation = false
 
     var body: some View {
         NavigationStack {
@@ -27,6 +28,18 @@ struct LocalLinuxDisplayView: View {
             .navigationTitle(IDELanguageRunText.t("屏幕", "Screen"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { toolbarContent }
+        }
+        .confirmationDialog(
+            IDELanguageRunText.t("升级 Linux 环境", "Upgrade Linux environment"),
+            isPresented: $showsUpgradeConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button(IDELanguageRunText.t("升级并打开屏幕", "Upgrade and open screen")) {
+                Task { await owner.upgradeComponentAndRetry() }
+            }
+            Button("action.cancel", role: .cancel) { }
+        } message: {
+            Text("execution.runtime_rebuild.confirm")
         }
         .task {
             await owner.beginViewerDemand()
@@ -54,6 +67,16 @@ struct LocalLinuxDisplayView: View {
                         Task { await owner.startDisplay() }
                     }
                     .buttonStyle(.borderedProminent)
+                }
+                if owner.requiresComponentUpgrade {
+                    Button(IDELanguageRunText.t("升级 Linux 环境", "Upgrade Linux environment")) {
+                        showsUpgradeConfirmation = true
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(owner.upgradingComponent)
+                }
+                if owner.upgradingComponent {
+                    ProgressView(IDELanguageRunText.t("正在升级 Linux 环境…", "Upgrading the Linux environment…"))
                 }
                 if case .failed(let message) = owner.state {
                     DisclosureGroup(IDELanguageRunText.t("详情", "Details")) {
@@ -148,9 +171,13 @@ struct LocalLinuxDisplayView: View {
     private var statusDetail: String {
         switch owner.state {
         case .failed:
-            return owner.canStop
-                ? IDELanguageRunText.t("请重试连接或停止屏幕。", "Retry the connection or stop the screen.")
-                : IDELanguageRunText.t("请重试，或更新 Linux 组件。", "Retry, or update the Linux component.")
+            if owner.requiresComponentUpgrade {
+                return IDELanguageRunText.t("升级后可打开屏幕。旧运行盘会保留。", "Upgrade to open the screen. The old runtime disk will be retained.")
+            }
+            if owner.canStop {
+                return IDELanguageRunText.t("请重试连接或停止屏幕。", "Retry the connection or stop the screen.")
+            }
+            return IDELanguageRunText.t("请重试，或检查执行环境。", "Try again, or check Execution Environment.")
         case .ended(let message):
             return message
         case .unavailable:
