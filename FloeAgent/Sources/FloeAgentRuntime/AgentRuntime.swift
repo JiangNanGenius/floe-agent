@@ -686,6 +686,8 @@ public actor FloeAgentRuntime {
         /// `temporaryReadOnly` ceiling stays authoritative for the catalog.
         /// Set once by the caller; never model-minted, never changed mid-run.
         public var chatFastMode: Bool
+        /// App-selected ordinary cloud agent. Only affects schema presentation inside the live ceiling.
+        public var offersCloudAgentBaseTools = false
         /// Request-level reasoning policy for the run's provider dispatch
         /// (the frozen chat fast/level resolution). `.modelDefault` keeps
         /// today's behavior for every other run; `.disabled` transmits the
@@ -2951,14 +2953,12 @@ public actor FloeAgentRuntime {
             discoveryPriority = additionNames + discoveryPriority.filter { !seenAdditions.contains($0) }
         }
         let nativeBindingNames = nativeAdditions.map(\.name)
-        // Fast chat presents the same progressive discovery as a task run:
-        // goal-text matching, the schema budget and eviction notices behave
-        // identically for every run; chat mode changes the envelope and
-        // reasoning, never the discovery contract.
+        let coreNames = configuration.offersCloudAgentBaseTools
+            ? ToolDiscovery.cloudAgentCoreNames : ToolDiscovery.coreNames
         // Restore recently used groups without replaying a discovery call.
         let recentGroups = Set(executionLedger.entries.suffix(6).map { ToolDiscovery.group($0.toolName) })
         catalogDescriptors = catalogDescriptors.filter {
-            ToolDiscovery.coreNames.contains($0.name) || discoveredToolNames.contains($0.name) || recentGroups.contains(ToolDiscovery.group($0.name))
+            coreNames.contains($0.name) || discoveredToolNames.contains($0.name) || recentGroups.contains(ToolDiscovery.group($0.name))
         }
         let statefulGroups: Set<String> = ["vnc", "executor", "terminal"]
         var pinned = Set(catalogDescriptors.filter { statefulGroups.contains(ToolDiscovery.group($0.name)) && recentGroups.contains(ToolDiscovery.group($0.name)) }.map(\.name))
@@ -2980,7 +2980,7 @@ public actor FloeAgentRuntime {
             catalogDescriptors,
             priority: discoveryPriority,
             pinned: pinned,
-            coreNames: ToolDiscovery.coreNames
+            coreNames: coreNames
         )
         catalogDescriptors.append(contentsOf: ToolDiscovery.runtimeDescriptors(
             publicWebOnly: configuration.temporaryReadOnly

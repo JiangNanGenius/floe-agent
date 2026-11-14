@@ -79,14 +79,38 @@ struct ToolSchemaExposureContractTests {
     }
     private func runtime(adapter: any ProviderAdapter, executor: MockExecutor, provider: ProviderProfile,
                          window: Int = 65_536, allowed: Set<String>? = nil,
-                         store: MockCheckpointStore = MockCheckpointStore()) -> FloeAgentRuntime {
+                         cloudAgentBase: Bool = false, store: MockCheckpointStore = MockCheckpointStore()) -> FloeAgentRuntime {
         let model = ModelProfile(providerID: provider.id, remoteModelID: "exposure-contract",
             displayName: "Exposure contract", limits: .init(contextTokens: window, maxOutputTokens: 2_048),
             capabilities: [.text, .tools])
-        return FloeAgentRuntime(configuration: .init(provider: provider, model: model,
-            allowedToolNames: allowed, maxProviderRetries: 0), adapter: adapter,
+        var configuration = FloeAgentRuntime.Configuration(provider: provider, model: model,
+            allowedToolNames: allowed, maxProviderRetries: 0)
+        configuration.offersCloudAgentBaseTools = cloudAgentBase
+        return FloeAgentRuntime(configuration: configuration, adapter: adapter,
             policy: HumanApprovalPolicy(), executor: executor, checkpointStore: store,
             liveSystemContext: { "Owned read-only fixture context." })
+    }
+
+    @Test func cloudAgentBaseIsOfferedWithoutDiscoveryWithinTheLiveCeiling() async throws {
+        let names = ToolDiscovery.cloudAgentCoreNames
+        #expect(names.count == 45) // The runtime provides three discovery helpers.
+        let disabled = "memory.forget"
+        let executor = MockExecutor()
+        for name in names.union(["image.view", "delegate.peers"]) {
+            executor.descriptors[name] = Self.descriptor(name)
+        }
+        let allowed = Set(executor.descriptors.keys).subtracting([disabled])
+        for enabled in [false, true] {
+            let adapter = ExposureRequestAdapter { _, _ in Self.done() }
+            let agent = runtime(adapter: adapter, executor: executor, provider: TestFixtures.localhostProvider(),
+                                allowed: allowed, cloudAgentBase: enabled)
+            try await agent.start(goal: "Hello")
+            let request = try #require(adapter.requests.first)
+            let offered = Set(request.toolSchemas.map(\.name))
+            let expected = (enabled ? names : ToolDiscovery.coreNames).subtracting([disabled])
+                .union([ToolDiscovery.name, ToolDiscovery.listName, ToolResultPagingTool.name])
+            #expect(offered == expected)
+        }
     }
 
     @Test func finalReadmissionEvictionIsFalseInActualListResponse() async throws {

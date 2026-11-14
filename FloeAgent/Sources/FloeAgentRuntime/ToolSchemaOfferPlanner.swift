@@ -16,6 +16,12 @@ import Foundation
 import FloeTools
 
 public enum ToolSchemaOfferPlanner {
+    /// Durable memory operations considered for ordinary cloud-agent presentation.
+    public static let baseMemoryToolNames: Set<String> = [
+        "memory.search", "memory.recall", "memory.list",
+        "memory.remember", "memory.update", "memory.forget"
+    ]
+
     public struct Plan: Sendable, Equatable {
         public var offered: [ToolCatalog.Descriptor]
         public var deferred: [String]

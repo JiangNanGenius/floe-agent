@@ -4504,12 +4504,16 @@ final class ConversationCenter: ObservableObject {
             }.map(\.name))
             allowedToolNames = allowedToolNames.map { $0.intersection(usable) } ?? usable
         }
+        let offersCloudAgentBaseTools = provider.kind != .local && executionMode == .agent
+            && runSurface == .ordinary && conversationRecord?.purpose == .ordinary
+            && !isTemporary && linuxCacheCleanupProfile == nil
         if !Self.requestsAgentMemoryTools(memoryQuery) {
-            let withoutMemory = Set(availableDescriptors.lazy
+            let retainedMemory = offersCloudAgentBaseTools ? ToolSchemaOfferPlanner.baseMemoryToolNames : []
+            let permittedNames = Set(availableDescriptors.lazy
                 .map(\.name)
-                .filter { !$0.hasPrefix("memory.") })
-            allowedToolNames = allowedToolNames.map { $0.intersection(withoutMemory) }
-                ?? withoutMemory
+                .filter { !$0.hasPrefix("memory.") || retainedMemory.contains($0) })
+            allowedToolNames = allowedToolNames.map { $0.intersection(permittedNames) }
+                ?? permittedNames
         }
         if taskRootLease == nil && notesScratchRoot == nil {
             let nonWorkspace = Set(availableDescriptors.lazy
@@ -4812,6 +4816,7 @@ final class ConversationCenter: ObservableObject {
                 return names
             }
         )
+        configuration.offersCloudAgentBaseTools = offersCloudAgentBaseTools
         if effectiveExecutionMode.conversationMode == .goal, let activeGoal {
             configuration.goalBudgets = activeGoal.budgets
         }

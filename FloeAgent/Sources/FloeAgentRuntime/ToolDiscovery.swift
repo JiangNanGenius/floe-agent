@@ -32,6 +32,20 @@ final class DispatchedToolSchemaState: @unchecked Sendable {
 /// already inside this run's permission/skill ceiling.
 enum ToolDiscovery {
     static let coreNames: Set<String> = ["skill.search", "skill.read", "skill.list", "checklist.readPlan", "checklist.updatePlan", "checklist.resetPlan", "goal.create", "goal.read", "exec.shell", "user.ask", "task.wait"]
+    // The three runtime discovery helpers are appended separately after the catalog filter.
+    static let cloudAgentCoreNames: Set<String> = coreNames
+        .union(ToolSchemaOfferPlanner.baseMemoryToolNames)
+        .union([
+            "chat.present", "chat.content.list",
+            "conversation.list", "conversation.search", "conversation.read", "conversation.message",
+            "conversation.spawn", "delegate",
+            "workspace.listDirectory", "workspace.searchFiles", "workspace.readFile", "workspace.inspectFileMetadata",
+            "workspace.createFile", "workspace.appendFile", "workspace.replaceText", "workspace.applyPatch",
+            "workspace.writeFile", "workspace.createDirectory", "workspace.copyFile", "workspace.moveFile",
+            "workspace.deleteFile", "workspace.importOutput", "workspace.publishOutput",
+            "jobs.submit", "jobs.status", "jobs.result", "jobs.cancel", "task.schedule"
+        ])
+
     static let name = "tools.search"
     static let listName = "tools.list"
     static var listDescriptor: ToolCatalog.Descriptor {
