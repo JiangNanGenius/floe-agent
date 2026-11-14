@@ -1,0 +1,3 @@
+Internal testing only; no external review or App Store submission is authorized for this candidate.
+Floe uses user-configured AI providers and does not bundle shared provider credentials. Font management can be inspected without sending data to an external model.
+Storage recovery and cross-device Keychain behavior remain device-validation items.
