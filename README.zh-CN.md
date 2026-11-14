@@ -10,8 +10,7 @@
 <p align="center">
   <a href="https://apps.apple.com/app/id6801209053"><img src="docs/images/install/app-store.svg" alt="从 App Store 获取 Floe Agent 正式版" width="144" height="56"></a>
   <a href="https://www.floe-agent.com/?utm_source=github&amp;utm_medium=referral&amp;utm_campaign=beta_readme_zh#beta"><img src="docs/images/install/testflight.svg" alt="前往官网申请 TestFlight 内测" width="144" height="56"></a>
-  <a href="https://altdirect.app/?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json&amp;r=feather"><img src="docs/images/install/feather.svg" alt="添加 Floe Agent 软件源到 Feather" width="144" height="56"></a>
-  <a href="https://altdirect.app/?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json&amp;r=altstore"><img src="docs/images/install/altstore.svg" alt="添加 Floe Agent 软件源到 AltStore" width="144" height="56"></a>
+  <a href="https://altdirect.app/?url=https%3A%2F%2Fraw.githubusercontent.com%2FJiangNanGenius%2Ffloe-agent%2Fmain%2Ffeather.json"><img src="docs/images/install/self-signing-zh.svg" alt="自签名商店：Feather 与 AltStore" width="144" height="56"></a>
 </p>
 
 [![iOS / iPadOS 26+](https://img.shields.io/badge/iOS%20%2F%20iPadOS-26%2B-0A84FF)](FloeAgent/project.yml)
@@ -42,9 +41,9 @@
 App Store、TestFlight 和 GitHub 各自更新。请结合所选发布说明及[带日期的渠道状态](docs/CURRENT_STATUS.md)选择版本；GitHub 已发布不代表 Apple 渠道已经可用。
 
 <details>
-<summary>通过 Feather 或 AltStore 安装 iOS IPA</summary>
+<summary>自签名商店：安装说明与软件源</summary>
 
-点击顶部 Feather 或 AltStore 按钮添加软件源，再按所用签名方式完成安装。
+点击顶部「自签名商店」，在同一页面选择 Feather 或 AltStore，再按所用签名方式添加软件源并完成安装。
 
 也可以手动复制软件源地址：
 
@@ -124,4 +123,5 @@ Gitee 同步源码与发布记录，详见[镜像说明](docs/FLOE_GITEE_RELEASE
 参与开发前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)，安全漏洞请通过 [SECURITY.md](SECURITY.md) 私下报告。
 
 Floe 原创代码采用 [MPL 2.0](LICENSE)。第三方组件保留各自许可证与声明，可在 App 的“设置 → 诊断与关于 → 第三方许可”中查看。
+
 
