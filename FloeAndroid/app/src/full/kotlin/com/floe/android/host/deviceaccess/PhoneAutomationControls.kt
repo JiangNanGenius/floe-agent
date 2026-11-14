@@ -50,9 +50,9 @@ import kotlin.math.min
  * with the real task/action/result and the existing pause/resume and takeover
  * actions; four seconds without a user touch collapses it again. Collapsing
  * is presentation only: it never pauses, resumes, takes over, executes or
- * changes permissions. Only a real RUNNING operation animates; waiting,
- * paused, done, failed, stopped and unknown states stay static and are named
- * truthfully for accessibility.
+ * changes permissions. Only a real RUNNING operation animates; waiting and
+ * paused states stay static. Settled operations hide the bubble; the latest
+ * result remains in the notification until the control session ends.
  *
  * The status is fed from the real claimed platform tool lifecycle (started ->
  * actual outcome) and from the typed background document-view verification.
@@ -129,7 +129,10 @@ internal class PhoneAutomationControls(
     fun show(owner: PhoneControlOwner, title: String, overlay: Boolean, paused: Boolean = false,
              waitingForUser: Boolean = false) {
         main.post {
-            if (!canPresent(owner)) return@post
+            if (!canPresent(owner)) {
+                clear(expectedOwner = owner)
+                return@post
+            }
             if (this.owner != owner && operationOwner != owner) {
                 this.operation = null
                 this.operationOwner = null
@@ -216,6 +219,10 @@ internal class PhoneAutomationControls(
         main.post {
             if (owner == null || token != receivedToken) return@post
             val current = owner ?: return@post
+            if (!canPresent(current)) {
+                clear(expectedOwner = current)
+                return@post
+            }
             val accepted = when (action) {
                 "pause" -> if (!paused) Action.PAUSE else return@post
                 "resume" -> if (paused) Action.RESUME else return@post
@@ -250,7 +257,11 @@ internal class PhoneAutomationControls(
     }
 
     private fun render() {
-        if (owner == null) return
+        val current = owner ?: return
+        if (!canPresent(current)) {
+            clear(expectedOwner = current)
+            return
+        }
         runCatching { renderNotification() }
         runCatching { renderOverlay() }
     }
@@ -282,11 +293,17 @@ internal class PhoneAutomationControls(
     }
 
     private fun renderOverlay() {
-        if (owner == null) {
+        val current = owner
+        if (current == null) {
             removeOverlay()
             return
         }
-        if (!showOverlay || !Settings.canDrawOverlays(context)) {
+        if (!canPresent(current)) {
+            clear(expectedOwner = current)
+            return
+        }
+        if (!showOverlay || !Settings.canDrawOverlays(context) ||
+            !PhoneAutomationStatusText.showsOverlay(paused, waitingForUser, operation?.state)) {
             removeOverlay()
             return
         }
@@ -759,7 +776,10 @@ internal class PhoneAutomationControls(
             if (expectedOwner != null && presentationOwner != expectedOwner) return@clear
             owner = null
             token = UUID.randomUUID().toString()
+            paused = false
             waitingForUser = false
+            title = ""
+            showOverlay = false
             operation = null
             operationOwner = null
             pendingOperation = null

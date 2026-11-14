@@ -2,7 +2,9 @@
 package com.floe.android.host.deviceaccess
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -12,6 +14,28 @@ import org.junit.Test
  * viewer.
  */
 class DeviceArtifact113OverlayStatusTest {
+
+    @Test
+    fun settledScreenWorkHidesBubbleUntilTheNextRealOperation() {
+        fun visible(state: PhoneAutomationOperationState?) =
+            PhoneAutomationStatusText.showsOverlay(false, false, state)
+        assertFalse(visible(null))
+        assertTrue(visible(PhoneAutomationOperationState.RUNNING))
+        for (settled in listOf(PhoneAutomationOperationState.DONE,
+            PhoneAutomationOperationState.FAILED, PhoneAutomationOperationState.UNKNOWN,
+            PhoneAutomationOperationState.CANCELLED)) {
+            repeat(3) { assertFalse(visible(settled)) }
+        }
+        assertTrue(visible(PhoneAutomationOperationState.RUNNING))
+    }
+
+    @Test
+    fun explicitPauseAndUserWaitRetainTheResumeControl() {
+        assertTrue(PhoneAutomationStatusText.showsOverlay(true, false, null))
+        assertTrue(PhoneAutomationStatusText.showsOverlay(false, true, null))
+        assertTrue(PhoneAutomationStatusText.showsOverlay(
+            false, false, PhoneAutomationOperationState.WAITING))
+    }
 
     @Test
     fun statusIsSingleLineBoundedAndFreeOfControlCharacters() {

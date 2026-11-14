@@ -1,5 +1,13 @@
 # Floe Android 分目标实施记录
 
+## 屏幕控制浮球收尾源码检查点（2026-11-15）
+
+悬浮控制只在真实屏幕动作进行中、主动暂停或等待用户时显示；动作结算后自动隐藏，下次真实动作再显示。停止／接管、任务结束、无障碍会话释放或 ADB 会话失效时清除对应控制，后台任务继续及旧回调不能使其重新出现。进行中的面板继续沿用四秒自动收起，保留现有暂停／恢复与授权语义。
+
+四个改动的生产 Kotlin 文件已独立编译为实际字节码，依赖复用现有 FullRelease；相关 JVM 检查为原所有者／显示类 26 项加状态类 6 项，共 32 项通过。未运行 Gradle、原生构建、安装包封装或新实机测试，未打断三星录像；这些结果不等于新 APK 或设备验收。公开安装包仍为不可变 [1.0.10／118](releases/builds/FLOE_ANDROID_1.0.10_BUILD118_DELIVERY.md)，本次源码将在下一候选集成。
+
+English: The overlay is visible for real screen work, an explicit pause or a user wait, and hides after the operation settles. Session loss and exact-owner termination retire controls and fence late callbacks. Four changed production Kotlin files compiled to bytecode and 32 relevant JVM methods passed. No new APK or device acceptance is claimed; public1.0.10/code118 and the recording device remain unchanged.
+
 ## 1.0.7／115 已公开，真实生图与浏览器恢复闭合（2026-11-14）
 
 [Android1.0.7预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v1.0.7) 固定实际生产源 `908133880f0b3d722d98e2451567657a077d4e9f`（包含N11检查点 `b7e8805374bb33d4229cca11e27241644c4a057c`），Full APK 166,456,567字节，SHA-256 `bbfdf80c9772272de07af26cf09af1909bfe02a2eb24b3e5066474a64a7534e7`。native53实际ARM64对象／链接、Full封装、58项原生绑定、16KiB对齐及四类包API28／29签名通过；29项宿主方法按原24项通过和五项夹具定向复测闭合，原失败保留。

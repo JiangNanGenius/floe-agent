@@ -29,6 +29,13 @@ internal object PhoneAutomationStatusText {
     const val MAX_LABEL = 32
     const val MAX_NOTE = 48
 
+    /** Background task progress or a retained result must not leave a
+     * resident bubble. A fresh real screen operation can show it again. */
+    fun showsOverlay(paused: Boolean, waitingForUser: Boolean,
+                     state: PhoneAutomationOperationState?): Boolean =
+        paused || waitingForUser || state == PhoneAutomationOperationState.RUNNING ||
+            state == PhoneAutomationOperationState.WAITING
+
     /**
      * One inert single-line display value. Control characters (including
      * CR/LF) are removed instead of allowing a multi-line/spoofed status, and

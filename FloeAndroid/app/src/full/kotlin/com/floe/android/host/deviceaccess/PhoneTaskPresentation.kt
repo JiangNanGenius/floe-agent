@@ -56,6 +56,18 @@ internal sealed interface PhoneTaskArmDecision {
 
 internal object PhoneTaskPresentation {
 
+    /** A running Agent task alone does not mean it still controls the screen.
+     * Keep a deliberate pause resumable, but retire controls after the actual
+     * session ends; a later fresh arm can present them again. UI-only. */
+    fun automationControlsVisible(
+        owner: PhoneControlOwner,
+        ownerLive: Boolean,
+        actualOwner: PhoneControlOwner?,
+        armingOwner: PhoneControlOwner?,
+        paused: Boolean,
+    ): Boolean = ownerLive &&
+        (actualOwner == owner || armingOwner == owner || paused)
+
     fun ownership(
         candidate: PhoneTaskLiveCandidate?,
         armedOwner: PhoneControlOwner?,

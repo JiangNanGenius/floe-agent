@@ -43,6 +43,52 @@ class PhoneTaskPresentationTest {
     // ------------------------------------------------------------- display
 
     @Test
+    fun screenSessionEndsWhileBackgroundTaskKeepsRunning() {
+        val run = owner(1, 1)
+        fun visible(actual: PhoneControlOwner?, arming: PhoneControlOwner? = null) =
+            PhoneTaskPresentation.automationControlsVisible(run, true, actual, arming, false)
+        assertTrue(visible(run))
+        // Release/lock/service loss ends the session while the Agent keeps
+        // doing background work. Later task progress cannot revive a bubble.
+        repeat(3) { assertFalse(visible(null)) }
+        // A new real arm, rather than task liveness alone, restores controls.
+        assertTrue(visible(null, run))
+        assertTrue(visible(run))
+    }
+
+    @Test
+    fun stoppedOwnerCannotReappearThroughLateScreenCallbacks() {
+        val stopped = owner(1, 1)
+        val fresh = owner(2, 2)
+        assertFalse(PhoneTaskPresentation.automationControlsVisible(
+            stopped, false, stopped, stopped, true))
+        assertFalse(PhoneTaskPresentation.automationControlsVisible(
+            stopped, true, fresh, fresh, false))
+        assertTrue(PhoneTaskPresentation.automationControlsVisible(
+            fresh, true, fresh, null, false))
+    }
+
+    @Test
+    fun deliberatePauseStaysResumableOnlyUntilItsOwnerEnds() {
+        val run = owner(1, 1)
+        assertTrue(PhoneTaskPresentation.automationControlsVisible(
+            run, true, null, null, true))
+        assertFalse(PhoneTaskPresentation.automationControlsVisible(
+            run, false, null, null, true))
+    }
+
+    @Test
+    fun failedInitialArmDoesNotLeaveResidentControls() {
+        val run = owner(1, 1)
+        assertFalse(PhoneTaskPresentation.automationControlsVisible(
+            run, true, null, null, false))
+        assertTrue(PhoneTaskPresentation.automationControlsVisible(
+            run, true, null, run, false))
+        assertFalse(PhoneTaskPresentation.automationControlsVisible(
+            run, true, null, null, false))
+    }
+
+    @Test
     fun freshRunAfterTakeoverIsStillShownAndOffersArm() {
         val old = owner(1, 1)
         val fresh = owner(2, 2)

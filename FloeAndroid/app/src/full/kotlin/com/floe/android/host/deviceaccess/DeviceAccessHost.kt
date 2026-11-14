@@ -2400,11 +2400,15 @@ internal class DeviceAccessHost(
             scope.launch(io) { runCatching { adbUiBackend?.stop(ended) } }
             automationControls.clear(expectedOwner = ended)
         }
-        automatedOwner.get()?.takeIf { !isOwnerStopped(it) && isOwnerRunLive(it) }?.let { owner ->
-            val candidate = PhoneTaskPresentation.holderLookupKeys(owner.taskID)
-                .firstNotNullOfOrNull { key -> candidateFor(key)?.takeIf { it.owner == owner } }
-            val waiting = candidate?.phase == DeviceAccessTaskPhaseUi.WAITING_FOR_USER
-            automationControls.show(owner, titleFor(owner), settings.floatingControls, phonePause.isPaused(owner), waiting)
+        automatedOwner.get()?.let { owner ->
+            if (canPresentAutomationControls(owner)) {
+                val candidate = PhoneTaskPresentation.holderLookupKeys(owner.taskID)
+                    .firstNotNullOfOrNull { key -> candidateFor(key)?.takeIf { it.owner == owner } }
+                val waiting = candidate?.phase == DeviceAccessTaskPhaseUi.WAITING_FOR_USER
+                automationControls.show(owner, titleFor(owner), settings.floatingControls, phonePause.isPaused(owner), waiting)
+            } else {
+                automationControls.clear(expectedOwner = owner)
+            }
         }
         reconcileScreenShare()
         val candidate = currentCandidate()
@@ -3029,8 +3033,26 @@ internal class DeviceAccessHost(
     private fun automationOwnerStillLive(owner: PhoneControlOwner): Boolean =
         !closed && !isOwnerStopped(owner) && isOwnerRunLive(owner)
 
-    private fun canPresentAutomationControls(owner: PhoneControlOwner): Boolean =
-        automationOwnerStillLive(owner) && automatedOwner.get() == owner
+    private fun canPresentAutomationControls(owner: PhoneControlOwner): Boolean {
+        val actualOwner = if (armedBackend == PhoneControlBackend.ADB_UI_AUTOMATION) {
+            val epoch = host.nativeRootEpoch()
+            armedOwner?.takeIf {
+                adbUiReady && epoch != null && adbUiBackend?.isArmed(it, epoch) == true
+            }
+        } else {
+            phoneStatus.activeOwner?.takeIf {
+                phoneStatus.connected && phoneStatus.enabled && phoneStatus.blocker == null &&
+                    !phoneStatus.automationFinishing
+            }
+        }
+        return PhoneTaskPresentation.automationControlsVisible(
+            owner = owner,
+            ownerLive = automationOwnerStillLive(owner) && automatedOwner.get() == owner,
+            actualOwner = actualOwner,
+            armingOwner = armingOwner,
+            paused = phonePause.isPaused(owner),
+        )
+    }
 
     private fun stopActiveTask(takeOver: Boolean, expectedOwner: PhoneControlOwner? = null) {
         // Prefer an actual arm/admission owner over an in-flight arming
