@@ -2,6 +2,7 @@
 package com.floe.android.host.linux
 
 import android.content.Context
+import android.os.IBinder
 import com.floe.android.runtimeipc.RuntimeExecutionTrace
 import com.floe.android.runtimeipc.RuntimeExecutionTrace.Stage
 import com.floe.android.host.services.C01ManagedServiceOwner
@@ -26,23 +27,39 @@ import kotlinx.serialization.json.contentOrNull
 import org.json.JSONObject
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 /** App-owned transient transport. Original Swift services remain job/run authority. */
 class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
-    private class AdmissionRefused(val code: String = "runtime_not_started") : IllegalStateException("Runtime refused admission")
+    internal class AdmissionRefused(val code: String = "runtime_not_started") : IllegalStateException("Runtime refused admission")
     private val context = context.applicationContext
     private val foreground = RunForegroundController.forApplication(context)
     private val epoch = AtomicLong()
     private val starts = Mutex()
     private val admissionClosed = AtomicBoolean()
-    private data class TerminalReceipt(val epoch: Long, val runID: String, val toolCallID: String?, val sessionID: String?, val proof: String)
+    private class TerminalReceipt(
+        val epoch: Long, val runID: String, val toolCallID: String?, val sessionID: String?, val proof: String,
+    ) {
+        /** True while the runtime's own read index still serves this released
+         *  session. A typed refusal for a session the runtime no longer holds
+         *  flips it ONCE; every later poll then answers from the recorded REAL
+         *  terminal without any IPC — never a fresh bind/death-link per poll
+         *  (the Full 13 JNI global-reference overflow). */
+        @Volatile var runtimeServesSession = true
+    }
     private val terminals = LinkedHashMap<String, TerminalReceipt>()
     private val slots = Semaphore(4)
     private var reader: Job? = null
+    /** ONE read-only runtime channel (status / released-session pages /
+     *  capability) reused for this pump generation. Opened lazily and closed
+     *  on the epoch fence; it must never be one `bindService` per poll. */
+    private var readChannel: LinuxRuntimeChannelLease? = null
+    /** Count-only boundedness evidence: how many authenticated channels this
+     *  pump opened in total. A healthy generation opens ONE per live session,
+     *  ONE read-only channel and one per preflight/sync — never one per poll. */
+    private val channelOpens = AtomicLong()
     private val work = ConcurrentHashMap<String, OwnedSession>()
     private class OwnedJobForeground(val epoch: Long) {
         val ended = AtomicBoolean()
@@ -95,7 +112,19 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
          *  Published exactly once from whichever observer sees the terminal. */
         val latency = LinuxTerminalLatency.begin()
         lateinit var lease: ForegroundLease
-        var client: RuntimeConnection? = null
+        /** ONE authenticated channel for this session's ACTUAL lifetime.
+         *  Routine `ok=false` refusals are replies and never drop it; a real
+         *  transport loss reopens it once on the next call. finish()/finishDeferred()
+         *  close it exactly once. */
+        val channel = LinuxRuntimeChannelLease("session-$controlID") {
+            openRuntimeChannel(lease.runtimePermit, workspaceGrant)
+        }
+        /** Bounded fatal-refusal latch: after repeated typed poll refusals the
+         *  runtime no longer holds this session's in-memory receipt, so later
+         *  polls answer the SAME typed refusal without IPC instead of a 50 ms
+         *  bind/link loop. Never a terminal release, never a retry. */
+        @Volatile private var refusedPollCode: String? = null
+        private val refusedPollCount = java.util.concurrent.atomic.AtomicInteger()
         var workspaceGrant: CoreWorkspaceGrant? = null
         /** The Core grant's session key captured at mint time (before finish
          *  nulls the grant). ONE failed-start receipt handoff re-binds its
@@ -117,7 +146,9 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
         }
         fun failedStartEvidenceOrNull(): FailedStartEvidence? = startFailure.get()?.workspace
         fun runtimeStartFailureOrNull(): RuntimeStartFailure? = startFailure.get()?.runtime
-        val connectionLock = Mutex()
+        /** True once a repeated typed poll refusal latched this session: later
+         *  polls answer it without IPC (never a fresh bind per poll). */
+        fun pollRefusalLatched(): Boolean = refusedPollCode != null
         val settlementLock = Mutex()
         private var settledProof: String? = null
         suspend fun hasSettledProof(): Boolean = settlementLock.withLock { settledProof != null }
@@ -138,15 +169,21 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
         @Volatile var deferredOutcome: String? = null
 
         suspend fun exchange(operation: String, payload: JSONObject = JSONObject(), requestID: String = UUID.randomUUID().toString()): JSONObject {
-            val connection = connectionLock.withLock {
-                client ?: RuntimeConnection(context, lease.runtimePermit, workspaceGrant).also {
-                    try { it.connect().get(15, TimeUnit.SECONDS); client = it }
-                    catch (failure: Exception) { it.close(); throw failure }
-                }
-            }
-            try { return result(connection.exchange(operation, payload, requestID)) }
-            catch (failure: Exception) {
-                connectionLock.withLock { if (client === connection) { client = null; connection.close() } }
+            val latched = refusedPollCode
+            if (latched != null && operation in POLLED_OPERATIONS) throw AdmissionRefused(latched)
+            val envelope = channel.exchange(operation, payload, requestID)
+            try {
+                val reply = result(envelope)
+                if (operation in POLLED_OPERATIONS) refusedPollCount.set(0)
+                return reply
+            } catch (failure: AdmissionRefused) {
+                // A well-formed refusal crossed the wire: the binder is healthy
+                // and is REUSED (reopening per refusal was the leak + churn).
+                // Only a repeated "runtime no longer holds this session" answer
+                // latches the session, and still only as a typed refusal.
+                if (operation in POLLED_OPERATIONS && failure.code in FINAL_POLL_REFUSALS &&
+                    refusedPollCount.incrementAndGet() >= POLL_REFUSAL_LATCH_AFTER
+                ) refusedPollCode = failure.code
                 throw failure
             }
         }
@@ -246,7 +283,7 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
                 terminals[controlID] = TerminalReceipt(nativeEpoch, runID, toolCallID, sessionID, proof.toString())
                 while (terminals.size > 128) terminals.remove(terminals.keys.first())
             }
-            connectionLock.withLock { client?.close(); client = null }
+            channel.close()
             lease.close()
             work.remove(controlID, this)
             settledProof = proof.toString()
@@ -291,7 +328,7 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
         deferredOutcome = outcome
         workspaceGrant?.close()
         workspaceGrant = null
-        connectionLock.withLock { client?.close(); client = null }
+        channel.close()
         lease.close()
         work.remove(controlID, this)
     }
@@ -343,6 +380,16 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
             if (expectedEpoch > 0 && epoch.compareAndSet(expectedEpoch, 0)) {
                 LinuxShellNative.fenceEpoch(expectedEpoch)
                 reader?.cancelAndJoin(); reader = null
+                // The read-only channel dies WITH the epoch: a new generation
+                // opens its own single channel on first use.
+                synchronized(this@LinuxShellPump) {
+                    readChannel?.close()
+                    readChannel = null
+                }
+                // Counts only (no ids, no operations): lets the next device
+                // case prove at a glance that polls did not open channels.
+                runCatching { android.util.Log.i("FloeLinuxStart",
+                    "PUMP_CHANNEL_ACCOUNT opened=${channelOpens.get()}") }
             }
         }
         return true
@@ -438,11 +485,7 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
                 // or command. It exists so the Swift owner can prove a
                 // retained session belongs to a retired runtime process
                 // instead of guessing a release from an error string.
-                val client = RuntimeConnection(context)
-                try {
-                    client.connect().get(15, TimeUnit.SECONDS)
-                    complete(claim, 0, result(client.exchange("status")))
-                } finally { client.close() }
+                complete(claim, 0, result(readOnlyChannel().exchange("status")))
                 return
             }
             if (operation == "shell.start") {
@@ -561,25 +604,80 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
             }
             complete(claim, 0, response)
         } catch (failure: Exception) {
-            // Closed operation and exception class only; never payloads,
-            // commands, paths, IDs or exception messages.
+            // A well-formed runtime refusal already crossed the wire and names
+            // its own bounded code (for example runtime_not_ready); reporting it
+            // as the generic runtime_unavailable is what made the Full 13
+            // refusals undiagnosable. Cancellation stays a typed cancelled and
+            // is never a transport failure. Only real transport/local failures
+            // keep the historical generic code.
+            val cancelled = failure is kotlinx.coroutines.CancellationException
+            val code = controlFailureCode(failure)
+            // Closed operation, exception class and bounded code only; never
+            // payloads, commands, paths, IDs or exception messages.
             runCatching { android.util.Log.i("FloeLinuxStart",
-                "PUMP_CONTROL_REFUSED op=$observedOperation type=${failure.javaClass.simpleName.take(80)}") }
-            complete(claim, 1, JSONObject().put("code", "runtime_unavailable"))
+                "PUMP_CONTROL_REFUSED op=$observedOperation type=${failure.javaClass.simpleName.take(80)} code=$code") }
+            complete(claim, 1, JSONObject().put("code", code))
+            if (cancelled) throw failure
         }
     }
 
+    /**
+     * One page for an ALREADY-SETTLED session over the pump's ONE retained
+     * read-only channel (never a fresh bind per poll).
+     *
+     * The runtime keeps released output readable only while its bounded
+     * in-memory read index still holds the session. Once it answers with the
+     * typed "not held" refusal, that answer is remembered on THIS terminal
+     * receipt and every later poll is served from the recorded REAL terminal
+     * (no IPC, no bind, no death-link). The recorded proof is produced only by
+     * an actual `leaseReleased` terminal (see [terminalProof]/[finish]); this
+     * is not a fabricated release and it never re-sends a command.
+     */
     private suspend fun readTerminalPoll(payload: JSONObject, proof: JSONObject): JSONObject {
         val sessionID = payload.getString("sessionID")
         require(proof.getString("sessionID") == sessionID)
-        val client = RuntimeConnection(context)
-        try {
-            client.connect().get(15, TimeUnit.SECONDS)
-            val response = result(client.exchange("shell.poll", payload))
-            require(response.getString("sessionID") == sessionID)
-            copyWorkspaceProof(response, proof)
-            return response
-        } finally { client.close() }
+        val receipt = terminalReceipt(sessionID, proof.optLong("epoch", 0L))
+        if (receipt != null && !receipt.runtimeServesSession) {
+            return recordedTerminalPage(payload, proof)
+        }
+        val envelope = readOnlyChannel().exchange("shell.poll", payload)
+        if (!envelope.optBoolean("ok")) {
+            val code = envelope.optString("code")
+            if (code in FINAL_POLL_REFUSALS) {
+                // The runtime proved it no longer holds this released session:
+                // never ask again for the lifetime of this staged terminal.
+                receipt?.runtimeServesSession = false
+                return recordedTerminalPage(payload, proof)
+            }
+            throw AdmissionRefused(code)
+        }
+        val response = envelope.getJSONObject("result")
+        require(response.getString("sessionID") == sessionID)
+        copyWorkspaceProof(response, proof)
+        return response
+    }
+
+    /** The staged terminal receipt for exactly this session/epoch, if any. */
+    private fun terminalReceipt(sessionID: String, epoch: Long): TerminalReceipt? = synchronized(terminals) {
+        terminals.values.lastOrNull {
+            it.sessionID == sessionID && (epoch <= 0 || it.epoch == epoch)
+        }
+    }
+
+    /**
+     * The ONE read-only channel shared by status, released-session pages and
+     * capability probes for the current pump generation.
+     */
+    private fun readOnlyChannel(): LinuxRuntimeChannelLease = synchronized(this) {
+        readChannel ?: LinuxRuntimeChannelLease("runtime-read") {
+            openRuntimeChannel(null, null)
+        }.also { readChannel = it }
+    }
+
+    /** The ONE place a pump-owned runtime channel is constructed. */
+    private fun openRuntimeChannel(permit: IBinder?, grant: IBinder?): LinuxRuntimeChannel {
+        channelOpens.incrementAndGet()
+        return RuntimeIpcChannel(RuntimeConnection(context, permit, grant))
     }
 
     /**
@@ -668,25 +766,21 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
         if (current <= 0) return JSONObject().put("contractVersion", "")
             .put("serviceRoleAvailable", false).put("detail", "engineUnbound")
         return try {
-            val client = RuntimeConnection(context)
-            try {
-                client.connect().get(10, TimeUnit.SECONDS)
-                val status = result(client.exchange("status"))
-                val contract = status.optString("workloadContractVersion")
-                val available = C01ManagedServiceOwner.contractSupportsServices(contract)
-                val stdio = status.optString("stdioContractVersion")
-                val stdioAvailable = C01ManagedServiceOwner.contractSupportsStdio(stdio)
-                JSONObject()
-                    .put("contractVersion", contract.take(64))
-                    .put("serviceRoleAvailable", available)
-                    .put("stdioContractVersion", stdio.take(64))
-                    .put("stdioRoleAvailable", stdioAvailable)
-                    .put("detail", when {
-                        available && stdioAvailable -> "v3 service roles and separated stdio advertised"
-                        available -> "v3 service roles advertised; separated stdio unavailable"
-                        else -> "service roles unavailable in this component"
-                    })
-            } finally { client.close() }
+            val status = result(readOnlyChannel().exchange("status"))
+            val contract = status.optString("workloadContractVersion")
+            val available = C01ManagedServiceOwner.contractSupportsServices(contract)
+            val stdio = status.optString("stdioContractVersion")
+            val stdioAvailable = C01ManagedServiceOwner.contractSupportsStdio(stdio)
+            JSONObject()
+                .put("contractVersion", contract.take(64))
+                .put("serviceRoleAvailable", available)
+                .put("stdioContractVersion", stdio.take(64))
+                .put("stdioRoleAvailable", stdioAvailable)
+                .put("detail", when {
+                    available && stdioAvailable -> "v3 service roles and separated stdio advertised"
+                    available -> "v3 service roles advertised; separated stdio unavailable"
+                    else -> "service roles unavailable in this component"
+                })
         } catch (_: Exception) {
             JSONObject().put("contractVersion", "")
                 .put("serviceRoleAvailable", false).put("detail", "capabilityUnreachable")
@@ -742,7 +836,7 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
         val settled = AtomicBoolean()
         var lease: ForegroundLease? = null
         var grant: CoreWorkspaceGrant? = null
-        var client: RuntimeConnection? = null
+        var client: LinuxRuntimeChannel? = null
         // The boundary currently being crossed; threaded into the honest
         // `unconfirmed` answer so the caller can discriminate acquire/grant/
         // identity/connect/exchange/receipt. Typed lowercase token only.
@@ -772,10 +866,11 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
                 complete(claim, 0, refused("cancelled")); return
             }
             phase = "connect"
-            val connection = RuntimeConnection(context, acquired.runtimePermit, minted).also {
-                it.connect().get(15, TimeUnit.SECONDS)
-            }
+            // Keep the channel referenced BEFORE connecting so the finally
+            // still closes (unlinks/unbinds) it when the handshake refuses.
+            val connection = openRuntimeChannel(acquired.runtimePermit, minted)
             client = connection
+            connection.connect(15_000L)
             phase = "exchange"
             val first = result(connection.exchange("workspace.syncInputs", payload, syncID))
             phase = "receipt"
@@ -917,8 +1012,15 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
             if (!possiblyAdmitted) owned.latency.publish(LinuxTerminalLatency.TERMINAL_FAILED)
             if (!possiblyAdmitted) {
                 if (work.containsKey(owned.controlID)) owned.finish(JSONObject().put("state", "quiescent"))
+                // A refused admission already crossed the wire and names its
+                // own bounded code. The historical environment-transaction
+                // names stay byte-identical; other reviewed admission names
+                // (runtime_not_ready/runtime_not_started/...) are preserved so
+                // the next device case can tell a stopping/idle/refusing
+                // engine from a transport failure instead of one opaque
+                // runtime_unavailable. Anything else keeps the old default.
                 val code = (failure as? AdmissionRefused)?.code?.takeIf {
-                    it in setOf("environment_transaction_busy", "environment_transaction_requires_idle")
+                    it in ADMISSION_REFUSAL_CODES
                 } ?: "runtime_not_started"
                 complete(claim, 1, JSONObject().put("code", code))
             }
@@ -982,7 +1084,10 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
         withContext(NonCancellable) {
             RuntimeExecutionTrace.mark(Stage.PUMP_WATCH_ENTER)
             val emittedStages = mutableSetOf<Stage>()
+            var consecutiveFailures = 0
+            var iteration = 0L
             while (true) {
+                var failed = false
                 try {
                     if (owned.stop.get()) owned.requestStop()
                     if (owned.sessionID == null) {
@@ -1043,19 +1148,26 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
                     }
                     // A new component process has no old receipt. Initializing
                     // its metadata performs runtime-UID quiescence recovery;
-                    // status alone (before recovery) is never proof.
-                    awaitReceipt(owned, owned.exchange("install.status"))
-                    val status = owned.exchange("status")
-                    if (finishIfRuntimeGenerationRetired(owned, failedStartClaim, status)) {
-                        return@withContext
+                    // status alone (before recovery) is never proof. This
+                    // generation probe is bounded (not 2 IPC every second for
+                    // the whole session) and a real poll failure probes at
+                    // once, so retirement detection is not delayed.
+                    iteration += 1
+                    if (iteration % WATCH_GENERATION_PROBE_EVERY == 0L) {
+                        awaitReceipt(owned, owned.exchange("install.status"))
+                        val status = owned.exchange("status")
+                        if (finishIfRuntimeGenerationRetired(owned, failedStartClaim, status)) {
+                            return@withContext
+                        }
+                        if (!status.getBoolean("active")) {
+                            owned.finish(JSONObject().put("state", "quiescent"))
+                            RuntimeExecutionTrace.mark(Stage.PUMP_FINISHED)
+                            failedStartClaim?.let { complete(it, 1, failedStartProof(owned, "runtime_start_interrupted")) }
+                            return@withContext
+                        }
                     }
-                    if (!status.getBoolean("active")) {
-                        owned.finish(JSONObject().put("state", "quiescent"))
-                        RuntimeExecutionTrace.mark(Stage.PUMP_FINISHED)
-                        failedStartClaim?.let { complete(it, 1, failedStartProof(owned, "runtime_start_interrupted")) }
-                        return@withContext
-                    }
-                } catch (_: Exception) {
+                } catch (failure: Exception) {
+                    failed = true
                     if (emittedStages.add(Stage.PUMP_WATCH_EXCEPTION)) RuntimeExecutionTrace.mark(Stage.PUMP_WATCH_EXCEPTION)
                     // A failing poll for an owned session is exactly the
                     // symptom of a replaced runtime process (the new process
@@ -1064,7 +1176,24 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
                     // measured boot tokens. Any other failure keeps the
                     // original retention (never replay, never timer release).
                     try {
-                        if (finishIfRuntimeGenerationRetired(owned, failedStartClaim)) {
+                        val status = if (failure is AdmissionRefused &&
+                            owned.pollRefusalLatched() && !owned.hasSettledProof()
+                        ) runCatching { owned.exchange("status") }.getOrNull() else null
+                        if (status != null) {
+                            // The runtime no longer holds this session at all
+                            // (typed latch) and reports no owned work: the
+                            // existing honest non-terminal settlement, which
+                            // keeps workspaceStatus=unknown and never replays.
+                            if (finishIfRuntimeGenerationRetired(owned, failedStartClaim, status)) {
+                                return@withContext
+                            }
+                            if (!status.getBoolean("active")) {
+                                owned.finish(JSONObject().put("state", "quiescent"))
+                                RuntimeExecutionTrace.mark(Stage.PUMP_FINISHED)
+                                failedStartClaim?.let { complete(it, 1, failedStartProof(owned, "runtime_start_interrupted")) }
+                                return@withContext
+                            }
+                        } else if (finishIfRuntimeGenerationRetired(owned, failedStartClaim)) {
                             return@withContext
                         }
                     } catch (_: Exception) {
@@ -1072,7 +1201,13 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
                         // keep the exact session and retry on the next loop.
                     }
                 }
-                delay(1_000)
+                if (failed) {
+                    consecutiveFailures += 1
+                    delay(watchBackoffMillis(consecutiveFailures))
+                } else {
+                    consecutiveFailures = 0
+                    delay(WATCH_POLL_INTERVAL_MILLIS)
+                }
             }
         }
     }
@@ -1093,9 +1228,13 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
         val operationID: String? = null,
     ) {
         lateinit var lease: ForegroundLease
-        var client: RuntimeConnection? = null
+        /** ONE authenticated channel for this preflight round trip, reused for
+         *  the dispatch and every receipt poll and closed exactly once by
+         *  settle(). A routine refusal never drops it. */
+        val channel = LinuxRuntimeChannelLease("preflight-$controlID") {
+            openRuntimeChannel(lease.runtimePermit, workspaceGrant)
+        }
         var workspaceGrant: CoreWorkspaceGrant? = null
-        val connectionLock = Mutex()
         val stop = AtomicBoolean()
         /** True once a request may have crossed the wire. Uncertain claims
          *  are retired ONLY by an authenticated same-request terminal or a
@@ -1108,19 +1247,8 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
          *  it; it never trusts an unmeasured string. */
         @Volatile var dispatchedPeerToken: String? = null
 
-        suspend fun exchange(operation: String, payload: JSONObject, requestID: String = controlID): JSONObject {
-            val connection = connectionLock.withLock {
-                client ?: RuntimeConnection(context, lease.runtimePermit, workspaceGrant).also {
-                    try { it.connect().get(15, TimeUnit.SECONDS); client = it }
-                    catch (failure: Exception) { it.close(); throw failure }
-                }
-            }
-            try { return result(connection.exchange(operation, payload, requestID)) }
-            catch (failure: Exception) {
-                connectionLock.withLock { if (client === connection) { client = null; connection.close() } }
-                throw failure
-            }
-        }
+        suspend fun exchange(operation: String, payload: JSONObject, requestID: String = controlID): JSONObject =
+            result(channel.exchange(operation, payload, requestID))
 
         /** Target-scoped cancel for THIS preflight request only (the original
          *  control UUID travels as the wire request id). It never stops an
@@ -1154,7 +1282,7 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
          *  exactly once and never retain the claimed map entry on a false
          *  return that already discharged our contribution. */
         suspend fun settle(): Boolean {
-            connectionLock.withLock { client?.close(); client = null }
+            channel.close()
             val grant = workspaceGrant
             if (grant != null && !grantClosed.get()) {
                 if (!runCatching { grant.close() }.isSuccess) return false
@@ -1183,6 +1311,7 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
     private fun reconcilePreflightOwnership(owned: OwnedPreflight) {
         if (!owned.reconcileStarted.compareAndSet(false, true)) return
         scope.launch(Dispatchers.IO) {
+            var quiet = 0
             while (preflights[owned.controlID] === owned) {
                 if (!owned.dispatchedRemote.get()) {
                     // Nothing crossed the wire: only the LOCAL channel close
@@ -1224,8 +1353,9 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
                     } else if (owned.stop.get()) {
                         runCatching { owned.requestCancel() } // ONLY the matching control cancel
                     }
+                    if (state == null || state == "unknown") quiet += 1 else quiet = 0
                 }
-                delay(1_000)
+                delay(reconcileBackoffMillis(quiet))
             }
         }
     }
@@ -1609,7 +1739,7 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
         }
         val leaseProofDigest = outcome.optString("leaseProofDigest")
         val sessionToken = LinuxRuntimeReadinessController.processIdentity(outcome)
-        val peerProof = runCatching { owned.client?.currentPeerProof() }.getOrNull()
+        val peerProof = runCatching { owned.channel.currentPeerProof() }.getOrNull()
         // The ONLY accepted file-sync evidence: the actual Core-owned
         // terminal EXPORT_FINISH reply captured by THIS grant (result
         // "synced", terminal marker, this session key, current epoch).
@@ -1843,6 +1973,108 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
                 .put("operationID", observed.operationID)
                 .put("uiRunID", observed.uiRunID)
                 .put("conversationID", observed.conversationID)
+        }
+
+        /** The ONLY terminal-refusal names that prove the runtime no longer
+         *  holds a released session's in-memory receipt (its `matching()` /
+         *  stopping fence). A transient transport failure is NOT one. */
+        internal val FINAL_POLL_REFUSALS = setOf("runtime_not_ready", "runtime_not_started")
+
+        /** Operations whose repeated polling created the recorded leak. */
+        internal val POLLED_OPERATIONS = setOf("shell.poll", "stdio.poll")
+
+        /** Consecutive typed refusals tolerated before a session latches the
+         *  refusal: a single transient answer is never treated as final. */
+        internal const val POLL_REFUSAL_LATCH_AFTER = 3
+
+        /** Reviewed admission-refusal names preserved verbatim on a refused
+         *  start (the historical environment-transaction pair included). */
+        internal val ADMISSION_REFUSAL_CODES = setOf(
+            "environment_transaction_busy", "environment_transaction_requires_idle",
+            "runtime_not_ready", "runtime_not_started", "invalid_request",
+        )
+
+        internal val REFUSAL_TOKEN = Regex("^[a-z][a-z0-9_]{0,47}$")
+
+        /**
+         * The ONE typed mapping from a pump control failure to the bounded code
+         * the mailbox settles. A well-formed runtime refusal keeps ITS OWN
+         * reviewed code; cancellation is `cancelled`; everything else (real
+         * transport loss, local decode/state failure) keeps the historical
+         * generic `runtime_unavailable`. Untrusted/odd refusal text can never
+         * reach the tool surface.
+         */
+        internal fun controlFailureCode(failure: Exception): String = when {
+            failure is kotlinx.coroutines.CancellationException -> "cancelled"
+            failure is AdmissionRefused && REFUSAL_TOKEN.matches(failure.code) -> failure.code
+            else -> "runtime_unavailable"
+        }
+
+        internal const val WATCH_POLL_INTERVAL_MILLIS = 1_000L
+        internal const val WATCH_GENERATION_PROBE_EVERY = 15L
+        internal const val WATCH_FAILURE_BACKOFF_MAX_MILLIS = 30_000L
+
+        /** Bounded exponential backoff for the owned watch/preflight loops:
+         *  a fatal or stale refusal must not become a busy loop (and must
+         *  never be retried into a different side effect). */
+        internal fun watchBackoffMillis(consecutiveFailures: Int): Long {
+            if (consecutiveFailures <= 0) return WATCH_POLL_INTERVAL_MILLIS
+            var value = WATCH_POLL_INTERVAL_MILLIS
+            repeat((consecutiveFailures - 1).coerceAtMost(5)) {
+                value = (value * 2).coerceAtMost(WATCH_FAILURE_BACKOFF_MAX_MILLIS)
+            }
+            return value.coerceAtMost(WATCH_FAILURE_BACKOFF_MAX_MILLIS)
+        }
+
+        internal fun reconcileBackoffMillis(quietIterations: Int): Long =
+            if (quietIterations <= 0) WATCH_POLL_INTERVAL_MILLIS
+            else watchBackoffMillis(quietIterations)
+
+        /**
+         * The page served for a released session the runtime no longer holds.
+         * Every field is copied from the RECORDED terminal proof produced by a
+         * real `leaseReleased` page (see [terminalProof]/[OwnedSession.finish]);
+         * the page itself carries no new bytes and does not claim any. This is
+         * NOT a fabricated release: it is the same real terminal re-projected
+         * after the runtime's bounded read index stopped serving it, so late
+         * polls never reopen a binding or re-ask forever.
+         */
+        internal fun recordedTerminalPage(payload: JSONObject, proof: JSONObject): JSONObject {
+            require(proof.optString("state") == "released") { "No recorded terminal release" }
+            require(proof.getString("sessionID") == payload.getString("sessionID"))
+            val page = JSONObject()
+                .put("sessionID", payload.getString("sessionID"))
+                // The runtime's own released page reports its real job state
+                // ("terminated"); the recorded terminal is the same real
+                // terminal, so it keeps that vocabulary (the Swift decoder
+                // recognizes `terminated` as terminal-quiescent) and never
+                // invents a new state name.
+                .put("state", "terminated")
+                .put("outputBase64", "")
+                .put("cursor", payload.optLong("cursor", 0L))
+                .put("gapBytes", 0L).put("more", false).put("droppedBytes", 0L)
+                .put("leaseReleased", true)
+                .put("cancelled", proof.optBoolean("cancelled", false))
+            for (key in listOf("stopReason", "exitCode", "termSig", "waitErrno")) {
+                if (proof.has(key)) page.put(key, proof.get(key))
+            }
+            copyWorkspaceProof(page, proof)
+            return page
+        }
+
+        internal fun copyWorkspaceProof(target: JSONObject, proof: JSONObject) {
+            target.remove("workspaceStatus"); target.remove("workspaceRecoveryRef")
+            target.remove("workspaceRecovery"); target.remove("workspaceKey"); target.remove("workspaceOwner")
+            target.put("workspaceStatus", proof.optString("workspaceStatus", "unknown"))
+            if (proof.has("workspaceKey")) target.put("workspaceKey", proof.getString("workspaceKey"))
+            if (proof.has("workspaceOwner")) target.put("workspaceOwner", proof.getBoolean("workspaceOwner"))
+            if (proof.has("workspaceRecoveryRef")) target.put("workspaceRecoveryRef", proof.getString("workspaceRecoveryRef"))
+            // The OPTIONAL merged recovery projection rides the same terminal
+            // proof channel (never a second registry); absence is preserved.
+            proof.optJSONObject("workspaceRecovery")?.let { target.put("workspaceRecovery", it) }
+            target.remove("environmentTransaction")
+            sanitizeEnvironmentTransactionReceipt(proof.optJSONObject("environmentTransaction"))
+                ?.let { target.put("environmentTransaction", it) }
         }
 
         internal fun requiresControlReceipt(operation: String): Boolean {
@@ -2254,20 +2486,6 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
         return value
     }
 
-    private fun copyWorkspaceProof(target: JSONObject, proof: JSONObject) {
-        target.remove("workspaceStatus"); target.remove("workspaceRecoveryRef")
-        target.remove("workspaceRecovery"); target.remove("workspaceKey"); target.remove("workspaceOwner")
-        target.put("workspaceStatus", proof.optString("workspaceStatus", "unknown"))
-        if (proof.has("workspaceKey")) target.put("workspaceKey", proof.getString("workspaceKey"))
-        if (proof.has("workspaceOwner")) target.put("workspaceOwner", proof.getBoolean("workspaceOwner"))
-        if (proof.has("workspaceRecoveryRef")) target.put("workspaceRecoveryRef", proof.getString("workspaceRecoveryRef"))
-        // The OPTIONAL merged recovery projection rides the same terminal
-        // proof channel (never a second registry); absence is preserved.
-        proof.optJSONObject("workspaceRecovery")?.let { target.put("workspaceRecovery", it) }
-        target.remove("environmentTransaction")
-        sanitizeEnvironmentTransactionReceipt(proof.optJSONObject("environmentTransaction"))
-            ?.let { target.put("environmentTransaction", it) }
-    }
 
     private fun terminalProof(page: JSONObject): JSONObject = JSONObject().put("state", "released").also { proof ->
         for (key in listOf("sessionID", "cancelled", "stopReason", "exitCode", "termSig", "waitErrno",

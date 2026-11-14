@@ -173,6 +173,7 @@ extension G02InstalledComposition {
 
     private func registerHistoryCommands(gen: AndroidRuntimeBootstrap.Generation) {
         let domain = conversationDomain
+        let epoch = gen.epoch
         bind(gen, scope: .applicationConfiguration, command: "conversation.list",
              configurationScope: "conversations") { job in
             do {
@@ -357,6 +358,35 @@ extension G02InstalledComposition {
                     payload: G02DomainBinder.settingsPayload(job))
                 return G02DomainBinder.completedWireObject(reply.wireObject)
             } catch let error as ConversationDomainError {
+                if error == .notFound,
+                   let (runs, _) = RunDomainFacade.current(epoch: epoch),
+                   let request = try? ConversationContentReadRequest.parse(
+                       G02DomainBinder.settingsPayload(job)) {
+                    switch await runs.readOwnedRunContent(
+                        handle: request.handle, offset: request.offset,
+                        maxBytes: request.maxBytes, conversationID: taskID) {
+                    case .slice(let bytes, let next, let complete):
+                        guard let text = String(data: bytes, encoding: .utf8) else {
+                            return G02DomainBinder.wireError("persistenceUnavailable",
+                                                             reason: "contentSliceDecode")
+                        }
+                        let wire: [String: Any] = [
+                            "handle": request.handle, "chunk": text,
+                            "done": complete, "nextOffset": complete ? NSNull() : next,
+                            "conversationID": taskID.uuidString,
+                        ]
+                        guard let encoded = try? JSONSerialization.data(withJSONObject: wire),
+                              encoded.count <= SettingsDomainV1.pageBudgetBytes else {
+                            return G02DomainBinder.wireError("payloadTooLarge",
+                                                             reason: "contentSliceBudget")
+                        }
+                        return G02DomainBinder.completedWireObject(wire)
+                    case .notFound: break
+                    case .invalidOffset:
+                        return G02DomainBinder.wireError("invalidEnvelope",
+                                                         reason: "contentOffsetInvalid")
+                    }
+                }
                 return G02DomainBinder.wireError(error.wireCode, reason: error.wireReason)
             } catch let error as MemoryAdapterError {
                 return G02DomainBinder.wireError(error.wireCode, reason: error.wireReason)

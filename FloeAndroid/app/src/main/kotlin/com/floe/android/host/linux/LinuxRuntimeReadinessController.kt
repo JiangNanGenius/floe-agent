@@ -267,9 +267,19 @@ class LinuxRuntimeReadinessController(
             try {
                 fresh.connect().get(15, TimeUnit.SECONDS)
             } catch (timeout: java.util.concurrent.TimeoutException) {
+                // A failed handshake drops this candidate: the binding must
+                // be unlinked/unbound here, otherwise the framework keeps the
+                // ServiceDispatcher (and its JNI reference) alive for a
+                // connection nobody owns any more. The bounded re-ingress
+                // attempt set creates a fresh candidate.
+                runCatching { fresh.close() }
                 throw IllegalStateException("connectTimeout", timeout)
             } catch (refused: java.util.concurrent.ExecutionException) {
+                runCatching { fresh.close() }
                 throw IllegalStateException(connectionFailureStage(refused), refused)
+            } catch (other: Exception) {
+                runCatching { fresh.close() }
+                throw other
             }
             // REAL callback: the actual Binder object death / disconnect of
             // the anchored peer falls ALL facts for the generation NOW

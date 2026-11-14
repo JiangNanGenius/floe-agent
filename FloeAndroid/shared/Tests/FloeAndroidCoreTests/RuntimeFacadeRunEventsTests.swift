@@ -213,6 +213,27 @@ final class RuntimeFacadeRunEventsTests: XCTestCase {
             if offset == Int.max { break }
         }
         XCTAssertEqual(String(decoding: reassembled, as: UTF8.self), big)
+        var scopedBytes = Data()
+        var scopedOffset = 0
+        while true {
+            switch await domain.readOwnedRunContent(handle: handle, offset: scopedOffset,
+                                                   maxBytes: 16_384,
+                                                   conversationID: conversationID) {
+            case .slice(let bytes, let next, let complete):
+                scopedBytes.append(bytes)
+                scopedOffset = next
+                if complete { scopedOffset = Int.max }
+            case .notFound, .invalidOffset:
+                return XCTFail("the owning conversation must resolve its snapshot handle")
+            }
+            if scopedOffset == Int.max { break }
+        }
+        XCTAssertEqual(scopedBytes, reassembled)
+        switch await domain.readOwnedRunContent(handle: handle, offset: 0, maxBytes: 64,
+                                                conversationID: UUID()) {
+        case .notFound: break
+        default: XCTFail("foreign conversation must not resolve a run snapshot")
+        }
         // A foreign run can never read the handle.
         switch await domain.readRunContent(handle: handle, offset: 0, maxBytes: 64,
                                            runID: UUID(), conversationID: conversationID) {

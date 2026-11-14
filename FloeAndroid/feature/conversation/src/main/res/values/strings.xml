@@ -109,6 +109,7 @@
     <string name="reasoning_thinking">Thinking…</string>
     <string name="reasoning_view_record">View thinking record</string>
     <string name="reasoning_still_updating">Still updating</string>
+    <string name="reasoning_partial">Partial record</string>
     <string name="reasoning_full">Full reasoning</string>
 
     <!-- messages, credentials and attachments -->

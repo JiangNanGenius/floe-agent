@@ -54,6 +54,9 @@ fun ConversationUiSyntheticPreview(modifier: Modifier = Modifier) {
             host.onParseResult = { session, source, generation, blocks ->
                 h.applyMarkdownParseResult(session, source, generation, blocks)
             }
+            host.onParseDiscard = { session, source, generation ->
+                h.abandonMarkdownParse(session, source, generation)
+            }
         }
     }
     Column(modifier = modifier.fillMaxSize().background(Floe.colors.readingSurface)) {
@@ -268,6 +271,7 @@ private class SyntheticConversationHost(
     private val mainHandler = Handler(Looper.getMainLooper())
 
     var onParseResult: ((ConversationSessionToken, String, Long, List<MarkdownBlockUi>?) -> Unit)? = null
+    var onParseDiscard: ((ConversationSessionToken, String, Long) -> Unit)? = null
 
     override fun loadThread(session: ConversationSessionToken) = Unit
     override fun threadViewDetached(session: ConversationSessionToken) = Unit
@@ -326,7 +330,10 @@ private class SyntheticConversationHost(
         // REAL bounded adapter off the UI thread; the generation-fenced echo
         // returns to the main thread exactly as a production host binding
         // would (no synchronous fake projection any more).
-        parseService.schedule(source, generation) { echoedSource, echoedGeneration, blocks ->
+        parseService.schedule(
+            source, generation,
+            onDiscard = { s, g -> mainHandler.post { onParseDiscard?.invoke(session, s, g) } },
+        ) { echoedSource, echoedGeneration, blocks ->
             mainHandler.post { onParseResult?.invoke(session, echoedSource, echoedGeneration, blocks) }
         }
 

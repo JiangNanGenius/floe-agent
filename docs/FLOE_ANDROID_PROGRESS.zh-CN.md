@@ -1,5 +1,19 @@
 # Floe Android 分目标实施记录
 
+## 1.0.11／119 修复源码收口（2026-11-15）
+
+补充检查：native57 已从本批不可变源码实际完成 Android ARM64 生产对象／链接，2,743 项规范输入与保存的原始库一致；Full119及Office/CAD组件实际封装通过，58项原生库绑定、16KiB与四项API28／29签名检查通过。聊天四类相关JVM共72项：首轮71项通过，一项新测试夹具漏登记回调；补齐夹具并保留原断言后仅复测这一项通过，原失败保留，生产解析器未改。三星安装与实际行为验收、源码许可封装及公开下载仍分开记录，尚未发布119。
+
+English: Native57 ARM64 production, actual Full119/component packaging, 58 native bindings, 16KiB and four API28/29 signer checks passed. The 72 selected conversation methods are accounted for by 71 original passes plus one corrected fixture-only recheck with unchanged assertions. Samsung behavior and publication remain pending.
+
+本批修复终端连接重复注册引发的 JNI 引用耗尽、旧 Binder 回调影响新连接、重复拒绝后的轮询风暴，并集成屏幕控制结束／停止后的浮球清理。连接与权限继续按真实任务和会话归属，不重放结果不明的命令，不以空闲状态伪造终端释放。
+
+聊天补齐长回复／思考的任务所有者分页读取，真实原生 `content.read` 在消息读取未找到时接入运行快照读取；保留任务、句柄及原生代际校验。修正相同文本版本的乱序句柄回收、Markdown 解析丢弃后的等待清理，并明确未完整读回的部分记录。
+
+截至本源码检查点：六个实际 Kotlin 生产文件已编译，27 项连接／终端 JVM 检查通过；新增原生接线已实际完成 Swift 6 对象编译，超长中文／表情精确读回与跨任务拒绝所在的一个定向用例通过。此前浮球四文件编译及32项检查复用。聊天其余 JVM、Android ARM64 新组件、Full APK、三星和公开下载仍待完成，不能将这些源码和组件结果计为新版本交付。现有1.0.10／118及原失败记录保持不变。
+
+English: The source batch repairs terminal Binder lifecycle, repeated-refusal polling, exact-owner bubble cleanup, native task-owned long-text continuation and Markdown pending cleanup. Six actual Kotlin production files compiled and 27 focused JVM tests passed; actual Swift6 object compilation and one byte-exact oversized UTF8/foreign-task test passed. The earlier 32 bubble tests are reused. New ARM64/App packaging, remaining conversation tests, Samsung acceptance and publication are pending.
+
 ## 屏幕控制浮球收尾源码检查点（2026-11-15）
 
 悬浮控制只在真实屏幕动作进行中、主动暂停或等待用户时显示；动作结算后自动隐藏，下次真实动作再显示。停止／接管、任务结束、无障碍会话释放或 ADB 会话失效时清除对应控制，后台任务继续及旧回调不能使其重新出现。进行中的面板继续沿用四秒自动收起，保留现有暂停／恢复与授权语义。

@@ -600,6 +600,15 @@ class ConversationHostController internal constructor(
 
     internal val markdownParser = com.floe.android.feature.conversation.MarkdownParseService()
 
+    /**
+     * One in-flight snapshot continuation read per (conversation, run, kind).
+     * A new snapshot page only updates the builder's adopted handle/offset;
+     * the running read chain picks the newest plan up on its next step. This
+     * keeps a 20-50 ms snapshot cadence from starting overlapping read loops.
+     */
+    private val activeSnapshotContinuationReads =
+        java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
     internal fun start() {
         if (host.readiness.value.conversationDomainAdmitted) {
             refreshHistory()
@@ -1394,6 +1403,9 @@ class ConversationHostController internal constructor(
                         val selectedHere = entry.builder.selectedRunId == runID
                         if (selectedHere) entry.builder.applySnapshotLiveText(page)
                         entry.holder.applyHostSnapshot(entry.builder.build())
+                        if (selectedHere) {
+                            resumeSnapshotContinuations(entry, entry.holder.session, page)
+                        }
                         // Run snapshots are the canonical live read; a
                         // question can appear while the tool call is still
                         // executing. The controller throttles the read.
@@ -2222,6 +2234,155 @@ class ConversationHostController internal constructor(
         }
     }
 
+    /**
+     * Starts (or leaves running) the ONE paged read chain for the selected
+     * run's adopted snapshot continuation(s). The native snapshot stages the
+     * FULL live text behind an owned `chunk:v1:` handle and inlines only a
+     * bounded prefix; this chain pages the rest through the EXISTING
+     * authorised `content.read` command. Every reply is fenced on holder,
+     * session epoch, selected run, adopted handle/revision/step and the exact
+     * expected byte offset; a stale/foreign/closed reply appends nothing.
+     */
+    private fun resumeSnapshotContinuations(
+        entry: ConversationFlowHolderEntry,
+        session: ConversationSessionToken,
+        page: ConversationWire.SnapshotPage,
+    ) {
+        if (!page.runID.equals(entry.builder.selectedRunId, ignoreCase = true)) return
+        maybeStartSnapshotContinuation(entry, session, reasoning = false)
+        maybeStartSnapshotContinuation(entry, session, reasoning = true)
+    }
+
+    private fun maybeStartSnapshotContinuation(
+        entry: ConversationFlowHolderEntry,
+        session: ConversationSessionToken,
+        reasoning: Boolean,
+    ) {
+        val runID = entry.builder.selectedRunId ?: return
+        val key = snapshotContinuationKey(session.conversationId, runID, reasoning)
+        if (!activeSnapshotContinuationReads.add(key)) return
+        readSnapshotContinuationStep(entry, session, reasoning, key, depth = 0)
+    }
+
+    private fun snapshotContinuationKey(
+        conversationID: String,
+        runID: String,
+        reasoning: Boolean,
+    ): String = conversationID.lowercase() + "/" + runID.lowercase() + "/" +
+        if (reasoning) "reasoning" else "answer"
+
+    private fun readSnapshotContinuationStep(
+        entry: ConversationFlowHolderEntry,
+        session: ConversationSessionToken,
+        reasoning: Boolean,
+        key: String,
+        depth: Int,
+        supersededRetries: Int = 0,
+    ) {
+        val finish = { activeSnapshotContinuationReads.remove(key) }
+        if (depth > MAXIMUM_CONTENT_CHUNKS) {
+            finish()
+            return
+        }
+        if (!ownCurrentEntry(entry, session.conversationId, session.sessionEpoch)) {
+            finish()
+            return
+        }
+        val plan = entry.builder.snapshotContinuationPlan(reasoning)
+        if (plan == null) {
+            finish()
+            return
+        }
+        val restartIfSuperseded = {
+            // The adopted step/handle moved while this reply was in flight
+            // (a new snapshot restaged the full text). Abandoning the chain
+            // here would leave the NEW handle unread, so restart at most
+            // twice against the builder's current plan.
+            if (supersededRetries < 2) {
+                activeSnapshotContinuationReads.add(key)
+                readSnapshotContinuationStep(
+                    entry, session, reasoning, key, depth, supersededRetries + 1,
+                )
+            } else {
+                finish()
+            }
+        }
+        host.trackOperation(
+            HostCommandRequest(
+                command = "content.read",
+                // The SAME authorised conversationLifecycle content channel
+                // message-row handles use. Native ownership re-checks the
+                // handle/task/run before any byte is returned.
+                scope = HostScope.ConversationLifecycle(session.conversationId),
+                stateful = false,
+                correlationID = client().correlationID("sread"),
+                payload = JsonObject(
+                    mapOf(
+                        "handle" to JsonPrimitive(plan.handle),
+                        "offset" to JsonPrimitive(plan.offset),
+                        "maxBytes" to JsonPrimitive(plan.maxBytes),
+                    ),
+                ),
+            ),
+        ) { outcome ->
+            if (!ownCurrentEntry(entry, session.conversationId, session.sessionEpoch)) {
+                finish()
+                return@trackOperation
+            }
+            when (outcome) {
+                is HostOperationOutcome.Completed -> {
+                    val slice = ConversationWire.decodeContentSlice(outcome.value)
+                    if (slice == null) {
+                        entry.builder.markSnapshotContinuationUnavailable(
+                            plan, "contentDecode",
+                        )
+                        entry.holder.applyHostSnapshot(entry.builder.build())
+                        finish()
+                        return@trackOperation
+                    }
+                    val changed = entry.builder.applySnapshotContinuationChunk(
+                        plan = plan,
+                        chunk = slice.chunk,
+                        done = slice.done,
+                        nextOffset = slice.nextOffset,
+                        totalBytes = slice.totalBytes,
+                    )
+                    if (changed) entry.holder.applyHostSnapshot(entry.builder.build())
+                    if (!changed) {
+                        finish()
+                        restartIfSuperseded()
+                        return@trackOperation
+                    }
+                    // A handle's `done` only exhausts THAT handle; a newer
+                    // adopter may still carry more text. The next step reads
+                    // the builder's current handle at the new byte offset,
+                    // and a genuinely complete step plans nothing.
+                    readSnapshotContinuationStep(
+                        entry, session, reasoning, key, depth + 1, supersededRetries,
+                    )
+                }
+                is HostOperationOutcome.Rejected -> {
+                    val changed = entry.builder.markSnapshotContinuationUnavailable(
+                        plan, outcome.code,
+                    )
+                    if (changed) entry.holder.applyHostSnapshot(entry.builder.build())
+                    finish()
+                    if (!changed) restartIfSuperseded()
+                }
+                is HostOperationOutcome.Failed -> {
+                    val changed = entry.builder.markSnapshotContinuationUnavailable(
+                        plan, outcome.code,
+                    )
+                    if (changed) entry.holder.applyHostSnapshot(entry.builder.build())
+                    finish()
+                    if (!changed) restartIfSuperseded()
+                }
+                HostOperationOutcome.Cancelled,
+                HostOperationOutcome.Superseded -> finish()
+            }
+        }
+    }
+
     private fun resumeLiveRuns(
         session: ConversationSessionToken,
         entry: ConversationFlowHolderEntry,
@@ -2406,6 +2567,7 @@ class ConversationHostController internal constructor(
                         // ⇄ the router echo: the VM selection follows the host truth.
                         entry.holder.selectRun(page.runID)
                         entry.holder.applyHostSnapshot(entry.builder.build())
+                        resumeSnapshotContinuations(entry, entry.holder.session, page)
                         // The old run's own receipt/result: the SAME recorded
                         // history read the ordinary terminal-run path issues.
                         loadRecordedRunEvents(entry.holder.session, entry, page.runID)
@@ -7334,7 +7496,18 @@ class ConversationHostController internal constructor(
         session: ConversationSessionToken,
         source: String,
         generation: Long,
-    ): Boolean = markdownParser.schedule(source, generation) { echoSource, echoGeneration, blocks ->
+    ): Boolean = markdownParser.schedule(
+        source = source,
+        generation = generation,
+        onDiscard = { droppedSource, droppedGeneration ->
+            // The job was conflated/overflowed/closed and can never deliver.
+            // Forget only that exact pending ticket; the fragment remains
+            // visible as literal text and the next effect may reschedule it.
+            holders[session.conversationId]?.holder?.abandonMarkdownParse(
+                session, droppedSource, droppedGeneration,
+            )
+        },
+    ) { echoSource, echoGeneration, blocks ->
         holders[session.conversationId]?.holder?.applyMarkdownParseResult(
             session, echoSource, echoGeneration, blocks,
         )

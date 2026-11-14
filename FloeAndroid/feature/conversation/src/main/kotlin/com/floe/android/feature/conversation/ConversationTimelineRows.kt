@@ -154,7 +154,12 @@ fun ConversationTimelineRow(
         is TimelineRowUi.MissingFinal -> MissingFinalRow(modifier)
         TimelineRowUi.LiveReasoning -> {
             val state = holder.snapshot.value ?: return
-            val isStreaming = state.isRunning && state.liveStateName == "streamingModel"
+            // Truthful activity: "still updating" only while a real reasoning
+            // signal was observed in the CURRENT reasoning step; a working
+            // run without fresh reasoning bytes says "Thinking…" instead.
+            val isStreaming = state.liveReasoningAdvancing
+            val isAwaiting = !isStreaming && state.isRunning &&
+                state.liveStateName == "streamingModel"
             val label = if (state.isRunning && state.liveStateName != null) {
                 runStateTitle(state.liveStateName)
             } else {
@@ -168,6 +173,8 @@ fun ConversationTimelineRow(
                 onCopyText = { holder.copyMessage(state.liveReasoningText) },
                 modifier = modifier,
                 label = label,
+                isAwaiting = isAwaiting,
+                partial = state.liveReasoningPartial,
             )
         }
         TimelineRowUi.LiveAssistantTail -> {

@@ -332,6 +332,153 @@ class ConversationCommonMarkAdapterTest {
     }
 
     @Test
+    fun conflatedPendingJobSettlesItsPendingTicketWithoutDelivering() {
+        val gate = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val discarded = java.util.concurrent.CopyOnWriteArrayList<Pair<String, Long>>()
+        val delivered = AtomicReference<List<Long>>(emptyList())
+        val done = CountDownLatch(1)
+        val service = MarkdownParseService(
+            parse = { source ->
+                if (source == "block") {
+                    gate.countDown()
+                    release.await(5, TimeUnit.SECONDS)
+                }
+                listOf(MarkdownBlockUi.ThematicBreak)
+            },
+            workerCount = 1,
+            maxPending = 8,
+        )
+        try {
+            service.schedule(
+                "block", 1,
+                onDiscard = { source, generation -> discarded.add(source to generation) },
+            ) { _, _, _ -> }
+            assertTrue(gate.await(5, TimeUnit.SECONDS))
+            service.schedule(
+                "tail", 2,
+                onDiscard = { source, generation -> discarded.add(source to generation) },
+            ) { _, _, _ -> }
+            service.schedule(
+                "tail", 3,
+                onDiscard = { source, generation -> discarded.add(source to generation) },
+            ) { _, generation, _ ->
+                delivered.set(delivered.get() + generation)
+                done.countDown()
+            }
+            assertEquals(listOf("tail" to 2L), discarded.toList())
+            release.countDown()
+            assertTrue(done.await(5, TimeUnit.SECONDS))
+            assertEquals(listOf(3L), delivered.get())
+            assertEquals(
+                "the conflated generation is settled exactly once and never delivered",
+                listOf("tail" to 2L),
+                discarded.toList(),
+            )
+        } finally {
+            release.countDown()
+            service.close()
+        }
+    }
+
+    @Test
+    fun queueOverflowSettlesTheOldestDroppedTicket() {
+        val gate = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val discarded = java.util.concurrent.CopyOnWriteArrayList<Pair<String, Long>>()
+        val delivered = java.util.concurrent.ConcurrentHashMap<String, Long>()
+        val service = MarkdownParseService(
+            parse = { source ->
+                if (source == "block") {
+                    gate.countDown()
+                    release.await(5, TimeUnit.SECONDS)
+                }
+                listOf(MarkdownBlockUi.ThematicBreak)
+            },
+            workerCount = 1,
+            maxPending = 2,
+        )
+        try {
+            service.schedule("block", 1) { _, _, _ -> }
+            assertTrue(gate.await(5, TimeUnit.SECONDS))
+            service.schedule(
+                "old", 2,
+                onDiscard = { source, generation -> discarded.add(source to generation) },
+            ) { source, generation, _ -> delivered[source] = generation }
+            service.schedule(
+                "mid", 3,
+                onDiscard = { source, generation -> discarded.add(source to generation) },
+            ) { source, generation, _ -> delivered[source] = generation }
+            service.schedule(
+                "new", 4,
+                onDiscard = { source, generation -> discarded.add(source to generation) },
+            ) { source, generation, _ -> delivered[source] = generation }
+            assertEquals(listOf("old" to 2L), discarded.toList())
+            release.countDown()
+            val deadline = System.currentTimeMillis() + 5_000
+            while (delivered.size < 2 && System.currentTimeMillis() < deadline) {
+                Thread.sleep(10)
+            }
+            assertEquals(4L, delivered["new"])
+            assertEquals(3L, delivered["mid"])
+            assertNull(delivered["old"])
+        } finally {
+            release.countDown()
+            service.close()
+        }
+    }
+
+    @Test
+    fun closeSettlesQueuedTicketsWithoutDeliveringThem() {
+        val gate = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val discarded = java.util.concurrent.CopyOnWriteArrayList<Pair<String, Long>>()
+        val delivered = AtomicInteger(0)
+        val service = MarkdownParseService(
+            parse = { source ->
+                if (source == "block") {
+                    gate.countDown()
+                    release.await(5, TimeUnit.SECONDS)
+                }
+                listOf(MarkdownBlockUi.ThematicBreak)
+            },
+            workerCount = 1,
+            maxPending = 4,
+        )
+        try {
+            service.schedule(
+                "block", 1,
+                onDiscard = { source, generation -> discarded.add(source to generation) },
+            ) { _, _, _ -> delivered.incrementAndGet() }
+            assertTrue(gate.await(5, TimeUnit.SECONDS))
+            service.schedule(
+                "queued", 2,
+                onDiscard = { source, generation -> discarded.add(source to generation) },
+            ) { _, _, _ -> delivered.incrementAndGet() }
+            service.close()
+            assertTrue(service.isClosed())
+            assertTrue(
+                "the never-started job's ticket is settled by close",
+                discarded.contains("queued" to 2L),
+            )
+            release.countDown()
+            val deadline = System.currentTimeMillis() + 2_000
+            while (discarded.size < 2 && System.currentTimeMillis() < deadline) {
+                Thread.sleep(10)
+            }
+            assertEquals(
+                "the in-flight job is also settled, never delivered after close",
+                2,
+                discarded.size,
+            )
+            assertEquals(0, delivered.get())
+        } finally {
+            release.countDown()
+            service.close()
+        }
+    }
+
+    @Test
     fun closeReleasesPendingWorkAndRefusesNewSchedules() {
         val gate = CountDownLatch(1)
         val never = AtomicInteger(0)

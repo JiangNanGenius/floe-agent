@@ -367,6 +367,9 @@ object CommonMarkMarkdownParser {
  *  - queue overflow drops the OLDEST unstarted fragment (its result would be
  *    a superseded generation anyway; the holder's coordinator fences the
  *    echo), never the newest;
+ *  - every dropped/never-delivered job invokes its optional [onDiscard]
+ *    exactly once so the presentation owner can settle its pending ticket;
+ *    [deliver] itself is never called for such a job (no result is invented);
  *  - [close] stops taking work, releases the pool and never delivers to
  *    dropped/in-flight jobs — honest release semantics;
  *  - the actual parse runs only inside the workers; the caller thread does
@@ -384,7 +387,12 @@ class MarkdownParseService(
         const val DEFAULT_MAX_PENDING = 64
     }
 
-    private class Job(val source: String, val generation: Long, val deliver: (String, Long, List<MarkdownBlockUi>?) -> Unit)
+    private class Job(
+        val source: String,
+        val generation: Long,
+        val onDiscard: ((String, Long) -> Unit)?,
+        val deliver: (String, Long, List<MarkdownBlockUi>?) -> Unit,
+    )
 
     private val lock = Any()
     private var closed = false
@@ -398,48 +406,81 @@ class MarkdownParseService(
 
     /** True if this generation was retained for execution. False = the
      * service is closed (the coordinator records BACKEND_UNAVAILABLE
-     * literal recovery). Dropped-by-conflation/overflow jobs deliver
-     * nothing; the holder's generation fence already treats them as dead. */
-    fun schedule(source: String, generation: Long, deliver: (String, Long, List<MarkdownBlockUi>?) -> Unit): Boolean {
-        synchronized(lock) {
-            if (closed) return false
-            // Latest-generation conflation for the same fragment source.
-            queuedBySource.remove(source)?.let { queue.remove(it) }
-            while (queue.size >= maxPending) {
-                val dropped = queue.removeFirst()
-                queuedBySource.remove(dropped.source)
+     * literal recovery). Dropped-by-conflation/overflow/close jobs deliver
+     * nothing but invoke [onDiscard] once after the service lock is released,
+     * so the coordinator can forget that exact pending ticket without ever
+     * claiming parsed content. */
+    fun schedule(
+        source: String,
+        generation: Long,
+        onDiscard: ((String, Long) -> Unit)? = null,
+        deliver: (String, Long, List<MarkdownBlockUi>?) -> Unit,
+    ): Boolean {
+        val discarded = ArrayList<Job>(2)
+        val accepted = synchronized(lock) {
+            if (closed) {
+                false
+            } else {
+                // Latest-generation conflation for the same fragment source.
+                queuedBySource.remove(source)?.let { previous ->
+                    if (queue.remove(previous)) discarded.add(previous)
+                }
+                while (queue.size >= maxPending) {
+                    val dropped = queue.removeFirst()
+                    queuedBySource.remove(dropped.source)
+                    discarded.add(dropped)
+                }
+                val job = Job(source, generation, onDiscard, deliver)
+                queue.addLast(job)
+                queuedBySource[source] = job
+                startWorkersLocked()
+                true
             }
-            val job = Job(source, generation, deliver)
-            queue.addLast(job)
-            queuedBySource[source] = job
-            startWorkersLocked()
-            return true
         }
+        discarded.forEach(::notifyDiscard)
+        return accepted
     }
 
     private fun startWorkersLocked() {
         // Caller holds [lock]. Launch only up to workerCount concurrent jobs.
-        while (running.get() < workerCapacity && queue.isNotEmpty()) {
+        while (running.get() < workerCapacity && queue.isNotEmpty() && !closed) {
             val job = queue.removeFirst()
             if (queuedBySource[job.source] === job) queuedBySource.remove(job.source)
             running.incrementAndGet()
-            executor.execute {
-                val blocks = try {
-                    parse(job.source)
-                } catch (_: Throwable) {
-                    null
-                }
-                running.decrementAndGet()
-                val delivered = synchronized(lock) {
-                    if (closed) {
-                        false
-                    } else {
-                        startWorkersLocked()
-                        true
+            try {
+                executor.execute {
+                    val blocks = try {
+                        parse(job.source)
+                    } catch (_: Throwable) {
+                        null
                     }
+                    running.decrementAndGet()
+                    val delivered = synchronized(lock) {
+                        if (closed) {
+                            false
+                        } else {
+                            startWorkersLocked()
+                            true
+                        }
+                    }
+                    if (delivered) job.deliver(job.source, job.generation, blocks)
+                    else notifyDiscard(job)
                 }
-                if (delivered) job.deliver(job.source, job.generation, blocks)
+            } catch (_: java.util.concurrent.RejectedExecutionException) {
+                // close() raced this launch: the job never ran and owns no
+                // parsed result. Settle its ticket honestly.
+                running.decrementAndGet()
+                notifyDiscard(job)
             }
+        }
+    }
+
+    private fun notifyDiscard(job: Job) {
+        // Never let a presentation callback break the worker/pool. The
+        // callback owns its own thread confinement and only clears a ticket.
+        try {
+            job.onDiscard?.invoke(job.source, job.generation)
+        } catch (_: Throwable) {
         }
     }
 
@@ -451,12 +492,15 @@ class MarkdownParseService(
     fun isClosed(): Boolean = synchronized(lock) { closed }
 
     override fun close() {
+        val discarded = ArrayList<Job>()
         synchronized(lock) {
             if (closed) return
             closed = true
+            discarded.addAll(queue)
             queue.clear()
             queuedBySource.clear()
         }
         executor.shutdownNow()
+        discarded.forEach(::notifyDiscard)
     }
 }

@@ -97,6 +97,10 @@ class ConversationLiveStreamSnapshotTest {
         /** Committed rows served to `conversation.messagePage`. */
         @Volatile var messageRowsJson: String = "[]"
 
+        /** Scripted `content.read` slice documents, one per effect poll. */
+        val contentSlices = CopyOnWriteArrayList<String>()
+        val contentReadPolls = AtomicInteger(0)
+
         /** One-shot typed failures for bounded negative-path tests. */
         @Volatile var snapshotFailuresRemaining: Int = 0
         @Volatile var messagePageFailuresRemaining: Int = 0
@@ -166,6 +170,15 @@ class ConversationLiveStreamSnapshotTest {
                             ),
                         )
                         "op:v1:cget" -> effect(correlation, "cget", accepted(conversationReply()))
+                        "op:v1:contentRead" -> {
+                            val slice = if (contentSlices.isNotEmpty()) {
+                                contentSlices.removeAt(0)
+                            } else {
+                                """{"chunk":"","done":true,"nextOffset":null,"totalBytes":0}"""
+                            }
+                            contentReadPolls.incrementAndGet()
+                            effect(correlation, "contentRead", accepted(slice))
+                        }
                         "op:v1:messagePage" -> {
                             if (messagePageFailuresRemaining > 0) {
                                 messagePageFailuresRemaining -= 1
@@ -248,6 +261,8 @@ class ConversationLiveStreamSnapshotTest {
                     receipt(correlation, "runSnapshot")
                 request.contains("\"command\":\"run.retry\"") ->
                     receipt(correlation, "runRetry")
+                request.contains("\"command\":\"content.read\"") ->
+                    receipt(correlation, "contentRead")
                 request.contains("\"command\":\"conversation.messagePage\"") ->
                     receipt(correlation, "messagePage")
                 request.contains("\"command\":\"config.providers.list\"") ->
@@ -457,10 +472,16 @@ class ConversationLiveStreamSnapshotTest {
         answerHandle: String? = null,
         reasoningText: String? = null,
         reasoningHandle: String? = null,
+        textRevision: Long? = null,
+        answerBaseSequence: Long? = null,
+        answerDurableSequence: Long? = null,
+        reasoningBaseSequence: Long? = null,
+        reasoningDurableSequence: Long? = null,
     ): String {
         fun stringOrNull(value: String?): String =
             if (value == null) "null" else "\"" + value.replace("\\", "\\\\")
                 .replace("\"", "\\\"") + "\""
+        fun numberOrNull(value: Long?): String = value?.toString() ?: "null"
         return """{"schema":"floe.command-envelope/3","conversationID":"$conversationId",""" +
             """"runID":"$runID","durableState":"$durableState",""" +
             """"revision":{"resourceID":"run.${runID.uppercase()}",""" +
@@ -469,12 +490,35 @@ class ConversationLiveStreamSnapshotTest {
             """"answerText":${stringOrNull(answerText)},""" +
             """"answerComplete":$answerComplete,""" +
             """"answerContinuationHandle":${stringOrNull(answerHandle)},""" +
+            """"answerBaseSequence":${numberOrNull(answerBaseSequence)},""" +
+            """"answerDurableSequence":${numberOrNull(answerDurableSequence)},""" +
             """"reasoningText":${stringOrNull(reasoningText)},""" +
             """"reasoningComplete":false,""" +
             """"reasoningContinuationHandle":${stringOrNull(reasoningHandle)},""" +
+            """"reasoningBaseSequence":${numberOrNull(reasoningBaseSequence)},""" +
+            """"reasoningDurableSequence":${numberOrNull(reasoningDurableSequence)},""" +
+            """"textRevision":${numberOrNull(textRevision)},""" +
             """"pendingApproval":null,"approvalRevision":null,"pendingInputs":[],""" +
             """"queueRevision":{"resourceID":"pendingQueue.${conversationId.uppercase()}",""" +
             """"version":"queue-digest-1"},"durableWatermark":4}"""
+    }
+
+    private fun contentSlice(
+        handle: String,
+        chunk: String,
+        done: Boolean,
+        nextOffset: Int?,
+        totalBytes: Int,
+    ): String {
+        fun escape(value: String): String = value.replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+            .replace("\t", "\\t")
+        return """{"handle":"$handle","chunk":"${escape(chunk)}","totalBytes":$totalBytes,""" +
+            """"done":$done,"nextOffset":${nextOffset ?: "null"},""" +
+            """"conversationID":"$conversationId","messageID":null""" +
+            ""","contentDigest":"d"}"""
     }
 
     private fun committedRows(runID: String, userText: String, answerText: String): String =
@@ -666,6 +710,178 @@ class ConversationLiveStreamSnapshotTest {
             holder.snapshot.value?.rows.orEmpty()
                 .any { it is TimelineRowUi.LiveAssistantTail },
         )
+    }
+
+    @Test
+    fun longUtf8ReasoningContinuationPagesTheFullTextExactlyOnce() =
+        kotlinx.coroutines.runBlocking {
+            val exchange = ScriptedExchange()
+            val handle = "chunk:v1:" + "a".repeat(32)
+            val prefix = "思考\uD83D\uDE42"
+            val rest1 = "继续推理"
+            val rest2 = "，完成"
+            val prefixBytes = prefix.toByteArray(Charsets.UTF_8).size
+            val rest1Bytes = rest1.toByteArray(Charsets.UTF_8).size
+            val rest2Bytes = rest2.toByteArray(Charsets.UTF_8).size
+            val total = prefixBytes + rest1Bytes + rest2Bytes
+            exchange.queueSnapshot(
+                runSnapshot(
+                    reasoningText = prefix,
+                    reasoningHandle = handle,
+                    textRevision = 5,
+                    reasoningBaseSequence = 10,
+                    reasoningDurableSequence = 10,
+                ),
+            )
+            exchange.contentSlices.add(
+                contentSlice(
+                    handle, rest1, done = false,
+                    nextOffset = prefixBytes + rest1Bytes, totalBytes = total,
+                ),
+            )
+            exchange.contentSlices.add(
+                contentSlice(
+                    handle, rest2, done = true,
+                    nextOffset = total, totalBytes = total,
+                ),
+            )
+            val host = readyHost(exchange)
+            val holder = loadedHolder(host)
+            val full = prefix + rest1 + rest2
+            assertTrue(
+                "the full UTF-8 reasoning text must be assembled from the pages",
+                awaitCondition { holder.snapshot.value?.liveReasoningText == full },
+            )
+            assertEquals(2, exchange.contentReadPolls.get())
+            val offsets = exchange.commandsOf("content.read").mapNotNull { envelope ->
+                envelope["payload"]?.jsonObject?.get("offset")?.jsonPrimitive?.content
+                    ?.toIntOrNull()
+            }
+            assertEquals(
+                "the reader continues at the inline-prefix boundary, never re-reading it",
+                listOf(prefixBytes, prefixBytes + rest1Bytes),
+                offsets,
+            )
+            assertEquals(full, holder.snapshot.value?.liveReasoningText)
+            assertEquals(false, holder.snapshot.value?.liveReasoningPartial)
+            assertTrue(holder.snapshot.value?.isRunning == true)
+            assertTrue(
+                holder.snapshot.value?.rows.orEmpty()
+                    .any { it is TimelineRowUi.LiveReasoning },
+            )
+        }
+
+    @Test
+    fun continuationChunksAreFencedByStepOffsetAndClosure() {
+        val handle = "chunk:v1:" + "e".repeat(32)
+        val builder = preparedBuilder()
+        builder.applySnapshotLiveText(
+            snapshotPage(reasoningText = "思", reasoningHandle = handle, textRevision = 7),
+        )
+        val plan = builder.snapshotContinuationPlan(reasoning = true)
+        assertNotNull(plan)
+        assertEquals("思".toByteArray(Charsets.UTF_8).size, plan!!.offset)
+        assertEquals("思", builder.build().liveReasoningText)
+
+        // A reader reply that skips its own nextOffset cannot be treated as a
+        // contiguous whole: the record becomes partial and nothing is appended.
+        assertTrue(
+            builder.applySnapshotContinuationChunk(
+                plan = plan,
+                chunk = "考",
+                done = false,
+                nextOffset = plan.offset + 6,
+                totalBytes = 20,
+            ),
+        )
+        assertEquals("思", builder.build().liveReasoningText)
+        assertTrue(builder.build().liveReasoningPartial)
+        assertEquals(null, builder.snapshotContinuationPlan(reasoning = true))
+
+        // A genuinely new step (different prefix + revision) resets the text
+        // and invalidates the old plan bytes.
+        val newHandle = "chunk:v1:" + "f".repeat(32)
+        builder.applySnapshotLiveText(
+            snapshotPage(reasoningText = "新", reasoningHandle = newHandle, textRevision = 8),
+        )
+        assertEquals("新", builder.build().liveReasoningText)
+        assertEquals(
+            "an old-step reply can never append onto the reset step",
+            false,
+            builder.applySnapshotContinuationChunk(
+                plan = plan,
+                chunk = "旧",
+                done = false,
+                nextOffset = plan.offset + 6,
+                totalBytes = 20,
+            ),
+        )
+
+        // A closed tail never revives from a late chunk.
+        val nextPlan = builder.snapshotContinuationPlan(reasoning = true)
+        assertNotNull(nextPlan)
+        builder.clearLiveBuffers()
+        assertEquals(
+            false,
+            builder.applySnapshotContinuationChunk(
+                plan = nextPlan!!,
+                chunk = "尾",
+                done = true,
+                nextOffset = nextPlan.offset + 3,
+                totalBytes = 20,
+            ),
+        )
+    }
+
+    @Test
+    fun reasoningActivityUsesObservedSignalsNotOnlyRunState() {
+        val builder = preparedBuilder()
+        val page = snapshotPage(reasoningText = "Think", textRevision = 1)
+        builder.applySnapshot(page)
+        builder.applySnapshotLiveText(page)
+        assertTrue("a reasoning-carrying page is a real signal", builder.build().liveReasoningAdvancing)
+        assertEquals(false, builder.build().liveReasoningPartial)
+
+        // Visible answer bytes end the reasoning step.
+        builder.applyRunEvent(answerFrame(runId, 2, "Answer"))
+        assertEquals(false, builder.build().liveReasoningAdvancing)
+        assertTrue(builder.build().liveReasoningText.isNotEmpty())
+
+        // A later real reasoning delta reopens it.
+        builder.applyRunEvent(answerFrame(runId, 3, " more", kind = "reasoning"))
+        assertTrue(builder.build().liveReasoningAdvancing)
+
+        // A tool boundary closes it again even while the run is active.
+        builder.applyRunEvent(
+            HostRunEventFrame(
+                runID = runId,
+                sequence = 4,
+                kind = "toolRequest",
+                payload = buildJsonObject {
+                    put("id", JsonPrimitive("call-1"))
+                    put("tool", JsonPrimitive("exec.shell"))
+                    put("status", JsonPrimitive("running"))
+                },
+                bytes = 32,
+            ),
+        )
+        assertEquals(false, builder.build().liveReasoningAdvancing)
+    }
+
+    @Test
+    fun identicalSnapshotsKeepStableRowsAndOnlyRealTextBumpsTheTick() {
+        val builder = preparedBuilder()
+        builder.applySnapshotLiveText(snapshotPage(answerText = "A", textRevision = 1))
+        val first = builder.build()
+        builder.applySnapshotLiveText(snapshotPage(answerText = "A", textRevision = 1))
+        val repeated = builder.build()
+        assertEquals(first.rows.map { it.id }, repeated.rows.map { it.id })
+        assertEquals(first.liveTextRevision, repeated.liveTextRevision)
+
+        builder.applySnapshotLiveText(snapshotPage(answerText = "AB", textRevision = 2))
+        val grown = builder.build()
+        assertEquals(first.rows.map { it.id }, grown.rows.map { it.id })
+        assertTrue(grown.liveTextRevision > first.liveTextRevision)
     }
 
     @Test
@@ -1393,6 +1609,12 @@ class ConversationLiveStreamSnapshotTest {
         answerText: String? = null,
         answerHandle: String? = null,
         reasoningText: String? = null,
+        reasoningHandle: String? = null,
+        textRevision: Long? = null,
+        answerBaseSequence: Long? = null,
+        answerDurableSequence: Long? = null,
+        reasoningBaseSequence: Long? = null,
+        reasoningDurableSequence: Long? = null,
     ): ConversationWire.SnapshotPage = ConversationWire.SnapshotPage(
         runID = runID,
         durableState = durableState,
@@ -1408,7 +1630,12 @@ class ConversationLiveStreamSnapshotTest {
         answerContinuationHandle = answerHandle,
         reasoningText = reasoningText,
         reasoningComplete = false,
-        reasoningContinuationHandle = null,
+        reasoningContinuationHandle = reasoningHandle,
+        answerBaseSequence = answerBaseSequence,
+        answerDurableSequence = answerDurableSequence,
+        reasoningBaseSequence = reasoningBaseSequence,
+        reasoningDurableSequence = reasoningDurableSequence,
+        textRevision = textRevision,
     )
 
     private fun durableFrame(kind: String, text: String): HostRunEventFrame =

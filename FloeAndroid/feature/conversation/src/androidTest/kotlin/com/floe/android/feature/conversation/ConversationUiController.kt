@@ -384,7 +384,10 @@ internal class ConversationFixtureHost(
     override fun requestMarkdownParse(session: ConversationSessionToken, source: String, generation: Long): Boolean {
         record("requestMarkdownParse", session, source.length, generation)
         val holder = threadHolder ?: return false
-        return parseService.schedule(source, generation) { s, g, blocks ->
+        return parseService.schedule(
+            source, generation,
+            onDiscard = { s, g -> main.post { holder.abandonMarkdownParse(session, s, g) } },
+        ) { s, g, blocks ->
             main.post { holder.applyMarkdownParseResult(session, s, g, blocks) }
         }
     }

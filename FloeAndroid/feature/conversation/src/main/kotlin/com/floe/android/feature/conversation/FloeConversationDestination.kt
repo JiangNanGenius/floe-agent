@@ -390,8 +390,15 @@ private fun ThreadTimeline(
     // ⇄ latest-follow: scroll to the bottom when the user follows latest and
     // content/length ticks changed; an intentional scroll-away is respected
     // (content growth is not a user scroll).
-    val contentTick = remember(state.rows.map { it.id }, state.liveAssistantText.length, state.liveReasoningText.length, state.isRunning) {
-        state.rows.size.toString() + ":" + state.liveAssistantText.length + ":" + state.liveReasoningText.length + ":" + state.isRunning
+    val contentTick = remember(
+        state.rows.map { it.id },
+        state.liveAssistantText.length,
+        state.liveReasoningText.length,
+        state.liveTextRevision,
+        state.isRunning,
+    ) {
+        state.rows.size.toString() + ":" + state.liveAssistantText.length + ":" +
+            state.liveReasoningText.length + ":" + state.liveTextRevision + ":" + state.isRunning
     }
     LaunchedEffect(holder.session, contentTick, holder.latestScrollRequest,
         state.hasLoaded, search.focusedMessageId, state.usage != null) {
