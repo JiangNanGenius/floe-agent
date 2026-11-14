@@ -67,6 +67,8 @@ import kotlin.math.min
 internal class PhoneAutomationControls(
     private val context: Context,
     private val act: (PhoneControlOwner, Action) -> Unit,
+    private val canPresent: (PhoneControlOwner) -> Boolean,
+    private val ownerStillLive: (PhoneControlOwner) -> Boolean,
 ) {
     private val main = Handler(Looper.getMainLooper())
     private val notifications = context.getSystemService(NotificationManager::class.java)
@@ -115,6 +117,7 @@ internal class PhoneAutomationControls(
     }
 
     private var paused = false
+    private var waitingForUser = false
     private var title = ""
     private var showOverlay = false
     private var operation: PhoneAutomationOperation? = null
@@ -123,8 +126,10 @@ internal class PhoneAutomationControls(
      * replaced by the next start/finish; never a history buffer. */
     private var pendingOperation: Pair<PhoneControlOwner, String>? = null
 
-    fun show(owner: PhoneControlOwner, title: String, overlay: Boolean, paused: Boolean = false) {
+    fun show(owner: PhoneControlOwner, title: String, overlay: Boolean, paused: Boolean = false,
+             waitingForUser: Boolean = false) {
         main.post {
+            if (!canPresent(owner)) return@post
             if (this.owner != owner && operationOwner != owner) {
                 this.operation = null
                 this.operationOwner = null
@@ -139,6 +144,7 @@ internal class PhoneAutomationControls(
             }
             this.owner = owner
             this.paused = paused
+            this.waitingForUser = waitingForUser
             this.title = PhoneAutomationStatusText.bounded(title, 48)
             showOverlay = overlay
             // The trusted pump calls start immediately before the first
@@ -162,6 +168,7 @@ internal class PhoneAutomationControls(
     /** A real claimed device operation started. UI-only; no authority. */
     fun operationStarted(owner: PhoneControlOwner, label: String) {
         main.post {
+            if (!ownerStillLive(owner)) return@post
             if (paused) return@post
             if (this.owner == null) {
                 pendingOperation = owner to PhoneAutomationStatusText.bounded(label, 32)
@@ -183,6 +190,7 @@ internal class PhoneAutomationControls(
         note: String? = null,
     ) {
         main.post {
+            if (!ownerStillLive(owner)) return@post
             if (this.owner == null) {
                 if (pendingOperation?.first == owner) pendingOperation = null
                 operation = PhoneAutomationStatusText.operation(
@@ -220,6 +228,7 @@ internal class PhoneAutomationControls(
 
     private fun statusLine(): String {
         if (paused) return context.getString(R.string.phone_automation_paused)
+        if (waitingForUser) return context.getString(R.string.device_automation_state_waiting)
         val current = operation
             ?: return context.getString(R.string.device_automation_status_active)
         val state = when (current.state) {
@@ -385,7 +394,7 @@ internal class PhoneAutomationControls(
 
     private fun updateBubbleState(palette: Palette) {
         val view = bubble ?: return
-        val running = !paused && operation?.state == PhoneAutomationOperationState.RUNNING
+        val running = !paused && !waitingForUser && operation?.state == PhoneAutomationOperationState.RUNNING
         bubbleProgress?.visibility = if (running) View.VISIBLE else View.GONE
         val dotColor = if (running) null else stateDotColor(palette)
         val dot = bubbleStateDot
@@ -403,7 +412,7 @@ internal class PhoneAutomationControls(
     }
 
     private fun stateDotColor(palette: Palette): Int? {
-        if (paused) return palette.pending
+        if (paused || waitingForUser) return palette.pending
         return when (operation?.state) {
             null, PhoneAutomationOperationState.RUNNING -> null
             PhoneAutomationOperationState.WAITING -> palette.pending
@@ -745,10 +754,12 @@ internal class PhoneAutomationControls(
     }
 
     fun clear(expectedOwner: PhoneControlOwner? = null) {
-        main.post {
-            if (expectedOwner != null && owner != expectedOwner) return@post
+        val clear = clear@{
+            val presentationOwner = owner ?: pendingOperation?.first ?: operationOwner
+            if (expectedOwner != null && presentationOwner != expectedOwner) return@clear
             owner = null
             token = UUID.randomUUID().toString()
+            waitingForUser = false
             operation = null
             operationOwner = null
             pendingOperation = null
@@ -756,6 +767,7 @@ internal class PhoneAutomationControls(
             notifications.cancel(NOTIFICATION)
             if (PhoneAutomationRelay.controls === this) PhoneAutomationRelay.controls = null
         }
+        if (Looper.myLooper() == main.looper) clear() else main.post { clear() }
     }
 
     // ------------------------------------------------------ screen bounds

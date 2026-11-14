@@ -11,6 +11,83 @@ final class PhoneObservationApprovalTests: XCTestCase {
     private let oldID = "00000000-0000-4000-8000-000000000001"
     private let newID = "00000000-0000-4000-8000-000000000002"
 
+    private func page(_ cache: inout PhoneObservationReviewCache, id: String,
+                      offset: Int, rows: String, screen: String = "fixture.calendar",
+                      status: ToolResult.Status = .ok) throws {
+        let c = try ToolCall(id: "page-\(offset)", toolName: "device.observe",
+            argumentsJSON: JSONSerialization.data(withJSONObject: ["observationId": id, "offset": offset]),
+            scope: .local)
+        cache.record(call: c, result: ToolResult(callID: c.id, status: status,
+            outputSummary: "observation=\(id) page=\(screen) window=1 display=0 offset=\(offset)\n\(rows)",
+            outputDigest: ""), outcomeUnknown: false)
+    }
+
+    func testLaterPagePreservesTheExactEarlierNodeAndItsOriginalPage() throws {
+        var cache = PhoneObservationReviewCache()
+        try page(&cache, id: newID, offset: 50,
+                 rows: "n50|View|text=2026-11-11\nn61|View|text=2026-11-21")
+        try page(&cache, id: newID, offset: 67, rows: "n67|View|text=2026-11-27")
+        let evidence = try XCTUnwrap(cache.evidence(
+            for: try call("device.act", observation: newID, ref: "n61"), redactingSecret: nil))
+        XCTAssertEqual(evidence.nodeSummary, "n61|View|text=2026-11-21")
+        XCTAssertTrue(evidence.pageSummary.contains("offset=50"))
+        XCTAssertEqual(evidence.sourceTool, "device.observe")
+        let action = ProposedAction(toolCall: try call("device.act", observation: newID, ref: "n61"),
+            riskLabels: ["writesDevice"], userGoal: "Open November 21.",
+            observationEvidence: evidence, hostAndPathScope: .local)
+        let prompt = try RunApprovalModelBackend.classificationPrompt(for: action)
+        XCTAssertTrue(prompt.contains("n61|View|text=2026-11-21"))
+    }
+
+    func testRepeatedAndOverlappingPagesAreIdempotent() throws {
+        var cache = PhoneObservationReviewCache()
+        for _ in 0..<3 {
+            try page(&cache, id: newID, offset: 50, rows: "n61|View|text=2026-11-21")
+        }
+        try page(&cache, id: newID, offset: 60,
+                 rows: "n61|View|text=2026-11-21\nn62|View|text=2026-11-22")
+        XCTAssertNotNil(cache.evidence(for: try call(observation: newID, ref: "n61"), redactingSecret: nil))
+        XCTAssertNotNil(cache.evidence(for: try call(observation: newID, ref: "n62"), redactingSecret: nil))
+    }
+
+    func testConflictingNodeAcrossPagesStaysAmbiguous() throws {
+        var cache = PhoneObservationReviewCache()
+        try page(&cache, id: newID, offset: 0, rows: "n10|View|text=Find")
+        try page(&cache, id: newID, offset: 10, rows: "n10|View|text=Delete\nn11|View|text=Next")
+        try page(&cache, id: newID, offset: 0, rows: "n10|View|text=Find")
+        XCTAssertNil(cache.evidence(for: try call(observation: newID), redactingSecret: nil))
+        XCTAssertNotNil(cache.evidence(for: try call(observation: newID, ref: "n11"), redactingSecret: nil))
+    }
+
+    func testChangedObservationOrFailedPageNeverRetainsEarlierRows() throws {
+        var cache = PhoneObservationReviewCache()
+        try page(&cache, id: oldID, offset: 0, rows: "n10|View|text=Find")
+        try page(&cache, id: newID, offset: 10, rows: "n11|View|text=Next")
+        XCTAssertNil(cache.evidence(for: try call(observation: oldID), redactingSecret: nil))
+        XCTAssertNil(cache.evidence(for: try call(observation: newID), redactingSecret: nil))
+        try page(&cache, id: newID, offset: 0, rows: "n10|View|text=Save", status: .failed)
+        XCTAssertNil(cache.evidence(for: try call(observation: newID, ref: "n11"), redactingSecret: nil))
+    }
+
+    func testSameObservationWithDifferentScreenCannotSupplyEvidence() throws {
+        var cache = PhoneObservationReviewCache()
+        try page(&cache, id: newID, offset: 0, rows: "n10|View|text=Find")
+        try page(&cache, id: newID, offset: 10, rows: "n11|View|text=Next", screen: "foreign.application")
+        XCTAssertNil(cache.evidence(for: try call(observation: newID), redactingSecret: nil))
+        XCTAssertNil(cache.evidence(for: try call(observation: newID, ref: "n11"), redactingSecret: nil))
+    }
+
+    func testPageRetentionHonorsTheHostNodeBound() throws {
+        var cache = PhoneObservationReviewCache()
+        for offset in stride(from: 0, through: 400, by: 50) {
+            let end = min(offset + 50, 401)
+            try page(&cache, id: newID, offset: offset,
+                     rows: (offset..<end).map { "n\($0)|View|text=Date" }.joined(separator: "\n"))
+        }
+        XCTAssertNil(cache.evidence(for: try call(observation: newID, ref: "n0"), redactingSecret: nil))
+        XCTAssertNil(cache.evidence(for: try call(observation: newID, ref: "n400"), redactingSecret: nil))
+    }
+
     private func call(_ name: String = "phone.act", observation: String? = nil,
                       ref: String = "n10") throws -> ToolCall {
         let args: [String: Any] = observation.map {

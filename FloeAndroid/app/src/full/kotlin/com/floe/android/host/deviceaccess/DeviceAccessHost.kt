@@ -517,7 +517,8 @@ internal class DeviceAccessHost(
     private val phoneControlRevision = java.util.concurrent.atomic.AtomicLong()
     @Volatile private var explicitResumeOwner: PhoneControlOwner? = null
     @Volatile private var pauseStateInvalid = pauseSaved != null && phonePause.snapshot == null
-    private val automationControls = PhoneAutomationControls(context, ::onAutomationControl)
+    private val automationControls = PhoneAutomationControls(
+        context, ::onAutomationControl, ::canPresentAutomationControls, ::automationOwnerStillLive)
     private val automatedOwner = java.util.concurrent.atomic.AtomicReference<PhoneControlOwner?>(null)
     private val deviceRunLiveness = DeviceRunLiveness(HostDeviceRunReadPort(host)) {
         if (!closed) publish()
@@ -854,12 +855,14 @@ internal class DeviceAccessHost(
         }
         // The settings page collects a StateFlow; no host event fires merely
         // because a run started or ended while the sheet was closed. Observe
-        // the EXISTING history projection (live-run ids only) so the Active
-        // phone task card tracks real run liveness without polling and
+        // the EXISTING history projection and real run approval phases so the
+        // task card and bubble track liveness/waiting without polling and
         // without a second owner registry. publish() only reads state.
         statusJobs += scope.launch(Dispatchers.Main.immediate) {
             snapshotFlow {
                 host.conversations.historyHolder.state.value?.runningConversationIds.orEmpty()
+                    .mapNotNull { candidateFor(it) }
+                    .map { it.owner to it.phase }
             }
                 .distinctUntilChanged()
                 .collect { if (!closed) publish() }
@@ -2320,8 +2323,11 @@ internal class DeviceAccessHost(
             scope.launch(io) { runCatching { adbUiBackend?.stop(ended) } }
             automationControls.clear(expectedOwner = ended)
         }
-        automatedOwner.get()?.takeIf { !userStopped && isOwnerRunLive(it) }?.let {
-            automationControls.show(it, titleFor(it), settings.floatingControls, phonePause.isPaused(it))
+        automatedOwner.get()?.takeIf { !userStopped && isOwnerRunLive(it) }?.let { owner ->
+            val candidate = PhoneTaskPresentation.holderLookupKeys(owner.taskID)
+                .firstNotNullOfOrNull { key -> candidateFor(key)?.takeIf { it.owner == owner } }
+            val waiting = candidate?.phase == DeviceAccessTaskPhaseUi.WAITING_FOR_USER
+            automationControls.show(owner, titleFor(owner), settings.floatingControls, phonePause.isPaused(owner), waiting)
         }
         reconcileScreenShare()
         val candidate = currentCandidate()
@@ -2804,7 +2810,10 @@ internal class DeviceAccessHost(
     /** Notification/overlay callbacks carry their exact owner. A different
      * task becoming visible cannot turn an old action into a fresh grant. */
     private fun onAutomationControl(owner: PhoneControlOwner, action: PhoneAutomationControls.Action) {
-        if (closed || userStopped || !isOwnerRunLive(owner) || controlOwner() != owner) return
+        if (closed || userStopped || !isOwnerRunLive(owner) || controlOwner() != owner) {
+            automationControls.clear(expectedOwner = owner)
+            return
+        }
         when (action) {
             PhoneAutomationControls.Action.PAUSE -> {
                 phoneControlRevision.incrementAndGet()
@@ -2862,12 +2871,31 @@ internal class DeviceAccessHost(
         }
     }
 
+    private fun automationOwnerStillLive(owner: PhoneControlOwner): Boolean =
+        !closed && !userStopped && isOwnerRunLive(owner)
+
+    private fun canPresentAutomationControls(owner: PhoneControlOwner): Boolean =
+        automationOwnerStillLive(owner) && automatedOwner.get() == owner
+
     private fun stopActiveTask(takeOver: Boolean, expectedOwner: PhoneControlOwner? = null) {
-        if (busy != DeviceAccessBusyUi.NONE && expectedOwner == null) return
-        val owner = expectedOwner ?: armedOwner ?: armingOwner ?: currentCandidate()?.owner ?: return
-        if (expectedOwner != null && (!isOwnerRunLive(owner) || controlOwner() != owner)) return
+        if (busy == DeviceAccessBusyUi.TASK_STOP || busy == DeviceAccessBusyUi.TASK_TAKE_OVER) return
+        val owner = expectedOwner ?: armedOwner ?: armingOwner ?: automatedOwner.get() ?: currentCandidate()?.owner
+        if (expectedOwner != null && (!isOwnerRunLive(expectedOwner) || controlOwner() != expectedOwner)) {
+            automationControls.clear(expectedOwner = expectedOwner)
+            return
+        }
         phoneControlRevision.incrementAndGet()
+        // User Stop fences presentation before any queued/backend cleanup.
+        // Late show/result posts recheck this live authority on Main.
+        userStopped = true
+        automatedOwner.set(null)
+        automationControls.clear()
         explicitResumeOwner = null
+        if (owner == null) {
+            screenShare.clear()
+            publish()
+            return
+        }
         busy = if (takeOver) {
             DeviceAccessBusyUi.TASK_TAKE_OVER
         } else {
@@ -2878,9 +2906,7 @@ internal class DeviceAccessHost(
             // 1) Fence queued/new platform work for the same epoch (the host
             // publishes the reduced availability mask; phone tools disappear
             // from discovery until a fresh USER arm).
-            userStopped = true
             phonePause.snapshot?.takeIf { it.owner == owner }?.let { phonePause.resume(owner, it.id, ::clearPersistedPause) }
-            automationControls.clear()
             lastStoppedOwner = owner
             stoppedOwnerSettled = false
             armedOwner = null
@@ -4004,8 +4030,8 @@ internal class DeviceAccessHost(
             return@withLock PlatformToolOutcome.Failure("cancelled")
         }
         val keyguard = context.getSystemService(KeyguardManager::class.java)
-        automationControls.show(owner, titleFor(owner), settings.floatingControls)
         automatedOwner.set(owner)
+        automationControls.show(owner, titleFor(owner), settings.floatingControls)
         if (!keyguard.isKeyguardLocked && asClient.userIsActive() &&
             call.presenceApprovedAtMillis < asClient.lastUserInteractionWallMillis()) {
             val token = if (armedOwner == owner) "PRESENCE_RECHECK_SAME_TASK" else "INITIAL_PHONE_PRESENCE_REQUIRED"
@@ -4129,8 +4155,8 @@ internal class DeviceAccessHost(
             runCatching { android.util.Log.i("FloePhoneUnlock", token) }
             return PlatformToolOutcome.Failure("device_presence_required")
         }
-        automationControls.show(owner, titleFor(owner), settings.floatingControls)
         automatedOwner.set(owner)
+        automationControls.show(owner, titleFor(owner), settings.floatingControls)
         armingOwner = owner
         val armRevision = phoneControlRevision.get()
         bindPhoneCall(call)

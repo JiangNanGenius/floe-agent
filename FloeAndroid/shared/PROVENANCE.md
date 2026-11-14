@@ -1313,3 +1313,19 @@ Android Full Release Kotlin consumer plus 46 affected JVM cases pass.
 The primary's actual-input/NO_USER_ACTION relock repair is included in that
 consumer build. ARM64 production, installation and fresh device behavior
 remain separate evidence; no released Alpha80 bytes are changed.
+
+
+## 2026-11-14 — paged device evidence and revocable controls
+
+`PhoneObservationReviewCache.swift` retains successful pages of the exact same
+observation in activation-local RAM, bounded by the host's 400-node/64,000-character
+limits. The requested node keeps its original source-page header. A changed
+observation/screen, failed or unknown result clears prior evidence; conflicting
+node definitions remain ambiguous. The review prompt describes that page binding.
+No observation lifetime, permission, approval decision or dispatch check is extended.
+
+The Full host removes its floating control and notification synchronously on user
+Stop/Takeover before backend cleanup, and queued presentation callbacks recheck
+the existing live owner. The existing task observer also follows approval phases
+so a wait for the user overrides the previous operation's visual completion.
+The presentation remains separate from authority and cannot approve or restart work.
