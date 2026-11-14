@@ -713,6 +713,7 @@ class HomeLaunchpadHost internal constructor(
         sendingState.value = true
         val taskTitle = text.lines().firstOrNull()?.take(80) ?: text.take(80)
         val selectedProject = selectedProjectIdState.value
+        val draftApproval = host.conversations.rootWorkspace.draftApprovalMode.value
         val (draftNonce, _) = host.conversations.rootWorkspace.currentDraftOwner()
         val handoffAttachments = host.conversations.rootWorkspace.takeSendableForLaunch()
         fun failWith(reason: String) {
@@ -773,6 +774,7 @@ class HomeLaunchpadHost internal constructor(
                                 isOriginCurrent = true,
                             )
                             host.conversations.rootWorkspace.clearHandedOff(draftNonce)
+                            host.conversations.seedCreatedDraftApprovalMode(conversationID, draftApproval)
                             val target = SidebarSelection.Conversation(conversationID)
                             ownedNavigation = OwnedNavigation(
                                 navigationID = nextNavigationID + 1,
