@@ -332,13 +332,20 @@ private actor ARM64ResidentGuestOwner {
             }
             return
         }
+        // The resident supervisor cannot open any project without this 9P
+        // share. Check before booting the machine so a missing Settings
+        // maintenance workspace does not leave a needless running guest.
+        guard let workspace = descriptor.shares.first(where: { $0.tag == LinuxGuestShare.workspaceTag }) else {
+            throw LinuxGuestError.invalidConfiguration(
+                descriptor.id == "shared"
+                    ? "The shared Linux maintenance workspace is unavailable"
+                    : "The project folder is unavailable"
+            )
+        }
         try await ensureMachine(descriptor: descriptor, image: image, directory: imageDirectory, limits: limits)
         guard let machine, let supervisor else { throw ARM64MachineError.notRunning }
         guard let slot = (0..<capacity).first(where: { index in !projects.values.contains { $0.slot == index } }) else {
             throw LinuxGuestError.capacityReached(detail: "All project sessions are in use")
-        }
-        guard let workspace = descriptor.shares.first(where: { $0.tag == LinuxGuestShare.workspaceTag }) else {
-            throw LinuxGuestError.invalidConfiguration("The project folder is unavailable")
         }
         let environment = descriptor.shares.first(where: { $0.tag == LinuxGuestShare.environmentTag })
         let requestedCache = descriptor.shares.first(where: { $0.tag == LinuxGuestShare.cacheTag })?.hostDirectory.standardizedFileURL

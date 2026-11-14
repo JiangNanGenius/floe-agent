@@ -292,6 +292,7 @@ private final class StorageOptimizationProgressGate: @unchecked Sendable {
 @MainActor
 final class StorageOptimizationService: ObservableObject {
     @Published private(set) var state = StorageOptimizationState()
+    let bootstrapFailure: RuntimeV2MaintenanceBootstrapFailure?
     private let adapter: RuntimeV2RecoveryOptimizationAdapter?
     private let defaults: UserDefaults
     private let settled: @MainActor @Sendable () async -> Void
@@ -302,18 +303,22 @@ final class StorageOptimizationService: ObservableObject {
     private var recoveryProgressGeneration: UUID?
     private var lastDiagnosticPersistUptime: TimeInterval = 0
     private static let savedResultKey = "floe.storage.legacyOptimization.lastResult.v1"
+    private static let bootstrapFailureKey = "floe.storage.legacyOptimization.bootstrapFailure.v1"
     private static let maximumSnapshotBytes = 16_384
 
     var isRunning: Bool { operation != nil }
     var canStart: Bool { adapter != nil && !isRunning }
     var canCancel: Bool { cancellation != nil && isRunning && state.phase != .cancelling }
 
-    init(adapter: RuntimeV2RecoveryOptimizationAdapter?, defaults: UserDefaults = .standard,
+    init(adapter: RuntimeV2RecoveryOptimizationAdapter?,
+         bootstrapFailure: RuntimeV2MaintenanceBootstrapFailure? = nil, defaults: UserDefaults = .standard,
          settled: @escaping @MainActor @Sendable () async -> Void = {
              StorageDiagnosticService.shared.invalidate(.other("legacyRecoveryOptimization"))
              _ = await StorageDiagnosticService.shared.refresh(explicit: true)
          }) {
         self.adapter = adapter; self.defaults = defaults; self.settled = settled
+        self.bootstrapFailure = adapter == nil ? bootstrapFailure : nil
+        Self.persistBootstrapFailure(self.bootstrapFailure, to: defaults)
         self.hasLegacyRecoveryTree = RuntimeV2MaintenanceDomain.trustedLegacyRoot().map {
             FileManager.default.fileExists(atPath: $0.appendingPathComponent("recovery").path)
         } ?? false
@@ -572,11 +577,53 @@ final class StorageOptimizationService: ObservableObject {
         return (try? JSONDecoder().decode(StorageOptimizationState.self, from: data))?.sanitizedDiagnostics()
     }
 
-    /// Only the already-persisted operation receipt is exported. Reading a
+    /// A failed bootstrap is not an optimization attempt. Preserve the old
+    /// operation receipt byte for byte and record this launch separately.
+    private static func persistBootstrapFailure(_ failure: RuntimeV2MaintenanceBootstrapFailure?,
+                                                to defaults: UserDefaults) {
+        guard let failure else { defaults.removeObject(forKey: bootstrapFailureKey); return }
+        var value: [String: Any] = [
+            "build": StorageDiagnosticService.appBuildFingerprint(), "observedAt": Date().timeIntervalSince1970,
+            "code": failure.code.rawValue, "rootCheck": failure.rootCheck.rawValue,
+            "histories": max(0, min(1_000_000, failure.histories)),
+            "pending": max(0, min(1_000_000, failure.pending))
+        ]
+        value["stage"] = failure.stage?.rawValue
+        value["errno"] = failure.posixErrno
+        guard let data = try? JSONSerialization.data(withJSONObject: value), data.count <= 2_048 else { return }
+        defaults.set(data, forKey: bootstrapFailureKey)
+    }
+
+    private static func bootstrapDiagnosticLines(defaults: UserDefaults) -> [String] {
+        guard let data = defaults.data(forKey: bootstrapFailureKey), data.count <= 2_048,
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let rawCode = object["code"] as? String,
+              let code = RuntimeV2MaintenanceBootstrapFailure.Code(rawValue: rawCode),
+              let rawRoot = object["rootCheck"] as? String,
+              let root = RuntimeV2MaintenanceBootstrapFailure.RootCheck(rawValue: rawRoot),
+              let observed = object["observedAt"] as? Double, observed.isFinite else { return [] }
+        let rawBuild = object["build"] as? String ?? ""
+        let build = !rawBuild.isEmpty && rawBuild.utf8.count <= 40
+            && rawBuild.utf8.allSatisfy { (48...57).contains($0) || $0 == 46 } ? rawBuild : "unrecorded"
+        let stage = (object["stage"] as? String)
+            .flatMap(RuntimeV2MaintenanceBootstrapFailure.Stage.init(rawValue:))?.rawValue ?? "unrecorded"
+        let posix = (object["errno"] as? Int32).map { String($0) } ?? "unrecorded"
+        func count(_ key: String) -> String { String(max(0, min(1_000_000, object[key] as? Int ?? 0))) }
+        return ["optimization_bootstrap_evidence: persisted_bootstrap_failure",
+            "optimization_bootstrap_build: \(build)",
+            "optimization_bootstrap_observed_at: \(ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: observed)))",
+            "optimization_bootstrap_code: \(code.rawValue)", "optimization_bootstrap_root_check: \(root.rawValue)",
+            "optimization_bootstrap_stage: \(stage)", "optimization_bootstrap_errno: \(posix)",
+            "optimization_bootstrap_histories: \(count("histories"))", "optimization_bootstrap_pending: \(count("pending"))"]
+    }
+
+    /// Only already-persisted bootstrap and operation receipts are exported. Reading a
     /// diagnostic report never starts inventory, preparation or optimization.
     static func diagnosticText(defaults: UserDefaults = .standard) -> String {
+        let bootstrapLines = bootstrapDiagnosticLines(defaults: defaults)
         guard let value = readSnapshot(from: defaults) else {
-            return "optimization_evidence: unavailable\noptimization_live_measurement: false"
+            return (bootstrapLines + ["optimization_evidence: unavailable", "optimization_live_measurement: false"])
+                .joined(separator: "\n")
         }
         func date(_ value: Date?) -> String {
             guard let value, value.timeIntervalSince1970.isFinite else { return "unrecorded" }
@@ -588,7 +635,7 @@ final class StorageOptimizationService: ObservableObject {
         let rawBuild = value.appBuildFingerprint ?? ""
         let build = !rawBuild.isEmpty && rawBuild.utf8.count <= 40
             && rawBuild.utf8.allSatisfy { (48...57).contains($0) || $0 == 46 } ? rawBuild : "unrecorded"
-        var lines = ["optimization_evidence: persisted_operation_summary", "optimization_live_measurement: false",
+        var lines = bootstrapLines + ["optimization_evidence: persisted_operation_summary", "optimization_live_measurement: false",
             "optimization_build: \(build)", "optimization_started_at: \(date(value.startedAt))",
             "optimization_finished_at: \(date(value.finishedAt))", "optimization_phase: \(value.phase.rawValue)",
             "optimization_attempted: \(count(value.attempted))", "optimization_optimized: \(count(value.optimized))",

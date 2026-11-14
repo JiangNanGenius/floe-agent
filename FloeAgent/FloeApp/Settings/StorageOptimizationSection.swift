@@ -26,29 +26,39 @@ struct StorageOptimizationSection: View {
                 }.disabled(!service.canCancel)
             }
 
-            if service.state.attempted > 0 || !service.state.details.isEmpty {
+            if service.bootstrapFailure != nil || service.state.attempted > 0 || !service.state.details.isEmpty {
                 DisclosureGroup(isExpanded: $showsDetails) {
-                    metric("settings.storage_optimization.optimized", value: String(service.state.optimized))
-                    metric("settings.storage_optimization.skipped", value: String(service.state.skipped))
-                    let remaining = max(0, service.state.total - service.state.optimized - service.state.skipped)
-                    if remaining > 0 { metric("settings.storage_optimization.remaining", value: String(remaining)) }
-                    if let delta = service.state.observedHostFreeDelta {
-                        metric("settings.storage_optimization.host_free_change", value: signedBytes(delta))
-                        Text(FloeL10n.l("settings.storage_optimization.host_change_note"))
+                    if let failure = service.bootstrapFailure {
+                        metric("settings.storage_optimization.failure_code", value: failure.code.rawValue)
+                        if let stage = failure.stage {
+                            metric("settings.storage_optimization.failure_stage", value: stage.rawValue)
+                        }
+                        if let code = failure.posixErrno {
+                            metric("settings.storage_optimization.failure_errno", value: String(code))
+                        }
+                    } else {
+                        metric("settings.storage_optimization.optimized", value: String(service.state.optimized))
+                        metric("settings.storage_optimization.skipped", value: String(service.state.skipped))
+                        let remaining = max(0, service.state.total - service.state.optimized - service.state.skipped)
+                        if remaining > 0 { metric("settings.storage_optimization.remaining", value: String(remaining)) }
+                        if let delta = service.state.observedHostFreeDelta {
+                            metric("settings.storage_optimization.host_free_change", value: signedBytes(delta))
+                            Text(FloeL10n.l("settings.storage_optimization.host_change_note"))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        metric("settings.storage_optimization.file_allocation_change",
+                               value: ByteCountFormatter.string(fromByteCount: service.state.fileAllocationReduction, countStyle: .file))
+                        Text(FloeL10n.l("settings.storage_optimization.file_change_note"))
                             .font(.caption).foregroundStyle(.secondary)
-                    }
-                    metric("settings.storage_optimization.file_allocation_change",
-                           value: ByteCountFormatter.string(fromByteCount: service.state.fileAllocationReduction, countStyle: .file))
-                    Text(FloeL10n.l("settings.storage_optimization.file_change_note"))
-                        .font(.caption).foregroundStyle(.secondary)
-                    Text(FloeL10n.l("settings.storage_optimization.guest_unchanged"))
-                        .font(.caption).foregroundStyle(.secondary)
-                    ForEach(service.state.safeDetails.keys.sorted(), id: \.self) { code in
-                        HStack {
-                            Text(code).font(.caption.monospaced())
-                            Spacer()
-                            Text(String(service.state.safeDetails[code] ?? 0)).font(.caption).monospacedDigit()
-                        }.foregroundStyle(.secondary)
+                        Text(FloeL10n.l("settings.storage_optimization.guest_unchanged"))
+                            .font(.caption).foregroundStyle(.secondary)
+                        ForEach(service.state.safeDetails.keys.sorted(), id: \.self) { code in
+                            HStack {
+                                Text(code).font(.caption.monospaced())
+                                Spacer()
+                                Text(String(service.state.safeDetails[code] ?? 0)).font(.caption).monospacedDigit()
+                            }.foregroundStyle(.secondary)
+                        }
                     }
                 } label: {
                     Text(FloeL10n.l("settings.storage_optimization.details"))
@@ -75,6 +85,9 @@ struct StorageOptimizationSection: View {
         case .blocked: return service.state.inventoryNotice ?? service.state.terminalNotice
             ?? FloeL10n.l("settings.storage_optimization.try_later")
         case .unavailable:
+            if service.bootstrapFailure != nil {
+                return FloeL10n.l("settings.storage_optimization.bootstrap_failed")
+            }
             return FloeL10n.l(service.hasLegacyRecoveryTree
                 ? "settings.storage_optimization.try_later" : "settings.storage_optimization.no_change")
         }

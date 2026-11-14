@@ -667,14 +667,35 @@ public struct UserQuestionAnswer: Codable, Sendable, Hashable {
             && (customText ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    /// Native ingress may replace a short secret near the 1,000-character
+    /// limit with a longer opaque reference before the durable store validates
+    /// the same answer again. Count each complete reference as one character;
+    /// the coordinator still validates the person's raw text first.
+    private static func boundedAnswerLength(_ text: String) -> Int {
+        guard let expression = try? NSRegularExpression(pattern: "⟨credential:[0-9A-Fa-f-]{36}⟩") else {
+            return text.count
+        }
+        let matches = expression.matches(in: text, range: NSRange(text.startIndex..., in: text))
+        return matches.reduce(text.count) { count, match in
+            guard let range = Range(match.range, in: text) else { return count }
+            return count - text[range].count + 1
+        }
+    }
+
     /// Validates and normalizes this answer against `question`.
     /// `partial` permits an incomplete draft, but never an invalid option id,
     /// too many selections for single-select, a custom answer combined with a
     /// fixed option on single-select, or a note where the question forbids it.
-    public func validated(for question: UserQuestion, partial: Bool) throws -> UserQuestionAnswer {
+    public func validated(
+        for question: UserQuestion,
+        partial: Bool,
+        allowSanitizedReferences: Bool = false
+    ) throws -> UserQuestionAnswer {
         let trimmedText = freeText?.trimmingCharacters(in: .whitespacesAndNewlines)
         let text = (trimmedText?.isEmpty == false) ? trimmedText : nil
-        if let text, text.count > UserQuestionRequest.maximumFreeTextCharacters {
+        if let text,
+           (allowSanitizedReferences ? Self.boundedAnswerLength(text) : text.count)
+            > UserQuestionRequest.maximumFreeTextCharacters {
             throw FloeError.validationFailed(
                 "The note must be at most \(UserQuestionRequest.maximumFreeTextCharacters) characters."
             )
@@ -683,7 +704,9 @@ public struct UserQuestionAnswer: Codable, Sendable, Hashable {
         // Preserve a selected empty custom field in drafts without ever
         // accepting it as a completed answer, even beside multiple choices.
         let custom = (trimmedCustom?.isEmpty == false) ? trimmedCustom : nil
-        if let custom, custom.count > UserQuestionRequest.maximumFreeTextCharacters {
+        if let custom,
+           (allowSanitizedReferences ? Self.boundedAnswerLength(custom) : custom.count)
+            > UserQuestionRequest.maximumFreeTextCharacters {
             throw FloeError.validationFailed(
                 "Your own answer must be at most \(UserQuestionRequest.maximumFreeTextCharacters) characters."
             )

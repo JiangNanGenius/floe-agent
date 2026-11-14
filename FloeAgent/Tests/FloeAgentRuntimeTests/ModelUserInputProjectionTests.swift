@@ -11,6 +11,22 @@ import FloeTestSupport
 
 @Suite("Selected primary user input")
 struct ModelUserInputProjectionTests {
+    @Test func closedOwnerGivesContinuationANewProjectionWithoutReopeningLateCallbacks() throws {
+        let old = ModelUserInputProjection()
+        let secret = CapturedSecret(label: "synthetic", value: Data("QUESTION_SECRET_42".utf8))
+        try old.register(id: UUID(), safe: secret.placeholder, live: "QUESTION_SECRET_42", captures: [secret])
+        #expect(old.successorIfClosed() == nil)
+        old.close()
+        let next = try #require(old.successorIfClosed())
+        #expect(throws: (any Error).self) {
+            try old.register(id: UUID(), safe: "My own answer", live: "My own answer")
+        }
+        try next.register(id: UUID(), safe: "My own answer", live: "My own answer")
+        #expect(next.redacted("QUESTION_SECRET_42") == secret.placeholder)
+        old.clear()
+        #expect(next.redacted("QUESTION_SECRET_42") == secret.placeholder)
+    }
+
     @Test func nativeSourceIdentityAndShortSecretRedaction() throws {
         let projection = ModelUserInputProjection()
         let id = UUID()

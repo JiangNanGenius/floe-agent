@@ -32,6 +32,82 @@ import FloePersistence
         return try JSONDecoder().decode(LegacyRecoveryInventoryReport.self, from: JSONSerialization.data(withJSONObject: object))
     }
 
+    private func bootstrapFailure() throws -> RuntimeV2MaintenanceBootstrapFailure {
+        let directory = try root(), legacy = directory.appendingPathComponent("v2")
+        let authority = directory.appendingPathComponent("MaintenanceAuthority")
+        try FileManager.default.createDirectory(at: legacy, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: authority, withIntermediateDirectories: true)
+        // An unknown physical anchor must stay refused; diagnostics do not
+        // adopt it or turn old metadata into permission to rewrite a disk.
+        try Data().write(to: authority.appendingPathComponent(".physical-" + String(repeating: "f", count: 64) + ".lock"))
+        do {
+            _ = try RuntimeV2MaintenanceDomain(trustedLegacyRoot: legacy).authorityHistoryLayout()
+            XCTFail("An unknown anchor must not be admitted")
+            throw CocoaError(.fileReadUnknown)
+        } catch let failure as RuntimeV2MaintenanceBootstrapFailure { return failure }
+    }
+
+    func testBootstrapFailureKeepsOldOperationAndExportsThisLaunchSeparately() throws {
+        let store = try defaults()
+        var previous = StorageOptimizationState(phase: .blocked, details: ["recovery-pending": 1],
+                                              appBuildFingerprint: "1.8.22.343")
+        previous.recordStage("recovery-check")
+        StorageOptimizationService.persistSnapshot(previous, to: store)
+        let original = try XCTUnwrap(store.data(forKey: "floe.storage.legacyOptimization.lastResult.v1"))
+        let service = StorageOptimizationService(adapter: nil, bootstrapFailure: try bootstrapFailure(), defaults: store)
+        XCTAssertFalse(service.canStart)
+        XCTAssertFalse(service.isRunning)
+        XCTAssertEqual(service.state.phase, .unavailable)
+        XCTAssertEqual(service.bootstrapFailure?.stage, .physicalAnchorMismatch)
+        XCTAssertEqual(store.data(forKey: "floe.storage.legacyOptimization.lastResult.v1"), original)
+        XCTAssertEqual(StorageOptimizationService.readSnapshot(from: store)?.phase, .blocked)
+        let text = StorageOptimizationService.diagnosticText(defaults: store)
+        XCTAssertTrue(text.contains("optimization_bootstrap_code: history_shape_unknown"))
+        XCTAssertTrue(text.contains("optimization_bootstrap_stage: physical_anchor_mismatch"))
+        XCTAssertTrue(text.contains("optimization_bootstrap_errno: unrecorded"))
+        XCTAssertTrue(text.contains("optimization_build: 1.8.22.343"))
+        XCTAssertTrue(text.contains("optimization_attempted: 0"))
+        let bounded = FeedbackUploadService.boundedDiagnostics(DiagnosticsExporter.render(sections: [
+            .init(id: .storageSnapshot, body: text),
+            .init(id: .recentLog, body: String(repeating: "bounded log\n", count: 20_000))
+        ]))
+        XCTAssertTrue(bounded.contains("optimization_bootstrap_stage: physical_anchor_mismatch"))
+        XCTAssertEqual(store.data(forKey: "floe.storage.legacyOptimization.lastResult.v1"), original)
+    }
+
+    func testLaunchWithoutBootstrapFailureDoesNotReuseAnOldFailure() throws {
+        let store = try defaults()
+        _ = StorageOptimizationService(adapter: nil, bootstrapFailure: try bootstrapFailure(), defaults: store)
+        XCTAssertTrue(StorageOptimizationService.diagnosticText(defaults: store).contains("optimization_bootstrap_code:"))
+        let service = StorageOptimizationService(adapter: nil, defaults: store)
+        XCTAssertNil(service.bootstrapFailure)
+        XCTAssertFalse(service.canStart)
+        XCTAssertFalse(StorageOptimizationService.diagnosticText(defaults: store).contains("optimization_bootstrap_code:"))
+        XCTAssertNil(StorageOptimizationService.readSnapshot(from: store), "A failed bootstrap never fabricates an operation")
+    }
+
+    func testBootstrapDiagnosticSnapshotOnlyExportsClosedValues() throws {
+        let store = try defaults(), key = "floe.storage.legacyOptimization.bootstrapFailure.v1"
+        let marker = "/synthetic-private/" + UUID().uuidString
+        var object: [String: Any] = ["code": "history_shape_unknown", "rootCheck": "verified",
+            "build": marker, "stage": marker, "observedAt": Date().timeIntervalSince1970,
+            "histories": -10, "pending": Int.max, "errno": marker, "extra": marker]
+        store.set(try JSONSerialization.data(withJSONObject: object), forKey: key)
+        var text = StorageOptimizationService.diagnosticText(defaults: store)
+        XCTAssertFalse(text.contains(marker))
+        XCTAssertTrue(text.contains("optimization_bootstrap_build: unrecorded"))
+        XCTAssertTrue(text.contains("optimization_bootstrap_stage: unrecorded"))
+        XCTAssertTrue(text.contains("optimization_bootstrap_histories: 0"))
+        XCTAssertTrue(text.contains("optimization_bootstrap_pending: 1000000"))
+        object["code"] = marker
+        store.set(try JSONSerialization.data(withJSONObject: object), forKey: key)
+        text = StorageOptimizationService.diagnosticText(defaults: store)
+        XCTAssertFalse(text.contains("optimization_bootstrap_code:"))
+        XCTAssertFalse(text.contains(marker))
+        store.set(Data(repeating: 65, count: 2_049), forKey: key)
+        XCTAssertFalse(StorageOptimizationService.diagnosticText(defaults: store).contains("optimization_bootstrap_code:"))
+    }
+
     func testUnrelatedBoundNativeTaskDoesNotInvalidateLegacyReferenceClaim() async throws {
         let directory = try root(), legacyRoot = directory.appendingPathComponent("v2")
         try FileManager.default.createDirectory(at: legacyRoot.appendingPathComponent("environments/legacy-env"),

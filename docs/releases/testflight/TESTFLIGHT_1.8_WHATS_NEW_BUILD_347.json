@@ -1,0 +1,4 @@
+{
+  "zh-Hans": "347 内部测试：改善换机后旧 Linux 环境的容量整理与失败诊断；修复从设置发起的 Linux 缓存清理任务；修复选择题自定义回答显示未保存；仅在支持 GPU 的环境显示显存选项。请在换机后的 iPad 上核对实际回收量，以及清理任务、问答和执行环境设置。本次不提交公开 TestFlight 或正式 App Store 审核。",
+  "en-US": "Build 347 internal test: improves storage optimization and diagnostics after device migration; fixes the Linux cache cleanup task launched from Settings; fixes custom choice answers appearing unsaved; and shows GPU memory controls only when supported. On a migrated iPad, check actual reclaimed space and the cleanup, question, and environment flows. No public TestFlight or formal App Store submission."
+}

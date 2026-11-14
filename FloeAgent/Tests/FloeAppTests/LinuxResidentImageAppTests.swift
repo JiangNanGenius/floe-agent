@@ -98,4 +98,54 @@ import FloePersistence
         let record = await f.registry.record(id: f.recordID)
         XCTAssertFalse(try XCTUnwrap(record).requiresRebuild)
     }
+
+    func testSharedLinuxDescriptorGetsOnlyItsOwnMaintenanceWorkspace() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let f = try await fixture(root, recordedImageID: "old-image")
+        let resolved = await f.provider.linuxGuestEnvironment(id: EnvironmentRegistry.sharedContainerID)
+        let descriptor = try XCTUnwrap(resolved)
+        let environmentShare = try XCTUnwrap(descriptor.shares.first {
+            $0.tag == LinuxGuestShare.environmentTag
+        })
+        let workspaceShare = try XCTUnwrap(descriptor.shares.first {
+            $0.tag == LinuxGuestShare.workspaceTag
+        })
+        let expected = root.appendingPathComponent("environments/.LinuxCacheCleanupWorkspace")
+        XCTAssertEqual(workspaceShare.hostDirectory.standardizedFileURL, expected.standardizedFileURL)
+        XCTAssertNotEqual(workspaceShare.hostDirectory.standardizedFileURL,
+                          environmentShare.hostDirectory.standardizedFileURL)
+        XCTAssertNotEqual(workspaceShare.hostDirectory.standardizedFileURL,
+                          root.appendingPathComponent("workspace").standardizedFileURL)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: expected.path))
+        let map = LinuxGuestPathMap(shares: descriptor.shares)
+        XCTAssertEqual(map.hostPath(forGuestPath: LinuxGuestMountPoint.workspace)?.standardizedFileURL,
+                       expected.standardizedFileURL)
+        let access = try await f.provider.acquireShareAccess(
+            environmentID: EnvironmentRegistry.sharedContainerID, descriptor: descriptor
+        )
+        XCTAssertNil(access)
+        let projectResolved = await f.provider.linuxGuestEnvironment(id: f.recordID)
+        let project = try XCTUnwrap(projectResolved)
+        XCTAssertEqual(project.shares.first { $0.tag == LinuxGuestShare.workspaceTag }?.hostDirectory,
+                       root.appendingPathComponent("workspace"))
+    }
+
+    func testSharedLinuxDescriptorRejectsRedirectedMaintenanceWorkspace() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let f = try await fixture(root, recordedImageID: "old-image")
+        let userData = root.appendingPathComponent("user-data", isDirectory: true)
+        try FileManager.default.createDirectory(at: userData, withIntermediateDirectories: false)
+        let marker = userData.appendingPathComponent("keep.txt")
+        try Data("keep".utf8).write(to: marker)
+        try FileManager.default.createSymbolicLink(
+            at: root.appendingPathComponent("environments/.LinuxCacheCleanupWorkspace"),
+            withDestinationURL: userData
+        )
+        let resolved = await f.provider.linuxGuestEnvironment(id: EnvironmentRegistry.sharedContainerID)
+        let descriptor = try XCTUnwrap(resolved)
+        XCTAssertNil(descriptor.shares.first { $0.tag == LinuxGuestShare.workspaceTag })
+        XCTAssertEqual(try Data(contentsOf: marker), Data("keep".utf8))
+    }
 }

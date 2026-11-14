@@ -2625,10 +2625,22 @@ final class ConversationCenter: ObservableObject {
     /// provider adapter used by titles, memory or delegated children.
     private var modelInputProjections: [UUID: ModelUserInputProjection] = [:]
     private var modelInputProjectionOwners: [UUID: UUID] = [:]
+    private var serviceModelInputProjections: [UUID: ModelUserInputProjection] = [:]
 
     private func clearModelInputProjection(_ runID: UUID) {
         modelInputProjections.removeValue(forKey: runID)?.clear()
+        serviceModelInputProjections.removeValue(forKey: runID)?.clear()
         modelInputProjectionOwners[runID] = nil
+    }
+
+    private func releaseServiceModelInputProjection(_ runID: UUID) {
+        guard let serviceProjection = serviceModelInputProjections.removeValue(forKey: runID) else { return }
+        serviceProjection.clear()
+        // A pending question may already have installed the successor for
+        // this same run. The former service must never clear its answer.
+        if modelInputProjections[runID] === serviceProjection {
+            clearModelInputProjection(runID)
+        }
     }
 
     private func modelInputProjection(for runID: UUID, conversationID: UUID) -> ModelUserInputProjection {
@@ -2637,6 +2649,16 @@ final class ConversationCenter: ObservableObject {
         let value = ModelUserInputProjection()
         modelInputProjections[runID] = value
         return value
+    }
+
+    /// The completed service still owns its closed projection for late
+    /// callbacks. A pending native question or a reserved Continue of that
+    /// same run receives a fresh owner without reopening the old service.
+    private func renewClosedModelInputProjection(runID: UUID, conversationID: UUID) {
+        guard modelInputProjectionOwners[runID] == conversationID,
+              let previous = modelInputProjections[runID],
+              let successor = previous.successorIfClosed() else { return }
+        modelInputProjections[runID] = successor
     }
 
     private func hydrateModelUserInputs(_ sources: [ModelUserInputSource], runID: UUID,
@@ -2680,6 +2702,10 @@ final class ConversationCenter: ObservableObject {
     /// existing explicit-label scanner. Neither path grants tool authority.
     func normalizeQuestionAnswer(_ answer: UserQuestionAnswer, question: UserQuestion,
                                  ephemeral: Bool) async throws -> UserQuestionAnswer {
+        // The coordinator has already verified this pending question's run,
+        // conversation and revision before calling the answer normalizer.
+        guard !runInvocationOwnership.isCancelled(question.runID) else { throw CancellationError() }
+        renewClosedModelInputProjection(runID: question.runID, conversationID: question.conversationID)
         var safe = answer
         if let raw = answer.freeText, !raw.isEmpty {
             safe.freeText = try await normalizeQuestionText(raw, question: question, ephemeral: ephemeral,
@@ -5052,6 +5078,7 @@ final class ConversationCenter: ObservableObject {
             }
         )
         preparationStage("end:service_and_approval")
+        serviceModelInputProjections[runID] = userInputProjection
         resourceOwnershipTransferred = true
         if runInvocationOwnership.hasOwner(runID) {
             pendingRunResources[runID] = taskRootResources
@@ -7932,6 +7959,7 @@ final class ConversationCenter: ObservableObject {
             await launchNextQueuedInput(conversationID: service.conversationID)
         }
         await environment.subagentRunnerRegistry.remove(runID: runID)
+        releaseServiceModelInputProjection(runID)
         return outcome
     }
 
@@ -7965,7 +7993,7 @@ final class ConversationCenter: ObservableObject {
         // service channel, so `track` cannot always release this ownership.
         // Clear it explicitly or the UI will believe a failed run is still
         // active and refuse to resume it.
-        clearModelInputProjection(service.runID)
+        releaseServiceModelInputProjection(service.runID)
         runServices[service.runID] = nil
         snapshotTasks[service.runID]?.cancel()
         snapshotTasks[service.runID] = nil
@@ -9767,6 +9795,7 @@ final class ConversationCenter: ObservableObject {
            !launchPreparations.mayExecute(inheritedPreparationID) { throw CancellationError() }
         let workID = inheritedPreparationID ?? UUID()
         let invocation = try claimRunInvocation(record.id, conversationID: record.conversationID, generation: workID)
+        renewClosedModelInputProjection(runID: record.id, conversationID: record.conversationID)
         var taskRegistered = false
         var localModelRetained = false
         var preparedService: ConversationRunService?
@@ -10059,7 +10088,7 @@ final class ConversationCenter: ObservableObject {
         if snapshot.isTerminal || cancelledBeforeStart {
             activeRuns[service.runID] = nil
         }
-        clearModelInputProjection(service.runID)
+        releaseServiceModelInputProjection(service.runID)
         runServices[service.runID] = nil
         snapshotTasks[service.runID]?.cancel()
         snapshotTasks[service.runID] = nil
@@ -11050,7 +11079,7 @@ final class ConversationCenter: ObservableObject {
     private func apply(_ snapshot: ConversationRunService.Snapshot) {
         let existing = activeRuns[snapshot.runID]
         if snapshot.isTerminal {
-            modelInputProjections[snapshot.runID]?.close()
+            serviceModelInputProjections[snapshot.runID]?.close()
             // Durable history already owns terminal runs. Keeping them in the
             // live-owner projection made every failed launch look paused and
             // caused Continue to chase a run that had already ended.

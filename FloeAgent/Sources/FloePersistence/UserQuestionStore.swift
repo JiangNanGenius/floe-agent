@@ -262,7 +262,7 @@ public actor UserQuestionStore {
                     saved: false
                 )
             }
-            let normalized = try draft.validated(for: question, partial: true)
+            let normalized = try draft.validated(for: question, partial: true, allowSanitizedReferences: true)
             // Drafts are UI progress, not settlement: they do not consume the
             // answer CAS revision. The card's final answer stays valid while
             // the person edits notes or moves between questions.
@@ -303,7 +303,7 @@ public actor UserQuestionStore {
                     saved: false
                 )
             }
-            let normalized = try draft.validated(for: question, partial: true)
+            let normalized = try draft.validated(for: question, partial: true, allowSanitizedReferences: true)
             // Drafts never consume the answer CAS revision.
             question.draftAnswer = normalized
             question.updatedAt = now
@@ -593,7 +593,8 @@ public actor UserQuestionStore {
         }
         let normalized: UserQuestionAnswer?
         if let answer {
-            normalized = try answer.validated(for: question, partial: false)
+            normalized = try answer.validated(for: question, partial: false,
+                allowSanitizedReferences: source == .human)
         } else {
             normalized = nil
         }

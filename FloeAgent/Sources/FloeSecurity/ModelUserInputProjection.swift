@@ -144,6 +144,19 @@ public final class ModelUserInputProjection: @unchecked Sendable {
         return (try? JSONSerialization.data(withJSONObject: safe, options: [.sortedKeys, .fragmentsAllowed])) ?? Data()
     }
 
+    /// A continued invocation of the same run needs a live disclosure owner.
+    /// Keep the old object closed for any late service callback, while the new
+    /// object retains known secrets for redaction (including RAM-only chats).
+    /// The caller must verify that the run and conversation still own the
+    /// continuation; this method never reopens a closed object in place.
+    public func successorIfClosed() -> ModelUserInputProjection? {
+        lock.lock(); defer { lock.unlock() }
+        guard !open else { return nil }
+        let successor = ModelUserInputProjection()
+        successor.secrets = secrets
+        return successor
+    }
+
     /// Stop new disclosure immediately; keep redaction until in-flight writers
     /// quiesce. The service's terminal cleanup then releases every raw value.
     public func close() { lock.lock(); open = false; texts.removeAll(); lock.unlock() }

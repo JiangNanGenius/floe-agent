@@ -250,4 +250,24 @@ struct LinuxGuestImageWebsiteFallbackTests {
         #expect(try LinuxGuestImageWebsiteFallback.responseOffset(full, ticket: ticket, requestedOffset: 65_536) == 0)
     }
 }
+
+@Suite("Execution environment GPU setting availability")
+@MainActor
+struct ExecutionEnvironmentGPUSettingTests {
+    @Test func pickerRequiresInstalledVerifiedQualifiedResidentGPUImage() {
+        let cpu = LinuxGuestImage(id: "resident", biosPath: "firmware.fd", qualified: true)
+        let gpu = LinuxGuestImage(id: "resident", biosPath: "firmware.fd", qualified: true,
+            deviceCapabilities: .init(vulkanGPU: true))
+        func status(_ image: LinuxGuestImage?, installed: Bool = true,
+                    issue: LinuxImageVerificationIssue? = nil) -> LinuxGuestImageInstallationService.ImageStatus {
+            .init(id: "resident", installed: installed, verificationIssue: issue,
+                  image: image, distributable: true)
+        }
+        #expect(!ExecutionEnvironmentView.supportsVerifiedResidentGPU(nil))
+        #expect(!ExecutionEnvironmentView.supportsVerifiedResidentGPU(status(cpu)))
+        #expect(!ExecutionEnvironmentView.supportsVerifiedResidentGPU(status(gpu, installed: false)))
+        #expect(!ExecutionEnvironmentView.supportsVerifiedResidentGPU(status(gpu, issue: .artifactMissing(role: "disk"))))
+        #expect(ExecutionEnvironmentView.supportsVerifiedResidentGPU(status(gpu)))
+    }
+}
 #endif

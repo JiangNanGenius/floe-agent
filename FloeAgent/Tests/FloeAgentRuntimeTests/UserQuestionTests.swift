@@ -89,6 +89,61 @@ struct UserQuestionTests {
         #expect(delivered.humanAnsweredQuestionIDs == [target.questionID])
     }
 
+    @Test("An accepted typed answer wakes the run even when its post-commit snapshot read fails")
+    func acceptedAnswerSurvivesProjectionReadFailure() async throws {
+        let (_, conversation, run, store, _) = try await fixture()
+        let coordinator = UserQuestionCoordinator(store: store, postCommitSnapshot: { _ in
+            throw UserQuestionError.notFound
+        })
+        let callID = "call_post_commit_read_failure"
+        let requestID = UserQuestionCoordinator.requestID(runID: run, toolCallID: callID)
+        let waiting = Task {
+            try await coordinator.ask(request([.init(question: "What should change?", allowsFreeText: true)]),
+                runID: run, conversationID: conversation, toolCallID: callID,
+                cancellation: CancellationToken(), temporaryReadOnly: false)
+        }
+        let pending = try await waitForSnapshot(store, requestID: requestID)
+        let target = pending.target(for: try #require(pending.currentQuestion))
+        let receipt = try await coordinator.submitHumanAnswer(target: target,
+            answer: .init(freeText: "Use the native path"))
+        #expect(receipt.accepted)
+        #expect(try await store.snapshot(requestID: requestID)?.questions.first?.answer?.freeText == "Use the native path")
+        let delivered = try await waiting.value
+        #expect(delivered.status == .answered)
+        #expect(delivered.answers.first?.freeText == "Use the native path")
+    }
+
+    @Test("A near-limit custom answer remains valid after credential redaction expands its stored text")
+    func longSanitizedCustomAnswer() async throws {
+        let (_, conversation, run, store, _) = try await fixture()
+        let raw = String(repeating: "x", count: 990) + "KEY=7"
+        let reference = CapturedSecret.placeholder(for: UUID())
+        let coordinator = UserQuestionCoordinator(store: store, answerNormalizer: { answer, _, _ in
+            var safe = answer
+            safe.customText = answer.customText?.replacingOccurrences(of: "7", with: reference)
+            return safe
+        })
+        let callID = "call_long_sanitized_custom"
+        let requestID = UserQuestionCoordinator.requestID(runID: run, toolCallID: callID)
+        let waiting = Task {
+            try await coordinator.ask(request([.init(question: "Which?", options: [.init(id: "a", label: "A")])]),
+                runID: run, conversationID: conversation, toolCallID: callID,
+                cancellation: CancellationToken(), temporaryReadOnly: false)
+        }
+        let pending = try await waitForSnapshot(store, requestID: requestID)
+        let target = pending.target(for: try #require(pending.currentQuestion))
+        #expect((raw.replacingOccurrences(of: "7", with: reference)).count > UserQuestionRequest.maximumFreeTextCharacters)
+        let receipt = try await coordinator.submitHumanAnswer(target: target, answer: .init(customText: raw))
+        #expect(receipt.accepted)
+        let delivered = try await waiting.value
+        #expect(delivered.answers.first?.customText?.contains(reference) == true)
+        #expect(try await store.snapshot(requestID: requestID)?.questions.first?.answer?.customText?.contains(reference) == true)
+        #expect(throws: (any Error).self) {
+            try UserQuestionAnswer(customText: raw.replacingOccurrences(of: "7", with: reference))
+                .validated(for: try #require(pending.currentQuestion), partial: false)
+        }
+    }
+
     @Test("Optional custom and note content survives recovery until the exact delivery is acknowledged")
     func optionalCustomDeliveryRecovery() async throws {
         let (database, conversation, run, store, coordinator) = try await fixture()

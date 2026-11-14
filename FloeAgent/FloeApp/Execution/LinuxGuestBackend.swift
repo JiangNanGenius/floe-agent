@@ -111,9 +111,25 @@ struct AppLinuxGuestEnvironmentProvider: LinuxGuestEnvironmentProviding {
         if let layer {
             shares.append(LinuxGuestShare(tag: "floe-env", hostDirectory: layer))
         }
-        if let workspace = try? await registry.workspaceRoot(for: id),
-           !shares.contains(where: { $0.hostDirectory.standardizedFileURL == workspace.standardizedFileURL }) {
-            shares.append(LinuxGuestShare(tag: "workspace", hostDirectory: workspace))
+        if record.id == EnvironmentRegistry.sharedContainerID, record.kind == .shared,
+           let layer {
+            // A shared Linux job has no project workspace, but the resident
+            // supervisor still requires a workspace 9P mount. Give it one
+            // stable, app-owned root. Never alias the environment layer
+            // (which is mounted separately at /floe/env) or borrow a user's
+            // project folder for a maintenance task.
+            do {
+                let maintenance = try Self.prepareSharedMaintenanceWorkspace(nextTo: layer)
+                shares.append(LinuxGuestShare(tag: LinuxGuestShare.workspaceTag,
+                                               hostDirectory: maintenance))
+            } catch {
+                FloeLogger(category: .tools).warning(
+                    "Shared Linux maintenance workspace unavailable: \(error.localizedDescription)"
+                )
+            }
+        } else if let workspace = try? await registry.workspaceRoot(for: id),
+                  !shares.contains(where: { $0.hostDirectory.standardizedFileURL == workspace.standardizedFileURL }) {
+            shares.append(LinuxGuestShare(tag: LinuxGuestShare.workspaceTag, hostDirectory: workspace))
         }
         if let cache = sharedDownloadCacheURL {
             var isDirectory: ObjCBool = false
@@ -153,6 +169,27 @@ struct AppLinuxGuestEnvironmentProvider: LinuxGuestEnvironmentProviding {
         )
     }
 
+    private static func prepareSharedMaintenanceWorkspace(nextTo layer: URL) throws -> URL {
+        let root = layer.deletingLastPathComponent()
+        guard layer.lastPathComponent == "Shared" else {
+            throw FloeError.invalidConfiguration("The shared Linux layer is not in the managed environment root")
+        }
+        let workspace = root.appendingPathComponent(".LinuxCacheCleanupWorkspace", isDirectory: true)
+        let manager = FileManager.default
+        try manager.createDirectory(at: workspace, withIntermediateDirectories: false)
+        let values = try workspace.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+        guard values.isDirectory == true, values.isSymbolicLink != true,
+              workspace.resolvingSymlinksInPath().deletingLastPathComponent()
+                == root.resolvingSymlinksInPath() else {
+            throw FloeError.invalidConfiguration("The shared Linux maintenance workspace is not an owned directory")
+        }
+        var excluded = workspace
+        var backupValues = URLResourceValues()
+        backupValues.isExcludedFromBackup = true
+        try? excluded.setResourceValues(backupValues)
+        return workspace
+    }
+
     /// Durable access for the workspace 9P share. The registry only stores a
     /// plain path, and an iOS external Files folder is only reachable while a
     /// security-scoped grant is held; without this, a guest booted after a
@@ -165,12 +202,24 @@ struct AppLinuxGuestEnvironmentProvider: LinuxGuestEnvironmentProviding {
         environmentID: String,
         descriptor: LinuxGuestEnvironmentDescriptor
     ) async throws -> LinuxGuestShareAccessLease? {
-        if let record = await registry.record(id: environmentID),
-           record.requiresRebuild || record.pendingRuntimeResetID != nil {
+        let record = await registry.record(id: environmentID)
+        if let record, record.requiresRebuild || record.pendingRuntimeResetID != nil {
             throw LinuxGuestError.startFailed("The runtime needs to be restored before starting")
         }
         guard let workspace = descriptor.shares.first(where: { $0.tag == LinuxGuestShare.workspaceTag })
         else { return nil }
+        if record?.id == EnvironmentRegistry.sharedContainerID, record?.kind == .shared {
+            guard let layer = await registry.layerURL(for: environmentID),
+                  let expected = try? Self.prepareSharedMaintenanceWorkspace(nextTo: layer),
+                  workspace.hostDirectory.standardizedFileURL == expected.standardizedFileURL,
+                  WorkspaceCenter.isAppOwnedWorkspacePath(expected.path) else {
+                throw LinuxGuestError.shareAccessUnavailable(
+                    environmentID: environmentID,
+                    detail: "The shared Linux maintenance workspace is unavailable"
+                )
+            }
+            return nil // This dedicated share lives inside the App container.
+        }
         do {
             return try await WorkspaceCenter.acquireExternalWorkspaceAccess(
                 forCanonicalPath: workspace.hostDirectory.path,
@@ -681,6 +730,19 @@ struct RoutingLocalShellBackend: LocalShellBackend {
             return .failed(message: error.localizedDescription)
         }
         var preparedRequest = request
+        if environmentID == EnvironmentRegistry.sharedContainerID,
+           let pathMapping = guests as? any LinuxGuestPathMapping {
+            // Shell input is authorized against the conversation's private
+            // task root, but a shared guest mounts its own maintenance root
+            // at /workspace. Align cwd and large-script staging with the
+            // actual 9P table; otherwise a staged command is written into a
+            // different host folder and can never be read by the guest.
+            guard let mounted = await pathMapping.linuxGuestPathMap(environmentID: environmentID)?
+                .hostPath(forGuestPath: LinuxGuestMountPoint.workspace) else {
+                return .failed(message: "The shared Linux maintenance workspace is unavailable")
+            }
+            preparedRequest.rootURL = mounted
+        }
         if mayPrepare, let prepareNativeComponents,
            let bindings = await prepareNativeComponents(
                environmentID, request.runID, cancellation
@@ -714,7 +776,16 @@ struct RoutingLocalShellBackend: LocalShellBackend {
                 id: environmentID, taskID: nil, runID: request.runID
             )
         }
-        let result = try await guestBackend.openSession(request, cancellation: cancellation)
+        var preparedRequest = request
+        if environmentID == EnvironmentRegistry.sharedContainerID,
+           let pathMapping = guests as? any LinuxGuestPathMapping {
+            guard let mounted = await pathMapping.linuxGuestPathMap(environmentID: environmentID)?
+                .hostPath(forGuestPath: LinuxGuestMountPoint.workspace) else {
+                throw LinuxGuestError.invalidConfiguration("The shared Linux maintenance workspace is unavailable")
+            }
+            preparedRequest.rootURL = mounted
+        }
+        let result = try await guestBackend.openSession(preparedRequest, cancellation: cancellation)
         guestSessions.insert(request.sessionID)
         return result
     }

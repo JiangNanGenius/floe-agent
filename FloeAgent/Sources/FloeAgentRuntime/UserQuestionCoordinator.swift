@@ -91,6 +91,7 @@ public actor UserQuestionCoordinator: UserQuestionAnswering, UserQuestionRuntime
     private let now: @Sendable () -> Date
     private let defaultSettings: @Sendable () async -> UserQuestionDefaults
     private let answerNormalizer: (@Sendable (UserQuestionAnswer, UserQuestion, Bool) async throws -> UserQuestionAnswer)?
+    private let postCommitSnapshot: @Sendable (String) async throws -> UserQuestionWaitingSnapshot?
 
     /// One parked execution per request. The continuation is resumed by the
     /// next accepted answer, expiry, cancel or terminal fence.
@@ -110,12 +111,14 @@ public actor UserQuestionCoordinator: UserQuestionAnswering, UserQuestionRuntime
         eventHandler: (@Sendable (UserQuestionEvent) async -> Void)? = nil,
         now: @escaping @Sendable () -> Date = { Date() },
         answerNormalizer: (@Sendable (UserQuestionAnswer, UserQuestion, Bool) async throws -> UserQuestionAnswer)? = nil,
+        postCommitSnapshot: (@Sendable (String) async throws -> UserQuestionWaitingSnapshot?)? = nil,
         defaultSettings: @escaping @Sendable () async -> UserQuestionDefaults = { UserQuestionDefaults() }
     ) {
         self.store = store
         self.eventHandler = eventHandler
         self.now = now
         self.answerNormalizer = answerNormalizer
+        self.postCommitSnapshot = postCommitSnapshot ?? { try await store.snapshot(requestID: $0) }
         self.defaultSettings = defaultSettings
     }
 
@@ -232,16 +235,17 @@ public actor UserQuestionCoordinator: UserQuestionAnswering, UserQuestionRuntime
             now: now()
         )
         guard receipt.accepted else { return receipt }
-        guard let snapshot = try await store.snapshot(requestID: target.requestID) else {
-            return receipt
-        }
-        await emit(.settled(snapshot))
+        // The CAS is the durable answer. A later projection read can fail
+        // transiently; it must neither turn this accepted answer into an
+        // apparent save failure nor strand the parked runtime continuation.
         signal(target.requestID)
         cleanupWaitTasks(for: target.requestID)
+        let snapshot = try? await postCommitSnapshot(target.requestID)
+        if let snapshot { await emit(.settled(snapshot)) }
         // A nonblocking request may still contain another timed question.
         // Reuse the one existing deadline task; no new scheduler is introduced.
         await startDeadlineTask(requestID: target.requestID)
-        if returnedRequestIDs.contains(target.requestID),
+        if let snapshot, returnedRequestIDs.contains(target.requestID),
            !snapshot.hasBlockingPending,
            let record = receipt.answer {
             if snapshot.isFullySettled { returnedRequestIDs.remove(target.requestID) }
@@ -255,13 +259,18 @@ public actor UserQuestionCoordinator: UserQuestionAnswering, UserQuestionRuntime
                 text: UserQuestionFormatting.deliveryText(request: snapshot, answers: [record])
             )
             await emit(.answerAvailable(delivery))
+        } else if snapshot == nil, returnedRequestIDs.contains(target.requestID),
+                  let delivery = try? await store.undeliveredAnswers(conversationID: target.conversationID)
+                    .first(where: { $0.requestID == target.requestID && $0.answers.contains(where: { $0.questionID == target.questionID }) }) {
+            // Durable queue read-back is the fallback wake signal for an
+            // optional answer when only the immediate snapshot failed.
+            await emit(.answerAvailable(delivery))
         }
         return receipt
     }
 
     private func normalizedAnswer(_ answer: UserQuestionAnswer, target: UserQuestionAnswerTarget,
                                   partial: Bool) async throws -> UserQuestionAnswer {
-        guard let normalizer = answerNormalizer else { return answer }
         guard let snapshot = try await store.snapshot(requestID: target.requestID),
               snapshot.conversationID == target.conversationID, snapshot.runID == target.runID,
               let question = snapshot.questions.first(where: { $0.questionID == target.questionID }),
@@ -270,6 +279,7 @@ public actor UserQuestionCoordinator: UserQuestionAnswering, UserQuestionRuntime
             return answer
         }
         let validated = try answer.validated(for: question, partial: partial)
+        guard let normalizer = answerNormalizer else { return validated }
         return try await normalizer(validated, question, snapshot.isEphemeral)
     }
 

@@ -1728,6 +1728,80 @@ public actor RuntimeV2MaintenanceCoordinator {
         return record
     }
 
+    /// Bootstrap reads through the already verified namespace descriptor. A
+    /// missing intent is the only reason to classify a namespace as intentless;
+    /// FileManager.fileExists also returns false when an existing file cannot
+    /// be inspected, which previously sent that case down the wrong path.
+    nonisolated static func readHistoryIntent(directoryFD: Int32) throws -> RuntimeV2MaintenanceIntentRecord? {
+        let fd = openat(directoryFD, "intent.json", O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        if fd < 0 && errno == ENOENT { return nil }
+        guard fd >= 0 else {
+            throw RuntimeV2MaintenanceBootstrapFailure(.historyUnreadable, rootCheck: .verified,
+                posixErrno: errno, stage: .intentOpen)
+        }
+        defer { close(fd) }
+        var before = stat(), named = stat(), after = stat(), finalNamed = stat()
+        guard fstat(fd, &before) == 0,
+              fstatat(directoryFD, "intent.json", &named, AT_SYMLINK_NOFOLLOW) == 0 else {
+            throw RuntimeV2MaintenanceBootstrapFailure(.historyUnreadable, rootCheck: .verified,
+                posixErrno: errno, stage: .intentStat)
+        }
+        guard before.st_mode & S_IFMT == S_IFREG, before.st_nlink == 1,
+              before.st_size > 0, before.st_size <= 1 << 20,
+              before.st_dev == named.st_dev, before.st_ino == named.st_ino else {
+            throw RuntimeV2MaintenanceBootstrapFailure(.historyUnreadable, rootCheck: .verified,
+                stage: .intentStat)
+        }
+        var bytes = [UInt8](repeating: 0, count: Int(before.st_size))
+        var offset = 0
+        let expected = bytes.count
+        while offset < expected {
+            let count = bytes.withUnsafeMutableBytes {
+                read(fd, $0.baseAddress!.advanced(by: offset), expected - offset)
+            }
+            if count < 0 && errno == EINTR { continue }
+            guard count > 0 else {
+                throw RuntimeV2MaintenanceBootstrapFailure(.historyUnreadable, rootCheck: .verified,
+                    posixErrno: count < 0 ? errno : nil, stage: .intentRead)
+            }
+            offset += count
+        }
+        guard fstat(fd, &after) == 0,
+              fstatat(directoryFD, "intent.json", &finalNamed, AT_SYMLINK_NOFOLLOW) == 0 else {
+            throw RuntimeV2MaintenanceBootstrapFailure(.historyUnreadable, rootCheck: .verified,
+                posixErrno: errno, stage: .intentStat)
+        }
+        guard before.st_dev == after.st_dev, before.st_ino == after.st_ino,
+              before.st_size == after.st_size,
+              before.st_dev == finalNamed.st_dev, before.st_ino == finalNamed.st_ino else {
+            throw RuntimeV2MaintenanceBootstrapFailure(.historyUnreadable, rootCheck: .verified,
+                stage: .intentChanged)
+        }
+        #if canImport(Darwin)
+        guard before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec,
+              before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec,
+              before.st_ctimespec.tv_sec == after.st_ctimespec.tv_sec,
+              before.st_ctimespec.tv_nsec == after.st_ctimespec.tv_nsec else {
+            throw RuntimeV2MaintenanceBootstrapFailure(.historyUnreadable, rootCheck: .verified,
+                stage: .intentChanged)
+        }
+        #else
+        guard before.st_mtim.tv_sec == after.st_mtim.tv_sec,
+              before.st_mtim.tv_nsec == after.st_mtim.tv_nsec,
+              before.st_ctim.tv_sec == after.st_ctim.tv_sec,
+              before.st_ctim.tv_nsec == after.st_ctim.tv_nsec else {
+            throw RuntimeV2MaintenanceBootstrapFailure(.historyUnreadable, rootCheck: .verified,
+                stage: .intentChanged)
+        }
+        #endif
+        guard let record = try? intentDecoder.decode(RuntimeV2MaintenanceIntentRecord.self, from: Data(bytes)),
+              record.version == RuntimeV2MaintenanceIntentRecord.currentVersion else {
+            throw RuntimeV2MaintenanceBootstrapFailure(.historyUnreadable, rootCheck: .verified,
+                stage: .intentPayload)
+        }
+        return record
+    }
+
     /// Bounded, readonly discovery before any legacy owner is constructed.
     /// A different/copy identity or ambiguous history blocks instead of opening
     /// a fresh empty authority namespace under the new container UUID.

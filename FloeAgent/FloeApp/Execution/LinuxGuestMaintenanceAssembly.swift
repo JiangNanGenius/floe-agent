@@ -207,16 +207,23 @@ enum LinuxGuestMaintenanceAssembly {
     private final class Holder: @unchecked Sendable {
         let lock = NSLock()
         var runtime: LinuxGuestMaintenanceRuntime?
+        var bootstrapFailure: RuntimeV2MaintenanceBootstrapFailure?
         func current() -> LinuxGuestMaintenanceRuntime? { lock.withLock { runtime } }
+        func currentFailure() -> RuntimeV2MaintenanceBootstrapFailure? { lock.withLock { bootstrapFailure } }
+        func record(_ failure: RuntimeV2MaintenanceBootstrapFailure?) {
+            lock.withLock { if runtime == nil { bootstrapFailure = failure } }
+        }
         func install(_ candidate: LinuxGuestMaintenanceRuntime) -> LinuxGuestMaintenanceRuntime {
             lock.withLock {
                 if let runtime { return runtime }
+                bootstrapFailure = nil
                 runtime = candidate; return candidate
             }
         }
     }
     private static let holder = Holder()
     static func currentRuntime() -> LinuxGuestMaintenanceRuntime? { holder.current() }
+    static func currentBootstrapFailure() -> RuntimeV2MaintenanceBootstrapFailure? { holder.currentFailure() }
 
     /// Must run BEFORE constructing any runtime layout/backend in this launch.
     /// It does not open/prepare/migrate the legacy store or stop any machine.
@@ -234,6 +241,7 @@ enum LinuxGuestMaintenanceAssembly {
             FloeLogger(category: .tools).info("legacyMaintenanceBootstrap code=registered rootCheck=verified histories=\(histories.historicalDirectories.count) pending=\(histories.pendingIntentCount)")
             return holder.install(runtime)
         } catch {
+            holder.record(error as? RuntimeV2MaintenanceBootstrapFailure)
             if let failure = error as? RuntimeV2MaintenanceBootstrapFailure {
                 FloeLogger(category: .tools).error(failure.diagnosticText)
             } else {

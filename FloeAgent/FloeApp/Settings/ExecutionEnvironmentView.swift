@@ -64,6 +64,21 @@ struct ExecutionEnvironmentView: View {
     @State private var sharedRuntimeRunning = false
     @State private var sharedRunningIDs: Set<String> = []
 
+    static func supportsVerifiedResidentGPU(_ status: LinuxGuestImageInstallationService.ImageStatus?) -> Bool {
+        guard let status, status.installed, status.verificationIssue == nil,
+              let image = status.image, image.id == status.id, image.qualified else { return false }
+        return image.deviceCapabilities?.vulkanGPU == true
+    }
+
+    private var verifiedResidentGPUAvailable: Bool {
+        Self.supportsVerifiedResidentGPU(linuxImageStatus)
+    }
+
+    private var proposedSharedConfiguration: LinuxGuestLifecycleConfig {
+        .init(vcpus: sharedCPUs, memoryMB: sharedMemoryMB,
+              gpuMemoryMB: verifiedResidentGPUAvailable ? sharedGPUMemoryMB : sharedConfiguration?.gpuMemoryMB)
+    }
+
     private var runtimeRecoveryRunning: Bool {
         packageJobs.running.contains(FloePlatformServices.residentRecoveryJobID)
     }
@@ -117,34 +132,36 @@ struct ExecutionEnvironmentView: View {
                                 .foregroundStyle(FloeTheme.pending)
                         }
                     }
-                    Picker("execution.shared.gpu_memory", selection: $sharedGPUMemoryMB) {
-                        ForEach([256, 512, 768, 1024, 1536, 2048], id: \.self) { value in
-                            Text(value == 1024 ? "1 GB" : value == 2048 ? "2 GB" : "\(value) MB").tag(value)
+                    if verifiedResidentGPUAvailable {
+                        Picker("execution.shared.gpu_memory", selection: $sharedGPUMemoryMB) {
+                            ForEach([256, 512, 768, 1024, 1536, 2048], id: \.self) { value in
+                                Text(value == 1024 ? "1 GB" : value == 2048 ? "2 GB" : "\(value) MB").tag(value)
+                            }
                         }
-                    }
-                    if let gpu = sharedGPUStatus, sharedRuntimeRunning {
-                        if gpu.present {
-                            LabeledContent("execution.shared.gpu_current", value: gpuMemoryLabel(gpu.effectiveBytes))
-                            if gpu.pending {
-                                Text(String.localizedStringWithFormat(
-                                    String(localized: "execution.shared.gpu_pending"), gpuMemoryLabel(gpu.targetBytes)))
-                                    .font(.subheadline).foregroundStyle(FloeTheme.pending)
-                            } else if gpu.clamped {
-                                Text("execution.shared.gpu_limited").font(.subheadline).foregroundStyle(.secondary)
+                        if let gpu = sharedGPUStatus, sharedRuntimeRunning {
+                            if gpu.present {
+                                LabeledContent("execution.shared.gpu_current", value: gpuMemoryLabel(gpu.effectiveBytes))
+                                if gpu.pending {
+                                    Text(String.localizedStringWithFormat(
+                                        String(localized: "execution.shared.gpu_pending"), gpuMemoryLabel(gpu.targetBytes)))
+                                        .font(.subheadline).foregroundStyle(FloeTheme.pending)
+                                } else if gpu.clamped {
+                                    Text("execution.shared.gpu_limited").font(.subheadline).foregroundStyle(.secondary)
+                                }
+                                if gpu.needsReset {
+                                    Text("execution.shared.gpu_unavailable").font(.subheadline).foregroundStyle(.secondary)
+                                }
+                            } else {
+                                Text("execution.shared.gpu_update_image").font(.subheadline).foregroundStyle(.secondary)
                             }
-                            if gpu.needsReset {
-                                Text("execution.shared.gpu_unavailable").font(.subheadline).foregroundStyle(.secondary)
-                            }
-                        } else {
-                            Text("execution.shared.gpu_update_image").font(.subheadline).foregroundStyle(.secondary)
                         }
                     }
                     if sharedRuntimeRunning {
                         LabeledContent("execution.shared.projects", value: String(sharedRunningIDs.count))
                         Button("execution.shared.stop", role: .destructive) { runtimeRecovery = .stopShared }
                     }
-                    if sharedConfiguration != .init(vcpus: sharedCPUs, memoryMB: sharedMemoryMB, gpuMemoryMB: sharedGPUMemoryMB)
-                        || sharedGPUStatus?.clamped == true {
+                    if sharedConfiguration != proposedSharedConfiguration
+                        || (verifiedResidentGPUAvailable && sharedGPUStatus?.clamped == true) {
                         Button("execution.shared.save") { Task { await saveSharedConfiguration() } }
                             .disabled(linuxBusy)
                     }
@@ -505,7 +522,7 @@ struct ExecutionEnvironmentView: View {
         linuxBusy = true; linuxError = nil
         defer { linuxBusy = false }
         do {
-            try await service.configureSharedGuest(.init(vcpus: sharedCPUs, memoryMB: sharedMemoryMB, gpuMemoryMB: sharedGPUMemoryMB))
+            try await service.configureSharedGuest(proposedSharedConfiguration)
             sharedConfiguration = await service.sharedGuestConfiguration()
         } catch { linuxError = error.localizedDescription }
         sharedMemoryStatus = await service.sharedMemoryStatus()
