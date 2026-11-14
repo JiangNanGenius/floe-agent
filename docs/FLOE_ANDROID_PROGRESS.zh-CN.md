@@ -2,6 +2,10 @@
 
 ## 1.0.11／119 修复源码收口（2026-11-15）
 
+候选05增量：三星“新建任务”首次发送已显示已保存的完全访问权限。新的计算器B任务真实启动、观察并清空旧结果；下一次点击被`device_stale_observation`拒绝，模型按失败即停结束，未读到本次计算结果。原47行完整任务导出、原录屏和日志保留，不续跑。日志证明新观察在生成132毫秒后被无包名的窗口事件误清除，仍远在120秒有效期内。本批添加按实际观察代际维护的有界窗口身份归属，仅在明确识别无关窗口时保留观察，真实目标变化及未知事件继续拒绝旧引用；显式观察中的元数据扫描最多32个窗口，单个已消失窗口不破坏目标观察。实际模块编译及原窗口事件、新身份归属两组JVM共29项通过；首轮选中了本仓库未启用的Release单测任务，原零执行错误保留，随后使用现有Debug单测变体。新Full候选06和三星行为尚待验证，119仍未公开。
+
+English: Candidate05 reaches the saved Full Access default from New Task. Its fresh Calculator run launches, observes and clears, then stops honestly on a stale-reference refusal. The original47-row export/video/logs remain. A package-less event invalidated the fresh observation after132ms. The bounded attribution repair retains positively identified unrelated windows while preserving target/unknown-event rejection. Actual module compilation and29 selected JVM cases passed; the initial unavailable Release-test selector is retained separately. Candidate06/device acceptance and publication remain pending.
+
 候选04增量：本机Full已构建并在三星覆盖安装；58项原生打包／排除检查、16KiB及API28／29签名通过。真实新任务完成12组请求／回执、零审批弹窗，实际WebView返回`QA119_FINAL_READY`节点并发布140字节成果；两PTY会话真实重叠，关闭A后B仍可执行。随后“新建任务”入口又复现未传默认权限，已补齐该入口和直接创建入口的首次运行交接，仍待下一APK验收。计算器A在人工确认启动后持续等待，已停止并保留，未将悬浮球或计算结果计为通过，不续旧任务。通用Linux常驻服务和容器回收确认为实际缺口，不能以“平台不支持”销账。
 
 实机增量发现：候选03中已保存“完全控制”，新任务仍退回人工授权；已定位并补齐首页新任务的默认值映射，补充从真实控制器到首次`run.start`负载的定向回归。此追加仍待编译和新APK验证。三星文件生成已实测21字节，网页链路继续验证；原审批等待、预览失败和对应安装包均保留。

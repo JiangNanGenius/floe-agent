@@ -7,6 +7,7 @@ import android.os.Build
 import android.os.SystemClock
 import android.view.Display
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityWindowInfo
 import java.util.UUID
 
 internal data class PhoneControlCapture(
@@ -15,6 +16,12 @@ internal data class PhoneControlCapture(
     val fingerprint: Long,
     val protectedWindow: Boolean,
     val hasSensitiveField: Boolean,
+    /**
+     * Package-only identities of the other visible windows at capture time,
+     * used solely to attribute later package-less framework window events.
+     * Never carries node text, titles or tree content.
+     */
+    val windowIdentities: List<PhoneControlWindowIdentity> = emptyList(),
 )
 
 /**
@@ -143,6 +150,12 @@ internal class PhoneControlSnapshotter(private val service: AccessibilityService
             }
             val className = root.className?.toString()
             val rawWindowTitle = runCatching { window?.title?.toString() }.getOrNull()
+            // Package-only metadata for the other visible windows, read inside
+            // this explicit authorized observation (never in an accessibility
+            // callback). A later package-less window event can be attributed
+            // to a known transient/own overlay instead of failing closed;
+            // node text and tree content are never read here.
+            val windowIdentities = readWindowIdentities(windows, windowId)
             windows.forEach { info -> runCatching { info.recycle() } }
 
             // Protected windows never need node text at all. Establish that
@@ -262,11 +275,41 @@ internal class PhoneControlSnapshotter(private val service: AccessibilityService
                 fingerprint = shaped.fingerprint,
                 protectedWindow = protectedWindow,
                 hasSensitiveField = stats.hasSensitiveField,
+                windowIdentities = windowIdentities,
             )
         } finally {
             @Suppress("DEPRECATION")
             runCatching { root.recycle() }
         }
+    }
+
+    /**
+     * Package-only identity inventory of the other visible windows. This runs
+     * only inside an explicit observation: no node text, view id, title or
+     * child tree is read, and each root handle is recycled immediately.
+     */
+    @Suppress("DEPRECATION")
+    private fun readWindowIdentities(
+        windows: List<AccessibilityWindowInfo>,
+        observedWindowId: Int,
+    ): List<PhoneControlWindowIdentity> {
+        val identities = ArrayList<PhoneControlWindowIdentity>(minOf(windows.size, MAX_WINDOW_IDENTITIES))
+        for (info in windows.asSequence().take(MAX_WINDOW_IDENTITIES)) {
+            val windowId = info.id
+            if (windowId < 0 || windowId == observedWindowId) continue
+            val windowRoot = runCatching { info.root }.getOrNull() ?: continue
+            val packageName = try {
+                runCatching { windowRoot.packageName?.toString() }.getOrNull()
+            } finally {
+                runCatching { windowRoot.recycle() }
+            }
+            val bounded = PhoneControlText.bound(
+                PhoneControlText.clean(packageName),
+                PhoneControlLimits.MAX_PACKAGE_CHARS,
+            ).text ?: continue
+            identities += PhoneControlWindowIdentity(windowId, bounded)
+        }
+        return identities
     }
 
     /**
@@ -430,5 +473,10 @@ internal class PhoneControlSnapshotter(private val service: AccessibilityService
             @Suppress("DEPRECATION")
             runCatching { node.recycle() }
         }
+    }
+
+    private companion object {
+        /** Bound the per-observation root-package reads to the book's capacity. */
+        const val MAX_WINDOW_IDENTITIES = 32
     }
 }

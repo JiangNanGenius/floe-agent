@@ -177,6 +177,13 @@ internal class PhoneControlFence {
  * bounds and clickability), so even a misclassified keep fails closed at
  * dispatch with NODE_UNAVAILABLE/WINDOW_CHANGED, never with a blind action.
  *
+ * [eventPackageName] may be supplied from a bounded identity that was
+ * positively learned earlier (a package-carrying framework event or an
+ * authorized explicit observation snapshot). Such an identity is only valid
+ * while its window id and owning generation are still current; the caller
+ * must pass null for an id that was removed, reused or never attributed.
+ * Unknown attribution alone is never permission to keep an observation.
+ *
  * This is Android-free: callers map framework event constants to the boolean
  * inputs, keeping the decision unit-testable on the JVM.
  */

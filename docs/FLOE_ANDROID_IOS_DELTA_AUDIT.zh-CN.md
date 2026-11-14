@@ -531,3 +531,16 @@ English: This bounded registration compares the last complete iOS anchor0ed1af72
 Android1.0.0冻结源为`9230fc6485aabfb8542058121d43bd7da2efc3d6`。本文上方较大区间中登记的回执、提问、持续转录及重型编辑器差异仍保留；本轮未读取其他任务未提交源码，也未新增iOS编译／设备验证。原视觉参照和各功能编号继续沿用，下一次从本次main固定锚点以后增量比较。
 
 English: The post332-source delta through main9225285c8 contains21 FloeAgent help/content/catalog/build-test paths. Android consumes its own four-entry shared/Android catalog in a subsequent native-help package rather than the iOS signed package. Frozen Android1.0.0 is unchanged. Earlier additive differences and original identities remain; unrelated uncommitted iOS work was not imported or treated as accepted.
+
+## 2026-11-15 Android119 修复期间的有界增量
+
+固定比较 iOS345／`v1.8.24` 的 `663b1f8b78556c82d1112f01ef50d1d0c2105a34` → 已合入 main 的 iOS352 检查点 `416831634848f50419a969f7f60153694e9d5e47`，共152条 `FloeAgent/` 路径。Android 对照为候选05的固定源 `d5228b6d33e7267e71f3f25ffa1ed8cc39aee6d6`；本轮窗口事件修复和后续 APK 验收另记，不以本静态登记代替。未读取其他任务未提交的供应商、语音或重型模块作为已集成功能。
+
+- iOS Linux 镜像升级、稀疏／克隆空间预算、启动进度与旧镜像回收使用 iOS 虚拟机路径。Android 继续现有独立 PRoot 运行组件，常驻服务接线和环境容器回收保留为真实缺口；不照搬 VM 或据 iOS 通过推定 Android 已完成。
+- `ToolResultPagingTool` 新增当前运行结果的索引、搜索与页读取约束；`ProviderStreamRequest` 新增本地精确工具目录提示。沿既有 C02／N02 工具发现与分页合同登记后续核对，不直接开放未知工具或重启全量迁移。
+- `UserQuestionCoordinator` 将已接受答案的运行时唤醒与提交后快照读取分开，并在没有附加 normalizer 时仍验证答案；`ConversationStore` 首次插入携带归档状态，后续保存由专门 setter 维护归档／置顶。沿原提问恢复与持久化编号保留后续差异，不将源差异自动算作 Android 实机失败。
+- 实时语音断线恢复、未确认音频和字体／GIS／其他工作台增量继续原后续归属。保留系统／云端语音、Android 原生应用优先、轻量内置编辑和项目 Linux 增强的边界。
+
+这是路径分组和上述合同的有限源码检查，未逐项移植152条路径，也未进行 iOS 编译或设备验收。原 G/C/N/IOS-D、183项操作、视觉参照和原始失败不重编号；新增独立功能不作为 Android119 修复发布的等待门。下一次从本次固定检查点之后增量核对。
+
+English: This bounded source review compares immutable iOS345 source663b1f8b through merged352 checkpoint416831634 against Android candidate05/d5228b6d3. The152 paths are not152 missing features. VM maintenance remains platform-specific; run-scoped paging, question wake-up/validation, archive persistence and live-voice continuity retain their existing follow-up ownership. Android managed services and environment reclamation remain explicit gaps. No iOS/device acceptance or exhaustive port is claimed.

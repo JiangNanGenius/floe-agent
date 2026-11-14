@@ -40,6 +40,7 @@ internal class PhoneControlSession(
     private val mainHandler = Handler(Looper.getMainLooper())
     private val snapshotter = PhoneControlSnapshotter(service)
     private val screenshotter = PhoneControlScreenshotter(service)
+    private val windowAttribution = PhoneControlWindowAttribution()
     private val powerManager = service.getSystemService(Context.POWER_SERVICE) as? PowerManager
     private val keyguardManager =
         service.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
@@ -1570,27 +1571,40 @@ internal class PhoneControlSession(
         // Attribute the event before destroying a live observation: transient
         // windows from other packages (toasts, heads-up, system dialogs,
         // Floe's own overlay) leave the observed page untouched, while real
-        // navigation and same-app page changes still clear it. Unattributable
-        // events stay conservative and always invalidate.
-        latest?.observation?.let { observation ->
-            val keepsObservation = !windowEventInvalidates(
-                observedWindowId = observation.windowId,
-                observedPackageName = observation.packageName,
-                eventWindowId = sourceWindowId,
-                eventPackageName = packageName,
-                isWindowStateChanged = eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
-                activeWindowChanged =
-                    eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED &&
-                    (windowChanges and AccessibilityEvent.WINDOWS_CHANGE_ACTIVE) != 0,
-            )
-            if (keepsObservation) {
-                traceObservationKept(eventType, sourceWindowId, windowChanges)
-                return
-            }
+        // navigation and same-app page changes still clear it. A package-less
+        // framework event uses the bounded identity learned from an earlier
+        // package-carrying event or from the explicit observation snapshot;
+        // an identity that was never positively established stays unknown and
+        // keeps the conservative invalidation.
+        val state = fence.state()
+        val observation = latest?.observation
+        val keepsObservation = !windowAttribution.onWindowEvent(
+            fenceGeneration = state.fenceGeneration,
+            pageGeneration = state.pageGeneration,
+            elapsedRealtimeMillis = SystemClock.elapsedRealtime(),
+            observedWindowId = observation?.windowId,
+            observedPackageName = observation?.packageName,
+            eventWindowId = sourceWindowId,
+            eventPackageName = packageName,
+            isWindowStateChanged = eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
+            activeWindowChanged =
+                eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED &&
+                (windowChanges and AccessibilityEvent.WINDOWS_CHANGE_ACTIVE) != 0,
+            windowAdded =
+                eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED &&
+                (windowChanges and AccessibilityEvent.WINDOWS_CHANGE_ADDED) != 0,
+            windowRemoved =
+                eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED &&
+                (windowChanges and AccessibilityEvent.WINDOWS_CHANGE_REMOVED) != 0,
+        )
+        if (observation != null && keepsObservation) {
+            traceObservationKept(eventType, sourceWindowId, windowChanges)
+            return
         }
         traceObservationClear("window_event", eventType, sourceWindowId, windowChanges)
         fence.onPageChanged()
         latest = null
+        windowAttribution.clear()
         lastWindowChangeAt = SystemClock.elapsedRealtime()
         PhoneControlRuntime.publish()
     }
@@ -1683,6 +1697,9 @@ internal class PhoneControlSession(
         unlocker.close()
         fence.block(blocker)
         latest = null
+        // A retired service must not leave window identities behind for a
+        // later session; the replacement session starts with an empty book.
+        windowAttribution.clear()
         abortInFlight(blocker, "the accessibility service is no longer connected")
         screenshotter.close()
         pendingTimeout?.let { mainHandler.removeCallbacks(it) }
@@ -1859,14 +1876,25 @@ internal class PhoneControlSession(
     private fun record(
         capture: PhoneControlCapture,
         request: PhoneControlObserveRequest,
-    ): ObservationRecord = ObservationRecord(
-        observation = capture.observation,
-        records = capture.records,
-        fingerprint = capture.fingerprint,
-        protectedWindow = capture.protectedWindow,
-        hasSensitiveField = capture.hasSensitiveField,
-        request = request,
-    )
+    ): ObservationRecord {
+        // Seed the bounded window-identity memory from this explicit
+        // observation snapshot. It is scoped to the observation's exact
+        // fence/page generations, so a new run or page cannot inherit it.
+        windowAttribution.seed(
+            fenceGeneration = capture.observation.fenceGeneration,
+            pageGeneration = capture.observation.pageGeneration,
+            elapsedRealtimeMillis = capture.observation.capturedAtElapsedRealtimeMillis,
+            windows = capture.windowIdentities,
+        )
+        return ObservationRecord(
+            observation = capture.observation,
+            records = capture.records,
+            fingerprint = capture.fingerprint,
+            protectedWindow = capture.protectedWindow,
+            hasSensitiveField = capture.hasSensitiveField,
+            request = request,
+        )
+    }
 
     private fun scheduleTimeout(opId: String, timeoutMs: Long) {
         pendingTimeout?.let { mainHandler.removeCallbacks(it) }
