@@ -706,6 +706,28 @@ public enum LinuxGuestImageDistributionCatalog {
     /// tree cancellation, loopback forwarding and initial-state restore passed.
     /// Legacy RISC-V images are not executable candidates for this backend.
     public static let defaultImageID = "floe-debian13-arm64-gpu-resident-20261111-v8"
+
+    /// Publication evidence for an explicit replacement with a fresh resident disk.
+    /// These SHA-256 pins identify the exact manifest bytes inside the released archives.
+    /// Disk-origin compatibility remains a separate contract for reusing a writable disk.
+    struct FactoryReplacement: Sendable {
+        let activeImageID: String
+        let activeManifestSHA256: String
+        let replacedManifestSHA256: [String: String]
+    }
+
+    // V1 was also published. It is now accepted as a disk origin by V2, but
+    // the only V1 factory installation eligible here is the original release.
+    static let residentFactoryReplacement = FactoryReplacement(
+        activeImageID: "floe-debian13-arm64-gpu-resident-20261111-v8",
+        activeManifestSHA256: "aeeb85aaacce0380b1387cd3e6f2881c11415cb974207040ea79d84c2fce3568",
+        replacedManifestSHA256: [
+            "floe-debian13-arm64-basic-resident-20261105-v1": "c8479b3047192a4dac84d45534e88dcc155512f8c1d3aa99b2a85c09c5bfd779",
+            "floe-debian13-arm64-basic-resident-20261105-v2": "23371435ed23fe844a856c50aaf9f52e7b862ee3d71c17ccee6ce4308085fead",
+            "floe-debian13-arm64-basic-resident-20261108-v3": "7e06d92dfe5846ffe15483df004f49146b6fb429d074bb05cd31a9a5940daca8"
+        ]
+    )
+
     public static let bundled: [LinuxGuestTrustedImage] = [
         LinuxGuestTrustedImage(
             id: defaultImageID,

@@ -220,6 +220,64 @@ final class RuntimeV2ImageRetirementTests: XCTestCase {
 
     // MARK: identical redownload
 
+    func testPublishedFactoryReplacementRequiresActivePinnedImageAndRetainsReferencedOrForeignBytes() async throws {
+        let active = try makeFactoryInstall(id: "arm-factory-current", riscv: false, disk: diskBytes(11))
+        let old = try makeFactoryInstall(id: "arm-factory-old", riscv: false, disk: diskBytes(12))
+        let pinned = try makeFactoryInstall(id: "arm-factory-pinned", riscv: false, disk: diskBytes(13))
+        let foreign = try makeFactoryInstall(id: "arm-factory-local", riscv: false, disk: diskBytes(14))
+        let mixed = try makeFactoryInstall(id: "arm-factory-mixed", riscv: false, disk: diskBytes(15))
+        let unknown = try makeFactoryInstall(id: "arm-unrelated", riscv: false, disk: diskBytes(16))
+        let template = try makeFactoryInstall(id: "arm-template-base", riscv: false, disk: diskBytes(17))
+        func manifestDigest(_ fixture: Fixture) throws -> String {
+            try FloeDigest.sha256Hex(ofFileAt: fixture.directory.appendingPathComponent("manifest.json"))
+        }
+        let replacement = try LinuxGuestImageDistributionCatalog.FactoryReplacement(
+            activeImageID: active.image.id, activeManifestSHA256: manifestDigest(active),
+            replacedManifestSHA256: [old.image.id: manifestDigest(old), pinned.image.id: manifestDigest(pinned),
+                                    foreign.image.id: manifestDigest(foreign), mixed.image.id: manifestDigest(mixed),
+                                    template.image.id: manifestDigest(template)])
+        let engine = await RuntimeV2FactoryImageRetirement(layout: layout, registry: store.registry, blobs: store.blobs,
+                                                     factoryReplacement: replacement)
+        let localManifest = foreign.directory.appendingPathComponent("manifest.json")
+        try (Data(contentsOf: localManifest) + Data("\n".utf8)).write(to: localManifest)
+        for fixture in [active, old, pinned, foreign, mixed, unknown, template] { try await migrate(fixture) }
+        _ = try await store.registry.beginTemplateVersion(
+            templateID: "pinned-release", version: 1, digest: String(repeating: "a", count: 128),
+            architecture: "arm64", parentKind: "base-image", parentID: template.image.id, parentVersion: nil,
+            parentDigest: FloeDigest.sha512Hex(template.disk), manifestJSON: nil, buildID: nil, stagingPath: nil)
+        let changedRollback = rollbackDirectory(mixed.image.id).appendingPathComponent("legacy-images")
+            .appendingPathComponent(mixed.image.id).appendingPathComponent("manifest.json")
+        try (Data(contentsOf: changedRollback) + Data("\n".utf8)).write(to: changedRollback)
+        let pinnedExpanded = try layout.expandedImageDirectory(imageID: pinned.image.id)
+        let selection = pinnedExpanded.appendingPathComponent("boot-assets.json")
+        let selectedBytes = Data("user-selected-kernel".utf8)
+        try selectedBytes.write(to: selection)
+
+        // A verified download alone cannot discard the old image before the resident disk switches.
+        let before = await engine.retireSupersededFactoryImages(afterUsableImage: active.image.id,
+            protectedActiveImageID: old.image.id)
+        XCTAssertTrue(before.failures.isEmpty)
+        XCTAssertTrue(manifestExists(old.image.id))
+        let after = await engine.retireSupersededFactoryImages(afterUsableImage: active.image.id,
+            protectedActiveImageID: active.image.id)
+        XCTAssertTrue(after.failures.isEmpty)
+        XCTAssertTrue(after.retiredImages.contains(old.image.id))
+        XCTAssertFalse(manifestExists(old.image.id))
+        XCTAssertFalse(expandedExists(old.image.id))
+        XCTAssertTrue(after.retainedImages[pinned.image.id]?.contains("user-boot-selection") == true)
+        XCTAssertEqual(try Data(contentsOf: selection), selectedBytes)
+        XCTAssertTrue(after.retainedImages[template.image.id]?.contains("template-pin") == true)
+        for fixture in [active, pinned, foreign, mixed, unknown, template] {
+            XCTAssertTrue(manifestExists(fixture.image.id), fixture.image.id)
+            XCTAssertTrue(expandedExists(fixture.image.id), fixture.image.id)
+        }
+        let repeated = await engine.retireSupersededFactoryImages(afterUsableImage: active.image.id,
+            protectedActiveImageID: active.image.id)
+        XCTAssertTrue(repeated.failures.isEmpty)
+        XCTAssertEqual(repeated.deletedFiles, 0)
+        XCTAssertEqual(repeated.releasedBlobs, 0)
+    }
+
     func testIdenticalRedownloadRetiresTheNewBackupAgain() async throws {
         let v1 = try makeFactoryInstall(id: "arm-redownload-v1", riscv: false, disk: diskBytes(11))
         try await migrate(v1)

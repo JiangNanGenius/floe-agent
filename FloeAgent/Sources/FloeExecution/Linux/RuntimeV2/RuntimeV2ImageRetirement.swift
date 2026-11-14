@@ -17,7 +17,8 @@
 //   * SUPERSEDED GENERATION — the image's own factory manifest declares the
 //     predecessor (`compatibleOrigins`). After a usable replacement generation
 //     exists, the predecessor closure is retired transitively, so repeated
-//     upgrades converge without any per-build/per-image allowlist. A generation
+//     upgrades converge. A separately pinned distribution may also replace older
+//     factory packages after its exact image becomes the native resident. A generation
 //     that is still an environment base, a template pin, a live lease, an
 //     active/preserved working disk or a user boot selection is retained and
 //     reported with that exact reason.
@@ -352,10 +353,18 @@ public actor RuntimeV2FactoryImageRetirement {
     private let layout: RuntimeV2Layout
     private let registry: RuntimeV2Registry
     private let blobs: RuntimeV2BlobStore
+    private let factoryReplacement: LinuxGuestImageDistributionCatalog.FactoryReplacement
     private var busy = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
 
     public init(layout: RuntimeV2Layout, registry: RuntimeV2Registry, blobs: RuntimeV2BlobStore) {
+        self.init(layout: layout, registry: registry, blobs: blobs,
+                  factoryReplacement: LinuxGuestImageDistributionCatalog.residentFactoryReplacement)
+    }
+
+    init(layout: RuntimeV2Layout, registry: RuntimeV2Registry, blobs: RuntimeV2BlobStore,
+         factoryReplacement: LinuxGuestImageDistributionCatalog.FactoryReplacement) {
+        self.factoryReplacement = factoryReplacement
         self.layout = layout
         self.registry = registry
         self.blobs = blobs
@@ -513,13 +522,21 @@ public actor RuntimeV2FactoryImageRetirement {
         var releasedBlobs = 0
         var releasedBlobBytes: Int64 = 0
 
-        // The predecessor closure is derived BEFORE anything is deleted, so a
-        // chain of three/four/five upgrades converges in one pass without any
-        // image-id allowlist. Each image's own authenticated manifest declares
-        // its immediate predecessor.
+        // Compatible disk origins and replacements of released factory packages
+        // independently establish a predecessor. Only the actual resident may
+        // authorize the latter, after its verified factory manifest matches the pin.
         var lineage: Set<String> = []
         if let triggerID = request.triggerImageID {
             lineage = predecessorClosure(of: triggerID, candidates: &candidates)
+            if triggerID == request.protectedActiveImageID, triggerID == factoryReplacement.activeImageID,
+               let active = candidates[triggerID]?.v2Manifest?.legacyManifestData,
+               FloeDigest.sha256Hex(active) == factoryReplacement.activeManifestSHA256 {
+                for (id, digest) in factoryReplacement.replacedManifestSHA256 {
+                    if let candidate = candidates[id], matchesPublishedFactory(candidate, manifestSHA256: digest) {
+                        lineage.insert(id)
+                    }
+                }
+            }
         }
         guard let references = await referenceFacts() else {
             return .init(
@@ -889,6 +906,27 @@ public actor RuntimeV2FactoryImageRetirement {
             guard isRealDirectory(path) || isRegularFile(path) else { return nil }
             return value
         }
+    }
+
+    /// A local import can use the same ID as a distribution. Keep the whole
+    /// generation if any factory view has different or unverifiable provenance.
+    private func matchesPublishedFactory(_ candidate: ImageRecord, manifestSHA256: String) -> Bool {
+        let matches: (Data?) -> Bool = { bytes in
+            guard let bytes else { return false }
+            return FloeDigest.sha256Hex(bytes) == manifestSHA256
+        }
+        guard matches(candidate.factoryManifestData),
+              !candidate.hasRollbackLegacyDirectory || matches(candidate.rollbackLegacyManifestData) else { return false }
+        if let installed = candidate.legacyInstallManifestData, !matches(installed) { return false }
+        var views = candidate.quarantinedExpandedEntries.map { layout.quarantineDirectory.appendingPathComponent($0) }
+        if candidate.hasExpandedDirectory {
+            guard let expanded = try? layout.expandedImageDirectory(imageID: candidate.id) else { return false }
+            views.append(expanded)
+        }
+        if candidate.hasRollbackExpandedPrevious {
+            views.append(migrationRoot.appendingPathComponent(candidate.migrationID).appendingPathComponent("expanded-previous"))
+        }
+        return views.allSatisfy { matches(try? readRegularFile($0.appendingPathComponent("manifest.json"))) }
     }
 
     private func predecessorClosure(
