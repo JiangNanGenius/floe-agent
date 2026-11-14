@@ -224,44 +224,79 @@ enum class MarkdownScheduleResult { SCHEDULED, BACKEND_UNAVAILABLE }
  * evicted (LRU) and everything is dropped on rebind. */
 const val MAX_MARKDOWN_CACHE_ENTRIES = 64
 
+/** Bound on outstanding (source, generation) tickets. The service queue is
+ * bounded too; this cap keeps the presentation map from outliving a dropped
+ * ticket when a caller schedules many distinct fragments. */
+const val MAX_MARKDOWN_PENDING_ENTRIES = 64
+
 /**
  * Presentation-side state machine for the [MarkdownContentUi] contract.
  * Pure logic (JVM-testable): monotonic generations, exactly-once scheduling
  * per (source, generation), stale/superseded echo rejection, LRU bounding
  * and full invalidation. No parsing, no coroutines, no host calls inside —
  * the caller supplies the schedule function.
+ *
+ * Thread ownership: the App's composition calls [state]/[ensureRequested]
+ * on the main thread while [MarkdownParseService] workers call [applyResult]
+ * (through the host seam) on their own threads. Every mutation therefore
+ * holds [lock]; `state()` is the only read and is serialized with the same
+ * lock, so the access-order map is never structurally mutated by Compose.
+ * `states` is intentionally not a Compose snapshot state: the holder owns
+ * the observable revision and renders only immutable [MarkdownContentUi]
+ * values.
  */
-class MarkdownParseCoordinator(private val maxEntries: Int = MAX_MARKDOWN_CACHE_ENTRIES) {
+class MarkdownParseCoordinator(
+    private val maxEntries: Int = MAX_MARKDOWN_CACHE_ENTRIES,
+    private val maxPending: Int = MAX_MARKDOWN_PENDING_ENTRIES,
+) {
 
-    // accessOrder = true → LRU eviction of parsed fragments.
+    private val lock = Any()
+
+    // accessOrder = true → LRU eviction of parsed fragments. Every access
+    // goes through [lock].
     private val states = object : LinkedHashMap<String, MarkdownContentUi>(16, 0.75f, true) {
         override fun removeEldestEntry(eldest: Map.Entry<String, MarkdownContentUi>): Boolean =
             size > maxEntries
     }
-    private val pendingGeneration = mutableMapOf<String, Long>()
+
+    // Insertion order makes pending eviction deterministic (oldest ticket
+    // first); a forgotten ticket never hides user-visible source text — the
+    // renderer always falls back to the literal fragment.
+    private val pendingGeneration = object : LinkedHashMap<String, Long>(16, 0.75f, false) {
+        override fun removeEldestEntry(eldest: Map.Entry<String, Long>): Boolean =
+            size > maxPending
+    }
     private var generationCounter = 0L
 
-    /** Composition-safe read: never mutates, never schedules. Unknown
-     * fragments report Preparing because the post-composition effect will
-     * request them on this frame. */
-    fun state(source: String): MarkdownContentUi = when {
-        source in states -> states.getValue(source)
-        source in pendingGeneration -> MarkdownContentUi.Preparing
-        else -> MarkdownContentUi.Preparing
+    /** Composition-safe read: never schedules. Unknown fragments report
+     * Preparing because the post-composition effect will request them on
+     * this frame. The LRU touch is serialized with all writers. */
+    fun state(source: String): MarkdownContentUi = synchronized(lock) {
+        states[source] ?: MarkdownContentUi.Preparing
     }
 
     /** Post-composition scheduling. Duplicate requests for an already-parsed
-     * or already-pending fragment dispatch nothing. */
+     * or already-pending fragment dispatch nothing. The host call runs
+     * OUTSIDE [lock]: a host double may synchronously echo a result. */
     fun ensureRequested(source: String, schedule: (generation: Long) -> MarkdownScheduleResult) {
-        if (source in states || source in pendingGeneration) return
-        generationCounter += 1
-        val generation = generationCounter
-        pendingGeneration[source] = generation
+        val generation: Long
+        synchronized(lock) {
+            if (source in states || source in pendingGeneration) return
+            generationCounter += 1
+            generation = generationCounter
+            pendingGeneration[source] = generation
+        }
         when (schedule(generation)) {
             MarkdownScheduleResult.SCHEDULED -> Unit
             MarkdownScheduleResult.BACKEND_UNAVAILABLE -> {
-                pendingGeneration.remove(source)
-                states[source] = MarkdownContentUi.Literal(source, MarkdownLiteralReason.BACKEND_UNAVAILABLE)
+                synchronized(lock) {
+                    if (pendingGeneration[source] == generation) {
+                        pendingGeneration.remove(source)
+                        states[source] = MarkdownContentUi.Literal(
+                            source, MarkdownLiteralReason.BACKEND_UNAVAILABLE,
+                        )
+                    }
+                }
             }
         }
     }
@@ -270,22 +305,36 @@ class MarkdownParseCoordinator(private val maxEntries: Int = MAX_MARKDOWN_CACHE_
      * source is accepted; anything else (stale tail, dead epoch that reached
      * here anyway) is dropped, leaving the honest literal/Preparing state. */
     fun applyResult(source: String, generation: Long, blocks: List<MarkdownBlockUi>?) {
-        if (pendingGeneration[source] != generation) return
-        pendingGeneration.remove(source)
-        states[source] = if (blocks != null) {
-            MarkdownContentUi.Parsed(blocks)
-        } else {
-            MarkdownContentUi.Literal(source, MarkdownLiteralReason.PARSE_FAILED)
+        synchronized(lock) {
+            if (pendingGeneration[source] != generation) return
+            pendingGeneration.remove(source)
+            states[source] = if (blocks != null) {
+                MarkdownContentUi.Parsed(blocks)
+            } else {
+                MarkdownContentUi.Literal(source, MarkdownLiteralReason.PARSE_FAILED)
+            }
         }
     }
 
-    fun invalidateAll() {
-        states.clear()
-        pendingGeneration.clear()
+    /** A conflated/overflowed/closed service job delivers nothing. Forgetting
+     * its exact ticket lets the next post-composition effect schedule the
+     * still-visible fragment again instead of leaving it Preparing forever.
+     * No parsed state is written: no result was received. */
+    fun abandon(source: String, generation: Long): Boolean = synchronized(lock) {
+        if (pendingGeneration[source] != generation) return false
+        pendingGeneration.remove(source)
+        true
     }
 
-    fun cachedCount(): Int = states.size
-    fun pendingCount(): Int = pendingGeneration.size
+    fun invalidateAll() {
+        synchronized(lock) {
+            states.clear()
+            pendingGeneration.clear()
+        }
+    }
+
+    fun cachedCount(): Int = synchronized(lock) { states.size }
+    fun pendingCount(): Int = synchronized(lock) { pendingGeneration.size }
 }
 
 /* ------------------------------ the renderer --------------------------------- */
@@ -677,6 +726,13 @@ fun ConversationReasoningBlock(
     onCopyText: (String) -> Unit,
     modifier: Modifier = Modifier,
     label: String = "",
+    /** The run is active in its reasoning phase but no new reasoning bytes
+     * have been observed yet. Truthful "Thinking…" copy; never "Still
+     * updating", which claims byte freshness. */
+    isAwaiting: Boolean = false,
+    /** The full record could not be read to completion (snapshot prefix or a
+     * failed continuation read). The footer must not claim completeness. */
+    partial: Boolean = false,
 ) {
     val colors = Floe.colors
     var didCopy by remember(text) { mutableStateOf(false) }
@@ -684,9 +740,12 @@ fun ConversationReasoningBlock(
     val thinking = stringResource(R.string.reasoning_thinking)
     val viewRecord = stringResource(R.string.reasoning_view_record)
     val copyLabel = stringResource(if (didCopy) R.string.action_copied else R.string.action_copy)
-    val fullLabel = stringResource(
-        if (isStreaming) R.string.reasoning_still_updating else R.string.reasoning_full
-    )
+    val fullLabel = when {
+        isStreaming -> stringResource(R.string.reasoning_still_updating)
+        partial -> stringResource(R.string.reasoning_partial)
+        isAwaiting -> stringResource(R.string.reasoning_thinking)
+        else -> stringResource(R.string.reasoning_full)
+    }
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -704,13 +763,16 @@ fun ConversationReasoningBlock(
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Box(modifier = Modifier.width(26.dp), contentAlignment = Alignment.Center) {
-                if (isStreaming) FloeActivityIndicator() else IconGlyph(FloeIcons.Wand, colors.accent, 16.dp)
+                if (isStreaming || isAwaiting) FloeActivityIndicator()
+                else IconGlyph(FloeIcons.Wand, colors.accent, 16.dp)
             }
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                 FloeText(if (label.isEmpty()) title else label, style = Floe.typography.bodyEmphasized, color = colors.label)
                 if (!expanded) {
                     FloeText(
-                        preview(text).ifEmpty { if (isStreaming) thinking else viewRecord },
+                        preview(text).ifEmpty {
+                            if (isStreaming || isAwaiting) thinking else viewRecord
+                        },
                         style = Floe.typography.metadata,
                         color = colors.secondaryLabel,
                         maxLines = 2,

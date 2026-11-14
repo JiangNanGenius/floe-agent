@@ -1010,6 +1010,28 @@ data class ThreadUiState(
     val voiceOutputAvailable: Boolean = false,
     /** Original cause from this run's native snapshot or durable status event. */
     val continuationReasonRaw: String? = null,
+    /**
+     * True only while the SELECTED run is in `streamingModel` AND a real
+     * reasoning signal (a delta or a snapshot carrying reasoning text) was
+     * observed after the last non-reasoning boundary of that step. This is
+     * the truthful "still updating" input — never inferred from run state
+     * alone. A false value with [isRunning] means the run is working but no
+     * reasoning bytes are currently arriving ("Thinking…").
+     */
+    val liveReasoningAdvancing: Boolean = false,
+    /**
+     * The expanded live reasoning is a PREFIX/PARTIAL record: the native
+     * snapshot staged the full text behind a continuation handle and the App
+     * has not read it to completion (or the read failed). The footer must not
+     * claim a full record while this is true.
+     */
+    val liveReasoningPartial: Boolean = false,
+    /**
+     * Bumped only when a displayed live byte actually changed. The timeline
+     * uses it (with the length) as its latest-follow tick so an identical
+     * repeated snapshot never re-scrolls the reader.
+     */
+    val liveTextRevision: Long = 0L,
 )
 
 /** ⇄ ImportantFileShortcut (host-projected working set; this module never

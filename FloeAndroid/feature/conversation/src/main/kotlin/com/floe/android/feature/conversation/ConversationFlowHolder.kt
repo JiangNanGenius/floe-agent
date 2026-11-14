@@ -698,7 +698,7 @@ class ConversationFlowHolder(
         // A rebind is a new session: every cached parse fragment and pending
         // generation belongs to the dead epoch and must not style this one.
         markdownCoordinator.invalidateAll()
-        markdownRevision.value += 1L
+        bumpMarkdownRevision()
         host.loadThread(session)
     }
 
@@ -752,7 +752,7 @@ class ConversationFlowHolder(
         temporaryKeepBound = null
         temporaryEndBound = null
         markdownCoordinator.invalidateAll()
-        markdownRevision.value += 1L
+        bumpMarkdownRevision()
     }
 
     /**
@@ -2062,12 +2062,19 @@ class ConversationFlowHolder(
     private val markdownCoordinator = MarkdownParseCoordinator()
 
     /** Observable revision: bumped by EVERY coordinator mutation (schedule,
-     * echo, invalidation). [markdownState] reads it first so composition
-     * subscribes — without this, a Parsed result arriving after the last
-     * stream tick (a static final message) would leave the surface on
-     * Preparing forever, because the coordinator's map itself is plain
-     * state. Found by the API37 component fixture, fixed at the holder. */
+     * echo, invalidation) and by a dropped-ticket settlement. [markdownState]
+     * reads it first so composition subscribes — without this, a Parsed
+     * result arriving after the last stream tick (a static final message)
+     * would leave the surface on Preparing forever, because the
+     * coordinator's map itself is plain state. The counter is atomic because
+     * parse workers and the composition thread both bump it; only the latest
+     * value is exposed (a lost increment could delay one frame forever). */
+    private val markdownRevisionCounter = java.util.concurrent.atomic.AtomicLong(0L)
     private val markdownRevision = mutableStateOf(0L)
+
+    private fun bumpMarkdownRevision() {
+        markdownRevision.value = markdownRevisionCounter.incrementAndGet()
+    }
 
     fun markdownState(source: String): MarkdownContentUi {
         markdownRevision.value // subscription edge
@@ -2080,12 +2087,13 @@ class ConversationFlowHolder(
             val scheduled = host.requestMarkdownParse(session, source, generation)
             if (!scheduled) MarkdownScheduleResult.BACKEND_UNAVAILABLE else MarkdownScheduleResult.SCHEDULED
         }
-        markdownRevision.value += 1L
+        bumpMarkdownRevision()
     }
 
     /** Host echo of one off-UI-thread parse. Foreign epochs are dropped; the
      * coordinator then fences the generation, so a superseded fragment can
-     * never style the current stream tail. */
+     * never style the current stream tail. The coordinator serializes the
+     * cache mutation on its own lock, so this is safe from a parse worker. */
     fun applyMarkdownParseResult(
         echoSession: ConversationSessionToken,
         source: String,
@@ -2094,7 +2102,20 @@ class ConversationFlowHolder(
     ) {
         if (!echoAccepted(echoSession)) return
         markdownCoordinator.applyResult(source, generation, blocks)
-        markdownRevision.value += 1L
+        bumpMarkdownRevision()
+    }
+
+    /** The host dropped/conflated/closed this exact scheduled job without a
+     * result. Forget only that pending ticket so the still-visible fragment
+     * can be scheduled again; parsed states are untouched and no content is
+     * ever substituted for the missing result. */
+    fun abandonMarkdownParse(
+        echoSession: ConversationSessionToken,
+        source: String,
+        generation: Long,
+    ) {
+        if (!echoAccepted(echoSession)) return
+        if (markdownCoordinator.abandon(source, generation)) bumpMarkdownRevision()
     }
 
     /** Test/diagnostic hook: bounded cache size (never a public surface). */

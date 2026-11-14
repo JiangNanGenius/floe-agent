@@ -132,6 +132,78 @@ class ConversationMarkdownCoordinatorTest {
     }
 
     @Test
+    fun abandonedPendingTicketCanBeScheduledAgain() {
+        val host = RecordingHost()
+        val holder = holder(host)
+        holder.ensureMarkdownParse("fragment")
+        val generation = host.lastArgs("requestMarkdownParse")!![2] as Long
+        assertEquals(1, host.count("requestMarkdownParse"))
+
+        holder.abandonMarkdownParse(holder.session, "fragment", generation)
+        holder.ensureMarkdownParse("fragment")
+
+        assertEquals(
+            "a dropped service job must not leave the visible fragment pending forever",
+            2,
+            host.count("requestMarkdownParse"),
+        )
+    }
+
+    @Test
+    fun foreignAbandonCannotClearThisThreadsPendingTicket() {
+        val host = RecordingHost()
+        val holder = holder(host)
+        holder.ensureMarkdownParse("fragment")
+        val generation = host.lastArgs("requestMarkdownParse")!![2] as Long
+
+        holder.abandonMarkdownParse(
+            ConversationSessionToken("conv-1", holder.session.sessionEpoch + 7),
+            "fragment",
+            generation,
+        )
+        holder.ensureMarkdownParse("fragment")
+
+        assertEquals(1, host.count("requestMarkdownParse"))
+    }
+
+    @Test
+    fun concurrentReadsSchedulesAndEchoesKeepTheCoordinatorBounded() {
+        val coordinator = MarkdownParseCoordinator(maxEntries = 8, maxPending = 8)
+        val generations = java.util.concurrent.ConcurrentHashMap<String, Long>()
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(8)
+        try {
+            repeat(400) { index ->
+                pool.execute {
+                    val source = "s-${index % 16}"
+                    repeat(6) {
+                        // Composition-side reads must be safe against the
+                        // worker echoes mutating the same cache.
+                        coordinator.state(source)
+                    }
+                    coordinator.ensureRequested(source) { generation ->
+                        generations[source] = generation
+                        MarkdownScheduleResult.SCHEDULED
+                    }
+                    generations[source]?.let { generation ->
+                        coordinator.applyResult(
+                            source,
+                            generation,
+                            listOf(MarkdownBlockUi.ThematicBreak),
+                        )
+                    }
+                    Unit
+                }
+            }
+            pool.shutdown()
+            assertTrue(pool.awaitTermination(10, java.util.concurrent.TimeUnit.SECONDS))
+        } finally {
+            pool.shutdownNow()
+        }
+        assertTrue(coordinator.cachedCount() <= 8)
+        assertTrue(coordinator.pendingCount() <= 8)
+    }
+
+    @Test
     fun retirementStopsSchedulingNewParses() {
         val host = RecordingHost()
         val holder = holder(host)

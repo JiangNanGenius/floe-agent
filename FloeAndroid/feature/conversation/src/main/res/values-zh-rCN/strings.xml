@@ -108,6 +108,7 @@
     <string name="reasoning_thinking">思考中…</string>
     <string name="reasoning_view_record">查看思考记录</string>
     <string name="reasoning_still_updating">仍在更新</string>
+    <string name="reasoning_partial">记录不完整</string>
     <string name="reasoning_full">完整思考</string>
 
     <!-- 消息、凭据与附件 -->

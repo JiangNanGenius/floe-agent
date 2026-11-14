@@ -160,10 +160,73 @@ class ThreadProjectionBuilder internal constructor(
     private var snapshotReasoningBase: Long? = null
     private var snapshotReasoningThrough: Long? = null
     private var liveSegmentChars: Int = 0
+
+    /**
+     * Paged live snapshot text (native `*ContinuationHandle`). The inline
+     * `answerText`/`reasoningText` member is only a bounded prefix (8 KiB of
+     * reasoning / 16 KiB of answer) whenever the native builder stages the
+     * FULL current text behind an owned `chunk:v1:` handle. The
+     * [SnapshotContinuation] below is the display-side assembly: the byte
+     * offset already shown, the adopted handle and the exact step identity
+     * (run + textRevision + [SnapshotContinuation.stepEpoch]). Reads go
+     * through the EXISTING authorised `content.read` command and are fenced
+     * against every adoption/reset/close; the inline prefix remains visible
+     * when a page cannot be read, and completion is never inferred.
+     */
+    @Volatile
+    private var answerContinuation: SnapshotContinuation? = null
+
+    @Volatile
+    private var reasoningContinuation: SnapshotContinuation? = null
+
+    /**
+     * Monotonic per-run step identity for continuation reads. A reset (new
+     * step/revision with a different prefix, retry, close) increments it so
+     * every in-flight reply from the previous step is rejected even when it
+     * still carries the same run/handle/revision spelling.
+     */
+    private var continuationStepCounter: Long = 0L
+
+    /**
+     * The native live text is append-only inside one assistant step
+     * (`ConversationRunService.streamedText/reasoningText` reset only at a
+     * real step boundary/retry). The display therefore continues reading a
+     * newer handle from the bytes already shown instead of restarting at 0.
+     */
+    private class SnapshotContinuation(
+        val runID: String,
+        val reasoning: Boolean,
+        var revision: Long?,
+        var handle: String?,
+        var text: String,
+        var bytesKnown: Int,
+        var done: Boolean,
+        var failed: Boolean,
+        var truncated: Boolean,
+        var failureCode: String?,
+        var stepEpoch: Long,
+        /** Native durable base sequence of THIS step; a changed base is a
+         * real new step even when the first bytes repeat older words. */
+        var baseSequence: Long?,
+        /** The inline prefix of the newest applied page; used to prove a
+         * same-step continuation after the full text grew beyond it. */
+        var lastInlinePrefix: String,
+    )
+
     /** Run that owns the live tail buffers currently displayed. */
     private var liveTailRunId: String? = null
     /** Run whose live tail reached its durable close boundary (never revived). */
     private var liveTailClosedFor: String? = null
+    /** Bumped ONLY when a displayed live byte actually changed; lets the
+     * timeline distinguish a real text tick from a repeated snapshot rebuild. */
+    private var liveTextRevisionValue: Long = 0L
+    /**
+     * True only while a reasoning signal (a real delta or a page carrying
+     * reasoning text) was observed AFTER the last non-reasoning boundary of
+     * the same step. The activity footer uses this instead of inferring
+     * "still updating" from the run state alone.
+     */
+    private var reasoningStepOpen: Boolean = false
     private var actionError: String? = null
     private data class RunReason(val state: String, val reason: String?, val sequence: Long)
     private val runReasons = LinkedHashMap<String, RunReason>()
@@ -805,6 +868,10 @@ class ThreadProjectionBuilder internal constructor(
         liveAssistantSegments.clear()
         liveReasoningSegments.clear()
         liveSegmentChars = 0
+        answerContinuation = null
+        reasoningContinuation = null
+        continuationStepCounter += 1L
+        reasoningStepOpen = false
         liveTailRunId = runID
         liveTailClosedFor = null
     }
@@ -833,6 +900,9 @@ class ThreadProjectionBuilder internal constructor(
                     if (liveAssistantSegments.lastOrNull()?.sequence?.let { it >= frame.sequence } == true) return
                     liveAssistant += text
                     recordLiveSegment(text, frame.sequence, reasoning = false)
+                    // Visible answer bytes are the real end of this step's
+                    // reasoning; a later reasoning delta reopens it.
+                    reasoningStepOpen = false
                 }
             }
             "reasoning" -> {
@@ -843,10 +913,12 @@ class ThreadProjectionBuilder internal constructor(
                     if (liveReasoningSegments.lastOrNull()?.sequence?.let { it >= frame.sequence } == true) return
                     liveReasoning += text
                     recordLiveSegment(text, frame.sequence, reasoning = true)
+                    reasoningStepOpen = true
                 }
             }
             "terminal" -> {
                 val runID = frame.runID
+                if (runID == liveTailRunId || runID == selectedRunId) reasoningStepOpen = false
                 if (frame.sequence >= approvalFence(runID)) {
                     retirePendingApprovals(runID, frame.sequence)
                     advanceApprovalFence(runID, frame.sequence)
@@ -866,6 +938,11 @@ class ThreadProjectionBuilder internal constructor(
             "status" -> {
                 val state = payload?.string("state")
                 if (state != null) {
+                    if (state != "streamingModel" &&
+                        (frame.runID == liveTailRunId || frame.runID == selectedRunId)
+                    ) {
+                        reasoningStepOpen = false
+                    }
                     runRows[frame.runID] = (runRows[frame.runID]
                         ?: RunRowUi(frame.runID, state, null, ""))
                         .copy(stateName = state)
@@ -877,7 +954,17 @@ class ThreadProjectionBuilder internal constructor(
                     }
                 }
             }
+            "toolRequest", "toolResult", "autoApproved", "planChanged", "goalChanged" -> {
+                // A tool/plan boundary closes the visible reasoning step; a
+                // later real reasoning delta reopens it with actual bytes.
+                if (frame.runID == liveTailRunId || frame.runID == selectedRunId) {
+                    reasoningStepOpen = false
+                }
+            }
             "approval" -> {
+                if (frame.runID == liveTailRunId || frame.runID == selectedRunId) {
+                    reasoningStepOpen = false
+                }
                 // Engine approval rows: a REQUEST carries
                 // {tool,callID,scope,reason}; an OUTCOME carries
                 // {tool,callID,outcome}. Presence of `outcome` is the exact
@@ -1059,6 +1146,10 @@ class ThreadProjectionBuilder internal constructor(
         liveAssistantSegments.clear()
         liveReasoningSegments.clear()
         liveSegmentChars = 0
+        answerContinuation = null
+        reasoningContinuation = null
+        continuationStepCounter += 1L
+        reasoningStepOpen = false
         liveTailClosedFor = liveTailRunId
     }
 
@@ -1110,8 +1201,10 @@ class ThreadProjectionBuilder internal constructor(
      *   text member leaves the durable tail untouched: absence is unknown,
      *   never an empty answer.
      * * `answerContinuationHandle != null` means the inline text is a bounded
-     *   PREFIX: it is displayed, never treated as complete, and never clears
-     *   the durable tail. The final message page remains the full truth.
+     *   PREFIX of the current step. The prefix is displayed immediately and
+     *   the exact FULL text is paged through the existing authorised
+     *   `content.read` channel by [snapshotContinuationPlan]. A page that
+     *   cannot be read is an explicit PARTIAL record — never "complete".
      */
     internal fun applySnapshotLiveText(page: ConversationWire.SnapshotPage) {
         if (page.runID != selectedRunId) return
@@ -1122,23 +1215,323 @@ class ThreadProjectionBuilder internal constructor(
         if (durableState in TERMINAL_STATES) return
         val answer = page.answerText
         val reasoning = page.reasoningText
-        if (answer == null && reasoning == null) return
+        // Only the native `chunk:v1:<32 hex>` shape is a readable handle.
+        // A malformed/unknown member is honest absence, never a read target.
+        val answerHandle = page.answerContinuationHandle
+            ?.takeIf { CONTINUATION_HANDLE.matches(it) }
+        val reasoningHandle = page.reasoningContinuationHandle
+            ?.takeIf { CONTINUATION_HANDLE.matches(it) }
+        if (answer == null && reasoning == null &&
+            answerHandle == null && reasoningHandle == null
+        ) return
         val revision = page.textRevision
         val previousRevision = snapshotTextRevision
         if (previousRevision != null && (revision == null || revision < previousRevision)) return
         liveTailRunId = page.runID
         revision?.let { snapshotTextRevision = it }
-        answer?.let {
-            snapshotAnswerOverlay = it
+        var textChanged = false
+        if (answer != null || answerHandle != null) {
+            textChanged = adoptSnapshotContinuation(
+                reasoning = false,
+                runID = page.runID,
+                text = answer,
+                handle = answerHandle,
+                revision = revision,
+                baseSequence = page.answerBaseSequence,
+            ) || textChanged
             snapshotAnswerBase = page.answerBaseSequence
             snapshotAnswerThrough = page.answerDurableSequence
         }
         // Absence is unknown, not an empty stream or a new step.
-        reasoning?.let {
-            snapshotReasoningOverlay = it
+        if (reasoning != null || reasoningHandle != null) {
+            textChanged = adoptSnapshotContinuation(
+                reasoning = true,
+                runID = page.runID,
+                text = reasoning,
+                handle = reasoningHandle,
+                revision = revision,
+                baseSequence = page.reasoningBaseSequence,
+            ) || textChanged
             snapshotReasoningBase = page.reasoningBaseSequence
             snapshotReasoningThrough = page.reasoningDurableSequence
+            if (durableState == "streamingModel" && !reasoning.isNullOrEmpty()) {
+                reasoningStepOpen = true
+            }
         }
+        if (answer != null && reasoning == null && reasoningHandle == null) {
+            // Visible answer bytes are the real end of this step's reasoning;
+            // a later reasoning delta re-opens it.
+            reasoningStepOpen = false
+        }
+        if (textChanged) bumpLiveTextRevision()
+    }
+
+    /**
+     * One bounded read step for an adopted snapshot continuation. The host
+     * issues it through the EXISTING `content.read` command; all identity
+     * (run, handle, revision, stepEpoch, byte offset) is carried here so a
+     * late/foreign/closed reply can never append to another tail.
+     */
+    internal data class SnapshotContinuationPlan(
+        val runID: String,
+        val handle: String,
+        val revision: Long?,
+        val offset: Int,
+        val maxBytes: Int,
+        val reasoning: Boolean,
+        val stepEpoch: Long,
+    )
+
+    /** The next read step for [reasoning], or null when the current text is
+     * inline-complete/terminal/closed/already failed/truncated. */
+    internal fun snapshotContinuationPlan(reasoning: Boolean): SnapshotContinuationPlan? {
+        val current = (if (reasoning) reasoningContinuation else answerContinuation)
+            ?: return null
+        if (current.runID != selectedRunId) return null
+        if (liveTailClosedFor == current.runID) return null
+        if (runRows[current.runID]?.stateName in TERMINAL_STATES) return null
+        if (current.done || current.failed || current.truncated) return null
+        if (current.bytesKnown >= MAXIMUM_SNAPSHOT_TEXT_BYTES) {
+            current.truncated = true
+            setSnapshotOverlay(reasoning, current.text)
+            bumpLiveTextRevision()
+            return null
+        }
+        val handle = current.handle ?: return null
+        return SnapshotContinuationPlan(
+            runID = current.runID,
+            handle = handle,
+            revision = current.revision,
+            offset = current.bytesKnown,
+            maxBytes = minOf(
+                MAXIMUM_SNAPSHOT_READ_CHUNK_BYTES,
+                MAXIMUM_SNAPSHOT_TEXT_BYTES - current.bytesKnown,
+            ),
+            reasoning = reasoning,
+            stepEpoch = current.stepEpoch,
+        )
+    }
+
+    /**
+     * Appends one verified `content.read` slice. Accepted only for the EXACT
+     * adopted step and the EXACT expected byte offset; a gap, a shrinking
+     * handle, a foreign step or an offset mismatch marks the record PARTIAL
+     * and publishes nothing invented. Returns true when display state changed
+     * (the caller republishes the holder snapshot).
+     */
+    internal fun applySnapshotContinuationChunk(
+        plan: SnapshotContinuationPlan,
+        chunk: String,
+        done: Boolean,
+        nextOffset: Int?,
+        totalBytes: Int?,
+    ): Boolean {
+        val current = (if (plan.reasoning) reasoningContinuation else answerContinuation)
+            ?: return false
+        if (current.runID != plan.runID || current.reasoning != plan.reasoning) return false
+        if (current.stepEpoch != plan.stepEpoch) return false
+        if (current.done || current.failed || current.truncated) return false
+        if (current.bytesKnown != plan.offset) return false
+        val chunkBytes = utf8Length(chunk)
+        val expected = current.bytesKnown + chunkBytes
+        if (totalBytes != null && totalBytes < expected) {
+            current.failed = true
+            current.failureCode = "contentShrank"
+            setSnapshotOverlay(plan.reasoning, current.text)
+            bumpLiveTextRevision()
+            return true
+        }
+        if (chunk.isEmpty() && !done) return false
+        if (nextOffset == null && !done) return false
+        if (nextOffset != null && nextOffset != expected) {
+            current.failed = true
+            current.failureCode = "contentGap"
+            setSnapshotOverlay(plan.reasoning, current.text)
+            bumpLiveTextRevision()
+            return true
+        }
+        if (expected > MAXIMUM_SNAPSHOT_TEXT_BYTES) {
+            current.truncated = true
+            current.failed = true
+            current.failureCode = "contentTruncated"
+            setSnapshotOverlay(plan.reasoning, current.text)
+            bumpLiveTextRevision()
+            return true
+        }
+        current.text = current.text + chunk
+        current.bytesKnown = expected
+        // `done` proves THIS handle is exhausted. If a newer handle was
+        // adopted while this read was in flight, the step may have grown:
+        // the caller continues at the new handle's same byte offset instead
+        // of claiming the live text complete.
+        if (done) current.done = current.handle == plan.handle
+        setSnapshotOverlay(plan.reasoning, current.text)
+        bumpLiveTextRevision()
+        return true
+    }
+
+    /** A typed refusal/read failure for the adopted continuation: keep the
+     * honest prefix, mark the record partial and stop paging THIS revision.
+     * A genuinely newer revision may clear the failure and retry. */
+    internal fun markSnapshotContinuationUnavailable(
+        plan: SnapshotContinuationPlan,
+        code: String,
+    ): Boolean {
+        val current = (if (plan.reasoning) reasoningContinuation else answerContinuation)
+            ?: return false
+        if (current.runID != plan.runID || current.stepEpoch != plan.stepEpoch) return false
+        // A newer page may already have adopted a newer handle/revision while
+        // this old read was in flight; its failure cannot poison that handle.
+        if (current.handle != plan.handle || current.revision != plan.revision) return false
+        if (current.done || current.failed) return false
+        current.failed = true
+        current.failureCode = code
+        setSnapshotOverlay(plan.reasoning, current.text)
+        bumpLiveTextRevision()
+        return true
+    }
+
+    private fun continuationFor(reasoning: Boolean): SnapshotContinuation? =
+        if (reasoning) reasoningContinuation else answerContinuation
+
+    private fun setContinuation(reasoning: Boolean, value: SnapshotContinuation?) {
+        if (reasoning) reasoningContinuation = value else answerContinuation = value
+    }
+
+    private fun snapshotOverlay(reasoning: Boolean): String? =
+        if (reasoning) snapshotReasoningOverlay else snapshotAnswerOverlay
+
+    private fun setSnapshotOverlay(reasoning: Boolean, text: String) {
+        if (reasoning) snapshotReasoningOverlay = text else snapshotAnswerOverlay = text
+    }
+
+    /**
+     * Adopt one page's inline text/handle into the selected run's step.
+     * The same-step test compares the inline prefix with the already shown
+     * bytes (native live text is append-only inside one assistant step and
+     * resets on a real new step/retry). On a reset the old text/stepEpoch is
+     * replaced atomically, so every in-flight reply of the previous step is
+     * rejected. Handles are always adopted newest-first; the reader continues
+     * at [SnapshotContinuation.bytesKnown], never by re-reading the prefix.
+     */
+    private fun adoptSnapshotContinuation(
+        reasoning: Boolean,
+        runID: String,
+        text: String?,
+        handle: String?,
+        revision: Long?,
+        baseSequence: Long?,
+    ): Boolean {
+        val prefix = text.orEmpty()
+        val prefixBytes = utf8Length(prefix)
+        val current = continuationFor(reasoning)
+        val previousDisplay = snapshotOverlay(reasoning)
+        if (current == null || current.runID != runID) {
+            val fresh = SnapshotContinuation(
+                runID = runID,
+                reasoning = reasoning,
+                revision = revision,
+                handle = handle,
+                text = prefix,
+                bytesKnown = prefixBytes,
+                done = handle == null,
+                failed = false,
+                truncated = false,
+                failureCode = null,
+                stepEpoch = ++continuationStepCounter,
+                baseSequence = baseSequence,
+                lastInlinePrefix = prefix,
+            )
+            setContinuation(reasoning, fresh)
+            setSnapshotOverlay(reasoning, fresh.text)
+            return previousDisplay != fresh.text
+        }
+        val stepBoundaryChanged = current.baseSequence != null &&
+            baseSequence != null && current.baseSequence != baseSequence
+        // A non-null EMPTY current text is a real reset (provider retry /
+        // resumed generation), not a budget-dropped member (that is null).
+        val explicitEmpty = text != null && text.isEmpty()
+        val sameStep = !stepBoundaryChanged && !explicitEmpty &&
+            (current.text.isEmpty() || prefix.isEmpty() ||
+                current.text.startsWith(prefix) || prefix.startsWith(current.text))
+        if (!sameStep) {
+            val fresh = SnapshotContinuation(
+                runID = runID,
+                reasoning = reasoning,
+                revision = revision,
+                handle = handle,
+                text = prefix,
+                bytesKnown = prefixBytes,
+                done = handle == null,
+                failed = false,
+                truncated = false,
+                failureCode = null,
+                stepEpoch = ++continuationStepCounter,
+                baseSequence = baseSequence,
+                lastInlinePrefix = prefix,
+            )
+            setContinuation(reasoning, fresh)
+            setSnapshotOverlay(reasoning, fresh.text)
+            return previousDisplay != fresh.text
+        }
+        val previousRevision = current.revision
+        current.baseSequence = baseSequence ?: current.baseSequence
+        if (handle != null) {
+            // A newer page always stages the FULL current text; continue at
+            // the bytes already shown. Only a genuinely newer revision may
+            // clear a previous read failure (the same revision can restage a
+            // fresh handle on every snapshot and must never spin).
+            if (current.failed && revision != null && previousRevision != null &&
+                revision > previousRevision
+            ) {
+                current.failed = false
+                current.truncated = false
+                current.failureCode = null
+            }
+            // The SAME revision never grows; a repeated page with a restaged
+            // handle must not re-open an already completed read.
+            val sameRevision = revision != null && previousRevision != null &&
+                revision == previousRevision
+            val sameLegacyHandle = revision == null && previousRevision == null &&
+                current.handle == handle
+            current.revision = revision ?: current.revision
+            current.handle = handle
+            if (!(current.done && (sameRevision || sameLegacyHandle))) {
+                current.done = false
+            }
+            current.lastInlinePrefix = prefix
+        } else {
+            // Inline-only text is the whole current step: no handle remains
+            // to page and no late chunk may append after it.
+            current.revision = revision ?: current.revision
+            current.handle = null
+            current.done = true
+            current.failed = false
+            current.truncated = false
+            current.failureCode = null
+            current.lastInlinePrefix = prefix
+            if (text != null) {
+                if (text.length >= current.text.length && text.startsWith(current.text)) {
+                    current.text = text
+                    current.bytesKnown = prefixBytes
+                    // The inline text may have grown beyond the previous
+                    // read; the same stepEpoch keeps a late reply harmless
+                    // because its offset no longer matches bytesKnown.
+                } else if (!current.text.startsWith(text)) {
+                    current.text = text
+                    current.bytesKnown = prefixBytes
+                    current.stepEpoch = ++continuationStepCounter
+                }
+            }
+        }
+        setSnapshotOverlay(reasoning, current.text)
+        return previousDisplay != current.text
+    }
+
+    private fun utf8Length(text: String): Int = text.toByteArray(Charsets.UTF_8).size
+
+    private fun bumpLiveTextRevision() {
+        liveTextRevisionValue += 1L
     }
 
     /** A durable frame may extend the tail only for the run that owns it. */
@@ -1169,6 +1562,7 @@ class ThreadProjectionBuilder internal constructor(
             if (reasoning) reasoningDroppedThrough = maxOf(reasoningDroppedThrough, dropped.sequence)
             else assistantDroppedThrough = maxOf(assistantDroppedThrough, dropped.sequence)
         }
+        bumpLiveTextRevision()
     }
 
     /** Display tails: durable segmented truth plus the authoritative overlay. */
@@ -1444,6 +1838,12 @@ class ThreadProjectionBuilder internal constructor(
         // dead-generation row (no live window), and completed/failed/
         // checkpointed/idle are durable-terminal.
         val running = selectedState != null && selectedState in ACTIVE_STATES
+        val reasoningAdvancing = reasoningStepOpen && running && selectedState == "streamingModel"
+        val reasoningContinuationHere = reasoningContinuation
+            ?.takeIf { it.runID == selected }
+        val reasoningPartial = reasoningContinuationHere != null &&
+            (!reasoningContinuationHere.done || reasoningContinuationHere.failed ||
+                reasoningContinuationHere.truncated)
         val continuationReason = selected?.let { runReasons[it] }
             ?.takeIf { it.state == selectedState }?.reason
         val waitingForJobs = selectedState == "checkpointed" &&
@@ -1511,6 +1911,9 @@ class ThreadProjectionBuilder internal constructor(
             taskPolicyRevision = policyRevisionValue,
             taskRecoveryPolicyRaw = policyRecoveryRaw,
             taskNotificationPolicyRaw = policyNotificationRaw,
+            liveReasoningAdvancing = reasoningAdvancing,
+            liveReasoningPartial = reasoningPartial,
+            liveTextRevision = liveTextRevisionValue,
         )
     }
 
@@ -1536,6 +1939,14 @@ class ThreadProjectionBuilder internal constructor(
         /** Bounded live-tail segment window (answer + reasoning share it). */
         private const val LIVE_SEGMENT_LIMIT = 256
         private const val LIVE_SEGMENT_CHAR_LIMIT = 1 shl 20
+
+        /** Native FacadeContentReader aggregate ceiling (4 MiB) and its
+         * per-read page bound. The display assembly never asks for more than
+         * the reader can return; exceeding the ceiling is an explicit
+         * truncated/partial record, never a completion claim. */
+        internal const val MAXIMUM_SNAPSHOT_TEXT_BYTES = 4 * 1_024 * 1_024
+        internal const val MAXIMUM_SNAPSHOT_READ_CHUNK_BYTES = 32_768
+        private val CONTINUATION_HANDLE = Regex("chunk:v1:[0-9a-fA-F]{32}")
     }
 }
 
@@ -2021,6 +2432,10 @@ internal object ConversationWire {
         val chunk: String,
         val done: Boolean,
         val nextOffset: Int?,
+        /** Native total handle bytes; used to reject an offset that a
+         * RESET/shrunk snapshot handle cannot satisfy. Null = legacy reply
+         * without the member (never treated as a shrink proof). */
+        val totalBytes: Int? = null,
     )
 
     /** Decodes one ACTUAL `conversationLifecycle content.read` reply. */
@@ -2031,6 +2446,7 @@ internal object ConversationWire {
             chunk = chunk,
             done = root.bool("done") ?: false,
             nextOffset = root.long("nextOffset")?.toInt(),
+            totalBytes = root.long("totalBytes")?.toInt(),
         )
     }
 

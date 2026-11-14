@@ -3860,10 +3860,7 @@ public actor FacadeRunDomain {
 
     /// Run-scoped continuation reads (snapshot handles). Validation is
     /// owner-bound: a foreign/retired handle is a typed notFound, and the
-    /// content itself came from the ORIGINAL stores (never model-staged
-    /// bytes). The future shared `content.read` composition binds this
-    /// reader (Main typed-carrier decision 6: compose by owner scope, never
-    /// overwrite a sibling lane's handler).
+    /// content itself came from the ORIGINAL stores (never model-staged bytes).
     public func readRunContent(handle: String, offset: Int, maxBytes: Int,
                                runID: UUID, conversationID: UUID) async
         -> FacadeContentReader.ReadOutcome {
@@ -3871,6 +3868,19 @@ public actor FacadeRunDomain {
               owner.runID == runID, owner.conversationID == conversationID,
               owner.epoch == epoch else { return .notFound }
         return components.content.read(handle: handle, offset: offset, maxBytes: maxBytes)
+    }
+
+    /// The conversation-scoped content channel also serves that task's run
+    /// snapshots. The opaque handle resolves its native run identity; the
+    /// caller cannot supply another run, path or epoch as authority.
+    public func readOwnedRunContent(handle: String, offset: Int, maxBytes: Int,
+                                    conversationID: UUID) async
+        -> FacadeContentReader.ReadOutcome {
+        guard let owner = contentHandles[handle],
+              owner.conversationID == conversationID,
+              owner.epoch == epoch else { return .notFound }
+        return await readRunContent(handle: handle, offset: offset, maxBytes: maxBytes,
+                                    runID: owner.runID, conversationID: conversationID)
     }
 
     // MARK: - Shared internals (used by RunTrack + lifecycle)
