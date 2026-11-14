@@ -576,7 +576,7 @@ public class BrowserWebViewRenderer(
         if (source.isEmpty()) return
         // Re-injection is idempotent (the IIFE returns early when installed);
         // document-start support varies by WebView build (documented).
-        slot.webView?.evaluateJavascript("(function{$source})();", null)
+        slot.webView?.evaluateJavascript(source, null)
     }
 }
 
