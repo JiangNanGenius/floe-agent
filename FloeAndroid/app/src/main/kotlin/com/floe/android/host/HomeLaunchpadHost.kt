@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 package com.floe.android.host
 
+import androidx.lifecycle.Lifecycle
 import com.floe.android.FloeFoundation
 import com.floe.android.HomeDraftTransfer
 import com.floe.android.design.ComposerAvailability
@@ -71,6 +72,35 @@ sealed interface HomeNavigationClaim {
         internal val token: HomeSendToken,
         val target: SidebarSelection,
     ) : HomeNavigationClaim
+}
+
+/**
+ * Foreground-only admission for the application-scoped one-shot host
+ * navigation flow (`ConversationHostController.navigationRequest`).
+ *
+ * The RuntimeHost is Application-owned, so EVERY live MainActivity
+ * composition in the process observes the SAME StateFlow. Only the RESUMED
+ * (visible) shell is the route authority: a stopped/started composition
+ * that saw the value first would clear it and commit the route into its own
+ * invisible selection — the visible Task Center/history tap would then do
+ * nothing, and its temp-fence admission could even touch the visible
+ * session. Requests published while no shell is resumed stay in the flow
+ * and are replayed by StateFlow to the next foreground collector.
+ *
+ * [consume] is the exact-value CAS used at the FINAL route commit (and for a
+ * refused/stale-owned request), never at observation time. A lifecycle stop
+ * during the temporary-fence await therefore cancels the collector without
+ * swallowing the pending request, and a newer request is never erased by a
+ * late completion of an older one.
+ */
+internal class ForegroundNavigationRequests(
+    private val pending: MutableStateFlow<SidebarSelection?>,
+) {
+    fun mayConsume(lifecycleState: Lifecycle.State): Boolean =
+        lifecycleState.isAtLeast(Lifecycle.State.RESUMED)
+
+    fun consume(requested: SidebarSelection): Boolean =
+        pending.compareAndSet(requested, null)
 }
 
 class HomeLaunchpadHost internal constructor(

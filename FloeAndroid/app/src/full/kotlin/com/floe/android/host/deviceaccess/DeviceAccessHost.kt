@@ -451,11 +451,10 @@ internal class DeviceAccessHost(
     }
 
     /**
-     * One bounded post-dispatch foreground read for the background document
-     * VIEW. This uses the existing observation path (policy, live grant,
-     * target ceiling, owner/epoch fences) and returns only a tri-state
-     * visibility fact; it never selects another target, retries the launch or
-     * claims the content rendered.
+     * Observe the real viewer during a bounded launch-transition window.
+     * The first snapshot may still belong to the previous app even after
+     * Android accepts VIEW. Only re-observe; never repeat the OS launch.
+     * Every read retains the live grant/owner fence and target ceiling.
      */
     private suspend fun observeArtifactViewerForeground(
         client: PhoneControlClient,
@@ -464,35 +463,46 @@ internal class DeviceAccessHost(
         stillCurrent: () -> Boolean,
     ): Boolean? {
         if (!stillCurrent()) return null
-        val observed = try {
-            withTimeoutOrNull(3_000) {
-                client.observe(principal, PhoneControlObserveRequest(
-                    maxNodes = 1,
-                    maxDepth = 0,
-                    includeInvisible = false,
-                    textBudgetChars = 0,
-                ))
+        var lastKnownOther = false
+        val visible = try {
+            withTimeoutOrNull<Boolean?>(3_000) {
+                while (stillCurrent()) {
+                    val observed = client.observe(principal, PhoneControlObserveRequest(
+                        maxNodes = 1,
+                        maxDepth = 0,
+                        includeInvisible = false,
+                        textBudgetChars = 0,
+                    ))
+                    if (!stillCurrent()) return@withTimeoutOrNull null
+                    lastKnownOther = when (observed) {
+                        is PhoneControlResult.Ok -> when (
+                            com.floe.android.phonecontrol.classifyDocumentViewerForeground(
+                                expectedPackage, observed.value.packageName)
+                        ) {
+                            com.floe.android.phonecontrol.PhoneControlDocumentViewerForeground.TARGET ->
+                                return@withTimeoutOrNull true
+                            com.floe.android.phonecontrol.PhoneControlDocumentViewerForeground.OTHER -> true
+                            com.floe.android.phonecontrol.PhoneControlDocumentViewerForeground.UNKNOWN -> false
+                        }
+                        is PhoneControlResult.Denied ->
+                            observed.reason == PhoneControlDenial.TARGET_PACKAGE_NOT_ALLOWED
+                        else -> false
+                    }
+                    // Protected/unattributable pages, revoked grants and
+                    // service failures stay unknown; never poll around them.
+                    if (!lastKnownOther) return@withTimeoutOrNull null
+                    kotlinx.coroutines.delay(100)
+                }
+                null
             }
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Throwable) {
+            lastKnownOther = false
             null
-        } ?: return null
-        return when (observed) {
-            is PhoneControlResult.Ok ->
-                when (com.floe.android.phonecontrol.classifyDocumentViewerForeground(
-                    expectedPackage, observed.value.packageName)) {
-                    com.floe.android.phonecontrol.PhoneControlDocumentViewerForeground.TARGET -> true
-                    com.floe.android.phonecontrol.PhoneControlDocumentViewerForeground.OTHER -> false
-                    com.floe.android.phonecontrol.PhoneControlDocumentViewerForeground.UNKNOWN -> null
-                }
-            is PhoneControlResult.Denied ->
-                // The active ordinary app is outside the user's target
-                // ceiling; that cannot be this requested viewer.
-                if (observed.reason == PhoneControlDenial.TARGET_PACKAGE_NOT_ALLOWED) false
-                else null
-            else -> null
         }
+        if (!stillCurrent()) return null
+        return visible ?: if (lastKnownOther) false else null
     }
 
     private var rootController: RootSystemController? = null

@@ -255,7 +255,15 @@ class ConversationHostController internal constructor(
         com.floe.android.host.questions.UserQuestionNotifications.install(userQuestions)
     }
 
-    /** Shell navigation requests (host → shell, observed by composition). */
+    /**
+     * Shell navigation requests (host → shell, observed by composition).
+     * Application-scoped: every live MainActivity composition in the process
+     * sees this SAME StateFlow, so ONLY the RESUMED shell may consume a
+     * request. A request published while no shell is resumed stays pending
+     * and is replayed when the visible shell resumes; a background
+     * composition never clears it or routes it into its own invisible
+     * selection.
+     */
     val navigationRequest = MutableStateFlow<SidebarSelection?>(null)
 
     /**

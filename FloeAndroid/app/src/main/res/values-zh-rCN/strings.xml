@@ -591,6 +591,8 @@
     <string name="phone_automation_paused">设备操作已暂停</string>
     <string name="phone_automation_resume_failed">无法继续，请打开任务重试。</string>
     <string name="phone_automation_credential_failed">无法更新解锁凭据，请重试。</string>
+    <string name="phone_automation_bubble_show">%1$s。%2$s。点按显示控制。</string>
+    <string name="phone_automation_bubble_hide">%1$s。%2$s。点按收起控制。</string>
     <string name="reporting_title">诊断与反馈</string>
     <string name="reporting_automatic">自动上报应用故障</string>
     <string name="reporting_privacy">同意后自动上报应用崩溃和内部故障。任务异常、模型错误和取消不会自动上报。不自动附带截图、文档、聊天内容或凭据。手动附件默认仅通过 Wi-Fi 上传，可单独更改。</string>

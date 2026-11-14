@@ -268,9 +268,14 @@ class ConversationHistoryHolder(
     /* ----------------------------- navigation actions ----------------------------- */
 
     /** Row tap outside edit mode: a DIRECT user tap on the history surface,
-     * so the source token is null (the host always navigates for it). */
+     * so the source token is null (the host always navigates for it). A
+     * synchronous host refusal (conversation domain not admitted) uses the
+     * SAME typed action-error surface as the other history actions instead
+     * of a tap that silently does nothing. */
     fun openConversation(id: String) {
-        host.requestOpenConversation(null, id)
+        if (!host.requestOpenConversation(null, id)) {
+            applyActionError("runtime_unavailable")
+        }
     }
 
     /** ⇄ createAndOpen: host creates the durable row and owns navigation. */

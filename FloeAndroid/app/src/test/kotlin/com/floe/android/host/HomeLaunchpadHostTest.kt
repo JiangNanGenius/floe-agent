@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 package com.floe.android.host
 
+import androidx.lifecycle.Lifecycle
 import com.floe.android.HomeDraftTransfer
+import com.floe.android.design.SidebarSelection
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
@@ -658,6 +660,51 @@ class HomeLaunchpadHostTest {
         assertNull(oldFailure.get())
         host.home.admissionPublishBarrier = null
         host.stop()
+    }
+
+    /* ============ foreground ownership of the shared host route flow ============ */
+
+    @Test
+    fun onlyTheResumedShellMayTakeTheSharedHostNavigationRequest() {
+        val pending = MutableStateFlow<SidebarSelection?>(null)
+        val requests = ForegroundNavigationRequests(pending)
+        val requested = SidebarSelection.Conversation(conversationId)
+        pending.value = requested
+
+        // A live but non-foreground MainActivity composition (an older
+        // instance left in the task, or a paused surface) must neither see
+        // the request as consumable nor clear the shared value. Android
+        // Lifecycle has exactly INITIALIZED/CREATED/STARTED/RESUMED/
+        // DESTROYED; only RESUMED is the visible foreground surface.
+        assertFalse(requests.mayConsume(Lifecycle.State.INITIALIZED))
+        assertFalse(requests.mayConsume(Lifecycle.State.CREATED))
+        assertFalse(requests.mayConsume(Lifecycle.State.STARTED))
+        assertFalse(requests.mayConsume(Lifecycle.State.DESTROYED))
+        assertEquals(requested, pending.value)
+
+        // The RESUMED visible shell is the one route authority; it consumes
+        // EXACTLY the route at the final commit.
+        assertTrue(requests.mayConsume(Lifecycle.State.RESUMED))
+        assertTrue(requests.consume(requested))
+        assertNull(pending.value)
+    }
+
+    @Test
+    fun lateCompletionOfAnOlderRouteNeverErasesANewerSharedRequest() {
+        val pending = MutableStateFlow<SidebarSelection?>(null)
+        val requests = ForegroundNavigationRequests(pending)
+        val older = SidebarSelection.Conversation("older-task")
+        val newer = SidebarSelection.Conversation("newer-task")
+        pending.value = older
+
+        // A newer click replaces the shared request while the older route is
+        // still finishing its temporary-fence await; the older completion is
+        // an exact-value CAS and must leave the newer request intact.
+        pending.value = newer
+        assertFalse(requests.consume(older))
+        assertEquals(newer, pending.value)
+        assertTrue(requests.consume(newer))
+        assertNull(pending.value)
     }
 
 }

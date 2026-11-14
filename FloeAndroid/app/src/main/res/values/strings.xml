@@ -591,6 +591,8 @@
     <string name="phone_automation_allow">Allow</string>
     <string name="phone_automation_stop">Take over</string>
     <string name="phone_automation_credential_failed">Could not update the saved unlock credential. Try again.</string>
+    <string name="phone_automation_bubble_show">%1$s. %2$s. Tap to show controls.</string>
+    <string name="phone_automation_bubble_hide">%1$s. %2$s. Tap to hide controls.</string>
     <string name="reporting_title">Diagnostics and feedback</string>
     <string name="reporting_automatic">Automatically report App faults</string>
     <string name="reporting_privacy">After you agree, App crashes and internal faults can be reported automatically. Task failures, model errors and cancellations are excluded. No automatic screenshots, documents, chat content or credentials. Manual attachments use Wi-Fi unless you choose otherwise.</string>

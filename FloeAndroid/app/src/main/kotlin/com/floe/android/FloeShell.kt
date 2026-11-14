@@ -61,6 +61,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import com.floe.android.design.Floe
 import com.floe.android.design.LocalFloeOverlayMaterial
 import com.floe.android.design.floeMaterialSource
@@ -93,6 +94,7 @@ import com.floe.android.feature.canvas.CreativeAvailability
 import com.floe.android.feature.dataexchange.DataExchangePhase
 import com.floe.android.feature.providers.FloeProviderSettingsDestination
 import com.floe.android.host.AttachmentPickerEffect
+import com.floe.android.host.ForegroundNavigationRequests
 import com.floe.android.host.LocalNetworkPermissionEffect
 import com.floe.android.host.RuntimeHost
 import com.floe.android.host.officerecovery.OfficeRecoveryEffect
@@ -375,53 +377,119 @@ private fun FloeShellContent(
                 },
             )
         }
-        LaunchedEffect(runtimeHost) {
-            // ONE serial consumer for host navigation. Collecting (instead of
-            // keying a LaunchedEffect on the value) means clearing the
-            // request cannot cancel the application halfway through a
-            // temporary-fence await: the final route commit always runs.
-            runtimeHost.conversations.navigationRequest.collect { requested ->
-                if (requested != null) {
-                    runtimeHost.conversations.navigationRequest.value = null
-                    // Home request ownership travels THROUGH the final route
-                    // commit: the claim is taken before the fence await and
-                    // re-validated after it, so an intent invalidated during
-                    // the wait can never move the route. A Home-owned route
-                    // is consumed exactly once; any other navigation commits
-                    // normally, so a kept ordinary conversation can always be
-                    // reopened from TaskCenter/history.
-                    runtimeHost.home.applyHostNavigation(
-                        target = requested,
-                        waitForAdmission = {
-                            val currentTemporary =
-                                runtimeHost.conversations.activeTemporarySession()
-                            // The REMEMBERED live surface is the visible
-                            // selection (it tracks temporary truth that the
-                            // durable-only persisted key intentionally
-                            // does not carry).
-                            val visibleSelection = selection
-                            val leavingConversation =
-                                visibleSelection is SidebarSelection.Conversation &&
-                                    requested.key != visibleSelection.key
-                            if (currentTemporary != null && leavingConversation) {
-                                runtimeHost.conversations.tempFence.beginEnd(currentTemporary)
-                                runtimeHost.conversations.tempFence
-                                    .awaitAdmission(currentTemporary)
-                            } else {
-                                true
-                            }
-                        },
-                        commit = { next ->
-                            commitVisibleSelection(next)
-                            drawerOpen = false
-                            inspectorRoute = null
-                        },
-                    )
+        LaunchedEffect(runtimeHost, shellLifecycle) {
+            // ONE serial consumer for host navigation, collecting ONLY while
+            // THIS Activity is the RESUMED foreground surface. The
+            // RuntimeHost is Application-owned, so every live MainActivity
+            // composition in the process observes the SAME
+            // `navigationRequest` StateFlow. Without this gate a second,
+            // stopped MainActivity (for example an older instance left in
+            // the task) could observe a Task Center tap first, clear it and
+            // commit the route into its own invisible selection, leaving the
+            // visible LIST tap a no-op. `repeatOnLifecycle` (not a
+            // recomposition-keyed boolean) is deliberate: the Compose
+            // recomposer is paused while the Activity is stopped, so a keyed
+            // boolean alone could leave this collector running and could
+            // also fail to restart it on resume. A request published while
+            // this shell is not resumed stays in the StateFlow and is
+            // replayed to the collector when the surface resumes.
+            val foregroundRequests = ForegroundNavigationRequests(
+                runtimeHost.conversations.navigationRequest,
+            )
+            shellLifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                runtimeHost.conversations.navigationRequest.collect { requested ->
+                    if (requested != null &&
+                        foregroundRequests.mayConsume(shellLifecycle.currentState)
+                    ) {
+                        // The request is consumed at the FINAL route commit,
+                        // not at observation: a lifecycle stop during the
+                        // temporary-fence await cancels this collector without
+                        // swallowing the pending request (the next resumed
+                        // collector replays it), and the exact-value CAS never
+                        // erases a newer request.
+                        // Home request ownership travels THROUGH the final
+                        // route commit: the claim is taken before the fence
+                        // await and re-validated after it, so an intent
+                        // invalidated during the wait can never move the
+                        // route. A Home-owned route is consumed exactly once;
+                        // any other navigation commits normally, so a kept
+                        // ordinary conversation can always be reopened from
+                        // TaskCenter/history.
+                        val applied = runtimeHost.home.applyHostNavigation(
+                            target = requested,
+                            waitForAdmission = {
+                                val currentTemporary =
+                                    runtimeHost.conversations.activeTemporarySession()
+                                // The REMEMBERED live surface is the visible
+                                // selection (it tracks temporary truth that
+                                // the durable-only persisted key
+                                // intentionally does not carry).
+                                val visibleSelection = selection
+                                val leavingConversation =
+                                    visibleSelection is SidebarSelection.Conversation &&
+                                        requested.key != visibleSelection.key
+                                val admitted = if (currentTemporary != null && leavingConversation) {
+                                    runtimeHost.conversations.tempFence
+                                        .beginEnd(currentTemporary)
+                                    runtimeHost.conversations.tempFence
+                                        .awaitAdmission(currentTemporary)
+                                } else {
+                                    true
+                                }
+                                // Revalidate before Home consumes its claim;
+                                // the final visible commit also uses CAS.
+                                admitted && foregroundRequests.mayConsume(
+                                    shellLifecycle.currentState,
+                                ) && runtimeHost.conversations.navigationRequest.value == requested
+                            },
+                            commit = { next ->
+                                // FINAL foreground/pending re-check after the
+                                // temporary-fence await: a pause or a newer
+                                // request during the wait must never let this
+                                // older route land in an invisible shell.
+                                // `consume` is an exact-value CAS, so a false
+                                // result (already consumed by the visible
+                                // shell, replaced by a newer request, or this
+                                // shell no longer RESUMED) is NEVER treated as
+                                // a committed route.
+                                if (shellLifecycle.currentState.isAtLeast(
+                                        Lifecycle.State.RESUMED,
+                                    ) &&
+                                    foregroundRequests.consume(requested)
+                                ) {
+                                    commitVisibleSelection(next)
+                                    drawerOpen = false
+                                    inspectorRoute = null
+                                }
+                            },
+                        )
+                        if (!applied &&
+                            shellLifecycle.currentState.isAtLeast(
+                                Lifecycle.State.RESUMED,
+                            )
+                        ) {
+                            // A refused/stale-owned route commits nothing;
+                            // retire exactly that pending value through the
+                            // same CAS. If this shell already lost the
+                            // foreground, the request is left for the next
+                            // resumed collector to replay; a newer request is
+                            // also left untouched.
+                            foregroundRequests.consume(requested)
+                        }
+                    }
                 }
             }
         }
-        LaunchedEffect(runtimeHost) {
-            // ONE serial consumer for the scoped same-id Keep promotion.
+        LaunchedEffect(runtimeHost, shellLifecycle) {
+            // ONE serial consumer for the scoped same-id Keep promotion,
+            // collecting ONLY while THIS Activity is the RESUMED foreground
+            // surface for the same shared-host reason as the navigation
+            // collector above: a stopped MainActivity must not clear the
+            // application-scoped adoption signal before the visible shell
+            // sees it. `repeatOnLifecycle` restarts this collection on
+            // resume (the recomposer may be paused while stopped), so a
+            // promotion published while this shell is not resumed stays in
+            // the StateFlow and is replayed on resume.
             // The committed terminal can arrive LATE (root-wide client, no
             // per-holder filtering in trackOperation), so the durable kept
             // selection reaches this shell ONLY while the EXACT origin
@@ -430,21 +498,30 @@ private fun FloeShellContent(
             // that now owns the surface. Rotation/background reconstruction
             // of the same still-live origin re-adopts it as current first,
             // so the genuine keep-stays-where-you-was path remains valid.
-            runtimeHost.conversations.keptPromotion.collect { promotion ->
-                if (promotion != null) {
-                    runtimeHost.conversations.keptPromotion.value = null
-                    val originEntry = runtimeHost.conversations
-                        .entryFor(promotion.originRef.conversationId)
-                    if (keptPromotionAppliesToVisibleOrigin(
-                            visible = selection,
-                            visibleConversationEpoch =
-                                originEntry?.holder?.session?.sessionEpoch,
-                            origin = promotion.originRef,
-                        )
+            shellLifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                runtimeHost.conversations.keptPromotion.collect { promotion ->
+                    // Exact-value CAS: a newer promotion published between
+                    // the emission and this clear is never erased by the
+                    // older one, and only the exact adopted signal is consumed.
+                    if (promotion != null &&
+                        shellLifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) &&
+                        runtimeHost.conversations.keptPromotion
+                            .compareAndSet(promotion, null)
                     ) {
-                        commitVisibleSelection(
-                            SidebarSelection.Conversation(promotion.durableConversationId),
-                        )
+                        val originEntry = runtimeHost.conversations
+                            .entryFor(promotion.originRef.conversationId)
+                        if (keptPromotionAppliesToVisibleOrigin(
+                                visible = selection,
+                                visibleConversationEpoch =
+                                    originEntry?.holder?.session?.sessionEpoch,
+                                origin = promotion.originRef,
+                            )
+                        ) {
+                            commitVisibleSelection(
+                                SidebarSelection.Conversation(
+                                    promotion.durableConversationId),
+                            )
+                        }
                     }
                 }
             }
@@ -533,33 +610,58 @@ private fun FloeShellContent(
                 previewRequest?.let { runtimeHost.browser.consumePreviewPresentation(taskID, it.value) }
             }
         }
-        val requestedInspector by runtimeHost.conversations.inspectorRequest.collectAsState()
-        LaunchedEffect(requestedInspector) {
-            requestedInspector?.let { (content, conversationId) ->
-                application?.componentDocumentReturns?.clear()
-                runtimeHost.conversations.inspectorRequest.value = null
-                inspectorRoute = encodeInspectorRoute(
-                    InspectorRoute(content = mapInspectorContent(content), conversationId = conversationId),
-                )
+        // The host's one-shot inspector signal is application-scoped like the
+        // navigation flow: only the RESUMED shell may consume it (a stopped
+        // MainActivity must not clear it into its own invisible UI), the
+        // exact-value CAS never erases a newer request, and a value published
+        // while this shell is not resumed stays pending for the next resume.
+        LaunchedEffect(runtimeHost, shellLifecycle) {
+            shellLifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                runtimeHost.conversations.inspectorRequest.collect { requested ->
+                    if (requested != null &&
+                        shellLifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) &&
+                        runtimeHost.conversations.inspectorRequest
+                            .compareAndSet(requested, null)
+                    ) {
+                        val (content, conversationId) = requested
+                        application?.componentDocumentReturns?.clear()
+                        inspectorRoute = encodeInspectorRoute(
+                            InspectorRoute(
+                                content = mapInspectorContent(content),
+                                conversationId = conversationId,
+                            ),
+                        )
+                    }
+                }
             }
         }
         // Conversation artifact direct preview: consume the host's one-shot
         // owner-proven request into the shell-owned (saveable) presentation
-        // state. The host slot clears immediately, so the same value can
-        // never be delivered twice or reopen after this owner left.
-        val requestedArtifactPreview by runtimeHost.conversations.artifactPreviewRequest.collectAsState()
-        LaunchedEffect(requestedArtifactPreview) {
-            requestedArtifactPreview?.let { request ->
-                application?.componentDocumentReturns?.clear()
-                runtimeHost.conversations.artifactPreviewRequest.value = null
-                artifactTaskId = request.taskID
-                artifactWorkspaceId = request.workspaceID
-                artifactPath = request.relativePath
-                artifactSurfaceName = request.surface.name
-                artifactToken = request.token
-                artifactNativeEpoch = request.nativeEpoch
-                artifactHostGeneration = request.hostGeneration
-                artifactSessionEpoch = request.sessionEpoch
+        // state. Same application-scoped foreground-only rule as the
+        // inspector: only the RESUMED shell CAS-consumes the exact request,
+        // so a stopped MainActivity cannot swallow the promised file-result
+        // preview, and a newer request is never erased. The host slot clears
+        // immediately for the real consumer, so the same value can never be
+        // delivered twice or reopen after this owner left.
+        LaunchedEffect(runtimeHost, shellLifecycle) {
+            shellLifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                runtimeHost.conversations.artifactPreviewRequest.collect { request ->
+                    if (request != null &&
+                        shellLifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) &&
+                        runtimeHost.conversations.artifactPreviewRequest
+                            .compareAndSet(request, null)
+                    ) {
+                        application?.componentDocumentReturns?.clear()
+                        artifactTaskId = request.taskID
+                        artifactWorkspaceId = request.workspaceID
+                        artifactPath = request.relativePath
+                        artifactSurfaceName = request.surface.name
+                        artifactToken = request.token
+                        artifactNativeEpoch = request.nativeEpoch
+                        artifactHostGeneration = request.hostGeneration
+                        artifactSessionEpoch = request.sessionEpoch
+                    }
+                }
             }
         }
         // The preview belongs to the conversation surface that raised it: a
@@ -583,13 +685,26 @@ private fun FloeShellContent(
         LaunchedEffect(runtimeHost) {
             runtimeHost.conversations.reloadHistory()
         }
-        val permissionsConversation by runtimeHost.conversations.permissionsRequest.collectAsState()
-        LaunchedEffect(permissionsConversation) {
-            permissionsConversation?.let { conversationId ->
-                runtimeHost.conversations.permissionsRequest.value = null
-                inspectorRoute = encodeInspectorRoute(
-                    InspectorRoute(content = InspectorContent.PERMISSIONS, conversationId = conversationId),
-                )
+        // Same application-scoped one-shot rule: the permissions request is
+        // consumed only by the RESUMED shell through an exact-value CAS, so a
+        // stopped MainActivity cannot clear the request that restores this
+        // round's policy surface, and a newer request is never erased.
+        LaunchedEffect(runtimeHost, shellLifecycle) {
+            shellLifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                runtimeHost.conversations.permissionsRequest.collect { conversationId ->
+                    if (conversationId != null &&
+                        shellLifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) &&
+                        runtimeHost.conversations.permissionsRequest
+                            .compareAndSet(conversationId, null)
+                    ) {
+                        inspectorRoute = encodeInspectorRoute(
+                            InspectorRoute(
+                                content = InspectorContent.PERMISSIONS,
+                                conversationId = conversationId,
+                            ),
+                        )
+                    }
+                }
             }
         }
     }
