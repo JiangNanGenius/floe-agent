@@ -1568,9 +1568,9 @@ enum OfficeIsolatedPDFExport {
     }
 }
 
+#endif
+
 struct OfficeServiceSessionFailure: LocalizedError {
     var reason: String
     var errorDescription: String? { "The service-owned Office session failed: \(reason)" }
 }
-
-#endif
