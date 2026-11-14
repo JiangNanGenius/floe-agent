@@ -175,7 +175,8 @@ internal class DeviceRunLiveness(
         val observed = current.get() ?: return
         if (observed.owner != owner) return
         end(observed)
-        current.compareAndSet(observed, null)
+        // Retain the ended proof: null would let the host fall back to an
+        // older UI holder and mistake this stopped owner for a live run.
     }
 
     private fun end(observed: Observation) {
