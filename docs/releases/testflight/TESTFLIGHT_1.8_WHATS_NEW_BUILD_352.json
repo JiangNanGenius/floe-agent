@@ -1,0 +1,4 @@
+{
+  "zh-Hans": "已有旧 Linux 环境时，从终端或聊天任务启动它，检查是否出现升级选择。「设置 → 执行环境」也能发起升级。升级后打开终端中的「屏幕」，核对画面，并检查原来的工作区文件。请在 Linux 关闭时更改图形内存，重新进入设置核对数值。测试云端实时听写和会议转写时，可以在一句话中短暂断网，恢复网络后继续说，检查断线期间的内容是否保留、已确认的文字是否重复。",
+  "en-US": "If you have an older Linux environment, start it from a terminal or a chat task and check the upgrade choices. You can also start the upgrade in Settings → Execution Environment. After upgrading, open Screen from the terminal and check the picture and your original workspace files. With Linux stopped, change the graphics memory budget and reopen Settings to check the value. During cloud dictation or meeting transcription, briefly disconnect mid-sentence and keep speaking. Check that speech during the interruption is preserved and that confirmed text appears only once."
+}
