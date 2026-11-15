@@ -3,9 +3,11 @@
 
 这是带核实日期的渠道快照。各渠道独立更新；源码版本、公开下载、Apple 审核与测试组可用性分别核对。 / This is a dated channel snapshot. Source versions, public downloads, Apple review and beta-group availability are separate states.
 
-最新内部 TestFlight 为 1.8.31（352），GitHub／Feather 最近一次已核验的稳定版为 346。[发布版本依据](RELEASE_VERSION_AUTHORITY.zh-CN.md)
+最新内部 TestFlight 为 1.8.32（353），GitHub／Feather 最近一次已核验的稳定版为 346。[发布版本依据](RELEASE_VERSION_AUTHORITY.zh-CN.md)
 
 ## 2026-11-15 iOS 内部测试 / Internal TestFlight
+
+Floe QA 已可安装 1.8.32（353）。打开空仓库时的错误弹窗已修复，源码管理按钮已在 iPad mini 模拟器上核对。 / Floe QA can install build 353. Source Control now opens an uninitialized workspace without an error alert. The updated sidebar controls were verified on the iPad mini simulator. [353 交付记录 / Delivery](releases/builds/FLOE_1.8.32_BUILD353_DELIVERY.md)
 
 Floe QA 已可安装 1.8.31（352）。共享 Linux 可在启动前或「设置 → 执行环境」中升级。iPad 模拟器从旧磁盘升级后，原终端重新连接，虚拟屏幕显示了新系统的终端。云端语音输入在两次模拟断线后恢复，最终文字仅提交一次。 / Floe QA can install build 352. The iPad Simulator upgraded an existing Linux environment, reconnected its terminal and displayed the new guest’s console. Cloud dictation recovered across two forced disconnects and committed the final transcript once. [352 交付记录 / Delivery](releases/builds/FLOE_1.8.31_BUILD352_DELIVERY.md)
 
