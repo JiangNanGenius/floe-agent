@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 package com.floe.android.host.output
 
+import com.floe.android.feature.conversation.RunOutputDisplayName
 import java.io.File
-import java.util.Locale
 import java.util.UUID
 
 /**
@@ -294,8 +294,11 @@ internal class RunOutputPdfLaunchRegistry {
 }
 
 /** Shared closed agreement for the run-output PDF Open route: the native
- * verified MIME must MATCH the sealed `.pdf` extension (never either alone). */
+ * verified MIME must MATCH the real `.pdf` extension (never either alone).
+ * The extension uses the ONE shared legacy-annotation projection, so an old
+ * `report.pdf（终版）` seal still agrees while the sealed title and path stay
+ * untouched and the stager's byte-level `%PDF-`/digest proof still runs. */
 internal fun runOutputPdfOpenAgreement(mimeType: String, displayName: String): Boolean =
     mimeType == RunOutputOfficeSnapshotStager.PDF_MIME &&
-        displayName.substringAfterLast('.', "").lowercase(Locale.ROOT) ==
+        RunOutputDisplayName.facts(displayName).extension ==
         RunOutputOfficeSnapshotStager.FORMAT_PDF

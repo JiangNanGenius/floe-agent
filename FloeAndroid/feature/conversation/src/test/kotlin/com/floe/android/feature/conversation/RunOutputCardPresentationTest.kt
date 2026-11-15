@@ -190,4 +190,55 @@ class RunOutputCardPresentationTest {
         assertEquals("runOutputs.run-1",
             TimelineRowUi.RunOutputGroup("run-1", listOf(card())).id)
     }
+
+    @Test
+    fun annotatedLegacyNamesOfferOnlyTheirRealPreviewRoutes() {
+        // Confirmed Full18 examples: the sealed title keeps the label, but
+        // the card gate uses the shared real-extension projection so the
+        // media/PDF/text routes become reachable again.
+        val png = "sydney_creator_meetup_poster.png（海报）"
+        val mp4 = "sydney_creator_meetup_teaser_12s_1080p.mp4（12秒预告）"
+        assertTrue(RunOutputCardPresentation.supportsOpen("image/png", png))
+        assertTrue(RunOutputCardPresentation.supportsOpen("video/mp4", mp4))
+        assertTrue(RunOutputCardPresentation.supportsOpen("audio/mpeg", "narration.mp3（旁白）"))
+        assertTrue(RunOutputCardPresentation.supportsOpen("application/pdf", "report.pdf（终版）"))
+        assertTrue(RunOutputCardPresentation.supportsOpen("text/markdown", "notes.md（备注）"))
+        assertNull(RunOutputCardPresentation.previewUnsupportedLabelRes(true, "image/png", png))
+        assertNull(RunOutputCardPresentation.previewUnsupportedLabelRes(true, "video/mp4", mp4))
+        // The title stays the exact sealed string (the card renders it
+        // directly); only the transfer projection is normalised.
+        assertEquals(png, RunOutputDisplayName.facts(png).title)
+        assertEquals("sydney_creator_meetup_poster（海报）.png",
+            RunOutputDisplayName.facts(png).transferName)
+
+        // MIME/extension disagreement still keeps Save only, with the honest
+        // limitation note — never a fake Open.
+        assertFalse(RunOutputCardPresentation.supportsOpen("image/png", "poster.webp（海报）"))
+        assertEquals(R.string.run_output_preview_unsupported,
+            RunOutputCardPresentation.previewUnsupportedLabelRes(
+                true, "image/png", "poster.webp（海报）"))
+        // ZIP stays Save-Copy-only by product policy.
+        assertFalse(RunOutputCardPresentation.supportsOpen(
+            "application/zip", "archive.zip（下载）"))
+    }
+
+    @Test
+    fun annotatedOoxmlUsesTheExistingHostRouteAndKeepsItsTitle() {
+        // The host pre-check and verified snapshot stager share this same
+        // filename projection; the original seal remains unchanged.
+        val name = "weekly_report.docx（周报）"
+        assertTrue(RunOutputCardPresentation.supportsOpen(
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document", name))
+        assertNull(RunOutputCardPresentation.previewUnsupportedLabelRes(
+                true,
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                name))
+        assertEquals(name, RunOutputDisplayName.facts(name).title)
+        assertEquals("weekly_report（周报）.docx",
+            RunOutputDisplayName.facts(name).transferName)
+        // Ordinary OOXML names remain on the existing route.
+        assertTrue(RunOutputCardPresentation.supportsOpen(
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "weekly_report.docx"))
+    }
 }

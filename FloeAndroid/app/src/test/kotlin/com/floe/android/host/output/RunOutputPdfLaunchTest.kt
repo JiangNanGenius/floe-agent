@@ -228,6 +228,14 @@ class RunOutputPdfLaunchRegistryTest {
     fun pdfAgreementIsBothMimeAndExtensionNeverEitherAlone() {
         assertTrue(runOutputPdfOpenAgreement("application/pdf", "报告.pdf"))
         assertTrue(runOutputPdfOpenAgreement("application/pdf", "Report.PDF"))
+        // Legacy one-trailing-annotation seals keep the exact title/path but
+        // still project their real `.pdf` extension for this closed gate.
+        assertTrue(runOutputPdfOpenAgreement("application/pdf", "报告.pdf（终版）"))
+        assertTrue(runOutputPdfOpenAgreement("application/pdf", "report.pdf (final)"))
+        assertFalse(runOutputPdfOpenAgreement("application/pdf", "report.pdf（终版）（1）"))
+        assertFalse(runOutputPdfOpenAgreement("application/pdf", "report.pdf（../x）"))
+        assertFalse(runOutputPdfOpenAgreement("application/pdf", "report.txt（终版）"))
+        assertFalse(runOutputPdfOpenAgreement("text/plain", "报告.pdf（终版）"))
         assertFalse(runOutputPdfOpenAgreement("application/pdf", "report.txt"))
         assertFalse(runOutputPdfOpenAgreement("text/plain", "report.pdf"))
         assertFalse(runOutputPdfOpenAgreement("application/octet-stream", "report.pdf"))
@@ -369,6 +377,51 @@ class RunOutputPdfLaunchRegistryTest {
             assertEquals("invalidOfficeFormat",
                 (pdfFailure as RunOutputOfficeSnapshotStager.Failure).code)
             assertEquals(2, officeChannel.closes + pdfChannel.closes)
+            assertEquals(0, root.walk().filter { it != root }.count())
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun annotatedPdfNameStagesTheRealSuffixWithTheSealedTitle() {
+        val root = tempRoot()
+        try {
+            val name = "sydney_report.pdf（终版）"
+            val channel = ScriptedChannel(pdfInfoJson(name = name), pdfPayload)
+            val snapshot = pdfStager(root, channel).stage(owner()) { true }
+            // Title/path tail stay byte-identical; only the internal staging
+            // name carries the real extension.
+            assertEquals(name, snapshot.displayName)
+            assertTrue(snapshot.relativePath.endsWith("/$name"))
+            assertTrue(snapshot.file.name == "document.pdf")
+            assertTrue(snapshot.file.readBytes().contentEquals(pdfPayload))
+            assertFalse(snapshot.file.canWrite())
+            assertEquals(1, channel.closes)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun annotatedPdfStillRequiresMimeAndMagicAgreement() {
+        val root = tempRoot()
+        try {
+            val badMime = ScriptedChannel(
+                pdfInfoJson(name = "report.pdf（终版）", mime = "text/plain"), pdfPayload)
+            val e1 = runCatching { pdfStager(root, badMime).stage(owner()) { true } }
+                .exceptionOrNull()
+            assertEquals("invalidPdfFormat",
+                (e1 as RunOutputOfficeSnapshotStager.Failure).code)
+
+            val notPdf = ByteArray(70_000) { (it % 199).toByte() }
+            val badMagic = ScriptedChannel(
+                pdfInfoJson(name = "report.pdf（终版）", digest = sha(notPdf)), notPdf)
+            val e2 = runCatching { pdfStager(root, badMagic).stage(owner()) { true } }
+                .exceptionOrNull()
+            assertEquals("invalidPdfMagic",
+                (e2 as RunOutputOfficeSnapshotStager.Failure).code)
+            assertEquals(2, badMime.closes + badMagic.closes)
             assertEquals(0, root.walk().filter { it != root }.count())
         } finally {
             root.deleteRecursively()

@@ -78,10 +78,12 @@ internal object RunOutputCardPresentation {
     /** The existing office viewer accepts exactly the OOXML triple. The
      * Android publisher always records the matching MIME; its documented
      * octet-stream fallback is tolerated so an otherwise valid sealed OOXML
-     * receipt still reaches the real viewer (which re-checks the extension). */
+     * receipt still reaches the real viewer (which re-checks the extension).
+     * Legacy annotated names use the same extension projection as the host
+     * route and verified snapshot stager; the sealed title stays intact. */
     private fun supportsOfficeOpen(mimeType: String, displayName: String): Boolean {
-        val extension = displayName.substringAfterLast('.', "").lowercase()
-        if (extension !in OFFICE_EXTENSIONS) return false
+        val facts = RunOutputDisplayName.facts(displayName)
+        if (facts.extension !in OFFICE_EXTENSIONS) return false
         val mime = mimeType.substringBefore(';').trim().lowercase()
         return mime in OFFICE_MIMES || mime == "application/octet-stream"
     }
@@ -120,13 +122,14 @@ internal object RunOutputCardPresentation {
     /** Lane 17: a durable PDF run output opens IN-APP (verified staged bytes
      * → the SAME isolated renderer + system Print). The affordance appears
      * ONLY under verified agreement — the sealed MIME is exactly
-     * `application/pdf` AND the sealed name ends `.pdf`; either alone is
-     * not a PDF for this host, and byte-level proof (magic + whole-stream
+     * `application/pdf` AND the name's real extension is `.pdf` (including
+     * the explicit one-trailing-annotation legacy projection); either alone
+     * is not a PDF for this host, and byte-level proof (magic + whole-stream
      * digest) re-runs host-side at staging. The host re-checks the SAME
      * closed rule before routing. */
     fun supportsPdfOpen(mimeType: String, displayName: String): Boolean =
         mimeType == PDF_MIME &&
-            displayName.substringAfterLast('.', "").lowercase() == "pdf"
+            RunOutputDisplayName.facts(displayName).extension == "pdf"
 
     private const val PDF_MIME = "application/pdf"
 

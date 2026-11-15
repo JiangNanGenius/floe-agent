@@ -396,4 +396,47 @@ class RunOutputSaveCopyControllerTest {
             assertTrue(fx.deliver(identity) is RunOutputSaveDelivery.NoTarget)
         } finally { fx.dispose() }
     }
+
+    @Test
+    fun annotatedLegacyNameKeepsSealedPathButSuggestsTransferableName() {
+        val bytes = ByteArray(32) { it.toByte() }
+        val root = File(System.getProperty("java.io.tmpdir"), "ro-save-annot-${System.nanoTime()}")
+            .also { it.mkdirs() }
+        try {
+            val backend = FakeBackend()
+            val controller = RunOutputSaveCopyController(SafGatewayService(backend), backend, root)
+            val name = "sydney_creator_meetup_poster.png（海报）"
+            val info = egressInfo(bytes, name = name, mime = "image/png")
+            // The egress facts still describe the EXACT sealed path tail.
+            assertEquals("RunOutputs/$run/$output/$name", info.relativePath)
+            val prepared = controller.prepare(FakeEgressSource(info, bytes))
+            assertNotNull(prepared)
+            val (_, spec) = prepared!!
+            // The picker gets a filename ending in the real extension; the
+            // human label is retained beside the basename.
+            assertEquals("sydney_creator_meetup_poster（海报）.png", spec.suggestedName)
+            assertEquals("image/png", spec.mimeTypes.single())
+        } finally { root.deleteRecursively() }
+    }
+
+    @Test
+    fun annotatedNameStillRefusesTraversalAndUnsafeSuggestedNames() {
+        val bytes = ByteArray(16) { it.toByte() }
+        val root = File(System.getProperty("java.io.tmpdir"), "ro-save-annot-bad-${System.nanoTime()}")
+            .also { it.mkdirs() }
+        try {
+            val backend = FakeBackend()
+            val controller = RunOutputSaveCopyController(SafGatewayService(backend), backend, root)
+            // A slash inside the annotation is not a label: the sealed path
+            // check and the suggested-name check both refuse it.
+            val unsafe = egressInfo(
+                bytes, name = "poster.png（../x）", mime = "image/png")
+            assertNull(controller.prepare(FakeEgressSource(unsafe, bytes)))
+            // Ordinary names are still suggested byte-identically.
+            val ordinary = egressInfo(bytes, name = "chart.png", mime = "image/png")
+            val prepared = controller.prepare(FakeEgressSource(ordinary, bytes))
+            assertNotNull(prepared)
+            assertEquals("chart.png", prepared!!.second.suggestedName)
+        } finally { root.deleteRecursively() }
+    }
 }

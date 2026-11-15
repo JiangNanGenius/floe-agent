@@ -7838,7 +7838,7 @@ class ConversationHostController internal constructor(
         }
         // EXISTING in-app Office path (DOCX/XLSX/PPTX). No external intent
         // fallback, no local preview invention.
-        if (!OfficePreviewController.supports(card.displayName)) return false
+        if (!RunOutputOfficeSnapshotStager.supportsDisplayName(card.displayName)) return false
         val office = (host.appContext as? FloeApplication)?.officePreviews ?: return false
         if (office.isBusy) {
             // Honest VISIBLE refusal: the single Office viewer slot is held

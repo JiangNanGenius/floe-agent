@@ -212,6 +212,11 @@ class RunOutputOfficeSnapshotStagerTest {
                 "script.py" to "application/octet-stream",
                 "README" to "application/octet-stream",
                 "notes.foobar" to "text/plain",
+                // Legacy annotated text candidates keep the sealed title and
+                // stage under the real (or bounded fallback) suffix.
+                "script.py（脚本）" to "application/octet-stream",
+                "notes.foobar（备注）" to "text/plain",
+                "README（备注）" to "text/plain",
             )) {
                 val channel = ScriptedChannel(
                     infoJson(name = name, bytes = text.size.toLong(),
@@ -257,6 +262,100 @@ class RunOutputOfficeSnapshotStagerTest {
                 RunOutputOfficeSnapshotStager(root, absent).stage(owner()) { true }
             }.exceptionOrNull()
             assertEquals("sourceUnavailable", (e2 as RunOutputOfficeSnapshotStager.Failure).code)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun annotatedSealedNamesStageTheRealExtensionNotTheLabel() {
+        val root = tempRoot()
+        try {
+            // Office: annotated DOCX uses the shared projection, staged as
+            // document.docx while the sealed title/path tail stay exact.
+            val docxName = "weekly_report.docx（周报）"
+            val docx = ScriptedChannel(infoJson(name = docxName), payload)
+            val docxSnapshot = RunOutputOfficeSnapshotStager(root, docx).stage(owner()) { true }
+            assertEquals(docxName, docxSnapshot.displayName)
+            assertTrue(docxSnapshot.relativePath.endsWith("/$docxName"))
+            assertEquals("document.docx", docxSnapshot.file.name)
+
+            // Viewer lane: annotated PNG is staged with its real extension.
+            val pngName = "sydney_creator_meetup_poster.png（海报）"
+            val pngChannel = ScriptedChannel(
+                infoJson(name = pngName, mime = "image/png"), payload)
+            val png = RunOutputOfficeSnapshotStager(
+                root, pngChannel,
+                com.floe.android.feature.conversation.RunOutputViewerSupport.STAGED_EXTENSIONS,
+                allowTextCandidates = true,
+            ).stage(owner()) { true }
+            assertEquals(pngName, png.displayName)
+            assertEquals("document.png", png.file.name)
+            assertTrue(png.file.readBytes().contentEquals(payload))
+            assertEquals(2, docx.closes + pngChannel.closes)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun annotationLabelCannotBypassTheOfficeOrPdfFormatGate() {
+        val root = tempRoot()
+        try {
+            // A ZIP label is not an accepted OOXML/PDF extension; the strict
+            // (textCandidate = false) consumers refuse it before staging.
+            val zip = ScriptedChannel(infoJson(name = "archive.zip（下载）"), payload)
+            val e1 = runCatching {
+                RunOutputOfficeSnapshotStager(root, zip).stage(owner()) { true }
+            }.exceptionOrNull()
+            assertEquals("invalidOfficeFormat",
+                (e1 as RunOutputOfficeSnapshotStager.Failure).code)
+
+            // A second annotation group is not the one conservative legacy
+            // form: the raw suffix stays opaque and the PDF gate refuses it.
+            val pdfRoot = tempRoot()
+            try {
+                val pdf = ScriptedChannel(
+                    infoJson(name = "report.pdf（终版）（1）", mime = "application/pdf",
+                             bytes = payload.size.toLong()),
+                    payload)
+                val e2 = runCatching {
+                    RunOutputOfficeSnapshotStager(
+                        pdfRoot, pdf, RunOutputOfficeSnapshotStager.PDF_FORMAT_EXTENSIONS,
+                    ).stage(owner()) { true }
+                }.exceptionOrNull()
+                assertEquals("invalidOfficeFormat",
+                    (e2 as RunOutputOfficeSnapshotStager.Failure).code)
+            } finally {
+                pdfRoot.deleteRecursively()
+            }
+            assertEquals(1, zip.closes)
+            assertEquals(0, root.walk().filter { it != root }.count())
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun annotatedNameStillFailsClosedOnDigestMismatch() {
+        val root = tempRoot()
+        try {
+            val corrupted = payload.clone()
+            corrupted[0] = (corrupted[0] + 1).toByte()
+            val channel = ScriptedChannel(
+                infoJson(name = "poster.png（海报）", mime = "image/png", digest = sha(payload)),
+                corrupted)
+            val stager = RunOutputOfficeSnapshotStager(
+                root, channel,
+                com.floe.android.feature.conversation.RunOutputViewerSupport.STAGED_EXTENSIONS,
+                allowTextCandidates = true,
+            )
+            val failure = runCatching { stager.stage(owner()) { true } }.exceptionOrNull()
+            assertTrue(failure is RunOutputOfficeSnapshotStager.Failure)
+            assertTrue((failure as Exception).message!!.contains("DigestMismatch", true) ||
+                failure.message!!.contains("digest"))
+            assertEquals(1, channel.closes)
+            assertEquals(0, root.walk().filter { it != root && it.isFile }.count())
         } finally {
             root.deleteRecursively()
         }

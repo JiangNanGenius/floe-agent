@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 package com.floe.android.host.output
 
+import com.floe.android.feature.conversation.RunOutputDisplayName
 import com.floe.android.safgateway.PickAcceptResult
 import com.floe.android.safgateway.PickRequestSpec
 import com.floe.android.safgateway.ProbeFlag
@@ -162,6 +163,14 @@ internal class RunOutputSaveCopyController(
         val expected = "RunOutputs/${info.runID}/${info.outputID}/${info.displayName}"
         if (info.relativePath != expected) return null
         if (info.byteCount !in 1..MAX_BYTES) return null
+        // The sealed display name is the exact title and canonical path tail;
+        // Save Copy never renames, reopens or re-hashes by the suggested
+        // name. Only the SYSTEM PICKER's suggested filename uses the shared
+        // legacy-annotation projection so the saved copy ends in its real
+        // extension (`poster.png（海报）` -> `poster（海报）.png`). Ordinary
+        // names are byte-identical.
+        val transferName = RunOutputDisplayName.facts(info.displayName).transferName
+        if (!isSafeSuggestedName(transferName)) return null
         synchronized(lock) {
             if (active != null) return null
             val identity = RunOutputSaveIdentity(
@@ -170,7 +179,7 @@ internal class RunOutputSaveCopyController(
                 outputID = info.outputID,
                 generation = ++generation,
             )
-            val spec = service.grants.pickerForCreateDocument(info.mimeType, info.displayName)
+            val spec = service.grants.pickerForCreateDocument(info.mimeType, transferName)
             active = Active(identity, spec, source)
             return identity to spec
         }
@@ -479,6 +488,16 @@ internal class RunOutputSaveCopyController(
             }
         }
     }
+
+    /** The projection reuses only the already-validated sealed characters,
+     * but the system picker still gets an independent single-component
+     * check: no traversal, no separator, no control character, not hidden
+     * and not the dot pseudo-names. */
+    private fun isSafeSuggestedName(name: String): Boolean =
+        name.isNotEmpty() && name != "." && name != ".." &&
+            !name.startsWith('.') &&
+            !name.contains('/') && !name.contains('\\') &&
+            name.none { it.code < 0x20 || it.code == 0x7f }
 
     /** Drop the active operation for an unmounted surface / runtime stop. */
     fun abandonActive(reason: String): RunOutputSaveIdentity? = synchronized(lock) {

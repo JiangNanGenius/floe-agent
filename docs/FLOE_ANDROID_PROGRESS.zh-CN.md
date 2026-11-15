@@ -1,5 +1,15 @@
 # Floe Android 分目标实施记录
 
+## 1.0.15／124源码补丁：带备注的成果预览与保存（2026-11-16）
+
+修复已封存成果名带末尾备注时，图片、音视频及PDF被误判为无法预览的问题。统一区分原展示标题、真实扩展名和保存副本建议名；例如`poster.png（海报）`保留原标题及封存路径，保存时建议`poster（海报）.png`。Office成果入口与原有查看器也接入同一规则。MIME／扩展名约束、任务归属、完整摘要、长度、PDF文件头及实际解码校验保留，ZIP仍仅保存副本；不改写旧封存记录，也不新增数据库迁移。
+
+OpenCode单个Normal/auto代码包已交接，主线程补齐Office宿主入口；真实Kotlin生产对象编译和五组JVM suite共56项通过。测试启动器首次用了错误类名，原失败保留；修正启动参数后运行同一批已编译对象，不修改断言。Swift及原生组件输入未改，下一私有Full包复用native63；本节尚不代表新安装包或三星预览验收。
+
+此前Full124C02的自然任务已正常完成：215组工具请求／结果全部配对，其中197成功、18失败，之后交付5项成果；日历两项实际保存并重开，原始ZIP通过正常“保存副本”取得且摘要一致。媒体已打开不等于完整播放验收，原失败、生成ICS的夏令时边界及后台资源退休证据不足仍保留。公开版本保持1.0.14／123，本批不发布124。
+
+English: Legacy annotated output names now share a conservative title/extension/export-name projection across cards, viewers, Office and Save Copy, preserving original seals and existing validation. Real changed Kotlin objects and56 focused JVM tests passed; the initial runner-name failure is retained. Native inputs are unchanged and new APK/device acceptance is pending. The earlier Full124C02 natural task completed with215 paired tool calls and five outputs; calendar reopen and the original ZIP were verified separately. Public1.0.14 remains unchanged;124 stays private.
+
 ## 1.0.15／124候选：屏幕控制收尾、稳定观察与原生文件回执（2026-11-16）
 
 本批私有Full候选固定APK源码`a3dcb3f9d553f7b84bc36c525b53a887c5131d14`，已构建并保留数据安装三星；公开版本仍为1.0.14／123，尚未发布。

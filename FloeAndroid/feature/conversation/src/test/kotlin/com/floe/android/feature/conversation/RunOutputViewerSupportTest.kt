@@ -147,4 +147,106 @@ class RunOutputViewerSupportTest {
             assertFalse(extension, extension in RunOutputViewerSupport.STAGED_EXTENSIONS)
         }
     }
+
+    @Test
+    fun legacyAnnotatedNamesKeepTheirVerifiedTypeAndExactTitle() {
+        // The confirmed Full18 defect: a real PNG/MP4 seal with one trailing
+        // human annotation must stay viewable. The exact sealed string stays
+        // the presentation title and canonical path tail; only the derived
+        // transfer filename moves the annotation beside the basename.
+        val png = RunOutputDisplayName.facts("sydney_creator_meetup_poster.png（海报）")
+        assertEquals("sydney_creator_meetup_poster.png（海报）", png.title)
+        assertEquals("png", png.extension)
+        assertEquals("sydney_creator_meetup_poster（海报）.png", png.transferName)
+        assertTrue(png.annotated)
+        assertEquals(RunOutputViewerKind.IMAGE,
+            RunOutputViewerSupport.classify("image/png", png.title))
+
+        val mp4 = RunOutputDisplayName.facts(
+            "sydney_creator_meetup_teaser_12s_1080p.mp4（12秒预告）")
+        assertEquals("sydney_creator_meetup_teaser_12s_1080p.mp4（12秒预告）", mp4.title)
+        assertEquals("mp4", mp4.extension)
+        assertEquals("sydney_creator_meetup_teaser_12s_1080p（12秒预告）.mp4", mp4.transferName)
+        assertEquals(RunOutputViewerKind.VIDEO,
+            RunOutputViewerSupport.classify("video/mp4", mp4.title))
+
+        assertEquals(RunOutputViewerKind.AUDIO,
+            RunOutputViewerSupport.classify("audio/mpeg", "narration.mp3（旁白）"))
+        assertEquals(RunOutputViewerKind.IMAGE,
+            RunOutputViewerSupport.classify("image/jpeg", "photo.jpg (final)"))
+        assertEquals(RunOutputViewerKind.IMAGE,
+            RunOutputViewerSupport.classify("image/png", "Poster.PNG（海报）"))
+        assertEquals(RunOutputViewerKind.IMAGE,
+            RunOutputViewerSupport.classify("image/png", "poster.png【海报】"))
+        assertEquals("poster【海报】.png",
+            RunOutputDisplayName.facts("poster.png【海报】").transferName)
+        // A dot inside the label (`（v1.2）`) must not become the extension.
+        assertEquals(RunOutputViewerKind.IMAGE,
+            RunOutputViewerSupport.classify("image/png", "poster.png（v1.2）"))
+        assertEquals("poster（v1.2）.png",
+            RunOutputDisplayName.facts("poster.png（v1.2）").transferName)
+        // Text candidates keep their broad content-probed policy, including
+        // an unknown extension behind one annotation.
+        assertEquals(RunOutputViewerKind.TEXT,
+            RunOutputViewerSupport.classify("text/markdown", "notes.md（备注）"))
+        assertEquals(RunOutputViewerKind.TEXT,
+            RunOutputViewerSupport.classify("application/octet-stream", "script.py（脚本）"))
+        assertEquals(RunOutputViewerKind.TEXT,
+            RunOutputViewerSupport.classify("application/octet-stream", "notes.foobar（备注）"))
+        assertEquals(RunOutputViewerKind.TEXT,
+            RunOutputViewerSupport.classify("text/plain", "README（备注）"))
+    }
+
+    @Test
+    fun legacyAnnotationNeverOverridesMimeAgreementOrAcceptedFormats() {
+        // The annotation supplies a filename fact only. The MIME agreement
+        // still decides, so a mislabelled image/archive stays unsupported.
+        assertEquals(RunOutputViewerKind.UNSUPPORTED,
+            RunOutputViewerSupport.classify("image/png", "poster.webp（海报）"))
+        assertEquals(RunOutputViewerKind.UNSUPPORTED,
+            RunOutputViewerSupport.classify("text/plain", "poster.png（海报）"))
+        assertEquals(RunOutputViewerKind.UNSUPPORTED,
+            RunOutputViewerSupport.classify("application/octet-stream", "archive.zip（下载）"))
+        // One trailing annotation only: a second group, trailing text or a
+        // path separator inside the label keeps the legacy opaque name and
+        // therefore the existing refusal.
+        for (name in listOf(
+            "poster.png（海报）（终版）",
+            "poster.png（海报）extra",
+            "poster.png（../x）",
+            "poster.png（海/报）",
+            "poster.png（）",
+        )) {
+            assertEquals(name, RunOutputViewerKind.UNSUPPORTED,
+                RunOutputViewerSupport.classify("image/png", name))
+        }
+    }
+
+    @Test
+    fun annotationProjectionLeavesOrdinaryAndDottedBasenamesAlone() {
+        val finalPng = RunOutputDisplayName.facts("report (final).png")
+        assertEquals("report (final).png", finalPng.title)
+        assertEquals("report (final).png", finalPng.transferName)
+        assertEquals("png", finalPng.extension)
+        assertFalse(finalPng.annotated)
+        assertEquals(RunOutputViewerKind.IMAGE,
+            RunOutputViewerSupport.classify("image/png", finalPng.title))
+
+        val annotated = RunOutputDisplayName.facts("report (final).png（海报）")
+        assertEquals("report (final).png（海报）", annotated.title)
+        assertEquals("report (final)（海报）.png", annotated.transferName)
+        assertTrue(annotated.annotated)
+
+        // A dotted basename keeps both real dots: only the final suffix is
+        // projected and the annotation is inserted before it.
+        val dotted = RunOutputDisplayName.facts("foo.bar.png（海报）")
+        assertEquals("foo.bar（海报）.png", dotted.transferName)
+        assertEquals("png", dotted.extension)
+
+        // Ordinary uppercase extensions are not rewritten for transfer.
+        val upper = RunOutputDisplayName.facts("Report.PDF")
+        assertEquals("Report.PDF", upper.transferName)
+        assertEquals("pdf", upper.extension)
+        assertFalse(upper.annotated)
+    }
 }

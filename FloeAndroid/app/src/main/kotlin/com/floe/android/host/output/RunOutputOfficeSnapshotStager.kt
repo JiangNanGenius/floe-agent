@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 package com.floe.android.host.output
 
+import com.floe.android.feature.conversation.RunOutputDisplayName
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
 import java.nio.file.Files
 import java.nio.file.StandardOpenOption
 import java.security.MessageDigest
-import java.util.Locale
 import java.util.UUID
 
 /** Read-only byte transport over the EXISTING native run-output authority,
@@ -38,6 +38,13 @@ import java.util.UUID
  * copy, alongside the existing exact length + whole-stream SHA + clean EOF;
  * a receipt claiming pdf identity over non-PDF bytes is refused and its own
  * directory removed like every other failure).
+ *
+ * Legacy names: the format gate uses the ONE shared
+ * [RunOutputDisplayName] projection, so an old seal such as
+ * `report.pdf（终版）` is staged with its real `document.pdf` internal name
+ * while `Snapshot.displayName`/`relativePath` stay the exact sealed title
+ * and canonical path. The MIME, magic, digest and EOF proofs below are
+ * unchanged — the projection never authorizes a type by itself.
  *
  * Call on an IO dispatcher, never the UI thread.
  */
@@ -109,16 +116,15 @@ internal class RunOutputOfficeSnapshotStager(
             val bytes = facts.byteCount
             if (bytes > MAX_BYTES) throw Failure("contentTooLarge")
             if (bytes < 1) throw Failure("invalidSnapshotInfo")
-            val fileExtension = facts.displayName.substringAfterLast('.', "")
-                .lowercase(Locale.ROOT)
+            // ONE shared projection: ordinary names are unchanged and a
+            // legacy trailing human annotation (`report.pdf（终版）`) yields
+            // the real extension while the sealed displayName stays the
+            // exact title/path tail. The accepted-format set below still
+            // decides whether this consumer may stage it; a text candidate
+            // still needs the reader's real UTF-8/NUL proof.
+            val fileExtension = RunOutputDisplayName.facts(facts.displayName).extension
             val textCandidate = allowTextCandidates && isSafeTextCandidateExtension(fileExtension)
-            if (fileExtension != extensionOf(facts.displayName) ||
-                (!textCandidate && fileExtension !in formats)) {
-                // extensionOf is the SAME derivation the engine's format
-                // detection uses; the second clause is the frozen R1 gate
-                // (now against the instance's accepted format set). A text
-                // candidate only passes the staging format gate; the reader
-                // still proves the real UTF-8/NUL content before display.
+            if (!textCandidate && fileExtension !in formats) {
                 throw Failure("invalidOfficeFormat")
             }
             // PDF identity agreement BEFORE any byte is staged: the native
@@ -207,9 +213,6 @@ internal class RunOutputOfficeSnapshotStager(
         return snapshot ?: throw Failure("snapshotMissing")
     }
 
-    private fun extensionOf(name: String): String =
-        name.substringAfterLast('.', "").lowercase(Locale.ROOT)
-
     /** A bounded, filename-safe extension for the text candidate lane. An
      * empty extension (README/CHANGELOG) is valid; path separators, control
      * characters and overlong names were already refused by the native
@@ -245,12 +248,13 @@ internal class RunOutputOfficeSnapshotStager(
         )
 
         fun supportsDisplayName(name: String): Boolean =
-            name.substringAfterLast('.', "").lowercase(Locale.ROOT) in setOf("docx", "xlsx", "pptx")
+            RunOutputDisplayName.facts(name).extension in OFFICE_FORMAT_EXTENSIONS
 
         /** The SAME closed agreement the card gate and the host router use:
-         * verified sealed MIME must MATCH the sealed extension. */
+         * verified sealed MIME must MATCH the real extension (including the
+         * one-trailing-annotation legacy projection). */
         fun pdfOpenAgreement(mimeType: String, displayName: String): Boolean =
             mimeType == PDF_MIME &&
-                displayName.substringAfterLast('.', "").lowercase(Locale.ROOT) == FORMAT_PDF
+                RunOutputDisplayName.facts(displayName).extension == FORMAT_PDF
     }
 }
