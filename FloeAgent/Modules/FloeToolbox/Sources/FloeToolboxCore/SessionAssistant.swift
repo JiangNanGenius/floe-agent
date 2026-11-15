@@ -85,8 +85,8 @@ public actor SerialSession {
         guard expected == lease, !closed, !Task.isCancelled else { throw ToolboxError.staleSession }
     }
     private func effect(_ bytes: Data) throws -> SerialActionEffect {
-        if [.modbusTCP, .modbusRTU].contains(endpoint.wireProtocol) {
-            let report = try ModbusCodec.decode(bytes, rtu: endpoint.wireProtocol == .modbusRTU, response: false)
+        if let framing = endpoint.wireProtocol.modbusFraming {
+            let report = try ModbusCodec.decode(bytes, framing: framing, response: false)
             return ["1", "2", "3", "4"].contains(report.fields["function"]) ? .send : .deviceWrite
         }
         if [.mqtt311,.mqtt5].contains(endpoint.wireProtocol), bytes.first.map({ $0 >> 4 == 3 }) == true { return .deviceWrite }

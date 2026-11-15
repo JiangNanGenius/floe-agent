@@ -163,6 +163,64 @@ struct DeepSeekSearchTests {
         #expect(Set(body.keys) == ["query", "count", "need_content"])
     }
 
+    @Test("Thinking searches invoke Flash and expose cited sources separately from its answer")
+    func thinkingSearchRoundTrip() async throws {
+        let config = provider(options: [DeepSeekSearchOptions.Key.searchWhileThinking: "true",
+                                        DeepSeekSearchOptions.Key.needContent: "true"])
+        let question = String(repeating: "问题", count: 70)
+        let url = "https://example.com/guide"
+        let reply = try JSONSerialization.data(withJSONObject: [
+            "object": "response", "status": "completed", "output": [
+                ["type": "reasoning", "content": [["type": "reasoning_text", "text": "private reasoning"]]],
+                ["type": "web_search_call", "kind": "deep_search", "status": "completed",
+                 "action": ["type": "search", "sources": [
+                    ["url": "https://example.com/other", "title": "Other"],
+                    ["url": url, "title": "Guide", "snippet": "Source excerpt", "site_name": "Example"]]]],
+                ["type": "web_search_call", "kind": "deep_search", "status": "completed",
+                 "action": ["type": "open_page"], "page": ["url": url, "title": "Guide"]],
+                ["type": "message", "role": "assistant", "content": [
+                    ["type": "output_text", "text": "Final answer.", "annotations": [
+                        ["type": "url_citation", "url": url, "title": ""]]]]]
+            ]
+        ])
+        DeepSeekStubURLProtocol.reset()
+        DeepSeekStubURLProtocol.handler = { _ in (200, reply) }
+        let result = try await makeService([(config, .init(values: ["apiKey": "fixture-key"]))])
+            .search(WebSearchQuery(text: question, maxResults: 1, requestedProvider: "deepseek"))
+        let request = try #require(DeepSeekStubURLProtocol.captured.first)
+        #expect(request.url == URL(string: "https://api.deepseek.com/responses"))
+        #expect(WebSearchService.requestURLIsCanonical(request.url, configuration: config))
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer fixture-key")
+        let body = try bodyObject(request)
+        #expect(body["model"] as? String == "deepseek-flash")
+        #expect(body["reasoning"] as? [String: String] == ["effort": "high"])
+        #expect(body["tools"] as? [[String: String]] == [["type": "deepseek_web_search"]])
+        #expect(body["input"] as? String == question)
+        #expect(Set(body.keys) == ["model", "reasoning", "tools", "input", "stream"])
+        #expect(result.results.map(\.url.absoluteString) == [url])
+        #expect(result.results.first?.snippet == "Source excerpt")
+        #expect(result.results.first?.effectiveContentState == .searchMetadataOnly)
+        #expect(result.generatedAnswers.map(\.text) == ["Final answer."])
+    }
+
+    @Test("Thinking mode preserves an explicit gateway and rejects incomplete or failed search")
+    func thinkingSearchFailures() throws {
+        let configuration = provider(options: [DeepSeekSearchOptions.Key.searchWhileThinking: "1"],
+                                     endpoint: URL(string: "https://gateway.example/proxy/v1/tools/search"))
+        let request = try WebSearchService.makeRequest(configuration, credential: .init(values: ["apiKey": "k"]),
+                                                       query: .init(text: "q"))
+        #expect(request.url?.absoluteString == "https://gateway.example/proxy/v1/responses")
+        #expect(!WebSearchService.allowsTransientTunnel(for: configuration))
+        for fixture in [#"{"status":"failed","error":{"code":"server_error"}}"#,
+                        #"{"status":"incomplete","output":[]}"#,
+                        #"{"status":"completed","output":[{"type":"web_search_call","status":"failed"}]}"#,
+                        #"{"results":[]}"#] {
+            Self.expectInvalidResponse {
+                _ = try WebSearchService.parseOutput(Data(fixture.utf8), provider: .deepseek, limit: 2, deepSeekThinking: true)
+            }
+        }
+    }
+
     @Test("Omitted need_content stays false and the tool default count is five")
     func omittedDefaults() async throws {
         DeepSeekStubURLProtocol.reset()

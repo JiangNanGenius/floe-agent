@@ -55,6 +55,9 @@ public struct GameProjectSelectionRecord: Codable, Equatable, Sendable {
     public let baseRevision: String
     public let selectedRoot: GameRelativePath?
     public let selectedEngine: GameEngineID
+    /// Optional so records written by the earlier schema (schemaVersion 1
+    /// without this key) stay readable. Missing means `.evidenceMatched`.
+    public let verification: GameProjectSelectionVerification?
 
     init(context: GameProjectContext, snapshot: GameProjectSelectionSnapshot) throws {
         guard snapshot.projectID == context.projectID,
@@ -76,6 +79,13 @@ public struct GameProjectSelectionRecord: Codable, Equatable, Sendable {
         self.baseRevision = snapshot.baseRevision
         self.selectedRoot = snapshot.selectedRoot
         self.selectedEngine = selectedEngine
+        self.verification = snapshot.selectionVerification ?? .evidenceMatched
+    }
+
+    /// Older records have no verification key; they were only ever written
+    /// from recognized matches, so the default stays evidence-backed.
+    public var effectiveVerification: GameProjectSelectionVerification {
+        verification ?? .evidenceMatched
     }
 }
 

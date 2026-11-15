@@ -2,8 +2,10 @@
 #if canImport(UIKit)
 import Foundation
 import FloeBuildingEditor
+import FloeCAD
 import FloeBuildingRecords
 import FloeBuildingWorkspace
+import FloeInteriorCore
 import FloeCore
 import FloeTools
 
@@ -16,7 +18,10 @@ private struct BuildingStudioPage: Encodable {
     let nextOffset: Int?
     let readFormat = "The optional building field accepts {action:'overview'}, {action:'drawingPages'}, {action:'search',query,rowOffset?} (50 hits), {action:'observations',roomID} (latest 100 observations) or {action:'sourceText',sourceVersionID} (UTF-8). Outer offset/limit page the same JSON result in characters."
     let editFormat: String?
-    let saveScope = "projectWorkingCopy"
+    let buildingChangeCount: Int?
+    let wallRevision: Int?
+    let generationID: String?
+    var saveScope = "projectWorkingCopy"
 }
 
 private struct BuildingStudioMutationReceipt: Encodable {
@@ -25,7 +30,10 @@ private struct BuildingStudioMutationReceipt: Encodable {
     let result: String
     let ids: [String: UUID]
     var detail: String? = nil
-    let saveScope = "projectWorkingCopy"
+    var buildingChangeCount: Int? = nil
+    var wallRevision: Int? = nil
+    var copies: [BuildingProjectCopyReceipt]? = nil
+    var saveScope = "projectWorkingCopy"
 }
 
 extension StudioCoordinator {
@@ -34,10 +42,11 @@ extension StudioCoordinator {
         try await authorizedBuilding(mount, context: context, editing: false)
         let original = mount.context
         let snapshot = try await original.recordsSnapshot()
+        let walls = try original.wallSnapshot()
         let bytes: Data
         switch query.action {
         case .overview:
-            bytes = try StudioToolOutput.data(BuildingStudioOverview(snapshot))
+            bytes = try StudioToolOutput.data(BuildingStudioOverview(snapshot, walls: walls))
         case .search:
             let rowOffset = query.rowOffset ?? 0
             let maximumOffset = RecordsLimits().maxSearchOffset
@@ -64,6 +73,19 @@ extension StudioCoordinator {
         case .drawingPages:
             struct Page: Encodable { let id: UUID; let title: String }
             bytes = try StudioToolOutput.data(original.projectDrawingPages().map { Page(id: $0.id, title: $0.title) })
+        case .walls:
+            bytes = try StudioToolOutput.data(walls)
+        case .exportOptions:
+            struct Option: Encodable { let id: UUID; let name: String; let storeyID: UUID; let discipline: String }
+            struct Options: Encodable { let storeys: [CADBuildingStorey]; let elements: [Option]; let nextRow: Int? }
+            let selection = try original.nativeDocument.buildingExportSelection(.wholeProject)
+            let start = min(max(0, query.rowOffset ?? 0), selection.elements.count)
+            let rows = selection.elements.dropFirst(start).prefix(100)
+            bytes = try StudioToolOutput.data(Options(storeys: selection.storeys, elements: rows.map {
+                Option(id: $0.id, name: $0.name, storeyID: $0.storeyID, discipline: $0.kind.exportDiscipline.rawValue)
+            }, nextRow: start + rows.count < selection.elements.count ? start + rows.count : nil))
+        case .copies:
+            bytes = try StudioToolOutput.data(original.listProjectCopies())
         }
         if query.action != .overview {
             guard try await original.recordsSnapshot().project.revision == snapshot.project.revision else { throw PersonalContentError.changedDocument }
@@ -77,7 +99,11 @@ extension StudioCoordinator {
         let canEdit = context.allowedToolNames?.contains("studio.edit") != false && context.frozenEffectiveCatalogNames?.contains("studio.edit") != false
         return try StudioToolOutput.make(BuildingStudioPage(projectID: mount.id, revision: String(snapshot.project.revision),
             contentSHA256: StudioToolOutput.hash(bytes), contentJSON: String(text[start..<end]),
-            nextOffset: end == text.endIndex ? nil : offset + limit, editFormat: canEdit ? BuildingStudioEdit.guide : nil))
+            nextOffset: end == text.endIndex ? nil : offset + limit,
+            editFormat: canEdit ? BuildingStudioEdit.guide : nil,
+            buildingChangeCount: walls.changeCount,
+            wallRevision: walls.wallRevision,
+            generationID: walls.generationID))
     }
 
     func editBuilding(_ mount: BuildingStudioMount, revision: String, operations: String, context: ToolContext) async throws -> ToolExecutionOutput {
@@ -87,6 +113,9 @@ extension StudioCoordinator {
         let edit = try JSONDecoder().decode(BuildingStudioEdit.self, from: Data(operations.utf8))
         let original = mount.context
         guard try await original.recordsSnapshot().project.revision == expected else { throw PersonalContentError.changedDocument }
+        if let generation = edit.expectedGenerationID, generation != original.generationID {
+            throw PersonalContentError.changedDocument
+        }
         try context.cancellation.throwIfCancelled()
         try Task.checkCancellation()
         try buildingProjects.verify(mount)
@@ -119,8 +148,88 @@ extension StudioCoordinator {
                 output.exitStatus = 1
                 return output
             }
+        case let .addWall(storeyID, a, b, thicknessMM, heightMM, name, changeCount, wallRevision):
+            let value = try await original.applyWallCommand(
+                .addWall(storeyID: storeyID, a: a, b: b, thicknessMM: thicknessMM,
+                         heightMM: heightMM, name: name),
+                expectedChangeCount: changeCount, expectedWallRevision: wallRevision)
+            result = try await wallResult(value, mount: mount, original: original,
+                                          outcome: "wallAdded", wallID: value.wallID)
+        case let .moveWallEndpoint(wallID, end, point, changeCount, wallRevision):
+            let value = try await original.applyWallCommand(
+                .moveEndpoint(wallID: wallID, end: end, point: point),
+                expectedChangeCount: changeCount, expectedWallRevision: wallRevision)
+            result = try await wallResult(value, mount: mount, original: original,
+                                          outcome: "wallEndpointMoved", wallID: wallID)
+        case let .updateWall(wallID, thicknessMM, heightMM, name, changeCount, wallRevision):
+            let value = try await original.applyWallCommand(
+                .updateWall(wallID: wallID, thicknessMM: thicknessMM, heightMM: heightMM, name: name),
+                expectedChangeCount: changeCount, expectedWallRevision: wallRevision)
+            result = try await wallResult(value, mount: mount, original: original,
+                                          outcome: "wallUpdated", wallID: wallID)
+        case let .deleteWall(wallID, changeCount, wallRevision):
+            let value = try await original.applyWallCommand(
+                .deleteWall(wallID: wallID),
+                expectedChangeCount: changeCount, expectedWallRevision: wallRevision)
+            result = try await wallResult(value, mount: mount, original: original,
+                                          outcome: "wallDeleted", wallID: wallID)
+        case let .setWallFinish(wallID, side, finishID, changeCount, wallRevision):
+            let value = try await original.applyWallCommand(
+                .setFinish(wallID: wallID, side: side, finishID: finishID),
+                expectedChangeCount: changeCount, expectedWallRevision: wallRevision)
+            result = try await wallResult(value, mount: mount, original: original,
+                                          outcome: finishID == nil ? "wallFinishCleared" : "wallFinishSet",
+                                          wallID: wallID)
+        case let .swapWallFinishes(wallID, changeCount, wallRevision):
+            let value = try await original.applyWallCommand(
+                .swapFinishes(wallID: wallID),
+                expectedChangeCount: changeCount, expectedWallRevision: wallRevision)
+            result = try await wallResult(value, mount: mount, original: original,
+                                          outcome: "wallFinishesSwapped", wallID: wallID)
+        case let .saveAsBuilding(title, _):
+            let saved = try await original.recordsSnapshot()
+            let copy = try await original.saveBuildingCopy(title: title)
+            result = .init(projectID: mount.id, revision: String(saved.project.revision),
+                           result: "buildingCopySaved", ids: ["copyID": copy.id],
+                           detail: copy.losses.joined(separator: "\n"), copies: [copy], saveScope: "independentSpaceProject")
+        case let .exportExchange(format, pageID, title, scope, _):
+            let file = try await original.exportExchangeFile(format: format, scope: scope, pageID: pageID, title: title)
+            let published = try await StudioResultPublication.publish(
+                file: file.url, projectRoot: file.url.deletingLastPathComponent(), action: "buildingExchange",
+                fileKey: file.url.lastPathComponent, context: context,
+                validateSource: { @MainActor in
+                    try context.cancellation.throwIfCancelled()
+                    try self.buildingProjects.verify(mount)
+                    try await self.authorizedBuilding(mount, context: context, editing: true)
+                })
+            var output = try StudioToolOutput.make(BuildingStudioMutationReceipt(
+                projectID: mount.id, revision: revision, result: "exchangeFileSaved", ids: [:],
+                detail: ([file.url.lastPathComponent, file.sha256] + file.losses).joined(separator: "\n"), saveScope: "runOutputFile"))
+            output.outputFiles = [published.file]
+            return output
+        case let .exportCADCopy(kind, pageID, title, scope, _):
+            guard kind != .building else {
+                throw BuildingStudioInputError.invalid("Use saveAsBuilding for a building package.")
+            }
+            let saved = try await original.recordsSnapshot()
+            let copy = try await original.exportCADCopy(kind: kind, pageID: pageID, title: title, scope: scope)
+            result = .init(projectID: mount.id, revision: String(saved.project.revision),
+                           result: kind == .cad2D ? "cad2DCopySaved" : "cad3DCopySaved",
+                           ids: ["copyID": copy.id],
+                           detail: copy.losses.joined(separator: "\n"), copies: [copy], saveScope: "independentSpaceProject")
         }
         return try StudioToolOutput.make(result)
+    }
+
+    private func wallResult(_ value: BuildingWallEditResult, mount: BuildingStudioMount,
+                            original: BuildingEditorToolContext, outcome: String,
+                            wallID: UUID?) async throws -> BuildingStudioMutationReceipt {
+        let saved = try await original.recordsSnapshot()
+        var ids: [String: UUID] = [:]
+        if let wallID { ids["wallID"] = wallID }
+        return .init(projectID: mount.id, revision: String(saved.project.revision),
+                     result: outcome, ids: ids, buildingChangeCount: value.changeCount,
+                     wallRevision: value.wallRevision)
     }
 }
 #endif

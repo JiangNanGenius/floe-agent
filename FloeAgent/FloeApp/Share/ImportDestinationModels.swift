@@ -455,7 +455,7 @@ extension DocumentIntakeKind {
     var requiresDestinationChoice: Bool {
         switch self {
         case .pdf, .text, .office, .image, .engineering: return true
-        case .floeNote, .floeCanvas: return false
+        case .floeNote, .floeCanvas, .building: return false
         }
     }
 }

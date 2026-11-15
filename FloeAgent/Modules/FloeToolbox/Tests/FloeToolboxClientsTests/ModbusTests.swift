@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 import FloeToolboxCore
-@testable import FloeToolboxClients
+import FloeToolboxClients
 #if os(macOS)
 import Darwin
 private final class ModbusFixture: @unchecked Sendable {
@@ -27,7 +27,7 @@ private final class ModbusFixture: @unchecked Sendable {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString); defer { try? FileManager.default.removeItem(at:root) }
     let lease = SessionLease(ownerID:UUID()), connection = try await NetworkSerialConnection.connect(host:"127.0.0.1",port:fixture.port)
     let endpoint = try SerialEndpoint(title:"Loopback Modbus",transport:.tcp,wireProtocol:.modbusTCP,host:"127.0.0.1",port:Int(fixture.port))
-    let journal = try CaptureJournal(ownerID:lease.ownerID,captureID:lease.sessionID,repository:FileCaptureRepository(root:root),limits:CaptureLimits())
+    let journal = try await CaptureJournal(ownerID:lease.ownerID,captureID:lease.sessionID,repository:FileCaptureRepository(root:root) as any CaptureRepository,limits:CaptureLimits())
     let approvals = ModbusApprovals()
     let session = try SerialSession(lease:lease,endpoint:endpoint,journal:journal,connection:connection,authorize:{ await approvals.record($0.effect) })
     let client = try ModbusClient(session:session)
@@ -39,9 +39,17 @@ private final class ModbusFixture: @unchecked Sendable {
     _ = try await client.exchange(unit:1,address:5,operation:.singleCoil(true))
     let coil = try await client.exchange(unit:1,address:5,operation:.read(function:1,quantity:1))
     #expect(coil.report?.fields["packedCoilsHex"] == "01")
+    let discrete = try await client.exchange(unit:1,address:5,operation:.read(function:2,quantity:9))
+    #expect(discrete.report?.fields["packedCoilsHex"] == "00 00")
+    let inputs = try await client.exchange(unit:1,address:7,operation:.read(function:4,quantity:2))
+    #expect(inputs.report?.fields["registerValues"] == "7,8")
+    #expect(try await client.exchange(unit:1,address:10,operation:.singleRegister(0xBEEF)).writeEchoVerified)
+    #expect(try await client.exchange(unit:1,address:10,operation:.read(function:3,quantity:1)).report?.fields["registerValues"] == "48879")
+    #expect(try await client.exchange(unit:1,address:5,operation:.coils([true,false,true])).writeEchoVerified)
+    #expect(try await client.exchange(unit:1,address:5,operation:.read(function:1,quantity:3)).report?.fields["packedCoilsHex"] == "05")
     let exception = try await client.exchange(unit:1,address:10000,operation:.read(function:3,quantity:1))
     #expect(exception.report?.fields["exceptionCode"] == "2")
-    #expect(await approvals.effects.filter {$0 == .deviceWrite}.count == 2)
+    #expect(await approvals.effects.filter {$0 == .deviceWrite}.count == 4)
     await session.close()
 }
 #endif
@@ -58,7 +66,7 @@ private actor RTUFragments: SerialConnection {
     let lease = SessionLease(ownerID:UUID()), endpoint = try SerialEndpoint(title:"RTU stream",transport:.tcp,wireProtocol:.modbusRTU,host:"127.0.0.1",port:9000)
     let body = Data([1,3,2,0,42]), crc = ModbusCodec.crc16(body), response = body+Data([UInt8(crc&255),UInt8(crc>>8)])
     let wire = RTUFragments([Data(response.prefix(2)),Data(response.dropFirst(2))])
-    let journal = try CaptureJournal(ownerID:lease.ownerID,captureID:lease.sessionID,repository:FileCaptureRepository(root:root),limits:CaptureLimits())
+    let journal = try await CaptureJournal(ownerID:lease.ownerID,captureID:lease.sessionID,repository:FileCaptureRepository(root:root) as any CaptureRepository,limits:CaptureLimits())
     let session = try SerialSession(lease:lease,endpoint:endpoint,journal:journal,connection:wire,authorize:{ _ in true }), client = try ModbusClient(session:session)
     #expect(try await client.exchange(unit:1,address:0,operation:.read(function:3,quantity:1)).report?.fields["registerValues"] == "42")
     let broadcast = try await client.exchange(unit:0,address:0,operation:.singleRegister(1))

@@ -39,6 +39,10 @@ public actor BuildingWorkspaceService {
         self.projectDirectory=projectDirectory;self.recordsLimits=recordsLimits;self.creationPolicy=creationPolicy
     }
 
+    /// Stable host-side location used for view preferences; it is not a
+    /// model-provided storage root and grants no access.
+    public nonisolated var directoryURL: URL { projectDirectory }
+
     private func records() throws -> ProjectRecordsStore {
         guard !permanentlyClosed else{throw BuildingWorkspaceError.closed}
         if let store{return store}

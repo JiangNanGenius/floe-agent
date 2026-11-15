@@ -41,6 +41,7 @@ public struct BuildingWorkbenchProjectActions {
     public var roomSelectionChanged: (RoomID?) -> Void
     public var metadataRevision: () -> Int
     public var requestAssistant: (() -> Void)?
+    public var requestSaveAs: (() -> Void)?
     public var requestFurnitureImport: (() -> Void)?
     public var projectOperationBusy: () -> Bool
     public var cancelProjectOperation: (() -> Void)?
@@ -57,6 +58,7 @@ public struct BuildingWorkbenchProjectActions {
         roomSelectionChanged: @escaping (RoomID?) -> Void = { _ in },
         metadataRevision: @escaping () -> Int = { -1 },
         requestAssistant: (() -> Void)? = nil,
+        requestSaveAs: (() -> Void)? = nil,
         requestFurnitureImport: (() -> Void)? = nil,
         projectOperationBusy: @escaping () -> Bool = { false },
         cancelProjectOperation: (() -> Void)? = nil
@@ -72,6 +74,7 @@ public struct BuildingWorkbenchProjectActions {
         self.roomSelectionChanged = roomSelectionChanged
         self.metadataRevision = metadataRevision
         self.requestAssistant = requestAssistant
+        self.requestSaveAs = requestSaveAs
         self.requestFurnitureImport = requestFurnitureImport
         self.projectOperationBusy = projectOperationBusy
         self.cancelProjectOperation = cancelProjectOperation

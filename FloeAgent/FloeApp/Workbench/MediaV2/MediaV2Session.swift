@@ -66,6 +66,10 @@ import FloeTools
     var gradientRadial = false
     var brushEffectAmount = 12.0
     var brushWidth = 12.0
+    var featherDiameter = 32.0
+    var featherStrength = 0.65
+    var pencilEditing = false
+    var lastCanvasEditTool = "image.brush"
     var brushHardness = 0.8
     var brushOpacity = 1.0
     var colorHex = "#166F74"

@@ -28,6 +28,7 @@ public enum TTSSpeakerProvider: String, Codable, CaseIterable, Sendable, Hashabl
     case onDevice
     case volcengine
     case elevenLabs
+    case deepSeek
     case openAI
     case alibaba
 
@@ -39,7 +40,7 @@ public enum TTSSpeakerProvider: String, Codable, CaseIterable, Sendable, Hashabl
         case .apple, .onDevice: return []
         case .volcengine: return [.agentPlan, .payAsYouGo]
         case .alibaba: return [.tokenPlan, .payAsYouGo]
-        case .elevenLabs, .openAI: return [.payAsYouGo]
+        case .elevenLabs, .openAI, .deepSeek: return [.payAsYouGo]
         }
     }
 
@@ -48,8 +49,25 @@ public enum TTSSpeakerProvider: String, Codable, CaseIterable, Sendable, Hashabl
     public var requiresCloudCredential: Bool {
         switch self {
         case .apple, .onDevice: return false
-        case .volcengine, .elevenLabs, .openAI, .alibaba: return true
+        case .volcengine, .elevenLabs, .openAI, .alibaba, .deepSeek: return true
         }
+    }
+}
+
+/// The official speech service accepts no model identifier in either request.
+public enum DeepSeekSpeechAPI {
+    public static let asrURL = URL(string: "https://api.deepseek.com/v1/tools/asr")!
+    public static let ttsURL = URL(string: "https://api.deepseek.com/v1/tools/tts")!
+    public static let recognitionName = "DeepSeek ASR"
+    public static let maximumFileBytes = 8 * 1024 * 1024
+    public static let maximumAudioSeconds: Double = 120
+    public static let voices = ["stella", "tide"]
+
+    public static func isOfficialConnection(_ url: URL?) -> Bool {
+        guard let url, let parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return false }
+        return parts.scheme?.lowercased() == "https" && parts.host?.lowercased() == "api.deepseek.com"
+            && (parts.port == nil || parts.port == 443) && parts.user == nil && parts.password == nil
+            && parts.query == nil && parts.fragment == nil
     }
 }
 
@@ -378,7 +396,11 @@ public struct TTSSynthesisRequest: Sendable, Hashable, Identifiable {
         if voiceID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return "voice ID is required"
         }
-        if modelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if provider == .deepSeek {
+            guard DeepSeekSpeechAPI.voices.contains(voiceID), format.sampleRate == 24_000, openAIBaseURL == nil else {
+                return "DeepSeek requires a supported voice and 24 kHz PCM at its official endpoint"
+            }
+        } else if modelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return "model ID is required"
         }
         // OpenAI-compatible base address: validated here so an unusable URL

@@ -37,6 +37,8 @@ let package = Package(
         .target(name: "FloeToolboxFileTransports", dependencies: ["FloeToolboxCore", "FloeToolboxRemoteFiles", "FloeToolboxClients"]),
         .target(name: "FloeToolboxWorkbenches", dependencies: ["FloeToolboxCore", "FloeToolboxClients", "FloeToolboxDiagnostics", "FloeToolboxUtilities"]),
         .testTarget(name: "FloeToolboxCoreTests", dependencies: ["FloeToolboxCore"]),
+        .testTarget(name: "FloeToolboxModbusTests",
+                    dependencies: ["FloeToolboxCore", "FloeToolboxClients", "FloeToolboxWorkbenches"]),
         .testTarget(name: "FloeToolboxRemoteFilesTests", dependencies: ["FloeToolboxRemoteFiles", "FloeToolboxCore"]),
         .testTarget(name: "FloeToolboxClientsTests", dependencies: ["FloeToolboxClients", "FloeToolboxCore"], resources: [.copy("Fixtures")]),
         .testTarget(name: "FloeToolboxDiagnosticsTests", dependencies: ["FloeToolboxDiagnostics", "FloeToolboxCore"]),

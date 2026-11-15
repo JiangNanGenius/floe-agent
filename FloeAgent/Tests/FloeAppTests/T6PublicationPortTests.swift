@@ -145,7 +145,7 @@ struct T6PublicationPortTests {
             liveRunID: nil, isRunning: false,
             liveStreamedText: "", liveReasoningText: "", pendingApprovals: [])
         let assistantIDs = timeline.compactMap { item -> String? in
-            if case .assistantMessage(_, let idSuffix) = item { return idSuffix }
+            if case .assistantMessage(_, let idSuffix, _) = item { return idSuffix }
             return nil
         }
         #expect(assistantIDs.contains(message.id.uuidString))

@@ -146,20 +146,14 @@ nonisolated struct ToolboxConnectionSetup: Sendable {
         return tool.rawValue
     }
     static func open(tool: ToolboxTool, setup: ToolboxConnectionSetup, environment: AppEnvironment,
-                     workbenchModels: Bool = true,
+                     workbenchModels: Bool = true, usbDevices: ToolboxUSBDevices? = nil,
                      onUSBFailure: (@MainActor @Sendable (ToolboxUSBFailure) -> Void)? = nil,
                      onBluetoothFailure: (@MainActor @Sendable (any Error) -> Void)? = nil) async throws -> ToolboxConnection {
-        // USB serial is deferred from this candidate until its distribution
-        // permission is granted and the driver is included in an App build.
-        if tool == .serialAssistant, setup.serial.connection == .usb {
-            guard includesUSBSerialDriver else {
-                throw ClientError.unsupported
-            }
-        }
         if let issue = setup.inputIssues(for: tool).first { throw issue }
         if tool == .serialAssistant, setup.serial.connection == .usb {
-            guard let request = setup.usbRequest else { throw ToolboxUSBFailure.chooseDevice }
-            try request.validate()
+            // The same picker supplies its checked package, selected registry
+            // identity and generation. A fresh picker owns no prior selection.
+            try (usbDevices ?? ToolboxUSBDevices()).validateSelection(setup.usbRequest)
         }
         let lease = SessionLease(ownerID: UUID())
         let root = try PersonalContentLibrary.applicationRoot().deletingLastPathComponent().appendingPathComponent("Toolbox", isDirectory: true)

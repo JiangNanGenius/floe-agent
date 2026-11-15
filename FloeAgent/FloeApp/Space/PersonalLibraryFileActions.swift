@@ -9,6 +9,7 @@ import FloeDiagramIntegration
 import FloeDiagramExchange
 import FloePrintCore
 import FloeLaTeXCore
+import FloeBuildingProject
 
 nonisolated enum PersonalFileAction: String, Sendable { case move, duplicate, share }
 nonisolated enum PersonalFileActionError: Error, LocalizedError {
@@ -422,6 +423,10 @@ nonisolated struct PersonalLibraryTrashRestoreResult: Sendable {
         case .document:
             try PersonalTextDocument.requireClosedForFileAction(projectID: record.id)
             try PersonalOfficeDocument.requireClosedForFileAction(projectID: record.id)
+        case .building:
+            guard uses[record.id]?.isEmpty != false, environment?.studioCoordinator.buildingProjects.current(record.id) == nil else {
+                throw PersonalFileActionError.closeFirst
+            }
         case .cad2D, .cad3D: try PersonalCADSessions.prepareForLibraryMove(id: record.id, directory: directory)
         case .printing: try PrintProjectSession.requireIdleForDeletion(id: record.id)
         case .manufacturing: try ManufacturingSessions.requireIdleForDeletion(id: record.id)
@@ -452,9 +457,9 @@ nonisolated struct PersonalLibraryTrashRestoreResult: Sendable {
     }
     static func supports(_ action: PersonalFileAction, kind: PersonalContentKind) -> Bool {
         switch action {
-        case .move: [.document, .cad2D, .cad3D, .biology, .latex, .electronics, .geography].contains(kind)
-        case .duplicate: [.document, .printing, .latex, .electronics, .geography].contains(kind)
-        case .share: [.document, .diagram, .printing, .latex, .electronics, .geography].contains(kind)
+        case .move: [.document, .building, .cad2D, .cad3D, .biology, .latex, .electronics, .geography].contains(kind)
+        case .duplicate: [.document, .building, .printing, .latex, .electronics, .geography].contains(kind)
+        case .share: [.document, .building, .diagram, .printing, .latex, .electronics, .geography].contains(kind)
         }
     }
     static func limitation(_ action: PersonalFileAction, kind: PersonalContentKind) -> String {
@@ -470,6 +475,9 @@ nonisolated struct PersonalLibraryTrashRestoreResult: Sendable {
         let library = try await PersonalContentService.shared.library(), source = try await library.resolve(selection.id)
         guard source.record.relativePath == selection.relativePath, source.record.kind == selection.kind else { throw PersonalFileActionError.changed }
         switch source.record.kind {
+        case .building:
+            guard uses[selection.id]?.isEmpty != false else { throw PersonalFileActionError.closeFirst }
+            try await PersonalContentService.shared.verify(source.record)
         case .geography:
             guard uses[selection.id]?.isEmpty != false else { throw PersonalFileActionError.closeFirst }
             try await GISProjectSession.prepareForFileAction(id: selection.id, directory: source.url)
@@ -504,7 +512,14 @@ nonisolated struct PersonalLibraryTrashRestoreResult: Sendable {
         let library = try await PersonalContentService.shared.library(), source = try await library.resolve(selection.id)
         guard source.record.relativePath == selection.relativePath, source.record.kind == selection.kind else { throw PersonalFileActionError.changed }
         let result: PersonalContentRecord
-        if source.record.kind == .geography {
+        if source.record.kind == .building {
+            result = try await library.create(kind: .building, title: title, in: folders) { directory, id in
+                let copy = try await Self.copyPublishedBuilding(from: source.url, to: BuildingProjectSpaceOriginal.projectURL(directory: directory))
+                _ = try BuildingProjectSpaceOriginal.verify(spaceRecordID: id, title: title, directory: directory)
+                try await verifyLocation(selection.id, expected: source.record.relativePath)
+                try writeCopyReceipt(directory: directory, source: source.record, newID: id, revision: copy.contentDigest)
+            }
+        } else if source.record.kind == .geography {
             let saved = try await personalPreviewOffMain { try GISProjectOriginal.read(id: selection.id, directory: source.url) }
             result = try await library.create(kind: .geography, title: title, in: folders) { directory, id in
                 try await GISProjectOriginal.copy(saved, to: directory, id: id, title: title)
@@ -580,6 +595,10 @@ nonisolated struct PersonalLibraryTrashRestoreResult: Sendable {
         defer { if !adopted { try? FileManager.default.removeItem(at: directory) } }
         let url: URL
         switch source.record.kind {
+        case .building:
+            url = directory.appendingPathComponent(safeName(source.record.title) + "." + BuildingProjectDocumentType.filenameExtension,
+                                                  isDirectory: true)
+            _ = try await copyPublishedBuilding(from: source.url, to: url)
         case .geography:
             let saved = try await personalPreviewOffMain { try GISProjectOriginal.read(id: selection.id, directory: source.url) }
             let bytes = try GISProjectOriginal.projectData(saved)
@@ -636,6 +655,14 @@ nonisolated struct PersonalLibraryTrashRestoreResult: Sendable {
         try Task.checkCancellation()
         adopted = true
         return .init(url: url, directory: directory)
+    }
+
+    private nonisolated static func copyPublishedBuilding(from source: URL, to destination: URL) async throws -> BuildingProjectPortableCopyReceipt {
+        try await personalPreviewOffMain {
+            let package = try checkedChildDirectory(BuildingProjectSpaceOriginal.projectFolderName, under: source)
+            let repository = try BuildingProjectRepository.open(at: package)
+            return try repository.exportPortableCopy(to: destination)
+        }
     }
 
     private static func copyEditablePrint(_ frozen: PrintProjectDocument, from source: PrintProjectDisk, to root: URL, newID: UUID) async throws -> PrintProjectDocument {

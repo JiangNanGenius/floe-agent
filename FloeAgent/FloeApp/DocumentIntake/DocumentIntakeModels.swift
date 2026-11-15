@@ -13,6 +13,7 @@ import Foundation
 import UniformTypeIdentifiers
 import FloeCore
 import FloeNotes
+import FloeBuildingProject
 
 // MARK: - Kind
 
@@ -22,6 +23,7 @@ import FloeNotes
 enum DocumentIntakeKind: String, Codable, Sendable, CaseIterable {
     case floeNote
     case floeCanvas
+    case building
     case pdf
     case text
     case office
@@ -36,6 +38,7 @@ enum DocumentIntakeKind: String, Codable, Sendable, CaseIterable {
         switch self {
         case .floeNote: "floenote"
         case .floeCanvas: "floecanvas"
+        case .building: BuildingProjectDocumentType.filenameExtension
         case .pdf: "pdf"
         case .text: "txt"
         case .office: "docx"
@@ -51,6 +54,7 @@ enum DocumentIntakeKind: String, Codable, Sendable, CaseIterable {
     var maximumBytes: Int64 {
         switch self {
         case .floeNote, .floeCanvas: 2_147_483_648
+        case .building: DocumentIntakeLimits.production.maximumQueuedBytes
         case .text: 2_000_000
         case .pdf, .office, .image, .engineering: 536_870_912
         }
@@ -58,7 +62,7 @@ enum DocumentIntakeKind: String, Codable, Sendable, CaseIterable {
 
     /// Notes owns its own durable library, independent from task deletion.
     /// Canvas owns its own project files. The two editors never share state.
-    var importsIntoNotes: Bool { self != .floeCanvas }
+    var importsIntoNotes: Bool { self != .floeCanvas && self != .building }
 }
 
 extension DocumentIntakeKind {
@@ -78,6 +82,9 @@ extension DocumentIntakeKind {
     /// through an image fallback.
     static func classify(fileExtension: String, contentType: UTType?) -> DocumentIntakeKind? {
         let ext = fileExtension.lowercased()
+        if ext == BuildingProjectDocumentType.filenameExtension || contentType?.identifier == BuildingProjectDocumentType.contentTypeIdentifier {
+            return .building
+        }
         if ext == "floenote" || contentType?.identifier == floeNoteType.identifier {
             return .floeNote
         }
@@ -106,6 +113,7 @@ extension DocumentIntakeKind {
         switch kind {
         case .floeNote: return "floenote"
         case .floeCanvas: return "floecanvas"
+        case .building: return BuildingProjectDocumentType.filenameExtension
         case .pdf: return "pdf"
         case .office: return officeExtensions.contains(ext) ? ext : "docx"
         case .engineering:
@@ -132,6 +140,7 @@ extension DocumentIntakeKind {
         switch kind {
         case .floeNote: return ext == "floenote"
         case .floeCanvas: return ext == "floecanvas"
+        case .building: return ext == BuildingProjectDocumentType.filenameExtension
         case .pdf: return ext == "pdf"
         case .office: return officeExtensions.contains(ext)
         case .engineering: return NoteDocument.supportedEngineeringFileExtensions.contains(ext)

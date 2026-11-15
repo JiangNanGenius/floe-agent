@@ -2,6 +2,8 @@
 #if canImport(UIKit)
 import Foundation
 import Testing
+import FloeTools
+import FloeToolboxHost
 import FloeToolboxCore
 import FloeToolboxUSBWire
 import FloeToolboxUSBIOKit
@@ -13,6 +15,8 @@ import FloeToolboxUSBIOKit
 private actor AppUSBChannel: USBUserClientChannel {
     private(set) var closed = false
     private(set) var writes: [Data] = []
+    private(set) var controls: [UInt8] = []
+    private var nextRead = Data("fixture-secret".utf8)
     func exchange(_ bytes: Data, maximumReplyBytes: Int) throws -> Data {
         guard !closed else { throw USBClientError.detached }
         var request = FloeUSBRequest()
@@ -24,11 +28,16 @@ private actor AppUSBChannel: USBUserClientChannel {
             info.inputEndpoint = 0x81; info.outputEndpoint = 2; info.maximumPacketSize = 64
             payload = withUnsafeBytes(of: info) { Data($0) }; count = UInt32(payload.count)
         } else if request.operation == FLOE_USB_OP_READ {
-            payload = Data("fixture-secret".utf8); count = UInt32(payload.count)
+            payload = nextRead; count = UInt32(payload.count)
         } else if request.operation == FLOE_USB_OP_WRITE {
             let content = Data(bytes.dropFirst(MemoryLayout<FloeUSBRequest>.size))
             writes.append(content); count = UInt32(content.count)
-        } else if request.operation == FLOE_USB_OP_CONTROL { count = request.payloadSize }
+            if content == Data(":070600091234A4\r\n".utf8) { nextRead = content }
+            if content == Data(":070300090001EC\r\n".utf8) { nextRead = Data(":0703021234AE\r\n".utf8) }
+        } else if request.operation == FLOE_USB_OP_CONTROL {
+            controls.append(request.request)
+            count = request.payloadSize
+        }
         else { throw USBClientError.invalidPacket }
         var response = FloeUSBResponse()
         response.magic = FLOE_USB_MAGIC; response.version = UInt16(FLOE_USB_VERSION)
@@ -44,6 +53,7 @@ private actor AppUSBBackend: USBRegistryBackend {
     let records: [USBRegistryIdentity]
     let channel = AppUSBChannel()
     private(set) var opened = 0
+    private(set) var selectedServiceID: UInt64?
     private var hold = false
     private var held: CheckedContinuation<[USBRegistryIdentity], any Error>?
     private var waiters: [CheckedContinuation<Void, Never>] = []
@@ -63,7 +73,7 @@ private actor AppUSBBackend: USBRegistryBackend {
     }
     func open(expected: USBRegistryIdentity) throws -> any USBUserClientChannel {
         guard records.contains(expected) else { throw USBRegistryError.staleSelection }
-        opened += 1; return channel
+        opened += 1; selectedServiceID = expected.serviceID; return channel
     }
 }
 @MainActor private func appUSBFixture() throws -> (ToolboxUSBDevices, AppUSBBackend) {
@@ -90,6 +100,7 @@ private actor AppUSBBackend: USBRegistryBackend {
         })
         await devices.refresh().value
         guard case .failed(.notIncluded) = devices.state else { Issue.record("Expected actual notIncluded state"); return }
+        #expect(throws: ToolboxUSBFailure.notIncluded) { try devices.validateSelection(nil) }
         #expect(factories == 0 && !devices.canDiscover && !devices.canConnect)
         #expect(ToolboxUSBFailure.from(USBRegistryError.io(-536870207)) == .system(-536870207))
     }
@@ -100,9 +111,14 @@ private actor AppUSBBackend: USBRegistryBackend {
         #expect(throws: ToolboxUSBFailure.chooseDevice) { _ = try devices.request(settings: USBSerialSettings()) }
         devices.select(102)
         let old = try devices.request(settings: USBSerialSettings())
-        try old.validate()
+        try devices.validateSelection(old)
+        let (other, otherBackend) = try appUSBFixture()
+        await other.refresh().value
+        other.select(102)
+        #expect(throws: ToolboxUSBFailure.changedDevice) { try other.validateSelection(old) }
+        #expect(await otherBackend.opened == 0)
         devices.select(101); devices.select(102)
-        #expect(throws: ToolboxUSBFailure.changedDevice) { try old.validate() }
+        #expect(throws: ToolboxUSBFailure.changedDevice) { try devices.validateSelection(old) }
         #expect(await backend.opened == 0)
         devices.reset()
         #expect(devices.selectedID == nil && !devices.canConnect)
@@ -128,6 +144,59 @@ private actor AppUSBBackend: USBRegistryBackend {
         let settings = try setup.usbSettings()
         #expect(settings.baud == 115200 && settings.dataBits == 7 && settings.stopBits == 2 && settings.parity == .even)
     }
+    @Test func serialAssistantOpensModbusWorkbenchAndFreezesUserSelectedConnection() async throws {
+        let environment = FloeAgentApp.liveEnvironment
+        try await environment.ensureDurableAutomationReady()
+        let (devices,backend) = try appUSBFixture()
+        let center = ToolboxCenter(environment:environment, usbDevices:devices)
+        let picker = center.usbDevices
+        await picker.refresh().value
+        picker.select(102)
+        var setup = ToolboxConnectionSetup()
+        setup.serial.connection = .usb
+        setup.serial.protocolType = .modbus
+        setup.serial.modbusFraming = .ascii
+        let request = try picker.request(settings:setup.usbSettings())
+        setup.usbRequest = request
+        center.connect(.serialAssistant,setup:setup)
+        do {
+            let deadline = ContinuousClock.now.advanced(by:.seconds(5))
+            while center.connecting.contains(.serialAssistant), ContinuousClock.now < deadline {
+                try await Task.sleep(for:.milliseconds(10))
+            }
+            let connection = try #require(center.connections[.serialAssistant], "\(center.failures[.serialAssistant] ?? "No connection")")
+            let workbench = try #require(connection.modbusModel)
+            #expect(connection.serialModel == nil)
+            #expect(await backend.selectedServiceID == 102)
+            #expect(await backend.channel.controls == [0, 0x1e, 3, 7])
+            workbench.draft = .init(kind:.writeSingleRegister,unitText:"7",addressText:"40010",valuesText:"4660",readBack:false)
+            await workbench.refreshPreview()
+            #expect(workbench.requestPreview == Data(":070600091234A4\r\n".utf8))
+            await workbench.execute(workbench.draft)
+            #expect(workbench.result?.writeEchoVerified == true)
+            let conversation = try await center.assistant(for:connection), run = UUID()
+            try await environment.runStore.saveRun(.init(id:run,conversationID:conversation,state:"executing",goal:"Synthetic Modbus",startedAt:Date()))
+            let names = try await center.freeze(runID:run,conversationID:conversation)
+            #expect(names == ["toolbox.capture.read","toolbox.modbus.read","toolbox.modbus.write","toolbox.modbus.build","toolbox.modbus.decode"])
+            let registry = ToolRunnerRegistry()
+            NativeToolboxTools.register(in:registry,enabledNames:names,resolve:{ try await center.resolve($0) })
+            let read = try #require(registry.runner(named:"toolbox.modbus.read"))
+            let context = ToolContext(runID:run,allowedToolNames:names,cancellation:CancellationToken(),conversationID:conversation,frozenEffectiveCatalogNames:names)
+            let arguments = Data(#"{"unit":7,"address":9,"function":3,"quantity":1}"#.utf8)
+            let reply = try await read.execute(argumentsJSON:arguments,context:context)
+            #expect(reply.summary.contains(#""registerValues":"4660""#))
+            #expect(await backend.channel.writes == [Data(":070600091234A4\r\n".utf8),Data(":070300090001EC\r\n".utf8)])
+            await center.disconnect(.serialAssistant)
+            #expect(throws: ToolboxUSBFailure.changedDevice) { try request.validate() }
+            await #expect(throws:ToolboxError.staleSession) { try await read.execute(argumentsJSON:arguments,context:context) }
+            await center.disposeAssistantsNow(for:.serialAssistant).value
+        } catch {
+            await center.disconnect(.serialAssistant)
+            await center.disposeAssistantsNow(for:.serialAssistant).value
+            throw error
+        }
+    }
+
     @Test func actualUSBSessionUsesSelectedDescriptorBoundedReceiveRedactionLeaseAndClose() async throws {
         let environment = FloeAgentApp.liveEnvironment
         try await environment.ensureDurableAutomationReady()
@@ -136,7 +205,7 @@ private actor AppUSBBackend: USBRegistryBackend {
         setup.serial.connection = .usb; setup.username = "fixture-secret"
         setup.usbRequest = try devices.request(settings: setup.usbSettings())
         let connection = try await ToolboxConnection.open(tool: .serialAssistant, setup: setup,
-            environment: environment, workbenchModels: false)
+            environment: environment, workbenchModels: false, usbDevices: devices)
         let captureID = connection.lease.sessionID, ownerID = connection.id
         func removeFixtureCapture() async throws {
             try await environment.database.writer { db in

@@ -19,7 +19,7 @@ nonisolated struct StudioPublishedResult: Sendable {
     /// only its runtime context, never a model path or invented task binding.
     static func publish(file url: URL, projectRoot: URL, action: String, fileKey: String? = nil, context: ToolContext,
                         validateSource: @escaping @MainActor @Sendable () async throws -> Void) async throws -> StudioPublishedResult {
-        guard let producer = context.executionToolName, ["studio.run", "studio.machining", "studio.chemistry", "latex.export"].contains(producer) else {
+        guard let producer = context.executionToolName, ["studio.run", "studio.machining", "studio.chemistry", "latex.export"].contains(producer) || (producer == "studio.edit" && action == "buildingExchange") else {
             throw FloeError.validationFailed("A real native result call is required")
         }
         try context.cancellation.throwIfCancelled(); try await validateSource()

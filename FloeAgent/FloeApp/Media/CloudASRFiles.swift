@@ -17,6 +17,7 @@
 import Foundation
 import AVFoundation
 import FloeCore
+import FloeProviders
 
 struct PreparedCloudAudio: Sendable {
     let url: URL
@@ -234,6 +235,24 @@ enum CloudASRTimingPolicy {
 }
 
 enum CloudASRFilePipeline {
+    private static func originalDeepSeekFile(at url: URL, profile: ASRProfile, maximumSeconds: Double) throws -> ASRFileTranscriptionRequest? {
+        guard url.isFileURL else { return nil }
+        let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+        guard values.isRegularFile == true, let size = values.fileSize,
+              size > 0, size <= DeepSeekSpeechAPI.maximumFileBytes else { return nil }
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        // Check the signature before reading the full body of a small movie or other codec.
+        let signature = try handle.read(upToCount: 4)
+        guard signature == Data("RIFF".utf8) || signature == Data("OggS".utf8) else { return nil }
+        try handle.seek(toOffset: 0)
+        let audio = try handle.read(upToCount: DeepSeekSpeechAPI.maximumFileBytes + 1) ?? Data()
+        guard let file = try? DeepSeekTranscriptionAdapter.inspectFile(audio),
+              file.durationSeconds <= maximumSeconds else { return nil }
+        return ASRFileTranscriptionRequest(profile: profile, audio: audio, filename: file.filename,
+            mimeType: file.mimeType, sourceDurationSeconds: file.durationSeconds)
+    }
+
     /// Transcribes one audio/video file through the supplied profile adapter.
     /// The output keeps true provider timing only; text-only chunks produce
     /// no segments. No destructive de-duplication: legitimate repeated words
@@ -249,8 +268,18 @@ enum CloudASRFilePipeline {
         enableSpeakerAttribution: Bool = false,
         progress: @escaping @Sendable (Double) -> Void = { _ in }
     ) async throws -> ASRTranscriptionResult {
+        try Task.checkCancellation()
+        if profile.provider == .deepSeek,
+           let original = try originalDeepSeekFile(at: fileURL, profile: profile, maximumSeconds: maximumChunkSeconds) {
+            let result = try await adapter.transcribe(original, credential: credential)
+            try Task.checkCancellation()
+            progress(1)
+            return result
+        }
         let prepared = try await CloudASRAudioExtractor.extract(url: fileURL)
         defer { prepared.removeExtractionFile() }
+        let maximumChunkSeconds = profile.provider == .deepSeek
+            ? min(maximumChunkSeconds, DeepSeekSpeechAPI.maximumAudioSeconds) : maximumChunkSeconds
         let count = CloudASRFileChunker.chunkCount(
             for: prepared, maximumSeconds: maximumChunkSeconds)
         var texts: [String] = []

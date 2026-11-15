@@ -1251,7 +1251,9 @@ struct RootView: View {
         guard entryNavigationReady,
               let presentation = environment.documentIntakeCenter.takePresentation(sceneID: sceneID)
         else { return }
-        if presentation.kind == .floeCanvas {
+        if presentation.kind == .building, let projectID = presentation.documentID {
+            pendingEntry = QueuedEntry(route: .work(projectID))
+        } else if presentation.kind == .floeCanvas {
             guard let canvasID = presentation.canvasID else { return }
             guard presentedCanvasWorkspace == nil,
                   !router.presentsCanvas || router.presentedCanvasID == canvasID else {

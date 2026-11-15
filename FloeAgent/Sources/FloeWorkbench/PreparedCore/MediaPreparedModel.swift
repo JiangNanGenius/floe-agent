@@ -395,6 +395,9 @@ public struct MediaPreparedLayerMask: Sendable, Codable, Hashable {
     public var isEnabled: Bool
     public var isInverted: Bool
 
+    /// Ordered local edge edits. Missing on projects saved before the feather brush.
+    public var featherStrokes: [MediaLocalFeatherStroke]?
+
     public init(strokes: [ImageMaskStroke] = [],
                 vector: ImageSelection? = nil,
                 isEnabled: Bool = true,

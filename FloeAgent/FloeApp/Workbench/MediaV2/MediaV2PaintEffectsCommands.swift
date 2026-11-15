@@ -8,7 +8,7 @@ extension MediaV2Session {
     static let nativePaintTools: Set<String> = ["image.heal","image.patch","image.smudge","image.clone","image.gradient","image.blur-brush","image.sharpen-brush","image.layer-effect"]
     static let nativePaintStrokeTools: Set<String> = ["image.heal","image.patch","image.smudge","image.clone","image.gradient","image.blur-brush","image.sharpen-brush"]
     static func usesDirectStroke(_ tool:String) -> Bool {
-        MediaDrawingInputPolicy.isStrokeTool(tool) || nativePaintStrokeTools.contains(tool)
+        MediaDrawingInputPolicy.isStrokeTool(tool) || nativePaintStrokeTools.contains(tool) || tool == "image.feather-brush"
     }
     func applyNativePaint(_ id:String,input:MediaV2ToolInput,layer:MediaPreparedLayer?,region:ImageSelection?,actor:MediaPreparedActorKind,
                           base:Int64,originalSelection:ImageSelection?) async throws -> MediaV2ToolReceipt {

@@ -63,6 +63,7 @@ public actor GameProjectSelectionCoordinator {
                                                  requiredFor: $0.requiredFor,
                                                  host: .unverified)
                 },
+                recognizedEvidence: [],
                 recognizedMarkerPaths: [],
                 preparedRuntimePackPresent: descriptor.runtimePack == nil
                     ? nil : scaffolder.resources.pack(for: descriptor.engine) != nil,
@@ -126,6 +127,86 @@ public actor GameProjectSelectionCoordinator {
                 GameProjectSelectionText.bounded(error))
         }
         return resolution.snapshot.withPersistence(true)
+    }
+
+    /// Explicit manual choice for an imported tree whose engine is not
+    /// recognized deterministically. The host UI must only call this after the
+    /// user acknowledged that no marker evidence exists. The choice is
+    /// persisted with `.manualUnverified`, remains readable/editable, and
+    /// deliberately does not produce a run selection.
+    public func selectManual(root: GameRelativePath?, engine: GameEngineID,
+                             context: GameProjectContext,
+                             acknowledgingUnverified: Bool) async throws
+        -> GameProjectSelectionSnapshot {
+        guard acknowledgingUnverified else {
+            throw GameProjectFlowError.manualSelectionNotAcknowledged
+        }
+        try Task.checkCancellation()
+        let key = try selectionKey(context)
+        let token = beginWrite(key)
+        let project = try await openProject(id: context.projectID, owner: context.owner)
+        let resolution = try await resolver().resolve(
+            project: project, context: context, loadedRecord: nil, intent: nil,
+            manualIntent: .init(root: root, engine: engine))
+        try requireWrite(key, token)
+        try Task.checkCancellation()
+        let snapshot = try await applyPersistence(resolution, context: context,
+                                                  key: key, observedGeneration: token,
+                                                  mandatory: true)
+        return snapshot.withPersistence(true)
+    }
+
+    /// Advisory proposal from the current project assistant. This never saves
+    /// a selection; only `confirmProposal` after a real user confirmation can.
+    public func proposeSelection(root: GameRelativePath?, engine: GameEngineID,
+                                 evidencePaths: [GameRelativePath],
+                                 rationale: String, generatedBy: String,
+                                 context: GameProjectContext) async throws
+        -> GameProjectSelectionProposal {
+        try Task.checkCancellation()
+        let project = try await openProject(id: context.projectID, owner: context.owner)
+        return try await resolver().proposal(project: project, context: context,
+                                             root: root, engine: engine,
+                                             evidencePaths: evidencePaths,
+                                             rationale: rationale,
+                                             generatedBy: generatedBy)
+    }
+
+    /// Persists a proposal only when the caller represents the user's explicit
+    /// confirmation in the project setup surface. The exact revision, owner,
+    /// environment, root and fresh recognition are revalidated first.
+    public func confirmProposal(_ proposal: GameProjectSelectionProposal,
+                                context: GameProjectContext,
+                                userConfirmed: Bool) async throws
+        -> GameProjectSelectionSnapshot {
+        guard userConfirmed else { throw GameProjectFlowError.proposalNotConfirmed }
+        try Task.checkCancellation()
+        guard proposal.projectID == context.projectID,
+              proposal.owner == context.owner,
+              proposal.environmentID == context.environmentID else {
+            throw GameProjectFlowError.proposalStale
+        }
+        let project = try await openProject(id: context.projectID, owner: context.owner)
+        let canonicalRoot = context.rootURL.standardizedFileURL.resolvingSymlinksInPath()
+        guard proposal.rootURL.standardizedFileURL.resolvingSymlinksInPath() == canonicalRoot,
+              proposal.baseRevision == project.revision else {
+            throw GameProjectFlowError.proposalStale
+        }
+        let currentPaths = Set(project.files.map(\.path))
+        for path in proposal.evidencePaths where !currentPaths.contains(path) {
+            throw GameProjectFlowError.proposalStale
+        }
+        switch proposal.verification {
+        case .evidenceMatched:
+            return try await select(root: proposal.selectedRoot,
+                                    engine: proposal.selectedEngine,
+                                    context: context)
+        case .manualUnverified:
+            return try await selectManual(root: proposal.selectedRoot,
+                                          engine: proposal.selectedEngine,
+                                          context: context,
+                                          acknowledgingUnverified: true)
+        }
     }
 
     /// Exact engine/root pair for `ExistingWorkspaceGameIDEHost`

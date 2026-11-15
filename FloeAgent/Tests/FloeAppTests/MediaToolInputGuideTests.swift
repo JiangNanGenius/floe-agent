@@ -10,6 +10,32 @@ import FloeWorkspace
 
 @Suite("Native media example payloads",.serialized)
 @MainActor struct MediaToolInputGuideTests {
+    @Test func smudgeOwnsFeatherAndNavigationTracksActualInput() async throws {
+        let group = try #require(MediaV2ImageToolLayout.groups.first { $0.id == "image.smudge" })
+        #expect(group.entries.map(\.id) == ["image.smudge","image.feather-brush"])
+        #expect(MediaV2ImageToolLayout.groups.allSatisfy { $0.id != "image.feather-brush" })
+        #expect(MediaV2ImageToolLayout.compactSections.first { $0.id == "retouch" }?.entries.contains { $0.id == "image.feather-brush" } == true)
+        let starting = MediaV2ImageToolLayout.railClusters(pencilEditing:false).flatMap { $0 }.flatMap(\.entries).map(\.id)
+        let pencil = MediaV2ImageToolLayout.railClusters(pencilEditing:true).flatMap { $0 }.flatMap(\.entries).map(\.id)
+        #expect(starting.contains("view.pan") && !pencil.contains("view.pan"))
+        #expect(!starting.contains("view.zoom-in") && !starting.contains("view.zoom-out") && !starting.contains("view.fit"))
+        #expect(MediaV2CanvasInputMode.pencilEditing(after:.pencil,current:false,fingerDrawing:false))
+        #expect(MediaV2CanvasInputMode.pencilEditing(after:.direct,current:true,fingerDrawing:false))
+        #expect(!MediaV2CanvasInputMode.pencilEditing(after:.indirectPointer,current:true,fingerDrawing:false))
+        #expect(!MediaV2CanvasInputMode.deliberateFingerDrag(from:.zero,to:.init(x:5,y:4),multipleContacts:false))
+        #expect(!MediaV2CanvasInputMode.deliberateFingerDrag(from:.zero,to:.init(x:50,y:30),multipleContacts:true))
+        #expect(!MediaV2ImageToolLayout.reservesFingerForEditing("image.rectangle",fingerDrawing:false,pencilEditing:true))
+        #expect(MediaV2ImageToolLayout.reservesFingerForEditing("image.feather-brush",fingerDrawing:true,pencilEditing:true))
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:root) }
+        let session = try await interactionSession(root:root,drawing:false)
+        let layer = try #require(session.selectedLayer)
+        var input = MediaV2ToolInput(); input.objectID = layer.id; input.expectedRevision = session.document.revision
+        input.points = [.init(x:0.35,y:0.5),.init(x:0.64,y:0.5)]; input.number = 28; input.secondary = 0.6
+        let receipt = try await session.performTool("image.feather-brush",input:input)
+        #expect(receipt.groupID != nil)
+        #expect(session.document.layer(layer.id)?.mask?.featherStrokes?.first?.points == input.points)
+    }
     @Test func imageToolbarUsesAvailableToolsAndSeparatesSelectionActions() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("image-toolbar-contract-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }

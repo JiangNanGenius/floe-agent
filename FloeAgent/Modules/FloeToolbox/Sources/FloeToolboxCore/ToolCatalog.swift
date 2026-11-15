@@ -29,7 +29,25 @@ public enum SerialAssistantConnection: String, Codable, CaseIterable, Sendable {
     }
 }
 public enum SerialAssistantProtocol: String, Codable, CaseIterable, Sendable { case raw, modbus }
-public enum ModbusFraming: String, Codable, CaseIterable, Sendable { case mbap, rtu }
+public enum ModbusFraming: String, Codable, CaseIterable, Sendable {
+    case mbap, rtu, ascii
+    public var wireProtocol: SerialProtocol {
+        switch self { case .mbap: .modbusTCP; case .rtu: .modbusRTU; case .ascii: .modbusASCII }
+    }
+    /// ASCII and RTU are serial-line formats. A TCP/UDP connection carrying
+    /// either one is a serial gateway or a transparent byte bridge.
+    public var isSerialLine: Bool { self != .mbap }
+}
+public extension SerialProtocol {
+    var modbusFraming: ModbusFraming? {
+        switch self {
+        case .modbusTCP: .mbap
+        case .modbusRTU: .rtu
+        case .modbusASCII: .ascii
+        default: nil
+        }
+    }
+}
 public struct SerialAssistantConfiguration: Codable, Equatable, Sendable {
     public var connection: SerialAssistantConnection
     public var protocolType: SerialAssistantProtocol
@@ -38,10 +56,21 @@ public struct SerialAssistantConfiguration: Codable, Equatable, Sendable {
                 modbusFraming: ModbusFraming? = nil) {
         self.connection = connection; self.protocolType = protocolType; self.modbusFraming = modbusFraming
     }
+    /// Native Modbus TCP uses MBAP. Serial transports use RTU or ASCII; the
+    /// same serial formats are valid over a TCP/UDP serial gateway.
+    public var availableModbusFramings: [ModbusFraming] {
+        switch connection {
+        case .bluetooth, .usb: [.rtu, .ascii]
+        case .tcp, .udp: [.mbap, .rtu, .ascii]
+        }
+    }
     public func wireProtocol() throws -> SerialProtocol {
         if protocolType == .raw { return .raw }
         guard let modbusFraming else { throw ToolboxError.invalid("select the device's Modbus framing") }
-        return modbusFraming == .mbap ? .modbusTCP : .modbusRTU
+        guard availableModbusFramings.contains(modbusFraming) else {
+            throw ToolboxError.invalid("selected framing does not match the connection")
+        }
+        return modbusFraming.wireProtocol
     }
     /// Bind before creating a session. An active session's endpoint remains immutable.
     public func validate(endpoint: SerialEndpoint) throws {

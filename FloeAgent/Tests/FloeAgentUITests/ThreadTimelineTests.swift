@@ -855,7 +855,9 @@ struct ThreadTimelineTests {
         )
 
         let replyIndex = items.firstIndex(where: {
-            if case .assistantMessage(let text, _) = $0 { return text == "旧回复" }
+            if case .assistantMessage(let text, _, let date) = $0 {
+                return text == "旧回复" && date == messages[1].createdAt
+            }
             return false
         })
         let terminalIndex = items.firstIndex(where: {
@@ -867,6 +869,25 @@ struct ThreadTimelineTests {
         if let replyIndex, let terminalIndex {
             #expect(replyIndex < terminalIndex)
         }
+    }
+
+    @Test("Historical user messages and assistant turns keep their own stored dates")
+    func historicalMessageDates() {
+        let conversation = UUID()
+        let userDate = Date(timeIntervalSince1970: 1_658_232_000)
+        let replyDate = userDate.addingTimeInterval(86_400)
+        let run = makeRun(state: "completed", conversationID: conversation)
+        let user = PersistedMessage(id: UUID(), conversationID: conversation, role: "user",
+            content: "goal", createdAt: userDate, runID: run.id)
+        let reply = RunEventRecord(runID: run.id, sequence: 1, kind: .assistantText,
+            payloadJSON: #"{"text":"old reply"}"#, createdAt: replyDate)
+        let items = ThreadTimelineBuilder.build(messages: [user], events: [reply], run: run,
+            isRunning: false, liveStreamedText: "", liveReasoningText: "", pendingApprovals: [])
+        #expect(items.contains { if case .userMessage(let value) = $0 { value.createdAt == userDate } else { false } })
+        #expect(items.contains {
+            if case .assistantMessage(_, let id, let date) = $0 { id == reply.id.uuidString && date == replyDate }
+            else { false }
+        })
     }
 
     @Test("Reloading a thread never duplicates the final reply")
@@ -1045,11 +1066,11 @@ struct ThreadTimelineTests {
             pendingApprovals: []
         )
         #expect(items.contains { item in
-            if case .assistantMessage(let text, _) = item { return text == "first run" }
+            if case .assistantMessage(let text, _, _) = item { return text == "first run" }
             return false
         })
         #expect(!items.contains { item in
-            if case .assistantMessage(let text, _) = item { return text == "second run" }
+            if case .assistantMessage(let text, _, _) = item { return text == "second run" }
             return false
         })
     }
@@ -1163,11 +1184,11 @@ struct ThreadTimelineTests {
             return false
         }
         let firstAnswerIndex = items.firstIndex {
-            if case .assistantMessage(let text, _) = $0 { return text == "我先检查文件" }
+            if case .assistantMessage(let text, _, _) = $0 { return text == "我先检查文件" }
             return false
         }
         let finalAnswerIndex = items.firstIndex {
-            if case .assistantMessage(let text, _) = $0 { return text == "已按引导完成" }
+            if case .assistantMessage(let text, _, _) = $0 { return text == "已按引导完成" }
             return false
         }
         #expect(guidanceIndex != nil)
@@ -1219,7 +1240,7 @@ struct ThreadTimelineTests {
             liveRunID: nil, isRunning: false,
             liveStreamedText: "", liveReasoningText: "", pendingApprovals: [])
         let projected = items.compactMap { item -> String? in
-            if case .assistantMessage(let text, let idSuffix) = item,
+            if case .assistantMessage(let text, let idSuffix, _) = item,
                idSuffix == notice.id.uuidString { return text }
             return nil
         }
@@ -1337,7 +1358,7 @@ struct ThreadTimelineTests {
             runs: [], eventsByRun: [:], liveRunID: nil, isRunning: false,
             liveStreamedText: "", liveReasoningText: "", pendingApprovals: [])
         let assistantText = items.compactMap { item -> String? in
-            if case .assistantMessage(let text, let idSuffix) = item,
+            if case .assistantMessage(let text, let idSuffix, _) = item,
                idSuffix == assistantMirror.id.uuidString { return text }
             return nil
         }
@@ -1348,13 +1369,13 @@ struct ThreadTimelineTests {
         }
         #expect(hasUserRow)
         let otherText = items.compactMap { item -> String? in
-            if case .assistantMessage(let text, let idSuffix) = item,
+            if case .assistantMessage(let text, let idSuffix, _) = item,
                idSuffix == otherNotice.id.uuidString { return text }
             return nil
         }
         #expect(otherText == [ordinaryNotices[0]])
         let trustedText = items.compactMap { item -> String? in
-            if case .assistantMessage(let text, let idSuffix) = item,
+            if case .assistantMessage(let text, let idSuffix, _) = item,
                idSuffix == systemMessage.id.uuidString { return text }
             return nil
         }
@@ -1511,7 +1532,7 @@ struct ThreadTimelineTests {
             liveRunID: nil, isRunning: false,
             liveStreamedText: "", liveReasoningText: "", pendingApprovals: [])
         let projected = items.compactMap { item -> String? in
-            if case .assistantMessage(let text, let idSuffix) = item,
+            if case .assistantMessage(let text, let idSuffix, _) = item,
                idSuffix == notice.id.uuidString { return text }
             return nil
         }
@@ -1736,11 +1757,11 @@ struct ThreadTimelineTests {
             isRunning: false, liveStreamedText: "", liveReasoningText: "",
             pendingApprovals: [], suppressedDecisionNoticeIDs: suppressedWhileUnloaded)
         #expect(!unloadedItems.contains {
-            if case .assistantMessage(_, let id) = $0 { return id == automaticNotice.id.uuidString }
+            if case .assistantMessage(_, let id, _) = $0 { return id == automaticNotice.id.uuidString }
             return false
         })
         #expect(unloadedItems.contains {
-            if case .assistantMessage(_, let id) = $0 { return id == manualNotice.id.uuidString }
+            if case .assistantMessage(_, let id, _) = $0 { return id == manualNotice.id.uuidString }
             return false
         })
 
@@ -1752,7 +1773,7 @@ struct ThreadTimelineTests {
             liveStreamedText: "", liveReasoningText: "", pendingApprovals: [],
             suppressedDecisionNoticeIDs: [automaticNotice.id])
         #expect(!suppressedItems.contains {
-            if case .assistantMessage(_, let idSuffix) = $0 {
+            if case .assistantMessage(_, let idSuffix, _) = $0 {
                 return idSuffix == automaticNotice.id.uuidString
             }
             return false
@@ -1760,7 +1781,7 @@ struct ThreadTimelineTests {
         // The user decision stays as its own row with the decision-specific
         // sentence and no internal template/proposal identity.
         let row = try #require(suppressedItems.compactMap { item -> String? in
-            if case .assistantMessage(let text, let idSuffix) = item,
+            if case .assistantMessage(let text, let idSuffix, _) = item,
                idSuffix == manualNotice.id.uuidString { return text }
             return nil
         }.first)

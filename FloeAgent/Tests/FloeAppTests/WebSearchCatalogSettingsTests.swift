@@ -165,7 +165,7 @@ final class WebSearchCatalogSettingsTests: XCTestCase {
         XCTAssertEqual(ContentUpdateCenter.searchProviderPackageID, "floe.search.providers")
         XCTAssertEqual(SearchProviderCatalog.packageID, "floe.search.providers")
         XCTAssertEqual(ContentUpdateCenter.searchProviderCatalogPath, "SearchProviderCatalog.json")
-        XCTAssertEqual(ContentUpdateCenter.builtInSearchProvidersVersion, "1.2.1")
+        XCTAssertEqual(ContentUpdateCenter.builtInSearchProvidersVersion, "1.3.0")
         let bundled = try XCTUnwrap(SearchProviderCatalogIndex.loadBundled(bundle: .main))
         XCTAssertEqual(bundled.version, ContentUpdateCenter.builtInSearchProvidersVersion)
         XCTAssertEqual(bundled.entries.count, 11)
@@ -178,7 +178,7 @@ final class WebSearchCatalogSettingsTests: XCTestCase {
         XCTAssertEqual(entry.adapterKind, WebSearchProviderKind.deepseek.rawValue)
         XCTAssertEqual(entry.defaultEndpoint, "https://api.deepseek.com/v1/tools/search")
         XCTAssertEqual(entry.credentialKeys, ["apiKey"])
-        XCTAssertEqual(entry.optionFields.map(\.key), [DeepSeekSearchOptions.Key.needContent])
+        XCTAssertEqual(entry.optionFields.map(\.key), [DeepSeekSearchOptions.Key.searchWhileThinking, DeepSeekSearchOptions.Key.needContent])
         XCTAssertEqual(entry.optionFields.first?.defaultValue, "false")
         XCTAssertEqual(entry.name["zh-Hans"], "DeepSeek 搜索")
 
@@ -212,6 +212,13 @@ final class WebSearchCatalogSettingsTests: XCTestCase {
         // Enabling stays the user's independent switch.
         center.setEnabled(true, id: stored.configuration.id)
         XCTAssertTrue(center.instances.first?.configuration.enabled == true)
+        var edited = try XCTUnwrap(center.instances.first)
+        edited.configuration.options[DeepSeekSearchOptions.Key.searchWhileThinking] = "true"
+        try center.saveInstance(edited, credential: nil)
+        let reopened = try XCTUnwrap(makeCenter().instances.first)
+        XCTAssertEqual(reopened.configuration.id, stored.configuration.id)
+        XCTAssertTrue(try DeepSeekSearchOptions(options: reopened.configuration.options).searchWhileThinking)
+        XCTAssertTrue(reopened.configuration.enabled)
     }
 
     // MARK: - Fresh state

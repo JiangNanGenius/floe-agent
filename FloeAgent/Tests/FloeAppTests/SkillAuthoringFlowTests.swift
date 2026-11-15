@@ -61,7 +61,8 @@ struct SkillAuthoringFlowTests {
         await flow.open(kind: .importing)
         #expect(flow.presentation?.id == id)
         #expect(flow.draftText(id) == "Keep my input")
-        #expect(flow.taskCenterRecords.count == 1)
+        #expect(flow.shelfRecords.map(\.id) == [id])
+        #expect(flow.historyRecords.isEmpty)
         #expect(backend.startCount == 0)
     }
     @Test func missingAuxiliaryNeverStartsFallback() async throws {
@@ -94,6 +95,11 @@ struct SkillAuthoringFlowTests {
         flow.updateDraft(id: id, text: "Recoverable"); await flow.cancel(id: id)
         #expect(try await store.active() == nil); #expect(flow.record(id)?.phase == .stopped)
         #expect(flow.draftText(id) == "Recoverable")
+        await flow.acknowledge(id: id)
+        #expect(flow.shelfRecords.isEmpty)
+        #expect(flow.historyRecords.map(\.id) == [id])
+        await flow.open(id: id)
+        #expect(flow.draftText(id) == "Recoverable")
     }
     @Test func failedURLStagePreservesDraftAndNeverUsesModel() async throws {
         let (flow, store, _, backend, root) = try await setup(); defer { try? FileManager.default.removeItem(at: root) }
@@ -102,6 +108,7 @@ struct SkillAuthoringFlowTests {
         flow.importURL(id: id)
         try await awaitSettlement(flow, id: id)
         #expect(flow.record(id)?.phase == .failed)
+        #expect(try await store.record(id: id)?.phase == .failed)
         #expect(flow.draftText(id) == "https://example.invalid/skill.json")
         #expect(backend.prepareCount == 1 && backend.resolveCount == 0 && backend.startCount == 0 && backend.installCount == 0)
         #expect(try await store.record(id: id)?.generatedArtifactIDs.isEmpty == true)

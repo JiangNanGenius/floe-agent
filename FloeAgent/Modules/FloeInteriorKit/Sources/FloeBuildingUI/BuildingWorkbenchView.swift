@@ -40,16 +40,20 @@ enum BuildingSection: String, CaseIterable, Identifiable {
 public struct BuildingWorkbenchView<ModelContent:View, FurnitureContent:View, DeliveryContent:View>:BuildingLocalizedView {
     @Environment(\.locale) var buildingLocale
     @State private var session:BuildingWorkspaceSession
+    @State private var presentingSaveAs = false
     @State private var importing=false
     @State private var importingPhotometry=false
     private let modelContent:ModelContent
     private let furnitureContent:FurnitureContent
     private let deliveryContent:DeliveryContent
     private let integrated:Bool
-    public init(workspace:BuildingWorkspaceService,actions:BuildingWorkbenchProjectActions,
+    private let saveAsForm: AnyView?
+    public init(workspace:BuildingWorkspaceService,actions:BuildingWorkbenchProjectActions, saveAsForm: AnyView? = nil,
                 @ViewBuilder model:()->ModelContent,@ViewBuilder furniture:()->FurnitureContent,
                 @ViewBuilder delivery:()->DeliveryContent){
-        _session=State(initialValue:BuildingWorkspaceSession(service:workspace,projectActions:actions))
+        _session=State(initialValue:BuildingWorkspaceSession(service:workspace,projectActions:actions,
+            initialSection:.model,integrated:true))
+        self.saveAsForm = saveAsForm
         modelContent=model();furnitureContent=furniture();deliveryContent=delivery();integrated=true
     }
     private var sections:[BuildingSection]{
@@ -126,6 +130,17 @@ public struct BuildingWorkbenchView<ModelContent:View, FurnitureContent:View, De
                     }label:{Label(buildingText("导入","Import"),systemImage:"tray.and.arrow.down")}
                     .accessibilityIdentifier("building.import").disabled(session.operationBusy || session.snapshot==nil)
                     Menu{
+                        if saveAsForm != nil || session.projectActions?.requestSaveAs != nil {
+                            Button(buildingText("另存为…","Save As…"), systemImage: "square.on.square") {
+                                if saveAsForm != nil {
+                                    presentingSaveAs = true
+                                } else {
+                                    session.projectActions?.requestSaveAs?()
+                                }
+                            }
+                            .menuActionDismissBehavior(.enabled)
+                            .accessibilityIdentifier("building.saveAs")
+                        }
                         if session.activeKind != nil,session.editorsReady {
                             Button{session.exportCurrent()}label:{Label(buildingText("导出参数 JSON","Export parameters as JSON"),systemImage:"square.and.arrow.up")}
                         }
@@ -140,6 +155,9 @@ public struct BuildingWorkbenchView<ModelContent:View, FurnitureContent:View, De
                 }
             }
             .safeAreaInset(edge:.bottom){feedback}
+            // This detail view owns both the toolbar menu and its copy form.
+            // A reopened project creates a fresh workbench with a fresh presentation.
+            .sheet(isPresented: $presentingSaveAs) { saveAsForm }
         }
         .task{session.locale=buildingLocale;session.reload()}
         .onChange(of:buildingLocale){_,locale in session.locale=locale}
@@ -202,6 +220,7 @@ public struct BuildingWorkbenchView<ModelContent:View, FurnitureContent:View, De
 public extension BuildingWorkbenchView where ModelContent == EmptyView,FurnitureContent == EmptyView,DeliveryContent == EmptyView {
     init(projectDirectory:URL){
         _session=State(initialValue:BuildingWorkspaceSession(directory:projectDirectory))
+        saveAsForm = nil
         modelContent=EmptyView();furnitureContent=EmptyView();deliveryContent=EmptyView();integrated=false
     }
 }

@@ -1534,14 +1534,18 @@ struct WebSearchProviderEditor: View {
         }
     }
 
+    private var deepSeekThinking: Bool {
+        configuration.kind == .deepseek && (try? DeepSeekSearchOptions(options: optionValues).searchWhileThinking) == true
+    }
+
     private var moonshotChannel: String { optionValues["interface"] ?? configuration.options["interface"] ?? "payg" }
-    private func moonshotText(_ en: String, _ zh: String) -> String {
+    private func localizedText(_ en: String, _ zh: String) -> String {
         WebSearchSettingsCenter.localePrimary == "zh-Hans" ? zh : en
     }
 
     private var moonshotChannelSection: some View {
         Section {
-            Picker(moonshotText("Account type", "账号类型"), selection: Binding(
+            Picker(localizedText("Account type", "账号类型"), selection: Binding(
                 get: { moonshotChannel },
                 set: { next in
                     optionValues["interface"] = next
@@ -1549,12 +1553,12 @@ struct WebSearchProviderEditor: View {
                     revealsSecrets = false
                     endpointText = ""
                 })) {
-                Text(moonshotText("Moonshot AI", "月之暗面")).tag("payg")
+                Text(localizedText("Moonshot AI", "月之暗面")).tag("payg")
                 Text("Kimi Code").tag("kimiCode")
             }
             Text(moonshotChannel == "kimiCode"
-                ? moonshotText("Uses this Kimi Code key for web search and professional datasets.", "使用当前 Kimi Code 密钥进行网页搜索与专业数据库查询。")
-                : moonshotText("Uses your Moonshot AI API key.", "使用你的月之暗面 API 密钥。"))
+                ? localizedText("Uses this Kimi Code key for web search and professional datasets.", "使用当前 Kimi Code 密钥进行网页搜索与专业数据库查询。")
+                : localizedText("Uses your Moonshot AI API key.", "使用你的月之暗面 API 密钥。"))
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -1613,7 +1617,14 @@ struct WebSearchProviderEditor: View {
                 if !optionFields.isEmpty {
                     Section {
                         ForEach(optionFields) { field in
-                            optionField(field)
+                            if !(deepSeekThinking && field.key == DeepSeekSearchOptions.Key.needContent) {
+                                optionField(field)
+                            }
+                        }
+                    } footer: {
+                        if deepSeekThinking {
+                            Text(localizedText("DeepSeek Flash can search several times and cite its sources. Model and search charges apply.",
+                                               "DeepSeek Flash 可多次检索并引用来源，按模型和搜索用量计费。"))
                         }
                     }
                 }
@@ -1801,9 +1812,10 @@ struct WebSearchProviderEditor: View {
         switch field.kind {
         case .bool:
             Toggle(label, isOn: Binding(
-                get: { optionValues[field.key] != "false" },
+                get: { ["true", "1"].contains((optionValues[field.key] ?? field.defaultValue ?? "false").lowercased()) },
                 set: { optionValues[field.key] = $0 ? "true" : "false" }
             ))
+            .accessibilityIdentifier("websearch.option." + field.key)
         case .option:
             Picker(label, selection: Binding(
                 get: { optionValues[field.key] ?? field.defaultValue ?? field.allowedValues?.first ?? "" },

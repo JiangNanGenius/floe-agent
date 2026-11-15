@@ -38,31 +38,36 @@ enum TemporaryChatUITestFixture {
         let arguments = ProcessInfo.processInfo.arguments
         guard arguments.contains("-ui-testing"), arguments.contains(launchArgument) else { return }
         #if targetEnvironment(simulator)
-        if (try? await environment.conversationStore.conversation(id: savedConversationID)) == nil {
+        let historical = arguments.contains("--ui-test-history-date-copy")
+        let id = historical ? UUID(uuidString: "9289330B-91EB-4617-81B2-ABA312B98801")! : savedConversationID
+        let title = historical ? "历史日期与复制测试" : savedTitle
+        let firstSentAt = historical ? Date(timeIntervalSince1970: 1_658_232_000) : Date()
+        if (try? await environment.conversationStore.conversation(id: id)) == nil {
             try? await environment.conversationStore.saveConversation(ConversationRecord(
-                id: savedConversationID,
-                title: savedTitle,
-                createdAt: Date(),
+                id: id,
+                title: title,
+                createdAt: firstSentAt,
                 updatedAt: Date()
             ))
         }
         let existing = (try? await environment.conversationStore
-            .messages(conversationID: savedConversationID)) ?? []
+            .messages(conversationID: id)) ?? []
         if existing.isEmpty {
             for (index, role) in ["user", "assistant"].enumerated() {
+                let text = historical && role == "user" ? "第一行  \n第二行" : "\(savedMessage)-\(index)"
                 try? await environment.conversationStore.appendMessage(PersistedMessage(
                     id: UUID(),
-                    conversationID: savedConversationID,
+                    conversationID: id,
                     role: role,
-                    content: "\(savedMessage)-\(index)",
-                    createdAt: Date().addingTimeInterval(TimeInterval(index))
+                    content: text,
+                    createdAt: firstSentAt.addingTimeInterval(TimeInterval(index))
                 ))
             }
         }
         // This is an ordinary saved chat, so use the same canonical ownership
         // as real history. Never create a workspace for the RAM-only preset.
         _ = try? await SQLiteWorkspaceStore(database: environment.database)
-            .ensureWorkspace(conversationID: savedConversationID, title: savedTitle)
+            .ensureWorkspace(conversationID: id, title: title)
         await environment.workspaceCenter.reload()
         await environment.conversationCenter.reload()
         #endif

@@ -1023,9 +1023,7 @@ struct NotesDocumentEditor: View {
                         if tool == value, value == .pen || value == .marker { showingInkOptions = true }
                         selectTool(value)
                     } label: {
-                        let labelTitle: LocalizedStringKey = value == .pen ? inkPreferences.selectedPen.keyTitle : value.localizedTitle
-                        let labelIcon = value == .pen ? inkPreferences.selectedPen.icon : value.icon
-                        Label(labelTitle, systemImage: labelIcon).labelStyle(.iconOnly)
+                        value.glyph(selectedPen: inkPreferences.selectedPen)
                             .font(.title3).frame(width: 44, height: 44)
                             .background(tool == value ? Color.accentColor.opacity(0.14) : .clear, in: Capsule())
                             .foregroundStyle(tool == value ? Color.accentColor : .secondary)
@@ -1181,10 +1179,8 @@ struct NotesDocumentEditor: View {
     }
 
     private var inkOptions: some View {
-        NotesInkOptionsPanel(selected: activeBrush, preferences: inkPreferences, select: { kind in
-            if kind == .marker { selectTool(.marker) }
-            else { inkPreferences.select(kind); selectTool(.pen) }
-        }, close: { showingInkOptions = false })
+        NotesInkOptionsPanel(selected: activeBrush, preferences: inkPreferences,
+                             select: inkPreferences.select, close: { showingInkOptions = false })
     }
 
 }

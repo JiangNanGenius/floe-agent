@@ -86,6 +86,17 @@ struct ThreadActivityHistoryTests {
 
     // MARK: - Helpers
 
+    @Test("Copy preserves the full user message and only exposes the displayed credential label")
+    func copiesVisibleUserMessage() {
+        let multiline = " 第一行  \n第二行 🧱\n"
+        let handle = "⟨credential:00000000-0000-0000-0000-000000000001⟩"
+        #expect(CredentialMessagePart.clipboardText(multiline) == multiline)
+        #expect(CredentialMessagePart.clipboardText("") == nil)
+        #expect(CredentialMessagePart.clipboardText(handle) == nil)
+        #expect(CredentialMessagePart.clipboardText("A \(handle)\nB")
+            == "A " + String(localized: "chat.user_message_bubble.secure_credentials") + "\nB")
+    }
+
     private func makeRun(state: String, conversationID: UUID, startedAt: Date) -> RunRecord {
         RunRecord(
             id: UUID(),

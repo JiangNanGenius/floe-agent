@@ -13,6 +13,10 @@ struct MediaV2Preview: View {
     @State private var strokeRevision: Int64?
     @State private var gestureStart: CGPoint?
     @State private var gestureMoved = false
+    @State private var featherPreview: CGImage?
+    @State private var featherPreviewTask: Task<Void,Never>?
+    @State private var featherEpoch = UUID()
+    @State private var strokeSelection: ImageSelection?
     var body: some View {
         GeometryReader { geometry in
             let canvas = session.document.canvas ?? .init(width: 1600, height: 1200)
@@ -23,8 +27,12 @@ struct MediaV2Preview: View {
                 if session.project.kind == .image {
                     MediaV2CanvasViewport(canvasSize: size, zoom: $session.zoom,
                         resetID: session.viewportResetID,
-                        fingerDrawing: MediaV2ImageToolLayout.reservesFingerForEditing(session.tool, fingerDrawing: fingerDrawing),
+                        fingerDrawing: MediaV2ImageToolLayout.reservesFingerForEditing(session.tool, fingerDrawing:fingerDrawing,pencilEditing:session.pencilEditing),
                         navigationOnly: !MediaV2ImageToolLayout.editsCanvas(session.tool),
+                        onCanvasInput: { source in
+                            session.pencilEditing = MediaV2CanvasInputMode.pencilEditing(after:source,current:session.pencilEditing,fingerDrawing:fingerDrawing)
+                            if source == .pencil, session.tool == "view.pan" { session.tool = session.lastCanvasEditTool }
+                        },
                         onNavigationBegan: cancelInteraction) {
                         canvasSurface(size: size, canvas: canvas)
                     }
@@ -35,7 +43,8 @@ struct MediaV2Preview: View {
                 if session.project.kind == .image, MediaV2Session.imageWarpToolIDs.contains(session.tool) { MediaV2ImageWarpActionBar(session: session) }
             }
         }
-        .onChange(of:session.selectedLayerID) { _,_ in session.cloneSourcePoint = nil;session.cloneDestinationOrigin = nil;session.clonePickSource = false }
+        .onChange(of:session.selectedLayerID) { _,_ in cancelInteraction(); session.cloneSourcePoint = nil;session.cloneDestinationOrigin = nil;session.clonePickSource = false }
+        .onDisappear { cancelInteraction() }
         .onChange(of: session.tool) { _, tool in
             cancelInteraction()
             if !MediaV2Session.imageWarpToolIDs.contains(tool) { session.discardImageWarpDraft() }
@@ -49,7 +58,7 @@ struct MediaV2Preview: View {
         ZStack {
             checkerboard
             if let player = session.player { VideoPlayer(player: player) }
-            else if let image = session.imageWarpPreview ?? (session.colorShowsOriginal ? session.preview : session.colorPreview ?? session.preview) {
+            else if let image = featherPreview ?? session.imageWarpPreview ?? (session.colorShowsOriginal ? session.preview : session.colorPreview ?? session.preview) {
                 Image(decorative: image, scale: 1)
                     .allowedDynamicRange(session.project.kind == .video && session.document.canvas?.videoColorProfile?.isHDR == true ? .high : nil)
                     .resizable().aspectRatio(contentMode: .fit)
@@ -112,6 +121,11 @@ struct MediaV2Preview: View {
                     for shape in selection.shapes {
                         ghost.stroke(selectionPath(shape.kind,points:shape.points,size:bounds),with:.color(.orange),style:.init(lineWidth:1.5,dash:[4,3]))
                     }
+                } else if session.tool == "image.feather-brush", let current = points.last {
+                    let diameter = session.featherDiameter * bounds.width / CGFloat(canvas.width)
+                    let tip = Path(ellipseIn:CGRect(x:current.x*bounds.width-diameter/2,y:current.y*bounds.height-diameter/2,width:diameter,height:diameter))
+                    context.stroke(tip,with:.color(.black.opacity(0.65)),lineWidth:2)
+                    context.stroke(tip,with:.color(.white),lineWidth:1)
                 } else if MediaV2Session.usesDirectStroke(session.tool) {
                     let displayed = session.tool == "image.gradient" ? [points.first!,points.last!] : points
                     let path = selectionPath(.lasso, points: displayed, size: bounds, close: false)
@@ -155,11 +169,12 @@ struct MediaV2Preview: View {
         .overlay {
             if MediaV2Session.usesDirectStroke(session.tool) {
                 WorkbenchPressureSurface(fingerDrawing: fingerDrawing, onChanged: { point, pressure in
-                    if points.isEmpty { originalLayer = session.selectedLayer;strokeRevision = session.document.revision }
+                    if points.isEmpty { originalLayer = session.selectedLayer; strokeRevision = session.document.revision; strokeSelection = session.selection }
                     var sample = normalized(point, size: size)
                     sample.pressure = pressure
                     points.append(sample)
                     if points.count > 10_000 { points.removeSubrange(1..<100) }
+                    if session.tool == "image.feather-brush" { startFeatherPreview() }
                 }, onEnded: {
                     defer { resetCanvasEdit() }
                     guard !points.isEmpty, MediaV2Session.usesDirectStroke(session.tool) else { return }
@@ -167,6 +182,7 @@ struct MediaV2Preview: View {
                 }, onCancelled: cancelInteraction)
             } else if MediaV2ImageToolLayout.editsCanvas(session.tool) {
                 MediaV2CanvasEditSurface(
+                    allowsFinger: !session.pencilEditing || fingerDrawing,
                     onBegan: { beginCanvasEdit($0, size: size) },
                     onChanged: { continueCanvasEdit($0, size: size) },
                     onEnded: { finishCanvasEdit($0, size: size) },
@@ -236,6 +252,8 @@ struct MediaV2Preview: View {
         }
     }
     private func resetCanvasEdit() {
+        featherEpoch = UUID()
+        featherPreviewTask?.cancel(); featherPreviewTask = nil; featherPreview = nil; strokeSelection = nil
         points = []
         originalLayer = nil
         strokeRevision = nil
@@ -244,6 +262,35 @@ struct MediaV2Preview: View {
     }
     private func cancelInteraction() {
         resetCanvasEdit()
+    }
+    private func startFeatherPreview() {
+        guard featherPreviewTask == nil, let layer = originalLayer, let revision = strokeRevision,
+              let canvas = session.document.canvas else { return }
+        let epoch = featherEpoch, selected = strokeSelection
+        featherPreviewTask = Task { @MainActor in
+            var lastSamples: [ImageFreehandStroke.Point] = []
+            do {
+                let assets = try session.resolvedAssets()
+                while !Task.isCancelled, epoch == featherEpoch, session.tool == "image.feather-brush",
+                      session.document.revision == revision, session.selection == selected {
+                    let samples = points
+                    if samples != lastSamples {
+                        lastSamples = samples
+                        var draft = session.document
+                        guard let index = draft.layers.firstIndex(where:{ $0.id == layer.id }) else { return }
+                        draft.layers[index].mask = try MediaNativeFeatherBrush.appending(to:layer,document:draft,points:samples,
+                            diameter:session.featherDiameter,strength:session.featherStrength,selection:selected)
+                        let image = try await session.imageRenderer.renderPrepared(draft,canvas:.init(width:canvas.width,height:canvas.height),
+                            resolveAsset:{ assets[$0] },previewMaxEdge:768,outputMaxEdge:768)
+                        guard !Task.isCancelled, epoch == featherEpoch, session.document.revision == revision else { return }
+                        featherPreview = image
+                    }
+                    try await Task.sleep(for:.milliseconds(42))
+                }
+            } catch is CancellationError {} catch {
+                if epoch == featherEpoch { session.diagnostic = error.localizedDescription }
+            }
+        }
     }
     private func submitToolPoints() {
         guard let first = points.first, let last = points.last else { return }
@@ -254,6 +301,10 @@ struct MediaV2Preview: View {
         if MediaV2Session.usesDirectStroke(session.tool) { input.objectID = originalLayer?.id }
         input.number = session.brushWidth; input.color = session.colorHex
         let tool = session.tool
+        if tool == "image.feather-brush" {
+            guard session.selection == strokeSelection else { return }
+            input.number = session.featherDiameter; input.secondary = session.featherStrength
+        }
         input.points = ["image.rectangle", "image.ellipse", "image.crop"].contains(tool) ? [first, last] : points
         if tool == "image.wand"{input.number=session.wandTolerance;input.property=session.selectionMode.rawValue}
         input.flag = session.tool == "image.eraser" ? session.eraserRestores : nil
@@ -297,7 +348,7 @@ struct MediaV2Preview: View {
 struct MediaV2CanvasTouchPolicy {
     enum Admission: Equatable { case begin, ignore, cancel }
     private(set) var source: UITouch.TouchType?
-    let allowsFinger: Bool
+    var allowsFinger: Bool
     init(allowsFinger: Bool = true) { self.allowsFinger = allowsFinger }
 
     func allows(_ type: UITouch.TouchType) -> Bool {
@@ -368,7 +419,8 @@ final class MediaV2CanvasTouchView: UIView {
     var allowsFinger = true {
         didSet {
             guard oldValue != allowsFinger else { return }
-            policy = MediaV2CanvasTouchPolicy(allowsFinger: allowsFinger)
+            policy.allowsFinger = allowsFinger
+            if !allowsFinger, policy.source == .direct { cancelActive() }
         }
     }
     private var policy = MediaV2CanvasTouchPolicy()
@@ -458,6 +510,60 @@ final class MediaV2CanvasTouchView: UIView {
     }
 }
 
+/// Observe the input source without recognizing a competing canvas gesture.
+/// Finger taps, palms and two-finger navigation never switch away from Pencil.
+enum MediaV2CanvasInputMode {
+    static func pencilEditing(after input: UITouch.TouchType, current: Bool, fingerDrawing: Bool) -> Bool {
+        switch input {
+        case .pencil: MediaImageCanvasControls.pencilEditing(after:.pencil,current:current,fingerDrawing:fingerDrawing)
+        case .indirect, .indirectPointer: MediaImageCanvasControls.pencilEditing(after:.pointer,current:current,fingerDrawing:fingerDrawing)
+        case .direct: MediaImageCanvasControls.pencilEditing(after:.finger,current:current,fingerDrawing:fingerDrawing)
+        @unknown default: current
+        }
+    }
+    static func deliberateFingerDrag(from: CGPoint, to: CGPoint, multipleContacts: Bool) -> Bool {
+        MediaImageCanvasControls.deliberateFingerDrag(distance:hypot(to.x-from.x,to.y-from.y),multipleContacts:multipleContacts)
+    }
+}
+
+private final class MediaV2CanvasInputProbe: UIGestureRecognizer {
+    var observe: ((UITouch.TouchType) -> Void)?
+    var pencilContact: ((Bool) -> Void)?
+    private var pencil: UITouch?
+    private var finger: UITouch?
+    private var origin = CGPoint.zero
+    private var navigated = false
+    override func canPrevent(_ other: UIGestureRecognizer) -> Bool { false }
+    override func canBePrevented(by other: UIGestureRecognizer) -> Bool { false }
+    override func touchesBegan(_ touches:Set<UITouch>,with event:UIEvent) {
+        if let stylus = touches.first(where:{ $0.type == .pencil }) {
+            pencil = stylus; pencilContact?(true); navigated = true; observe?(.pencil)
+        }
+        else if touches.contains(where:{ $0.type == .indirectPointer || $0.type == .indirect }) { observe?(.indirectPointer) }
+        let direct = touches.filter { $0.type == .direct }
+        if direct.count == 1, finger == nil, let first = direct.first {
+            finger = first; origin = first.location(in:view)
+        } else if !direct.isEmpty { navigated = true }
+        if (event.allTouches ?? touches).count > 1 { navigated = true }
+    }
+    override func touchesEnded(_ touches:Set<UITouch>,with event:UIEvent) {
+        if !navigated, let finger, touches.contains(finger) {
+            let end = finger.location(in:view)
+            if MediaV2CanvasInputMode.deliberateFingerDrag(from:origin,to:end,multipleContacts:navigated) { observe?(.direct) }
+        }
+        if let pencil, touches.contains(pencil) { self.pencil = nil; pencilContact?(false) }
+        if !(event.allTouches ?? touches).contains(where:{ $0.phase == .began || $0.phase == .moved || $0.phase == .stationary }) {
+            state = .failed
+        }
+    }
+    override func touchesCancelled(_ touches:Set<UITouch>,with event:UIEvent) { state = .failed }
+    override func reset() {
+        super.reset()
+        if pencil != nil { pencil = nil; pencilContact?(false) }
+        finger = nil; navigated = false
+    }
+}
+
 /// UIKit owns pinch and pan so Pencil/mouse edits retain their original
 /// coordinate space. Finger drawing reserves a single finger for ink.
 struct MediaV2CanvasViewport<Content: View>: UIViewControllerRepresentable {
@@ -466,6 +572,7 @@ struct MediaV2CanvasViewport<Content: View>: UIViewControllerRepresentable {
     let resetID: UUID
     let fingerDrawing: Bool
     var navigationOnly = false
+    var onCanvasInput: (UITouch.TouchType) -> Void = { _ in }
     var onNavigationBegan: () -> Void = {}
     @ViewBuilder let content: () -> Content
 
@@ -473,6 +580,7 @@ struct MediaV2CanvasViewport<Content: View>: UIViewControllerRepresentable {
         MediaV2CanvasViewportController(content: content())
     }
     func updateUIViewController(_ controller: MediaV2CanvasViewportController<Content>, context: Context) {
+        controller.onCanvasInput = onCanvasInput
         controller.update(content: content(), canvasSize: canvasSize, zoom: zoom,
             resetID: resetID, fingerDrawing: fingerDrawing, navigationOnly: navigationOnly, onNavigationBegan: onNavigationBegan) { zoom = $0 }
     }
@@ -480,6 +588,7 @@ struct MediaV2CanvasViewport<Content: View>: UIViewControllerRepresentable {
 
 @MainActor
 final class MediaV2CanvasViewportController<Content: View>: UIViewController, UIScrollViewDelegate {
+    var onCanvasInput: ((UITouch.TouchType) -> Void)?
     let scrollView = UIScrollView()
     private let host: UIHostingController<Content>
     private var canvasSize = CGSize(width: 1, height: 1)
@@ -488,6 +597,8 @@ final class MediaV2CanvasViewportController<Content: View>: UIViewController, UI
     private var onZoom: ((Double) -> Void)?
     private var onNavigationBegan: (() -> Void)?
     private var viewportSize = CGSize.zero
+    private var normalPanTouches = 1
+    private var pencilContact = false
 
     init(content: Content) { host = UIHostingController(rootView: content); super.init(nibName: nil, bundle: nil) }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -505,6 +616,21 @@ final class MediaV2CanvasViewportController<Content: View>: UIViewController, UI
         scrollView.contentInsetAdjustmentBehavior = .never
         scrollView.delaysContentTouches = false
         scrollView.delegate = self
+        scrollView.panGestureRecognizer.allowedScrollTypesMask = .all
+        let probe = MediaV2CanvasInputProbe(target:nil,action:nil)
+        probe.cancelsTouchesInView = false
+        probe.delaysTouchesBegan = false; probe.delaysTouchesEnded = false
+        probe.observe = { [weak self] in self?.onCanvasInput?($0) }
+        probe.pencilContact = { [weak self] down in
+            guard let self else { return }
+            pencilContact = down
+            scrollView.panGestureRecognizer.minimumNumberOfTouches = down ? 2 : normalPanTouches
+        }
+        scrollView.addGestureRecognizer(probe)
+        let pencilHover = UIHoverGestureRecognizer(target:self,action:#selector(observedPencilHover(_:)))
+        pencilHover.allowedTouchTypes = [NSNumber(value:UITouch.TouchType.pencil.rawValue)]
+        pencilHover.cancelsTouchesInView = false
+        scrollView.addGestureRecognizer(pencilHover)
         // Pencil and pointer input go directly to the existing editing surface.
         scrollView.panGestureRecognizer.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
         view.addSubview(scrollView)
@@ -513,6 +639,9 @@ final class MediaV2CanvasViewportController<Content: View>: UIViewController, UI
         host.view.backgroundColor = .clear
         scrollView.addSubview(host.view)
         host.didMove(toParent: self)
+    }
+    @objc private func observedPencilHover(_ gesture: UIHoverGestureRecognizer) {
+        if gesture.state == .began { onCanvasInput?(.pencil) }
     }
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
@@ -539,7 +668,8 @@ final class MediaV2CanvasViewportController<Content: View>: UIViewController, UI
         self.onZoom = onZoom
         self.onNavigationBegan = onNavigationBegan
         host.rootView = content
-        scrollView.panGestureRecognizer.minimumNumberOfTouches = navigationOnly ? 1 : fingerDrawing ? 2 : 1
+        normalPanTouches = navigationOnly ? 1 : fingerDrawing ? 2 : 1
+        scrollView.panGestureRecognizer.minimumNumberOfTouches = pencilContact ? 2 : normalPanTouches
         scrollView.panGestureRecognizer.allowedTouchTypes = navigationOnly
             ? [UITouch.TouchType.direct, .pencil, .indirectPointer].map { NSNumber(value: $0.rawValue) }
             : [NSNumber(value: UITouch.TouchType.direct.rawValue)]

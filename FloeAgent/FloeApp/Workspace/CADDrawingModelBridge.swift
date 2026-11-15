@@ -10,17 +10,19 @@ import FloeCAD
         document.drawingSketchDecoder = { data, name in
             try await decode(data: data, name: name)
         }
-        document.drawingDWGEncoder = { data in
-            let engine = CadWebEngineSession()
-            do {
-                try await engine.start()
-                _ = try await engine.open(bytes: data, format: "dxf")
-                let result = try await engine.exportAs("dwg", engineeringDrawing: true)
-                try Task.checkCancellation()
-                await engine.shutdown()
-                return result
-            } catch { await engine.shutdown(); throw error }
-        }
+        document.drawingDWGEncoder = { try await encodeDWG($0) }
+    }
+
+    static func encodeDWG(_ dxf: Data) async throws -> Data {
+        let engine = CadWebEngineSession()
+        do {
+            try await engine.start()
+            _ = try await engine.open(bytes: dxf, format: "dxf")
+            let result = try await engine.exportAs("dwg", engineeringDrawing: true)
+            try Task.checkCancellation()
+            await engine.shutdown()
+            return result
+        } catch { await engine.shutdown(); throw error }
     }
     static func decode(data: Data, name: String,
                        purpose: CADSketchTransferEnvelope.Purpose = .modelSketch,

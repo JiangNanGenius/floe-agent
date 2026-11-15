@@ -121,6 +121,7 @@ enum DocumentIntakeStager {
         do {
             values = try source.resourceValues(forKeys: [
                 .isRegularFileKey,
+                .isDirectoryKey,
                 .isSymbolicLinkKey,
                 .isAliasFileKey,
                 .fileSizeKey,
@@ -129,7 +130,6 @@ enum DocumentIntakeStager {
         } catch {
             throw mapReadError(error)
         }
-        guard values.isRegularFile == true else { throw DocumentIntakeError.notAFile }
         guard values.isSymbolicLink != true, values.isAliasFile != true else {
             throw DocumentIntakeError.linkNotAllowed
         }
@@ -139,7 +139,10 @@ enum DocumentIntakeStager {
         ) else {
             throw DocumentIntakeError.unsupportedType
         }
-        if let size = values.fileSize {
+        guard kind == .building ? values.isDirectory == true : values.isRegularFile == true else {
+            throw DocumentIntakeError.notAFile
+        }
+        if kind != .building, let size = values.fileSize {
             guard size > 0 else { throw DocumentIntakeError.emptyFile }
             guard Int64(size) <= kind.maximumBytes else {
                 throw DocumentIntakeError.tooLarge(kind.maximumBytes)
@@ -174,12 +177,14 @@ enum DocumentIntakeStager {
         )
         let payload: (digest: String, byteCount: Int64)
         do {
-            payload = try copyPayload(
-                from: source,
-                to: directory,
-                fileName: stagedFileName,
-                maximumBytes: kind.maximumBytes
-            )
+            if kind == .building {
+                let target = directory.appendingPathComponent(stagedFileName, isDirectory: true)
+                payload = try DocumentIntakeStorage.stageBuilding(from: source, to: target,
+                    maximumBytes: min(kind.maximumBytes, limits.maximumQueuedBytes))
+            } else {
+                payload = try copyPayload(from: source, to: directory, fileName: stagedFileName,
+                                          maximumBytes: kind.maximumBytes)
+            }
         } catch {
             // Only this attempt's uncommitted staging directory is removed.
             activeLock.close()

@@ -6,7 +6,7 @@ import CryptoKit
 /// workspace, execution environment, or the native editor's commit authority.
 enum PersonalContentKind: String, Codable, CaseIterable, Hashable, Sendable {
     case canvas, diagram, image, drawing, video, music, meeting, chemistry, biology, latex, electronics
-    case cad2D, cad3D, printing, manufacturing, document, geography, game
+    case building, cad2D, cad3D, printing, manufacturing, document, geography, game
 }
 
 struct PersonalContentRecord: Codable, Hashable, Identifiable, Sendable {

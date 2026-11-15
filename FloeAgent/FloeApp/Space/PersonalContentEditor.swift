@@ -67,6 +67,7 @@ struct PersonalContentEditor: View {
         case office(PersonalOfficeDocument)
         case media(URL)
         case cad(FloeCADDocument)
+        case building(URL)
     }
 
     var body: some View {
@@ -88,7 +89,11 @@ struct PersonalContentEditor: View {
 
     private var editorPresentation: some View {
         Group {
-            if let content, case .diagram(let model) = content {
+            if case .building(let directory) = content {
+                BuildingProjectSpaceEditor(recordID: record.id, title: record.title, directory: directory,
+                                           opensAssistantOnLoad: opensAssistantOnLoad,
+                                           onClose: { dismissAfterClosing() })
+            } else if let content, case .diagram(let model) = content {
                 // This editor owns its split navigation. Wrapping that split in
                 // another NavigationStack can discard its detail column.
                 DiagramEditorView(model: model, onClose: { Task { await finish() } },
@@ -128,7 +133,7 @@ struct PersonalContentEditor: View {
             let generation = presentationGeneration
             await load()
             guard !Task.isCancelled, isPresented, presentationGeneration == generation,
-                  content != nil, opensAssistantOnLoad, !openedInitialAssistant else { return }
+                  content != nil, record.kind != .building, opensAssistantOnLoad, !openedInitialAssistant else { return }
             openedInitialAssistant = true
             showingAssistant = true
         }
@@ -250,7 +255,7 @@ struct PersonalContentEditor: View {
                         PersonalFilePreview(url: url)
                     case .printing(let session):
                         PrintProjectView(session: session)
-                    case .manufacturing:
+                    case .manufacturing, .building:
                         EmptyView()
                     case .music(let session):
                         MusicEditorView(session: session)
@@ -444,6 +449,9 @@ struct PersonalContentEditor: View {
                 content = .media(value.url)
             case .cad2D, .cad3D:
                 content = .cad(try await PersonalCADSessions.open(id: record.id, directory: value.url))
+            case .building:
+                try await PersonalContentService.shared.verify(record)
+                content = .building(value.url)
             case .printing:
                 content = .printing(try await PrintProjectSession.open(id: record.id, directory: value.url.appendingPathComponent("Printing")))
             case .manufacturing:

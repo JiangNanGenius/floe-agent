@@ -114,6 +114,7 @@ struct CloudASRProfilesView: View {
 
     private func presetKey(_ preset: CloudASRSettingsStore.ProviderPreset) -> String {
         switch preset {
+        case .deepSeek: return "DeepSeek"
         case .openAI: return "voice.cloud.preset.openai"
         case .volcenginePayAsYouGo: return "voice.cloud.preset.volcengine_payg"
         case .volcengineAgentPlan: return "voice.cloud.preset.volcengine_plan"
@@ -137,7 +138,7 @@ struct CloudASRProfilesView: View {
 
 }
 
-private struct CloudASRProfileEditor: View {
+struct CloudASRProfileEditor: View {
     let store: CloudASRSettingsStore
     let original: ASRProfile
     let preload: CloudASRPreloadCoordinator?
@@ -156,6 +157,8 @@ private struct CloudASRProfileEditor: View {
     @State private var advanced = false
     @State private var errorKey: String?
     @State private var savedKey = false
+    @State private var useForInput = false
+    @AppStorage(VoiceRecognitionPreferences.methodKey) private var inputMethod = VoiceRecognitionPreferences.Method.automatic.rawValue
     @State private var isNew: Bool
 
     init(
@@ -206,13 +209,20 @@ private struct CloudASRProfileEditor: View {
                     LabeledContent("voice.cloud.profile.model",
                                    value: FloeL10n.l("voice.cloud.model.volcengine_seed_asr2"))
                 }
-                TextField("voice.cloud.profile.file_endpoint", text: $fileEndpoint)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .keyboardType(.URL)
-                TextField("voice.cloud.profile.file_model", text: $fileModel)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
+                if original.provider == .deepSeek {
+                    LabeledContent("voice.cloud.profile.file_endpoint", value: DeepSeekSpeechAPI.asrURL.absoluteString)
+                    Text(FloeL10n.isChinese ? "录音结束后转写，自动识别语种。" : "Transcribes after recording and detects the language automatically.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    Toggle(FloeL10n.isChinese ? "保存后用于语音输入" : "Use for voice input after saving", isOn: $useForInput)
+                } else {
+                    TextField("voice.cloud.profile.file_endpoint", text: $fileEndpoint)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+                    TextField("voice.cloud.profile.file_model", text: $fileModel)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                }
             } footer: {
                 if offersStreaming {
                     Text("voice.cloud.profile.streaming.footer")
@@ -230,24 +240,26 @@ private struct CloudASRProfileEditor: View {
             } footer: {
                 Text("voice.cloud.profile.key.footer")
             }
-            DisclosureGroup("voice.cloud.profile.advanced", isExpanded: $advanced) {
-                if streamingEnabled {
-                    TextField("voice.cloud.profile.live_model", text: $liveModel)
+            if original.provider != .deepSeek {
+                DisclosureGroup("voice.cloud.profile.advanced", isExpanded: $advanced) {
+                    if streamingEnabled {
+                        TextField("voice.cloud.profile.live_model", text: $liveModel)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    }
+                    TextField("voice.cloud.profile.live_endpoint", text: $liveEndpoint)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+                    if original.provider == .volcengine {
+                        TextField("voice.cloud.profile.resource", text: $resourceID)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    }
+                    TextField("voice.cloud.profile.languages", text: $languages)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                 }
-                TextField("voice.cloud.profile.live_endpoint", text: $liveEndpoint)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .keyboardType(.URL)
-                if original.provider == .volcengine {
-                    TextField("voice.cloud.profile.resource", text: $resourceID)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                }
-                TextField("voice.cloud.profile.languages", text: $languages)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
             }
             Section {
                 if !isNew, store.primaryProfileID != original.id {
@@ -279,6 +291,7 @@ private struct CloudASRProfileEditor: View {
 
     private var providerTitle: String {
         switch original.provider {
+        case .deepSeek: return "DeepSeek"
         case .openaiCompatible: return FloeL10n.l("voice.cloud.provider.openai")
         case .volcengine: return FloeL10n.l("voice.cloud.provider.volcengine")
         case .alibaba: return FloeL10n.l("voice.cloud.provider.alibaba")
@@ -324,7 +337,10 @@ private struct CloudASRProfileEditor: View {
             }
             savedKey = true
             key = ""
-            _ = saved
+            if useForInput, saved.provider == .deepSeek, store.isReady(saved) {
+                store.setPrimary(saved.id)
+                inputMethod = VoiceRecognitionPreferences.Method.cloud.rawValue
+            }
             if let preload { Task { await preload.syncPrimaryRoute() } }
             dismiss()
             onDone()

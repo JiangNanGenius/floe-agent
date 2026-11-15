@@ -108,6 +108,17 @@ public final class FloeCADDocument {
     /// cannot reconstruct a complete canonical identity.
     public var modelSHA256: String { session.savedIdentity.modelSHA256 }
 
+    /// Narrow public history access for feature surfaces that cannot see the
+    /// internal DocumentSession (for example the building/interior kit). This
+    /// is the SAME native undo stack used by the CAD editor, not a parallel
+    /// history. It performs no save and grants no write/permission authority.
+    public var canUndo: Bool { !closed && session.undoStack.canUndo }
+    public var canRedo: Bool { !closed && session.undoStack.canRedo }
+    /// Undo the newest native document change, including a building edit.
+    public func undo() { guard !closed else { return }; session.undo() }
+    /// Redo the newest reverted native document change.
+    public func redo() { guard !closed else { return }; session.redo() }
+
     let project: Project
     let context: CADModelContext
     let store: FileCADDocumentStore

@@ -33,6 +33,7 @@ import Foundation
 public enum ASRProviderKind: String, Codable, CaseIterable, Sendable, Hashable {
     /// OpenAI and OpenAI-compatible relays (native or reverse proxy).
     case openaiCompatible
+    case deepSeek
     /// Volcengine Doubao large-model streaming ASR.
     case volcengine
     /// Alibaba Model Studio Qwen ASR (pay-as-you-go or Token Plan).
@@ -42,7 +43,7 @@ public enum ASRProviderKind: String, Codable, CaseIterable, Sendable, Hashable {
     /// set is a configuration error; a failure never switches route silently.
     public var supportedBillingRoutes: [ASRBillingRoute] {
         switch self {
-        case .openaiCompatible: return [.payAsYouGo]
+        case .openaiCompatible, .deepSeek: return [.payAsYouGo]
         case .volcengine: return [.payAsYouGo, .agentPlan]
         case .alibaba: return [.payAsYouGo, .tokenPlan]
         }
@@ -57,6 +58,7 @@ public enum ASRProviderKind: String, Codable, CaseIterable, Sendable, Hashable {
     public var defaultProfileName: String {
         switch self {
         case .openaiCompatible: return "OpenAI"
+        case .deepSeek: return "DeepSeek"
         case .volcengine: return "Volcengine"
         case .alibaba: return "Alibaba"
         }
@@ -130,6 +132,7 @@ public enum ASRProviderRouting {
     ) -> String {
         switch provider {
         case .openaiCompatible: return openAIFileModel
+        case .deepSeek: return DeepSeekSpeechAPI.recognitionName
         case .volcengine: return volcengineModel
         case .alibaba:
             return route == .tokenPlan
@@ -144,6 +147,7 @@ public enum ASRProviderRouting {
     ) -> String? {
         switch provider {
         case .openaiCompatible: return openAILiveModel
+        case .deepSeek: return nil
         case .volcengine: return volcengineModel
         case .alibaba:
             return route == .tokenPlan ? nil : alibabaPayAsYouGoLiveModel
@@ -156,6 +160,7 @@ public enum ASRProviderRouting {
     ) -> String? {
         guard provider.supports(route) else { return nil }
         switch provider {
+        case .deepSeek: return DeepSeekSpeechAPI.asrURL.absoluteString
         case .openaiCompatible:
             // nil means the official endpoint; the OpenAI endpoint helper
             // composes `/audio/transcriptions` exactly once.
@@ -177,6 +182,7 @@ public enum ASRProviderRouting {
     ) -> String? {
         guard provider.supports(route) else { return nil }
         switch provider {
+        case .deepSeek: return nil
         case .openaiCompatible:
             // nil means the official realtime URL with intent=transcription.
             return nil
@@ -278,6 +284,12 @@ public struct ASRProfile: Codable, Sendable, Hashable, Identifiable {
     }
 
     // MARK: Default profiles
+
+    /// DeepSeek accepts recorded files at its fixed recognition endpoint.
+    public static func deepSeek(id: UUID = UUID(), name: String = "DeepSeek") -> ASRProfile {
+        ASRProfile(id: id, name: name, provider: .deepSeek, billingRoute: .payAsYouGo,
+                   fileModelID: DeepSeekSpeechAPI.recognitionName)
+    }
 
     /// Latest OpenAI-compatible file + live models. `fileEndpoint` /
     /// `liveEndpoint` are optional relay overrides; nil keeps the official
@@ -421,7 +433,12 @@ public struct ASRProfile: Codable, Sendable, Hashable, Identifiable {
                 return "live transcription model is not supported"
             }
         }
-        if provider == .openaiCompatible {
+        if provider == .deepSeek {
+            guard resolvedFileEndpoint == DeepSeekSpeechAPI.asrURL.absoluteString,
+                  liveModelID == nil, liveEndpoint == nil else {
+                return "DeepSeek uses its official file transcription endpoint"
+            }
+        } else if provider == .openaiCompatible {
             // Use the exact adapter endpoint rules so a profile cannot pass
             // validation and then fail at dispatch (for example a query or a
             // plain-HTTP relay).
@@ -621,6 +638,11 @@ public enum ASRModelCapabilityCatalog {
     ) -> ASRModelCapabilities {
         let model = modelID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         switch provider {
+        case .deepSeek:
+            return ASRModelCapabilities(supportsFileTranscription: true, supportsLiveTranscription: false,
+                fileResponseFormat: .automatic, supportsFileStreaming: false, languageParameter: .none,
+                supportsTimestampGranularities: false, supportsPrompt: false, supportsKeywords: false,
+                timing: .sourceSpanOnly, maximumFileBytes: DeepSeekSpeechAPI.maximumFileBytes)
         case .openaiCompatible:
             return openAI(model: model)
         case .volcengine:

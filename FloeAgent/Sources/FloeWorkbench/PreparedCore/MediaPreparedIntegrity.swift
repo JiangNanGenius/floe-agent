@@ -248,6 +248,17 @@ public enum MediaPreparedIntegrity {
     }
 
     private static func validate(_ mask: MediaPreparedLayerMask) throws {
+        if let strokes = mask.featherStrokes {
+            guard strokes.count <= 512 else { throw MediaPreparedCoreError.invalidDocument("too many feather strokes") }
+            for stroke in strokes {
+                guard (1...10_000).contains(stroke.points.count), (1...200).contains(stroke.diameter),
+                      (0.01...1).contains(stroke.strength) else { throw MediaPreparedCoreError.invalidDocument("invalid feather brush") }
+                try MediaCanvasLayout.validate(stroke.canvas)
+                try stroke.anchorToArtboard.validate()
+                for point in stroke.points { try validate(point,label:"feather") }
+                if let selection = stroke.selection { try validate(selection:selection) }
+            }
+        }
         guard mask.strokes.count <= 512 else {
             throw MediaPreparedCoreError.invalidDocument("mask supports at most 512 strokes")
         }

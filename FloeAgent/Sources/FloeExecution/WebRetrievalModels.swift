@@ -245,50 +245,40 @@ public struct VolcengineSearchOptions: Sendable, Hashable {
     }
 }
 
-/// DeepSeek Search options exposed through the existing provider catalog
-/// options dictionary. The only adjustable request field is `need_content`;
-/// query, count and every filter are derived from the frozen tool arguments,
-/// never from unrelated configuration. Absent values keep the documented
-/// upstream default (`false`).
+/// The standalone Search API and model-driven search share one saved provider.
 public struct DeepSeekSearchOptions: Sendable, Hashable {
     public enum Key {
         public static let needContent = "needContent"
-        /// Historical/compatibility spelling accepted when a record was
-        /// authored outside the catalog editor. The catalog itself only ever
-        /// emits `needContent`.
         public static let needContentAlias = "need_content"
+        public static let searchWhileThinking = "searchWhileThinking"
     }
 
-    /// Official `query` bound: 1...128 Unicode characters after every
-    /// translated site/date filter is appended.
+    /// Final query limit on the standalone Search API.
     public static let maximumQueryScalars = 128
 
     public var needContent: Bool
+    public var searchWhileThinking: Bool
 
-    public init(needContent: Bool = false) {
+    public init(needContent: Bool = false, searchWhileThinking: Bool = false) {
         self.needContent = needContent
+        self.searchWhileThinking = searchWhileThinking
     }
 
     public init(options: [String: String]) throws {
-        let raw = options[Key.needContent] ?? options[Key.needContentAlias]
-        guard let raw else {
-            needContent = false
-            return
+        func flag(_ key: String, alias: String? = nil) throws -> Bool {
+            let raw = options[key] ?? alias.flatMap { options[$0] } ?? "false"
+            switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            case "", "false", "0": return false
+            case "true", "1": return true
+            default: throw WebRetrievalError.invalidResponse("Invalid DeepSeek search option \(key)")
+            }
         }
-        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "", "false", "0":
-            needContent = false
-        case "true", "1":
-            needContent = true
-        default:
-            throw WebRetrievalError.invalidResponse(
-                "Invalid DeepSeek search option needContent"
-            )
-        }
+        needContent = try flag(Key.needContent, alias: Key.needContentAlias)
+        searchWhileThinking = try flag(Key.searchWhileThinking)
     }
 
     public var dictionary: [String: String] {
-        [Key.needContent: needContent ? "true" : "false"]
+        [Key.needContent: String(needContent), Key.searchWhileThinking: String(searchWhileThinking)]
     }
 }
 

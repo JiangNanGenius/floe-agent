@@ -13252,9 +13252,9 @@ private struct SharedCanvasAgentConversation: View {
                 viewportFrame: earlierActivityViewport,
                 scrollDemand: earlierActivityScrollDemand)
         case .userMessage(let message):
-            messageBubble(title: FloeL10n.l("workspace.workspace_canvas_view.you"), text: displayContent(message), isUser: true)
-        case .assistantMessage(let text, _):
-            messageBubble(title: FloeL10n.l("workspace.workspace_canvas_view.canvas_assistant"), text: text, isUser: false)
+            messageBubble(title: FloeL10n.l("workspace.workspace_canvas_view.you"), text: displayContent(message), isUser: true, sentAt: message.createdAt, messageID: message.id.uuidString)
+        case .assistantMessage(let text, let id, let sentAt):
+            messageBubble(title: FloeL10n.l("workspace.workspace_canvas_view.canvas_assistant"), text: text, isUser: false, sentAt: sentAt, messageID: id)
         case .stepGroup(let events, let isLatest):
             StepGroupView(
                 events: events,
@@ -13294,7 +13294,7 @@ private struct SharedCanvasAgentConversation: View {
         }
     }
 
-    private func messageBubble(title: String, text: String, isUser: Bool) -> some View {
+    private func messageBubble(title: String, text: String, isUser: Bool, sentAt: Date, messageID: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             if isUser {
@@ -13304,6 +13304,7 @@ private struct SharedCanvasAgentConversation: View {
                 .environment(\.chatInlineContentScope, ChatInlineContentScope(
                     conversationID: viewModel.conversationID, isTemporary: viewModel.isTemporary))
             }
+            ChatMessageFooter(sentAt: sentAt, messageID: messageID, userText: isUser ? text : nil)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(isUser ? 12 : 0)

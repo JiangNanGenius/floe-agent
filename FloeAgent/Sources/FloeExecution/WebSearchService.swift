@@ -206,6 +206,8 @@ public actor WebSearchService {
         .googleProgrammable: URL(string: "https://customsearch.googleapis.com/customsearch/v1")!
     ]
 
+    static let deepSeekResponsesEndpoint = URL(string: "https://api.deepseek.com/responses")!
+
     static let volcengineFeedcoopEndpoint = URL(
         string: "https://open.feedcoopapi.com/search_api/web_search"
     )!
@@ -219,6 +221,10 @@ public actor WebSearchService {
     /// no fake-IP tunnel relaxation. Other kinds keep their single entry.
     static func canonicalEndpoint(for configuration: WebSearchProviderConfiguration) -> URL? {
         guard configuration.endpoint == nil else { return nil }
+        if configuration.kind == .deepseek {
+            guard let options = try? DeepSeekSearchOptions(options: configuration.options) else { return nil }
+            return options.searchWhileThinking ? deepSeekResponsesEndpoint : canonicalEndpoints[.deepseek]
+        }
         if configuration.kind == .moonshot {
             return try? MoonshotSearchOptions(options: configuration.options).endpoint
         }
@@ -323,7 +329,8 @@ public actor WebSearchService {
             var output = try Self.parseOutput(
                 data,
                 provider: configuration.kind,
-                limit: limit
+                limit: limit,
+                deepSeekThinking: try configuration.kind == .deepseek && DeepSeekSearchOptions(options: configuration.options).searchWhileThinking
             )
             if configuration.kind == .moonshot {
                 let channel = try MoonshotSearchOptions(options: configuration.options).channel.rawValue
@@ -360,6 +367,7 @@ public actor WebSearchService {
         let count = max(1, min(query.maxResults, 50))
         let apiKey = credential["apiKey"] ?? ""
         var request: URLRequest
+        var timeout: TimeInterval = configuration.kind == .moonshot ? 120 : 30
         switch configuration.kind {
         case .bochaWeb, .bochaAI:
             guard !apiKey.isEmpty else { throw WebRetrievalError.missingCredential("apiKey") }
@@ -477,14 +485,21 @@ public actor WebSearchService {
         case .deepseek:
             guard !apiKey.isEmpty else { throw WebRetrievalError.missingCredential("apiKey") }
             let options = try DeepSeekSearchOptions(options: configuration.options)
-            request = try deepSeekSearchRequest(
-                configuration,
-                apiKey: apiKey,
-                query: query,
-                count: count,
-                needContent: options.needContent,
-                now: now
-            )
+            if options.searchWhileThinking {
+                let input = try deepSeekQueryText(query, now: now, standalone: false)
+                request = try post(deepSeekThinkingEndpoint(override: configuration.endpoint), json: [
+                    "model": "deepseek-flash",
+                    "reasoning": ["effort": "high"],
+                    "tools": [["type": "deepseek_web_search"]],
+                    "input": input,
+                    "stream": false
+                ])
+                request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+                timeout = 300
+            } else {
+                request = try deepSeekSearchRequest(configuration, apiKey: apiKey, query: query,
+                                                    count: count, needContent: options.needContent, now: now)
+            }
 
         case .custom:
             guard let endpoint = configuration.endpoint else {
@@ -494,7 +509,7 @@ public actor WebSearchService {
             request = try post(endpoint, json: ["query": query.text, "count": count])
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         }
-        request.timeoutInterval = configuration.kind == .moonshot ? 120 : 30
+        request.timeoutInterval = timeout
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         return request
     }
@@ -753,13 +768,22 @@ public actor WebSearchService {
         return request
     }
 
+    /// A user-supplied gateway keeps its origin, port and path prefix when switching protocols.
+    private static func deepSeekThinkingEndpoint(override: URL?) -> URL {
+        guard let override, override != canonicalEndpoints[.deepseek] else { return deepSeekResponsesEndpoint }
+        guard var components = URLComponents(url: override, resolvingAgainstBaseURL: false),
+              components.path.hasSuffix("/tools/search") else { return override }
+        components.path = String(components.path.dropLast("/tools/search".count)) + "/responses"
+        return components.url ?? override
+    }
+
     /// Applies the officially documented search syntax to the frozen query
     /// arguments, then enforces the final scalar bound. Multiple preferred
     /// domains use the documented OR form; excluded hosts are space-separated
     /// `-site:` terms. Recency becomes an exact UTC `after:` date (inclusive
     /// window semantics match the other adapters: N days means the last N
     /// calendar days, so the start is N-1 days before `now`).
-    static func deepSeekQueryText(_ query: WebSearchQuery, now: Date) throws -> String {
+    static func deepSeekQueryText(_ query: WebSearchQuery, now: Date, standalone: Bool = true) throws -> String {
         let trimmed = query.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             throw WebRetrievalError.invalidResponse("DeepSeek search query is empty")
@@ -783,7 +807,7 @@ public actor WebSearchService {
         }
         let final = parts.joined(separator: " ")
         let scalarCount = final.unicodeScalars.count
-        guard scalarCount > 0, scalarCount <= DeepSeekSearchOptions.maximumQueryScalars else {
+        guard !standalone || scalarCount <= DeepSeekSearchOptions.maximumQueryScalars else {
             throw WebRetrievalError.invalidResponse(
                 "DeepSeek Search accepts queries up to \(DeepSeekSearchOptions.maximumQueryScalars) Unicode characters including site and date filters; shorten the query or filters"
             )
@@ -943,12 +967,12 @@ public actor WebSearchService {
         try parseOutput(data, provider: provider, limit: limit).results
     }
 
-    /// Full provider output. Only Ark carries a separate generated answer;
-    /// every other provider returns an empty answer field.
+    /// A synthesized answer stays separate from its URL sources.
     static func parseOutput(
         _ data: Data,
         provider: WebSearchProviderKind,
-        limit: Int
+        limit: Int,
+        deepSeekThinking: Bool = false
     ) throws -> WebSearchProviderOutput {
         let root: Any
         do {
@@ -966,6 +990,7 @@ public actor WebSearchService {
         }
         if provider == .moonshot { return try parseMoonshotResponse(object, limit: limit) }
         if provider == .deepseek {
+            if deepSeekThinking { return try parseDeepSeekThinkingResponse(object, limit: limit) }
             return try parseDeepSeekResponse(object, limit: limit)
         }
         if provider == .volcengine, isArkResponse(object) {
@@ -1051,7 +1076,8 @@ public actor WebSearchService {
                 !title.isEmpty,
                 let rawURL = optionalString(item, keys: ["url"]),
                 let url = URL(string: rawURL),
-                ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
+                ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
+                url.host?.isEmpty == false, url.user == nil, url.password == nil else {
                 continue
             }
             let snippet = optionalString(item, keys: ["snippet"]) ?? ""
@@ -1076,6 +1102,66 @@ public actor WebSearchService {
             ))
         }
         return WebSearchProviderOutput(results: output, generatedAnswer: nil)
+    }
+
+    /// DeepSeek puts the evidence in completed server calls and cites it in the final answer.
+    /// Reasoning items and encrypted payloads never enter the search output.
+    private static func parseDeepSeekThinkingResponse(_ object: [String: Any], limit: Int) throws -> WebSearchProviderOutput {
+        if let error = object["error"], !(error is NSNull) {
+            throw WebRetrievalError.invalidResponse(providerErrorMessage(error))
+        }
+        guard object["status"] as? String == "completed",
+              let output = object["output"] as? [[String: Any]] else {
+            throw WebRetrievalError.invalidResponse("DeepSeek did not complete the search")
+        }
+        var sources: [String: [String: Any]] = [:]
+        var sourceOrder: [String] = []
+        var citations: [[String: Any]] = []
+        var answer: [String] = []
+        var completedCalls = 0
+        var failedCalls = 0
+
+        func record(_ row: [String: Any]) {
+            guard let url = row["url"] as? String else { return }
+            if sources[url] == nil { sourceOrder.append(url) }
+            sources[url, default: [:]].merge(row) { existing, _ in existing }
+        }
+        for item in output {
+            switch item["type"] as? String {
+            case "web_search_call":
+                guard item["status"] as? String == "completed" else { failedCalls += 1; continue }
+                completedCalls += 1
+                let action = item["action"] as? [String: Any]
+                for row in action?["sources"] as? [[String: Any]] ?? [] { record(row) }
+                if let page = item["page"] as? [String: Any] { record(page) }
+            case "message":
+                guard item["role"] as? String == "assistant" else { continue }
+                for part in item["content"] as? [[String: Any]] ?? [] where part["type"] as? String == "output_text" {
+                    if let text = part["text"] as? String { answer.append(text) }
+                    citations += (part["annotations"] as? [[String: Any]] ?? []).filter { $0["type"] as? String == "url_citation" }
+                }
+            default: continue
+            }
+        }
+        guard failedCalls == 0 || completedCalls > 0 else {
+            throw WebRetrievalError.invalidResponse("DeepSeek could not retrieve search results")
+        }
+        var seen = Set<String>()
+        var rows: [[String: Any]] = []
+        for entry in citations + sourceOrder.compactMap({ sources[$0] }) {
+            guard let url = entry["url"] as? String, seen.insert(url).inserted else { continue }
+            var row = sources[url] ?? [:]
+            if (row["title"] as? String)?.isEmpty != false {
+                let title = entry["title"] as? String
+                row["title"] = title?.isEmpty == false ? title : url
+            }
+            row["url"] = url
+            row["date"] = row["published_at"]
+            rows.append(row)
+        }
+        let results = try parseDeepSeekResponse(["results": rows], limit: limit).results
+        return WebSearchProviderOutput(results: results,
+            generatedAnswer: .bounded(provider: .deepseek, text: answer.joined(separator: "\n")))
     }
 
     /// Ark Responses objects are distinguishable from the direct search API

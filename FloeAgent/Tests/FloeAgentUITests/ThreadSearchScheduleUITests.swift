@@ -172,6 +172,71 @@ final class ThreadSearchScheduleUITests: XCTestCase {
         }
     }
 
+    func testHistoricalDateAndOneTapUserCopy() {
+        XCUIDevice.shared.orientation = .portrait
+        let app = launch(arguments: ["--ui-test-temporary-chat-fixture", "--ui-test-history-date-copy"])
+        defer { app.terminate() }
+        XCTAssertTrue(revealSidebarRow(app, identifier: "sidebar.conversation.9289330B-91EB-4617-81B2-ABA312B98801"))
+        let dates = app.staticTexts.matching(NSPredicate(format: "identifier BEGINSWITH %@", "thread.message.date."))
+        XCTAssertTrue(dates.firstMatch.waitForExistence(timeout: 10))
+        XCTAssertEqual(dates.count, 2)
+        for date in dates.allElementsBoundByIndex {
+            XCTAssertTrue(date.label.contains("2022") && date.label.contains("7月") && date.label.contains("19"),
+                          "Stored July 19, 2022 date missing from \(date.label)")
+        }
+        let button = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "thread.user.copy.")).firstMatch
+        XCTAssertTrue(button.isHittable)
+        button.tap()
+        XCTAssertTrue(waitForLabel(button, "已复制", timeout: 2))
+        let input = app.textViews["composer.input"].firstMatch
+        XCTAssertTrue(input.waitForExistence(timeout: 10))
+        let expected = "第一行  \n第二行"
+        input.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        func removeFixturePaste() {
+            let value = input.value as? String ?? ""
+            guard !value.isEmpty else { return }
+            guard value == expected else {
+                XCTFail("Only text pasted by this test may be removed from its historical fixture")
+                return
+            }
+            // The trailing edge of the last line places the insertion point after
+            // this short two-line fixture, including when a prior run left it saved.
+            input.coordinate(withNormalizedOffset: CGVector(dx: 0.93, dy: 0.86)).tap()
+            input.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: expected.count))
+            let empty = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", ""), object: input)
+            XCTAssertEqual(XCTWaiter.wait(for: [empty], timeout: 6), .completed)
+        }
+        removeFixturePaste()
+        tapEditingCommand(["粘贴", "Paste"], in: input, app: app)
+        let pasted = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", expected), object: input)
+        XCTAssertEqual(XCTWaiter.wait(for: [pasted], timeout: 6), .completed,
+                       "The UIKit composer must contain the copied text with its spaces and newline intact")
+        removeFixturePaste()
+    }
+
+    private func tapEditingCommand(_ labels: [String], in editor: XCUIElement, app: XCUIApplication) {
+        editor.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 1.2)
+        let match = NSPredicate(format: "label IN %@", labels)
+        let item = app.menuItems.matching(match).firstMatch
+        if item.waitForExistence(timeout: 2) {
+            item.tap()
+        } else {
+            let button = app.buttons.matching(match).firstMatch
+            XCTAssertTrue(button.waitForExistence(timeout: 5), "UIKit must offer " + labels[0])
+            button.tap()
+        }
+    }
+
+    private func clearOwnedDraft(_ editor: XCUIElement, in app: XCUIApplication) {
+        if !((editor.value as? String) ?? "").isEmpty {
+            tapEditingCommand(["全选", "Select All"], in: editor, app: app)
+            editor.typeText(XCUIKeyboardKey.delete.rawValue)
+        }
+        let empty = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", ""), object: editor)
+        XCTAssertEqual(XCTWaiter.wait(for: [empty], timeout: 5), .completed,
+                       "The synthetic chat draft must be empty before the next edit")
+    }
+
     func testInChatFindCountsNavigatesAndPreservesDraft() {
         let app = launch(arguments: ["--ui-test-temporary-chat-fixture"])
         openSavedSyntheticChat(app)
@@ -187,28 +252,7 @@ final class ThreadSearchScheduleUITests: XCTestCase {
         // interrupted invocation can therefore leave the same test-owned
         // text in the slot; clear only that slot through the real editor
         // before typing this run's draft.
-        let existingDraft = composer.value as? String ?? ""
-        if !existingDraft.isEmpty {
-            // The iPad software-keyboard route did not perform Cmd+A in
-            // ui-repair-1 (the video retained a collapsed leading caret).
-            // Use UIKit's visible edit menu to select the owned draft; the
-            // empty assertion below still requires an actual successful edit.
-            composer.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-                .press(forDuration: 1.2)
-            let labels = NSPredicate(format: "label IN %@", ["全选", "Select All"])
-            let selectAllItem = app.menuItems.matching(labels).firstMatch
-            let selectAllButton = app.buttons.matching(labels).firstMatch
-            if selectAllItem.waitForExistence(timeout: 2) {
-                selectAllItem.tap()
-            } else {
-                XCTAssertTrue(selectAllButton.waitForExistence(timeout: 5),
-                              "UIKit must offer Select All for the nonempty synthetic draft")
-                selectAllButton.tap()
-            }
-            composer.typeText(XCUIKeyboardKey.delete.rawValue)
-        }
-        XCTAssertEqual(composer.value as? String ?? "", "",
-                       "the synthetic chat draft must be empty before typing")
+        clearOwnedDraft(composer, in: app)
         composer.typeText("draft-keep")
 
         let menu = app.buttons["thread.inspector.menu"]

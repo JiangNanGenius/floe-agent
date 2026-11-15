@@ -294,6 +294,7 @@ extension TTSSpeakerProvider {
         case .apple: return FloeL10n.l("voice.settings.service.system")
         case .onDevice: return FloeL10n.l("voice.settings.service.local")
         case .volcengine: return FloeL10n.l("voice.settings.service.volcengine")
+        case .deepSeek: return "DeepSeek"
         case .elevenLabs: return "ElevenLabs"
         case .openAI: return "OpenAI"
         case .alibaba: return FloeL10n.l("voice.settings.service.alibaba")

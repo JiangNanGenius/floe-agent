@@ -4,7 +4,7 @@ import UniformTypeIdentifiers
 import FloeCore
 import FloePersistence
 
-/// One scene-level presenter shared by Hub and Task Center.
+/// The Skill Hub opens its editor through the scene-level presenter.
 struct SkillAuthoringPresentationHost: ViewModifier {
     @ObservedObject var coordinator: SkillAuthoringCoordinator
     @ObservedObject var router: AppRouter
@@ -25,7 +25,7 @@ struct SkillAuthoringPresentationHost: ViewModifier {
     }
 }
 
-/// Both Hub and Task Center open this same panel; dismissal shelves work.
+/// Dismissing the panel leaves the draft in the Skill Hub.
 struct SkillAuthoringView: View {
     @ObservedObject var coordinator: SkillAuthoringCoordinator
     let id: UUID
@@ -55,12 +55,14 @@ struct SkillAuthoringView: View {
                             LabeledContent(FloeL10n.l("skills.authoring.model"), value: coordinator.modelLabel(id))
                             if [.draft, .failed, .interrupted, .stopped].contains(record.phase), record.kind == .importing {
                                 Button(FloeL10n.l("skills.authoring.choose_folder"), systemImage: "folder") { choosingFolder = true }
+                                    .accessibilityIdentifier("skills.authoring.chooseFolder")
                                 Button(FloeL10n.l("skills.authoring.import_url"), systemImage: "link") { coordinator.importURL(id: id) }
                                     .disabled(coordinator.isWorking(id) || coordinator.draftText(id).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                             }
                             if [.draft, .failed, .interrupted, .stopped, .needsUser].contains(record.phase),
                                record.kind == .creation || record.phase == .needsUser {
                                 Button(FloeL10n.l("skills.authoring.generate")) { coordinator.generate(id: id) }
+                                    .accessibilityIdentifier("skills.authoring.generate")
                                     .disabled(coordinator.isWorking(id) || coordinator.draftText(id).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                             }
                         }
@@ -83,18 +85,20 @@ struct SkillAuthoringView: View {
                     if !record.phase.isSettled, !record.isPromoted {
                         Section { Button(FloeL10n.l("skills.authoring.cancel"), role: .destructive) {
                             Task { await coordinator.cancel(id: id) }
-                        }.disabled(record.phase == .cancelling) }
+                        }.disabled(record.phase == .cancelling).accessibilityIdentifier("skills.authoring.cancelDraft") }
                     }
                     if record.isPromoted {
                         Button(FloeL10n.l("skills.authoring.open_task")) { coordinator.close(id: id); openTask(id) }
                     } else if record.phase.isSettled {
                         Button(FloeL10n.l("skills.authoring.done")) { Task { await coordinator.acknowledge(id: id) } }
+                            .accessibilityIdentifier("skills.authoring.done")
                     }
                 }
             }
             .navigationTitle(FloeL10n.l(coordinator.record(id)?.kind.titleKey ?? "skills.authoring.create"))
             .toolbar { ToolbarItem(placement: .cancellationAction) {
                 Button(FloeL10n.l("skills.authoring.close")) { coordinator.close(id: id) }
+                    .accessibilityIdentifier("skills.authoring.close")
             } }
             .fileImporter(isPresented: $choosingFolder, allowedContentTypes: [.folder]) { result in
                 switch result {
@@ -157,9 +161,9 @@ extension SkillAuthoringPackageDescriptor: Identifiable { var id: UUID { snapsho
 /// Reusable projection; the embedding screen owns navigation and placement.
 struct SkillAuthoringRows: View {
     @ObservedObject var coordinator: SkillAuthoringCoordinator
-    var taskCenter = false
+    let records: [SkillAuthoringRecord]
     var body: some View {
-        ForEach(taskCenter ? coordinator.taskCenterRecords : coordinator.shelfRecords) { record in
+        ForEach(records) { record in
             Button { Task { await coordinator.open(id: record.id) } } label: {
                 HStack {
                     Image(systemName: record.kind == .creation ? "sparkles" : "square.and.arrow.down")
@@ -168,6 +172,7 @@ struct SkillAuthoringRows: View {
                     Text(FloeL10n.l(record.phase.titleKey)).foregroundStyle(.secondary)
                 }
             }
+            .accessibilityIdentifier("skills.authoring.record.\(record.id.uuidString)")
         }
     }
 }

@@ -49,16 +49,6 @@ struct NotesToolbarButtonStyle: ButtonStyle {
 
 enum NotesInkTool: String, CaseIterable {
     case pen = "笔", marker = "荧光笔", eraser = "橡皮", lasso = "套索", region = "AI 选区"
-    /// Localized UI label. The raw value is persisted and stays stable.
-    var localizedTitle: LocalizedStringKey {
-        switch self {
-        case .pen: "notes.ink.tool.pen"
-        case .marker: "notes.ink.tool.marker"
-        case .eraser: "notes.ink.tool.eraser"
-        case .lasso: "notes.ink.tool.lasso"
-        case .region: "notes.ink.tool.ai_selection"
-        }
-    }
     var localizedAccessibilityTitle: String {
         switch self {
         case .pen: FloeL10n.l("notes.ink.tool.pen")
@@ -68,6 +58,15 @@ enum NotesInkTool: String, CaseIterable {
         case .region: FloeL10n.l("notes.ink.tool.ai_selection")
         }
     }
+    @ViewBuilder func glyph(selectedPen: NotesBrushKind) -> some View {
+        switch self {
+        case .pen: NotesBrushGlyph(kind: selectedPen).frame(width: 23, height: 23)
+        case .marker: NotesBrushGlyph(kind: .marker).frame(width: 23, height: 23)
+        default: Image(systemName: icon)
+        }
+    }
+
+    // The original name is also used by the stable accessibility identifiers.
     var icon: String {
         switch self {
         case .pen: "pencil.tip"
@@ -132,7 +131,7 @@ struct NotesPencilToolWheel: View {
                 Color.clear.frame(width: 44, height: 44)
             }.accessibilityLabel("notes.notes_palette_presentation.close_the_tool_ring_and_continue")
                 .accessibilityIdentifier("notes.pencil.quickMenu.close")
-            Text(preview == .pen ? inkPreferences.selectedPen.title : preview?.rawValue ?? "")
+            Text(preview == .pen ? inkPreferences.selectedPen.title : preview?.localizedAccessibilityTitle ?? "")
                 .font(.caption2.weight(.medium)).foregroundStyle(.secondary)
                 .lineLimit(1).frame(width: 92)
                 .position(x: diameter / 2 - 30 * cos((placement.startAngle + 90) * .pi / 180),
@@ -168,10 +167,9 @@ struct NotesPencilToolWheel: View {
         let isPreviewed = preview == value
         let highlightOpacity: Double = isSelected ? 0.16 : (isPreviewed ? 0.08 : 0)
         let foreground: Color = isSelected || isPreviewed ? .accentColor : .primary
-        let icon = value == .pen ? inkPreferences.selectedPen.icon : value.icon
         let title = value == .pen ? inkPreferences.selectedPen.title : value.localizedAccessibilityTitle
         return Button { select(value) } label: {
-            Image(systemName: icon)
+            value.glyph(selectedPen: inkPreferences.selectedPen)
                 .font(.system(size: 21, weight: .medium))
                 .foregroundStyle(foreground)
                 .frame(width: 44, height: 44)
