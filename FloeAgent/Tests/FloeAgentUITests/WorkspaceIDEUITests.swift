@@ -145,7 +145,18 @@ final class WorkspaceIDEUITests: XCTestCase {
         // is initialized through the product button, never a test hook.
         let initialize = app.buttons["sourceControl.initialize"]
         if initialize.waitForExistence(timeout: 8) {
+            app.buttons["workspace.ide.sidebar.refresh"].tap()
+            let clone = app.buttons["sourceControl.clone.open"]
+            XCTAssertFalse(app.alerts["源码管理错误"].exists, "a plain folder is a normal source-control state")
+            XCTAssertTrue(initialize.isHittable)
+            XCTAssertTrue(clone.isHittable)
+            XCTAssertGreaterThanOrEqual(initialize.frame.height, 44)
+            XCTAssertGreaterThanOrEqual(clone.frame.height, 44)
+            XCTAssertEqual(initialize.frame.width, clone.frame.width, accuracy: 1)
             capture("ide-git-before-initialize")
+            clone.tap()
+            XCTAssertTrue(app.textFields["sourceControl.clone.address"].waitForExistence(timeout: 10))
+            app.navigationBars["克隆仓库"].buttons["取消"].tap()
             initialize.tap()
         }
         XCTAssertTrue(
@@ -174,7 +185,11 @@ final class WorkspaceIDEUITests: XCTestCase {
         let branch = app.buttons["sourceControl.branch.open"]
         XCTAssertTrue(branch.exists, "the branch row must stay reachable")
         XCTAssertGreaterThanOrEqual(branch.frame.height, 44, "the branch row must keep a 44pt target")
-        XCTAssertGreaterThanOrEqual(app.buttons["sourceControl.commit.stageAll"].frame.height, 44)
+        let stageAll = app.buttons["sourceControl.commit.stageAll"]
+        let submit = app.buttons["sourceControl.commit.submit"]
+        XCTAssertGreaterThanOrEqual(stageAll.frame.height, 44)
+        XCTAssertGreaterThanOrEqual(submit.frame.height, 44)
+        XCTAssertEqual(stageAll.frame.width, submit.frame.width, accuracy: 1)
         XCTAssertTrue(
             app.descendants(matching: .any).matching(identifier: "sourceControl.commit.message").firstMatch.exists,
             "the multiline commit field must remain reachable"
@@ -339,7 +354,15 @@ final class WorkspaceIDEUITests: XCTestCase {
         }
         let manage = app.buttons["settings.files.manage"]
         XCTAssertTrue(manage.waitForExistence(timeout: 10)); manage.tap()
-        let workspace = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "批量选择测试")).firstMatch
+        let workspace = app.buttons.matching(NSPredicate(
+            format: "identifier BEGINSWITH %@ AND label CONTAINS %@", "files.workspace.", "批量选择测试"
+        )).firstMatch
+        if !workspace.exists {
+            let search = app.searchFields["搜索工作区或聊天"]
+            XCTAssertTrue(search.waitForExistence(timeout: 10))
+            search.tap()
+            search.typeText("批量选择测试\n")
+        }
         XCTAssertTrue(workspace.waitForExistence(timeout: 30)); workspace.tap()
         // Retain the actual listing state before the file query: on loaded
         // runners AX snapshots of a restored heavy editor can stall answers.

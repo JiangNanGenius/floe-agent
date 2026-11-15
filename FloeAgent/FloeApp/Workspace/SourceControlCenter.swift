@@ -17,8 +17,10 @@ import FloeSSH
 enum SourceControlRootIdentity {
     static func matches(current: URL?, pinned: URL?) -> Bool {
         guard let pinned else { return true }
-        guard let current else { return false }
-        return current.standardizedFileURL == pinned.standardizedFileURL
+        guard let current, current.isFileURL, pinned.isFileURL else { return false }
+        // Resolving ".." can add a trailing slash. Both identities are directory URLs.
+        return current.standardizedFileURL.appendingPathComponent("", isDirectory: true)
+            == pinned.standardizedFileURL.appendingPathComponent("", isDirectory: true)
     }
 }
 
@@ -347,8 +349,7 @@ final class SourceControlCenter: ObservableObject {
                 guard let self else { return }
                 self.cancelOperation()
                 self.refreshGeneration &+= 1
-                self.snapshot = .init(isRepository: false); self.repositoryRoot = nil
-                self.repositoryWorkspaceRoot = nil; self.remoteDescriptors = []
+                self.clearRepositoryState()
                 await self.refreshRepository()
             }
         }
@@ -724,25 +725,45 @@ final class SourceControlCenter: ObservableObject {
     /// stale in-flight task, so switching workspaces always schedules B.
     private var refreshGeneration: UInt64 = 0
 
+    private func clearRepositoryState() {
+        snapshot = .init(isRepository: false)
+        repositoryRoot = nil
+        repositoryWorkspaceRoot = nil
+        remoteDescriptors = []
+        selectedRemoteName = "origin"
+        historyRequestID = nil
+        historyBusy = false
+        historyEntries = []
+        historyNextOffset = nil
+        historyHeadOID = nil
+        historyWorkspaceRoot = nil
+        errorMessage = nil
+    }
+
     func refreshRepository() async {
         refreshGeneration &+= 1
         let generation = refreshGeneration
         guard let root = workspaceCenter.currentRootURL else {
-            snapshot = GitRepositorySnapshot(isRepository: false)
-            repositoryRoot = nil
+            clearRepositoryState()
             return
         }
         do {
             let updated = try await git.snapshot(at: root)
             guard isCurrentRefresh(generation, root: root) else { return }
+            guard updated.isRepository else {
+                clearRepositoryState()
+                return
+            }
             snapshot = updated
             repositoryRoot = updated.repositoryRoot
             repositoryWorkspaceRoot = root
-            let remotes = updated.isRepository ? try await git.remotes(at: updated.repositoryRoot ?? root) : []
+            let remotes = try await git.remotes(at: updated.repositoryRoot ?? root)
             guard isCurrentRefresh(generation, root: root) else { return }
             remoteDescriptors = remotes
             if !remotes.contains(where: { $0.name == selectedRemoteName }) {
-                selectedRemoteName = (try? await git.upstreamRemote(at: updated.repositoryRoot ?? root)) ?? remotes.first?.name ?? "origin"
+                let upstream = try? await git.upstreamRemote(at: updated.repositoryRoot ?? root)
+                guard isCurrentRefresh(generation, root: root) else { return }
+                selectedRemoteName = upstream ?? remotes.first?.name ?? "origin"
             }
             errorMessage = nil
             if historyWorkspaceRoot != root || historyHeadOID != updated.headOID { await loadHistory(reset: true) }
@@ -774,6 +795,10 @@ final class SourceControlCenter: ObservableObject {
         // during this second round trip.
         guard SourceControlRootIdentity.matches(current: currentWorkspaceRoot, pinned: workspaceRoot) else {
             await refreshRepository()
+            return
+        }
+        guard updated.isRepository else {
+            clearRepositoryState()
             return
         }
         snapshot = updated
@@ -997,7 +1022,7 @@ final class SourceControlCenter: ObservableObject {
         return project.id
     }
     func loadHistory(reset: Bool = false) async {
-        guard (reset || !historyBusy), let origin = currentWorkspaceRoot else { return }
+        guard snapshot.isRepository, (reset || !historyBusy), let origin = currentWorkspaceRoot else { return }
         let expected = reset ? nil : historyHeadOID, offset = reset ? 0 : historyNextOffset
         guard reset || offset != nil else { return }
         let requestID = UUID(); historyRequestID = requestID; historyBusy = true

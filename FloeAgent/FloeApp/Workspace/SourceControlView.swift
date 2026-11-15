@@ -86,6 +86,7 @@ private extension View {
 /// scannable.
 struct SourceControlView: View {
     @EnvironmentObject private var router: AppRouter
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @ObservedObject var center: SourceControlCenter
     /// Directly observed so a workspace switch that does not publish through
     /// the source-control center still redraws the pane and flips the lock.
@@ -161,20 +162,7 @@ struct SourceControlView: View {
             } else if center.snapshot.isRepository {
                 repositoryContent
             } else {
-                // Intentional not-a-repository state: discovery already
-                // checked the workspace and its parents, so this is a truthful
-                // "no repository here" (not a hidden or failed tree).
-                ContentUnavailableView {
-                    Label(IDELanguageRunText.t("不是 Git 仓库", "Not a Git Repository"), systemImage: "arrow.triangle.branch")
-                } description: {
-                    Text(IDELanguageRunText.t("当前工作区及上层目录中都没有 Git 仓库。可以在工作区初始化一个本地仓库；文件仍保留在原位置。", "No Git repository exists in this workspace or its parent folders. You can initialize a local repository here; files stay where they are."))
-                } actions: {
-                    Button(IDELanguageRunText.t("初始化仓库", "Initialize Repository")) { run { try await center.initializeRepository() } }
-                        .buttonStyle(.borderedProminent)
-                        .frame(minWidth: 44, minHeight: 44)
-                        .disabled(center.isBusy)
-                        .accessibilityIdentifier("sourceControl.initialize")
-                }
+                emptyRepository
             }
         }
         .disabled(pinnedRootURL != nil && !identityMatches)
@@ -203,7 +191,7 @@ struct SourceControlView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
-                    Button { panelOriginRoot = workspaceCenter.currentRootURL; showClone = true } label: { Label(IDELanguageRunText.t("克隆仓库", "Clone Repository"), systemImage: "square.and.arrow.down") }
+                    Button(action: openClone) { Label(IDELanguageRunText.t("克隆仓库", "Clone Repository"), systemImage: "square.and.arrow.down") }
                     if center.snapshot.isRepository {
                         Button { panelOriginRoot = workspaceCenter.currentRootURL; showRemotes = true } label: { Label(IDELanguageRunText.t("远端与连接", "Remotes and Connections"), systemImage: "network") }
                         Button { panelOriginRoot = workspaceCenter.currentRootURL; showRecovery = true } label: { Label(IDELanguageRunText.t("恢复修改", "Recover Changes"), systemImage: "clock.arrow.circlepath") }
@@ -312,6 +300,45 @@ struct SourceControlView: View {
         }
     }
 
+    private var emptyRepository: some View {
+        ContentUnavailableView {
+            Label(IDELanguageRunText.t("尚未初始化仓库", "No Git Repository Yet"), systemImage: "arrow.triangle.branch")
+        } description: {
+            Text(IDELanguageRunText.t("用 Git 记录当前工作区的文件更改，或克隆已有仓库。", "Track changes to files in this workspace with Git, or clone an existing repository."))
+        } actions: {
+            VStack(spacing: 8) {
+                Button {
+                    run { try await center.initializeRepository() }
+                } label: {
+                    Text(IDELanguageRunText.t("初始化仓库", "Initialize Repository"))
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .accessibilityIdentifier("sourceControl.initialize")
+                Button(action: openClone) {
+                    Text(IDELanguageRunText.t("克隆仓库", "Clone Repository"))
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .accessibilityIdentifier("sourceControl.clone.open")
+            }
+            .controlSize(.large)
+            .frame(maxWidth: 300)
+            .disabled(center.isBusy || workspaceCenter.currentRootURL == nil)
+        }
+    }
+
+    private func openClone() {
+        panelOriginRoot = workspaceCenter.currentRootURL
+        showClone = true
+    }
+
+    private var actionLayout: AnyLayout {
+        dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(spacing: 8))
+            : AnyLayout(HStackLayout(spacing: 8))
+    }
+
     private var repositoryContent: some View {
         List {
             Section {
@@ -355,6 +382,66 @@ struct SourceControlView: View {
                 }
             }
 
+            if !conflictedChanges.isEmpty {
+                Section(String(format: IDELanguageRunText.t("冲突（%lld）", "Conflicts (%lld)"), Int64(conflictedChanges.count))) {
+                    ForEach(conflictedChanges) { change in
+                        Button {
+                            openConflict(change.path)
+                        } label: {
+                            Label(change.path, systemImage: "exclamationmark.triangle.fill")
+                                .foregroundStyle(FloeTheme.destructive)
+                                .frame(maxWidth: .infinity, minHeight: SourceControlLayout.minRowHeight, alignment: .leading)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .sourceControlRowInsets()
+                    }
+                    Button(role: .destructive) {
+                        run { try await center.abortMerge() }
+                    } label: {
+                        Text(IDELanguageRunText.t("中止合并", "Abort Merge"))
+                            .frame(maxWidth: .infinity, minHeight: FloeTheme.minimumTarget, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                    .disabled(center.isBusy)
+                    .sourceControlRowInsets()
+                }
+            }
+
+            Section(IDELanguageRunText.t("提交", "Commit")) {
+                TextField(IDELanguageRunText.t("说明这次修改", "Describe this change"), text: $commitMessage, axis: .vertical)
+                    .lineLimit(2...5)
+                    .font(.subheadline)
+                    .accessibilityIdentifier("sourceControl.commit.message")
+                    .sourceControlRowInsets()
+                actionLayout {
+                    Button {
+                        run { try await center.stageAll() }
+                    } label: {
+                        Text(IDELanguageRunText.t("暂存全部", "Stage All"))
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(center.isBusy)
+                    .accessibilityIdentifier("sourceControl.commit.stageAll")
+                    Button {
+                        let message = commitMessage
+                        run {
+                            try await center.commit(message: message)
+                            commitMessage = ""
+                        }
+                    } label: {
+                        Text(IDELanguageRunText.t("提交", "Commit"))
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || center.isBusy || stagedChanges.isEmpty)
+                    .accessibilityIdentifier("sourceControl.commit.submit")
+                }
+                .controlSize(.large)
+                .sourceControlRowInsets()
+            }
+
             Section(IDELanguageRunText.t("同步", "Sync")) {
                 // Three equal buttons instead of bordered `Label`s: a bordered
                 // label title wraps its two CJK characters one per line in
@@ -367,7 +454,7 @@ struct SourceControlView: View {
                         ForEach(center.remoteDescriptors) { Text($0.name).tag($0.name) }
                     }.disabled(center.isBusy).sourceControlRowInsets()
                 }
-                HStack(spacing: 6) {
+                actionLayout {
                     syncButton(
                         IDELanguageRunText.t("抓取", "Fetch"),
                         icon: "arrow.down.circle",
@@ -405,66 +492,6 @@ struct SourceControlView: View {
                 .sourceControlRowInsets()
             }
 
-            if !conflictedChanges.isEmpty {
-                Section(String(format: IDELanguageRunText.t("冲突（%lld）", "Conflicts (%lld)"), Int64(conflictedChanges.count))) {
-                    ForEach(conflictedChanges) { change in
-                        Button {
-                            openConflict(change.path)
-                        } label: {
-                            Label(change.path, systemImage: "exclamationmark.triangle.fill")
-                                .foregroundStyle(FloeTheme.destructive)
-                                .frame(maxWidth: .infinity, minHeight: SourceControlLayout.minRowHeight, alignment: .leading)
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .sourceControlRowInsets()
-                    }
-                    Button(role: .destructive) {
-                        run { try await center.abortMerge() }
-                    } label: {
-                        Text(IDELanguageRunText.t("中止合并", "Abort Merge"))
-                            .frame(maxWidth: .infinity, minHeight: FloeTheme.minimumTarget, alignment: .leading)
-                            .contentShape(Rectangle())
-                    }
-                    .disabled(center.isBusy)
-                    .sourceControlRowInsets()
-                }
-            }
-
-            Section(IDELanguageRunText.t("提交", "Commit")) {
-                TextField(IDELanguageRunText.t("说明这次修改", "Describe this change"), text: $commitMessage, axis: .vertical)
-                    .lineLimit(2...5)
-                    .font(.subheadline)
-                    .accessibilityIdentifier("sourceControl.commit.message")
-                    .sourceControlRowInsets()
-                HStack(spacing: 8) {
-                    Button {
-                        run { try await center.stageAll() }
-                    } label: {
-                        Text(IDELanguageRunText.t("暂存全部", "Stage All"))
-                            .frame(minHeight: FloeTheme.minimumTarget)
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(center.isBusy)
-                    .accessibilityIdentifier("sourceControl.commit.stageAll")
-                    Spacer(minLength: 0)
-                    Button {
-                        let message = commitMessage
-                        run {
-                            try await center.commit(message: message)
-                            commitMessage = ""
-                        }
-                    } label: {
-                        Text(IDELanguageRunText.t("提交", "Commit"))
-                            .frame(minHeight: FloeTheme.minimumTarget)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || center.isBusy || stagedChanges.isEmpty)
-                    .accessibilityIdentifier("sourceControl.commit.submit")
-                }
-                .sourceControlRowInsets()
-            }
-
             if !stagedChanges.isEmpty {
                 Section(String(format: IDELanguageRunText.t("已暂存（%lld）", "Staged (%lld)"), Int64(stagedChanges.count))) {
                     OutlineGroup(SourceControlChangeTree.build(stagedChanges), children: \.outlineChildren) { node in
@@ -475,7 +502,9 @@ struct SourceControlView: View {
 
             Section(String(format: IDELanguageRunText.t("更改（%lld）", "Changes (%lld)"), Int64(unstagedChanges.count))) {
                 if unstagedChanges.isEmpty {
-                    Text(IDELanguageRunText.t("工作区干净", "Working tree clean"))
+                    Text(stagedChanges.isEmpty && conflictedChanges.isEmpty
+                        ? IDELanguageRunText.t("工作区干净", "Working tree clean")
+                        : IDELanguageRunText.t("没有未暂存的更改", "No unstaged changes"))
                         .foregroundStyle(.secondary)
                         .frame(minHeight: SourceControlLayout.minRowHeight, alignment: .leading)
                         .sourceControlRowInsets()
@@ -528,6 +557,7 @@ struct SourceControlView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 Button { Task { await center.refreshRepository() } } label: { Image(systemName: "arrow.clockwise") }
                     .disabled(center.isBusy)
+                    .accessibilityLabel(IDELanguageRunText.t("刷新", "Refresh"))
             }
         }
     }
@@ -722,11 +752,7 @@ struct SourceControlView: View {
         .contentShape(Rectangle())
     }
 
-    /// One sync action. Three of these share the row equally: a glyph over a
-    /// short single-line label keeps fetch/pull/push readable in the pane's
-    /// 280–330pt width, where a bordered `Label` wrapped its two CJK
-    /// characters one per line into an unreadable circle. Every button keeps
-    /// a >=44pt target and carries the action's name for VoiceOver.
+    /// The three actions share a row at standard sizes and stack at accessibility sizes.
     private func syncButton(
         _ title: String,
         icon: String,
@@ -734,17 +760,14 @@ struct SourceControlView: View {
         operation: @escaping @MainActor () async throws -> Void
     ) -> some View {
         Button { run(operation) } label: {
-            VStack(spacing: 1) {
+            VStack(spacing: 3) {
                 Image(systemName: icon)
-                    .font(.system(size: 16, weight: .medium))
-                    .frame(height: 20)
+                    .font(.body.weight(.medium))
                 Text(title)
-                    .font(.caption2.weight(.medium))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                    .frame(maxWidth: .infinity)
+                    .font(.caption.weight(.medium))
             }
             .foregroundStyle(FloeTheme.primary)
+            .padding(.vertical, 4)
             .frame(maxWidth: .infinity, minHeight: FloeTheme.minimumTarget)
             .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .background(

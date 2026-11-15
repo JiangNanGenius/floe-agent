@@ -7,9 +7,7 @@
 // current workspace changes. Settings file browsing has its own center, so
 // the IDE and source-control surface must share that exact instance.
 //
-// `SourceControlCenter` itself needs the app-lifetime `AppEnvironment` graph
-// (private init, live keychain/services), so these tests pin the pure
-// identity decision the rendering lock and the mutation guard both use:
+// The identity cases pin the decision the rendering lock and the mutation guard both use:
 // same root => bound, A→B => blocked, nil pin (legacy inspector) => follows
 // the source-control center's bound workspace.
 
@@ -23,6 +21,55 @@ import Testing
 struct SourceControlRootIdentityTests {
     private let rootA = URL(fileURLWithPath: "/workspaces/A")
     private let rootB = URL(fileURLWithPath: "/workspaces/B")
+
+    @Test("Opening and refreshing a plain task folder offers initialization without a Git error")
+    func refreshPlainTaskWorkspace() async throws {
+        let environment = FloeAgentApp.liveEnvironment
+        try await environment.ensureDurableAutomationReady()
+        let workspace = WorkspaceCenter(environment: environment, publishesSharedState: false)
+        let id = UUID()
+        let now = Date()
+        try await environment.conversationStore.saveConversationWithCanonicalWorkspace(
+            .init(id: id, title: "Git refresh test", createdAt: now, updatedAt: now))
+        var testRoot: URL?
+        func cleanUp() async throws {
+            workspace.closeCurrentWorkspace()
+            try await environment.conversationStore.deleteConversation(id: id)
+            if let testRoot, FileManager.default.fileExists(atPath: testRoot.path) {
+                try FileManager.default.removeItem(at: testRoot)
+            }
+        }
+        do {
+            try await workspace.openTaskWorkspace(conversationID: id)
+            let root = try #require(workspace.currentRootURL)
+            testRoot = root
+            let center = SourceControlCenter(environment: environment, workspaceCenter: workspace)
+            await center.refreshRepository()
+            await center.refreshRepository()
+            #expect(!center.snapshot.isRepository)
+            #expect(center.errorMessage == nil)
+            #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(".git").path))
+
+            try await center.initializeRepository()
+            try Data("first change".utf8).write(to: root.appendingPathComponent("file.txt"))
+            try await center.stage(paths: ["file.txt"])
+            try await center.commit(message: "First commit")
+            await center.refreshRepository()
+            #expect(center.historyEntries.first?.message == "First commit")
+            #expect(center.errorMessage == nil)
+
+            try FileManager.default.moveItem(at: root.appendingPathComponent(".git"),
+                                             to: root.appendingPathComponent("saved.git"))
+            await center.refreshRepository()
+            #expect(!center.snapshot.isRepository)
+            #expect(center.historyEntries.isEmpty)
+            #expect(center.errorMessage == nil)
+        } catch {
+            try await cleanUp()
+            throw error
+        }
+        try await cleanUp()
+    }
 
     @Test("A pinned root matches the same workspace")
     func sameRootMatches() {
