@@ -1,6 +1,7 @@
 import SwiftUI
 import RealityKit
 import FloeChemistryCore
+import FloeChemistryEngine
 import simd
 #if os(iOS)
 import UIKit
@@ -29,7 +30,22 @@ private enum MolecularNavigation: CaseIterable { case orbit, pan, zoom
     @State private var showCell = true
     @State private var cell: [SIMD3<Float>] = []
     @State private var error: String?
-    public init(object: ChemicalObject, selectedAtoms: Binding<[Int]>) { self.object = object; _selectedAtoms = selectedAtoms }
+    @State private var loaded = false
+    private let previewOrigin: ChemistryPreviewOrigin?
+    private let optimizationStatus: String?
+    public init(object: ChemicalObject, selectedAtoms: Binding<[Int]>, previewOrigin: ChemistryPreviewOrigin? = nil, optimizationStatus: String? = nil) {
+        self.object = object
+        _selectedAtoms = selectedAtoms
+        self.previewOrigin = previewOrigin
+        self.optimizationStatus = optimizationStatus
+    }
+    private func previewTitle(_ origin: ChemistryPreviewOrigin) -> String {
+        switch origin {
+        case .original: chemistryText("Original 3D coordinates", "原始三维坐标")
+        case .generated: chemistryText("3D preview generated", "已生成三维预览")
+        case .cached: chemistryText("Saved 3D preview", "已恢复三维预览")
+        }
+    }
     public var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
@@ -49,11 +65,23 @@ private enum MolecularNavigation: CaseIterable { case orbit, pan, zoom
                     MolecularRealityView(scene: scene, cell: showCell ? cell : [], style: style, selectedAtoms: $selectedAtoms)
                         .realityViewCameraControls(navigation.controls).id(reset)
                 } else if let error { ContentUnavailableView(chemistryText("Preview unavailable", "暂时无法预览"), systemImage: "atom", description: Text(error)) }
-                else { ContentUnavailableView(chemistryText("No spatial coordinates", "尚无空间坐标"), systemImage: "atom", description: Text(chemistryText("Use 2D drawing, or generate a 3D structure in a configured environment.", "可使用二维绘图，或在已配置的环境中生成三维结构。"))) }
+                else if previewOrigin != nil && !loaded { ProgressView() }
+                else { ContentUnavailableView(chemistryText("No spatial coordinates", "尚无空间坐标"), systemImage: "atom") }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            if let previewOrigin, scene.isThreeDimensional {
+                HStack {
+                    Text(previewTitle(previewOrigin)).accessibilityIdentifier("chemistry.preview.ready")
+                        .accessibilityValue(Text(verbatim: previewOrigin.rawValue))
+                    if optimizationStatus == "parametersUnavailable" || optimizationStatus == "iterationLimit" {
+                        Text(chemistryText("Approximate geometry", "近似几何结构")).foregroundStyle(.secondary)
+                    }
+                }.font(.caption).padding(.horizontal, 12)
+            }
             Divider()
             HStack(spacing: 12) {
                 Text("\(Int(object.facts?["atomCount"]?.number ?? Double(scene.atoms.count))) " + chemistryText("atoms", "个原子") + " · \(scene.bonds.count) " + chemistryText("bonds", "条键"))
+                    .accessibilityIdentifier("chemistry.preview.counts")
+                    .accessibilityValue(Text(verbatim: "\(scene.atoms.count)/\(scene.bonds.count)"))
                 if !selectedAtoms.isEmpty { Text(chemistryText("Selected", "已选") + " " + selectedAtoms.map { String($0+1) }.joined(separator: ", ")) }
                 Spacer()
                 Text(object.facts?["geometryDimension"]?.number == 2 ? chemistryText("2D drawing coordinates · Å", "二维绘图坐标 · Å") : "Å").accessibilityLabel(chemistryText("Coordinates in angstroms", "坐标单位为埃"))
@@ -64,10 +92,10 @@ private enum MolecularNavigation: CaseIterable { case orbit, pan, zoom
             do {
                 let source = object.facts?["cjson"]?.string ?? (object.format == "cjson" ? object.source : "{}")
                 let value = try await ChemistryScene.load(source)
-                guard !Task.isCancelled else { return }; scene = value; cell = value.cellVertices; reset = UUID(); error = nil
+                guard !Task.isCancelled else { return }; loaded = true; scene = value; cell = value.cellVertices; reset = UUID(); error = nil
             } catch {
                 guard !Task.isCancelled else { return }
-                self.error=error.localizedDescription;scene=ChemistryScene();cell=[]
+                loaded = true; self.error=error.localizedDescription;scene=ChemistryScene();cell=[]
             }
         }
         .onChange(of: showCell) { _, _ in reset = UUID() }

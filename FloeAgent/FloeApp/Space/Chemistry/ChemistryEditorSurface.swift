@@ -45,6 +45,7 @@ struct ChemistryEditorSurface: View {
                     }.padding().background(.regularMaterial)
                 }
             }
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("chemistry.personalEditor")
     }
     private func insert(_ objectID: UUID?, using callback: @escaping ChemistryNotesInsertion) {

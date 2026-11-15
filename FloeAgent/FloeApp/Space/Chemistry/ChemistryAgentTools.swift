@@ -162,6 +162,38 @@ extension ChemistryProjectSession {
             return try StudioToolOutput.make(ChemistryNativeCapabilities(projectID: projectID,
                 defaultEnvironmentID: project.defaultEnvironmentID, environments: await service.capabilities(),
                 nativeEngineVersion: NativeChemistryBackend().engineVersion))
+        case "preview3D":
+            try await requireReadyForAgentEdit()
+            guard let objectID = input.objectID, let revision = input.expectedObjectRevision,
+                  let fields = try JSONSerialization.jsonObject(with: Data(inputJSON.utf8)) as? [String: Any],
+                  Set(fields.keys) == ["objectID", "expectedObjectRevision"] else {
+                throw FloeError.validationFailed("3D Preview requires the object ID and its current revision.")
+            }
+            guard let object = project.objects.first(where: { $0.id == objectID }),
+                  object.revision == revision else { throw PersonalContentError.changedDocument }
+            let token = context.cancellation
+            try token.throwIfCancelled()
+            try Task.checkCancellation()
+            let work = Task { try await editor.moleculePreview(for: object) }
+            let cancellation = Task {
+                while !Task.isCancelled {
+                    if token.isCancelled { work.cancel(); return }
+                    do { try await Task.sleep(for: .milliseconds(75)) } catch { return }
+                }
+            }
+            defer { cancellation.cancel() }
+            let preview = try await withTaskCancellationHandler {
+                try await work.value
+            } onCancel: { work.cancel() }
+            try token.throwIfCancelled()
+            try Task.checkCancellation()
+            guard !closing else { throw PersonalContentError.changedDocument }
+            return try StudioToolOutput.make(ChemistryPreviewReceipt(
+                projectID: projectID, objectID: objectID, objectRevision: revision,
+                sourceSHA256: preview.key.sourceDigest, origin: preview.origin.rawValue,
+                atomCount: preview.atomCount, bondCount: preview.bondCount,
+                optimizationStatus: preview.optimizationStatus,
+                openURL: "floe://work/" + projectID.uuidString.lowercased()))
         case "history":
             let offset = input.offset ?? 0, limit = input.limit ?? 50
             guard offset >= 0, (1...200).contains(limit) else { throw PersonalContentError.invalidProject }
@@ -265,6 +297,18 @@ struct ChemistryNativeCapabilities: Encodable {
     let defaultEnvironmentID: String
     let environments: [String: [String]]
     let nativeEngineVersion: String
+    let moleculePreviewAction = "preview3D"
+}
+struct ChemistryPreviewReceipt: Encodable {
+    let projectID: UUID
+    let objectID: UUID
+    let objectRevision: UInt64
+    let sourceSHA256: String
+    let origin: String
+    let atomCount: Int
+    let bondCount: Int
+    let optimizationStatus: String?
+    let openURL: String
 }
 struct ChemistryHistoryPage: Encodable { let projectID: UUID; let revisions: [ChemistryRevision]; let nextOffset: Int? }
 struct ChemistryObjectReceipt: Encodable { let projectID: UUID; let objectID: UUID; let revision: UInt64; let format: String }
@@ -273,14 +317,14 @@ struct ChemistryExportReceipt: Encodable { let projectID: UUID; let fileName: St
 struct StudioChemistryTool: AgentTool {
     struct Arguments: Decodable, Sendable { let projectID: UUID; let action: String; let inputJSON: String? }
     static let name = "studio.chemistry"
-    static let toolDescription = "Use the actual chemistry original and fixed on-device engine. Read studio.read first for project/object revisions and methods. actions: capabilities, history, calculate, status, result, cancel, apply, export. calculate inputJSON requires objectID, expectedObjectRevision, method, optional options/environmentID (native.local only). status/cancel use runID. calculate/status include complete small results or explicit resultComplete=false plus resultFields/resultSHA256; result reads runID+optional exact resultKey/offset/limit (1...1000), with expectedResultSHA256 required for continuation. apply uses runID+expectedObjectRevision and refuses stale structures. export uses objectID+format for the original, or runID+format=json for the complete saved successful result, or runID+format=csv+resultKey for a real numeric table and a provenance sidecar. Result exports return verified run-owned outputFiles; no strings/nested CSV coercion or new calculation. Failed/cancelled calculations retain their actual status and never masquerade as success. External jobs are handled by the separately configured environment adapter, never by this tool."
-    static let parametersJSON = #"{"type":"object","properties":{"projectID":{"type":"string","format":"uuid"},"action":{"type":"string","enum":["capabilities","history","calculate","status","result","cancel","apply","export"]},"inputJSON":{"type":"string","maxLength":262144}},"required":["projectID","action"],"additionalProperties":false}"#
+    static let toolDescription = "Use the actual chemistry original and fixed on-device engine. Read studio.read first for project/object revisions and methods. actions: capabilities, history, preview3D, calculate, status, result, cancel, apply, export. preview3D takes objectID and expectedObjectRevision, uses stored coordinates or generates a local preview, and preserves the original drawing. Its receipt identifies the source revision, origin, atom and bond counts. calculate inputJSON requires objectID, expectedObjectRevision, method, optional options/environmentID (native.local only). status/cancel use runID. calculate/status include complete small results or explicit resultComplete=false plus resultFields/resultSHA256; result reads runID+optional exact resultKey/offset/limit (1...1000), with expectedResultSHA256 required for continuation. apply uses runID+expectedObjectRevision and refuses stale structures. export uses objectID+format for the original, or runID+format=json for the complete saved successful result, or runID+format=csv+resultKey for a real numeric table and a provenance sidecar. Result exports return verified run-owned outputFiles; no strings/nested CSV coercion or new calculation. Failed/cancelled calculations retain their actual status and never masquerade as success. External jobs are handled by the separately configured environment adapter, never by this tool."
+    static let parametersJSON = #"{"type":"object","properties":{"projectID":{"type":"string","format":"uuid"},"action":{"type":"string","enum":["capabilities","history","preview3D","calculate","status","result","cancel","apply","export"]},"inputJSON":{"type":"string","maxLength":262144}},"required":["projectID","action"],"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.persistsPersonalData]
     static let isSideEffecting = true
     static let toolEffect: ToolEffect = .internalState
     let coordinator: StudioCoordinator
     func validate(_ args: Arguments) throws {
-        guard ["capabilities", "history", "calculate", "status", "result", "cancel", "apply", "export"].contains(args.action),
+        guard ["capabilities", "history", "preview3D", "calculate", "status", "result", "cancel", "apply", "export"].contains(args.action),
               (args.inputJSON?.utf8.count ?? 0) <= 256 * 1_024 else { throw PersonalContentError.invalidProject }
     }
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {

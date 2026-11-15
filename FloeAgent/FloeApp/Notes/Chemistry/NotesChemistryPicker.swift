@@ -41,9 +41,12 @@ import FloeChemistryCore
                         ForEach(works) { work in Text(work.title).tag(Optional(work.id)) }
                     }.disabled(inserting || fixedWorkID != nil)
                     Picker(IDELanguageRunText.t("插入内容", "Insert content"), selection: $mode) {
-                        Text(IDELanguageRunText.t("图片与工程链接", "Image and project link")).tag(NotesChemistryInsertMode.image)
-                        Text(IDELanguageRunText.t("仅工程链接", "Project link only")).tag(NotesChemistryInsertMode.link)
-                    }.disabled(inserting)
+                        Text(IDELanguageRunText.t("图片与链接", "Image and link")).tag(NotesChemistryInsertMode.image)
+                        Text(IDELanguageRunText.t("仅链接", "Link only")).tag(NotesChemistryInsertMode.link)
+                    }
+                    .pickerStyle(.segmented)
+                    .accessibilityIdentifier("notes.chemistry.contentMode")
+                    .disabled(inserting)
                     if let project {
                         Picker(IDELanguageRunText.t("结构或谱图", "Structure or spectrum"), selection: $objectID) {
                             if mode == .link { Text(IDELanguageRunText.t("整个工程", "Entire project")).tag(UUID?.none) }

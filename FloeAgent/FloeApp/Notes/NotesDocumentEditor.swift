@@ -31,8 +31,13 @@ struct NotesDocumentEditor: View {
     @State private var showingChemistry = false
     @State private var pendingChemistryWork: NoteWorkReference?
     @State private var chemistryWork: PersonalContentRecord?
-    @State private var inspectingElement: NoteElement?
-    @State private var inspectionBase: NoteDocument?
+    private struct ElementInspection: Identifiable {
+        let document: NoteDocument
+        let page: NotePage
+        let element: NoteElement
+        var id: UUID { element.id }
+    }
+    @State private var inspectingElement: ElementInspection?
     @State private var textBase: NoteDocument?
     @State private var textPageID: UUID?
     @State private var savingText = false
@@ -522,30 +527,32 @@ struct NotesDocumentEditor: View {
                 target: .init(documentID: document.id, pageID: page?.id, parentNodeID: selectedMapNodeID),
                 onInserted: { _ in showingChemistry = false })
         }
-        .sheet(item: $chemistryWork) { work in PersonalContentEditor(record: work) }
+        .fullScreenCover(item: $chemistryWork) { work in PersonalContentEditor(record: work) }
         .onChange(of: document.id) { _, _ in showingChemistry = false; pendingChemistryWork = nil }
         .sheet(item: $topicToInspect, onDismiss: openPendingChemistryWork) { node in
             MindMapTopicInspector(session: session, document: document, node: node, onOpenWork: { reference in
                 pendingChemistryWork = reference; topicToInspect = nil
             })
         }
-        .sheet(item: $inspectingElement, onDismiss: openPendingChemistryWork) { element in
-            if let base = inspectionBase, let page = base.pages.first(where: { $0.elements.contains(where: { $0.id == element.id }) }) {
-                NoteElementInspector(element: element, page: page, sourceText: element.textSourceID.flatMap { base.textSources?[$0.uuidString] }, save: { updated in
-                    let edits = NotesTextLayout.replacementEdits(element: updated, text: updated.text,
-                                                                markdown: updated.isMarkdown, page: page, document: base)
-                    _ = try await session.commit(edits, documentID: base.id, expectedRevision: base.revision)
-                    inspectingElement = nil
-                }, delete: {
-                    _ = try await session.commit([.deleteElements(pageID: page.id, ids: [element.id])], documentID: base.id, expectedRevision: base.revision)
-                    inspectingElement = nil
-                }, openSource: { source in
-                    inspectingElement = nil
-                    Task { await session.openSource(source) }
-                }, openWork: { reference in
-                    pendingChemistryWork = reference; inspectingElement = nil
-                })
-            }
+        .sheet(item: $inspectingElement, onDismiss: openPendingChemistryWork) { inspection in
+            let base = inspection.document
+            let page = inspection.page
+            let element = inspection.element
+            NoteElementInspector(element: element, page: page, sourceText: element.textSourceID.flatMap { base.textSources?[$0.uuidString] }, save: { updated in
+                let edits = NotesTextLayout.replacementEdits(element: updated, text: updated.text,
+                                                            markdown: updated.isMarkdown, page: page, document: base)
+                _ = try await session.commit(edits, documentID: base.id, expectedRevision: base.revision)
+                inspectingElement = nil
+            }, delete: {
+                _ = try await session.commit([.deleteElements(pageID: page.id, ids: [element.id])], documentID: base.id, expectedRevision: base.revision)
+                inspectingElement = nil
+            }, openSource: { source in
+                inspectingElement = nil
+                Task { await session.openSource(source) }
+            }, openWork: { reference in
+                pendingChemistryWork = reference
+                inspectingElement = nil
+            })
         }
         .sheet(isPresented: Binding(get: { answerToSave != nil }, set: { if !$0 { answerToSave = nil } })) {
             if let answerToSave {
@@ -1098,7 +1105,9 @@ struct NotesDocumentEditor: View {
                             session.apply([.updatePage(updated)], title: FloeL10n.l("notes.notes_document_editor.bookmark"), base: document)
                         }
                         ForEach(Array(page.elements.enumerated()), id: \.element.id) { index, element in
-                            Button("\(index + 1). \(element.kind == .text ? String(element.text.prefix(20)) : element.kind.rawValue)") { inspectionBase = document; inspectingElement = element }
+                            Button("\(index + 1). \(element.kind == .text ? String(element.text.prefix(20)) : element.kind.rawValue)") {
+                                inspectingElement = ElementInspection(document: document, page: page, element: element)
+                            }
                         }
                     }
                     Button("notes.notes_document_editor.add_page", systemImage: "doc.badge.plus") {

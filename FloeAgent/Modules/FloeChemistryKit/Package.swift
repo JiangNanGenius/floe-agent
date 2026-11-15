@@ -9,7 +9,7 @@ let package = Package(
         .library(name: "FloeChemistryEngine", targets: ["FloeChemistryEngine"]),
         .library(name: "FloeChemistryUI", targets: ["FloeChemistryUI"])
     ],
-    dependencies: [.package(path: "../FloeChemistryNative"), .package(path: "../FloeChemistrySketch")],
+    dependencies: [.package(path: "../FloeChemistryNative"), .package(path: "../FloeChemistrySketch"), .package(path: "../FloeMoleculePreviewNative")],
     targets: [
         .target(name: "FloeChemistryCore"),
         .target(name: "FloeChemistryWorkerResources", path: "Backends",
@@ -17,10 +17,12 @@ let package = Package(
             sources: ["WorkerResources.swift"],
             resources: [.copy("chemistry_worker.py"), .copy("science_worker.py"), .copy("quantum_worker.py"),
                         .copy("requirements-rdkit.txt"), .copy("requirements-science.txt"), .copy("WorkerManifest.json")]),
-        .target(name: "FloeChemistryEngine", dependencies: ["FloeChemistryCore", "FloeChemistryWorkerResources", .product(name: "FloeChemistryNative", package: "FloeChemistryNative")]),
+        .target(name: "FloeChemistryEngine", dependencies: ["FloeChemistryCore", "FloeChemistryWorkerResources", .product(name: "FloeChemistryNative", package: "FloeChemistryNative"),
+            .product(name: "FloeMoleculePreviewNative", package: "FloeMoleculePreviewNative")]),
         .target(name: "FloeChemistryUI", dependencies: ["FloeChemistryCore", "FloeChemistryEngine", .product(name: "FloeChemistrySketch", package: "FloeChemistrySketch")]),
         .testTarget(name: "FloeChemistryCoreTests", dependencies: ["FloeChemistryCore"]),
-        .testTarget(name: "FloeChemistryEngineTests", dependencies: ["FloeChemistryEngine"])
+        .testTarget(name: "FloeChemistryEngineTests", dependencies: ["FloeChemistryEngine", "FloeChemistryCore",
+            .product(name: "FloeMoleculePreviewNative", package: "FloeMoleculePreviewNative")])
     ],
     swiftLanguageModes: [.v6]
 )

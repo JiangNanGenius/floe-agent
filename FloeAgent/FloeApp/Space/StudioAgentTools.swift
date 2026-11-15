@@ -1159,7 +1159,10 @@ enum StudioToolOutput {
         let session = try await ChemistryProjectSession.open(id: id, directory: value.url, environment: environment)
         let result = try await session.nativeTool(action: action, inputJSON: inputJSON, context: context)
         _ = try await location(id, context: context, editing: editing, allowedNames: [StudioChemistryTool.name])
-        if editing { try await PersonalContentService.shared.library().markChanged(id); changed(id) }
+        if editing {
+            if action != "preview3D" { try await PersonalContentService.shared.library().markChanged(id) }
+            changed(id)
+        }
         return result
     }
     /// Manufacturing is owned by the selected CAD original. The task cannot

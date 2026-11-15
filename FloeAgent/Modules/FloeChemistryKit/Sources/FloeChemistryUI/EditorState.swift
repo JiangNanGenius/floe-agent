@@ -213,6 +213,27 @@ public final class ChemistryEditorState {
             else { _ = try await service.start(projectID, objectID: selectedID, method: method, options: options) }
         }
     }
+    public func moleculePreview(for object: ChemicalObject) async throws -> ChemistryMoleculePreview {
+        if let drawing = drawingSessions[object.id] {
+            await drawing.flush()
+            guard !drawing.blocksExit else { throw ChemistryPreviewError.changed }
+        }
+        try Task.checkCancellation()
+        let preview = try await service.moleculePreview(projectID, objectID: object.id, expectedObjectRevision: object.revision) { [weak self] ket in
+            guard let self else { throw CancellationError() }
+            return try await self.previewMOL(from: ket)
+        }
+        guard try preview.key.matches(object) else { throw ChemistryPreviewError.changed }
+        return preview
+    }
+    private func previewMOL(from ket: String) async throws -> String {
+        try Task.checkCancellation()
+        let snapshot = try await structureProcessor.evaluate(ket)
+        try Task.checkCancellation()
+        guard snapshot.format == "mol", let mol = snapshot.source, !mol.isEmpty else { throw ChemistryPreviewError.unsupported }
+        return mol
+    }
+    /// Advanced calculation preparation creates an applicable result in the chosen environment.
     public func generate3D(environmentID: String) async {
         guard let selectedID, availableEnvironments[environmentID]?.contains("rdkit.embed") == true else { return }
         await perform {

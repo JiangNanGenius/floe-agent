@@ -302,6 +302,17 @@ import AVFoundation
             #expect(elements.filter { $0.number == 1 }.count == 6)
             #expect(edges.count == 24)
             #expect((sourceGraph["atoms"]?["coords"]?["3d"]?.array ?? []).isEmpty)
+            let previewInput = String(decoding: try JSONSerialization.data(withJSONObject:
+                ["objectID": imported.id.uuidString, "expectedObjectRevision": imported.revision]), as: UTF8.self)
+            context.toolCallID = "preview-benzene-on-device"
+            let preview = try json(try await invoke("studio.chemistry",
+                ["projectID": id, "action": "preview3D", "inputJSON": previewInput], context))
+            #expect(preview["origin"] as? String == "generated")
+            #expect(preview["atomCount"] as? Int == 12 && preview["bondCount"] as? Int == 12)
+            #expect((preview["sourceSHA256"] as? String)?.count == 64)
+            let afterPreview = try await read(id, context)
+            #expect(try chemistryProject(afterPreview).objects.only == imported)
+            #expect(afterPreview["revision"] as? String == importedPage["revision"] as? String)
             context.toolCallID = "analyze-real-benzene-graph"
             let analysis = try json(try await invoke("studio.chemistry",["projectID":id,"action":"calculate",
                 "inputJSON":try StudioTypedEditExamples.encode(StudioTypedEditExamples.chemistryAnalyze(imported))],context))
@@ -328,6 +339,11 @@ import AVFoundation
             let uuid = try #require(UUID(uuidString:id)),location = try await PersonalContentService.shared.library().resolve(uuid)
             let disk = try await ChemistryHostFactory.verifiedStore(id:uuid,directory:location.url)
             #expect(try await disk.load(uuid).objects.only == final)
+            context.toolCallID = "reject-old-preview-revision"
+            await #expect(throws: (any Error).self) {
+                _ = try await invoke("studio.chemistry",
+                    ["projectID": id, "action": "preview3D", "inputJSON": previewInput], context)
+            }
         }
     }
 }

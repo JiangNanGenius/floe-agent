@@ -125,12 +125,14 @@ extension ChemistryStructureProcessor: ChemistryStructureProcessing {}
         editor?.sketchStatuses[objectID] = .editing
         schedule()
     }
-    private func schedule() {
+    private func schedule(debounce: Bool = true) {
         guard saveTask == nil, !discarded else { return }
         saveTask = Task { [self] in
-            // Cancellation must actually exit: a discarded session never drains.
-            do { try await Task.sleep(for:.milliseconds(200)) } catch { return }
-            await drain(); saveTask = nil
+            if debounce {
+                do { try await Task.sleep(for: .milliseconds(200)) } catch { return }
+            }
+            await drain()
+            saveTask = nil
         }
     }
     private func publish(_ snapshot: ChemistrySketchSnapshot) async throws {
@@ -177,7 +179,12 @@ extension ChemistryStructureProcessor: ChemistryStructureProcessing {}
     }
     func flush() async {
         if let task = saveTask { await task.value }
-        if isDirty { await drain() }
+        if isDirty {
+            // The drawing view and a preview request can flush together.
+            // Both wait for the same revision-checked save, including on retry.
+            schedule(debounce: false)
+            if let task = saveTask { await task.value }
+        }
     }
     /// The owning object is being removed: fence first so no continuation can
     /// write statuses or publish after this point, then join the in-flight

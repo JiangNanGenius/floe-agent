@@ -588,6 +588,12 @@ STATIC_COMPONENTS = (
         "engineering", None,
     ),
     (
+        "RDKit native molecule preview", "2026.09.1",
+        "BSD-3-Clause; BSL-1.0; MPL-2.0; MIT and retained notices",
+        "https://github.com/rdkit/rdkit/tree/fece8caa860bdf6c9c82bdb9253f22a0cf87150c",
+        "engineering", None,
+    ),
+    (
         "Ketcher / Indigo offline chemistry assets", "Ketcher 3.18.0 pinned standalone assets",
         "Apache-2.0 and bundled dependency notices",
         "https://github.com/epam/ketcher/releases/tag/v3.18.0",
@@ -2278,6 +2284,7 @@ STATIC_EVIDENCE = {
     "FloeGPU (Venus renderer and MoltenVK)": "Vendor/FloeGPU/PROVENANCE.json binds the renderer commit, Floe patch, official MoltenVK archive, embedded dependency notice revisions and all delivered static archives/headers. Full notices ship in FloeApp/Resources/Licenses/FloeGPU-LICENSES.txt.",
     'FloeTeXNativeXDV (XeTeX/BibTeX and Apple PDF)': 'Modules/FloeLaTeXKit/Native/tectonic.source.json; patches/production-xdv-{source-manifest,local-sources}.json; licenses/native-xdv-selected-licenses.json; Production/Vendor/FloeTeXNativeXDV.manifest.json and NOTICES.json bind the original source, complete patch, selected license branches and actual Cargo/object closure.',
     "Floe chemistry native libraries (Avogadro / Eigen)": "Modules/FloeChemistryNative/UPSTREAM.json and BUILD_SAVED.json bind the Avogadro source/bridge and all three static slices; retained notices in FloeApp/Resources/Licenses/Chemistry-NOTICES.txt. Eigen 5.0.1 is recorded as the producer's header-only build input, not a new remote SwiftPM pin.",
+    "RDKit native molecule preview": "Modules/FloeMoleculePreviewNative/UPSTREAM.json, DEPENDENCIES.json and BUILD_SAVED.json record the RDKit and dependency sources and Apple static slices. Chemistry-NOTICES.txt includes the corresponding RDKit, RingDecomposerLib, Boost, Eigen and nlohmann-json notices.",
     "Ketcher / Indigo offline chemistry assets": "Modules/FloeChemistrySketch/UPSTREAM.json binds Ketcher standalone 3.18.0 archive and every bundled asset; LICENSE.Ketcher and retained bundled JavaScript notices are reproduced in FloeApp/Resources/Licenses/Chemistry-NOTICES.txt.",
     "Manifold": "ThirdParty/FloeCADKit/Vendor/Manifold-SOURCE.json (fixed 3.5.4 source and native slices); full Apache-2.0 and source notices in FloeApp/Resources/Licenses/Manifold-NOTICES.txt",
     "iCTRL (native iOS automation protocol adaptations)": "FloeApp/Resources/Licenses/iCTRL-NOTICE.md (upstream c1e4268859ba858d1579f7b846a56cb40641b7f6); full Apache-2.0 text in iCTRL-Apache-2.0.txt",

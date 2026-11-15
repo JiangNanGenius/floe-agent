@@ -81,7 +81,7 @@ public actor ChemistryProjectStore {
             let actual = current?.revision ?? 0
             guard actual == expectedRevision else { throw ChemistryError.conflict(expected: expectedRevision, actual: actual) }
             // Validate the previous head before publishing a new one; preserve corrupt evidence.
-            if let current { _ = try snapshot(current) }
+            let previous = try current.map { try snapshot($0) }
             guard actual < UInt64.max else { throw ChemistryError.invalid("Revision overflow.") }
             var saved = project
             saved.revision = actual + 1; saved.modifiedAt = Date()
@@ -95,6 +95,7 @@ public actor ChemistryProjectStore {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             try bytes.write(to: folder.appendingPathComponent(revision.filename), options: [.atomic])
             try encoder.encode(revision).write(to: directory(saved.id).appendingPathComponent("HEAD.json"), options: [.atomic])
+            if let previous { discardChangedMoleculePreviews(previous, saved) }
             return saved
         }
     }
@@ -158,6 +159,65 @@ public actor ChemistryProjectStore {
             let target = try recoveryFolder(id).appendingPathComponent(recoveryID.uuidString + ".json")
             try refuseLink(target)
             if FileManager.default.fileExists(atPath: target.path) { try FileManager.default.removeItem(at: target) }
+        }
+    }
+}
+
+// These derived-cache operations use named entry points across package boundaries.
+extension ChemistryProjectStore {
+    /// Called under the same lock after HEAD was replaced. Stale cache entries
+    /// are also rejected by their key if storage cannot remove one.
+    private func discardChangedMoleculePreviews(_ previous: ChemistryProject, _ saved: ChemistryProject) {
+        guard let directory = try? directory(saved.id) else { return }
+        let folder = directory.appendingPathComponent("molecule-previews", isDirectory: true)
+        guard let info = try? folder.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
+              info.isDirectory == true, info.isSymbolicLink != true else { return }
+        let remaining = Dictionary(uniqueKeysWithValues: saved.objects.map { ($0.id, $0) })
+        for old in previous.objects {
+            if let next = remaining[old.id], old.revision == next.revision, old.kind == next.kind, old.format == next.format,
+               old.source == next.source, old.sketchDocument == next.sketchDocument, old.sketchSMILES == next.sketchSMILES { continue }
+            let file = folder.appendingPathComponent(old.id.uuidString + ".json")
+            guard let info = try? file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
+                  info.isRegularFile == true, info.isSymbolicLink != true else { continue }
+            try? FileManager.default.removeItem(at: file)
+        }
+    }
+
+    private func previewFile(_ key: ChemistryPreviewKey) throws -> URL {
+        let folder = try directory(key.projectID).appendingPathComponent("molecule-previews", isDirectory: true)
+        try refuseLink(folder)
+        let file = folder.appendingPathComponent(key.objectID.uuidString + ".json")
+        try refuseLink(file)
+        return file
+    }
+    public func checkPreviewSource(_ key: ChemistryPreviewKey) throws {
+        try Task.checkCancellation()
+        guard let original = try load(key.projectID).objects.first(where: { $0.id == key.objectID }),
+              try key.matches(original) else { throw ChemistryError.invalid("The molecule changed or was removed.") }
+    }
+    public func cachedMoleculePreview(_ key: ChemistryPreviewKey) throws -> ChemistryCachedMoleculePreview? {
+        try withLock {
+            try checkPreviewSource(key)
+            let file = try previewFile(key)
+            guard FileManager.default.fileExists(atPath: file.path) else { return nil }
+            let info = try file.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+            guard info.isRegularFile == true else { throw ChemistryError.corrupt("Invalid molecule preview file.") }
+            guard let size = info.fileSize, size <= 4 * 1024 * 1024 else { return nil }
+            let data = try read(file, limit: 4 * 1024 * 1024)
+            guard let saved = try? JSONDecoder().decode(ChemistryCachedMoleculePreview.self, from: data),
+                  saved.key == key, saved.valid else { return nil }
+            return saved
+        }
+    }
+    public func saveMoleculePreview(_ preview: ChemistryCachedMoleculePreview) throws {
+        let data = try JSONEncoder().encode(preview)
+        guard data.count <= 4 * 1024 * 1024, preview.valid else { throw ChemistryError.invalid("Invalid molecule preview.") }
+        try withLock {
+            try checkPreviewSource(preview.key)
+            let file = try previewFile(preview.key)
+            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Task.checkCancellation()
+            try data.write(to: file, options: .atomic)
         }
     }
 }

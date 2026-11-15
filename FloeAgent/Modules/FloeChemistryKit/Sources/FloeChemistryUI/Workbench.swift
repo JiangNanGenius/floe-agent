@@ -49,6 +49,7 @@ private enum ChemistrySheet: String, Identifiable { case importer, inspector, hi
     @State private var drawing = false
     @State private var showRuns = true
     @State private var sheet: ChemistrySheet?
+    @State private var deferredPreviewID: UUID?
     @State private var pendingPreparation: UUID?
     @State private var removalRequest: ChemicalObject?
     private let onPrepareStructure: (@MainActor (UUID) -> Void)?
@@ -132,7 +133,7 @@ private enum ChemistrySheet: String, Identifiable { case importer, inspector, hi
                 if state.project?.runs.contains(where: { [.queued, .running].contains($0.status) }) == true { await state.refresh() }
             }
         }
-        .onChange(of: state.selectedID) { _, _ in atoms = []; drawing = state.selected?.sketchDocument != nil }
+        .onChange(of: state.selectedID) { _, _ in atoms = []; deferredPreviewID = nil; drawing = state.selected?.sketchDocument != nil }
         .confirmationDialog(chemistryText("Remove this object?", "移除这个对象？"),
                             isPresented: Binding(get: { removalRequest != nil }, set: { if !$0 { removalRequest = nil } }),
                             presenting: removalRequest) { object in
@@ -180,17 +181,24 @@ private enum ChemistrySheet: String, Identifiable { case importer, inspector, hi
                     if !object.requiresPreparation && (object.kind == .molecule || object.sketchDocument != nil) {
                         Picker(chemistryText("Structure view", "结构视图"), selection: $drawing) {
                             Text(chemistryText("2D drawing", "二维绘图")).tag(true)
-                            Text(chemistryText("3D view", "三维视图")).tag(false)
+                            Text(object.kind == .molecule ? chemistryText("3D preview", "三维预览") : chemistryText("Reaction", "反应")).tag(false)
                         }.pickerStyle(.segmented).frame(maxWidth: 240)
+                        .accessibilityIdentifier("chemistry.structureView")
+                    } else if object.requiresPreparation && deferredPreviewID == object.id {
+                        Button(chemistryText("View source", "查看原文")) { deferredPreviewID = nil }
                     }
                 }.padding(.horizontal).padding(.vertical, 8)
                 Divider()
-            if object.requiresPreparation {
+            if object.requiresPreparation && deferredPreviewID != object.id {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
                         Label(chemistryText("Awaiting processing", "待处理"), systemImage: "hourglass").font(.headline)
                         Text(chemistryText("The original is saved. Choose a processing method in Properties and methods.", "原始内容已保存，可在“属性与方法”中选择处理方法。"))
                             .foregroundStyle(.secondary)
+                        if object.kind == .molecule {
+                            Button(chemistryText("3D preview", "三维预览"), systemImage: "cube") { deferredPreviewID = object.id; drawing = false }
+                                .accessibilityIdentifier("chemistry.prepare3D")
+                        }
                         Button(chemistryText("Properties and methods", "属性与方法")) { sheet = .inspector }
                         DisclosureGroup(chemistryText("Source preview", "原始内容预览")) {
                             Text(String(object.source.prefix(65536))).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
@@ -215,16 +223,10 @@ private enum ChemistrySheet: String, Identifiable { case importer, inspector, hi
                     if let facts = object.facts, let bytes = try? JSONEncoder().encode(facts) { Text(String(decoding: bytes, as: UTF8.self)).textSelection(.enabled) }
                 }.frame(maxWidth: .infinity, alignment: .leading).padding() }
             } else {
-                VStack(spacing: 0) {
-                    if object.requires3DPreparation {
-                        HStack {
-                            Text(chemistryText("The molecular graph is available; prepare 3D coordinates before force-field calculations.", "分子连接关系已保留；力场计算前需先准备三维坐标。"))
-                                .font(.caption).foregroundStyle(.secondary)
-                            Spacer()
-                            Button(chemistryText("Prepare 3D", "生成三维")) { sheet = .inspector }
-                                .accessibilityIdentifier("chemistry.prepare3D")
-                        }.padding(10)
-                    }
+                if object.kind == .molecule {
+                    ChemistryMoleculePreviewPane(editor: state, object: object, selectedAtoms: $atoms)
+                        .id(object.id)
+                } else {
                     ChemistryMoleculeView(object: object, selectedAtoms: $atoms)
                 }
             }

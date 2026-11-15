@@ -1267,6 +1267,15 @@
       "evidence": "Modules/FloeChemistryNative/UPSTREAM.json and BUILD_SAVED.json bind the Avogadro source/bridge and all three static slices; retained notices in FloeApp/Resources/Licenses/Chemistry-NOTICES.txt. Eigen 5.0.1 is recorded as the producer's header-only build input, not a new remote SwiftPM pin."
     },
     {
+      "name": "RDKit native molecule preview",
+      "version": "2026.09.1",
+      "license": "BSD-3-Clause; BSL-1.0; MPL-2.0; MIT and retained notices",
+      "source": "https://github.com/rdkit/rdkit/tree/fece8caa860bdf6c9c82bdb9253f22a0cf87150c",
+      "section": "engineering",
+      "noteKey": null,
+      "evidence": "Modules/FloeMoleculePreviewNative/UPSTREAM.json, DEPENDENCIES.json and BUILD_SAVED.json record the RDKit and dependency sources and Apple static slices. Chemistry-NOTICES.txt includes the corresponding RDKit, RingDecomposerLib, Boost, Eigen and nlohmann-json notices."
+    },
+    {
       "name": "Ketcher / Indigo offline chemistry assets",
       "version": "Ketcher 3.18.0 pinned standalone assets",
       "license": "Apache-2.0 and bundled dependency notices",
@@ -3123,7 +3132,7 @@
     }
   ],
   "counts": {
-    "components": 240,
+    "components": 241,
     "documents": 63,
     "pins": 40
   }
