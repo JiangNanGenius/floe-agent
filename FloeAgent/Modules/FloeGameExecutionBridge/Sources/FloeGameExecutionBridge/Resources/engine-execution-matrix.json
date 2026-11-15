@@ -608,7 +608,7 @@
         "wasm4-linux"
       ],
       "prerequisites": [
-        "wasm4-cli:0.3.x or project pin"
+        "wasm4-cli:2.7.1"
       ],
       "status": "implementedSource+unexecutedExternalBuild",
       "notes": [],

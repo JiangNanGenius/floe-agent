@@ -303,7 +303,7 @@
       "provenanceArtifact": "floe-build-provenance",
       "runnerPrerequisites": [
         "ubuntu-latest",
-        "w4 CLI"
+        "w4 CLI 2.7.1 (installed and verified by the workflow)"
       ],
       "inputs": [
         "source_transport",

@@ -82,9 +82,10 @@ hardware. Blender is not a capability.
   That evidence is not iOS, physical-iPad or App acceptance.
 - The fixed 128 MiB indirect geometry-shader heap remains; oversized indirect
   draws fail explicitly instead of wrapping.
-- OpenCL and video node integration remain deferred: they need an admitted
-  compiler / ABI4 engine and kernel module, neither of which is in this
-  selection.
+- The repository includes the OpenCL build inputs, the native ABI4 video
+  backend and the virtio-media kernel module source. A compatible installed
+  guest needs the matching binaries and a verified image manifest before
+  those devices appear. See [acceleration image assembly](ACCELERATION-IMAGE.md).
 - The installed v8 image remains the current baseline. A new image requires a
   real build and a new installed-image qualification.
 
@@ -102,4 +103,5 @@ derived under their upstream notices; the Floe patch text is MPL-2.0.
 `prepare_mesa_sources.py` 默认只校验哈希，`--apply` 才在新建目录解压并应用补丁；
 不会下载、编译或启动虚拟机。`emit_capabilities.py` 只有在所需产物真实安装且
 有资格标识时才生成能力声明；没有证据的能力一律不可用。Blender 不是能力项，
-视频“原生软件”不得标记为硬件加速。OpenCL 与视频节点仍未具备可交付运行条件。
+视频“原生软件”单独计数。OpenCL 构建输入、ABI4 原生视频后端、virtio-media
+内核模块源码已经接入，配套镜像的构建和能力核验见[镜像组装说明](ACCELERATION-IMAGE.md)。

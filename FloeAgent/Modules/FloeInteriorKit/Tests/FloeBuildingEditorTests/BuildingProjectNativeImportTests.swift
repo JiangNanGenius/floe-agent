@@ -43,21 +43,33 @@ final class BuildingProjectNativeImportTests: XCTestCase {
         let session = try await BuildingEditorProjectSession.create(at: projectURL, name: "Imported project",
             assetLibraryDirectory: library, importingNativeDocument: sourceURL)
         do {
-            XCTAssertTrue(session.nativeDocument.url.standardizedFileURL.path
-                .hasPrefix(projectURL.standardizedFileURL.path))
+            var relationship = FileManager.URLRelationship.other
+            try FileManager.default.getRelationship(&relationship,
+                ofDirectoryAt: projectURL.resolvingSymlinksInPath().standardizedFileURL,
+                toItemAt: session.nativeDocument.url.resolvingSymlinksInPath().standardizedFileURL)
+            XCTAssertEqual(relationship, .contains, "The imported drawing must belong to the project's directory")
             XCTAssertEqual(session.nativeDocument.session.document.sketches.map(\.id), [sketchID])
             XCTAssertEqual(session.nativeDocument.session.document.sketches.first?.entities.map(\.id), [lineID])
             XCTAssertEqual(session.nativeDocument.savedIdentity.modelSHA256, sourceModel)
+            let initial = try XCTUnwrap(session.published)
+            XCTAssertEqual(initial.identity.cadModelSHA256, sourceModel)
+            XCTAssertFalse(session.hasUnpublishedChanges, "Creation publishes the verified imported drawing")
+
+            let secondLineID = UUID()
+            session.nativeDocument.session.perform(AddSketchEntityCommand(sketchID: sketchID,
+                entity: .line(id: secondLineID, a: SIMD2(2400, 0), b: SIMD2(2400, 1800))))
             XCTAssertTrue(session.hasUnpublishedChanges)
             try await session.checkpoint()
             let generation = try XCTUnwrap(session.published?.generationID)
+            XCTAssertNotEqual(generation, initial.generationID)
             XCTAssertFalse(session.hasUnpublishedChanges)
             try await session.close()
             let reopened = try await BuildingEditorProjectSession.open(at: projectURL, assetLibraryDirectory: library)
             do {
                 XCTAssertEqual(reopened.published?.generationID, generation)
                 XCTAssertEqual(reopened.nativeDocument.session.document.sketches.map(\.id), [sketchID])
-                XCTAssertEqual(reopened.nativeDocument.session.document.sketches.first?.entities.map(\.id), [lineID])
+                let sketch = try XCTUnwrap(reopened.nativeDocument.session.document.sketches.first)
+                XCTAssertEqual(sketch.entities.map(\.id), [lineID, secondLineID])
                 try await reopened.close()
             } catch { try? await reopened.close(discardWorkingCopy: false); throw error }
             // The source package is only read: its committed identity did not move.

@@ -31,18 +31,42 @@ enum BuildingProjectLocation {
     /// survives an app container move or reinstall. Editing, saving or renaming
     /// the drawing's display name never moves an existing project.
     static func projectDirectory(for document: FloeCADDocument, workspaceRoot: URL) -> URL {
-        container(workspaceRoot: workspaceRoot)
-            .appendingPathComponent(folderName(for: document, workspaceRoot: workspaceRoot), isDirectory: true)
+        let source = document.url.standardizedFileURL
+        let root = workspaceRoot.standardizedFileURL
+        let resolvedSource = source.resolvingSymlinksInPath().standardizedFileURL
+        let resolvedRoot = root.resolvingSymlinksInPath().standardizedFileURL
+        let projects = container(workspaceRoot: root)
+        let key = sourceKey(for: resolvedSource, relativeTo: resolvedRoot)
+        let directory = projects.appendingPathComponent(folderName(for: resolvedSource, key: key), isDirectory: true)
+        let originalName = folderName(for: source, key: sourceKey(for: source, relativeTo: root))
+        if originalName != directory.lastPathComponent {
+            let original = projects.appendingPathComponent(originalName, isDirectory: true)
+            if FileManager.default.fileExists(atPath: original.path) { return original }
+        }
+        if FileManager.default.fileExists(atPath: directory.path) { return directory }
+
+        // Older entries hashed the incoming URL spelling. A workspace alias
+        // could therefore classify its own drawing as an external file.
+        let previous = [
+            folderName(for: source, key: "external:" + source.path),
+            folderName(for: resolvedSource, key: "external:" + resolvedSource.path)
+        ]
+        for name in previous where name != directory.lastPathComponent {
+            let existing = projects.appendingPathComponent(name, isDirectory: true)
+            if FileManager.default.fileExists(atPath: existing.path) { return existing }
+        }
+        return directory
     }
 
-    static func folderName(for document: FloeCADDocument, workspaceRoot: URL) -> String {
-        let documentPath = document.url.standardizedFileURL.path
-        var root = workspaceRoot.standardizedFileURL.path
-        if !root.hasSuffix("/") { root += "/" }
-        let key = documentPath.hasPrefix(root)
-            ? String(documentPath.dropFirst(root.count))
-            : "external:\(documentPath)"
-        let stem = document.url.deletingPathExtension().lastPathComponent
+    private static func sourceKey(for source: URL, relativeTo root: URL) -> String {
+        let path = source.pathComponents
+        let parent = root.pathComponents
+        guard path.count > parent.count, path.starts(with: parent) else { return "external:" + source.path }
+        return path.dropFirst(parent.count).joined(separator: "/")
+    }
+
+    private static func folderName(for source: URL, key: String) -> String {
+        let stem = source.deletingPathExtension().lastPathComponent
         let digest = String(FloeDigest.sha256Hex(Data(key.utf8)).prefix(8))
         return "\(sanitized(stem))-\(digest)"
     }

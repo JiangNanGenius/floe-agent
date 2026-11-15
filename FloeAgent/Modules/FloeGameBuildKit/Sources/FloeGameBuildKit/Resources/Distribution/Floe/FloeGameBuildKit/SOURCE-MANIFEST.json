@@ -90,16 +90,16 @@
       "sha256": "c97a6b818d9e3260d663a95a350730f8dfc99a5044dd50e4e93e998c9a4e55f9"
     },
     "Sources/FloeGameBuildKit/Resources/Catalog/build-routes.v1.json": {
-      "bytes": 83143,
-      "sha256": "164d4edd2c3762667e88545e740cc556301d14e99aa9cecb3720a5e8e8baf00c"
+      "bytes": 83136,
+      "sha256": "fe0324061f2eb3e25cd1ff094991dd4c809452f66c6d2740c5eb7e6d69c722df"
     },
     "Sources/FloeGameBuildKit/Resources/Catalog/distribution-profiles.v1.json": {
       "bytes": 20037,
       "sha256": "e34266a64dbba50eff22389fdff74dc6e36b6fd13dc858b6c8b7a2b260397aec"
     },
     "Sources/FloeGameBuildKit/Resources/Catalog/workflow-contracts.v1.json": {
-      "bytes": 11552,
-      "sha256": "1b9e148a0b7b7c23354282d658b2aabb9d8aef53ef5b4adcae9c6e87c324c18e"
+      "bytes": 11599,
+      "sha256": "6108c8acc5691b4c3aaa3a0798a9d41e5af40daee2e5d73117546dd0b0de5f30"
     },
     "Sources/FloeGameBuildKit/Resources/TestVectors/source-transport.json": {
       "bytes": 26887,
@@ -130,8 +130,8 @@
       "sha256": "556da80b6fe0e5fa6f44231de113d230cef1452ee2f6a5fa75cdbbfdad20633b"
     },
     "Sources/FloeGameBuildKit/Resources/Workflows/floe-game-build-wasm4.yml": {
-      "bytes": 26698,
-      "sha256": "065e6811291a244592e5f1f17afbb78aab87d7a1d056935d73b3472ca3a28a6b"
+      "bytes": 27864,
+      "sha256": "9682fac822c78cb084125a665b4c7f620e087e45c5163c0593a1eca15d0daf0e"
     },
     "Sources/GameBuildExport/main.swift": {
       "bytes": 2705,

@@ -23,7 +23,7 @@ struct GameBuildToolReadiness: Sendable, Equatable {
         "cocos-creator", "android-sdk", "android-ndk",
         "gdevelop-sdk", "python3",
         "godot-editor", "godot-export-templates",
-        "node-lts",
+        "node-lts", "wasm4-cli",
     ]
 
     let provided: Set<String>

@@ -1441,9 +1441,9 @@
       "prerequisites": [
         {
           "id": "wasm4-cli",
-          "version": "0.3.x or project pin",
+          "version": "2.7.1",
           "documentation": "https://wasm4.org/docs/reference/cli/",
-          "note": "w4 CLI; `w4 bundle` is the documented native/HTML bundle route.",
+          "note": "The CI workflow installs the pinned w4 CLI for native and HTML bundles.",
           "required": true
         }
       ],

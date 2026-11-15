@@ -82,6 +82,8 @@ env:
   FLOE_ENGINE_VERSION: ${{ inputs.engine_version }}
   FLOE_ARTIFACT_PREFIX: ${{ inputs.artifact_prefix }}
   FLOE_TEMPLATE_ID: floe-game-build-wasm4
+  FLOE_WASM4_VERSION: "2.7.1"
+  FLOE_WASM4_LINUX_SHA256: 58e7de1e87f9b7e9a0c7dc68b12b84effbadc4330dbaf7148bfb9eab3ea48720
 jobs:
   prepare:
     outputs:
@@ -256,8 +258,19 @@ jobs:
             output.write("selected_digest=" + actual + "\n")
         print("Floe selected game source verified: " + (raw or ".") + " (" + actual + ")")
         PY
-    - name: Require the w4 CLI
-      run: command -v w4 || { echo "The w4 CLI is required; see https://wasm4.org/docs/reference/cli/" >&2; exit 1; }
+    - name: Install the pinned WASM-4 CLI
+      shell: bash
+      run: |
+        set -euo pipefail
+        tool_dir="$RUNNER_TEMP/floe-wasm4"
+        mkdir -p "$tool_dir"
+        curl --fail --silent --show-error --location --retry 2 --output "$tool_dir/w4.zip" \
+          "https://github.com/aduros/wasm4/releases/download/v${FLOE_WASM4_VERSION}/w4-linux.zip"
+        printf '%s  %s\n' "$FLOE_WASM4_LINUX_SHA256" "$tool_dir/w4.zip" | sha256sum --check --status
+        unzip -p "$tool_dir/w4.zip" w4 > "$tool_dir/w4"
+        chmod 755 "$tool_dir/w4"
+        test "$("$tool_dir/w4" --version)" = "$FLOE_WASM4_VERSION"
+        printf '%s\n' "$tool_dir" >> "$GITHUB_PATH"
     - name: Assemble WASM-4 Web artifact
       run: 'CART=$(find selected-src -maxdepth 3 -name "*.wasm" | head -1)
 
@@ -336,8 +349,19 @@ jobs:
             output.write("selected_digest=" + actual + "\n")
         print("Floe selected game source verified: " + (raw or ".") + " (" + actual + ")")
         PY
-    - name: Require the w4 CLI
-      run: command -v w4 || { echo "The w4 CLI is required; see https://wasm4.org/docs/reference/cli/" >&2; exit 1; }
+    - name: Install the pinned WASM-4 CLI
+      shell: bash
+      run: |
+        set -euo pipefail
+        tool_dir="$RUNNER_TEMP/floe-wasm4"
+        mkdir -p "$tool_dir"
+        curl --fail --silent --show-error --location --retry 2 --output "$tool_dir/w4.zip" \
+          "https://github.com/aduros/wasm4/releases/download/v${FLOE_WASM4_VERSION}/w4-linux.zip"
+        printf '%s  %s\n' "$FLOE_WASM4_LINUX_SHA256" "$tool_dir/w4.zip" | sha256sum --check --status
+        unzip -p "$tool_dir/w4.zip" w4 > "$tool_dir/w4"
+        chmod 755 "$tool_dir/w4"
+        test "$("$tool_dir/w4" --version)" = "$FLOE_WASM4_VERSION"
+        printf '%s\n' "$tool_dir" >> "$GITHUB_PATH"
     - name: Bundle documented native executables
       run: 'CART=$(find selected-src -maxdepth 3 -name "*.wasm" | head -1)
 

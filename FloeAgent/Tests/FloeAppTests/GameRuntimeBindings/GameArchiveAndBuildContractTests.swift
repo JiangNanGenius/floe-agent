@@ -126,6 +126,26 @@ final class GameArchiveAndBuildContractTests: XCTestCase {
         }
     }
 
+    func testWASM4JobsInstallTheirDeclaredCLIBeforeBundling() throws {
+        let catalog = try GameBuildCatalogLoader.load()
+        let engine = try XCTUnwrap(catalog.engines.first { $0.engine == .wasm4 })
+        let cli = try XCTUnwrap(engine.prerequisites.first { $0.tool.id == "wasm4-cli" })
+        let template = try XCTUnwrap(GameCIWorkflowTemplates.template(for: .wasm4))
+        XCTAssertTrue(template.yaml.contains("FLOE_WASM4_VERSION: \"\(cli.tool.version)\""))
+        XCTAssertEqual(Set(template.targets.map(\.job)), ["web", "native"])
+        for target in template.targets {
+            let header = try XCTUnwrap(template.yaml.range(of: "\n  \(target.job):\n"))
+            let job = template.yaml[header.upperBound...].split(separator: "\n")
+                .prefix { $0.hasPrefix("    ") }.joined(separator: "\n")
+            var remaining = job[...]
+            for step in ["w4-linux.zip", "sha256sum --check", "unzip -p",
+                         "\"$tool_dir/w4\" --version", "\"$GITHUB_PATH\"", "w4 bundle"] {
+                let match = try XCTUnwrap(remaining.range(of: step), "\(target.job) requires \(step)")
+                remaining = remaining[match.upperBound...]
+            }
+        }
+    }
+
     func testUnityWebRouteStillRequiresEditorAndWebGLModule() throws {
         let catalog = try GameBuildCatalogLoader.load()
         guard let unity = catalog.engines.first(where: { $0.engine == .unity }) else {

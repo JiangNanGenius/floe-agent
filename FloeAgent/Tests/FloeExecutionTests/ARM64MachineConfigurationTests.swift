@@ -57,15 +57,17 @@ final class ARM64MachineConfigurationTests: XCTestCase {
         let older = try JSONDecoder().decode(LinuxGuestLifecycleConfig.self,
             from: Data(#"{"vcpus":2,"memoryMB":512}"#.utf8))
         XCTAssertEqual(older.resolvedGPUMemoryMB, 1024)
+        XCTAssertTrue(older.resolvedVideoNativeSoftware)
         XCTAssertEqual(older, .init(vcpus: 2, memoryMB: 512, gpuMemoryMB: 1024))
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let factory = ARM64ResidentGuestSessionFactory(root: root)
-        try await factory.configureSharedMachine(.init(vcpus: 2, memoryMB: 512, gpuMemoryMB: 1536))
+        try await factory.configureSharedMachine(.init(vcpus: 2, memoryMB: 512, gpuMemoryMB: 1536, videoNativeSoftware: false))
         try await factory.configureSharedMachine(.init(vcpus: 3, memoryMB: 512))
         XCTAssertEqual(factory.preferredSharedConfiguration?.resolvedGPUMemoryMB, 1536)
         let reopened = ARM64ResidentGuestSessionFactory(root: root)
         XCTAssertEqual(reopened.preferredSharedConfiguration?.resolvedGPUMemoryMB, 1536)
+        XCTAssertEqual(reopened.preferredSharedConfiguration?.videoNativeSoftware, false)
         for invalid in [0, 2049] {
             do {
                 try await factory.configureSharedMachine(.init(vcpus: 3, memoryMB: 512, gpuMemoryMB: invalid))

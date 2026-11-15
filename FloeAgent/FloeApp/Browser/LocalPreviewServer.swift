@@ -60,7 +60,7 @@ final class LocalPreviewCoordinator: ObservableObject, @unchecked Sendable {
         relativeRoot: String?,
         entry: String?,
         owner: UUID,
-        control: BrowserControlLease? = nil,
+        modelRunID: UUID? = nil,
         cancellation: CancellationToken? = nil
     ) async throws -> ToolExecutionOutput {
         try await startPreview(
@@ -68,7 +68,7 @@ final class LocalPreviewCoordinator: ObservableObject, @unchecked Sendable {
             relativeRoot: relativeRoot,
             entry: entry,
             owner: owner,
-            control: control,
+            modelRunID: modelRunID,
             cancellation: cancellation
         )
     }
@@ -186,7 +186,7 @@ final class LocalPreviewCoordinator: ObservableObject, @unchecked Sendable {
         relativeRoot: String?,
         entry: String?,
         owner: UUID,
-        control: BrowserControlLease?,
+        modelRunID: UUID?,
         cancellation: CancellationToken?
     ) async throws -> ToolExecutionOutput {
         guard let browser else { throw FloeError.invalidConfiguration("Visible browser is unavailable") }
@@ -199,6 +199,7 @@ final class LocalPreviewCoordinator: ObservableObject, @unchecked Sendable {
         var staged: (server: LocalPreviewServer, session: LocalPreviewServer.Session)?
         var navigation: (sessionID: UUID, url: URL)?
         var navigationUncertain = false
+        var control: BrowserControlLease?
         var priorRecord: PreviewRecord?
         var priorPageURL: URL?
         do {
@@ -210,7 +211,14 @@ final class LocalPreviewCoordinator: ObservableObject, @unchecked Sendable {
                 .afterServerStart(owner: owner, stagedURL: started.1.url)
             )
             try verifyStart(operationID: operationID, owner: owner, cancellation: cancellation)
-            let session = try browser.taskSession(for: owner)
+            let session: BrowserTaskSession
+            if let modelRunID {
+                let acquired = try browser.beginModelControl(conversationID: owner, runID: modelRunID)
+                control = acquired.lease
+                session = acquired.session
+            } else {
+                session = try browser.taskSession(for: owner)
+            }
             if control == nil, session.hasModelControlHolder {
                 throw FloeError.validationFailed(
                     "This task is using the browser; take over the browser before opening its preview"
@@ -357,13 +365,13 @@ final class LocalPreviewCoordinator: ObservableObject, @unchecked Sendable {
         guard let currentURL = session.activeWebView?.url,
               isPreviewURL(currentURL, matching: stagedURL),
               let restoreURL else { return false }
-        let result = await browser.execute(
-            BrowserCommand(
-                sessionID: sessionID,
-                action: .navigate(url: restoreURL.absoluteString)
-            ),
-            in: owner
-        )
+        let command = BrowserCommand(sessionID: sessionID, action: .navigate(url: restoreURL.absoluteString))
+        let result: BrowserResult
+        if let control {
+            result = await browser.execute(command, in: owner, control: control)
+        } else {
+            result = await browser.execute(command, in: owner)
+        }
         return result.status == .ok
     }
 
@@ -461,7 +469,11 @@ final class LocalPreviewCoordinator: ObservableObject, @unchecked Sendable {
             guard !relativeRoot.hasPrefix("/"), !relativeRoot.split(separator: "/").contains("..") else {
                 throw FloeError.validationFailed("Preview root must be a safe workspace-relative path")
             }
-            let candidate = root.appendingPathComponent(relativeRoot)
+            let workspace = root.standardizedFileURL.resolvingSymlinksInPath()
+            let candidate = workspace.appendingPathComponent(relativeRoot).standardizedFileURL.resolvingSymlinksInPath()
+            guard candidate.pathComponents.starts(with: workspace.pathComponents) else {
+                throw FloeError.validationFailed("Preview root must stay in this task's workspace")
+            }
             var isDirectory: ObjCBool = false
             if FileManager.default.fileExists(atPath: candidate.path, isDirectory: &isDirectory), !isDirectory.boolValue {
                 // The model passed a file (commonly the entry page) as root:
@@ -510,9 +522,9 @@ private struct PreviewStartTool: AgentTool {
         guard let root = context.workspaceRootURL else { throw FloeError.notFound("No task workspace is open") }
         let owner = try previewOwner(for: context)
         let runID = try BrowserControlIdentity.logicalRun(for: context, owner: owner)
-        let control: BrowserControlLease
         do {
-            control = try await environment.acquireModelControl(owner: owner, runID: runID)
+            return try await environment.start(root: root, relativeRoot: args.root,
+                entry: args.entry, owner: owner, modelRunID: runID, cancellation: context.cancellation)
         } catch BrowserControlError.needsUser(let message) {
             return ToolExecutionOutput(
                 summary: "Preview start needs the user: " + message,
@@ -520,14 +532,6 @@ private struct PreviewStartTool: AgentTool {
                 requiresUserAction: true
             )
         }
-        return try await environment.start(
-            root: root,
-            relativeRoot: args.root,
-            entry: args.entry,
-            owner: owner,
-            control: control,
-            cancellation: context.cancellation
-        )
     }
 }
 

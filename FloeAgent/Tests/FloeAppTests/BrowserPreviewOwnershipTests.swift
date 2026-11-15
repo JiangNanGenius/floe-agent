@@ -394,6 +394,13 @@ struct BrowserPreviewOwnershipTests {
         }
         #expect(coordinator.url(for: ownerB) == nil)
         #expect(center.session(for: ownerB) == nil)
+        let outside = workspaceB.appendingPathComponent("linked-preview")
+        try FileManager.default.createSymbolicLink(at: outside, withDestinationURL: workspaceA)
+        await #expect(throws: FloeError.self) {
+            _ = try await run(registry, "preview.start", "{\"root\":\"linked-preview\"}",
+                              as: context(for: ownerB, workspaceRoot: workspaceB))
+        }
+        #expect(center.session(for: ownerB) == nil)
         #expect(try await servedBody(urlA).contains("preview-alpha"))
         #expect(center.session(for: ownerA)?.activeWebView?.url == urlA)
     }

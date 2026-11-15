@@ -570,20 +570,21 @@ final class BrowserTaskSession: NSObject, ObservableObject {
 
     // MARK: - Ownership lifecycle
 
-    /// Atomic first acquisition for one model run. No page read, WebView
-    /// creation or action may happen unless this returns a lease. A session
-    /// the user controls, is taking over, or another run owns never yields
-    /// one, so the caller cannot fall back to observing the page.
+    var userControlMessage: String? {
+        if isUserControlling || takeoverPending {
+            return "The user controls this browser; wait until the user returns control"
+        }
+        if isEditingAddress { return "The user is using the address bar; wait until they return control" }
+        return nil
+    }
+
+    /// Acquire before a model reads or acts on the page. An existing holder
+    /// or a user editing the browser keeps control of the same session.
     func acquireModelControl(runID: UUID) throws -> BrowserControlAcquisition {
         guard !isReleased else {
             throw FloeError.validationFailed("This task's browser session was released")
         }
-        if isUserControlling || takeoverPending {
-            return .needsUser("The user controls this browser; wait until the user returns control")
-        }
-        if isEditingAddress {
-            return .needsUser("The user is using the address bar; wait until they return control")
-        }
+        if let userControlMessage { return .needsUser(userControlMessage) }
         if let holder = modelControl {
             return holder.runID == runID ? .acquired(holder) : .heldByAnotherRun
         }

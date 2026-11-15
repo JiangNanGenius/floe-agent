@@ -992,6 +992,7 @@ struct BrowserTaskSessionTests {
     @Test("Completions from an old generation cannot authorize work after reactivation")
     func oldGenerationCompletionsCannotAuthorizeNewWork() async throws {
         let center = makeCenter()
+        let registry = makeRegistry(center)
         let owner = UUID()
         center.bind(to: owner)
         let old = try #require(center.session(for: owner))
@@ -1047,20 +1048,21 @@ struct BrowserTaskSessionTests {
     func modelControlIsAcquiredAtomicallyAndSurvivesCalls() async throws {
         let center = makeCenter()
         let owner = UUID()
-        let run = UUID()
+        let runID = UUID()
         center.bind(to: owner)
         let registry = makeRegistry(center)
-        let ctx = context(for: owner, runID: run)
+        let ctx = context(for: owner, runID: runID)
 
         // `browser.tabs` is the first call: the session, its first tab and
         // the holding period are established together, and the result names
         // the holder before any page read happened.
         let listing = try await run(registry, "browser.tabs", "{}", as: ctx)
-        let listed = try object(listing)
+        let listed = try page(listing)
         let session = try #require(center.session(for: owner))
-        #expect(session.currentModelRunID == run)
+        #expect(session.currentModelRunID == runID)
         #expect(session.hasModelControlHolder)
-        #expect(listed["tabs"] != nil)
+        let tabs = try #require(listed["tabs"] as? [[String: Any]])
+        #expect(tabs.count == 1)
         let firstControl = try controlID(in: listing)
 
         let tab = try #require(session.activeTabID)
@@ -1069,7 +1071,7 @@ struct BrowserTaskSessionTests {
         #expect(nodesText(page).contains("ready-control"))
         let held = try #require(session.modelControl)
         #expect(held.id.uuidString == firstControl)
-        #expect(held.runID == run)
+        #expect(held.runID == runID)
 
         // The preview strip's label comes from this action's own document.
         let documentID = try #require(page["documentID"] as? String)
@@ -1150,9 +1152,9 @@ struct BrowserTaskSessionTests {
     func firstPageEntryAcquiresHolder(_ entry: String) async throws {
         let center = makeCenter()
         let owner = UUID()
-        let run = UUID()
+        let runID = UUID()
         let registry = makeRegistry(center)
-        let ctx = context(for: owner, runID: run)
+        let ctx = context(for: owner, runID: runID)
         do {
             switch entry {
             case "tabs":
@@ -1169,7 +1171,7 @@ struct BrowserTaskSessionTests {
             // Acquisition must still have happened before that attempt.
         }
         let session = try #require(center.session(for: owner))
-        #expect(session.currentModelRunID == run)
+        #expect(session.currentModelRunID == runID)
         #expect(session.hasModelControlHolder)
         #expect(session.tabs.count == 1)
     }
@@ -1178,10 +1180,10 @@ struct BrowserTaskSessionTests {
     func userTakeoverWithholdsPageAndNotifiesHolderRun() async throws {
         let center = makeCenter()
         let owner = UUID()
-        let run = UUID()
+        let runID = UUID()
         center.bind(to: owner)
         let registry = makeRegistry(center)
-        let ctx = context(for: owner, runID: run)
+        let ctx = context(for: owner, runID: runID)
         let session = try #require(center.session(for: owner))
         let tab = try #require(session.activeTabID)
         try await load(fixturePage("handover"), tab: tab, in: session, registry: registry, context: ctx)
@@ -1198,11 +1200,11 @@ struct BrowserTaskSessionTests {
         #expect(session.isUserControlling)
         #expect(!session.hasModelControlHolder)
         #expect(session.lastModelActivity == nil)
-        #expect(center.handoff(for: owner)?.runID == run)
+        #expect(center.handoff(for: owner)?.runID == runID)
         #expect(center.handoff(for: owner)?.runID != newerRun)
         #expect(center.handoff(for: owner)?.sessionID == session.sessionID)
         #expect(center.handoff(for: owner)?.tabID == tab)
-        #expect(beforeControl.runID == run)
+        #expect(beforeControl.runID == runID)
 
         for (name, arguments) in [
             ("browser.observe", "{\"tabID\":\"\(tab)\"}"),
@@ -1259,10 +1261,10 @@ struct BrowserTaskSessionTests {
     func humanInputFirstBlocksModelInsert() async throws {
         let center = makeCenter()
         let owner = UUID()
-        let run = UUID()
+        let runID = UUID()
         center.bind(to: owner)
         let registry = makeRegistry(center)
-        let ctx = context(for: owner, runID: run)
+        let ctx = context(for: owner, runID: runID)
         let session = try #require(center.session(for: owner))
         let tab = try #require(session.activeTabID)
         try await load(
@@ -1278,7 +1280,7 @@ struct BrowserTaskSessionTests {
         // insert anything, and the exact holder run is notified.
         session.registerUserInput()
         #expect(session.isUserControlling)
-        #expect(center.handoff(for: owner)?.runID == run)
+        #expect(center.handoff(for: owner)?.runID == runID)
         let attempted = try await run(
             registry, "browser.type",
             "{\"tabID\":\"\(tab)\",\"ref\":\"\(ref)\",\"documentID\":\"\(documentID)\",\"text\":\"model-value\"}",
@@ -1288,17 +1290,17 @@ struct BrowserTaskSessionTests {
         let value = try await webView.evaluateJavaScript(
             "document.getElementById('field').value") as? String
         #expect(value == "")
-        #expect(center.handoff(for: owner)?.runID == run)
+        #expect(center.handoff(for: owner)?.runID == runID)
     }
 
     @Test("An in-flight read after takeover returns no content and defers human input until it settles")
     func inFlightReadIsWithheldOnTakeover() async throws {
         let center = makeCenter()
         let owner = UUID()
-        let run = UUID()
+        let runID = UUID()
         center.bind(to: owner)
         let registry = makeRegistry(center)
-        let ctx = context(for: owner, runID: run)
+        let ctx = context(for: owner, runID: runID)
         let session = try #require(center.session(for: owner))
         let tab = try #require(session.activeTabID)
         try await load(fixturePage("inflight"), tab: tab, in: session, registry: registry, context: ctx)
@@ -1337,10 +1339,10 @@ struct BrowserTaskSessionTests {
     func inFlightClickTakenOverIsWithheldAndNeverReplayed() async throws {
         let center = makeCenter()
         let owner = UUID()
-        let run = UUID()
+        let runID = UUID()
         center.bind(to: owner)
         let registry = makeRegistry(center)
-        let ctx = context(for: owner, runID: run)
+        let ctx = context(for: owner, runID: runID)
         let session = try #require(center.session(for: owner))
         let tab = try #require(session.activeTabID)
         let html = "<!doctype html><html><body style=\"margin:0\">"
@@ -1391,10 +1393,10 @@ struct BrowserTaskSessionTests {
     func runEndReleasesLeaseAndKeepsPage() async throws {
         let center = makeCenter()
         let owner = UUID()
-        let run = UUID()
+        let runID = UUID()
         center.bind(to: owner)
         let registry = makeRegistry(center)
-        let ctx = context(for: owner, runID: run)
+        let ctx = context(for: owner, runID: runID)
         let session = try #require(center.session(for: owner))
         let tab = try #require(session.activeTabID)
         try await load(fixturePage("runend"), tab: tab, in: session, registry: registry, context: ctx)
@@ -1405,7 +1407,7 @@ struct BrowserTaskSessionTests {
 
         #expect(center.endModelControl(conversationID: owner, runID: UUID()) == false)
         #expect(session.modelControl == lease)
-        #expect(center.endModelControl(conversationID: owner, runID: run))
+        #expect(center.endModelControl(conversationID: owner, runID: runID))
         #expect(!session.hasModelControlHolder)
         #expect(!session.isUserControlling)
         #expect(!session.isReleased)
@@ -1429,7 +1431,7 @@ struct BrowserTaskSessionTests {
         // A user takeover survives the holder run ending.
         center.takeControl()
         #expect(session.isUserControlling)
-        #expect(center.endModelControl(conversationID: owner, runID: run) == false)
+        #expect(center.endModelControl(conversationID: owner, runID: runID) == false)
         #expect(session.isUserControlling)
     }
 
@@ -1437,10 +1439,10 @@ struct BrowserTaskSessionTests {
     func staleReleaseCannotUnlockNewerHoldingPeriod() async throws {
         let center = makeCenter()
         let owner = UUID()
-        let run = UUID()
+        let runID = UUID()
         center.bind(to: owner)
         let registry = makeRegistry(center)
-        let ctx = context(for: owner, runID: run)
+        let ctx = context(for: owner, runID: runID)
         _ = try await run(registry, "browser.tabs", "{}", as: ctx)
         let session = try #require(center.session(for: owner))
         let first = try #require(session.modelControl)

@@ -118,6 +118,9 @@ private final class BrowserToolEnvironment: @unchecked Sendable {
         let owner = try owner(for: context)
         try context.cancellation.throwIfCancelled()
         guard let center else { throw FloeError.invalidConfiguration("The task browser service is unavailable") }
+        if action != "release", let message = center.session(for: owner)?.userControlMessage {
+            return needsUserOutput(message)
+        }
         // Workspace/parameter authority is decided before the page is held.
         guard let root = context.workspaceRootURL, root.isFileURL,
               let environmentID = context.environmentID, !environmentID.isEmpty else {
