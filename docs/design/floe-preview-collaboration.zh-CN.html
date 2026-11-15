@@ -1,0 +1,497 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Floe · 本机协作预览交互稿</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #fff; --inset: #f5f6f7; --paper: #fff; --ink: #23262c; --muted: #565d69;
+      --line: #d8dce1; --accent: #2456a1; --active: #eaf1fc; --old: #8b3c38; --old-bg: #f9eeed;
+      --new: #236344; --new-bg: #e8f3eb; --shadow: rgb(25 38 55 / .12);
+      font: 100%/1.55 -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", sans-serif;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #1c1d20; --inset: #202226; --paper: #25272c; --ink: #f1f2f4; --muted: #b1b7c1;
+        --line: #40454e; --accent: #a9caff; --active: #273750; --old: #edb8b4; --old-bg: #3c2b30;
+        --new: #abd9b6; --new-bg: #253c30; --shadow: rgb(0 0 0 / .23);
+      }
+    }
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    body { margin: 0; color: var(--ink); background: var(--bg); }
+    button, summary, textarea, input { font: inherit; color: inherit; }
+    button, summary { cursor: pointer; }
+    button { min-height: 44px; background: transparent; border: 0; padding: 5px 10px; border-radius: 8px; }
+    button:hover, summary:hover { background: var(--inset); }
+    ::selection { background: var(--active); }
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+    h1,h2,h3,h4,p { margin: 0; }
+    h1 { font-size: 1.375rem; line-height: 1.25; }
+    h2 { font-size: 1.25rem; line-height: 1.3; }
+    .app { display: grid; grid-template-columns: minmax(0,1fr) minmax(360px, min(38%, 520px)); height: 100vh; height: 100dvh; }
+    .chat, .pane { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+    .bar, .pane-head { min-height: 58px; display: flex; align-items: center; border-bottom: 1px solid var(--line); }
+    .bar { justify-content: space-between; gap: 12px; padding: 6px 20px; }
+    .bar h1 { font-weight: 650; }
+    .bar button, .link-button { color: var(--accent); }
+    .history { min-height: 0; overflow: auto; flex: 1; padding: clamp(24px,6vh,54px) 22px 24px; }
+    .transcript, .composer-inner { max-width: 41rem; margin: auto; }
+    .prompt { max-width: 90%; width: fit-content; margin-left: auto; padding: 10px 15px; border-radius: 15px 15px 5px 15px; background: var(--inset); }
+    .speaker { font-weight: 650; margin: 22px 0 4px; }
+    .turn + .turn { margin-top: 36px; }
+    .turn p + details { margin-top: 4px; }
+    .changes summary { display: flex; align-items: center; width: fit-content; min-height: 44px; gap: 9px; color: var(--muted); font-size: .92rem; }
+    summary { list-style: none; }
+    summary::-webkit-details-marker { display: none; }
+    .chevron { width: 7px; height: 7px; border: solid currentColor; border-width: 1.5px 1.5px 0 0; transform: rotate(45deg); }
+    details[open] summary .chevron { transform: rotate(135deg); }
+    .file-list { margin: 0 0 0 4px; padding-left: 12px; border-left: 1px solid var(--line); }
+    .file-list button { width: 100%; text-align: left; display: flex; justify-content: space-between; gap: 6px; }
+    small, .secondary { color: var(--muted); font-size: .86rem; }
+    .composer { padding: 8px 22px max(18px, env(safe-area-inset-bottom)); }
+    textarea { width: 100%; padding: 12px 14px; min-height: 54px; display: block; border: 1px solid var(--line); border-radius: 13px; background: var(--bg); resize: vertical; }
+    textarea::placeholder { color: var(--muted); }
+    .pane { border-left: 1px solid var(--line); background: var(--inset); position: relative; }
+    .pane-head { padding: 4px 14px; justify-content: space-between; gap: 8px; position: relative; background: var(--bg); }
+    .pane-head h2 { font-weight: 620; min-width: 0; overflow-wrap: anywhere; }
+    .pane-head .tools { position: relative; flex: none; }
+    .tools summary { min-height: 44px; padding: 8px 10px; color: var(--accent); display: flex; align-items: center; }
+    .tool-menu { position: absolute; top: 100%; right: 0; background: var(--paper); padding: 5px; border: 1px solid var(--line); border-radius: 10px; width: max-content; z-index: 3; box-shadow: 0 4px 14px var(--shadow); }
+    .tool-menu button { display: block; width: 100%; text-align: left; padding-inline: 12px; }
+    .pane-body { display: flex; flex-direction: column; flex: 1; overflow: hidden; min-height: 0; }
+    .surface { overflow: auto; min-height: 0; flex: 1; overscroll-behavior: contain; }
+    .file-page { margin: 18px; padding: clamp(16px, 3vw, 28px); border: 1px solid var(--line); border-radius: 5px; background: var(--paper); }
+    .file-page h3 { font-size: 1.375rem; font-weight: 650; line-height: 1.4; margin-bottom: 14px; }
+    .file-page h4 { font-size: 1rem; margin: 18px 0 5px; }
+    .file-page p + p { margin-top: 8px; }
+    .file-page ol { padding-left: 1.5em; }
+    .file-page .diff { padding: 7px 10px; border-radius: 4px; }
+    .before { color: var(--old); background: var(--old-bg); }
+    .after { color: var(--new); background: var(--new-bg); }
+    .dock { display: grid; flex: none; align-content: end; margin: 0 15px 14px; padding: 8px 14px; border: 1px solid var(--line); box-shadow: 0 3px 12px var(--shadow); background: var(--paper); border-radius: 12px; }
+    .dock-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+    .dock-head strong { font-size: .94rem; }
+    .fold { color: var(--muted); font-size: .875rem; }
+    .status-text { font-size: .88rem; color: var(--muted); margin: 1px 0 7px; }
+    .dock-mini { overflow: hidden; background: var(--inset); border-radius: 5px; padding: 8px 12px; }
+    .mini-title { font-size: .89rem; font-weight: 600; }
+    .mini-controls { margin-top: 6px; display: flex; gap: 4px; flex-wrap: wrap; }
+    .mini-controls span { font: .83rem/1.55 ui-monospace, monospace; padding: 1px 6px; border: 1px solid var(--line); border-radius: 4px; }
+    .mini-controls span.selected { color: var(--accent); border-color: var(--accent); }
+    .mini-controls span.hit, .options button.hit { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .dock-actions, .browser-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+    .dock-actions button, .browser-actions button { font-size: .92rem; }
+    .primary { background: var(--active); color: var(--accent); font-weight: 600; }
+    .primary:hover { background: var(--active); text-decoration: underline; }
+    .browser-surface { padding: 18px; }
+    .browser-actions { align-items: center; justify-content: space-between; margin-bottom: 12px; }
+    .owner { color: var(--accent); font-weight: 600; }
+    .web-sheet { background: var(--paper); border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
+    .website { display: flex; align-items: center; min-height: 38px; padding: 6px 12px; font: .82rem/1.4 ui-monospace, monospace; border-bottom: 1px solid var(--line); color: var(--muted); }
+    .experiment { padding: 16px; }
+    .experiment h3 { font-size: 1.375rem; margin-bottom: 7px; }
+    .experiment svg { width: 100%; height: 110px; margin-block: 6px; background: var(--inset); border-radius: 6px; }
+    .experiment .line { stroke: var(--muted); fill: none; }
+    .experiment .block { fill: var(--accent); }
+    .options { display: flex; gap: 5px; align-items: center; flex-wrap: wrap; }
+    .options button { background: var(--inset); min-width: 48px; border: 1px solid var(--line); }
+    .options button[aria-pressed=true] { border-color: var(--accent); color: var(--accent); }
+    .personal-row { margin-top: 9px; }
+    .personal-row button { padding-left: 2px; color: var(--accent); }
+    .browser-foot { margin-top: 12px; }
+    .mobile-close, .mobile-activity { display: none; }
+    .app.pane-closed { grid-template-columns: minmax(0, 1fr); }
+    .pane-closed .pane { display: none; }
+    .pane-closed .mobile-activity:not([hidden]) { display: block; text-align: center; color: var(--accent); }
+    button:disabled { cursor: default; }
+    .sr-only { position: absolute; top: 0; left: 0; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+    @media (max-width: 819px) {
+      .app { display: flex; }
+      .chat { flex: 1; }
+      .history, .composer { padding-inline: 16px; }
+      .pane { display: none; }
+      .mobile-close { display: block; }
+      .pane.mobile-open { display: flex; position: fixed; z-index: 8; inset: auto 0 0; height: 83vh; height: 83dvh; border: 1px solid var(--line); border-radius: 16px 16px 0 0; overflow: hidden; box-shadow: 0 -6px 22px var(--shadow); }
+      .mobile-activity { padding: 0 16px; align-items: center; gap: 6px; width: 100%; color: var(--accent); text-align: left; font-size: .9rem; }
+      .mobile-activity:not([hidden]) { display: flex; }
+      .shade:not([hidden]) { position: fixed; z-index: 7; inset: 0; background: rgb(10 15 30 / .25); }
+      .bar { padding-inline: 16px; }
+      .dock { margin: 0 9px 9px; padding-inline: 10px; }
+      .dock-mini { display: none; }
+      .file-page { margin: 10px; }
+      .browser-surface { padding: 12px; }
+    }
+    @media (max-height: 560px) {
+      .dock-mini { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <section class="chat" aria-labelledby="chat-heading">
+      <header class="bar"><h1 id="chat-heading">整理第三章讲义</h1><button id="open-pane">预览</button></header>
+      <div class="history">
+        <div class="transcript">
+          <section class="turn">
+            <p class="prompt">把第三章的例题和课后练习分开，删掉旧草稿。</p>
+            <p class="speaker">Floe</p><p>例题留在讲义，课后练习已单独整理。</p>
+            <details class="changes"><summary><span class="chevron" aria-hidden="true"></span>已更改 3 个文件</summary><div class="file-list">
+              <button data-file="lecture">讲义.md <small>修改</small></button><button data-file="practice">练习单.md <small>新增</small></button><button data-file="deleted">旧草稿.txt <small>删除</small></button>
+            </div></details>
+          </section>
+          <section class="turn">
+            <p class="prompt">再打开斜面实验网页，核对后把我们班要用的倾角补进讲义。</p>
+            <p class="speaker">Floe</p><p id="reply">我正在核对网页里的倾角。</p>
+            <details class="changes" id="finished-changes" hidden><summary><span class="chevron" aria-hidden="true"></span>已更改 1 个文件</summary>
+              <div class="file-list"><button data-file="newdiff">讲义.md <small>修改</small></button></div>
+            </details>
+          </section>
+        </div>
+      </div>
+      <button class="mobile-activity" id="mobile-activity"><span id="mobile-label"></span> <span aria-hidden="true">›</span></button>
+      <div class="composer"><div class="composer-inner"><textarea rows="1" aria-label="主对话草稿" placeholder="继续给 Floe 补充要求…"></textarea></div></div>
+    </section>
+    <div id="shade" class="shade" hidden></div>
+    <section class="pane" aria-labelledby="pane-title" id="pane">
+      <header class="pane-head">
+        <h2 id="pane-title" tabindex="-1">讲义.md</h2>
+        <details class="tools"><summary>更多</summary><div class="tool-menu">
+          <button data-file="document">查看讲义</button><button id="menu-browser">任务浏览器</button><button id="menu-replay">重播示例</button>
+        </div></details>
+        <button class="mobile-close link-button" id="close-pane">完成</button>
+      </header>
+      <div class="pane-body">
+        <div class="surface" id="file-surface" tabindex="0" aria-label="文件内容">
+          <article class="file-page" id="document"><h3>斜面上的木块</h3><p>在木块上画出重力与支持力，比较木块在不同倾角下的受力情况。</p>
+            <h4>观察方法</h4><p>打开斜面实验，选择倾角，观察木块与斜面的相对位置。</p>
+            <h4>课堂记录</h4><p id="file-note">例题的倾角待核对。</p>
+            <button id="show-update" class="link-button" hidden>查看更新</button>
+            <h4>讨论</h4><p>当倾角变大时，重力沿斜面的分量怎样变化？</p>
+          </article>
+          <article class="file-page" id="file-detail" hidden><h3 id="detail-title"></h3><div id="detail-body"></div></article>
+        </div>
+        <div class="surface browser-surface" id="browser-surface" hidden>
+          <div class="browser-actions"><span class="owner" id="owner"></span><button class="primary" id="owner-action">我来操作</button></div>
+          <div class="web-sheet"><div class="website">physics.example</div>
+            <div class="experiment" id="experiment"><h3>斜面实验</h3><p>选择倾角，观察木块的位置。</p>
+              <svg viewBox="0 0 260 110" aria-label="斜面上的木块" role="img">
+                <path class="line" stroke-width="1.6" d="M18 91 H243"></path><g id="slope" transform="rotate(-15 22 90)">
+                  <path class="line" stroke-width="2" d="M22 90 H140"></path><rect class="block" x="82" y="78" width="18" height="12" rx="1"></rect>
+                </g>
+              </svg>
+              <div class="options" role="group" aria-label="倾角"><button data-angle="15">15°</button><button data-angle="30">30°</button><button data-angle="45">45°</button></div>
+            </div>
+            <div class="experiment" id="private-page" hidden><h3>个人实验记录</h3><p>此页由你查看。示例不需要身份信息。</p></div>
+          </div>
+          <div class="personal-row" id="personal-row" hidden><button id="private-toggle">打开个人记录</button></div>
+          <p class="status-text browser-foot" id="browser-status"></p>
+          <button class="link-button" id="back-file">返回文件</button>
+        </div>
+        <aside class="dock" id="dock" aria-labelledby="dock-title">
+          <div class="dock-head"><strong id="dock-title">AI 正在使用浏览器</strong><button class="fold" id="fold" aria-expanded="true">收起小窗</button></div>
+          <p class="status-text" id="dock-status"></p>
+          <div class="dock-mini" id="mini" aria-hidden="true">
+            <div class="mini-title">斜面实验</div>
+            <div class="mini-controls"><span data-mini="15">15°</span><span data-mini="30">30°</span><span data-mini="45">45°</span></div>
+          </div>
+          <div class="dock-actions" id="dock-actions"><button class="link-button" id="watch">放大观看</button><button class="primary" id="take">我来操作</button></div>
+        </aside>
+      </div>
+    </section>
+  </main>
+  <div class="sr-only" id="announcement" aria-live="polite"></div>
+  <script>
+    const $ = selector => document.querySelector(selector);
+    const all = selector => [...document.querySelectorAll(selector)];
+    const compact = matchMedia('(max-width: 819px)');
+    const fileInfo = {
+      document: '讲义.md', lecture: '讲义.md', practice: '练习单.md',
+      deleted: '旧草稿.txt', newdiff: '讲义.md'
+    };
+    const state = {
+      surface: 'file', file: 'document', owner: 'ai', angle: 15, hit: null, lastAction: '',
+      folded: false, paneVisible: true, sheetOpen: false, privatePage: false, savedAngle: null, shownAngle: null
+    };
+    let cycle = 0;
+    let timer = null;
+    let openingControl = null;
+
+    function invalidateSteps() {
+      cycle += 1;
+      clearTimeout(timer);
+    }
+    function schedule(wait, action) {
+      clearTimeout(timer);
+      const ticket = cycle;
+      timer = setTimeout(() => { if (ticket === cycle) action(); }, wait);
+    }
+    function announce(message) { $('#announcement').textContent = message; }
+    function ownerText() {
+      switch (state.owner) {
+        case 'ai': return 'AI 正在使用浏览器';
+        case 'waiting': return '浏览器需要你操作';
+        case 'taking': return '正在接管浏览器…';
+        case 'user': return '你在操作浏览器';
+        case 'returning': return '正在交还浏览器…';
+        case 'done': return '网页核对已完成';
+      }
+    }
+    function actionText() {
+      switch (state.owner) {
+        case 'waiting': return '网页里有三个角度，请选择本班使用的倾角。';
+        case 'taking': return '正在结束 AI 的当前操作。';
+        case 'user': return state.privatePage ? '个人页面已隐藏。' : '你可以更改倾角，选好后交还给 AI。';
+        case 'returning': return 'AI 正在重新读取当前页面。';
+        case 'done': return '已核对 ' + state.savedAngle + '° 并更新讲义。';
+        case 'ai': return state.lastAction;
+      }
+    }
+    function renderOwnership() {
+      const readingFile = state.surface === 'file';
+      const human = state.owner === 'user';
+      const switching = state.owner === 'taking' || state.owner === 'returning';
+      const ended = state.owner === 'done';
+      const needsHuman = state.owner === 'waiting';
+      $('#pane-title').textContent = readingFile ? fileInfo[state.file] : '任务浏览器';
+      $('#file-surface').hidden = !readingFile;
+      $('#browser-surface').hidden = readingFile;
+      $('#dock').hidden = !readingFile || ended;
+      $('#dock-title').textContent = ownerText();
+      $('#dock-status').textContent = actionText();
+      $('#browser-status').textContent = actionText();
+      $('#owner').textContent = ownerText();
+      $('#fold').textContent = state.folded ? '展开小窗' : '收起小窗';
+      $('#fold').setAttribute('aria-expanded', String(!state.folded));
+      $('#mini').hidden = state.folded || human || switching || needsHuman;
+      $('#dock-actions').hidden = state.folded;
+      $('#watch').textContent = human ? '回到浏览器' : '放大观看';
+      $('#take').hidden = human || ended;
+      $('#take').disabled = switching;
+      $('#owner-action').hidden = ended;
+      $('#owner-action').disabled = switching || (human && state.privatePage);
+      $('#owner-action').textContent = human ? '交还给 AI' : switching ? ownerText() : '我来操作';
+      $('#personal-row').hidden = !human;
+      $('#private-toggle').textContent = state.privatePage ? '返回实验页' : '打开个人记录';
+      $('#private-page').hidden = !state.privatePage;
+      $('#experiment').hidden = state.privatePage;
+      $('#experiment').inert = !human;
+      for (const button of all('[data-angle]')) {
+        const angle = Number(button.dataset.angle);
+        button.disabled = !human;
+        button.setAttribute('aria-pressed', String(angle === state.angle));
+        button.classList.toggle('hit', state.owner === 'ai' && state.hit === angle);
+      }
+      for (const item of all('[data-mini]')) {
+        const angle = Number(item.dataset.mini);
+        item.classList.toggle('selected', angle === state.angle);
+        item.classList.toggle('hit', state.owner === 'ai' && state.hit === angle);
+      }
+      $('#slope').setAttribute('transform', 'rotate(-' + state.angle + ' 22 90)');
+      const hiddenPane = compact.matches ? !state.sheetOpen : !state.paneVisible;
+      $('#mobile-activity').hidden = !hiddenPane || ended;
+      $('#mobile-label').textContent = human || needsHuman ? ownerText() : '查看 AI 的浏览器操作';
+      $('#open-pane').textContent = !compact.matches && state.paneVisible ? '收起预览' : '打开预览';
+      $('#open-pane').setAttribute('aria-expanded', String(!hiddenPane));
+      $('#finished-changes').hidden = !ended;
+      $('#show-update').hidden = state.savedAngle === null || state.shownAngle === state.savedAngle;
+    }
+    function setPresentation() {
+      const sheet = compact.matches && state.sheetOpen;
+      $('.app').classList.toggle('pane-closed', !compact.matches && !state.paneVisible);
+      $('#pane').classList.toggle('mobile-open', sheet);
+      $('#shade').hidden = !sheet;
+      $('.chat').inert = sheet;
+      if (sheet) {
+        $('#pane').setAttribute('role', 'dialog');
+        $('#pane').setAttribute('aria-modal', 'true');
+      } else {
+        $('#pane').removeAttribute('role');
+        $('#pane').removeAttribute('aria-modal');
+      }
+    }
+    function revealPane() {
+      $('.tools').open = false;
+      if (compact.matches && !state.sheetOpen) openingControl = document.activeElement;
+      state.sheetOpen = compact.matches;
+      state.paneVisible = true;
+      setPresentation();
+      renderOwnership();
+      $('#pane-title').focus({preventScroll: true});
+    }
+    function hidePane() {
+      state.sheetOpen = false;
+      if (!compact.matches) state.paneVisible = false;
+      $('.tools').open = false;
+      setPresentation();
+      renderOwnership();
+      const target = openingControl?.isConnected && openingControl.offsetWidth > 0 ? openingControl : $('#open-pane');
+      target.focus({preventScroll: true});
+      openingControl = null;
+    }
+    function detailLine(text, style) {
+      const p = document.createElement('p');
+      p.textContent = text;
+      if (style) p.className = 'diff ' + style;
+      return p;
+    }
+    function displayFile(name) {
+      const same = state.file === name;
+      if (name === 'document' && !same && state.savedAngle !== null) revealDocumentUpdate();
+      state.file = name;
+      state.surface = 'file';
+      $('#document').hidden = name !== 'document';
+      $('#file-detail').hidden = name === 'document';
+      if (!same && name !== 'document') {
+        const descriptions = {
+          lecture: ['本轮差异', detailLine('− 例题和课后练习附在文末。', 'before'), detailLine('+ 课后练习请见《练习单》。', 'after')],
+          practice: ['当前文件', detailLine('课后练习：画出木块的受力图，比较不同斜面上的运动。')],
+          deleted: ['本轮删除', detailLine('旧草稿.txt 已从工作区删除。')],
+          newdiff: ['本轮差异', detailLine('− 例题的倾角待核对。', 'before'), detailLine('+ 本班的示例倾角为 ' + state.savedAngle + '°。', 'after')]
+        };
+        const [heading, ...lines] = descriptions[name];
+        $('#detail-title').textContent = heading;
+        $('#detail-body').replaceChildren(...lines);
+      }
+      revealPane();
+      if (!same) $('#file-surface').scrollTop = 0;
+    }
+    function watchBrowser() {
+      state.surface = 'browser';
+      revealPane();
+    }
+    function revealDocumentUpdate() {
+      state.shownAngle = state.savedAngle;
+      $('#file-note').textContent = '本班的示例倾角为 ' + state.shownAngle + '°。';
+      $('#show-update').hidden = true;
+    }
+    function beginTakeover() {
+      if (state.owner !== 'ai' && state.owner !== 'waiting') return;
+      invalidateSteps();
+      state.owner = 'taking';
+      state.hit = null;
+      watchBrowser();
+      announce('正在接管浏览器');
+      schedule(350, () => {
+        state.owner = 'user';
+        renderOwnership();
+        announce('现在由你操作浏览器');
+      });
+    }
+    function returnBrowser() {
+      if (state.owner !== 'user' || state.privatePage) return;
+      invalidateSteps();
+      state.owner = 'returning';
+      state.hit = null;
+      renderOwnership();
+      announce('正在交还。AI 将重新读取当前页面');
+      schedule(850, () => {
+        state.owner = 'ai';
+        const observedAngle = state.angle;
+        state.lastAction = '已重新读取实验页，当前倾角为 ' + observedAngle + '°。';
+        renderOwnership();
+        schedule(2800, () => {
+          state.owner = 'done';
+          state.savedAngle = observedAngle;
+          $('#reply').textContent = '已核对实验网页，讲义中的本班示例倾角已更新为 ' + observedAngle + '°。';
+          renderOwnership();
+          announce('讲义已更新');
+        });
+      });
+    }
+    function playExample() {
+      invalidateSteps();
+      state.owner = 'ai';
+      state.angle = 15;
+      state.hit = null;
+      state.privatePage = false;
+      state.savedAngle = null;
+      state.shownAngle = null;
+      $('#file-note').textContent = '例题的倾角待核对。';
+      state.folded = false;
+      state.lastAction = '已打开斜面实验页，正在查看可选倾角。';
+      if (state.file === 'newdiff') state.file = 'document';
+      $('#document').hidden = state.file !== 'document';
+      $('#file-detail').hidden = state.file === 'document';
+      $('#finished-changes').open = false;
+      $('#reply').textContent = '我正在核对网页里的倾角。';
+      $('.tools').open = false;
+      renderOwnership();
+      schedule(2400, () => {
+        state.angle = 30;
+        state.hit = 30;
+        state.lastAction = '已点选「30°」，网页显示了新的斜面。';
+        renderOwnership();
+        schedule(10000, () => {
+          state.angle = 45;
+          state.hit = 45;
+          state.lastAction = '已点选「45°」，正在比较示例。';
+          renderOwnership();
+          schedule(9000, () => {
+            state.owner = 'waiting';
+            state.hit = null;
+            renderOwnership();
+            announce('浏览器需要你选择本班使用的倾角');
+          });
+        });
+      });
+    }
+
+    all('[data-file]').forEach(button => button.addEventListener('click', () => displayFile(button.dataset.file)));
+    all('[data-angle]').forEach(button => button.addEventListener('click', () => {
+      if (state.owner !== 'user' || state.privatePage) return;
+      state.angle = Number(button.dataset.angle);
+      renderOwnership();
+    }));
+    $('#open-pane').addEventListener('click', () => {
+      if (!compact.matches && state.paneVisible) hidePane(); else revealPane();
+    });
+    $('#mobile-activity').addEventListener('click', watchBrowser);
+    $('#close-pane').addEventListener('click', hidePane);
+    $('#shade').addEventListener('click', hidePane);
+    $('#fold').addEventListener('click', () => { state.folded = !state.folded; renderOwnership(); });
+    $('#watch').addEventListener('click', watchBrowser);
+    $('#take').addEventListener('click', beginTakeover);
+    $('#owner-action').addEventListener('click', () => {
+      if (state.owner === 'user') returnBrowser(); else beginTakeover();
+    });
+    $('#private-toggle').addEventListener('click', () => {
+      if (state.owner !== 'user') return;
+      state.privatePage = !state.privatePage;
+      renderOwnership();
+    });
+    $('#menu-browser').addEventListener('click', watchBrowser);
+    $('#menu-replay').addEventListener('click', playExample);
+    $('#show-update').addEventListener('click', () => {
+      revealDocumentUpdate();
+      $('#file-surface').focus({preventScroll: true});
+      announce('已显示最新讲义');
+    });
+    $('#back-file').addEventListener('click', () => displayFile(state.file));
+    document.addEventListener('keydown', event => {
+      if (event.key === 'Escape' && $('.tools').open) { $('.tools').open = false; $('.tools summary').focus(); return; }
+      if (event.key === 'Escape' && compact.matches && state.sheetOpen) { event.preventDefault(); hidePane(); }
+      if (event.key === 'Tab' && compact.matches && state.sheetOpen) {
+        const targets = [...$('#pane').querySelectorAll('button:not(:disabled), summary, [tabindex="0"]')]
+          .filter(el => !el.closest('[inert]') && el.getClientRects().length);
+        const first = targets[0], last = targets.at(-1);
+        if (event.shiftKey && (document.activeElement === first || document.activeElement === $('#pane-title'))) {
+          event.preventDefault(); last?.focus();
+        } else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+      }
+    });
+    compact.addEventListener('change', () => {
+      const wasInPane = $('#pane').contains(document.activeElement);
+      if (compact.matches) state.sheetOpen = wasInPane && state.paneVisible;
+      else if (state.sheetOpen) state.paneVisible = true;
+      setPresentation();
+      renderOwnership();
+    });
+    setPresentation();
+    playExample();
+  </script>
+</body>
+</html>

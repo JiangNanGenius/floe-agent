@@ -12,6 +12,23 @@
 import Foundation
 import FloeCore
 
+/// Typed control refusal raised by the task browser service. Tool callers
+/// turn these into an honest `needsUser`/refusal result instead of touching
+/// the page; they never carry page data.
+enum BrowserControlError: Error, LocalizedError, Equatable {
+    case heldByAnotherRun
+    case needsUser(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .heldByAnotherRun:
+            return "This browser is being used by another run; continue with other authorized work"
+        case .needsUser(let message):
+            return message
+        }
+    }
+}
+
 enum BrowserAction: Sendable, Codable, Hashable {
     case protocolInfo
     case create

@@ -102,25 +102,43 @@ private struct BrowserSurface: View {
             }
             .background(.bar)
             BrowserProgressBar(session: session)
-            if center.taskHandoffsEnabled && (session.isUserControlling || center.handoffNeedsContinue || center.handoffError != nil) {
+            if center.taskHandoffsEnabled && session.isUserControlling {
                 HStack {
-                    Text(center.handoffError ?? (center.handoffNeedsContinue
-                        ? IDELanguageRunText.t("通知已保存，原任务未运行", "Notification saved; the original task is not running")
-                        : IDELanguageRunText.t("浏览器由你操作，模型可继续其他工作", "You control the browser; the agent can continue other work")))
+                    Text(center.handoffError ?? (session.takeoverPending
+                        ? IDELanguageRunText.t("正在接管，等待上一个操作结束", "Taking over; waiting for the previous action to settle")
+                        : (center.handoffNeedsContinue
+                            ? IDELanguageRunText.t("通知已保存，原任务未运行", "Notification saved; the original task is not running")
+                            : IDELanguageRunText.t("浏览器由你操作，模型可继续其他工作", "You control the browser; the agent can continue other work"))))
                         .font(.caption).lineLimit(2)
                     Spacer()
-                    Button {
-                        Task { await center.returnToAgent(continueTask: center.handoffNeedsContinue) }
-                    } label: {
-                        if center.returningControl {
-                            HStack { ProgressView(); Text(IDELanguageRunText.t("正在交还", "Returning control")) }
+                    if session.takeoverPending {
+                        Button { session.forceUserTakeover() } label: {
+                            Text(IDELanguageRunText.t("重试接管", "Retry takeover"))
+                                .frame(minHeight: 44)
                         }
-                        else { Text(center.handoffNeedsContinue
-                            ? IDELanguageRunText.t("继续任务", "Continue task")
-                            : IDELanguageRunText.t("完成并交还模型", "Return to agent")) }
+                        .accessibilityIdentifier("browser.retryTakeover")
+                    } else {
+                        Button {
+                            // An explicit handback also releases the address
+                            // bar/keyboard focus, so the model does not stay
+                            // blocked by a field the user left focused.
+                            UIApplication.shared.sendAction(
+                                #selector(UIResponder.resignFirstResponder),
+                                to: nil, from: nil, for: nil)
+                            Task { await center.returnToAgent(continueTask: center.handoffNeedsContinue) }
+                        } label: {
+                            if center.returningControl {
+                                HStack { ProgressView(); Text(IDELanguageRunText.t("正在交还", "Returning control")) }
+                            }
+                            else { Text(center.handoff == nil
+                                ? IDELanguageRunText.t("完成", "Done")
+                                : (center.handoffNeedsContinue
+                                    ? IDELanguageRunText.t("继续任务", "Continue task")
+                                    : IDELanguageRunText.t("完成并交还模型", "Return to agent"))) }
+                        }
+                        .disabled(center.returningControl)
+                        .frame(minHeight: 44)
                     }
-                    .disabled(center.returningControl)
-                    .frame(minHeight: 44)
                 }.padding(.horizontal, 12)
                     .accessibilityIdentifier("browser.taskHandoff")
             }
@@ -129,8 +147,15 @@ private struct BrowserSurface: View {
                     .font(.caption).foregroundStyle(.secondary)
                     .accessibilityIdentifier("browser.taskHandoffNotified")
             }
+            if center.taskHandoffsEnabled && !session.isUserControlling && session.modelControl != nil {
+                BrowserModelStatusBar(center: center, session: session)
+            }
             Divider()
-            BrowserWebContainer(webView: session.activeWebView)
+            BrowserWebContainer(
+                webView: session.activeWebView,
+                onUserInteraction: { session.registerUserInput() }
+            )
+            .allowsHitTesting(!session.takeoverPending)
                 .overlay(alignment: .top) {
                     if case .failed(let message) = session.surfaceState {
                         VStack(spacing: 12) {
@@ -145,6 +170,61 @@ private struct BrowserSurface: View {
                 }
                 .overlay(alignment: .bottom) { BrowserDownloadBanner(service: session.downloads) }
                 .clipped()
+        }
+    }
+}
+
+/// Live, publicly safe status of the model's current page work plus the
+/// visible "I'll take over" affordance. It shows only what the executed
+/// action kind proves; without target evidence it never fabricates a click
+/// label or page content.
+private struct BrowserModelStatusBar: View {
+    @ObservedObject var center: BrowserSessionCenter
+    @ObservedObject var session: BrowserTaskSession
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "sparkles")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(activityText)
+                .font(.caption)
+                .lineLimit(2)
+            Spacer(minLength: 8)
+            Button {
+                center.takeControl()
+            } label: {
+                Text(IDELanguageRunText.t("我来操作", "I'll take over"))
+                    .font(.caption.weight(.semibold))
+                    .frame(minHeight: 44)
+            }
+            .accessibilityIdentifier("browser.takeControlInline")
+        }
+        .padding(.horizontal, 12)
+        .background(.thinMaterial)
+        .accessibilityIdentifier("browser.modelStatus")
+    }
+
+    private var activityText: String {
+        let kind = session.lastModelActivity?.kind ?? .observing
+        switch kind {
+        case .observing:
+            return IDELanguageRunText.t("AI 正在查看网页", "AI is viewing the page")
+        case .navigating:
+            return IDELanguageRunText.t("AI 正在打开网页", "AI is opening a page")
+        case .clicking:
+            if let detail = session.lastModelActivity?.detail, !detail.isEmpty {
+                return IDELanguageRunText.t("AI 点击了「\(detail)」", "AI clicked “\(detail)”")
+            }
+            return IDELanguageRunText.t("AI 正在操作网页", "AI is using the page")
+        case .typing:
+            return IDELanguageRunText.t("AI 正在填写表单", "AI is filling in a form")
+        case .scrolling:
+            return IDELanguageRunText.t("AI 正在滚动网页", "AI is scrolling the page")
+        case .waiting:
+            return IDELanguageRunText.t("AI 正在等待网页", "AI is waiting for the page")
+        case .exporting, .downloading:
+            return IDELanguageRunText.t("AI 正在保存网页文件", "AI is saving a page file")
         }
     }
 }
@@ -207,6 +287,7 @@ private struct BrowserTabStrip: View {
                     BrowserTabChip(session: session, tab: tab)
                 }
                 Button {
+                    session.registerUserInput(reason: "You opened a tab")
                     _ = session.createTab()
                 } label: {
                     Image(systemName: "plus")
@@ -238,6 +319,7 @@ private struct BrowserTabChip: View {
     var body: some View {
         HStack(spacing: 0) {
             Button {
+                session.registerUserInput(reason: "You closed a tab")
                 session.close(tab.id)
             } label: {
                 Image(systemName: "xmark")
@@ -249,6 +331,7 @@ private struct BrowserTabChip: View {
             .buttonStyle(.plain)
             .accessibilityLabel(IDELanguageRunText.t("关闭标签页", "Close tab"))
             Button {
+                session.registerUserInput(reason: "You switched tabs")
                 session.activate(tab.id)
             } label: {
                 Text(title)
@@ -279,6 +362,7 @@ private struct BrowserTabOverview: View {
                 Section {
                     ForEach(session.tabs) { tab in
                         Button {
+                            session.registerUserInput(reason: "You switched tabs")
                             session.activate(tab.id)
                             dismiss()
                         } label: {
@@ -299,6 +383,7 @@ private struct BrowserTabOverview: View {
                         }
                         .swipeActions {
                             Button(role: .destructive) {
+                                session.registerUserInput(reason: "You closed a tab")
                                 session.close(tab.id)
                             } label: { Label(IDELanguageRunText.t("关闭", "Close"), systemImage: "xmark") }
                         }
@@ -306,6 +391,7 @@ private struct BrowserTabOverview: View {
                 }
                 Section {
                     Button {
+                        session.registerUserInput(reason: "You opened a tab")
                         _ = session.createTab()
                         dismiss()
                     } label: {
@@ -396,13 +482,17 @@ private struct BrowserAddressBar: View {
                 .font(.subheadline)
                 .multilineTextAlignment(editing ? .leading : .center)
                 .focused($editing)
-                .onChange(of: editing) { _, value in session.isEditingAddress = value }
+                .onChange(of: editing) { _, value in
+                    session.isEditingAddress = value
+                    if value { session.registerUserInput(reason: "You are using the address bar") }
+                }
                 .onChange(of: session.activeTabID) { _, _ in editing = false; session.isEditingAddress = false }
                 .onSubmit { editing = false; session.isEditingAddress = false; session.navigateFromAddressBar() }
                 .accessibilityIdentifier("browser.address")
                 .accessibilityValue(session.addressText)
             button(session.isLoading ? "xmark" : "arrow.clockwise",
                    session.isLoading ? IDELanguageRunText.t("停止载入", "Stop loading") : IDELanguageRunText.t("刷新", "Reload")) {
+                session.registerUserInput(reason: "You reloaded the page")
                 if session.isLoading { session.activeWebView?.stopLoading() }
                 else { session.activeWebView?.reload() }
             }
@@ -440,10 +530,16 @@ private struct BrowserAddressBar: View {
 
     private var historyButtons: some View {
         Group {
-            button("chevron.backward", IDELanguageRunText.t("后退", "Back")) { session.activeWebView?.goBack() }
+            button("chevron.backward", IDELanguageRunText.t("后退", "Back")) {
+                session.registerUserInput(reason: "You navigated back")
+                session.activeWebView?.goBack()
+            }
                 .disabled(!session.canGoBack)
                 .accessibilityIdentifier("browser.back")
-            button("chevron.forward", IDELanguageRunText.t("前进", "Forward")) { session.activeWebView?.goForward() }
+            button("chevron.forward", IDELanguageRunText.t("前进", "Forward")) {
+                session.registerUserInput(reason: "You navigated forward")
+                session.activeWebView?.goForward()
+            }
                 .disabled(!session.canGoForward)
                 .accessibilityIdentifier("browser.forward")
         }
@@ -459,11 +555,20 @@ private struct BrowserAddressBar: View {
     private var browserMenu: some View {
         Menu {
             Section {
-                Button(IDELanguageRunText.t("后退", "Back"), systemImage: "chevron.backward") { session.activeWebView?.goBack() }
+                Button(IDELanguageRunText.t("后退", "Back"), systemImage: "chevron.backward") {
+                    session.registerUserInput(reason: "You navigated back")
+                    session.activeWebView?.goBack()
+                }
                     .disabled(!session.canGoBack)
-                Button(IDELanguageRunText.t("前进", "Forward"), systemImage: "chevron.forward") { session.activeWebView?.goForward() }
+                Button(IDELanguageRunText.t("前进", "Forward"), systemImage: "chevron.forward") {
+                    session.registerUserInput(reason: "You navigated forward")
+                    session.activeWebView?.goForward()
+                }
                     .disabled(!session.canGoForward)
-                Button(IDELanguageRunText.t("刷新", "Reload"), systemImage: "arrow.clockwise") { session.activeWebView?.reload() }
+                Button(IDELanguageRunText.t("刷新", "Reload"), systemImage: "arrow.clockwise") {
+                    session.registerUserInput(reason: "You reloaded the page")
+                    session.activeWebView?.reload()
+                }
                 Button(IDELanguageRunText.t("复制地址", "Copy address"), systemImage: "doc.on.doc") {
                     UIPasteboard.general.string = session.technicalAddress
                 }
@@ -484,12 +589,21 @@ private struct BrowserAddressBar: View {
             Section {
                 Button(IDELanguageRunText.t("标签页概览", "Tab overview"), systemImage: "square.on.square", action: showTabs)
                 ForEach(session.tabs) { tab in
-                    Button(tabTitle(tab)) { session.activate(tab.id) }
+                    Button(tabTitle(tab)) {
+                        session.registerUserInput(reason: "You switched tabs")
+                        session.activate(tab.id)
+                    }
                 }
-                Button("browser.new_tab", systemImage: "plus") { _ = session.createTab() }
+                Button("browser.new_tab", systemImage: "plus") {
+                    session.registerUserInput(reason: "You opened a tab")
+                    _ = session.createTab()
+                }
                     .accessibilityIdentifier("browser.menu.newTab")
                 if let active = session.activeTabID, !session.tabs.isEmpty {
-                    Button("browser.close_tab", systemImage: "xmark", role: .destructive) { session.close(active) }
+                    Button("browser.close_tab", systemImage: "xmark", role: .destructive) {
+                        session.registerUserInput(reason: "You closed a tab")
+                        session.close(active)
+                    }
                         .accessibilityIdentifier("browser.menu.closeTab")
                 }
             }
@@ -540,11 +654,50 @@ private struct BrowserDownloadBanner: View {
 
 private struct BrowserWebContainer: UIViewRepresentable {
     let webView: WKWebView?
+    let onUserInteraction: () -> Void
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        let onUserInteraction: () -> Void
+        init(onUserInteraction: @escaping () -> Void) { self.onUserInteraction = onUserInteraction }
+
+        @objc func began(_ recognizer: UIGestureRecognizer) {
+            switch recognizer.state {
+            case .began, .recognized, .ended: onUserInteraction()
+            default: break
+            }
+        }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+        ) -> Bool { true }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(onUserInteraction: onUserInteraction) }
 
     func makeUIView(context: Context) -> UIView {
         let container = UIView()
         container.backgroundColor = .systemBackground
         container.clipsToBounds = true
+        // The first real human gesture registers user control before it can
+        // act, without cancelling the WebView's own touch/scroll handling.
+        // A zero-duration long press is the touch-down detector: it begins
+        // before the web content can act on the tap, so the takeover is
+        // registered first. Pan/pinch/tap cover the remaining real gestures.
+        let touchDown = UILongPressGestureRecognizer(
+            target: context.coordinator, action: #selector(Coordinator.began(_:)))
+        touchDown.minimumPressDuration = 0
+        touchDown.allowableMovement = .greatestFiniteMagnitude
+        for recognizer: UIGestureRecognizer in [
+            touchDown,
+            UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.began(_:))),
+            UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.began(_:))),
+            UIPinchGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.began(_:)))
+        ] {
+            recognizer.cancelsTouchesInView = false
+            recognizer.delegate = context.coordinator
+            container.addGestureRecognizer(recognizer)
+        }
         return container
     }
 

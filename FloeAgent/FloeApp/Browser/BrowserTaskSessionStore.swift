@@ -58,6 +58,60 @@ struct BrowserTaskSessionConfiguration {
 @MainActor
 protocol BrowserTaskSessionHost: AnyObject {
     func browserSessionRequestedUserControl(_ session: BrowserTaskSession, reason: String)
+    /// First real human input on the page, address bar or tab chrome. The
+    /// control center registers the takeover before the input proceeds.
+    func browserSessionUserStartedInput(_ session: BrowserTaskSession, reason: String)
+}
+
+@MainActor
+extension BrowserTaskSessionHost {
+    /// Hosts that predate gesture-level input detection keep the single
+    /// existing takeover path; the center implements the dedicated one.
+    func browserSessionUserStartedInput(_ session: BrowserTaskSession, reason: String) {
+        browserSessionRequestedUserControl(session, reason: reason)
+    }
+}
+
+/// One model run's control of this task's browser. `runID` is the
+/// runtime-issued logical owner (the parent run when a delegated child acts
+/// for it); `id` is the token only `browser.release` must present; `epoch`
+/// fences a completion once control has been released, re-acquired or handed
+/// to the user.
+struct BrowserControlLease: Sendable, Equatable, Hashable {
+    let id: UUID
+    let runID: UUID
+    let epoch: Int
+}
+
+/// Result of the atomic acquisition that precedes every model page read or
+/// action. A session owned by the user or by another run never yields a lease,
+/// so no tool can fall back to reading the page.
+enum BrowserControlAcquisition: Equatable {
+    case acquired(BrowserControlLease)
+    case heldByAnotherRun
+    case needsUser(String)
+}
+
+enum BrowserControlReleaseOutcome: Equatable {
+    case released
+    /// Repeating the same release, or presenting a token from an earlier
+    /// holding period, has no effect on the current holder.
+    case alreadyReleased
+    case heldByAnotherRun
+}
+
+/// Publicly safe description of the last model action for the preview strip.
+/// It never carries page text, typed content, credentials or coordinates.
+struct BrowserModelActivity: Equatable {
+    enum Kind: String {
+        case observing, navigating, clicking, typing, scrolling, waiting, exporting, downloading
+    }
+    var kind: Kind
+    /// Public label of the exact target this executed action addressed (for
+    /// example a button's visible text). Absent whenever the action cannot
+    /// prove a same-document target; the UI then stays generic.
+    var detail: String?
+    var at: Date
 }
 
 /// A callback may never arrive after a WebKit process/navigation failure.
@@ -198,6 +252,33 @@ final class BrowserTaskSession: NSObject, ObservableObject {
     private var pendingProbes: [UUID: BrowserProbeRequest] = [:]
     private(set) var lastActivityAt = Date()
 
+    /// The model run currently allowed to read or act on this browser. It
+    /// survives between tool calls, model thinking and view changes until an
+    /// explicit release, this run's real terminal state, or a user takeover.
+    @Published private(set) var modelControl: BrowserControlLease?
+    /// A takeover is waiting for an already dispatched WebKit action. User
+    /// input stays disabled until it settles or the user retries explicitly;
+    /// an uncertain result is never replayed.
+    @Published private(set) var takeoverPending = false
+    @Published private(set) var lastModelActivity: BrowserModelActivity?
+    private var controlEpochCounter = 0
+    private var dispatchBusy = false
+    private var dispatchWaiters: [DispatchWaiter] = []
+    /// Public node labels from the most recent observation, keyed by the
+    /// document they belong to. Used only for the local status strip; cleared
+    /// on document replacement, evidence invalidation and any control change.
+    private var documentNodeLabels: [String: [String: String]] = [:]
+
+    private struct DispatchWaiter {
+        let id: UUID
+        let epoch: Int
+        let continuation: CheckedContinuation<Bool, Never>
+    }
+
+    var hasModelControlHolder: Bool { modelControl != nil }
+    var currentModelRunID: UUID? { modelControl?.runID }
+    var isModelActive: Bool { modelControl != nil && !isUserControlling && !takeoverPending }
+
     /// Native Impeccable capture/Needs bridge for this task's browser.
     /// Records are fenced synchronously from the lifecycle points below;
     /// the service itself never issues work to other sessions.
@@ -258,7 +339,7 @@ final class BrowserTaskSession: NSObject, ObservableObject {
 
     @discardableResult
     func createTab() -> UUID? {
-        guard !isReleased else { return nil }
+        guard !isReleased, !takeoverPending else { return nil }
         guard tabs.count < maximumTabs else {
             tabLimitNotice = IDELanguageRunText.t(
                 "此浏览器最多支持 6 个标签页。关闭一个标签页后再打开新的标签页。",
@@ -312,7 +393,7 @@ final class BrowserTaskSession: NSObject, ObservableObject {
     }
 
     func activate(_ id: UUID) {
-        guard !isReleased, tabs.contains(where: { $0.id == id }) else { return }
+        guard !isReleased, !takeoverPending, tabs.contains(where: { $0.id == id }) else { return }
         // A user tab switch is presentation only. Any in-flight tool command
         // captured its own tabID/webView before awaiting, so switching here
         // never retargets a pending AI action.
@@ -324,7 +405,8 @@ final class BrowserTaskSession: NSObject, ObservableObject {
     }
 
     func close(_ id: UUID) {
-        guard !isReleased, let index = tabs.firstIndex(where: { $0.id == id }) else { return }
+        guard !isReleased, !takeoverPending,
+              let index = tabs.firstIndex(where: { $0.id == id }) else { return }
         impeccableCaptures.fence(tabID: id, reason: .tabClosed)
         stagedExports.fenceTab(id, reason: .tabClosed)
         tabObservations.removeValue(forKey: id)?.forEach { $0.invalidate() }
@@ -361,7 +443,7 @@ final class BrowserTaskSession: NSObject, ObservableObject {
     }
 
     func navigateFromAddressBar() {
-        guard !isReleased else { return }
+        guard !isReleased, !takeoverPending else { return }
         if let currentURL = activeWebView?.url,
            Self.isLocalPreview(currentURL),
            addressText == Self.visibleAddress(for: activeWebView) {
@@ -466,7 +548,7 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         cancellation: CancellationToken
     ) async throws -> BrowserDownloadReceipt {
         guard !isReleased else { throw FloeError.validationFailed("This task's browser was released") }
-        guard !isUserControlling else {
+        guard !isUserControlling, !takeoverPending else {
             throw FloeError.validationFailed("Wait for the user to return browser control before downloading")
         }
         guard let selected = tabID ?? activeTabID,
@@ -488,23 +570,209 @@ final class BrowserTaskSession: NSObject, ObservableObject {
 
     // MARK: - Ownership lifecycle
 
-    func setUserControlling(_ value: Bool) {
-        isUserControlling = value
-        if value {
-            // The user can move any tab at any moment now; every capture
-            // bound to this session fences at the instant of takeover.
-            impeccableCaptures.fenceAll(reason: .userTakeover)
-            stagedExports.fenceAll(reason: .userTakeover)
-            surfaceState = .needsUser("User takeover is active")
-        } else if case .needsUser = surfaceState {
-            surfaceState = .ready
+    /// Atomic first acquisition for one model run. No page read, WebView
+    /// creation or action may happen unless this returns a lease. A session
+    /// the user controls, is taking over, or another run owns never yields
+    /// one, so the caller cannot fall back to observing the page.
+    func acquireModelControl(runID: UUID) throws -> BrowserControlAcquisition {
+        guard !isReleased else {
+            throw FloeError.validationFailed("This task's browser session was released")
         }
+        if isUserControlling || takeoverPending {
+            return .needsUser("The user controls this browser; wait until the user returns control")
+        }
+        if isEditingAddress {
+            return .needsUser("The user is using the address bar; wait until they return control")
+        }
+        if let holder = modelControl {
+            return holder.runID == runID ? .acquired(holder) : .heldByAnotherRun
+        }
+        // A new holding period after any earlier release/handoff must not
+        // reuse element or visual evidence from the previous period.
+        if controlEpochCounter > 0 {
+            invalidateDocumentsForHandoff()
+        }
+        controlEpochCounter += 1
+        let lease = BrowserControlLease(id: UUID(), runID: runID, epoch: controlEpochCounter)
+        modelControl = lease
+        if case .needsUser = surfaceState { surfaceState = .ready }
+        return .acquired(lease)
+    }
+
+    /// Explicit model release. Releasing an already released holding period,
+    /// or a token from an earlier holding period, is a no-op; it can never
+    /// release the run's newer acquisition.
+    func releaseModelControl(controlID: UUID, runID: UUID) -> BrowserControlReleaseOutcome {
+        guard let holder = modelControl else { return .alreadyReleased }
+        guard holder.runID == runID else { return .heldByAnotherRun }
+        guard holder.id == controlID else { return .alreadyReleased }
+        controlEpochCounter += 1
+        modelControl = nil
+        lastModelActivity = nil
+        // In-flight page work of this holding period is fenced with it; an
+        // uncommitted capture/export is never published after release.
+        impeccableCaptures.fenceAll(reason: .ownerHandoff)
+        stagedExports.fenceAll(reason: .ownerHandoff)
+        downloads.cancelAll()
+        fenceDispatchQueue()
+        return .released
+    }
+
+    /// The owning run reached a real terminal state (completed, failed,
+    /// cancelled, or checkpointed). Only that exact logical run loses the
+    /// page; the page, tabs, login and scroll position are preserved. A user
+    /// takeover is never undone by a run ending.
+    @discardableResult
+    func endModelControl(runID: UUID) -> Bool {
+        guard let holder = modelControl, holder.runID == runID else { return false }
+        controlEpochCounter += 1
+        modelControl = nil
+        lastModelActivity = nil
+        impeccableCaptures.fenceAll(reason: .ownerHandoff)
+        stagedExports.fenceAll(reason: .ownerHandoff)
+        downloads.cancelAll()
+        fenceDispatchQueue()
+        return true
+    }
+
+    /// Whether this exact holding period still authorizes page access. Every
+    /// page payload is checked against it immediately before it is returned
+    /// or committed.
+    func isModelControlCurrent(_ lease: BrowserControlLease?) -> Bool {
+        guard !isReleased, !isUserControlling, !takeoverPending else { return false }
+        guard let lease else { return true }
+        guard let holder = modelControl, holder == lease,
+              controlEpochCounter == lease.epoch else { return false }
+        return true
+    }
+
+    func assertModelControlCurrent(_ lease: BrowserControlLease?) throws {
+        guard isModelControlCurrent(lease) else {
+            throw FloeError.validationFailed(
+                "Browser control was released or returned to the user; stop and re-observe after control is returned"
+            )
+        }
+    }
+
+    /// First real human input: register the takeover before the input is
+    /// allowed to change the page. Idle browsing that no model owns stays
+    /// local and creates no handoff receipt.
+    func registerUserInput(reason: String = "You started using this browser") {
+        guard !isReleased, !isUserControlling else { return }
+        host?.browserSessionUserStartedInput(self, reason: reason)
+    }
+
+    /// Transfers the page to the user. The model holder is revoked
+    /// synchronously, queued model dispatches are fenced, and user input is
+    /// held back only while an action already sent to WebKit settles.
+    func beginUserTakeover(reason: String?) {
+        guard !isReleased else { return }
+        controlEpochCounter += 1
+        modelControl = nil
+        lastModelActivity = nil
+        documentNodeLabels.removeAll()
+        fenceDispatchQueue()
+        isUserControlling = true
+        takeoverPending = activeExecutionCount > 0
+        activeWebView?.isUserInteractionEnabled = !takeoverPending
+        // The user can move any tab at any moment now; every capture bound to
+        // this session fences at the instant of takeover.
+        impeccableCaptures.fenceAll(reason: .userTakeover)
+        stagedExports.fenceAll(reason: .userTakeover)
+        downloads.cancelAll()
+        surfaceState = .needsUser(reason ?? "User takeover is active")
+    }
+
+    /// The user returned control. Previous element/document references and
+    /// visual evidence stay invalid; the next model acquisition is a new
+    /// epoch. No new model run is started from here.
+    func endUserControl() {
+        guard !isReleased else { return }
+        isUserControlling = false
+        takeoverPending = false
+        isEditingAddress = false
+        controlEpochCounter += 1
+        modelControl = nil
+        lastModelActivity = nil
+        documentNodeLabels.removeAll()
+        activeWebView?.isUserInteractionEnabled = true
+        activeWebView?.endEditing(true)
+        if case .needsUser = surfaceState { surfaceState = .ready }
+    }
+
+    /// Explicit "retry takeover" after WebKit never returned a receipt. The
+    /// page is kept, the uncertain action is not replayed, and human input is
+    /// enabled immediately.
+    func forceUserTakeover() {
+        guard isUserControlling else { return }
+        takeoverPending = false
+        activeWebView?.isUserInteractionEnabled = true
+    }
+
+    func setUserControlling(_ value: Bool) {
+        if value { beginUserTakeover(reason: "User takeover is active") }
+        else { endUserControl() }
+    }
+
+    private func finishTakeoverIfIdle() {
+        guard isUserControlling, takeoverPending, activeExecutionCount == 0 else { return }
+        takeoverPending = false
+        activeWebView?.isUserInteractionEnabled = true
+    }
+
+    private func fenceDispatchQueue() {
+        let waiters = dispatchWaiters
+        dispatchWaiters.removeAll()
+        for waiter in waiters { waiter.continuation.resume(returning: false) }
+    }
+
+    /// Serializes actions for this one browser session. A queued call is
+    /// woken with `false` when control changed while it waited; it then
+    /// returns stale/needsUser without touching the page.
+    private func enterDispatch(epoch: Int) async -> Bool {
+        if !dispatchBusy {
+            dispatchBusy = true
+            return true
+        }
+        let waiterID = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                if Task.isCancelled {
+                    continuation.resume(returning: false)
+                } else {
+                    dispatchWaiters.append(DispatchWaiter(
+                        id: waiterID, epoch: epoch, continuation: continuation))
+                }
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in self?.cancelDispatchWaiter(waiterID) }
+        }
+    }
+
+    /// A cancelled tool call must not remain queued behind another action.
+    private func cancelDispatchWaiter(_ id: UUID) {
+        guard let index = dispatchWaiters.firstIndex(where: { $0.id == id }) else { return }
+        let waiter = dispatchWaiters.remove(at: index)
+        waiter.continuation.resume(returning: false)
+    }
+
+    private func leaveDispatch() {
+        while !dispatchWaiters.isEmpty {
+            let next = dispatchWaiters.removeFirst()
+            if next.epoch == controlEpochCounter, !isUserControlling, !takeoverPending {
+                next.continuation.resume(returning: true)
+                return
+            }
+            next.continuation.resume(returning: false)
+        }
+        dispatchBusy = false
     }
 
     /// Invalidate every element/document reference before the user or a new
     /// run takes the page. Only this task's evidence is affected.
     func invalidateDocumentsForHandoff() {
         guard !isReleased else { return }
+        documentNodeLabels.removeAll()
         for index in tabs.indices {
             tabs[index].documentID = UUID().uuidString
             tabs[index].documentGeneration += 1
@@ -519,6 +787,11 @@ final class BrowserTaskSession: NSObject, ObservableObject {
     func release() {
         guard !isReleased else { return }
         isReleased = true
+        controlEpochCounter += 1
+        modelControl = nil
+        lastModelActivity = nil
+        documentNodeLabels.removeAll()
+        fenceDispatchQueue()
         impeccableCaptures.fenceAll(reason: .released)
         stagedExports.fenceAll(reason: .released)
         downloads.cancelAll()
@@ -528,6 +801,7 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         pendingProbes.removeAll()
         probes.forEach { $0.invalidate() }
         isUserControlling = false
+        takeoverPending = false
         surfaceState = .unbound
         for tab in tabs {
             tab.webView.stopLoading()
@@ -542,13 +816,28 @@ final class BrowserTaskSession: NSObject, ObservableObject {
 
     // MARK: - Command execution
 
+    /// Unleased execution retained for native services and the existing
+    /// protocol tests. It still obeys every user-control/lifecycle fence and
+    /// never creates model control.
     func execute(_ command: BrowserCommand) async -> BrowserResult {
+        await execute(command, control: nil)
+    }
+
+    /// Executes one command for a model holding a lease, or for a native
+    /// service that already passed the same user-control fence. Dispatches
+    /// are serialized; a takeover or release while queued returns without
+    /// touching the page, and every page payload is rechecked before it is
+    /// returned.
+    func execute(_ command: BrowserCommand, control: BrowserControlLease?) async -> BrowserResult {
         guard !isReleased else {
             return failure(command, status: .stale, code: "released", "This task's browser session was released")
         }
         lastActivityAt = Date()
         activeExecutionCount += 1
-        defer { activeExecutionCount -= 1 }
+        defer {
+            activeExecutionCount -= 1
+            finishTakeoverIfIdle()
+        }
 
         guard command.version == 1 else {
             return failure(command, status: .failed, code: "version", "Unsupported browser protocol version")
@@ -556,16 +845,190 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         guard command.sessionID == sessionID else {
             return failure(command, status: .stale, code: "session", "Browser session is no longer active")
         }
-        if isUserControlling {
-            switch command.action {
-            case .protocolInfo, .observe, .listTabs, .events,
-                 .listLinks, .readTable, .readText:
-                break
-            default:
+        if command.action != .protocolInfo {
+            if isUserControlling || takeoverPending {
                 return failure(command, status: .needsUser, code: "takeover", "The user currently controls the browser")
+            }
+            if let control {
+                if !isModelControlCurrent(control) {
+                    return failure(
+                        command,
+                        status: .stale,
+                        code: "control",
+                        "Browser control was released or handed to the user"
+                    )
+                }
+            } else if modelControl != nil {
+                // A native/protocol caller without a run identity must never
+                // bypass the run that currently owns this page.
+                return failure(
+                    command,
+                    status: .stale,
+                    code: "control",
+                    "This browser is in use by a run; it must release control first"
+                )
             }
         }
 
+        let epoch = controlEpochCounter
+        guard await enterDispatch(epoch: epoch) else {
+            let takenOver = isUserControlling || takeoverPending
+            return failure(
+                command,
+                status: takenOver ? .needsUser : .stale,
+                code: takenOver ? "takeover" : "control",
+                takenOver
+                    ? "The user currently controls the browser"
+                    : "Browser control was released or handed to the user"
+            )
+        }
+        defer { leaveDispatch() }
+
+        // Recheck after waiting behind another action. A takeover, release or
+        // newer holder while this call was queued must never reach the page.
+        guard !isReleased else {
+            return failure(command, status: .stale, code: "released", "This task's browser session was released")
+        }
+        if command.action != .protocolInfo {
+            if isUserControlling || takeoverPending {
+                return failure(command, status: .needsUser, code: "takeover", "The user currently controls the browser")
+            }
+            if let control {
+                if !isModelControlCurrent(control) {
+                    return failure(
+                        command,
+                        status: .stale,
+                        code: "control",
+                        "Browser control was released or handed to the user"
+                    )
+                }
+            } else if modelControl != nil {
+                return failure(
+                    command,
+                    status: .stale,
+                    code: "control",
+                    "This browser is in use by a run; it must release control first"
+                )
+            }
+        }
+
+        let result = await executeAuthorized(command, control: control)
+        if command.action != .protocolInfo, !isModelControlCurrent(control) {
+            // A result that already says needsUser carries no page payload;
+            // keep its specific reason (for example sensitive input).
+            if result.status == .needsUser {
+                if let artifact = result.page?.screenshotArtifact { discardArtifact(artifact) }
+                return result
+            }
+            // A withheld capture must not leave a viewport thumbnail of the
+            // user's page on disk.
+            if let artifact = result.page?.screenshotArtifact { discardArtifact(artifact) }
+            let takenOver = isUserControlling || takeoverPending
+            return failure(
+                command,
+                status: takenOver ? .needsUser : .stale,
+                code: takenOver ? "takeover" : "control",
+                takenOver
+                    ? "The user currently controls the browser; this result was withheld"
+                    : "Browser control was released or handed to the user; this result was withheld"
+            )
+        }
+        if result.status == .ok, modelControl != nil {
+            recordModelActivity(for: command.action)
+        }
+        return result
+    }
+
+    /// Returns a needsUser/stale result when the page may no longer be read
+    /// or touched at this exact await boundary.
+    private func pageAccessFailure(
+        _ command: BrowserCommand,
+        control: BrowserControlLease?
+    ) -> BrowserResult? {
+        if isReleased {
+            return failure(command, status: .stale, code: "released", "This task's browser session was released")
+        }
+        if isUserControlling || takeoverPending {
+            return failure(command, status: .needsUser, code: "takeover", "The user currently controls the browser")
+        }
+        if let control, !isModelControlCurrent(control) {
+            return failure(
+                command,
+                status: .stale,
+                code: "control",
+                "Browser control was released or handed to the user"
+            )
+        }
+        return nil
+    }
+
+    private func recordModelActivity(for action: BrowserAction) {
+        let kind: BrowserModelActivity.Kind
+        var detail: String?
+        switch action {
+        case .navigate, .create, .activateTab, .closeTab, .back, .forward, .reload:
+            kind = .navigating
+        case .click(let target):
+            kind = .clicking
+            detail = publicLabel(for: target)
+        case .type:
+            kind = .typing
+        case .scroll:
+            kind = .scrolling
+        case .wait:
+            kind = .waiting
+        case .screenshot, .observe, .listTabs, .events, .listLinks, .readTable, .readText, .protocolInfo, .takeover:
+            kind = .observing
+        }
+        lastModelActivity = BrowserModelActivity(kind: kind, detail: detail, at: Date())
+    }
+
+    /// A same-document, publicly safe label for the executed target. It never
+    /// contains form values, credentials, URLs or text from a different page.
+    private func publicLabel(for target: BrowserTarget) -> String? {
+        switch target {
+        case .element(let ref, let documentID):
+            guard tabs.contains(where: { $0.documentID == documentID }),
+                  let label = documentNodeLabels[documentID]?[ref] else { return nil }
+            return label
+        case .visualText(let reference):
+            guard let tab = activeTab,
+                  let evidence = tab.visualFallbackEvidence,
+                  evidence.documentID == tab.documentID,
+                  let region = evidence.visualTextRegions.first(where: { $0.reference == reference }) else {
+                return nil
+            }
+            return Self.boundedPublicLabel(region.text)
+        case .point:
+            return nil
+        }
+    }
+
+    private static func boundedPublicLabel(_ raw: String) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return String(trimmed.prefix(80))
+    }
+
+    private func recordNodeLabels(tabID: UUID, documentID: String, nodes: [BrowserNode]) {
+        guard tabs.contains(where: { $0.id == tabID && $0.documentID == documentID }) else { return }
+        var labels: [String: String] = [:]
+        for node in nodes {
+            let candidate = node.name.isEmpty ? node.text : node.name
+            if let label = Self.boundedPublicLabel(candidate) { labels[node.ref] = label }
+        }
+        guard !labels.isEmpty else { return }
+        documentNodeLabels[documentID] = labels
+        // Bounded: a task only needs the current/previous observation.
+        if documentNodeLabels.count > 4 {
+            for key in Array(documentNodeLabels.keys) where key != documentID {
+                documentNodeLabels.removeValue(forKey: key)
+                if documentNodeLabels.count <= 2 { break }
+            }
+        }
+    }
+
+    private func executeAuthorized(_ command: BrowserCommand, control: BrowserControlLease?) async -> BrowserResult {
         switch command.action {
         case .protocolInfo:
             return BrowserResult(
@@ -606,18 +1069,22 @@ final class BrowserTaskSession: NSObject, ObservableObject {
             switch command.action {
             case .navigate(let value):
                 let url = try BrowserURLPolicy.validate(value, conversationID: conversationID, allowLocalNetwork: true)
+                if let denied = pageAccessFailure(command, control: control) { return denied }
                 impeccableCaptures.fence(tabID: tabID, reason: .navigation)
                 stagedExports.fenceTab(tabID, reason: .navigation)
                 tab.webView.load(URLRequest(url: url))
             case .back:
+                if let denied = pageAccessFailure(command, control: control) { return denied }
                 impeccableCaptures.fence(tabID: tabID, reason: .navigation)
                 stagedExports.fenceTab(tabID, reason: .navigation)
                 tab.webView.goBack()
             case .forward:
+                if let denied = pageAccessFailure(command, control: control) { return denied }
                 impeccableCaptures.fence(tabID: tabID, reason: .navigation)
                 stagedExports.fenceTab(tabID, reason: .navigation)
                 tab.webView.goForward()
             case .reload:
+                if let denied = pageAccessFailure(command, control: control) { return denied }
                 impeccableCaptures.fence(tabID: tabID, reason: .reload)
                 stagedExports.fenceTab(tabID, reason: .reload)
                 tab.webView.reload()
@@ -625,6 +1092,10 @@ final class BrowserTaskSession: NSObject, ObservableObject {
                 return await observeResult(command, tabID: tabID, cursor: cursor)
             case .screenshot:
                 let artifact = try await saveSnapshot(of: tab.webView)
+                if let denied = pageAccessFailure(command, control: control) {
+                    discardArtifact(artifact)
+                    return denied
+                }
                 let visualTextRegions = try recognizeVisualText(in: artifact)
                 var result = await observeResult(command, tabID: tabID, cursor: nil)
                 result.page?.screenshotArtifact = artifact
@@ -670,6 +1141,7 @@ final class BrowserTaskSession: NSObject, ObservableObject {
                         x: x / Double(evidence.pixelWidth) * evidence.viewportWidth,
                         y: y / Double(evidence.pixelHeight) * evidence.viewportHeight
                     )
+                    if let denied = pageAccessFailure(command, control: control) { return denied }
                     try await perform(
                         target: cssTarget,
                         in: tab,
@@ -683,6 +1155,10 @@ final class BrowserTaskSession: NSObject, ObservableObject {
                     // viewport again and require an observable state change.
                     try? await Task.sleep(for: .milliseconds(250))
                     let postArtifact = try await saveSnapshot(of: tab.webView)
+                    if let denied = pageAccessFailure(command, control: control) {
+                        discardArtifact(postArtifact)
+                        return denied
+                    }
                     let postVisualTextRegions = try recognizeVisualText(in: postArtifact)
                     var result = await observeResult(command, tabID: tabID, cursor: nil)
                     result.page?.screenshotArtifact = postArtifact
@@ -716,6 +1192,7 @@ final class BrowserTaskSession: NSObject, ObservableObject {
                     }
                     return result
                 }
+                if let denied = pageAccessFailure(command, control: control) { return denied }
                 try await perform(
                     target: target,
                     in: tab,
@@ -728,6 +1205,7 @@ final class BrowserTaskSession: NSObject, ObservableObject {
                 guard text.utf8.count <= 16 * 1024 else {
                     throw BrowserPolicyError.blocked("Browser input exceeds 16 KiB")
                 }
+                if let denied = pageAccessFailure(command, control: control) { return denied }
                 try await perform(
                     target: target,
                     in: tab,
@@ -737,6 +1215,7 @@ final class BrowserTaskSession: NSObject, ObservableObject {
                     visualFallbackReason: nil
                 )
             case .scroll(let x, let y):
+                if let denied = pageAccessFailure(command, control: control) { return denied }
                 // Any scroll invalidates every outstanding capture on this
                 // tab before the page actually moves.
                 impeccableCaptures.fence(tabID: tabID, reason: .scroll)
@@ -1001,6 +1480,9 @@ final class BrowserTaskSession: NSObject, ObservableObject {
             FloeLogger(category: .tools).info("Browser observe request=\(trace) phase=snapshot.end")
             if let index = tabs.firstIndex(where: { $0.id == tabID }) {
                 tabs[index].revision = max(tabs[index].revision, probe.revision)
+            }
+            if tabs.contains(where: { $0.id == tabID }) {
+                recordNodeLabels(tabID: tabID, documentID: tab.documentID, nodes: probe.nodes)
             }
             let snapshot = PageSnapshot(
                 documentID: tab.documentID,
@@ -1289,6 +1771,9 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         repeat {
             guard !isReleased else {
                 return failure(command, status: .stale, code: "released", "This task's browser session was released")
+            }
+            if isUserControlling || takeoverPending {
+                return failure(command, status: .needsUser, code: "takeover", "The user currently controls the browser")
             }
             guard let tab = tabs.first(where: { $0.id == tabID }) else {
                 return failure(command, status: .stale, code: "tab", "Browser tab is no longer available")
@@ -1728,6 +2213,15 @@ final class BrowserTaskSession: NSObject, ObservableObject {
     })();
     """#
 
+    /// Removes one of this session's own screenshot artifacts when a capture
+    /// must not be retained (takeover/release while it was in flight).
+    private func discardArtifact(_ artifact: BrowserArtifactReference) {
+        let name = (artifact.relativePath as NSString).lastPathComponent
+        guard !name.isEmpty, name != ".", name != ".." else { return }
+        try? FileManager.default.removeItem(
+            at: artifactDirectory.appendingPathComponent(name))
+    }
+
     private func saveSnapshot(of webView: WKWebView) async throws -> BrowserArtifactReference {
         let image = try await webView.takeSnapshot(configuration: nil)
         guard let data = image.jpegData(compressionQuality: 0.78) else {
@@ -1825,6 +2319,7 @@ extension BrowserTaskSession: WKNavigationDelegate, WKUIDelegate {
         guard !isReleased, let index = tabs.firstIndex(where: { $0.webView === webView }) else { return }
         tabs[index].documentID = UUID().uuidString
         tabs[index].documentGeneration += 1
+        documentNodeLabels.removeAll()
         // Fence at the moment of the document change, before anything else
         // can answer against the replaced page.
         impeccableCaptures.fence(tabID: tabs[index].id, reason: .navigation)

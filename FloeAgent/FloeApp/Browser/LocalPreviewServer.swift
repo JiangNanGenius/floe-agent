@@ -60,6 +60,7 @@ final class LocalPreviewCoordinator: ObservableObject, @unchecked Sendable {
         relativeRoot: String?,
         entry: String?,
         owner: UUID,
+        control: BrowserControlLease? = nil,
         cancellation: CancellationToken? = nil
     ) async throws -> ToolExecutionOutput {
         try await startPreview(
@@ -67,11 +68,24 @@ final class LocalPreviewCoordinator: ObservableObject, @unchecked Sendable {
             relativeRoot: relativeRoot,
             entry: entry,
             owner: owner,
+            control: control,
             cancellation: cancellation
         )
     }
 
-    func reload(owner: UUID, cancellation: CancellationToken? = nil) async throws -> ToolExecutionOutput {
+    /// Acquire the calling model run's control of the preview owner's browser.
+    /// Used only by the model-facing preview tools; the file UI drives its own
+    /// explicit user selection and needs no lease.
+    func acquireModelControl(owner: UUID, runID: UUID) throws -> BrowserControlLease {
+        guard let browser else { throw FloeError.invalidConfiguration("Visible browser is unavailable") }
+        return try browser.beginModelControl(conversationID: owner, runID: runID).lease
+    }
+
+    func reload(
+        owner: UUID,
+        control: BrowserControlLease? = nil,
+        cancellation: CancellationToken? = nil
+    ) async throws -> ToolExecutionOutput {
         guard let browser else { throw FloeError.invalidConfiguration("Visible browser is unavailable") }
         try checkCancellation(cancellation)
         guard let record = records[owner] else {
@@ -89,10 +103,23 @@ final class LocalPreviewCoordinator: ObservableObject, @unchecked Sendable {
                 "This task's browser is no longer showing the preview; start it again"
             )
         }
-        let result = await browser.execute(
-            BrowserCommand(sessionID: session.sessionID, action: .reload),
-            in: owner
-        )
+        if let control {
+            try session.assertModelControlCurrent(control)
+        } else if session.hasModelControlHolder {
+            // The file-UI reload path is user-initiated, but it may not take
+            // a page a running model currently owns. The user can take over
+            // the browser explicitly first.
+            throw FloeError.validationFailed(
+                "This task is using the browser; take over the browser before reloading its preview"
+            )
+        }
+        let command = BrowserCommand(sessionID: session.sessionID, action: .reload)
+        let result: BrowserResult
+        if let control {
+            result = await browser.execute(command, in: owner, control: control)
+        } else {
+            result = await browser.execute(command, in: owner)
+        }
         try checkCancellation(cancellation)
         // A newer start may have replaced this record while the reload was in
         // flight; its page is not what this call reloaded.
@@ -159,6 +186,7 @@ final class LocalPreviewCoordinator: ObservableObject, @unchecked Sendable {
         relativeRoot: String?,
         entry: String?,
         owner: UUID,
+        control: BrowserControlLease?,
         cancellation: CancellationToken?
     ) async throws -> ToolExecutionOutput {
         guard let browser else { throw FloeError.invalidConfiguration("Visible browser is unavailable") }
@@ -183,7 +211,14 @@ final class LocalPreviewCoordinator: ObservableObject, @unchecked Sendable {
             )
             try verifyStart(operationID: operationID, owner: owner, cancellation: cancellation)
             let session = try browser.taskSession(for: owner)
-            try verifyStart(operationID: operationID, owner: owner, cancellation: cancellation)
+            if control == nil, session.hasModelControlHolder {
+                throw FloeError.validationFailed(
+                    "This task is using the browser; take over the browser before opening its preview"
+                )
+            }
+            try verifyStart(
+                operationID: operationID, owner: owner,
+                control: control, cancellation: cancellation)
             priorRecord = records[owner]
             priorPageURL = session.activeWebView?.url
             let command = BrowserCommand(
@@ -191,7 +226,12 @@ final class LocalPreviewCoordinator: ObservableObject, @unchecked Sendable {
                 action: .navigate(url: started.1.url.absoluteString)
             )
             FloeLogger(category: .tools).info("Preview navigation operation=\(operationID) request=\(command.requestID.uuidString) phase=begin")
-            let result = await browser.execute(command, in: owner)
+            let result: BrowserResult
+            if let control {
+                result = await browser.execute(command, in: owner, control: control)
+            } else {
+                result = await browser.execute(command, in: owner)
+            }
             FloeLogger(category: .tools).info("Preview navigation operation=\(operationID) request=\(command.requestID.uuidString) phase=end status=\(result.status.rawValue)")
             // The load is issued before the protocol observes the page. Ok is
             // conclusive; a failed observe is also a real navigation when the
@@ -211,7 +251,9 @@ final class LocalPreviewCoordinator: ObservableObject, @unchecked Sendable {
             await previewStartPhaseHookForTesting?(
                 .afterNavigation(owner: owner, stagedURL: started.1.url)
             )
-            try verifyStart(operationID: operationID, owner: owner, cancellation: cancellation)
+            try verifyStart(
+                operationID: operationID, owner: owner,
+                control: control, cancellation: cancellation)
             guard let current = browser.session(for: owner),
                   current.sessionID == session.sessionID else {
                 throw FloeError.validationFailed(
@@ -260,8 +302,10 @@ final class LocalPreviewCoordinator: ObservableObject, @unchecked Sendable {
                     owner: owner,
                     sessionID: navigation.sessionID,
                     stagedURL: navigation.url,
-                    restoreURL: restoreURL
+                    restoreURL: restoreURL,
+                    control: control
                 ))
+
                 if restoreFailed {
                     uncertaintyNote = " The task's browser page may still show the stopped preview."
                 }
@@ -291,11 +335,23 @@ final class LocalPreviewCoordinator: ObservableObject, @unchecked Sendable {
         owner: UUID,
         sessionID: UUID,
         stagedURL: URL,
-        restoreURL: URL?
+        restoreURL: URL?,
+        control: BrowserControlLease?
     ) async -> Bool {
         guard let browser,
               let session = browser.session(for: owner),
               session.sessionID == sessionID else { return false }
+        // A user takeover during a model-started preview is never navigated
+        // back under the user: restoring an old page is another navigation.
+        guard !session.isUserControlling, !session.takeoverPending else { return false }
+        // Cleanup may not bypass a newer holder. It may restore its own
+        // model-started navigation only while that exact lease is current; a
+        // user-interface start may restore only while no model holds the page.
+        if let control {
+            guard session.isModelControlCurrent(control) else { return false }
+        } else if session.hasModelControlHolder {
+            return false
+        }
         // Unknown/absent current URL means this attempt cannot prove its
         // navigation is still the page. Do not roll back anything then.
         guard let currentURL = session.activeWebView?.url,
@@ -347,6 +403,7 @@ final class LocalPreviewCoordinator: ObservableObject, @unchecked Sendable {
     private func verifyStart(
         operationID: Int,
         owner: UUID,
+        control: BrowserControlLease? = nil,
         cancellation: CancellationToken?
     ) throws {
         try checkCancellation(cancellation)
@@ -354,6 +411,9 @@ final class LocalPreviewCoordinator: ObservableObject, @unchecked Sendable {
             throw FloeError.validationFailed(
                 "The preview start was superseded by a newer preview or a stop for this task"
             )
+        }
+        if let control, let session = browser?.session(for: owner) {
+            try session.assertModelControlCurrent(control)
         }
     }
 
@@ -449,11 +509,23 @@ private struct PreviewStartTool: AgentTool {
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         guard let root = context.workspaceRootURL else { throw FloeError.notFound("No task workspace is open") }
         let owner = try previewOwner(for: context)
+        let runID = try BrowserControlIdentity.logicalRun(for: context, owner: owner)
+        let control: BrowserControlLease
+        do {
+            control = try await environment.acquireModelControl(owner: owner, runID: runID)
+        } catch BrowserControlError.needsUser(let message) {
+            return ToolExecutionOutput(
+                summary: "Preview start needs the user: " + message,
+                fullOutputSHA256: "",
+                requiresUserAction: true
+            )
+        }
         return try await environment.start(
             root: root,
             relativeRoot: args.root,
             entry: args.entry,
             owner: owner,
+            control: control,
             cancellation: context.cancellation
         )
     }
@@ -470,8 +542,20 @@ private struct PreviewReloadTool: AgentTool {
     func validate(_ args: Arguments) throws {}
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         let owner = try previewOwner(for: context)
+        let runID = try BrowserControlIdentity.logicalRun(for: context, owner: owner)
+        let control: BrowserControlLease
+        do {
+            control = try await environment.acquireModelControl(owner: owner, runID: runID)
+        } catch BrowserControlError.needsUser(let message) {
+            return ToolExecutionOutput(
+                summary: "Preview reload needs the user: " + message,
+                fullOutputSHA256: "",
+                requiresUserAction: true
+            )
+        }
         let output = try await environment.reload(
             owner: owner,
+            control: control,
             cancellation: context.cancellation
         )
         // The reload may have awaited the page; a run cancelled during that

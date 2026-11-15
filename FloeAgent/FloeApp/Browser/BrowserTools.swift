@@ -47,37 +47,109 @@ private final class BrowserToolEnvironment: @unchecked Sendable {
         return owner
     }
 
+    /// One acquired model holding period plus the exact task session it
+    /// covers. Every page read/action entry resolves this before touching the
+    /// page; the lease is what later calls and `browser.release` present.
     @MainActor
-    func session(for context: ToolContext) throws -> (owner: UUID, session: BrowserTaskSession) {
+    struct Control {
+        let owner: UUID
+        let session: BrowserTaskSession
+        let lease: BrowserControlLease
+        let acquiredNow: Bool
+    }
+
+    /// Atomic acquisition before the first page read/create. The logical run
+    /// is runtime-issued: a delegated child acts for its original parent run,
+    /// and a mismatched/nested identity is refused by `handoffRun`.
+    @MainActor
+    func control(for context: ToolContext) throws -> Control {
         guard let center else {
             throw FloeError.invalidConfiguration("The task browser service is unavailable")
         }
         let owner = try owner(for: context)
-        // Cancellation is runtime evidence that the owning run is finished.
-        // It is checked again immediately before any session would be
-        // created, so a late callback from a cancelled (deleted, archived or
-        // superseded) run can never recreate a browser for its owner.
         try context.cancellation.throwIfCancelled()
-        return (owner, try center.taskSession(for: owner))
+        let runID = try handoffRun(for: context, owner: owner)
+        let model = try center.beginModelControl(conversationID: owner, runID: runID)
+        return Control(
+            owner: owner,
+            session: model.session,
+            lease: model.lease,
+            acquiredNow: model.acquiredNow
+        )
+    }
+
+    /// The lightweight marker attached to every control-acquiring result. It
+    /// is only present while this exact holding period is still live, so a
+    /// result produced after takeover/release carries no stale token.
+    @MainActor
+    func controlMarker(for control: Control) -> [String: String]? {
+        guard control.session.isModelControlCurrent(control.lease) else { return nil }
+        return ["id": control.lease.id.uuidString, "releaseTool": "browser.release"]
+    }
+
+    @MainActor
+    func assertCurrent(_ control: Control) throws {
+        try control.session.assertModelControlCurrent(control.lease)
+    }
+
+    /// Honest needsUser result: no page, screenshot, event, text or control
+    /// token. The model can continue other work and must not retry in a loop.
+    @MainActor
+    func needsUserOutput(_ message: String) -> ToolExecutionOutput {
+        let result = BrowserResult(
+            requestID: UUID(),
+            status: .needsUser,
+            message: message,
+            error: BrowserFailure(code: "takeover", message: message)
+        )
+        let data = (try? JSONEncoder().encode(result)) ?? Data()
+        return ToolExecutionOutput(
+            summary: String(decoding: data, as: UTF8.self),
+            fullOutputSHA256: FloeDigest.sha256Hex(data),
+            requiresUserAction: true,
+            maximumSummaryCharacters: 16_384
+        )
     }
 
     /// Fixed native measurement only. Engine execution remains in the
     /// resolved Linux environment through the existing exec.shell lifecycle.
     @MainActor
     func design(context: ToolContext, action: String, tabID: UUID?, captureID: UUID?, needsFile: String?) async throws -> ToolExecutionOutput {
-        let resolved = try session(for: context)
+        let owner = try owner(for: context)
+        try context.cancellation.throwIfCancelled()
+        guard let center else { throw FloeError.invalidConfiguration("The task browser service is unavailable") }
+        // Workspace/parameter authority is decided before the page is held.
         guard let root = context.workspaceRootURL, root.isFileURL,
               let environmentID = context.environmentID, !environmentID.isEmpty else {
             throw FloeError.validationFailed("Design capture requires this task's workspace and execution environment")
         }
         let physicalRoot = root.standardizedFileURL.resolvingSymlinksInPath()
-        try context.authorizeWorkspacePath("Impeccable/" + resolved.owner.uuidString)
-        guard busyDesignTasks.insert(resolved.owner).inserted else {
+        try context.authorizeWorkspacePath("Impeccable/" + owner.uuidString)
+        // `release` only retires this run's own measurement files: it never
+        // reads the page and must stay possible after a takeover. Every other
+        // design action reads/measures the real page, so it acquires control
+        // atomically first.
+        let resolved: (session: BrowserTaskSession, control: Control?)
+        if action == "release" {
+            guard let existing = center.session(for: owner) else {
+                throw FloeError.validationFailed("This task's browser is not open; there is no design capture to release")
+            }
+            resolved = (existing, nil)
+        } else {
+            do {
+                let acquired = try self.control(for: context)
+                resolved = (acquired.session, acquired)
+            } catch BrowserControlError.needsUser(let message) {
+                return needsUserOutput(message)
+            }
+        }
+        let session = resolved.session
+        let control = resolved.control
+        guard busyDesignTasks.insert(owner).inserted else {
             throw FloeError.validationFailed("A design measurement is already running for this task")
         }
-        defer { busyDesignTasks.remove(resolved.owner) }
+        defer { busyDesignTasks.remove(owner) }
         designOwners = designOwners.filter { $0.value.session?.isReleased == false }
-        let session = resolved.session
         switch action {
         case "capture":
             guard let selectedTab = tabID ?? session.activeTabID else { throw FloeError.validationFailed("Open a browser tab before capturing its design") }
@@ -92,6 +164,7 @@ private final class BrowserToolEnvironment: @unchecked Sendable {
                 session.impeccableCaptures.cleanup(captureID: ticket.captureID)
                 throw FloeError.validationFailed("The design capture belongs to a different workspace")
             }
+            if let control { try assertCurrent(control) }
             designOwners[ticket.captureID] = BrowserDesignCaptureOwner(session: session, runID: context.runID,
                 root: physicalRoot, environmentID: environmentID, tabID: selectedTab)
             struct CaptureResponse: Encodable {
@@ -99,19 +172,21 @@ private final class BrowserToolEnvironment: @unchecked Sendable {
                 let state = "captured"
                 let engineRun = false
                 let capture: ImpeccableCaptureReceipt
+                let control: [String: String]?
             }
-            let bytes = try JSONEncoder().encode(CaptureResponse(capture: ticket.receipt))
+            let marker = control.flatMap { controlMarker(for: $0) }
+            let bytes = try JSONEncoder().encode(CaptureResponse(capture: ticket.receipt, control: marker))
             return ToolExecutionOutput(summary: String(decoding: bytes, as: UTF8.self), fullOutputSHA256: FloeDigest.sha256Hex(bytes))
         case "facts", "release":
-            guard let captureID, let owner = designOwners[captureID],
-                  owner.session === session, owner.runID == context.runID,
-                  owner.root == physicalRoot, owner.environmentID == environmentID,
-                  tabID == nil || tabID == owner.tabID else {
+            guard let captureID, let captureOwner = designOwners[captureID],
+                  captureOwner.session === session, captureOwner.runID == context.runID,
+                  captureOwner.root == physicalRoot, captureOwner.environmentID == environmentID,
+                  tabID == nil || tabID == captureOwner.tabID else {
                 throw FloeError.validationFailed("The design capture is unavailable for this run or workspace")
             }
             if action == "release" {
                 session.impeccableCaptures.cleanup(captureID: captureID)
-                let directory = physicalRoot.appendingPathComponent("Impeccable/" + resolved.owner.uuidString + "/" + captureID.uuidString)
+                let directory = physicalRoot.appendingPathComponent("Impeccable/" + owner.uuidString + "/" + captureID.uuidString)
                 guard !FileManager.default.fileExists(atPath: directory.path) else {
                     throw FloeError.storageCorrupted("The design capture files could not be removed")
                 }
@@ -138,12 +213,19 @@ private final class BrowserToolEnvironment: @unchecked Sendable {
             } else { needsInput = needs }
             let facts = try await session.impeccableCaptures.answerNeeds(captureID: captureID, needsJSON: needsInput)
             try context.cancellation.throwIfCancelled()
-            let relative = "Impeccable/" + resolved.owner.uuidString + "/" + captureID.uuidString + "/" + facts.lastPathComponent
+            if let control { try assertCurrent(control) }
+            let relative = "Impeccable/" + owner.uuidString + "/" + captureID.uuidString + "/" + facts.lastPathComponent
             guard try pathGuard.resolve(relative) == facts.standardizedFileURL else {
                 throw FloeError.validationFailed("The measurements belong to a different workspace")
             }
-            struct FactsResponse: Encodable { let state = "factsReady"; let captureID: UUID; let relativeFactsFile: String }
-            let bytes = try JSONEncoder().encode(FactsResponse(captureID: captureID, relativeFactsFile: relative))
+            struct FactsResponse: Encodable {
+                let state = "factsReady"
+                let captureID: UUID
+                let relativeFactsFile: String
+                let control: [String: String]?
+            }
+            let marker = control.flatMap { controlMarker(for: $0) }
+            let bytes = try JSONEncoder().encode(FactsResponse(captureID: captureID, relativeFactsFile: relative, control: marker))
             return ToolExecutionOutput(summary: String(decoding: bytes, as: UTF8.self), fullOutputSHA256: FloeDigest.sha256Hex(bytes))
         default:
             throw FloeError.validationFailed("Unknown design action")
@@ -166,7 +248,8 @@ private final class BrowserToolEnvironment: @unchecked Sendable {
         expectedWidth: Int?,
         expectedHeight: Int?
     ) async throws -> ToolExecutionOutput {
-        let resolved = try session(for: context)
+        let owner = try owner(for: context)
+        try context.cancellation.throwIfCancelled()
         guard let root = context.workspaceRootURL, root.isFileURL,
               let environmentID = context.environmentID, !environmentID.isEmpty else {
             throw FloeError.validationFailed("Staged file export requires this task's workspace and execution environment")
@@ -191,7 +274,11 @@ private final class BrowserToolEnvironment: @unchecked Sendable {
         guard destination.path.hasPrefix(physicalRoot.path + "/") else {
             throw FloeError.validationFailed("The export destination belongs to a different workspace")
         }
-        let session = resolved.session
+        let control = try self.control(for: context)
+        guard control.owner == owner else {
+            throw FloeError.validationFailed("The staged export task changed while validating the destination")
+        }
+        let session = control.session
         guard let selectedTab = tabID ?? session.activeTabID else {
             throw FloeError.validationFailed("Open the artifact preview in a browser tab before exporting its staged file")
         }
@@ -206,22 +293,25 @@ private final class BrowserToolEnvironment: @unchecked Sendable {
             ),
             cancellation: context.cancellation
         )
-        let bytes = try receipt.encodedJSON()
+        // A takeover or release during the export must not publish its
+        // receipt as a live result even though the service already fenced.
+        try assertCurrent(control)
+        let receiptBytes = try receipt.encodedJSON()
+        var object = try JSONSerialization.jsonObject(with: receiptBytes) as? [String: Any] ?? [:]
+        if let marker = controlMarker(for: control) { object["control"] = marker }
+        let bytes = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
         return ToolExecutionOutput(
             summary: String(decoding: bytes, as: UTF8.self),
             fullOutputSHA256: FloeDigest.sha256Hex(bytes)
         )
     }
 
+    /// Provider data authorization is requested BEFORE control is acquired:
+    /// waiting for consent must not hold this task's page. The subsequent
+    /// acquisition still rechecks user control and cancellation.
     @MainActor
-    func requireBrowserDataAccess(
-        _ session: BrowserTaskSession,
-        context: ToolContext
-    ) async throws -> BrowserDataAuthorization {
-        guard !session.isUserControlling else {
-            throw FloeError.validationFailed("Wait for the user to return browser control before reading browser session data")
-        }
-        return try await BrowserProviderTrustCoordinator.shared.requireBrowserDataAuthorization(
+    func requireBrowserDataAccess(context: ToolContext) async throws -> BrowserDataAuthorization {
+        try await BrowserProviderTrustCoordinator.shared.requireBrowserDataAuthorization(
             runID: context.runID,
             conversationID: context.conversationID
         )
@@ -248,13 +338,9 @@ private final class BrowserToolEnvironment: @unchecked Sendable {
         maxBytes: Int?,
         overwrite: Bool?
     ) async throws -> ToolExecutionOutput {
-        let resolved = try session(for: context)
-        let owner = resolved.owner
-        let session = resolved.session
+        let owner = try owner(for: context)
+        try context.cancellation.throwIfCancelled()
         let url = try BrowserURLPolicy.validate(urlString, conversationID: owner, allowLocalNetwork: true)
-        guard !session.isUserControlling else {
-            throw FloeError.validationFailed("Wait for the user to return browser control before downloading")
-        }
         guard let root = context.workspaceRootURL, root.isFileURL else {
             throw FloeError.validationFailed("Browser download requires this task's workspace")
         }
@@ -273,10 +359,17 @@ private final class BrowserToolEnvironment: @unchecked Sendable {
         guard destination.path.hasPrefix(physicalRoot.path + "/") else {
             throw FloeError.validationFailed("The download destination belongs to a different workspace")
         }
+        // Consent is awaited before the page is held; a takeover during the
+        // wait therefore never has to wait for this run's lease.
         let authorization = try await BrowserProviderTrustCoordinator.shared.requireBrowserDataAuthorization(
             runID: context.runID,
             conversationID: context.conversationID
         )
+        let control = try self.control(for: context)
+        guard control.owner == owner else {
+            throw FloeError.validationFailed("The browser download task changed while waiting for authorization")
+        }
+        let session = control.session
         let receipt = try await session.startDownload(
             tabID: tabID,
             url: url,
@@ -292,8 +385,9 @@ private final class BrowserToolEnvironment: @unchecked Sendable {
             advancedGeneration: authorization.advancedGeneration
         )
         try context.cancellation.throwIfCancelled()
+        try assertCurrent(control)
         let outputFiles = try Self.publishDownload(receipt, using: context)
-        let payload: [String: Any] = [
+        var payload: [String: Any] = [
             "status": "ok",
             "path": receipt.relativePath,
             "mimeType": receipt.mimeType,
@@ -302,6 +396,7 @@ private final class BrowserToolEnvironment: @unchecked Sendable {
             "filename": receipt.suggestedFilename,
             "sourceHost": receipt.finalHost ?? ""
         ]
+        if let marker = controlMarker(for: control) { payload["control"] = marker }
         let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
         return ToolExecutionOutput(
             summary: String(decoding: data, as: UTF8.self),
@@ -361,19 +456,7 @@ private final class BrowserToolEnvironment: @unchecked Sendable {
     /// conversation is never chosen as a substitute for a known original.
     @MainActor
     func handoffRun(for context: ToolContext, owner: UUID) throws -> UUID {
-        guard let child = context.childExecution else { return context.runID }
-        let identity = child.identity
-        guard identity.depth == 1 else {
-            throw FloeError.validationFailed(
-                "A nested delegated child cannot request a browser handoff"
-            )
-        }
-        guard identity.rootTaskID == owner else {
-            throw FloeError.validationFailed(
-                "The delegated child belongs to a different root task and cannot use this task's browser"
-            )
-        }
-        return identity.parentRunID
+        try BrowserControlIdentity.logicalRun(for: context, owner: owner)
     }
 
     @MainActor
@@ -388,9 +471,17 @@ private final class BrowserToolEnvironment: @unchecked Sendable {
     ) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
         guard let center else { throw FloeError.invalidConfiguration("The task browser service is unavailable") }
-        let resolved = try session(for: context)
+        let control: Control
+        do {
+            control = try self.control(for: context)
+        } catch BrowserControlError.needsUser(let message) {
+            // The user owns the page. Return an honest needsUser result with
+            // no page, screenshot, event or control token instead of reading
+            // anything, and do not queue for a later attempt.
+            return needsUserOutput(message)
+        }
         let command = BrowserCommand(
-            sessionID: resolved.session.sessionID,
+            sessionID: control.session.sessionID,
             tabID: tabID,
             expectedDocumentID: documentID,
             timeoutMilliseconds: timeoutMilliseconds,
@@ -398,10 +489,14 @@ private final class BrowserToolEnvironment: @unchecked Sendable {
             visualFallbackReason: visualFallbackReason,
             action: action
         )
-        // The owner is applied explicitly; visibility is irrelevant.
-        let result = await center.execute(command, in: resolved.owner)
+        // The owner and holding period are applied explicitly; visibility is
+        // irrelevant and the command contents cannot choose a session.
+        let result = await center.execute(command, in: control.owner, control: control.lease)
         try context.cancellation.throwIfCancelled()
-        let data = try JSONEncoder().encode(result)
+        let encoded = try JSONEncoder().encode(result)
+        var object = try JSONSerialization.jsonObject(with: encoded) as? [String: Any] ?? [:]
+        if let marker = controlMarker(for: control) { object["control"] = marker }
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
         // The protocol already bounds nodes, events and tabs. Byte truncation
         // here creates invalid JSON and can remove action evidence mid-field.
         let summary = String(decoding: data, as: UTF8.self)
@@ -423,6 +518,28 @@ private final class BrowserToolEnvironment: @unchecked Sendable {
             requiresUserAction: false,
             maximumSummaryCharacters: 262_144
         )
+    }
+}
+
+/// Runtime-issued logical owner of a browser holding period. A delegated
+/// child acts for its original parent run; nested/foreign identities are
+/// refused. This is the same identity the durable handoff receipt uses, so
+/// control release and user-takeover notification always target one run.
+enum BrowserControlIdentity {
+    static func logicalRun(for context: ToolContext, owner: UUID) throws -> UUID {
+        guard let child = context.childExecution else { return context.runID }
+        let identity = child.identity
+        guard identity.depth == 1 else {
+            throw FloeError.validationFailed(
+                "A nested delegated child cannot use this task's browser control"
+            )
+        }
+        guard identity.rootTaskID == owner else {
+            throw FloeError.validationFailed(
+                "The delegated child belongs to a different root task and cannot use this task's browser"
+            )
+        }
+        return identity.parentRunID
     }
 }
 
@@ -990,9 +1107,11 @@ private struct BrowserCookiesTool: AgentTool {
     @MainActor func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try validate(args)
         try context.cancellation.throwIfCancelled()
-        let resolved = try environment.session(for: context)
-        let session = resolved.session
-        let recipient = try await environment.requireBrowserDataAccess(session, context: context)
+        _ = try environment.owner(for: context)
+        try context.cancellation.throwIfCancelled()
+        let recipient = try await environment.requireBrowserDataAccess(context: context)
+        let control = try environment.control(for: context)
+        let session = control.session
         let bridge = BrowserWebDataBridge(session: session)
         let selectedTab = args.tabID ?? session.activeTabID
         let pageOrigin = session.tabs.first(where: { $0.id == selectedTab })
@@ -1008,7 +1127,8 @@ private struct BrowserCookiesTool: AgentTool {
                 copy.value = nil
                 return copy
             }
-            let object: [String: Any] = [
+            try environment.assertCurrent(control)
+            var object: [String: Any] = [
                 "status": "ok",
                 "action": "list",
                 "origin": pageOrigin ?? "",
@@ -1016,6 +1136,7 @@ private struct BrowserCookiesTool: AgentTool {
                 "includeValues": includeValues,
                 "valuesRedacted": includeValues
             ]
+            if let marker = environment.controlMarker(for: control) { object["control"] = marker }
             var ephemeral: String?
             if includeValues {
                 ephemeral = try BrowserSensitiveOutput.encodedSummary([
@@ -1033,10 +1154,12 @@ private struct BrowserCookiesTool: AgentTool {
             }
             let record = try await bridge.setCookie(tabID: args.tabID, input: input)
             try environment.revalidateBrowserDataAccess(recipient, context: context)
-            let object: [String: Any] = [
+            try environment.assertCurrent(control)
+            var object: [String: Any] = [
                 "status": "ok", "action": "set", "origin": pageOrigin ?? "",
                 "cookie": try Self.jsonObject([record])
             ]
+            if let marker = environment.controlMarker(for: control) { object["control"] = marker }
             return try Self.output(object, maximum: 16_384)
         case "delete":
             let name = args.name ?? args.cookie?.name
@@ -1044,15 +1167,21 @@ private struct BrowserCookiesTool: AgentTool {
             let path = args.path ?? args.cookie?.path
             let count = try await bridge.deleteCookies(tabID: args.tabID, name: name, domain: domain, path: path)
             try environment.revalidateBrowserDataAccess(recipient, context: context)
-            return try Self.output([
+            try environment.assertCurrent(control)
+            var object: [String: Any] = [
                 "status": "ok", "action": "delete", "origin": pageOrigin ?? "", "deleted": count
-            ], maximum: 8_192)
+            ]
+            if let marker = environment.controlMarker(for: control) { object["control"] = marker }
+            return try Self.output(object, maximum: 8_192)
         default:
             let count = try await bridge.clearCookies(tabID: args.tabID)
             try environment.revalidateBrowserDataAccess(recipient, context: context)
-            return try Self.output([
+            try environment.assertCurrent(control)
+            var object: [String: Any] = [
                 "status": "ok", "action": "clear", "origin": pageOrigin ?? "", "deleted": count
-            ], maximum: 8_192)
+            ]
+            if let marker = environment.controlMarker(for: control) { object["control"] = marker }
+            return try Self.output(object, maximum: 8_192)
         }
     }
 
@@ -1117,9 +1246,11 @@ private struct BrowserStorageTool: AgentTool {
     @MainActor func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try validate(args)
         try context.cancellation.throwIfCancelled()
-        let resolved = try environment.session(for: context)
-        let session = resolved.session
-        let recipient = try await environment.requireBrowserDataAccess(session, context: context)
+        _ = try environment.owner(for: context)
+        try context.cancellation.throwIfCancelled()
+        let recipient = try await environment.requireBrowserDataAccess(context: context)
+        let control = try environment.control(for: context)
+        let session = control.session
         let bridge = BrowserWebDataBridge(session: session)
         let kind = BrowserStorageKind(rawValue: args.kind ?? "local") ?? .local
         let includeValues = args.includeValues == true
@@ -1139,12 +1270,14 @@ private struct BrowserStorageTool: AgentTool {
             let sanitized = page.entries.map { entry -> BrowserStorageEntry in
                 BrowserStorageEntry(key: entry.key, value: nil, valueLength: entry.valueLength)
             }
-            let object: [String: Any] = [
+            try environment.assertCurrent(control)
+            var object: [String: Any] = [
                 "status": "ok", "action": "list", "kind": kind.rawValue,
                 "origin": page.origin, "entries": try Self.jsonObject(sanitized),
                 "totalKeys": page.totalKeys, "truncated": page.truncated,
                 "includeValues": includeValues, "valuesRedacted": includeValues
             ]
+            if let marker = environment.controlMarker(for: control) { object["control"] = marker }
             var ephemeral: String?
             if includeValues {
                 ephemeral = try BrowserSensitiveOutput.encodedSummary([
@@ -1164,7 +1297,8 @@ private struct BrowserStorageTool: AgentTool {
                 key: key
             )
             try environment.revalidateBrowserDataAccess(recipient, context: context)
-            let object: [String: Any] = [
+            try environment.assertCurrent(control)
+            var object: [String: Any] = [
                 "status": "ok", "action": "get", "kind": kind.rawValue,
                 "origin": origin ?? "", "key": key,
                 "hasValue": value != nil,
@@ -1172,6 +1306,7 @@ private struct BrowserStorageTool: AgentTool {
                 "includeValues": includeValues,
                 "valuesRedacted": includeValues
             ]
+            if let marker = environment.controlMarker(for: control) { object["control"] = marker }
             var ephemeral: String?
             if includeValues, let value {
                 ephemeral = try BrowserSensitiveOutput.encodedSummary([
@@ -1189,29 +1324,38 @@ private struct BrowserStorageTool: AgentTool {
                 requestedOrigin: args.origin, key: key, value: value
             )
             try environment.revalidateBrowserDataAccess(recipient, context: context)
-            return try Self.output([
+            try environment.assertCurrent(control)
+            var object: [String: Any] = [
                 "status": "ok", "action": "set", "kind": kind.rawValue,
                 "origin": origin ?? "", "key": key, "valueLength": value.utf8.count
-            ], maximum: 8_192)
+            ]
+            if let marker = environment.controlMarker(for: control) { object["control"] = marker }
+            return try Self.output(object, maximum: 8_192)
         case "delete":
             try await bridge.deleteStorage(
                 tabID: args.tabID, kind: kind,
                 requestedOrigin: args.origin, key: args.key ?? ""
             )
             try environment.revalidateBrowserDataAccess(recipient, context: context)
-            return try Self.output([
+            try environment.assertCurrent(control)
+            var object: [String: Any] = [
                 "status": "ok", "action": "delete", "kind": kind.rawValue,
                 "origin": origin ?? "", "key": args.key ?? ""
-            ], maximum: 8_192)
+            ]
+            if let marker = environment.controlMarker(for: control) { object["control"] = marker }
+            return try Self.output(object, maximum: 8_192)
         default:
             try await bridge.clearStorage(
                 tabID: args.tabID, kind: kind, requestedOrigin: args.origin
             )
             try environment.revalidateBrowserDataAccess(recipient, context: context)
-            return try Self.output([
+            try environment.assertCurrent(control)
+            var object: [String: Any] = [
                 "status": "ok", "action": "clear", "kind": kind.rawValue,
                 "origin": origin ?? ""
-            ], maximum: 8_192)
+            ]
+            if let marker = environment.controlMarker(for: control) { object["control"] = marker }
+            return try Self.output(object, maximum: 8_192)
         }
     }
 
@@ -1265,9 +1409,11 @@ private struct BrowserSiteDataTool: AgentTool {
     @MainActor func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try validate(args)
         try context.cancellation.throwIfCancelled()
-        let resolved = try environment.session(for: context)
-        let session = resolved.session
-        let recipient = try await environment.requireBrowserDataAccess(session, context: context)
+        _ = try environment.owner(for: context)
+        try context.cancellation.throwIfCancelled()
+        let recipient = try await environment.requireBrowserDataAccess(context: context)
+        let control = try environment.control(for: context)
+        let session = control.session
         let scope = args.scope ?? "persistent"
         guard ["persistent", "session", "all"].contains(scope) else {
             throw FloeError.validationFailed("Unknown site-data scope")
@@ -1298,7 +1444,10 @@ private struct BrowserSiteDataTool: AgentTool {
                 }
             }
             try environment.revalidateBrowserDataAccess(recipient, context: context)
-            return try Self.output(["status": "ok", "action": "list", "sites": sites], maximum: 131_072)
+            try environment.assertCurrent(control)
+            var object: [String: Any] = ["status": "ok", "action": "list", "sites": sites]
+            if let marker = environment.controlMarker(for: control) { object["control"] = marker }
+            return try Self.output(object, maximum: 131_072)
         case "delete":
             let name = args.displayName ?? ""
             var deleted = 0
@@ -1310,18 +1459,24 @@ private struct BrowserSiteDataTool: AgentTool {
                 )
             }
             try environment.revalidateBrowserDataAccess(recipient, context: context)
-            return try Self.output([
+            try environment.assertCurrent(control)
+            var object: [String: Any] = [
                 "status": "ok", "action": "delete", "displayName": name, "deleted": deleted
-            ], maximum: 8_192)
+            ]
+            if let marker = environment.controlMarker(for: control) { object["control"] = marker }
+            return try Self.output(object, maximum: 8_192)
         default:
             var cleared = 0
             for (_, store) in stores {
                 cleared += await BrowserWebDataBridge.clearAll(store: store)
             }
             try environment.revalidateBrowserDataAccess(recipient, context: context)
-            return try Self.output([
+            try environment.assertCurrent(control)
+            var object: [String: Any] = [
                 "status": "ok", "action": "clear", "cleared": cleared
-            ], maximum: 8_192)
+            ]
+            if let marker = environment.controlMarker(for: control) { object["control"] = marker }
+            return try Self.output(object, maximum: 8_192)
         }
     }
 
@@ -1377,6 +1532,54 @@ private struct BrowserDownloadTool: AgentTool {
     }
 }
 
+/// Explicit end of one model holding period. It releases only the caller's
+/// own lease: the page, tabs, login state and scroll position stay exactly
+/// where they are, and the tool can never acquire page access. Repeating an
+/// already-consumed token is a no-op, so a stale release can never unlock the
+/// run's newer holding period.
+private struct BrowserReleaseTool: AgentTool {
+    struct Arguments: Decodable, Sendable { let controlID: UUID }
+    static let name = "browser.release"
+    static let toolDescription = "Release this run's control of this task's browser when you have finished browsing. Pass the control.id from your latest browser tool result. The page and tabs stay open for the user; another run may then take control. Repeating an old release has no effect. This tool never grants page access and requires no confirmation."
+    static let parametersJSON = #"{"type":"object","properties":{"controlID":{"type":"string","format":"uuid"}},"required":["controlID"],"additionalProperties":false}"#
+    static let riskLabels: Set<RiskLabel> = []
+    static let isSideEffecting = false
+    static let toolEffect: ToolEffect = .readOnly
+    let environment: BrowserToolEnvironment
+
+    func validate(_ args: Arguments) throws {}
+
+    @MainActor func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try context.cancellation.throwIfCancelled()
+        guard let center = environment.center else {
+            throw FloeError.invalidConfiguration("The task browser service is unavailable")
+        }
+        let owner = try environment.owner(for: context)
+        let runID = try environment.handoffRun(for: context, owner: owner)
+        // Never create a browser just to release one.
+        guard let session = center.session(for: owner), !session.isReleased else {
+            return ToolExecutionOutput(digesting: "No task browser is open; nothing was released")
+        }
+        if session.isUserControlling {
+            return ToolExecutionOutput(digesting: "The user controls this browser; nothing was released")
+        }
+        switch center.releaseModelControl(
+            conversationID: owner,
+            runID: runID,
+            controlID: args.controlID
+        ) {
+        case .released:
+            return ToolExecutionOutput(digesting: "Browser control released; the page stays open for the user")
+        case .alreadyReleased:
+            return ToolExecutionOutput(digesting: "That browser control was already released; nothing changed")
+        case .heldByAnotherRun:
+            throw FloeError.validationFailed(
+                "This browser is controlled by another run; nothing was released"
+            )
+        }
+    }
+}
+
 @MainActor
 func registerBrowserTools(center: BrowserSessionCenter, registry: ToolRunnerRegistry = .shared) {
     ToolCatalog.register(BrowserPanelTool.self)
@@ -1404,6 +1607,7 @@ func registerBrowserTools(center: BrowserSessionCenter, registry: ToolRunnerRegi
     ToolCatalog.register(BrowserStorageTool.self)
     ToolCatalog.register(BrowserSiteDataTool.self)
     ToolCatalog.register(BrowserDownloadTool.self)
+    ToolCatalog.register(BrowserReleaseTool.self)
     registry.register(BrowserNavigateTool(environment: environment))
     registry.register(BrowserObserveTool(environment: environment))
     registry.register(BrowserEventsTool(environment: environment))
@@ -1422,5 +1626,6 @@ func registerBrowserTools(center: BrowserSessionCenter, registry: ToolRunnerRegi
     registry.register(BrowserStorageTool(environment: environment))
     registry.register(BrowserSiteDataTool(environment: environment))
     registry.register(BrowserDownloadTool(environment: environment))
+    registry.register(BrowserReleaseTool(environment: environment))
 }
 #endif

@@ -1555,9 +1555,6 @@ final class ConversationCenter: ObservableObject {
     init(environment: AppEnvironment) {
         self.environment = environment
         self.launchRecoveryCutoff = Date()
-        environment.browserCenter.handoffRun = { [weak self] conversationID in
-            self?.activeRuns.values.first(where: { $0.conversationID == conversationID })?.id
-        }
         environment.browserCenter.deliverHandoff = { [weak self] event, shouldContinue in
             guard let self else { throw FloeError.invalidConfiguration("Task service unavailable") }
             return try await self.deliverBrowserHandoff(event, shouldContinue: shouldContinue)
@@ -7916,6 +7913,11 @@ final class ConversationCenter: ObservableObject {
             }
         }
         clearFrozenTemporaryRun(runID: runID)
+        // The service's real terminal state releases this run's browser
+        // holding period (completed, failed, cancelled or checkpointed). It
+        // never closes the page, clears tabs or ends a user takeover.
+        environment.browserCenter.endModelControl(
+            conversationID: service.conversationID, runID: runID)
         switch (terminalState, outcome) {
         case ("checkpointed", _), ("interrupted", _):
             environment.backgroundRunCoordinator.didSuspend(
@@ -8887,8 +8889,17 @@ final class ConversationCenter: ObservableObject {
         // of holding this launch open until its deadline. An already frozen
         // decision is kept: a deliberate same-round Continue reuses it
         // without a new request.
+        let browserOwner = runServices[runID]?.conversationID
+            ?? activeRuns[runID]?.conversationID
         if let service = runServices[runID] {
             await service.cancel()
+        }
+        // Cancellation blocks new browser dispatch first (the run token is
+        // cancelled above), then releases exactly this run's holding period.
+        // The page survives; a user takeover is untouched.
+        if let browserOwner {
+            environment.browserCenter.endModelControl(
+                conversationID: browserOwner, runID: runID)
         }
         await automaticReasoningEffortCoordinator.cancelPending(runID: runID)
         do { try await cancelParkedRuntimeWait(runID: runID) }
@@ -9730,7 +9741,13 @@ final class ConversationCenter: ObservableObject {
             let service = runServices[invocation.runID]
             Task { @MainActor [weak self, service] in
                 guard let self, self.runInvocationOwnership.isCurrent(invocation) else { return }
-                if let service { await service.cancel() }
+                if let service {
+                    await service.cancel()
+                    // This stop path must also release exactly this run's
+                    // browser holding period; the page itself is preserved.
+                    self.environment.browserCenter.endModelControl(
+                        conversationID: service.conversationID, runID: invocation.runID)
+                }
                 guard self.runInvocationOwnership.isCurrent(invocation) else { return }
                 await self.automaticReasoningEffortCoordinator.cancelPending(runID: invocation.runID)
             }
@@ -10092,6 +10109,10 @@ final class ConversationCenter: ObservableObject {
         runServices[service.runID] = nil
         snapshotTasks[service.runID]?.cancel()
         snapshotTasks[service.runID] = nil
+        // A resumed run that ends here releases its browser holding period,
+        // even though it reused the original runID. A user takeover remains.
+        environment.browserCenter.endModelControl(
+            conversationID: service.conversationID, runID: service.runID)
         let conclusion: TaskRunConclusion = cancelledBeforeStart ? .cancelled : (TaskRunConclusion.from(state: snapshot.stateName) ?? .failed)
         let succeeded = conclusion == .completed
         let suspended = conclusion == .checkpointed

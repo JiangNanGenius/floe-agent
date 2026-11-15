@@ -102,8 +102,14 @@ struct BrowserPreviewOwnershipTests {
         temporary: Bool = false,
         token: CancellationToken = CancellationToken()
     ) -> ToolContext {
+        // These tests exercise task-level preview ownership. The runtime
+        // normally supplies one stable run for the task's active turn, so use
+        // the same run identity for successive calls on one owner; a fresh
+        // run here would model a second run of the same task, which the
+        // browser control contract deliberately refuses while the first holds
+        // the page. Run isolation itself is covered by BrowserTaskSessionTests.
         ToolContext(
-            runID: UUID(),
+            runID: owner,
             workspaceRootURL: workspaceRoot,
             cancellation: token,
             conversationID: owner,

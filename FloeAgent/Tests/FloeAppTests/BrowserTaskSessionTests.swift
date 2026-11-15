@@ -590,10 +590,24 @@ struct BrowserTaskSessionTests {
         #expect(sessionA.isUserControlling)
         #expect(!sessionB.isUserControlling)
 
+        // While the user operates A, the model gets needsUser with no page,
+        // screenshot, events or text. Reading the user's page is forbidden.
+        let refusedA = try await run(
+            registry, "browser.observe", "{\"tabID\":\"\(tabA)\"}", as: contextA)
+        #expect(refusedA.contains("\"status\":\"needsUser\""), Comment(rawValue: refusedA))
+        let refusedPage = try object(refusedA)
+        #expect(refusedPage["page"] == nil)
+        #expect((refusedPage["events"] as? [Any])?.isEmpty ?? true)
+        #expect(!refusedA.contains("ready-alpha"))
+        let refusedText = try await run(
+            registry, "browser.text", "{\"tabID\":\"\(tabA)\"}", as: contextA)
+        #expect(refusedText.contains("\"status\":\"needsUser\""), Comment(rawValue: refusedText))
+        #expect(!refusedText.contains("ready-alpha"))
+        let refusedShot = try await run(
+            registry, "browser.screenshot", "{\"tabID\":\"\(tabA)\"}", as: contextA)
+        #expect(refusedShot.contains("\"status\":\"needsUser\""), Comment(rawValue: refusedShot))
+        #expect(!refusedShot.contains("screenshotArtifact"))
         // B keeps reading and mutating its own page.
-        let readA = try await observe(tab: tabA, registry: registry, context: contextA)
-        let readDocumentA = try #require(readA["documentID"] as? String)
-        #expect(!readDocumentA.isEmpty)
         let documentB = try #require(pageB["documentID"] as? String)
         let referenceB = try #require(try button(in: pageB)["ref"] as? String)
         let clickedB = try await run(
@@ -606,14 +620,12 @@ struct BrowserTaskSessionTests {
         let clickedPageB = try page(clickedB)
         #expect(nodesText(clickedPageB).contains("clicked-beta"))
 
-        // A's own mutation waits for the return.
-        let pageA = try await observe(tab: tabA, registry: registry, context: contextA)
-        let documentA = try #require(pageA["documentID"] as? String)
-        let referenceA = try #require(try button(in: pageA)["ref"] as? String)
+        // A's own mutation also waits for the return; no page observation can
+        // supply it a command, and even a well-formed click is refused.
         let deniedA = try await run(
             registry,
             "browser.click",
-            "{\"tabID\":\"\(tabA)\",\"ref\":\"\(referenceA)\",\"documentID\":\"\(documentA)\"}",
+            "{\"tabID\":\"\(tabA)\",\"ref\":\"n1\",\"documentID\":\"stale\"}",
             as: contextA
         )
         #expect(deniedA.contains("\"status\":\"needsUser\""), Comment(rawValue: deniedA))
@@ -816,6 +828,7 @@ struct BrowserTaskSessionTests {
         #expect((artifactB["relativePath"] as? String)?.contains("BrowserArtifacts/") == true)
 
         // B cannot authorize a coordinate click with A's screenshot digest.
+        let leaseB = try #require(sessionB.modelControl)
         let foreignEvidence = await center.execute(
             BrowserCommand(
                 sessionID: sessionB.sessionID,
@@ -825,13 +838,15 @@ struct BrowserTaskSessionTests {
                 visualFallbackReason: "noStructuredTarget",
                 action: .click(.point(x: 12, y: 12))
             ),
-            in: ownerB
+            in: ownerB,
+            control: leaseB
         )
         #expect(foreignEvidence.status == .blocked)
         #expect(foreignEvidence.message?.contains("fresh screenshot") == true)
 
         // A's own digest passes evidence validation and is only rejected for
         // the structured/point boundary, never for a foreign screenshot.
+        let leaseA = try #require(sessionA.modelControl)
         let ownEvidence = await center.execute(
             BrowserCommand(
                 sessionID: sessionA.sessionID,
@@ -841,7 +856,8 @@ struct BrowserTaskSessionTests {
                 visualFallbackReason: "noStructuredTarget",
                 action: .click(.point(x: 12, y: 12))
             ),
-            in: ownerA
+            in: ownerA,
+            control: leaseA
         )
         #expect(ownEvidence.message?.contains("fresh screenshot") != true)
     }
@@ -1008,11 +1024,445 @@ struct BrowserTaskSessionTests {
         #expect(!current.isUserControlling)
         #expect(center.handoff(for: owner) == nil)
 
-        // The current session's own takeover path still works.
-        current.setUserControlling(true)
-        #expect(current.isUserControlling)
+        // The current session's own takeover path still works, attributed to
+        // the exact run that held control (never a guessed recent run).
+        let currentRun = UUID()
+        _ = try await run(
+            registry, "browser.tabs", "{}", as: context(for: owner, runID: currentRun))
+        #expect(current.currentModelRunID == currentRun)
         center.browserSessionRequestedUserControl(current, reason: "current")
-        #expect(center.handoff(for: owner) != nil)
+        #expect(current.isUserControlling)
+        #expect(center.handoff(for: owner)?.runID == currentRun)
+    }
+
+    // MARK: - Run-scoped browser control
+
+    private func controlID(in summary: String) throws -> String {
+        let value = try object(summary)
+        let control = try #require(value["control"] as? [String: Any], "missing control marker")
+        return try #require(control["id"] as? String)
+    }
+
+    @Test("First read acquires control before the page, survives calls, and release keeps the page")
+    func modelControlIsAcquiredAtomicallyAndSurvivesCalls() async throws {
+        let center = makeCenter()
+        let owner = UUID()
+        let run = UUID()
+        center.bind(to: owner)
+        let registry = makeRegistry(center)
+        let ctx = context(for: owner, runID: run)
+
+        // `browser.tabs` is the first call: the session, its first tab and
+        // the holding period are established together, and the result names
+        // the holder before any page read happened.
+        let listing = try await run(registry, "browser.tabs", "{}", as: ctx)
+        let listed = try object(listing)
+        let session = try #require(center.session(for: owner))
+        #expect(session.currentModelRunID == run)
+        #expect(session.hasModelControlHolder)
+        #expect(listed["tabs"] != nil)
+        let firstControl = try controlID(in: listing)
+
+        let tab = try #require(session.activeTabID)
+        try await load(fixturePage("control"), tab: tab, in: session, registry: registry, context: ctx)
+        let page = try await observe(tab: tab, registry: registry, context: ctx)
+        #expect(nodesText(page).contains("ready-control"))
+        let held = try #require(session.modelControl)
+        #expect(held.id.uuidString == firstControl)
+        #expect(held.runID == run)
+
+        // The preview strip's label comes from this action's own document.
+        let documentID = try #require(page["documentID"] as? String)
+        let ref = try #require(try button(in: page)["ref"] as? String)
+        _ = try await run(
+            registry, "browser.click",
+            "{\"tabID\":\"\(tab)\",\"ref\":\"\(ref)\",\"documentID\":\"\(documentID)\"}",
+            as: ctx)
+        #expect(session.lastModelActivity?.kind == .clicking)
+        #expect(session.lastModelActivity?.detail == "Go control")
+
+        // Another run is refused and cannot take this page.
+        let otherRegistry = makeRegistry(center)
+        await #expect(throws: (any Error).self) {
+            _ = try await run(
+                otherRegistry, "browser.observe", "{\"tabID\":\"\(tab)\"}",
+                as: context(for: owner))
+        }
+        #expect(session.modelControl?.id.uuidString == firstControl)
+        // A yield request from another run cannot hand over this page either.
+        await #expect(throws: (any Error).self) {
+            _ = try await run(
+                registry, "browser.panel",
+                "{\"action\":\"requestUser\",\"reason\":\"wrong run\"}",
+                as: context(for: owner))
+        }
+        #expect(!session.isUserControlling)
+        #expect(session.modelControl?.id.uuidString == firstControl)
+
+        // Explicit release keeps the tab, URL, login state and page.
+        let releasedURL = session.activeWebView?.url
+        let released = try await run(
+            registry, "browser.release", "{\"controlID\":\"\(firstControl)\"}", as: ctx)
+        #expect(released.contains("released"), Comment(rawValue: released))
+        #expect(!session.hasModelControlHolder)
+        #expect(!session.isReleased)
+        #expect(session.tabs.count == 1)
+        #expect(session.activeTabID == tab)
+        #expect(session.activeWebView?.url == releasedURL)
+
+        // Repeating the release is a no-op.
+        _ = try await run(
+            registry, "browser.release", "{\"controlID\":\"\(firstControl)\"}", as: ctx)
+        #expect(!session.hasModelControlHolder)
+
+        // A later observation re-acquires; the old token cannot release it.
+        let second = try await run(
+            registry, "browser.observe", "{\"tabID\":\"\(tab)\"}", as: ctx)
+        let secondControl = try controlID(in: second)
+        #expect(secondControl != firstControl)
+        _ = try await run(
+            registry, "browser.release", "{\"controlID\":\"\(firstControl)\"}", as: ctx)
+        #expect(session.modelControl?.id.uuidString == secondControl)
+        _ = try await run(
+            registry, "browser.release", "{\"controlID\":\"\(secondControl)\"}", as: ctx)
+        #expect(!session.hasModelControlHolder)
+    }
+
+    @Test("Releasing control never creates a browser and is a no-op when none is open")
+    func releaseDoesNotCreateBrowser() async throws {
+        let center = makeCenter()
+        let owner = UUID()
+        center.bind(to: owner)
+        let registry = makeRegistry(center)
+        let ctx = context(for: owner, runID: UUID())
+        // The bound session exists for viewing, but there is no holder and no
+        // acquisition here: release must not create or navigate anything.
+        center.discard(conversationID: owner)
+        #expect(center.session(for: owner) == nil)
+        let output = try await run(
+            registry, "browser.release",
+            "{\"controlID\":\"\(UUID().uuidString)\"}", as: ctx)
+        #expect(output.contains("No task browser is open"), Comment(rawValue: output))
+        #expect(center.session(for: owner) == nil)
+    }
+
+    @Test("The first page entry acquires the holder before reading or navigating", arguments: ["tabs", "observe", "navigate"])
+    func firstPageEntryAcquiresHolder(_ entry: String) async throws {
+        let center = makeCenter()
+        let owner = UUID()
+        let run = UUID()
+        let registry = makeRegistry(center)
+        let ctx = context(for: owner, runID: run)
+        do {
+            switch entry {
+            case "tabs":
+                _ = try await run(registry, "browser.tabs", "{}", as: ctx)
+            case "observe":
+                _ = try await run(registry, "browser.observe", "{}", as: ctx)
+            default:
+                _ = try await run(
+                    registry, "browser.navigate",
+                    "{\"url\":\"https://example.com/\"}", as: ctx)
+            }
+        } catch {
+            // A blank/first page may legitimately fail its first observation.
+            // Acquisition must still have happened before that attempt.
+        }
+        let session = try #require(center.session(for: owner))
+        #expect(session.currentModelRunID == run)
+        #expect(session.hasModelControlHolder)
+        #expect(session.tabs.count == 1)
+    }
+
+    @Test("User takeover withholds every page payload and notifies the actual holder run")
+    func userTakeoverWithholdsPageAndNotifiesHolderRun() async throws {
+        let center = makeCenter()
+        let owner = UUID()
+        let run = UUID()
+        center.bind(to: owner)
+        let registry = makeRegistry(center)
+        let ctx = context(for: owner, runID: run)
+        let session = try #require(center.session(for: owner))
+        let tab = try #require(session.activeTabID)
+        try await load(fixturePage("handover"), tab: tab, in: session, registry: registry, context: ctx)
+        let before = try await observe(tab: tab, registry: registry, context: ctx)
+        let beforeDocument = try #require(before["documentID"] as? String)
+        let beforeControl = try #require(session.modelControl)
+
+        // A newer run is admitted before the user takes over. The receipt
+        // must still name the run that actually holds the page, never the
+        // newest admitted run.
+        let newerRun = UUID()
+        center.recordOwnerRun(conversationID: owner, runID: newerRun)
+        center.takeControl()
+        #expect(session.isUserControlling)
+        #expect(!session.hasModelControlHolder)
+        #expect(session.lastModelActivity == nil)
+        #expect(center.handoff(for: owner)?.runID == run)
+        #expect(center.handoff(for: owner)?.runID != newerRun)
+        #expect(center.handoff(for: owner)?.sessionID == session.sessionID)
+        #expect(center.handoff(for: owner)?.tabID == tab)
+        #expect(beforeControl.runID == run)
+
+        for (name, arguments) in [
+            ("browser.observe", "{\"tabID\":\"\(tab)\"}"),
+            ("browser.text", "{\"tabID\":\"\(tab)\"}"),
+            ("browser.links", "{\"tabID\":\"\(tab)\"}"),
+            ("browser.table", "{\"tabID\":\"\(tab)\"}"),
+            ("browser.events", "{\"tabID\":\"\(tab)\"}"),
+            ("browser.screenshot", "{\"tabID\":\"\(tab)\"}"),
+            ("browser.observe", "{\"tabID\":\"\(tab)\",\"profile\":\"design\"}")
+        ] {
+            let output = try await run(registry, name, arguments, as: ctx)
+            #expect(output.contains("\"status\":\"needsUser\""), Comment(rawValue: name + ": " + output))
+            #expect(!output.contains("\"page\""), Comment(rawValue: name))
+            #expect(!output.contains("screenshotArtifact"), Comment(rawValue: name))
+            #expect(!output.contains("ready-handover"), Comment(rawValue: name))
+            #expect(!output.contains("Go handover"), Comment(rawValue: name))
+            #expect(!output.contains("\"control\""), Comment(rawValue: name))
+        }
+        // Mutations are refused too, and the page is unchanged.
+        let typed = try await run(
+            registry, "browser.type",
+            "{\"tabID\":\"\(tab)\",\"ref\":\"n1\",\"documentID\":\"stale\",\"text\":\"injected\"}",
+            as: ctx)
+        #expect(typed.contains("\"status\":\"needsUser\""), Comment(rawValue: typed))
+
+        // The handback clears user control and invalidates the old document.
+        center.deliverHandoff = { _, _ in false }
+        await center.returnToAgent()
+        #expect(!session.isUserControlling)
+        #expect(!session.hasModelControlHolder)
+        #expect(center.handoff?.returning == true)
+        let returned = try await observe(tab: tab, registry: registry, context: ctx)
+        #expect(returned["documentID"] as? String != beforeDocument)
+        #expect(returned["control"] != nil)
+        #expect(nodesText(returned).contains("ready-handover"))
+    }
+
+    @Test("User input on an idle browser stays local and creates no handoff receipt")
+    func idleUserInputCreatesNoReceipt() async throws {
+        let center = makeCenter()
+        let owner = UUID()
+        center.bind(to: owner)
+        let session = try #require(center.session(for: owner))
+        #expect(!session.hasModelControlHolder)
+        session.registerUserInput()
+        #expect(session.isUserControlling)
+        #expect(center.handoff(for: owner) == nil)
+        #expect(center.pendingPanelRequest(for: owner) == nil)
+        await center.returnToAgent()
+        #expect(!session.isUserControlling)
+    }
+
+    @Test("Human input before the model blocks AI insertion and preserves the field value")
+    func humanInputFirstBlocksModelInsert() async throws {
+        let center = makeCenter()
+        let owner = UUID()
+        let run = UUID()
+        center.bind(to: owner)
+        let registry = makeRegistry(center)
+        let ctx = context(for: owner, runID: run)
+        let session = try #require(center.session(for: owner))
+        let tab = try #require(session.activeTabID)
+        try await load(
+            "<!doctype html><html><body><input id=\"field\" value=\"\"><p>form</p></body></html>",
+            tab: tab, in: session, registry: registry, context: ctx)
+        let page = try await observe(tab: tab, registry: registry, context: ctx)
+        let documentID = try #require(page["documentID"] as? String)
+        let field = try #require((page["nodes"] as? [[String: Any]])?
+            .first(where: { ($0["role"] as? String) == "input" }))
+        let ref = try #require(field["ref"] as? String)
+
+        // First real keystroke/gesture: takeover happens before the model can
+        // insert anything, and the exact holder run is notified.
+        session.registerUserInput()
+        #expect(session.isUserControlling)
+        #expect(center.handoff(for: owner)?.runID == run)
+        let attempted = try await run(
+            registry, "browser.type",
+            "{\"tabID\":\"\(tab)\",\"ref\":\"\(ref)\",\"documentID\":\"\(documentID)\",\"text\":\"model-value\"}",
+            as: ctx)
+        #expect(attempted.contains("\"status\":\"needsUser\""), Comment(rawValue: attempted))
+        let webView = try #require(session.activeWebView)
+        let value = try await webView.evaluateJavaScript(
+            "document.getElementById('field').value") as? String
+        #expect(value == "")
+        #expect(center.handoff(for: owner)?.runID == run)
+    }
+
+    @Test("An in-flight read after takeover returns no content and defers human input until it settles")
+    func inFlightReadIsWithheldOnTakeover() async throws {
+        let center = makeCenter()
+        let owner = UUID()
+        let run = UUID()
+        center.bind(to: owner)
+        let registry = makeRegistry(center)
+        let ctx = context(for: owner, runID: run)
+        let session = try #require(center.session(for: owner))
+        let tab = try #require(session.activeTabID)
+        try await load(fixturePage("inflight"), tab: tab, in: session, registry: registry, context: ctx)
+        let webView = try #require(session.activeWebView)
+        #expect(webView.isUserInteractionEnabled)
+
+        let waiting = Task {
+            try await run(
+                registry, "browser.wait",
+                "{\"tabID\":\"\(tab)\",\"condition\":\"text\",\"value\":\"never-appears\",\"timeoutMilliseconds\":5000}",
+                as: ctx)
+        }
+        // Let the real WebKit wait begin.
+        for _ in 0..<50 where session.activeExecutionCount == 0 {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(session.activeExecutionCount > 0)
+        center.takeControl()
+        #expect(session.isUserControlling)
+        #expect(session.takeoverPending)
+        #expect(!webView.isUserInteractionEnabled)
+
+        let output = try await waiting.value
+        #expect(output.contains("\"status\":\"needsUser\""), Comment(rawValue: output))
+        #expect(!output.contains("\"page\""))
+        #expect(!output.contains("ready-inflight"))
+        for _ in 0..<50 where session.takeoverPending {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(!session.takeoverPending)
+        #expect(webView.isUserInteractionEnabled)
+        #expect(session.isUserControlling)
+    }
+
+    @Test("An in-flight click taken over is withheld, never replayed, and the page settles once")
+    func inFlightClickTakenOverIsWithheldAndNeverReplayed() async throws {
+        let center = makeCenter()
+        let owner = UUID()
+        let run = UUID()
+        center.bind(to: owner)
+        let registry = makeRegistry(center)
+        let ctx = context(for: owner, runID: run)
+        let session = try #require(center.session(for: owner))
+        let tab = try #require(session.activeTabID)
+        let html = "<!doctype html><html><body style=\"margin:0\">"
+            + "<button id=\"go\" style=\"width:180px;height:60px\" "
+            + "onclick=\"window.clickCount=(window.clickCount||0)+1; var end=Date.now()+1200; while(Date.now()<end){}; document.getElementById('status').textContent='clicked-once';\">Go</button>"
+            + "<p id=\"status\">ready-click</p></body></html>"
+        try await load(html, tab: tab, in: session, registry: registry, context: ctx)
+        let page = try await observe(tab: tab, registry: registry, context: ctx)
+        let documentID = try #require(page["documentID"] as? String)
+        let ref = try #require(try button(in: page)["ref"] as? String)
+
+        let clicking = Task {
+            try await run(
+                registry, "browser.click",
+                "{\"tabID\":\"\(tab)\",\"ref\":\"\(ref)\",\"documentID\":\"\(documentID)\"}",
+                as: ctx)
+        }
+        // Wait until the real WebKit click is dispatched, then take over.
+        for _ in 0..<200 where session.activeExecutionCount == 0 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        // The handler blocks the web process for 1.2s; taking over during
+        // that window proves the already-dispatched click is not replayed.
+        try await Task.sleep(for: .milliseconds(300))
+        center.takeControl()
+        #expect(session.isUserControlling)
+        #expect(session.takeoverPending)
+
+        let output = try await clicking.value
+        #expect(output.contains("\"status\":\"needsUser\""), Comment(rawValue: output))
+        #expect(!output.contains("clicked-once"))
+        #expect(!output.contains("\"page\""))
+
+        // The already-dispatched click cannot be undone; it must have landed
+        // exactly once and the model result never claimed success.
+        try await Task.sleep(for: .milliseconds(900))
+        let webView = try #require(session.activeWebView)
+        let count = try await webView.evaluateJavaScript("window.clickCount") as? NSNumber
+        #expect(count?.intValue == 1)
+        let status = try await webView.evaluateJavaScript(
+            "document.getElementById('status').textContent") as? String
+        #expect(status == "clicked-once")
+        #expect(!session.takeoverPending)
+        #expect(webView.isUserInteractionEnabled)
+    }
+
+    @Test("A run's terminal state releases only its own lease and never ends user control")
+    func runEndReleasesLeaseAndKeepsPage() async throws {
+        let center = makeCenter()
+        let owner = UUID()
+        let run = UUID()
+        center.bind(to: owner)
+        let registry = makeRegistry(center)
+        let ctx = context(for: owner, runID: run)
+        let session = try #require(center.session(for: owner))
+        let tab = try #require(session.activeTabID)
+        try await load(fixturePage("runend"), tab: tab, in: session, registry: registry, context: ctx)
+        let page = try await observe(tab: tab, registry: registry, context: ctx)
+        let lease = try #require(session.modelControl)
+        let url = session.activeWebView?.url
+        let documentID = try #require(page["documentID"] as? String)
+
+        #expect(center.endModelControl(conversationID: owner, runID: UUID()) == false)
+        #expect(session.modelControl == lease)
+        #expect(center.endModelControl(conversationID: owner, runID: run))
+        #expect(!session.hasModelControlHolder)
+        #expect(!session.isUserControlling)
+        #expect(!session.isReleased)
+        #expect(session.tabs.count == 1)
+        #expect(session.activeWebView?.url == url)
+
+        // A late completion carrying the ended lease is stale and returns no page.
+        let late = await center.execute(
+            BrowserCommand(
+                sessionID: session.sessionID, tabID: tab,
+                expectedDocumentID: documentID, action: .observe(cursor: nil)),
+            in: owner, control: lease)
+        #expect(late.status == .stale)
+        #expect(late.error?.code == "control")
+        #expect(late.page == nil)
+
+        // A newer run may acquire the same page.
+        _ = try await run(registry, "browser.tabs", "{}", as: context(for: owner, runID: UUID()))
+        #expect(session.hasModelControlHolder)
+
+        // A user takeover survives the holder run ending.
+        center.takeControl()
+        #expect(session.isUserControlling)
+        #expect(center.endModelControl(conversationID: owner, runID: run) == false)
+        #expect(session.isUserControlling)
+    }
+
+    @Test("Repeated and stale release tokens never unlock a newer holding period")
+    func staleReleaseCannotUnlockNewerHoldingPeriod() async throws {
+        let center = makeCenter()
+        let owner = UUID()
+        let run = UUID()
+        center.bind(to: owner)
+        let registry = makeRegistry(center)
+        let ctx = context(for: owner, runID: run)
+        _ = try await run(registry, "browser.tabs", "{}", as: ctx)
+        let session = try #require(center.session(for: owner))
+        let first = try #require(session.modelControl)
+        _ = try await run(
+            registry, "browser.release", "{\"controlID\":\"\(first.id.uuidString)\"}", as: ctx)
+        #expect(!session.hasModelControlHolder)
+        let secondOutput = try await run(registry, "browser.observe", "{}", as: ctx)
+        let second = try #require(session.modelControl)
+        #expect(second.id != first.id)
+        // The old token has no effect on the new period.
+        let stale = try await run(
+            registry, "browser.release", "{\"controlID\":\"\(first.id.uuidString)\"}", as: ctx)
+        #expect(stale.contains("already released"), Comment(rawValue: stale))
+        #expect(session.modelControl == second)
+        #expect(secondOutput.contains(second.id.uuidString))
+        // A different run cannot release it either.
+        await #expect(throws: (any Error).self) {
+            _ = try await run(
+                registry, "browser.release", "{\"controlID\":\"\(second.id.uuidString)\"}",
+                as: context(for: owner, runID: UUID()))
+        }
+        #expect(session.modelControl == second)
     }
 
     // MARK: - Original-run handoff attribution (repair)

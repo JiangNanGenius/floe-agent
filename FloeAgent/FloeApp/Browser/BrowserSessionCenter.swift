@@ -33,6 +33,15 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
         let conversationID: UUID
         let show: Bool
     }
+    /// The exact task session a model run just acquired and the lease it must
+    /// present for later calls and `browser.release`.
+    struct ModelControl {
+        let session: BrowserTaskSession
+        let lease: BrowserControlLease
+        /// True when this call created the holding period rather than joining
+        /// the run's existing one.
+        let acquiredNow: Bool
+    }
 
     /// The conversation whose browser the UI currently projects. Binding is a
     /// presentation choice only; it never moves execution between sessions.
@@ -49,7 +58,9 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
     @Published private(set) var handoffNeedsContinue = false
     @Published private(set) var handoffNotified = false
 
-    var handoffRun: ((UUID) -> UUID?)?
+    /// There is deliberately no "most recent run" resolver: a handoff or a
+    /// user takeover is attributed only to the run named by the runtime-issued
+    /// ToolContext or by the browser's actual control holder.
     var deliverHandoff: ((Handoff, Bool) async throws -> Bool)?
     /// Set by AppEnvironment so an explicit owner release also stops that
     /// owner's local preview server. The coordinator is owned by the
@@ -277,6 +288,68 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
         return session
     }
 
+    /// Atomic first acquisition for one model run. Existing sessions yield
+    /// their current lease or refuse; a new session acquires the lease BEFORE
+    /// its first tab/WebView exists, so no read or creation can race another
+    /// holder. A session already controlled by the user returns needsUser and
+    /// never yields page data.
+    func beginModelControl(
+        conversationID: UUID,
+        runID: UUID
+    ) throws -> ModelControl {
+        if let existing = store.session(for: conversationID) {
+            switch try existing.acquireModelControl(runID: runID) {
+            case .acquired(let lease):
+                return ModelControl(session: existing, lease: lease, acquiredNow: false)
+            case .heldByAnotherRun:
+                throw BrowserControlError.heldByAnotherRun
+            case .needsUser(let message):
+                throw BrowserControlError.needsUser(message)
+            }
+        }
+        if isReleaseFenced(conversationID) {
+            throw FloeError.validationFailed("This task's browser session was released")
+        }
+        makeRoomForSession()
+        let session = BrowserTaskSession(
+            conversationID: conversationID,
+            generation: generation(for: conversationID),
+            configuration: sessionConfiguration,
+            host: self
+        )
+        let lease: BrowserControlLease
+        switch try session.acquireModelControl(runID: runID) {
+        case .acquired(let acquired): lease = acquired
+        case .heldByAnotherRun: throw BrowserControlError.heldByAnotherRun
+        case .needsUser(let message): throw BrowserControlError.needsUser(message)
+        }
+        try store.insert(session)
+        _ = session.createTab()
+        session.surfaceState = .ready
+        return ModelControl(session: session, lease: lease, acquiredNow: true)
+    }
+
+    /// Explicit release of one holding period. Never creates a session and
+    /// never returns the user's page to the model on the user's behalf.
+    func releaseModelControl(
+        conversationID: UUID,
+        runID: UUID,
+        controlID: UUID
+    ) -> BrowserControlReleaseOutcome {
+        guard let session = store.session(for: conversationID) else {
+            return .alreadyReleased
+        }
+        return session.releaseModelControl(controlID: controlID, runID: runID)
+    }
+
+    /// This run reached its real terminal state. Only its own holding period
+    /// is released; the page survives and a user takeover stays in place.
+    @discardableResult
+    func endModelControl(conversationID: UUID, runID: UUID) -> Bool {
+        guard let session = store.session(for: conversationID) else { return false }
+        return session.endModelControl(runID: runID)
+    }
+
     func session(for conversationID: UUID) -> BrowserTaskSession? {
         store.session(for: conversationID)
     }
@@ -297,6 +370,7 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
             guard store.count >= store.maximumSessions else { break }
             guard session.conversationID != conversationID,
                   !session.isUserControlling,
+                  !session.hasModelControlHolder,
                   session.activeExecutionCount == 0,
                   session.lastActivityAt < cutoff,
                   handoffs[session.conversationID] == nil else { continue }
@@ -386,6 +460,13 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
         guard let session = store.session(for: conversationID) else {
             throw FloeError.validationFailed(
                 "This task's browser is not open; navigate before requesting user interaction"
+            )
+        }
+        // A yield request can only hand over the calling run's own control. It
+        // can never take the page from a different run that currently owns it.
+        if let runID, let holder = session.modelControl, holder.runID != runID {
+            throw FloeError.validationFailed(
+                "This browser is being used by another run; continue with other authorized work"
             )
         }
         if let tabID {
@@ -485,6 +566,25 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
         }
     }
 
+    /// Runs one command under a previously acquired model lease. A lease from
+    /// a released/reacquired holding period is refused inside the session,
+    /// so a late callback can never act on the new holder's page.
+    func execute(
+        _ command: BrowserCommand,
+        in conversationID: UUID,
+        control: BrowserControlLease
+    ) async -> BrowserResult {
+        guard let session = store.session(for: conversationID) else {
+            return BrowserResult(
+                requestID: command.requestID,
+                status: .stale,
+                message: "This task's browser session is no longer active",
+                error: BrowserFailure(code: "session", message: "This task's browser session is no longer active")
+            )
+        }
+        return await session.execute(command, control: control)
+    }
+
     func executeProtocol(_ request: FloeBrowserProtocolCommand) async -> FloeBrowserProtocolResponse {
         if let session = visibleSession {
             return await session.executeProtocol(request)
@@ -569,6 +669,12 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
         knownRunIDs[conversationID]
     }
 
+    /// Transfers this task's browser to the user. `runID` is the real
+    /// original run for a model-requested handoff (already runtime-issued) or
+    /// the current holder's logical run for a user takeover. There is
+    /// deliberately no "most recent run" fallback: an idle browser that no
+    /// model run holds becomes user-controlled locally and creates no receipt
+    /// to notify a run that never owned it.
     private func beginUserControl(
         for session: BrowserTaskSession,
         runID: UUID?,
@@ -581,37 +687,48 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
         // reactivated) is fenced here: its late delegate callbacks can never
         // hand control or rewrite the durable receipt for a newer session.
         guard store.session(for: owner) === session, !session.isReleased else { return }
+        let receiptRun = runID ?? session.currentModelRunID
         let existing = handoffs[owner]
         let existingWasDelivered = existing.map { deliveredHandoffIDs.contains($0.id) } ?? false
         // A failed delivery leaves the receipt marked returning but undelivered;
         // taking control again must keep that exact receipt for a later retry.
-        if existing == nil
-            || existing?.sessionID != session.sessionID
-            || (existing?.returning == true && existingWasDelivered) {
-            if let existing { deliveredHandoffIDs.remove(existing.id) }
-            let event = Handoff(
-                id: UUID(),
-                conversationID: owner,
-                runID: runID ?? handoffRun?(owner) ?? knownRunIDs[owner],
-                sessionID: session.sessionID,
-                tabID: session.activeTabID,
-                returning: false
-            )
-            handoffs[owner] = event
-            do { try persistHandoffs() } catch {
-                if conversationID == owner { handoffError = error.localizedDescription }
+        if let receiptRun {
+            if existing == nil
+                || existing?.sessionID != session.sessionID
+                || (existing?.returning == true && existingWasDelivered) {
+                if let existing { deliveredHandoffIDs.remove(existing.id) }
+                let event = Handoff(
+                    id: UUID(),
+                    conversationID: owner,
+                    runID: receiptRun,
+                    sessionID: session.sessionID,
+                    tabID: session.activeTabID,
+                    returning: false
+                )
+                handoffs[owner] = event
+                do { try persistHandoffs() } catch {
+                    if conversationID == owner { handoffError = error.localizedDescription }
+                }
+            } else if var updated = handoffs[owner], updated.tabID != session.activeTabID {
+                // Keep the same durable receipt while the user takes control of
+                // another tab in this task's own browser.
+                updated.tabID = session.activeTabID
+                handoffs[owner] = updated
+                try? persistHandoffs()
             }
-        } else if var updated = handoffs[owner], updated.tabID != session.activeTabID {
-            // Keep the same durable receipt while the user takes control of
-            // another tab in this task's own browser.
-            updated.tabID = session.activeTabID
-            handoffs[owner] = updated
-            try? persistHandoffs()
         }
-        session.setUserControlling(true)
-        if let reason { session.surfaceState = .needsUser(reason) }
+        session.beginUserTakeover(reason: reason)
         handoffNeedsContinueByConversation[owner] = false
         guard conversationID == owner else { return }
+        guard receiptRun != nil else {
+            // No run ever held this idle browser: nothing to notify. Never
+            // resurface an older, already-delivered receipt as this takeover.
+            handoff = nil
+            handoffNeedsContinue = false
+            handoffNotified = false
+            handoffError = nil
+            return
+        }
         handoff = handoffs[owner]
         handoffNeedsContinue = false
         handoffNotified = false
@@ -619,7 +736,19 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
     }
 
     func returnToAgent(continueTask: Bool = false) async {
-        guard taskHandoffsEnabled, !returningControl, let event = handoff, let deliverHandoff else { return }
+        guard taskHandoffsEnabled, !returningControl else { return }
+        // A user who took over an idle browser (no model holder, no receipt)
+        // simply returns that browser to idle. Nothing is delivered and no
+        // task is started or continued on their behalf.
+        guard let event = handoff, let deliverHandoff else {
+            if let session = visibleSession, session.isUserControlling {
+                session.endUserControl()
+                pendingPanelRequests.removeValue(forKey: session.conversationID)
+                handoffNotified = false
+                handoffNeedsContinue = false
+            }
+            return
+        }
         guard deliveringHandoffs.insert(event.id).inserted else { return }
         returningControl = true
         handoffError = nil
@@ -633,6 +762,10 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
             let ownerSession = store.session(for: event.conversationID).flatMap {
                 $0.sessionID == event.sessionID ? $0 : nil
             }
+            // Handback captures the page, then stops human input while the
+            // notification is delivered. A failed delivery restores the
+            // user's control (and input) unchanged.
+            ownerSession?.activeWebView?.isUserInteractionEnabled = false
             // Never persist credentials, fragments or query parameters from the page.
             if firstReturn,
                let ownerSession,
@@ -654,14 +787,21 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
             handoffs[event.conversationID] = updated
             handoffNeedsContinueByConversation[event.conversationID] = needsContinue
             pendingPanelRequests.removeValue(forKey: event.conversationID)
-            ownerSession?.setUserControlling(false)
+            ownerSession?.endUserControl()
             try persistHandoffs()
             guard conversationID == event.conversationID else { return }
             handoff = updated
             handoffNotified = !needsContinue
             handoffNeedsContinue = needsContinue
         } catch {
+            ownerSessionFor(event)?.activeWebView?.isUserInteractionEnabled = true
             if conversationID == event.conversationID { handoffError = error.localizedDescription }
+        }
+    }
+
+    private func ownerSessionFor(_ event: Handoff) -> BrowserTaskSession? {
+        store.session(for: event.conversationID).flatMap {
+            $0.sessionID == event.sessionID ? $0 : nil
         }
     }
 
@@ -679,7 +819,7 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
             pendingPanelRequests.removeValue(forKey: conversationID)
             if let ownerSession = store.session(for: conversationID),
                ownerSession.sessionID == event.sessionID {
-                ownerSession.setUserControlling(false)
+                ownerSession.endUserControl()
             }
             guard self.conversationID == conversationID else { return }
             handoff = event
@@ -767,7 +907,16 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
 
 extension BrowserSessionCenter: BrowserTaskSessionHost {
     func browserSessionRequestedUserControl(_ session: BrowserTaskSession, reason: String) {
-        beginUserControl(for: session, runID: nil, reason: reason)
+        // This path is a model `browser.panel(requestUser)` or a WebKit
+        // sensitive-input escalation; the model's own lease (if any) names
+        // the real run. Never fall back to a guessed recent run.
+        beginUserControl(for: session, runID: session.currentModelRunID, reason: reason)
+    }
+
+    func browserSessionUserStartedInput(_ session: BrowserTaskSession, reason: String) {
+        // First real human input: the current model holder's logical run is
+        // the only run to notify. Browsing that no run holds stays local.
+        beginUserControl(for: session, runID: session.currentModelRunID, reason: reason)
     }
 }
 
@@ -786,6 +935,15 @@ extension BrowserSessionCenter: BrowserCookieProviding {
         guard let session = store.session(for: conversationID), !session.isReleased else {
             throw BrowserCookieProviderError.noTask
         }
+        // Borrowing this browser's cookies is page/session data. While the
+        // user operates the page the model gets no task cookie context.
+        guard !session.isUserControlling, !session.takeoverPending else {
+            throw BrowserCookieProviderError.notAuthorized
+        }
+        // Never let one run borrow cookies from a page another run owns.
+        if let holder = session.modelControl, holder.runID != runID {
+            throw BrowserCookieProviderError.notAuthorized
+        }
         guard let tab = session.activeTab else {
             throw BrowserCookieProviderError.noActivePage
         }
@@ -799,12 +957,25 @@ extension BrowserSessionCenter: BrowserCookieProviding {
             runID: runID,
             conversationID: conversationID
         )
+        // Consent can take a human-visible moment: recheck the exact page
+        // ownership before reading and again before returning cookie values.
+        func ensureStillAuthorized() throws {
+            guard store.session(for: conversationID) === session, !session.isReleased,
+                  !session.isUserControlling, !session.takeoverPending else {
+                throw BrowserCookieProviderError.notAuthorized
+            }
+            if let holder = session.modelControl, holder.runID != runID {
+                throw BrowserCookieProviderError.notAuthorized
+            }
+        }
+        try ensureStillAuthorized()
         let allCookies = await session.websiteDataStore.httpCookieStore.allCookies()
         try BrowserProviderTrustCoordinator.shared.revalidateBrowserDataAuthorization(
             runID: runID,
             expectedProviderID: authorization.provider.id,
             advancedGeneration: authorization.advancedGeneration
         )
+        try ensureStillAuthorized()
         let cookies = allCookies.map(HTTPCookiePolicy.snapshot(from:))
         let matched = HTTPCookiePolicy.matchingCookies(for: url, cookies: cookies)
         return BrowserWebContext(
@@ -824,6 +995,14 @@ extension BrowserSessionCenter: BrowserCookieProviding {
         guard let runID else { throw BrowserCookieProviderError.notAuthorized }
         guard let providerID = context.authorizationProviderID else {
             throw BrowserCookieProviderError.notAuthorized
+        }
+        if let conversationID, let session = store.session(for: conversationID) {
+            if session.isUserControlling || session.takeoverPending {
+                throw BrowserCookieProviderError.notAuthorized
+            }
+            if let holder = session.modelControl, holder.runID != runID {
+                throw BrowserCookieProviderError.notAuthorized
+            }
         }
         try BrowserProviderTrustCoordinator.shared.revalidateBrowserDataAuthorization(
             runID: runID,
