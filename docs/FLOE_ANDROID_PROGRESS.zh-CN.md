@@ -2,15 +2,19 @@
 
 ## 1.0.15／124候选：屏幕控制收尾、稳定观察与原生文件回执（2026-11-16）
 
-本批为源码候选，公开版本仍为1.0.14／123。尚未发布，也不把旧APK的设备证据当作新候选通过。
+本批私有Full候选固定APK源码`a3dcb3f9d553f7b84bc36c525b53a887c5131d14`，已构建并保留数据安装三星；公开版本仍为1.0.14／123，尚未发布。
 
 屏幕工具取消时先退休该运行的浮球和通知，迟到回调不能重新显示。同一段屏幕操作复用浮窗，转入实际后台工作或停止控制后清理；转圈只代表真实操作正在执行。新观察先经过既有的短稳定窗口，再采集界面，保留原有权限、观察有效期、窗口失效和动作核验规则。
 
 原生文件工具的比较记录接入现有运行代次与成果存储。文件真实提交后，可选比较失败会明确返回已保存及预览不可用，避免误报失败后重复写入；原件冲突、取消和主要写入失败仍保留。长目录的翻页游标移至摘要头部。归档目录比较补上同一物理路径的系统别名，不放开目录边界；正常ZIP往返和危险路径／逃逸链接的回归已通过。
 
-已完成实际Swift6.4.1对象编译，以及三项文件回执／代次回归、目录分页和两项ZIP检查。首次失败和诊断证据保留。手机控制26个生产源文件及4个宿主文件已实际编译，55项JVM定向测试通过。实际ARM64／Full APK及三星验收仍在本批后续步骤；重复观察失效、运行时偶发未就绪和停止后的资源归属分别核对，不能用总体验证或录制完成替代。
+已完成实际Swift6.4.1对象编译，以及三项文件回执／代次回归、目录分页和两项ZIP检查。首次失败和诊断证据保留。手机控制26个生产源文件及4个宿主文件已实际编译，55项JVM定向测试通过。native63真实ARM64生产完成；随后仅有Kotlin展示生命周期接线，复用未变原生输入。Full候选02实际编译、58项原生绑定／16KiB封装及四包API28–29签名检查通过。Linux接线从原生工作区授权取得任务／运行标识，保持权限和执行规则不变。
 
-English:1.0.15/code124 is a source candidate; public1.0.14 remains unchanged. The bounded changes retire screen controls on cancellation, reuse the overlay within a screen sequence, settle before capture without extending observation validity, bind change evidence to the existing generation-owned store, and preserve truthful saved-file receipts when optional previews fail. Pagination and archive alias handling have focused object/test evidence. Production Kotlin objects and55 focused JVM cases passed. ARM64/APK and Samsung behavior remain separate pending steps; the original failures are retained.
+三星原生文件受控用例的4组请求／结果全部成功：创建、替换均返回已保存及可用比较引用，原生读取和同项目Linux读取内容一致，实际轻量编辑器打开9字节修改成果。屏幕用例的13组请求／结果全部成功，包含连续结构化观察、清空及依次输入2、加号、3，结果预览实际为5；未调用截图工具。随后为验收停止而主动接管，首次173毫秒采样中浮窗2→0，后续8次采样无回弹，当时无障碍仍开。该用例没有按等号，也没有到达屏幕后Linux命令，不将它记为完整计算／后台切换或自然目标通过。测试设置与权限恢复后再交接录像。
+
+完整自然目标、屏幕转后台命令的实机路径、运行时偶发未就绪及原失败运行的资源归属仍单独追踪；本批组件结果不能替代这些项目。
+
+English: Private1.0.15/code124 candidate02 is built from the exact source above; public1.0.14 remains unchanged. Actual native63 ARM64 production, Full compilation,58 native bindings,16KiB packaging, four API28–29 signer checks and55 focused JVM cases passed. Samsung proved truthful native save receipts, matching native/Linux reads and a real editor reopen. A separate directed control case had13 successful tool pairs and four clicks with structured post-action effects. Native Take Over removed both windows at the first173ms sample, with no return across eight samples while accessibility remained enabled. The case was deliberately stopped before equals and its shell step; full natural-goal, screen-to-shell and intermittent runtime-readiness acceptance remain open. Original failures are retained.
 
 
 ## 1.0.14／123已公开：后台预算、原任务接续与浮球停止（2026-11-16）
