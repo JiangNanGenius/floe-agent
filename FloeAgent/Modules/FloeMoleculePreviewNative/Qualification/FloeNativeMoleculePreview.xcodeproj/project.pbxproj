@@ -1,0 +1,505 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		00EDCF33D5F46FCE37EC53E0 /* ethanol.mol in Resources */ = {isa = PBXBuildFile; fileRef = E9D55EACD7E5ACEB067930FA /* ethanol.mol */; };
+		08B01BA2783152C6229CEC90 /* FloeChemistryUI in Frameworks */ = {isa = PBXBuildFile; productRef = A7AE15DB850C91ED7AB258D8 /* FloeChemistryUI */; };
+		2F294550132875FBA3DD8503 /* lactic-R.mol in Resources */ = {isa = PBXBuildFile; fileRef = E5DCFCC26DC6873B400C3FE1 /* lactic-R.mol */; };
+		522FBD57DA8C02E142F07F97 /* isotope-charge.mol in Resources */ = {isa = PBXBuildFile; fileRef = 37FA353630E332AABE42650B /* isotope-charge.mol */; };
+		53C496E0B46669C56A908DF4 /* index.json in Resources */ = {isa = PBXBuildFile; fileRef = 1753D9991731E044EC746885 /* index.json */; };
+		55242721EBA60106349C9F12 /* lactic-S.mol in Resources */ = {isa = PBXBuildFile; fileRef = 4643BBE31A70831E76445D54 /* lactic-S.mol */; };
+		552DC5A5FC80182C33B781FA /* cyclohexane.mol in Resources */ = {isa = PBXBuildFile; fileRef = 3840B3F6E835288798EBA175 /* cyclohexane.mol */; };
+		A7D9056D3284F6C7B9868324 /* FloeMoleculePreviewNative in Frameworks */ = {isa = PBXBuildFile; productRef = 7292384C42DCA5611EFB3F65 /* FloeMoleculePreviewNative */; };
+		BC71617A09EFBF6F2A7F5CCA /* FloeChemistryEngine in Frameworks */ = {isa = PBXBuildFile; productRef = 549F99BD0B1779B03617613C /* FloeChemistryEngine */; };
+		C12F05703DA5043BC559402B /* alkene-Z.mol in Resources */ = {isa = PBXBuildFile; fileRef = 679963BCA297B80114F97A3A /* alkene-Z.mol */; };
+		C602C73FA3BED745A3D64DCF /* Host.swift in Sources */ = {isa = PBXBuildFile; fileRef = 673923E3B61EDD658261AA74 /* Host.swift */; };
+		C7B1533A613DDC2CA505B0CA /* benzene.mol in Resources */ = {isa = PBXBuildFile; fileRef = 63DF621C20E3A1FD50CAE290 /* benzene.mol */; };
+		D1A8B72348114015DFE1F507 /* UITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C08B7E11EFBEFFFCBC6A2800 /* UITests.swift */; };
+		D2DD2ABEE104D90BC0D2F23E /* aspirin.mol in Resources */ = {isa = PBXBuildFile; fileRef = 65100E214854B00CF5F2E5D2 /* aspirin.mol */; };
+		DBE843802A82D439995F782A /* FloeChemistryCore in Frameworks */ = {isa = PBXBuildFile; productRef = 3D63F9205D3BB0BD2669F703 /* FloeChemistryCore */; };
+		F523150D60D6F8DDAABEB6AA /* alkene-E.mol in Resources */ = {isa = PBXBuildFile; fileRef = 6B5E0CA521C27E4A44F75EA9 /* alkene-E.mol */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		642C3110DB9F222F764F4994 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 38A2631E96F23CC93553BD93 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = DA907C30C78D1229F590E89D;
+			remoteInfo = NativeMoleculePreviewHost;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		10F8AE2B18954357E188282B /* FloeMoleculePreviewNative */ = {isa = PBXFileReference; lastKnownFileType = folder; name = FloeMoleculePreviewNative; path = ..; sourceTree = SOURCE_ROOT; };
+		1753D9991731E044EC746885 /* index.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = index.json; sourceTree = "<group>"; };
+		36FB09CFEB205D0A4855253E /* FloeChemistryKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = FloeChemistryKit; path = ../../FloeChemistryKit; sourceTree = SOURCE_ROOT; };
+		3756F16CAD3E14694A149439 /* NativeMoleculePreviewHost.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = NativeMoleculePreviewHost.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		37FA353630E332AABE42650B /* isotope-charge.mol */ = {isa = PBXFileReference; path = "isotope-charge.mol"; sourceTree = "<group>"; };
+		3840B3F6E835288798EBA175 /* cyclohexane.mol */ = {isa = PBXFileReference; path = cyclohexane.mol; sourceTree = "<group>"; };
+		4643BBE31A70831E76445D54 /* lactic-S.mol */ = {isa = PBXFileReference; path = "lactic-S.mol"; sourceTree = "<group>"; };
+		63DF621C20E3A1FD50CAE290 /* benzene.mol */ = {isa = PBXFileReference; path = benzene.mol; sourceTree = "<group>"; };
+		65100E214854B00CF5F2E5D2 /* aspirin.mol */ = {isa = PBXFileReference; path = aspirin.mol; sourceTree = "<group>"; };
+		673923E3B61EDD658261AA74 /* Host.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Host.swift; sourceTree = "<group>"; };
+		679963BCA297B80114F97A3A /* alkene-Z.mol */ = {isa = PBXFileReference; path = "alkene-Z.mol"; sourceTree = "<group>"; };
+		6B5E0CA521C27E4A44F75EA9 /* alkene-E.mol */ = {isa = PBXFileReference; path = "alkene-E.mol"; sourceTree = "<group>"; };
+		C08B7E11EFBEFFFCBC6A2800 /* UITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UITests.swift; sourceTree = "<group>"; };
+		E5DCFCC26DC6873B400C3FE1 /* lactic-R.mol */ = {isa = PBXFileReference; path = "lactic-R.mol"; sourceTree = "<group>"; };
+		E9D55EACD7E5ACEB067930FA /* ethanol.mol */ = {isa = PBXFileReference; path = ethanol.mol; sourceTree = "<group>"; };
+		EAE4422AB7348D718C9B6FB2 /* NativeMoleculePreviewUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = NativeMoleculePreviewUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		23519A706BC6420CDF6B54E6 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A7D9056D3284F6C7B9868324 /* FloeMoleculePreviewNative in Frameworks */,
+				DBE843802A82D439995F782A /* FloeChemistryCore in Frameworks */,
+				BC71617A09EFBF6F2A7F5CCA /* FloeChemistryEngine in Frameworks */,
+				08B01BA2783152C6229CEC90 /* FloeChemistryUI in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		88EDC8A6D0118529CB706329 /* Packages */ = {
+			isa = PBXGroup;
+			children = (
+				36FB09CFEB205D0A4855253E /* FloeChemistryKit */,
+				10F8AE2B18954357E188282B /* FloeMoleculePreviewNative */,
+			);
+			name = Packages;
+			sourceTree = "<group>";
+		};
+		A136B91E711CE74A2B361288 /* Fixtures */ = {
+			isa = PBXGroup;
+			children = (
+				6B5E0CA521C27E4A44F75EA9 /* alkene-E.mol */,
+				679963BCA297B80114F97A3A /* alkene-Z.mol */,
+				65100E214854B00CF5F2E5D2 /* aspirin.mol */,
+				63DF621C20E3A1FD50CAE290 /* benzene.mol */,
+				3840B3F6E835288798EBA175 /* cyclohexane.mol */,
+				E9D55EACD7E5ACEB067930FA /* ethanol.mol */,
+				1753D9991731E044EC746885 /* index.json */,
+				37FA353630E332AABE42650B /* isotope-charge.mol */,
+				E5DCFCC26DC6873B400C3FE1 /* lactic-R.mol */,
+				4643BBE31A70831E76445D54 /* lactic-S.mol */,
+			);
+			path = Fixtures;
+			sourceTree = "<group>";
+		};
+		E63A3D55037FA5F45DF80AB2 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				3756F16CAD3E14694A149439 /* NativeMoleculePreviewHost.app */,
+				EAE4422AB7348D718C9B6FB2 /* NativeMoleculePreviewUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		EDF3BDCFA4615D1F44A51472 = {
+			isa = PBXGroup;
+			children = (
+				673923E3B61EDD658261AA74 /* Host.swift */,
+				C08B7E11EFBEFFFCBC6A2800 /* UITests.swift */,
+				A136B91E711CE74A2B361288 /* Fixtures */,
+				88EDC8A6D0118529CB706329 /* Packages */,
+				E63A3D55037FA5F45DF80AB2 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		932A3479E9697E8833383354 /* NativeMoleculePreviewUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 16133BAC82D6F1A1132F089E /* Build configuration list for PBXNativeTarget "NativeMoleculePreviewUITests" */;
+			buildPhases = (
+				CC9EB9DB0788482BC4CCE8C1 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				CE5E59E259A651C99D821C78 /* PBXTargetDependency */,
+			);
+			name = NativeMoleculePreviewUITests;
+			packageProductDependencies = (
+			);
+			productName = NativeMoleculePreviewUITests;
+			productReference = EAE4422AB7348D718C9B6FB2 /* NativeMoleculePreviewUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+		DA907C30C78D1229F590E89D /* NativeMoleculePreviewHost */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = BACC24D1B8DFE3E86ABF9334 /* Build configuration list for PBXNativeTarget "NativeMoleculePreviewHost" */;
+			buildPhases = (
+				E8A5A90029D2E1658AC2AE44 /* Sources */,
+				458E40FEF536DD38167F0F9E /* Resources */,
+				23519A706BC6420CDF6B54E6 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = NativeMoleculePreviewHost;
+			packageProductDependencies = (
+				7292384C42DCA5611EFB3F65 /* FloeMoleculePreviewNative */,
+				3D63F9205D3BB0BD2669F703 /* FloeChemistryCore */,
+				549F99BD0B1779B03617613C /* FloeChemistryEngine */,
+				A7AE15DB850C91ED7AB258D8 /* FloeChemistryUI */,
+			);
+			productName = NativeMoleculePreviewHost;
+			productReference = 3756F16CAD3E14694A149439 /* NativeMoleculePreviewHost.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		38A2631E96F23CC93553BD93 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					932A3479E9697E8833383354 = {
+						TestTargetID = DA907C30C78D1229F590E89D;
+					};
+				};
+			};
+			buildConfigurationList = 547D4F1359A0376062424A48 /* Build configuration list for PBXProject "FloeNativeMoleculePreview" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = EDF3BDCFA4615D1F44A51472;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				478D6E7DD9A711058731F014 /* XCLocalSwiftPackageReference "../../FloeChemistryKit" */,
+				57E0ADE01C3AC28958772AFA /* XCLocalSwiftPackageReference ".." */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = E63A3D55037FA5F45DF80AB2 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				DA907C30C78D1229F590E89D /* NativeMoleculePreviewHost */,
+				932A3479E9697E8833383354 /* NativeMoleculePreviewUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		458E40FEF536DD38167F0F9E /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				F523150D60D6F8DDAABEB6AA /* alkene-E.mol in Resources */,
+				C12F05703DA5043BC559402B /* alkene-Z.mol in Resources */,
+				D2DD2ABEE104D90BC0D2F23E /* aspirin.mol in Resources */,
+				C7B1533A613DDC2CA505B0CA /* benzene.mol in Resources */,
+				552DC5A5FC80182C33B781FA /* cyclohexane.mol in Resources */,
+				00EDCF33D5F46FCE37EC53E0 /* ethanol.mol in Resources */,
+				53C496E0B46669C56A908DF4 /* index.json in Resources */,
+				522FBD57DA8C02E142F07F97 /* isotope-charge.mol in Resources */,
+				2F294550132875FBA3DD8503 /* lactic-R.mol in Resources */,
+				55242721EBA60106349C9F12 /* lactic-S.mol in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		CC9EB9DB0788482BC4CCE8C1 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D1A8B72348114015DFE1F507 /* UITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E8A5A90029D2E1658AC2AE44 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C602C73FA3BED745A3D64DCF /* Host.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		CE5E59E259A651C99D821C78 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = DA907C30C78D1229F590E89D /* NativeMoleculePreviewHost */;
+			targetProxy = 642C3110DB9F222F764F4994 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		2398145D719984E6A469DD2E /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = arm64;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGNING_ALLOWED = NO;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		637D21B7FFCE7B44DA193FF0 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "com.floe.qualification.native-molecule-preview.uitests";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = NativeMoleculePreviewHost;
+			};
+			name = Release;
+		};
+		6FBFD49945475E213D70B0AC /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "com.floe.qualification.native-molecule-preview";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		83CF7A23C18B78F229F99388 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "com.floe.qualification.native-molecule-preview";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		9027A97C9E01482743765E58 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = arm64;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGNING_ALLOWED = NO;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		D501829914C9CB491C4BAC07 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "com.floe.qualification.native-molecule-preview.uitests";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = NativeMoleculePreviewHost;
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		16133BAC82D6F1A1132F089E /* Build configuration list for PBXNativeTarget "NativeMoleculePreviewUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D501829914C9CB491C4BAC07 /* Debug */,
+				637D21B7FFCE7B44DA193FF0 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		547D4F1359A0376062424A48 /* Build configuration list for PBXProject "FloeNativeMoleculePreview" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				9027A97C9E01482743765E58 /* Debug */,
+				2398145D719984E6A469DD2E /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		BACC24D1B8DFE3E86ABF9334 /* Build configuration list for PBXNativeTarget "NativeMoleculePreviewHost" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				6FBFD49945475E213D70B0AC /* Debug */,
+				83CF7A23C18B78F229F99388 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		478D6E7DD9A711058731F014 /* XCLocalSwiftPackageReference "../../FloeChemistryKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../../FloeChemistryKit;
+		};
+		57E0ADE01C3AC28958772AFA /* XCLocalSwiftPackageReference ".." */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ..;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		3D63F9205D3BB0BD2669F703 /* FloeChemistryCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = FloeChemistryCore;
+		};
+		549F99BD0B1779B03617613C /* FloeChemistryEngine */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = FloeChemistryEngine;
+		};
+		7292384C42DCA5611EFB3F65 /* FloeMoleculePreviewNative */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = FloeMoleculePreviewNative;
+		};
+		A7AE15DB850C91ED7AB258D8 /* FloeChemistryUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = FloeChemistryUI;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 38A2631E96F23CC93553BD93 /* Project object */;
+}

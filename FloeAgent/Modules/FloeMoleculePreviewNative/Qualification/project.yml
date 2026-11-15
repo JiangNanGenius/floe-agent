@@ -1,0 +1,59 @@
+name: FloeNativeMoleculePreview
+options:
+  deploymentTarget:
+    iOS: '26.0'
+packages:
+  FloeMoleculePreviewNative:
+    path: ..
+  FloeChemistryKit:
+    path: ../../FloeChemistryKit
+settings:
+  base:
+    SWIFT_VERSION: '6.0'
+    ARCHS: arm64
+    ONLY_ACTIVE_ARCH: YES
+    CODE_SIGNING_ALLOWED: NO
+    GENERATE_INFOPLIST_FILE: YES
+    SWIFT_STRICT_CONCURRENCY: complete
+targets:
+  NativeMoleculePreviewHost:
+    type: application
+    platform: iOS
+    sources:
+      - path: Host.swift
+      - path: Fixtures
+        buildPhase: resources
+    dependencies:
+      - package: FloeMoleculePreviewNative
+      - package: FloeChemistryKit
+        product: FloeChemistryCore
+      - package: FloeChemistryKit
+        product: FloeChemistryEngine
+      - package: FloeChemistryKit
+        product: FloeChemistryUI
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.floe.qualification.native-molecule-preview
+        TARGETED_DEVICE_FAMILY: '1,2'
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+  NativeMoleculePreviewUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [UITests.swift]
+    dependencies:
+      - target: NativeMoleculePreviewHost
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.floe.qualification.native-molecule-preview.uitests
+        TEST_TARGET_NAME: NativeMoleculePreviewHost
+schemes:
+  NativeMoleculePreview:
+    build:
+      targets:
+        NativeMoleculePreviewHost: all
+        NativeMoleculePreviewUITests: [test]
+    test:
+      targets:
+        - name: NativeMoleculePreviewUITests
+          parallelizable: false

@@ -1,0 +1,8 @@
+{
+  "repository": "https://github.com/rdkit/rdkit",
+  "tag": "Release_2026_09_1",
+  "commit": "fece8caa860bdf6c9c82bdb9253f22a0cf87150c",
+  "archive": "https://codeload.github.com/rdkit/rdkit/tar.gz/fece8caa860bdf6c9c82bdb9253f22a0cf87150c",
+  "sha256": "deba969d21a869ea0f93d0bbe7d4b496828bf34f8823b70c111ab931402c15cf",
+  "version": "2026.09.1"
+}

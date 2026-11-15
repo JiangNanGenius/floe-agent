@@ -1,0 +1,5 @@
+framework module FloeMoleculePreviewBridge {
+  umbrella header "FloeMoleculePreviewBridge.h"
+  export *
+  module * { export * }
+}

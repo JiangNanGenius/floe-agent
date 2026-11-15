@@ -1,0 +1,56 @@
+[
+  {
+    "id": "ethanol",
+    "smiles": "CCO",
+    "file": "ethanol.mol",
+    "sha256": "c632f8087de09946aa0a12382d7a1ab9fc9df402c96d825629ea41399e1f02a9"
+  },
+  {
+    "id": "benzene",
+    "smiles": "c1ccccc1",
+    "file": "benzene.mol",
+    "sha256": "42b99c89e72fedcf1b9e6151d24fd080347c6a5a2122581ac74cf49ffd535d30"
+  },
+  {
+    "id": "cyclohexane",
+    "smiles": "C1CCCCC1",
+    "file": "cyclohexane.mol",
+    "sha256": "3428348615feac7bc7146f8fb1c46ced47e32d2989ebcfc29e2a1cd4447764a6"
+  },
+  {
+    "id": "lactic-R",
+    "smiles": "C[C@H](O)C(=O)O",
+    "file": "lactic-R.mol",
+    "sha256": "ab88ee534e3eebf52970cea22227bebeab85c6ccedda69bd55f070557354454a"
+  },
+  {
+    "id": "lactic-S",
+    "smiles": "C[C@@H](O)C(=O)O",
+    "file": "lactic-S.mol",
+    "sha256": "c00c07d9098da4969c2685fdf7f2e5d3b147421d14804c8773a998dddc4dad62"
+  },
+  {
+    "id": "alkene-E",
+    "smiles": "F/C=C/F",
+    "file": "alkene-E.mol",
+    "sha256": "fb6259d6f266a0d68f9fc69291ca519602a1757e022bad210d9ab2453bbc496f"
+  },
+  {
+    "id": "alkene-Z",
+    "smiles": "F/C=C\\F",
+    "file": "alkene-Z.mol",
+    "sha256": "25cbdd9b4efb34794c40b4ba461b91491aba5ac840a9058835e0a3e89086316e"
+  },
+  {
+    "id": "isotope-charge",
+    "smiles": "[13CH3][NH3+]",
+    "file": "isotope-charge.mol",
+    "sha256": "0ce23a41e1d7195a939522ab255fc03ab6021f63ff2077806f0a2a1107cef381"
+  },
+  {
+    "id": "aspirin",
+    "smiles": "CC(=O)Oc1ccccc1C(=O)O",
+    "file": "aspirin.mol",
+    "sha256": "99cac8c2f9d683f722b3328940f6bf2960581044482b7a93759de7e342f63e42"
+  }
+]

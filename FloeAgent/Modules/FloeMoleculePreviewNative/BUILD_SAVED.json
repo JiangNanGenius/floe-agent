@@ -1,0 +1,612 @@
+{
+  "schemaVersion": 1,
+  "toolchain": "Xcode 27.2\nBuild version 27B52",
+  "upstream": {
+    "repository": "https://github.com/rdkit/rdkit",
+    "tag": "Release_2026_09_1",
+    "commit": "fece8caa860bdf6c9c82bdb9253f22a0cf87150c",
+    "archive": "https://codeload.github.com/rdkit/rdkit/tar.gz/fece8caa860bdf6c9c82bdb9253f22a0cf87150c",
+    "sha256": "deba969d21a869ea0f93d0bbe7d4b496828bf34f8823b70c111ab931402c15cf",
+    "version": "2026.09.1"
+  },
+  "platforms": [
+    "macos",
+    "ios",
+    "simulator"
+  ],
+  "sourceFiles": [
+    {
+      "path": "DEPENDENCIES.json",
+      "sha256": "818d98d73f750b69f03cd87a532c76ed9318ee6d26a441161af465f293a27e28"
+    },
+    {
+      "path": "Licenses/Boost-1.90.0.txt",
+      "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566"
+    },
+    {
+      "path": "Licenses/Eigen/COPYING.APACHE",
+      "sha256": "03379001a7b12a2ec997a25554247d985270b353c10d5bafee9ac8d6519820b7"
+    },
+    {
+      "path": "Licenses/Eigen/COPYING.BSD",
+      "sha256": "51928dce36213c5333ba3172e847d735d4c6e9b7ff2722a326c49067155b82eb"
+    },
+    {
+      "path": "Licenses/Eigen/COPYING.MINPACK",
+      "sha256": "c87b7f8ee88f6195e91743820c00354833583aef091b72e2d4a49c8e28e798a0"
+    },
+    {
+      "path": "Licenses/Eigen/COPYING.MPL2",
+      "sha256": "66a3107d5ad6a058aab753eaac2047ccb2ed0e39465dd0fe5844da3e300d5172"
+    },
+    {
+      "path": "Licenses/Eigen/COPYING.README",
+      "sha256": "db640ff2bd90c6abd6a4d3fbb351e0ee4d555417cf840492054d1cbb2ea85644"
+    },
+    {
+      "path": "Licenses/Eigen/LICENSE",
+      "sha256": "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5"
+    },
+    {
+      "path": "Licenses/RDKit-BSD.txt",
+      "sha256": "daeb8d194502cbcf34c05c39541a0d02be65bc9bada5b891c1974cd24e9fca30"
+    },
+    {
+      "path": "Licenses/RingDecomposerLib-BSD.txt",
+      "sha256": "510d2b0c6b68597ac15f227b3aa22ebe7041dbaf0d5a703efa33069e8bb35762"
+    },
+    {
+      "path": "Licenses/nlohmann-json-3.11.3.txt",
+      "sha256": "86b998c792894ccb911a1cb7994f7a9652894e7a094c0b5e45be2f553f45cf14"
+    },
+    {
+      "path": "Native/Bridge.cmake",
+      "sha256": "11a91f23bd612edd4d39ff928ff86791191281eba28bbcf0a7f26d01920cd06e"
+    },
+    {
+      "path": "Native/bridge.cpp",
+      "sha256": "aefa569cdc1e6dcd7408305478e7a44812a98b20c2436e1763d52402d45be031"
+    },
+    {
+      "path": "Native/framework.modulemap",
+      "sha256": "8bd029def7f8f8286badf7382b26204deab4a5dd56c51bd9e6e592350200ecc4"
+    },
+    {
+      "path": "Native/include/FloeMoleculePreviewBridge.h",
+      "sha256": "45440fd60ee1793e9709e6eb51c1261be258a68f902b34e16b82555f4bf11524"
+    },
+    {
+      "path": "Package.swift",
+      "sha256": "e044a3e454b9420e4145dc08505d1b04cb4d0431e2f0b694bd884a1099264340"
+    },
+    {
+      "path": "Scripts/build_native.py",
+      "sha256": "a5e4a5a513fb080adea8c82c749277ec34feb27fb6ea4241f659223ade8f5da1"
+    },
+    {
+      "path": "Sources/FloeMoleculePreviewNative/Preview.swift",
+      "sha256": "685cec8100ffc51b7e791556ed57bc9ae8c32761d4eba613d487a0a38bee9eb2"
+    },
+    {
+      "path": "Tests/probe.cpp",
+      "sha256": "a1b67124fe143227f7f24169d42165ece2dc914b5253f238a1d96d6025cbb190"
+    },
+    {
+      "path": "UPSTREAM.json",
+      "sha256": "f696d9f99f2a69af5f488be50dd60fa55348a890a257094789c7feb8c0fb29a0"
+    }
+  ],
+  "files": [
+    {
+      "path": "Info.plist",
+      "sha256": "02f385bc66574bd46eccb5c1678753ec8a41c20c11e01518053296d7c7346843",
+      "bytes": 1674
+    },
+    {
+      "path": "ios-arm64/FloeMoleculePreviewBridge.framework/FloeMoleculePreviewBridge",
+      "sha256": "fe5385184a0a56258771bf5ce58e1b0958ca3f7a9ab9a76a6ece7ae8c06a4650",
+      "bytes": 20200584
+    },
+    {
+      "path": "ios-arm64/FloeMoleculePreviewBridge.framework/Headers/FloeMoleculePreviewBridge.h",
+      "sha256": "45440fd60ee1793e9709e6eb51c1261be258a68f902b34e16b82555f4bf11524",
+      "bytes": 509
+    },
+    {
+      "path": "ios-arm64/FloeMoleculePreviewBridge.framework/Info.plist",
+      "sha256": "73bf87deb14742b1adb0328bd2ed4dc445d6a41455653f4fec52c034fb76d78c",
+      "bytes": 716
+    },
+    {
+      "path": "ios-arm64/FloeMoleculePreviewBridge.framework/Modules/module.modulemap",
+      "sha256": "8bd029def7f8f8286badf7382b26204deab4a5dd56c51bd9e6e592350200ecc4",
+      "bytes": 130
+    },
+    {
+      "path": "ios-arm64-simulator/FloeMoleculePreviewBridge.framework/FloeMoleculePreviewBridge",
+      "sha256": "d6f28f06a650fe3d36e209a7f6da8bab1c90c00a1f3661b34d4bd590581c14c0",
+      "bytes": 20207464
+    },
+    {
+      "path": "ios-arm64-simulator/FloeMoleculePreviewBridge.framework/Headers/FloeMoleculePreviewBridge.h",
+      "sha256": "45440fd60ee1793e9709e6eb51c1261be258a68f902b34e16b82555f4bf11524",
+      "bytes": 509
+    },
+    {
+      "path": "ios-arm64-simulator/FloeMoleculePreviewBridge.framework/Info.plist",
+      "sha256": "3ec1c1d05abc77b3fb0d2d7af5a8ba5f73f4c1a15909e99785d51ae0843b351f",
+      "bytes": 723
+    },
+    {
+      "path": "ios-arm64-simulator/FloeMoleculePreviewBridge.framework/Modules/module.modulemap",
+      "sha256": "8bd029def7f8f8286badf7382b26204deab4a5dd56c51bd9e6e592350200ecc4",
+      "bytes": 130
+    },
+    {
+      "path": "macos-arm64/FloeMoleculePreviewBridge.framework/FloeMoleculePreviewBridge",
+      "sha256": "1985152e4ea921c781691fc7a677cdcbab682f75974eebb939dd0817bfe7e6c8",
+      "bytes": 20209840
+    },
+    {
+      "path": "macos-arm64/FloeMoleculePreviewBridge.framework/Headers/FloeMoleculePreviewBridge.h",
+      "sha256": "45440fd60ee1793e9709e6eb51c1261be258a68f902b34e16b82555f4bf11524",
+      "bytes": 509
+    },
+    {
+      "path": "macos-arm64/FloeMoleculePreviewBridge.framework/Info.plist",
+      "sha256": "69dfe6767de4cac549c0af7e13b49766e2cfc982a5ab81084f77d9c5f369a186",
+      "bytes": 714
+    },
+    {
+      "path": "macos-arm64/FloeMoleculePreviewBridge.framework/Modules/module.modulemap",
+      "sha256": "8bd029def7f8f8286badf7382b26204deab4a5dd56c51bd9e6e592350200ecc4",
+      "bytes": 130
+    }
+  ],
+  "compiledReceipts": {
+    "macos": {
+      "toolchain": "Xcode 27.2\nBuild version 27B52",
+      "upstream": {
+        "repository": "https://github.com/rdkit/rdkit",
+        "tag": "Release_2026_09_1",
+        "commit": "fece8caa860bdf6c9c82bdb9253f22a0cf87150c",
+        "archive": "https://codeload.github.com/rdkit/rdkit/tar.gz/fece8caa860bdf6c9c82bdb9253f22a0cf87150c",
+        "sha256": "deba969d21a869ea0f93d0bbe7d4b496828bf34f8823b70c111ab931402c15cf",
+        "version": "2026.09.1"
+      },
+      "port": {
+        "originalCMakeSHA256": "5119bb0edc9c3c6b202ddd2b3d0b1ff5dda7427a0e815f8f847e5dc8d133a515",
+        "portedCMakeSHA256": "2920fa431b01f71d60de2f52ad688a5ddee8ea38e06aaa638f14f6fb50940596",
+        "change": "Build Apple libraries statically; include the bounded preview bridge. Upstream calculation sources unchanged."
+      },
+      "sourceFiles": [
+        {
+          "path": "Native/Bridge.cmake",
+          "sha256": "11a91f23bd612edd4d39ff928ff86791191281eba28bbcf0a7f26d01920cd06e"
+        },
+        {
+          "path": "Native/bridge.cpp",
+          "sha256": "aefa569cdc1e6dcd7408305478e7a44812a98b20c2436e1763d52402d45be031"
+        },
+        {
+          "path": "Native/framework.modulemap",
+          "sha256": "8bd029def7f8f8286badf7382b26204deab4a5dd56c51bd9e6e592350200ecc4"
+        },
+        {
+          "path": "Native/include/FloeMoleculePreviewBridge.h",
+          "sha256": "45440fd60ee1793e9709e6eb51c1261be258a68f902b34e16b82555f4bf11524"
+        },
+        {
+          "path": "Package.swift",
+          "sha256": "e044a3e454b9420e4145dc08505d1b04cb4d0431e2f0b694bd884a1099264340"
+        },
+        {
+          "path": "Scripts/build_native.py",
+          "sha256": "523cd5fef340a56d294952dbf304f7cdd25d5b081ef71728447a21cfd86d4e22"
+        },
+        {
+          "path": "Sources/FloeMoleculePreviewNative/Preview.swift",
+          "sha256": "685cec8100ffc51b7e791556ed57bc9ae8c32761d4eba613d487a0a38bee9eb2"
+        },
+        {
+          "path": "Tests/probe.cpp",
+          "sha256": "a1b67124fe143227f7f24169d42165ece2dc914b5253f238a1d96d6025cbb190"
+        },
+        {
+          "path": "UPSTREAM.json",
+          "sha256": "f696d9f99f2a69af5f488be50dd60fa55348a890a257094789c7feb8c0fb29a0"
+        }
+      ],
+      "sdk": "macosx",
+      "minimumOS": "15.0",
+      "archives": [
+        {
+          "name": "libRDKitAlignment.a",
+          "sha256": "22908439040afa3b7d48b792fa00d3259a402286ab950c4e199060dc8151f03c"
+        },
+        {
+          "name": "libRDKitChemTransforms.a",
+          "sha256": "946dc1501d04de40109c0bc6635cfc108d3b5f6b49863427f4fd0cb2a30bbf01"
+        },
+        {
+          "name": "libRDKitDataStructs.a",
+          "sha256": "597d5d18ab8df40f90084ec9e00ddafa9b0aebb231cc84c426cff18d9a7afb3a"
+        },
+        {
+          "name": "libRDKitDepictor.a",
+          "sha256": "0cefc0c49950f6abbb6144b5945dd1354b449ceeea24d5fa585726eea48a0c4c"
+        },
+        {
+          "name": "libRDKitDistGeomHelpers.a",
+          "sha256": "8f9abe10d9424455a37958b5dd748facecf8c3396008b9e8a1aeadabdc6c1b8a"
+        },
+        {
+          "name": "libRDKitDistGeometry.a",
+          "sha256": "d232d088bbdc0d057a6f63ab15b751f5c3aefd6c71c78742eb034fc3e29db5c2"
+        },
+        {
+          "name": "libRDKitEigenSolvers.a",
+          "sha256": "a7da619a1a3a7169bbb0698452fad14d6212ed421894148933255ef5a8f8fd54"
+        },
+        {
+          "name": "libRDKitFileParsers.a",
+          "sha256": "4ac926d58518bad478f92a587f61d293cf3420dca22a2531d78a946525d79f19"
+        },
+        {
+          "name": "libRDKitForceField.a",
+          "sha256": "1bbb483825301739e38eff990a72a9e3414b1e4581dbefa638d974122501fd85"
+        },
+        {
+          "name": "libRDKitForceFieldHelpers.a",
+          "sha256": "b60a1a41506049f2d015e0b8e91b77d2ac96ad586d287595e8d1a458ae987538"
+        },
+        {
+          "name": "libRDKitGenericGroups.a",
+          "sha256": "e9c4ef80f7b5db6e94f196a6689ee812ac28715513dbbc6faeaedce56c749b61"
+        },
+        {
+          "name": "libRDKitGraphMol.a",
+          "sha256": "85e96c2cacbd51c740491405064306ba168de9b8dc4354cf0d40c3bb7107f7ed"
+        },
+        {
+          "name": "libRDKitMolAlign.a",
+          "sha256": "6c210434d5dee66ea7f6a5f6c7ffc6783843fec62437c66449ee3ef1474eafa2"
+        },
+        {
+          "name": "libRDKitMolTransforms.a",
+          "sha256": "55a96b16feb1fa4545f2d38d2914fe8972be2725d403f528c0b24617c8d7eabf"
+        },
+        {
+          "name": "libRDKitOptimizer.a",
+          "sha256": "73fca178cbdecdb07c2e0786f884704a12b26f89306192617f657f0620915377"
+        },
+        {
+          "name": "libRDKitRDGeneral.a",
+          "sha256": "5b0e35599416aa7ab3ec09203d1d43724757ef30df2c713b77061ad4fd1d2e73"
+        },
+        {
+          "name": "libRDKitRDGeometryLib.a",
+          "sha256": "76c7cd0f4f04ab75309f69832afa57896ca792c1c10b6129e975a2f5775b8493"
+        },
+        {
+          "name": "libRDKitRingDecomposerLib.a",
+          "sha256": "37996eb0565bbacfe188a5361e037629acf4194be59270b96c389482f08bd6d8"
+        },
+        {
+          "name": "libRDKitSmilesParse.a",
+          "sha256": "4a6ecb0ee2184e5d3ae5b703bc608f78f358b0b6220893586a65fa9981cd7744"
+        },
+        {
+          "name": "libRDKitSubstructMatch.a",
+          "sha256": "9b28cadf243d87dad1d5a0af7a6d0529a182cb0d2553d72226b4b8e39426ca7d"
+        },
+        {
+          "name": "libRDKitTrajectory.a",
+          "sha256": "50d5ba8f5990d2d626cb635c267667d00ab3812d23992635dca1c1a7f0b43b6e"
+        },
+        {
+          "name": "libFloeMoleculePreviewBridge.a",
+          "sha256": "fc1fdb6cbeafd89c48295f99579279b6cb4e1a748cf5aba140c9fd945eef5bb8"
+        }
+      ],
+      "outputSHA256": "1985152e4ea921c781691fc7a677cdcbab682f75974eebb939dd0817bfe7e6c8",
+      "outputBytes": 20209840
+    },
+    "ios": {
+      "toolchain": "Xcode 27.2\nBuild version 27B52",
+      "upstream": {
+        "repository": "https://github.com/rdkit/rdkit",
+        "tag": "Release_2026_09_1",
+        "commit": "fece8caa860bdf6c9c82bdb9253f22a0cf87150c",
+        "archive": "https://codeload.github.com/rdkit/rdkit/tar.gz/fece8caa860bdf6c9c82bdb9253f22a0cf87150c",
+        "sha256": "deba969d21a869ea0f93d0bbe7d4b496828bf34f8823b70c111ab931402c15cf",
+        "version": "2026.09.1"
+      },
+      "port": {
+        "originalCMakeSHA256": "5119bb0edc9c3c6b202ddd2b3d0b1ff5dda7427a0e815f8f847e5dc8d133a515",
+        "portedCMakeSHA256": "2920fa431b01f71d60de2f52ad688a5ddee8ea38e06aaa638f14f6fb50940596",
+        "change": "Build Apple libraries statically; include the bounded preview bridge. Upstream calculation sources unchanged."
+      },
+      "sourceFiles": [
+        {
+          "path": "Native/Bridge.cmake",
+          "sha256": "11a91f23bd612edd4d39ff928ff86791191281eba28bbcf0a7f26d01920cd06e"
+        },
+        {
+          "path": "Native/bridge.cpp",
+          "sha256": "aefa569cdc1e6dcd7408305478e7a44812a98b20c2436e1763d52402d45be031"
+        },
+        {
+          "path": "Native/framework.modulemap",
+          "sha256": "8bd029def7f8f8286badf7382b26204deab4a5dd56c51bd9e6e592350200ecc4"
+        },
+        {
+          "path": "Native/include/FloeMoleculePreviewBridge.h",
+          "sha256": "45440fd60ee1793e9709e6eb51c1261be258a68f902b34e16b82555f4bf11524"
+        },
+        {
+          "path": "Package.swift",
+          "sha256": "e044a3e454b9420e4145dc08505d1b04cb4d0431e2f0b694bd884a1099264340"
+        },
+        {
+          "path": "Scripts/build_native.py",
+          "sha256": "523cd5fef340a56d294952dbf304f7cdd25d5b081ef71728447a21cfd86d4e22"
+        },
+        {
+          "path": "Sources/FloeMoleculePreviewNative/Preview.swift",
+          "sha256": "685cec8100ffc51b7e791556ed57bc9ae8c32761d4eba613d487a0a38bee9eb2"
+        },
+        {
+          "path": "Tests/probe.cpp",
+          "sha256": "a1b67124fe143227f7f24169d42165ece2dc914b5253f238a1d96d6025cbb190"
+        },
+        {
+          "path": "UPSTREAM.json",
+          "sha256": "f696d9f99f2a69af5f488be50dd60fa55348a890a257094789c7feb8c0fb29a0"
+        }
+      ],
+      "sdk": "iphoneos",
+      "minimumOS": "26.0",
+      "archives": [
+        {
+          "name": "libRDKitAlignment.a",
+          "sha256": "665457983c1260a51eb5d9fd6ca6c93a30934b5f6a2ae844fb8beb63bc6d5c32"
+        },
+        {
+          "name": "libRDKitChemTransforms.a",
+          "sha256": "f539ac2294d4455736ec184b3e6292ac38463a7b2ed84031aed54448b36077fe"
+        },
+        {
+          "name": "libRDKitDataStructs.a",
+          "sha256": "50ee2ee61779de352cf46b6ca73bb3c9a055c04fcdc81185aea54fbeced3a1ad"
+        },
+        {
+          "name": "libRDKitDepictor.a",
+          "sha256": "a6f4c80023490a019e29b555f5ec3edf170aa9d217cac282860eb137b5e1fc27"
+        },
+        {
+          "name": "libRDKitDistGeomHelpers.a",
+          "sha256": "a28cb8ce5432262d3f5b2c881e3e21e86d903000a6137e11c78a4f50f647a9c8"
+        },
+        {
+          "name": "libRDKitDistGeometry.a",
+          "sha256": "38af1a4b307357fbd312f6146ebf50e2f43af1eef4584f732128f0bd275cac17"
+        },
+        {
+          "name": "libRDKitEigenSolvers.a",
+          "sha256": "d7d1ac04daf7cec0973d773a855f859a802964e4d58f464a60b781b683c6ade4"
+        },
+        {
+          "name": "libRDKitFileParsers.a",
+          "sha256": "ffd574775f7afb4c642afb340fa60b0f4f0644815034d8bbb7b5584c2a001951"
+        },
+        {
+          "name": "libRDKitForceField.a",
+          "sha256": "6a29ef318f0d05e76958f930aac5655961e30581faa7599515b5c4c50b7580cc"
+        },
+        {
+          "name": "libRDKitForceFieldHelpers.a",
+          "sha256": "88402c5e4ad4aff3c2120291fea10210b32ccdc27bffdca80884b524433700f0"
+        },
+        {
+          "name": "libRDKitGenericGroups.a",
+          "sha256": "df49bab035ef7552edd57b21e65cbdda35adc01a68a06f7fe3e4a60589d1f09d"
+        },
+        {
+          "name": "libRDKitGraphMol.a",
+          "sha256": "69a79b64c91713e705adf8f6d033f16371cc7f4d06bc6df4aac2af46360c14b4"
+        },
+        {
+          "name": "libRDKitMolAlign.a",
+          "sha256": "59f1b24dfe4969d8e8f996e05c07decfaa3816363f55ccb38237f70bd87f221d"
+        },
+        {
+          "name": "libRDKitMolTransforms.a",
+          "sha256": "db43503a604d57d3e92ed91d75c3e9524129dea19505967c8308670ecfdf9db8"
+        },
+        {
+          "name": "libRDKitOptimizer.a",
+          "sha256": "a22a71a176b087fe409fb804f41395c98bfdd0dbb3bb129b33f8a36713d8cc8d"
+        },
+        {
+          "name": "libRDKitRDGeneral.a",
+          "sha256": "61f7518de38d7ba2f9fa20aa134e8a43dc162c317b925e476d9509b3b7beac0a"
+        },
+        {
+          "name": "libRDKitRDGeometryLib.a",
+          "sha256": "e6f318116d27e8d9fb0e9d4637a5b88994049a34abd8df580e80c54dff29ac3a"
+        },
+        {
+          "name": "libRDKitRingDecomposerLib.a",
+          "sha256": "44164acb92ae16933a566a54261a6fadeda31f94e70326150d2bc47ec56a383a"
+        },
+        {
+          "name": "libRDKitSmilesParse.a",
+          "sha256": "71aeaff4783c51747f7b95d7c2e22b56defac380859925855cd3f02ad60c5978"
+        },
+        {
+          "name": "libRDKitSubstructMatch.a",
+          "sha256": "812b2da48af91d8ec57e6f90982bf4b0cc6f8be90cca1d1a7499a02c7c4637a2"
+        },
+        {
+          "name": "libRDKitTrajectory.a",
+          "sha256": "a7cef98dd8bbf6f3130503bad473e89e7b069eb926bed71981228f6af2731636"
+        },
+        {
+          "name": "libFloeMoleculePreviewBridge.a",
+          "sha256": "31a53fb669d0e5bb508d4035db82b6919d5bd56f34196d6834919ac1844f6bbf"
+        }
+      ],
+      "outputSHA256": "fe5385184a0a56258771bf5ce58e1b0958ca3f7a9ab9a76a6ece7ae8c06a4650",
+      "outputBytes": 20200584
+    },
+    "simulator": {
+      "toolchain": "Xcode 27.2\nBuild version 27B52",
+      "upstream": {
+        "repository": "https://github.com/rdkit/rdkit",
+        "tag": "Release_2026_09_1",
+        "commit": "fece8caa860bdf6c9c82bdb9253f22a0cf87150c",
+        "archive": "https://codeload.github.com/rdkit/rdkit/tar.gz/fece8caa860bdf6c9c82bdb9253f22a0cf87150c",
+        "sha256": "deba969d21a869ea0f93d0bbe7d4b496828bf34f8823b70c111ab931402c15cf",
+        "version": "2026.09.1"
+      },
+      "port": {
+        "originalCMakeSHA256": "5119bb0edc9c3c6b202ddd2b3d0b1ff5dda7427a0e815f8f847e5dc8d133a515",
+        "portedCMakeSHA256": "2920fa431b01f71d60de2f52ad688a5ddee8ea38e06aaa638f14f6fb50940596",
+        "change": "Build Apple libraries statically; include the bounded preview bridge. Upstream calculation sources unchanged."
+      },
+      "sourceFiles": [
+        {
+          "path": "Native/Bridge.cmake",
+          "sha256": "11a91f23bd612edd4d39ff928ff86791191281eba28bbcf0a7f26d01920cd06e"
+        },
+        {
+          "path": "Native/bridge.cpp",
+          "sha256": "aefa569cdc1e6dcd7408305478e7a44812a98b20c2436e1763d52402d45be031"
+        },
+        {
+          "path": "Native/framework.modulemap",
+          "sha256": "8bd029def7f8f8286badf7382b26204deab4a5dd56c51bd9e6e592350200ecc4"
+        },
+        {
+          "path": "Native/include/FloeMoleculePreviewBridge.h",
+          "sha256": "45440fd60ee1793e9709e6eb51c1261be258a68f902b34e16b82555f4bf11524"
+        },
+        {
+          "path": "Package.swift",
+          "sha256": "e044a3e454b9420e4145dc08505d1b04cb4d0431e2f0b694bd884a1099264340"
+        },
+        {
+          "path": "Scripts/build_native.py",
+          "sha256": "523cd5fef340a56d294952dbf304f7cdd25d5b081ef71728447a21cfd86d4e22"
+        },
+        {
+          "path": "Sources/FloeMoleculePreviewNative/Preview.swift",
+          "sha256": "685cec8100ffc51b7e791556ed57bc9ae8c32761d4eba613d487a0a38bee9eb2"
+        },
+        {
+          "path": "Tests/probe.cpp",
+          "sha256": "a1b67124fe143227f7f24169d42165ece2dc914b5253f238a1d96d6025cbb190"
+        },
+        {
+          "path": "UPSTREAM.json",
+          "sha256": "f696d9f99f2a69af5f488be50dd60fa55348a890a257094789c7feb8c0fb29a0"
+        }
+      ],
+      "sdk": "iphonesimulator",
+      "minimumOS": "26.0",
+      "archives": [
+        {
+          "name": "libRDKitAlignment.a",
+          "sha256": "1a0765a97498abbf676176fe2596d6d0b855f1d31ab0a466a2e5baa91cc88476"
+        },
+        {
+          "name": "libRDKitChemTransforms.a",
+          "sha256": "79dd282f75914b30b3f4f42e1ae996b283d70e1f43e60b75d7c6b1453a96bd93"
+        },
+        {
+          "name": "libRDKitDataStructs.a",
+          "sha256": "e1863b60edd304ab57f9cc355ab101cfdcff341b0e9c692d121a08686655519b"
+        },
+        {
+          "name": "libRDKitDepictor.a",
+          "sha256": "0d96f35849b4adf699776f065d21c02b8d618cb1cdb78cbbb5b3b974a9771c71"
+        },
+        {
+          "name": "libRDKitDistGeomHelpers.a",
+          "sha256": "2a3d322f9a3409ddf013232da79ab03fdf1f0bd4207b568db6b8d846862c91cc"
+        },
+        {
+          "name": "libRDKitDistGeometry.a",
+          "sha256": "db188f65c3c0d82007c2a8fce676c0d2b223fe3ac409ea030dfebd507de91bf2"
+        },
+        {
+          "name": "libRDKitEigenSolvers.a",
+          "sha256": "86cbf452bb4d4c1c21a1a99b47734d05bdf9a88a4c39845604982f5c3afd17f0"
+        },
+        {
+          "name": "libRDKitFileParsers.a",
+          "sha256": "18001f4cf51bae6d6103d380cf3d9bfde0c9f0318fc563f2a6b40c4ada81b47d"
+        },
+        {
+          "name": "libRDKitForceField.a",
+          "sha256": "c38ae07325e90c110139ca5cf6c37193631a42ed9e7add2fd55ec45fc22fc664"
+        },
+        {
+          "name": "libRDKitForceFieldHelpers.a",
+          "sha256": "f9a9229a7d477ef65563ee8d88e9dec753150f705a7efc5af12c3f159dd870b9"
+        },
+        {
+          "name": "libRDKitGenericGroups.a",
+          "sha256": "9381c1f254e11c8d7ed99dfd732fb8ab534543e9af79a25c1134a5d5db6ba137"
+        },
+        {
+          "name": "libRDKitGraphMol.a",
+          "sha256": "04ed7f39bf44c4fd9fc4e89dd31fdc89af89925decbf26f25e84d969f3eec5f8"
+        },
+        {
+          "name": "libRDKitMolAlign.a",
+          "sha256": "a34ef54da5c05a2beed645aa275e39a9e5ad50605d6782d66458de30a77eec99"
+        },
+        {
+          "name": "libRDKitMolTransforms.a",
+          "sha256": "f3e3c659a2d0e97bd967990a87f1e86a69b710896e04e42058885c7c536b92ae"
+        },
+        {
+          "name": "libRDKitOptimizer.a",
+          "sha256": "ec6b735d04507312286106eb817273e13145a7cfb2c91754b4ba1f5af43deab7"
+        },
+        {
+          "name": "libRDKitRDGeneral.a",
+          "sha256": "492a36cb1899eeae037c3d6a51e92a80152157dda07da835db9b45dbe597b6ce"
+        },
+        {
+          "name": "libRDKitRDGeometryLib.a",
+          "sha256": "c0f40fa706bec1b3a98ee263d64073f550737d1390256e1d6c5aa3784080ec18"
+        },
+        {
+          "name": "libRDKitRingDecomposerLib.a",
+          "sha256": "4c59a2916577fa87b1cf4da860760c64932369e58b01b592b1af06435020bb3a"
+        },
+        {
+          "name": "libRDKitSmilesParse.a",
+          "sha256": "7b6ab0af1a74f442f02a77c4c0e090cde173dd93f0338758e47e4dcfcb6ed0ff"
+        },
+        {
+          "name": "libRDKitSubstructMatch.a",
+          "sha256": "2949affed647a7c706a20e3445a53fcbf4d47560ac907fc4233d223644f5f2c2"
+        },
+        {
+          "name": "libRDKitTrajectory.a",
+          "sha256": "0fea81d55eb0829889c1fc121012e89f4429490215d19a4bdfee08e09364dc1a"
+        },
+        {
+          "name": "libFloeMoleculePreviewBridge.a",
+          "sha256": "aeb1251f6d548fe6436bb9a3f6fad1c04f71b6729a94c7fb8bc8085057c6db47"
+        }
+      ],
+      "outputSHA256": "d6f28f06a650fe3d36e209a7f6da8bab1c90c00a1f3661b34d4bd590581c14c0",
+      "outputBytes": 20207464
+    }
+  }
+}

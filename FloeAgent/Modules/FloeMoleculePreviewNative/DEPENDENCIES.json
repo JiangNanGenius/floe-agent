@@ -1,0 +1,30 @@
+{
+  "RDKit": {
+    "version": "2026.09.1",
+    "commit": "fece8caa860bdf6c9c82bdb9253f22a0cf87150c",
+    "license": "Licenses/RDKit-BSD.txt"
+  },
+  "RingDecomposerLib": {
+    "version": "1.1.3_rdkit",
+    "archiveSHA256": "944b5816712a48bbf88aa25d4300ce11871ddf6e971218eac08f90ed2192f715",
+    "license": "Licenses/RingDecomposerLib-BSD.txt",
+    "port": "The pinned RDKit CMake applies its stable_sort change."
+  },
+  "Boost": {
+    "version": "1.90.0",
+    "versionHeaderSHA256": "1a3a432bf24fbd21b3c9c90b3f5dce9456f2334f1d2b79b1e3318c780d8b1935",
+    "license": "Licenses/Boost-1.90.0.txt",
+    "usage": "Headers only"
+  },
+  "Eigen": {
+    "version": "5.0.1",
+    "license": "Licenses/Eigen/COPYING.MPL2",
+    "usage": "Headers only"
+  },
+  "nlohmann-json": {
+    "version": "3.11.3",
+    "jsonHeaderSHA256": "2432cbf7f4258453538eca193cd937fc777462ae2ce8ee9f46e6ee460ef56bea",
+    "license": "Licenses/nlohmann-json-3.11.3.txt",
+    "usage": "Headers from the existing pinned Avogadro vendor snapshot"
+  }
+}
