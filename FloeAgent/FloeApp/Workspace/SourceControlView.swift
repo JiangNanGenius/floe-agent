@@ -69,6 +69,30 @@ private enum SourceControlLayout {
     static let sectionSpacing: CGFloat = 12
 }
 
+/// Draw the controls at toolbar scale while keeping the whole cell tappable.
+private struct SourceControlActionStyle: ButtonStyle {
+    var prominent = false
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        let highlighted = prominent && isEnabled
+        configuration.label
+            .labelStyle(.titleAndIcon)
+            .imageScale(.small)
+            .font(.subheadline.weight(.medium))
+            .foregroundStyle(highlighted ? Color.white : (isEnabled ? Color.primary : Color.secondary))
+            .multilineTextAlignment(.center)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 5)
+            .frame(maxWidth: .infinity, minHeight: 32)
+            .background(highlighted ? FloeTheme.primary : FloeTheme.fieldSurface,
+                        in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .opacity(configuration.isPressed ? 0.7 : (isEnabled ? 1 : 0.6))
+            .frame(minHeight: FloeTheme.minimumTarget)
+            .contentShape(Rectangle())
+    }
+}
+
 private extension View {
     /// Applies the source-control pane's compact row insets. SwiftUI has no
     /// list-wide row-inset modifier, so every row opts in explicitly.
@@ -301,30 +325,31 @@ struct SourceControlView: View {
     }
 
     private var emptyRepository: some View {
-        ContentUnavailableView {
-            Label(IDELanguageRunText.t("尚未初始化仓库", "No Git Repository Yet"), systemImage: "arrow.triangle.branch")
-        } description: {
-            Text(IDELanguageRunText.t("用 Git 记录当前工作区的文件更改，或克隆已有仓库。", "Track changes to files in this workspace with Git, or clone an existing repository."))
-        } actions: {
-            VStack(spacing: 8) {
-                Button {
-                    run { try await center.initializeRepository() }
-                } label: {
-                    Text(IDELanguageRunText.t("初始化仓库", "Initialize Repository"))
-                        .frame(maxWidth: .infinity)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(IDELanguageRunText.t("尚未初始化仓库", "No Git Repository Yet"))
+                    .font(.headline)
+                Text(IDELanguageRunText.t("用 Git 记录这个工作区的文件更改。", "Track changes to this workspace with Git."))
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                actionGrid {
+                    Button {
+                        run { try await center.initializeRepository() }
+                    } label: {
+                        Label(IDELanguageRunText.t("初始化仓库", "Initialize"), systemImage: "plus")
+                    }
+                    .buttonStyle(SourceControlActionStyle(prominent: true))
+                    .accessibilityIdentifier("sourceControl.initialize")
+                    Button(action: openClone) {
+                        Label(IDELanguageRunText.t("克隆仓库", "Clone"), systemImage: "square.and.arrow.down")
+                    }
+                    .accessibilityIdentifier("sourceControl.clone.open")
                 }
-                .buttonStyle(.borderedProminent)
-                .accessibilityIdentifier("sourceControl.initialize")
-                Button(action: openClone) {
-                    Text(IDELanguageRunText.t("克隆仓库", "Clone Repository"))
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-                .accessibilityIdentifier("sourceControl.clone.open")
+                .disabled(center.isBusy || workspaceCenter.currentRootURL == nil)
             }
-            .controlSize(.large)
-            .frame(maxWidth: 300)
-            .disabled(center.isBusy || workspaceCenter.currentRootURL == nil)
+            .padding(.horizontal, SourceControlLayout.rowInsets.leading)
+            .padding(.top, 20)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -333,10 +358,12 @@ struct SourceControlView: View {
         showClone = true
     }
 
-    private var actionLayout: AnyLayout {
-        dynamicTypeSize.isAccessibilitySize
-            ? AnyLayout(VStackLayout(spacing: 8))
-            : AnyLayout(HStackLayout(spacing: 8))
+    private func actionGrid<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        let column: GridItem.Size = dynamicTypeSize.isAccessibilitySize ? .flexible() : .adaptive(minimum: 116)
+        return LazyVGrid(columns: [GridItem(column, spacing: 8)], alignment: .leading, spacing: 0, content: content)
+            .buttonStyle(SourceControlActionStyle())
+            .frame(maxWidth: 320)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var repositoryContent: some View {
@@ -365,6 +392,7 @@ struct SourceControlView: View {
                     )
                 }
                 .buttonStyle(.plain)
+                .sourceControlRowInsets()
                 .accessibilityIdentifier("sourceControl.branch.open")
                 infoRow(
                     icon: "network",
@@ -374,6 +402,7 @@ struct SourceControlView: View {
                         ?? center.snapshot.remoteURL ?? IDELanguageRunText.t("未绑定", "Not configured"),
                     valueSecondary: center.snapshot.remoteURL == nil
                 )
+                .sourceControlRowInsets()
                 if gitHubRepository != nil {
                     Button { openCollaboration() } label: {
                         actionRow(icon: "arrow.triangle.pull", title: IDELanguageRunText.t("问题与拉取请求", "Issues and Pull Requests"))
@@ -410,18 +439,20 @@ struct SourceControlView: View {
 
             Section(IDELanguageRunText.t("提交", "Commit")) {
                 TextField(IDELanguageRunText.t("说明这次修改", "Describe this change"), text: $commitMessage, axis: .vertical)
-                    .lineLimit(2...5)
+                    .lineLimit(1...5)
                     .font(.subheadline)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(FloeTheme.fieldSurface, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .listRowSeparator(.hidden)
                     .accessibilityIdentifier("sourceControl.commit.message")
                     .sourceControlRowInsets()
-                actionLayout {
+                actionGrid {
                     Button {
                         run { try await center.stageAll() }
                     } label: {
-                        Text(IDELanguageRunText.t("暂存全部", "Stage All"))
-                            .frame(maxWidth: .infinity)
+                        Label(IDELanguageRunText.t("暂存全部", "Stage All"), systemImage: "plus.square.on.square")
                     }
-                    .buttonStyle(.bordered)
                     .disabled(center.isBusy)
                     .accessibilityIdentifier("sourceControl.commit.stageAll")
                     Button {
@@ -431,30 +462,23 @@ struct SourceControlView: View {
                             commitMessage = ""
                         }
                     } label: {
-                        Text(IDELanguageRunText.t("提交", "Commit"))
-                            .frame(maxWidth: .infinity)
+                        Label(IDELanguageRunText.t("提交", "Commit"), systemImage: "checkmark")
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(SourceControlActionStyle(prominent: true))
                     .disabled(commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || center.isBusy || stagedChanges.isEmpty)
                     .accessibilityIdentifier("sourceControl.commit.submit")
                 }
-                .controlSize(.large)
+                .listRowSeparator(.hidden)
                 .sourceControlRowInsets()
             }
 
             Section(IDELanguageRunText.t("同步", "Sync")) {
-                // Three equal buttons instead of bordered `Label`s: a bordered
-                // label title wraps its two CJK characters one per line in
-                // this pane's 280–330pt width, which turned fetch/pull/push
-                // into unreadable circles. A glyph over a short single-line
-                // label keeps the action readable, never wraps, keeps a
-                // >=44pt target, and stays VS Code-like in density.
                 if !center.remoteDescriptors.isEmpty {
                     Picker(IDELanguageRunText.t("远端", "Remote"), selection: $center.selectedRemoteName) {
                         ForEach(center.remoteDescriptors) { Text($0.name).tag($0.name) }
                     }.disabled(center.isBusy).sourceControlRowInsets()
                 }
-                actionLayout {
+                actionGrid {
                     syncButton(
                         IDELanguageRunText.t("抓取", "Fetch"),
                         icon: "arrow.down.circle",
@@ -470,25 +494,18 @@ struct SourceControlView: View {
                         icon: "arrow.up.to.line",
                         identifier: "sourceControl.sync.push"
                     ) { try await center.push() }
-                }
-                .sourceControlRowInsets()
-                Button {
-                    run {
+                    syncButton(
+                        IDELanguageRunText.t("拉取并合并", "Pull and Merge"),
+                        icon: "arrow.triangle.merge",
+                        identifier: "sourceControl.sync.pullMerge"
+                    ) {
                         let outcome = try await center.pullMerge()
                         mergeNotice = outcome.isConflict
                             ? String(format: IDELanguageRunText.t("拉取产生冲突：%@", "Pull produced conflicts: %@"), outcome.conflictedPaths.joined(separator: ", "))
                             : outcome.message
                     }
-                } label: {
-                    actionRow(
-                        icon: "arrow.triangle.merge",
-                        title: IDELanguageRunText.t("拉取并合并", "Pull and Merge"),
-                        disabled: center.isBusy
-                    )
                 }
-                .buttonStyle(.plain)
-                .disabled(center.isBusy)
-                .accessibilityIdentifier("sourceControl.sync.pullMerge")
+                .listRowSeparator(.hidden)
                 .sourceControlRowInsets()
             }
 
@@ -735,24 +752,22 @@ struct SourceControlView: View {
         .contentShape(Rectangle())
     }
 
-    /// A full-row action (pull and merge, conflict rows): icon + label, a
-    /// >=44pt target and a plain style so it keeps the pane's density.
-    private func actionRow(icon: String, title: String, disabled: Bool = false) -> some View {
+    /// A disclosure row that opens the repository collaboration panel.
+    private func actionRow(icon: String, title: String) -> some View {
         HStack(spacing: 8) {
             Image(systemName: icon)
-                .foregroundStyle(disabled ? AnyShapeStyle(.tertiary) : AnyShapeStyle(FloeTheme.primary))
+                .foregroundStyle(FloeTheme.primary)
                 .frame(width: 18)
             Text(title)
             Spacer(minLength: 8)
             Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
         }
         .font(.subheadline)
-        .foregroundStyle(disabled ? AnyShapeStyle(.secondary) : AnyShapeStyle(FloeTheme.primary))
+        .foregroundStyle(FloeTheme.primary)
         .frame(maxWidth: .infinity, minHeight: FloeTheme.minimumTarget, alignment: .leading)
         .contentShape(Rectangle())
     }
 
-    /// The three actions share a row at standard sizes and stack at accessibility sizes.
     private func syncButton(
         _ title: String,
         icon: String,
@@ -760,25 +775,9 @@ struct SourceControlView: View {
         operation: @escaping @MainActor () async throws -> Void
     ) -> some View {
         Button { run(operation) } label: {
-            VStack(spacing: 3) {
-                Image(systemName: icon)
-                    .font(.body.weight(.medium))
-                Text(title)
-                    .font(.caption.weight(.medium))
-            }
-            .foregroundStyle(FloeTheme.primary)
-            .padding(.vertical, 4)
-            .frame(maxWidth: .infinity, minHeight: FloeTheme.minimumTarget)
-            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(FloeTheme.fieldSurface)
-            )
+            Label(title, systemImage: icon)
         }
-        .buttonStyle(.plain)
         .disabled(center.isBusy)
-        .opacity(center.isBusy ? 0.5 : 1)
-        .accessibilityLabel(title)
         .accessibilityIdentifier(identifier)
     }
 

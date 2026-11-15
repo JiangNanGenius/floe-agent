@@ -153,6 +153,7 @@ final class WorkspaceIDEUITests: XCTestCase {
             XCTAssertGreaterThanOrEqual(initialize.frame.height, 44)
             XCTAssertGreaterThanOrEqual(clone.frame.height, 44)
             XCTAssertEqual(initialize.frame.width, clone.frame.width, accuracy: 1)
+            XCTAssertEqual(initialize.frame.midY, clone.frame.midY, accuracy: 1)
             capture("ide-git-before-initialize")
             clone.tap()
             XCTAssertTrue(app.textFields["sourceControl.clone.address"].waitForExistence(timeout: 10))
@@ -167,6 +168,7 @@ final class WorkspaceIDEUITests: XCTestCase {
             ("sourceControl.sync.fetch", "抓取"),
             ("sourceControl.sync.pull", "拉取"),
             ("sourceControl.sync.push", "推送"),
+            ("sourceControl.sync.pullMerge", "拉取并合并"),
         ] {
             let control = app.buttons[identifier]
             XCTAssertTrue(control.exists, "\(identifier) must exist")
@@ -190,6 +192,17 @@ final class WorkspaceIDEUITests: XCTestCase {
         XCTAssertGreaterThanOrEqual(stageAll.frame.height, 44)
         XCTAssertGreaterThanOrEqual(submit.frame.height, 44)
         XCTAssertEqual(stageAll.frame.width, submit.frame.width, accuracy: 1)
+        let fetch = app.buttons["sourceControl.sync.fetch"].frame
+        let pull = app.buttons["sourceControl.sync.pull"].frame
+        let push = app.buttons["sourceControl.sync.push"].frame
+        let merge = app.buttons["sourceControl.sync.pullMerge"].frame
+        XCTAssertEqual(stageAll.frame.minX, fetch.minX, accuracy: 1)
+        XCTAssertEqual(submit.frame.minX, pull.minX, accuracy: 1)
+        XCTAssertEqual(fetch.midY, pull.midY, accuracy: 1)
+        XCTAssertEqual(push.midY, merge.midY, accuracy: 1)
+        XCTAssertGreaterThanOrEqual(push.minY, fetch.maxY - 1)
+        XCTAssertEqual(fetch.minX, push.minX, accuracy: 1)
+        XCTAssertEqual(pull.minX, merge.minX, accuracy: 1)
         XCTAssertTrue(
             app.descendants(matching: .any).matching(identifier: "sourceControl.commit.message").firstMatch.exists,
             "the multiline commit field must remain reachable"
