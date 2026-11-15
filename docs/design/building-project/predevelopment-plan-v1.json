@@ -1,0 +1,369 @@
+{
+  "date": "2026-11-13",
+  "status": "123 earlier native component tests and full UI macOS objects passed; new24 furniture/manufacturing test methods authored but unrun; end-to-end NOT_CLOSED",
+  "confirmedQA": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28
+  ],
+  "preserveAllScope": true,
+  "mainAppReleaseIntegration": false,
+  "planningBasis": "全部范围保留；里程碑顺序表达技术依赖，不表达功能优先级或删减。",
+  "nativeTestAuthoringCount": 147,
+  "milestones": [
+    {
+      "id": "A",
+      "outcome": "项目内核与工作台",
+      "dependsOn": [],
+      "state": "组件123项原生测试和整个UI的macOS对象编译通过；独立iPad操作待验收",
+      "acceptance": [
+        "GRDB 重开、CAS、回滚、来源保留、迁移和重复导入",
+        "真实工作台导入、采用、保存、重开；组件与 App 验收分开"
+      ]
+    },
+    {
+      "id": "B",
+      "outcome": "自有 CAD、建筑语义、图纸和独立导出",
+      "dependsOn": [
+        "A"
+      ],
+      "state": "已有原生 CAD 证据，联合实现待继续",
+      "acceptance": [
+        "复杂整柜全部部件实际投影，解决来源预算",
+        "改宽高深后视图、尺寸和明细更新，保留人工内容",
+        "全部已确认格式与导出范围按实际读写器验证，副本不回写"
+      ]
+    },
+    {
+      "id": "C",
+      "outcome": "家具、材料、品牌五金与离线版本库",
+      "dependsOn": [
+        "A"
+      ],
+      "state": "已有来源与目录预研，原生准入待实施",
+      "acceptance": [
+        "真实素材进入 CAD、正确尺度、保存重开",
+        "目录更新与工程固定版本分开；明确升级比较",
+        "按需下载和完整依赖离线包；许可证与托管条件保留"
+      ]
+    },
+    {
+      "id": "D",
+      "outcome": "整屋室内设计与柜体生产准备",
+      "dependsOn": [
+        "B",
+        "C"
+      ],
+      "state": "柜体基础已实现，完整布置和制造规则待继续",
+      "acceptance": [
+        "布置沿用建筑平面且可撤销",
+        "材质分面、纹理尺度、铺贴与复合层可编辑",
+        "板件、五金、封边、孔位、运动、拆单、排板有来源规则",
+        "设计尺寸与开料尺寸分开，不补造制造条件"
+      ]
+    },
+    {
+      "id": "E",
+      "outcome": "量尺助手与资料驱动建模",
+      "dependsOn": [
+        "A",
+        "B"
+      ],
+      "state": "需求与数据合同已确认，设备适配待实施",
+      "acceptance": [
+        "LiDAR 与普通摄像头引导校准分别验证",
+        "多房间坐标合并、控制点、校正和来源定位保留",
+        "接已有 Office/OCR；模型失败不删资料",
+        "没有采集到的点云或网格不伪造"
+      ]
+    },
+    {
+      "id": "F",
+      "outcome": "智能家居、暖通、无线和灯光工作台",
+      "dependsOn": [
+        "A",
+        "B",
+        "C"
+      ],
+      "state": "规划模型与初算已写；完整专业后端待接入",
+      "reuseCandidates": [
+        "现有 EDA/Office/OCR",
+        "Radiance",
+        "OpenStudio/EnergyPlus",
+        "Sionna RT"
+      ],
+      "acceptance": [
+        "真实产品、料单、点位、拓扑、端口、场景和图纸统一关联",
+        "未知协议、网关、供电和材料保留缺项",
+        "快估、精细计算、实测和校准分别标识",
+        "交互渲染与工程照度分别验证；完整暖通系统计算选型",
+        "求解任务支持取消、失败恢复及输入结果版本；独立参考算例验证"
+      ]
+    },
+    {
+      "id": "G",
+      "outcome": "完整建筑、结构、机电和地区规则",
+      "dependsOn": [
+        "B",
+        "C",
+        "F"
+      ],
+      "state": "全部确认范围保留，专业实现待继续",
+      "acceptance": [
+        "完整常用建筑构件与图纸关联",
+        "整栋结构位移、内力、应力与参考算例核对",
+        "给排水、暖通、电气选型和硬碰撞/净距",
+        "八个地区及自定义规则记录来源、版本、适用范围；未覆盖显示未检查"
+      ]
+    },
+    {
+      "id": "H",
+      "outcome": "主 App 空间入口与持续编辑 AI",
+      "dependsOn": [
+        "A",
+        "B"
+      ],
+      "state": "本轮不改发布，后续独立集成",
+      "acceptance": [
+        "复用现有项目、任务、权限、持久化和长期任务服务",
+        "编辑器会话、选择与撤销隔离",
+        "已实现能力真实发现调用；导入内容不能授予权限",
+        "主 App 实际交互和保存返回单独验收，不以组件替代"
+      ]
+    }
+  ],
+  "packages": [
+    {
+      "id": "records",
+      "target": "FloeBuildingRecords",
+      "reuse": [
+        "GRDB7.8.0 matching parent",
+        "SQLite",
+        "existing Office/OCR adapters at integration"
+      ],
+      "state": "GRDB source with32native tests passed, including migration/reopen, provenance, CAS/rollback and selective adoption",
+      "coverageQA": [
+        7,
+        10,
+        11,
+        23,
+        24,
+        25
+      ]
+    },
+    {
+      "id": "systems",
+      "target": "FloeBuildingSystems",
+      "reuse": [
+        "existing EDA library adapter at integration"
+      ],
+      "state": "typed graph/12planning legends and radio quick estimate:24native tests passed",
+      "coverageQA": [
+        6,
+        26,
+        27
+      ]
+    },
+    {
+      "id": "analysis",
+      "target": "FloeBuildingAnalysis",
+      "reuse": [
+        "fixed MIT photometry parser source",
+        "Radiance candidate",
+        "OpenStudio/EnergyPlus candidates",
+        "SionnaRT candidate"
+      ],
+      "state": "bounded IES/direct illuminance/HVAC screening:12native tests passed; full professional backends remain candidates",
+      "coverageQA": [
+        6,
+        12,
+        27,
+        28
+      ]
+    },
+    {
+      "id": "cabinet-drawings",
+      "target": "FloeInteriorCore plus existing CAD adapter",
+      "reuse": [
+        "FloeCAD drawing engine",
+        "existing13test cabinet slice"
+      ],
+      "state": "Core18native tests passed;19panel native CAD assembly sheet test authored, not executed",
+      "coverageQA": [
+        7,
+        13,
+        16,
+        21,
+        22
+      ]
+    },
+    {
+      "id": "assets-materials-manufacturing",
+      "reuse": [
+        "checked175-entryCC0 catalog",
+        "official manufacturer sources",
+        "fixed PackingSolver candidate"
+      ],
+      "state": "Real catalog staging plus FurniturePlacement10 and CabinetManufacturingPreparation14 source tests authored, uncompiled/unrun; native admission, optimizer and production rules pending",
+      "coverageQA": [
+        9,
+        10,
+        16,
+        17,
+        23,
+        24,
+        25
+      ]
+    },
+    {
+      "id": "building-scan-professional",
+      "reuse": [
+        "native FloeCAD building model",
+        "RoomPlan",
+        "OpenPlan3D algorithms",
+        "IFC/STEP/DWG adapters",
+        "structural and MEP backend candidates"
+      ],
+      "state": "existing partial source plus research; complete semantics and professional behavior remaining",
+      "coverageQA": [
+        2,
+        4,
+        5,
+        6,
+        9,
+        12,
+        15,
+        18,
+        19
+      ]
+    },
+    {
+      "id": "native-workbench-and-AI",
+      "target": "FloeBuildingUI and independent qualification host",
+      "reuse": [
+        "native SwiftUI",
+        "same record/system/core services",
+        "existing studio authorization at integration"
+      ],
+      "state": "Workspace37native tests passed; full FloeBuildingUI macOS object build passed;4iPad flows and actual App registration/host acceptance pending",
+      "coverageQA": [
+        1,
+        3,
+        7,
+        8,
+        11,
+        13,
+        14,
+        17,
+        20,
+        26,
+        27,
+        28
+      ]
+    }
+  ],
+  "qualificationStages": [
+    "source implementation and tests",
+    "actual object compilation and relevant behavior checks",
+    "independent native workbench smoke",
+    "CAD and project service integration",
+    "main-App acceptance in a later authorized integration stage"
+  ],
+  "resourcePolicy": "shared native windows by explicit Root grant; task-only scratch actual allocated budget1GiB; iPad host separately scheduled",
+  "verificationClaims": "prior cabinet/database tests retain their original scope; new targets require fresh exact-source evidence",
+  "resourceState": "New Core42 window requested; Root directs source/audit only while Game/GPU own native stages; no native compilation/lock queued",
+  "interactionClosure": {
+    "status": "central UI source and entire macOS object build passed;4iPad flows and visual acceptance pending",
+    "scope": [
+      "project-level editor state and stable selection",
+      "page switches retain unsaved input",
+      "scoped bounded undo and redo",
+      "captured-value save baseline and failure retention",
+      "dirty reopen save/discard/cancel",
+      "import-to-review routing and selective adoption",
+      "explicit bill target and bounded source pagination",
+      "native UI flow evidence"
+    ],
+    "qualification": "history21, numeric2 and workspace14 native tests passed;4independent iPad UI flows authored, unrun",
+    "consistencyReview": {
+      "evidence": "${QUALIFICATION_ROOT}/interior-predevelopment-20261113/ui-consistency01",
+      "status": "Source duplicates consolidated; native toolbar/navigation/host acceptance pending",
+      "sourceObservations": {
+        "globalSaveActionCalls": 1,
+        "panelSaveActionCalls": 0,
+        "fileImporters": 1,
+        "selectedRoomRenameAffordances": 1,
+        "nativeNavigationLinks": 1
+      }
+    },
+    "UIObjectEvidence": {
+      "path": "${QUALIFICATION_ROOT}/interior-predevelopment-20261113/native-ui03",
+      "passed": true,
+      "compilerSeconds": 4.49,
+      "sourceFingerprint": "5d4930256ec8adbc81dc5e097f1a68f0e5b646a2cee7b92473e7ce5e5c5c25e7",
+      "objectFiles": 8,
+      "allExportedArtifactFiles": 11,
+      "archiveHashReadback": true,
+      "scope": "macOS FloeBuildingUI object build only; no tests/host/CAD/App claim"
+    },
+    "priorUIObjectFailures": [
+      "native-ui01: Observable initializer order",
+      "native-ui02: session property shadowing"
+    ]
+  },
+  "nativeTestsPassed": 123,
+  "nativeEvidence": {
+    "path": "${QUALIFICATION_ROOT}/interior-predevelopment-20261113/native-core01/attempt03",
+    "toolchain": "Xcode27.2(27B52)",
+    "sourceSHA": "477ef4cf61d99a48a067d3e3069613eae9d4a19d",
+    "sourceFingerprint": "a5e90d664e3b244eed87030ab5e52652169137a443c6e941756d4e5fd6ef394f",
+    "testCounts": {
+      "core": 18,
+      "records": 32,
+      "systems": 24,
+      "analysis": 12,
+      "workspace": 37
+    },
+    "scope": "macOS component XCTest and SIL/object compilation; UI target excluded; no host/CAD/main-App claim"
+  },
+  "nativeUIObjectPassed": true,
+  "currentEndToEndStatus": "NOT_CLOSED",
+  "closureScenarios": "docs/design/building-project/closure-scenarios-v2.json",
+  "nativeGapAndWorkPackages": "docs/design/building-project/native-core-gap-v2.json",
+  "domainV2": {
+    "status": "SOURCE_ONLY",
+    "newTestMethodsAuthored": 24,
+    "newNativeTestsPassed": 0,
+    "plannedCoreOnlyRunCount": 42,
+    "overlapWithOldCoreTests": 18,
+    "furniturePlacement": "explicit source units or catalog fit, orientation/anchor/pose/versioned transform plan; native admission pending",
+    "manufacturingPreparation": "explicit panel process/edge/grain/allowance/stock to finished/substrate/blank and nesting inputs; optimizer and production unverified",
+    "evidence": "${QUALIFICATION_ROOT}/interior-predevelopment-20261113/domain-v2-source-ready.json"
+  },
+  "qualificationRoot": "Relative qualification artifacts refer to the local evidence collection from the stated date."
+}

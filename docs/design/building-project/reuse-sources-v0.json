@@ -1,0 +1,198 @@
+{
+  "researchDate": "2026-11-12",
+  "floeSource": "59c57650ea80fc95ae809de5a2241187229c86c4",
+  "scope": "reuse Floe 2D/3D editors; evaluate intermediate conversion/domain algorithms and data/asset storage",
+  "candidates": [
+    {
+      "id": "openplan3d",
+      "status": "algorithm-port-candidate",
+      "license": "MIT",
+      "observedRevision": "b0727b54da5f0f642722dcc88cc52d7236fadc9e",
+      "url": "https://github.com/laanlabs/openPlan3D/blob/main/README.md",
+      "fileBlobSHA": "775c57365d15d0d04d1d66b88be315d1064d3040",
+      "verification": "selected source/documentation read; no iOS integration build or external inference executed"
+    },
+    {
+      "id": "openplan-room-import",
+      "status": "algorithm-port-candidate",
+      "license": "MIT",
+      "observedRevision": "b0727b54da5f0f642722dcc88cc52d7236fadc9e",
+      "url": "https://github.com/laanlabs/openPlan3D/blob/b0727b54da5f0f642722dcc88cc52d7236fadc9e/src/lib/utils/roomplanImport.ts",
+      "fileBlobSHA": "6fbc74288ed56966f6254175f8df8dd904d079dd",
+      "verification": "selected source/documentation read; no iOS integration build or external inference executed"
+    },
+    {
+      "id": "openplan-room-detection",
+      "status": "algorithm-port-candidate",
+      "license": "MIT",
+      "observedRevision": "b0727b54da5f0f642722dcc88cc52d7236fadc9e",
+      "url": "https://github.com/laanlabs/openPlan3D/blob/b0727b54da5f0f642722dcc88cc52d7236fadc9e/src/lib/utils/roomDetection.ts",
+      "fileBlobSHA": "169ee0d3bd29a9c8027936d45dcfb722db75c90f",
+      "verification": "selected source/documentation read; no iOS integration build or external inference executed"
+    },
+    {
+      "id": "openplan-wall-profile",
+      "status": "headless-algorithm-verified-native-port-pending",
+      "license": "MIT",
+      "observedRevision": "b0727b54da5f0f642722dcc88cc52d7236fadc9e",
+      "url": "https://github.com/laanlabs/openPlan3D/blob/b0727b54da5f0f642722dcc88cc52d7236fadc9e/src/lib/utils/wallProfiles.ts",
+      "fileBlobSHA": "bc61ab5650500066f0699e4c2548656b9074fbd3",
+      "verification": "10 selected upstream wall profile scenarios passed under Node 25.9.0. Original Git blob bytes checked; only models import path adapted. No iOS port, RoomPlan import or full editor run.",
+      "executionRecord": "../../qualification/FLOE_INTERIOR_COMPONENT_20261112.zh-CN.md"
+    },
+    {
+      "id": "ifcopenshell-0.8-build",
+      "status": "native-port-proof-needed",
+      "license": "LGPL-3.0-or-later",
+      "observedRevision": "481676e51b65cb93e520b9f073123f22a06b212b",
+      "url": "https://github.com/IfcOpenShell/IfcOpenShell/blob/481676e51b65cb93e520b9f073123f22a06b212b/cmake/CMakeLists.txt",
+      "fileBlobSHA": "ed9487c6fc2d1ce4d560a42fb8ab04cd3f559869",
+      "verification": "selected source/documentation read; no iOS integration build or external inference executed"
+    },
+    {
+      "id": "ifcopenshell-0.9-build",
+      "status": "shared-plugin-build-investigation",
+      "license": "LGPL-3.0-or-later",
+      "observedRevision": "b0ab9ec2f50699854911c9621182929a525bb420",
+      "url": "https://github.com/IfcOpenShell/IfcOpenShell/blob/v0.9.0/cmake/CMakeLists.txt",
+      "fileBlobSHA": "bb6a3defc344dc89ba07f7dbe550f05d9310ec0f",
+      "verification": "selected source/documentation read; no iOS integration build or external inference executed"
+    },
+    {
+      "id": "freecad-wall",
+      "status": "algorithm-reference",
+      "license": "LGPL-2.1-or-later",
+      "observedRevision": null,
+      "url": "https://github.com/FreeCAD/FreeCAD/blob/main/src/Mod/BIM/ArchWall.py",
+      "fileBlobSHA": "62787ab007402c2a6c657de4b0216fe8282b6b00",
+      "verification": "selected source/documentation read; no iOS integration build or external inference executed"
+    },
+    {
+      "id": "web-ifc",
+      "status": "native-cpp-alternative-proof-needed",
+      "license": "MPL-2.0",
+      "observedRevision": "2619f4c9214a8498d879109c36e5b1911d32886b",
+      "url": "https://github.com/ThatOpen/engine_web-ifc/blob/main/README.md",
+      "fileBlobSHA": "08efcce07081f38b618e0f0f2e57bcdf49e15055",
+      "verification": "selected source/documentation read; no iOS integration build or external inference executed"
+    },
+    {
+      "id": "libdxfrw",
+      "status": "optional-format-backend-proof-needed",
+      "license": "GPL-2.0-or-later",
+      "observedRevision": "d68fb1ed937ad2a74a54f6208277ec10a1b031b0",
+      "url": "https://github.com/LibreCAD/libdxfrw/blob/master/README.md",
+      "fileBlobSHA": "608ddc705be5d043e3a59ddb0f942c51fe505138",
+      "verification": "selected source/documentation read; no iOS integration build or external inference executed"
+    },
+    {
+      "id": "ezdxf",
+      "status": "exchange-oracle-or-linux-service",
+      "license": "MIT",
+      "observedRevision": null,
+      "url": "https://github.com/mozman/ezdxf/blob/master/README.md",
+      "fileBlobSHA": "bddd26af7d9224d3bbb2b3cb7fe03089e7298055",
+      "verification": "selected source/documentation read; no iOS integration build or external inference executed"
+    },
+    {
+      "id": "assimp",
+      "status": "mesh-import-candidate",
+      "license": "BSD-3-Clause",
+      "observedRevision": null,
+      "url": "https://github.com/assimp/assimp/blob/master/Readme.md",
+      "fileBlobSHA": "11e4e81a67979d0c290c1c6c2787531aeb09472e",
+      "verification": "selected source/documentation read; no iOS integration build or external inference executed",
+      "licenseProof": {
+        "url": "https://github.com/assimp/assimp/blob/master/LICENSE",
+        "fileBlobSHA": "f7ff71e8c4d397e928c1488ade2e522cbf1e7771",
+        "note": "test/models-nonbsd has separate asset terms"
+      }
+    },
+    {
+      "id": "grdb",
+      "status": "reuse-existing-pin",
+      "license": "MIT",
+      "observedRevision": "v7.8.0",
+      "url": "https://github.com/groue/GRDB.swift/blob/v7.8.0/README.md",
+      "fileBlobSHA": "920bd60690334175a38f54a6cd92f67d07e4e1ee",
+      "verification": "selected source/documentation read; no iOS integration build or external inference executed",
+      "licenseProof": {
+        "url": "https://github.com/groue/GRDB.swift/blob/v7.8.0/LICENSE",
+        "fileBlobSHA": "550890c8912ca08ff000249777b9eeb46411f189"
+      }
+    },
+    {
+      "id": "triposr",
+      "status": "optional-image-to-mesh-backend",
+      "license": "MIT",
+      "observedRevision": null,
+      "url": "https://github.com/VAST-AI-Research/TripoSR/blob/main/README.md",
+      "fileBlobSHA": "b52bfb251b850f13a8b8565b52914f2bc9ede2e3",
+      "verification": "selected source/documentation read; no iOS integration build or external inference executed"
+    },
+    {
+      "id": "poly-haven-api-terms",
+      "status": "asset-source-only-not-api-server-code",
+      "license": "CC0 assets; separate API terms",
+      "observedRevision": null,
+      "url": "https://github.com/Poly-Haven/Public-API/blob/master/ToS.md",
+      "fileBlobSHA": "b313d2fe11c91b9398ad5cdca4dfd4d516c531d2",
+      "verification": "selected source/documentation read; no iOS integration build or external inference executed",
+      "note": "API server source is AGPL; asset files are CC0; service use has separate terms. No server code selected."
+    },
+    {
+      "id": "opencutlist-workflow",
+      "status": "manufacturing-data-reference-not-an-ios-sdk",
+      "license": "GPL-3.0",
+      "observedRevision": "1ef3e14c896171eed8cd77ede440c7f5563e943e",
+      "url": "https://github.com/lairdubois/lairdubois-opencutlist-sketchup-extension/blob/1ef3e14c896171eed8cd77ede440c7f5563e943e/src/ladb_opencutlist/ruby/model/attributes/material_attributes.rb",
+      "fileBlobSHA": "491057032908d83d55da792dffaef00397d621b8",
+      "verification": "Pinned material attributes/defaults and packing worker source read. SketchUp host not run; no code copied into App. Live docs include features absent in this snapshot.",
+      "licenseProof": {
+        "url": "https://github.com/lairdubois/lairdubois-opencutlist-sketchup-extension/blob/1ef3e14c896171eed8cd77ede440c7f5563e943e/LICENSE",
+        "fileBlobSHA": "9cecc1d4669ee8af2ca727a5d8cde10cd8b2d7cc"
+      }
+    },
+    {
+      "id": "packy-wrapper",
+      "status": "reference-wrapper-not-selected-for-app",
+      "license": "GPL-3.0 repository license; no separate file license observed",
+      "observedRevision": "1ef3e14c896171eed8cd77ede440c7f5563e943e",
+      "url": "https://github.com/lairdubois/lairdubois-opencutlist-sketchup-extension/blob/1ef3e14c896171eed8cd77ede440c7f5563e943e/src/ladb_opencutlist/cpp/lib/Packy/CMakeLists.txt",
+      "fileBlobSHA": "7161a179a5d2cc1bb6235bb34a562ee761edd230",
+      "verification": "Shared C++ wrapper and C lifecycle API read; borrowed result string and process-global run map. No build or thread/cancellation qualification."
+    },
+    {
+      "id": "packingsolver-native",
+      "status": "independent-native-port-candidate",
+      "license": "MIT",
+      "observedRevision": "f1e2baa84e224f2f19a4121ad77bc9428e6cb146",
+      "url": "https://github.com/lairdubois/fontanf-packingsolver/blob/f1e2baa84e224f2f19a4121ad77bc9428e6cb146/CMakeLists.txt",
+      "fileBlobSHA": "4890a57803a495cf22ee0756df0c3d5ad4ae21fb",
+      "verification": "Exact dependency used by pinned OpenCutList Packy. CMake, dependency graph and README read; iOS static linking, solver runtime, memory and cancellation not qualified.",
+      "licenseProof": {
+        "url": "https://github.com/lairdubois/fontanf-packingsolver/blob/f1e2baa84e224f2f19a4121ad77bc9428e6cb146/LICENSE",
+        "fileBlobSHA": "0f766cd9f55f0d9b83f482756e60f8664dcb1da7"
+      }
+    }
+  ],
+  "failedProbes": [
+    {
+      "url": "https://github.com/ThatOpen/engine_web-ifc/blob/main/LICENSE",
+      "result": "404; repository listing located LICENSE.md, which was read"
+    },
+    {
+      "url": "https://groue.github.io/GRDB.swift/docs/7.8/index.html",
+      "result": "web access failed; pinned v7.8.0 README read through GitHub connector"
+    },
+    {
+      "url": "https://kenney.nl/assets/furniture-kit",
+      "result": "web fetch restricted; official search listing reports CC0; package contents not downloaded or verified"
+    },
+    {
+      "url": "https://api.github.com/repos/lairdubois/lairdubois-opencutlist-sketchup",
+      "result": "404; official source link identified repository suffix -extension. Correct pinned repository then read."
+    }
+  ],
+  "continuedResearchFloeSource": "349d61b36d1df6033a718167e41ebafad6c91c1d"
+}

@@ -1,0 +1,144 @@
+{
+  "researchDate": "2026-11-12",
+  "status": "source-selection, offline catalog staging and official manufacturer portal research; no App library integration",
+  "sources": [
+    {
+      "id": "sh3d-blendswap-cc0",
+      "name": "Sweet Home 3D / BlendSwap CC0 subset",
+      "catalogURL": "https://www.sweethome3d.com/import-models/",
+      "licenseURL": "https://www.sweethome3d.com/free-3d-models/",
+      "license": "CC0 subset only; other collections have separate licenses",
+      "pack": "3DModels-BlendSwap-CC-0-1.9.3.zip",
+      "officialListedModels": 175,
+      "formats": [
+        "SH3F library containing model metadata",
+        "OBJ + MTL + textures"
+      ],
+      "role": "curated general furniture starter library",
+      "verification": "Official ZIP downloaded and SHA256 matched. Inner catalog has175CC0 entries;169 basic references checked,6 entries need texture repair. Metadata staged and queried in prototype SQLite; no native import/rendering or App admission.",
+      "publishedPackageSHA256": "f87b1689df18a1b4302446dcb51922eca4d93ae9f388cf86624eb633f3068c39",
+      "downloadURL": "https://sourceforge.net/projects/sweethome3d/files/SweetHome3D-models/3DModels-1.9.3/3DModels-BlendSwap-CC-0-1.9.3.zip/download",
+      "intakeRecord": "../../FLOE_INTERIOR_FURNITURE_INTAKE_20261112.zh-CN.md",
+      "nativeAdmissionVerified": false
+    },
+    {
+      "id": "poly-haven",
+      "name": "Poly Haven",
+      "catalogURL": "https://polyhaven.com/models",
+      "licenseURL": "https://polyhaven.com/license",
+      "apiTermsURL": "https://github.com/Poly-Haven/Public-API/blob/master/ToS.md",
+      "license": "CC0 assets; live API use has separate identification and credit requirements",
+      "role": "selected detailed furniture, PBR textures and lighting",
+      "verification": "Official asset license and live API terms rechecked on2026-11-12. CC0 assets allow redistribution; live API is free for commercial use with application identification and visible source credit. No new asset download or API integration performed."
+    },
+    {
+      "id": "kenney-furniture",
+      "name": "Kenney Furniture Kit",
+      "catalogURL": "https://kenney.nl/assets/furniture-kit",
+      "license": "CC0 in official search listing; verify license file in selected package before admission",
+      "role": "lightweight furniture, lower-detail layout use",
+      "verification": "official page fetch restricted; package not downloaded or inspected"
+    },
+    {
+      "id": "ambientcg",
+      "name": "ambientCG",
+      "catalogURL": "https://ambientcg.com/",
+      "licenseURL": "https://docs.ambientcg.com/license/",
+      "license": "CC0 assets",
+      "role": "materials and PBR texture sets",
+      "verification": "Official CC0 asset and preview license rechecked on2026-11-12; no new package intake"
+    }
+  ],
+  "manufacturerPortals": [
+    {
+      "id": "blum-official",
+      "name": "Blum / 百隆",
+      "cadServiceURL": "https://www.blum.com/au/en/services/industrial-production/cad-cam-dataservice/",
+      "softwarePartnerDataURL": "https://www.blum.com/au/en/services/planning-construction-product-selection/productdata-service/",
+      "structuredExchangeReferenceURL": "https://www.blum.com/ca/en/services/faq/",
+      "roles": ["product and configured 3D CAD", "2D installation and production drawings", "software partner fitting-data packages and updates", "proprietary BXF assembly and drilling-data interface"],
+      "verification": "Official service pages and public overview PDF checked. No account export, partner package, batch API or BXF interface implementation obtained.",
+      "accessMode": "official user service or software-partner integration under actual provider conditions",
+      "centralRedistributionStatus": "not established",
+      "nativeAdmissionVerified": false,
+      "manufacturingVerified": false
+    },
+    {
+      "id": "salice-official-ifurn",
+      "name": "Salice / 萨利奇",
+      "catalogURL": "https://www.salice.com/ww/en/reserved-area/home",
+      "guideURL": "https://www.salice.com/download/NL/NL_2026_Salice-iFurn/Salice_iFurn-quick-guide.pdf",
+      "termsURL": "https://www.salice.com/ww/en/general-conditions-of-use",
+      "roles": ["iFurn / IMOS 3D hardware library", "hinge and mounting-plate configuration", "technical drilling and installation references"],
+      "formatsObservedInGuideScreenshot": ["PDF", "DWG", "STEP", "VRML", "STL"],
+      "verification": "Official reserved-area landing page, three-page iFurn guide and four-page USA Series100/105-degree drilling reference downloaded. Guide download screenshot and drilling-reference pages2-3 visually inspected. No authenticated CAD generation, batch API or whole-library acquisition performed.",
+      "accessMode": "official account-based library and user-provided files under applicable conditions",
+      "centralRedistributionStatus": "no permission established; current site terms require prior written authorization for redistribution and restrict linking/framing",
+      "nativeAdmissionVerified": false,
+      "manufacturingVerified": false
+    },
+    {
+      "id": "hettich-official-cad",
+      "name": "Hettich / 海蒂诗",
+      "catalogURL": "https://www.hettich.com/en-de/services/hettich-cad/cad-downloads",
+      "advertisedFormats": ["DWG/DXF", "STEP", "SAT", "IGES", "3DS", "MAX"],
+      "roles": ["hardware product CAD packages", "installation situations and planning references"],
+      "verification": "Official hinge-category STEP ZIP downloaded:34415676 bytes,1008 archive entries,881 STEP members; one STEP header checked. Members include accessories and are not881 unique hinges. No whole-archive geometry validation or native import performed.",
+      "sampleDownloadURL": "https://www.hettich.com/fileadmin/Hettich_International/Planning/CAD-Files/STEP_Scharniere.zip",
+      "sampleLocalSHA256": "0900c93c54075e2fcb9503daa0210dbc6d5aab2cce0dcc10b0194a6610703f3e",
+      "sampleEvidence": "brand-library-research01/hettich-intake.json",
+      "accessMode": "official public package downloads under applicable conditions",
+      "centralRedistributionStatus": "not established",
+      "nativeAdmissionVerified": false,
+      "manufacturingVerified": false
+    }
+  ],
+  "deliveryPolicy": {
+    "status": "product policy confirmed in QA23-QA25; no hosting, updater or native integration deployed",
+    "confirmedQAs": [23, 24, 25],
+    "strategy": "owned unified catalog, eligible self-hosted versioned packages, official-provider acquisition and local offline resources",
+    "sourceRepository": "catalogs, adapters, recipes, terms records and checks; not an indiscriminate binary mirror",
+    "binaryStorage": "dedicated package storage for content with established hosting rights; actual existing infrastructure to be selected at integration",
+    "manufacturerData": "record per-source permissions for cache, conversion, project delivery and central redistribution; a public download is not a mirror grant",
+    "projectVersionPolicy": "pin selected asset, dependency and engineering-rule versions; library updates create candidates without replacing adopted project data; user-initiated adoption compares changes before updating related deliverables",
+    "downloadModePolicy": "small starter library, on-demand downloads and explicit offline packs; retain project-adopted versions and dependencies for reopen",
+    "upgradeDesign": {
+      "status": "design to implement and validate",
+      "compare": ["exact product and variant", "market and compatibility", "geometry and installation frame", "material and texture dependencies", "mounting plates and accessories", "installation and drilling-rule versions", "affected model, dimensions, sheets and schedules"],
+      "adopt": "user-selected scope in a recoverable project revision; retain stable identities, manual annotations and layout",
+      "failure": "preserve original adopted versions on cancellation, failure or stale project state",
+      "jointCADAndDatabaseCommitVerified": false
+    },
+    "offlineDesign": {
+      "status": "design to implement and validate",
+      "availability": "catalog visibility, download progress and actual file/dependency availability are separate states",
+      "retention": "ordinary cache cleanup and offline-pack removal retain versions referenced by projects",
+      "sourceConditions": "record actual support for offline caching, conversion and project delivery per source"
+    },
+    "nativeIntegrationVerified": false
+  },
+  "additionalIntake": [
+    "user-provided model files and library packages",
+    "manufacturer-provided assets under their individual terms",
+    "AI-generated editable recipes or mesh assets"
+  ],
+  "admissionMetadata": [
+    "stable asset ID and version",
+    "creator and source",
+    "license and attribution",
+    "original package hash",
+    "representation type",
+    "unit and verified dimensions",
+    "front and anchor",
+    "material slots",
+    "dependent file hashes",
+    "LOD and collision proxies when present",
+    "parametric editability",
+    "manufacturing verification state",
+    "manufacturer, series, exact order code and variant when applicable",
+    "market, catalog edition, source timestamp and content hash",
+    "compatible mounting plate, installation references and rule versions",
+    "per-source cache, conversion, project-delivery and redistribution permissions"
+  ],
+  "policy": "library definitions are versioned; projects pin used versions; instances share resources and keep their own placement/overrides; importing a visual mesh does not establish manufacturing data"
+}

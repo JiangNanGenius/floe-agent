@@ -1,0 +1,327 @@
+{
+  "schemaVersion": 1,
+  "title": "FloeGameKit 可用组件闭环验证",
+  "qualifiedOn": "2026-11-11",
+  "timezone": "Australia/Sydney",
+  "qualifiedAtUTC": "2026-11-11T12:50:56.677925+00:00",
+  "module": "FloeAgent/Modules/FloeGameKit",
+  "sourceBaselineAtStart": "48fa9d057e585a5dc1dc346e5c7500d1c8030036",
+  "headAtEvidenceExport": "0197ff5191f6847ed0baa3bad46e3d60f2b2e148",
+  "sourceState": "组件仍为未提交工作区文件；使用逐文件 SHA-256 和源码归档绑定实际结果，仓库 HEAD 不是这些新增文件的提交证明",
+  "sourceSHA256": {
+    "FloeAgent/Modules/FloeGameKit/LICENSE": "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04",
+    "FloeAgent/Modules/FloeGameKit/Package.swift": "3698948d2c4dadf1c6f91ac3c1491880db9f9ba19b9cb68eb711b99f5efe8d9c",
+    "FloeAgent/Modules/FloeGameKit/README.md": "d88c4b3a87b92c097edc13519b9df778d3d4394f60586031f6d743c52398890d",
+    "FloeAgent/Modules/FloeGameKit/Scripts/prepare_phaser.py": "0f904c0ccd24d405b891a7291a619642665ff13efbcc8f92930090fa3b3af658",
+    "FloeAgent/Modules/FloeGameKit/Scripts/qualify.py": "e12abeda32be76108d081b3487bc129b840e8063b5101ef22dedfd3b01a016b7",
+    "FloeAgent/Modules/FloeGameKit/Sources/FloeGameCore/GameFileStorage.swift": "e80abcaeb5ccaae37f52441fb1197bb564543d71d9f11eb13e5eba5a9731af84",
+    "FloeAgent/Modules/FloeGameKit/Sources/FloeGameCore/GameJSONPatch.swift": "31af758a3e7c6bc9b275b7e618b53f5f0e4bda003b73f644dd6ab7a4d859f0e6",
+    "FloeAgent/Modules/FloeGameKit/Sources/FloeGameCore/GameLaunchPlanner.swift": "4ee96ce3bf76257c45df7cfa59f16213570d5e004ef875ecebceb5da253c81ad",
+    "FloeAgent/Modules/FloeGameKit/Sources/FloeGameCore/GamePhaserTemplate.swift": "4eb727329afd7ef1f9e33588fcfff9ce76ab4ee434f43d24f416557fc83f5934",
+    "FloeAgent/Modules/FloeGameKit/Sources/FloeGameCore/GameProject.swift": "b7525ad860aafc93ada85e194b1d81d9657cdabe5ee24434f617070b922d3625",
+    "FloeAgent/Modules/FloeGameKit/Sources/FloeGameCore/GameProjectInspector.swift": "bcc6549498664ecb6844c98cf2e6364c82404c5d32afff4b6ae57d87e0a2f50d",
+    "FloeAgent/Modules/FloeGameKit/Sources/FloeGameCore/GameProjectReader.swift": "7693ec4dd191299fde161ec4dc522efaf6c72f60c707e00c2aa18a962609239d",
+    "FloeAgent/Modules/FloeGameKit/Sources/FloeGameCore/GameProjectRepository.swift": "8c02cd7e394e32fb164943f0c9b7c155e4ff1dd6a3bf635bee3a50ddf9b8a02e",
+    "FloeAgent/Modules/FloeGameKit/Sources/FloeGameCore/GameSaveRepository.swift": "c140471e0dfce969dac624e165d3666fade90eb48f64b30ff2f601970c1ef177",
+    "FloeAgent/Modules/FloeGameKit/Sources/FloeGameCore/GameWebArtifact.swift": "d81ad0f141b35a5c8bfb5e7b9066ad68a7c65d16bc545a98c9158b0c08d49fbb",
+    "FloeAgent/Modules/FloeGameKit/Sources/FloeGameWebKit/GameArtifactSchemeHandler.swift": "46c7ae56aa38ec0c035eec17118a25f39d606d8e6395271d0466c89e1c4dcfcd",
+    "FloeAgent/Modules/FloeGameKit/Sources/FloeGameWebKit/GamePlayerView.swift": "7c4ecd2a6428537e84685c89d0117694608c8a5a5f0432be0b529e12faff74e1",
+    "FloeAgent/Modules/FloeGameKit/Sources/FloeGameWebKit/GameWebPlayer.swift": "9652b6969196650f673041a51764d02d8bfcfbe71e7b270a3760facdad3f75ff",
+    "FloeAgent/Modules/FloeGameKit/Sources/GamePreflight/main.swift": "b112ed08c30421c99c619a2ceafd255ce560af89b2050d8ba300b8f7658c1857",
+    "FloeAgent/Modules/FloeGameKit/Sources/GameRuntimeQualification/RuntimeQualification.swift": "ec4a88e0efa2382c93312fe2804ef14ad25aef725f5743d8e20e6fb3f26bd1f0",
+    "FloeAgent/Modules/FloeGameKit/Tests/FloeGameCoreTests/GameCoreTests.swift": "620d868908fa9a65b2b6bed5aa9ef9a28f872abbdae3ae0c6cdf2c1cb81949b4",
+    "FloeAgent/Modules/FloeGameKit/Tests/FloeGameCoreTests/GameRepositoryTests.swift": "29d6f6b569c8d3b0784a9730e2c29cdb9f9b2e8279fb9b63c61c100476fdcc61",
+    "FloeAgent/Modules/FloeGameKit/Tests/FloeGameWebKitTests/GameWebPlayerTests.swift": "2293e8736de80e3c1f38c335aaf8b49971212765533705e866aad84c42d5afac"
+  },
+  "qualifiedCodeSHA256": {
+    "Package.swift": "3698948d2c4dadf1c6f91ac3c1491880db9f9ba19b9cb68eb711b99f5efe8d9c",
+    "Scripts/prepare_phaser.py": "0f904c0ccd24d405b891a7291a619642665ff13efbcc8f92930090fa3b3af658",
+    "Scripts/qualify.py": "e12abeda32be76108d081b3487bc129b840e8063b5101ef22dedfd3b01a016b7",
+    "Sources/FloeGameCore/GameFileStorage.swift": "e80abcaeb5ccaae37f52441fb1197bb564543d71d9f11eb13e5eba5a9731af84",
+    "Sources/FloeGameCore/GameJSONPatch.swift": "31af758a3e7c6bc9b275b7e618b53f5f0e4bda003b73f644dd6ab7a4d859f0e6",
+    "Sources/FloeGameCore/GameLaunchPlanner.swift": "4ee96ce3bf76257c45df7cfa59f16213570d5e004ef875ecebceb5da253c81ad",
+    "Sources/FloeGameCore/GamePhaserTemplate.swift": "4eb727329afd7ef1f9e33588fcfff9ce76ab4ee434f43d24f416557fc83f5934",
+    "Sources/FloeGameCore/GameProject.swift": "b7525ad860aafc93ada85e194b1d81d9657cdabe5ee24434f617070b922d3625",
+    "Sources/FloeGameCore/GameProjectInspector.swift": "bcc6549498664ecb6844c98cf2e6364c82404c5d32afff4b6ae57d87e0a2f50d",
+    "Sources/FloeGameCore/GameProjectReader.swift": "7693ec4dd191299fde161ec4dc522efaf6c72f60c707e00c2aa18a962609239d",
+    "Sources/FloeGameCore/GameProjectRepository.swift": "8c02cd7e394e32fb164943f0c9b7c155e4ff1dd6a3bf635bee3a50ddf9b8a02e",
+    "Sources/FloeGameCore/GameSaveRepository.swift": "c140471e0dfce969dac624e165d3666fade90eb48f64b30ff2f601970c1ef177",
+    "Sources/FloeGameCore/GameWebArtifact.swift": "d81ad0f141b35a5c8bfb5e7b9066ad68a7c65d16bc545a98c9158b0c08d49fbb",
+    "Sources/FloeGameWebKit/GameArtifactSchemeHandler.swift": "46c7ae56aa38ec0c035eec17118a25f39d606d8e6395271d0466c89e1c4dcfcd",
+    "Sources/FloeGameWebKit/GamePlayerView.swift": "7c4ecd2a6428537e84685c89d0117694608c8a5a5f0432be0b529e12faff74e1",
+    "Sources/FloeGameWebKit/GameWebPlayer.swift": "9652b6969196650f673041a51764d02d8bfcfbe71e7b270a3760facdad3f75ff",
+    "Sources/GamePreflight/main.swift": "b112ed08c30421c99c619a2ceafd255ce560af89b2050d8ba300b8f7658c1857",
+    "Sources/GameRuntimeQualification/RuntimeQualification.swift": "ec4a88e0efa2382c93312fe2804ef14ad25aef725f5743d8e20e6fb3f26bd1f0",
+    "Tests/FloeGameCoreTests/GameCoreTests.swift": "620d868908fa9a65b2b6bed5aa9ef9a28f872abbdae3ae0c6cdf2c1cb81949b4",
+    "Tests/FloeGameCoreTests/GameRepositoryTests.swift": "29d6f6b569c8d3b0784a9730e2c29cdb9f9b2e8279fb9b63c61c100476fdcc61",
+    "Tests/FloeGameWebKitTests/GameWebPlayerTests.swift": "2293e8736de80e3c1f38c335aaf8b49971212765533705e866aad84c42d5afac"
+  },
+  "implemented": [
+    "工程目录导入，保留未知文本/二进制、空目录和可执行意图；不覆盖源工程",
+    "不可变文件对象和历史修订；跨实例 flock/CAS、失败事务清理、历史恢复、独立副本和导出",
+    "JSON 结构编辑保留无关及未知字段",
+    "按需准备并校验固定版本 Phaser JS、主许可证及 29 个上游声明块/EventEmitter 许可",
+    "实际 Phaser 模板创建、修改保存重开，以及真实 Web 产物复制/逐文件散列与读回",
+    "WebKit 本地资源服务、结构化输入、日志、状态、PNG 截图、确认停止、重新运行",
+    "原生持久进度与 CAS；按工程及空间/会话所有者隔离",
+    "SwiftUI/UIKit/AppKit 容器；不依附 View 生命周期启动或删除服务"
+  ],
+  "verification": {
+    "result": "passed",
+    "testFunctions": 25,
+    "testCases": 39,
+    "metadataExamples": 11,
+    "runtime": {
+      "engine": "phaser",
+      "error": "",
+      "iosGameRuntimeVerified": false,
+      "nativeHost": true,
+      "platform": "macOS AppKit + real WebKit",
+      "result": "passed",
+      "steps": [
+        "created-imported-edited-saved-reopened",
+        "phaser-3.90.0-visible-in-real-webkit",
+        "real-frames-input-score-screenshot-and-durable-progress",
+        "external-network-csp-violation-proved",
+        "stopped-restarted-and-restored-durable-progress",
+        "stopped-runtime-no-longer-exists"
+      ],
+      "version": "3.90.0"
+    },
+    "capturedStateAfterInput": {
+      "engineVersion": "3.90.0",
+      "frames": 19,
+      "score": 1,
+      "x": 142.824,
+      "y": 200
+    },
+    "screenshot": "${QUALIFICATION_ROOT}/game-components-20261111/delivery-final-qualification/runtime/phaser-actual-webkit.png",
+    "iOSObjects": [
+      {
+        "name": "GameFileStorage.swift.o",
+        "sha256": "9aed32291cdfca0595e6130ae190c42780f794a16265b48b5c4712f115f41530",
+        "platform": "arm64 IOSSIMULATOR",
+        "minimumOS": "26.0"
+      },
+      {
+        "name": "GameJSONPatch.swift.o",
+        "sha256": "5482177ff953e6b93928c4b944af60f8c67fb53f95c4b4629abcbe4670974f6b",
+        "platform": "arm64 IOSSIMULATOR",
+        "minimumOS": "26.0"
+      },
+      {
+        "name": "GameLaunchPlanner.swift.o",
+        "sha256": "380b2f4ec3201be837732a0cbc5ef0145c6e73e8dbb04d7e5ea99bd01f56354c",
+        "platform": "arm64 IOSSIMULATOR",
+        "minimumOS": "26.0"
+      },
+      {
+        "name": "GamePhaserTemplate.swift.o",
+        "sha256": "c6f052cc4c25917a8b0b21320071a10ac8c29dc7907e3662ff830b1b533ef375",
+        "platform": "arm64 IOSSIMULATOR",
+        "minimumOS": "26.0"
+      },
+      {
+        "name": "GameProject.swift.o",
+        "sha256": "782ead7c2845c09db3a53aa2ba5b3ecfecd02b4b60282d6773371a125643da0b",
+        "platform": "arm64 IOSSIMULATOR",
+        "minimumOS": "26.0"
+      },
+      {
+        "name": "GameProjectInspector.swift.o",
+        "sha256": "899d53e3decf0f5c98f19ec22ed0a89488224f8bd85ebafdbb9320514ee4f692",
+        "platform": "arm64 IOSSIMULATOR",
+        "minimumOS": "26.0"
+      },
+      {
+        "name": "GameProjectReader.swift.o",
+        "sha256": "09d63d73c8876f7ff478016adc2aa2371ad71a2dfa650fc15674559eca7cb1ff",
+        "platform": "arm64 IOSSIMULATOR",
+        "minimumOS": "26.0"
+      },
+      {
+        "name": "GameProjectRepository.swift.o",
+        "sha256": "6747b0fd8d1ae3efe66ca0064073b45367f4de1da42d2c17963e3398945c11a8",
+        "platform": "arm64 IOSSIMULATOR",
+        "minimumOS": "26.0"
+      },
+      {
+        "name": "GameSaveRepository.swift.o",
+        "sha256": "b1f5ac4d1f0bb90a9e6f8af0707afd92bdf7b3e1bc531cab585fdc0c2ece3dcf",
+        "platform": "arm64 IOSSIMULATOR",
+        "minimumOS": "26.0"
+      },
+      {
+        "name": "GameWebArtifact.swift.o",
+        "sha256": "794627d3bd2c0974358cb6a1a9e179890ba28812ebdebb39e200f90cc6c4d98a",
+        "platform": "arm64 IOSSIMULATOR",
+        "minimumOS": "26.0"
+      },
+      {
+        "name": "GameArtifactSchemeHandler.swift.o",
+        "sha256": "867b2b5053c5755099585475584336e08f3d4486d600fb3d993a17c531b57a5d",
+        "platform": "arm64 IOSSIMULATOR",
+        "minimumOS": "26.0"
+      },
+      {
+        "name": "GamePlayerView.swift.o",
+        "sha256": "deda8b16dd554858f63e4b53f29477f70b5aefa3b9ab05465f0a83e00faa3e46",
+        "platform": "arm64 IOSSIMULATOR",
+        "minimumOS": "26.0"
+      },
+      {
+        "name": "GameWebPlayer.swift.o",
+        "sha256": "32f46aa81ef31cd5f779d6eccd1275651478061e7b5a34601649f5c19068978b",
+        "platform": "arm64 IOSSIMULATOR",
+        "minimumOS": "26.0"
+      }
+    ],
+    "sourceChecks": "验证所有源代码/脚本散列在编译与测试期间保持不变；公开记录另含最终 README/LICENSE 散列",
+    "rawEvidence": "${QUALIFICATION_ROOT}/game-components-20261111/delivery-final-qualification",
+    "originalFailures": [
+      {
+        "log": "${QUALIFICATION_ROOT}/game-components-20261111/component-build-attempt1.log",
+        "finding": "WebKit 回调/async 名称使用不匹配；改为现有组件已采用的回调桥接并用实际 SDK 编译"
+      },
+      {
+        "log": "${QUALIFICATION_ROOT}/game-components-20261111/usable-tests-attempt1.log",
+        "finding": "XCTest 内引擎已初始化但没有观察到移动"
+      },
+      {
+        "log": "${QUALIFICATION_ROOT}/game-components-20261111/webkit-diagnostic-attempt2.log",
+        "finding": "真实状态显示 frames=0、document.visibilityState=hidden；保留原断言与失败日志"
+      },
+      {
+        "log": "${QUALIFICATION_ROOT}/game-components-20261111/webkit-foreground-attempt3.log",
+        "finding": "仅创建窗口仍未运行 NSApp 主事件循环；改用独立原生宿主执行原流程，保持 Phaser 的正常后台暂停行为"
+      }
+    ],
+    "commands": [
+      {
+        "name": "resource-check",
+        "command": [
+          "python3",
+          "$REPO/FloeAgent/Modules/FloeGameKit/Scripts/prepare_phaser.py",
+          "--output",
+          "${QUALIFICATION_ROOT}/game-components-20261111/engine-resources/phaser-3.90.0",
+          "--check"
+        ],
+        "exitCode": 0,
+        "elapsedSeconds": 0.13,
+        "log": "resource-check.log"
+      },
+      {
+        "name": "tests",
+        "command": [
+          "xcrun",
+          "swift",
+          "test",
+          "--build-system",
+          "native",
+          "--package-path",
+          "$REPO/FloeAgent/Modules/FloeGameKit",
+          "--scratch-path",
+          "$HOME/Library/Caches/CodexBuild/Floe/0dd039b5b74b/xcode27.2/game-usable/macos",
+          "--sdk",
+          "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX27.2.sdk",
+          "--jobs",
+          "6"
+        ],
+        "exitCode": 0,
+        "elapsedSeconds": 5.327,
+        "log": "tests.log"
+      },
+      {
+        "name": "metadata-demo",
+        "command": [
+          "$HOME/Library/Caches/CodexBuild/Floe/0dd039b5b74b/xcode27.2/game-usable/macos/arm64-apple-macosx/debug/floe-game-preflight",
+          "--demo"
+        ],
+        "exitCode": 0,
+        "elapsedSeconds": 0.041,
+        "log": "metadata-demo.log"
+      },
+      {
+        "name": "ios-objects",
+        "command": [
+          "xcrun",
+          "swift",
+          "build",
+          "--build-system",
+          "native",
+          "--package-path",
+          "$REPO/FloeAgent/Modules/FloeGameKit",
+          "--scratch-path",
+          "$HOME/Library/Caches/CodexBuild/Floe/0dd039b5b74b/xcode27.2/game-usable/ios-simulator",
+          "--sdk",
+          "/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator27.2.sdk",
+          "--triple",
+          "arm64-apple-ios26.0-simulator",
+          "--target",
+          "FloeGameWebKit",
+          "--jobs",
+          "6"
+        ],
+        "exitCode": 0,
+        "elapsedSeconds": 1.639,
+        "log": "ios-objects.log"
+      }
+    ],
+    "simulatorBootedByTask": false,
+    "physicalPhoneUsed": false,
+    "limits": [
+      "实际游戏运行在 macOS AppKit+WebKit 原生宿主；iOS 本轮为真实对象编译，未做 iPad/真机游戏验收",
+      "尚未接入 Floe App 的 .game 内容类型、第三版项目概览、项目 AI 和 IDE 自动运行分派",
+      "其余引擎尚未达到真实试玩闭环；原始文件保存不等于 RGSS/YAML 等语义编辑",
+      "ZIP 工程接入、引擎构建工具链、Unity CI 与独立安装包导出仍待接入既有服务"
+    ]
+  },
+  "licensing": {
+    "nativeComponent": "MPL-2.0",
+    "originalEmbeddedStarter": "MIT (output includes full license)",
+    "phaser": "MIT, upstream Arcade distribution 3.90.0",
+    "phaserCommit": "a9965625f49cf366584f454556b039e06e8adad6",
+    "engineSHA256": "2e1bc84f885ab5c62b11ebb72492bb334159ac5678b664c7cb2942fc979e44e3",
+    "noticesSHA256": "fd57bb945a3993569b6eae1833d25e9eb1e2a988cca541ba8dc770b0b7b7792b",
+    "notes": "保留 Phaser、EventEmitter3 5.0.1 及已校验未压缩 Arcade 构建中的 29 个原始版权/许可证注释块；未包含 RTP、Spine 或原生引擎二进制；此记录不替代最终分发许可和 Apple 审核"
+  },
+  "artifacts": [
+    {
+      "path": "${QUALIFICATION_ROOT}/game-components-20261111/deliverables/FloeGameKit-predevelopment-source.zip",
+      "sha256": "c69b9726942e9d61a7713c33f6bcea33521deb2c156c28b2b9dab2a3c203fb41",
+      "bytes": 56994
+    },
+    {
+      "path": "${QUALIFICATION_ROOT}/game-components-20261111/deliverables/Floe-Phaser-Starter-3.90.0.zip",
+      "sha256": "815a287839b8b54204457eb02ef61a1addef05c6893a84c30eaf7be013c1e7ce",
+      "bytes": 292745
+    }
+  ],
+  "cleanup": {
+    "status": "complete",
+    "removed": [
+      {
+        "path": "$HOME/Library/Caches/CodexBuild/Floe/0dd039b5b74b/xcode27.2/game-usable",
+        "allocatedKiB": 561904
+      },
+      {
+        "path": "${QUALIFICATION_ROOT}/game-components-20261111/engine-resources/phaser-reproducibility-check",
+        "allocatedKiB": 1088
+      }
+    ],
+    "openReferenceCheck": "lsof +D found no open references to the exact task build cache",
+    "retained": "Full source, selected visual, source/example ZIPs, pinned resources and notices, original failure/success evidence, real screenshots/state/exports, compiled developer tools and 13 iOS objects",
+    "simulators": "No Simulator started or created; final inventory has no booted device",
+    "nativeHost": "All task-owned qualification windows/processes exited; no physical iPhone used"
+  },
+  "appChanges": "未修改 App 接线、版本、签名或发布渠道；第三版空间布局保持已选方案",
+  "toolchain": {
+    "developerDirectory": "/Applications/Xcode.app/Contents/Developer",
+    "xcode": "27.2 (27B52)",
+    "swift": "Apple Swift 6.4.2 (swiftlang-6.4.2.1.9)",
+    "hostSDK": "macOS 27.2",
+    "iOSSDK": "iPhoneSimulator 27.2",
+    "iOSTarget": "arm64-apple-ios26.0-simulator"
+  },
+  "qualificationRoot": "Relative qualification artifacts refer to the local evidence collection from the stated date."
+}

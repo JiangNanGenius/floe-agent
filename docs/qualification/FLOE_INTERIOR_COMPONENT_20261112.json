@@ -1,0 +1,133 @@
+{
+  "date": "2026-11-12",
+  "status": "independent research stage verified; production integration pending",
+  "sourceBaseline": "349d61b36d1df6033a718167e41ebafad6c91c1d",
+  "sourceState": "Task-owned component plus one private CAD source patch; not a clean main source or full-App result",
+  "toolchain": {
+    "xcode": "27.2",
+    "build": "27B52",
+    "swift": "6.4.2",
+    "simulator": "iPad mini, iOS27.2, arm64"
+  },
+  "checks": {
+    "domain": {
+      "passed": 13,
+      "failed": 0,
+      "evidence": "frame-fix03/domain-tests.log"
+    },
+    "nativeWithPrivateCADPatch": {
+      "passed": 3,
+      "failed": 0,
+      "skipped": 0,
+      "evidence": "frame-fix04-private/native-run"
+    },
+    "upstreamWallProfile": {
+      "passed": 10,
+      "evidence": "upstream/verification.json"
+    },
+    "baseDatabaseDesign": {
+      "passed": 24,
+      "forms": 8,
+      "evidence": "../building-data-design-20261112/v0-asset-search/verification.json"
+    }
+  },
+  "privateCADPatch": {
+    "requiredForPassingNativeSTEPTransform": true,
+    "productionIntegratedByThisTask": false,
+    "productionFileByteUnchanged": true,
+    "path": "${QUALIFICATION_ROOT}/interior-component-research-20261112/private-cad-transform-proof/imported-transform-source.patch",
+    "sha256": "7bf5e4e422db2e2087eb4db25242c32a0a6fa05837963988ee69803148d07b78",
+    "originalFileSHA256": "0739ed07a3da82bd2bc099963696e472238899f82f700909fc4aaf770fbeeed1",
+    "patchedFileSHA256": "b4983eee174ad7263d818e5390d69857720a443143705af532fd6051f97fab01"
+  },
+  "nativeProof": {
+    "analyticPanelCount": 19,
+    "volumeAndBoundsChecked": true,
+    "sourceSaveReopenChecked": true,
+    "STEPIndependentReadbackSolids": 19,
+    "STEPUnit": "mm",
+    "copyTranslationMeasuredMM": [
+      10,
+      0,
+      0
+    ],
+    "sourceChangeCountAndSavedIdentityUnchanged": true,
+    "STEPMetadataLosses": [
+      "history",
+      "PMI",
+      "part names",
+      "assembly hierarchy"
+    ]
+  },
+  "drawing": {
+    "sampleVisualAccepted": true,
+    "sampleCount": 3,
+    "exportedFiles": 9,
+    "scope": "technical geometry only",
+    "paperExtentMM": [
+      [
+        120,
+        105
+      ],
+      [
+        30,
+        105
+      ],
+      [
+        118.2,
+        30
+      ]
+    ],
+    "fullConstructionDrawingSetImplemented": false,
+    "existingSourceBudget": 12,
+    "nineteenBodyViewRefusedWithoutDroppingParts": true
+  },
+  "furniture": {
+    "source": "Sweet Home3D BlendSwap CC0 1.9.3",
+    "entries": 175,
+    "basicResourceReferencesChecked": 169,
+    "needsResourceRepair": 6,
+    "resourceReferenceIssues": 11,
+    "nativeAdmissionVerified": false,
+    "sourcePackageSHA256": "f87b1689df18a1b4302446dcb51922eca4d93ae9f388cf86624eb633f3068c39",
+    "stagedAssetVersions": 175,
+    "nativeAdmittedReleases": 0,
+    "chineseQuery": "\"扶手椅\"",
+    "chineseMatches": 3,
+    "assetForeignKeyAndBackupReadbackChecked": true,
+    "evidence": "asset-intake/catalog-db01/verification.json"
+  },
+  "manufacturingBackend": {
+    "candidate": "PackingSolver",
+    "revision": "f1e2baa84e224f2f19a4121ad77bc9428e6cb146",
+    "licenseObserved": "MIT",
+    "compiled": false,
+    "optimizationExecuted": false,
+    "evidence": "manufacturing-upstream/sources.json"
+  },
+  "manufacturingVerified": false,
+  "fullAppIntegrated": false,
+  "simulatorArtifact": {
+    "scope": "iOS Simulator component host only; not a device IPA or full App",
+    "source": "private CAD single-file patch plus task-owned component",
+    "archive": "InteriorNativeHost-simulator-arm64.tar.gz",
+    "sha256": "d6ff84f675ec45a57c3f74af322bb34ef870501928471b9c5ad87f21e6c5dcff",
+    "bytes": 50033503,
+    "nativeTestExecutableSHA256": "db3742e15005080e5748e7373c58bdcb357d60fe032b89b48dbc0e6936b4c856",
+    "archiveReadbackVerified": true,
+    "included": [
+      "Debug-iphonesimulator/InteriorNativeHost.app",
+      "InteriorNativeChecks_iphonesimulator27.2-arm64.xctestrun",
+      "Debug-iphonesimulator/FloeCADKit_FloeCAD.bundle"
+    ]
+  },
+  "deviceCleanup": "All task-started Simulator runs ended Shutdown; no create/clone/reset or physical iPhone use",
+  "originalFailuresPreserved": [
+    "native-run01",
+    "native-run02 plus pdf-review",
+    "frame-fix03",
+    "asset-intake/inspection01"
+  ],
+  "record": "docs/qualification/FLOE_INTERIOR_COMPONENT_20261112.zh-CN.md",
+  "qualificationRoot": "Relative qualification artifacts refer to the local evidence collection from the stated date."
+}

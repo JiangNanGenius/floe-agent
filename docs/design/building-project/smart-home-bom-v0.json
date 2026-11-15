@@ -1,0 +1,60 @@
+{
+  "designVersion": 0,
+  "researchDate": "2026-11-12",
+  "status": "domain and import contract design; not a parser, SQL migration, registered AI tool or executed import",
+  "owner": "current building project",
+  "targetSources": ["XLSX", "CSV", "text PDF", "scanned PDF", "image or camera document", "text document", "pasted text"],
+  "stages": ["received", "extracting", "mapping_fields", "matching_products", "ready_with_issues", "adopting", "adopted"],
+  "additionalStates": ["cancelled", "failed", "needs_input"],
+  "sourceRecord": {
+    "identity": ["projectID", "sourceID", "sourceVersion", "contentSHA256", "importBatchID", "originalName", "mediaType"],
+    "locator": ["sheet and cell or row", "PDF page and region", "image region", "text span"],
+    "retention": "preserve original content and source context; derived extraction and mapping are versioned"
+  },
+  "lineFields": {
+    "identity": ["lineID", "sourceLocatorID", "rawText", "extractionRevision", "mappingProfileID"],
+    "product": ["manufacturer", "series", "rawModel", "normalizedModel", "orderCode", "variant", "market", "catalogEdition"],
+    "quantity": ["rawQuantity", "rawUnit", "normalizedQuantity", "normalizedUnit", "packageConversion", "kitMembership", "spareQuantity"],
+    "projectPlacement": ["storeyID", "roomID", "systemID", "pointID", "installationHeight", "circuitID", "address"],
+    "capabilityEvidence": ["deviceClass", "protocol", "gatewayRequirement", "powerRequirement", "installationType", "channelCount", "portProfileVersion"],
+    "businessRole": ["design_requirement", "quotation", "ordered", "received", "installed", "spare", "kit_component", "source_note"],
+    "optionalCost": ["unitPrice", "currency", "taxBasis", "discountBasis", "validity", "supplier"],
+    "matching": ["candidateAssetVersions", "adoptedAssetVersionID", "matchEvidence", "unresolvedFields", "verificationState"]
+  },
+  "normalization": {
+    "unknown": "retain unknown values and raw source; do not substitute zero or an arbitrary unit",
+    "formulas": "retain formula and cached/displayed value when available; absent or stale computed values require a suitable reader or clarification, not execution of embedded code",
+    "units": "devices, channels, sets, packages and cable length are separate quantities; conversions require an explicit basis",
+    "sourceNegatives": "preserve negative source values as adjustment/issue candidates rather than treating them as installed device counts",
+    "modelMatching": "use manufacturer, exact model/order code, variant and market with evidence; an alias or visual resemblance alone is insufficient",
+    "unmatchedProduct": "retain a custom product and source, with incomplete capability state; no fabricated geometry or protocol compatibility"
+  },
+  "relationships": [
+    "one product definition can have multiple versioned room allocations",
+    "one physical device can expose multiple channels or control entities",
+    "one kit can contain devices and accessories; do not count both as independent duplicate procurement quantities",
+    "one BOM row can remain unplaced or allocate to multiple planned device instances",
+    "design, quotation, procurement and installed records retain their own roles and correspondence",
+    "planned, unplaced and spare quantities do not become arbitrary model instances at the origin"
+  ],
+  "adoption": {
+    "preconditions": ["current project and target BOM revision", "valid source locations", "explicit selected scope", "available normalized values and declared unresolved issues"],
+    "idempotency": "replaying the same adoption operation and source rows into the same target does not add quantities twice; distinct source contexts and room allocations remain explicit",
+    "newSourceRevision": "compare changed, added and absent rows; source absence alone does not silently delete adopted project data",
+    "writes": "use the project service and a recoverable revision; preserve previous adopted data and manual project additions",
+    "criticalAmbiguity": "ask only for missing conditions that block the current action; process independent clear items within existing authorization",
+    "persistenceReceipt": ["adoptedLineIDs", "pendingIssues", "linkedEquipmentAndPointIDs", "projectRevision", "actualSaveStatus"],
+    "cancelOrFailure": "retain original files, completed extraction and prior valid project state"
+  },
+  "plannedAIToolCapabilities": [
+    "list, search and read project sources with bounded output and locators",
+    "extract selected source tables or regions through configured document/vision services",
+    "organize display names, categories, tags and project object associations",
+    "preview field mapping, product candidates, quantities and differences",
+    "adopt authorized BOM edits through the same project service as UI",
+    "return source evidence, unresolved issues, revisions and undo/recovery records"
+  ],
+  "toolAuthority": "existing project, task and document access services; imported content and paths do not grant access or execution permissions",
+  "implementationGaps": ["typed BOM/device/point records", "source format adapters", "native field mapping and review UI", "product matcher", "project AI action adapters", "joint CAD and data save/recovery", "real input and reopen verification"],
+  "verification": {"parserRun": false, "AIExtractionRun": false, "databaseMigrationRun": false, "nativeUIRun": false}
+}

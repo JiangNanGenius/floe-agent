@@ -1,0 +1,465 @@
+{
+  "schemaVersion": 1,
+  "title": "Floe 游戏工程复用调查",
+  "checkedOn": "2026-11-11",
+  "timezone": "Australia/Sydney",
+  "repositoryBaseline": "ee2057c91872abd31044bd3e0b9e4be38fcd9f85",
+  "status": "已完成可用通用组件和 Phaser 原生宿主 WebKit 闭环验证；iOS 对象编译通过；App 接线、其余引擎和最终许可/Apple 审核仍待完成",
+  "productConstraints": {
+    "platforms": "本轮 iOS/iPadOS 优先；Android 后续沿用现有 Linux 路线对齐",
+    "ordinaryConversation": "普通会话中的游戏是普通 IDE 工程，复用现有任务、工作区、文件和运行链路",
+    "space": "空间保存独立游戏工程与独立项目 AI；默认项目概览，再进入 AI 修改、原生简易编辑、IDE 或试玩",
+    "copying": "会话与空间通过显式复制、保存、导入或更新传递工程；无自动同步、关联回存或三方合并；更新保留历史；删除互不级联",
+    "editorScope": [
+      "素材编辑",
+      "角色/物品参数",
+      "2D 地图/对象摆放",
+      "剧情/事件"
+    ],
+    "nativeEditor": "Swift/SwiftUI/UIKit 原生操作界面；多数工作仍由 AI 完成，专用编辑器按实际支持范围提供",
+    "engines": [
+      "RPG Maker XP/VX/VX Ace",
+      "RPG Maker MV/MZ",
+      "Phaser",
+      "KAPLAY",
+      "Godot",
+      "Babylon.js",
+      "PlayCanvas",
+      "LÖVE",
+      "Ren’Py",
+      "TIC-80",
+      "Ink/inkjs",
+      "Twine/SugarCube",
+      "GDevelop",
+      "Cocos Creator",
+      "microStudio",
+      "WASM-4",
+      "Unity"
+    ],
+    "unity": "AI 编辑原工程；授权 CI 构建 Web 试玩；支持的独立游戏安装包构建与导出；未选原生固定 Unity 模板试玩",
+    "delivery": "全部选定引擎完成后统一交付；源码可编辑、可保存、反复试玩、反馈修复与导出分别验证"
+  },
+  "recommendation": "优先复用现有 App 原生组件与保存/任务服务，再引入数据解析、叙事运行和 CI/引擎宿主。新增代码集中在项目识别、引擎数据适配与可控试玩生命周期。",
+  "interfaceDecision": {
+    "status": "用户已选定第三张项目概览，沿用当前空间作品的独立编辑器呈现方式；简易编辑内部界面尚未实现",
+    "confirmedOn": "2026-11-11",
+    "selectedDisplayedOption": 3,
+    "selectedVisual": "docs/assets/game-editor/space-game-overview-selected-20261111.png",
+    "selectedVisualSHA256": "2dd800aa49ea7bf89aca04ae772deae08fc47fad552b067ce546d91745bb12ac",
+    "visualEvidenceType": "AI 生成的已选概念稿，不是 App 截图；画面中的示例游戏、预览、时间和保存状态不作为实现证据",
+    "overviewStructure": [
+      "顶部沿用空间作品现有关闭、标题和工具栏；概念稿中的返回空间表示关闭本次作品编辑器",
+      "项目图标、标题、引擎与简短说明",
+      "游戏预览；有真实截图时显示，没有时使用明确空态；不把示例画面冒充运行结果",
+      "AI 修改、简易编辑、打开 IDE、试玩四个入口",
+      "工程文件、版本记录两项辅助入口；状态来自实际项目服务"
+    ],
+    "interaction": {
+      "open": "从现有空间作品入口打开游戏项目概览；不增加另一套 App 外层导航或常驻项目侧栏",
+      "assistant": "复用当前作品助手的按需面板和持久绑定；默认不展开，按项目 ID 打开；概览和编辑界面共用同一个助手状态",
+      "simpleEdit": "原生辅助编辑范围仍为素材、角色/物品参数、2D 地图/对象摆放、剧情/事件；根据已验证的引擎适配能力呈现，不虚构全引擎完整可视化支持",
+      "ide": "作为同一空间工程的代码/文件视图，绑定实际工程根和所有者；不通过复制到普通会话后回存来实现",
+      "play": "与 IDE 的项目运行入口共用启动服务和同一保存修订；停止或关闭试玩返回原项目界面",
+      "copy": "普通会话和空间始终独立；仅由显式保存、更新、另存或导入复制工程"
+    },
+    "existingSourceEvidence": [
+      {
+        "path": "FloeAgent/FloeApp/Space/SpaceRootView.swift",
+        "finding": "空间作品由 fullScreenCover(item: opening) 打开 PersonalContentEditor；空间首页已有自己的分区、作品列表和工作台入口"
+      },
+      {
+        "path": "FloeAgent/FloeApp/Space/PersonalContentEditor.swift",
+        "finding": "现有作品编辑器负责标题、完成/关闭、作品助手与刷新；助手使用 inspector，按 record.id 保持身份，宽度为 320/420/520"
+      },
+      {
+        "path": "FloeAgent/FloeApp/Space/StudioAssistantView.swift",
+        "finding": "通过 studioCoordinator.assistant(for: record) 取得作品的持久助手，而非创建一份普通会话游戏副本"
+      },
+      {
+        "path": "FloeAgent/FloeApp/Space/StudioDocumentAccess.swift",
+        "finding": "document_assistants 维护一份作品到独立助手的绑定，document_access 维护实际编辑授权"
+      },
+      {
+        "path": "FloeAgent/FloeApp/App/FloeAgentApp.swift",
+        "finding": "iPad 外层 NavigationSplitView 已有稳定的侧栏、内容和按需检查面板；游戏入口应在现有功能内部扩展"
+      }
+    ],
+    "actualGap": "当前 PersonalContentKind 还没有游戏类型，PersonalContentEditor 也没有游戏分支；第三版是已确认的目标布局，不能描述为游戏功能已经接入"
+  },
+  "projectLaunchDirection": {
+    "decision": "统一运行入口、随 App 构建发布的引擎适配器、项目运行配置；普通使用不要求额外安装 VS Code 插件或通用扩展宿主",
+    "vscodeReferences": [
+      "https://code.visualstudio.com/docs/debugtest/debugging-configuration",
+      "https://code.visualstudio.com/api/extension-guides/debugger-extension",
+      "https://github.com/godotengine/godot-vscode-plugin",
+      "https://code.visualstudio.com/docs/other/unity"
+    ],
+    "vscodeFinding": "VS Code 用任务、启动配置和扩展连接实际工具链。Godot 扩展启动已安装的 Godot；Unity 调试连接 Unity Editor/Player，不是把完整 Unity Editor 嵌入 VS Code。Floe 借用统一入口与适配器的分层方式，不照搬桌面扩展的任意执行权限。",
+    "entryPolicy": [
+      "优先使用当前所有者绑定的工程根、引擎版本与启动目标，不以恰好打开的文件扩展名决定整个游戏的运行方式",
+      "只有一个已验证启动目标时直接使用；多个目标时让用户选择并保存项目配置；无法识别时保留原工程并显示具体原因",
+      "没有游戏工程匹配时保留当前单文件运行功能；不能把图片、README 或未打开脚本作为游戏运行的必要条件",
+      "先保存并固定工程修订，再检查资源/工具、构建、验证产物并启动试玩；旧产物必须带明确的源修订信息",
+      "Unity 保持 AI 修改原工程、CI 构建、Web 试玩和受支持安装包导出的已选路线",
+      "配置描述启动意图，不授予命令、网络、凭据或宿主 API 权限；工具命令继续使用已解析的环境和现有任务服务"
+    ],
+    "actualSourceSeams": [
+      {
+        "path": "FloeAgent/FloeApp/Workspace/WorkspaceIDEView.swift",
+        "finding": "现有 Run 在 activePath 为 nil 时禁用，presentRun 也要求当前文件；初始化时固定 center.currentWorkspace 和 currentRootURL",
+        "requiredChange": "增加工程优先的运行分派；空间 IDE 需要受生命周期管理的明确工程绑定，不能借用另一个全局当前工作区"
+      },
+      {
+        "path": "FloeAgent/FloeApp/Workspace/IDEWorkbenchState.swift",
+        "finding": "IDELanguageRunController 已有保存、上下文/修订复核、取消、运行归属和日志；GitHub Actions 由 App 级任务中心持有",
+        "requiredChange": "复用现有执行服务和保护，将整个工程的启动计划与当前单文件计划分开；试玩会话不得随视图重建失去归属"
+      },
+      {
+        "path": "FloeAgent/FloeApp/Workspace/IDELanguageRunView.swift",
+        "finding": "当前运行面板以活动文件推导语言/静态网页，已有网页服务和 Actions 结果入口",
+        "requiredChange": "提供项目运行状态和试玩容器路由；不要求先在代码标签页选中启动文件"
+      },
+      {
+        "path": "FloeAgent/FloeApp/Workspace/WorkspaceCenter.swift",
+        "finding": "现有中心管理明确的工作区根和文件服务；可关闭共享状态发布，但仍需合法根路径和运行环境绑定",
+        "requiredChange": "在复用 IDE 前验证空间项目原件、作品助手执行目录、环境与文件权限的实际映射；不能把已有助手临时工作目录视为空间原件"
+      },
+      {
+        "path": "FloeAgent/FloeApp/Space/PersonalContentLibrary.swift",
+        "finding": "作品目录是组织属性，不决定任务工作区、环境或编辑权限",
+        "requiredChange": "空间项目原件与普通会话副本的身份、保存和删除继续独立"
+      }
+    ],
+    "implementationStatus": "独立组件已可目录导入、文件/JSON 编辑保存重开、历史恢复与独立复制、真实 Web 产物和 Phaser WebKit 试玩/进度；尚未接入 Floe App 自动分派",
+    "validationBoundary": "25 组 39 个用例，11 个合成元数据示例；macOS 原生宿主真实 Phaser 输入/截图/停止重开和存档；13 个 iOS 26+ 对象编译，未启动模拟器"
+  },
+  "componentPredevelopment": {
+    "module": "FloeAgent/Modules/FloeGameKit",
+    "sourceBaseline": "48fa9d057e585a5dc1dc346e5c7500d1c8030036",
+    "record": "docs/qualification/FLOE_GAME_COMPONENTS_20261111.json",
+    "implemented": [
+      "工程目录导入，保留未知文本/二进制、空目录和可执行意图；不覆盖源工程",
+      "不可变文件对象和历史修订；跨实例 flock/CAS、失败事务清理、历史恢复、独立副本和导出",
+      "JSON 结构编辑保留无关及未知字段",
+      "按需准备并校验固定版本 Phaser JS、主许可证及 29 个上游声明块/EventEmitter 许可",
+      "实际 Phaser 模板创建、修改保存重开，以及真实 Web 产物复制/逐文件散列与读回",
+      "WebKit 本地资源服务、结构化输入、日志、状态、PNG 截图、确认停止、重新运行",
+      "原生持久进度与 CAS；按工程及空间/会话所有者隔离",
+      "SwiftUI/UIKit/AppKit 容器；不依附 View 生命周期启动或删除服务"
+    ],
+    "verified": "25 组 39 个用例；11 个识别示例；真实 macOS AppKit/WebKit Phaser 游戏；13 个 arm64 iOS Simulator 对象编译",
+    "boundary": "Phaser 是首个真实可试玩模板/适配器。其余引擎标识和文件保存不计为真实运行支持；App、原生辅助编辑器、其他引擎及构建/安装包导出仍待完成。"
+  },
+  "internalReuse": [
+    {
+      "name": "FloeCanvasKit / 当前原生画布宿主",
+      "license": "MPL-2.0",
+      "evidence": [
+        "FloeAgent/Modules/FloeCanvasKit/LICENSE",
+        "FloeAgent/Modules/FloeCanvasKit/Package.swift",
+        "FloeAgent/FloeApp/CreativeCanvas/CanvasFrameworkSurface.swift",
+        "FloeAgent/FloeApp/CreativeCanvas/CanvasFrameworkBacking.swift"
+      ],
+      "reusable": "SwiftUI/UIKit 画布、对象命中/移动、属性、稳定身份、预期修订提交、撤销/重做与恢复",
+      "remaining": "2D 瓦片/对象界面及各引擎数据映射；独立编辑状态；不可复用 Notes/Canvas 的会话、选择或 undo 实例",
+      "evidenceLevel": "已确认当前 App 源码接线；此次未运行 UI"
+    },
+    {
+      "name": "FloeDiagramKit / SwiftDagre",
+      "license": "MPL-2.0；SwiftDagre 为 MIT",
+      "evidence": [
+        "FloeAgent/Modules/FloeDiagramKit/LICENSE",
+        "FloeAgent/Modules/FloeDiagramKit/Vendor/SwiftDagre/LICENSE",
+        "FloeAgent/Modules/FloeDiagramKit/Sources/FloeDiagramUI/EditorView.swift",
+        "FloeAgent/FloeApp/Space/PersonalContentEditor.swift"
+      ],
+      "reusable": "原生节点、连接、布局、属性与结构化修订，可作剧情/事件界面的底座",
+      "remaining": "游戏事件语义、命令校验、引擎格式读写；可视化连接本身不意味着可执行",
+      "evidenceLevel": "已确认当前 App 有 DiagramEditorView 入口；此次未运行 UI"
+    },
+    {
+      "name": "现有 ZLImageEditor 封装",
+      "license": "MIT",
+      "evidence": [
+        "FloeAgent/ThirdParty/ZLImageEditor/LICENSE",
+        "FloeAgent/FloeApp/Media/FloeImageEditorView.swift",
+        "FloeAgent/FloeApp/Resources/ZLImageEditor-LICENSE.txt"
+      ],
+      "reusable": "绘制、裁剪、文字贴纸、马赛克、滤镜、调整、PNG 保存校验",
+      "remaining": "游戏素材选择、工程归属与保存适配；不是像素动画或完整关卡编辑器",
+      "evidenceLevel": "已确认依赖、原生封装与许可证文件；此次未运行 UI"
+    },
+    {
+      "name": "现有 IDE / 文件与归档服务",
+      "license": "MPL-2.0；第三方依赖沿现有许可清单",
+      "evidence": [
+        "FloeAgent/FloeApp/Workspace/WorkspaceIDEView.swift",
+        "FloeAgent/Sources/FloeWorkspace/WorkspaceTextPolicy.swift",
+        "FloeAgent/Sources/FloeWorkspace/IDEWorkspaceSession.swift",
+        "FloeAgent/Sources/FloeWorkspace/ArchiveBrowserService.swift"
+      ],
+      "reusable": "原生文本编辑、文件分类、文本/二进制保护、归档检查与受限解包、写入冲突校验",
+      "remaining": "工程与引擎优先的运行计划、游戏扩展名/容器识别、目录/ZIP 游戏导入；入口不能依赖当前恰好打开的是某个脚本"
+    },
+    {
+      "name": "空间持久化 / 项目 AI / 生命周期",
+      "license": "MPL-2.0",
+      "evidence": [
+        "FloeAgent/FloeApp/Space/PersonalContentLibrary.swift",
+        "FloeAgent/FloeApp/Space/StudioDocumentAccess.swift",
+        "FloeAgent/FloeApp/Space/StudioAssistantView.swift",
+        "FloeAgent/FloeApp/Space/PersonalFileAssistantLifecycle.swift"
+      ],
+      "reusable": "项目索引、独立助手身份、授权检查、版本/文件提交和删除收尾机制",
+      "remaining": "游戏内容类型、独立副本的显式复制/更新、稳定工程根与目标身份；来源元数据不能自动授予修改另一份工程的权限"
+    },
+    {
+      "name": "现有 GitHub Actions 任务与 IDE 路由",
+      "license": "MPL-2.0",
+      "evidence": [
+        "FloeAgent/Sources/FloeGit/GitHubActionsService.swift",
+        "FloeAgent/FloeApp/Workspace/GitHubActionsJobCenter.swift",
+        "FloeAgent/FloeApp/Workspace/GitHubActionsJobEngine.swift",
+        "FloeAgent/FloeApp/Workspace/IDEGitHubActionsPolicy.swift"
+      ],
+      "reusable": "仓库选择、构建任务状态、日志及结果接入的现有路径",
+      "remaining": "Unity 等引擎工作流模板、源修订绑定、产物与散列验证；不另建账户/凭据/任务系统"
+    }
+  ],
+  "externalCandidates": [
+    {
+      "name": "RPG-Maker-Translation-Tools/rvpacker-txt-rs-lib",
+      "url": "https://github.com/RPG-Maker-Translation-Tools/rvpacker-txt-rs-lib",
+      "branch": "main",
+      "license": "WTFPL",
+      "archived": false,
+      "pushedAt": "2026-11-02T20:21:47Z",
+      "language": "Rust",
+      "sourceSHA": "1feec3d6579b9770944379245600e99d446a4eaf",
+      "sourceURL": "https://github.com/RPG-Maker-Translation-Tools/rvpacker-txt-rs-lib/commit/1feec3d6579b9770944379245600e99d446a4eaf",
+      "commitDate": "2026-11-02T20:21:27Z",
+      "priority": "优先做数据往返验证",
+      "actualLicense": "WTFPL v2",
+      "licenseEvidence": "https://github.com/RPG-Maker-Translation-Tools/rvpacker-txt-rs-lib/blob/1feec3d6579b9770944379245600e99d446a4eaf/LICENSE.md",
+      "reusable": "XP/VX/VX Ace 的 rxdata/rvdata/rvdata2 与 JSON 双向转换；Scripts 与 Ruby 文本转换；地图、事件和数据库数据接口",
+      "codeEvidence": [
+        "src/json.rs",
+        "tests/json.rs",
+        "tests/roundtrip.rs",
+        "Cargo.toml"
+      ],
+      "dependenciesChecked": [
+        {
+          "name": "marshal-rs",
+          "version": "4.0.1",
+          "declaredLicense": "WTFPL",
+          "source": "https://crates.io/api/v1/crates/marshal-rs/4.0.1"
+        },
+        {
+          "name": "rm2k-lib",
+          "version": "1.2.0",
+          "declaredLicense": "WTFPL",
+          "source": "https://crates.io/api/v1/crates/rm2k-lib/1.2.0"
+        }
+      ],
+      "remaining": "先验证无改动和局部修改后的重新解析、对象引用、用户数据、字符串编码与脚本次序；数据等价不等于原始字节完全一致。完整锁定依赖闭包仍需后续核对。它不是 RGSS 运行时或现成 Swift 编辑器。",
+      "executionBoundary": "可作为受控数据处理组件或解析工具；模型编写的脚本和包命令仍通过现有 Linux exec.shell/jobs 路径"
+    },
+    {
+      "name": "game-ci/unity-builder",
+      "url": "https://github.com/game-ci/unity-builder",
+      "branch": "main",
+      "license": "MIT",
+      "archived": false,
+      "pushedAt": "2026-10-24T20:33:05Z",
+      "language": "TypeScript",
+      "sourceSHA": "fc892a0623ba0dba1f2d01b2be52994a57f936f3",
+      "sourceURL": "https://github.com/game-ci/unity-builder/commit/fc892a0623ba0dba1f2d01b2be52994a57f936f3",
+      "commitDate": "2026-10-24T20:33:03Z",
+      "priority": "优先采用 CI 构建组件",
+      "actualLicense": "MIT",
+      "licenseEvidence": "https://github.com/game-ci/unity-builder/blob/fc892a0623ba0dba1f2d01b2be52994a57f936f3/LICENSE",
+      "reusable": "Unity 多平台自动构建工作流及 WebGL 构建基础",
+      "remaining": "Unity Editor 本身的商业/Personal 授权独立于 Action 的 MIT；需要用户已配置的授权。构建应绑定工程 Unity 版本和源提交，iOS 导出与 Xcode 签名分别处理。Action 固定提交，不追浮动分支。",
+      "appRole": "CI 工作流，不是随 Floe 下载并执行的原生引擎"
+    },
+    {
+      "name": "migueldeicaza/SwiftGodotKit",
+      "url": "https://github.com/migueldeicaza/SwiftGodotKit",
+      "branch": "main",
+      "license": "MIT",
+      "archived": false,
+      "pushedAt": "2026-10-20T23:47:11Z",
+      "language": "C",
+      "sourceSHA": "8af63de094f8ef464e792847265b3d5f6149649f",
+      "sourceURL": "https://github.com/migueldeicaza/SwiftGodotKit/commit/8af63de094f8ef464e792847265b3d5f6149649f",
+      "commitDate": "2026-10-20T21:50:43Z",
+      "priority": "优先做独立宿主验证",
+      "actualLicense": "MIT",
+      "licenseEvidence": "https://github.com/migueldeicaza/SwiftGodotKit/blob/8af63de094f8ef464e792847265b3d5f6149649f/LICENSE",
+      "reusable": "SwiftUI Godot 宿主、PCK 加载、触控、Swift/Godot 信号通信及 Axolotl 示例结构",
+      "sourceDetails": "当前 Package.swift 使用 Swift tools 6.3，iOS 17+；固定 SwiftGodot c3303eadffe4413eaab359983ff7cd759fd7f351，并下载带 SHA256 的 4.7.3-rc libgodot 构建",
+      "remaining": "固定可复现组合并核对引擎二进制及第三方 notices；验证真正停止/重新运行、跨项目切换、内存和后台恢复。示例中的 Restart 调用游戏 new_game，不代表引擎销毁/重建已通过。",
+      "assetBoundary": "借用宿主和桥接代码；示例游戏、美术、字体按各自许可证单独核对，不自动打入 Floe",
+      "appleBoundary": "原生引擎代码随 App 签名构建；不可当按需资源下载原生 XCFramework"
+    },
+    {
+      "name": "y-lohse/inkjs",
+      "url": "https://github.com/y-lohse/inkjs",
+      "branch": "master",
+      "license": "MIT",
+      "archived": false,
+      "pushedAt": "2026-11-01T13:11:38Z",
+      "language": "TypeScript",
+      "sourceSHA": "fdc440a2c5a69c1fdb1e7d9765490a06d4cd092b",
+      "sourceURL": "https://github.com/y-lohse/inkjs/commit/fdc440a2c5a69c1fdb1e7d9765490a06d4cd092b",
+      "commitDate": "2026-11-01T13:11:36Z",
+      "priority": "优先采用叙事编译/运行核心",
+      "actualLicense": "MIT",
+      "licenseEvidence": "https://github.com/y-lohse/inkjs/blob/fdc440a2c5a69c1fdb1e7d9765490a06d4cd092b/LICENSE.md",
+      "reusable": "Ink 编译器与运行时，可减少另写剧情语言/解释器的工作；原生剧情编辑界面可以生成 Ink 文本",
+      "remaining": "剧情图与 Ink 的受限映射、状态保存、错误定位和实际引擎连接；界面为原生，脚本构建使用现有 Linux 任务链，Web 运行使用受控容器"
+    },
+    {
+      "name": "jpsim/Yams",
+      "url": "https://github.com/jpsim/Yams",
+      "branch": "main",
+      "license": "MIT",
+      "archived": false,
+      "pushedAt": "2026-10-13T14:46:43Z",
+      "language": "Swift",
+      "sourceSHA": "df801bc4f158f107035d2e14f6d0d8d31eb31ddb",
+      "sourceURL": "https://github.com/jpsim/Yams/commit/df801bc4f158f107035d2e14f6d0d8d31eb31ddb",
+      "commitDate": "2026-05-26T20:54:08Z",
+      "priority": "需要 Unity YAML 检视时采用",
+      "actualLicense": "MIT；libYAML 亦为 MIT",
+      "licenseEvidence": "https://github.com/jpsim/Yams/blob/df801bc4f158f107035d2e14f6d0d8d31eb31ddb/LICENSE",
+      "reusable": "Swift 原生 YAML 解析，可辅助 Unity 场景、Prefab、Meta 等文本数据检视",
+      "remaining": "不是 Unity 编辑器/完整序列化器；必须保留 GUID、标签、对象引用、未知字段及无法表示的数据；不能用普通 YAML 全量重写冒充无损编辑"
+    },
+    {
+      "name": "mfessenden/SKTiled",
+      "url": "https://github.com/mfessenden/SKTiled",
+      "branch": "master",
+      "license": "NOASSERTION",
+      "archived": false,
+      "pushedAt": "2025-10-21T20:32:07Z",
+      "language": "Swift",
+      "sourceSHA": "c0a15392bbfa8e5c307caa68e46ae5cd66720aa6",
+      "sourceURL": "https://github.com/mfessenden/SKTiled/commit/c0a15392bbfa8e5c307caa68e46ae5cd66720aa6",
+      "commitDate": "2025-10-21T20:32:07Z",
+      "priority": "条件候选，仅有 Tiled 预览需求时采用",
+      "actualLicense": "MIT（以实际 LICENSE.md 为准，GitHub 自动识别为 NOASSERTION）",
+      "licenseEvidence": "https://github.com/mfessenden/SKTiled/blob/c0a15392bbfa8e5c307caa68e46ae5cd66720aa6/LICENSE.md",
+      "reusable": "Swift/SpriteKit 的 Tiled 地图与对象读取、渲染、图层和自定义属性",
+      "remaining": "不是完整地图编辑器，不覆盖 RPG Maker 二进制地图。Package 使用 Swift tools 5.3；当前 Xcode/Swift 6 需真实对象编译和 UI 验证。对通用 2D 编辑优先复用现有画布，避免多加一个画布状态系统。"
+    }
+  ],
+  "otherRuntimeReuse": [
+    {
+      "name": "Phaser / KAPLAY / Babylon.js / PlayCanvas / GDevelop / TIC-80 / WASM-4 / SugarCube",
+      "decision": "继续复用各自现成核心，不重写游戏引擎；各核心、模板、美术和构建依赖分别锁定许可证与版本。本文不将其 Web/桌面编辑器当作 Swift 原生编辑器。",
+      "evidence": "同轮前续官方仓库调查；本清单不宣称已完成这些运行时的最终依赖闭包核验"
+    },
+    {
+      "name": "LÖVE",
+      "coreLicense": "zlib；多个依赖各有许可",
+      "source": "https://github.com/love2d/love/blob/main/license.txt",
+      "decision": "可复用核心，SDL/Lua 宿主与反复运行生命周期仍需验证；不能把下载解释代码、FFI 或任意原生扩展混为一种能力"
+    },
+    {
+      "name": "Ren’Py",
+      "coreLicense": "主要 MIT；包含 LGPL 等组件",
+      "source": "https://www.renpy.org/doc/html/license.html",
+      "decision": "复用脚本和运行核心；iOS/FFmpeg/SDL 等实际构件与分发义务独立核对，不能仅标 MIT 即视为已解决"
+    }
+  ],
+  "doNotAdoptAsDropIn": [
+    {
+      "name": "mateo-m/mkxp-z-apple-mobile",
+      "url": "https://github.com/mateo-m/mkxp-z-apple-mobile",
+      "branch": "dev",
+      "license": "GPLv3；iOS/多 Ruby 部分含附加署名与来源条款，上游部分保留原许可",
+      "archived": false,
+      "pushedAt": "2026-11-11T04:22:08Z",
+      "language": "C++",
+      "sourceSHA": "6facf0b41363bb7da91ea72a752de5b84e2743d7",
+      "sourceURL": "https://github.com/mateo-m/mkxp-z-apple-mobile/commit/6facf0b41363bb7da91ea72a752de5b84e2743d7",
+      "commitDate": "2026-11-11T04:12:31Z",
+      "evidence": [
+        "https://github.com/mateo-m/mkxp-z-apple-mobile/blob/6facf0b41363bb7da91ea72a752de5b84e2743d7/ADDITIONAL-TERMS.md",
+        "https://github.com/mateo-m/mkxp-z-apple-mobile/blob/6facf0b41363bb7da91ea72a752de5b84e2743d7/src/app_bridge.h#L657"
+      ],
+      "finding": "mkxp_killSession 的接口注释明确会停止整个进程；不能原样作为 Floe 可反复启动/停止的游戏会话。",
+      "decision": "可研究其移植实现；不直接把整套播放器或库并入 Floe。需单独处理组合许可、完整依赖/分发义务和运行隔离。MPL 与 GPL 并非一概不兼容，但不能据此认定整个 App 的分发条件已满足。XP/VX 目标仍保留。",
+      "licensingReference": "https://www.mozilla.org/en-US/MPL/2.0/FAQ/"
+    },
+    {
+      "name": "yukiny0811/easy-node-editor",
+      "url": "https://github.com/yukiny0811/easy-node-editor",
+      "branch": "main",
+      "license": "MIT",
+      "archived": false,
+      "pushedAt": "2024-05-11T04:34:35Z",
+      "language": "Swift",
+      "decision": "README 标为 alpha，维护快照最后 push 为 2024-05；现有原生 DiagramKit 更值得优先复用，不为成熟节点编辑需求直接采用它。"
+    },
+    {
+      "name": "Pixhaus",
+      "source": "https://github.com/pixhaus-app/pixhaus",
+      "decision": "Tauri/Rust + TypeScript/Solid.js UI，不符合本轮 Swift/SwiftUI/UIKit 编辑界面目标。"
+    },
+    {
+      "name": "完整桌面游戏编辑器",
+      "decision": "已核对候选中未找到许可清楚、可直接嵌入且能覆盖多引擎的成熟 Swift 成品。采用原生共用辅助编辑界面与引擎适配，保留原引擎工程格式。"
+    },
+    {
+      "name": "RPG Maker 官方运行时、默认脚本与 RTP/商店素材",
+      "source": "https://rpgmakerweb.com/eula",
+      "decision": "游戏分发授权不等于通用工具/素材库再分发授权。导入用户合法工程与内置分发官方内容分开处理；不从示例仓库直接复制来源不明或专有素材。"
+    }
+  ],
+  "appleRequirements": {
+    "references": [
+      "https://developer.apple.com/support/terms/apple-developer-program-license-agreement/",
+      "https://developer.apple.com/app-store/review/guidelines/"
+    ],
+    "rules": [
+      "原生引擎与 SDK 随签名 App 构建；按需内容区分素材、工程、解释代码和原生程序。",
+      "解释代码按用途、签名/沙箱及应用商店限制评估；编程学习例外另有条件，不默认套用。",
+      "Web 内容采用系统 WebKit。适用小游戏条款时落实原生 API、权限及内容要求，不向游戏暴露 Floe 的敏感宿主能力。",
+      "独立游戏安装包走正常构建、签名和分发路径；CI 编译成功不代表可安装或已通过 Apple 审核。"
+    ],
+    "evaluation": "MIT、MPL、GPL 等许可选择与 Apple 审核适用路径分别记录；开源许可本身不保证审核通过"
+  },
+  "minimumNewWork": [
+    "游戏工程识别、引擎/版本描述及当前所有者/根路径解析",
+    "各引擎原生数据与共用简易编辑界面的精确适配，保留未知数据",
+    "统一试玩服务的启动、停止、重复运行、输入、截图、日志和存档",
+    "显式工程复制/更新、资源校验、恢复与版本边界",
+    "资源离线准备及大型 Web/WASM/音视频资源服务；现有静态预览的 20 MiB 单文件限制、MIME/编码与流式读取需完善",
+    "AI 工具发现、实际能力回读以及 CI 构建与源版本/产物绑定"
+  ],
+  "verification": {
+    "performed": [
+      "读取实际 checkout、源码接线及本地许可证",
+      "使用 GitHub 官方 API 检查候选源码、许可证、维护元数据与固定提交",
+      "阅读 JSON/脚本写回与测试源码",
+      "核对 marshal-rs/rm2k-lib 的 crates.io 许可声明",
+      "核对 Apple 官方规则与 Unity/GameCI/Ren’Py 官方文档",
+      "将用户选定的第三张概览与当前 SpaceRootView、PersonalContentEditor、作品助手和 IDE 运行路径逐项对应",
+      "核对 VS Code 官方启动/任务配置、Godot 官方扩展和 Unity 调试说明",
+      "保留已选概念稿原图，并校验归档副本的 SHA-256",
+      "编译独立 FloeGameKit，完成宿主组件测试、11 个合成元数据样例和 iOS 对象编译；详细结果与逐文件散列在独立验证记录中",
+      "补齐真实文件仓库与 Phaser 组件闭环，并以独立原生宿主实际验证帧、输入、截图、持久进度及停止/重开；记录原始失败和实际修复"
+    ],
+    "notPerformed": [
+      "上游引擎/候选工程编译及依赖安装",
+      "完整传递依赖 SBOM 与最终分发许可审查",
+      "完整 App/Simulator/物理设备试玩",
+      "CI 构建或发布",
+      "Apple 申请、处理或审核"
+    ],
+    "modifications": "新增独立可用组件、资源准备与复现脚本、源码/试玩示例归档和记录；按需资源中使用已校验 Phaser JS 及许可证；未将原生引擎并入 App，未提交或发布"
+  }
+}

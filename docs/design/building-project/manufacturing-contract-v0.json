@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 0,
+  "status": "design-contract-only",
+  "units": "mm",
+  "notRuntimeSchemaOrManufacturingOutput": true,
+  "requiredRecords": {
+    "partIdentity": ["projectObjectID", "recipeVersion", "logicalPanelID", "geometryFingerprint"],
+    "localFrame": ["originMM", "uAxis", "vAxis", "normalAxis", "faceA", "faceB", "modelTransform"],
+    "sizeBasis": ["finishedEnvelopeIncludesEdgesOrCoreBeforeEdges", "finishedEnvelopeMM", "coreFinishedSizeMM", "cutBlankSizeMM"],
+    "material": ["materialVersion", "materialClass", "actualThicknessMM", "supplierOrSource", "ruleVersion"],
+    "edgeTreatment": ["stableEdgeID", "materialVersion", "effectiveFinishedBuildUpMM", "deductFromEnvelope", "processOrder"],
+    "allowance": ["uTotalOrPerEdge", "vTotalOrPerEdge", "thicknessAllowance", "processStage", "ruleVersion"],
+    "grain": ["uOrVOrNoneOrUnknown", "allowedQuarterTurns", "allowMirroring", "matchedGroupID"],
+    "stock": ["materialBatchVersion", "actualSizeMM", "quantity", "trimmingByEdgeMM", "defects"],
+    "cuttingProcess": ["linearOrGuillotineOrRectangleOrProfileNesting", "spacingMM", "machineOrProcessRuleVersion", "timeAndMemoryBudget"],
+    "hardware": ["productVersion", "mountingFace", "datumEdges", "drillPatternVersion", "motionEnvelope", "sourceEvidence"],
+    "result": ["inputFingerprint", "engineVersion", "itemToPartMapping", "placements", "unplacedParts", "cutTreeIfRequired", "verificationStages"]
+  },
+  "edgeFrameConvention": {
+    "rectangularPart": ["uMin", "uMax", "vMin", "vMax"],
+    "nonRectangularPart": "persistent profile segment identity; unresolved edits become issues",
+    "handedness": "u cross v equals positive normal; camera orientation does not define manufacturing face"
+  },
+  "hypotheticalExample": {
+    "source": "Synthetic arithmetic example; not supplier defaults or an executed generator",
+    "sizeBasis": "finished-envelope-includes-edges",
+    "finishedEnvelopeMM": [600, 400, 18],
+    "edges": {
+      "uMin": {"effectiveFinishedBuildUpMM": 1, "deductFromEnvelope": true},
+      "uMax": {"effectiveFinishedBuildUpMM": 1, "deductFromEnvelope": true},
+      "vMin": {"effectiveFinishedBuildUpMM": 0, "deductFromEnvelope": false},
+      "vMax": {"effectiveFinishedBuildUpMM": 0, "deductFromEnvelope": false}
+    },
+    "allowanceMM": {"uTotal": 2, "vTotal": 2, "thicknessTotal": 0},
+    "expectedCoreFinishedSizeMM": [598, 400, 18],
+    "expectedCutBlankSizeMM": [600, 402, 18],
+    "manufacturingVerified": false
+  },
+  "verificationStages": {
+    "sizePrepared": "not-implemented",
+    "layoutFeasible": "not-implemented",
+    "inventoryAdopted": "not-implemented",
+    "assemblyClearanceChecked": "not-implemented",
+    "hardwareAndDrillingValidated": "not-implemented",
+    "machinePostprocessorQualified": "not-implemented"
+  },
+  "missingInformationBehavior": "Keep design work available; block only dependent manufacturing outcomes; retain evidence and create issues",
+  "implementationBoundary": "FloeInteriorKit currently creates design geometry and CSV only; no production status is granted by this contract"
+}

@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "status": "design-prototype-not-app-ui",
+  "sharedWritePath": "project service with expected records/model revisions; model changes use native CAD session",
+  "fieldDefinitions": [
+    {"key":"room.use","valueType":"text","unit":"","label":{"zh":"房间用途","en":"Room use"}},
+    {"key":"room.requested_length","valueType":"number","unit":"mm","minimum":1,"maximum":1000000,"label":{"zh":"设计长度","en":"Requested length"}},
+    {"key":"room.clear_height","valueType":"number","unit":"mm","minimum":1,"maximum":100000,"label":{"zh":"净高","en":"Clear height"}},
+    {"key":"opening.width","valueType":"number","unit":"mm","minimum":1,"maximum":100000,"label":{"zh":"洞口宽度","en":"Opening width"}},
+    {"key":"cabinet.requested_width","valueType":"number","unit":"mm","minimum":1,"maximum":100000,"label":{"zh":"柜体目标宽度","en":"Requested cabinet width"}},
+    {"key":"furniture.installation_gap","valueType":"number","unit":"mm","minimum":0,"maximum":100000,"label":{"zh":"安装间隙","en":"Installation clearance"}},
+    {"key":"design.note","valueType":"text","unit":"","label":{"zh":"设计说明","en":"Design note"}}
+  ],
+  "forms": [
+    {"id":"room","title":{"zh":"房间档案","en":"Room dossier"},"record":"object:room","fields":[{"property":"room.use","control":"text"},{"property":"room.requested_length","control":"dimension"},{"property":"room.clear_height","control":"dimension"},{"property":"design.note","control":"multiline"}],"related":["sources","measurements","openings","furniture","issues","decisions"],"nativeReadOnly":["room.current_outline","room.net_area"],"nativeActions":["applyRoomConstraints"]},
+    {"id":"source","title":{"zh":"资料登记","en":"Source record"},"record":"source_version","fields":[{"column":"source.title","control":"text"},{"column":"source.kind","control":"sourceKind"},{"column":"source_version.original_name","control":"readOnly"}],"actions":["assignToObjects","openOriginalAtLocation","appendSourceVersion"]},
+    {"id":"measurement","title":{"zh":"尺寸核对","en":"Measurement review"},"record":"observation","fields":[{"column":"field_key","control":"propertyPicker"},{"column":"normalizedValue","control":"typedValue"},{"column":"origin","control":"readOnly"},{"column":"location_id","control":"sourceLink"}],"actions":["appendCorrection","adoptWithDecision","recordConflict"],"preserveOriginal":true},
+    {"id":"furniture","title":{"zh":"家具定义与实例","en":"Furniture definition and instance"},"record":"asset_instance","fields":[{"column":"asset_version_id","control":"pinnedAssetPicker"},{"column":"asset_version.dimensionsMM","control":"readOnly"},{"property":"furniture.installation_gap","control":"dimension"}],"nativeActions":["place","move","rotate","replaceInstance","editSupportedParameters"],"related":["assetVersion","license","materials","generationInputs"]},
+    {"id":"cabinet","title":{"zh":"柜体设计与生产准备","en":"Cabinet design and production preparation"},"record":"object:cabinet","fields":[{"property":"cabinet.requested_width","control":"dimension"},{"property":"design.note","control":"multiline"}],"nativeActions":["editCabinetAssembly","configurePanels","assignHardwareRules"],"related":["panels","hardware","edging","holes","cuttingPlan","manufacturingVerification"],"manufacturingRuleRequired":true},
+    {"id":"asset","title":{"zh":"资源入库","en":"Asset intake"},"record":"asset_version","fields":[{"column":"asset_definition.name","control":"text"},{"column":"geometry_kind","control":"representationPicker"},{"column":"dimensionsMM","control":"dimensions3D"},{"column":"license_id","control":"provenance"},{"column":"assetDependencies","control":"dependencyList"}],"actions":["validateResources","setFrontAndAnchor","generatePlanSymbol","publishVersionToLibrary"]},
+    {"id":"generation","title":{"zh":"AI 创建家具","en":"Create furniture with AI"},"record":"operation:generate_asset","fields":[{"column":"input.description","control":"multiline"},{"column":"input.referenceSources","control":"sourcePicker"},{"column":"input.targetRepresentation","control":"parametricOrMesh"},{"column":"input.dimensionsMM","control":"dimensions3D"}],"actions":["generateCandidates","inspectCandidate","reviseCandidate","saveAsAssetVersion","placeInstance"]},
+    {"id":"issues","title":{"zh":"待补与冲突","en":"Missing information and conflicts"},"record":"issue","fields":[{"column":"message","control":"text"},{"column":"relatedEvidence","control":"sourceLinks"},{"column":"state","control":"readOnly"}],"actions":["answer","resolveWithDecision","locateInModel"]}
+  ]
+}

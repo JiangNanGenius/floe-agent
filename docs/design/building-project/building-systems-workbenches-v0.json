@@ -1,0 +1,87 @@
+{
+  "designVersion": 0,
+  "researchDate": "2026-11-12",
+  "requirementsUpdated": "2026-11-13",
+  "confirmedQAs": [26, 27, 28],
+  "status": "user-requested workbench and simulation design; not implemented or registered as available capabilities",
+  "sharedIdentity": ["projectID", "projectRevision", "storeyID", "roomID", "sourceLocationID", "assetVersionID", "equipmentInstanceID", "portID", "networkSegmentID", "circuitID", "pointID", "drawingViewID", "BOMRevision"],
+  "workbenches": [
+    {
+      "id": "smart_home_planning",
+      "directlyRequested": true,
+      "sections": ["rooms and points", "equipment and BOM import", "power and terminals", "bus and network topology", "scenes and control logic", "AP placement and radio estimates", "installation sheets and schedules"],
+      "data": ["physical device", "logical channels/entities", "gateway", "power supply", "typed ports and connections", "room allocation", "scene/trigger/condition/action design", "source-backed product capabilities"],
+      "outputs": ["device and point plans", "connection and wiring diagrams", "port/circuit/address schedules", "scene and control schedules", "equipment, cable, gateway and accessory BOM"],
+      "bomContract": "smart-home-bom-v0.json",
+      "confirmedQA": 26,
+      "deliveryScope": "planning and construction deliverables: point plans, topology, wiring, scene schedules and BOM",
+      "deploymentAndCommissioningDepth": "not in this round: real-system configuration deployment, live equipment control or commissioning; field radio measurements and calibration are retained under QA27",
+      "requiresLiveHomeConnectionForPlanning": false
+    },
+    {
+      "id": "hvac",
+      "directlyRequested": true,
+      "existingConfirmedRequirement": "QA06 full MEP systems, calculation, sizing and coordination",
+      "sections": ["room and design conditions", "heating/cooling and fresh-air requirements", "system and equipment", "duct and pipe networks", "outlets and terminals", "controls and coordination", "calculation results and sheets"],
+      "inputs": ["climate and design conditions", "envelope and geometry", "occupancy and schedules", "internal and moisture loads", "equipment and method versions", "flow and network boundary conditions"],
+      "outputs": ["zone and load results", "equipment and sizing basis", "plans, sections and system diagrams", "service and clash issues", "equipment/material schedules", "calculation reports"],
+      "calculationCategories": ["explicitly labeled preliminary estimate", "design-condition calculation", "dynamic simulation"],
+      "candidateBackends": ["OpenStudio SDK/CLI", "EnergyPlus"],
+      "runtime": "selected existing environment and owned job lifecycle; input snapshot, engine version and actual result status retained"
+    }
+  ],
+  "legendAndConnectionPresets": {
+    "directlyRequested": true,
+    "representations": ["plan installation symbol", "logical system topology", "terminal wiring diagram", "2D/3D device geometry"],
+    "groups": [
+      {"id":"rs485", "record":["actual terminal labels", "signal pairs", "duplex mode", "reference/shield", "segment/address", "termination and isolation evidence", "separate application protocol"]},
+      {"id":"can", "record":["actual CAN type", "terminal labels", "segment/rate", "termination", "reference/isolation evidence", "application compatibility"]},
+      {"id":"ac_and_connectors", "record":["plug/socket/terminal form", "rated conditions", "L/N/PE", "supply circuit", "device neutral requirement"]},
+      {"id":"low_voltage_power", "record":["AC/DC", "actual voltage and polarity", "supply and load rating", "source supply", "cable and protection basis", "voltage-drop calculation basis"]},
+      {"id":"control", "record":["dry-contact COM/NO/NC", "relay channels", "analog/digital dimming interface", "sensor or thermostat interface", "signal reference"]},
+      {"id":"network_and_wireless", "record":["Ethernet ports", "PoE source/sink roles", "switch/AP/gateway", "antenna/wireless relation", "logical network and physical cable"]}
+    ],
+    "userPhrasePreserved": "带零线的插头; connector/socket form and a smart switch's neutral requirement remain separate fields",
+    "validationDesign": ["typed port compatibility", "supply versus load conditions", "required gateway/power missing", "channel/port capacity", "open connections", "source-specific topology and termination"],
+    "connections": "explicit port/node relationships; crossing lines and shared colors do not create a connection",
+    "candidateReuse": "existing Floe EDA symbol/pin and resource adapters; building installation symbols require domain templates and separate validation"
+  },
+  "radioPlanning": {
+    "directlyRequested": true,
+    "inputs": ["room/floor geometry and openings", "radio material and thickness", "frequency", "AP model and antenna pattern", "AP and receiver position/orientation", "transmit conditions", "channel and width", "interference assumptions", "algorithm and grid"],
+    "materialRule": "visual color and texture do not establish radio material properties",
+    "resultDesign": ["per-floor and per-band coverage maps", "received power", "coverage gaps and overlap", "channel coordination suggestions", "SINR/capacity only with corresponding model and inputs"],
+    "evidenceClasses": ["model estimate", "ray-computation result", "field measurement", "calibrated model"],
+    "calibration": "retain measurement source, device definition, coordinates and adopted adjustment version",
+    "candidateBackend": "Sionna RT; official CPU path depends on LLVM/Dr.Jit; no iPad performance or integration demonstrated",
+    "confirmedQA": 27,
+    "fidelityTarget": "quick estimates, detailed propagation simulation and field calibration; per-band heatmaps and selectable calculation fidelity",
+    "detailedCalculationLifecycle": "independent owned job with input snapshot, configuration, engine version, progress, cancellation, recoverable result and actual completion status",
+    "fieldMeasurementRecord": ["measurement source and device", "band/frequency", "position/orientation", "measurement conditions", "raw observations", "adopted calibration version"],
+    "calibrationScope": "updates a versioned prediction model; does not deploy AP configuration or control live equipment"
+  },
+  "lightingSimulation": {
+    "directlyRequestedIn3D": true,
+    "designTracks": ["visual light/color/shadow/exposure preview", "source-backed photometric calculation and report"],
+    "sharedLuminaireRecord": ["model and photometry version", "position/orientation", "output/dimming state", "circuit and control group"],
+    "targetPhotometryInputs": ["IES", "LDT with a separately verified adapter"],
+    "calculationInputs": ["geometry and occlusion", "luminaire photometry and output", "optical material properties", "calculation grid/workplane", "daylight and time when applicable", "method-specific maintenance and other conditions"],
+    "results": ["input snapshot and engine/configuration", "calculation plane", "illuminance distribution", "report and applicable rule coverage", "stale state after dependent changes"],
+    "candidateBackend": "Radiance and official ies2rad converter; no calculation or native integration run",
+    "missingPhotometry": "retain visual-use capability and show missing engineering basis",
+    "confirmedQA": 28,
+    "fidelityTarget": "both interactive visual lighting and real-luminaire-photometry-based illuminance distribution, statistics and report",
+    "validationTracks": ["visual interaction and rendering", "photometric input, calculation and report correctness"],
+    "sharedVersionBinding": "luminaire model/photometry, pose, output state, geometry and material inputs are traceable across both tracks; changed dependencies mark engineering results stale"
+  },
+  "candidateReferences": [
+    {"name":"Home Assistant registries and APIs", "url":"https://contributors.home-assistant.io/core/integrations/device-registry/", "scope":"official data/API documentation read; no system connected"},
+    {"name":"OpenStudio", "url":"https://openstudio.net/", "scope":"official SDK/CLI platform and workflow documentation read; no runtime or iOS build"},
+    {"name":"EnergyPlus", "url":"https://github.com/NatLabRockies/EnergyPlus", "scope":"official source project identified; fixed version, dependencies and calculation proof pending"},
+    {"name":"Sionna RT", "url":"https://nvlabs.github.io/sionna/rt/tutorials/Introduction.html", "scope":"official radio-map and installation documentation read; no simulation run"},
+    {"name":"Radiance", "url":"https://www.radiance-online.org/learning/documentation/manual-pages/pdfs/ies2rad.pdf", "scope":"IES converter documentation identified; no lighting calculation run"},
+    {"name":"KiCad library license", "url":"https://www.kicad.org/libraries/license/", "scope":"library collection license and design-output exception checked; no new symbol library integrated"}
+  ],
+  "verification": {"nativeWorkbenchImplemented": false, "BOMImportRun": false, "realDeviceConnected": false, "HVACCalculationRun": false, "radioSimulationRun": false, "lightingCalculationRun": false, "newSymbolSetValidated": false},
+  "existingPrototypeBoundary": "does not expand the24 database checks,8 existing forms or prior cabinet test results"
+}

@@ -1,0 +1,783 @@
+{
+  "schemaVersion": 1,
+  "status": "design-catalog-not-implemented-generators",
+  "primaryWorkflow": "interior_renovation",
+  "scopeNote": "Primary workflow priority; retains all previously confirmed architecture/structure/MEP requirements.",
+  "generators": [
+    "plan",
+    "reflected_plan",
+    "elevation",
+    "section",
+    "exploded",
+    "part",
+    "detail",
+    "manual_detail",
+    "schematic",
+    "nesting",
+    "labels",
+    "schedule"
+  ],
+  "sharedContract": {
+    "modelOwner": "existing Floe native drawing/model store",
+    "sheetId": "stable UUID; printed numbering configurable per project",
+    "scopes": [
+      "project",
+      "floor",
+      "room",
+      "run",
+      "cabinet",
+      "assembly",
+      "part",
+      "detail",
+      "sheet"
+    ],
+    "sourceVersions": [
+      "model",
+      "records",
+      "asset",
+      "cabinet_assembly",
+      "material_rule",
+      "hardware_rule",
+      "view_definition",
+      "annotations"
+    ],
+    "annotations": "native linked dimensions, symbols, labels and manually authored details",
+    "missingData": "draft with visible issues; missing manufacturing rules cannot be labelled production-verified",
+    "batchExport": "one fixed input snapshot, PDF/DWG/DXF where actual format service supports it; explicit partial/failure status",
+    "modelChange": "invalidate only affected derived views and schedules; retain authored annotations; unresolved anchors become visible issues",
+    "independentCopies": "no writeback to building original"
+  },
+  "groups": [
+    {
+      "id": "general",
+      "title": {
+        "zh": "图纸基础与量房",
+        "en": "General and survey"
+      },
+      "drawings": [
+        {
+          "id": "general.cover_index",
+          "title": {
+            "zh": "封面、目录与修订表",
+            "en": "Cover, index and revisions"
+          },
+          "generator": "schedule",
+          "requires": [
+            "sheet_set"
+          ],
+          "scopes": [
+            "sheet",
+            "project"
+          ]
+        },
+        {
+          "id": "general.notes_legends",
+          "title": {
+            "zh": "设计说明与图例",
+            "en": "Notes and legends"
+          },
+          "generator": "manual_detail",
+          "requires": [
+            "project_notes",
+            "symbol_standard"
+          ],
+          "scopes": [
+            "project"
+          ]
+        },
+        {
+          "id": "general.existing_plan",
+          "title": {
+            "zh": "量房现状与尺寸图",
+            "en": "Measured existing plan"
+          },
+          "generator": "plan",
+          "requires": [
+            "existing_phase",
+            "measurement_sources"
+          ],
+          "scopes": [
+            "floor",
+            "room"
+          ]
+        },
+        {
+          "id": "general.survey_issues",
+          "title": {
+            "zh": "待复量与现场问题图",
+            "en": "Survey issues plan"
+          },
+          "generator": "plan",
+          "requires": [
+            "existing_phase",
+            "measurement_issues"
+          ],
+          "scopes": [
+            "floor",
+            "room"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "alteration",
+      "title": {
+        "zh": "拆改与定位",
+        "en": "Alteration and setting out"
+      },
+      "drawings": [
+        {
+          "id": "alteration.demolition_plan",
+          "title": {
+            "zh": "拆除与保留图",
+            "en": "Demolition and retention plan"
+          },
+          "generator": "plan",
+          "requires": [
+            "phase_classification",
+            "alteration_decisions"
+          ],
+          "scopes": [
+            "floor",
+            "room"
+          ]
+        },
+        {
+          "id": "alteration.new_wall_plan",
+          "title": {
+            "zh": "新建墙体与门洞图",
+            "en": "New walls and openings"
+          },
+          "generator": "plan",
+          "requires": [
+            "proposed_phase",
+            "wall_types",
+            "opening_hosts"
+          ],
+          "scopes": [
+            "floor",
+            "room"
+          ]
+        },
+        {
+          "id": "alteration.setting_out",
+          "title": {
+            "zh": "定位放线与尺寸图",
+            "en": "Setting-out and dimension plan"
+          },
+          "generator": "plan",
+          "requires": [
+            "proposed_phase",
+            "reference_datums"
+          ],
+          "scopes": [
+            "floor",
+            "room"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "interior",
+      "title": {
+        "zh": "室内布置与饰面",
+        "en": "Interior layout and finishes"
+      },
+      "drawings": [
+        {
+          "id": "interior.furniture_plan",
+          "title": {
+            "zh": "家具与设备布置图",
+            "en": "Furniture and equipment plan"
+          },
+          "generator": "plan",
+          "requires": [
+            "asset_instances",
+            "plan_symbols"
+          ],
+          "scopes": [
+            "floor",
+            "room"
+          ]
+        },
+        {
+          "id": "interior.kitchen_bath_plan",
+          "title": {
+            "zh": "厨房、卫浴设备定位图",
+            "en": "Kitchen and bathroom layout"
+          },
+          "generator": "plan",
+          "requires": [
+            "fixture_instances",
+            "installation_interfaces"
+          ],
+          "scopes": [
+            "floor",
+            "room"
+          ]
+        },
+        {
+          "id": "interior.floor_finish",
+          "title": {
+            "zh": "地面材质与铺装图",
+            "en": "Floor finishes and laying plan"
+          },
+          "generator": "plan",
+          "requires": [
+            "finish_regions",
+            "laying_rules"
+          ],
+          "scopes": [
+            "floor",
+            "room"
+          ]
+        },
+        {
+          "id": "interior.wall_finish",
+          "title": {
+            "zh": "墙面饰面与编号图",
+            "en": "Wall finishes and references"
+          },
+          "generator": "plan",
+          "requires": [
+            "finish_regions",
+            "elevation_references"
+          ],
+          "scopes": [
+            "floor",
+            "room"
+          ]
+        },
+        {
+          "id": "interior.reflected_ceiling",
+          "title": {
+            "zh": "吊顶与标高图",
+            "en": "Reflected ceiling and levels"
+          },
+          "generator": "reflected_plan",
+          "requires": [
+            "ceiling_components",
+            "level_datums"
+          ],
+          "scopes": [
+            "floor",
+            "room"
+          ]
+        },
+        {
+          "id": "interior.ceiling_coordination",
+          "title": {
+            "zh": "天花综合定位图",
+            "en": "Ceiling coordination plan"
+          },
+          "generator": "reflected_plan",
+          "requires": [
+            "ceiling_components",
+            "lighting_instances",
+            "service_terminals"
+          ],
+          "scopes": [
+            "floor",
+            "room"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "services",
+      "title": {
+        "zh": "灯光、水电与机电协调",
+        "en": "Lighting and services"
+      },
+      "drawings": [
+        {
+          "id": "services.lighting",
+          "title": {
+            "zh": "灯具布置与定位图",
+            "en": "Lighting layout"
+          },
+          "generator": "reflected_plan",
+          "requires": [
+            "lighting_instances",
+            "level_datums"
+          ],
+          "scopes": [
+            "floor",
+            "room"
+          ]
+        },
+        {
+          "id": "services.switch_control",
+          "title": {
+            "zh": "开关与灯具控制图",
+            "en": "Switching and lighting controls"
+          },
+          "generator": "plan",
+          "requires": [
+            "electrical_points",
+            "control_connections"
+          ],
+          "scopes": [
+            "floor",
+            "room"
+          ]
+        },
+        {
+          "id": "services.power_data",
+          "title": {
+            "zh": "强弱电点位图",
+            "en": "Power and data points"
+          },
+          "generator": "plan",
+          "requires": [
+            "electrical_points",
+            "installation_heights"
+          ],
+          "scopes": [
+            "floor",
+            "room"
+          ]
+        },
+        {
+          "id": "services.electrical_circuits",
+          "title": {
+            "zh": "配电、回路与系统图",
+            "en": "Distribution, circuits and schematics"
+          },
+          "generator": "schematic",
+          "requires": [
+            "electrical_network",
+            "circuit_assignments"
+          ],
+          "scopes": [
+            "project",
+            "floor"
+          ]
+        },
+        {
+          "id": "services.plumbing",
+          "title": {
+            "zh": "给排水定位与管线图",
+            "en": "Water supply and drainage"
+          },
+          "generator": "plan",
+          "requires": [
+            "plumbing_network",
+            "installation_interfaces"
+          ],
+          "scopes": [
+            "floor",
+            "room"
+          ]
+        },
+        {
+          "id": "services.hvac",
+          "title": {
+            "zh": "暖通、新风与设备图",
+            "en": "HVAC and ventilation"
+          },
+          "generator": "plan",
+          "requires": [
+            "hvac_network",
+            "service_terminals"
+          ],
+          "scopes": [
+            "floor",
+            "room"
+          ]
+        },
+        {
+          "id": "services.service_coordination",
+          "title": {
+            "zh": "机电综合与检修避让图",
+            "en": "Services coordination and access"
+          },
+          "generator": "plan",
+          "requires": [
+            "service_networks",
+            "maintenance_envelopes"
+          ],
+          "scopes": [
+            "floor",
+            "room"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "details",
+      "title": {
+        "zh": "立面、剖面与施工节点",
+        "en": "Elevations, sections and details"
+      },
+      "drawings": [
+        {
+          "id": "details.room_elevations",
+          "title": {
+            "zh": "房间各向立面图",
+            "en": "Room elevations"
+          },
+          "generator": "elevation",
+          "requires": [
+            "room_boundaries",
+            "finish_regions",
+            "elevation_definitions"
+          ],
+          "scopes": [
+            "room"
+          ]
+        },
+        {
+          "id": "details.interior_sections",
+          "title": {
+            "zh": "室内剖面图",
+            "en": "Interior sections"
+          },
+          "generator": "section",
+          "requires": [
+            "section_definitions",
+            "level_datums"
+          ],
+          "scopes": [
+            "floor",
+            "room"
+          ]
+        },
+        {
+          "id": "details.wet_area",
+          "title": {
+            "zh": "湿区构造与收口详图",
+            "en": "Wet-area construction details"
+          },
+          "generator": "manual_detail",
+          "requires": [
+            "construction_details",
+            "installation_interfaces"
+          ],
+          "scopes": [
+            "room",
+            "detail"
+          ]
+        },
+        {
+          "id": "details.finish_junction",
+          "title": {
+            "zh": "地墙顶、门套与踢脚节点",
+            "en": "Finish junction details"
+          },
+          "generator": "manual_detail",
+          "requires": [
+            "construction_details",
+            "material_layers"
+          ],
+          "scopes": [
+            "room",
+            "detail"
+          ]
+        },
+        {
+          "id": "details.custom_detail",
+          "title": {
+            "zh": "自定义施工节点详图",
+            "en": "Custom construction detail"
+          },
+          "generator": "manual_detail",
+          "requires": [
+            "authored_detail"
+          ],
+          "scopes": [
+            "detail"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "cabinet",
+      "title": {
+        "zh": "柜体深化与生产准备",
+        "en": "Cabinet detailing and production preparation"
+      },
+      "drawings": [
+        {
+          "id": "cabinet.cabinet_layout",
+          "title": {
+            "zh": "柜体定位与安装总图",
+            "en": "Cabinet setting-out and installation"
+          },
+          "generator": "plan",
+          "requires": [
+            "cabinet_assembly",
+            "installation_datums"
+          ],
+          "scopes": [
+            "room",
+            "cabinet",
+            "run"
+          ]
+        },
+        {
+          "id": "cabinet.cabinet_front",
+          "title": {
+            "zh": "柜体外立面与门抽图",
+            "en": "Cabinet fronts, doors and drawers"
+          },
+          "generator": "elevation",
+          "requires": [
+            "cabinet_assembly",
+            "front_configuration"
+          ],
+          "scopes": [
+            "cabinet",
+            "run"
+          ]
+        },
+        {
+          "id": "cabinet.cabinet_internal",
+          "title": {
+            "zh": "柜体内部结构立面图",
+            "en": "Cabinet internal elevation"
+          },
+          "generator": "elevation",
+          "requires": [
+            "cabinet_assembly",
+            "panel_definitions"
+          ],
+          "scopes": [
+            "cabinet",
+            "run"
+          ]
+        },
+        {
+          "id": "cabinet.cabinet_sections",
+          "title": {
+            "zh": "柜体横纵剖面图",
+            "en": "Cabinet cross and longitudinal sections"
+          },
+          "generator": "section",
+          "requires": [
+            "cabinet_assembly",
+            "panel_definitions",
+            "joint_definitions"
+          ],
+          "scopes": [
+            "cabinet",
+            "assembly"
+          ]
+        },
+        {
+          "id": "cabinet.cabinet_exploded",
+          "title": {
+            "zh": "柜体装配与爆炸图",
+            "en": "Cabinet assembly and exploded view"
+          },
+          "generator": "exploded",
+          "requires": [
+            "cabinet_assembly",
+            "stable_part_ids"
+          ],
+          "scopes": [
+            "cabinet",
+            "assembly"
+          ]
+        },
+        {
+          "id": "cabinet.panel_fabrication",
+          "title": {
+            "zh": "单板件下料尺寸图",
+            "en": "Individual panel fabrication drawing"
+          },
+          "generator": "part",
+          "requires": [
+            "panel_definitions",
+            "cut_size_rules",
+            "part_datums"
+          ],
+          "scopes": [
+            "part"
+          ]
+        },
+        {
+          "id": "cabinet.edging_grain",
+          "title": {
+            "zh": "封边、饰面与木纹图",
+            "en": "Edgebanding, faces and grain"
+          },
+          "generator": "part",
+          "requires": [
+            "panel_definitions",
+            "edge_rules",
+            "grain_rules"
+          ],
+          "scopes": [
+            "part",
+            "cabinet"
+          ]
+        },
+        {
+          "id": "cabinet.drilling_grooves",
+          "title": {
+            "zh": "孔位、槽口与连接加工图",
+            "en": "Drilling, grooves and joinery"
+          },
+          "generator": "part",
+          "requires": [
+            "panel_definitions",
+            "machining_rules",
+            "hardware_rules",
+            "part_datums"
+          ],
+          "scopes": [
+            "part"
+          ]
+        },
+        {
+          "id": "cabinet.hardware_installation",
+          "title": {
+            "zh": "五金安装与开合避让图",
+            "en": "Hardware installation and movement"
+          },
+          "generator": "detail",
+          "requires": [
+            "hardware_rules",
+            "motion_envelopes",
+            "cabinet_assembly"
+          ],
+          "scopes": [
+            "cabinet",
+            "assembly"
+          ]
+        },
+        {
+          "id": "cabinet.worktop",
+          "title": {
+            "zh": "台面、收口与设备开孔图",
+            "en": "Worktops, fillers and equipment cut-outs"
+          },
+          "generator": "part",
+          "requires": [
+            "worktop_geometry",
+            "installation_interfaces",
+            "cutout_templates"
+          ],
+          "scopes": [
+            "run",
+            "part"
+          ]
+        },
+        {
+          "id": "cabinet.nesting",
+          "title": {
+            "zh": "原板排板与裁切图",
+            "en": "Sheet nesting and cutting plan"
+          },
+          "generator": "nesting",
+          "requires": [
+            "panel_definitions",
+            "stock_rules",
+            "cutting_rules",
+            "grain_rules"
+          ],
+          "scopes": [
+            "cabinet",
+            "run",
+            "project"
+          ]
+        },
+        {
+          "id": "cabinet.part_labels",
+          "title": {
+            "zh": "板件标签与装配编号",
+            "en": "Part labels and assembly identifiers"
+          },
+          "generator": "labels",
+          "requires": [
+            "stable_part_ids",
+            "panel_definitions"
+          ],
+          "scopes": [
+            "part",
+            "cabinet"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "schedules",
+      "title": {
+        "zh": "明细与工程量",
+        "en": "Schedules and quantities"
+      },
+      "drawings": [
+        {
+          "id": "schedules.room_finishes",
+          "title": {
+            "zh": "房间与饰面明细表",
+            "en": "Room and finish schedule"
+          },
+          "generator": "schedule",
+          "requires": [
+            "room_boundaries",
+            "finish_regions",
+            "quantity_rules"
+          ],
+          "scopes": [
+            "project",
+            "floor",
+            "room"
+          ]
+        },
+        {
+          "id": "schedules.furniture_schedule",
+          "title": {
+            "zh": "家具、设备与灯具表",
+            "en": "Furniture, equipment and lighting schedule"
+          },
+          "generator": "schedule",
+          "requires": [
+            "asset_instances",
+            "asset_versions"
+          ],
+          "scopes": [
+            "project",
+            "floor",
+            "room"
+          ]
+        },
+        {
+          "id": "schedules.door_window_schedule",
+          "title": {
+            "zh": "门窗与洞口表",
+            "en": "Door, window and opening schedule"
+          },
+          "generator": "schedule",
+          "requires": [
+            "opening_hosts",
+            "opening_types"
+          ],
+          "scopes": [
+            "project",
+            "floor"
+          ]
+        },
+        {
+          "id": "schedules.cabinet_parts_schedule",
+          "title": {
+            "zh": "柜体、板件与五金清单",
+            "en": "Cabinet, panel and hardware schedules"
+          },
+          "generator": "schedule",
+          "requires": [
+            "cabinet_assembly",
+            "panel_definitions",
+            "hardware_rules"
+          ],
+          "scopes": [
+            "project",
+            "run",
+            "cabinet"
+          ]
+        }
+      ]
+    }
+  ]
+}

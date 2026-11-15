@@ -1,0 +1,4439 @@
+{
+  "schemaVersion": 2,
+  "title": "建筑/室内原生核心能力与真实缺口（当前源码核对版）",
+  "currentSourceSHA": "91c7cd935387f6d88bba2d660b282fb3a8dfa9bb",
+  "observedCheckoutHeadSHA": "4d9d56102fc27ed3d9629d823edcb7cc9ac6b844",
+  "observedAt": "2026-11-13T06:54:01+11:00",
+  "scope": "只核对当前实际源码与已有 qualification 记录；面向后续实现包，不扩展愿望清单、不写源代码、不改 UI。全部 28 QA 与追加范围保留。",
+  "authority": "本文件是调查/设计输入，不是实现、编译、测试、设备或发布验收；主协调者负责取舍、实现和最终视觉判断。",
+  "sourceSnapshotNote": "观察到的 HEAD 比冻结源码多一个 Android 稳定提交；与本调查相关的 FloeCADKit/FloeApp/Sources/InteriorKit/design 文档无差异。所有行号按此观察工作树读取。",
+  "statusTaxonomy": {
+    "implemented-public-reusable": "当前 main 有公开接口，可直接复用；仍需按本报告列出的限制适配。",
+    "implemented-internal": "当前 main 有实现但为 internal/文件内类型，需要新增公开 facade 或同模块适配。",
+    "predeveloped-component-tested": "FloeInteriorKit 组件源码，已有 123 项测试中的对应记录，但未进入主 App。",
+    "component-not-integrated": "组件源码存在，未注册到 App/工具/空间入口。",
+    "source-only-unverified": "验证源码已写，但未编译/未运行。",
+    "design-only": "只有设计/合同/数据草案，无生成器或服务。",
+    "absent": "当前源码未发现实现。",
+    "source-only-placement-adapter": "FloeInteriorCore 工作树新增的纯值家具 placement 适配；源码存在，24 项中 10 项测试未运行，未接 App/原生几何/碰撞/制造。",
+    "source-only-not-optimizer": "FloeInteriorCore 工作树新增的柜体生产输入适配；源码存在，14 项制造测试未运行；不是排板优化器，manufacturingVerified=false。"
+  },
+  "capabilities": [
+    {
+      "id": "CAP-01",
+      "title": "建筑项目身份、入口与作品包",
+      "status": "partial-cad-cover-only",
+      "implementation": "建筑工作台已作为现有 CAD 文档的全屏子页存在；Space 个人库没有 building 类型，也没有建筑项目清单、预览和独立新建入口。",
+      "publicReuse": true,
+      "whatExists": "FloeCADHostChrome 从任意 .floecad 打开 Building Design；二维图纸转建筑时由 CADFromDrawingWorkspaceView 进入；建筑记录仍保存在该 .floecad 的 buildingData 中。",
+      "gaps": [
+        "PersonalContentKind 只有 cad2D/cad3D，没有 building；创建、验证、文件动作均无建筑类型。",
+        "没有建筑项目 manifest 绑定 CAD 文件与项目资料数据库。",
+        "没有 Space 新建/重开/预览/助手入口；建筑只能从已有 CAD 进入。",
+        "没有旧 CAD 建筑工程的独立副本转换器。"
+      ],
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/FloeApp/Workspace/FloeCADHostChrome.swift",
+          "symbol": "FloeCADHostChrome building button",
+          "line": 75,
+          "quote": "Button { building=true }",
+          "sourceType": "source",
+          "endLine": 99
+        },
+        {
+          "path": "FloeAgent/FloeApp/Workspace/CADFromDrawingWorkspaceView.swift",
+          "symbol": "CADFromDrawingWorkspaceView building route",
+          "line": 38,
+          "quote": "if isBuilding {",
+          "sourceType": "source",
+          "endLine": 42
+        },
+        {
+          "path": "FloeAgent/FloeApp/Space/PersonalContentLibrary.swift",
+          "symbol": "PersonalContentKind",
+          "line": 7,
+          "quote": "enum PersonalContentKind",
+          "sourceType": "source",
+          "endLine": 9
+        },
+        {
+          "path": "FloeAgent/FloeApp/Space/PersonalContentService.swift",
+          "symbol": "PersonalContentService.create",
+          "line": 62,
+          "quote": "func create(kind",
+          "sourceType": "source",
+          "endLine": 77
+        },
+        {
+          "path": "FloeAgent/FloeApp/Space/PersonalContentLibrary.swift",
+          "symbol": "PersonalContentRecord",
+          "line": 12,
+          "quote": "struct PersonalContentRecord",
+          "sourceType": "source",
+          "endLine": 24
+        }
+      ]
+    },
+    {
+      "id": "CAP-02",
+      "title": "建筑构件领域语义",
+      "status": "partial-straight-rectangle-model",
+      "implementation": "CADBuildingElement 以两端点、厚度、高度、基础偏移描述墙/梁/柱/板/屋顶/直梯/门窗/矩形空间/管/风管；楼层支持标高与层高；门窗绑定墙、起点偏移和宽度。",
+      "publicReuse": true,
+      "whatExists": "Element.Kind 11 类；UUID 稳定 id；bodyID 由 owner+role 确定性生成；validate 检查楼层、坐标、厚度、门窗位于墙内、空间两角矩形等。",
+      "gaps": [
+        "没有弧墙、复合墙层、基础、幕墙、坡屋顶、转折/旋转楼梯、家具或自定义构件类型。",
+        "空间只是轴对齐矩形语义，不是房间边界/闭合环；没有墙与房间的拓扑。",
+        "没有通用洞口或竖井，门窗之外不能建模墙洞。",
+        "构件没有材料/构造层/防火/声学/热工字段；没有类型参数或族/类型实例分离。",
+        "没有房间编号、用途、面积/体积的正式记录（只有 space.areaM2 计算属性）。"
+      ],
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingModel.swift",
+          "symbol": "CADBuildingElement.Kind",
+          "line": 19,
+          "quote": "public enum Kind",
+          "sourceType": "source",
+          "endLine": 21
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingModel.swift",
+          "symbol": "CADBuildingElement a/b",
+          "line": 28,
+          "quote": "public var a: [Double]",
+          "sourceType": "source",
+          "endLine": 29
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingModel.swift",
+          "symbol": "CADBuildingElement opening fields",
+          "line": 34,
+          "quote": "public var hostID: UUID?",
+          "sourceType": "source",
+          "endLine": 38
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingModel.swift",
+          "symbol": "CADBuildingDocument.validate slab/roof/space",
+          "line": 134,
+          "quote": "if [.slab, .roof, .space].contains",
+          "sourceType": "source",
+          "endLine": 138
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingModel.swift",
+          "symbol": "CADBuildingElement.bodyIDs",
+          "line": 52,
+          "quote": "public var bodyID: UUID",
+          "sourceType": "source",
+          "endLine": 57
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingModel.swift",
+          "symbol": "CADBuildingDocument.validate",
+          "line": 114,
+          "quote": "guard schemaVersion == 1",
+          "sourceType": "source",
+          "endLine": 117
+        }
+      ]
+    },
+    {
+      "id": "CAP-03",
+      "title": "建筑几何生成与整体事务",
+      "status": "implemented-native-whole-model",
+      "implementation": "CADBuildingGeometry.recipe 把构件转换为原生 box/cylinder 特征；墙洞通过布尔减与独立门窗片生成；setBuilding 用一个关联事务同时替换建筑 JSON 和 owned FeatureGraph。",
+      "publicReuse": true,
+      "whatExists": "setBuilding 校验 expectedChangeCount、回滚索引和未交错历史；门窗随墙移动；楼梯按 stepCount 生成 2...64 个踏步；修改后保持已有 element id/bodyID；失败保留旧模型。",
+      "gaps": [
+        "几何是解析盒体近似，不承载真实墙层、房间边界、结构分析截面或 IFC 参数语义。",
+        "不支持弧线/复合截面，也不支持只改一个构件的轻量 patch；每次改建筑都替换整个 building-owned 特征段。",
+        "直接 CAD 编辑建筑特征会被拒绝，必须恢复 building features 才能继续；没有双向编辑。",
+        "1000 构件上限与 32 MiB building document 记录上限未对应大型整栋项目预算。"
+      ],
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingService.swift",
+          "symbol": "CADBuildingGeometry.recipe",
+          "line": 17,
+          "quote": "static func recipe",
+          "sourceType": "source",
+          "endLine": 88
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingService.swift",
+          "symbol": "CADBuildingGeometry.recipe slab/roof box",
+          "line": 36,
+          "quote": "case .slab, .roof",
+          "sourceType": "source",
+          "endLine": 38
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingService.swift",
+          "symbol": "CADBuildingGeometry.recipe wall openings",
+          "line": 60,
+          "quote": "if element.kind == .wall",
+          "sourceType": "source",
+          "endLine": 83
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingService.swift",
+          "symbol": "FloeCADDocument.setBuilding",
+          "line": 98,
+          "quote": "func setBuilding",
+          "sourceType": "source",
+          "endLine": 150
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingService.swift",
+          "symbol": "setBuilding CAS",
+          "line": 100,
+          "quote": "expectedChangeCount != session.changeCount",
+          "sourceType": "source",
+          "endLine": 100
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingService.swift",
+          "symbol": "setBuilding associative transaction",
+          "line": 143,
+          "quote": "session.performAssociativeTransaction",
+          "sourceType": "source",
+          "endLine": 148
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingModel.swift",
+          "symbol": "CADBuildingDocument.validate source budget",
+          "line": 155,
+          "quote": "sources.reduce(0",
+          "sourceType": "source",
+          "endLine": 156
+        }
+      ]
+    },
+    {
+      "id": "CAP-04",
+      "title": "建筑检查、信息与地区规则",
+      "status": "partial-four-metrics",
+      "implementation": "inspectBuilding 可检查模型记录、几何是否缺失、逐层构件数与空间面积，并执行项目显式添加的四类最小尺寸规则。",
+      "publicReuse": true,
+      "whatExists": "CADBuildingRule.Metric = doorWidth/stairWidth/storeyHeight/spaceArea；每条规则要求 clause 和 HTTPS sourceURL；结果分为 passed/failed/notEvaluated；地区选择有 8 个官方链接和 OTHER。",
+      "gaps": [
+        "没有八地区实际规范规则集、版本/适用范围/地方采用判断。",
+        "没有完整构件明细、材料/复合层、房间编号/用途/面积/体积表、筛选和表格导出。",
+        "没有规范检查结果与图纸/构件明细的联动。"
+      ],
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingInspection.swift",
+          "symbol": "inspectBuilding",
+          "line": 42,
+          "quote": "func inspectBuilding",
+          "sourceType": "source",
+          "endLine": 78
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingInspection.swift",
+          "symbol": "inspectBuilding rule metrics",
+          "line": 64,
+          "quote": "for rule in model.rules",
+          "sourceType": "source",
+          "endLine": 75
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingModel.swift",
+          "symbol": "CADBuildingRule.Metric",
+          "line": 73,
+          "quote": "enum Metric",
+          "sourceType": "source",
+          "endLine": 73
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingEditors.swift",
+          "symbol": "CADBuildingSettingsView regions",
+          "line": 191,
+          "quote": "Section(bt(\"region\"",
+          "sourceType": "source",
+          "endLine": 201
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingEditors.swift",
+          "symbol": "CADBuildingSettingsView floors",
+          "line": 180,
+          "quote": "Section(bt(\"floors\"",
+          "sourceType": "source",
+          "endLine": 190
+        }
+      ]
+    },
+    {
+      "id": "CAP-05",
+      "title": "结构分析",
+      "status": "implemented-single-beam-only",
+      "implementation": "本机线性梁计算：单根矩形 Euler-Bernoulli 梁，简支或悬臂，均布荷载；输出挠度/反力/弯矩/应力采样。",
+      "publicReuse": true,
+      "whatExists": "CADBuildingLocalAnalysis.evaluate 与 CADBuildingProfessionalCenter 设备侧任务链；结果明确 wholeBuildingAnalysis=false、designCodeApproval=false。",
+      "gaps": [
+        "没有整栋框架、墙板壳、基础、支撑、荷载组合、位移/内力/应力完整结果。",
+        "没有截面库/材料非线性/稳定/抗震/基础与施工阶段。",
+        "单梁结果不能作为 QA05 的整栋结构分析。"
+      ],
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingLocalAnalysis.swift",
+          "symbol": "CADBuildingLocalAnalysis.evaluate single beam",
+          "line": 36,
+          "quote": "$0.kind == .beam",
+          "sourceType": "source",
+          "endLine": 38
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingLocalAnalysis.swift",
+          "symbol": "wholeBuildingAnalysis false",
+          "line": 96,
+          "quote": "wholeBuildingAnalysis",
+          "sourceType": "source",
+          "endLine": 96
+        }
+      ]
+    },
+    {
+      "id": "CAP-06",
+      "title": "机电系统与协调",
+      "status": "implemented-clash-only",
+      "implementation": "本机 Manifold 3.5.4 闭合网格布尔求交：管道/风管与墙/板/屋顶/梁/柱的体积相交。",
+      "publicReuse": true,
+      "whatExists": "真实三角网格相交体、AABB 粗筛、候选对预算 2048、体积阈值、未评估体/对显式报告；取消/超时；结果 systemSizing=false、clearanceComputed=false。",
+      "gaps": [
+        "没有给排水/暖通/电气系统连接、回路、拓扑、设备端口。",
+        "没有系统参数计算、管径/风量选型、净距/保温/坡度/支吊架检查。",
+        "没有硬碰撞之外的软碰撞或安装空间。",
+        "只有管道/风管两类 MEP 构件。"
+      ],
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingLocalCoordination.swift",
+          "symbol": "CADBuildingLocalCoordination system/structural kinds",
+          "line": 23,
+          "quote": "if kind == .pipe || kind == .duct",
+          "sourceType": "source",
+          "endLine": 25
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingLocalCoordination.swift",
+          "symbol": "penetration/clearance/systemSizing false",
+          "line": 90,
+          "quote": "penetrationDepthComputed",
+          "sourceType": "source",
+          "endLine": 91
+        }
+      ]
+    },
+    {
+      "id": "CAP-07",
+      "title": "原生二维/三维图纸基础",
+      "status": "implemented-generic-drawing-foundation",
+      "implementation": "CADDrawingService 支持页、共享多视图、比例、前后左右/等轴/剖/详图/爆炸视图、自动与人工尺寸、文字/气球/BOM、模板、PDF/SVG/DXF/PNG/CSV 与宿主 DWG 编码钩子。",
+      "publicReuse": true,
+      "whatExists": "每页最多 12 个 source body；装配页最多 64 个可见实例；投影不完整时 outputBlocked=true；源指纹检测 stale；人工尺寸可带 binding/feature；特征关联尺寸只支持圆柱面直径/半径；PDF/SVG/DXF 共用矢量几何。",
+      "gaps": [
+        "没有按建筑楼层/房间/专业/构件类别的图纸生成器；没有封面/目录/图纸集批量输出。",
+        "自动尺寸只按整体包围盒宽高和圆/圆弧生成，不是按构件/洞口/墙段关联。",
+        "12 源体上限使普通建筑楼层图和 19 板柜体普通页无法一次成图；64 实例装配路径是另一条路。",
+        "没有图纸集级别的批量导出（applyTemplate 的 pageIDs 只是模板批量应用）。"
+      ],
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADDrawingService.swift",
+          "symbol": "CADDrawingService limits",
+          "line": 88,
+          "quote": "maxPages = 64",
+          "sourceType": "source",
+          "endLine": 89
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADDrawingService.swift",
+          "symbol": "CADDrawingService.actions",
+          "line": 94,
+          "quote": "public nonisolated static let actions",
+          "sourceType": "source",
+          "endLine": 106
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADDrawingService.swift",
+          "symbol": "addPage bodyIDs cap",
+          "line": 1190,
+          "quote": "bodyIDs.count <= Self.maxSourceBodies",
+          "sourceType": "source",
+          "endLine": 1192
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADDrawingService.swift",
+          "symbol": "projectionSources maxInstances",
+          "line": 4205,
+          "quote": "let maxInstances = 64",
+          "sourceType": "source",
+          "endLine": 4222
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADDrawingService.swift",
+          "symbol": "dimensions(for:) bbox/circle",
+          "line": 5067,
+          "quote": "private func dimensions(for page",
+          "sourceType": "source",
+          "endLine": 5077
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADDrawingService.swift",
+          "symbol": "addDimensionAction feature restriction",
+          "line": 2391,
+          "quote": "A linked feature dimension supports only diameter or radius",
+          "sourceType": "source",
+          "endLine": 2392
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADDrawingService.swift",
+          "symbol": "applyTemplate batch only",
+          "line": 950,
+          "quote": "if let list = args[\"pageIDs\"]",
+          "sourceType": "source",
+          "endLine": 958
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADDrawing.swift",
+          "symbol": "CADDrawingSheetView",
+          "line": 259,
+          "quote": "public nonisolated struct CADDrawingSheetView",
+          "sourceType": "source",
+          "endLine": 277
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADDrawing.swift",
+          "symbol": "CADDrawingPage assembly/annotations",
+          "line": 556,
+          "quote": "public nonisolated struct CADDrawingPage",
+          "sourceType": "source",
+          "endLine": 601
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADDrawing.swift",
+          "symbol": "CADDrawingManualDimension",
+          "line": 384,
+          "quote": "public nonisolated struct CADDrawingManualDimension",
+          "sourceType": "source",
+          "endLine": 406
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADDrawingService.swift",
+          "symbol": "exportData formats",
+          "line": 263,
+          "quote": "public func exportData",
+          "sourceType": "source",
+          "endLine": 333
+        }
+      ]
+    },
+    {
+      "id": "CAP-08",
+      "title": "建筑出图",
+      "status": "partial-one-floor-sheet",
+      "implementation": "createBuildingDrawing 取某层所有 body，调用一次 multiViewSheet 生成一个共享页。",
+      "publicReuse": true,
+      "whatExists": "按楼层过滤、真实 body 绑定、错误返回；超过 12 个 body 明确拒绝，不丢模型。",
+      "gaps": [
+        "没有平面/立面/剖面/节点详图的建筑语义生成。",
+        "没有房间/门窗/墙厚/材料/尺寸自动标注与图签。",
+        "普通路径仍受 12 源体上限；不能用 64 实例装配路径替代建筑楼层图。",
+        "没有批量出图、楼层/专业范围选择和图纸目录。"
+      ],
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingService.swift",
+          "symbol": "createBuildingDrawing",
+          "line": 193,
+          "quote": "func createBuildingDrawing",
+          "sourceType": "source",
+          "endLine": 205
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingService.swift",
+          "symbol": "createBuildingDrawing maxSourceBodies",
+          "line": 199,
+          "quote": "ids.count <= CADDrawingService.maxSourceBodies",
+          "sourceType": "source",
+          "endLine": 201
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADDrawing.swift",
+          "symbol": "CADDrawingSet.multiViewSheet",
+          "line": 912,
+          "quote": "public static func multiViewSheet",
+          "sourceType": "source",
+          "endLine": 957
+        }
+      ]
+    },
+    {
+      "id": "CAP-09",
+      "title": "装配实例、坐标与外部零件引用",
+      "status": "implemented-generic-assembly",
+      "implementation": "CADAssembly 支持位置/四元数旋转/统一缩放、嵌套子装配、约束、爆炸视图、外部 .floecad 零件引用与 staged body。",
+      "publicReuse": true,
+      "whatExists": "CADAssemblyInstance transform 为 position+rotation+scale；约束支持重合/距离/角度/铰链/滑块；引用固定 sourceDocumentID/sourceBodyID/revision/content hash；addInstance 可拷贝实体。",
+      "gaps": [
+        "没有家具类别、名义宽深高、锚点/中心、前向、可放置地面/贴墙语义。",
+        "文档单位固定 mm，装配实例没有自身单位字段；外部源只支持 nativeDocument，不支持家具包/IFC。",
+        "placement 没有房间/楼层归属，也没有自动避让、靠墙/成组布置。",
+        "工程材料/版本只在 CADPartMetadata，不能表达饰面/封边/五金配置。"
+      ],
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADAssembly.swift",
+          "symbol": "CADAssemblyInstance",
+          "line": 94,
+          "quote": "public nonisolated struct CADAssemblyInstance",
+          "sourceType": "source",
+          "endLine": 132
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADAssembly.swift",
+          "symbol": "CADAssemblyInstance.transform/subassembly",
+          "line": 101,
+          "quote": "public var transform: CADTransform",
+          "sourceType": "source",
+          "endLine": 127
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADAssembly.swift",
+          "symbol": "CADPartReference",
+          "line": 247,
+          "quote": "public nonisolated struct CADPartReference",
+          "sourceType": "source",
+          "endLine": 284
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADAssembly.swift",
+          "symbol": "CADPartReferenceKind",
+          "line": 235,
+          "quote": "public nonisolated enum CADPartReferenceKind",
+          "sourceType": "source",
+          "endLine": 237
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADAssembly.swift",
+          "symbol": "CADPartMetadata",
+          "line": 471,
+          "quote": "public nonisolated struct CADPartMetadata",
+          "sourceType": "source",
+          "endLine": 490
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADAssemblyService.swift",
+          "symbol": "CADAssemblyService.actions",
+          "line": 236,
+          "quote": "public nonisolated static let actions",
+          "sourceType": "source",
+          "endLine": 249
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADAssemblyService.swift",
+          "symbol": "addInstanceAction",
+          "line": 1914,
+          "quote": "private func addInstanceAction",
+          "sourceType": "source",
+          "endLine": 1983
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADAssembly.swift",
+          "symbol": "CADAssemblyConstraint",
+          "line": 403,
+          "quote": "public nonisolated struct CADAssemblyConstraint",
+          "sourceType": "source",
+          "endLine": 423
+        }
+      ]
+    },
+    {
+      "id": "CAP-10",
+      "title": "家具资源库与原生准入",
+      "status": "source-only-placement-adapter",
+      "implementation": "已有 175 条 CC0 家具目录的离线检查和 SQLite 暂存；工作树新增 Core/Furniture/FurniturePlacement.swift（SOURCE_ONLY）提供纯值 placement plan：显式单位/目录尺寸、源 bounds、proper rotation、锚点、yaw、building→native 矩阵与 hash/指纹。没有原生家具目录/几何导入/素材准入。",
+      "publicReuse": false,
+      "whatExists": "FurniturePlacementInput/Plan/Planner；sourceBounds/assetID/version/sourceSHA/dependencySHA；sourceUnits/catalogDimensions 两种 sizing；bottomCenter/bottomFrontLeft/geometricCenter 锚点；plan 明确 nativeGeometryVerified=false、manufacturingVerified=false；10 个 FurniturePlacementTests 已写但未运行，旧 123 不包含。",
+      "gaps": [
+        "没有 FurnitureAsset 目录服务、SH3F/OBJ+MTL 原生成员定位、资源依赖重打包、许可证/来源版本、缩略图和离线包。",
+        "FurniturePlacement 不导入几何、不验证渲染/碰撞/净距/靠墙约束；它只输出 value-only plan。",
+        "没有工程固定资产版本升级、比较、回退或按需下载。",
+        "App/主工程没有家具库或摆放入口。"
+      ],
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeInteriorCore/Furniture/FurniturePlacement.swift",
+          "symbol": "FurniturePlacementPlan value-only flags",
+          "line": 96,
+          "quote": "A value-only adapter plan",
+          "sourceType": "source",
+          "endLine": 114
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeInteriorCore/Furniture/FurniturePlacement.swift",
+          "symbol": "FurniturePlacementPlanner",
+          "line": 139,
+          "quote": "public enum FurniturePlacementPlanner",
+          "sourceType": "source",
+          "endLine": 142
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Tests/FloeInteriorCoreTests/FurniturePlacementTests.swift",
+          "symbol": "FurniturePlacementTests",
+          "line": 5,
+          "quote": "final class FurniturePlacementTests",
+          "sourceType": "source",
+          "endLine": 5
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Tests/FloeInteriorCoreTests/FurniturePlacementTests.swift",
+          "symbol": "first furniture placement test",
+          "line": 17,
+          "quote": "func testExplicitUnitsBottomAnchorAndBuildingToNativeFrame",
+          "sourceType": "source",
+          "endLine": 17
+        },
+        {
+          "path": "docs/FLOE_INTERIOR_FURNITURE_INTAKE_20261112.zh-CN.md",
+          "symbol": "furniture catalog research only",
+          "line": 3,
+          "quote": "尚未接入 App 家具库",
+          "sourceType": "doc"
+        }
+      ]
+    },
+    {
+      "id": "CAP-11",
+      "title": "材质、UV 与贴图",
+      "status": "implemented-pbr-visual",
+      "implementation": "文档内材质库与 App 共享材质库支持 baseColor/metallic/roughness/opacity/emissive、PBR 贴图、mesh/planar/box UV、面级材质绑定、库导入导出。",
+      "publicReuse": true,
+      "whatExists": "CADMaterialDefinition/CADMaterialLibrary 有 512 条/96 MiB 上限；8 MiB 单贴图；应用是自包含快照；UV 有 mm 平铺与旋转/偏移；库编辑不自动改已应用 body。",
+      "gaps": [
+        "没有建筑/装修材料层（基层/饰面/保温/防水/隔声）、热工/防火参数和材料规则。",
+        "没有材料版本与项目固定版本、供应商/品牌/色号/批次。",
+        "UV 只覆盖 body/面，没有柜体板件纹理方向、封边/木纹规则。",
+        "没有家具/墙面专用铺贴、拼缝、阴阳角与材料用量。"
+      ],
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Kernel/MaterialKit.swift",
+          "symbol": "CADMaterialUVMapping",
+          "line": 75,
+          "quote": "nonisolated struct CADMaterialUVMapping",
+          "sourceType": "source",
+          "endLine": 82
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Kernel/MaterialKit.swift",
+          "symbol": "CADMaterialDefinition",
+          "line": 241,
+          "quote": "nonisolated struct CADMaterialDefinition",
+          "sourceType": "source",
+          "endLine": 256
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Kernel/MaterialKit.swift",
+          "symbol": "CADMaterialLibrary",
+          "line": 470,
+          "quote": "nonisolated struct CADMaterialLibrary",
+          "sourceType": "source",
+          "endLine": 482
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Kernel/MaterialKit.swift",
+          "symbol": "CADMaterialLimits",
+          "line": 530,
+          "quote": "nonisolated enum CADMaterialLimits",
+          "sourceType": "source",
+          "endLine": 534
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADMaterialService.swift",
+          "symbol": "CADMaterialService.actions",
+          "line": 24,
+          "quote": "public static let actions",
+          "sourceType": "source",
+          "endLine": 34
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADMaterialService.swift",
+          "symbol": "apply snapshot",
+          "line": 559,
+          "quote": "private func apply",
+          "sourceType": "source",
+          "endLine": 585
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADMaterialService.swift",
+          "symbol": "mapping action",
+          "line": 760,
+          "quote": "private func mapping",
+          "sourceType": "source",
+          "endLine": 782
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Kernel/Materials.swift",
+          "symbol": "BodyMaterialSpec",
+          "line": 17,
+          "quote": "nonisolated struct BodyMaterialSpec",
+          "sourceType": "source",
+          "endLine": 60
+        }
+      ]
+    },
+    {
+      "id": "CAP-12",
+      "title": "柜体领域核心",
+      "status": "predeveloped-component-tested",
+      "implementation": "FloeInteriorCore 以 CabinetRecipe 生成 19 板示例：侧板、顶底板、背板、隔板、固定层板、可选门板；板件 ID 稳定，几何/清单指纹可复算。",
+      "publicReuse": true,
+      "whatExists": "CabinetRecipe.validate；CabinetBuilder.build；CabinetAssembly.validateGeneratedSnapshot；CabinetDerivations.nativeDrafts/drawingPlans/partsCSV；构造规则 between-sides-inset-back@1。 另有 SOURCE_ONLY CabinetManufacturingPreparation（见 CAP-25），为板件生产输入适配；不等同于柜体配方/排板完成。",
+      "gaps": [
+        "构造规则只有一种；没有抽屉、活动层板、转角、开放格、顶线/踢脚/台面/五金孔位。",
+        "partsCSV 是设计完成尺寸，manufacturingVerified 固定 false；没有封边/开料余量/排板/CNC。",
+        "不是完整室内家具/整屋自动设计。",
+        "旧 123 项只覆盖变更前的 Core 18/Records/Systems/Analysis/Workspace 清单；工作树新增 FurniturePlacement/CabinetManufacturingPreparation 24 项未运行，不能拿旧 123 给当前整个 FloeInteriorCore 包做全量资格声明。"
+      ],
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeInteriorCore/CabinetDefinition.swift",
+          "symbol": "CabinetRecipe",
+          "line": 59,
+          "quote": "public struct CabinetRecipe",
+          "sourceType": "source",
+          "endLine": 72
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeInteriorCore/CabinetDefinition.swift",
+          "symbol": "CabinetRecipe.validate",
+          "line": 86,
+          "quote": "public func validate",
+          "sourceType": "source",
+          "endLine": 120
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeInteriorCore/CabinetAssembly.swift",
+          "symbol": "CabinetPanel",
+          "line": 10,
+          "quote": "public struct CabinetPanel",
+          "sourceType": "source",
+          "endLine": 28
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeInteriorCore/CabinetAssembly.swift",
+          "symbol": "CabinetBuilder.build",
+          "line": 55,
+          "quote": "public enum CabinetBuilder",
+          "sourceType": "source",
+          "endLine": 80
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeInteriorCore/CabinetAssembly.swift",
+          "symbol": "CabinetAssembly.validateGeneratedSnapshot",
+          "line": 40,
+          "quote": "public func validateGeneratedSnapshot",
+          "sourceType": "source",
+          "endLine": 42
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeInteriorCore/CabinetDerivations.swift",
+          "symbol": "CabinetDerivations.nativeDrafts",
+          "line": 25,
+          "quote": "public static func nativeDrafts",
+          "sourceType": "source",
+          "endLine": 31
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeInteriorCore/CabinetDerivations.swift",
+          "symbol": "CabinetDerivations.drawingPlans",
+          "line": 33,
+          "quote": "public static func drawingPlans",
+          "sourceType": "source",
+          "endLine": 53
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeInteriorCore/CabinetDerivations.swift",
+          "symbol": "CabinetDerivations.partsCSV",
+          "line": 55,
+          "quote": "public static func partsCSV",
+          "sourceType": "source",
+          "endLine": 65
+        }
+      ]
+    },
+    {
+      "id": "CAP-13",
+      "title": "柜体与原生 CAD 的持久绑定和更新",
+      "status": "research-adapter-new-draft-only",
+      "implementation": "NativeCabinetDraft 通过公开 FloeCADDocument 草图/拉伸/变换创建全新草稿，保存 bodyIDs 映射到包外 native-bindings.json；没有修改已有工程的更新路径。",
+      "publicReuse": true,
+      "whatExists": "研究适配器源码可在全新草稿中生成 19 板、保存/重开并写出包外 mapping 收据。历史 frame-fix04-private 的 19 板 BRep、7 板样图、预算拒绝三项检查通过（含 STEP 往返），但其中 STEP 实体移动依赖未合入 main 的私有 CAD 补丁；当前 main 未重跑该三项，不能把它当当前源码已验收。",
+      "gaps": [
+        "19 板 STEP 往返/移动只在私有补丁副本验证；当前 main 的导入体来源保存缺口未被本报告重新验证或修复。",
+        "mapping 不在 .floecad 包内，也不在 Space/Records 中；重开/迁移可能失去 part 身份。",
+        "没有 in-place update：改宽高深会生成新板件数组，必须替换 body/feature/assembly，尚未实现。",
+        "没有整体撤销、跨数据库/CAD 原子提交或人工修改后的冲突处理。",
+        "没有把柜体实例放入房间/墙边的位置模型。"
+      ],
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/Qualification/Interior/NativeCabinetAdapter.swift",
+          "symbol": "NativeCabinetDraft.create",
+          "line": 22,
+          "quote": "static func create",
+          "sourceType": "source",
+          "endLine": 54
+        },
+        {
+          "path": "FloeAgent/Qualification/Interior/NativeCabinetAdapter.swift",
+          "symbol": "NativeCabinetDraft.save receipt",
+          "line": 75,
+          "quote": "func save() async",
+          "sourceType": "source",
+          "endLine": 88
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeInteriorCore/CabinetAssembly.swift",
+          "symbol": "CabinetAssembly.validateGeneratedSnapshot",
+          "line": 40,
+          "quote": "public func validateGeneratedSnapshot",
+          "sourceType": "source",
+          "endLine": 42
+        },
+        {
+          "path": "docs/qualification/FLOE_BUILDING_PREDEVELOPMENT_20261113.zh-CN.md",
+          "symbol": "component not in App dependency graph",
+          "line": 85,
+          "quote": "尚未进入 App 依赖图",
+          "sourceType": "doc",
+          "endLine": 85
+        }
+      ]
+    },
+    {
+      "id": "CAP-14",
+      "title": "柜体组合图、斜视、内部立面与关联尺寸",
+      "status": "planner-source-only",
+      "implementation": "CabinetSheetPlanner 生成六类视图规格（正/侧/顶/剖/等轴/内部立面）、整体/分格/净空/板厚关联尺寸，并保留人工说明与尺寸展示；它不生成 CAD 页或投影。",
+      "publicReuse": true,
+      "whatExists": "视图方向/比例/纸面中心/投影宽高；内部立面过滤 front 板；尺寸有稳定 id、来源对象、视图种类；previous 保留人工 presentation，失联项进入 orphanedPresentation；status 明确 native-render-and-save-pending。",
+      "gaps": [
+        "没有把 CabinetCombinationSheet 映射到 CADDrawingPage/CADDrawingSheetView。",
+        "没有把 planner 尺寸映射到 CADDrawingManualDimension 或 linked dimension。",
+        "19 板测试源码存在但未运行；普通 12 源体与装配 64 实例之间的桥接未验证。",
+        "没有正式图签、图号、材料表/五金表/排板/加工图生成器。"
+      ],
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeInteriorCore/CabinetSheetPlanner.swift",
+          "symbol": "CabinetSheetPlanner.make",
+          "line": 69,
+          "quote": "public static func make",
+          "sourceType": "source",
+          "endLine": 160
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeInteriorCore/CabinetSheetPlanner.swift",
+          "symbol": "internal elevation filter",
+          "line": 102,
+          "quote": "kind == .internalElevation",
+          "sourceType": "source",
+          "endLine": 103
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeInteriorCore/CabinetSheetPlanner.swift",
+          "symbol": "associative dimensions",
+          "line": 110,
+          "quote": "var dimensions",
+          "sourceType": "source",
+          "endLine": 145
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeInteriorCore/CabinetSheetPlanner.swift",
+          "symbol": "manual presentation preservation",
+          "line": 146,
+          "quote": "let identities",
+          "sourceType": "source",
+          "endLine": 159
+        },
+        {
+          "path": "FloeAgent/Qualification/Interior/NativeCabinetAssemblyChecks.swift",
+          "symbol": "19-panel assembly test",
+          "line": 25,
+          "quote": "func testWholeCabinetAssembly",
+          "sourceType": "source",
+          "endLine": 44
+        },
+        {
+          "path": "FloeAgent/Qualification/Interior/NativeCabinetAssemblyChecks.swift",
+          "symbol": "19-panel 5-view export",
+          "line": 45,
+          "quote": "let selected",
+          "sourceType": "source",
+          "endLine": 70
+        },
+        {
+          "path": "docs/qualification/FLOE_BUILDING_PREDEVELOPMENT_20261113.zh-CN.md",
+          "symbol": "19-board/host unrun",
+          "line": 33,
+          "quote": "19 板 CAD 装配测试",
+          "sourceType": "doc",
+          "endLine": 33
+        },
+        {
+          "path": "docs/qualification/FLOE_BUILDING_PREDEVELOPMENT_20261113.zh-CN.md",
+          "symbol": "19-board test source only",
+          "line": 68,
+          "quote": "该验证尚未运行",
+          "sourceType": "doc",
+          "endLine": 68
+        }
+      ]
+    },
+    {
+      "id": "CAP-15",
+      "title": "通用格式交换",
+      "status": "implemented-most-formats-partial-IFC",
+      "implementation": "原生导出支持 STEP/IGES/GLB/USDZ/OBJ/OBJ bundle/STL/3MF；图纸导出 PDF/SVG/DXF/PNG/CSV，DWG 由 App 宿主 Web 引擎编码；IFC 由建筑专业 web-ifc 适配器只导出不导入。",
+      "publicReuse": true,
+      "whatExists": "STEP 精确闭合实体；IGES 闭合并支持开放面；GLB/USDZ 真实层级/材质；OBJ bundle 带纹理；图纸导出共用矢量几何；DWG 必须宿主注入编码器，否则拒绝；IFC4 类型/Name 回读与 IDS 名称子集。",
+      "gaps": [
+        "没有 IFC 导入/IFC 语义重读为原生建筑构件；IFC 导出是三角面片+类型/Name，不是完整属性/关系/BRep。",
+        "没有 3MF 导入；App 直接导入仅 STL/OBJ/STEP/IGES，CAD 工具导入多 GLB/glTF/USD/Blend。",
+        "没有独立 2D/3D 工程文件的打包身份；只有格式文件。",
+        "IFC 导出失败条件（非 BMP 名称）与实际模型/属性覆盖有限。"
+      ],
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADExactImportService.swift",
+          "symbol": "CADExactImportService format guard",
+          "line": 128,
+          "quote": "format == \"step\"",
+          "sourceType": "source",
+          "endLine": 132
+        },
+        {
+          "path": "FloeAgent/FloeApp/Workspace/CADUnifiedModelImport.swift",
+          "symbol": "CADUnifiedModelImport.extensions",
+          "line": 14,
+          "quote": "static let extensions",
+          "sourceType": "source",
+          "endLine": 14
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Kernel/MeshImportKit.swift",
+          "symbol": "MeshImportKit format switch",
+          "line": 396,
+          "quote": "case \"glb\", \"gltf\"",
+          "sourceType": "source",
+          "endLine": 429
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADDrawingService.swift",
+          "symbol": "exportData formats",
+          "line": 263,
+          "quote": "public func exportData",
+          "sourceType": "source",
+          "endLine": 333
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADDrawingService.swift",
+          "symbol": "DWG host encoder",
+          "line": 161,
+          "quote": "if format.lowercased() == \"dwg\"",
+          "sourceType": "source",
+          "endLine": 173
+        },
+        {
+          "path": "FloeAgent/FloeApp/Resources/BuildingNative/building.js",
+          "symbol": "building.js IFC types",
+          "line": 6,
+          "quote": "const types",
+          "sourceType": "source",
+          "endLine": 6
+        },
+        {
+          "path": "FloeAgent/FloeApp/Resources/BuildingNative/building.js",
+          "symbol": "building.js tessellation",
+          "line": 65,
+          "quote": "IFCCARTESIANPOINTLIST3D",
+          "sourceType": "source",
+          "endLine": 66
+        },
+        {
+          "path": "FloeAgent/FloeApp/Resources/BuildingNative/building.js",
+          "symbol": "building.js name readback",
+          "line": 94,
+          "quote": "GetModelSchema",
+          "sourceType": "source",
+          "endLine": 104
+        },
+        {
+          "path": "FloeAgent/FloeApp/Workspace/CADBuildingProfessional/CADBuildingLocalIFCHost.swift",
+          "symbol": "verifiedAssets web-ifc manifest",
+          "line": 26,
+          "quote": "guard let root = Bundle.main.url",
+          "sourceType": "source",
+          "endLine": 32
+        }
+      ]
+    },
+    {
+      "id": "CAP-16",
+      "title": "独立二维/三维工程副本",
+      "status": "partial-staging-only",
+      "implementation": "已有从二维图纸选择生成独立 .floecad 工作副本的 staging→save→move 模式；Space 文件动作不支持 CAD 复制，也没有建筑→二维/三维独立 Space 工程。",
+      "publicReuse": true,
+      "whatExists": "CADFromDrawingImport 在目标目录创建独立文件，源图纸/草稿保留；CADUnifiedModelImport 也以独立包提交；原文件不覆盖。",
+      "gaps": [
+        "没有 building→新建 cad2D/cad3D Space 记录的服务；没有导出范围（整工程/楼层/选择/专业）。",
+        "没有副本身份收据、源版本绑定、副本后续修改不回写原件的正式合同。",
+        "PersonalLibraryFileActions 的 duplicate 不包含 cad2D/cad3D。",
+        "没有独立导出任务/取消/恢复。"
+      ],
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/FloeApp/Workspace/CADFromDrawingImport.swift",
+          "symbol": "CADFromDrawingImport staged working copy",
+          "line": 10,
+          "quote": "static func open",
+          "sourceType": "source",
+          "endLine": 38
+        },
+        {
+          "path": "FloeAgent/FloeApp/Workspace/CADFromDrawingImport.swift",
+          "symbol": "CADFromDrawingImport stage/create",
+          "line": 22,
+          "quote": "let stageName",
+          "sourceType": "source",
+          "endLine": 31
+        },
+        {
+          "path": "FloeAgent/FloeApp/Space/PersonalLibraryFileActions.swift",
+          "symbol": "PersonalLibraryFileActions.supports",
+          "line": 429,
+          "quote": "case .duplicate",
+          "sourceType": "source",
+          "endLine": 430
+        },
+        {
+          "path": "FloeAgent/FloeApp/Space/PersonalContentLibrary.swift",
+          "symbol": "PersonalContentKind",
+          "line": 7,
+          "quote": "enum PersonalContentKind",
+          "sourceType": "source",
+          "endLine": 9
+        }
+      ]
+    },
+    {
+      "id": "CAP-17",
+      "title": "保存、重开与冲突恢复",
+      "status": "implemented-per-store-cross-store-gap",
+      "implementation": "`.floecad` 包有 revision/CAS、staged 验证、previous 旋转与恢复；Space 关闭时 await save，失败保持编辑器；建筑资料库用独立 SQLite/SourceVersion CAS。",
+      "publicReuse": true,
+      "whatExists": "save 失败返回错误；previous 保留上一完整提交；重开读历史；PersonalCADSessions 按记录 id 复用同一 live document；BuildingWorkspaceService 组件版本带 expectedBase。",
+      "gaps": [
+        "CAD 文件与 Records SQLite 没有跨存储原子提交；两者各自 CAS，崩溃窗口会产生不一致。",
+        "没有建筑项目级 save journal/恢复 UI；Space 只保存 CAD 包，不同步资料/方案组件。",
+        "没有跨 Records/CAD 的版本比较、冲突合并或回滚到同一 revision。",
+        "没有独立工程副本的 source/revision 绑定。"
+      ],
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/FloeCADDocument.swift",
+          "symbol": "FloeCADDocument.save",
+          "line": 546,
+          "quote": "public func save() async",
+          "sourceType": "source",
+          "endLine": 591
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/FileCADDocumentStore.swift",
+          "symbol": "performWriteWithIdentity CAS",
+          "line": 849,
+          "quote": "func performWriteWithIdentity",
+          "sourceType": "source",
+          "endLine": 970
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/FileCADDocumentStore.swift",
+          "symbol": "commit rotates previous",
+          "line": 1272,
+          "quote": "private func commit",
+          "sourceType": "source",
+          "endLine": 1324
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/FileCADDocumentStore.swift",
+          "symbol": "staged verification before commit",
+          "line": 955,
+          "quote": "let stagedDocument = try verifiedPackage",
+          "sourceType": "source",
+          "endLine": 970
+        },
+        {
+          "path": "FloeAgent/FloeApp/Space/PersonalContentEditor.swift",
+          "symbol": "PersonalContentEditor.finish",
+          "line": 564,
+          "quote": "case .cad(let document)",
+          "sourceType": "source",
+          "endLine": 569
+        },
+        {
+          "path": "FloeAgent/FloeApp/Space/PersonalCADSessions.swift",
+          "symbol": "PersonalCADSessions.open",
+          "line": 10,
+          "quote": "static func open",
+          "sourceType": "source",
+          "endLine": 28
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingWorkspace/BuildingWorkspaceService.swift",
+          "symbol": "writeComponent CAS",
+          "line": 141,
+          "quote": "private func writeComponent",
+          "sourceType": "source",
+          "endLine": 156
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingWorkspace/BuildingWorkspaceService.swift",
+          "symbol": "loadProject revision check",
+          "line": 172,
+          "quote": "public func loadProject",
+          "sourceType": "source",
+          "endLine": 180
+        }
+      ]
+    },
+    {
+      "id": "CAP-18",
+      "title": "项目资料、观察/采用值、料单",
+      "status": "component-records-tested-not-integrated",
+      "implementation": "FloeBuildingRecords 用 GRDB/SQLite 保存项目、房间、不可变来源版本、观察、采用值、BOM 目标/草稿/项目；观察带来源定位，采用值保留观察链。",
+      "publicReuse": true,
+      "whatExists": "ProjectContainer 固定 Building/Records.sqlite；来源内容 hash/相对路径/版本；观察 origin；采用值 superseded 链；BOM 草稿 issue/选择行采用/比较；分页与搜索。",
+      "gaps": [
+        "AdoptedValueRecord 只有 roomID+propertyKey，没有 elementID/bodyID/instanceID/viewID 原生锚点。",
+        "BOMItem 没有构件/图纸/设备实例引用，只有 roomID；不能做采用值与构件、料单与图纸的强一致。",
+        "没有 App 工具注册、Office/OCR 真实提取或品牌型号匹配。",
+        "没有跨 CAD/Records 提交或建筑项目记录类型。"
+      ],
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingRecords/ProjectModels.swift",
+          "symbol": "ProjectRecord",
+          "line": 3,
+          "quote": "public struct ProjectRecord",
+          "sourceType": "source",
+          "endLine": 9
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingRecords/ProjectModels.swift",
+          "symbol": "SourceRecord",
+          "line": 108,
+          "quote": "public struct SourceRecord",
+          "sourceType": "source",
+          "endLine": 99
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingRecords/ObservationModels.swift",
+          "symbol": "ObservationRecord",
+          "line": 302,
+          "quote": "public struct ObservationRecord",
+          "sourceType": "source",
+          "endLine": 316
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingRecords/ObservationModels.swift",
+          "symbol": "AdoptedValueRecord",
+          "line": 318,
+          "quote": "public struct AdoptedValueRecord",
+          "sourceType": "source",
+          "endLine": 326
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingRecords/BOMTypes.swift",
+          "symbol": "BOMItem",
+          "line": 263,
+          "quote": "public struct BOMItem",
+          "sourceType": "source",
+          "endLine": 290
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingRecords/ProjectContainer.swift",
+          "symbol": "ProjectContainer database path",
+          "line": 14,
+          "quote": "databaseRelativePath",
+          "sourceType": "source",
+          "endLine": 14
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingWorkspace/BuildingWorkspaceCommands.swift",
+          "symbol": "BuildingWorkspaceCommand future adapter",
+          "line": 8,
+          "quote": "public enum BuildingWorkspaceCommand",
+          "sourceType": "source",
+          "endLine": 14
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingWorkspace/BuildingComponentDocuments.swift",
+          "symbol": "BuildingComponentDocument",
+          "line": 5,
+          "quote": "public enum BuildingComponentKind",
+          "sourceType": "source",
+          "endLine": 9
+        }
+      ]
+    },
+    {
+      "id": "CAP-19",
+      "title": "智能家居、无线、暖通与系统图例",
+      "status": "component-planners-tested-not-integrated",
+      "implementation": "FloeBuildingSystems 有设备/端口/供电/协议/连接/场景、12 类原创图例、接线验证；FloeBuildingAnalysis 有无线快估、IES 直射照度、稳态暖通初算。",
+      "publicReuse": true,
+      "whatExists": "SmartHomePlan projectID/roomIDs/equipment/position/ports/segments/scenes；SystemPlanValidator 检查端口介质/协议/中性线/网关/供电与线缆端接条件；RadioQuickEstimator 证据等级；HVAC 显式条件稳态。",
+      "gaps": [
+        "系统 plan 的 roomID 是独立 UUID，不是 CAD storey/space；没有原生设备实例/点位/连接图元。",
+        "没有系统图/接线图/点位图/料单图纸生成器；BOM 与图纸未绑定。",
+        "无线只有快估，没有精细传播/现场校准引擎；HVAC 无条件选型/管网/湿负荷。",
+        "UI 的灯光/暖通种子是单个合成灯/合成房间，不是实际工程数据。"
+      ],
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingSystems/SmartHomePlan.swift",
+          "symbol": "SmartHomeEquipment",
+          "line": 44,
+          "quote": "public struct SmartHomeEquipment",
+          "sourceType": "source",
+          "endLine": 51
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingSystems/SmartHomePlan.swift",
+          "symbol": "SmartHomePlan",
+          "line": 110,
+          "quote": "public struct SmartHomePlan",
+          "sourceType": "source",
+          "endLine": 121
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingSystems/SystemPlanValidation.swift",
+          "symbol": "SmartHomePlanValidator",
+          "line": 18,
+          "quote": "public enum SmartHomePlanValidator",
+          "sourceType": "source",
+          "endLine": 20
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingSystems/Radio/RadioQuickEstimator.swift",
+          "symbol": "RadioQuickEstimator.estimate",
+          "line": 123,
+          "quote": "public static func estimate",
+          "sourceType": "source",
+          "endLine": 138
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingSystems/Radio/RadioQuickEstimator.swift",
+          "symbol": "RadioEvidenceClass",
+          "line": 7,
+          "quote": "public enum RadioEvidenceClass",
+          "sourceType": "source",
+          "endLine": 12
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingAnalysis/HVACDesignLoad.swift",
+          "symbol": "HVACDesignLoadRequest",
+          "line": 14,
+          "quote": "public struct HVACDesignLoadRequest",
+          "sourceType": "source",
+          "endLine": 36
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingAnalysis/HVACDesignLoad.swift",
+          "symbol": "HVAC limitations",
+          "line": 85,
+          "quote": "no dynamic schedules",
+          "sourceType": "source",
+          "endLine": 85
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingUI/BuildingEditorModels.swift",
+          "symbol": "BuildingWorkbenchEditors synthetic seeds",
+          "line": 73,
+          "quote": "final class BuildingWorkbenchEditors",
+          "sourceType": "source",
+          "endLine": 90
+        }
+      ]
+    },
+    {
+      "id": "CAP-20",
+      "title": "三维灯光与工程照度",
+      "status": "two-unconnected-paths",
+      "implementation": "CAD 有视觉场景灯（directional/point/spot、强度/颜色/阴影/环境贴图）；FloeBuildingAnalysis 有 Type-C 直射照度求解与 CSV。两者没有共用灯具实例、IES 配光或结果版本。",
+      "publicReuse": true,
+      "whatExists": "CADSceneLight 8 盏上限、视觉渲染；DirectLightingSolver 支持 IES 1995/2002/2019、AABB 遮挡、网格采样、直接光；结果带 input fingerprint/limitations。",
+      "gaps": [
+        "没有 IES 灯具实例与 CAD 场景灯的绑定；没有真实配光驱动视觉/工程结果。",
+        "没有反射/间接光/日光/材质 BRDF 的完整渲染或 Radiance 级验证。",
+        "没有灯光结果与图纸/灯具表/场景版本的联动。",
+        "工程照度结果未进入图纸或报告输出链。"
+      ],
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingAnalysis/LightingAnalysis.swift",
+          "symbol": "LightingLuminaire",
+          "line": 4,
+          "quote": "public struct LightingLuminaire",
+          "sourceType": "source",
+          "endLine": 15
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingAnalysis/LightingAnalysis.swift",
+          "symbol": "DirectLightingSolver",
+          "line": 114,
+          "quote": "public enum DirectLightingSolver",
+          "sourceType": "source",
+          "endLine": 114
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingUI/BuildingEditorModels.swift",
+          "symbol": "BuildingWorkbenchEditors synthetic seeds",
+          "line": 73,
+          "quote": "final class BuildingWorkbenchEditors",
+          "sourceType": "source",
+          "endLine": 90
+        }
+      ]
+    },
+    {
+      "id": "CAP-21",
+      "title": "AI 工具与同工程读写入口",
+      "status": "partial-building-only",
+      "implementation": "cad.document/parameters 和 studio.read/studio.edit 已能读建筑 inspect、写 addWall/addRoom；有 revision/change_count/source hash 三元 pin。",
+      "publicReuse": true,
+      "whatExists": "CADBuildingToolService 4 actions；CADParameterService 路由；StudioCADNativeOperations buildingWrites 和 nativeCAD.building state；cad.document building topic；同一 CAD 文档/撤销/保存。",
+      "gaps": [
+        "AI 不能增删/修改门窗、梁柱板、楼层、房间关联、家具、柜体、图纸、资料/料单/系统。",
+        "没有建筑项目/Records 工具，BuildingWorkspaceCommand 仅定义为 future adapter。",
+        "没有 AI 生成家具/自动设计/图纸集的工具合同。",
+        "工具只能作用于授权 .floecad，不能以 Space projectID 直接打开建筑项目。"
+      ],
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingToolService.swift",
+          "symbol": "CADBuildingToolService.actions",
+          "line": 32,
+          "quote": "static let actions",
+          "sourceType": "source",
+          "endLine": 32
+        },
+        {
+          "path": "FloeAgent/FloeApp/Space/StudioCADNativeOperations.swift",
+          "symbol": "StudioCADNativeOperations buildingWrites",
+          "line": 75,
+          "quote": "private static let buildingWrites",
+          "sourceType": "source",
+          "endLine": 75
+        },
+        {
+          "path": "FloeAgent/FloeApp/Space/StudioCADNativeOperations.swift",
+          "symbol": "buildingState",
+          "line": 724,
+          "quote": "private static func buildingState",
+          "sourceType": "source",
+          "endLine": 756
+        },
+        {
+          "path": "FloeAgent/Sources/FloeWorkbench/CadDocumentTool.swift",
+          "symbol": "cad.document building topic",
+          "line": 982,
+          "quote": "Topic(name: \"building\"",
+          "sourceType": "source",
+          "endLine": 992
+        },
+        {
+          "path": "FloeAgent/Sources/FloeWorkbench/CadDocumentTool.swift",
+          "symbol": "cad.document building actions",
+          "line": 1686,
+          "quote": "Building architecture",
+          "sourceType": "source",
+          "endLine": 1686
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADParameterService.swift",
+          "symbol": "CADParameterService building route",
+          "line": 42,
+          "quote": "CADBuildingToolService.actions",
+          "sourceType": "source",
+          "endLine": 42
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingWorkspace/BuildingWorkspaceCommands.swift",
+          "symbol": "BuildingWorkspaceCommand future adapter",
+          "line": 8,
+          "quote": "public enum BuildingWorkspaceCommand",
+          "sourceType": "source",
+          "endLine": 14
+        }
+      ]
+    },
+    {
+      "id": "CAP-22",
+      "title": "量尺/扫描与建筑底稿",
+      "status": "partial-single-plane-measure",
+      "implementation": "FloeToolbox SpatialMeasurementSession 用 ARKit 检测平面，做长度/面积点选和截图；没有 RoomPlan/房间拓扑/多会话对齐/建筑底稿导入。",
+      "publicReuse": true,
+      "whatExists": "真实 raycast 采样、平面共享检查、面积同一平面、64 点上限、相机权限/占用、生命周期暂停、快照 generation fence。",
+      "gaps": [
+        "只有长度/面积，不是墙/门窗/洞口/层高/面积房间底稿。",
+        "没有 RoomPlan、LiDAR 自动重建、多房间坐标对齐、公共墙/门洞对应、补扫/冲突。",
+        "没有点云/网格/照片与房间/构件的持久关联或建筑项目导入。",
+        "没有实测值到原生构件的采用链。"
+      ],
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/Modules/FloeToolbox/Sources/FloeToolboxWorkbenches/SpatialMeasurementSession.swift",
+          "symbol": "SpatialMeasurementSession mode",
+          "line": 22,
+          "quote": "public enum Mode",
+          "sourceType": "source",
+          "endLine": 23
+        },
+        {
+          "path": "FloeAgent/Modules/FloeToolbox/Sources/FloeToolboxWorkbenches/SpatialMeasurementSession.swift",
+          "symbol": "SpatialMeasurementSample",
+          "line": 11,
+          "quote": "public struct SpatialMeasurementSample",
+          "sourceType": "source",
+          "endLine": 19
+        },
+        {
+          "path": "FloeAgent/Modules/FloeToolbox/Sources/FloeToolboxWorkbenches/SpatialMeasurementSession.swift",
+          "symbol": "captureSnapshot",
+          "line": 522,
+          "quote": "public func captureSnapshot",
+          "sourceType": "source",
+          "endLine": 539
+        },
+        {
+          "path": "docs/FLOE_BUILDING_EDITOR_REQUIREMENTS_QA_20261112.zh-CN.md",
+          "symbol": "QA doc no RoomPlan",
+          "line": 280,
+          "quote": "未发现 RoomPlan",
+          "sourceType": "doc",
+          "endLine": 280
+        }
+      ]
+    },
+    {
+      "id": "CAP-23",
+      "title": "验证层级与宿主/应用接入",
+      "status": "mixed-verified-source-only",
+      "implementation": "FloeInteriorKit 内核 123 项 XCTest 通过，整个 FloeBuildingUI 的 macOS SIL/对象编译通过；独立 iPad 宿主四项 UI 流程和 19 板 CAD 装配测试只有源码，未运行；主 App 未接入。",
+      "publicReuse": false,
+      "whatExists": "Qualification 记录 source SHA/指纹/原始失败；组件测试覆盖数据库/CAS/回滚/分页/撤销历史/计算边界；UI 编译通过。",
+      "gaps": [
+        "没有 iPad 宿主实际交互、截图、主题/大字体/VoiceOver/窄窗验收。",
+        "没有 19 板整柜 assembly 绘图测试的实际结果，不能解决旧整柜出图问题。",
+        "App 内 CAD 建筑 UI 测试源码存在但本任务未运行；不能据此宣称主 App 可用。",
+        "本任务按要求没有重新构建、运行测试或设备操作。"
+      ],
+      "sourceEvidence": [
+        {
+          "path": "docs/qualification/FLOE_BUILDING_PREDEVELOPMENT_20261113.zh-CN.md",
+          "symbol": "123 tests pass",
+          "line": 31,
+          "quote": "123 项 XCTest 全部通过",
+          "sourceType": "doc",
+          "endLine": 32
+        },
+        {
+          "path": "docs/qualification/FLOE_BUILDING_PREDEVELOPMENT_20261113.zh-CN.md",
+          "symbol": "UI03 object compile",
+          "line": 36,
+          "quote": "native-ui03",
+          "sourceType": "doc",
+          "endLine": 36
+        },
+        {
+          "path": "docs/qualification/FLOE_BUILDING_PREDEVELOPMENT_20261113.zh-CN.md",
+          "symbol": "19-board/host unrun",
+          "line": 33,
+          "quote": "19 板 CAD 装配测试",
+          "sourceType": "doc",
+          "endLine": 33
+        },
+        {
+          "path": "docs/qualification/FLOE_BUILDING_PREDEVELOPMENT_20261113.zh-CN.md",
+          "symbol": "component not in App dependency graph",
+          "line": 85,
+          "quote": "尚未进入 App 依赖图",
+          "sourceType": "doc",
+          "endLine": 85
+        },
+        {
+          "path": "FloeAgent/Qualification/Interior/WorkbenchHost/WorkbenchUITests.swift",
+          "symbol": "four host UI flows",
+          "line": 61,
+          "quote": "func testRoomRenameSelectiveBillAndRelaunch",
+          "sourceType": "source",
+          "endLine": 114
+        },
+        {
+          "path": "FloeAgent/Tests/FloeAgentUITests/CADBuildingWorkflowUITests.swift",
+          "symbol": "App building UI test source",
+          "line": 26,
+          "quote": "func testPlanImportModelSaveReopenDrawingAndProfessionalMenus",
+          "sourceType": "source",
+          "endLine": 26
+        }
+      ]
+    },
+    {
+      "id": "CAP-24",
+      "title": "整屋室内自动设计",
+      "status": "absent",
+      "implementation": "现有数据模型只有项目/房间/资料/料单/柜体/系统方案，没有家具布置、材料铺贴、灯具/柜体组合或建筑平面约束下的整屋自动方案。",
+      "publicReuse": false,
+      "whatExists": "可用的种子只有 CabinetBuilder、CabinetSheetPlanner 和研究夹具；建筑平面由现有 CADBuilding 编辑。",
+      "gaps": [
+        "没有房间约束/家具候选/布置求解/材料铺贴/冲突检查/方案比较与采用。",
+        "没有在保留建筑平面不变的前提下生成家具、灯具、材质和柜体。",
+        "没有自动设计的版本、撤销、失败恢复与人工调整合并。"
+      ],
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeInteriorCore/CabinetSheetPlanner.swift",
+          "symbol": "CabinetSheetPlanner.make",
+          "line": 69,
+          "quote": "public static func make",
+          "sourceType": "source",
+          "endLine": 160
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingWorkspace/BuildingWorkspaceService.swift",
+          "symbol": "loadProject revision check",
+          "line": 172,
+          "quote": "public func loadProject",
+          "sourceType": "source",
+          "endLine": 180
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingUI/BuildingEditorModels.swift",
+          "symbol": "BuildingWorkbenchEditors synthetic seeds",
+          "line": 73,
+          "quote": "final class BuildingWorkbenchEditors",
+          "sourceType": "source",
+          "endLine": 90
+        }
+      ]
+    },
+    {
+      "id": "CAP-25",
+      "title": "柜体生产输入适配（非优化器、非制造验收）",
+      "status": "source-only-not-optimizer",
+      "implementation": "FloeInteriorCore 已在工作树新增 CabinetManufacturingPreparation：按板件工艺/封边/余量/纹理/库存/木纹/锯缝生成设计尺寸/完成尺寸/基材尺寸/开料毛尺寸与 packing group 输入。它是矩形板件生产输入适配，不是排板优化器，也不是 CNC/五金/规则验收。",
+      "publicReuse": true,
+      "whatExists": "CabinetPanelProcess/CabinetStockPanel/CabinetManufacturingInput；CabinetManufacturingPlanner.prepare；明确 designFace/finished/substrate/cuttingBlank 四类尺寸；missingProductionValidation 列 optimizer-output/hardware-and-drilling-rules/joinery-and-grain-matching/motion-and-clearance/machine-postprocessor；readyForNesting 只表示输入齐全；manufacturingVerified 恒 false。",
+      "gaps": [
+        "没有排板优化器/开料结果；没有五金孔位、铰链/导轨规则、封边/纹理联合规则、结构承载/开合避让、CNC 后处理。",
+        "没有原生箱体/板件/库存/工艺版本绑定，也没有跨 Records/CAD 提交。",
+        "14 个新增制造测试只有源码，当前未编译/未运行；旧 123 项不包含它们。",
+        "没有实际排板图/标签/加工图或工厂验证。"
+      ],
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeInteriorCore/Manufacturing/CabinetManufacturingPreparation.swift",
+          "symbol": "CabinetManufacturingPreparation",
+          "line": 124,
+          "quote": "public struct CabinetManufacturingPreparation",
+          "sourceType": "source",
+          "endLine": 137
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeInteriorCore/Manufacturing/CabinetManufacturingPreparation.swift",
+          "symbol": "CabinetManufacturingPlanner",
+          "line": 151,
+          "quote": "Rectangular part preparation only",
+          "sourceType": "source",
+          "endLine": 157
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Tests/FloeInteriorCoreTests/CabinetManufacturingPreparationTests.swift",
+          "symbol": "CabinetManufacturingPreparationTests",
+          "line": 5,
+          "quote": "final class CabinetManufacturingPreparationTests",
+          "sourceType": "source",
+          "endLine": 5
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Tests/FloeInteriorCoreTests/CabinetManufacturingPreparationTests.swift",
+          "symbol": "first manufacturing preparation test",
+          "line": 28,
+          "quote": "func testAllNineteenPanelIdentitiesReachExplicitNestingInput",
+          "sourceType": "source",
+          "endLine": 28
+        }
+      ]
+    }
+  ],
+  "requirementsCoverage": [
+    {
+      "qa": "QA01",
+      "title": "建筑项目内完整二维/三维/图纸编辑",
+      "status": "partial",
+      "capabilityIDs": [
+        "CAP-01",
+        "CAP-03",
+        "CAP-07",
+        "CAP-08"
+      ],
+      "summary": "二维/三维/图纸编辑器确实存在并可共用同一 CAD 会话；但建筑只是 CAD 子页，没有独立建筑项目，图纸也不是建筑语义生成。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/FloeBuildingWorkbenchView.swift",
+          "symbol": "FloeBuildingWorkbenchView modes",
+          "line": 23,
+          "quote": "enum Mode",
+          "sourceType": "source",
+          "endLine": 23
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/FloeBuildingWorkbenchView.swift",
+          "symbol": "FloeBuildingWorkbenchView plan/model/drawings",
+          "line": 74,
+          "quote": "switch mode",
+          "sourceType": "source",
+          "endLine": 77
+        },
+        {
+          "path": "FloeAgent/FloeApp/Workspace/FloeCADHostChrome.swift",
+          "symbol": "FloeCADHostChrome building button",
+          "line": 75,
+          "quote": "Button { building=true }",
+          "sourceType": "source",
+          "endLine": 99
+        }
+      ]
+    },
+    {
+      "qa": "QA02",
+      "title": "完整建筑、结构、机电与碰撞首轮范围",
+      "status": "partial",
+      "capabilityIDs": [
+        "CAP-02",
+        "CAP-05",
+        "CAP-06"
+      ],
+      "summary": "建筑仅有简化构件；结构只有单梁；MEP 只有几何相交。完整范围未实现。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingModel.swift",
+          "symbol": "CADBuildingElement.Kind",
+          "line": 19,
+          "quote": "public enum Kind",
+          "sourceType": "source",
+          "endLine": 21
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingLocalAnalysis.swift",
+          "symbol": "CADBuildingLocalAnalysis.evaluate single beam",
+          "line": 36,
+          "quote": "$0.kind == .beam",
+          "sourceType": "source",
+          "endLine": 38
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingLocalCoordination.swift",
+          "symbol": "penetration/clearance/systemSizing false",
+          "line": 90,
+          "quote": "penetrationDepthComputed",
+          "sourceType": "source",
+          "endLine": 91
+        }
+      ]
+    },
+    {
+      "qa": "QA03",
+      "title": "二维/三维独立工程与通用格式",
+      "status": "partial",
+      "capabilityIDs": [
+        "CAP-15",
+        "CAP-16"
+      ],
+      "summary": "格式写入器多数存在，二维图纸→独立 CAD 工作副本有 staging 模式；建筑→独立 Space 工程、范围选择和副本身份未实现。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/FloeApp/Workspace/CADFromDrawingImport.swift",
+          "symbol": "CADFromDrawingImport staged working copy",
+          "line": 10,
+          "quote": "static func open",
+          "sourceType": "source",
+          "endLine": 38
+        },
+        {
+          "path": "FloeAgent/FloeApp/Space/PersonalLibraryFileActions.swift",
+          "symbol": "PersonalLibraryFileActions.supports",
+          "line": 429,
+          "quote": "case .duplicate",
+          "sourceType": "source",
+          "endLine": 430
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADDrawingService.swift",
+          "symbol": "exportData formats",
+          "line": 263,
+          "quote": "public func exportData",
+          "sourceType": "source",
+          "endLine": 333
+        }
+      ]
+    },
+    {
+      "qa": "QA04",
+      "title": "完整常用建筑构件",
+      "status": "partial",
+      "capabilityIDs": [
+        "CAP-02",
+        "CAP-03"
+      ],
+      "summary": "11 类构件的简化盒体/圆柱模型；弧墙、复合墙、基础、幕墙、坡屋顶、转折/旋转楼梯、自定义构件缺失。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingModel.swift",
+          "symbol": "CADBuildingElement.Kind",
+          "line": 19,
+          "quote": "public enum Kind",
+          "sourceType": "source",
+          "endLine": 21
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingService.swift",
+          "symbol": "CADBuildingGeometry.recipe",
+          "line": 17,
+          "quote": "static func recipe",
+          "sourceType": "source",
+          "endLine": 88
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingModel.swift",
+          "symbol": "CADBuildingDocument.validate slab/roof/space",
+          "line": 134,
+          "quote": "if [.slab, .roof, .space].contains",
+          "sourceType": "source",
+          "endLine": 138
+        }
+      ]
+    },
+    {
+      "qa": "QA05",
+      "title": "整栋结构分析",
+      "status": "absent",
+      "capabilityIDs": [
+        "CAP-05"
+      ],
+      "summary": "只有单根矩形梁线弹性计算，没有整栋框架/墙板壳/基础/支撑/荷载组合/结果报告。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingLocalAnalysis.swift",
+          "symbol": "CADBuildingLocalAnalysis.evaluate single beam",
+          "line": 36,
+          "quote": "$0.kind == .beam",
+          "sourceType": "source",
+          "endLine": 38
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingLocalAnalysis.swift",
+          "symbol": "wholeBuildingAnalysis false",
+          "line": 96,
+          "quote": "wholeBuildingAnalysis",
+          "sourceType": "source",
+          "endLine": 96
+        }
+      ]
+    },
+    {
+      "qa": "QA06",
+      "title": "完整机电系统",
+      "status": "absent",
+      "capabilityIDs": [
+        "CAP-06"
+      ],
+      "summary": "只有管道/风管与结构体的体积相交，缺系统连接、参数计算、尺寸选型、电气和净距。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingLocalCoordination.swift",
+          "symbol": "CADBuildingLocalCoordination system/structural kinds",
+          "line": 23,
+          "quote": "if kind == .pipe || kind == .duct",
+          "sourceType": "source",
+          "endLine": 25
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingLocalCoordination.swift",
+          "symbol": "penetration/clearance/systemSizing false",
+          "line": 90,
+          "quote": "penetrationDepthComputed",
+          "sourceType": "source",
+          "endLine": 91
+        }
+      ]
+    },
+    {
+      "qa": "QA07",
+      "title": "平面/三维/图纸关联更新",
+      "status": "partial",
+      "capabilityIDs": [
+        "CAP-03",
+        "CAP-07"
+      ],
+      "summary": "同一 CAD 文档内的建筑变更会重建 owned features，图纸有 source fingerprint/stale、missing instance 报告；没有建筑视图/房间边界/标注的语义联动。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingService.swift",
+          "symbol": "setBuilding associative transaction",
+          "line": 143,
+          "quote": "session.performAssociativeTransaction",
+          "sourceType": "source",
+          "endLine": 148
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADDrawing.swift",
+          "symbol": "CADDrawingPage assembly/annotations",
+          "line": 556,
+          "quote": "public nonisolated struct CADDrawingPage",
+          "sourceType": "source",
+          "endLine": 601
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADDrawingService.swift",
+          "symbol": "projectionSources maxInstances",
+          "line": 4205,
+          "quote": "let maxInstances = 64",
+          "sourceType": "source",
+          "endLine": 4222
+        }
+      ]
+    },
+    {
+      "qa": "QA08",
+      "title": "完整通用导出格式",
+      "status": "partial",
+      "capabilityIDs": [
+        "CAP-15"
+      ],
+      "summary": "DWG/DXF/PDF、STEP/GLB/OBJ/STL/3MF 有实际写入器；IFC 只有建筑专业导出，无 IFC 导入；原生项目文件是 .floecad。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADDrawingService.swift",
+          "symbol": "exportData formats",
+          "line": 263,
+          "quote": "public func exportData",
+          "sourceType": "source",
+          "endLine": 333
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADExactImportService.swift",
+          "symbol": "CADExactImportService format guard",
+          "line": 128,
+          "quote": "format == \"step\"",
+          "sourceType": "source",
+          "endLine": 132
+        },
+        {
+          "path": "FloeAgent/FloeApp/Resources/BuildingNative/building.js",
+          "symbol": "building.js IFC types",
+          "line": 6,
+          "quote": "const types",
+          "sourceType": "source",
+          "endLine": 6
+        }
+      ]
+    },
+    {
+      "qa": "QA09",
+      "title": "旧图纸和模型导入",
+      "status": "partial",
+      "capabilityIDs": [
+        "CAP-02",
+        "CAP-15",
+        "CAP-16"
+      ],
+      "summary": "DWG/DXF 通过宿主 Web 引擎转 sketch；STEP/IGES 精确导入；STL/OBJ/GLB/glTF/USD/Blend 网格导入；没有 IFC 导入，建筑转墙只接受直线中心线。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/FloeApp/Workspace/CADDrawingModelBridge.swift",
+          "symbol": "decode DWG/DXF",
+          "line": 29,
+          "quote": "guard [\"dwg\", \"dxf\"]",
+          "sourceType": "source",
+          "endLine": 34
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADExactImportService.swift",
+          "symbol": "CADExactImportService format guard",
+          "line": 128,
+          "quote": "format == \"step\"",
+          "sourceType": "source",
+          "endLine": 132
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Kernel/MeshImportKit.swift",
+          "symbol": "MeshImportKit format switch",
+          "line": 396,
+          "quote": "case \"glb\", \"gltf\"",
+          "sourceType": "source",
+          "endLine": 429
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingService.swift",
+          "symbol": "buildingCandidate line-only import",
+          "line": 177,
+          "quote": "lines = transfer.snapshot.curves.filter",
+          "sourceType": "source",
+          "endLine": 178
+        }
+      ]
+    },
+    {
+      "qa": "QA10",
+      "title": "完整设计信息与明细表",
+      "status": "partial",
+      "capabilityIDs": [
+        "CAP-04",
+        "CAP-18"
+      ],
+      "summary": "有建筑元素/楼层/空间面积和图纸页 BOM；没有材料复合层、房间编号/用途、构件明细、工程量表与筛选导出。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingInspection.swift",
+          "symbol": "inspectBuilding",
+          "line": 42,
+          "quote": "func inspectBuilding",
+          "sourceType": "source",
+          "endLine": 78
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADDrawing.swift",
+          "symbol": "CADDrawingBOMEntry",
+          "line": 458,
+          "quote": "public nonisolated struct CADDrawingBOMEntry",
+          "sourceType": "source",
+          "endLine": 482
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingRecords/BOMTypes.swift",
+          "symbol": "BOMItem",
+          "line": 263,
+          "quote": "public struct BOMItem",
+          "sourceType": "source",
+          "endLine": 290
+        }
+      ]
+    },
+    {
+      "qa": "QA11",
+      "title": "AI 完整操作",
+      "status": "partial",
+      "capabilityIDs": [
+        "CAP-21"
+      ],
+      "summary": "AI 能 inspect 建筑并 addWall/addRoom；其余构件、房间、资料、柜体、图纸、结构/MEP 和导出不在工具合同内。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingToolService.swift",
+          "symbol": "CADBuildingToolService.actions",
+          "line": 32,
+          "quote": "static let actions",
+          "sourceType": "source",
+          "endLine": 32
+        },
+        {
+          "path": "FloeAgent/Sources/FloeWorkbench/CadDocumentTool.swift",
+          "symbol": "cad.document building topic",
+          "line": 982,
+          "quote": "Topic(name: \"building\"",
+          "sourceType": "source",
+          "endLine": 992
+        },
+        {
+          "path": "FloeAgent/FloeApp/Space/StudioCADNativeOperations.swift",
+          "symbol": "StudioCADNativeOperations buildingWrites",
+          "line": 75,
+          "quote": "private static let buildingWrites",
+          "sourceType": "source",
+          "endLine": 75
+        }
+      ]
+    },
+    {
+      "qa": "QA12",
+      "title": "八地区规范与自定义地区",
+      "status": "partial",
+      "capabilityIDs": [
+        "CAP-04"
+      ],
+      "summary": "有地区选择/官方链接和四类显式规则；没有逐项规则库、版本、地方采用或按用途检查。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingEditors.swift",
+          "symbol": "CADBuildingSettingsView regions",
+          "line": 191,
+          "quote": "Section(bt(\"region\"",
+          "sourceType": "source",
+          "endLine": 201
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingModel.swift",
+          "symbol": "CADBuildingRule.Metric",
+          "line": 73,
+          "quote": "enum Metric",
+          "sourceType": "source",
+          "endLine": 73
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingInspection.swift",
+          "symbol": "inspectBuilding rule metrics",
+          "line": 64,
+          "quote": "for rule in model.rules",
+          "sourceType": "source",
+          "endLine": 75
+        }
+      ]
+    },
+    {
+      "qa": "QA13",
+      "title": "成套图纸与柜体深化",
+      "status": "partial",
+      "capabilityIDs": [
+        "CAP-07",
+        "CAP-08",
+        "CAP-14"
+      ],
+      "summary": "通用图纸引擎和柜体视图/尺寸 plan 存在；没有建筑/室内图纸生成器、批量出图、图签/目录或生产图纸。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADDrawingService.swift",
+          "symbol": "CADDrawingService.actions",
+          "line": 94,
+          "quote": "public nonisolated static let actions",
+          "sourceType": "source",
+          "endLine": 106
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingService.swift",
+          "symbol": "createBuildingDrawing",
+          "line": 193,
+          "quote": "func createBuildingDrawing",
+          "sourceType": "source",
+          "endLine": 205
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeInteriorCore/CabinetSheetPlanner.swift",
+          "symbol": "CabinetSheetPlanner.make",
+          "line": 69,
+          "quote": "public static func make",
+          "sourceType": "source",
+          "endLine": 160
+        }
+      ]
+    },
+    {
+      "qa": "QA14",
+      "title": "导出范围选择",
+      "status": "partial",
+      "capabilityIDs": [
+        "CAP-07",
+        "CAP-16"
+      ],
+      "summary": "原生导出的 part/assembly scope 和图纸单页存在；建筑整工程/楼层/选择/专业范围与独立工程导出不存在。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADDrawingService.swift",
+          "symbol": "exportData formats",
+          "line": 263,
+          "quote": "public func exportData",
+          "sourceType": "source",
+          "endLine": 333
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADDrawingService.swift",
+          "symbol": "applyTemplate batch only",
+          "line": 950,
+          "quote": "if let list = args[\"pageIDs\"]",
+          "sourceType": "source",
+          "endLine": 958
+        },
+        {
+          "path": "FloeAgent/FloeApp/Space/PersonalLibraryFileActions.swift",
+          "symbol": "PersonalLibraryFileActions.supports",
+          "line": 429,
+          "quote": "case .duplicate",
+          "sourceType": "source",
+          "endLine": 430
+        }
+      ]
+    },
+    {
+      "qa": "QA15",
+      "title": "旧 CAD 建筑工程兼容",
+      "status": "absent",
+      "capabilityIDs": [
+        "CAP-01",
+        "CAP-02"
+      ],
+      "summary": "没有从旧 CAD 建筑数据创建独立建筑项目副本的转换器；现有 building 只从 buildingData 解码或从直线图纸选择新建。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingService.swift",
+          "symbol": "public FloeCADDocument building extension",
+          "line": 92,
+          "quote": "public extension FloeCADDocument",
+          "sourceType": "source",
+          "endLine": 93
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingService.swift",
+          "symbol": "buildingCandidate",
+          "line": 156,
+          "quote": "func buildingCandidate",
+          "sourceType": "source",
+          "endLine": 189
+        },
+        {
+          "path": "FloeAgent/FloeApp/Workspace/CADFromDrawingImport.swift",
+          "symbol": "CADFromDrawingImport staged working copy",
+          "line": 10,
+          "quote": "static func open",
+          "sourceType": "source",
+          "endLine": 38
+        }
+      ]
+    },
+    {
+      "qa": "QA16",
+      "title": "柜体设计与生产准备",
+      "status": "partial",
+      "capabilityIDs": [
+        "CAP-12",
+        "CAP-13",
+        "CAP-25"
+      ],
+      "summary": "19 板柜体配方、稳定 ID、样图源码存在；新增 CabinetManufacturingPreparation 只把工艺/封边/余量/库存/纹理输入转成设计/完成/基材/开料尺寸和 packing group 输入，明确不是优化器、manufacturingVerified=false；mapping 不持久、原地更新未实现，24 个新测试未运行，旧 123 不覆盖。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeInteriorCore/Manufacturing/CabinetManufacturingPreparation.swift",
+          "symbol": "CabinetManufacturingPreparation",
+          "line": 124,
+          "quote": "public struct CabinetManufacturingPreparation",
+          "sourceType": "source",
+          "endLine": 137
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeInteriorCore/Manufacturing/CabinetManufacturingPreparation.swift",
+          "symbol": "CabinetManufacturingPlanner",
+          "line": 151,
+          "quote": "Rectangular part preparation only",
+          "sourceType": "source",
+          "endLine": 157
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Tests/FloeInteriorCoreTests/CabinetManufacturingPreparationTests.swift",
+          "symbol": "CabinetManufacturingPreparationTests",
+          "line": 5,
+          "quote": "final class CabinetManufacturingPreparationTests",
+          "sourceType": "source",
+          "endLine": 5
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Tests/FloeInteriorCoreTests/CabinetManufacturingPreparationTests.swift",
+          "symbol": "first manufacturing preparation test",
+          "line": 28,
+          "quote": "func testAllNineteenPanelIdentitiesReachExplicitNestingInput",
+          "sourceType": "source",
+          "endLine": 28
+        },
+        {
+          "path": "FloeAgent/Qualification/Interior/NativeCabinetAdapter.swift",
+          "symbol": "NativeCabinetDraft.create",
+          "line": 22,
+          "quote": "static func create",
+          "sourceType": "source",
+          "endLine": 54
+        },
+        {
+          "path": "FloeAgent/Qualification/Interior/NativeCabinetAdapter.swift",
+          "symbol": "NativeCabinetDraft.save receipt",
+          "line": 75,
+          "quote": "func save() async",
+          "sourceType": "source",
+          "endLine": 88
+        }
+      ]
+    },
+    {
+      "qa": "QA17",
+      "title": "整屋室内自动设计",
+      "status": "absent",
+      "capabilityIDs": [
+        "CAP-24",
+        "CAP-19"
+      ],
+      "summary": "没有整屋家具/灯具/材质/柜体自动布置引擎；只有合成柜体和单系统方案种子。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingUI/BuildingEditorModels.swift",
+          "symbol": "BuildingWorkbenchEditors synthetic seeds",
+          "line": 73,
+          "quote": "final class BuildingWorkbenchEditors",
+          "sourceType": "source",
+          "endLine": 90
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingWorkspace/BuildingWorkspaceService.swift",
+          "symbol": "loadProject revision check",
+          "line": 172,
+          "quote": "public func loadProject",
+          "sourceType": "source",
+          "endLine": 180
+        }
+      ]
+    },
+    {
+      "qa": "QA18",
+      "title": "量尺助手设备路径",
+      "status": "partial",
+      "capabilityIDs": [
+        "CAP-22"
+      ],
+      "summary": "有 ARKit 平面长度/面积测量和截图；没有 RoomPlan/LiDAR 自动房间重建，也没有摄像头点取墙角/门窗的完整流程。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/Modules/FloeToolbox/Sources/FloeToolboxWorkbenches/SpatialMeasurementSession.swift",
+          "symbol": "SpatialMeasurementSession mode",
+          "line": 22,
+          "quote": "public enum Mode",
+          "sourceType": "source",
+          "endLine": 23
+        },
+        {
+          "path": "docs/FLOE_BUILDING_EDITOR_REQUIREMENTS_QA_20261112.zh-CN.md",
+          "symbol": "QA doc no RoomPlan",
+          "line": 280,
+          "quote": "未发现 RoomPlan",
+          "sourceType": "doc",
+          "endLine": 280
+        }
+      ]
+    },
+    {
+      "qa": "QA19",
+      "title": "可校正多房间/整层底稿",
+      "status": "absent",
+      "capabilityIDs": [
+        "CAP-22"
+      ],
+      "summary": "没有房间底稿、墙/门窗/洞口/层高/面积、坐标对齐、公共墙/门洞、补扫冲突或建筑导入。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/Modules/FloeToolbox/Sources/FloeToolboxWorkbenches/SpatialMeasurementSession.swift",
+          "symbol": "SpatialMeasurementSample",
+          "line": 11,
+          "quote": "public struct SpatialMeasurementSample",
+          "sourceType": "source",
+          "endLine": 19
+        },
+        {
+          "path": "docs/FLOE_BUILDING_EDITOR_REQUIREMENTS_QA_20261112.zh-CN.md",
+          "symbol": "QA doc no RoomPlan",
+          "line": 280,
+          "quote": "未发现 RoomPlan",
+          "sourceType": "doc",
+          "endLine": 280
+        }
+      ]
+    },
+    {
+      "qa": "QA20",
+      "title": "四方向全部纳入",
+      "status": "partial",
+      "capabilityIDs": [
+        "CAP-12",
+        "CAP-14",
+        "CAP-18",
+        "CAP-22"
+      ],
+      "summary": "四方向均有源码或设计种子，但只有柜体内核与部分记录/分析测试通过；CAD 联合、量尺和自动设计未闭环。",
+      "sourceEvidence": [
+        {
+          "path": "docs/design/building-project/predevelopment-plan-v1.json",
+          "symbol": "predevelopment plan state",
+          "line": 3,
+          "quote": "status",
+          "sourceType": "doc",
+          "endLine": 3
+        },
+        {
+          "path": "docs/qualification/FLOE_BUILDING_PREDEVELOPMENT_20261113.zh-CN.md",
+          "symbol": "123 tests pass",
+          "line": 31,
+          "quote": "123 项 XCTest 全部通过",
+          "sourceType": "doc",
+          "endLine": 32
+        }
+      ]
+    },
+    {
+      "qa": "QA21",
+      "title": "柜体总图+单柜深化图",
+      "status": "partial",
+      "capabilityIDs": [
+        "CAP-14"
+      ],
+      "summary": "CabinetSheetPlanner 有组合页/单柜视图/尺寸规格；未映射到 CAD 页，19 板测试未运行，无装配爆炸/编号明细。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeInteriorCore/CabinetSheetPlanner.swift",
+          "symbol": "CabinetSheetPlanner.make",
+          "line": 69,
+          "quote": "public static func make",
+          "sourceType": "source",
+          "endLine": 160
+        },
+        {
+          "path": "FloeAgent/Qualification/Interior/NativeCabinetAssemblyChecks.swift",
+          "symbol": "19-panel 5-view export",
+          "line": 45,
+          "quote": "let selected",
+          "sourceType": "source",
+          "endLine": 70
+        }
+      ]
+    },
+    {
+      "qa": "QA22",
+      "title": "自动生成+人工调整关联尺寸",
+      "status": "partial",
+      "capabilityIDs": [
+        "CAP-07",
+        "CAP-14"
+      ],
+      "summary": "CAD 有人工尺寸/特征关联尺寸；柜体有 planner 尺寸/人工 presentation；两者未连接，特征关联只支持圆柱面直径/半径。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADDrawing.swift",
+          "symbol": "CADDrawingManualDimension",
+          "line": 384,
+          "quote": "public nonisolated struct CADDrawingManualDimension",
+          "sourceType": "source",
+          "endLine": 406
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADDrawing.swift",
+          "symbol": "CADDrawingFeatureReference",
+          "line": 196,
+          "quote": "public nonisolated struct CADDrawingFeatureReference",
+          "sourceType": "source",
+          "endLine": 206
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADDrawingService.swift",
+          "symbol": "addDimensionAction feature restriction",
+          "line": 2391,
+          "quote": "A linked feature dimension supports only diameter or radius",
+          "sourceType": "source",
+          "endLine": 2392
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeInteriorCore/CabinetSheetPlanner.swift",
+          "symbol": "associative dimensions",
+          "line": 110,
+          "quote": "var dimensions",
+          "sourceType": "source",
+          "endLine": 145
+        }
+      ]
+    },
+    {
+      "qa": "QA23",
+      "title": "混合资源库组织",
+      "status": "partial",
+      "capabilityIDs": [
+        "CAP-10",
+        "CAP-11"
+      ],
+      "summary": "材质库可复用；175 条 CC0 家具目录只做离线暂存；没有统一家具目录/品牌五金/合作数据服务。",
+      "sourceEvidence": [
+        {
+          "path": "docs/FLOE_INTERIOR_FURNITURE_INTAKE_20261112.zh-CN.md",
+          "symbol": "furniture catalog research only",
+          "line": 3,
+          "quote": "尚未接入 App 家具库",
+          "sourceType": "doc",
+          "endLine": 3
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Kernel/MaterialKit.swift",
+          "symbol": "CADMaterialLibrary",
+          "line": 470,
+          "quote": "nonisolated struct CADMaterialLibrary",
+          "sourceType": "source",
+          "endLine": 482
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADAssembly.swift",
+          "symbol": "CADPartReferenceKind",
+          "line": 235,
+          "quote": "public nonisolated enum CADPartReferenceKind",
+          "sourceType": "source",
+          "endLine": 237
+        }
+      ]
+    },
+    {
+      "qa": "QA24",
+      "title": "工程固定资源版本与主动升级",
+      "status": "partial",
+      "capabilityIDs": [
+        "CAP-09",
+        "CAP-10",
+        "CAP-18"
+      ],
+      "summary": "外部零件引用会 pin source revision/hash；没有家具/材质/五金版本表、升级比较、依赖重算和可恢复升级。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADAssembly.swift",
+          "symbol": "CADPartReference",
+          "line": 247,
+          "quote": "public nonisolated struct CADPartReference",
+          "sourceType": "source",
+          "endLine": 284
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADAssembly.swift",
+          "symbol": "CADPartMetadata",
+          "line": 471,
+          "quote": "public nonisolated struct CADPartMetadata",
+          "sourceType": "source",
+          "endLine": 490
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Kernel/MaterialKit.swift",
+          "symbol": "CADMaterialLibrary",
+          "line": 470,
+          "quote": "nonisolated struct CADMaterialLibrary",
+          "sourceType": "source",
+          "endLine": 482
+        }
+      ]
+    },
+    {
+      "qa": "QA25",
+      "title": "小型基础库+按需下载/离线包",
+      "status": "absent",
+      "capabilityIDs": [
+        "CAP-10",
+        "CAP-11"
+      ],
+      "summary": "没有安装初始基础库、按需下载、离线包、依赖保留或缓存清理规则。",
+      "sourceEvidence": [
+        {
+          "path": "docs/FLOE_INTERIOR_FURNITURE_INTAKE_20261112.zh-CN.md",
+          "symbol": "furniture catalog research only",
+          "line": 3,
+          "quote": "尚未接入 App 家具库",
+          "sourceType": "doc",
+          "endLine": 3
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Kernel/MaterialKit.swift",
+          "symbol": "CADMaterialLimits",
+          "line": 530,
+          "quote": "nonisolated enum CADMaterialLimits",
+          "sourceType": "source",
+          "endLine": 534
+        }
+      ]
+    },
+    {
+      "qa": "QA26",
+      "title": "智能家居规划与施工交付",
+      "status": "partial",
+      "capabilityIDs": [
+        "CAP-19"
+      ],
+      "summary": "有设备/端口/线路/场景/图例/校验组件；没有 App 工作台、点位图/接线图/料单图纸，也没有与 CAD 房间/构件绑定。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingSystems/SmartHomePlan.swift",
+          "symbol": "SmartHomePlan",
+          "line": 110,
+          "quote": "public struct SmartHomePlan",
+          "sourceType": "source",
+          "endLine": 121
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingSystems/SystemPlanValidation.swift",
+          "symbol": "SmartHomePlanValidator",
+          "line": 18,
+          "quote": "public enum SmartHomePlanValidator",
+          "sourceType": "source",
+          "endLine": 20
+        }
+      ]
+    },
+    {
+      "qa": "QA27",
+      "title": "AP 快估+精细传播+现场校准",
+      "status": "partial",
+      "capabilityIDs": [
+        "CAP-19"
+      ],
+      "summary": "有快估和校准值类型/证据等级；没有精细传播引擎、分频段热力图图纸或现场测量校准闭环。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingSystems/Radio/RadioQuickEstimator.swift",
+          "symbol": "RadioQuickEstimator.estimate",
+          "line": 123,
+          "quote": "public static func estimate",
+          "sourceType": "source",
+          "endLine": 138
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingSystems/Radio/RadioQuickEstimator.swift",
+          "symbol": "RadioEvidenceClass",
+          "line": 7,
+          "quote": "public enum RadioEvidenceClass",
+          "sourceType": "source",
+          "endLine": 12
+        }
+      ]
+    },
+    {
+      "qa": "QA28",
+      "title": "三维灯光+真实配光照度",
+      "status": "partial",
+      "capabilityIDs": [
+        "CAP-20"
+      ],
+      "summary": "视觉场景灯与独立 Type-C 直射照度求解都存在但未连接；没有灯具实例/IES 绑定、反射/日光、报告或图纸输出。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingAnalysis/LightingAnalysis.swift",
+          "symbol": "LightingLuminaire",
+          "line": 4,
+          "quote": "public struct LightingLuminaire",
+          "sourceType": "source",
+          "endLine": 15
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingAnalysis/LightingAnalysis.swift",
+          "symbol": "DirectLightingSolver",
+          "line": 114,
+          "quote": "public enum DirectLightingSolver",
+          "sourceType": "source",
+          "endLine": 114
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingUI/BuildingEditorModels.swift",
+          "symbol": "BuildingWorkbenchEditors synthetic seeds",
+          "line": 73,
+          "quote": "final class BuildingWorkbenchEditors",
+          "sourceType": "source",
+          "endLine": 90
+        }
+      ]
+    }
+  ],
+  "additionalScope": [
+    {
+      "id": "A01",
+      "title": "室内装修作为默认工作流",
+      "status": "design-only",
+      "capabilityIDs": [
+        "CAP-01",
+        "CAP-24"
+      ],
+      "summary": "默认模板/入口/工作流仍以 CAD2D/3D 为主；没有建筑/室内项目类型或装修工作流。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/FloeApp/Space/PersonalContentLibrary.swift",
+          "symbol": "PersonalContentKind",
+          "line": 7,
+          "quote": "enum PersonalContentKind",
+          "sourceType": "source",
+          "endLine": 9
+        },
+        {
+          "path": "docs/FLOE_INTERIOR_DRAWINGS_AND_CABINET_DETAILING_20261112.zh-CN.md",
+          "symbol": "cabinet drawing design",
+          "line": 3,
+          "quote": "状态",
+          "sourceType": "doc",
+          "endLine": 3
+        }
+      ]
+    },
+    {
+      "id": "A02",
+      "title": "家具库与家具摆放",
+      "status": "research-only",
+      "capabilityIDs": [
+        "CAP-09",
+        "CAP-10"
+      ],
+      "summary": "可复用装配实例和网格导入，但没有家具目录、锚点/尺度/房间归属或摆放 UI。",
+      "sourceEvidence": [
+        {
+          "path": "docs/FLOE_INTERIOR_FURNITURE_INTAKE_20261112.zh-CN.md",
+          "symbol": "furniture catalog research only",
+          "line": 3,
+          "quote": "尚未接入 App 家具库",
+          "sourceType": "doc",
+          "endLine": 3
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADAssembly.swift",
+          "symbol": "CADAssemblyInstance",
+          "line": 94,
+          "quote": "public nonisolated struct CADAssemblyInstance",
+          "sourceType": "source",
+          "endLine": 132
+        }
+      ]
+    },
+    {
+      "id": "A03",
+      "title": "材质库、墙体材料与自动贴材质",
+      "status": "partial",
+      "capabilityIDs": [
+        "CAP-02",
+        "CAP-11"
+      ],
+      "summary": "PBR/UV 贴图存在；建筑构件没有材料/构造层，墙面铺贴与材料规则不存在。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Kernel/MaterialKit.swift",
+          "symbol": "CADMaterialUVMapping",
+          "line": 75,
+          "quote": "nonisolated struct CADMaterialUVMapping",
+          "sourceType": "source",
+          "endLine": 82
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingModel.swift",
+          "symbol": "CADBuildingElement a/b",
+          "line": 28,
+          "quote": "public var a: [Double]",
+          "sourceType": "source",
+          "endLine": 29
+        }
+      ]
+    },
+    {
+      "id": "A04",
+      "title": "柜体设计与自动设计",
+      "status": "partial",
+      "capabilityIDs": [
+        "CAP-12",
+        "CAP-14",
+        "CAP-24"
+      ],
+      "summary": "有单柜配方/planner；没有整屋自动设计、柜体更新、五金孔位或生产规则。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeInteriorCore/CabinetDefinition.swift",
+          "symbol": "CabinetRecipe",
+          "line": 59,
+          "quote": "public struct CabinetRecipe",
+          "sourceType": "source",
+          "endLine": 72
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeInteriorCore/CabinetSheetPlanner.swift",
+          "symbol": "CabinetSheetPlanner.make",
+          "line": 69,
+          "quote": "public static func make",
+          "sourceType": "source",
+          "endLine": 160
+        }
+      ]
+    },
+    {
+      "id": "A05",
+      "title": "项目资料与 AI 整理/采用",
+      "status": "component-only",
+      "capabilityIDs": [
+        "CAP-18",
+        "CAP-21"
+      ],
+      "summary": "Records 有来源/观察/采用值；采用值不绑定原生构件，AI 工具未注册。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingRecords/ObservationModels.swift",
+          "symbol": "AdoptedValueRecord",
+          "line": 318,
+          "quote": "public struct AdoptedValueRecord",
+          "sourceType": "source",
+          "endLine": 326
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingWorkspace/BuildingWorkspaceCommands.swift",
+          "symbol": "BuildingWorkspaceCommand future adapter",
+          "line": 8,
+          "quote": "public enum BuildingWorkspaceCommand",
+          "sourceType": "source",
+          "endLine": 14
+        }
+      ]
+    },
+    {
+      "id": "A06",
+      "title": "组合图、斜视、内部立面与正式尺寸",
+      "status": "source-only",
+      "capabilityIDs": [
+        "CAP-14"
+      ],
+      "summary": "planner 有视图/尺寸规格和人工保留；CAD 投影/图纸文件/19 板运行未完成。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeInteriorCore/CabinetSheetPlanner.swift",
+          "symbol": "internal elevation filter",
+          "line": 102,
+          "quote": "kind == .internalElevation",
+          "sourceType": "source",
+          "endLine": 103
+        },
+        {
+          "path": "docs/qualification/FLOE_BUILDING_PREDEVELOPMENT_20261113.zh-CN.md",
+          "symbol": "19-board test source only",
+          "line": 68,
+          "quote": "该验证尚未运行",
+          "sourceType": "doc",
+          "endLine": 68
+        }
+      ]
+    },
+    {
+      "id": "A07",
+      "title": "资源库分发、更新与品牌五金",
+      "status": "research-only",
+      "capabilityIDs": [
+        "CAP-10",
+        "CAP-11"
+      ],
+      "summary": "有资源来源/许可/入口调研；没有资源服务、品牌数据包、版本固定或离线依赖。",
+      "sourceEvidence": [
+        {
+          "path": "docs/FLOE_INTERIOR_FURNITURE_INTAKE_20261112.zh-CN.md",
+          "symbol": "furniture catalog research only",
+          "line": 3,
+          "quote": "尚未接入 App 家具库",
+          "sourceType": "doc",
+          "endLine": 3
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADAssembly.swift",
+          "symbol": "CADPartReferenceKind",
+          "line": 235,
+          "quote": "public nonisolated enum CADPartReferenceKind",
+          "sourceType": "source",
+          "endLine": 237
+        }
+      ]
+    },
+    {
+      "id": "A08",
+      "title": "智能家居、暖通、AP 与三维灯光",
+      "status": "component-only",
+      "capabilityIDs": [
+        "CAP-19",
+        "CAP-20"
+      ],
+      "summary": "有规划/分析组件与快估/直射照度；没有真实 CAD 房间、设备图形、精细传播/配光渲染或施工图纸。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingUI/BuildingEditorModels.swift",
+          "symbol": "BuildingWorkbenchEditors synthetic seeds",
+          "line": 73,
+          "quote": "final class BuildingWorkbenchEditors",
+          "sourceType": "source",
+          "endLine": 90
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingSystems/SmartHomePlan.swift",
+          "symbol": "SmartHomePlan",
+          "line": 110,
+          "quote": "public struct SmartHomePlan",
+          "sourceType": "source",
+          "endLine": 121
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingAnalysis/LightingAnalysis.swift",
+          "symbol": "DirectLightingSolver",
+          "line": 114,
+          "quote": "public enum DirectLightingSolver",
+          "sourceType": "source",
+          "endLine": 114
+        }
+      ]
+    }
+  ],
+  "reuseHooks": [
+    {
+      "id": "H01",
+      "name": "FloeCADDocument 公共 facade",
+      "kind": "public",
+      "provides": "打开/创建/保存 .floecad，revision/contentSHA/modelSHA、summary、execute/executeAsync、storedIdentity；建筑扩展 building/setBuilding。",
+      "limits": "所有变更走 DocumentCommand + CAS；关闭后拒绝写入；不能读取内部 Project。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/FloeCADDocument.swift",
+          "symbol": "FloeCADDocument.open",
+          "line": 135,
+          "quote": "public static func open",
+          "sourceType": "source",
+          "endLine": 143
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/FloeCADDocument.swift",
+          "symbol": "FloeCADDocument.save",
+          "line": 546,
+          "quote": "public func save() async",
+          "sourceType": "source",
+          "endLine": 591
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/FloeCADDocument.swift",
+          "symbol": "FloeCADDocument.summary",
+          "line": 335,
+          "quote": "public func summary",
+          "sourceType": "source",
+          "endLine": 352
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/FloeCADDocument.swift",
+          "symbol": "FloeCADDocument.execute",
+          "line": 360,
+          "quote": "public func execute",
+          "sourceType": "source",
+          "endLine": 388
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingService.swift",
+          "symbol": "public FloeCADDocument building extension",
+          "line": 92,
+          "quote": "public extension FloeCADDocument",
+          "sourceType": "source",
+          "endLine": 93
+        }
+      ]
+    },
+    {
+      "id": "H02",
+      "name": "FileCADDocumentStore 原子包存储",
+      "kind": "internal",
+      "provides": "revision/磁盘双重 CAS、staging 重读验证、previous 旋转、恢复。",
+      "limits": "只保护 .floecad；不覆盖 Records SQLite 或导出文件。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/FileCADDocumentStore.swift",
+          "symbol": "performWriteWithIdentity CAS",
+          "line": 849,
+          "quote": "func performWriteWithIdentity",
+          "sourceType": "source",
+          "endLine": 970
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/FileCADDocumentStore.swift",
+          "symbol": "commit rotates previous",
+          "line": 1272,
+          "quote": "private func commit",
+          "sourceType": "source",
+          "endLine": 1324
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/FileCADDocumentStore.swift",
+          "symbol": "staged verification before commit",
+          "line": 955,
+          "quote": "let stagedDocument = try verifiedPackage",
+          "sourceType": "source",
+          "endLine": 970
+        }
+      ]
+    },
+    {
+      "id": "H03",
+      "name": "CADBuildingDocument 语义模型",
+      "kind": "public",
+      "provides": "Codable schema、楼层/构件/来源/地区/rules、validate、稳定 bodyID。",
+      "limits": "矩形/直线/盒体模型；无弧/复合/房间拓扑/材料。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingModel.swift",
+          "symbol": "CADBuildingElement.Kind",
+          "line": 19,
+          "quote": "public enum Kind",
+          "sourceType": "source",
+          "endLine": 21
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingModel.swift",
+          "symbol": "CADBuildingDocument.validate",
+          "line": 114,
+          "quote": "guard schemaVersion == 1",
+          "sourceType": "source",
+          "endLine": 117
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingModel.swift",
+          "symbol": "CADBuildingDocument.validate slab/roof/space",
+          "line": 134,
+          "quote": "if [.slab, .roof, .space].contains",
+          "sourceType": "source",
+          "endLine": 138
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingModel.swift",
+          "symbol": "CADBuildingElement.bodyIDs",
+          "line": 52,
+          "quote": "public var bodyID: UUID",
+          "sourceType": "source",
+          "endLine": 57
+        }
+      ]
+    },
+    {
+      "id": "H04",
+      "name": "建筑几何与整体事务",
+      "kind": "internal",
+      "provides": "recipe→FeatureNode；门窗布尔减；setBuilding 关联事务与历史顺序/CAS 校验。",
+      "limits": "整段替换，不是逐构件 patch；不能保留直接 CAD 修改。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingService.swift",
+          "symbol": "CADBuildingGeometry.recipe",
+          "line": 17,
+          "quote": "static func recipe",
+          "sourceType": "source",
+          "endLine": 88
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingService.swift",
+          "symbol": "CADBuildingGeometry.recipe wall openings",
+          "line": 60,
+          "quote": "if element.kind == .wall",
+          "sourceType": "source",
+          "endLine": 83
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingService.swift",
+          "symbol": "FloeCADDocument.setBuilding",
+          "line": 98,
+          "quote": "func setBuilding",
+          "sourceType": "source",
+          "endLine": 150
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingService.swift",
+          "symbol": "setBuilding associative transaction",
+          "line": 143,
+          "quote": "session.performAssociativeTransaction",
+          "sourceType": "source",
+          "endLine": 148
+        }
+      ]
+    },
+    {
+      "id": "H05",
+      "name": "建筑工具与 AI 适配",
+      "kind": "public",
+      "provides": "catalog/inspect/addWall/addRoom，typed fields，expected_revision/change_count/source hash pins。",
+      "limits": "只有 4 个动作；没有其他构件、房间、柜体、图纸。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingToolService.swift",
+          "symbol": "CADBuildingToolService.actions",
+          "line": 32,
+          "quote": "static let actions",
+          "sourceType": "source",
+          "endLine": 32
+        },
+        {
+          "path": "FloeAgent/Sources/FloeWorkbench/CadDocumentTool.swift",
+          "symbol": "cad.document building topic",
+          "line": 982,
+          "quote": "Topic(name: \"building\"",
+          "sourceType": "source",
+          "endLine": 992
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADParameterService.swift",
+          "symbol": "CADParameterService building route",
+          "line": 42,
+          "quote": "CADBuildingToolService.actions",
+          "sourceType": "source",
+          "endLine": 42
+        }
+      ]
+    },
+    {
+      "id": "H06",
+      "name": "CADDrawingService 图纸引擎",
+      "kind": "public",
+      "provides": "页/视图/模板/尺寸/文字/气球/BOM/投影/导出；PDF/SVG/DXF/PNG/CSV；DWG 宿主编码钩子。",
+      "limits": "普通页/视图至多12个source body；assemblyMode使用另一路最多64个可见实例，仍受几何预算和完整性约束；没有按柜体语义过滤的组合页生成器和批量出图。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADDrawingService.swift",
+          "symbol": "CADDrawingService.actions",
+          "line": 94,
+          "quote": "public nonisolated static let actions",
+          "sourceType": "source",
+          "endLine": 106
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADDrawingService.swift",
+          "symbol": "exportData formats",
+          "line": 263,
+          "quote": "public func exportData",
+          "sourceType": "source",
+          "endLine": 333
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADDrawingService.swift",
+          "symbol": "dimensions(for:) bbox/circle",
+          "line": 5067,
+          "quote": "private func dimensions(for page",
+          "sourceType": "source",
+          "endLine": 5077
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADDrawingService.swift",
+          "symbol": "addDimensionAction feature restriction",
+          "line": 2391,
+          "quote": "A linked feature dimension supports only diameter or radius",
+          "sourceType": "source",
+          "endLine": 2392
+        }
+      ]
+    },
+    {
+      "id": "H07",
+      "name": "CADDrawingSet/Page 持久模型",
+      "kind": "public",
+      "provides": "多视图、section/detail/iso/exploded、assemblyMode、manualDimensions/annotations/bom、sourceFingerprint、schema v6。",
+      "limits": "普通来源过滤仍以 bodyID 12 为界；没有实例 ID/角色过滤字段。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADDrawing.swift",
+          "symbol": "CADDrawingSheetView",
+          "line": 259,
+          "quote": "public nonisolated struct CADDrawingSheetView",
+          "sourceType": "source",
+          "endLine": 277
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADDrawing.swift",
+          "symbol": "CADDrawingPage assembly/annotations",
+          "line": 556,
+          "quote": "public nonisolated struct CADDrawingPage",
+          "sourceType": "source",
+          "endLine": 601
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADDrawing.swift",
+          "symbol": "CADDrawingViewKind",
+          "line": 14,
+          "quote": "public nonisolated enum CADDrawingViewKind",
+          "sourceType": "source",
+          "endLine": 36
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADDrawing.swift",
+          "symbol": "CADDrawingBinding",
+          "line": 352,
+          "quote": "public nonisolated struct CADDrawingBinding",
+          "sourceType": "source",
+          "endLine": 365
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADDrawing.swift",
+          "symbol": "CADDrawingFeatureReference",
+          "line": 196,
+          "quote": "public nonisolated struct CADDrawingFeatureReference",
+          "sourceType": "source",
+          "endLine": 206
+        }
+      ]
+    },
+    {
+      "id": "H08",
+      "name": "CADAssembly 装配",
+      "kind": "public",
+      "provides": "实例 transform、嵌套/约束/爆炸、part reference pin、addInstance/moveInstance/placePartReference、干涉。",
+      "limits": "无家具语义/锚点/单位/房间归属；外部源只 nativeDocument。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADAssemblyService.swift",
+          "symbol": "CADAssemblyService.actions",
+          "line": 236,
+          "quote": "public nonisolated static let actions",
+          "sourceType": "source",
+          "endLine": 249
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADAssemblyService.swift",
+          "symbol": "addInstanceAction",
+          "line": 1914,
+          "quote": "private func addInstanceAction",
+          "sourceType": "source",
+          "endLine": 1983
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADAssembly.swift",
+          "symbol": "CADPartReference",
+          "line": 247,
+          "quote": "public nonisolated struct CADPartReference",
+          "sourceType": "source",
+          "endLine": 284
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADAssembly.swift",
+          "symbol": "CADPartMetadata",
+          "line": 471,
+          "quote": "public nonisolated struct CADPartMetadata",
+          "sourceType": "source",
+          "endLine": 490
+        }
+      ]
+    },
+    {
+      "id": "H09",
+      "name": "CADMaterial 材质/UV/库",
+      "kind": "public",
+      "provides": "PBR 定义、贴图、planar/box UV、面级绑定、文档/共享库导入导出。",
+      "limits": "视觉材质，不是建筑构造/热工/五金规则；无版本升级。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Kernel/MaterialKit.swift",
+          "symbol": "CADMaterialDefinition",
+          "line": 241,
+          "quote": "nonisolated struct CADMaterialDefinition",
+          "sourceType": "source",
+          "endLine": 256
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Kernel/MaterialKit.swift",
+          "symbol": "CADMaterialUVMapping",
+          "line": 75,
+          "quote": "nonisolated struct CADMaterialUVMapping",
+          "sourceType": "source",
+          "endLine": 82
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Kernel/MaterialKit.swift",
+          "symbol": "CADMaterialLibrary",
+          "line": 470,
+          "quote": "nonisolated struct CADMaterialLibrary",
+          "sourceType": "source",
+          "endLine": 482
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADMaterialService.swift",
+          "symbol": "CADMaterialService.actions",
+          "line": 24,
+          "quote": "public static let actions",
+          "sourceType": "source",
+          "endLine": 34
+        }
+      ]
+    },
+    {
+      "id": "H10",
+      "name": "模型导入",
+      "kind": "public",
+      "provides": "STEP/IGES 精确导入；STL/OBJ/GLB/glTF/USD/Blend/ZIP 网格导入；单位、资源摘要、失败不落盘。",
+      "limits": "无 IFC 导入；无家具目录/锚点；App 直接导入只列 STL/OBJ/STEP/IGES。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Floe/CADExactImportService.swift",
+          "symbol": "CADExactImportService format guard",
+          "line": 128,
+          "quote": "format == \"step\"",
+          "sourceType": "source",
+          "endLine": 132
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Kernel/MeshImportKit.swift",
+          "symbol": "MeshImportKit format switch",
+          "line": 396,
+          "quote": "case \"glb\", \"gltf\"",
+          "sourceType": "source",
+          "endLine": 429
+        },
+        {
+          "path": "FloeAgent/FloeApp/Workspace/CADUnifiedModelImport.swift",
+          "symbol": "CADUnifiedModelImport.extensions",
+          "line": 14,
+          "quote": "static let extensions",
+          "sourceType": "source",
+          "endLine": 14
+        }
+      ]
+    },
+    {
+      "id": "H11",
+      "name": "DWG/DXF 宿主桥",
+      "kind": "public App",
+      "provides": "通过隔离 WKWebView 引擎打开 DWG/DXF，导出 sketch transfer 或 DWG。",
+      "limits": "需要宿主注入 encoder/decoder；不是原生 DWG 内核；只取 curves/line 转建筑墙。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/FloeApp/Workspace/CADDrawingModelBridge.swift",
+          "symbol": "CADDrawingModelBridge configure",
+          "line": 9,
+          "quote": "static func configure",
+          "sourceType": "source",
+          "endLine": 18
+        },
+        {
+          "path": "FloeAgent/FloeApp/Workspace/CADDrawingModelBridge.swift",
+          "symbol": "decode DWG/DXF",
+          "line": 29,
+          "quote": "guard [\"dwg\", \"dxf\"]",
+          "sourceType": "source",
+          "endLine": 34
+        },
+        {
+          "path": "FloeAgent/FloeApp/Workspace/CadWebEngineSession.swift",
+          "symbol": "CadWebEngineSession open/export",
+          "line": 127,
+          "quote": "func open(bytes",
+          "sourceType": "source",
+          "endLine": 175
+        }
+      ]
+    },
+    {
+      "id": "H12",
+      "name": "二维→独立 CAD 工作副本",
+      "kind": "public App",
+      "provides": "CADFromDrawingImport：独立文件名、stage 创建/保存、move 发布、源 transfer digest 绑定。",
+      "limits": "只服务二维图纸转 CAD；不创建 Space 记录；无通用导出任务。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/FloeApp/Workspace/CADFromDrawingImport.swift",
+          "symbol": "CADFromDrawingImport staged working copy",
+          "line": 10,
+          "quote": "static func open",
+          "sourceType": "source",
+          "endLine": 38
+        },
+        {
+          "path": "FloeAgent/FloeApp/Workspace/CADFromDrawingImport.swift",
+          "symbol": "CADFromDrawingImport stage/create",
+          "line": 22,
+          "quote": "let stageName",
+          "sourceType": "source",
+          "endLine": 31
+        }
+      ]
+    },
+    {
+      "id": "H13",
+      "name": "Space 作品原件",
+      "kind": "public App",
+      "provides": "PersonalContentKind、FloeProject.json、atomic create/move/trash、CAD sessions 按 id 复用 live document。",
+      "limits": "无 building 类型；无工作包/任务归属；文件动作 duplicate 不含 CAD。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/FloeApp/Space/PersonalContentLibrary.swift",
+          "symbol": "PersonalContentKind",
+          "line": 7,
+          "quote": "enum PersonalContentKind",
+          "sourceType": "source",
+          "endLine": 9
+        },
+        {
+          "path": "FloeAgent/FloeApp/Space/PersonalContentService.swift",
+          "symbol": "PersonalContentService.create",
+          "line": 62,
+          "quote": "func create(kind",
+          "sourceType": "source",
+          "endLine": 77
+        },
+        {
+          "path": "FloeAgent/FloeApp/Space/PersonalCADSessions.swift",
+          "symbol": "PersonalCADSessions.open",
+          "line": 10,
+          "quote": "static func open",
+          "sourceType": "source",
+          "endLine": 28
+        },
+        {
+          "path": "FloeAgent/FloeApp/Space/PersonalLibraryFileActions.swift",
+          "symbol": "PersonalLibraryFileActions.supports",
+          "line": 429,
+          "quote": "case .duplicate",
+          "sourceType": "source",
+          "endLine": 430
+        }
+      ]
+    },
+    {
+      "id": "H14",
+      "name": "FloeBuildingRecords",
+      "kind": "component",
+      "provides": "GRDB 项目/房间/来源版本/观察/采用值/BOM；不可变来源、CAS、搜索、分页。",
+      "limits": "采用值只有 roomID/propertyKey；BOMItem 只有 roomID；无原生锚点。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingRecords/ProjectModels.swift",
+          "symbol": "ProjectRecord",
+          "line": 3,
+          "quote": "public struct ProjectRecord",
+          "sourceType": "source",
+          "endLine": 9
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingRecords/ObservationModels.swift",
+          "symbol": "AdoptedValueRecord",
+          "line": 318,
+          "quote": "public struct AdoptedValueRecord",
+          "sourceType": "source",
+          "endLine": 326
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingRecords/BOMTypes.swift",
+          "symbol": "BOMItem",
+          "line": 263,
+          "quote": "public struct BOMItem",
+          "sourceType": "source",
+          "endLine": 290
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingRecords/ProjectContainer.swift",
+          "symbol": "ProjectContainer database path",
+          "line": 14,
+          "quote": "databaseRelativePath",
+          "sourceType": "source",
+          "endLine": 14
+        }
+      ]
+    },
+    {
+      "id": "H15",
+      "name": "BuildingWorkspaceService",
+      "kind": "component",
+      "provides": "项目快照、组件版本 CAS、分页、BOM 采用、撤销历史适配的 typed commands。",
+      "limits": "独立目录/SQLite，未接 App；无 CAD 文件引用。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingWorkspace/BuildingWorkspaceService.swift",
+          "symbol": "BuildingWorkspaceService",
+          "line": 28,
+          "quote": "public actor BuildingWorkspaceService",
+          "sourceType": "source",
+          "endLine": 34
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingWorkspace/BuildingWorkspaceService.swift",
+          "symbol": "writeComponent CAS",
+          "line": 141,
+          "quote": "private func writeComponent",
+          "sourceType": "source",
+          "endLine": 156
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingWorkspace/BuildingWorkspaceService.swift",
+          "symbol": "loadProject revision check",
+          "line": 172,
+          "quote": "public func loadProject",
+          "sourceType": "source",
+          "endLine": 180
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingWorkspace/BuildingWorkspaceCommands.swift",
+          "symbol": "BuildingWorkspaceCommand future adapter",
+          "line": 8,
+          "quote": "public enum BuildingWorkspaceCommand",
+          "sourceType": "source",
+          "endLine": 14
+        }
+      ]
+    },
+    {
+      "id": "H16",
+      "name": "FloeInteriorCore 柜体",
+      "kind": "component",
+      "provides": "CabinetRecipe/Builder/Assembly/Derivations/SheetPlanner；稳定板件 ID、19 板、视图/尺寸规格、CSV。",
+      "limits": "单构造规则、无制造规则；planner 不是 CAD 页；更新只生成新数组。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeInteriorCore/CabinetDefinition.swift",
+          "symbol": "CabinetRecipe",
+          "line": 59,
+          "quote": "public struct CabinetRecipe",
+          "sourceType": "source",
+          "endLine": 72
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeInteriorCore/CabinetAssembly.swift",
+          "symbol": "CabinetBuilder.build",
+          "line": 55,
+          "quote": "public enum CabinetBuilder",
+          "sourceType": "source",
+          "endLine": 80
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeInteriorCore/CabinetDerivations.swift",
+          "symbol": "CabinetDerivations.nativeDrafts",
+          "line": 25,
+          "quote": "public static func nativeDrafts",
+          "sourceType": "source",
+          "endLine": 31
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeInteriorCore/CabinetSheetPlanner.swift",
+          "symbol": "CabinetSheetPlanner.make",
+          "line": 69,
+          "quote": "public static func make",
+          "sourceType": "source",
+          "endLine": 160
+        }
+      ]
+    },
+    {
+      "id": "H17",
+      "name": "建筑专业任务",
+      "kind": "public App",
+      "provides": "单梁结构、Manifold 碰撞、IFC/IDS 导出、操作记录/取消/恢复。",
+      "limits": "单梁/碰撞/IFC 导出范围有限；任务结果不等于整栋专业验收。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingLocalAnalysis.swift",
+          "symbol": "CADBuildingLocalAnalysis.evaluate single beam",
+          "line": 36,
+          "quote": "$0.kind == .beam",
+          "sourceType": "source",
+          "endLine": 38
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/CADBuildingLocalCoordination.swift",
+          "symbol": "CADBuildingLocalCoordination system/structural kinds",
+          "line": 23,
+          "quote": "if kind == .pipe || kind == .duct",
+          "sourceType": "source",
+          "endLine": 25
+        },
+        {
+          "path": "FloeAgent/FloeApp/Workspace/CADBuildingProfessional/CADBuildingLocalIFCHost.swift",
+          "symbol": "verifiedAssets web-ifc manifest",
+          "line": 26,
+          "quote": "guard let root = Bundle.main.url",
+          "sourceType": "source",
+          "endLine": 32
+        }
+      ]
+    },
+    {
+      "id": "H18",
+      "name": "光照分析",
+      "kind": "component",
+      "provides": "IES 解析、Type-C 直射照度、AABB 遮挡、CSV、input fingerprint、失效判断。",
+      "limits": "无反射/日光/完整 Radiance；未接 CAD 灯具/图纸。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingAnalysis/LightingAnalysis.swift",
+          "symbol": "LightingLuminaire",
+          "line": 4,
+          "quote": "public struct LightingLuminaire",
+          "sourceType": "source",
+          "endLine": 15
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingAnalysis/LightingAnalysis.swift",
+          "symbol": "DirectLightingSolver",
+          "line": 114,
+          "quote": "public enum DirectLightingSolver",
+          "sourceType": "source",
+          "endLine": 114
+        }
+      ]
+    },
+    {
+      "id": "H19",
+      "name": "系统规划与快估",
+      "kind": "component",
+      "provides": "SmartHomePlan/端口/连接/场景、图例、SystemPlanValidator、RadioQuickEstimator、HVAC 稳态初算。",
+      "limits": "独立 projectID/roomID；无 CAD 图形/设备实例；无精细 RF/设备选型。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingSystems/SmartHomePlan.swift",
+          "symbol": "SmartHomePlan",
+          "line": 110,
+          "quote": "public struct SmartHomePlan",
+          "sourceType": "source",
+          "endLine": 121
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingSystems/SystemPlanValidation.swift",
+          "symbol": "SmartHomePlanValidator",
+          "line": 18,
+          "quote": "public enum SmartHomePlanValidator",
+          "sourceType": "source",
+          "endLine": 20
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingSystems/Radio/RadioQuickEstimator.swift",
+          "symbol": "RadioQuickEstimator.estimate",
+          "line": 123,
+          "quote": "public static func estimate",
+          "sourceType": "source",
+          "endLine": 138
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingAnalysis/HVACDesignLoad.swift",
+          "symbol": "HVACDesignLoadRequest",
+          "line": 14,
+          "quote": "public struct HVACDesignLoadRequest",
+          "sourceType": "source",
+          "endLine": 36
+        }
+      ]
+    },
+    {
+      "id": "H20",
+      "name": "AR 平面测量",
+      "kind": "component",
+      "provides": "ARKit 平面 raycast、长度/面积、同一平面检查、快照、相机占用/生命周期。",
+      "limits": "只有测量，不是房间重建；无点云/网格/建筑导入。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/Modules/FloeToolbox/Sources/FloeToolboxWorkbenches/SpatialMeasurementSession.swift",
+          "symbol": "SpatialMeasurementSession mode",
+          "line": 22,
+          "quote": "public enum Mode",
+          "sourceType": "source",
+          "endLine": 23
+        },
+        {
+          "path": "FloeAgent/Modules/FloeToolbox/Sources/FloeToolboxWorkbenches/SpatialMeasurementSession.swift",
+          "symbol": "SpatialMeasurementSample",
+          "line": 11,
+          "quote": "public struct SpatialMeasurementSample",
+          "sourceType": "source",
+          "endLine": 19
+        },
+        {
+          "path": "FloeAgent/Modules/FloeToolbox/Sources/FloeToolboxWorkbenches/SpatialMeasurementSession.swift",
+          "symbol": "captureSnapshot",
+          "line": 522,
+          "quote": "public func captureSnapshot",
+          "sourceType": "source",
+          "endLine": 539
+        }
+      ]
+    },
+    {
+      "id": "H21",
+      "name": "AI CAD 工具入口",
+      "kind": "public App",
+      "provides": "cad.document/parameters 与 studio.read/studio.edit；同工程 CAS pin；building inspect/addWall/addRoom。",
+      "limits": "建筑动作仅 4 个；无 Records/柜体/家具/图纸集/系统工具。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/Sources/FloeWorkbench/CadDocumentTool.swift",
+          "symbol": "cad.document building topic",
+          "line": 982,
+          "quote": "Topic(name: \"building\"",
+          "sourceType": "source",
+          "endLine": 992
+        },
+        {
+          "path": "FloeAgent/FloeApp/Space/StudioCADNativeOperations.swift",
+          "symbol": "StudioCADNativeOperations buildingWrites",
+          "line": 75,
+          "quote": "private static let buildingWrites",
+          "sourceType": "source",
+          "endLine": 75
+        },
+        {
+          "path": "FloeAgent/FloeApp/Space/StudioCADNativeOperations.swift",
+          "symbol": "buildingState",
+          "line": 724,
+          "quote": "private static func buildingState",
+          "sourceType": "source",
+          "endLine": 756
+        }
+      ]
+    },
+    {
+      "id": "H22",
+      "name": "IFC 导出适配器",
+      "kind": "public App",
+      "provides": "web-ifc 0.0.75 固定资源、IFC4 类型、三角面片、Name/IDS 名称子集、保存后重开校验。",
+      "limits": "只导出；三角面片；无属性/关系/空间边界；非 BMP 名称拒绝。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/FloeApp/Resources/BuildingNative/building.js",
+          "symbol": "building.js IFC types",
+          "line": 6,
+          "quote": "const types",
+          "sourceType": "source",
+          "endLine": 6
+        },
+        {
+          "path": "FloeAgent/FloeApp/Resources/BuildingNative/building.js",
+          "symbol": "building.js tessellation",
+          "line": 65,
+          "quote": "IFCCARTESIANPOINTLIST3D",
+          "sourceType": "source",
+          "endLine": 66
+        },
+        {
+          "path": "FloeAgent/FloeApp/Resources/BuildingNative/building.js",
+          "symbol": "building.js name readback",
+          "line": 94,
+          "quote": "GetModelSchema",
+          "sourceType": "source",
+          "endLine": 104
+        },
+        {
+          "path": "FloeAgent/FloeApp/Workspace/CADBuildingProfessional/CADBuildingLocalIFCHost.swift",
+          "symbol": "verifiedAssets web-ifc manifest",
+          "line": 26,
+          "quote": "guard let root = Bundle.main.url",
+          "sourceType": "source",
+          "endLine": 32
+        }
+      ]
+    },
+    {
+      "id": "H23",
+      "name": "组件验证宿主",
+      "kind": "qualification",
+      "provides": "独立 iPad 宿主、4 条 UI 流程源码、19 板 assembly 测试源码；不碰主 App。",
+      "limits": "两项均未运行；没有截图/交互证据。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/Qualification/Interior/WorkbenchHost/WorkbenchUITests.swift",
+          "symbol": "four host UI flows",
+          "line": 61,
+          "quote": "func testRoomRenameSelectiveBillAndRelaunch",
+          "sourceType": "source",
+          "endLine": 114
+        },
+        {
+          "path": "FloeAgent/Qualification/Interior/NativeCabinetAssemblyChecks.swift",
+          "symbol": "19-panel assembly test",
+          "line": 25,
+          "quote": "func testWholeCabinetAssembly",
+          "sourceType": "source",
+          "endLine": 44
+        },
+        {
+          "path": "docs/qualification/FLOE_BUILDING_PREDEVELOPMENT_20261113.zh-CN.md",
+          "symbol": "19-board/host unrun",
+          "line": 33,
+          "quote": "19 板 CAD 装配测试",
+          "sourceType": "doc",
+          "endLine": 33
+        }
+      ]
+    },
+    {
+      "id": "H24",
+      "name": "建筑工作台 UI",
+      "kind": "public component",
+      "provides": "plan/model/drawings 三页；楼层/模式/设置/添加构件/导入/图纸/专业/检查；Undo/Redo。",
+      "limits": "仅 macOS 对象编译通过；iPad 未运行；无 Space chrome/退出所有权。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/FloeBuildingWorkbenchView.swift",
+          "symbol": "FloeBuildingWorkbenchView modes",
+          "line": 23,
+          "quote": "enum Mode",
+          "sourceType": "source",
+          "endLine": 23
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/FloeBuildingWorkbenchView.swift",
+          "symbol": "FloeBuildingWorkbenchView plan/model/drawings",
+          "line": 74,
+          "quote": "switch mode",
+          "sourceType": "source",
+          "endLine": 77
+        },
+        {
+          "path": "FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD/Building/FloeBuildingWorkbenchView.swift",
+          "symbol": "Add element menu",
+          "line": 194,
+          "quote": "ForEach(CADBuildingElement.Kind.allCases",
+          "sourceType": "source",
+          "endLine": 196
+        },
+        {
+          "path": "docs/qualification/FLOE_BUILDING_PREDEVELOPMENT_20261113.zh-CN.md",
+          "symbol": "UI03 object compile",
+          "line": 36,
+          "quote": "native-ui03",
+          "sourceType": "doc",
+          "endLine": 36
+        },
+        {
+          "path": "docs/qualification/FLOE_BUILDING_PREDEVELOPMENT_20261113.zh-CN.md",
+          "symbol": "component not in App dependency graph",
+          "line": 85,
+          "quote": "尚未进入 App 依赖图",
+          "sourceType": "doc",
+          "endLine": 85
+        }
+      ]
+    },
+    {
+      "id": "H25",
+      "name": "FurniturePlacement 值适配器",
+      "kind": "component-source-only",
+      "provides": "显式单位/目录尺寸、源 bounds、proper rotation、锚点、yaw、building→native 矩阵、envelope、fingerprint；不导入几何、不渲染/碰撞/制造验证。",
+      "limits": "SOURCE_ONLY；nativeGeometryVerified=false、manufacturingVerified=false；10 个测试未运行；不是家具库/原生准入。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeInteriorCore/Furniture/FurniturePlacement.swift",
+          "symbol": "FurniturePlacementPlan value-only flags",
+          "line": 96,
+          "quote": "A value-only adapter plan",
+          "sourceType": "source",
+          "endLine": 114
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeInteriorCore/Furniture/FurniturePlacement.swift",
+          "symbol": "FurniturePlacementPlanner",
+          "line": 139,
+          "quote": "public enum FurniturePlacementPlanner",
+          "sourceType": "source",
+          "endLine": 142
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Tests/FloeInteriorCoreTests/FurniturePlacementTests.swift",
+          "symbol": "FurniturePlacementTests",
+          "line": 5,
+          "quote": "final class FurniturePlacementTests",
+          "sourceType": "source",
+          "endLine": 5
+        }
+      ]
+    },
+    {
+      "id": "H26",
+      "name": "CabinetManufacturingPreparation 生产输入适配",
+      "kind": "component-source-only",
+      "provides": "矩形板件设计/完成/基材/开料尺寸、封边/余量/纹理/库存/锯缝/90°旋转约束和 packing group 输入；CSV；missingProductionValidation。",
+      "limits": "SOURCE_ONLY；不是排板优化器/五金/CNC；manufacturingVerified=false；14 个测试未运行；旧 123 不含。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeInteriorCore/Manufacturing/CabinetManufacturingPreparation.swift",
+          "symbol": "CabinetManufacturingPreparation",
+          "line": 124,
+          "quote": "public struct CabinetManufacturingPreparation",
+          "sourceType": "source",
+          "endLine": 137
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeInteriorCore/Manufacturing/CabinetManufacturingPreparation.swift",
+          "symbol": "CabinetManufacturingPlanner",
+          "line": 151,
+          "quote": "Rectangular part preparation only",
+          "sourceType": "source",
+          "endLine": 157
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Tests/FloeInteriorCoreTests/CabinetManufacturingPreparationTests.swift",
+          "symbol": "CabinetManufacturingPreparationTests",
+          "line": 5,
+          "quote": "final class CabinetManufacturingPreparationTests",
+          "sourceType": "source",
+          "endLine": 5
+        }
+      ]
+    }
+  ],
+  "workPackages": [
+    {
+      "id": "WP01",
+      "title": "建筑项目身份、跨存储保存与旧工程迁移",
+      "state": "design-ready-not-implemented",
+      "inputs": [
+        "Space 新建建筑项目（名称/文件夹/可选模板）",
+        "可选旧 .floecad 的 buildingData 或旧 floeproject 包装",
+        "楼栋/楼层/房间/资料/柜体/系统方案的初始记录"
+      ],
+      "existingInterfaces": [
+        {
+          "hook": "H13",
+          "use": "复用 FloeProject.json、原子 create/move/trash 与 CAD session 生命周期"
+        },
+        {
+          "hook": "H01/H02",
+          "use": "复用 .floecad 创建/打开/保存、revision/CAS、previous 恢复"
+        },
+        {
+          "hook": "H14/H15",
+          "use": "复用 Records SQLite 项目/房间/来源/组件版本"
+        }
+      ],
+      "newLayer": "新增 PersonalContentKind.building 与 BuildingProjectManifest(schema v1)：cadRelativePath、cadRevision、cadContentSHA256、modelSHA256、recordsProjectID、componentBases、schema versions、createdBy/updatedAt。新增 BuildingProjectSession 在同 projectID 下同时持有 CAD document 与 BuildingWorkspaceService；新增 write-ahead BuildingCommitJournal（状态：prepared→cadCommitted→recordsCommitted→manifestCommitted→clean）与 BuildingProjectMigrator（从 buildingData 建独立项目副本）。manifest 最后写入；失败可从 journal 继续或回退到 previous。",
+      "visibleOutcome": [
+        "Space 出现建筑项目类型、缩略图、打开/重开、助手入口",
+        "保存成功后 CAD revision/SHA 与项目 records revision 一起显示",
+        "另存/复制为独立建筑项目，原项目不变",
+        "旧 CAD 建筑数据转换副本，旧文件保留"
+      ],
+      "acceptanceExample": "在空白 Space 创建建筑项目；加两层、两墙、一间房、一个柜体方案；保存；在 cadCommitted 后人为中断，重开时应显示“待完成项目提交”并可继续完成；两个窗口同时改同一项目，第二次保存必须显示冲突并可保留两份；用一份含 buildingData 的旧 .floecad 迁移，原文件 SHA 不变、副本 revision=1 且可重开。",
+      "failureRecovery": "任何一段失败都不写 manifest clean；CAD 包保留 previous，Records 版本不可变，journal 记录已完成段；恢复失败进入只读恢复视图，允许导出原件/放弃并保留隔离副本。不得用覆盖写或删除旧包来“修复”。",
+      "dependencies": [
+        "H13",
+        "H01",
+        "H02",
+        "H14",
+        "H15"
+      ],
+      "coversQAs": [
+        "QA01",
+        "QA03",
+        "QA07",
+        "QA15",
+        "QA16"
+      ]
+    },
+    {
+      "id": "WP02",
+      "title": "建筑语义 v2：弧/复合墙、房间边界、通用洞口与多楼层",
+      "state": "design-ready-not-implemented",
+      "inputs": [
+        "墙中心线（直线段+圆弧段）",
+        "墙层构造表（材料/厚度/功能）",
+        "房间闭合边界（可带洞）",
+        "门窗/洞口宿主与沿墙距离",
+        "楼层标高/层高"
+      ],
+      "existingInterfaces": [
+        {
+          "hook": "H03",
+          "use": "在 CADBuildingDocument schema 上做 additive v2，复用 validate/Codable/bodyID"
+        },
+        {
+          "hook": "H04",
+          "use": "沿用 recipe→FeatureNode 与 setBuilding 单事务；新增弧/房间/洞口生成分支"
+        },
+        {
+          "hook": "H05/H21",
+          "use": "新增 typed actions 由同一 catalog/工具路由暴露"
+        }
+      ],
+      "newLayer": "schemaVersion 2 additive：WallPath(curve segments: line/arc)、WallLayerStack、RoomBoundary(polygon+holes, roomID, name/number/use)、Opening(kind/door/window, host wall, distance along path, width/height/sill/head)、Element.materialLayerIDs/roomIDs；v1→v2 显式迁移。CADBuildingGeometry.recipe v2 对弧段离散为受控段数（容差预算），复合墙保留层语义用于材质/剖面 hatch，房间边界生成可查询的 space 记录，不伪造闭合实体。新增 per-element update 命令只重建受影响 owned features，仍使用同一 revision/changeCount。",
+      "visibleOutcome": [
+        "画/导入弧墙与复合墙，墙层可查",
+        "闭合房间边界，生成 room/space 元数据与面积",
+        "门/窗/洞口可落在弧墙上，移动墙后跟随",
+        "多楼层构件和房间按 storeyID 正确归属",
+        "剖面 hatch 使用墙层材料"
+      ],
+      "acceptanceExample": "建立两层项目；画半径 3000 mm 的 90° 弧墙，3 层复合墙（基层/保温/饰面）；闭合 4×3 m 房间；在弧墙 30° 处放 900 mm 门；保存重开；把房间短边改为 4.2 m，门/窗/房间面积/剖面 hatch 全部更新；同一事务撤销恢复。再打开一份旧 v1 包，显式迁移后另存 v2并保留原件；当前旧客户端对v2可能拒绝，不能承诺既有旧版本可只读打开。新读者遇到未支持schema时保持原文件并明确不支持。",
+      "failureRecovery": "弧段/墙层/洞口任一验证失败则整事务不提交，保留 v1；当前旧读者会拒绝未知schema/字段，不能保证只读打开；迁移保留原件，未来兼容读取另做验证；弧离散超预算时拒绝并报告 segment 数，不降级成假直墙。",
+      "dependencies": [
+        "H03",
+        "H04",
+        "H05",
+        "H21"
+      ],
+      "coversQAs": [
+        "QA02",
+        "QA04",
+        "QA07",
+        "QA10",
+        "QA12",
+        "QA13"
+      ]
+    },
+    {
+      "id": "WP03",
+      "title": "家具/材质资源准入、固定版本与房间内摆放",
+      "state": "design-ready-not-implemented",
+      "inputs": [
+        "SH3F/OBJ+MTL/GLB/STEP 等家具来源包",
+        "PBR 材质/贴图/UV 参数",
+        "用户导入或 AI 创建资产",
+        "项目房间/楼层/墙体边界"
+      ],
+      "existingInterfaces": [
+        {
+          "hook": "H25",
+          "use": "复用 SOURCE_ONLY FurniturePlacement 的 value-only 尺寸/朝向/锚点/矩阵；不要重写它；本包只补资产目录/准入/版本/原生几何验证"
+        },
+        {
+          "hook": "H08",
+          "use": "用 addInstance/moveInstance/constraint 摆放家具，保留 part metadata/BOM 身份"
+        },
+        {
+          "hook": "H09",
+          "use": "把 PBR/UV 快照应用到家具 body/face"
+        },
+        {
+          "hook": "H10",
+          "use": "复用网格/精确模型导入、单位/资源摘要"
+        },
+        {
+          "hook": "H14",
+          "use": "把资产版本/许可证/来源作为不可变 SourceVersion"
+        }
+      ],
+      "newLayer": "FurnitureAsset(schema v1)：assetID、name/category、nominalWidth/Depth/HeightMM、anchor/pivot、front/up axis、license/source/URL、format、sourceSHA、dependencyHashes、version、thumbnail、offlinePackID。FurnitureCatalogService：包内成员定位、OBJ/MTL/贴图重定位、GLB/STEP 导入、尺度/朝向校验、失败保留。FurniturePlacement（复用 H25）只提供 value-only plan；本包新增的是原生家具资产准入/目录/版本与把 plan 落到 assembly instance + roomID/storeyID/spaceID 的适配，不重新实现 placement 数学。ProjectAssetPin：工程采用资产/材质/五金版本，升级前比较差异。",
+      "visibleOutcome": [
+        "家具库分类/检索/预览/离线包安装",
+        "家具按真实 mm 尺寸/锚点/朝向前向摆放",
+        "材质贴图按 mm 平铺，可替换",
+        "工程采用版本固定；升级显示变化并可回退",
+        "AI 创建资产作为独立版本准入"
+      ],
+      "acceptanceExample": "导入 175 条 CC0 子集中一个已知扶手椅（目录声明 594×627×1050 mm）和一个材质；原生导入后包围盒与声明误差在明确容差内；在房间放两个实例，一个旋转 90°，一个靠墙；保存重开；发布该资产新版本，旧工程仍引用旧 version；显式升级后比较尺寸/材质差异再更新。缺失贴图的 6 个条目应标 needsRepair 而不是伪造纹理。 先运行并核对 H25 的 10 个 placement 测试源码；若未运行，只能记为 source-only，不能把旧 123 当作 placement 通过。",
+      "failureRecovery": "来源摘要/许可/尺度/依赖任一不符则不进入可用库，原文件保留在隔离区；工程升级失败保留旧版本和旧几何；离线包缺失时明确显示不可用，不静默替换为相似模型。",
+      "dependencies": [
+        "H08",
+        "H09",
+        "H10",
+        "H14"
+      ],
+      "coversQAs": [
+        "QA17",
+        "QA23",
+        "QA24",
+        "QA25",
+        "A02",
+        "A03"
+      ]
+    },
+    {
+      "id": "WP04",
+      "title": "柜体稳定板件绑定与原地更新",
+      "state": "design-ready-not-implemented",
+      "inputs": [
+        "现有 CabinetRecipe/19 板装配",
+        "已放入项目的柜体实例",
+        "修改后的宽/高/深/分格/层板/门板参数",
+        "人工修改和图纸标注基线"
+      ],
+      "existingInterfaces": [
+        {
+          "hook": "H26",
+          "use": "复用 SOURCE_ONLY CabinetManufacturingPreparation 作为板件生产输入；不要把它当优化器或重新实现；本包只补 native binding/原地更新/规则与优化链"
+        },
+        {
+          "hook": "H16",
+          "use": "复用 CabinetBuilder/Derivations 与 stable panel ID/fingerprint"
+        },
+        {
+          "hook": "H01/H02",
+          "use": "用 .floecad 事务/保存/CAS 提交板件与绑定记录"
+        },
+        {
+          "hook": "H08",
+          "use": "用 assembly instance 放置柜体并保持 BOM 身份"
+        },
+        {
+          "hook": "H15",
+          "use": "用组件版本 CAS 保存柜体配方/展示数据"
+        }
+      ],
+      "newLayer": "CabinetBindingDocument 作为 .floecad 内 additive 记录（不放 sidecar）：cabinetID、recipeVersion、panelBindings[panelID→featureID/bodyID/instanceID]、geometryFingerprint、scheduleFingerprint、materialVersions、createdFromRevision、manualEditState。CabinetUpdateService：重建 assembly→diff panel IDs→校验旧 feature/body 仍由本柜体拥有→在一个复合命令中更新/新增/删除 body+feature+assembly+binding；若检测到人工 CAD 修改则拒绝并输出精确 diff，不覆盖。CabinetPlacement 记录 room/storey/space 和安装定位。",
+      "visibleOutcome": [
+        "改柜体宽高深/分格后原地更新，不是新建草稿",
+        "19 块板件 ID/数量/装配/BOM 保持连续",
+        "人工补充尺寸/说明保留，失联项显式列出",
+        "保存/重开/撤销/失败恢复",
+        "一个项目内多柜体实例共享配方但可独立覆盖尺寸",
+        "生产输入使用 H26 的 design/finished/substrate/blank 与 packingGroups；在没有优化器/五金孔位/后处理前不声称可生产。"
+      ],
+      "acceptanceExample": "用 19 板测试柜体放入项目，保存；宽度 2400→2600，高度 2100，深度 600；执行更新，核对 19 个 panelID、bodyID、assembly instance、BOM 数量；保存重开；手动移动一块侧板 10 mm 再更新，应拒绝并列出该板；撤销回原尺寸，恢复完整 binding。 先运行 14 个 CabinetManufacturingPreparation 测试源码并核对 readyForNesting/manufacturingVerified=false；未运行不得说生产输入已验收。",
+      "failureRecovery": "fingerprint 不一致/人工修改/身份冲突时拒绝更新，旧模型与旧 binding 原样保留；复合命令任一子步失败整体回滚；binding 写入失败时保留旧 binding 和可恢复 journal；不得静默重新 mint board ID。",
+      "dependencies": [
+        "H16",
+        "H01",
+        "H02",
+        "H08",
+        "H15"
+      ],
+      "coversQAs": [
+        "QA16",
+        "QA17",
+        "QA21",
+        "QA22"
+      ]
+    },
+    {
+      "id": "WP05",
+      "title": "柜体组合页/斜视/内部立面与关联尺寸适配",
+      "state": "design-ready-not-implemented",
+      "inputs": [
+        "CabinetAssembly+BindingDocument",
+        "CabinetSheetPlanner 的输出（6 视图/尺寸）",
+        "图纸模板/图签/纸张/比例",
+        "人工尺寸/说明/标注"
+      ],
+      "existingInterfaces": [
+        {
+          "hook": "H06",
+          "use": "用 addPage/addView/project/export 生成真实 CAD 页与 PDF/SVG/DXF"
+        },
+        {
+          "hook": "H07",
+          "use": "用 CADDrawingPage/SheetView/manualDimensions/annotations 持久化"
+        },
+        {
+          "hook": "H16",
+          "use": "复用 CabinetSheetPlanner 视图/尺寸规格与手动 presentation"
+        }
+      ],
+      "newLayer": "schema v7 additive：CADDrawingSheetView.sourceInstanceIDs（上限 64）与 assemblyRoleFilter；允许 assemblyMode 视图按 instance/part role 过滤，而不受 12 bodyID 限制。CabinetSheetAdapter：planner 6 视图→CADDrawingSheetView（front/top/side/section/iso/internalElevation），internalElevation 过滤 front panel 实例；planner dimension→CADDrawingManualDimension（稳定 id、value、viewID、text、tolerance 可选）并在模型变化时重算/标 dangling；manual notes→CADDrawingTextAnnotation；组合页/单柜页 id 绑定 cabinetID。新增 batch 出图任务（页集合快照、单 PDF/多页、SVG/DXF 逐页），仍按现有 export 路径。",
+      "visibleOutcome": [
+        "一张组合页 6 视图，19 板全部投影，不截断",
+        "内部立面隐藏门板，显示分格/层板/净空",
+        "整体宽/高/柜身深/含门总深/分格/板厚尺寸自动生成并保留人工调整",
+        "导出 PDF/SVG/DXF；重开/修改宽度后尺寸更新",
+        "不完整的投影/尺寸明确阻断出图"
+      ],
+      "acceptanceExample": "按现有 NativeCabinetAssemblyChecks 源码路径实际运行（需单独 CAD 窗口）：19 板、5 视图+内部立面、19 个实例全部出现；planner 的 2400/2100/620、板厚、净空尺寸出现在页上；人工移动一个尺寸文本并加注；宽度改 2600 后重算，人工文本位置保留；导出 PDF/SVG/DXF 并独立读回；保存关闭重开。",
+      "failureRecovery": "实例缺失/投影超 64/尺寸锚点丢失时 outputBlocked=true，不导出假完整图；dangling 尺寸标红并保留原值/来源，不静默删除；人工内容在重算失败时保留；导出先 staging 再发布，失败不产生部分文件。",
+      "dependencies": [
+        "H06",
+        "H07",
+        "H16",
+        "H12"
+      ],
+      "coversQAs": [
+        "QA13",
+        "QA20",
+        "QA21",
+        "QA22",
+        "A06"
+      ]
+    },
+    {
+      "id": "WP06",
+      "title": "独立二维/三维工程副本与全格式导出链",
+      "state": "design-ready-not-implemented",
+      "inputs": [
+        "建筑项目快照（CAD revision/SHA/modelSHA + records revision + asset pins）",
+        "导出范围（整工程/楼层/选择/建筑/结构/机电）",
+        "目标：Space cad2D/cad3D 工程或通用格式文件"
+      ],
+      "existingInterfaces": [
+        {
+          "hook": "H12",
+          "use": "复用 stage→save→move 发布模式与源 digest"
+        },
+        {
+          "hook": "H01/H02",
+          "use": "新独立 .floecad 由 create/save/CAS 产生"
+        },
+        {
+          "hook": "H06",
+          "use": "图纸 PDF/SVG/DXF/DWG/CSV"
+        },
+        {
+          "hook": "H10",
+          "use": "STEP/IGES/STL/OBJ/GLB 导入导出"
+        },
+        {
+          "hook": "H22",
+          "use": "IFC4 建筑导出与独立读回"
+        },
+        {
+          "hook": "H13",
+          "use": "在 Space 创建独立的 cad2D/cad3D 记录"
+        }
+      ],
+      "newLayer": "BuildingExportSnapshot（不可变：building model JSON、records revision、asset pins、drawing set JSON、scope）；BuildingExportJob（queued→preparing→writing→verifying→published/failed/cancelled），输出目录内 staging，逐文件 hash/readback 后原子发布。ExportToSpaceProject：创建新 cad2D/cad3D 原始工程（2D 用投影/图纸数据；3D 用精确实体/装配），写入 LibraryCopy receipt（sourceProjectID/newProjectID/source revision/format）。FormatReceipt 记录 writer/version/units/layers/object names/unsupported loss。",
+      "visibleOutcome": [
+        "“导出二维工程”“导出三维工程”生成独立 Space 项目，后续编辑不回写建筑",
+        "按整工程/楼层/选择/专业导出",
+        "DWG/DXF/PDF/IFC/STEP/GLB/OBJ/STL 实际文件 + sha256 + 读回回执",
+        "取消/失败不留下半成品"
+      ],
+      "acceptanceExample": "把一个含 2 层、3 个房间、1 个柜体的项目导出为 cad3D 项目；打开副本改墙，原建筑不变；导出该楼层 DXF/PDF、整工程 IFC/STEP/GLB；逐文件读回；IFC 重开检查 IFCBUILDINGSTOREY/类型/Name；在格式不支持某构件时回执必须列出，而不是静默丢失。",
+      "failureRecovery": "快照绑定 revision/asset pins；写入前检查源未变；任一格式失败/读回不同则删除 staging 并保留源；Space 记录只在文件发布后创建；副本创建失败保留 staging 与日志供恢复；不可覆盖命名的原件。",
+      "dependencies": [
+        "H12",
+        "H01",
+        "H02",
+        "H06",
+        "H10",
+        "H22",
+        "H13"
+      ],
+      "coversQAs": [
+        "QA03",
+        "QA08",
+        "QA09",
+        "QA14",
+        "QA15"
+      ]
+    },
+    {
+      "id": "WP07",
+      "title": "资料/料单与原生构件的同工程闭环及 AI 采用",
+      "state": "design-ready-not-implemented",
+      "inputs": [
+        "手绘/图纸/照片/文字/表格/量尺观察",
+        "AI 提取的字段/候选采用值",
+        "CAD 楼层/空间/构件/柜体板件/图纸视图",
+        "BOM 目标/草稿/项目"
+      ],
+      "existingInterfaces": [
+        {
+          "hook": "H14",
+          "use": "来源版本、观察、采用值、BOM、CAS/分页"
+        },
+        {
+          "hook": "H15",
+          "use": "项目/组件版本与 typed commands"
+        },
+        {
+          "hook": "H05/H21",
+          "use": "同一 CAD document 的 inspect/addWall/addRoom 与 pin"
+        },
+        {
+          "hook": "H01/H02",
+          "use": "CAD 事务/保存/previous 恢复"
+        }
+      ],
+      "newLayer": "BuildingNativeAnchor(schema v1)：kind=storey/space/element/body/instance/panel/drawingView，id/path/owner、resolved revision、optional geometry hash；AdoptedValueRecord/BOMItem 新增 optional anchor。BuildingProjectBridge：roomID↔space element/storey、panelID↔cabinet binding、drawingViewID↔page/view 的显式解析，未解析=待处理，不猜。新增 typed tool routes：records.inspect/search/adopt、building.inspect/editElement、cabinet.update、drawing.buildSet，全部沿用 expectedRevision/expectedChangeCount/expectedSourceSHA + records expectedRevision/expectedBase。跨存储提交用 BuildingCommitJournal（同 WP01）并记录 source/adoption/component bases；AI 只能 propose→preview→apply，不能绕过。",
+      "visibleOutcome": [
+        "导入资料后可把采用值绑定到墙/房间/板件/图纸视图",
+        "AI 读当前工程、提出改动、预览、人工确认/自动授权后应用，可撤销",
+        "料单行能回到来源、房间、构件/柜体部件和图纸",
+        "冲突/失联锚点显式显示并可修复"
+      ],
+      "acceptanceExample": "用合成手绘图+两张现场照片+一份 CSV；AI 提取房间宽 3600/4000 两条观察；用户采用 4000 并绑定到房间短墙，墙 a/b 更新、房间面积更新；另一条料单行绑定到柜体板件和图纸页；保存重开；再以旧 revision pin 应用必须 stale；删除来源不删除采用值/构件，显示来源失效。",
+      "failureRecovery": "未解析锚点保持 pending，不写入模型；CAD 或 Records 任一失败由 journal 恢复/补偿；AI 失败不改变文档；采用值/料单保留来源版本；冲突不自动选边，保留两份并给出可定位修复。",
+      "dependencies": [
+        "H14",
+        "H15",
+        "H05",
+        "H21",
+        "H01",
+        "H02"
+      ],
+      "coversQAs": [
+        "QA10",
+        "QA11",
+        "QA19",
+        "QA24",
+        "A05"
+      ]
+    },
+    {
+      "id": "WP08",
+      "title": "智能家居/暖通/照明/无线与房间-图纸-料单一致性",
+      "state": "design-ready-not-implemented",
+      "inputs": [
+        "建筑房间/楼层/空间/墙体",
+        "设备/端口/供电/协议/连接/场景",
+        "AP/频段/墙体衰减/实测校准",
+        "IES 配光/灯具位置/朝向",
+        "料单目标/项目/来源"
+      ],
+      "existingInterfaces": [
+        {
+          "hook": "H19",
+          "use": "SmartHomePlan/Validator/RadioQuickEstimator/HVAC 初算"
+        },
+        {
+          "hook": "H18",
+          "use": "IES 直射照度求解与 CSV"
+        },
+        {
+          "hook": "H07/H06",
+          "use": "图纸页/视图/标注/导出"
+        },
+        {
+          "hook": "H14",
+          "use": "项目/房间/来源/BOM 版本"
+        },
+        {
+          "hook": "H05",
+          "use": "AI/工具读写的同一工程事务"
+        }
+      ],
+      "newLayer": "BuildingSystemsDocument 作为 .floecad additive 记录（或 Records component 但带 native anchor）：deviceInstance（roomID/spaceID/storeyID、positionMM/orientation、asset pin）、port/connection/segment/scene、luminaireInstance（CAD position/aim/IES asset）、AP/measurement/calibration。SystemDrawingAdapter：图例 strokes→CAD 线/文字/块、点位图/接线图/系统图/设备表、热水管/风管标注；LightingResultAdapter：照度网格→可选热力图/等值线/单元表；RadioResultAdapter：分频段热力图（显式 ESTIMATE/CALIBRATED 标签）。BOM 从设备/端口/线缆/灯具生成并绑定 native anchor。",
+      "visibleOutcome": [
+        "同一建筑房间中布置设备/点位/线路/灯具/AP",
+        "生成点位图、接线图、系统图、设备/线缆/灯具表",
+        "AP 分频段热力图带证据等级，缺墙体衰减则 notEvaluated",
+        "IES 直射照度结果与灯具位置/版本绑定并输出报告/CSV",
+        "修改房间/设备/灯具后图纸和料单标记 stale/更新",
+        "范围之外：QA05 整栋结构/QA06 完整机电的计算与选型仍是 requirementsCoverage 中保留的缺口，不被本包或现有碰撞/单梁功能替代。"
+      ],
+      "acceptanceExample": "4×3 m 房间，布 2 个智能设备+1 条 RS-485 总线+1 盏 IES 灯具+1 个 AP；生成点位/接线图与设备表/料单；移动设备/灯，重新生成并检查房间边界/尺寸；AP 快估输出 MODEL_ESTIMATE，经现场测量校准后标 CALIBRATED_MODEL；删掉墙体衰减时报告 unresolved，不出假热力图；保存重开。",
+      "failureRecovery": "缺产品/配光/衰减/校准依据时结果为 notEvaluated/needsInput，不生成伪造几何或数值；图纸生成失败保留上一版与输入版本；设备/房间删除时锚点进入 orphaned，保留来源和手动内容；导出先 staging 再发布。",
+      "dependencies": [
+        "H19",
+        "H18",
+        "H07",
+        "H06",
+        "H14",
+        "H05"
+      ],
+      "coversQAs": [
+        "QA26",
+        "QA27",
+        "QA28",
+        "A08"
+      ]
+    }
+  ],
+  "verificationLayers": {
+    "componentTestsExecuted": {
+      "status": "recorded-pass-not-rerun-in-this-task",
+      "detail": "native-core01/attempt03：Xcode 27.2 (27B52) Swift SIL/对象编译与 123 项 XCTest 通过（Core 18、Records 32、Systems 24、Analysis 12、Workspace 37）；源码 SHA 477ef4cf61d99a48a067d3e3069613eae9d4a19d；UI 目标不在该 manifest。 该 123 项不包含本轮新增的 FurniturePlacement/CabinetManufacturingPreparation 24 个测试。",
+      "sourceEvidence": [
+        {
+          "path": "docs/qualification/FLOE_BUILDING_PREDEVELOPMENT_20261113.zh-CN.md",
+          "symbol": "123 tests pass",
+          "line": 31,
+          "quote": "123 项 XCTest 全部通过",
+          "sourceType": "doc",
+          "endLine": 32
+        }
+      ]
+    },
+    "uiObjectCompileExecuted": {
+      "status": "recorded-pass-not-rerun-in-this-task",
+      "detail": "native-ui03 整个 FloeBuildingUI 目标 macOS SIL/对象编译退出 0；8 个 UI 源对象+3 个 module 文件导出并核对；不包含 iPad 宿主/UI 运行/主 App。",
+      "sourceEvidence": [
+        {
+          "path": "docs/qualification/FLOE_BUILDING_PREDEVELOPMENT_20261113.zh-CN.md",
+          "symbol": "UI03 object compile",
+          "line": 36,
+          "quote": "native-ui03",
+          "sourceType": "doc",
+          "endLine": 36
+        }
+      ]
+    },
+    "hostUITestsAuthoredNotRun": {
+      "status": "source-only",
+      "detail": "独立 iPad 宿主四项流程源码：房间改名+料单采用+重开；柜体跨页+撤销重做+重开确认+保存重启；无线/灯光跨页；不完整数值保留/撤销恢复。未运行、无截图。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/Qualification/Interior/WorkbenchHost/WorkbenchUITests.swift",
+          "symbol": "four host UI flows",
+          "line": 61,
+          "quote": "func testRoomRenameSelectiveBillAndRelaunch",
+          "sourceType": "source",
+          "endLine": 114
+        },
+        {
+          "path": "docs/qualification/FLOE_BUILDING_PREDEVELOPMENT_20261113.zh-CN.md",
+          "symbol": "19-board/host unrun",
+          "line": 33,
+          "quote": "19 板 CAD 装配测试",
+          "sourceType": "doc",
+          "endLine": 33
+        }
+      ]
+    },
+    "cadAssemblyTestAuthoredNotRun": {
+      "status": "source-only",
+      "detail": "NativeCabinetAssemblyChecks 新写 19 板/5 视图/整体尺寸/SVG-DXF-PDF/保存重开；复用装配 64 实例路线，未编译/未运行；不能宣称旧整柜出图已解决。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/Qualification/Interior/NativeCabinetAssemblyChecks.swift",
+          "symbol": "19-panel assembly test",
+          "line": 25,
+          "quote": "func testWholeCabinetAssembly",
+          "sourceType": "source",
+          "endLine": 44
+        },
+        {
+          "path": "FloeAgent/Qualification/Interior/NativeCabinetAssemblyChecks.swift",
+          "symbol": "19-panel 5-view export",
+          "line": 45,
+          "quote": "let selected",
+          "sourceType": "source",
+          "endLine": 70
+        },
+        {
+          "path": "FloeAgent/Qualification/Interior/NativeCabinetAssemblyChecks.swift",
+          "symbol": "19-panel save/reopen",
+          "line": 93,
+          "quote": "for format in",
+          "sourceType": "source",
+          "endLine": 107
+        },
+        {
+          "path": "docs/qualification/FLOE_BUILDING_PREDEVELOPMENT_20261113.zh-CN.md",
+          "symbol": "19-board test source only",
+          "line": 68,
+          "quote": "该验证尚未运行",
+          "sourceType": "doc",
+          "endLine": 68
+        }
+      ]
+    },
+    "appUITestsSourceOnly": {
+      "status": "source-only-not-rerun",
+      "detail": "主 App 存在 CADBuildingWorkflowUITests 源码（plan import/model/save/reopen/drawing/professional menus），但本任务未运行；不能作为 App 验收。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/Tests/FloeAgentUITests/CADBuildingWorkflowUITests.swift",
+          "symbol": "App building UI test source",
+          "line": 26,
+          "quote": "func testPlanImportModelSaveReopenDrawingAndProfessionalMenus",
+          "sourceType": "source",
+          "endLine": 26
+        }
+      ]
+    },
+    "notExecutedInThisTask": [
+      "没有运行 Swift/Xcode 编译或 XCTest",
+      "没有启动 Simulator/物理设备",
+      "没有运行 GPU/渲染/安装/大资源下载",
+      "没有修改主 App、Package/project、Git、分支、版本或发布",
+      "未读取凭据或业务资料",
+      "本轮新增 FurniturePlacement/CabinetManufacturingPreparation 24 个 XCTest 也未运行"
+    ],
+    "sourceSnapshot": {
+      "currentSourceSHA": "91c7cd935387f6d88bba2d660b282fb3a8dfa9bb",
+      "observedCheckoutHeadSHA": "4d9d56102fc27ed3d9629d823edcb7cc9ac6b844",
+      "diffCheck": "git diff --name-only 91c7cd935387f6d88bba2d660b282fb3a8dfa9bb..HEAD -- FloeAgent/ThirdParty/FloeCADKit/Sources/FloeCAD FloeAgent/FloeApp FloeAgent/Sources/FloeAgentRuntime FloeAgent/Sources/FloeWorkbench FloeAgent/Modules/FloeInteriorKit docs/design/building-project => 0 files",
+      "interpretation": "观察到的 HEAD 比冻结源码多一个 Android 稳定提交；与本调查相关的 FloeCADKit/FloeApp/Sources/InteriorKit/design 文档无差异。所有行号按此观察工作树读取。 两个 Furniture/Manufacturing 源文件及两个测试文件是未提交的工作树新增（SOURCE_ONLY），不属于冻结 91c7 源码或旧 123 测试；本报告把它们单列，未把其测试源码当运行证据。",
+      "uncommittedSourceOnlyAdditions": [
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeInteriorCore/Furniture/FurniturePlacement.swift",
+          "sha256": "17f4cfd6e4bfb52fc4cedb0f4d64abacbc0929d88a1305ee102d6adb490d4b58",
+          "lineCount": 234,
+          "tests": 10,
+          "testPath": "FloeAgent/Modules/FloeInteriorKit/Tests/FloeInteriorCoreTests/FurniturePlacementTests.swift",
+          "testSHA256": "600b880f8e3112f55c227f15e3f6eb9392cb86ff41712f6b68078ae6f5ebbdfd",
+          "run": false
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeInteriorCore/Manufacturing/CabinetManufacturingPreparation.swift",
+          "sha256": "9309a376a394f36bb84f95592de9eb328e4b3af07b3c9859474bffbfc9e5e457",
+          "lineCount": 250,
+          "tests": 14,
+          "testPath": "FloeAgent/Modules/FloeInteriorKit/Tests/FloeInteriorCoreTests/CabinetManufacturingPreparationTests.swift",
+          "testSHA256": "88208efc70436121cc777e49e6f7c82ffcf8295a947c877e35cfafb2a3307e5e",
+          "run": false
+        }
+      ]
+    },
+    "sourceOnlyNewFurnitureAndManufacturingAdapters": {
+      "status": "source-only-not-run",
+      "detail": "工作树新增 Core/Furniture/FurniturePlacement.swift 与 Core/Manufacturing/CabinetManufacturingPreparation.swift，另有 10 个 FurniturePlacementTests + 14 个 CabinetManufacturingPreparationTests（共 24 个 XCTest 方法）源码。没有编译/运行；旧 123 项测试不含这些文件，不能用旧 123 或旧面板测试给它们资格。placement 明确 nativeGeometryVerified=false、manufacturingVerified=false；manufacturing preparation 明确 manufacturingVerified=false、missingProductionValidation 非空，readyForNesting 只是输入就绪。",
+      "sourceEvidence": [
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeInteriorCore/Furniture/FurniturePlacement.swift",
+          "symbol": "FurniturePlacementPlan value-only flags",
+          "line": 96,
+          "quote": "A value-only adapter plan",
+          "sourceType": "source",
+          "endLine": 114
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeInteriorCore/Furniture/FurniturePlacement.swift",
+          "symbol": "FurniturePlacementPlanner",
+          "line": 139,
+          "quote": "public enum FurniturePlacementPlanner",
+          "sourceType": "source",
+          "endLine": 142
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Tests/FloeInteriorCoreTests/FurniturePlacementTests.swift",
+          "symbol": "FurniturePlacementTests",
+          "line": 5,
+          "quote": "final class FurniturePlacementTests",
+          "sourceType": "source",
+          "endLine": 5
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Tests/FloeInteriorCoreTests/FurniturePlacementTests.swift",
+          "symbol": "first furniture placement test",
+          "line": 17,
+          "quote": "func testExplicitUnitsBottomAnchorAndBuildingToNativeFrame",
+          "sourceType": "source",
+          "endLine": 17
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeInteriorCore/Manufacturing/CabinetManufacturingPreparation.swift",
+          "symbol": "CabinetManufacturingPreparation",
+          "line": 124,
+          "quote": "public struct CabinetManufacturingPreparation",
+          "sourceType": "source",
+          "endLine": 137
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Sources/FloeInteriorCore/Manufacturing/CabinetManufacturingPreparation.swift",
+          "symbol": "CabinetManufacturingPlanner",
+          "line": 151,
+          "quote": "Rectangular part preparation only",
+          "sourceType": "source",
+          "endLine": 157
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Tests/FloeInteriorCoreTests/CabinetManufacturingPreparationTests.swift",
+          "symbol": "CabinetManufacturingPreparationTests",
+          "line": 5,
+          "quote": "final class CabinetManufacturingPreparationTests",
+          "sourceType": "source",
+          "endLine": 5
+        },
+        {
+          "path": "FloeAgent/Modules/FloeInteriorKit/Tests/FloeInteriorCoreTests/CabinetManufacturingPreparationTests.swift",
+          "symbol": "first manufacturing preparation test",
+          "line": 28,
+          "quote": "func testAllNineteenPanelIdentitiesReachExplicitNestingInput",
+          "sourceType": "source",
+          "endLine": 28
+        }
+      ]
+    }
+  },
+  "remainingUnknowns": [
+    "本轮没有实际运行任何构建、测试、Simulator 或设备；123 项测试、UI03 编译均来自已有 qualification 记录，未复跑。",
+    "独立 iPad 宿主的四项 UI 流程和主 App 的 CAD 建筑 UI 测试源码均未运行；实际按钮、导航、主题、大字体、VoiceOver、窄窗/横竖屏、退出/保存所有权未知。",
+    "19 板整柜 assembly 组合页测试未运行；19 个实例的真实投影、隐藏线、尺寸、PDF/SVG/DXF 读回、性能与内存仍未知。",
+    "普通 12 源体上限与装配 64 实例上限之间的桥接未在真实模型中验证；内部立面/门板过滤和 19 板全部投影可能受视图/页预算影响。",
+    "IFC 导入、IFC 属性/关系/空间边界/IfcOpenShell 或 web-ifc 原生集成未实现；现有 IFC 导出是三角面片+类型/Name+IDS 名称子集。",
+    "家具目录、品牌五金、离线包和版本升级只有研究证据；未取得可再分发的整库/批量接口/品牌许可，未做原生准入。",
+    "跨 Records SQLite 与 .floecad 的原子提交、冲突合并、崩溃恢复没有实现；本报告只提出 journal/manifest 方案，未验证。",
+    "RoomPlan/LiDAR 房间重建、多房间坐标对齐、点云/网格参考与实测校正未实现；现有 AR 只有单平面长度/面积。",
+    "无线精细传播、现场校准闭环、真实配光渲染/Radiance 验证、暖通选型/管网/湿负荷未实现；现有结果是快估/直射照度/稳态初算。",
+    "八地区规范规则库、完整结构/MEP 计算、制造拆单/排板/CNC 后处理、自动设计求解均未实现，不能由现有组件测试推断。",
+    "所有文件/符号/行号是基于当前工作树的静态读取；本任务未编译，不能保证未展示的调用点没有运行时问题。",
+    "主协调者需决定哪些新层进入现有 FloeCADKit 公共 schema、哪些保持 App 侧或 FloeInteriorKit 侧；本报告不修改这些边界。",
+    "FurniturePlacement 与 CabinetManufacturingPreparation 的 24 个新 XCTest 只有源码，未编译/运行；FurniturePlacementPlan 的 nativeGeometryVerified/manufacturingVerified 均为 false，CabinetManufacturingPreparation.manufacturingVerified 也为 false，readyForNesting 不是优化器输出或生产验收。"
+  ],
+  "retainedScopeNote": "8 个实现包优先闭环真实装修/家具/柜体/出图/保存/独立导出链；28 QA 与追加范围全部保留在 requirementsCoverage/additionalScope。未排入这 8 包的全结构分析、完整机电系统、RoomPlan 多房间扫描、完整制造/CNC 等仍标为缺口，不能因本报告或现有组件测试被当成已覆盖或已删除。",
+  "coordinatorReview": {
+    "workerStatus": "completed and write ownership released",
+    "criticalClarifications": [
+      "H06 distinguishes ordinary12body path from assembly64instance path; neither native integration has been newly run",
+      "WP02 does not promise already released old clients can open future schema read-only",
+      "WP01 journal proposal is not accepted as an atomic cross-store transaction; use the staged-generation/manifest contract and failure-injection criteria in the qualification report",
+      "Existing edit authorization remains authoritative; propose/preview/apply does not introduce a mandatory per-edit human approval"
+    ],
+    "decisionRecord": "docs/qualification/FLOE_BUILDING_PREDEVELOPMENT_20261113.zh-CN.md"
+  }
+}

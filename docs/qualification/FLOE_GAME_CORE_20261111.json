@@ -1,0 +1,188 @@
+{
+  "schemaVersion": 1,
+  "title": "FloeGameKit 首批组件轻量验证",
+  "qualifiedOn": "2026-11-11",
+  "timezone": "Australia/Sydney",
+  "sourceBaselineAtStart": "2a448605b17f73cb1df4e688c2673bb2d2adb776",
+  "headAtQualification": "48fa9d057e585a5dc1dc346e5c7500d1c8030036",
+  "sourceState": "新增模块文件尚未提交；使用下列逐文件 SHA-256 绑定实际验证代码，基线提交不代表模块已在提交中",
+  "module": "FloeAgent/Modules/FloeGameKit",
+  "sourceSHA256": {
+    "FloeAgent/Modules/FloeGameKit/LICENSE": "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04",
+    "FloeAgent/Modules/FloeGameKit/Package.swift": "c3af6d6d31f0210ba711d254a63710627aa27ba90009ad555354e344412a6fab",
+    "FloeAgent/Modules/FloeGameKit/README.md": "e4fdfc545464f4b9424d705d0542f5a015b28e8db2bf4e730a7c96bfde0147c4",
+    "FloeAgent/Modules/FloeGameKit/Sources/FloeGameCore/GameLaunchPlanner.swift": "4ee96ce3bf76257c45df7cfa59f16213570d5e004ef875ecebceb5da253c81ad",
+    "FloeAgent/Modules/FloeGameKit/Sources/FloeGameCore/GameProject.swift": "ac89c6b228d1ff5b4e914390ac5947bdc72f9988039eef43c30de1a422526d54",
+    "FloeAgent/Modules/FloeGameKit/Sources/FloeGameCore/GameProjectInspector.swift": "bcc6549498664ecb6844c98cf2e6364c82404c5d32afff4b6ae57d87e0a2f50d",
+    "FloeAgent/Modules/FloeGameKit/Sources/FloeGameCore/GameProjectReader.swift": "b359a64b0a78201bf1ad6813de8317e3c1b66e80a9aa42c9ee00479d3c5aaad0",
+    "FloeAgent/Modules/FloeGameKit/Sources/GamePreflight/main.swift": "b112ed08c30421c99c619a2ceafd255ce560af89b2050d8ba300b8f7658c1857",
+    "FloeAgent/Modules/FloeGameKit/Tests/FloeGameCoreTests/GameCoreTests.swift": "620d868908fa9a65b2b6bed5aa9ef9a28f872abbdae3ae0c6cdf2c1cb81949b4"
+  },
+  "toolchain": {
+    "xcode": "27.2 (27B52)",
+    "swift": "Apple Swift 6.4.2 (swiftlang-6.4.2.1.9)",
+    "iosSDK": "iPhoneSimulator27.2",
+    "iosTarget": "arm64-apple-ios26.0-simulator"
+  },
+  "implemented": [
+    "有界只读工程识别；首批 11 个引擎/版本的结构特征",
+    "空间/普通会话归属、原件根、保存修订及既有环境 ID 的绑定",
+    "工程级启动/构建计划及多候选选择",
+    "拒绝未绑定/过期识别结果、旧产物和不同归属/根/环境/修订的计划"
+  ],
+  "verification": {
+    "macOS": {
+      "result": "passed",
+      "testFunctions": 16,
+      "totalCases": 30,
+      "scope": "16 个测试函数，含 3 个参数化函数的 17 个样例及 13 个普通样例；宿主组件测试，非 iOS 游戏行为"
+    },
+    "metadataDemo": {
+      "result": "passed",
+      "syntheticProjects": 11,
+      "engines": [
+        "rpgMakerXP",
+        "rpgMakerVX",
+        "rpgMakerVXAce",
+        "rpgMakerMV",
+        "rpgMakerMZ",
+        "godot",
+        "unity",
+        "phaser",
+        "kaplay",
+        "babylon",
+        "playcanvas"
+      ],
+      "engineExecuted": false
+    },
+    "iOS": {
+      "result": "passed",
+      "coreObjects": 4,
+      "realObjectCompilation": true,
+      "platformInspection": "全部为 IOSSIMULATOR，minos 26.0",
+      "simulatorBootedByTask": false
+    },
+    "commands": [
+      {
+        "name": "swift-test-final",
+        "command": [
+          "xcrun",
+          "swift",
+          "test",
+          "--package-path",
+          "$REPO/FloeAgent/Modules/FloeGameKit",
+          "--scratch-path",
+          "$HOME/Library/Caches/CodexBuild/Floe/0dd039b5b74b/xcode27.2/game-core/macos",
+          "--jobs",
+          "6"
+        ],
+        "exit_code": 0,
+        "elapsed_seconds": 3.434,
+        "log": "${QUALIFICATION_ROOT}/game-core-20261111/swift-test-final.log"
+      },
+      {
+        "name": "metadata-demo-final",
+        "command": [
+          "xcrun",
+          "swift",
+          "run",
+          "--package-path",
+          "$REPO/FloeAgent/Modules/FloeGameKit",
+          "--scratch-path",
+          "$HOME/Library/Caches/CodexBuild/Floe/0dd039b5b74b/xcode27.2/game-core/macos",
+          "--skip-build",
+          "floe-game-preflight",
+          "--demo"
+        ],
+        "exit_code": 0,
+        "elapsed_seconds": 0.745,
+        "log": "${QUALIFICATION_ROOT}/game-core-20261111/metadata-demo-final.log"
+      },
+      {
+        "name": "ios-simulator-object-build-final",
+        "command": [
+          "xcrun",
+          "swift",
+          "build",
+          "--build-system",
+          "native",
+          "--package-path",
+          "$REPO/FloeAgent/Modules/FloeGameKit",
+          "--scratch-path",
+          "$HOME/Library/Caches/CodexBuild/Floe/0dd039b5b74b/xcode27.2/game-core/ios-simulator",
+          "--sdk",
+          "/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator27.2.sdk",
+          "--triple",
+          "arm64-apple-ios26.0-simulator",
+          "--target",
+          "FloeGameCore",
+          "--jobs",
+          "6"
+        ],
+        "exit_code": 0,
+        "elapsed_seconds": 0.854,
+        "log": "${QUALIFICATION_ROOT}/game-core-20261111/ios-simulator-object-build-final.log"
+      }
+    ],
+    "originalFailure": {
+      "stage": "首次编译",
+      "reason": "第二个可抛错的 exists 调用遗漏 try；已补正后重新进行真实编译与测试",
+      "log": "${QUALIFICATION_ROOT}/game-core-20261111/swift-test-attempt1.log"
+    },
+    "limits": [
+      "使用合成元数据及测试用宿主注册/产物信息；未加载真实引擎",
+      "未集成 App、未验证游戏交互、AI 调用、存档或独立安装包",
+      "未编译上游 RPG 转换器、Godot、Unity 或其他引擎",
+      "未新增外部依赖/引擎资源；此验证不是最终许可证审查或 Apple 审核结果"
+    ]
+  },
+  "retainedArtifacts": [
+    {
+      "path": "${QUALIFICATION_ROOT}/game-core-20261111/compiled/macos/floe-game-preflight",
+      "sha256": "2137c25c48cfe22c284c8f4be1a5ca704938aecb08b1ed751b95f7b31aaa6ef8",
+      "bytes": 456864
+    },
+    {
+      "path": "${QUALIFICATION_ROOT}/game-core-20261111/compiled/ios-simulator/GameLaunchPlanner.swift.o",
+      "sha256": "b26dde7b70b3ed21979a4fc60e9b996aa1c9739f4fce5aafa25bc90d7e353988",
+      "bytes": 156744
+    },
+    {
+      "path": "${QUALIFICATION_ROOT}/game-core-20261111/compiled/ios-simulator/GameProject.swift.o",
+      "sha256": "5abcfa43c54551625751fd359efd109537e6fd9396f9a6611a5e886df37afe45",
+      "bytes": 168880
+    },
+    {
+      "path": "${QUALIFICATION_ROOT}/game-core-20261111/compiled/ios-simulator/GameProjectInspector.swift.o",
+      "sha256": "ae7614d86523320d96595456029ba6e5ad30309ecef55633471ca7b789a24c6b",
+      "bytes": 123680
+    },
+    {
+      "path": "${QUALIFICATION_ROOT}/game-core-20261111/compiled/ios-simulator/GameProjectReader.swift.o",
+      "sha256": "122f0e5fdd4184752edbe6856f16c1a758a07c8ccdcb2e08fac99d0ff8438c99",
+      "bytes": 54800
+    },
+    {
+      "path": "${QUALIFICATION_ROOT}/game-core-20261111/compiled/LICENSE",
+      "sha256": "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04",
+      "bytes": 16726
+    }
+  ],
+  "rawEvidence": "${QUALIFICATION_ROOT}/game-core-20261111 (Git-ignored host-local logs and component artifacts)",
+  "cleanup": {
+    "status": "complete",
+    "removedTaskCache": "$HOME/Library/Caches/CodexBuild/Floe/0dd039b5b74b/xcode27.2/game-core",
+    "allocatedKiBRemoved": 106496,
+    "openReferenceCheck": "lsof +D returned no open references",
+    "retained": "Source, selected visual, original failure/success logs, source hashes, CLI and four iOS objects in repository-owned artifacts",
+    "simulatorInventory": "No booted Simulator; none created, modified or booted by this task"
+  },
+  "nextIntegration": [
+    "复用当前 WorkspaceIDEView 的运行入口，加入工程级识别和分派",
+    "为第三版空间概览绑定原件及现有项目助手，再复用原生编辑组件",
+    "接入真实解析/构建/试玩适配器；逐项核对格式往返、资源/许可证和生命周期"
+  ],
+  "status": "历史首批纯核心验证，保留原散列与证据；后续可用组件结果见 supersededBy",
+  "supersededBy": "docs/qualification/FLOE_GAME_COMPONENTS_20261111.json",
+  "qualificationRoot": "Relative qualification artifacts refer to the local evidence collection from the stated date."
+}

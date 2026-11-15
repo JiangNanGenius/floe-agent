@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>整理第三章讲义 · Floe 交互稿</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --paper: #fff; --panel: #f8f8fa; --ink: #222328; --muted: #565a65;
+      --line: #dfdfe4; --soft: #f1f2f5; --accent: #2757a4;
+      --add-ink: #236243; --add-bg: #e9f4ec; --del-ink: #943c3e; --del-bg: #f9eeec;
+      font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", sans-serif;
+      font-size: 100%; line-height: 1.6;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --paper: #1b1c20; --panel: #222328; --ink: #f1f1f2; --muted: #b7bac3;
+        --line: #41434c; --soft: #2b2d34; --accent: #a4c5ff;
+        --add-ink: #a8d9b6; --add-bg: #273a31; --del-ink: #edb7b3; --del-bg: #3f2c30;
+      }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--paper); color: var(--ink); }
+    button, textarea, summary { font: inherit; color: inherit; }
+    button, summary { cursor: pointer; }
+    button { border: none; background: none; }
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .app { display: grid; grid-template-columns: minmax(0, 1fr); height: 100vh; height: 100dvh; }
+    .chat { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
+    .bar { padding: 14px 24px; text-align: center; border-bottom: 1px solid var(--line); }
+    h1, h2, h3, p { margin: 0; }
+    h1, h2 { font-weight: 600; line-height: 1.25; }
+    h1 { font-size: 1.375rem; }
+    h2 { font-size: 1.25rem; overflow-wrap: anywhere; }
+    .thread { overflow-y: auto; padding: clamp(24px, 7vh, 64px) 22px 24px; scrollbar-gutter: stable; }
+    .conversation, .compose-inner { max-width: 44rem; margin-inline: auto; }
+    .request { width: fit-content; max-width: 87%; margin-left: auto; padding: 10px 16px; background: var(--soft); border-radius: 17px 17px 5px 17px; }
+    .answer { margin: 32px 0 8px; }
+    .sender { font-weight: 650; margin-bottom: 6px; }
+    details { margin: 3px 0; }
+    summary {
+      list-style: none; display: inline-flex; align-items: center; gap: 11px; min-height: 44px;
+      color: var(--muted); font-size: .92rem; font-weight: 550; padding: 0 6px 0 2px;
+    }
+    summary::-webkit-details-marker { display: none; }
+    .chevron { width: 7px; height: 7px; border-top: 1.6px solid; border-right: 1.6px solid; transform: rotate(45deg); flex: none; }
+    details[open] summary .chevron { transform: rotate(135deg); }
+    .files { display: grid; margin: 0 0 0 5px; padding: 0 0 0 12px; border-left: 1px solid var(--line); }
+    .file { min-height: 44px; display: flex; gap: 10px; justify-content: space-between; align-items: center; text-align: left; padding: 6px 11px; border-radius: 7px; }
+    .file:hover, .file[aria-current=true], .close:hover { background: var(--soft); }
+    .name { min-width: 0; overflow-wrap: anywhere; }
+    .status { font-size: .83rem; color: var(--muted); flex: none; }
+    .added { color: var(--add-ink); } .removed { color: var(--del-ink); }
+    .composer { padding: 10px 22px max(16px, env(safe-area-inset-bottom)); }
+    textarea { display: block; width: 100%; resize: none; min-height: 56px; padding: 13px 15px; border: 1px solid var(--line); border-radius: 15px; background: var(--paper); font-size: 1rem; }
+    textarea::placeholder { color: var(--muted); opacity: 1; }
+    dialog { color: var(--ink); background: var(--panel); padding: 0; border: 0; }
+    dialog[open] { display: flex; flex-direction: column; }
+    .preview-bar { min-height: 54px; display: flex; justify-content: space-between; align-items: center; gap: 12px; border-bottom: 1px solid var(--line); padding: 0 12px 0 20px; }
+    .close { color: var(--accent); min-height: 44px; padding: 0 10px; border-radius: 8px; }
+    .preview-content { padding: 24px 20px; overflow: auto; }
+    .preview-content h3 { color: var(--muted); font-weight: 550; font-size: .85rem; margin-bottom: 14px; }
+    .diff-line { margin-block: 4px; padding: 9px 11px; border-radius: 6px; overflow-wrap: anywhere; }
+    .before { color: var(--del-ink); background: var(--del-bg); }
+    .after { color: var(--add-ink); background: var(--add-bg); }
+    .diff-line span { font-family: ui-monospace, monospace; padding-right: 6px; }
+    .exercises { margin: 8px 0; padding-left: 1.7em; }
+    @media (min-width: 780px) {
+      .app:has(dialog[open]) { grid-template-columns: minmax(0, 1fr) minmax(290px, 33%); }
+      dialog[open] { position: static; margin: 0; height: 100%; width: 100%; max-width: none; max-height: none; border-left: 1px solid var(--line); }
+    }
+    @media (max-width: 779px) {
+      .thread { padding-inline: 17px; scrollbar-gutter: auto; }
+      .composer { padding-inline: 16px; }
+      .request { max-width: 91%; }
+      dialog[open] { position: fixed; inset: auto 0 0; margin: 0; width: 100%; max-width: none; min-height: min(42dvh, 300px); max-height: 75dvh; border-radius: 18px 18px 0 0; padding-bottom: env(safe-area-inset-bottom); }
+      dialog::backdrop { background: rgb(17 21 29 / 32%); }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <section class="chat" aria-labelledby="chat-title">
+      <header class="bar"><h1 id="chat-title">整理第三章讲义</h1></header>
+      <div class="thread">
+        <div class="conversation">
+          <p class="request">讲义里留一道斜面例题，把课后题整理成单独的练习单，再删掉旧草稿。</p>
+          <section class="answer" aria-label="Floe 的回复">
+            <p class="sender">Floe</p>
+            <p>讲义保留了斜面例题，三道课后题已放进练习单。旧草稿已删除。</p>
+          </section>
+          <details id="changes">
+            <summary><span class="chevron" aria-hidden="true"></span>已更改 3 个文件</summary>
+            <div class="files">
+              <button class="file" type="button" data-preview="lecture"><span class="name">讲义.md</span><span class="status">修改</span></button>
+              <button class="file" type="button" data-preview="exercises"><span class="name">练习单.md</span><span class="status added">新增</span></button>
+              <button class="file" type="button" data-preview="draft"><span class="name">旧草稿.txt</span><span class="status removed">删除</span></button>
+            </div>
+          </details>
+        </div>
+      </div>
+      <div class="composer"><div class="compose-inner"><textarea rows="1" aria-label="主对话草稿" placeholder="继续给 Floe 补充要求…"></textarea></div></div>
+    </section>
+    <dialog aria-labelledby="preview-title">
+      <header class="preview-bar">
+        <h2 id="preview-title" tabindex="-1"></h2>
+        <button type="button" class="close">完成</button>
+      </header>
+      <div class="preview-content"></div>
+    </dialog>
+  </main>
+  <template id="lecture">
+    <h3>本轮差异</h3>
+    <p class="diff-line before" aria-label="移除：本节例题和三道课后题附在文末。"><span aria-hidden="true">−</span>本节例题和三道课后题附在文末。</p>
+    <p class="diff-line after" aria-label="新增：例题：画出斜面上木块的受力图。"><span aria-hidden="true">+</span>例题：画出斜面上木块的受力图。</p>
+    <p class="diff-line after" aria-label="新增：课后题见《练习单》。"><span aria-hidden="true">+</span>课后题见《练习单》。</p>
+  </template>
+  <template id="exercises">
+    <h3>当前文件</h3>
+    <p><strong>第三章 · 课后练习</strong></p>
+    <ol class="exercises"><li>画出斜面上木块的受力图。</li><li>分析倾角增大时，支持力如何变化。</li><li>比较光滑与粗糙斜面上的运动。</li></ol>
+  </template>
+  <template id="draft">
+    <h3>本轮删除</h3>
+    <p>旧草稿.txt 已从工作区删除。</p>
+  </template>
+  <script>
+    const disclosure = document.querySelector('#changes');
+    const dialog = document.querySelector('dialog');
+    const title = document.querySelector('#preview-title');
+    const content = dialog.querySelector('.preview-content');
+    const narrow = window.matchMedia('(max-width: 779px)');
+    let selectedFile = null;
+
+    function present() {
+      if (dialog.open) dialog.close();
+      if (narrow.matches) dialog.showModal();
+      else dialog.show();
+      title.focus({ preventScroll: true });
+    }
+
+    function showFile(button) {
+      if (selectedFile) selectedFile.removeAttribute('aria-current');
+      selectedFile = button;
+      button.setAttribute('aria-current', 'true');
+      title.textContent = button.querySelector('.name').textContent;
+      const template = document.getElementById(button.dataset.preview);
+      content.replaceChildren(template.content.cloneNode(true));
+      present();
+    }
+
+    function dismiss() {
+      dialog.close();
+      selectedFile?.removeAttribute('aria-current');
+      const focusTarget = disclosure.open ? selectedFile : disclosure.querySelector('summary');
+      focusTarget?.focus({ preventScroll: true });
+      selectedFile = null;
+    }
+
+    disclosure.querySelectorAll('.file').forEach(button => {
+      button.addEventListener('click', () => showFile(button));
+    });
+    disclosure.addEventListener('toggle', () => {
+      if (!disclosure.open && dialog.open) dismiss();
+    });
+    dialog.querySelector('.close').addEventListener('click', dismiss);
+    dialog.addEventListener('cancel', event => { event.preventDefault(); dismiss(); });
+    dialog.addEventListener('click', event => {
+      if (narrow.matches && event.target === dialog && event.clientY < dialog.getBoundingClientRect().top) dismiss();
+    });
+    document.addEventListener('keydown', event => {
+      if (event.key === 'Escape' && dialog.open && !narrow.matches) { event.preventDefault(); dismiss(); }
+    });
+    narrow.addEventListener('change', () => { if (dialog.open) present(); });
+  </script>
+</body>
+</html>

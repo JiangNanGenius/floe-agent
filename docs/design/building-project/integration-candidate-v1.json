@@ -1,0 +1,250 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-11-13",
+  "status": "NOT_READY",
+  "objective": "An independent building/interior module with a demonstrated project workflow and one future main-App integration entry",
+  "preserveAllOriginalQA": true,
+  "originalQA": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28
+  ],
+  "notAnAppRelease": true,
+  "acceptanceMeaning": "Basic integration closure is a runnable project workflow. It does not assert completion of every retained architecture, manufacturing, scanning, regional or professional solver requirement.",
+  "gates": [
+    {
+      "id": "G01",
+      "outcome": "One public feature entry",
+      "requiredEvidence": [
+        "iOS object/link build of the independent module and host",
+        "Create/open the same project with a single root view and shared workspace service",
+        "No main-App source, navigation, version or release changes required to run the host"
+      ],
+      "state": "public-entry-and-independent-host-source-authored-unrun"
+    },
+    {
+      "id": "G02",
+      "outcome": "Consistent project save/reopen/recovery",
+      "requiredEvidence": [
+        "Real SQLite snapshot, original source bytes and native CAD identity in one published generation",
+        "Two repository instances competing on expectedGeneration cannot both publish",
+        "Failure injected before and after manifest publication never exposes mixed generations",
+        "A working copy and edits survive failed publication; no previous file overwrites a newer commit"
+      ],
+      "state": "project-service31-pass; native-CAD-joint-unrun",
+      "source16Candidate": "Existing native pending input contributes to dirty state and blocks checkpoint; drafting checkpoint lease defers page-departure flush until snapshot completes. New real-project save/reopen test authored, unrun."
+    },
+    {
+      "id": "G03",
+      "outcome": "Original files, room facts and bills remain usable",
+      "requiredEvidence": [
+        "Import an original and a CSV into the actual project, review selected bill rows, retain source locators",
+        "Reopen without losing adopted values, room identity, bill target or original versions",
+        "Typed project-scoped record calls use the same service and existing authorization boundary"
+      ],
+      "state": "prior-component-evidence-plus-new-integration-pending"
+    },
+    {
+      "id": "G04",
+      "outcome": "Real native 2D/3D editing and room links",
+      "requiredEvidence": [
+        "Edit actual native building geometry and inspect the same objects in another view",
+        "Room record/native space links are stable and explicitly resolved rather than guessed by name",
+        "Undo, external-change rejection and save/reopen on the actual native document",
+        "Full native 2D drafting entry on the shared document, with explicit floor/sketch-plane ownership and navigation restoration when leaving; wall-plan tools or exported linework are insufficient"
+      ],
+      "state": "native-bridge-and-explicit-room-links-source-unrun",
+      "remainingSourceGap": "Multiple linked sketches/layers per floor, bidirectional drafting/building updates, full floor visibility isolation and pending native input recovery after process death remain open; production entrance unchanged",
+      "source16Candidate": "Private floor drafting entrance reuses native2D tools/shared document; stable floor sketch IDs, explicit plane review, undo-safe refresh and camera/navigation restoration authored; uncompiled/unrun/unapplied"
+    },
+    {
+      "id": "G05",
+      "outcome": "Furniture works in a real project",
+      "requiredEvidence": [
+        "Archive a real OBJ with materials/dependencies and license metadata",
+        "Native geometry has the declared dimensional basis, floor elevation, orientation and anchor",
+        "Two independent instances share an asset version",
+        "Pinned offline dependency copy reopens without the catalog and survives catalog upgrades"
+      ],
+      "state": "resource-package-and-real-fixture-pinned-native-admission-unrun"
+    },
+    {
+      "id": "G06",
+      "outcome": "Cabinet model to actual drawings",
+      "requiredEvidence": [
+        "All19panels are represented; width2400-to2600 updates owned geometry with stable binding or explicitly refuses an unsupported update",
+        "Front/side/top/section/isometric and internal/assembly views are verified individually; incomplete sheets are blocked",
+        "Width/height/carcass-depth/overall-depth and relevant internal/panel dimensions are model-associated; manual notes/layout survive",
+        "Actual PDF/SVG/DXF read-back and native drawing reopen; no schematic thumbnail counted as a final sheet"
+      ],
+      "state": "output-source-delivered-and-Editor-wired; native-unrun"
+    },
+    {
+      "id": "G07",
+      "outcome": "Independent 2D and 3D deliverables",
+      "requiredEvidence": [
+        "Create new native editable2D and3D project outputs; source project identities and bytes remain unchanged when copies are edited",
+        "Export genuine drawing/model files with source generation, units, scope, format and unsupported-loss receipts",
+        "Cancellation/failure never publishes a partial deliverable"
+      ],
+      "state": "output-source-delivered-and-Editor-wired; native-unrun"
+    },
+    {
+      "id": "G08",
+      "outcome": "One coherent interface",
+      "requiredEvidence": [
+        "Only one project Save/Close/Reopen owner",
+        "Canvas undo and form undo have distinct ownership; no nested duplicate active buttons",
+        "Unsubmitted input, page changes, failure, discard and save-and-close are exercised",
+        "Actual canonical iPad host screenshots and interaction results, not only source counts",
+        "Host-owned project Save suppresses embedded view lifecycle partial commits on page change/background; explicit project publication and standalone CAD defaults remain valid"
+      ],
+      "state": "macOS-state15-native-pass-with-original-producer1-retained; inner-CAD-ownership-patch-private; iPad-screen-unrun",
+      "lifecycleSaveReview": "Two private lifecycle guards from14 included in16; floor drafting routes native undo/redo and project Save/Close to their existing owners; compact header and fifth UI case authored, no actual screenshots"
+    },
+    {
+      "id": "G09",
+      "outcome": "A bounded main-App handoff",
+      "requiredEvidence": [
+        "Public entry/init/open/close/export/assistant adapter contracts with exact dependency/resource list",
+        "Existing host authorization remains authoritative; no new per-edit approval service",
+        "Source hashes, exact native artifacts and focused verification results; incomplete retained capabilities listed plainly"
+      ],
+      "state": "public-facade-source-defined; native-artifacts-and-App-adapter-pending"
+    }
+  ],
+  "currentOwners": {
+    "project": "coordinator; worker released",
+    "assets": "coordinator; worker released",
+    "cad": "coordinator; workers released",
+    "integration": "coordinator",
+    "cadOutput": "Source delivered for integration",
+    "cadInitialPackage": "delivered and reclaimed"
+  },
+  "nativeState": "Core42, Assets15, Project31 and UI state12+lifecycle3 have actual component PASS evidence. UI15 native exit0; original producer exit1 from one deprecation warning splitting a passed line is retained. Log-derived exact method/source/frontend reconciliation is separately recorded. CAD29, joint11 and iPad host4 remain unrun; no main-App integration.",
+  "knownIntegrationFindings": [
+    "Existing native CAD autosave is isolated to a writable working copy",
+    "Published dirtiness compares model identity, records revision and editor references",
+    "Nested native model Undo/Redo duplication is confirmed by source; an unapplied minimal patch and a UI regression case exist",
+    "Two-sided divergent linked-room renames preserve both values; one-sided renames reconcile at checkpoint",
+    "Opening an existing or recovered mount requires existing Records, never silently creates an empty replacement",
+    "Missing real furniture resource is an error; qualification no longer uses an absolute private fixture path or XCTSkip",
+    "An apartment integration fixture now joins room/source/furniture/cabinet/detail sheets/native outputs/save/reopen in one generation; it has NOT run",
+    "Native2D polyline conversion was corrected to straight native line spans and now rejects invalid vertices and unsaved/interleaved source geometry; two regression tests are authored/unrun",
+    "Standalone host has Close-to-Reopen routing, with no second project toolbar",
+    "Native2D is explicitly paper-space editable drawing geometry; model-space/floor/profession and every requested format remain separate retained acceptance scopes",
+    "Native export-menu Save Project only saves CAD; a private candidate introduces default-compatible host save ownership and prevents nested building navigation, without modifying Main",
+    "Export-to-Space now has a typed host callback, 2D/3D package identity checks, owned cancellation and stable deduplication key; the existing native export/reopen fixture is extended with real copies and non-CAD refusal, still unrun"
+  ],
+  "references": [
+    "docs/design/building-project/closure-scenarios-v2.json",
+    "docs/design/building-project/native-core-gap-v2.json",
+    "docs/qualification/FLOE_BUILDING_PREDEVELOPMENT_20261113.zh-CN.md"
+  ],
+  "sourceValidationScopes": {
+    "core": {
+      "targetCount": 42,
+      "newTests": 24,
+      "runtime": "PASS Core42 / 0 failures; new24 only; no App/CAD/UI claim",
+      "evidence": "${QUALIFICATION_ROOT}/interior-predevelopment-20261113/native-domain-resume01/result.json"
+    },
+    "assetsAndProject": {
+      "authoredTests": 46,
+      "runtime": "PASS Assets15 from resume05 plus PASS Project31 from resume06; no duplicate run or count; no UI/CAD/App/host acceptance",
+      "originalFailure": "${QUALIFICATION_ROOT}/interior-closure-20261113/native-services-resume04/native.log",
+      "evidence": "${QUALIFICATION_ROOT}/interior-closure-20261113/native-services-project31-resume06/verified-evidence.json",
+      "assets": "PASS15 exact Core/Assets/test source verified for reuse",
+      "project": "PASS31 /0 failures/0 skipped; actual frozen source 3a7ce8610cb9c67cbd0957b9fee3f0ee345fc4b52552e39f6057390da5ecf4d2",
+      "priorFailures": [
+        "${QUALIFICATION_ROOT}/interior-closure-20261113/native-services-resume04/native.log",
+        "${QUALIFICATION_ROOT}/interior-closure-20261113/native-services-resume05/native.log"
+      ],
+      "assetsEvidence": "${QUALIFICATION_ROOT}/interior-closure-20261113/native-services-resume05/assets-pass-evidence.json"
+    },
+    "uiAndLifecycle": {
+      "authoredTests": 15,
+      "runtime": "PASS15 actual native exit0; original producer exit1 retained; per-method log-derived reconciliation, no rerun",
+      "evidence": "${QUALIFICATION_ROOT}/interior-closure-20261113/native-ui15-small11/reconciled-method-bindings.json",
+      "rawResult": "${QUALIFICATION_ROOT}/interior-closure-20261113/native-ui15-small11/result.json",
+      "nativeExitCode": 0,
+      "producerExitCode": 1,
+      "structuredPerCaseResultAvailable": false,
+      "sourceFingerprint": "7ce3ee5e2565cb0eeceb3f9991b3fa61c3956d1abc9e3aeeeeabe4f2f83ca845",
+      "independentCoordinatorEvidence": "${QUALIFICATION_ROOT}/interior-closure-20261113/native-ui15-small11/ROOT_NATIVE15_RECONCILIATION_VERIFIED.json"
+    },
+    "editorIntegration": {
+      "authoredTests": 11,
+      "runtime": "NOT_RUN"
+    },
+    "newEditorHostUI": {
+      "authoredTests": 4,
+      "runtime": "NOT_RUN"
+    },
+    "nativeCAD": {
+      "authoredTests": 29,
+      "runtime": "NOT_RUN"
+    }
+  },
+  "publicEntry": {
+    "product": "FloeBuildingEditor",
+    "root": "BuildingEditorProjectHost(projectDirectory:assetLibraryDirectory:launch:hostActions:)",
+    "existingMount": "BuildingEditorView(session:hostActions:)",
+    "hostOwned": [
+      "directory access and outer project identity",
+      "existing assistant/task authorization and departure fence",
+      "protected preview through existing PDF gate",
+      "Space project creation and independent CAD output registration"
+    ],
+    "noAppIntegrationYet": true,
+    "independentCADRegistration": "BuildingEditorHostActions.registerIndependentCAD(BuildingIndependentCADHandoff): copied package with verified native identity; host-owned durable deduplication per target Space using stable idempotencyKey. Source-only/unrun; no Main-App adapter installed."
+  },
+  "report": "docs/qualification/FLOE_BUILDING_PREDEVELOPMENT_20261113.zh-CN.md",
+  "iosQualificationPreparation": {
+    "status": "SOURCE_ONLY_NO_NATIVE_START",
+    "nativeSelection": 40,
+    "UISelection": 4,
+    "buildControllerSyntheticRules": "passed; no native/Simulator execution",
+    "actualBuildProductsReceiptAvailable": false,
+    "coldBuildStartGiB": 30,
+    "stages": [
+      "build-native40",
+      "run-native40-without-building",
+      "build-UI4-incremental",
+      "run-UI4-without-building"
+    ]
+  },
+  "source16CodeCandidate": {
+    "status": "PRIVATE_CODE_AUTHORED_SYNTAX_ONLY_NOT_CLOSED",
+    "SwiftFiles": 11,
+    "newNativeMethodsAuthored": 15,
+    "UIHostMethodsAuthoredIncludingOriginal4": 5,
+    "nativeMethodsExecuted": 0,
+    "productionCADOrMainAppChanged": false
+  },
+  "qualificationRoot": "Relative qualification artifacts refer to the local evidence collection from the stated date."
+}

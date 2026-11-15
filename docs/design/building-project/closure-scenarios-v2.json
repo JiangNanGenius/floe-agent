@@ -1,0 +1,429 @@
+{
+  "schemaVersion": 2,
+  "date": "2026-11-13",
+  "purpose": "Executable acceptance inputs and expected behavior for later native integration; not an implemented project or a passed end-to-end test",
+  "allOriginalQAStillRequired": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28
+  ],
+  "fixture": {
+    "id": "synthetic-two-bedroom-renovation-v2",
+    "synthetic": true,
+    "units": "mm",
+    "buildingAxes": {
+      "x": "plan right",
+      "y": "plan depth",
+      "z": "up"
+    },
+    "nativeAxes": "building(x,y,z) -> CAD(x,z,-y)",
+    "storey": {
+      "id": "01fbd2f6-6bc9-453a-a31b-3dc2ad85de5b",
+      "elevationMM": 0,
+      "heightMM": 3000
+    },
+    "kitchenRoomID": "d238a0bc-56b3-4c97-8ea8-1a4d78d21803",
+    "sharedWallID": "5719848a-0666-4c54-a49c-515042f6ac27",
+    "kitchenSources": [
+      {
+        "id": "sketch-v1",
+        "kind": "sketch",
+        "raw": "Kitchen length 3.6m",
+        "normalizedMM": 3600,
+        "authority": "unverified original"
+      },
+      {
+        "id": "tape-v1",
+        "kind": "manualMeasurement",
+        "raw": "Kitchen length 4000mm",
+        "normalizedMM": 4000,
+        "authority": "adopted by explicit decision"
+      }
+    ],
+    "protectedObjects": [
+      {
+        "id": "column-A",
+        "kind": "column",
+        "sizeMM": [
+          400,
+          400,
+          3000
+        ],
+        "automaticInteriorLayoutMayMove": false
+      }
+    ],
+    "opening": {
+      "id": "door-A",
+      "hostID": "5719848a-0666-4c54-a49c-515042f6ac27",
+      "widthMM": 900,
+      "heightMM": 2100,
+      "swingDegrees": 90,
+      "handing": "synthetic-left"
+    },
+    "libraryVersionPins": [
+      {
+        "id": "Blend Swap CC-0#armchair",
+        "version": "1.9.3",
+        "sourceSHA256": "4da2ca4ee1b573dfd5feaee4b689794a362f8da6df2f89adb79886c4ab8cd0ce",
+        "rawBoundsXYZ": [
+          [
+            -32.007305,
+            0.141129,
+            -42.7187
+          ],
+          [
+            33.058857,
+            115.15596,
+            25.961786
+          ]
+        ],
+        "declaredDimensionsMM": {
+          "width": 594,
+          "depth": 627,
+          "height": 1050
+        },
+        "normalizationBasis": "catalog dimensions, not guessed source centimetres",
+        "sourceLicense": "CC-0"
+      }
+    ],
+    "cabinet": {
+      "designWidthMM": 2400,
+      "carcassDepthMM": 600,
+      "overallDepthWithFrontsMM": 620,
+      "heightMM": 2400,
+      "geometryRule": "between-sides-inset-back@1",
+      "nativePanelCountInExistingSample": 19,
+      "manufacturingRulesAreSeparate": true
+    },
+    "professionalInputs": "All test temperatures, loads, RF losses, photometry and material process rules are synthetic unless a separate authoritative source is explicitly attached; no compliance pass can be inferred"
+  },
+  "scenarios": [
+    {
+      "id": "C01",
+      "outcome": "Original files to adopted room facts",
+      "qa": [
+        9,
+        10,
+        11,
+        18,
+        19
+      ],
+      "steps": [
+        "Archive sketch and measured record as immutable versions",
+        "Link both to stable room ID",
+        "Preserve 3600 and4000 values and their origins",
+        "Adopt4000 with the existing authorized edit flow",
+        "Rename the room and reopen"
+      ],
+      "assertions": [
+        "Original bytes and both observations survive",
+        "Current adopted value points to tape-v1",
+        "Room rename never breaks source links",
+        "AI reads room-scoped facts with source locators and missing/conflicting fields"
+      ],
+      "status": "Records component behavior partly passed; UI/OCR/scan/native-model binding pending"
+    },
+    {
+      "id": "C02",
+      "outcome": "One building model drives 2D/3D edits",
+      "qa": [
+        1,
+        2,
+        4,
+        7
+      ],
+      "steps": [
+        "Create an L-shaped room, one wall shared with living room, hosted door and protected column",
+        "Edit wall length through an authorized view",
+        "Switch between floor plan,3D and properties",
+        "Undo and reopen"
+      ],
+      "assertions": [
+        "Shared wall has one native identity",
+        "Door host and opening remain valid",
+        "Other views reflect the same objects and dimensions",
+        "No independent duplicate room geometry in Records",
+        "Unsupported native semantics are explicit rather than silently rectangularized"
+      ],
+      "status": "Full semantics and linked editor integration pending"
+    },
+    {
+      "id": "C03",
+      "outcome": "Real catalog model to reusable placed instance",
+      "qa": [
+        9,
+        17,
+        23,
+        24,
+        25
+      ],
+      "steps": [
+        "Verify original model/MTL/texture dependencies and license",
+        "Resolve orientation, declared-size fit or explicit units",
+        "Choose bottom anchor and floor elevation",
+        "Place two instances with distinct positions/yaw",
+        "Reopen offline with original library version pinned"
+      ],
+      "assertions": [
+        "Armchair fit is594x627x1050 mm using the stated catalog basis",
+        "Source-unit scale is not falsely reported as10",
+        "Copies share the resource version but keep independent instance IDs",
+        "Bounding envelope is not described as exact clearance",
+        "Missing materials block full admission or appear as an explicit unresolved state"
+      ],
+      "status": "Placement planner source and10tests authored; native admission and offline asset store pending"
+    },
+    {
+      "id": "C04",
+      "outcome": "Materials have separate rendering and engineering meaning",
+      "qa": [
+        6,
+        10,
+        12,
+        17,
+        27,
+        28
+      ],
+      "steps": [
+        "Apply a versioned visual material to a selected wall face",
+        "Set texture physical scale/orientation and room-side overrides",
+        "Keep wall layers and construction material distinct",
+        "Run RF/lighting only with their separately sourced parameters"
+      ],
+      "assertions": [
+        "Color/texture do not automatically supply RF attenuation,U-value or reflectance",
+        "Face override survives source geometry update or is clearly orphaned",
+        "UV scale follows explicit physical units",
+        "Material library updates leave project pins unchanged"
+      ],
+      "status": "Existing native material hooks require integration and actual behavior checks"
+    },
+    {
+      "id": "C05",
+      "outcome": "Cabinet design to explicit production preparation",
+      "qa": [
+        16,
+        21,
+        22
+      ],
+      "steps": [
+        "Build the existing19panel cabinet",
+        "Specify panel-local axes, band/no-band/unknown per edge and a versioned sizing rule",
+        "Supply machining allowances, grain, stock, offcuts,kerf and trim",
+        "Prepare a deterministic nesting request",
+        "Change material version or cabinet width"
+      ],
+      "assertions": [
+        "Finished,substrate and cutting blank dimensions are separate",
+        "Missing process rules never become guessed cut sizes",
+        "Different material versions/thicknesses/constraints are not mixed",
+        "Unknown grain does not enable free90degree rotation",
+        "Production inputs become stale after dependency changes",
+        "No CNC or verified hardware-hole claim without the missing backend rules"
+      ],
+      "status": "Manufacturing domain package in progress; nesting engine/hardware/drilling/production validation pending"
+    },
+    {
+      "id": "C06",
+      "outcome": "One cabinet produces associated multi-view sheets",
+      "qa": [
+        7,
+        13,
+        16,
+        21,
+        22
+      ],
+      "steps": [
+        "Project all19panel instances into front/side/top/section/isometric combination sheet",
+        "Generate separate internal elevation and panel details",
+        "Add manual dimensions/notes and adjust layout",
+        "Change width2400->2600 and depth600->650",
+        "Export and reopen drawings"
+      ],
+      "assertions": [
+        "No hidden truncation at ordinary12body limit",
+        "All requested sources and projection completeness are verified",
+        "Overall width/height,carcass depth,total depth,net spaces,thickness and installation datums use their correct semantic sources",
+        "Manual notes/layout survive model changes; missing anchors become explicit orphans",
+        "SVG/DXF/PDF are real outputs, not a JSON drawing plan"
+      ],
+      "status": "Core sheet planning passed;19panel native assembly test authored/unrun; full dimension/production drawing link pending"
+    },
+    {
+      "id": "C07",
+      "outcome": "BOM,smart-home points and construction drawings agree",
+      "qa": [
+        6,
+        10,
+        26
+      ],
+      "steps": [
+        "Import a bill with multiple device channels,alternative quoted items and missing models",
+        "Review and selectively adopt into an explicit target",
+        "Place only chosen physical devices in rooms",
+        "Assign RS485/CAN/AC/DC/Ethernet ports with actual evidence",
+        "Create wiring/topology/scene tables and installation drawings"
+      ],
+      "assertions": [
+        "Device count differs from channel count",
+        "Alternative quotations do not silently become installed inventory",
+        "A physical instance links its source row,product version,point,ports and sheet symbol",
+        "Unknown voltage/protocol/neutral requirement remains unknown",
+        "No actual home configuration or device control occurs"
+      ],
+      "status": "BOM/system component tests passed; model/product/drawing unification pending"
+    },
+    {
+      "id": "C08",
+      "outcome": "Professional results retain inputs and limitations",
+      "qa": [
+        5,
+        6,
+        12,
+        27,
+        28
+      ],
+      "steps": [
+        "Choose quick or detailed solver and capture the geometry/material/equipment snapshot",
+        "Run a bounded job with progress,cancel and recovery",
+        "Apply an explicit field calibration without overwriting measurements",
+        "Change a wall or light after a result exists"
+      ],
+      "assertions": [
+        "Old results stay readable but become stale",
+        "Estimated RF,ray propagation and field data are distinct",
+        "Interactive appearance differs from photometric calculation",
+        "HVAC/structural/compliance reports list actual supported coverage and reference cases",
+        "Unimplemented rules stay unchecked"
+      ],
+      "status": "Bounded quick/direct/screening components passed; full specialist backends pending"
+    },
+    {
+      "id": "C09",
+      "outcome": "Project save is coherent across stores",
+      "qa": [
+        7,
+        11,
+        15,
+        24,
+        25
+      ],
+      "steps": [
+        "Begin from a coherent records/CAD/resource checkpoint",
+        "Make a material or model edit",
+        "Inject failures before and after each write/commit boundary",
+        "Restart and recover",
+        "Retry against a stale project revision"
+      ],
+      "assertions": [
+        "Current checkpoint never presents half-oldRecords/half-newCAD as success",
+        "Recovery retains original inputs and prior coherent state",
+        "Conflicts preserve local edits for comparison",
+        "No cross-CAD/database atomic claim from an atomic JSON write alone",
+        "Used asset versions and texture dependencies remain reopenable offline"
+      ],
+      "status": "Independent store CAS/version tests passed; real cross-store commit/recovery protocol pending"
+    },
+    {
+      "id": "C10",
+      "outcome": "Independent export and delivery are reproducible",
+      "qa": [
+        3,
+        8,
+        14,
+        15,
+        23,
+        24,
+        25
+      ],
+      "steps": [
+        "Choose whole project,floor,selection or discipline",
+        "Resolve exact input checkpoint and resource closure",
+        "Create new independent2D/3D CAD project identities",
+        "Export each implemented standard format with coverage metadata",
+        "Open outputs elsewhere and modify exported copies"
+      ],
+      "assertions": [
+        "Exported edits cannot write back to original project",
+        "Units,coordinates,layers,names and representable semantics are retained",
+        "Mesh formats do not claim parametric history",
+        "Native package includes required sources and fixed resources without task permissions or secrets",
+        "Each claimed format has an actual writer and independent readback"
+      ],
+      "status": "Only limited prior native STEP/SVG/DXF/PDF evidence; full multi-format/export range integration pending"
+    },
+    {
+      "id": "C11",
+      "outcome": "Whole-room automatic design stays within authorization",
+      "qa": [
+        11,
+        17
+      ],
+      "steps": [
+        "Provide current fixed architectural plan and protected objects",
+        "Generate furniture/material/light/cabinet candidates",
+        "Compare alternatives with provenance and explicit constraints",
+        "Apply an authorized candidate as an undoable project edit"
+      ],
+      "assertions": [
+        "Automatic interior design does not move protected architecture",
+        "Clearances distinguish coarse envelope checks from exact collision",
+        "No missing measurements/hardware values invented",
+        "Applying or cancelling alternatives preserves user-created details"
+      ],
+      "status": "Constraint/planning backend and actual AI integration pending"
+    },
+    {
+      "id": "C12",
+      "outcome": "Operation and presentation logic fit the existing app",
+      "qa": [
+        1,
+        7,
+        11,
+        20
+      ],
+      "steps": [
+        "Open one project-owned workbench",
+        "Navigate all specialties with the same selection/context",
+        "Save,undo/redo,import,calculate and reopen",
+        "Use narrow iPad layout,large text,dark appearance and keyboard",
+        "Close and return to the owning workspace"
+      ],
+      "assertions": [
+        "One owner for each global save/close/import action",
+        "No nested duplicate navigation bars or filename rows",
+        "Uncommitted input persists across specialty switches",
+        "Failed or cancelled operations preserve drafts and prior results",
+        "Observed UI screens match native data state"
+      ],
+      "status": "UI source consolidated and macOS object build passed;4iPad flows and final host integration unrun"
+    }
+  ],
+  "currentEndToEndStatus": "NOT_CLOSED",
+  "acceptanceRule": "A scenario is passed only with actual relevant native/service artifacts and readback; writing the scenario or passing a smaller component does not pass the scenario"
+}

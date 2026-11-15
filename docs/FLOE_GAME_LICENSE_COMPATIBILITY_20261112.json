@@ -1,0 +1,148 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-11-12",
+  "scope": "Game component predevelopment; no App/release changes",
+  "primaryLicense": "MPL-2.0",
+  "intent": {
+    "zh-CN": "Floe 主工程和自研组件保持 MPL-2.0；第三方保留实际许可；不因接入引擎要求整款 App 改用 GPL 或增加用途限制。",
+    "en": "Keep Floe and its authored components under MPL-2.0, retain actual third-party terms, and avoid required whole-App GPL relicensing or extra use restrictions."
+  },
+  "rules": [
+    "Review actual selected versions, license texts and transitive runtime contents, not package metadata alone.",
+    "Keep upstream copyrights, notices, license texts and modifications/source/relink obligations where applicable.",
+    "Distinguish native host code, independently distributed runtime programs, external build tools, original starter content, and user-created/imported games.",
+    "A plugin, separate file, download or WebAssembly boundary alone does not prove licensing independence.",
+    "Do not relabel third-party source MPL-2.0 or alter other contributors license terms.",
+    "User-imported game files/assets retain their licenses and remain whole-tree importable. This distribution review is not an import or editing permission gate.",
+    "Apple compliance and upstream licensing are separate requirements; component compilation and runtime tests do not prove App Store approval.",
+    "Rebuilt game artifacts must retain applicable original project notices; generated scaffold licensing is scoped only to Floe-authored code, never blanket-assigned to imported content.",
+    "Prefer artifact layouts with separate readable MPL support source and original game source/data files; do not silently change existing license terms to remove file-boundary ambiguity."
+  ],
+  "currentDecisions": [
+    {
+      "component": "KAPLAY",
+      "selectedVersion": "3001.0.0",
+      "selectedLicense": "MIT",
+      "selectedSourceCommit": "f41e7d0bd9ab3d6de8ef29bc7ce20fbfb619223c",
+      "licenseSHA256": "4d8513caec72ba8f202fa550f10de67bef19fc9ab8739403bd6d76d7788247d9",
+      "rejectedDefaultVersion": "3001.0.19",
+      "rejectedDefaultReason": "Exact distributed license contains NoAITraining terms despite MIT package metadata.",
+      "validation": [
+        "2 resource/notice-integrity tests passed",
+        "iOS26 object compilation passed",
+        "actual native WebKit: movement, physical key release, screenshot, stop/restart/save/restore passed"
+      ]
+    },
+    {
+      "component": "RGSS/mkxp Web candidates",
+      "status": "research-only; not eligible for a Floe-provided runtime distribution yet",
+      "reason": "GPL runtime, host coupling, game-script bindings and complete corresponding-source obligations need a concrete compliant route. No whole-App GPL relicensing is authorized.",
+      "preservedCapabilities": [
+        "Whole-project import and immutable originals",
+        "Original RPG Maker format editing",
+        "AI editing and explicit-copy conversion proposals"
+      ],
+      "alternativeUnderVerification": {
+        "engine": "Tapir",
+        "sourceCommit": "a56b1946b69a408db2ff5f79b48a6682cd7dd957",
+        "directLicense": "Apache-2.0 OR MIT",
+        "route": "independent local Linux guest using existing App display/jobs/keyboard contracts",
+        "embeddedRuby": "select actual Ruby-license route where valid; per-file LEGAL and native dependencies require review",
+        "status": "Tapir Apache2 selected, original Ruby licenses and per-file LGPL/Artistic exceptions retained. XP/VX/Ace actual ARM64 baseline43215977243 passes frames/physical keys/saves/fresh-process recovery/exit0. Modified LGPL regex relink+runtime43216810255 passes.32Swift tests+iOS products43216114079 pass; no Main VNC/iOS runtime or arbitrary external-game compatibility claim."
+      }
+    },
+    {
+      "component": "LÖVE/love.js and RenPy Web",
+      "status": "Private exact-source/notice/relink profile completed; guarded portable source merge and per-engine source-accompanying bundles prepared; no public distribution",
+      "reason": "Top-level permissive engine labels do not cover all bundled components. LGPL is not classified as automatically incompatible with MPL.",
+      "required": [
+        "Exact corresponding source and local patches",
+        "Actual library inventory and original notices",
+        "Usable rebuild/relink or replacement mechanism",
+        "Preserve MPL source rights and applicable LGPL freedoms"
+      ],
+      "validation": [
+        "Worker source/notice integrity preflight:1387 checks,0 failures,0 warnings; not legal/Apple clearance.",
+        "Root runtime/source bundle file hashes and ZIP CRC verified.",
+        "Default LOVE compatibility preparation emits the exact native-qualified loader and unchanged upstream WASM; original terms plus full MPL addition retained.",
+        "Actual WebKit save/acknowledged close/NEWplayer restore passed43204076976: branch waited/clicks11 -> fresh opening/clicks0 -> F9 restored waited/clicks11. Original failure retained; actual Main App behavior remains separate."
+      ],
+      "remaining": [
+        "No clean engine WASM rebuild performed.",
+        "Finish applicable native checks for merged portable metadata after the App native window.",
+        "Final App/distribution route remains separate."
+      ]
+    },
+    {
+      "component": "GDevelop Web export",
+      "status": "full dependency notice attachment verified in an actual official SDK export",
+      "licenses": [
+        "MIT",
+        "BSD upstream text",
+        "ISC"
+      ],
+      "behavior": "Attach full selected dependency notices to the sealed export while preserving original engine bytes and GDevelop notice.",
+      "validation": "77 original exported SDK files remain byte-identical. Full embedded PIXI BSD and original FontFaceObserver banner added to the sealed dependency notice. Existing actual native WebKit proof reused because game/engine bytes are unchanged."
+    },
+    {
+      "component": "Standard RPG deployed-game data import",
+      "directReuse": {
+        "repository": "https://github.com/uuksu/RPGMakerDecrypter",
+        "commit": "465c88c304cac0b1516a3fbfb0b2a87fb0517736",
+        "license": "MIT",
+        "licenseSHA256": "e0506d6306bb0895f7a9dd3a1b701c3b7e97377be12dc0870b60698fe5fa15a5"
+      },
+      "selfAuthored": "MPL-2.0 streaming/staging/repository SDK; original MIT algorithms/copyright retained",
+      "behavior": "Pre-created project; complete raw import first; explicit archive/root selection; reviewed decoded revision with exact original backups, CAS, conflict choice and no game-code execution",
+      "validation": "Private independent reader118 fixture checks and85 source/license checks retained;20 actual Swift behavioral cases and real iOS26 simulator-arm64 object compilation passed. Gameplay and full App UI are distinct pending scopes.",
+      "limits": "No key recovery, commercial RTP/default scripts, invented project resources, execution of downloaded EXE, or blanket relicensing of imported games."
+    }
+  ],
+  "primarySources": [
+    {
+      "title": "Mozilla MPL 2.0 text, sections 3.1–3.4",
+      "url": "https://www.mozilla.org/en-US/MPL/2.0/"
+    },
+    {
+      "title": "Mozilla FAQ, questions 11–14",
+      "url": "https://www.mozilla.org/en-US/MPL/2.0/FAQ/"
+    },
+    {
+      "title": "GNU license FAQ, interpreter/plugins/aggregation",
+      "url": "https://www.gnu.org/licenses/gpl-faq.en.html"
+    },
+    {
+      "title": "Exact selected KAPLAY MIT source notice",
+      "url": "https://github.com/kaplayjs/kaplay/blob/f41e7d0bd9ab3d6de8ef29bc7ce20fbfb619223c/LICENSE"
+    },
+    {
+      "title": "Apple App Review Guidelines",
+      "url": "https://developer.apple.com/app-store/review/guidelines/"
+    }
+  ],
+  "limitations": [
+    "This is an implementation/distribution policy and evidence record, not an assertion of legal clearance for every engine or imported game.",
+    "The independent components are not yet wired into the full App."
+  ],
+  "implementationStatus": {
+    "licenseSelection": "MIT-only KAPLAY3001.0.0 selected instead of the later NoAITraining license. GDevelop actual export notices preserved.20-engine58-route source support is qualified by61actual BuildKit tests+iOS objects43217801550; actual Unity/Cocos game CI builds remain conditional.",
+    "narrativeExports": "42actual tests+iOS objects43215982222. Five runtime/source boundaries and previous actual WebKit/Node proofs retained. Cleared default TIC resource now binds complete corresponding source and retains original/user/MPL terms.",
+    "storage": "Main SDK passed 8 focused tests, real iOS26 objects and actual Phaser WebKit after project-scoped persistent browser storage merge",
+    "lovePersistence": "Original missing-file failure preserved. Focused acknowledged-close repair passes 8 Core cases, real iOS26 object compilation, six actual WebKit lifecycle cases and a real Lua filesystem save/read across NEW GameWebPlayer instances. Loader patch keeps original WASM and game bytes, readable source/old notices retained. This behavior evidence is separate from corresponding-source/license review.",
+    "appIntegration": "Independent predevelopment components and reviewable actual IDE/VNC binding patches; full App not yet integrated. Apple review compliance must be assessed on the actual full App path.",
+    "narrativeSourceBoundary": "Actual TIC baseline and modified LGPL blip_buf source rebuild/relink both run in WebKit43212724063.25uncleared embedded demos omitted. Default adapter and distribution catalog require exact complete source companion; no Main App replacement yet.",
+    "rpgTileRenderingLicense": "Private XP/VX/Ace/MV/MZ native atlas SDK has full MIT/MPL resource notices and permitted pinned generator references.10behavioral cases and real iOS26 core/UI objects passed;54actual CoreGraphics PNGs across5generations have zero diagnostics and Root visual review. Unified iPad editor gesture flow remains pending.",
+    "rpgStandardDeployment": "20actual behavioral cases and real iOS26 objects passed for standard RGSS archives and MV/MZ encrypted-media preparation, intact originals, owned revisions, collisions/cancellation and rollback boundaries. This is the data/import component proof, not RGSS gameplay acceptance.",
+    "ticSourceAccompaniment": "Exact current complete companion37410174bytes SHA2565717a89efbb1604e0bbc903154827efe973e306cec7b9ed7882e0b3e3548d08e. All31nested dependencies, patches, build/relink scripts, original licenses and toolchain identity included.20actual relink checks and both real WebKit runs passed; source copies into exported package and is rehashed.",
+    "renpyPersistence": "Actual WebKit save/acknowledged close/NEWplayer restore passed43204076976: branch waited/clicks11 -> fresh opening/clicks0 -> F9 restored waited/clicks11. Original failure retained; actual Main App behavior remains separate.",
+    "unifiedEditorHost": "Canonical17-package source graph passes all4source checks.11host service tests and6UI outcomes passed, with2full-screen actual visual flows. Host editor and immutable materializations are qualification fixtures; product uses actual existing IDE/Git/live WorkspaceCenter directory.",
+    "createFromZero": "Unified20-engine original starter source and owned-empty-project constructor delivered;856source checks pass, including corrected Cocos build configurations.7static original templates,4prepared-runtime-pack templates and9existing adapter templates; native behavior/iOS object validation is pending. User/imported content retains original terms and licensed engine prerequisites remain explicit.",
+    "closure": "Predevelopment is still active. Do not treat source readiness or previous unchanged runtime evidence as acceptance of remaining native/iPad/CI/relink stages.",
+    "unifiedRunPreparation": "All20 engines have explicit run/preparation routes using existing adapters or typed host/guest/CI prerequisites. Whole nested imports keep original ownership and saved revision. Source wiring and17declared behavioral cases include original bytecode preservation and actual prepared resource artifacts; native compilation/tests remain pending.",
+    "buildAndExportQualification": "Private20-engine/58route source passed59real XCTest with0failures/0skips and actual arm64 iOS26 object compilation on supplementary Xcode26.6 CI. All213produced objects/modules/test products hash-readback; current SDK source matches. Corrected original-user-notice copying and complete readable source layout. No claim of Main App/iPad qualification, actual Unity/Cocos game CI, or AppStore approval.",
+    "existingIDEReuse": "6actual IDE extension tests+iOS objects43215633867,111products verified. Same workspace for files/code/Git, save-before-whole-project-run, conflict/Git-revision fences and owned stop. Actual Main patch applies cleanly but is not applied/compiled; no second file/Git store.",
+    "rgssNative": "Tapir Apache2 selected, original Ruby licenses and per-file LGPL/Artistic exceptions retained. XP/VX/Ace actual ARM64 baseline43215977243 passes frames/physical keys/saves/fresh-process recovery/exit0. Modified LGPL regex relink+runtime43216810255 passes.32Swift tests+iOS products43216114079 pass; no Main VNC/iOS runtime or arbitrary external-game compatibility claim.",
+    "pairedSourceExport": "BuildKit now copies verified paired source into sources/third-party/, rehashes before publishing, and includes relative path/hash in manifests.61tests+iOS objects43217801550 include cache deletion and changed-source failure regression."
+  },
+  "updatedAt": "2026-11-12T12:30:32.823818+00:00"
+}
