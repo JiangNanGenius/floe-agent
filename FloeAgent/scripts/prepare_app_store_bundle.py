@@ -118,6 +118,7 @@ REVIEWED_EMBEDDED_FRAMEWORKS = {
     # These engines link statically into the app; Xcode embeds codeless stubs.
     # The normal required-reason scan still rejects any later API use here.
     "FloeChemistryBridge.framework": None,
+    "FloeMoleculePreviewBridge.framework": None,
     "FloeMachiningNative.framework": None,
     "RoyalVNCKit.framework": "RoyalVNCKit",
     "awk.framework": None,

@@ -181,7 +181,7 @@ class PrivacyManifestTests(unittest.TestCase):
             self.run_policy()
 
     def test_static_framework_stubs_still_reject_required_reason_apis(self):
-        for name in ("FloeChemistryBridge", "FloeMachiningNative"):
+        for name in ("FloeChemistryBridge", "FloeMoleculePreviewBridge", "FloeMachiningNative"):
             with self.subTest(framework=name):
                 root = self.add_framework(name, thin())
                 binary = root / name
