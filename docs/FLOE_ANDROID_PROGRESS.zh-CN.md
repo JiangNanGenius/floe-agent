@@ -1,5 +1,13 @@
 # Floe Android 分目标实施记录
 
+## Full124 C06补丁：审批后的设备接管确认（2026-11-16）
+
+修复询问模式中审批后的确认读取缺口：原窗口从审批请求开始计时，用户较晚点允许时，执行内部才创建的必答设备接管问题可能没有入口显示。现在仅在真实接受允许决定后，为同一设备工具调用重新开启既有有界读取窗口；沿用任务、会话、流代次与终态校验，不代答、不放宽权限、不重放操作。拒绝、失效决定及被替换的会话不会启动该窗口。
+
+实际生产Kotlin对象与对应测试对象已编译，22项定向测试通过；同一新回归在原代码上明确失败，保留原失败。Swift、原生输入和悬浮控制未改。当前准备C06私有Full包，用新的三星询问模式任务验证较晚允许后能显示接管确认，并取得真实启动／观察回执；旧失败任务不继续。C05完全访问的成功与原询问故障分别保留，不互相销账。
+
+English: C06 restarts the existing bounded question reader only after a real accepted allow decision for the exact device call. This exposes a required presence/handover question created inside execution when a slow human decision outlives the request-anchored window. Existing identity, session, generation and terminal fences remain; no answer, permission widening or effect retry is introduced. Actual production/test Kotlin objects compiled and22 focused tests passed; the same new regression fails against the original code. Native inputs and floating controls are unchanged. C06 packaging and a fresh delayed-allow Samsung ASK flow are pending; retained old runs are not continued and the independent C05 FullAccess success does not qualify ASK recovery.
+
 ## Full124 C05候选：设备观察结果的Unicode契约（2026-11-16）
 
 C04连续录制在Chrome首次使用／条款页中断，不能记为自然完成。原生导出确认：启动Chrome成功；之后两次默认`device.observe`返回的是“设备返回无效工具结果”，模型第三次显式选择`source=adb`后才收到未就绪错误。三次均早于人工中断，不能把ADB不可用解释成无障碍服务断开，也不能只增加启动等待掩盖格式拒绝。

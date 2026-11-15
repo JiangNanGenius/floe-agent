@@ -4,14 +4,15 @@ package com.floe.android.host
 import com.floe.android.feature.conversation.AgentExecutionModeUi
 import com.floe.android.feature.conversation.ApprovalScopeChoiceUi
 import com.floe.android.feature.conversation.ApprovalUserDecisionUi
+import com.floe.android.feature.conversation.ConversationFlowResult
 import com.floe.android.feature.conversation.ConversationSessionToken
 import com.floe.android.feature.conversation.GoalCreateRequest
 import com.floe.android.feature.conversation.RunningInputModeUi
 import com.floe.android.feature.conversation.RunningInputRequest
 import androidx.compose.ui.text.input.TextFieldValue
 import java.util.concurrent.CopyOnWriteArrayList
-import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
@@ -171,9 +172,10 @@ class ConversationOrdinaryPathTest {
         pendingInputs: String = "[]",
         queueVersion: String = "queue-digest-1",
         watermark: Long = 4,
+        pendingTool: String = "workspace.writeFile",
     ): String {
         val approval = if (!pendingApproval) "null" else
-            """{"callID":"$callId","tool":"workspace.writeFile","reason":"Needs approval",""" +
+            """{"callID":"$callId","tool":"$pendingTool","reason":"Needs approval",""" +
                 """"requestedAt":"$requestedAt"}"""
         val approvalRevision = if (!pendingApproval) "null" else
             """{"resourceID":"approval.$callId","version":"$requestedAt"}"""
@@ -201,6 +203,7 @@ class ConversationOrdinaryPathTest {
         var extraModelRows = ""
         var pendingInputsJson = "[]"
         @Volatile var pendingApproval = false
+        var pendingTool = "workspace.writeFile"
         var approvalEventWatermark = false
         var archiveAccepted = true
         val questionReads = AtomicInteger()
@@ -320,6 +323,7 @@ class ConversationOrdinaryPathTest {
                                 pendingInputs = script.pendingInputsJson,
                                 watermark = if (script.approvalEventWatermark)
                                     (if (approval) 1L else 0L) else 4L,
+                                pendingTool = script.pendingTool,
                             ),
                         ),
                     )
@@ -709,44 +713,120 @@ class ConversationOrdinaryPathTest {
         } finally { host.stop() }
     }
 
+    /** A real producer-shaped required phone-presence question for this task. */
+    private fun pendingPhoneQuestion(): String = """{
+        "requestID":"uq_phone","requestDigest":"${"a".repeat(64)}",
+        "conversationID":"$conversationId","runID":"$runId","toolCallID":"$callId",
+        "waitPolicy":"required","state":"awaitingAnswer","isEphemeral":false,
+        "createdAt":"$requestedAt","updatedAt":"$requestedAt","currentQuestionID":"uq_phone.q1",
+        "questions":[{"questionID":"uq_phone.q1","ordinal":0,"localID":"presence",
+        "text":"Allow this task to use the screen?","options":[{"id":"allow","label":"Allow"}],
+        "selectionMode":"single","allowsFreeText":false,"waitPolicy":"required",
+        "status":"pending","revision":1,"answerNonce":"nonce-phone-1",
+        "createdAt":"$requestedAt","updatedAt":"$requestedAt"}]}"""
+
     @Test
-    fun approvedPhoneToolDiscoversHandoverCreatedAfterItsApprovalSnapshot() = runBlocking {
-        val script = LocalScript().apply { runState = "executingTool" }
-        val approved = AtomicBoolean(false)
-        val sent = AtomicBoolean(false)
-        val postApprovalReads = AtomicInteger()
-        script.questionReply = {
-            val ready = approved.get() && postApprovalReads.incrementAndGet() > 1
-            val requests = if (!ready) "" else """{
-                "requestID":"uq_phone","requestDigest":"${"a".repeat(64)}",
-                "conversationID":"$conversationId","runID":"$runId","toolCallID":"$callId",
-                "waitPolicy":"required","state":"awaitingAnswer","isEphemeral":false,
-                "createdAt":"$requestedAt","updatedAt":"$requestedAt","currentQuestionID":"uq_phone.q1",
-                "questions":[{"questionID":"uq_phone.q1","ordinal":0,"localID":"presence",
-                "text":"Allow this task to use the screen?","options":[{"id":"allow","label":"Allow"}],
-                "selectionMode":"single","allowsFreeText":false,"waitPolicy":"required",
-                "status":"pending","revision":1,"answerNonce":"nonce-phone-1",
-                "createdAt":"$requestedAt","updatedAt":"$requestedAt"}]}"""
-            """{"schema":"floe.question.v1","conversationID":"$conversationId","requests":[$requests]}"""
+    fun approvedDeviceActionStartsQuestionDiscoveryAfterAcceptedDecision() = runBlocking {
+        val script = LocalScript().apply {
+            runState = "waitingApproval"
+            pendingApproval = true
+            pendingTool = "device.act"
+            // The card is projected from the authoritative snapshot. No
+            // toolRequest/approval event is delivered, so no request-anchored
+            // discovery window exists and the ONLY possible presentation
+            // boundary is the accepted human decision itself.
         }
-        script.eventScript = { correlation ->
-            if (sent.compareAndSet(false, true)) {
-                approved.set(true)
-                eventPage(correlation, "attached", "[" +
-                    event(1, "toolRequest", """{"id":"$callId","tool":"device.observe","input":"{}","status":"pending"}""") + "," +
-                    event(2, "approval", """{"callID":"$callId","tool":"device.observe","outcome":"runtime.agent_runtime.approved"}""") + "]", 2)
-            } else eventPage(correlation, "attached", nextSequence = 2)
+        val questionReady = AtomicBoolean(false)
+        script.questionReply = {
+            if (!questionReady.get()) {
+                """{"schema":"floe.question.v1","conversationID":"$conversationId","requests":[]}"""
+            } else {
+                """{"schema":"floe.question.v1","conversationID":"$conversationId",""" +
+                    """"requests":[${pendingPhoneQuestion()}]}"""
+            }
         }
         val exchange = buildExchange(script)
         val host = readyHost(script, exchange)
         try {
             val holder = loadedHolder(host)
-            assertTrue("an executing phone tool must discover its authoritative handover without another run event",
-                awaitCondition(4_000) { holder.currentUserQuestion?.questionId == "uq_phone.q1" })
-            assertTrue(postApprovalReads.get() >= 2)
+            assertTrue(
+                "the persisted approval card must project from the snapshot",
+                awaitCondition { holder.snapshot.value?.pendingApprovals?.isNotEmpty() == true },
+            )
+            val card = holder.snapshot.value!!.pendingApprovals.first()
+            // Let any load-time question read and the 750 ms refresh throttle
+            // settle before taking the baseline. The question only exists
+            // after the accepted decision, exactly like the mailbox park.
+            delay(900)
+            val readsBefore = script.questionReads.get()
+            assertNull(holder.currentUserQuestion)
+            questionReady.set(true)
+
+            assertEquals(ConversationFlowResult.Accepted, holder.resolveApproval(card, allow = true))
+            assertTrue(
+                "the accepted decision must dispatch the canonical approval command",
+                awaitCondition { exchange.commandsOf("run.approval.resolve").isNotEmpty() },
+            )
+            assertTrue(
+                "an accepted device decision must start a fresh authoritative question read",
+                awaitCondition(4_000) { script.questionReads.get() > readsBefore },
+            )
+            assertTrue(
+                "the parked device-presence question must be presented",
+                awaitCondition(4_000) { holder.currentUserQuestion?.questionId == "uq_phone.q1" },
+            )
             assertEquals("allow", holder.currentUserQuestion!!.options.single().id)
-            assertTrue(exchange.commandsOf("question.answer").isEmpty())
-            assertTrue(exchange.commandsOf("run.start").isEmpty())
+            // The presented card is ACTUALLY actionable: the human answer
+            // leaves through the original question.answer CAS identity, not
+            // through a new approval or a local dismissal.
+            holder.selectUserQuestionOption("allow")
+            assertEquals(ConversationFlowResult.Accepted, holder.submitUserQuestion())
+            assertTrue(
+                "the presented device question must dispatch its original answer",
+                awaitCondition { exchange.commandsOf("question.answer").isNotEmpty() },
+            )
+            val answer = exchange.commandsOf("question.answer").single()["payload"]!!.jsonObject
+            assertEquals("uq_phone", answer["requestID"]!!.jsonPrimitive.content)
+            assertEquals("uq_phone.q1", answer["questionID"]!!.jsonPrimitive.content)
+            assertEquals("nonce-phone-1", answer["answerNonce"]!!.jsonPrimitive.content)
+            assertEquals("allow", (answer["selectedOptionIDs"] as JsonArray).single().jsonPrimitive.content)
+
+            // A second tap on the same card is refused by the once-only latch
+            // and never sends a second decision or a second discovery window.
+            assertFalse(holder.resolveApproval(card, allow = true) is ConversationFlowResult.Accepted)
+            delay(250)
+            assertEquals(1, exchange.commandsOf("run.approval.resolve").size)
+            assertEquals(1, exchange.commandsOf("question.answer").size)
+        } finally { host.stop() }
+    }
+
+    @Test
+    fun deniedDeviceActionDoesNotStartQuestionDiscovery() = runBlocking {
+        val script = LocalScript().apply {
+            runState = "waitingApproval"
+            pendingApproval = true
+            pendingTool = "device.act"
+        }
+        script.questionReply = {
+            """{"schema":"floe.question.v1","conversationID":"$conversationId","requests":[]}"""
+        }
+        val exchange = buildExchange(script)
+        val host = readyHost(script, exchange)
+        try {
+            val holder = loadedHolder(host)
+            assertTrue(awaitCondition { holder.snapshot.value?.pendingApprovals?.isNotEmpty() == true })
+            val card = holder.snapshot.value!!.pendingApprovals.first()
+            delay(900)
+            val readsBefore = script.questionReads.get()
+
+            assertEquals(ConversationFlowResult.Accepted, holder.resolveApproval(card, allow = false))
+            assertTrue(awaitCondition { exchange.commandsOf("run.approval.resolve").isNotEmpty() })
+            delay(1_200)
+            // Nothing executed, so no presence question may be presented and
+            // a denial must not open the post-decision discovery window.
+            assertNull(holder.currentUserQuestion)
+            assertEquals(readsBefore, script.questionReads.get())
+            assertEquals(1, exchange.commandsOf("run.approval.resolve").size)
         } finally { host.stop() }
     }
 

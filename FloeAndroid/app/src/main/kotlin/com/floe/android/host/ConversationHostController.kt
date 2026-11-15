@@ -3325,9 +3325,11 @@ class ConversationHostController internal constructor(
             val tool = frame.payload?.string("tool")
             val callID = frame.payload?.string("callID") ?: frame.payload?.string("id")
             if ((tool == "user.ask" || tool in DEVICE_QUESTION_TOOLS) && callID != null) {
-                // Approval can take longer than the original discovery
-                // window. The question is created only AFTER approval, so
-                // start a fresh owned window at this durable boundary.
+                // Covers a decision that lands within this window. It is NOT
+                // the post-decision presentation boundary: the question is
+                // registered only after the human resolves the card, and a
+                // slow decision outlives this request-anchored window.
+                // `resolveApproval` starts the accepted-decision window.
                 beginQuestionDiscovery(
                     entry, runID, callID, conversationId, sessionEpoch, streamGeneration,
                     phonePreparation = tool in DEVICE_QUESTION_TOOLS,
@@ -4586,7 +4588,21 @@ class ConversationHostController internal constructor(
                 ),
             ) { outcome ->
                 when (outcome) {
-                    is HostOperationOutcome.Completed -> Unit
+                    is HostOperationOutcome.Completed -> {
+                        // The accepted human decision is the REAL presentation
+                        // boundary for a phone-control handover/presence
+                        // question: that question is registered inside the
+                        // approved tool execution, after this reply. The
+                        // request-anchored discovery window (toolRequest /
+                        // approval request) can expire while a slow user is
+                        // still deciding, and the live resolution frame is
+                        // only a lossy, throttled hint. Anchor a fresh bounded
+                        // window to the accepted decision for the exact
+                        // run/call the user approved.
+                        if (decision == "allow") {
+                            beginApprovedDeviceQuestionDiscovery(entry, request)
+                        }
+                    }
                     is HostOperationOutcome.Rejected -> surfaceError(entry, outcome.code)
                     is HostOperationOutcome.Failed -> surfaceError(entry, outcome.code)
                     else -> Unit
@@ -4622,6 +4638,46 @@ class ConversationHostController internal constructor(
             return true
         }
         return beginTerminalHandoffThenDispatch(entry, request, consent) { beginDispatch() }
+    }
+
+    /**
+     * A device handover/presence question is registered INSIDE the approved
+     * tool execution — after the human decision, not at the approval request.
+     * The request-anchored discovery window and the single coalesced live
+     * hint can both precede that registration (and the live hint is filtered
+     * by the ordinary 750 ms question-refresh throttle). Without this
+     * decision-anchored window a required presence question parks the run in
+     * executingTool with no result and no card, which is exactly the ASK
+     * allow-to-execution stall.
+     *
+     * This is the SAME bounded discovery loop as every other question-capable
+     * call: it only re-reads the authoritative `question.pending` command, it
+     * never answers or fabricates a question, and it stops on the first real
+     * snapshot, a terminal run, a toolResult, or a holder/session/generation
+     * change. A denied/stale decision never reaches this path.
+     */
+    private fun beginApprovedDeviceQuestionDiscovery(
+        entry: ConversationFlowHolderEntry,
+        request: ApprovalDecisionRequest,
+    ) {
+        if (request.toolName !in DEVICE_QUESTION_TOOLS) return
+        if (request.approvalId.isEmpty()) return
+        // The surface that asked must still be the surface that presents; a
+        // replaced/retired holder is left to the durable question recovery
+        // path instead of being targeted with a stale decision.
+        val sessionEpoch = entry.holder.session.sessionEpoch
+        if (request.sessionEpoch != sessionEpoch) return
+        beginQuestionDiscovery(
+            entry = entry,
+            runID = request.runId,
+            callID = request.approvalId,
+            conversationId = request.conversationId,
+            sessionEpoch = sessionEpoch,
+            streamGeneration = currentRunStreamGeneration(
+                request.conversationId, request.runId),
+            phonePreparation = true,
+            restart = true,
+        )
     }
 
     /**
