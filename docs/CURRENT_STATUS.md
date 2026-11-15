@@ -1,9 +1,13 @@
-<!-- docs-updated: 2026-11-15 -->
+<!-- docs-updated: 2026-11-16 -->
 # 当前版本与验证状态 / Current release and verification status
 
 这是带核实日期的渠道快照。各渠道独立更新；源码版本、公开下载、Apple 审核与测试组可用性分别核对。 / This is a dated channel snapshot. Source versions, public downloads, Apple review and beta-group availability are separate states.
 
-最新内部 TestFlight 为 1.8.33（354），GitHub／Feather 最近一次已核验的稳定版为 346。[发布版本依据](RELEASE_VERSION_AUTHORITY.zh-CN.md)
+最新内部 TestFlight 为 1.8.35（356），GitHub／Feather 最近一次已核验的稳定版为 346。[发布版本依据](RELEASE_VERSION_AUTHORITY.zh-CN.md)
+
+## 2026-11-16 iOS 内部测试 / Internal TestFlight
+
+Floe QA 已可安装 1.8.35（356）。本版加入原生分子三维预览，并带入建筑、游戏、聊天、串口与编辑工具改进。 / Floe QA can install build 356. It adds native 3D molecule previews and updates building, game, chat, serial and editing tools. [356 交付记录 / Delivery](releases/builds/FLOE_1.8.35_BUILD356_DELIVERY.md)
 
 ## 2026-11-15 iOS 内部测试 / Internal TestFlight
 
