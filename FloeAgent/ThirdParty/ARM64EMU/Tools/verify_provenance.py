@@ -3,6 +3,7 @@
 import hashlib
 import json
 import plistlib
+import re
 from pathlib import Path
 import subprocess
 
@@ -23,8 +24,18 @@ def main():
         assert path.is_file() and not path.is_symlink(), relative
         assert hashlib.sha256(path.read_bytes()).hexdigest() == item["sha256"], relative
         pinned.add(relative.as_posix())
-    assert len(record["productionTranslationUnits"]) == 34
-    assert set(record["productionTranslationUnits"]).issubset(pinned)
+    declared_units = record["productionTranslationUnits"]
+    compiled_units = []
+    for wrapper_path in sorted((root / "Sources").glob("*.c")):
+        assert wrapper_path.relative_to(root).as_posix() in pinned, wrapper_path.name
+        includes = re.findall(r'^\s*#\s*include\s*"\.\./([^"\n]+\.c)"', wrapper_path.read_text(), re.MULTILINE)
+        assert len(includes) == 1, wrapper_path.name
+        compiled_units.append(includes[0])
+    assert len(set(declared_units)) == len(declared_units)
+    assert sorted(compiled_units) == sorted(declared_units), "production wrappers differ from the manifest"
+    assert set(compiled_units).issubset(pinned)
+    assert "Bridge/no_native_jit.c" in compiled_units
+    assert [unit for unit in compiled_units if unit.startswith("Source/src/jit/")] == ["Source/src/jit/predecode.c"]
     adapter = "Bridge/fvgpu_virtio_backend_adapter.c"
     wrapper = "Sources/33_gpu_backend_adapter.c"
     assert adapter in record["productionTranslationUnits"] and adapter in pinned
@@ -34,13 +45,14 @@ def main():
     assert '#include "../Bridge/fvgpu_virtio_backend_adapter.c"' in (root / wrapper).read_text()
     gpu_root = root.parent / "FloeVirtualGPU"
     assert not (gpu_root / "src/fvgpu_virtio_backend_adapter.c").exists()
-    for source in ("devices/virtio_gpu.c", "devices/virtio_mem.c", "memory_regions.c"):
+    for source in ("devices/virtio_gpu.c", "devices/virtio_mem.c", "devices/virtio_media.c", "memory_regions.c"):
         assert "Source/src/" + source in record["productionTranslationUnits"]
     for name in ("Source/LICENSE", "Source/NOTICE", "Bridge/MPL-2.0.txt"):
         assert (root / name).is_file(), name
     package = (root.parents[1] / "Package.swift").read_text()
     assert 'name: "FloeARM64Engine"' in package
     engine_target = package.split('name: "FloeARM64Engine"', 1)[1].split('cSettings:', 1)[0]
+    assert 'sources: ["Sources"]' in engine_target
     assert 'resources: [.copy("PrivacyInfo.xcprivacy")]' in engine_target
     gpu_target = package.split('name: "FloeVirtualGPU"', 1)[1].split('name: "FloeARM64Engine"', 1)[0]
     assert "ARM64EMU/Bridge" not in gpu_target
@@ -60,7 +72,7 @@ def main():
     assert '"FloeTinyEMU"' not in package
     assert not (root.parent / "TinyEMU").exists()
     subprocess.run(["python3", str(root / "Tools/generate_crc32_tables.py"), "--check"], check=True)
-    print("ARM64 provenance, 34 translation units, licenses and App wiring verified")
+    print(f"ARM64 provenance, {len(compiled_units)} translation units, interpreter, licenses and App wiring verified")
 
 
 if __name__ == "__main__":

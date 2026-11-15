@@ -22,3 +22,13 @@
 - 建筑工程已验证初次建立即保存，新增线段后产生待保存状态，保存和重开均保留修改，原图摘要不变。建筑与游戏归档两组修正后的 iPad 宿主测试共通过 10 项。
 - 游戏的 RPG 瓦片、部署资源、运行包来源和工程工具组件通过 71 项本机检查。导出的 WASM‑4 工作流在安装 CLI 前核对固定摘要；本机以官方 2.7.1 CLI 和实际生成的游戏制作了 Web、Windows、macOS 和 Linux 四种产物。
 - Linux 加速源通过 43 项静态合同检查。视频模块、驱动接口与图形缓冲区另有原生编译和预算测试。硬件编解码、客户机 OpenCL 和 Blender 的运行结果取决于实际安装的后端、资源与镜像。
+
+## 游戏引擎的执行方式
+
+核对了 20 个 `GameEngineID`、实际试玩路由和游戏资源清单。RPG Maker XP、VX、VX Ace 通过工程所属 Linux 环境运行 Tapir，分别使用其 Ruby 1.8.1 或 1.9.2 解释器。Floe 的 iOS ARM64 宿主按预解码指令解释执行；35 个生产 C 编译单元与固定摘要和 SwiftPM 编译入口逐一吻合。镜像驱动对应新增的第 35 个单元。原生代码生成器没有进入该目标。
+
+其余 17 个引擎把可玩的 Web 工程或导出物交给系统 `WKWebView`。例如 Phaser 和 RPG Maker MV 使用 JavaScript，WASM‑4 和 LÖVE 还运行 WebAssembly；Godot、Unity 等需要先取得可用的 Web 导出物。iOS 游戏模块没有申请原生 JIT 权限。WebKit 在独立的内容进程内执行网页脚本，自行选择解释或编译层级。[Apple 的 WKWebView 进程说明](https://developer.apple.com/videos/play/wwdc2020/10188/) · [WebKit 的 JavaScriptCore 执行层级](https://docs.webkit.org/Getting%20Started/Introduction.html)
+
+LÖVE 11.4 的两份 `love.wasm` 已分别对照兼容版和发布版的固定 SHA‑256。该 Web 移植选择 `LOVE_JIT=0` 和 Lua 5.1.5，随资源保留上游 LuaJIT 版权声明。在 macOS 系统 `WKWebView` 加载 App 试玩使用的兼容版，让实际执行的 `love.load` 读取 Lua 环境，得到 `_VERSION = "Lua 5.1"`、`jit = nil`，加载 `jit` 模块失败。[LÖVE 运行包构建说明](../FloeAgent/Modules/FloeGamePortableKit/Scripts/Licenses/LOVE/LOVE-11.4-COMPONENT-ADDENDUM.md)
+
+在 macOS 系统 JavaScriptCore 显式关闭 JavaScript 和 WebAssembly 的 JIT，运行与 Floe 生成器产物摘要相同的 WASM‑4 示例，实际读回 120 帧、600 次矩形绘制和按键移动 8 像素。iOS Release 的 34 个游戏与 RPG 模块已检查链接符号，Web 播放器引用系统 `WKWebView`。桌面打包在独立工具链运行，iPad 试玩使用 Web 导出物。
