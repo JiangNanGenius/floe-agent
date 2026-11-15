@@ -127,6 +127,30 @@ struct ArchiveBrowserServiceTests {
         }
     }
 
+    @Test("RAR browsing reads the complete decoder listing and uses its extraction handler")
+    func signedDecoderListingAndExtraction() async throws {
+        let f = try Fixture()
+        try f.write("sample.rar", "fixture")
+        let service = ArchiveBrowserService(rootProvider: { [root = f.root] in root }, compressedHandler: { request in
+            #expect(request.format == "rar")
+            #expect(request.source == "sample.rar")
+            if request.action == "extract" {
+                #expect(request.destination == "unpacked")
+                return "extracted"
+            }
+            #expect(request.action == "list")
+            let rows: [[String: Any]] = (0..<120).map { ["path": "folder/file-\($0).txt", "size": $0, "directory": false] }
+            let response: [String: Any] = ["status": "ok", "action": "list", "format": "rar",
+                                            "listedEntries": rows, "listingTruncated": true]
+            return String(decoding: try JSONSerialization.data(withJSONObject: response), as: UTF8.self)
+        })
+        let listing = try await service.listing(relativePath: "sample.rar", rootURL: f.root, cancellation: f.cancel)
+        #expect(listing.truncated)
+        #expect(listing.entries.count == 120)
+        #expect(listing.entries.last == ArchiveBrowseEntry(path: "folder/file-119.txt", isDirectory: false, size: 119))
+        #expect(try await service.extract(relativePath: "sample.rar", destinationDir: "unpacked", rootURL: f.root, cancellation: f.cancel) == "extracted")
+    }
+
     @Test("Compressed archives extract and decompress through the shared service")
     func compressedExtraction() async throws {
         let f = try Fixture()

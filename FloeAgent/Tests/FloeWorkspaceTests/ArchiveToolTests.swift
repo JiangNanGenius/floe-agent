@@ -262,6 +262,61 @@ struct ArchiveToolTests {
         }
     }
 
+    @Test("7z preserves empty directories and files, and cancellation leaves no output")
+    func sevenZipStagingAndEmptyEntries() async throws {
+        let f = try Fixture()
+        // Stored 7z made from a directory containing an empty subdirectory,
+        // a zero-byte file and one text file.
+        let base64 = "N3q8ryccAATbTaO7eQAAAAAAAAAhAAAAAAAAAKxbXdJhcmNoaXZlIGNvbnRlbnRzCgAAgTMHrg/PBHGMB8hED9v4o5+dnlQCelop3UCN/7U92BzlnlozcwLyQu0dvV8+W892kzy+8cv3BBIppKVyzF6YWrTi2/fEU18DM3pPLp2kDegKzbcY9koYrZN38vyLUNIhXYtGXKwAFwYRAQloAAcLAQABIwMBAQVdABAAAAyArgoBpNM0awAA"
+        try #require(Data(base64Encoded: base64)).write(to: f.root.appendingPathComponent("folders.7z"))
+        let tool = WorkspaceArchiveTool(environment: f.environment)
+        let listing = try await tool.execute(.init(action: "list", source: "folders.7z"), context: f.context)
+        #expect(listing.summary.contains("folder/empty"))
+        _ = try await tool.execute(.init(action: "extract", source: "folders.7z", destinationDir: "complete"), context: f.context)
+        var directory: ObjCBool = false
+        #expect(FileManager.default.fileExists(atPath: f.root.appendingPathComponent("complete/folder/empty").path, isDirectory: &directory))
+        #expect(directory.boolValue)
+        #expect(try f.read("complete/folder/zero.txt").isEmpty)
+        #expect(try f.read("complete/folder/text.txt") == "archive contents\n")
+
+        let token = CancellationToken()
+        let interrupted = WorkspaceArchiveTool(environment: f.environment, progress: { progress in
+            if progress.completedBytes > 0 { token.cancel() }
+        })
+        await #expect(throws: (any Error).self) {
+            try await interrupted.execute(.init(action: "extract", source: "folders.7z", destinationDir: "interrupted"),
+                                          context: ToolContext(runID: UUID(), cancellation: token))
+        }
+        #expect(!f.exists("interrupted"))
+        // A different save claims the destination after staging starts.
+        let claimed = f.root.appendingPathComponent("claimed")
+        let racingSave = WorkspaceArchiveTool(environment: f.environment, progress: { _ in
+            try? Data("other save".utf8).write(to: claimed, options: .withoutOverwriting)
+        })
+        await #expect(throws: (any Error).self) {
+            try await racingSave.execute(.init(action: "extract", source: "folders.7z", destinationDir: "claimed"), context: f.context)
+        }
+        #expect(try f.read("claimed") == "other save")
+        #expect(try FileManager.default.contentsOfDirectory(atPath: f.root.path).allSatisfy { !$0.hasPrefix(".floe-archive-") })
+    }
+
+    @Test("Archive tools create and extract through an aliased workspace root")
+    func workspaceAliasRoundTrip() async throws {
+        let f = try Fixture()
+        try f.write("project/docs/hello.txt", "hello")
+        let alias = FileManager.default.temporaryDirectory.appendingPathComponent("floe-archive-alias-\(UUID())")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: f.root)
+        defer { try? FileManager.default.removeItem(at: alias) }
+        let tool = WorkspaceArchiveTool(environment: WorkspaceToolEnvironment(rootProvider: { alias }))
+        for format in ["zip", "tar"] {
+            _ = try await tool.execute(.init(action: "create", source: "project", destinationFile: "sample.\(format)"), context: f.context)
+            let receipt = try await tool.execute(.init(action: "extract", source: "sample.\(format)", destinationDir: "out-\(format)"), context: f.context)
+            #expect(receipt.summary.contains("entries=1"))
+            #expect(receipt.summary.contains("uncompressedBytes=5"))
+            #expect(try f.read("out-\(format)/project/docs/hello.txt") == "hello")
+        }
+    }
+
     @Test("tar extraction skips traversal entries")
     func tarTraversalSafety() async throws {
         let f = try Fixture()

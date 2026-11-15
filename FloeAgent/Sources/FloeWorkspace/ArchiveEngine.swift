@@ -260,6 +260,7 @@ public enum ArchiveEngine {
         }
         // Sidecars skipped during the scan are part of the honest report.
         summary.skipped += plan.skippedNoise
+        try cancellation.throwIfCancelled()
         try commit(staging: staging, to: destinationURL)
         return summary
     }
@@ -296,6 +297,7 @@ public enum ArchiveEngine {
             default:
                 summary = try extractTar(format: format, source: source, staging: staging, limits: limits, progress: progress, cancellation: cancellation)
             }
+            try cancellation.throwIfCancelled()
             try commit(staging: staging, to: destinationURL)
         } catch {
             throw Self.mappedArchivalError(error)
@@ -401,6 +403,7 @@ public enum ArchiveEngine {
         } catch {
             throw Self.mappedArchivalError(error)
         }
+        try cancellation.throwIfCancelled()
         try commit(staging: staging, to: destinationURL)
         return ArchiveOperationSummary(
             action: "decompress",
@@ -647,6 +650,7 @@ public enum ArchiveEngine {
         var linksSkipped = 0
         var unsupportedMetadata = 0
         var total: Int64 = 0
+        var writtenBytes: Int64 = 0
         var duplicate: Set<String> = []
         var directories: [(URL, Int, Date?)] = []
         let available = ArchiveDiskSpace.availableBytes(at: staging)
@@ -692,10 +696,10 @@ public enum ArchiveEngine {
                 guard entries < limits.maxEntries else {
                     throw ArchiveEngineError.limitExceeded("more than \(limits.maxEntries) entries")
                 }
-                total += Int64(entry.uncompressedSize)
-                guard total <= limits.maxTotalBytes else {
+                guard let size = Int64(exactly: entry.uncompressedSize), size <= limits.maxTotalBytes - total else {
                     throw ArchiveEngineError.limitExceeded("expanded output exceeds \(limits.maxTotalBytes) bytes")
                 }
+                total += size
                 if let available, total > available {
                     throw ArchiveEngineError.insufficientSpace(required: total, available: available)
                 }
@@ -720,8 +724,9 @@ public enum ArchiveEngine {
                 if let date = entry.fileAttributes[.modificationDate] as? Date {
                     try? FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: target.path)
                 }
+                writtenBytes += size
                 entries += 1
-                progress?(ArchiveProgress(phase: .reading, completedBytes: total, totalBytes: nil, completedEntries: entries))
+                progress?(ArchiveProgress(phase: .reading, completedBytes: writtenBytes, totalBytes: nil, completedEntries: entries))
             @unknown default:
                 unsupportedMetadata += 1
                 skipped += 1
@@ -738,7 +743,7 @@ public enum ArchiveEngine {
             format: "zip",
             entries: entries,
             skipped: skipped,
-            uncompressedBytes: total,
+            uncompressedBytes: writtenBytes,
             linksPreserved: links,
             linksSkipped: linksSkipped,
             metadataNotices: notices
@@ -984,6 +989,7 @@ public enum ArchiveEngine {
         var linksSkipped = 0
         var unsupportedEntries = 0
         var total: Int64 = 0
+        var writtenBytes: Int64 = 0
         var duplicate: Set<String> = []
         var directories: [(URL, Int, Int)] = []
         let available = ArchiveDiskSpace.availableBytes(at: staging)
@@ -1119,8 +1125,9 @@ public enum ArchiveEngine {
                         ofItemAtPath: target.path
                     )
                 }
+                writtenBytes += header.size
                 entries += 1
-                progress?(ArchiveProgress(phase: .reading, completedBytes: total, totalBytes: nil, completedEntries: entries))
+                progress?(ArchiveProgress(phase: .reading, completedBytes: writtenBytes, totalBytes: nil, completedEntries: entries))
             }
         }
         for (url, mode, mtime) in directories.reversed() {
@@ -1140,7 +1147,7 @@ public enum ArchiveEngine {
             format: format,
             entries: entries,
             skipped: skipped,
-            uncompressedBytes: total,
+            uncompressedBytes: writtenBytes,
             linksPreserved: links,
             linksSkipped: linksSkipped,
             metadataNotices: notices,
@@ -1291,9 +1298,12 @@ public enum ArchiveEngine {
     }
 
     static func isContained(_ candidate: URL, in root: URL) -> Bool {
-        let base = root.standardizedFileURL.path
-        let path = candidate.standardizedFileURL.path
-        return path.hasPrefix(base + "/")
+        // Darwin may standardize an existing /private/var directory to /var
+        // while retaining /private/var for a child that hasn't been created.
+        // Compare the same component-resolved identity for both paths.
+        guard let base = try? WorkspacePathGuard.resolveComponents(root),
+              let child = try? WorkspacePathGuard.resolveComponents(candidate) else { return false }
+        return child.path.hasPrefix(base.path + "/")
     }
 
     /// A symlink is preserved only when its target resolves inside the
@@ -1314,8 +1324,8 @@ public enum ArchiveEngine {
     }
 
     static func rejectSelfContainment(destination: URL, source: URL) throws {
-        let sourcePath = source.standardizedFileURL.path
-        let destinationPath = destination.standardizedFileURL.path
+        let sourcePath = try WorkspacePathGuard.resolveComponents(source).path
+        let destinationPath = try WorkspacePathGuard.resolveComponents(destination).path
         if destinationPath == sourcePath || destinationPath.hasPrefix(sourcePath + "/") {
             throw ArchiveEngineError.outputInsideSource(destinationPath)
         }

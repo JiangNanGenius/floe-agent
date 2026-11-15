@@ -7,10 +7,15 @@ import FloeWorkspace
 /// Bounded native decoder. Input files and package code are never executed.
 enum RARArchiveService {
     static func run(_ request: ArchiveCompressedRequest) async throws -> String {
-        try await Task.detached(priority: .utility) { try process(request) }.value
+        try await withTaskCancellationHandler {
+            try await Task.detached(priority: .utility) { try process(request) }.value
+        } onCancel: {
+            request.cancellation.cancel()
+        }
     }
 
     private static func process(_ request: ArchiveCompressedRequest) throws -> String {
+        try request.cancellation.throwIfCancelled()
         guard ["list", "extract"].contains(request.action) else { throw FloeError.validationFailed("RAR is list/extract only") }
         let guarder = WorkspacePathGuard(rootURL: request.workspaceRoot)
         let source = try guarder.resolve(request.source)
@@ -18,6 +23,7 @@ enum RARArchiveService {
         let destination = try request.destination.map { try guarder.resolve($0) }
         if request.action == "extract" {
             guard let destination, !manager.fileExists(atPath: destination.path) else { throw FloeError.validationFailed("RAR requires a new output directory") }
+            try guarder.assertWritable(destination)
         }
         guard let reader = archive_read_new() else { throw FloeError.internalError("RAR decoder allocation failed") }
         defer { archive_read_free(reader) }
@@ -81,6 +87,7 @@ enum RARArchiveService {
                 written += Int64(count); total += Int64(count)
                 guard written <= size, total <= 256 * 1024 * 1024 else { throw FloeError.validationFailed("RAR decompressed size limit") }
                 try output.write(contentsOf: Data(buffer.prefix(count)))
+                request.progress?(.init(phase: .reading, completedBytes: total, totalBytes: nil, completedEntries: entries - 1))
             }
             guard written == size else { throw FloeError.validationFailed("RAR entry is truncated") }
             try output.close()
@@ -89,6 +96,7 @@ enum RARArchiveService {
         try request.cancellation.throwIfCancelled()
         if request.action == "extract", let destination, let relative = request.destination {
             guard try guarder.resolve(relative) == destination else { throw FloeError.validationFailed("RAR destination changed during extraction") }
+            try guarder.assertWritable(destination)
             try manager.moveItem(at: staging, to: destination)
         }
         let result: [String: Any] = ["status": "ok", "action": request.action, "format": "rar", "entries": entries,

@@ -32,8 +32,9 @@ struct ArchiveBrowserView: View {
     @State private var previewText: String?
     @State private var previewMessage: String?
     @State private var previewing = false
-    @State private var extractedDirectory: String?
+    @State private var extractedDirectory: URL?
     @State private var extractMessage: String?
+    @State private var extractionFailed = false
     @State private var extracting = false
     @State private var confirmingExtract = false
     /// Cancels the in-flight extraction/decompression; progress text is
@@ -52,7 +53,7 @@ struct ArchiveBrowserView: View {
     var body: some View {
         VStack(spacing: 0) {
             if let extractMessage {
-                banner(extractMessage, isError: false)
+                banner(extractMessage, isError: extractionFailed)
             }
             if let progressText {
                 HStack(spacing: 8) {
@@ -104,7 +105,7 @@ struct ArchiveBrowserView: View {
                 } label: {
                     Label(IDELanguageRunText.t("解压到工作区", "Extract"), systemImage: "square.and.arrow.down")
                 }
-                .disabled(listing == nil || extracting || !canExtract)
+                .disabled(listing == nil || extracting)
                 .accessibilityIdentifier("archive.extract")
             }
             if extracting {
@@ -140,8 +141,8 @@ struct ArchiveBrowserView: View {
                     }
             }
         }
-        .task(id: relativePath) { await cleanUpPreview(); await load() }
-        .onDisappear { Task { await cleanUpPreview() } }
+        .task(id: relativePath) { cleanUpPreview(); await load() }
+        .onDisappear { cleanUpPreview() }
     }
 
     // MARK: - entries
@@ -168,7 +169,7 @@ struct ArchiveBrowserView: View {
                 Text(String(format: IDELanguageRunText.t("条目 %lld", "%lld entries"), Int64(listing.entries.count)))
             } footer: {
                 if listing.truncated {
-                    Text(IDELanguageRunText.t("条目过多，仅显示前 %lld 项。", "Too many entries; only the first %lld are shown."))
+                    Text(String(format: IDELanguageRunText.t("条目过多，仅显示前 %lld 项。", "Too many entries; only the first %lld are shown."), Int64(listing.entries.count)))
                 }
             }
         }
@@ -176,7 +177,10 @@ struct ArchiveBrowserView: View {
         .onChange(of: selection) { _, newValue in
             guard let newValue, !newValue.isDirectory else { return }
             if sizeClass == .compact { compactPreview = newValue }
-            Task { await preview(newValue) }
+        }
+        .task(id: selection) {
+            guard let selection, !selection.isDirectory else { return }
+            await preview(selection)
         }
     }
 
@@ -226,10 +230,8 @@ struct ArchiveBrowserView: View {
 
     // MARK: - actions
 
-    private var canExtract: Bool {
-        guard let format = listing?.format else { return false }
-        return ArchiveBrowserService.nativeFormats.contains(format)
-            || ArchiveBrowserService.singleFileFormats.contains(format)
+    private func archiveService(at root: URL) -> ArchiveBrowserService {
+        ArchiveBrowserService(rootProvider: { root }, compressedHandler: ArchiveCompressedBridge.makeHandler())
     }
 
     private var isSingleFileArchive: Bool {
@@ -257,15 +259,18 @@ struct ArchiveBrowserView: View {
         }
         loading = true
         defer { loading = false }
-        let service = ArchiveBrowserService(rootProvider: { rootURL })
+        let service = archiveService(at: rootURL)
         do {
-            listing = try await service.listing(
+            let result = try await service.listing(
                 relativePath: relativePath,
                 rootURL: rootURL,
                 cancellation: CancellationToken()
             )
+            try Task.checkCancellation()
+            listing = result
             listingError = nil
         } catch {
+            guard !Task.isCancelled else { return }
             listing = nil
             listingError = error.localizedDescription
         }
@@ -279,10 +284,11 @@ struct ArchiveBrowserView: View {
         previewing = true
         previewText = nil
         previewMessage = nil
-        defer { previewing = false }
+        defer { if !Task.isCancelled { previewing = false } }
         do {
             let directory = try await ensureExtracted(rootURL: rootURL)
-            guard let url = safeChild(of: directory, child: entry.path, rootURL: rootURL) else {
+            try Task.checkCancellation()
+            guard let url = safeChild(of: directory, child: entry.path) else {
                 previewMessage = IDELanguageRunText.t("该条目不在解压目录内。", "This entry is outside the extracted folder.")
                 return
             }
@@ -307,38 +313,43 @@ struct ArchiveBrowserView: View {
                 ? String(text.prefix(bound)) + "\n…\n" + IDELanguageRunText.t("（内容过长，已截断）", "(truncated)")
                 : text
         } catch {
+            guard !Task.isCancelled else { return }
             previewMessage = error.localizedDescription
         }
     }
 
     /// Reuses one extraction for the whole browser session. Single-file
     /// archives decompress their one payload into the same preview folder.
-    private func ensureExtracted(rootURL: URL) async throws -> String {
+    private func ensureExtracted(rootURL: URL) async throws -> URL {
         if let extractedDirectory { return extractedDirectory }
         let directory = ".floe-archive-preview/\(UUID().uuidString)"
-        let service = ArchiveBrowserService(rootProvider: { rootURL })
-        if isSingleFileArchive {
-            _ = try await service.decompress(
-                relativePath: relativePath,
-                destinationFile: directory + "/" + extractFileName,
-                rootURL: rootURL,
-                cancellation: cancelToken ?? CancellationToken()
-            )
-        } else {
-            _ = try await service.extract(
-                relativePath: relativePath,
-                destinationDir: directory,
-                rootURL: rootURL,
-                cancellation: cancelToken ?? CancellationToken()
-            )
+        let destination = rootURL.appendingPathComponent(directory, isDirectory: true)
+        let service = archiveService(at: rootURL)
+        let token = CancellationToken()
+        do {
+            if isSingleFileArchive {
+                _ = try await service.decompress(
+                    relativePath: relativePath, destinationFile: directory + "/" + extractFileName,
+                    rootURL: rootURL, cancellation: token)
+            } else {
+                _ = try await service.extract(
+                    relativePath: relativePath, destinationDir: directory,
+                    rootURL: rootURL, cancellation: token)
+            }
+            try Task.checkCancellation()
+        } catch {
+            try? FileManager.default.removeItem(at: destination)
+            throw error
         }
-        extractedDirectory = directory
-        return directory
+        extractedDirectory = destination
+        return destination
     }
 
     private func extract() async {
         guard let rootURL else { return }
         extracting = true
+        extractionFailed = false
+        extractMessage = nil
         let token = CancellationToken()
         cancelToken = token
         let box = ArchiveProgressBox()
@@ -355,7 +366,7 @@ struct ArchiveBrowserView: View {
             cancelToken = nil
             progressText = nil
         }
-        let service = ArchiveBrowserService(rootProvider: { rootURL })
+        let service = archiveService(at: rootURL)
         do {
             if isSingleFileArchive {
                 _ = try await service.decompress(
@@ -377,22 +388,21 @@ struct ArchiveBrowserView: View {
                 extractMessage = String(format: IDELanguageRunText.t("已解压到“%@”。", "Extracted to “%@”."), extractDestination)
             }
         } catch {
+            extractionFailed = true
             extractMessage = error.localizedDescription
         }
     }
 
-    private func cleanUpPreview() async {
-        guard let extractedDirectory, let rootURL else { return }
-        let url = rootURL.appendingPathComponent(extractedDirectory, isDirectory: true)
-        try? FileManager.default.removeItem(at: url)
+    private func cleanUpPreview() {
+        guard let extractedDirectory else { return }
+        try? FileManager.default.removeItem(at: extractedDirectory)
         self.extractedDirectory = nil
     }
 
     /// The extracted path must stay inside the preview directory, even though
     /// the archive service already rejected traversal entries.
-    private func safeChild(of directory: String, child: String, rootURL: URL) -> URL? {
-        let base = rootURL.appendingPathComponent(directory, isDirectory: true)
-            .resolvingSymlinksInPath().standardizedFileURL
+    private func safeChild(of directory: URL, child: String) -> URL? {
+        let base = directory.resolvingSymlinksInPath().standardizedFileURL
         let candidate = base.appendingPathComponent(child).resolvingSymlinksInPath().standardizedFileURL
         guard candidate.path.hasPrefix(base.path + "/") else { return nil }
         return candidate

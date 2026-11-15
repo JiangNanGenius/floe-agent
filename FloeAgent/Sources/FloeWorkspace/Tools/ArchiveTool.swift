@@ -24,11 +24,12 @@ public struct ArchiveCompressedRequest: Sendable {
     public var destination: String?
     public var workspaceRoot: URL
     public var cancellation: CancellationToken
+    public var progress: ArchiveEngine.ProgressHandler?
     /// Task environment that owns the request; nil only in tests without an
     /// environment.
     public var environmentID: String?
 
-    public init(action: String, format: String, source: String, destination: String?, workspaceRoot: URL, cancellation: CancellationToken = CancellationToken(), environmentID: String? = nil) {
+    public init(action: String, format: String, source: String, destination: String?, workspaceRoot: URL, cancellation: CancellationToken = CancellationToken(), environmentID: String? = nil, progress: ArchiveEngine.ProgressHandler? = nil) {
         self.action = action
         self.format = format
         self.source = source
@@ -36,6 +37,7 @@ public struct ArchiveCompressedRequest: Sendable {
         self.workspaceRoot = workspaceRoot
         self.cancellation = cancellation
         self.environmentID = environmentID
+        self.progress = progress
     }
 }
 
@@ -68,7 +70,7 @@ public struct WorkspaceArchiveTool: AgentTool {
 
     public static let name = "workspace.archive"
     public static let toolDescription =
-        "Archive operations inside the workspace. create writes a new archive to destinationFile (zip/tar/tar.gz/tar.bz2/tar.xz from one file or directory, or gzip/bzip2/xz for a single file). extract writes zip/tar/tar.gz/tar.bz2/tar.xz/7z/rar entries into a new destinationDir, or decompresses gzip/bzip2/xz into destinationFile. Every format — including bzip2 — is decoded natively with a bounded streaming decoder (the SDK's libbz2 for bzip2), so no operation materializes a whole archive and expansion bombs hit the byte budget before output is appended. Pass exactly the matching field; list accepts neither. All supported operations are native and bounded; existing outputs are never overwritten, traversal/symlink escapes and self-inclusion are refused, and the summary reports skipped entries plus metadata the format cannot carry. RAR list/extract uses the app's signed native decoder and rejects encrypted, multipart or unsupported variants. Old destination calls must be replanned, not replayed."
+        "Archive operations inside the workspace. create writes a new archive to destinationFile (zip/tar/tar.gz/tar.bz2/tar.xz from one file or directory, or gzip/bzip2/xz for a single file). extract writes zip/tar/tar.gz/tar.bz2/tar.xz/7z/rar entries into a new destinationDir, or decompresses gzip/bzip2/xz into destinationFile. ZIP, TAR and single-file streams enforce output budgets while decoding. 7z checks declared sizes before its in-memory decode; cancellation is checked before and after decoding and as files are written. Pass exactly the matching field; list accepts neither. All supported operations are native and bounded; existing outputs are never overwritten, traversal/symlink escapes and self-inclusion are refused, and the summary reports skipped entries plus metadata the format cannot carry. RAR list/extract uses the app's signed native decoder and rejects encrypted, multipart or unsupported variants. Old destination calls must be replanned, not replayed."
     public static let parametersJSON = #"""
     {
       "type": "object",
@@ -192,14 +194,14 @@ public struct WorkspaceArchiveTool: AgentTool {
             case "extract":
                 return try extract7z(args, context: context, guarder: guarder, sourceURL: sourceURL)
             default:
-                return try list7z(args, sourceURL: sourceURL)
+                return try list7z(args, sourceURL: sourceURL, cancellation: context.cancellation)
             }
         }
         if resolvedFormat == "rar" {
             guard let compressedHandler else { throw WorkspaceToolError.invalidArguments("RAR requires the app's signed native archive decoder") }
             let summary = try await compressedHandler(ArchiveCompressedRequest(action: args.action, format: "rar",
                 source: args.source, destination: args.destination, workspaceRoot: guarder.rootURL, cancellation: context.cancellation,
-                environmentID: context.environment?.id))
+                environmentID: context.environment?.id, progress: progress))
             return WorkspaceToolSupport.output(summary)
         }
         if ["gz", "bz2", "xz"].contains(resolvedFormat), args.action == "list" {
@@ -298,78 +300,116 @@ public struct WorkspaceArchiveTool: AgentTool {
         guard !FileManager.default.fileExists(atPath: destinationURL.path) else {
             throw WorkspaceToolError.alreadyExists(destination)
         }
-        let data = try Data(contentsOf: sourceURL, options: [.mappedIfSafe])
+        let cancellation = context.cancellation
+        let (data, headers) = try sevenZipDirectory(sourceURL, cancellation: cancellation)
+        guard headers.count <= Self.limits.maxEntries else {
+            throw ArchiveEngineError.limitExceeded("more than \(Self.limits.maxEntries) entries")
+        }
+        var declaredBytes: Int64 = 0
+        for header in headers {
+            try cancellation.throwIfCancelled()
+            guard !header.hasStream || header.size != nil else {
+                throw ArchiveEngineError.corrupt("7z stream has no declared size")
+            }
+            let size = Int64(header.size ?? 0)
+            guard size >= 0, size <= Self.limits.maxTotalBytes - declaredBytes else {
+                throw ArchiveEngineError.limitExceeded("expanded output exceeds \(Self.limits.maxTotalBytes) bytes")
+            }
+            declaredBytes += size
+        }
+        let staging = try ArchiveEngine.stagingURL(for: destinationURL)
+        let manager = FileManager.default
+        try manager.createDirectory(at: staging, withIntermediateDirectories: false)
+        defer { try? manager.removeItem(at: staging) }
+        try ArchiveDiskSpace.require(declaredBytes, at: staging, cancelling: cancellation)
         let entries: [SevenZipEntry]
         do {
             entries = try SevenZipContainer.open(container: data)
         } catch {
-            throw WorkspaceToolError.invalidArguments("source is not a readable 7z archive")
+            try cancellation.throwIfCancelled()
+            throw ArchiveEngineError.corrupt("could not decode 7z payloads")
         }
-        var extracted = 0
-        var skipped = 0
-        var totalBytes: UInt64 = 0
-        try FileManager.default.createDirectory(at: destinationURL, withIntermediateDirectories: true)
-        for entry in entries where entry.info.type == .regular {
-            try context.cancellation.throwIfCancelled()
-            guard extracted < Self.limits.maxEntries else {
-                throw WorkspaceToolError.tooLarge(limit: Self.limits.maxEntries)
-            }
-            let name = entry.info.name
-            let components = name.split(separator: "/", omittingEmptySubsequences: true)
-            if let baseName = components.last, baseName.hasPrefix("._") {
-                continue
-            }
-            guard !name.hasPrefix("/"), !name.hasPrefix("~"),
-                  !components.contains(".."), !components.isEmpty,
-                  !name.contains("\\") else {
+        try cancellation.throwIfCancelled()
+        var extracted = 0, directories = 0, skipped = 0
+        var writtenBytes: Int64 = 0
+        var paths = Set<String>()
+        for entry in entries {
+            try cancellation.throwIfCancelled()
+            let header = entry.info
+            let isDirectory = header.type == .directory
+            guard !header.isAnti, isDirectory || header.type == .regular,
+                  !header.name.contains("\\"),
+                  let name = try ArchiveEngine.safeEntryName(header.name, isDirectory: false) else {
                 skipped += 1
                 continue
             }
-            totalBytes += UInt64(entry.info.size ?? 0)
-            guard totalBytes <= UInt64(Self.limits.maxTotalBytes) else {
-                throw WorkspaceToolError.tooLarge(limit: Int(Self.limits.maxTotalBytes))
+            let target = staging.appendingPathComponent(name, isDirectory: isDirectory)
+            guard ArchiveEngine.isContained(target, in: staging) else {
+                throw ArchiveEngineError.corrupt("7z entry is outside the output directory")
             }
-            let target = destinationURL.appendingPathComponent(name)
-            guard target.path.hasPrefix(destinationURL.path + "/") else {
-                skipped += 1
+            guard paths.insert(name.precomposedStringWithCanonicalMapping.lowercased()).inserted else {
+                throw ArchiveEngineError.conflict("two entries map to \(name)")
+            }
+            if isDirectory {
+                try manager.createDirectory(at: target, withIntermediateDirectories: true)
+                directories += 1
                 continue
             }
-            try FileManager.default.createDirectory(
-                at: target.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            guard let contents = entry.data else {
-                skipped += 1
-                continue
+            guard let contents = entry.data, header.size == contents.count,
+                  Int64(contents.count) <= Self.limits.maxTotalBytes - writtenBytes else {
+                throw ArchiveEngineError.corrupt("7z entry size does not match its payload")
             }
-            try contents.write(to: target, options: [.atomic])
+            guard !manager.fileExists(atPath: target.path) else {
+                throw ArchiveEngineError.conflict("two entries map to \(name)")
+            }
+            try manager.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let sink = try FileByteSink(url: target)
+            for offset in stride(from: 0, to: contents.count, by: 65_536) {
+                try cancellation.throwIfCancelled()
+                let end = min(offset + 65_536, contents.count)
+                try sink.write(contents.subdata(in: (contents.startIndex + offset)..<(contents.startIndex + end)))
+                writtenBytes += Int64(end - offset)
+                progress?(ArchiveProgress(phase: .reading, completedBytes: writtenBytes,
+                                          totalBytes: declaredBytes, completedEntries: extracted))
+            }
+            try sink.close()
             extracted += 1
         }
+        try cancellation.throwIfCancelled()
+        guard try guarder.resolve(destination) == destinationURL else {
+            throw ArchiveEngineError.conflict("destination changed during extraction")
+        }
+        try guarder.assertWritable(destinationURL)
+        try ArchiveEngine.commit(staging: staging, to: destinationURL)
         return WorkspaceToolSupport.output(
-            "status=ok action=extract format=7z source=\(args.source) destination=\(destination) entries=\(extracted) skipped=\(skipped) uncompressedBytes=\(totalBytes)"
+            "status=ok action=extract format=7z source=\(args.source) destination=\(destination) entries=\(extracted) directories=\(directories) skipped=\(skipped) uncompressedBytes=\(writtenBytes)"
         )
     }
 
-    private func list7z(_ args: Arguments, sourceURL: URL) throws -> ToolExecutionOutput {
-        let data = try Data(contentsOf: sourceURL, options: [.mappedIfSafe])
-        let entries: [SevenZipEntry]
+    /// Reading the 7z directory can decode compressed metadata, but does not
+    /// expand file payloads. The decoder exposes no callback inside open().
+    private func sevenZipDirectory(_ source: URL, cancellation: CancellationToken) throws -> (Data, [SevenZipEntryInfo]) {
+        try cancellation.throwIfCancelled()
+        let data = try Data(contentsOf: source, options: [.mappedIfSafe])
+        let headers: [SevenZipEntryInfo]
         do {
-            entries = try SevenZipContainer.open(container: data)
+            headers = try SevenZipContainer.info(container: data)
         } catch {
-            throw WorkspaceToolError.invalidArguments("source is not a readable 7z archive")
+            try cancellation.throwIfCancelled()
+            throw ArchiveEngineError.corrupt("source is not a readable 7z archive")
         }
-        var listing = ArchiveListing(entries: [], truncated: false)
-        for entry in entries {
-            if listing.entries.count >= Self.limits.maxListedEntries {
-                listing.truncated = true
-                break
-            }
-            listing.entries.append(ArchiveListedEntry(
-                path: entry.info.name,
-                isDirectory: entry.info.type == .directory,
-                size: Int64(entry.info.size ?? 0)
-            ))
+        try cancellation.throwIfCancelled()
+        return (data, headers)
+    }
+
+    private func list7z(_ args: Arguments, sourceURL: URL, cancellation: CancellationToken) throws -> ToolExecutionOutput {
+        let (_, headers) = try sevenZipDirectory(sourceURL, cancellation: cancellation)
+        let page = headers.prefix(Self.limits.maxListedEntries)
+        let entries = page.map {
+            ArchiveListedEntry(path: $0.name, isDirectory: $0.type == .directory, size: Int64($0.size ?? 0))
         }
+        let listing = ArchiveListing(entries: entries, truncated: headers.count > page.count)
         return WorkspaceToolSupport.output(Self.listingText(listing, format: "7z", source: args.source))
     }
+
 }

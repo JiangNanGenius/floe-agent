@@ -197,7 +197,7 @@ public struct WorkspacePathGuard: Sendable {
     /// does not exist yet. Resolve each existing component instead, including
     /// dangling links, before accepting a new output's namespace. No mkdir or
     /// write occurs here; internal links and explicit mount roots still work.
-    private static func resolveComponents(_ url: URL) throws -> URL {
+    static func resolveComponents(_ url: URL) throws -> URL {
         var pending = url.standardizedFileURL.pathComponents.filter { $0 != "/" && !$0.isEmpty }
         var index = 0, links = 0
         var current = URL(fileURLWithPath: "/", isDirectory: true)

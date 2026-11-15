@@ -13,12 +13,17 @@ import Foundation
 import FloeCore
 import FloeTools
 
-public struct ArchiveBrowseEntry: Sendable, Hashable, Identifiable {
+public struct ArchiveBrowseEntry: Sendable, Hashable, Identifiable, Decodable {
     public var path: String
     public var isDirectory: Bool
     public var size: Int64
 
     public var id: String { path }
+
+    private enum CodingKeys: String, CodingKey {
+        case path, size
+        case isDirectory = "directory"
+    }
 
     public init(path: String, isDirectory: Bool, size: Int64) {
         self.path = path
@@ -71,9 +76,15 @@ public struct ArchiveBrowserService: Sendable {
     public static let rarFormats: Set<String> = ["rar"]
 
     private let environment: WorkspaceToolEnvironment
+    private let compressedHandler: ArchiveCompressedHandler?
 
-    public init(rootProvider: @escaping @Sendable () -> URL?) {
+    public init(rootProvider: @escaping @Sendable () -> URL?, compressedHandler: ArchiveCompressedHandler? = nil) {
         self.environment = WorkspaceToolEnvironment(rootProvider: rootProvider)
+        self.compressedHandler = compressedHandler
+    }
+
+    private func supportsContainer(_ format: String) -> Bool {
+        Self.nativeFormats.contains(format) || (Self.rarFormats.contains(format) && compressedHandler != nil)
     }
 
     /// The format inferred from the file name, matching the archive tool's
@@ -95,7 +106,7 @@ public struct ArchiveBrowserService: Sendable {
                 reason: "the file name has no archive extension this app recognises"
             )
         }
-        guard Self.nativeFormats.contains(format) || Self.singleFileFormats.contains(format) else {
+        guard supportsContainer(format) || Self.singleFileFormats.contains(format) else {
             throw Self.unsupported(format: format)
         }
         if Self.singleFileFormats.contains(format) {
@@ -125,7 +136,22 @@ public struct ArchiveBrowserService: Sendable {
             rootURL: rootURL,
             cancellation: cancellation
         )
-        return Self.parseListing(output.summary, format: format)
+        let fullListing = output.capturedOutput ?? output.summary
+        if Self.rarFormats.contains(format) {
+            struct RARListing: Decodable {
+                let status, action, format: String
+                let listedEntries: [ArchiveBrowseEntry]
+                let listingTruncated: Bool
+            }
+            let listing = try JSONDecoder().decode(RARListing.self, from: Data(fullListing.utf8))
+            guard listing.status == "ok", listing.action == "list", listing.format == format,
+                  listing.listedEntries.count <= WorkspaceArchiveTool.limits.maxListedEntries else {
+                throw ArchiveBrowseError.failed("Invalid RAR listing")
+            }
+            return ArchiveBrowseListing(format: format, entries: listing.listedEntries,
+                                        truncated: listing.listingTruncated, summary: output.summary)
+        }
+        return Self.parseListing(fullListing, format: format)
     }
 
     /// Extracts a container archive into a new directory inside the workspace.
@@ -144,7 +170,7 @@ public struct ArchiveBrowserService: Sendable {
                 reason: "the file name has no archive extension this app recognises"
             )
         }
-        guard Self.nativeFormats.contains(format) else {
+        guard supportsContainer(format) else {
             if Self.singleFileFormats.contains(format) {
                 throw ArchiveBrowseError.unsupportedFormat(
                     format: format,
@@ -186,7 +212,7 @@ public struct ArchiveBrowserService: Sendable {
     /// workspace multi-select surface defaults to zip; the engine also
     /// supports tar and the compressed tar variants. `progress` receives the
     /// engine's bounded scan/write callbacks (never file bytes).
-    public func createArchive(
+    @concurrent public func createArchive(
         sources: [String],
         destinationFile: String,
         format: String = "zip",
@@ -246,13 +272,13 @@ public struct ArchiveBrowserService: Sendable {
 
     // MARK: - internals
 
-    private func run(
+    @concurrent private func run(
         arguments: WorkspaceArchiveTool.Arguments,
         rootURL: URL,
         cancellation: CancellationToken,
         progress: ArchiveEngine.ProgressHandler? = nil
     ) async throws -> ToolExecutionOutput {
-        let tool = WorkspaceArchiveTool(environment: environment, progress: progress)
+        let tool = WorkspaceArchiveTool(environment: environment, compressedHandler: compressedHandler, progress: progress)
         let context = ToolContext(
             runID: UUID(),
             scope: .local,
@@ -260,7 +286,11 @@ public struct ArchiveBrowserService: Sendable {
             cancellation: cancellation
         )
         do {
-            return try await tool.execute(arguments, context: context)
+            return try await withTaskCancellationHandler {
+                try await tool.execute(arguments, context: context)
+            } onCancel: {
+                cancellation.cancel()
+            }
         } catch let error as WorkspaceToolError {
             switch error {
             case .notFound:
