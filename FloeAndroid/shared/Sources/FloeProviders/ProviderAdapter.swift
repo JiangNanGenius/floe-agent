@@ -30,16 +30,100 @@ public enum CompatToolNames {
         ToolNameSpelling.wire(canonicalName, safe: usesWireSafeNames(provider))
     }
 
+    /// One model-emitted wire name resolved against this request's universe.
+    /// `received` is preserved only for bounded diagnostics; dispatch uses
+    /// `canonical`.
+    public struct Resolution: Sendable, Hashable {
+        public var received: String
+        public var canonical: String
+        public var changed: Bool
+        /// True when the resolved canonical name is among the schemas this
+        /// request actually offers.
+        public var offered: Bool
+        /// True when the resolved name is inside the run's canonical
+        /// authorized ceiling (or offered as a runtime-virtual schema).
+        /// Closed rename aliases (for example phone.observe → device.observe)
+        /// are resolved later by the runtime's canonical dispatcher, not by
+        /// this wire-name layer.
+        public var authorized: Bool
+
+        public var diagnosticReceivedName: String {
+            authorized ? CompatToolNames.logSafeName(received) : CompatToolNames.nameDigest(received)
+        }
+
+        public var diagnosticCanonicalName: String {
+            authorized ? CompatToolNames.logSafeName(canonical) : CompatToolNames.nameDigest(canonical)
+        }
+    }
+
     /// Canonical (dotted) name for a model-emitted wire name. The universe is
     /// the run ceiling AND the schemas offered this turn — discovery tools
     /// (tools.list/tools.search) and the synthetic plan tool exist only in
-    /// toolSchemas. Unknown or ambiguous spellings pass through unchanged so
-    /// the runtime's not-in-catalog denial stays honest.
-    public static func canonicalName(_ wireName: String, request: ProviderStreamRequest) -> String {
-        guard usesWireSafeNames(request.provider) else { return wireName }
+    /// toolSchemas.
+    ///
+    /// Resolution is attempted even when the CURRENT provider does not need
+    /// wire-safe names: a conversation can move between a wire-safe provider
+    /// and a dotted-name provider while history or a persisted call still
+    /// carries the underscored spelling. Exact registered spelling wins;
+    /// dot/underscore normalization resolves only a UNIQUE match, so an
+    /// ambiguous or unknown spelling passes through unchanged instead of
+    /// reaching a different tool.
+    public static func resolve(
+        _ wireName: String,
+        request: ProviderStreamRequest
+    ) -> Resolution {
         var universe = request.allToolNames
         universe.append(contentsOf: request.toolSchemas.map(\.name))
-        return ToolNameSpelling.canonical(wireName, among: universe) ?? wireName
+        let canonical = ToolNameSpelling.canonical(wireName, among: universe) ?? wireName
+        let offered = request.toolSchemas.contains { $0.name == canonical }
+        let authorized = request.allToolNames.contains(canonical) || offered
+        return Resolution(
+            received: wireName,
+            canonical: canonical,
+            changed: canonical != wireName,
+            offered: offered,
+            authorized: authorized
+        )
+    }
+
+    public static func canonicalName(_ wireName: String, request: ProviderStreamRequest) -> String {
+        resolve(wireName, request: request).canonical
+    }
+
+    /// Privacy-safe diagnostic spelling: a short name made only of a fixed
+    /// tool-name alphabet is logged verbatim; anything longer or containing
+    /// unexpected characters is replaced by a bounded digest. No model text,
+    /// path or argument ever enters this helper's output.
+    public static func logSafeName(_ name: String) -> String {
+        let allowed = CharacterSet(charactersIn:
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+        let scalars = name.unicodeScalars
+        guard !name.isEmpty, scalars.count <= 64,
+              scalars.allSatisfy({ allowed.contains($0) }) else {
+            return nameDigest(name)
+        }
+        return name
+    }
+
+    private static func nameDigest(_ name: String) -> String {
+        "sha256:" + FloeDigest.shortSHA256(Data(name.utf8), length: 12)
+    }
+}
+
+/// Privacy-safe tool-name resolution evidence. A name outside the authorized
+/// ceiling logs at info; normal exact/changed spellings log at debug. Only
+/// bounded tool-name characters are retained; anything else is replaced by a
+/// digest. Arguments, prompts and model reasoning never appear.
+func logResolvedToolName(
+    _ resolution: CompatToolNames.Resolution,
+    protocolName: String,
+    logger: FloeLogger
+) {
+    let line = "providerToolNameResolved protocol=\(protocolName) received=\(resolution.diagnosticReceivedName) canonical=\(resolution.diagnosticCanonicalName) changed=\(resolution.changed) offered=\(resolution.offered) authorized=\(resolution.authorized)"
+    if resolution.authorized {
+        logger.debug(line)
+    } else {
+        logger.info(line)
     }
 }
 
@@ -164,6 +248,12 @@ public struct ProviderStreamRequest: Sendable {
     /// Transient liveness only. Partial arguments are never dispatched,
     /// persisted as a tool call, or exposed as model text.
     public var onToolArgumentsProgress: (@Sendable () async -> Void)?
+    /// Reports the exact canonical schema names this adapter actually
+    /// prepared for the wire. `tools.list` uses this to report `schemaLoaded`
+    /// truthfully instead of confusing historical activation with the latest
+    /// dispatched offer. Cloud adapters send every request schema; an
+    /// on-device adapter reports its own final selected subset.
+    public var onToolSchemasPrepared: (@Sendable ([String]) async -> Void)?
     /// True for temporary (ephemeral) conversations: the transport must not
     /// leave request/response content in any shared on-disk cache. The
     /// request still reaches the provider normally — this is a local cache
@@ -183,6 +273,7 @@ public struct ProviderStreamRequest: Sendable {
         allToolNames: [String] = [],
         reasoningPolicy: ProviderReasoningPolicy = .modelDefault,
         onToolArgumentsProgress: (@Sendable () async -> Void)? = nil,
+        onToolSchemasPrepared: (@Sendable ([String]) async -> Void)? = nil,
         ephemeralTransport: Bool = false
     ) {
         self.provider = provider
@@ -197,6 +288,7 @@ public struct ProviderStreamRequest: Sendable {
         self.allToolNames = allToolNames
         self.reasoningPolicy = reasoningPolicy
         self.onToolArgumentsProgress = onToolArgumentsProgress
+        self.onToolSchemasPrepared = onToolSchemasPrepared
         self.ephemeralTransport = ephemeralTransport
     }
 
@@ -697,6 +789,7 @@ public struct OpenAIResponsesAdapter: ProviderAdapter {
                     logger.info(
                         "providerRequestStarted protocol=responses provider=\(request.provider.id.uuidString) host=\(host) model=\(request.model.remoteModelID) messages=\(request.effectiveMessages.count) tools=\(request.toolSchemas.count) bodyBytes=\(body.count)"
                     )
+                    await request.onToolSchemasPrepared?(request.toolSchemas.map(\.name))
                     let pump = SSEBytePump(
                         urlRequest: urlRequest,
                         session: ProviderTransport.session(ephemeral: request.ephemeralTransport)
@@ -721,7 +814,9 @@ public struct OpenAIResponsesAdapter: ProviderAdapter {
                             }
                             for event in WireTranslator.translate(wireEvent) {
                                 if case .toolRequest(var call) = event {
-                                    call.toolName = CompatToolNames.canonicalName(call.toolName, request: request)
+                                    let resolution = CompatToolNames.resolve(call.toolName, request: request)
+                                    logResolvedToolName(resolution, protocolName: "responses", logger: logger)
+                                    call.toolName = resolution.canonical
                                     continuation.yield(.toolRequest(call))
                                 } else {
                                     continuation.yield(event)
@@ -914,6 +1009,7 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
                     logger.info(
                         "providerRequestStarted protocol=chat provider=\(request.provider.id.uuidString) host=\(host) model=\(request.model.remoteModelID) messages=\(request.effectiveMessages.count) tools=\(request.toolSchemas.count) bodyBytes=\(body.count)"
                     )
+                    await request.onToolSchemasPrepared?(request.toolSchemas.map(\.name))
                     let pump = SSEBytePump(
                         urlRequest: urlRequest,
                         session: ProviderTransport.session(ephemeral: request.ephemeralTransport)
@@ -942,7 +1038,9 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
                             }
                             for event in WireTranslator.translate(chunk, aggregator: &aggregator) {
                                 if case .toolRequest(var call) = event {
-                                    call.toolName = CompatToolNames.canonicalName(call.toolName, request: request)
+                                    let resolution = CompatToolNames.resolve(call.toolName, request: request)
+                                    logResolvedToolName(resolution, protocolName: "chat", logger: logger)
+                                    call.toolName = resolution.canonical
                                     continuation.yield(.toolRequest(call))
                                 } else if case .completed(let completion) = event {
                                     // OpenAI Chat Completions commonly sends a
@@ -1171,6 +1269,7 @@ public struct AnthropicMessagesAdapter: ProviderAdapter {
                 do {
                     var urlRequest = try buildURLRequest(request: request, credentials: credentials)
                     urlRequest.httpBody = try ProviderWireEncoder.encode(buildBody(from: request))
+                    await request.onToolSchemasPrepared?(request.toolSchemas.map(\.name))
                     let pump = SSEBytePump(
                         urlRequest: urlRequest,
                         session: ProviderTransport.session(ephemeral: request.ephemeralTransport)
@@ -1189,7 +1288,9 @@ public struct AnthropicMessagesAdapter: ProviderAdapter {
                             }
                             for event in WireTranslator.translate(wireEvent, aggregator: &aggregator) {
                                 if case .toolRequest(var call) = event {
-                                    call.toolName = CompatToolNames.canonicalName(call.toolName, request: request)
+                                    let resolution = CompatToolNames.resolve(call.toolName, request: request)
+                                    logResolvedToolName(resolution, protocolName: "anthropic", logger: logger)
+                                    call.toolName = resolution.canonical
                                     continuation.yield(.toolRequest(call))
                                 } else {
                                     continuation.yield(event)

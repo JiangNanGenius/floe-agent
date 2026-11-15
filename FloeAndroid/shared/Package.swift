@@ -879,6 +879,9 @@ let package = Package(
         .testTarget(name: "FloeToolsTests", dependencies: [
             "FloeTools", "FloeCore",
         ], swiftSettings: strictSettings),
+        .testTarget(name: "FloeAgentRuntimeTests", dependencies: [
+            "FloeAgentRuntime", "FloeTools", "FloeCore",
+        ], swiftSettings: strictSettings),
         // Provider service-role projection contract (provider purpose
         // roundtrip repair, job-da1626251bbb47fe): pins that the roles the
         // config.providers.list projection reports are the roles the

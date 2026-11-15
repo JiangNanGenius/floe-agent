@@ -1,5 +1,17 @@
 # Floe Android 分目标实施记录
 
+## 下一候选源码检查点：工具定义供给与浮球收尾（2026-11-15）
+
+已接通按实际模型窗口装入完整工具定义，移除固定23项／23KB预裁剪，分别保存期望激活与最近实际供给，保持已有定义的顺序；精确发现可返回完整参数定义，兼容名称仅作无歧义回映射。未知调用名的诊断只留摘要，不记录参数或凭据。
+
+浮球继续沿用操作中小气泡、面板四秒自动收起及停止／任务结束清理；本批补齐“主动暂停后服务撤销或ADB连接失效”时隐藏控制的边界。环境状态在组件已经匹配时，通过原安装状态服务重新核对旧缓存；等待核对时返回可重试的检查状态，不再沿旧缓存提示重装。
+
+实际Swift6宿主对象编译及22项工具供给／名称回映射测试通过；浮球27项JVM策略测试、两个相关生产文件的真实Kotlin编译、环境状态生产文件编译通过。保留首次Swift闭包捕获及测试初始化编译失败，修复后通过；这些是组件证据，尚非新ARM64产物、APK或三星新包验收。
+
+1.0.13完整自然任务停在等待后台作业，全部178组请求／结果成对；日历和真实浮球有正向画面，媒体与整体任务未通过。已确认旧版缺少有限作业的逐项取消入口及等待作业后的完整接续，另一个有界源码包正在补齐。原始失败导出保留，三星以未证实资源释放的维修状态交还，不继续旧失败运行。本批只交付源码检查点，不发布或替换安装包。
+
+English: The next source checkpoint adds complete-schema admission under the real context budget, stable offered order, truthful discovery state, unique name resolution, paused-control teardown, and refresh of stale component-required status. Swift6 host object compilation and22 focused tests passed;27 JVM policy cases and the affected Kotlin production files compiled. Android ARM64/App acceptance remains pending. Full122's natural run remains incomplete and parked; per-job cancellation and continuation wiring are a separate active source package.
+
 ## 1.0.13／122已公开：查看器交接与占屏归因（2026-11-15）
 
 [Android1.0.13预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v1.0.13)固定`ecefc6495d8e29cc52718344b976fdcd890df5e8`。63项定向JVM、实际Full封装、复用未变Native60输入的58项绑定／16KiB及四包API28–29签名通过。

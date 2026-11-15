@@ -783,8 +783,14 @@ public actor FloeAgentRuntime {
     private var providerLastEventWasToolArguments = false
     private var providerToolProgressPublishedAt: Date?
     private var providerLastProgressAt = Date()
+    /// Desired activation, not a promise that a definition fits the current
+    /// request. Discovery and skill activation persist this set; budget
+    /// eviction must never erase it, so a later window can carry it again.
     private var discoveredToolNames: Set<String> = []
     private var discoveryPriority: [String] = []
+    /// The complete definitions actually prepared for the latest provider
+    /// request. `tools.list` reports this, not historical activation.
+    private var lastDispatchedToolSchemas = DispatchedToolSchemaState()
     private var persistedDiscovery: (names: Set<String>, priority: [String])?
     private var discoverableDescriptors: [ToolCatalog.Descriptor] = []
     private var providerAttemptStartedAt = Date()
@@ -1026,6 +1032,9 @@ public actor FloeAgentRuntime {
         // and the ledger stays bounded.
         await runtimeAuthorities.revoke(runID: runID)
         await runtimeAuthorities.purgeExpired()
+        // A fresh activation has not dispatched a request yet. Reporting a
+        // previous activation's schemas as loaded would be historical drift.
+        lastDispatchedToolSchemas = DispatchedToolSchemaState()
         // Seed deferred-schema discovery from the conversation-level store so a
         // fresh run keeps previously loaded tools instead of re-guessing from
         // the goal text or re-enumerating the catalog.
@@ -1351,16 +1360,32 @@ public actor FloeAgentRuntime {
         latestProviderDispatchRequest = checkpoint.providerDispatchRequest
         if let snapshot = checkpoint.providerDispatchRequest {
             let restoredRequest = snapshot.request()
-            // Presentation hints only; the next preparation intersects them
-            // with current executable descriptors and current permission limits.
-            discoveryPriority = restoredRequest.toolSchemas.map(\.name).filter { $0 != ToolDiscovery.name }
-            discoveredToolNames = Set(discoveryPriority)
             guard restoredRequest.provider.id == configuration.provider.id,
                   restoredRequest.model.id == configuration.model.id else {
                 throw FloeError.validationFailed(
                     "Checkpoint provider request does not match the resumed run configuration"
                 )
             }
+            // Desired activation is restored separately from the exact last
+            // offer. The offer is the truthful `schemaLoaded` source; desired
+            // names survive an eviction so the next ample window can carry
+            // them without a second discovery round-trip. Older checkpoints
+            // have no activation fields, so the last offer is the only
+            // conservative activation seed available.
+            let restoredOfferNames = restoredRequest.toolSchemas.map(\.name)
+            lastDispatchedToolSchemas = DispatchedToolSchemaState(
+                catalogNames: runtimeVisibleCatalogDescriptors().map(\.name)
+                    + [ToolDiscovery.name, ToolDiscovery.listName, PlanSubmission.toolName],
+                offeredNames: restoredOfferNames
+            )
+            let restoredPriority = checkpoint.discoveryPriority
+                ?? restoredOfferNames.filter {
+                    $0 != ToolDiscovery.name
+                        && $0 != ToolDiscovery.listName
+                        && $0 != PlanSubmission.toolName
+                }
+            discoveryPriority = restoredPriority
+            discoveredToolNames = Set(checkpoint.discoveredToolNames ?? restoredPriority)
             latestProviderDispatchEnvelope = checkpoint.providerDispatchEnvelope
             restoredProviderDispatchEnvelope = checkpoint.providerDispatchEnvelope
             providerRetryRequest = restoredRequest
@@ -1374,6 +1399,12 @@ public actor FloeAgentRuntime {
             latestProviderDispatchEnvelope = nil
             restoredProviderDispatchEnvelope = nil
             providerRetryRequest = nil
+            if let restoredPriority = checkpoint.discoveryPriority {
+                discoveryPriority = restoredPriority
+            }
+            if let restoredNames = checkpoint.discoveredToolNames {
+                discoveredToolNames = Set(restoredNames)
+            }
         }
         // Older checkpoints may already contain a complete provider pair but
         // predate lifecycle metadata. Normalize those pairs before enforcing
@@ -2134,11 +2165,10 @@ public actor FloeAgentRuntime {
         discoverableDescriptors = catalogDescriptors
         let userTask = messages.last(where: { $0.role == "user" })?.content ?? ""
         // Eviction notices only make sense for schemas the model actually saw
-        // in a previous request. Capture the pre-discovery state exactly as
-        // before (cloud semantics unchanged): a first-turn guess, the curated
-        // pinned union, or names dropped by the ceiling must not look like a
-        // prior discovery and trigger an eviction notice.
-        let hadPriorDiscovery = !discoveredToolNames.isEmpty
+        // in a previous request. Using the exact last offer (not historical
+        // activation) keeps a first-turn guess, the curated pinned union or a
+        // name dropped by the ceiling from looking like a lost capability.
+        let hadPriorDiscovery = !lastDispatchedToolSchemas.offeredOrder.isEmpty
         if discoveredToolNames.isEmpty {
             let initial = ToolDiscovery.matches(query: userTask, descriptors: catalogDescriptors)
             discoveredToolNames.formUnion(initial.map(\.name))
@@ -2165,10 +2195,12 @@ public actor FloeAgentRuntime {
         }
         let statefulGroups: Set<String> = ["vnc", "executor", "terminal"]
         var pinned = Set(catalogDescriptors.filter { statefulGroups.contains(ToolDiscovery.group($0.name)) && recentGroups.contains(ToolDiscovery.group($0.name)) }.map(\.name))
-        // Keep the stable local pinned schemas on the wire even under the
-        // 23-tool/23-KB presentation budget; the adapter still applies its
-        // per-window token/character budget, so this never overruns the
-        // model context.
+        // Keep the stable local pinned schemas in the candidate set. There is
+        // no fixed 23-tool/23-KB dispatch pre-filter any more: that cap could
+        // silently drop an explicitly loaded large definition behind optional
+        // core schemas even when the model window had ample room. Admission
+        // below is ordered by explicit activation/pin and sized from the
+        // ACTUAL request allowance.
         if isLocalProvider {
             pinned.formUnion(
                 catalogDescriptors.map(\.name).filter {
@@ -2176,16 +2208,166 @@ public actor FloeAgentRuntime {
                 }
             )
         }
-        let schemasLoadedBeforeBudget = discoveredToolNames
-        catalogDescriptors = ToolDiscovery.bounded(catalogDescriptors, priority: discoveryPriority, pinned: pinned)
-        let retainedAfterBudget = Set(catalogDescriptors.map(\.name))
-        let evictedSchemaNames = hadPriorDiscovery
-            ? schemasLoadedBeforeBudget.subtracting(retainedAfterBudget).sorted()
-            : []
-        discoveredToolNames = retainedAfterBudget
+        catalogDescriptors = ToolSchemaOfferPlanner.prioritized(
+            catalogDescriptors,
+            priority: discoveryPriority,
+            pinned: pinned,
+            coreNames: ToolDiscovery.coreNames
+        )
         catalogDescriptors.append(ToolDiscovery.descriptor)
         catalogDescriptors.append(ToolDiscovery.listDescriptor)
         persistDiscoveryIfChanged()
+        // Complete-schema admission for THIS model window. The allowance is
+        // the real leftover request budget after output reservation,
+        // conversation, images, replayed evidence, currently pending results
+        // and a bounded reserve for the next tool-result channel. There is
+        // deliberately no arbitrary tool-count or 23-KB cap: an explicitly
+        // requested large definition is offered whole when the window can
+        // carry it and deferred honestly when it cannot.
+        var schemaDeferredNames: [String] = []
+        var schemaOversizedNames: [String] = []
+        var evictedSchemaNames: [String] = []
+        var schemaOfferBudget = 0
+        var schemaOfferTokens = 0
+        // A retry replays the exact committed request below; do not re-plan
+        // its schemas from a possibly smaller current window. The retry's own
+        // schema array remains the truthful offer recorded at dispatch.
+        if supportsTools, !catalogDescriptors.isEmpty, providerRetryRequest == nil {
+            let window = max(1, configuration.model.limits.contextTokens)
+            let outputReserve = Self.contextOutputReservation(limits: configuration.model.limits)
+            let resultEstimate = pendingToolResults.reduce(0) { partial, result in
+                // Ordinary results are compacted before the request; a
+                // discovery result carrying complete exact schemas is
+                // preserved up to its own bounded cap, so charge its real
+                // (still bounded) size. Otherwise the schema planner would
+                // spend room the pending result later needs.
+                let toolName = pendingToolCalls.first {
+                    $0.id == result.callID
+                }?.toolName
+                let estimateBytes: Int
+                if let toolName, ToolResultProjection.isPagingPage(toolName: toolName) {
+                    estimateBytes = min(
+                        result.outputSummary.utf8.count,
+                        result.maximumSummaryCharacters
+                    )
+                } else if toolName == ToolDiscovery.name {
+                    estimateBytes = min(
+                        result.outputSummary.utf8.count,
+                        ToolDiscovery.maximumDiscoveryResultBytes
+                    )
+                } else {
+                    estimateBytes = min(result.outputSummary.utf8.count, 2_048)
+                }
+                return partial + max(1, (estimateBytes + 2) / 3)
+            }
+            // Reserve room for the system envelope assembled after admission
+            // (ledger, reminders, guidance, discovery index, deferral notes).
+            // Without this, a measured schema budget could spend space that
+            // those real messages later need.
+            let systemEnvelopeReserve = min(4_096, max(512, window / 32))
+            // Replayed pairs are already bounded at settlement. Charge the
+            // whole bounded history rather than the older per-pair excerpt
+            // estimate: admission must not spend room that the actual replayed
+            // wire history later needs.
+            let replayEstimate = min(
+                replayableToolHistory.reduce(0) { partial, pair in
+                    partial + pair.call.argumentsJSON.count
+                        + pair.result.outputSummary.utf8.count + 64
+                },
+                ToolReplayPlanner.defaultMaxResultBytes
+            ) / 3
+            let messageEstimate = ContextTokenEstimator().estimate(messages)
+                + replayEstimate
+                + resultEstimate
+                + systemEnvelopeReserve
+            var imageEstimate = messages.reduce(0) { $0 + $1.images.count * 1_024 }
+            if configuration.model.capabilities.contains(.vision) {
+                imageEstimate += pendingToolResults.reduce(0) { $0 + $1.artifacts.count } * 1_024
+            }
+            // Leave a realistic share of the window for the pending result
+            // channel instead of spending nearly all of it on schemas.
+            let toolResultReserve = min(window / 3, max(1_024, window / 4))
+            let discoveryCost = catalogDescriptors
+                .first(where: { $0.name == ToolDiscovery.name })
+                .map(ToolSchemaOfferPlanner.tokenCost) ?? 0
+            let planSubmissionCost = configuration.conversationMode == .plan
+                ? ToolSchemaOfferPlanner.tokenCost(
+                    name: PlanSubmission.toolName,
+                    description: PlanSubmission.toolDescription,
+                    parametersJSON: PlanSubmission.parametersJSON
+                )
+                : 0
+            let ordinarySchemaBudget = ToolSchemaOfferPlanner.availableTokenBudget(
+                contextWindowTokens: window,
+                reservedOutputTokens: outputReserve,
+                messageTokens: messageEstimate,
+                imageTokens: imageEstimate,
+                replayTokens: 0,
+                toolResultReserveTokens: toolResultReserve
+            )
+            let fullSchemaBudget = ToolSchemaOfferPlanner.availableTokenBudget(
+                contextWindowTokens: window,
+                reservedOutputTokens: outputReserve,
+                messageTokens: messageEstimate,
+                imageTokens: imageEstimate,
+                replayTokens: 0,
+                toolResultReserveTokens: toolResultReserve,
+                minimumDiscoveryTokens: discoveryCost
+            )
+            // On-device adapters render a much smaller native prompt; the
+            // shared runtime's documented local schema allowance is ~2 000
+            // tokens (the same value `contextCompressionPolicy` already
+            // reserves for local tool schemas). Keep admission inside that
+            // real local budget instead of re-deriving a window slice from a
+            // message estimate that the local prompt template does not use.
+            let schemaBudget: Int
+            if isLocalProvider {
+                // Honor a tighter configured window, but keep a minimal
+                // discovery floor so a small local prompt estimate does not
+                // make tool use impossible. The ceiling remains the local
+                // adapter's documented ~2 000-token schema allowance, never
+                // a tool count.
+                let localBudget = min(2_000, max(512, fullSchemaBudget))
+                schemaBudget = max(0, localBudget - planSubmissionCost)
+            } else {
+                schemaBudget = max(0, fullSchemaBudget - planSubmissionCost)
+                if fullSchemaBudget > ordinarySchemaBudget {
+                    logger.debug(
+                        "toolSchemaDiscoveryReserveBorrowed run=\(runID.uuidString) window=\(window) ordinary=\(ordinarySchemaBudget) full=\(fullSchemaBudget)"
+                    )
+                }
+            }
+            let offeredPlan = ToolSchemaOfferPlanner.plan(
+                descriptors: catalogDescriptors,
+                tokenBudget: schemaBudget,
+                alwaysKeep: [ToolDiscovery.name, ToolDiscovery.listName],
+                discoveryName: ToolDiscovery.name
+            )
+            let hasUsableDiscovery = offeredPlan.offered.contains {
+                $0.name == ToolDiscovery.name
+            }
+            guard hasUsableDiscovery else {
+                await failRun(
+                    message: FloeL10n.isChinese
+                        ? "当前对话没有足够空间使用工具。请精简对话或选择上下文更大的模型。"
+                        : "There is not enough context space to use tools. Shorten the conversation or choose a model with a larger context window.",
+                    recoverable: true
+                )
+                return
+            }
+            catalogDescriptors = offeredPlan.offered
+            schemaDeferredNames = offeredPlan.deferred
+            schemaOversizedNames = offeredPlan.oversized
+            schemaOfferBudget = schemaBudget + planSubmissionCost
+            schemaOfferTokens = offeredPlan.estimatedTokens + planSubmissionCost
+            if hadPriorDiscovery {
+                evictedSchemaNames = ToolSchemaOfferPlanner.evicted(
+                    previous: lastDispatchedToolSchemas.offeredOrder,
+                    current: offeredPlan.offered.map(\.name),
+                    eligible: Set(discoverableDescriptors.map(\.name))
+                )
+            }
+        }
         // Prerequisite wording belongs to the current user turn. Do not let a
         // historical SSH-before-VNC request constrain a later, unrelated turn.
         let statefulRouteGoal = messages.last(where: { $0.role == "user" })?.content ?? ""
@@ -2220,8 +2402,12 @@ public actor FloeAgentRuntime {
             contentMessages[index].content.append(.text(continuity))
         }
         if supportsTools, !prerequisiteNotes.isEmpty {
+            let shown = prerequisiteNotes.prefix(32)
+            let overflow = prerequisiteNotes.count > shown.count
+                ? "\n(+\(prerequisiteNotes.count - shown.count) more with prerequisites)"
+                : ""
             let note = "Installed tools remain callable; satisfy these execution prerequisites first:\n"
-                + prerequisiteNotes.joined(separator: "\n")
+                + shown.joined(separator: "\n") + overflow
             if let index = legacyMessages.firstIndex(where: { $0.role == "system" }) {
                 legacyMessages[index].content += "\n\n" + note
                 contentMessages[index].content.append(.text(note))
@@ -2230,14 +2416,49 @@ public actor FloeAgentRuntime {
         // Make schema-budget eviction visible. Silently dropping a schema makes
         // models believe the capability vanished and re-enumerate the catalog.
         if supportsTools, !evictedSchemaNames.isEmpty {
-            let note = "Schema budget unloaded these previously discovered tools for this request only: "
-                + evictedSchemaNames.map {
-                    CompatToolNames.wireName($0, for: configuration.provider)
-                }.joined(separator: ", ")
-                + ". They remain installed and callable, and results already obtained stay valid. Reload one schema by exact name with "
+            let shown = evictedSchemaNames.prefix(32).map {
+                CompatToolNames.wireName($0, for: configuration.provider)
+            }
+            let overflow = evictedSchemaNames.count > shown.count
+                ? " (+\(evictedSchemaNames.count - shown.count) more)" : ""
+            let note = "Schema budget unloaded these previously offered tools for this request only: "
+                + shown.joined(separator: ", ") + overflow
+                + ". They remain installed and callable, and results already obtained stay valid. Request one schema by exact name with "
                 + CompatToolNames.wireName(ToolDiscovery.name, for: configuration.provider)
-                + "; do not re-enumerate the catalog with "
+                + " when the real window permits; do not re-enumerate the catalog with "
                 + CompatToolNames.wireName(ToolDiscovery.listName, for: configuration.provider) + "."
+            if let index = legacyMessages.firstIndex(where: { $0.role == "system" }) {
+                legacyMessages[index].content += "\n\n" + note
+                contentMessages[index].content.append(.text(note))
+            } else {
+                legacyMessages.insert((role: "system", content: note), at: 0)
+                contentMessages.insert(ProviderMessage(role: "system", content: [.text(note)]), at: 0)
+            }
+        }
+        // Deferred definitions are a presentation budget, never a permission
+        // loss. State the reason explicitly so the model neither assumes the
+        // capability is missing nor resends the same broad discovery query.
+        if supportsTools, !schemaDeferredNames.isEmpty || !schemaOversizedNames.isEmpty {
+            let wireProvider = configuration.provider
+            let display: (String) -> String = {
+                CompatToolNames.wireName($0, for: wireProvider)
+            }
+            var note = "Complete tool definitions are admitted only as the real model request window permits."
+            if !schemaDeferredNames.isEmpty {
+                let shown = schemaDeferredNames.prefix(24).map(display)
+                note += " Deferred for this request: " + shown.joined(separator: ", ")
+                    + (schemaDeferredNames.count > shown.count
+                        ? " (+\(schemaDeferredNames.count - shown.count) more)" : "")
+                    + ". They remain installed and callable."
+            }
+            if !schemaOversizedNames.isEmpty {
+                let shown = schemaOversizedNames.prefix(12).map(display)
+                note += " Too large for this window's schema allowance on their own (not sliced): "
+                    + shown.joined(separator: ", ")
+                    + (schemaOversizedNames.count > shown.count
+                        ? " (+\(schemaOversizedNames.count - shown.count) more)" : "")
+                    + "."
+            }
             if let index = legacyMessages.firstIndex(where: { $0.role == "system" }) {
                 legacyMessages[index].content += "\n\n" + note
                 contentMessages[index].content.append(.text(note))
@@ -2351,6 +2572,51 @@ public actor FloeAgentRuntime {
                 ))
             }
         }
+        var toolSchemasForRequest: [ToolSchemaDescriptor] = []
+        if supportsTools, providerRetryRequest == nil {
+            let schemas = catalogDescriptors.map {
+                ToolSchemaDescriptor(
+                    name: $0.name,
+                    description: Self.providerToolDescription($0),
+                    parametersJSON: $0.parametersJSON
+                )
+            }
+            // Stable cache-friendly wire order: stable base helpers first,
+            // then the previous request's surviving order, then newly
+            // admitted definitions appended. Admission itself never changes
+            // permissions; this only orders complete definitions.
+            let baseNames = ToolDiscovery.coreNames
+                .union([ToolDiscovery.name, ToolDiscovery.listName])
+            var ordered = schemas.sorted { left, right in
+                let leftBase = baseNames.contains(left.name)
+                let rightBase = baseNames.contains(right.name)
+                return leftBase == rightBase
+                    ? left.name < right.name
+                    : leftBase
+            }
+            if configuration.conversationMode == .plan {
+                ordered.append(ToolSchemaDescriptor(
+                    name: PlanSubmission.toolName,
+                    description: PlanSubmission.toolDescription,
+                    parametersJSON: PlanSubmission.parametersJSON
+                ))
+            }
+            toolSchemasForRequest = ToolSchemaOfferPlanner.retainingOrder(
+                ordered,
+                after: lastDispatchedToolSchemas.offeredOrder,
+                name: \.name
+            )
+        }
+        // Complete exact-name discovery definitions travel intact: a fixed
+        // 2-KB history compaction would slice the JSON Schema the model was
+        // explicitly shown, and the next admission budget already accounts
+        // for this pending result. The discovery renderer's own 96-KB cap
+        // remains the hard bound.
+        if providerRetryRequest == nil {
+            logger.debug(
+                "toolSchemaPlan run=\(runID.uuidString) provider=\(configuration.provider.kind.rawValue) offered=\(toolSchemasForRequest.count) deferred=\(schemaDeferredNames.count) oversized=\(schemaOversizedNames.count) budget=\(schemaOfferBudget) tokens=\(schemaOfferTokens) canonicalDigest=\(Self.toolSchemaOfferDigest(toolSchemasForRequest)) names=\(Self.boundedToolList(toolSchemasForRequest.map { CompatToolNames.wireName($0.name, for: configuration.provider) })) deferredNames=\(Self.boundedToolList(schemaDeferredNames.map { CompatToolNames.wireName($0, for: configuration.provider) })) oversizedNames=\(Self.boundedToolList(schemaOversizedNames.map { CompatToolNames.wireName($0, for: configuration.provider) }))"
+            )
+        }
         let freshRequest = ProviderStreamRequest(
             provider: configuration.provider,
             model: configuration.model,
@@ -2372,6 +2638,21 @@ public actor FloeAgentRuntime {
                     // second summary would make its nextOffset header lie.
                     return (callID: result.callID, output: visible)
                 }
+                if toolName == ToolDiscovery.name,
+                   visible.utf8.count <= ToolDiscovery.maximumDiscoveryResultBytes {
+                    // Exact-name discovery carries complete JSON Schemas.
+                    // Preserve the bounded renderer output verbatim instead
+                    // of cutting a definition the model explicitly asked for
+                    // (and was told is complete). Larger output still falls
+                    // back to the normal bounded summary below.
+                    return (
+                        callID: result.callID,
+                        output: Self.summaryWithCaptureReference(
+                            visible,
+                            captureInfo: result.captureInfo
+                        )
+                    )
+                }
                 return (
                     callID: result.callID,
                     output: Self.summaryWithCaptureReference(
@@ -2389,19 +2670,7 @@ public actor FloeAgentRuntime {
             // reasoning requirement without checkpointing the whole trace.
             pendingAssistantReasoning: pendingToolCalls.isEmpty
                 ? nil : ToolReplayPlanner.boundedReasoning(responseReasoning),
-            toolSchemas: supportsTools ? catalogDescriptors.map {
-                ToolSchemaDescriptor(
-                    name: $0.name,
-                    description: Self.providerToolDescription($0),
-                    parametersJSON: $0.parametersJSON
-                )
-            } + (configuration.conversationMode == .plan ? [
-                ToolSchemaDescriptor(
-                    name: PlanSubmission.toolName,
-                    description: PlanSubmission.toolDescription,
-                    parametersJSON: PlanSubmission.parametersJSON
-                )
-            ] : []) : [],
+            toolSchemas: toolSchemasForRequest,
             // Compat-mode reverse name mapping must be total over the run's
             // capability ceiling — the same set tools.list enumerates —
             // because eviction notes legitimately invite calls to tools whose
@@ -2521,9 +2790,26 @@ public actor FloeAgentRuntime {
         startProviderWatchdog(attempt: providerAttemptNumber)
         var dispatchRequest = request
         let attempt = providerAttemptNumber
+        // Truthful exposure for the run: the runtime request's complete schema
+        // array is the prepared offer. An on-device adapter may report its
+        // final selected subset through the callback (a late callback is
+        // fenced by catalog names); absent a callback the request set stays
+        // the conservative truth.
+        let exposure = DispatchedToolSchemaState(
+            catalogNames: discoverableDescriptors.map(\.name)
+                + [ToolDiscovery.name, ToolDiscovery.listName, PlanSubmission.toolName],
+            offeredNames: dispatchRequest.toolSchemas.map(\.name)
+        )
+        lastDispatchedToolSchemas = exposure
+        dispatchRequest.onToolSchemasPrepared = { names in
+            exposure.recordPrepared(names)
+        }
         dispatchRequest.onToolArgumentsProgress = { [weak self] in
             await self?.handleToolArgumentsProgress(attempt: attempt)
         }
+        logger.info(
+            "toolSchemaOffer run=\(runID.uuidString) provider=\(configuration.provider.kind.rawValue) offered=\(dispatchRequest.toolSchemas.count) canonicalDigest=\(Self.toolSchemaOfferDigest(dispatchRequest.toolSchemas)) names=\(Self.boundedToolList(dispatchRequest.toolSchemas.map { CompatToolNames.wireName($0.name, for: configuration.provider) }))"
+        )
         let stream = adapter.stream(request: dispatchRequest, credentials: credentials)
         streamTask = Task { [weak self] in
             guard let self else { return }
@@ -2888,14 +3174,26 @@ public actor FloeAgentRuntime {
             // parallel and writes act as barriers.
             do {
                 var canonicalCall = call
-                // Generic rename aliases first, then the bounded device
-                // namespace alias (exactly phone.observe/act/screenshot →
-                // device.*): a model resuming a persisted run that still
-                // names the old tools has its calls canonicalised BEFORE
-                // catalog resolution, so previously persisted phone.*
-                // records stay resumable without advertising the old names.
+                // Compatible wire spelling first (a provider/name transition
+                // may leave dotted names underscored), then the closed rename
+                // aliases and the bounded device namespace alias. A unique
+                // sanitized match resolves to the exact catalog spelling;
+                // ambiguous or unknown spellings pass through unchanged so
+                // they cannot silently reach a different tool. Resolution is
+                // name identity only: dispatch still re-checks the ceiling,
+                // temporary/plan policy and approval.
+                var ingressNames = discoverableDescriptors.map(\.name)
+                ingressNames.append(ToolDiscovery.name)
+                ingressNames.append(ToolDiscovery.listName)
+                if configuration.conversationMode == .plan {
+                    ingressNames.append(PlanSubmission.toolName)
+                }
+                let wireCanonical = ToolNameSpelling.canonical(
+                    call.toolName,
+                    among: ingressNames
+                ) ?? call.toolName
                 canonicalCall.toolName = DeviceToolNames.canonical(
-                    ToolAliasTable.canonical(call.toolName))
+                    ToolAliasTable.canonical(wireCanonical))
                 // One narrow shape normalization at the canonical ingress,
                 // BEFORE approval/checkpoint/persistence/provider replay: an
                 // exact jobs.submit→exec.shell wrapper whose nested
@@ -4385,7 +4683,7 @@ public actor FloeAgentRuntime {
                 do {
                     let output = try ToolDiscovery.list(arguments: call.argumentsJSON,
                         descriptors: discoverableDescriptors + [ToolDiscovery.descriptor, ToolDiscovery.listDescriptor],
-                        loaded: discoveredToolNames.union([ToolDiscovery.name, ToolDiscovery.listName]),
+                        loaded: lastDispatchedToolSchemas.offeredNames,
                         relatedSkills: configuration.relatedSkillIDsByTool,
                         wireSafeNames: CompatToolNames.usesWireSafeNames(configuration.provider))
                     result = ToolResult(callID: call.id, status: .ok, outputSummary: output, outputDigest: "", maximumSummaryCharacters: 262_144)
@@ -4407,9 +4705,17 @@ public actor FloeAgentRuntime {
                     continue
                 }
                 let matches = ToolDiscovery.matches(queries: queries, descriptors: discoverableDescriptors)
-                let selected = ToolDiscovery.bounded(matches + discoverableDescriptors.filter { ["skill.read", "skill.search"].contains($0.name) && !matches.map(\.name).contains($0.name) }, priority: matches.map(\.name))
+                // Activation is progressive by the real catalog match set,
+                // not by a fixed 23-tool/23-KB presentation cap: a large
+                // explicitly requested definition must enter the activated
+                // set even when the current window cannot carry it yet.
+                // Admission for the next request remains the real budget.
+                let selected = matches + discoverableDescriptors.filter {
+                    ["skill.read", "skill.search"].contains($0.name)
+                        && !matches.map(\.name).contains($0.name)
+                }
                 let names = selected.map(\.name)
-                let alreadyInContext = discoveredToolNames
+                let alreadyActivated = discoveredToolNames
                 discoveredToolNames.formUnion(names)
                 discoveryPriority = names + discoveryPriority.filter { !names.contains($0) }
                 persistDiscoveryIfChanged()
@@ -4417,20 +4723,65 @@ public actor FloeAgentRuntime {
                 func display(_ name: String) -> String {
                     ToolNameSpelling.wire(name, safe: wireSafe)
                 }
-                let deferred = matches.filter { !names.contains($0.name) }.map(\.name)
-                let matchedSummary = matches.isEmpty
-                    ? "No matching executable tool in this task's capability set. "
+                let previouslyOffered = lastDispatchedToolSchemas.offeredNames
+                let teaserLimit = 40
+                let shown = selected.prefix(teaserLimit)
+                let matchedSummary: String
+                if matches.isEmpty {
+                    matchedSummary = "No matching executable tool in this task's capability set. "
                         + ToolDiscovery.index(discoverableDescriptors, wireSafeNames: wireSafe)
-                    : "Loaded for the next request:\n" + selected.map { descriptor in
-                        display(descriptor.name) + ": " + String(descriptor.toolDescription.prefix(160))
-                            + (alreadyInContext.contains(descriptor.name) ? " (schema already in context; call it directly, no reload needed)" : "")
-                            + " [relatedSkillIDs=" + configuration.relatedSkillIDsByTool[descriptor.name, default: []].joined(separator: ",") + "]"
-                    }.joined(separator: "\n")
-                        + (deferred.isEmpty ? "" : "\nNot yet loaded (schema budget): \(deferred.map(display).joined(separator: ", ")). Search one exact name when needed, not the same broad query.")
+                } else {
+                    var text = "Activated as candidates for future budgeted requests:\n"
+                        + shown.map { descriptor in
+                            let suffix: String
+                            if previouslyOffered.contains(descriptor.name) {
+                                suffix = " (already in the latest dispatched request; call it directly)"
+                            } else if alreadyActivated.contains(descriptor.name) {
+                                suffix = " (already activated; awaiting request admission)"
+                            } else {
+                                suffix = ""
+                            }
+                            return display(descriptor.name) + ": "
+                                + String(descriptor.toolDescription.prefix(160)) + suffix
+                                + " [relatedSkillIDs=" + configuration.relatedSkillIDsByTool[descriptor.name, default: []].joined(separator: ",") + "]"
+                        }.joined(separator: "\n")
+                    if selected.count > shown.count {
+                        let remaining = selected.count - shown.count
+                        if previouslyOffered.contains(ToolDiscovery.listName) {
+                            text += "\n(\(remaining) more activated; use tools.list for the complete directory.)"
+                        } else {
+                            text += "\n(\(remaining) more activated; request an exact name with tools.search when needed.)"
+                        }
+                    }
+                    text += "\nFinal request admission depends on the actual model window; tools.list schemaLoaded reflects the latest dispatched request."
+                    matchedSummary = text
+                }
                 let querySummary = queries.map { query in
                     query + " => " + ToolDiscovery.matches(query: query, descriptors: discoverableDescriptors).map(\.name).map(display).joined(separator: ", ")
                 }.joined(separator: "\n")
-                let result = ToolResult(callID: call.id, status: .ok, outputSummary: querySummary + "\n" + matchedSummary, outputDigest: "", maximumSummaryCharacters: 262_144)
+                // An exact-name search returns the COMPLETE callable schema in
+                // this result, so the model can act immediately instead of
+                // inferring arguments from a teaser. The section is bounded
+                // by the real model window; an oversized definition is
+                // reported rather than sliced.
+                let exactAllowance = ToolDiscovery.exactSchemaResultAllowance(
+                    contextTokens: configuration.model.limits.contextTokens,
+                    reservedOutputTokens: Self.contextOutputReservation(limits: configuration.model.limits)
+                )
+                let exactSchemas = ToolDiscovery.exactSchemaSection(
+                    ToolDiscovery.exactNameMatches(queries, descriptors: discoverableDescriptors),
+                    wireSafeNames: wireSafe,
+                    perToolBytes: min(24 * 1024, exactAllowance),
+                    totalBytes: exactAllowance
+                )
+                let result = ToolResult(
+                    callID: call.id,
+                    status: .ok,
+                    outputSummary: querySummary + "\n" + matchedSummary
+                        + (exactSchemas.isEmpty ? "" : "\n\n" + exactSchemas),
+                    outputDigest: "",
+                    maximumSummaryCharacters: 262_144
+                )
                 await audit(toolCall: call, result: result, decision: "allow:tool-discovery")
                 resultsByID[call.id] = result
                 continue
@@ -5896,6 +6247,8 @@ public actor FloeAgentRuntime {
                 copy.call = ToolArgumentSanitizer.sanitizedForPersistence(pair.call)
                 return copy
             },
+            discoveredToolNames: discoveredToolNames.sorted(),
+            discoveryPriority: discoveryPriority,
             ownedSystemContextID: ownedSystemContextID,
             sensitiveToolCallIDs: sensitiveCallIDs.isEmpty ? nil : sensitiveCallIDs
         )
@@ -6015,6 +6368,23 @@ public actor FloeAgentRuntime {
                 .joined()
                 .prefix(16)
         )
+    }
+
+    /// Diagnostics only: exact ordered schema identity and sizes, no prompt
+    /// text and no arguments. The full name list is bounded; a count suffix
+    /// keeps a large offer readable.
+    private static func toolSchemaOfferDigest(_ schemas: [ToolSchemaDescriptor]) -> String {
+        let material = schemas.map {
+            "\($0.name)|\($0.parametersJSON.utf8.count)"
+        }.joined(separator: "\n")
+        return String(FloeDigest.sha256Hex(Data(material.utf8)).prefix(16))
+    }
+
+    private static func boundedToolList(_ names: [String], limit: Int = 32) -> String {
+        guard !names.isEmpty else { return "-" }
+        let shown = names.prefix(max(1, limit))
+        let suffix = names.count > shown.count ? ",+\(names.count - shown.count)" : ""
+        return shown.joined(separator: ",") + suffix
     }
 
     private static func dispatchEnvelope(

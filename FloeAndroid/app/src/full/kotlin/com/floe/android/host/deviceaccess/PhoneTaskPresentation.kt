@@ -65,7 +65,8 @@ internal object PhoneTaskPresentation {
         actualOwner: PhoneControlOwner?,
         armingOwner: PhoneControlOwner?,
         paused: Boolean,
-    ): Boolean = ownerLive &&
+        backendAvailable: Boolean = true,
+    ): Boolean = ownerLive && backendAvailable &&
         (actualOwner == owner || armingOwner == owner || paused)
 
     fun ownership(

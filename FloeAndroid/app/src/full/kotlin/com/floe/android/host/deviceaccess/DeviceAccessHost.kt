@@ -3060,6 +3060,14 @@ internal class DeviceAccessHost(
         !closed && !isOwnerStopped(owner) && isOwnerRunLive(owner)
 
     private fun canPresentAutomationControls(owner: PhoneControlOwner): Boolean {
+        // An intentional pause keeps Resume reachable only while its driver
+        // still exists. A retained pause must not keep an overlay/notification
+        // resident after Accessibility revocation or ADB disconnection.
+        val backendAvailable = if (armedBackend == PhoneControlBackend.ADB_UI_AUTOMATION) {
+            adbUiReady && (host.nativeRootEpoch() ?: 0L) > 0L
+        } else {
+            !phoneServiceTornDown(phoneStatus)
+        }
         val actualOwner = if (armedBackend == PhoneControlBackend.ADB_UI_AUTOMATION) {
             val epoch = host.nativeRootEpoch()
             armedOwner?.takeIf {
@@ -3077,6 +3085,7 @@ internal class DeviceAccessHost(
             actualOwner = actualOwner,
             armingOwner = armingOwner,
             paused = phonePause.isPaused(owner),
+            backendAvailable = backendAvailable,
         )
     }
 

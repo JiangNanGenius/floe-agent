@@ -6,6 +6,8 @@ import com.floe.android.runtimeipc.RuntimeConnection
 import com.floe.android.host.RuntimeMetadataRead
 import com.floe.android.host.RuntimeMetadataReadFailure
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
@@ -32,7 +34,11 @@ object C01LinuxEnvironmentOwner {
         /** Existing Root stop/drain request. It must not be a model-only path. */
         val requestRootStop: (() -> Unit)?,
         val desktopMetadata: ((String) -> JSONObject?)?,
-    )
+    ) {
+        // One service-owned metadata refresh, shared by concurrent readers.
+        // Cancelling a caller's bounded wait must not cancel the setup host.
+        var componentRefresh: Job? = null
+    }
 
     @Volatile
     private var attachment: Attachment? = null
@@ -118,8 +124,29 @@ object C01LinuxEnvironmentOwner {
         .put("phase", "unavailable")
         .put("code", code.take(32))
 
+    private suspend fun currentSetupState(attached: Attachment): LocalRuntimeSetupHost.State? {
+        val cached = attached.setup.state.value
+        if (cached.phase != LocalRuntimeSetupHost.Phase.COMPONENT_REQUIRED ||
+            !RuntimeComponentMatch.matches(attached.context)) return cached
+        // The application setup host can predate a component installed from
+        // another settings host. Reconcile that stale phase through the real
+        // read-only setup flow, rather than advising a reinstall when fresh
+        // PackageManager facts already match.
+        val refresh = synchronized(attached) {
+            attached.componentRefresh?.takeIf { it.isActive }
+                ?: attached.setup.refresh().also { attached.componentRefresh = it }
+        }
+        if (withTimeoutOrNull(5_000) { refresh.join(); true } != true) return null
+        val updated = attached.setup.state.value
+        return updated.takeUnless {
+            it.phase == LocalRuntimeSetupHost.Phase.COMPONENT_REQUIRED &&
+                RuntimeComponentMatch.matches(attached.context)
+        }
+    }
+
     private suspend fun status(attached: Attachment, control: JSONObject): JSONObject {
-        val state = attached.setup.state.value
+        val state = currentSetupState(attached)
+            ?: return pending(attached, control, "Checking the installed Linux environment. Try again shortly.")
         val runtime = runtimeStatus(attached.context)
         val phase = when (state.phase) {
             LocalRuntimeSetupHost.Phase.COMPONENT_REQUIRED -> "componentRequired"
@@ -154,10 +181,11 @@ object C01LinuxEnvironmentOwner {
             }
     }
 
-    private fun start(attached: Attachment, control: JSONObject): JSONObject {
-        val state = attached.setup.state.value
+    private suspend fun start(attached: Attachment, control: JSONObject): JSONObject {
+        val state = currentSetupState(attached)
+            ?: return pending(attached, control, "Checking the installed Linux environment. Try again shortly.")
         return when (state.phase) {
-            LocalRuntimeSetupHost.Phase.INSTALLED -> statusBlocking(attached, control)
+            LocalRuntimeSetupHost.Phase.INSTALLED -> status(attached, control)
             LocalRuntimeSetupHost.Phase.INSTALLING,
             LocalRuntimeSetupHost.Phase.COMPONENT_INSTALLING,
             LocalRuntimeSetupHost.Phase.STOPPING -> pending(attached, control, "The existing runtime setup/stop operation is still running; nothing new was started.")

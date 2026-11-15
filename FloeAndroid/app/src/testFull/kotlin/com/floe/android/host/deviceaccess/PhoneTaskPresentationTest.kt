@@ -78,6 +78,20 @@ class PhoneTaskPresentationTest {
     }
 
     @Test
+    fun revokedOrDisconnectedDriverRetiresPausedControls() {
+        val run = owner(1, 1)
+        assertTrue(PhoneTaskPresentation.automationControlsVisible(
+            run, true, null, null, true, backendAvailable = true))
+        assertFalse(PhoneTaskPresentation.automationControlsVisible(
+            run, true, null, null, true, backendAvailable = false))
+        // Delayed old arm/owner projections cannot override a missing driver.
+        assertFalse(PhoneTaskPresentation.automationControlsVisible(
+            run, true, run, run, true, backendAvailable = false))
+        assertFalse(PhoneTaskPresentation.automationControlsVisible(
+            run, false, null, null, true, backendAvailable = true))
+    }
+
+    @Test
     fun failedInitialArmDoesNotLeaveResidentControls() {
         val run = owner(1, 1)
         assertFalse(PhoneTaskPresentation.automationControlsVisible(

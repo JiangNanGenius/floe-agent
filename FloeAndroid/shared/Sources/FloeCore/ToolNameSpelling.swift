@@ -11,14 +11,15 @@ public enum ToolNameSpelling {
     }
 
     /// Maps a model-emitted spelling to the unique matching name in
-    /// `universe`: exact match, then case-folded match, then a unique
+    /// `universe`: exact match, then a unique case-folded match, then a unique
     /// sanitized (dot/underscore, case-folded) match. Returns nil when the
-    /// spelling is unknown or ambiguous so callers can deny honestly.
+    /// spelling is unknown or ambiguous so callers can deny honestly; it must
+    /// never guess a different tool from a partial or ambiguous name.
     public static func canonical(_ spelling: String, among universe: [String]) -> String? {
         if universe.contains(spelling) { return spelling }
-        if let folded = universe.first(where: { $0.lowercased() == spelling.lowercased() }) {
-            return folded
-        }
+        let folded = spelling.lowercased()
+        let foldedMatches = Set(universe.filter { $0.lowercased() == folded })
+        if foldedMatches.count == 1 { return foldedMatches.first }
         let target = spelling.replacingOccurrences(of: ".", with: "_").lowercased()
         let matches = Set(universe.filter {
             $0.replacingOccurrences(of: ".", with: "_").lowercased() == target

@@ -295,6 +295,15 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
     /// Optional so checkpoints written before cross-turn replay decode.
     public var replayedToolPairs: [ReplayedToolPair]?
 
+    /// Desired progressive-discovery activation, independent of the exact
+    /// definitions that fit the last request. Optional so checkpoints written
+    /// before this field remain decodable; a nil value falls back to the
+    /// last dispatched schemas from `providerDispatchRequest`.
+    public var discoveredToolNames: [String]?
+    /// Activation order (most recently requested first) for stable schema
+    /// admission across resume. Optional for the same backward compatibility.
+    public var discoveryPriority: [String]?
+
     /// Explicit ownership prevents live context refresh from replacing a
     /// historical summary. Optional for checkpoints written by older builds.
     public var ownedSystemContextID: UUID?
@@ -308,7 +317,10 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
     /// value keeps the previous conservative repair behavior.
     public var sensitiveToolCallIDs: [String]?
 
-    /// Current checkpoint file format.
+    /// Current checkpoint file format. Additive optional fields
+    /// (`discoveredToolNames`, `discoveryPriority`) intentionally keep v5:
+    /// older readers ignore unknown JSON keys and new readers treat absence as
+    /// nil with the documented last-offer fallback, so no migration is needed.
     public static let currentFormatVersion = 5
     /// Current GRDB schema version.
     public static let currentSchemaVersion = 1
@@ -339,6 +351,8 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
         providerDispatchRequest: ProviderDispatchRequestSnapshot? = nil,
         pendingAssistantReasoning: String? = nil,
         replayedToolPairs: [ReplayedToolPair]? = nil,
+        discoveredToolNames: [String]? = nil,
+        discoveryPriority: [String]? = nil,
         ownedSystemContextID: UUID? = nil,
         sensitiveToolCallIDs: [String]? = nil
     ) {
@@ -367,6 +381,8 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
         self.providerDispatchRequest = providerDispatchRequest
         self.pendingAssistantReasoning = pendingAssistantReasoning
         self.replayedToolPairs = replayedToolPairs
+        self.discoveredToolNames = discoveredToolNames
+        self.discoveryPriority = discoveryPriority
         self.ownedSystemContextID = ownedSystemContextID
         self.sensitiveToolCallIDs = sensitiveToolCallIDs
     }

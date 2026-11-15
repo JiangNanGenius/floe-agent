@@ -1922,15 +1922,14 @@ public struct SubagentRunner: Sendable {
     }
 
     /// `tools.search` handled inside the child. Reuses the main run's
-    /// progressive selection (same matcher, same 23-tool/23-KB per-search
-    /// presentation bound); the cumulative child context is bounded by the
-    /// real JSON-escaped 48 KiB frozen-schema ledger, evicting oldest
-    /// definitions and reporting every eviction. The rendered "Loaded" block
-    /// names only the schemas the next request really carries (the admission
-    /// receipt), and a definition that is deferred or too large is reported
-    /// with its own reason — never as a silent omission. A definition that
-    /// cannot fit even alone is reported for that definition only — never a
-    /// catalog abort.
+    /// progressive matcher with no fixed tool-count pre-filter; the
+    /// cumulative child context is bounded by the real JSON-escaped 48 KiB
+    /// frozen-schema ledger, evicting oldest definitions and reporting every
+    /// eviction. The rendered "Loaded" block names only the schemas the next
+    /// request really carries (the admission receipt), and a definition that
+    /// is deferred or too large is reported with its own reason — never as a
+    /// silent omission. A definition that cannot fit even alone is reported
+    /// for that definition only — never a catalog abort.
     static func localDiscoverySearchResult(
         _ call: ToolCall,
         discovery: inout ChildToolDiscovery,
@@ -1952,10 +1951,11 @@ public struct SubagentRunner: Sendable {
             ["skill.read", "skill.search"].contains($0.name)
                 && !matched.map(\.name).contains($0.name)
         }
-        let selected = ToolDiscovery.bounded(
-            matched + skillFallback,
-            priority: matched.map(\.name)
-        )
+        // No fixed 23-tool/23-KB pre-filter: the child's discovery state
+        // admits every requested complete definition that fits its real
+        // frozen 48-KiB wire allowance. Anything that does not fit is
+        // reported by `load` below, never silently dropped or sliced.
+        let selected = matched + skillFallback
         let previouslyLoaded = Set(discovery.loaded)
         let receipt = discovery.load(selected.map(\.name), maxBytes: maximumFrozenToolSchemaBytes)
         // The child context for the NEXT request carries exactly
@@ -1964,7 +1964,9 @@ public struct SubagentRunner: Sendable {
         // never rendered inside the "Loaded" block.
         let loadedNow = Set(discovery.loaded)
         let loadedSelected = selected.filter { loadedNow.contains($0.name) }
-        let loadedLines = loadedSelected.map { descriptor in
+        let loadedTeaserLimit = 40
+        let loadedTeasers = loadedSelected.prefix(loadedTeaserLimit)
+        let loadedLines = loadedTeasers.map { descriptor in
             display(descriptor.name) + ": " + String(descriptor.toolDescription.prefix(160))
                 + (previouslyLoaded.contains(descriptor.name) ? " (schema already in context; call it directly, no reload needed)" : "")
         }.joined(separator: "\n")
@@ -1979,6 +1981,9 @@ public struct SubagentRunner: Sendable {
             summary += "\nNo matching executable tool could be loaded for the next request within the schema budget."
         } else {
             summary += "\nLoaded for the next request:\n" + loadedLines
+            if loadedSelected.count > loadedTeasers.count {
+                summary += "\n(\(loadedSelected.count - loadedTeasers.count) more loaded; use tools.list for the complete directory.)"
+            }
         }
         // Definitions the next request will NOT carry are reported with their
         // real reason: individually too large (reported for themselves below)
@@ -2006,9 +2011,8 @@ public struct SubagentRunner: Sendable {
                 + " (still callable by exact name)."
         }
         // Individual definitions too large to ever fit are reported for
-        // THEMSELVES; even when the per-search presentation bound dropped
-        // them before admission, the model gets the explicit reason instead of
-        // a silent omission. Nothing here aborts the child or the catalog.
+        // THEMSELVES; the model gets the explicit reason instead of a silent
+        // omission. Nothing here aborts the child or the catalog.
         if !oversized.isEmpty {
             let details = oversized
                 .sorted { $0.key < $1.key }
@@ -2016,6 +2020,24 @@ public struct SubagentRunner: Sendable {
                 .joined(separator: ", ")
             summary += "\nNot loadable within the request schema budget (definition too large on its own): "
                 + details + ". Everything else remains available."
+        }
+        // Exact-name searches carry the complete callable definitions in the
+        // result itself. Fit the section inside this child result's real
+        // 32-KB envelope; if it cannot fit, say so instead of letting the
+        // result clamp slice a JSON Schema.
+        let exactBudget = max(0, maximumResultBytes - summary.utf8.count - 256)
+        let exactSchemas = ToolDiscovery.exactSchemaSection(
+            ToolDiscovery.exactNameMatches(queries, descriptors: discovery.offered),
+            wireSafeNames: wireSafe,
+            perToolBytes: exactBudget,
+            totalBytes: exactBudget
+        )
+        if !exactSchemas.isEmpty {
+            if summary.utf8.count + exactSchemas.utf8.count + 2 <= maximumResultBytes {
+                summary += "\n\n" + exactSchemas
+            } else {
+                summary += "\n\nComplete exact schema text was omitted because this child result would exceed its bounded 32-KiB envelope. The definition remains discoverable; request the exact name again when the current pending result has settled."
+            }
         }
         return ToolResult(
             callID: call.id, status: .ok, outputSummary: summary,

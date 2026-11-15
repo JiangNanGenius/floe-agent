@@ -8,9 +8,15 @@ enum ToolDiscovery {
     static let coreNames: Set<String> = ["skill.search", "skill.read", "skill.list", "checklist.readPlan", "checklist.updatePlan", "exec.shell"]
     static let name = "tools.search"
     static let listName = "tools.list"
+    /// A discovery result may carry complete exact schemas. Keep that
+    /// bounded result intact through the pending-result channel instead of
+    /// applying the ordinary 2-KB history compaction, which would slice the
+    /// schema the model was explicitly shown. Anything above this byte cap
+    /// still falls back to the normal bounded summary.
+    static let maximumDiscoveryResultBytes = 96 * 1024
     static var listDescriptor: ToolCatalog.Descriptor {
         .init(name: listName,
-              toolDescription: "List the complete executable tool directory within this task's permission ceiling without loading schemas or executing tools. Follow nextAfterName until absent. Filter by group if desired. schemaLoaded=false means discoverable, not missing; use tools.search with an exact name or queries array to load definitions.",
+              toolDescription: "List the complete executable tool directory within this task's permission ceiling without loading schemas or executing tools. Follow nextAfterName until absent. Filter by group if desired. schemaLoaded reports complete definitions in the latest dispatched inference request (for a delegated child, its currently prepared next-request set), not historical activation or permission; false means discoverable, not missing. Use tools.search with an exact name or queries array to activate definitions; final request admission depends on the actual model window.",
               parametersJSON: #"{"type":"object","properties":{"afterName":{"type":"string"},"group":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":100}},"additionalProperties":false}"#,
               riskLabels: [], isSideEffecting: false)
     }
@@ -77,7 +83,7 @@ enum ToolDiscovery {
     }
     static var descriptor: ToolCatalog.Descriptor {
         .init(name: name,
-              toolDescription: "Load executable schemas by exact tool name or capability. Use skill.search/skill.read when workflow guidance is needed; exact tool calls do not require reading a guide. This search only loads definitions, never executes tools or grants permissions. Prefer an exact name when a group is too large.",
+              toolDescription: "Activate executable tool definitions by exact tool name or capability. Use skill.search/skill.read when workflow guidance is needed; exact tool calls do not require reading a guide. Final provider admission depends on the actual model window. This search never executes tools or grants permissions. Prefer an exact name when a group is too large.",
               parametersJSON: DiscoveryQueries.parametersJSON,
               riskLabels: [], isSideEffecting: false)
     }
@@ -201,6 +207,98 @@ enum ToolDiscovery {
         return base + fallback
     }
 
+    /// Tools whose canonical name (or a known alias) is an EXACT token of one
+    /// query. An exact-name search returns the complete callable definition
+    /// in this result when it fits the bounded display envelope, never a
+    /// 160-character teaser or a sliced schema, so the model can act on the
+    /// schema immediately. Future provider admission remains budgeted.
+    static func exactNameMatches(
+        _ queries: [String],
+        descriptors: [ToolCatalog.Descriptor]
+    ) -> [ToolCatalog.Descriptor] {
+        let descriptors = descriptors.filter { !RetiredExecutionTools.contains($0.name) }
+        var result: [ToolCatalog.Descriptor] = []
+        var seen = Set<String>()
+        for query in queries {
+            let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !trimmed.isEmpty else { continue }
+            let tokens = trimmed
+                .split(whereSeparator: { $0.isWhitespace || "，,;；/".contains($0) })
+                .map(String.init)
+            for descriptor in descriptors where !seen.contains(descriptor.name) {
+                let aliases = ToolAliasTable.aliases(of: descriptor.name)
+                let exact = tokens.contains(descriptor.name.lowercased())
+                    || aliases.contains(where: { tokens.contains($0.lowercased()) })
+                    || tokens.contains(where: { token in
+                        let canonical = ToolAliasTable.canonical(token)
+                        return canonical.lowercased() == descriptor.name.lowercased()
+                            || canonicalSpelling(token, among: descriptors).lowercased()
+                                == descriptor.name.lowercased()
+                    })
+                if exact {
+                    seen.insert(descriptor.name)
+                    result.append(descriptor)
+                }
+            }
+        }
+        return result
+    }
+
+    /// Complete callable schema text for exact-name matches. Bounded per tool
+    /// and in total; an oversized definition says so instead of being
+    /// silently cut into an invalid schema.
+    static func exactSchemaSection(
+        _ descriptors: [ToolCatalog.Descriptor],
+        wireSafeNames: Bool,
+        perToolBytes: Int = 24 * 1024,
+        totalBytes: Int = 48 * 1024
+    ) -> String {
+        guard !descriptors.isEmpty else { return "" }
+        var sections: [String] = []
+        var used = 0
+        for descriptor in descriptors {
+            let name = wireSpelling(descriptor.name, wireSafe: wireSafeNames)
+            let section = "Complete schema for \(name) (complete arguments below; activation is budgeted):\n"
+                + descriptor.toolDescription + "\nparametersJSON: " + descriptor.parametersJSON
+            // A JSON Schema cut to fit is not a smaller schema: required
+            // fields, nested objects and enums can be lost and the model then
+            // emits arguments the executor must reject. Report an oversized
+            // definition instead of slicing it; a later provider request can
+            // still carry the complete definition if the window permits.
+            if section.utf8.count > perToolBytes {
+                sections.append("The complete schema for \(name) is \(section.utf8.count) bytes, above this result's per-tool display envelope (\(perToolBytes) bytes). It was not sliced. It is a candidate for complete provider admission when the final request window permits. Do not guess absent arguments; a search result does not guarantee the next request can carry it.")
+                continue
+            }
+            if used + section.utf8.count > totalBytes {
+                if sections.isEmpty {
+                    sections.append("The complete schema for \(name) is \(section.utf8.count) bytes, above this discovery result's total display envelope (\(totalBytes) bytes) for the current model window. It was not sliced; request it again with a larger-context model or use the exact definition only when the provider request can carry it.")
+                } else {
+                    sections.append("More exact schemas were requested than this result can carry; search the remaining names one at a time. No schema below was cut.")
+                }
+                break
+            }
+            used += section.utf8.count
+            sections.append(section)
+        }
+        return sections.joined(separator: "\n\n")
+    }
+
+    /// Total display envelope for exact schemas in a discovery result.
+    /// Scaled to the real model window instead of a fixed value: an exact
+    /// schema result that cannot fit the next request would otherwise turn
+    /// discovery into an overflow. The 48 KiB ceiling bounds the exact-schema
+    /// section; smaller windows get a proportionally smaller envelope.
+    static func exactSchemaResultAllowance(
+        contextTokens: Int,
+        reservedOutputTokens: Int
+    ) -> Int {
+        let usableTokens = max(512, contextTokens - max(0, reservedOutputTokens))
+        // Bytes are not tokens; one byte per remaining token is deliberately
+        // conservative for mixed JSON/ASCII, so a discovery result never
+        // consumes the whole window by itself.
+        return min(48 * 1024, max(4 * 1024, usableTokens))
+    }
+
     static func index(_ descriptors: [ToolCatalog.Descriptor], wireSafeNames: Bool = false) -> String {
         let descriptors = descriptors.filter { !RetiredExecutionTools.contains($0.name) }
         let groups = Dictionary(grouping: descriptors, by: { group($0.name) })
@@ -210,9 +308,9 @@ enum ToolDiscovery {
         if names.isSuperset(of: ["checklist.readPlan", "checklist.updatePlan"]) {
             lines.append("At task start, judge whether the request requires substantial multi-step work. If so, use \(n("checklist.readPlan")) and \(n("checklist.updatePlan")) to maintain a durable checklist while executing; simple questions need none. Revise the same checklist when new evidence or user steering changes the work: preserve step IDs, update the revision, and retain completed evidence. A checklist never enables Goal mode.")
         }
-        lines.append("Use \(n("tools.list")) to enumerate tool metadata available in this run; it does not load every schema. Use \(n("tools.search")) to load definitions by exact name or capability, batching independent queries. Available groups: "
+        lines.append("Use \(n("tools.list")) to enumerate tool metadata available in this run; schemaLoaded there reflects the latest dispatched request, not permission. Use \(n("tools.search")) to activate definitions by exact name or capability, batching independent queries. Available groups: "
             + (groups.isEmpty ? "none" : groups.keys.sorted().map { "\($0) (\(groups[$0]!.count))" }.joined(separator: ", "))
-            + ". Deferred schemas are not missing capabilities; runtime permissions and prerequisites still apply.")
+            + ". Discoverable definitions are not missing capabilities; complete request admission depends on the actual model window, and runtime permissions and prerequisites still apply.")
         if names.contains("cad.document") {
             lines.append("Use \(n("cad.document")) for 2D DWG/DXF and native .floecad work. read/query/locate/measure/check are read-only; propose binds the exact revision and SHA and returns a new/changed/deleted preview without changing the original; apply commits ONE atomic undoable transaction for that exact proposal — with a grant_id the user issued in the CAD UI, or WITHOUT one under the runtime-approved call authority for that exact call — after the proposal's revision/SHA is re-verified against the live document. Never claim a drawing or model edit was applied or saved without an apply/save receipt, and never invent a grant id. For an already authorized editing task, continue from propose to apply without grant_id, then read/save/export and verify the real result. Wait for adoption only when the user asked to review first or the runtime requires approval. Native workbench services (drawing/assembly/script/mesh) need one named operation: payload.action or the legacy payload.op \"<kind>.<action>\" (for example \"drawing.addPage\"); an action-less payload is refused, never defaulted. Mutating ones run via propose then apply; drawing PDF/SVG/DXF export also needs page_id from query kind=drawings. Call capabilities with kind=drawing|assembly|script|mesh for exact arguments and examples.")
         }
@@ -230,7 +328,7 @@ enum ToolDiscovery {
             lines.append("Browser tools and local previews do not open the user interface. Only when a concrete interaction needs the user's help, use \(n("browser.panel")) action=requestUser with a clear reason. Routine navigation and progress reporting should remain in the background.")
         }
         if names.contains("exec.shell") {
-            lines.append("\(n("exec.shell")) is the general local execution entry point, with its schema kept available when authorized. Use POSIX shell commands and scripts for file/text processing, loops, pipelines and combining Python or Node operations in the current workspace. Choose shell when it expresses the task naturally; there is no requirement to split a command workflow into many specialized tools. Inspect available commands with command -v before relying on an unfamiliar utility. \(n("shell.open"))/\(n("shell.exchange")) provide persistent sessions when available. Shell calls retain the same permissions and result checks as other tools.")
+            lines.append("\(n("exec.shell")) is the general local execution entry point, with its complete schema admitted when the request window permits. Use POSIX shell commands and scripts for file/text processing, loops, pipelines and combining Python or Node operations in the current workspace. Choose shell when it expresses the task naturally; there is no requirement to split a command workflow into many specialized tools. Inspect available commands with command -v before relying on an unfamiliar utility. \(n("shell.open"))/\(n("shell.exchange")) provide persistent sessions when available. Shell calls retain the same permissions and result checks as other tools.")
         }
 
         // Native-first routing guidance is emitted only for capabilities this
@@ -270,27 +368,5 @@ enum ToolDiscovery {
             lines.append("Image generation can use any configured image route: call \(n("image.models")) first to read the public candidate names (`model`/`modelName`) and their parameter limits, choose the candidate that fits the request yourself, then pass its public `model` value to \(n("image.generate")). `model` and `modelID` are a mutually exclusive one-of; never ask the user for an internal UUID, and never resubmit a running or outcome-unknown generation.")
         }
         return lines.joined(separator: "\n")
-    }
-
-    /// Discovery is a presentation budget, never an authority grant.
-    static func bounded(_ descriptors: [ToolCatalog.Descriptor], priority: [String], pinned: Set<String> = [], maxTools: Int = 23, maxBytes: Int = 23_000) -> [ToolCatalog.Descriptor] {
-        let descriptors = descriptors.filter { !RetiredExecutionTools.contains($0.name) }
-        let core = coreNames
-        let ranks = Dictionary(priority.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: min)
-        let ordered = descriptors.sorted {
-            let a = core.contains($0.name) || pinned.contains($0.name)
-            let b = core.contains($1.name) || pinned.contains($1.name)
-            if a != b { return a }
-            let x = ranks[$0.name] ?? Int.max, y = ranks[$1.name] ?? Int.max
-            return x == y ? $0.name < $1.name : x < y
-        }
-        var result: [ToolCatalog.Descriptor] = [], bytes = 0
-        for descriptor in ordered {
-            let size = descriptor.parametersJSON.utf8.count + descriptor.toolDescription.utf8.count
-            let required = core.contains(descriptor.name) || pinned.contains(descriptor.name)
-            guard required || (result.count < maxTools && bytes + size <= maxBytes) else { continue }
-            result.append(descriptor); bytes += size
-        }
-        return result
     }
 }
