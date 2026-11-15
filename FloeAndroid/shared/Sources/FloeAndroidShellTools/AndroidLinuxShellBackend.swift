@@ -576,7 +576,8 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
                 engine.stopRequested = true
                 stopIssuedAt = Date()
                 sessions[holdKey] = SessionRecord(engine: engine, reconcilingSince: nil)
-                _ = try? await transport.shellCancel(LinuxShellCancelRequest(sessionID: engine.engineSessionID))
+                _ = try? await transport.shellCancel(LinuxShellCancelRequest(
+                    sessionID: engine.engineSessionID, reason: .timeout))
             }
             let ceiling = max(deadline, stopIssuedAt ?? deadline)
                 .addingTimeInterval(configuration.releaseGrace)

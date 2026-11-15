@@ -16,6 +16,8 @@ import com.floe.android.linuxruntime.supervision.*
 import com.floe.android.runtimeipc.RuntimePackages
 import com.floe.android.runtimeipc.RuntimePeerVerifier
 import com.floe.android.runtimeipc.RuntimeWire
+import com.floe.android.runtimeipc.ShellStopReason
+import com.floe.android.runtimeipc.ShellStopReasonLatch
 import com.floe.android.workspacebridge.RuntimeWorkspaceSession
 import com.floe.android.workspacebridge.WorkspaceCancelSignal
 import com.floe.android.workspacebridge.WorkspaceImportReceipt
@@ -206,6 +208,7 @@ internal class LinuxRuntimeOperations(
         val terminal = AtomicReference<WorkloadTerminal?>()
         val finished = AtomicBoolean()
         val startCancelled: AtomicBoolean = startCancellation
+        val stopCause = ShellStopReasonLatch()
         @Volatile var authorityBound = false
         @Volatile var nativeReleaseFailed = false
         @Volatile var cleanupDeferred = false
@@ -814,8 +817,12 @@ internal class LinuxRuntimeOperations(
                         RuntimeExecutionTrace.mark(Stage.OPS_PUMP_ENTER)
                         try {
                             while (owned.job.stateNow != JobState.TERMINATED) {
-                                if (isStartCancelled(owned) || canceled(cancelled)) owned.job.requestCancel("user-stop")
-                                else if (SystemClock.elapsedRealtime() >= owned.deadline) owned.job.requestCancel("timeout")
+                                if (isStartCancelled(owned) || canceled(cancelled)) {
+                                    owned.job.requestCancel(owned.stopCause.capture(ShellStopReason.USER_STOP).wireValue)
+                                }
+                                else if (SystemClock.elapsedRealtime() >= owned.deadline) {
+                                    owned.job.requestCancel(owned.stopCause.capture(ShellStopReason.TIMEOUT).wireValue)
+                                }
                                 val pumped = owned.job.pump()
                                 if (pumped is PumpOutcome.Blocked || pumped is PumpOutcome.QuiescePending || pumped is PumpOutcome.ReadFailed) break
                             }
@@ -896,7 +903,9 @@ internal class LinuxRuntimeOperations(
                 }
             } else child?.let { owned ->
                 owned.startCancelled.set(true)
-                val stopped = runCatching { owned.job.requestCancel("start-binding-failed") }.getOrNull()
+                val stopped = runCatching {
+                    owned.job.requestCancel(owned.stopCause.capture(ShellStopReason.START_BINDING_FAILED).wireValue)
+                }.getOrNull()
                 if (stopped is CancelOutcome.Terminated) owned.terminal.set(stopped.terminal)
                 reconcileUntilReleased(owned, terminal)
             }
@@ -1116,9 +1125,9 @@ internal class LinuxRuntimeOperations(
                         try {
                             while (owned.job.stateNow != JobState.TERMINATED) {
                                 if (isStartCancelled(owned) || canceled(cancelled)) {
-                                    owned.job.requestCancel("user-stop")
+                                    owned.job.requestCancel(owned.stopCause.capture(ShellStopReason.USER_STOP).wireValue)
                                 } else if (SystemClock.elapsedRealtime() >= owned.deadline) {
-                                    owned.job.requestCancel("timeout")
+                                    owned.job.requestCancel(owned.stopCause.capture(ShellStopReason.TIMEOUT).wireValue)
                                 }
                                 val pumped = owned.job.pump()
                                 if (pumped is PumpOutcome.Blocked || pumped is PumpOutcome.QuiescePending ||
@@ -1165,7 +1174,9 @@ internal class LinuxRuntimeOperations(
                 preparedScratch?.let { cleanupScratch(it, lease.id) }
             } else child?.let { owned ->
                 owned.startCancelled.set(true)
-                val stopped = runCatching { owned.job.requestCancel("start-binding-failed") }.getOrNull()
+                val stopped = runCatching {
+                    owned.job.requestCancel(owned.stopCause.capture(ShellStopReason.START_BINDING_FAILED).wireValue)
+                }.getOrNull()
                 if (stopped is CancelOutcome.Terminated) owned.terminal.set(stopped.terminal)
                 reconcileUntilReleased(owned, terminal)
             }
@@ -1966,6 +1977,8 @@ internal class LinuxRuntimeOperations(
                 requestID = request.payload.optString("requestID").takeIf { it.isNotEmpty() },
                 heldLeaseIDs = heldLeases.keys.toSet(),
                 pendingStartIDs = pendingShellStartIDs.toSet() + retainedTransactionStartIDs(),
+                stopReason = request.payload.opt("stopReason")?.toString(),
+                runningSessionIDs = running.keys,
             )
             require(scope != null) { "Cancellation does not address owned work" }
         }
@@ -1991,6 +2004,8 @@ internal class LinuxRuntimeOperations(
                 heldLeaseIDs = heldLeases.keys,
                 pendingStartIDs = cancelledStarts.keys + retainedTransactionStartIDs(),
                 runningStartIDs = running.values.map { it.startID },
+                stopReason = request.payload.opt("stopReason")?.toString(),
+                runningSessionIDs = running.keys,
             )
         }
         when (resolution.target) {
@@ -2034,7 +2049,7 @@ internal class LinuxRuntimeOperations(
             }
             StopTarget.SESSION -> {
                 val target = checkNotNull(resolution.id)
-                running[target]?.let { runCatching { cancelOwned(it) } }
+                running[target]?.let { runCatching { cancelOwned(it, resolution.reason) } }
                     ?: heldLeases[target]?.let { lease ->
                         // Exact held lease (pre-Running/finish window): arm
                         // only ITS start token, then cancel only THIS lease.
@@ -2047,10 +2062,13 @@ internal class LinuxRuntimeOperations(
     }
 
     /** Real stop + the designed completion retry for exactly this workload. */
-    private fun cancelOwned(owned: Running) {
+    private fun cancelOwned(owned: Running, reason: ShellStopReason = ShellStopReason.USER_STOP) {
+        // Publish before the cancellation flags: the pump may observe either
+        // flag immediately and must submit the SAME cause to the supervisor.
+        val acceptedCause = owned.stopCause.capture(reason)
         owned.startCancelled.set(true)
         authority.cancel(owned.lease)
-        val cancelled = supervisor.cancelActive(owned.job.lease, "user-stop")
+        val cancelled = supervisor.cancelActive(owned.job.lease, acceptedCause.wireValue)
         if (cancelled is CancelOutcome.Terminated) {
             owned.terminal.set(cancelled.terminal)
             finish(owned)
@@ -2097,8 +2115,12 @@ internal class LinuxRuntimeOperations(
             )
             when (action) {
                 ReconcileAction.DONE -> return
-                ReconcileAction.REQUEST_STOP -> runCatching { owned.job.requestCancel("user-stop") }
-                ReconcileAction.ENFORCE_DEADLINE -> runCatching { owned.job.requestCancel("timeout") }
+                ReconcileAction.REQUEST_STOP -> runCatching {
+                    owned.job.requestCancel(owned.stopCause.capture(ShellStopReason.USER_STOP).wireValue)
+                }
+                ReconcileAction.ENFORCE_DEADLINE -> runCatching {
+                    owned.job.requestCancel(owned.stopCause.capture(ShellStopReason.TIMEOUT).wireValue)
+                }
                 ReconcileAction.SETTLE -> {
                     val settlement = runCatching { supervisor.settleLease(owned.job.lease) }.getOrNull()
                     if (settlement is LeaseSettlement.Released) {
@@ -2157,7 +2179,11 @@ internal class LinuxRuntimeOperations(
     /** Exact execution-time stop scope. */
     internal enum class StopTarget { NONE, ALL, INSTALL, PREFLIGHT, PENDING_START, SESSION }
 
-    internal data class StopResolution(val target: StopTarget, val id: String? = null)
+    internal data class StopResolution(
+        val target: StopTarget,
+        val id: String? = null,
+        val reason: ShellStopReason = ShellStopReason.USER_STOP,
+    )
 
     /**
      * Exact ownership-map cleanup for the safe-to-abandon start path.
@@ -2272,10 +2298,15 @@ internal class LinuxRuntimeOperations(
             requestID: String?,
             heldLeaseIDs: Collection<String>,
             pendingStartIDs: Collection<String>,
+            stopReason: String? = null,
+            runningSessionIDs: Collection<String> = emptyList(),
         ): String? = when {
-            keys == setOf("sessionID") ->
+            keys == setOf("sessionID") && stopReason == null ->
                 if (sessionID != null && heldLeaseIDs.contains(sessionID)) "session" else null
-            keys == setOf("requestID") ->
+            keys == setOf("sessionID", "stopReason") &&
+                ShellStopReason.fromWire(stopReason) != null ->
+                if (sessionID != null && sessionID in heldLeaseIDs && sessionID in runningSessionIDs) "session" else null
+            keys == setOf("requestID") && stopReason == null ->
                 if (requestID != null && pendingStartIDs.contains(requestID)) "pendingStart" else null
             else -> null
         }
@@ -2349,6 +2380,8 @@ internal class LinuxRuntimeOperations(
             heldLeaseIDs: Collection<String>,
             pendingStartIDs: Collection<String>,
             runningStartIDs: Collection<String>,
+            stopReason: String? = null,
+            runningSessionIDs: Collection<String> = emptyList(),
         ): StopResolution {
             if (operation == null) return StopResolution(StopTarget.ALL)
             return when (operation) {
@@ -2361,10 +2394,14 @@ internal class LinuxRuntimeOperations(
                         StopResolution(StopTarget.PREFLIGHT, requestID)
                     } else StopResolution(StopTarget.NONE)
                 "shell.cancel" -> when {
-                    keys == setOf("sessionID") && sessionID != null &&
+                    keys == setOf("sessionID") && stopReason == null && sessionID != null &&
                         sessionID in heldLeaseIDs ->
                         StopResolution(StopTarget.SESSION, sessionID)
-                    keys == setOf("requestID") && requestID != null &&
+                    keys == setOf("sessionID", "stopReason") &&
+                        ShellStopReason.fromWire(stopReason) != null && sessionID != null &&
+                        sessionID in heldLeaseIDs && sessionID in runningSessionIDs ->
+                        StopResolution(StopTarget.SESSION, sessionID, checkNotNull(ShellStopReason.fromWire(stopReason)))
+                    keys == setOf("requestID") && stopReason == null && requestID != null &&
                         (requestID in pendingStartIDs || requestID in runningStartIDs) ->
                         StopResolution(StopTarget.PENDING_START, requestID)
                     else -> StopResolution(StopTarget.NONE)

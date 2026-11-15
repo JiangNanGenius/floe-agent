@@ -59,6 +59,7 @@ final class FakeLinuxShellTransport: LinuxShellTransport, @unchecked Sendable {
     var runtimeStatusError: Error?
     var inputError: Error?
     var releaseAfterCancel = true
+    var cancelledStopReason: String? = "user-stop"
 
     func recordStart(_ request: LinuxShellStartRequest) {
         lock.lock(); starts.append(request); lock.unlock()
@@ -70,6 +71,7 @@ final class FakeLinuxShellTransport: LinuxShellTransport, @unchecked Sendable {
     /// Lock-guarded (Swift 6 race-safe) view of the LAST recorded stop
     /// request's engine session, for target-only cancellation proofs.
     var lastCancelSessionID: String? { lock.lock(); defer { lock.unlock() }; return cancels.last?.sessionID }
+    var lastCancelReason: LinuxShellStopReason? { lock.lock(); defer { lock.unlock() }; return cancels.last?.reason }
 
     private var perSessionPolls: [String: Int] = [:]
     private var released: Set<String> = []
@@ -122,6 +124,7 @@ final class FakeLinuxShellTransport: LinuxShellTransport, @unchecked Sendable {
         let isReleased: Bool
         let stopRequested: Bool
         let releaseAfterCancel: Bool
+        let cancelledStopReason: String?
     }
 
     private func pollStepLocked(_ request: LinuxShellPollRequest) -> PollStep {
@@ -132,7 +135,8 @@ final class FakeLinuxShellTransport: LinuxShellTransport, @unchecked Sendable {
         return PollStep(nth: nth, scripted: pollScript, error: pollError,
                         isReleased: released.contains(request.sessionID),
                         stopRequested: cancels.contains { $0.sessionID == request.sessionID },
-                        releaseAfterCancel: releaseAfterCancel)
+                        releaseAfterCancel: releaseAfterCancel,
+                        cancelledStopReason: cancelledStopReason)
     }
 
     func shellRuntimeStatus() async throws -> LinuxShellRuntimeStatus {
@@ -160,7 +164,7 @@ final class FakeLinuxShellTransport: LinuxShellTransport, @unchecked Sendable {
             return LinuxShellPollReply(sessionID: request.sessionID, mergedOutput: Data(),
                                        cursor: request.cursor, gapBytes: 0, more: false,
                                        droppedBytes: 0, state: .terminated, leaseReleased: true,
-                                       cancelled: true, stopReason: "user-stop",
+                                       cancelled: true, stopReason: step.cancelledStopReason,
                                        exitCode: 0, termSig: 0, waitErrno: 0,
                                        // Positive synthetic fixture default: the same
                                        // explicit synced proof `page()` already carries.

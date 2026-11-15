@@ -454,6 +454,26 @@ final class LinuxShellMailboxTests: XCTestCase {
         }
     }
 
+    func testTrustedTimeoutCauseIsSerializedWithoutChangingTheTarget() async throws {
+        let (mailbox, transport) = makeMailbox()
+        XCTAssertTrue(mailbox.bind(epoch: 10))
+        let replyTask = Task {
+            try await transport.shellCancel(LinuxShellCancelRequest(sessionID: "lease-9", reason: .timeout))
+        }
+        let host = try claimOne(mailbox)
+        XCTAssertEqual(host.operation, "shell.cancel")
+        XCTAssertEqual(host.payload.keys.sorted(), ["sessionID", "stopReason"])
+        XCTAssertEqual(host.payload["sessionID"] as? String, "lease-9")
+        XCTAssertEqual(host.payload["stopReason"] as? String, "timeout")
+        let buffer = Data(#"{"state":"stop_requested"}"#.utf8)
+        buffer.withUnsafeBytes { raw in
+            XCTAssertEqual(mailbox.complete(claim: host.claim, status: 0,
+                value: raw.bindMemory(to: UInt8.self).baseAddress!, valueLen: Int32(buffer.count)), 0)
+        }
+        let reply = try await replyTask.value
+        XCTAssertEqual(reply.state, "stop_requested")
+    }
+
     func testFailedReceiptMapsToTypedRemoteFailure() async throws {
         let (mailbox, transport) = makeMailbox()
         XCTAssertTrue(mailbox.bind(epoch: 10))

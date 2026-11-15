@@ -151,7 +151,7 @@ fun FloeConversationDestination(
                 modifier = Modifier.weight(1f),
                 onAttachmentDesign = if (state.isTemporary) null else onAttachmentDesign,
             )
-            BackgroundJobsWaitingBar(holder)
+            BackgroundJobsWaitingBar(holder, isWide = isWide)
             ThreadCompactionStatus(holder)
             ThreadErrorBanner(holder)
             ThreadContinuationBar(holder)
@@ -172,7 +172,7 @@ fun FloeConversationDestination(
 
     // Sheet hosts (same surfaces the iOS view presents over the thread):
     GoalBuilderSheet(holder)
-    BackgroundJobsSheet(holder)
+    BackgroundJobsSheet(holder, isWide = isWide)
     PendingInputEditorSheet(holder)
     TemporaryChatAboutSheet(holder)
     ChildRunDetailSheet(holder)

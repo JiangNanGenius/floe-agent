@@ -4,6 +4,8 @@ package com.floe.android.host.linux
 import android.content.Context
 import android.os.IBinder
 import com.floe.android.runtimeipc.RuntimeExecutionTrace
+import com.floe.android.runtimeipc.ShellStopReason
+import com.floe.android.runtimeipc.ShellStopReasonLatch
 import com.floe.android.runtimeipc.RuntimeExecutionTrace.Stage
 import com.floe.android.host.RunForegroundBinding
 import com.floe.android.host.services.C01ManagedServiceOwner
@@ -162,6 +164,7 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
         private var settledProof: String? = null
         suspend fun hasSettledProof(): Boolean = settlementLock.withLock { settledProof != null }
         val stop = AtomicBoolean()
+        private val stopCause = ShellStopReasonLatch()
         private val tracedStopTargets = ConcurrentHashMap.newKeySet<Stage>()
         @Volatile var sessionID: String? = null
         /** The runtime PROCESS boot token that admitted this exact session
@@ -204,12 +207,19 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
             retired = { readTerminalPoll(payload, JSONObject(checkNotNull(settledProof))) },
         )
 
-        suspend fun requestStop() {
+        suspend fun requestStop(reason: ShellStopReason = ShellStopReason.USER_STOP) {
+            if (reason == ShellStopReason.TIMEOUT) {
+                check(sessionID != null) { "A command deadline cannot precede execution admission" }
+            }
+            val acceptedCause = stopCause.capture(reason)
             val stopStage = if (sessionID == null) Stage.PUMP_STOP_REQUEST else Stage.PUMP_STOP_SESSION
             if (tracedStopTargets.add(stopStage)) RuntimeExecutionTrace.mark(stopStage)
             stop.set(true)
             val target = sessionID?.let { JSONObject().put("sessionID", it) }
                 ?: JSONObject().put("requestID", controlID)
+            if (acceptedCause == ShellStopReason.TIMEOUT) {
+                target.put("stopReason", acceptedCause.wireValue)
+            }
             try { exchange("shell.cancel", target) } catch (_: Exception) { /* receipt/watch retains ownership */ }
         }
 
@@ -603,7 +613,11 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
                 // Share its settlement lock before selecting a connection.
                 owner.poll(payload)
             } else if (operation == "shell.cancel") {
-                owner.requestStop(); JSONObject().put("state", "stop_requested")
+                val reason = if (payload.has("stopReason")) {
+                    require(payload.opt("stopReason") is String)
+                    requireNotNull(ShellStopReason.fromWire(payload.getString("stopReason")))
+                } else ShellStopReason.USER_STOP
+                owner.requestStop(reason); JSONObject().put("state", "stop_requested")
             } else {
                 val first = owner.exchange(operation, payload)
                 // Poll is an immediate memory snapshot; input/resize are

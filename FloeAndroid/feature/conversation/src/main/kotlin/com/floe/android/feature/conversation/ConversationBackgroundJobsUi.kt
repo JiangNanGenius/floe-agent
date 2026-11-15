@@ -48,9 +48,29 @@ import com.floe.android.design.FloeIcons
 fun BackgroundJobsWaitingBar(
     holder: ConversationFlowHolder,
     modifier: Modifier = Modifier,
+    isWide: Boolean = false,
 ) {
     val state = holder.snapshot.value ?: return
     if (!FloeBackgroundJobPresentation.showsWaitingBar(state)) return
+    val actions: @Composable () -> Unit = {
+        if (state.selectedRunDependenciesSettled && !state.isRunning) {
+            FloeCapsuleAction(
+                label = stringResource(R.string.action_continue),
+                onClick = { holder.retry() },
+            )
+        }
+        FloeCapsuleAction(
+            label = stringResource(R.string.jobs_view),
+            onClick = { holder.openBackgroundJobs() },
+        )
+        if (state.isRunning || state.selectedRunWaitingForJobs) {
+            FloeCapsuleAction(
+                label = stringResource(R.string.action_stop),
+                tint = Floe.colors.destructive,
+                onClick = { holder.cancel() },
+            )
+        }
+    }
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -66,6 +86,8 @@ fun BackgroundJobsWaitingBar(
                     stringResource(R.string.jobs_waiting_title),
                     style = Floe.typography.metadata,
                     color = Floe.colors.label,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
                 FloeText(
                     stringResource(
@@ -77,24 +99,19 @@ fun BackgroundJobsWaitingBar(
                     ),
                     style = Floe.typography.metadata,
                     color = Floe.colors.secondaryLabel,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
-            if (state.selectedRunDependenciesSettled && !state.isRunning) {
-                FloeCapsuleAction(
-                    label = stringResource(R.string.action_continue),
-                    onClick = { holder.retry() },
-                )
-            }
-            FloeCapsuleAction(
-                label = stringResource(R.string.jobs_view),
-                onClick = { holder.openBackgroundJobs() },
-            )
-            if (state.isRunning || state.selectedRunWaitingForJobs) {
-                FloeCapsuleAction(
-                    label = stringResource(R.string.action_stop),
-                    tint = Floe.colors.destructive,
-                    onClick = { holder.cancel() },
-                )
+            if (isWide) actions()
+        }
+        if (!isWide) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                actions()
             }
         }
     }
@@ -102,12 +119,12 @@ fun BackgroundJobsWaitingBar(
 
 /** The bounded, inspectable list of THIS task's durable finite jobs. */
 @Composable
-fun BackgroundJobsSheet(holder: ConversationFlowHolder) {
+fun BackgroundJobsSheet(holder: ConversationFlowHolder, isWide: Boolean = false) {
     val state = holder.snapshot.value
     FloePageSheet(
         visible = holder.backgroundJobsVisible,
         onDismiss = holder::dismissBackgroundJobs,
-        widthFraction = 0.66f,
+        widthFraction = if (isWide) 0.66f else 0.94f,
         heightFraction = 0.74f,
         placement = FloeSheetPlacement.CENTER,
     ) {

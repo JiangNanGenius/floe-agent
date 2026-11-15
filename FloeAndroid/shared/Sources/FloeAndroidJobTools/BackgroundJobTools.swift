@@ -631,7 +631,7 @@ public struct JobsSubmitTool: AgentTool {
         let waits = args.wait ?? true
         let note = payloadMatches
             ? (waits
-                ? "Job accepted. This task stays open until the job finishes and then continues in the SAME run with the result; use jobs.result for the full output if the announcement is ever lost."
+                ? "Job accepted, NOT completed. Its preparation and execution may still be pending; elapsed time does not prove its outputs exist. End this turn to wait for the completion notice, or continue unrelated work. This task stays open and continues in the SAME run with the result; use jobs.result for the full output if the announcement is ever lost."
                 : "Job accepted as detached work. Do not resubmit the same payload; collect it later with jobs.status/jobs.result.")
             : "This call id already has an accepted job with DIFFERENT arguments; the original payload runs. Poll it with this jobID, or submit the changed operation under a new call id."
         return try jobsOutput(Response(

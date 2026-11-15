@@ -1171,7 +1171,8 @@ public struct MailboxLinuxShellTransport: LinuxShellTransport {
     }
 
     public func shellCancel(_ request: LinuxShellCancelRequest) async throws -> LinuxShellCancelReply {
-        let payload: [String: Any] = ["sessionID": request.sessionID]
+        var payload: [String: Any] = ["sessionID": request.sessionID]
+        if let reason = request.reason { payload["stopReason"] = reason.rawValue }
         // Exact sessionID only: the engine refuses to stop another workload
         // (validateCancellation), and "stop_requested" is NOT a proven stop.
         let reply = try await mailbox.submit(operation: "shell.cancel",

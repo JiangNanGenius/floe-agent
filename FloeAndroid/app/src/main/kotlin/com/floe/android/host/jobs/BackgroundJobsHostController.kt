@@ -80,6 +80,13 @@ internal class BackgroundJobsHostController(
                         if (result.error != null) {
                             entry.builder.applyBackgroundJobsFailure(result.error)
                         } else {
+                            if (!quiet) {
+                                val terminalCount = result.jobs.count { it.terminal }
+                                android.util.Log.i("FloeTaskJobs",
+                                    "list jobs=${result.jobs.size} terminal=$terminalCount " +
+                                        "nonterminal=${result.jobs.size - terminalCount} " +
+                                        "truncated=${result.truncated}")
+                            }
                             entry.builder.applyBackgroundJobs(
                                 result.jobs, result.truncated, null)
                         }

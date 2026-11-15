@@ -1,13 +1,16 @@
 // FloeAndroidShellTools — Android platform mirror of the ORIGINAL
 // FloeAgent/Sources/FloeExecution/Shell/LocalShellService.swift.
-// Every statement is byte-equal to the original except ONE additive line:
+// Android adaptations:
 //   A1 (owner threading, job-1bd4fcce5eca4856): the constructed
 //      `ShellRunRequest` additionally carries
 //      `conversationID: context.conversationID` — the runtime-issued
 //      conversation identity the engine `shell.start` payload requires and
 //      the ORIGINAL DTO lacks (see LocalShellBackend.swift header D2). It
 //      comes from the trusted `ToolContext`, never from model text, and no
-//      other validation/limits/root-resolution/journal behaviour is changed.
+//      other validation/root-resolution/journal behaviour is changed.
+//   A1c: a service-owned background job defaults to its existing background
+//      budget, rather than inheriting the short foreground default. Explicit
+//      timeouts and both compiled ceilings remain authoritative.
 // The iOS guest-shape helpers are excluded (LocalShellBackend.swift D1);
 // the service never referenced them, so the body is otherwise identical.
 //
@@ -93,7 +96,8 @@ public actor LocalShellService {
     /// Clamps requested limits to the compiled ceilings. Exposed for tests.
     public nonisolated func normalizedTimeout(_ requested: TimeInterval?, isBackground: Bool) -> TimeInterval {
         let ceiling = isBackground ? configuration.backgroundTimeout : configuration.maxTimeout
-        let value = requested.flatMap { $0.isFinite ? $0 : nil } ?? configuration.defaultTimeout
+        let fallback = isBackground ? configuration.backgroundTimeout : configuration.defaultTimeout
+        let value = requested.flatMap { $0.isFinite ? $0 : nil } ?? fallback
         return max(0.05, min(value, ceiling))
     }
 

@@ -940,11 +940,23 @@ public struct LinuxShellResizeReply: Sendable, Equatable {
     public init(resized: Bool) { self.resized = resized }
 }
 
+public enum LinuxShellStopReason: String, Sendable, Equatable {
+    case userStop = "user-stop"
+    case timeout = "timeout"
+}
+
 public struct LinuxShellCancelRequest: Sendable, Equatable {
     /// EXACT engine session id. The engine refuses a stale cancellation
     /// from stopping another workload.
     public var sessionID: String
-    public init(sessionID: String) { self.sessionID = sessionID }
+    /// Trusted backend intent, never a model argument. nil retains the
+    /// legacy user-stop payload. Terminal classification still requires the
+    /// engine's actual released receipt and its first accepted stop reason.
+    public var reason: LinuxShellStopReason?
+    public init(sessionID: String, reason: LinuxShellStopReason? = nil) {
+        self.sessionID = sessionID
+        self.reason = reason
+    }
 }
 
 public struct LinuxShellCancelReply: Sendable, Equatable {

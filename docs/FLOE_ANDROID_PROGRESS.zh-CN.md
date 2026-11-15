@@ -1,5 +1,17 @@
 # Floe Android 分目标实施记录
 
+## 1.0.14／123实机发现的后台默认超时修复，准备新候选（2026-11-15）
+
+上一私有候选已完成真实ARM64生产、58项包内绑定／16KiB和四包API28–29签名检查，并以保留数据的方式安装三星。旧等待任务的实际停止入口可用，界面最终显示已停止；原失败长任务未继续。
+
+新的受控任务确实提交了后台作业，但未生成文件。官方任务导出与运行阶段记录确认：未填写超时时，后台命令沿用前台10秒默认值；冷准备结束后执行约10秒，期限触发的取消又被运行时归为主动停止。保留该失败任务和导出，没有重发或继续原失败运行。
+
+本批将后台默认值设为既有后台预算，保留显式短超时、前后台上限与进程结束证明；期限原因通过私有调用链传递，首次原因在重复清理中保持，未知原因、混合目标和准备阶段的期限取消均拒绝。手机等待栏与弹窗同时做紧凑调整。实际Swift6生产对象及16项宿主测试通过；相关Kotlin生产代码编译为99个类，首次原因与原有停止范围合计21项JVM测试通过。测试首次遗漏import和JVM参数过长的原始记录保留，修复后完成相应检查。
+
+这些仍是代码与定向检查证据，新的ARM64产物、Full安装包及三星正向成果／浮球验收待完成。1.0.14尚未公开，公开版本仍为1.0.13；不把上个候选的失败、编译通过或已准备的源码附件算成发布成功。以下保留先前阶段记录。
+
+English: Samsung found that an omitted background timeout inherited the ten-second foreground default and that the ensuing deadline stop was reported as a user stop. The bounded repair keeps explicit limits and real settlement proof, carries the trusted stop cause through the host/runtime path, and retains the first cause. Actual Swift6 objects and16 focused cases, production Kotlin objects and21 JVM cases passed. A new ARM64/APK and positive device acceptance are still pending; public1.0.13 remains unchanged.
+
 ## 1.0.14／123候选：作业接续与控制清理，进入ARM64构建（2026-11-15）
 
 已接通当前任务的后台作业面板、逐项取消、等待期间停止、完成后的原运行接续，以及模型仍在运行时的原生状态通知。前台服务保护通过已有宿主通道真实申请，保持同一任务、运行与环境代次；停止、重复回调、其他运行占用及不确定的冷恢复均有围栏。系统状态通知不伪造用户消息，取消请求不伪造进程结束。

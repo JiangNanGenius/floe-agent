@@ -531,7 +531,7 @@ fun ContextUsageDetails(usage: UsageUi, modifier: Modifier = Modifier) {
 @Composable
 fun ThreadContinuationBar(holder: ConversationFlowHolder, modifier: Modifier = Modifier) {
     val state = holder.snapshot.value ?: return
-    if (!state.canContinue) return
+    if (!state.canContinue || state.selectedRunWaitingForJobs) return
     val continueLabel = stringResource(R.string.action_continue)
     val title = when (FloeContinuationPresentation.titleKey(state.liveStateName, state.continuationReasonRaw)) {
         "state_stopped" -> R.string.state_stopped
