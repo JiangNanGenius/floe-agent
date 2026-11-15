@@ -34,19 +34,25 @@ public enum BridgeResponseValidation {
         return id
     }
 
+    public static func uploadChunkLimit(_ begin: [String: BridgeValue]) throws -> Int {
+        guard let value = begin["maximumChunkBytes"] else { return BridgeWire.pageBytes }
+        guard let size = value.integer, size > 0 else { throw BridgeFailure.invalidResponse }
+        return Int(min(size, Int64(BridgeWire.maximumFileChunkBytes)))
+    }
+
     public static func fileListPage(_ payload: [String: BridgeValue], offset: Int64,
                                     seenPaths: Set<String>) throws -> FileListPage {
         guard offset >= 0, let values = payload["files"]?.array,
               values.count <= maximumListedFiles - seenPaths.count else {
             throw BridgeFailure.invalidResponse
         }
-        var paths = seenPaths
+        var paths = Set<String>()
         var files: [[String: BridgeValue]] = []
         for value in values {
             guard let row = value.object, let path = row["path"]?.string,
                   validRelativePath(path), let size = row["size"]?.integer, size >= 0,
                   let hash = row["sha256"]?.string, validDigest(hash),
-                  paths.insert(path).inserted else { throw BridgeFailure.invalidResponse }
+                  !seenPaths.contains(path), paths.insert(path).inserted else { throw BridgeFailure.invalidResponse }
             files.append(row)
         }
         let next: Int64?
@@ -64,8 +70,9 @@ public enum BridgeResponseValidation {
     }
 
     public static func fileChunk(_ payload: [String: BridgeValue], offset: Int64,
-                                 totalBytes: Int64) throws -> Data {
-        let data = try decodedData(payload, limit: BridgeWire.pageBytes)
+                                 totalBytes: Int64, limit: Int = BridgeWire.pageBytes) throws -> Data {
+        guard limit <= BridgeWire.maximumFileChunkBytes else { throw BridgeFailure.invalidResponse }
+        let data = try decodedData(payload, limit: limit)
         let (end, overflow) = offset.addingReportingOverflow(Int64(data.count))
         guard offset >= 0, totalBytes >= offset, !overflow, end <= totalBytes,
               payload["offset"]?.integer == end,
@@ -75,6 +82,7 @@ public enum BridgeResponseValidation {
 
     public static func poll(_ payload: [String: BridgeValue], offset: Int64,
                             limit: Int = BridgeWire.pageBytes) throws -> PollPage {
+        guard limit <= BridgeWire.pageBytes else { throw BridgeFailure.invalidResponse }
         let data = try decodedData(payload, limit: limit)
         let (end, overflow) = offset.addingReportingOverflow(Int64(data.count))
         guard offset >= 0, !overflow, payload["offset"]?.integer == end,
@@ -109,7 +117,7 @@ public enum BridgeResponseValidation {
     }
 
     private static func decodedData(_ payload: [String: BridgeValue], limit: Int) throws -> Data {
-        guard limit > 0, limit <= BridgeWire.pageBytes, let text = payload["data"]?.string,
+        guard limit > 0, let text = payload["data"]?.string,
               text.utf8.count <= ((limit + 2) / 3) * 4,
               let data = Data(base64Encoded: text), data.count <= limit else {
             throw BridgeFailure.invalidResponse

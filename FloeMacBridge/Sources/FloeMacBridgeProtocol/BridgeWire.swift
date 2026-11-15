@@ -36,6 +36,9 @@ public enum BridgeWire {
     public static let endpoint = URL(string: "http://127.0.0.1:43871/rpc")!
     public static let maximumFrameBytes = 4 * 1_024 * 1_024
     public static let pageBytes = 64 * 1_024
+    /// File RPCs may opt in to larger chunks. Terminal I/O and older peers
+    /// continue using pageBytes within the same wire-1 envelope.
+    public static let maximumFileChunkBytes = 1_024 * 1_024
     public static func encode<T: Encodable>(_ value: T) throws -> Data {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]

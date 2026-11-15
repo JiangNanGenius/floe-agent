@@ -34,23 +34,34 @@ struct BridgePaths: Sendable {
         return url
     }
     static func files(in root: URL) throws -> [[String: BridgeValue]] {
-        guard let entries = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]) else { return [] }
+        var readError: Error?
+        guard let entries = FileManager.default.enumerator(at: root,
+            includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey],
+            errorHandler: { _, error in readError = error; return false }) else {
+            throw BridgeFailure.remote("The Mac workspace could not be listed.")
+        }
         var result: [[String: BridgeValue]] = []
         for case let file as URL in entries {
-            let relative = String(file.path.dropFirst(root.path.count + 1))
+            // The enumerator can return /private/var for a /var root. Its
+            // directory depth identifies the child's relative path in both.
+            guard entries.level > 0 else { throw BridgeFailure.unsafePath }
+            let relative = file.pathComponents.suffix(entries.level).joined(separator: "/")
             if BridgeWorkspaceTransferPolicy.excludes(relative) { entries.skipDescendants(); continue }
             let values = try file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
             guard values.isSymbolicLink != true else { entries.skipDescendants(); continue }
             guard values.isRegularFile == true else { continue }
-            let path = String(file.path.dropFirst(root.path.count + 1))
+            guard result.count < BridgeResponseValidation.maximumListedFiles else {
+                throw BridgeFailure.remote("The workspace has too many files to synchronize.")
+            }
             // Hash incrementally; large artifacts never enter one Data allocation.
             let handle = try FileHandle(forReadingFrom: file)
             defer { try? handle.close() }
             var hasher = SHA256()
             while let chunk = try handle.read(upToCount: 256 * 1_024), !chunk.isEmpty { hasher.update(data: chunk) }
             let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
-            result.append(["path": .string(path), "size": .integer(Int64(values.fileSize ?? 0)), "sha256": .string(digest)])
+            result.append(["path": .string(relative), "size": .integer(Int64(values.fileSize ?? 0)), "sha256": .string(digest)])
         }
+        if let readError { throw readError }
         return result.sorted { ($0["path"]?.string ?? "") < ($1["path"]?.string ?? "") }
     }
 }

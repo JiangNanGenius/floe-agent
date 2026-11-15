@@ -8,7 +8,7 @@ import FloeMacBridgeProtocol
 actor BridgeService {
     struct Pair: Codable, Sendable { let key: Data; let name: String; let acceptedAt: Date; let verification: String?; let nonce: String? }
     struct Delivery: Sendable { let data: Data; let lease: BridgeUpdateActivity.Lease }
-    struct Transfer: Sendable { let root: URL; let relativePath: String; let stage: URL; let expected: String?; let clientID: String; var updatedAt: Date; let updateLease: BridgeUpdateActivity.Lease }
+    struct Transfer: Sendable { let root: URL; let relativePath: String; let stage: URL; let expected: String?; let clientID: String; var expires: ContinuousClock.Instant; let updateLease: BridgeUpdateActivity.Lease }
     let paths: BridgePaths
     nonisolated let updateActivity: BridgeUpdateActivity
     let jobs: BridgeJobs
@@ -16,6 +16,20 @@ actor BridgeService {
     private var pairs: [String: Pair]
     private var accepted: [String: Int64] = [:]
     private var transfers: [String: Transfer] = [:]
+    private let transferLifetime: Duration
+    private let listingLifetime: Duration
+    private var expiryTask: Task<Void, Never>?
+    private struct ListingKey: Hashable {
+        let client: String
+        let workspace: String
+        let id: String?
+    }
+    private struct Listing {
+        let files: [[String: BridgeValue]]
+        var next: Int
+        var expires: ContinuousClock.Instant
+    }
+    private var listings: [ListingKey: Listing] = [:]
     private var pending: [String: (name: String, key: Data, nonce: String, verification: String, updateLease: BridgeUpdateActivity.Lease)] = [:]
     private var rejected: [String: String] = [:]
     var skillPins: [String: Set<String>] = [:]
@@ -23,8 +37,11 @@ actor BridgeService {
     // A caller-supplied key permits isolated synthetic contract fixtures without
     // accessing the user's Keychain. The application uses the existing default.
     init(paths: BridgePaths, updateActivity: BridgeUpdateActivity = BridgeUpdateActivity(),
-         signingKey: Curve25519.Signing.PrivateKey? = nil) throws {
+         signingKey: Curve25519.Signing.PrivateKey? = nil, transferLifetime: Duration = .seconds(900),
+         listingLifetime: Duration = .seconds(120)) throws {
         self.paths = paths; self.updateActivity = updateActivity
+        self.transferLifetime = transferLifetime
+        self.listingLifetime = listingLifetime
         self.jobs = BridgeJobs(paths: paths, updateActivity: updateActivity)
         self.signingKey = try signingKey ?? BridgeKeychain.signingKey(service: "org.floeagent.bridge.server")
         let pairURL = paths.root.appendingPathComponent("State/paired-clients.json")
@@ -49,6 +66,7 @@ actor BridgeService {
         let operation = try updateActivity.begin(.maintenance)
         defer { updateActivity.finish(operation) }
         pairs.removeValue(forKey: clientID); try savePairs()
+        listings = listings.filter { $0.key.client != clientID }
         for (id, transfer) in transfers where transfer.clientID == clientID {
             try? FileManager.default.removeItem(at: transfer.stage); transfers.removeValue(forKey: id)
             updateActivity.finish(transfer.updateLease)
@@ -118,7 +136,10 @@ actor BridgeService {
                 }
             } else {
                 guard pairs[clientID]?.key == body.clientKey else { throw BridgeFailure.authentication }
-                if !["ping", "poll", "file.list", "file.read", "file.readAbsolute", "permissions", "skill.list", "storage"].contains(body.method) {
+                // A file chunk is admitted by its private transfer and exact
+                // append offset. The stage cannot rewind, and a restart
+                // discards the transfer ID. A replay cannot append twice.
+                if !["ping", "poll", "file.list", "file.read", "file.readAbsolute", "file.chunk", "file.confirmMissing", "permissions", "skill.list", "storage"].contains(body.method) {
                     // Persist mutation admission BEFORE side effects. An interrupted
                     // reply never becomes permission to execute a command twice.
                     let now = Int64(Date().timeIntervalSince1970 * 1_000)
@@ -138,11 +159,22 @@ actor BridgeService {
         }
     }
     func transfersAreIdle() -> Bool {
-        for (id, transfer) in transfers where Date().timeIntervalSince(transfer.updatedAt) > 900 {
+        for (id, transfer) in transfers where transfer.expires <= .now {
             try? FileManager.default.removeItem(at: transfer.stage); transfers.removeValue(forKey: id)
             updateActivity.finish(transfer.updateLease)
         }
         return transfers.isEmpty
+    }
+    private func scheduleTransferExpiry() {
+        guard expiryTask == nil, let deadline = transfers.values.map(\.expires).min() else { return }
+        expiryTask = Task { [weak self] in
+            do { try await Task.sleep(until: deadline, clock: .continuous) } catch { return }
+            await self?.expireTransfers()
+        }
+    }
+    private func expireTransfers() {
+        expiryTask = nil
+        if !transfersAreIdle() { scheduleTransferExpiry() }
     }
     private func workspace(_ values: [String: BridgeValue]) throws -> URL {
         guard let id = values["workspaceID"]?.string else { throw BridgeFailure.unsafePath }
@@ -216,14 +248,28 @@ actor BridgeService {
             try await jobs.resize(id: required(p, "jobID"), clientID: clientID,
                                   columns: Int(p["columns"]?.integer ?? 80), rows: Int(p["rows"]?.integer ?? 24)); return [:]
         case "file.list":
-            let files = try BridgePaths.files(in: workspace(p)); let offset = max(0, Int(p["offset"]?.integer ?? 0))
-            let page = Array(files.dropFirst(offset).prefix(100))
-            return ["files": .array(page.map(BridgeValue.object)), "next": offset + page.count < files.count ? .integer(Int64(offset + page.count)) : .null]
+            return try listWorkspaceFiles(p, client: clientID)
+        case "file.confirmMissing":
+            let root = try workspace(p)
+            guard let values = p["paths"]?.array, values.count <= 100 else { throw BridgeFailure.invalidResponse }
+            var missing: [BridgeValue] = []
+            for value in values {
+                guard let path = value.string, !BridgeWorkspaceTransferPolicy.excludes(path) else { throw BridgeFailure.unsafePath }
+                let file = try BridgePaths.safe(path, under: root)
+                var details = stat()
+                if lstat(file.path, &details) == -1 {
+                    guard errno == ENOENT else { throw BridgeFailure.remote("The Mac file could not be inspected.") }
+                    missing.append(value)
+                }
+            }
+            return ["missing": .array(missing)]
         case "file.read":
             let file = try BridgePaths.safe(required(p, "path"), under: workspace(p))
             let reader = try FileHandle(forReadingFrom: file); defer { try? reader.close() }
             let offset = max(0, p["offset"]?.integer ?? 0); try reader.seek(toOffset: UInt64(offset))
-            let data = try reader.read(upToCount: BridgeWire.pageBytes) ?? Data()
+            let limit = p["limit"]?.integer ?? Int64(BridgeWire.pageBytes)
+            guard limit > 0, limit <= Int64(BridgeWire.maximumFileChunkBytes) else { throw BridgeFailure.invalidResponse }
+            let data = try reader.read(upToCount: Int(limit)) ?? Data()
             return ["data": .string(data.base64EncodedString()), "offset": .integer(offset + Int64(data.count))]
         case "file.readAbsolute":
             // Additive read-only method; the workspace-relative contract above
@@ -253,15 +299,19 @@ actor BridgeService {
                 updateActivity.finish(transferLease)
                 throw BridgeFailure.remote("Cannot prepare file transfer.")
             }
-            transfers[id] = Transfer(root: transferRoot, relativePath: relativePath, stage: stage, expected: expected, clientID: clientID, updatedAt: Date(), updateLease: transferLease)
-            return ["transferID": .string(id)]
+            transfers[id] = Transfer(root: transferRoot, relativePath: relativePath, stage: stage, expected: expected, clientID: clientID, expires: .now + transferLifetime, updateLease: transferLease)
+            scheduleTransferExpiry()
+            return ["transferID": .string(id), "maximumChunkBytes": .integer(Int64(BridgeWire.maximumFileChunkBytes))]
         case "file.chunk":
             let id = try required(p, "transferID")
-            guard var transfer = transfers[id], transfer.clientID == clientID, let data = Data(base64Encoded: try required(p, "data")), data.count <= BridgeWire.pageBytes else { throw BridgeFailure.remote("Unknown transfer.") }
+            guard var transfer = transfers[id], transfer.clientID == clientID,
+                  let encoded = p["data"]?.string, encoded.utf8.count <= ((BridgeWire.maximumFileChunkBytes + 2) / 3) * 4,
+                  let data = Data(base64Encoded: encoded), data.count <= BridgeWire.maximumFileChunkBytes else { throw BridgeFailure.remote("Unknown transfer.") }
             let writer = try FileHandle(forWritingTo: transfer.stage); defer { try? writer.close() }
-            guard try writer.seekToEnd() == UInt64(max(0, p["offset"]?.integer ?? 0)) else { throw BridgeFailure.remote("The transfer position changed.") }
+            guard transfer.expires > .now, let offset = p["offset"]?.integer, offset >= 0,
+                  !data.isEmpty, try writer.seekToEnd() == UInt64(offset) else { throw BridgeFailure.remote("The transfer position changed.") }
             try writer.write(contentsOf: data)
-            transfer.updatedAt = Date(); transfers[id] = transfer
+            transfer.expires = .now + transferLifetime; transfers[id] = transfer
             return [:]
         case "file.abort":
             let id = try required(p, "transferID")
@@ -275,6 +325,7 @@ actor BridgeService {
                 transfers.removeValue(forKey: id); try? FileManager.default.removeItem(at: transfer.stage)
                 updateActivity.finish(transfer.updateLease)
             }
+            guard transfer.expires > .now else { throw BridgeFailure.remote("The file transfer expired.") }
             guard try digest(transfer.stage) == required(p, "sha256") else { throw BridgeFailure.remote("The transferred file did not match.") }
             try BridgeSafeFileSystem.commit(staged: transfer.stage, relativePath: transfer.relativePath,
                 under: transfer.root, expectedSHA256: transfer.expected)
@@ -291,6 +342,45 @@ actor BridgeService {
         case "skill.list", "skill.activate", "skill.remove", "skill.pin", "skill.unpin": return try await skill(method, p)
         default: throw BridgeFailure.remote("This bridge operation is unavailable. Update both apps.")
         }
+    }
+    private func listWorkspaceFiles(_ payload: [String: BridgeValue], client: String) throws -> [String: BridgeValue] {
+        let root = try workspace(payload)
+        let id = payload["listingID"]?.string
+        if payload["listingID"] != nil {
+            guard let id, UUID(uuidString: id) != nil else { throw BridgeFailure.invalidResponse }
+        }
+        let key = ListingKey(client: client, workspace: try required(payload, "workspaceID"), id: id)
+        let offset = Int(payload["offset"]?.integer ?? 0)
+        let now = ContinuousClock.now
+        listings = listings.filter { $0.value.expires > now }
+        let files: [[String: BridgeValue]]
+        if offset == 0 {
+            // Old clients have one cursor per client and workspace. Reject an
+            // overlapping start instead of splicing two different listings.
+            guard listings[key] == nil else { throw BridgeFailure.remote("A workspace file list is already in progress. Try again.") }
+            files = try BridgePaths.files(in: root)
+        } else {
+            guard let listing = listings[key], listing.next == offset else {
+                throw BridgeFailure.remote("The workspace file list expired or changed. Start it again.")
+            }
+            files = listing.files
+        }
+        let end = min(offset + 100, files.count)
+        var reply: [String: BridgeValue] = ["files": .array(files[offset..<end].map(BridgeValue.object)), "next": .null]
+        if let id { reply["listingID"] = .string(id) }
+        if end < files.count {
+            if offset == 0 {
+                let retained = listings.values.reduce(0) { $0 + $1.files.count }
+                guard listings.count < 8, retained + files.count <= BridgeResponseValidation.maximumListedFiles else {
+                    throw BridgeFailure.remote("There are too many workspace file lists in progress. Try again.")
+                }
+            }
+            listings[key] = Listing(files: files, next: end, expires: .now + listingLifetime)
+            reply["next"] = .integer(Int64(end))
+        } else {
+            listings.removeValue(forKey: key)
+        }
+        return reply
     }
     private func digest(_ url: URL) throws -> String {
         let reader = try FileHandle(forReadingFrom: url); defer { try? reader.close() }

@@ -42,11 +42,19 @@ struct BridgeAbsoluteFileReadTests {
         return root
     }
 
-    private func makeFixture() async throws -> (Fixture, URL) {
+    private func makeFixture(transferLifetime: Duration = .seconds(900), listingLifetime: Duration = .seconds(120),
+                             retainedMutationCount: Int = 0) async throws -> (Fixture, URL) {
         let home = try makeRoot("home")
         let server = try Curve25519.Signing.PrivateKey(rawRepresentation: Data(repeating: 0x71, count: 32))
         let client = try Curve25519.Signing.PrivateKey(rawRepresentation: Data(repeating: 0x72, count: 32))
-        let service = try BridgeService(paths: BridgePaths(home: home), signingKey: server)
+        let paths = try BridgePaths(home: home)
+        if retainedMutationCount > 0 {
+            let now = Int64(Date().timeIntervalSince1970 * 1_000)
+            let retained = Dictionary(uniqueKeysWithValues: (0..<retainedMutationCount).map { ("accepted-\($0)", now) })
+            try BridgeWire.encode(retained).write(to: paths.root.appendingPathComponent("State/request-ids.json"))
+        }
+        let service = try BridgeService(paths: paths, signingKey: server,
+                                        transferLifetime: transferLifetime, listingLifetime: listingLifetime)
         let fixture = Fixture(service: service, server: server, client: client)
         let nonce = String(repeating: "a", count: 64)
         _ = try await fixture.call("pair", ["name": .string("Fixture"), "nonce": .string(nonce)])
@@ -56,6 +64,85 @@ struct BridgeAbsoluteFileReadTests {
         try await service.approve(BridgeWire.digest(client.publicKey.rawRepresentation),
                                   verification: verification, allow: true)
         return (fixture, home)
+    }
+
+    @Test("An interleaved workspace edit cannot move another listing's page boundary")
+    func immutableWorkspacePages() async throws {
+        let (fixture, home) = try await makeFixture()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let fields: [String: BridgeValue] = ["workspaceID": .string("listing")]
+        let workspace = try await fixture.call("workspace", fields)
+        let root = URL(fileURLWithPath: try #require(workspace["root"]?.string))
+        for n in 0..<102 { try Data().write(to: root.appendingPathComponent(String(format: "row-%03d", n))) }
+        let first = UUID().uuidString, second = UUID().uuidString
+        func page(_ id: String?, _ offset: Int64) async throws -> [String: BridgeValue] {
+            var payload = fields; payload["offset"] = .integer(offset)
+            if let id { payload["listingID"] = .string(id) }
+            return try await fixture.call("file.list", payload)
+        }
+        #expect(try await page(first, 0)["next"] == .integer(100))
+        try FileManager.default.removeItem(at: root.appendingPathComponent("row-100"))
+        try Data().write(to: root.appendingPathComponent("row-000-new"))
+        #expect(try await page(second, 0)["listingID"] == .string(second))
+        let tail = try await page(first, 100)
+        #expect(tail["files"]?.array?.compactMap { $0.object?["path"]?.string } == ["row-100", "row-101"])
+        let newTail = try await page(second, 100)
+        #expect(newTail["files"]?.array?.compactMap { $0.object?["path"]?.string } == ["row-099", "row-101"])
+        let absent = try await fixture.call("file.confirmMissing", ["workspaceID": .string("listing"), "paths": .array([.string("row-100"), .string("row-101")])])
+        #expect(absent["missing"] == .array([.string("row-100")]))
+        #expect(try await page(nil, 0)["next"] == .integer(100))
+        #expect(try await page(nil, 100)["next"] == .null)
+        await #expect(throws: (any Error).self) { _ = try await page(first, 100) }
+    }
+
+    @Test("Abandoned transfers release the updater and expired listings fail explicitly")
+    func idleTransferAndListingExpire() async throws {
+        let (fixture, home) = try await makeFixture(transferLifetime: .milliseconds(40), listingLifetime: .milliseconds(40))
+        defer { try? FileManager.default.removeItem(at: home) }
+        let fields: [String: BridgeValue] = ["workspaceID": .string("expiry")]
+        let workspace = try await fixture.call("workspace", fields)
+        let root = URL(fileURLWithPath: try #require(workspace["root"]?.string))
+        for n in 0..<101 { try Data().write(to: root.appendingPathComponent("\(n)")) }
+        let listing = UUID().uuidString
+        _ = try await fixture.call("file.list", fields.merging(["listingID": .string(listing)]) { _, b in b })
+        _ = try await fixture.call("file.begin", fields.merging(["path": .string("abandoned")]) { _, b in b })
+        #expect(fixture.service.reserveUpdateInstallationIfIdle() == nil)
+        try await Task.sleep(for: .milliseconds(120))
+        let reservation = try #require(fixture.service.reserveUpdateInstallationIfIdle())
+        fixture.service.updateActivity.resume(after: reservation)
+        await #expect(throws: (any Error).self) {
+            _ = try await fixture.call("file.list", fields.merging(["listingID": .string(listing), "offset": .integer(100)]) { _, b in b })
+        }
+        let caches = try BridgePaths(home: home).caches
+        #expect(try FileManager.default.contentsOfDirectory(atPath: caches.path).filter { $0.hasPrefix("upload-") }.isEmpty)
+    }
+
+    @Test("A verified 256 MiB upload uses only begin and commit replay slots; duplicate chunks cannot append twice")
+    func chunkQuotaAndReplay() async throws {
+        let (fixture, home) = try await makeFixture(retainedMutationCount: 4_094)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let opening = try await fixture.call("file.begin", ["workspaceID": .string("bulk"), "path": .string("payload")])
+        let id = try BridgeResponseValidation.transferID(opening)
+        let size = try BridgeResponseValidation.uploadChunkLimit(opening)
+        #expect(size == 1_048_576)
+        let data = Data(repeating: 41, count: size), encoded = data.base64EncodedString()
+        let head: [String: BridgeValue] = ["transferID": .string(id), "offset": .integer(0), "data": .string(encoded)]
+        var hash = SHA256()
+        for n in 0..<256 {
+            _ = try await fixture.call("file.chunk", head.merging(["offset": .integer(Int64(n * size))]) { _, b in b })
+            hash.update(data: data)
+            if n == 0 { await #expect(throws: (any Error).self) { _ = try await fixture.call("file.chunk", head) } }
+        }
+        let digest = hash.finalize().map { String(format: "%02x", $0) }.joined()
+        _ = try await fixture.call("file.commit", ["transferID": .string(id), "sha256": .string(digest)])
+        let paths = try BridgePaths(home: home)
+        let file = paths.root.appendingPathComponent("Workspaces/bulk/payload")
+        #expect(try file.resourceValues(forKeys: [.fileSizeKey]).fileSize == 256 * size)
+        let journal = try BridgeWire.decode([String: Int64].self, from: Data(contentsOf: paths.root.appendingPathComponent("State/request-ids.json")))
+        #expect(journal.count == 4_096)
+        await #expect(throws: (any Error).self) {
+            _ = try await fixture.call("file.begin", ["workspaceID": .string("bulk"), "path": .string("over-quota")])
+        }
     }
 
     private func bytes(_ payload: [String: BridgeValue]) throws -> Data {

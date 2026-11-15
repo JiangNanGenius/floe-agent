@@ -9,8 +9,10 @@ public actor MacBridgeShellBackend: LocalShellBackend {
     private struct Session: Sendable {
         let jobID: String
         let root: URL
+        let cancellation: CancellationToken?
         var offset: Int64
         let redactor: SensitiveSessionRedactor?
+        var exitDeliveryClaimed = false
     }
     private let client: MacBridgeClient
     private var sessions: [String: Session] = [:]
@@ -25,8 +27,9 @@ public actor MacBridgeShellBackend: LocalShellBackend {
             ? request.sensitiveEnvironment?.redactor : nil
         var created = false
         var submitted = false
+        var stagingCommand = false
         defer {
-            if !submitted {
+            if stagingCommand && !submitted {
                 Task { [client] in _ = try? await client.call("command.discard", ["jobID": .string(jobID)]) }
             }
         }
@@ -39,7 +42,8 @@ public actor MacBridgeShellBackend: LocalShellBackend {
                 try Self.validateSensitiveNames(sensitive)
                 try await ensureSensitiveRedactionCapability()
             }
-            let workspaceID = try await client.synchronizeBeforeExecution(root: request.rootURL)
+            let workspaceID = try await client.synchronizeBeforeExecution(root: request.rootURL, cancellation: cancellation)
+            try check(cancellation)
             let remoteWorkspace = try await client.workspace(root: request.rootURL)
             let executableCommand = Self.withManagedPaths(request.command, root: remoteWorkspace.path)
             try check(cancellation)
@@ -49,11 +53,13 @@ public actor MacBridgeShellBackend: LocalShellBackend {
                 sensitiveEnvironmentNames: sensitive?.names ?? [],
                 columns: 100, rows: 30)
             if MacBridgeCommandTransfer.requiresStaging(utf8Bytes: executableCommand.utf8.count) {
+                stagingCommand = true
                 let digest = try await client.stageCommand(executableCommand, jobID: jobID, cancellation: cancellation)
                 payload["command"] = nil; payload["commandFile"] = .string(jobID); payload["commandDigest"] = .string(digest)
             }
             try check(cancellation)
             try await client.recordJobAttempt(id: jobID, root: request.rootURL, sessionID: request.sessionID)
+            try check(cancellation)
             submitted = true
             _ = try await client.call("start", payload)
             created = true
@@ -100,8 +106,12 @@ public actor MacBridgeShellBackend: LocalShellBackend {
             }
             try writer.close()
             let note = "Full terminal output: .floe/terminal/\(jobID).log"
-            do { try await client.synchronizeAfterExecution(root: request.rootURL) }
-            catch { return .outcomeUnknown(jobID: jobID, message: "The command finished with exit code \(exitCode), but file transfer is pending: \(error.localizedDescription). Use Sync Files in the saved job; do not run the command again.") }
+            do {
+                try await client.synchronizeAfterExecution(root: request.rootURL, cancellation: cancellation)
+            } catch {
+                if cancellation?.isCancelled == true || Task.isCancelled { return .cancelled }
+                return .outcomeUnknown(jobID: jobID, message: "The command finished with exit code \(exitCode), but file transfer is pending: \(error.localizedDescription). Use Sync Files in the saved job; do not run the command again.")
+            }
             let duration = Self.milliseconds(started.duration(to: .now))
             if cancelling && !timedOut { return .cancelled }
             let previewText = String(decoding: preview, as: UTF8.self)
@@ -146,13 +156,16 @@ public actor MacBridgeShellBackend: LocalShellBackend {
             try Self.validateSensitiveNames(sensitive)
             try await ensureSensitiveRedactionCapability()
         }
-        let workspaceID = try await client.synchronizeBeforeExecution(root: request.rootURL)
-            let remoteWorkspace = try await client.workspace(root: request.rootURL)
-            let executableCommand = Self.withManagedPaths(request.command, root: remoteWorkspace.path)
+        let workspaceID = try await client.synchronizeBeforeExecution(root: request.rootURL, cancellation: cancellation)
+        try check(cancellation)
+        let remoteWorkspace = try await client.workspace(root: request.rootURL)
+        try check(cancellation)
+        let executableCommand = Self.withManagedPaths(request.command, root: remoteWorkspace.path)
         let jobID = UUID().uuidString
         var submitted = false
+        var stagingCommand = false
         defer {
-            if !submitted { Task { [client] in _ = try? await client.call("command.discard", ["jobID": .string(jobID)]) } }
+            if stagingCommand && !submitted { Task { [client] in _ = try? await client.call("command.discard", ["jobID": .string(jobID)]) } }
         }
         var payload = Self.startPayload(jobID: jobID, workspaceID: workspaceID,
             command: executableCommand, cwd: request.cwd,
@@ -160,16 +173,19 @@ public actor MacBridgeShellBackend: LocalShellBackend {
             sensitiveEnvironmentNames: sensitive?.names ?? [],
             columns: request.columns, rows: request.rows)
         if MacBridgeCommandTransfer.requiresStaging(utf8Bytes: executableCommand.utf8.count) {
+            stagingCommand = true
             let digest = try await client.stageCommand(executableCommand, jobID: jobID, cancellation: cancellation)
             payload["command"] = nil; payload["commandFile"] = .string(jobID); payload["commandDigest"] = .string(digest)
         }
         try check(cancellation)
         try await client.recordJobAttempt(id: jobID, root: request.rootURL, sessionID: request.sessionID)
+        try check(cancellation)
         let sessionRedactor = (request.sensitiveEnvironment?.isEmpty == false)
             ? request.sensitiveEnvironment.map { SensitiveSessionRedactor(environment: $0) } : nil
         sessions[request.sessionID] = Session(
             jobID: jobID,
             root: request.rootURL,
+            cancellation: cancellation,
             offset: 0,
             redactor: sessionRedactor
         )
@@ -182,7 +198,7 @@ public actor MacBridgeShellBackend: LocalShellBackend {
         try check(cancellation)
         guard var session = sessions[request.sessionID] else { throw BridgeFailure.disconnected }
         do {
-        if let input = request.input {
+        if !session.exitDeliveryClaimed, let input = request.input {
             if input == "\u{03}" { _ = try await client.call("signal", ["jobID": .string(session.jobID), "signal": .string("INT")]) }
             else { try await sendInput(Data(input.utf8), jobID: session.jobID) }
         }
@@ -190,18 +206,37 @@ public actor MacBridgeShellBackend: LocalShellBackend {
             "limit": .integer(Int64(min(max(request.maxBytes, 1), BridgeWire.pageBytes)))])
         let status = try BridgeResponseValidation.poll(page, offset: session.offset, limit: min(max(request.maxBytes, 1), BridgeWire.pageBytes))
         if status.outcomeUnknown { throw ToolExecutionOutcomeUnknownError(reference: session.jobID, message: "The Mac terminal exit was not confirmed after reconnect.") }
-        let data = status.data; session.offset = status.offset
+        guard let current = sessions[request.sessionID], current.jobID == session.jobID else { throw CancellationError() }
+        // Another poll can finish while this one is awaiting the bridge.
+        session = current
+        let unread = max(0, status.offset - session.offset)
+        let data = Data(status.data.suffix(Int(clamping: unread)))
+        session.offset = max(session.offset, status.offset)
+        let alive = status.alive && !session.exitDeliveryClaimed
+        // The session center closes an exited session after this reply. Claim
+        // final delivery once while keeping any remaining output readable.
+        let deliverFiles = !status.alive && !session.exitDeliveryClaimed
+        if deliverFiles { session.exitDeliveryClaimed = true }
         sessions[request.sessionID] = session
-        let alive = status.alive
         let output: Data
         if let redactor = session.redactor {
             output = await redactor.redact(data, flush: !alive)
         } else {
             output = data
         }
-        if !alive { try await client.synchronizeAfterExecution(root: session.root) }
+        var deliveryFailure: String?
+        if deliverFiles {
+            do {
+                try await client.synchronizeAfterExecution(
+                    root: session.root, cancellation: cancellation, sessionCancellation: session.cancellation)
+            } catch where cancellation?.isCancelled == true || session.cancellation?.isCancelled == true || Task.isCancelled {
+                deliveryFailure = FloeL10n.isChinese
+                    ? "文件同步已取消。可在已保存的任务中重新同步。"
+                    : "File sync was cancelled. You can sync files from the saved job."
+            }
+        }
         return ShellExchangeResult(output: String(decoding: output, as: UTF8.self), alive: alive,
-            exitCode: status.exitCode, terminalOutput: output,
+            exitCode: status.exitCode, terminalOutput: output, failure: deliveryFailure,
             bytesRead: Int(clamping: status.totalBytes), bytesWritten: Int(clamping: status.inputBytes))
         } catch let error as ToolExecutionOutcomeUnknownError { throw error }
         catch {
@@ -211,6 +246,10 @@ public actor MacBridgeShellBackend: LocalShellBackend {
     }
     public func closeSession(sessionID: String) async {
         guard let session = sessions[sessionID] else { return }
+        if session.exitDeliveryClaimed {
+            sessions.removeValue(forKey: sessionID)
+            return
+        }
         do {
             _ = try await client.call("signal", ["jobID": .string(session.jobID), "signal": .string("TERM")])
             // Actual exit must be observed before dropping ownership.
@@ -219,13 +258,16 @@ public actor MacBridgeShellBackend: LocalShellBackend {
                 let status = try BridgeResponseValidation.poll(page, offset: 0, limit: 1)
                 if status.outcomeUnknown { return }
                 if !status.alive {
-                    try await client.synchronizeAfterExecution(root: session.root)
-                    sessions.removeValue(forKey: sessionID); return
+                    guard let current = sessions[sessionID], current.jobID == session.jobID else { return }
+                    sessions.removeValue(forKey: sessionID)
+                    if current.exitDeliveryClaimed { return }
+                    try await client.synchronizeAfterExecution(root: session.root, cancellation: session.cancellation)
+                    return
                 }
                 if attempt == 30 { _ = try await client.call("signal", ["jobID": .string(session.jobID), "signal": .string("KILL")]) }
                 try await Task.sleep(for: .milliseconds(100))
             }
-        } catch { /* Retain the session and its immutable job ID for reconnect. */ }
+        } catch { /* Unconfirmed jobs keep their session. Confirmed exits keep their saved job for file sync. */ }
     }
     public func signalSession(sessionID: String, signal: ShellSignal) async {
         guard let session = sessions[sessionID] else { return }

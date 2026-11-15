@@ -1961,6 +1961,7 @@ targets:
       - path: Tests/FloePersistenceTests/StorageSuspensionTests.swift
       - path: Tests/FloeSkillsTests/MacOriginalSkillTests.swift
       - path: Tests/FloeMacBridgeTests/MacBridgeCommandTransferTests.swift
+      - path: Tests/FloeMacBridgeTests/MacBridgeWorkspaceSyncTests.swift
       - path: Tests/FloeAgentRuntimeTests/MacUnknownOutcomeTests.swift
       - path: Tests/FloePersistenceTests/TaskScheduleStoreTests.swift
       - path: Tests/FloeAgentRuntimeTests/ConversationSearchTests.swift

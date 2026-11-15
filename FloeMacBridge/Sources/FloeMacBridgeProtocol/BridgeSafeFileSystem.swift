@@ -6,7 +6,9 @@ import Darwin
 /// Descriptor-relative commit: a directory swapped for a symbolic link while
 /// network IO is suspended can never redirect the final write outside root.
 public enum BridgeSafeFileSystem {
-    public static func commit(staged source: URL, relativePath: String, under root: URL, expectedSHA256: String?) throws {
+    public static func commit(staged source: URL, relativePath: String, under root: URL, expectedSHA256: String?,
+                              checkCancellation: () throws -> Void = {}) throws {
+        try checkCancellation()
         let parts = relativePath.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
         guard !relativePath.hasPrefix("/"), !relativePath.contains("\0"), !parts.isEmpty,
               parts.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else { throw BridgeFailure.unsafePath }
@@ -20,7 +22,7 @@ public enum BridgeSafeFileSystem {
             Darwin.close(parent); parent = next
         }
         guard let name = parts.last else { throw BridgeFailure.unsafePath }
-        let mode = try checkExisting(name, parent: parent, expected: expectedSHA256)
+        let mode = try checkExisting(name, parent: parent, expected: expectedSHA256, check: checkCancellation)
         let input = Darwin.open(source.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
         guard input >= 0 else { throw BridgeFailure.unsafePath }
         defer { Darwin.close(input) }
@@ -32,6 +34,7 @@ public enum BridgeSafeFileSystem {
         defer { Darwin.close(output); Darwin.unlinkat(parent, temporary, 0) }
         var buffer = [UInt8](repeating: 0, count: 64 * 1_024)
         while true {
+            try checkCancellation()
             let count = Darwin.read(input, &buffer, buffer.count)
             if count < 0, errno == EINTR { continue }
             guard count >= 0 else { throw BridgeFailure.remote("Cannot read the transferred file.") }
@@ -48,12 +51,14 @@ public enum BridgeSafeFileSystem {
             }
         }
         guard Darwin.fsync(output) == 0 else { throw BridgeFailure.remote("Cannot save the transferred file.") }
-        _ = try checkExisting(name, parent: parent, expected: expectedSHA256)
+        _ = try checkExisting(name, parent: parent, expected: expectedSHA256, check: checkCancellation)
+        try checkCancellation()
         guard Darwin.renameat(parent, temporary, parent, name) == 0 else { throw BridgeFailure.remote("Cannot commit the transferred file.") }
         _ = Darwin.fsync(parent)
     }
     public static func moveToRecovery(relativePath: String, under root: URL, expectedSHA256: String,
-                                      recoveryRoot: URL) throws {
+                                      recoveryRoot: URL, checkCancellation: () throws -> Void = {}) throws {
+        try checkCancellation()
         let parts = relativePath.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
         guard !relativePath.hasPrefix("/"), !relativePath.contains("\0"), !parts.isEmpty,
               parts.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else { throw BridgeFailure.unsafePath }
@@ -65,9 +70,10 @@ public enum BridgeSafeFileSystem {
             Darwin.close(parent); parent = next
         }
         guard let name = parts.last else { throw BridgeFailure.unsafePath }
-        _ = try checkExisting(name, parent: parent, expected: expectedSHA256)
+        _ = try checkExisting(name, parent: parent, expected: expectedSHA256, check: checkCancellation)
         let recovery = try openRoot(recoveryRoot)
         defer { Darwin.close(recovery) }
+        try checkCancellation()
         guard Darwin.renameat(parent, name, recovery, name) == 0 else { throw BridgeFailure.remote("Cannot retain the removed file for recovery.") }
     }
     private static func openRoot(_ root: URL) throws -> Int32 {
@@ -88,7 +94,7 @@ public enum BridgeSafeFileSystem {
         guard actual == expected else { Darwin.close(descriptor); throw BridgeFailure.unsafePath }
         return descriptor
     }
-    private static func checkExisting(_ name: String, parent: Int32, expected: String?) throws -> mode_t {
+    private static func checkExisting(_ name: String, parent: Int32, expected: String?, check: () throws -> Void) throws -> mode_t {
         let descriptor = Darwin.openat(parent, name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
         if descriptor < 0 {
             guard errno == ENOENT, expected == nil else { throw BridgeFailure.remote("The destination changed. Both copies were retained.") }
@@ -100,7 +106,7 @@ public enum BridgeSafeFileSystem {
         guard let expected else { throw BridgeFailure.remote("The destination changed. Both copies were retained.") }
         let reader = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
         var digest = SHA256()
-        while let chunk = try reader.read(upToCount: 256 * 1_024), !chunk.isEmpty { digest.update(data: chunk) }
+        while let chunk = try reader.read(upToCount: 256 * 1_024), !chunk.isEmpty { try check(); digest.update(data: chunk) }
         guard digest.finalize().map({ String(format: "%02x", $0) }).joined() == expected else {
             throw BridgeFailure.remote("The destination changed. Both copies were retained.")
         }

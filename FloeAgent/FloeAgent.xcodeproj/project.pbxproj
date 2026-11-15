@@ -2150,6 +2150,7 @@
 		DAA9E37B3CACEF89E5551F69 /* FloeChemistryEngine in Frameworks */ = {isa = PBXBuildFile; productRef = 331DB8DBCA88A4ACCEF650FC /* FloeChemistryEngine */; };
 		DAC9A427A313BDE210421E9C /* GISProjectOriginal.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D80DCD0595A46692DC71524 /* GISProjectOriginal.swift */; };
 		DAD6FCD9615DCEF6AA5F446E /* ChildRunStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5203FDB43E6298E75BE1E5C0 /* ChildRunStoreTests.swift */; };
+		DAF4CB8FA435F1C75049BE6F /* MacBridgeWorkspaceSyncTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2FA7FC0B63E82744E2B1428 /* MacBridgeWorkspaceSyncTests.swift */; };
 		DAF69978B99B20F06191B2CB /* PiPAudioService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B28D9D00B0F8DC98654AE54 /* PiPAudioService.swift */; };
 		DAF72966D0954BAC05D562E5 /* LocalMLXRealCADQualificationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BA4FD6D735713BF17CCD7D2 /* LocalMLXRealCADQualificationTests.swift */; };
 		DB81E6DC19F4D550BD1550A9 /* MCPConnectionFailurePresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACB2A03A2804DC5B4968C1CB /* MCPConnectionFailurePresentation.swift */; };
@@ -4143,6 +4144,7 @@
 		B2D3C98D6397E23A40924949 /* LocalPythonServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalPythonServiceTests.swift; sourceTree = "<group>"; };
 		B2E06AB922C6F81891606172 /* APNsTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APNsTransport.swift; sourceTree = "<group>"; };
 		B2F5FA6182890371A5AD9ABA /* dash.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = dash.xcframework; path = Frameworks/dash.xcframework; sourceTree = "<group>"; };
+		B2FA7FC0B63E82744E2B1428 /* MacBridgeWorkspaceSyncTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacBridgeWorkspaceSyncTests.swift; sourceTree = "<group>"; };
 		B3135923FB83C439E60E432C /* ToolCallCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolCallCardView.swift; sourceTree = "<group>"; };
 		B319C93122082BA3EA49C17E /* FloeGameGDevelopKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = FloeGameGDevelopKit; path = Modules/FloeGameGDevelopKit; sourceTree = SOURCE_ROOT; };
 		B358440D36F2E90D87A4E431 /* StudioCADRenameSaveContractTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioCADRenameSaveContractTests.swift; sourceTree = "<group>"; };
@@ -8582,6 +8584,7 @@
 			isa = PBXGroup;
 			children = (
 				F160163F0EF5F94F11D19E03 /* MacBridgeCommandTransferTests.swift */,
+				B2FA7FC0B63E82744E2B1428 /* MacBridgeWorkspaceSyncTests.swift */,
 			);
 			path = FloeMacBridgeTests;
 			sourceTree = "<group>";
@@ -11193,6 +11196,7 @@
 				F508437F7B934EB1A82293FC /* MacBridgeAbsoluteFileTests.swift in Sources */,
 				3445AAA50D83A8AF5E2ABFB3 /* MacBridgeAbsoluteImageTests.swift in Sources */,
 				1BB047F0BA25DE77BFD474CF /* MacBridgeCommandTransferTests.swift in Sources */,
+				DAF4CB8FA435F1C75049BE6F /* MacBridgeWorkspaceSyncTests.swift in Sources */,
 				B18D0C1510D6C1DA5902E5C8 /* MacOriginalSkillTests.swift in Sources */,
 				760EC140FBD191D7AEC42E33 /* MacUnknownOutcomeTests.swift in Sources */,
 				33E898F6F36AB6A713C37D4F /* MailBodyPagingTests.swift in Sources */,
