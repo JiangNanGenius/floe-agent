@@ -57,7 +57,7 @@ struct NativeAuthoringRoutingOldTaskTests {
         #expect(Set(["studio.create", "studio.list", "studio.read", "studio.edit", "studio.run"]).isSubset(of: Set(additions)))
         #expect(!additions.contains("exec.shell"))
         #expect(!additions.contains("exec.localPython")) // retired/guest entry never refreshed
-        #expect(additions.count <= 12)
+        #expect(Set(additions).isSubset(of: Set(updatedCatalog().map(\.name))))
         let lines = NativeAuthoringRouting.contextLines(
             userTask: "继续",
             taskContext: context,

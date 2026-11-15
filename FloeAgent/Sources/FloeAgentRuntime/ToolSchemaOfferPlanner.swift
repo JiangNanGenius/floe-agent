@@ -16,6 +16,16 @@ import Foundation
 import FloeTools
 
 public enum ToolSchemaOfferPlanner {
+    /// Admission has already run. Keep surviving definitions in the last
+    /// dispatched order, then append new definitions in the caller's order.
+    static func retainingOrder<T>(_ admitted: [T], after previous: [String], name: KeyPath<T, String>) -> [T] {
+        guard !previous.isEmpty else { return admitted }
+        var remaining = Dictionary(admitted.map { ($0[keyPath: name], $0) },
+                                   uniquingKeysWith: { first, _ in first })
+        let retained = previous.compactMap { remaining.removeValue(forKey: $0) }
+        return retained + admitted.compactMap { remaining.removeValue(forKey: $0[keyPath: name]) }
+    }
+
     /// Durable memory operations considered for ordinary cloud-agent presentation.
     public static let baseMemoryToolNames: Set<String> = [
         "memory.search", "memory.recall", "memory.list",

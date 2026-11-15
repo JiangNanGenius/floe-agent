@@ -33,7 +33,7 @@ import FloeTools
 ///
 /// Presentation only: every returned descriptor comes from the live,
 /// ceiling-filtered descriptors the caller passes; results are additive,
-/// capped and idempotent (an unchanged context cannot churn the provider
+/// budget-admitted and idempotent (an unchanged context cannot churn the provider
 /// prefix cache); authority, approval, revision/CAS and output validation are
 /// unchanged — a loaded schema grants nothing and a denied call stays denied.
 enum NativeAuthoringRouting {
@@ -101,7 +101,7 @@ enum NativeAuthoringRouting {
         for (group, terms) in ToolAliasTable.synonyms {
             if terms.contains(where: { lowered.contains($0) }) { groups.insert(group) }
         }
-        var names = Set<String>()
+        var names = Set(ToolDiscovery.workspaceOperationNames(in: lowered).map { $0.lowercased() })
         let tokens = lowered.split(whereSeparator: { $0.isWhitespace || "，,;；/".contains($0) }).map(String.init)
         let offered = descriptors.map(\.name)
         for token in tokens where token.count > 2 {
@@ -126,9 +126,11 @@ enum NativeAuthoringRouting {
     static func boundedTaskContext(
         currentUserTask: String,
         originalGoal: String?,
-        planStepTitles: [String]
+        planStepTitles: [String],
+        currentStepTitle: String? = nil
     ) -> String {
         var pieces: [String] = []
+        if let currentStepTitle { pieces.append(String(currentStepTitle.prefix(240))) }
         let current = currentUserTask.trimmingCharacters(in: .whitespacesAndNewlines)
         if !current.isEmpty { pieces.append(String(current.prefix(2_000))) }
         if let originalGoal {
@@ -142,7 +144,7 @@ enum NativeAuthoringRouting {
     }
 
     /// Schemas the bounded context matches among the LIVE offered descriptors
-    /// that this run has not discovered yet. Additive, capped, idempotent and
+    /// that this run has not discovered yet. Additive, idempotent and
     /// catalog-driven. Suppressed when the CURRENT user message itself
     /// explicitly asks for a script/code route (the user's chosen path for
     /// this turn; capabilities stay discoverable as before).
@@ -184,17 +186,26 @@ enum NativeAuthoringRouting {
         ranked.sort { left, right in
             left.rank == right.rank ? left.name < right.name : left.rank < right.rank
         }
-        var result: [ToolCatalog.Descriptor] = []
-        for item in ranked where result.count < 12 {
-            result.append(item.descriptor)
-        }
-        return result
+        return ranked.map(\.descriptor)
     }
 
-    /// The exact union the runtime applies. Existing discovery names and
-    /// priority entries are preserved; additions lead the priority (like a
-    /// `tools.search` activation) so a tight schema window admits the fresh
-    /// capabilities before older optional entries.
+    /// A changed step may need a previously discovered schema that didn't fit
+    /// in the last request. Prioritize that step before other matching work.
+    static func taskBoundNames(
+        userTask: String, taskContext: String = "", currentStepTitle: String? = nil,
+        liveDescriptors: [ToolCatalog.Descriptor]
+    ) -> [String] {
+        let focused = currentStepTitle.map {
+            taskBoundAdditions(userTask: userTask, taskContext: String($0.prefix(240)),
+                               liveDescriptors: liveDescriptors, discoveredNames: []).map(\.name)
+        } ?? []
+        let other = taskBoundAdditions(userTask: userTask, taskContext: taskContext,
+                                       liveDescriptors: liveDescriptors, discoveredNames: Set(focused))
+        return focused + other.map(\.name)
+    }
+
+    /// Projects newly discovered names onto an existing discovery seed.
+    /// Existing entries retain their order after the additions.
     static func mergedDiscoveryState(
         userTask: String,
         taskContext: String = "",

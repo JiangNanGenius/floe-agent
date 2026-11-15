@@ -59,8 +59,7 @@ struct ChildToolDiscovery: Sendable {
     /// seed. Sorted for a deterministic wire order.
     let pinned: [String]
 
-    /// Schemas currently loaded, in priority order (most recently requested
-    /// first) after the pinned seed.
+    /// Complete schemas in presentation order. Admission recency is separate.
     private(set) var loaded: [String]
     private(set) var priority: [String]
 
@@ -172,8 +171,7 @@ struct ChildToolDiscovery: Sendable {
 
     // MARK: Selection
 
-    /// Builds the exact frozen schemas for the next child request. Order:
-    /// pinned seed first (deterministic), then most-recently loaded.
+    /// Builds the frozen request with the surviving provider prefix intact.
     func schemas() -> [ToolSchemaDescriptor] {
         loaded.compactMap { offeredByName[$0] }.map {
             ToolSchemaDescriptor(
@@ -182,6 +180,19 @@ struct ChildToolDiscovery: Sendable {
                 parametersJSON: $0.parametersJSON
             )
         }
+    }
+
+    mutating func recordPrepared(_ names: [String]) {
+        loaded = ToolSchemaOfferPlanner.retainingOrder(loaded, after: names, name: \.self)
+    }
+
+    /// The delegated task hasn't changed across the checkpoint. Fit newly
+    /// available definitions after the child's own saved search selections.
+    mutating func refreshAfterResume(_ taskNames: [String], maxBytes: Int) -> LoadReceipt {
+        let saved = Set(loaded), savedPriority = priority
+        let receipt = load(taskNames.filter { !saved.contains($0) }, maxBytes: maxBytes, protected: saved)
+        priority = ToolSchemaOfferPlanner.retainingOrder(priority, after: savedPriority, name: \.self)
+        return receipt
     }
 
     /// Loads definitions into the child's context within the real wire-byte
@@ -295,7 +306,7 @@ struct ChildToolDiscovery: Sendable {
         let keptSet = Set(kept)
         receipt.admitted = kept.filter { !previous.contains($0) }
         receipt.alreadyLoaded = kept.filter { previous.contains($0) && requestedSet.contains($0) }
-        self.loaded = kept
+        self.loaded = ToolSchemaOfferPlanner.retainingOrder(kept, after: loaded, name: \.self)
         // Priority: newest request first, then everything retained in the
         // relative order it already had.
         var newPriority: [String] = []
@@ -404,9 +415,8 @@ struct ChildToolDiscovery: Sendable {
     private(set) var restoredDrops: [String] = []
 
     /// Restores the child's own selection against the CURRENT parent's
-    /// offered universe. The pinned seed is always re-established first; the
-    /// remaining persisted names are intersected with the offered universe in
-    /// their persisted order. The caller then runs one `load(_:maxBytes:)`
+    /// offered universe. The pinned seed retains admission priority, while
+    /// surviving schemas keep their dispatch order. The caller then runs one `load(_:maxBytes:)`
     /// pass (empty request) so the wire-byte budget is re-fitted under the
     /// current model's actual schema allowance — its eviction receipt reports
     /// every further drop through the existing explicit-notice path.
@@ -416,7 +426,8 @@ struct ChildToolDiscovery: Sendable {
         let keptLoaded = snapshot.loadedNames.filter { available.contains($0) }
         self.restoredDrops = snapshot.loadedNames.filter { !available.contains($0) }
         let pinnedSet = Set(pinned)
-        self.loaded = pinned + keptLoaded.filter { !pinnedSet.contains($0) }
+        self.loaded = ToolSchemaOfferPlanner.retainingOrder(
+            pinned + keptLoaded.filter { !pinnedSet.contains($0) }, after: keptLoaded, name: \.self)
         let keptPriority = snapshot.priorityNames.filter {
             available.contains($0) && !pinnedSet.contains($0)
         }

@@ -1128,6 +1128,7 @@ public actor FloeAgentRuntime {
     private var providerToolProgressPublishedAt: Date?
     private var providerLastProgressAt = Date()
     private var discoveredToolNames: Set<String> = []
+    private var taskBoundToolNames: [String] = []
     private var lastDispatchedToolSchemas = DispatchedToolSchemaState()
     private var discoveryPriority: [String] = []
     private var persistedDiscovery: (names: Set<String>, priority: [String])?
@@ -2928,33 +2929,33 @@ public actor FloeAgentRuntime {
         // output are never read, so an old scripting route is not inherited.
         // Refresh is catalog-driven via ToolDiscovery matching with routing-
         // metadata exclusions (generic interpreters/retired), additive,
-        // capped, idempotent, and it never invents an unoffered tool or
+        // idempotent, and it never invents an unoffered tool or
         // widens any ceiling. An explicit code route in the CURRENT user
         // message suppresses it. `persistDiscoveryIfChanged()` below keeps the
         // widened presentation set; every later load still intersects it with
         // the live ceiling.
-        let routingChecklist = configuration.planChecklistProvider != nil
-            ? await configuration.planChecklistProvider?() : nil
-        let routingPlanTitles = routingChecklist?.runID == runID
-            ? (routingChecklist?.steps ?? []).map(\.title) : []
+        let checklist = await configuration.planChecklistProvider?()
+        let routingSteps = checklist?.runID == runID ? checklist?.steps ?? [] : []
+        let currentStepTitle = routingSteps.first { $0.status == .inProgress }?.title
+            ?? routingSteps.first { $0.status == .blocked }?.title
         let routingContext = NativeAuthoringRouting.boundedTaskContext(
             currentUserTask: userTask,
             originalGoal: messages.first(where: { $0.role == "user" })?.content,
-            planStepTitles: routingPlanTitles
+            planStepTitles: routingSteps.lazy.filter { $0.status == .pending }.prefix(24).map(\.title),
+            currentStepTitle: currentStepTitle
         )
-        let nativeAdditions = NativeAuthoringRouting.taskBoundAdditions(
-            userTask: userTask,
-            taskContext: routingContext,
-            liveDescriptors: catalogDescriptors,
-            discoveredNames: discoveredToolNames
+        let selectedNames = NativeAuthoringRouting.taskBoundNames(
+            userTask: userTask, taskContext: routingContext, currentStepTitle: currentStepTitle,
+            liveDescriptors: catalogDescriptors
         )
-        if !nativeAdditions.isEmpty {
-            let additionNames = nativeAdditions.map(\.name)
-            discoveredToolNames.formUnion(additionNames)
-            let seenAdditions = Set(additionNames)
-            discoveryPriority = additionNames + discoveryPriority.filter { !seenAdditions.contains($0) }
+        let nativeBindingNames = selectedNames.filter { !discoveredToolNames.contains($0) }
+        discoveredToolNames.formUnion(selectedNames)
+        // A later explicit search keeps priority until the working set changes.
+        if selectedNames != taskBoundToolNames {
+            let selected = Set(selectedNames)
+            discoveryPriority = selectedNames + discoveryPriority.filter { !selected.contains($0) }
+            taskBoundToolNames = selectedNames
         }
-        let nativeBindingNames = nativeAdditions.map(\.name)
         let coreNames: Set<String>
         switch configuration.toolAccess {
         case .chat: coreNames = ConversationToolAccess.chatNames
@@ -3403,6 +3404,8 @@ public actor FloeAgentRuntime {
                 let l = base.contains(lhs.name), r = base.contains(rhs.name)
                 return l == r ? lhs.name < rhs.name : l
             }
+            toolSchemasForRequest = ToolSchemaOfferPlanner.retainingOrder(
+                toolSchemasForRequest, after: lastDispatchedToolSchemas.offeredOrder, name: \.name)
         }
         let selectionInputs = await makeToolResultSelectionInputs(
             pagingCallIDs: pendingPagingCallIDs
@@ -3718,7 +3721,8 @@ public actor FloeAgentRuntime {
         // their smaller final prompt/repair set before invoking the engine.
         let exposure = DispatchedToolSchemaState(
             catalogNames: discoverableDescriptors.map(\.name)
-                + [ToolDiscovery.name, ToolDiscovery.listName, ToolResultPagingTool.name],
+                + [ToolDiscovery.name, ToolDiscovery.listName, ToolResultPagingTool.name]
+                + (configuration.toolAccess == .plan ? [PlanSubmission.toolName] : []),
             offeredNames: configuration.provider.kind == .local ? [] : dispatchRequest.toolSchemas.map(\.name)
         )
         lastDispatchedToolSchemas = exposure

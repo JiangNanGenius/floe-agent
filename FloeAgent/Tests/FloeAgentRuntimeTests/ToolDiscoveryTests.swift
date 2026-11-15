@@ -170,6 +170,32 @@ struct ToolDiscoveryTests {
         #expect(!ToolDiscovery.index([descriptor("browser.navigate")]).contains("network.http"))
     }
 
+    @Test func workspaceOperationWordsResolveWithinTheOfferedCatalog() {
+        let cases: [(String, [String])] = [
+            ("workspace.archive", ["压缩", "解压", "压缩包", "解压缩", "打包", "unzip", "Unzip report.zip", "解压这个压缩包"]),
+            ("workspace.copyFile", ["复制", "复制文件"]),
+            ("workspace.moveFile", ["重命名", "给文件重命名"]),
+            ("workspace.appendFile", ["追加"]),
+            ("workspace.searchFiles", ["搜索", "搜索文件"]),
+            ("workspace.replaceText", ["替换", "替换文件里的文字"])
+        ]
+        let offered = (cases.map(\.0) + ["workspace.deleteFile", "web.search", "linux.port"]).map(descriptor)
+        for (name, queries) in cases {
+            for query in queries {
+                let names = ToolDiscovery.matches(query: query, descriptors: offered).map(\.name)
+                #expect(names.first == name, "query: \(query)")
+                #expect(names.filter { $0 == name }.count == 1)
+                let restricted = offered.filter { $0.name != name }
+                #expect(!ToolDiscovery.matches(query: query, descriptors: restricted).contains { $0.name == name })
+            }
+        }
+        #expect(ToolDiscovery.matches(query: "搜索", descriptors: offered).contains { $0.name == "web.search" })
+        #expect(ToolDiscovery.matches(query: "unzip report.zip", descriptors: offered).map(\.name) == ["workspace.archive"])
+        #expect(ToolDiscovery.matches(query: "搜索网页", descriptors: offered).map(\.name) == ["web.search"])
+        #expect(ToolDiscovery.matches(query: "web.search", descriptors: offered).map(\.name) == ["web.search"])
+        #expect(NativeAuthoringRouting.taskBoundNames(userTask: "解压", liveDescriptors: offered) == ["workspace.archive"])
+    }
+
     @Test("Chinese and English history queries discover the whole conversation pair")
     func historyQueriesLoadTheConversationGroup() {
         let available = ["conversation.search", "conversation.read", "conversation.spawn", "memory.search"].map(descriptor)

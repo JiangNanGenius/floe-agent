@@ -739,13 +739,10 @@ public struct SubagentRunner: Sendable {
             // the child's own user task against the CURRENT parent ceiling:
             // additive, idempotent, never wider than what canonical dispatch
             // would already let this same-task child call.
-            let resumeUserTask = messages.last(where: { $0.role == "user" })?.content ?? ""
-            let nativeAdditions = NativeAuthoringRouting.taskBoundAdditions(
-                userTask: resumeUserTask,
-                liveDescriptors: offered,
-                discoveredNames: Set(restored.loaded)
-            ).map(\.name)
-            let refreshReceipt = restored.load(nativeAdditions, maxBytes: Self.schemaAllowanceBytes(
+            // Peer messages can share the user role; the persisted delegated
+            // task is the trusted source for this child's automatic selection.
+            let taskNames = NativeAuthoringRouting.taskBoundNames(userTask: request.task, liveDescriptors: offered)
+            let refreshReceipt = restored.refreshAfterResume(taskNames, maxBytes: Self.schemaAllowanceBytes(
                 model: model,
                 messageLedgerBytes: Self.requiredMessageLedgerBytes(messages)
             ))
@@ -1155,6 +1152,7 @@ public struct SubagentRunner: Sendable {
                         }
                     }
                 }
+                discovery.recordPrepared(exposure.offeredOrder)
 
                 if !calls.isEmpty {
                     if !text.isEmpty {

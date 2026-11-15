@@ -352,4 +352,108 @@ struct ToolSchemaExposureContractTests {
         #expect(request.toolSchemas.contains { $0.name == ToolDiscovery.name })
     }
 
+    @Test func activeStepReconsidersPreviouslyDiscoveredSchemasInsideTheCurrentCeiling() {
+        let names = (0..<24).map { String(format: "studio.operation%02d", $0) }
+        let catalog = (names + ["github.readLink", "exec.shell"]).map { Self.descriptor($0) }
+        let focused = "制作背景音乐"
+        let context = NativeAuthoringRouting.boundedTaskContext(currentUserTask: "继续",
+            originalGoal: "github.readLink", planStepTitles: [], currentStepTitle: focused)
+        let old = Set(names)
+        #expect(NativeAuthoringRouting.taskBoundAdditions(userTask: "继续", taskContext: focused,
+            liveDescriptors: catalog, discoveredNames: old).isEmpty)
+        let selected = NativeAuthoringRouting.taskBoundNames(userTask: "继续", taskContext: context,
+            currentStepTitle: focused, liveDescriptors: catalog)
+        #expect(Array(selected.prefix(names.count)) == names)
+        #expect(!selected.contains("exec.shell"))
+        let reduced = catalog.filter { $0.name != names[0] }
+        #expect(!NativeAuthoringRouting.taskBoundNames(userTask: "继续", taskContext: context,
+            currentStepTitle: focused, liveDescriptors: reduced).contains(names[0]))
+        #expect(NativeAuthoringRouting.taskBoundNames(userTask: "用 Python 脚本合成音乐", taskContext: context,
+            currentStepTitle: focused, liveDescriptors: catalog).isEmpty)
+    }
+
+    @Test func runtimeUsesItsOwnActiveOrBlockedStepBeyondCompletedHistory() async throws {
+        let provider = TestFixtures.localhostProvider()
+        let model = ModelProfile(providerID: provider.id, remoteModelID: "step-routing",
+            displayName: "Step routing", limits: .init(contextTokens: 65_536, maxOutputTokens: 2_048),
+            capabilities: [.text, .tools])
+        let executor = MockExecutor()
+        for name in ["studio.edit", "github.readLink", "studio.unavailable"] {
+            executor.descriptors[name] = Self.descriptor(name)
+        }
+        for (status, owned) in [(TaskChecklist.Step.Status.inProgress, true), (.blocked, true), (.blocked, false)] {
+            let runID = UUID(), owner = owned ? runID : UUID()
+            let completed = (0..<30).map { TaskChecklist.Step(id: String($0), title: "github.readLink", status: .completed) }
+            let checklist = TaskChecklist(conversationID: UUID(), runID: owner, revision: 1, title: "Work",
+                steps: completed + [.init(id: "music", title: "制作背景音乐", status: status)], updatedAt: Date())
+            let adapter = ExposureRequestAdapter { _, _ in Self.done() }
+            let agent = FloeAgentRuntime(configuration: .init(provider: provider, model: model,
+                allowedToolNames: ["studio.edit", "github.readLink"], planChecklistProvider: { checklist }),
+                adapter: adapter, policy: HumanApprovalPolicy(), executor: executor, runID: runID)
+            try await agent.start(goal: "继续")
+            let first = try #require(adapter.requests.first)
+            let names = Set(first.toolSchemas.map(\.name))
+            #expect(names.contains("studio.edit") == owned)
+            #expect(names.isDisjoint(with: ["github.readLink", "studio.unavailable"]))
+        }
+    }
+
+    @Test func childKeepsDispatchedOrderAcrossExplicitLoadsAndFilteredResume() {
+        let all = ["workspace.readFile", "fixture.alpha", "fixture.zeta"].map { Self.descriptor($0) }
+        let seed: Set<String> = ["workspace.readFile"]
+        var child = ChildToolDiscovery(descriptors: all, seedNames: seed)
+        _ = child.load(["fixture.zeta"], maxBytes: 100_000)
+        child.recordPrepared(["fixture.zeta", "unavailable", "workspace.readFile"])
+        _ = child.load(["fixture.alpha"], maxBytes: 100_000)
+        let offered = child.schemas().map(\.name)
+        #expect(offered == ["fixture.zeta", "workspace.readFile", "fixture.alpha"])
+        let restored = ChildToolDiscovery(restoring: child.snapshot(),
+            descriptors: all.filter { $0.name != "fixture.alpha" }, seedNames: seed)
+        #expect(restored.schemas().map(\.name) == Array(offered.dropLast()))
+        #expect(restored.restoredDrops == ["fixture.alpha"])
+    }
+
+    @Test func resumedChildFitsNewTaskMatchesBehindItsSavedSearch() {
+        let all = ["fixture.auto1", "fixture.auto2", "fixture.saved"].map { Self.descriptor($0) }
+        let byName = Dictionary(uniqueKeysWithValues: all.map { ($0.name, $0) })
+        var child = ChildToolDiscovery(descriptors: all, seedNames: [])
+        _ = child.load(["fixture.auto1", "fixture.saved"], maxBytes: 100_000)
+        _ = child.load(["fixture.saved"], maxBytes: 100_000)
+        let prior = child.snapshot()
+        var resumed = ChildToolDiscovery(restoring: prior, descriptors: all, seedNames: [])
+        let budget = resumed.namesLedgerBytes() + prior.loadedNames.compactMap { byName[$0] }
+            .reduce(0) { $0 + ChildToolDiscovery.schemaWireBytes($1) }
+        let task = ["fixture.auto1", "fixture.auto2"]
+        let tight = resumed.refreshAfterResume(task, maxBytes: budget)
+        #expect(tight.deferred == ["fixture.auto2"])
+        #expect(resumed.snapshot().loadedNames == prior.loadedNames)
+        #expect(resumed.snapshot().priorityNames == prior.priorityNames)
+        let roomy = resumed.refreshAfterResume(task, maxBytes: 100_000)
+        #expect(roomy.admitted == ["fixture.auto2"])
+        #expect(resumed.snapshot().priorityNames == prior.priorityNames + ["fixture.auto2"])
+    }
+
+    @Test func laterSearchAppendsSchemasAfterTheActualCloudPrefix() async throws {
+        let executor = MockExecutor(), provider = TestFixtures.localhostProvider()
+        for name in ["fixture.alpha", "fixture.zeta", "fixture.unavailable"] {
+            executor.descriptors[name] = Self.descriptor(name)
+        }
+        let adapter = ExposureRequestAdapter { _, turn in
+            guard turn < 2 else { return Self.done() }
+            let name = ["fixture.zeta", "fixture.alpha"][turn]
+            return Self.use(try TestFixtures.toolCall(id: "search-\(turn)", toolName: "tools.search",
+                arguments: "{\"query\":\"\(name)\"}"))
+        }
+        let agent = runtime(adapter: adapter, executor: executor, provider: provider,
+                            allowed: ["fixture.zeta", "fixture.alpha"])
+        try await agent.start(goal: "Begin")
+        try #require(adapter.requests.count == 3)
+        let previous = adapter.requests[1].toolSchemas, next = adapter.requests[2].toolSchemas
+        #expect(previous.contains { $0.name == "fixture.zeta" })
+        #expect(previous.allSatisfy { $0.name != "fixture.alpha" })
+        let newlyLoaded = try #require(next.first { $0.name == "fixture.alpha" })
+        #expect(next == previous + [newlyLoaded])
+        #expect(next.allSatisfy { $0.name != "fixture.unavailable" })
+    }
+
 }

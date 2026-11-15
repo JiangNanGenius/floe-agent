@@ -8,23 +8,28 @@ import FloeCore
 final class DispatchedToolSchemaState: @unchecked Sendable {
     private let lock = NSLock()
     private let catalogNames: Set<String>
-    private var preparedNames: Set<String>
+    private var preparedOrder: [String]
 
     init(catalogNames: [String] = [], offeredNames: [String] = []) {
-        self.catalogNames = Set(catalogNames)
-        self.preparedNames = Set(offeredNames).intersection(self.catalogNames)
+        let catalog = Set(catalogNames)
+        self.catalogNames = catalog
+        self.preparedOrder = offeredNames.filter(catalog.contains)
     }
 
     func recordPrepared(_ names: [String]) {
         lock.lock()
         defer { lock.unlock() }
-        preparedNames = Set(names).intersection(catalogNames)
+        preparedOrder = names.filter(catalogNames.contains)
     }
 
     var offeredNames: Set<String> {
+        Set(offeredOrder)
+    }
+
+    var offeredOrder: [String] {
         lock.lock()
         defer { lock.unlock() }
-        return preparedNames
+        return preparedOrder
     }
 }
 
@@ -146,6 +151,33 @@ enum ToolDiscovery {
         return queries.flatMap { matches(query: $0, descriptors: descriptors) }.filter { seen.insert($0.name).inserted }
     }
 
+    /// An operation is more specific than the whole workspace namespace.
+    /// Bare Chinese terms are common in discovery requests; inside a longer
+    /// phrase require file context so e.g. “搜索网页” keeps its web meaning.
+    private static let workspaceOperations: [(name: String, terms: [String])] = [
+        ("workspace.archive", ["压缩", "解压", "压缩包", "解压缩", "打包", "unzip"]),
+        ("workspace.copyFile", ["复制"]),
+        ("workspace.moveFile", ["重命名"]),
+        ("workspace.appendFile", ["追加"]),
+        ("workspace.searchFiles", ["搜索"]),
+        ("workspace.replaceText", ["替换"])
+    ]
+
+    static func workspaceOperationNames(in query: String) -> Set<String> {
+        var names = Set<String>()
+        for line in query.lowercased().split(whereSeparator: \.isNewline) {
+            let phrase = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            let fileContext = ["文件", "目录", "工作区", "压缩包"].contains(where: phrase.contains)
+            let unzip = phrase.split { !$0.isLetter && !$0.isNumber }.contains("unzip")
+            for operation in workspaceOperations where operation.terms.contains(where: { term in
+                phrase == term || (term == "unzip" ? unzip : fileContext && phrase.contains(term))
+            }) {
+                names.insert(operation.name)
+            }
+        }
+        return names
+    }
+
     static func matches(query: String, descriptors: [ToolCatalog.Descriptor]) -> [ToolCatalog.Descriptor] {
         let descriptors = descriptors.filter { !RetiredExecutionTools.contains($0.name) }
         guard !RetiredExecutionTools.contains(query.trimmingCharacters(in: .whitespacesAndNewlines)) else { return [] }
@@ -177,6 +209,8 @@ enum ToolDiscovery {
                 || ToolAliasTable.aliases(of: descriptor.name).contains { tokenSet.contains($0.lowercased()) }
         }
         if !exact.isEmpty { return exact }
+        let operationNames = workspaceOperationNames(in: query)
+        let fileOperations = descriptors.filter { operationNames.contains($0.name) }.sorted { $0.name < $1.name }
         // Guest topology is controlled by the host-side environment tools,
         // not by commands inside the guest. A query such as "Linux 虚拟机多核"
         // also matches the generic shell synonym, so put the three relevant
@@ -192,7 +226,8 @@ enum ToolDiscovery {
             let shell = descriptors.filter { $0.name == "exec.shell" }
             return lifecycle + shell
         }
-        if ["port", "forward", FloeL10n.l("runtime.tool_discovery.port"), FloeL10n.l("runtime.tool_discovery.forward")].contains(where: query.contains),
+        if operationNames.isEmpty,
+           ["port", "forward", FloeL10n.l("runtime.tool_discovery.port"), FloeL10n.l("runtime.tool_discovery.forward")].contains(where: query.contains),
            let ports = descriptors.first(where: { $0.name == "linux.port" }) {
             return [ports] + descriptors.filter { $0.name == "environment.linuxStatus" || $0.name == "exec.localService" }
         }
@@ -221,7 +256,7 @@ enum ToolDiscovery {
                     : left.score > right.score
             }
             return appendingInterpreterFallback(
-                ranked.prefix(8).map { $0.descriptor },
+                fileOperations + ranked.prefix(8).map { $0.descriptor }.filter { !operationNames.contains($0.name) },
                 query: query,
                 descriptors: descriptors
             )
@@ -232,7 +267,8 @@ enum ToolDiscovery {
         let inspections = NativeAuthoringGuidance.inspectionOrder.compactMap { name in matched.first { $0.name == name } }
         let inspectionNames = Set(inspections.map(\.name))
         return appendingInterpreterFallback(
-            inspections + matched.filter { !inspectionNames.contains($0.name) },
+            fileOperations + (inspections + matched.filter { !inspectionNames.contains($0.name) })
+                .filter { !operationNames.contains($0.name) },
             query: query,
             descriptors: descriptors
         )
