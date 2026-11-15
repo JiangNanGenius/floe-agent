@@ -3,7 +3,7 @@
 
 本文是 iOS／iPadOS 下一版版本选择的唯一维护入口；各渠道实际交付状态见[当前状态](CURRENT_STATUS.md)与[逐版交付记录](releases/README.md)。Android 版本独立管理。
 
-**最近已核验的内部测试为 1.8.32（353）。** Apple 返回 `VALID`，构建未过期，Floe QA 为 `IN_BETA_TESTING`。签名 IPA 的主程序 UUID 与本地构建匹配。GitHub stable/latest 与 Feather 最近一次核验为 346。[353 交付记录](releases/builds/FLOE_1.8.32_BUILD353_DELIVERY.md)
+**最近已核验的内部测试为 1.8.33（354）。** Apple 返回 `VALID`，构建未过期，唯一测试组 Floe QA 为 `IN_BETA_TESTING`。签名包主程序 UUID 与本地构建一致。GitHub stable/latest 与 Feather 最近一次核验为 346。[354 交付记录](releases/builds/FLOE_1.8.33_BUILD354_DELIVERY.md)
 
 ## 依据与判定
 
@@ -13,7 +13,7 @@
 
 ## 本轮版本记录
 
-1.8.33（354）选作下一内部 Floe QA 构建。选定时 Apple 的上传、构建及预发布版本查询均为空，本地和远端也没有同名标签。353 的公开测试及正式送审继续使用原构建。
+1.8.33（354）已交付内部 Floe QA。Apple 上的测试说明、有效状态和测试组已独立读回。353 的公开测试及正式送审继续使用各自原提交。
 
 1.8.32（353）已交付 Floe QA。此构建修复空仓库误报并统一源码管理按钮。Apple 已确认具备正式送审资格，送审由用户决定。
 

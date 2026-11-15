@@ -3,9 +3,11 @@
 
 这是带核实日期的渠道快照。各渠道独立更新；源码版本、公开下载、Apple 审核与测试组可用性分别核对。 / This is a dated channel snapshot. Source versions, public downloads, Apple review and beta-group availability are separate states.
 
-最新内部 TestFlight 为 1.8.32（353），GitHub／Feather 最近一次已核验的稳定版为 346。[发布版本依据](RELEASE_VERSION_AUTHORITY.zh-CN.md)
+最新内部 TestFlight 为 1.8.33（354），GitHub／Feather 最近一次已核验的稳定版为 346。[发布版本依据](RELEASE_VERSION_AUTHORITY.zh-CN.md)
 
 ## 2026-11-15 iOS 内部测试 / Internal TestFlight
+
+Floe QA 已可安装 1.8.33（354）。Linux 终端可离线安装加速工具，图片工作台可用 Apple Pencil 在画布上直接操作。 / Floe QA can install build 354. The Linux terminal can install acceleration tools offline, and the image workbench supports direct Apple Pencil editing. [354 交付记录 / Delivery](releases/builds/FLOE_1.8.33_BUILD354_DELIVERY.md)
 
 Floe QA 已可安装 1.8.32（353）。打开空仓库时的错误弹窗已修复，源码管理按钮已在 iPad mini 模拟器上核对。 / Floe QA can install build 353. Source Control now opens an uninitialized workspace without an error alert. The updated sidebar controls were verified on the iPad mini simulator. [353 交付记录 / Delivery](releases/builds/FLOE_1.8.32_BUILD353_DELIVERY.md)
 
