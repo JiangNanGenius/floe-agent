@@ -1,5 +1,15 @@
 # Floe Android 分目标实施记录
 
+## 1.0.14／123已公开：后台预算、原任务接续与浮球停止（2026-11-16）
+
+[Android1.0.14预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v1.0.14)固定源码`61e4a67d1fdb116fd235284e03179d1318367743`。native62真实ARM64生产、16项Swift与21项JVM定向检查、58项原生绑定（含8项排除）、16KiB封装和四包API28–29签名检查通过。三星已安装同一精确Full APK，UID保持、既有任务与配置可见；不表示更早测试库记录已经恢复。
+
+必需后台命令超过原10秒限制后完成，经持久系统通知自动接续同一原运行，未点继续；模型仍只回复等待，未交付文件，完整目标保留未通过。真实浮球、展开面板和约四秒收起已验证；接管后首次227毫秒采样中浮窗2→0、控制通知1→0，无障碍当时仍开，随后没有晚回浮球。旧自然目标从未继续；后续独立停止后，实际27项后台作业均终态，不改写原失败。
+
+五附件296181507字节匿名完整下载与摘要、123／122／Alpha65三个真实生产更新器共12个安装版本样本读回通过，iOS Latest保持。本次仅完整包，无增量附件；覆盖安装与公开发现不扩展为新OTA实机验收。测试权限及电源基线已恢复，四份手机重复导出与两批结束／过期源码打包暂存已清理，当前／回退／符号和原失败保留。已正式交接录像会话继续新鲜自然目标，主线停止三星输入和重型构建。详见[本版交付记录](releases/builds/FLOE_ANDROID_1.0.14_BUILD123_DELIVERY.md)。以下候选段落保留其当时状态。
+
+English: Full1.0.14/code123 is public and bound to the exact source above. Real ARM64 production, focused checks, public bytes and twelve production-updater samples passed. Samsung proved same-run continuation and real floating-control teardown; the requested file delivery and full natural goal remain unaccepted. Recording owns the next natural-goal acceptance; prior failures remain preserved.
+
 ## 1.0.14／123实机发现的后台默认超时修复，准备新候选（2026-11-15）
 
 上一私有候选已完成真实ARM64生产、58项包内绑定／16KiB和四包API28–29签名检查，并以保留数据的方式安装三星。旧等待任务的实际停止入口可用，界面最终显示已停止；原失败长任务未继续。
