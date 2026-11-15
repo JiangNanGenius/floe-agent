@@ -4,7 +4,6 @@
 // UTF-8 BOM, multi-byte UTF-8 split across feeds, and stream interruption.
 
 import Foundation
-import FloeCore
 
 /// Errors raised by `SSEParser.finish()` when the stream ends malformed.
 public enum SSEParserError: Error, Sendable, Hashable {
@@ -49,7 +48,7 @@ public struct SSEParser: Sendable {
     // Per-event field accumulation. All mutations happen via methods taking
     // `inout SSEParser` — never through closure captures of computed
     // properties, which would break value semantics.
-    private var pendingData: [String] = []
+    private var pendingData = ""
     private var pendingEvent: String = ""
     private var pendingID: String?
     private var pendingRetry: Int?
@@ -66,7 +65,7 @@ public struct SSEParser: Sendable {
     public mutating func feed(_ bytes: UnsafeBufferPointer<UInt8>) -> [SSEEvent] {
         var events: [SSEEvent] = []
         for byte in bytes {
-            processByte(byte, into: &events)
+            if let event = feed(byte) { events.append(event) }
         }
         return events
     }
@@ -79,7 +78,7 @@ public struct SSEParser: Sendable {
     public mutating func feed<C: Collection<UInt8>>(_ data: C) -> [SSEEvent] {
         var events: [SSEEvent] = []
         for byte in data {
-            processByte(byte, into: &events)
+            if let event = feed(byte) { events.append(event) }
         }
         return events
     }
@@ -88,108 +87,65 @@ public struct SSEParser: Sendable {
     /// - Throws: `SSEParserError.truncatedUTF8` when the final line buffer
     ///   ends mid-codepoint.
     public mutating func finish() throws -> [SSEEvent] {
-        var events: [SSEEvent] = []
-        switch state {
-        case .streamStart:
-            break
-        case .bomPending:
-            // BOM prefix bytes never completed: treat them as content.
-            state = .inLine
-            if !lineBuffer.isEmpty {
-                dispatchLine(into: &events)
-            }
-        case .inLine:
-            if !lineBuffer.isEmpty {
-                guard decodeLineBuffer() != nil else {
-                    throw SSEParserError.truncatedUTF8
-                }
-                dispatchLine(into: &events)
-            }
-        case .afterCR:
-            // A trailing lone CR terminated the final line.
-            dispatchLine(into: &events)
+        if state == .inLine, !lineBuffer.isEmpty,
+           String(validating: lineBuffer, as: UTF8.self) == nil {
+            throw SSEParserError.truncatedUTF8
         }
-        // Flush an event terminated by EOF instead of a blank line.
-        if let event = flushEvent() {
-            events.append(event)
-        }
+        // An incomplete BOM stays in the line as content. A trailing CR has
+        // already dispatched its line, so only the pending event needs flushing.
+        if !lineBuffer.isEmpty { _ = dispatchLine() }
         state = .streamStart
-        return events
+        // Flush an event terminated by EOF instead of a blank line.
+        if let event = flushEvent() { return [event] }
+        return []
     }
 
     // MARK: Byte processing
 
-    private mutating func processByte(_ byte: UInt8, into events: inout [SSEEvent]) {
+    /// URLSession.AsyncBytes feeds one byte at a time. A terminator can
+    /// complete at most one event, which the caller can deliver immediately.
+    mutating func feed(_ byte: UInt8) -> SSEEvent? {
         switch state {
         case .streamStart:
             if byte == 0xEF {
                 lineBuffer.append(byte)
                 state = .bomPending(1)
-            } else {
-                state = .inLine
-                processContentByte(byte, into: &events)
+                return nil
             }
+            state = .inLine
 
         case .bomPending(let seen):
-            let expected: [UInt8] = [0xEF, 0xBB, 0xBF]
-            if byte == expected[seen] {
+            if seen == 1 && byte == 0xBB {
                 lineBuffer.append(byte)
-                if seen + 1 == expected.count {
-                    // Complete BOM consumed; drop it.
-                    lineBuffer.removeAll(keepingCapacity: true)
-                    state = .inLine
-                } else {
-                    state = .bomPending(seen + 1)
-                }
-            } else {
-                // Not a BOM: replay buffered prefix bytes as content, then
-                // process the current byte.
-                let buffered = lineBuffer
+                state = .bomPending(2)
+                return nil
+            }
+            state = .inLine
+            if seen == 2 && byte == 0xBF {
                 lineBuffer.removeAll(keepingCapacity: true)
-                state = .inLine
-                for b in buffered { processContentByte(b, into: &events) }
-                processContentByte(byte, into: &events)
+                return nil
             }
-
-        case .inLine, .afterCR:
-            processContentByte(byte, into: &events)
-        }
-    }
-
-    private mutating func processContentByte(_ byte: UInt8, into events: inout [SSEEvent]) {
-        switch state {
-        case .inLine:
-            switch byte {
-            case 0x0A: // LF terminates the line.
-                dispatchLine(into: &events)
-            case 0x0D: // CR terminates the line; swallow a following LF.
-                dispatchLine(into: &events)
-                state = .afterCR
-            default:
-                if lineBuffer.count < Self.maximumLineBytes {
-                    lineBuffer.append(byte)
-                } else {
-                    lineOverflowed = true
-                }
-            }
+            // The partial prefix already in lineBuffer belongs to this line.
         case .afterCR:
-            switch byte {
-            case 0x0A: // Second half of CRLF.
-                state = .inLine
-            case 0x0D: // CRCR: another empty line terminated by CR.
-                dispatchLine(into: &events)
-                state = .afterCR
-            default:
-                state = .inLine
-                if lineBuffer.count < Self.maximumLineBytes {
-                    lineBuffer.append(byte)
-                } else {
-                    lineOverflowed = true
-                }
-            }
+            state = .inLine
+            if byte == 0x0A { return nil }
+        case .inLine:
+            break
+        }
+
+        switch byte {
+        case 0x0A:
+            return dispatchLine()
+        case 0x0D:
+            state = .afterCR
+            return dispatchLine()
         default:
-            // Only reachable when misused from `.streamStart`/`.bomPending`.
-            lineBuffer.append(byte)
+            if lineBuffer.count < Self.maximumLineBytes {
+                lineBuffer.append(byte)
+            } else {
+                lineOverflowed = true
+            }
+            return nil
         }
     }
 
@@ -198,99 +154,69 @@ public struct SSEParser: Sendable {
     /// Decodes the buffered line and processes it as an SSE line.
     /// Mid-stream invalid UTF-8 is replaced with U+FFFD (not fatal); only
     /// a truncated final codepoint at `finish()` raises.
-    private mutating func dispatchLine(into events: inout [SSEEvent]) {
+    private mutating func dispatchLine() -> SSEEvent? {
         defer {
             lineBuffer.removeAll(keepingCapacity: true)
             lineOverflowed = false
         }
-        if state != .afterCR { state = .inLine }
         if lineOverflowed {
             pendingEventOverflowed = true
-            return
+            return nil
         }
         guard !lineBuffer.isEmpty else {
             // Blank line: dispatch pending event.
-            if let event = flushEvent() {
-                events.append(event)
+            return flushEvent()
+        }
+        guard !pendingEventOverflowed, lineBuffer.first != 0x3A else { return nil }
+        // SSE field delimiters are ASCII bytes, even when the value starts
+        // with a combining scalar. Decode only the value of a recognized field.
+        let fieldEnd = lineBuffer.firstIndex(of: 0x3A) ?? lineBuffer.endIndex
+        var valueStart = fieldEnd
+        if valueStart < lineBuffer.endIndex {
+            valueStart += 1
+            if valueStart < lineBuffer.endIndex && lineBuffer[valueStart] == 0x20 {
+                valueStart += 1
             }
-            return
         }
-        let line = decodeLineBuffer() ?? String(decoding: lineBuffer, as: UTF8.self)
-        processLine(line)
-    }
-
-    /// Strict UTF-8 decode of the line buffer; nil when invalid.
-    private func decodeLineBuffer() -> String? {
-        if lineBuffer.allSatisfy({ $0 < 0x80 }) {
-            return String(decoding: lineBuffer, as: UTF8.self)
-        }
-        var iterator = lineBuffer.makeIterator()
-        var codec = UTF8()
-        while true {
-            switch codec.decode(&iterator) {
-            case .scalarValue:
-                continue
-            case .emptyInput:
-                return String(decoding: lineBuffer, as: UTF8.self)
-            case .error:
+        let bytes = lineBuffer[valueStart...]
+        switch String(decoding: lineBuffer[..<fieldEnd], as: UTF8.self) {
+        case "data":
+            let value = String(decoding: bytes, as: UTF8.self)
+            let addedBytes = value.utf8.count + (pendingHasData ? 1 : 0)
+            guard addedBytes <= Self.maximumEventBytes - pendingDataBytes else {
+                pendingEventOverflowed = true
                 return nil
             }
-        }
-    }
-
-    private mutating func processLine(_ line: String) {
-        if line.hasPrefix(":") {
-            // Comment / heartbeat line — ignored by design.
-            return
-        }
-
-        let field: Substring
-        let value: Substring
-        if let colonIndex = line.firstIndex(of: ":") {
-            field = line[..<colonIndex]
-            var rest = line[line.index(after: colonIndex)...]
-            // One leading space after the colon is stripped per spec.
-            if rest.hasPrefix(" ") {
-                rest = rest.dropFirst()
-            }
-            value = rest
-        } else {
-            // Field name only, empty value.
-            field = Substring(line)
-            value = ""
-        }
-
-        switch field {
-        case "data":
-            let valueBytes = value.utf8.count
-            if valueBytes <= Self.maximumEventBytes - pendingDataBytes {
-                pendingData.append(String(value))
-                pendingDataBytes += valueBytes
-                pendingHasData = true
+            if pendingHasData {
+                pendingData.append("\n")
+                pendingData.append(value)
             } else {
-                pendingEventOverflowed = true
+                pendingData = value
+                pendingHasData = true
             }
+            pendingDataBytes += addedBytes
         case "event":
-            pendingEvent = String(value)
+            pendingEvent = String(decoding: bytes, as: UTF8.self)
         case "id":
             // IDs containing NUL are ignored per spec.
-            if !value.contains("\0") {
-                pendingID = String(value)
+            if !bytes.contains(0) {
+                pendingID = String(decoding: bytes, as: UTF8.self)
             }
         case "retry":
-            if let retry = Int(value), retry >= 0 {
+            if let retry = Int(String(decoding: bytes, as: UTF8.self)), retry >= 0 {
                 pendingRetry = retry
             }
         default:
             // Unknown field names are ignored (forward compatibility).
-            return
+            break
         }
+        return nil
     }
 
     /// Emits the pending event if it carries data, then resets field state.
     private mutating func flushEvent() -> SSEEvent? {
         defer {
-            pendingData.removeAll(keepingCapacity: true)
+            pendingData = ""
             pendingEvent = ""
             pendingRetry = nil
             pendingHasData = false
@@ -310,7 +236,7 @@ public struct SSEParser: Sendable {
         guard pendingHasData else { return nil }
         return SSEEvent(
             event: pendingEvent,
-            data: pendingData.joined(separator: "\n"),
+            data: pendingData,
             id: pendingID,
             retry: pendingRetry
         )

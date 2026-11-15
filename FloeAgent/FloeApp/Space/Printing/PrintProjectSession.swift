@@ -431,23 +431,26 @@ actor PrintProjectDisk {
     func slice() {
         guard !isBusy, !isEditing, !objects.isEmpty else { return }
         isBusy = true; isCancelling = false; diagnostic = nil; lastError = nil; completed = false; progress = 0
-        let preset = self.preset, height = layerHeight, process = processSettings
-        var machine = self.machine
-        if let assignedTool = objects.first?.toolID { machine.selectedTool = assignedTool }
-        self.machine = machine
+        let preset = self.preset, height = layerHeight, process = processSettings, draftMachine = machine
+        let assigned = Set(objects.map(\.toolID))
         operation = Task { [self] in
             defer { isBusy = false; isCancelling = false; operation = nil; identity = nil }
             do {
                 // The current adapter outputs one selected tool per plate; never silently flatten a multi-tool assignment.
-                let assigned = Set(objects.map(\.toolID))
                 guard assigned.count <= 1 else { throw PrintError.invalidSetting("Multiple tools on one plate require separate slicing") }
+                var machine = draftMachine
+                if let selected = assigned.first { machine.selectedTool = selected }
+                self.machine = machine
                 var next = document; next.preset = preset; next.layerHeight = height; next.processSettings = process; next.machine = machine
-                document = try await disk.commit(next, expectedRevision: document.revision)
-                let frozen = document
-                var overrides = frozen.processSettings ?? [:]; overrides[preset == .genericMarlinPLA ? "sliceHeight" : "slaSlice"] = height
-                var configured = machine
-                if let selected = assigned.first { configured.selectedTool = selected }
-                let input = try PrintInput(mesh: try await disk.mesh(frozen), preset: preset, overrides: overrides, machine: configured)
+                var overrides = process
+                overrides[preset == .genericMarlinPLA ? "sliceHeight" : "slaSlice"] = height
+                let input = try PrintInput(mesh: try await disk.mesh(next), preset: preset, overrides: overrides, machine: machine)
+                try Task.checkCancellation()
+                let frozen = try await disk.commit(next, expectedRevision: next.revision)
+                // The saved settings take effect even if the new slice later fails or is cancelled.
+                resultMatchesConfiguration = result != nil && frozen.resultFingerprint == input.fingerprint
+                document = frozen
+                try Task.checkCancellation()
                 let request = PrintRequest(identity: .init(projectID: id, plateID: frozen.plateID, revision: frozen.revision), input: input)
                 identity = request.identity
                 let artifact = try await Self.service.slice(request) { [weak self] update in

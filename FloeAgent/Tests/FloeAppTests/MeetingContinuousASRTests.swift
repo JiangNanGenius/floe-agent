@@ -590,10 +590,10 @@ private final class MeetingFakeLiveAdapter: ASRLiveTranscribing, @unchecked Send
     }
 
     func startLiveSession(_ request: ASRLiveSessionRequest, credential: String) async throws -> any ASRLiveSession {
-        lock.lock()
-        attempts += 1
-        let failure = startFailure
-        lock.unlock()
+        let failure = lock.withLock {
+            attempts += 1
+            return startFailure
+        }
         if let failure { throw failure }
         let domain = ScriptedDomain(request: request)
         let session = MeetingFakeSession(domain: domain)

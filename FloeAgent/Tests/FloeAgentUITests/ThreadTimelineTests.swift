@@ -347,11 +347,13 @@ struct ThreadTimelineTests {
     @Test("Short SSE events are delivered before more bytes or EOF arrive")
     func smallSSEEventDoesNotWaitForKilobyte() throws {
         for ending in ["\n\n", "\r\n\r\n", "\r\r"] {
-            var framer = SSEByteFramer()
+            var parser = SSEParser()
             var events: [SSEEvent] = []
-            for byte in ("data: first" + ending).utf8 { events += framer.feed(byte) }
+            for byte in ("data: first" + ending).utf8 {
+                if let event = parser.feed(byte) { events.append(event) }
+            }
             #expect(events.map(\.data) == ["first"])
-            #expect(try framer.finish().isEmpty)
+            #expect(try parser.finish().isEmpty)
         }
     }
 
@@ -1196,6 +1198,36 @@ struct ThreadTimelineTests {
             #expect(firstAnswerIndex < guidanceIndex)
             #expect(guidanceIndex < finalAnswerIndex)
         }
+    }
+
+    @Test("Multiple guidance messages keep their positions around event boundaries")
+    func multipleGuidanceMessagesRemainOrdered() {
+        let conversationID = UUID()
+        let start = Date(timeIntervalSince1970: 1_000)
+        let run = RunRecord(id: UUID(), conversationID: conversationID, state: "completed",
+                            goal: "goal", startedAt: start, endedAt: start.addingTimeInterval(10))
+        let goal = PersistedMessage(id: UUID(), conversationID: conversationID, role: "user",
+                                    content: "goal", createdAt: start, parts: [], runID: run.id)
+        let guidance = [1.0, 3.0, 7.0].map { offset in
+            PersistedMessage(id: UUID(), conversationID: conversationID, role: "user",
+                             content: "guidance \(Int(offset))", createdAt: start.addingTimeInterval(offset),
+                             parts: [], runID: run.id)
+        }
+        var first = makeEvent(runID: run.id, sequence: 1, kind: .assistantText, payload: ["text": "first"])
+        first.createdAt = start.addingTimeInterval(3)
+        var second = makeEvent(runID: run.id, sequence: 2, kind: .assistantText, payload: ["text": "second"])
+        second.createdAt = start.addingTimeInterval(5)
+        let items = ThreadTimelineBuilder.build(
+            messages: [goal] + Array(guidance.reversed()), events: [first, second], run: run,
+            isRunning: false, liveStreamedText: "", liveReasoningText: "", pendingApprovals: [])
+        let visible = items.compactMap { item -> String? in
+            switch item {
+            case .userMessage(let message): return message.content
+            case .assistantMessage(let text, _, _): return text
+            default: return nil
+            }
+        }
+        #expect(visible == ["goal", "guidance 1", "guidance 3", "first", "second", "guidance 7"])
     }
 
     // MARK: - Trusted design confirmation projection (T7V)

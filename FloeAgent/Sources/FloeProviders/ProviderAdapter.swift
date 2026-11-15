@@ -523,27 +523,6 @@ enum BoundedHTTP {
     }
 }
 
-/// Flush complete SSE lines immediately, including short first events. A
-/// size-only 1 KiB buffer can hide valid events until the watchdog expires.
-struct SSEByteFramer: Sendable {
-    private var parser = SSEParser()
-    private var buffer: [UInt8] = []
-
-    mutating func feed(_ byte: UInt8) -> [SSEEvent] {
-        buffer.append(byte)
-        guard buffer.count >= 1024 || byte == 10 || byte == 13 else { return [] }
-        let events = parser.feed(buffer)
-        buffer.removeAll(keepingCapacity: true)
-        return events
-    }
-
-    mutating func finish() throws -> [SSEEvent] {
-        let events = parser.feed(buffer)
-        buffer.removeAll(keepingCapacity: true)
-        return events + (try parser.finish())
-    }
-}
-
 /// Scoped per-request transport for provider traffic.
 ///
 /// Ordinary requests keep using the caller's session (default
@@ -677,15 +656,15 @@ struct SSEBytePump: Sendable {
                             continuation.finish()
                             return
                         }
-                        var framer = SSEByteFramer()
+                        var parser = SSEParser()
                         for try await byte in bytes {
                             try Task.checkCancellation()
-                            for event in framer.feed(byte) {
+                            if let event = parser.feed(byte) {
                                 compatibility.observeStreamEvent()
                                 continuation.yield(event)
                             }
                         }
-                        for event in try framer.finish() {
+                        for event in try parser.finish() {
                             compatibility.observeStreamEvent()
                             continuation.yield(event)
                         }

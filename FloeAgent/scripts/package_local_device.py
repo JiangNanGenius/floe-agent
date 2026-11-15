@@ -1,5 +1,5 @@
 from pathlib import Path
-import subprocess, json, plistlib, hashlib, shutil, argparse, zipfile
+import subprocess, json, plistlib, hashlib, argparse, os, sys, tempfile, zipfile
 parser=argparse.ArgumentParser()
 parser.add_argument("--products",type=Path,required=True)
 parser.add_argument("--source",required=True)
@@ -16,10 +16,22 @@ assert info['CFBundleVersion'].isdigit()
 assert info['DTSDKName'].startswith('iphoneos')
 out=root/'Local/Artifacts'/('build'+info['CFBundleVersion']);out.mkdir(exist_ok=True)
 assert not (out/'local-device.zip').exists(), 'Never overwrite an existing release package'
-# Preserve the successful raw device build before normalization/signing.
-subprocess.run(['ditto','-c','-k','--keepParent',str(app),str(out/'raw-device-app.zip')],check=True)
+raw_archive = out / 'raw-device-app.zip'
+raw_exists = f'Existing raw device archive must be preserved: {raw_archive}'
+if os.path.lexists(raw_archive):
+    raise SystemExit(raw_exists)
 stage=root/'Local/Scratch'/('build'+info['CFBundleVersion']+'-transfer'); assert not stage.exists()
-(stage/'Payload').mkdir(parents=True)
+# Store the completed archive atomically. A competing producer may claim its
+# name at any point while ditto is compressing the original device App.
+with tempfile.TemporaryDirectory(prefix='.raw-device-app-', dir=out) as scratch:
+    candidate = Path(scratch) / raw_archive.name
+    subprocess.run(['ditto', '-c', '-k', '--keepParent', str(app), str(candidate)], check=True)
+    try:
+        os.link(candidate, raw_archive)
+    except FileExistsError:
+        raise SystemExit(raw_exists) from None
+stage.mkdir(parents=True)
+(stage/'Payload').mkdir()
 subprocess.run(['ditto',str(app),str(stage/'Payload'/app.name)],check=True)
 normalized=stage/'Payload'/app.name
 subprocess.run(['python3',str(root/'FloeAgent/scripts/prepare_app_store_bundle.py'),'--app',str(normalized),'--report',str(stage/'bundle-normalization.json')],check=True)
@@ -31,11 +43,13 @@ if stub.exists():
 symbols=stage/'symbols';symbols.mkdir()
 for dsym in products.glob('*.dSYM'):
  subprocess.run(['ditto',str(dsym),str(symbols/dsym.name)],check=True)
-appuuid=subprocess.check_output(['dwarfdump','--uuid',str(app/info['CFBundleExecutable'])],text=True).split()[1]
-ds=symbols/(app.name+'.dSYM');assert ds.exists()
-dsymuuid=subprocess.check_output(['dwarfdump','--uuid',str(ds)],text=True).split()[1];assert appuuid==dsymuuid
+ds=symbols/(app.name+'.dSYM')
+strip_report = json.loads(subprocess.check_output([
+    sys.executable, '-B', str(root/'FloeAgent/scripts/strip_device_main.py'),
+    str(app), str(normalized), str(ds),
+], text=True))
 source=args.source
-p={'source_sha':source,'version':info['CFBundleShortVersionString'],'build':info['CFBundleVersion'],'xcode_build':info['DTXcodeBuild'],'sdk':info['DTSDKName'],'app_uuid':appuuid,'dsym_uuid':dsymuuid,'qualification':args.qualification}
+p={'source_sha':source,'version':info['CFBundleShortVersionString'],'build':info['CFBundleVersion'],'xcode_build':info['DTXcodeBuild'],'sdk':info['DTSDKName'],'app_uuid':strip_report['uuid'],'dsym_uuid':strip_report['dsym_uuid'],'qualification':args.qualification,'main_executable_strip':strip_report}
 (stage/'provenance.json').write_text(json.dumps(p,indent=2)+'\n')
 subprocess.run(['ditto','-c','-k','.',str(out/'local-device.zip')],cwd=stage,check=True)
 h=hashlib.sha256()

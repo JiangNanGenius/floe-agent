@@ -186,6 +186,41 @@ struct SSEParserEdgeTests {
         #expect(events.count == 1)
         #expect(events[0].data.count == 1_048_576)
     }
+
+    @Test("Byte and chunk feeds share field boundaries and deliver the event at its terminating CR")
+    func mixedFeedsPreserveLeadingCombiningMarks() throws {
+        var parser = SSEParser()
+        let prefix: [UInt8] = [0xEF, 0xBB, 0xBF] + Array("id: first\r\ndata:".utf8)
+        let initial = prefix.withUnsafeBufferPointer { parser.feed($0) }
+        #expect(initial.isEmpty)
+        var events: [SSEEvent] = []
+        for byte in "\u{0301}Chinese 中文\rdata: \u{0308}\r\r".utf8 {
+            if let event = parser.feed(byte) { events.append(event) }
+        }
+        #expect(events == [SSEEvent(data: "\u{0301}Chinese 中文\n\u{0308}", id: "first")])
+        #expect(parser.feed(Data([0x0A])).isEmpty)
+        #expect(try parser.finish().isEmpty)
+    }
+
+    @Test("Joined data counts every separator toward the limit and resumes at the next event")
+    func emptyDataLinesRespectEventLimit() throws {
+        let line = Array(("data: " + String(repeating: "x", count: 1_048_575) + "\n").utf8)
+        var parser = SSEParser()
+        for _ in 0..<4 {
+            #expect(parser.feed(line).isEmpty)
+        }
+        #expect(parser.feed("data:\n".utf8).isEmpty)
+        var overLimit = parser
+        let exact = parser.feed([UInt8(0x0A)])
+        #expect(exact.count == 1)
+        #expect(exact.first?.event == "")
+        #expect(exact.first?.data.utf8.count == 4 * 1_024 * 1_024)
+
+        let recovered = overLimit.feed("data:\n\ndata: next\n\n".utf8)
+        #expect(recovered.map(\.event) == ["__floe_sse_error__", ""])
+        #expect(recovered.last?.data == "next")
+        #expect(try overLimit.finish().isEmpty)
+    }
 }
 
 

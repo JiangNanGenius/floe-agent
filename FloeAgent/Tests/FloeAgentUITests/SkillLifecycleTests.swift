@@ -158,8 +158,14 @@ struct SkillLifecycleTests {
         let tree = FileTreeViewModel(center: browser)
         try await tree.move(.init(relativePath: "move.txt", name: "move.txt", isDirectory: false, size: 4), to: "folder/moved.txt")
         #expect(FileManager.default.fileExists(atPath: managedRoot.appendingPathComponent("folder/moved.txt").path))
-        let failures = await tree.deleteBatch(["folder", "folder/moved.txt", "../outside"])
-        #expect(Set(failures.keys) == ["../outside"])
+        let scope = try WorkspaceFileActionScope(center: browser)
+        await #expect(throws: (any Error).self) {
+            try await tree.prepareDeletionBatch(["folder", "folder/moved.txt", "../outside"], scope: scope)
+        }
+        #expect(FileManager.default.fileExists(atPath: managedRoot.appendingPathComponent("folder/moved.txt").path))
+        let batch = try await tree.prepareDeletionBatch(["folder", "folder/moved.txt"], scope: scope)
+        let failures = await tree.deleteBatch(batch)
+        #expect(failures.isEmpty)
         #expect(!FileManager.default.fileExists(atPath: managedRoot.appendingPathComponent("folder").path))
         #expect(try String(contentsOf: activeRoot.appendingPathComponent("keep.txt"), encoding: .utf8) == "keep")
         browser.closeCurrentWorkspace()

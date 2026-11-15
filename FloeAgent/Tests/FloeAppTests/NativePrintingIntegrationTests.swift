@@ -9,6 +9,52 @@ import Testing
 @MainActor
 struct NativePrintingIntegrationTests {
     @Test(.timeLimit(.minutes(2)))
+    func failedResliceKeepsThePreviousFileAndChecksItsSettingsBeforeExport() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("print-reslice-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID(), disk = PrintProjectDisk(root: root)
+        try await disk.create(PrintProjectDocument(projectID: id))
+        let session = try await PrintProjectSession.open(id: id, directory: root)
+        try await session.apply([.init(action: .addCube, sizeMM: 4)], expectedRevision: session.document.revision)
+        session.machine.tools.append(.init(id: 1))
+        let objectID = try #require(session.selectedObject?.id)
+        try await session.apply([.init(action: .assignTool, objectID: objectID, toolID: 1)], expectedRevision: session.document.revision)
+        #expect(session.machine.selectedTool == 0)
+        let previousFile = try await session.sliceAndWait()
+        let originalBytes = try Data(contentsOf: previousFile)
+        let original = try await disk.load()
+        let originalMachine = session.machine
+        #expect(original.machine?.selectedTool == 1)
+        #expect(String(decoding: originalBytes, as: UTF8.self).contains("kinematics=cartesian; tool=1"))
+        #expect(session.resultIsCurrent)
+
+        session.machine.bedWidth = 1
+        await #expect(throws: PrintError.outsideBed) { _ = try await session.sliceAndWait() }
+        let afterInvalid = try await disk.load()
+        #expect(afterInvalid.revision == original.revision)
+        #expect(afterInvalid.machine == original.machine)
+        #expect(!session.resultIsCurrent)
+        session.machine = originalMachine
+        #expect(session.resultIsCurrent)
+
+        // The editor permits a custom end block. The actual generated file inspector rejects inch-mode output.
+        session.machine.scripts.end += "\nG20"
+        session.layerHeight = 0.3
+        await #expect(throws: PrintError.unsupportedFormat) { _ = try await session.sliceAndWait() }
+        let afterFailure = try await disk.load()
+        #expect(afterFailure.layerHeight == 0.3 && afterFailure.machine == session.machine)
+        #expect(afterFailure.resultAsset == original.resultAsset)
+        #expect(!session.hasUnsavedSettings && !session.resultIsCurrent)
+        #expect(session.result == previousFile)
+        #expect(try Data(contentsOf: previousFile) == originalBytes)
+
+        session.machine = originalMachine
+        let replacement = try await session.sliceAndWait()
+        #expect(session.resultIsCurrent && session.result == replacement)
+        #expect(replacement != previousFile)
+    }
+
+    @Test(.timeLimit(.minutes(2)))
     func visibleDefaultsReachRealGCodeAndRepeatedSlicesPublishNewCompletion() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("print-defaults-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }

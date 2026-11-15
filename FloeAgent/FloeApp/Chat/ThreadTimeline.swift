@@ -603,7 +603,7 @@ enum ThreadTimelineBuilder {
         }
         var finalReplyRendered = false
         var currentStepGroup: [RunEventRecord] = []
-        var guidedMessages = run.map { _ in
+        let guidedMessages = run.map { _ in
             messagesForRun
                 .filter { ($0.role == "user" && $0.id != startingGoalMessageID)
                     || ($0.role == "assistant" && $0.parts.contains { $0.kind == .interactive }) }
@@ -612,18 +612,20 @@ enum ThreadTimelineBuilder {
                     return lhs.id.uuidString < rhs.id.uuidString
                 }
         } ?? []
+        var nextGuidedMessageIndex = 0
         func flushStepGroup() {
             guard !currentStepGroup.isEmpty else { return }
             items.append(.stepGroup(events: currentStepGroup, isLatest: false))
             currentStepGroup = []
         }
         func flushGuidedMessages(upTo date: Date? = nil) {
-            while let next = guidedMessages.first,
-                  date.map({ next.createdAt <= $0 }) ?? true {
+            while nextGuidedMessageIndex < guidedMessages.count {
+                let next = guidedMessages[nextGuidedMessageIndex]
+                guard date.map({ next.createdAt <= $0 }) ?? true else { break }
                 flushStepGroup()
                 items.append(next.role == "assistant"
                     ? .assistantMessage(text: next.content, idSuffix: next.id.uuidString, sentAt: next.createdAt) : .userMessage(next))
-                guidedMessages.removeFirst()
+                nextGuidedMessageIndex += 1
             }
         }
         for event in nonTerminalEvents {
