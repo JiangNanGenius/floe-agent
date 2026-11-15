@@ -549,36 +549,40 @@ internal class PlatformToolHostPump(
  */
 internal object BoundedResultText {
     fun summary(value: String): String {
-        val cleaned = buildString(value.length.coerceAtMost(2_048)) {
-            value.forEach { ch ->
-                when {
-                    ch == '\n' || ch == '\t' -> append(ch)
-                    ch.code < 0x20 || ch.code == 0x7F -> append(' ')
-                    else -> append(ch)
-                }
-            }
-        }.trim()
+        val cleaned = clean(value, allowNewlines = true, initialCapacity = 2_048)
         if (cleaned.isEmpty()) return "Completed."
         return clip(cleaned, 2_048)
     }
 
     fun evidence(value: String): String {
-        val cleaned = buildString(value.length.coerceAtMost(192)) {
-            value.forEach { ch ->
-                append(if (ch.code < 0x20 || ch.code == 0x7F) ' ' else ch)
-            }
-        }.trim()
+        val cleaned = clean(value, allowNewlines = false, initialCapacity = 192)
         return clipBytes(cleaned, 192)
     }
 
     fun detail(value: String): String {
-        val cleaned = buildString(value.length.coerceAtMost(200)) {
-            value.forEach { ch ->
-                append(if (ch.code < 0x20 || ch.code == 0x7F) ' ' else ch)
-            }
-        }.trim()
+        val cleaned = clean(value, allowNewlines = false, initialCapacity = 200)
         return clip(cleaned, 200)
     }
+
+    /** Match the receiver's Unicode control rejection, including bidi/format
+     * marks from external accessibility labels. Traverse code points so
+     * supplementary format marks and malformed UTF-16 cannot escape the wire
+     * boundary; ordinary CJK, combining marks and paired emoji stay intact. */
+    private fun clean(value: String, allowNewlines: Boolean, initialCapacity: Int): String =
+        buildString(value.length.coerceAtMost(initialCapacity)) {
+            var index = 0
+            while (index < value.length) {
+                val point = Character.codePointAt(value, index)
+                val type = Character.getType(point)
+                when {
+                    allowNewlines && (point == 0x0A || point == 0x09) -> appendCodePoint(point)
+                    Character.isISOControl(point) || type == Character.FORMAT.toInt() ||
+                        type == Character.SURROGATE.toInt() -> append(' ')
+                    else -> appendCodePoint(point)
+                }
+                index += Character.charCount(point)
+            }
+        }.trim()
 
     fun token(value: String): String {
         // Swift's failure-code grammar is ASCII alphanumeric plus '_'/'-'

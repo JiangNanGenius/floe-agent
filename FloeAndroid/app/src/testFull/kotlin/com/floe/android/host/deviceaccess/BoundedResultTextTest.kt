@@ -51,4 +51,39 @@ class BoundedResultTextTest {
         assertEquals("Completed.", BoundedResultText.summary(""))
         assertEquals("Completed.", BoundedResultText.summary(" \n\t "))
     }
+
+    @Test
+    fun unicodeControlsCannotInvalidateAnOtherwiseSuccessfulReply() {
+        for (point in listOf(0x85, 0xAD, 0x61C, 0x200E, 0x202A, 0x202E,
+                0x2066, 0x2067, 0x2068, 0x2069, 0xE0001)) {
+            val raw = "before" + String(Character.toChars(point)) + "after"
+            assertEquals("summary U+${point.toString(16)}", "before after", BoundedResultText.summary(raw))
+            assertEquals("evidence U+${point.toString(16)}", "before after", BoundedResultText.evidence(raw))
+            assertEquals("detail U+${point.toString(16)}", "before after", BoundedResultText.detail(raw))
+        }
+    }
+
+    @Test
+    fun validUnicodeTextSurvivesTheWireCleanup() {
+        val raw = "中文 😀 e\u0301"
+        assertEquals(raw, BoundedResultText.summary(raw))
+        assertEquals(raw, BoundedResultText.evidence(raw))
+        assertEquals(raw, BoundedResultText.detail(raw))
+    }
+
+    @Test
+    fun unpairedSurrogatesCannotProduceAnInvalidJsonString() {
+        val raw = "A\uD800B\uDC00C"
+        assertEquals("A B C", BoundedResultText.summary(raw))
+        assertEquals("A B C", BoundedResultText.evidence(raw))
+        assertEquals("A B C", BoundedResultText.detail(raw))
+    }
+
+    @Test
+    fun onlySummaryKeepsTheAllowedNewlineAndTab() {
+        val raw = "left\n\tright"
+        assertEquals(raw, BoundedResultText.summary(raw))
+        assertEquals("left  right", BoundedResultText.evidence(raw))
+        assertEquals("left  right", BoundedResultText.detail(raw))
+    }
 }

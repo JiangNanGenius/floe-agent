@@ -1,5 +1,15 @@
 # Floe Android 分目标实施记录
 
+## Full124 C05候选：设备观察结果的Unicode契约（2026-11-16）
+
+C04连续录制在Chrome首次使用／条款页中断，不能记为自然完成。原生导出确认：启动Chrome成功；之后两次默认`device.observe`返回的是“设备返回无效工具结果”，模型第三次显式选择`source=adb`后才收到未就绪错误。三次均早于人工中断，不能把ADB不可用解释成无障碍服务断开，也不能只增加启动等待掩盖格式拒绝。
+
+定位到应修的发送端契约缺口：原`BoundedResultText`只移除ASCII控制字符，而接收端还会拒绝Unicode控制／格式字符。本机真实生产Kotlin对象与Foundation规则合成检查已复现同类不一致；原被拒回复没有保留具体字段原因，因此不声称已经还原当次Chrome原始字符。小修复按码点净化摘要、证据和失败详情，保留允许的换行／制表符、普通中文及合法代理对，不放宽接收端、长度、权限或观察失效校验。真实生产对象编译与9项定向JVM回归通过，Swift／原生输入未改。
+
+下一步只做Chrome首次使用页的受控只读观察，不点击条款、登录或输入；不继续旧中断任务。旧任务权限及资源退休状态分别记录，不能用新建任务默认策略或应用重启销账。C05安装包及实机结果尚待完成，Full124仍为私有候选。
+
+English: C04's interrupted Chrome take is not a natural completion. Two default observations failed result validation; a later explicit ADB observation independently reported unavailable. A sender/receiver Unicode-control mismatch is reproducible locally, but the original rejected payload is unavailable, so its exact codepoint remains unproven. The sender-only fix preserves receiver/permission/bounds rules; real production objects and9 JVM tests passed. Native inputs are unchanged. C05 packaging and a controlled read-only Chrome observation are pending; no terms/login action or old-run continuation is included.
+
 ## 1.0.15／124源码补丁：带备注的成果预览与保存（2026-11-16）
 
 修复已封存成果名带末尾备注时，图片、音视频及PDF被误判为无法预览的问题。统一区分原展示标题、真实扩展名和保存副本建议名；例如`poster.png（海报）`保留原标题及封存路径，保存时建议`poster（海报）.png`。Office成果入口与原有查看器也接入同一规则。MIME／扩展名约束、任务归属、完整摘要、长度、PDF文件头及实际解码校验保留，ZIP仍仅保存副本；不改写旧封存记录，也不新增数据库迁移。
