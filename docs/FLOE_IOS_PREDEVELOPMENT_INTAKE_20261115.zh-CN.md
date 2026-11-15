@@ -22,6 +22,7 @@
 - 建筑工程已验证初次建立即保存，新增线段后产生待保存状态，保存和重开均保留修改，原图摘要不变。建筑与游戏归档两组修正后的 iPad 宿主测试共通过 10 项。
 - 游戏的 RPG 瓦片、部署资源、运行包来源和工程工具组件通过 71 项本机检查。导出的 WASM‑4 工作流在安装 CLI 前核对固定摘要；本机以官方 2.7.1 CLI 和实际生成的游戏制作了 Web、Windows、macOS 和 Linux 四种产物。
 - Linux 加速源通过 43 项静态合同检查。视频模块、驱动接口与图形缓冲区另有原生编译和预算测试。硬件编解码、客户机 OpenCL 和 Blender 的运行结果取决于实际安装的后端、资源与镜像。
+- Xcode 27.2（27B52）已完成共享工作区的通用 iOS 设备 Release 编译。主程序为 arm64，最低 iOS 26.0，SDK 27.2。核对了 4 个扩展、29 个框架、游戏资源注册表、建筑资源包和 `floe-accel` 的随包内容。此次本地工程构建未签名，共享工作区另外包含供应商设置的在途改动。发布版本另行编号和签名。
 
 ## 游戏引擎的执行方式
 
@@ -31,4 +32,6 @@
 
 LÖVE 11.4 的两份 `love.wasm` 已分别对照兼容版和发布版的固定 SHA‑256。该 Web 移植选择 `LOVE_JIT=0` 和 Lua 5.1.5，随资源保留上游 LuaJIT 版权声明。在 macOS 系统 `WKWebView` 加载 App 试玩使用的兼容版，让实际执行的 `love.load` 读取 Lua 环境，得到 `_VERSION = "Lua 5.1"`、`jit = nil`，加载 `jit` 模块失败。[LÖVE 运行包构建说明](../FloeAgent/Modules/FloeGamePortableKit/Scripts/Licenses/LOVE/LOVE-11.4-COMPONENT-ADDENDUM.md)
 
-在 macOS 系统 JavaScriptCore 显式关闭 JavaScript 和 WebAssembly 的 JIT，运行与 Floe 生成器产物摘要相同的 WASM‑4 示例，实际读回 120 帧、600 次矩形绘制和按键移动 8 像素。iOS Release 的 34 个游戏与 RPG 模块已检查链接符号，Web 播放器引用系统 `WKWebView`。桌面打包在独立工具链运行，iPad 试玩使用 Web 导出物。
+在 macOS 系统 JavaScriptCore 显式关闭 JavaScript 和 WebAssembly 的 JIT，运行与 Floe 生成器产物摘要相同的 WASM‑4 示例，实际读回 120 帧、600 次矩形绘制和按键移动 8 像素。iOS Release 的 34 个游戏与 RPG 模块已检查链接符号，Web 播放器引用系统 `WKWebView`。
+
+WASM‑4 的 Windows、macOS、Linux 三个桌面导出文件另外通过了 SHA‑256 复核，三个文件均能读到随官方运行时编入的 wasm3 解释器标识。iPad 试玩使用 Web 导出物。[WASM‑4 2.7.1 原生后端](https://github.com/aduros/wasm4/blob/v2.7.1/runtimes/native/CMakeLists.txt) · [wasm3](https://github.com/wasm3/wasm3)
