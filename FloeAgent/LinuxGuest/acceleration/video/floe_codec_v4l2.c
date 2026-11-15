@@ -3,6 +3,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <glob.h>
 #include <poll.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -49,74 +50,70 @@ static int fourcc_codec(uint32_t f) {
     }
 }
 
-int floe_codec_v4l2_scan(floe_v4l2_device_info *devices, size_t capacity, size_t *count_out) {
-    if (!count_out) return -1;
-    size_t count = 0;
-    char path[64];
-    for (int i = 0; i < 64 && count < capacity; i++) {
-        snprintf(path, sizeof(path), "/dev/video%d", i);
-        int fd = open(path, O_RDWR | O_CLOEXEC | O_NONBLOCK);
-        if (fd < 0) continue;
-        struct v4l2_capability cap;
-        memset(&cap, 0, sizeof(cap));
-        if (ioctl(fd, VIDIOC_QUERYCAP, &cap) < 0) { close(fd); continue; }
-        floe_v4l2_device_info info;
-        memset(&info, 0, sizeof(info));
-        snprintf(info.path, sizeof(info.path), "%s", path);
-        snprintf(info.card, sizeof(info.card), "%s", (const char *)cap.card);
-        snprintf(info.bus, sizeof(info.bus), "%s", (const char *)cap.bus_info);
-        uint32_t caps = cap.capabilities | cap.device_caps;
-        info.is_decoder = (caps & V4L2_CAP_VIDEO_M2M) || (caps & V4L2_CAP_VIDEO_M2M_MPLANE);
-        info.is_encoder = info.is_decoder;
-        struct { unsigned type; } queues[2] = {
-            { V4L2_BUF_TYPE_VIDEO_OUTPUT },
-            { V4L2_BUF_TYPE_VIDEO_CAPTURE },
-        };
-        for (int q = 0; q < 2; q++) {
-            struct v4l2_fmtdesc fmt;
-            memset(&fmt, 0, sizeof(fmt));
-            fmt.type = queues[q].type;
-            fmt.index = 0;
-            while (ioctl(fd, VIDIOC_ENUM_FMT, &fmt) == 0) {
-                int codec = fourcc_codec(fmt.pixelformat);
-                if (codec) info.formats |= 1u << codec;
-                fmt.index++;
-            }
-        }
-        close(fd);
-        devices[count++] = info;
+/* The client transfers single-planar NV12. Compressed OUTPUT is decode
+ * input, and compressed CAPTURE is encoder output. Cameras and multi-planar
+ * devices may exist without supporting these transfer paths. */
+static uint32_t queue_formats(int fd, unsigned type, int *nv12) {
+    struct v4l2_fmtdesc fmt = { .type = type };
+    uint32_t formats = 0;
+    *nv12 = 0;
+    while (ioctl(fd, VIDIOC_ENUM_FMT, &fmt) == 0) {
+        int codec = fourcc_codec(fmt.pixelformat);
+        if (codec) formats |= 1u << codec;
+        if (fmt.pixelformat == V4L2_PIX_FMT_NV12) *nv12 = 1;
+        fmt.index++;
     }
-    *count_out = count;
+    return formats;
+}
+
+static int inspect_node(const char *path, floe_v4l2_device_info *info) {
+    int fd = open(path, O_RDWR | O_CLOEXEC | O_NONBLOCK);
+    if (fd < 0) return -1;
+    struct v4l2_capability cap = {0};
+    if (ioctl(fd, VIDIOC_QUERYCAP, &cap) < 0) { close(fd); return -1; }
+    memset(info, 0, sizeof(*info));
+    snprintf(info->path, sizeof(info->path), "%s", path);
+    snprintf(info->card, sizeof(info->card), "%.*s", (int)sizeof(cap.card), (const char *)cap.card);
+    snprintf(info->bus, sizeof(info->bus), "%.*s", (int)sizeof(cap.bus_info), (const char *)cap.bus_info);
+    uint32_t caps = (cap.capabilities & V4L2_CAP_DEVICE_CAPS) ? cap.device_caps : cap.capabilities;
+    info->m2m = !!(caps & (V4L2_CAP_VIDEO_M2M | V4L2_CAP_VIDEO_M2M_MPLANE));
+    if ((caps & V4L2_CAP_VIDEO_M2M) && (caps & V4L2_CAP_STREAMING)) {
+        int raw_input, raw_output;
+        uint32_t input = queue_formats(fd, V4L2_BUF_TYPE_VIDEO_OUTPUT, &raw_input);
+        uint32_t output = queue_formats(fd, V4L2_BUF_TYPE_VIDEO_CAPTURE, &raw_output);
+        if (raw_output) info->decode_formats = input;
+        if (raw_input) info->encode_formats = output;
+    }
+    close(fd);
     return 0;
 }
 
-int floe_codec_v4l2_find(const char *explicit_path, int decoder,
-                         floe_v4l2_device_info *out) {
-    if (!out) return -1;
-    if (explicit_path) {
-        floe_v4l2_device_info devices[64];
-        size_t count = 0;
-        if (floe_codec_v4l2_scan(devices, 64, &count)) return -1;
-        for (size_t i = 0; i < count; i++) {
-            if (strcmp(devices[i].path, explicit_path) == 0) { *out = devices[i]; return 0; }
-        }
-        return -1;
+int floe_codec_v4l2_scan(floe_v4l2_device_info *devices, size_t capacity, size_t *count_out) {
+    if (!devices || !count_out) return -1;
+    *count_out = 0;
+    glob_t entries = {0};
+    int status = glob("/dev/video[0-9]*", 0, NULL, &entries);
+    if (status != 0 && status != GLOB_NOMATCH) { globfree(&entries); return -1; }
+    for (size_t i = 0; i < entries.gl_pathc && *count_out < capacity; i++) {
+        const char *path = entries.gl_pathv[i];
+        const char *digits = path + sizeof("/dev/video") - 1;
+        if (digits[strspn(digits, "0123456789")] != '\0') continue;
+        if (inspect_node(path, &devices[*count_out]) == 0) (*count_out)++;
     }
+    globfree(&entries);
+    return 0;
+}
+
+int floe_codec_v4l2_find(const char *explicit_path, int decoder, unsigned codec,
+                         floe_v4l2_device_info *out) {
+    if (!out || codec >= 32) return -1;
     floe_v4l2_device_info devices[64];
     size_t count = 0;
     if (floe_codec_v4l2_scan(devices, 64, &count)) return -1;
     for (size_t i = 0; i < count; i++) {
-        const char *card = devices[i].card;
-        int card_decoder = strstr(card, "decoder") != NULL;
-        int card_encoder = strstr(card, "encoder") != NULL;
-        if ((decoder && card_decoder) || (!decoder && card_encoder)) {
-            *out = devices[i];
-            return 0;
-        }
-    }
-    /* If the card name is not directional, accept the first M2M node. */
-    for (size_t i = 0; i < count; i++) {
-        if (devices[i].is_decoder) { *out = devices[i]; return 0; }
+        if (explicit_path && strcmp(devices[i].path, explicit_path) != 0) continue;
+        uint32_t formats = decoder ? devices[i].decode_formats : devices[i].encode_formats;
+        if (formats & (1u << codec)) { *out = devices[i]; return 0; }
     }
     return -1;
 }
@@ -298,7 +295,6 @@ int floe_codec_v4l2_encode(const char *device, uint32_t codec_fourcc,
     fmt.fmt.pix.height = height;
     fmt.fmt.pix.field = V4L2_FIELD_NONE;
     if (xioctl(fd, VIDIOC_S_FMT, &fmt, "S_FMT OUTPUT") < 0) { close(fd); return -1; }
-    uint32_t sizeimage = fmt.fmt.pix.sizeimage ? fmt.fmt.pix.sizeimage : (uint32_t)frame_bytes;
     uint32_t stride = fmt.fmt.pix.bytesperline ? fmt.fmt.pix.bytesperline : width;
     memset(&fmt, 0, sizeof(fmt));
     fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;

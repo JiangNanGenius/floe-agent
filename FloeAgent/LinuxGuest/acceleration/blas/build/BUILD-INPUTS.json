@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 1,
+  "package": "floe-guest-blas-vulkan-provider",
+  "version": "0.1.0",
+  "architecture": "arm64",
+  "target": "aarch64-unknown-linux-gnu",
+  "runtimePackages": [
+    {
+      "package": "libvulkan1",
+      "version": "1.4.309.0-1",
+      "source": "FloeAgent/LinuxGuest/image/arm64/packages.lock.tsv",
+      "purpose": "guest Vulkan loader; dlopened, never linked"
+    },
+    {
+      "package": "libblas3",
+      "version": "3.12.1-6",
+      "source": "FloeAgent/LinuxGuest/image/arm64/packages.lock.tsv",
+      "purpose": "untouched original guest LP64 float32 BLAS fallback"
+    },
+    {
+      "package": "liblapack3",
+      "version": "3.12.1-6",
+      "source": "FloeAgent/LinuxGuest/image/arm64/packages.lock.tsv",
+      "purpose": "untouched guest LAPACK (not intercepted)"
+    },
+    {
+      "package": "python3-numpy",
+      "version": "1:2.2.4+ds-1",
+      "source": "FloeAgent/LinuxGuest/image/arm64/packages.lock.tsv",
+      "purpose": "application-level comparison only; NumPy source is not modified"
+    }
+  ],
+  "buildPackages": [
+    {
+      "package": "libvulkan-dev",
+      "version": "1.4.309.0-1",
+      "sha256": "3244f0422d3c5cf14f5d13bc48a0cae7786d94ea0ceff22414c094388666e70d",
+      "url": "https://deb.debian.org/debian/pool/main/v/vulkan-loader/libvulkan-dev_1.4.309.0-1_arm64.deb",
+      "purpose": "Vulkan headers only; no Vulkan library is linked"
+    },
+    {
+      "package": "libc6-dev",
+      "version": "Debian trixie ARM64 sysroot",
+      "purpose": "libc, libdl, libpthread, libm headers and link stubs"
+    },
+    {
+      "package": "gcc-14 / aarch64-linux-gnu-gcc",
+      "version": "14.2.0-19 (or Apple clang 21.0.0 targeting aarch64)",
+      "purpose": "C11 cross compiler"
+    },
+    {
+      "package": "glslangValidator or glslc",
+      "version": "trusted build-window tool; record actual version in build evidence",
+      "purpose": "compile shaders/floe_blas_{matmul,gemv}.comp into real SPIR-V"
+    }
+  ],
+  "notShipped": [
+    "Vulkan loader or headers",
+    "glslang/SPIRV-Tools binaries",
+    "BLAS/LAPACK/OpenBLAS libraries or NumPy",
+    "any test matrix or prebuilt .spv placeholder"
+  ],
+  "notes": [
+    "The provider uses VK_NO_PROTOTYPES and resolves the loader with dlopen; libvulkan is not a DT_NEEDED dependency.",
+    "The generated SPIR-V headers are required build inputs and are not checked in.",
+    "The exact sysroot/toolchain identity must be recorded by the primary build window."
+  ]
+}

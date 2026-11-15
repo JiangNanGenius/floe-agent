@@ -16,13 +16,13 @@ typedef struct {
     char path[64];
     char card[64];
     char bus[64];
-    int is_decoder;
-    int is_encoder;
-    uint32_t formats; /* bit N for FLVCodec N when the matching FourCC exists */
+    int m2m;
+    uint32_t decode_formats; /* bit N for FLVCodec N */
+    uint32_t encode_formats;
 } floe_v4l2_device_info;
 
 int floe_codec_v4l2_scan(floe_v4l2_device_info *devices, size_t capacity, size_t *count_out);
-int floe_codec_v4l2_find(const char *explicit_path, int decoder,
+int floe_codec_v4l2_find(const char *explicit_path, int decoder, unsigned codec,
                          floe_v4l2_device_info *out);
 
 /* codec_fourcc is the V4L2 pixelformat (H264/HEVC/...); width/height may be

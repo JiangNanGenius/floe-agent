@@ -1,0 +1,149 @@
+Floe guest standard-BLAS Vulkan provider build recipe
+=====================================================
+
+Status
+------
+Source recipe only.  No compiler, shader compiler, Vulkan runtime or VM was
+invoked during candidate creation.  The generated SPIR-V headers are required
+build inputs and are intentionally absent until this recipe is run.
+
+Toolchain inputs
+----------------
+Required:
+- A C11 compiler that targets aarch64-unknown-linux-gnu.  Two verified families
+  already exist in this repository's GPU work:
+  * GNU cross compiler: aarch64-linux-gnu-gcc 14.2 (Debian trixie) with the
+    exact Debian trixie ARM64 sysroot used for the guest image.
+  * Apple clang 21.0.0 from Xcode 27.2 plus rust-lld 22.1.8, targeting
+    aarch64-unknown-linux-gnu and using that same sysroot.  This is the same
+    family recorded by FloeAgent/LinuxGuest/image/arm64/gpu-mesa/BUILD-RECIPE.
+- The exact Debian trixie ARM64 sysroot already used by the image/Mesa build,
+  including libc6-dev, libgcc, libdl/libpthread/libm development files.
+- Vulkan headers from Debian trixie libvulkan-dev 1.4.309.0-1:
+    https://deb.debian.org/debian/pool/main/v/vulkan-loader/libvulkan-dev_1.4.309.0-1_arm64.deb
+    sha256 3244f0422d3c5cf14f5d13bc48a0cae7786d94ea0ceff22414c094388666e70d
+  Runtime is libvulkan1 1.4.309.0-1.  The provider dlopens libvulkan.so.1;
+  it does not link or redistribute the loader.
+- A trusted glslangValidator or glslc compatible with Vulkan 1.1 SPIR-V.
+  Set FLOE_GLSLANG to an absolute path, or put one on PATH.  Record its
+  version in the build evidence; the tool is not redistributed.
+
+The provider itself needs no libvulkan at link time (VK_NO_PROTOTYPES).
+It links only the guest glibc, libdl, libpthread and libm.
+
+1. Generate the real SPIR-V assets
+----------------------------------
+    cd FloeAgent/LinuxGuest/acceleration/blas
+    python3 build/build_spirv.py
+    python3 build/build_spirv.py --check     # optional: recompile + compare
+
+Expected outputs:
+    generated/floe_blas_matmul_spv.h
+    generated/floe_blas_gemv_spv.h
+
+The script rejects a missing/malformed compiler, shader >64 KiB, output
+>1 MiB, bad SPIR-V magic/version, or missing `main`.  It writes headers
+atomically.  It never fabricates an empty shader.  `--source-check` reads the
+GLSL interface only and invokes no compiler:
+    python3 build/build_spirv.py --source-check
+
+2. Build the library and probe
+------------------------------
+GNU cross compiler example (replace SYSROOT):
+
+    make -j2 \
+      CC=aarch64-linux-gnu-gcc \
+      TARGET_FLAGS="--sysroot=/path/to/debian-trixie-arm64" \
+      all
+
+Apple clang + lld example (replace SYSROOT; keep the target and sysroot
+explicit, never install cross-built libraries on the macOS host):
+
+    XCODE=/Applications/Xcode.app/Contents/Developer
+    make -j2 \
+      CC="$XCODE/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang" \
+      TARGET_FLAGS="--target=aarch64-unknown-linux-gnu \
+        --sysroot=/path/to/debian-trixie-arm64 -fuse-ld=lld" \
+      all
+
+Outputs:
+    build/libfloe_blas.so
+    build/floe-blas-probe
+
+The library is built with `-shared -fPIC -fvisibility=hidden`, SONAME
+`libfloe_blas.so`, `-Wl,-z,defs -Wl,-z,relro -Wl,-z,now`, `-std=c11 -Wall
+-Wextra -Werror -D_GNU_SOURCE -DVK_NO_PROTOTYPES=1`.  Only the documented ABI
+and stats/activation functions have default visibility.
+
+3. Source/interface checks
+--------------------------
+    make check
+    make check-spirv       # only after step 1; invokes the shader compiler
+
+`make check` runs tests/run_source_checks.py and shader `--source-check`.
+It checks the ABI export set, fallback discipline, shader/host push layouts,
+activation paths, shell syntax and a non-guest `--status` run.  It is not a
+native compile or runtime test.
+
+4. Build and run the focused C tests (future guest window)
+----------------------------------------------------------
+    make tests
+    # copy/install the optional test binary, or run from build/ with
+    # LD_LIBRARY_PATH=build
+    ./build/floe-blas-tests
+
+Exit 0 = all tests passed and the optional 512 GEMM GPU counter test passed.
+Exit 77 = all non-GPU tests passed, no Venus device was available; CPU
+fallback remains valid.  Exit 1 = assertion failure.  The test binary must be
+run inside the real Linux guest where /dev/dri/renderD128 exists for the GPU
+counter case.
+
+5. Install into the prepared guest root
+---------------------------------------
+    scripts/install-floe-blas.sh --root /path/to/prepared/base --build build
+
+The installer writes only:
+    /usr/local/lib/floe-acceleration/libfloe_blas.so
+    /usr/local/bin/floe-blas-run
+    /usr/local/bin/floe-blas-probe
+    /usr/local/lib/floe-acceleration/floe-blas-shell.sh
+    /usr/local/share/floe-acceleration/floe-blas-activate.sh
+    /usr/local/share/floe-acceleration/floe-blas.env
+    /usr/local/include/floe-acceleration/floe_blas.h
+    /usr/local/share/doc/floe-blas/{LICENSE,NOTICE}
+    optional /usr/local/libexec/floe-acceleration/floe-blas-tests
+
+It verifies ELF64 AArch64 headers and the installed library SHA-256.  Use
+`--dry-run` to print the plan and hashes without writing; `--check` verifies
+candidate/build presence without writing.
+
+6. Exact future runtime commands
+--------------------------------
+Inside the resolved Linux guest:
+
+    floe-blas-run --status
+    floe-blas-probe --activation-json
+    floe-blas-probe --size 512
+    floe-blas-run -- python3 tests/numpy_blas_compare.py --size 512
+    /usr/local/libexec/floe-acceleration/floe-blas-tests
+    floe-blas-run --set-mode off
+    floe-blas-run --status
+    floe-blas-run --set-mode auto
+
+Expected honest outcomes to record, not assume:
+- `--status` reports the exact library/device/ICD facts and mode source.
+- `floe-blas-probe --size 512` prints `gpuSubmitted>=1` and
+  `gpuCompleted>=1`; otherwise it exits nonzero with a reason.
+- The NumPy script asserts a real GPU-counter delta for float32, zero GPU
+  delta for small float32 and float64, and a bounded numerical error.
+- `make tests` exit 77 is a skip, not a GPU pass.
+- No speedup is claimed from this recipe; the earlier 2.52x number was a
+  naive-C comparison, not NumPy/OpenBLAS.
+
+Known unrun items
+-----------------
+- No shader compilation or SPIR-V validation was performed.
+- No native compilation, link, ELF inspection or install occurred.
+- No Vulkan device, VM, guest, NumPy import or probe execution occurred.
+- Runtime GPU acceptance, App/UI integration and release delivery remain with
+  the primary owner.

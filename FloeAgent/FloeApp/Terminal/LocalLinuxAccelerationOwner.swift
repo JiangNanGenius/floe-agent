@@ -10,16 +10,31 @@ struct LinuxAccelerationInventory: Decodable, Sendable, Equatable {
     struct Graphics: Decodable, Sendable, Equatable {
         var deviceNodePresent: Bool
         var inspectorInstalled: Bool
+        // Optional so an older installed dispatcher's schemaVersion 1 JSON
+        // still decodes. Absent means "older image did not report this".
+        var renderNodePresent: Bool?
+        var cardNodePresent: Bool?
+        var renderNodeCount: Int?
+        var cardNodeCount: Int?
+        var glxInspectorInstalled: Bool?
+        var eglInspectorInstalled: Bool?
+        var eglLibraryInstalled: Bool?
+        var glProbeInstalled: Bool?
     }
     struct Video: Decodable, Sendable, Equatable {
         var clientInstalled: Bool
         var decoderNodePresent: Bool
         var encoderNodePresent: Bool
+        var videoNodeCount: Int?
     }
     struct Compute: Decodable, Sendable, Equatable {
         var runnerInstalled: Bool
         var probeInstalled: Bool
         var providerInstalled: Bool
+        var openCLLoaderInstalled: Bool?
+        var openCLICDCount: Int?
+        var openCLProbeInstalled: Bool?
+        var openCLCompilerInstalled: Bool?
     }
     struct Blender: Decodable, Sendable, Equatable {
         var launcherInstalled: Bool
@@ -37,16 +52,25 @@ struct LinuxAccelerationInventory: Decodable, Sendable, Equatable {
 @MainActor @Observable
 final class LocalLinuxAccelerationOwner {
     enum Diagnostic: Equatable {
-        case graphics, video, compute, blender
+        case graphics, openGL, headlessOpenGL, video, compute, openCL, openCLProbe, blender
         var arguments: [String] {
             switch self {
             case .graphics: ["graphics", "status"]
+            case .openGL: ["graphics", "info"]
+            case .headlessOpenGL: ["graphics", "egl"]
             case .video: ["video", "list", "--json"]
             case .compute: ["compute", "probe", "--size", "512"]
+            case .openCL: ["compute", "opencl", "status"]
+            case .openCLProbe: ["compute", "opencl", "probe", "--device", "any", "--size", "1024"]
             case .blender: ["blender", "status", "--json"]
             }
         }
-        var timeout: TimeInterval { self == .compute ? 90 : 30 }
+        var timeout: TimeInterval {
+            switch self {
+            case .compute, .openCLProbe: 90
+            default: 30
+            }
+        }
     }
 
     private let root: URL
@@ -55,6 +79,7 @@ final class LocalLinuxAccelerationOwner {
     private let runID = UUID()
     private var queryGeneration = UUID()
     private var queryToken = CancellationToken()
+    private var installGeneration = UUID()
     private var launchGeneration = UUID()
     private var launchToken = CancellationToken()
     private var blenderSessionID: String?
@@ -63,6 +88,7 @@ final class LocalLinuxAccelerationOwner {
     private(set) var inventory: LinuxAccelerationInventory?
     private(set) var inventoryEnvironmentID: String?
     private(set) var isBusy = false
+    private(set) var installing = false
     private(set) var launching = false
     private(set) var blenderRunning = false
     private(set) var activeEnvironmentID: String?
@@ -79,7 +105,7 @@ final class LocalLinuxAccelerationOwner {
     func refresh(environmentID: String) async {
         // A newly selected environment must not lose its refresh while the
         // previous view's cancelled request is still unwinding its lease.
-        cancelQuery()
+        cancelActiveQuery()
         inventory = nil
         inventoryEnvironmentID = nil
         let result = await query(environmentID: environmentID, arguments: ["status", "--json"], timeout: 20)
@@ -108,6 +134,32 @@ final class LocalLinuxAccelerationOwner {
         }
     }
 
+    /// Installs the release-owned acceleration toolkit into the current
+    /// environment. It never requests GPU success and never changes the
+    /// environment identity; the ordinary probes keep working without it.
+    @discardableResult
+    func installTools(environmentID: String) async -> Bool {
+        guard !isBusy else { return false }
+        let generation = UUID()
+        installGeneration = generation
+        installing = true
+        defer { if installGeneration == generation { installing = false } }
+        guard let result = await query(environmentID: environmentID, arguments: ["install-tools"], timeout: 180) else {
+            if !Task.isCancelled, message == nil {
+                message = IDELanguageRunText.t("安装未完成，请查看详情。", "Installation did not complete. See details.")
+            }
+            return false
+        }
+        guard result.exitCode == 0 else { return false }
+        guard installGeneration == generation, !Task.isCancelled else { return false }
+        await refresh(environmentID: environmentID)
+        guard installGeneration == generation, inventoryEnvironmentID == environmentID, inventory != nil else {
+            return false
+        }
+        message = IDELanguageRunText.t("加速工具已安装。", "Acceleration tools installed.")
+        return true
+    }
+
     private func query(environmentID: String, arguments: [String], timeout: TimeInterval) async -> LinuxCommandResult? {
         guard !isBusy else { return nil }
         let generation = UUID(), token = CancellationToken()
@@ -120,14 +172,18 @@ final class LocalLinuxAccelerationOwner {
                   await runner.supports(environmentID: environmentID) else {
                 throw FloeError.validationFailed(IDELanguageRunText.t("请先启动这个 Linux 环境。", "Start this Linux environment first."))
             }
+            // The installer is provided by the release owner. It receives the
+            // fixed internal request and supplies both argv and stdin; the
+            // ordinary diagnostics keep using the bundled dispatcher.
+            let install = arguments == ["install-tools"] ? try LocalLinuxAccelerationInstaller.command() : nil
             let lease = try await acquireEnvironment(environmentID, token: token)
             let result: LinuxCommandResult
             do {
-                let command = try Self.guestArguments(arguments)
+                let command = try install?.argv ?? Self.guestArguments(arguments)
                 result = try await withTaskCancellationHandler {
                     try await runner.run(environmentID: environmentID,
                         argv: command,
-                        workingDirectory: nil, standardInput: nil, timeout: timeout,
+                        workingDirectory: nil, standardInput: install?.standardInput, timeout: timeout,
                         maxOutputBytes: 32 * 1024, cancellation: token)
                 } onCancel: { token.cancel() }
                 await lease.finish()
@@ -153,10 +209,16 @@ final class LocalLinuxAccelerationOwner {
         }
     }
 
-    func cancelQuery() {
+    private func cancelActiveQuery() {
         queryToken.cancel()
         queryGeneration = UUID()
         isBusy = false
+    }
+
+    func cancelQuery() {
+        cancelActiveQuery()
+        installGeneration = UUID()
+        installing = false
     }
 
     func launchBlender(display: LocalLinuxDisplayOwner, software: Bool) async {
@@ -296,7 +358,21 @@ final class LocalLinuxAccelerationOwner {
             throw FloeError.validationFailed(IDELanguageRunText.t("无法读取加速工具。", "Could not load the acceleration tool."))
         }
         let dispatcher = try String(contentsOf: url, encoding: .utf8)
-        let preferInstalled = #"if [ -x /usr/local/bin/floe-accel ]; then exec /usr/local/bin/floe-accel "$@"; fi"#
+        // Older images may still carry an older installed dispatcher. Use it
+        // only when its own help advertises the requested entry; otherwise the
+        // App-bundled dispatcher provides the newer OpenGL/OpenCL commands
+        // without changing the guest's installed files.
+        let preferInstalled = #"""
+        token="$1"
+        case "$token" in
+            graphics|compute) [ "$#" -ge 2 ] && token="$1 $2" ;;
+        esac
+        if [ -x /usr/local/bin/floe-accel ] \
+           && /usr/local/bin/floe-accel --capabilities 2>/dev/null | grep -F -- "floe-accel-api: 2" >/dev/null 2>&1 \
+           && /usr/local/bin/floe-accel --help 2>/dev/null | grep -F -- "$token" >/dev/null 2>&1; then
+            exec /usr/local/bin/floe-accel "$@"
+        fi
+        """#
         return ["/bin/sh", "-c", preferInstalled + "\n" + dispatcher, "floe-accel"] + arguments
     }
 }

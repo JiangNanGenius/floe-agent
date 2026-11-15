@@ -290,7 +290,7 @@ static int cmd_list(const char *device, const char *endpoint, int json) {
         printf("floe-codec %s\n", FLOE_CODEC_VERSION);
         for (size_t i = 0; i < device_count; i++) {
             printf("v4l2 %s card=%s bus=%s formats=0x%08x\n",
-                   devices[i].path, devices[i].card, devices[i].bus, devices[i].formats);
+                   devices[i].path, devices[i].card, devices[i].bus, (devices[i].decode_formats | devices[i].encode_formats));
         }
         printf("native endpoint=%s connected=%d policy=%s\n",
                broker_ok ? broker.host : "unavailable", broker_ok,
@@ -311,7 +311,7 @@ static int cmd_list(const char *device, const char *endpoint, int json) {
         if (i) putchar(',');
         printf("{\"path\":\"%s\",\"card\":\"%s\",\"bus\":\"%s\",\"m2m\":%s,\"formats\":%u}",
                devices[i].path, devices[i].card, devices[i].bus,
-               devices[i].is_decoder ? "true" : "false", devices[i].formats);
+               devices[i].m2m ? "true" : "false", (devices[i].decode_formats | devices[i].encode_formats));
     }
     printf("],\"native\":{\"connected\":%s,\"endpoint\":\"%s\",\"policy\":\"%s\","
            "\"capabilities\":[",
@@ -343,7 +343,7 @@ static int cmd_list(const char *device, const char *endpoint, int json) {
             int v4l2 = 0;
             if (c->fourcc) {
                 for (size_t i = 0; i < device_count; i++)
-                    if (devices[i].formats & (1u << c->id)) { v4l2 = 1; break; }
+                    if ((direction == FLV_ENCODE ? devices[i].encode_formats : devices[i].decode_formats) & (1u << c->id)) { v4l2 = 1; break; }
             }
             int hardware = cap &&
                 (cap->flags & (FLV_CAP_HW_REPORTED | FLV_CAP_SESSION_PROBED)) ==
@@ -538,7 +538,7 @@ static int standard_decode(const char *device, const codec_entry *codec,
                            const char *input, const char *output, uint32_t width, uint32_t height,
                            size_t frame_hint, uint32_t limit, int json) {
     floe_v4l2_device_info info;
-    if (floe_codec_v4l2_find(device, 1, &info)) {
+    if (floe_codec_v4l2_find(device, 1, codec->id, &info)) {
         fprintf(stderr, "floe-codec: no V4L2 decoder node\n");
         return 1;
     }
@@ -576,7 +576,7 @@ static int standard_encode(const char *device, const codec_entry *codec,
                            const char *input, const char *output, uint32_t width, uint32_t height,
                            uint32_t limit, int json) {
     floe_v4l2_device_info info;
-    if (floe_codec_v4l2_find(device, 0, &info)) {
+    if (floe_codec_v4l2_find(device, 0, codec->id, &info)) {
         fprintf(stderr, "floe-codec: no V4L2 encoder node\n");
         return 1;
     }
@@ -602,6 +602,7 @@ static void usage(void) {
     fprintf(stderr,
         "floe-codec %s — Floe Linux video client\n"
         "usage:\n"
+        "  floe-codec node-roles\n"
         "  floe-codec list [--json] [--device DEV] [--endpoint HOST:PORT:TOKEN]\n"
         "  floe-codec decode --codec NAME --input FILE --output FILE [--width N --height N]\n"
         "                  [--backend auto|v4l2|native] [--device DEV] [--endpoint ...]\n"
@@ -642,6 +643,18 @@ int main(int argc, char **argv) {
         else if (!strcmp(arg, "--help") || !strcmp(arg, "-h")) { usage(); return 0; }
         else { fprintf(stderr, "floe-codec: unknown argument %s\n", arg); usage(); return 2; }
     }
+    if (!strcmp(command, "node-roles")) {
+        floe_v4l2_device_info devices[64];
+        size_t count = 0;
+        if (floe_codec_v4l2_scan(devices, 64, &count) != 0) return 1;
+        uint32_t decode = 0, encode = 0;
+        for (size_t i = 0; i < count; i++) {
+            decode |= devices[i].decode_formats;
+            encode |= devices[i].encode_formats;
+        }
+        printf("%s %s\n", decode ? "decode" : "-", encode ? "encode" : "-");
+        return 0;
+    }
     if (!strcmp(command, "list")) return cmd_list(device, endpoint, json);
     if (!input || !output) { usage(); return 2; }
     if (!codec_name) { fprintf(stderr, "floe-codec: --codec is required\n"); return 2; }
@@ -660,8 +673,7 @@ int main(int argc, char **argv) {
     if (!strcmp(backend, "v4l2")) use_v4l2 = 1;
     else if (!strcmp(backend, "auto") && codec->fourcc && codec->v4l2_cli) {
         floe_v4l2_device_info info;
-        if (floe_codec_v4l2_find(device, decode ? 1 : 0, &info) == 0 &&
-            (info.formats & (1u << codec->id))) use_v4l2 = 1;
+        if (floe_codec_v4l2_find(device, decode, codec->id, &info) == 0) use_v4l2 = 1;
     } else if (!strcmp(backend, "native")) use_v4l2 = 0;
     else if (strcmp(backend, "auto")) {
         fprintf(stderr, "floe-codec: --backend must be auto, v4l2 or native\n");

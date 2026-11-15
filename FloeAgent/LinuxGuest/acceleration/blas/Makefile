@@ -83,4 +83,4 @@ install:
 	@exit 2
 
 clean:
-	rm -rf $(BUILD)
+	rm -f $(LIB) $(PROBE) $(TESTS)

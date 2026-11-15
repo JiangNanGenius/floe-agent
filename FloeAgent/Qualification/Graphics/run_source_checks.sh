@@ -40,6 +40,9 @@ echo "== source selection and patch digests"
 echo "== acceleration source contracts"
 /usr/bin/python3 "$REPO/FloeAgent/Qualification/Graphics/check_acceleration_sources.py"
 
+echo "== acceleration services, App routing and inventory decode"
+/usr/bin/python3 "$REPO/FloeAgent/Qualification/Graphics/check_acceleration_services.py"
+
 echo "== ABI4 layout (unchanged v1-v3 prefix, exact video tail)"
 "${CC[@]}" -I "$REPO/FloeAgent/ThirdParty/ARM64EMU/include" \
     "$REPO/FloeAgent/Qualification/Graphics/ABI4LayoutTests.c" -o "$WORK/ABI4LayoutTests"

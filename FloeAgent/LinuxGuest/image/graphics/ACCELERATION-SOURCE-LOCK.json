@@ -1,14 +1,15 @@
 {
   "schema": "floe.linux-acceleration.source-lock.v1",
   "generatedAt": "2026-11-15",
-  "purpose": "Exact readable source files included for video, BLAS, Blender and OpenCL acceleration. Hashes are of the checked-in source bytes; no compiled artifact is listed.",
+  "purpose": "Exact readable source files for video, BLAS, Blender, OpenGL and OpenCL acceleration. Hashes cover the checked-in source bytes. The App packages the runtime separately.",
   "roots": [
     "FloeAgent/Modules/FloeLinuxVideo",
     "FloeAgent/LinuxGuest/virtio-media",
     "FloeAgent/LinuxGuest/acceleration/video",
     "FloeAgent/LinuxGuest/acceleration/blas",
     "FloeAgent/LinuxGuest/acceleration/blender",
-    "FloeAgent/LinuxGuest/acceleration/opencl"
+    "FloeAgent/LinuxGuest/acceleration/opencl",
+    "FloeAgent/LinuxGuest/acceleration/graphics"
   ],
   "files": [
     {
@@ -513,8 +514,8 @@
     },
     {
       "path": "FloeAgent/LinuxGuest/acceleration/video/floe_codec.c",
-      "bytes": 31140,
-      "sha256": "3bd1ff442d143f3a1609942fda075eb308e09f9c62e7317a78a645aaaa9314d3"
+      "bytes": 31757,
+      "sha256": "05848195b523c8ef0bc4824b2894e3352203c9b652d26d662f97a4cced7892bc"
     },
     {
       "path": "FloeAgent/LinuxGuest/acceleration/video/floe_codec_broker.c",
@@ -528,13 +529,13 @@
     },
     {
       "path": "FloeAgent/LinuxGuest/acceleration/video/floe_codec_v4l2.c",
-      "bytes": 16199,
-      "sha256": "ceefa091a6c92859555d9015cbfe5f5c9df4bd1ff6f161c28982e3869966d473"
+      "bytes": 16409,
+      "sha256": "b6b76a0b77eae667e1501706925dcd2b44bf73d0317e60622435355aa0158157"
     },
     {
       "path": "FloeAgent/LinuxGuest/acceleration/video/floe_codec_v4l2.h",
-      "bytes": 1516,
-      "sha256": "372cbddf377dfd1e84ddcde2fe5fd19ef9fd86c4b44dc359bc659c000a2d9d62"
+      "bytes": 1509,
+      "sha256": "b4f08512032cfc57cd554e9772ed42451f14bac428cb5ef131f9d9693e0d2d6c"
     },
     {
       "path": "FloeAgent/LinuxGuest/acceleration/blas/LICENSE",
@@ -543,8 +544,8 @@
     },
     {
       "path": "FloeAgent/LinuxGuest/acceleration/blas/Makefile",
-      "bytes": 3012,
-      "sha256": "c5edf8672ab0db870a48c827328b49fd06569e4f80876824caab3d29e42d65fc"
+      "bytes": 3027,
+      "sha256": "acb6b0f7d9b7a3144796e29c92f813a4504a5ed1e0a8e34d1915aa74f44fe823"
     },
     {
       "path": "FloeAgent/LinuxGuest/acceleration/blas/NOTICE",
@@ -728,8 +729,8 @@
     },
     {
       "path": "FloeAgent/LinuxGuest/acceleration/opencl/README.md",
-      "bytes": 3708,
-      "sha256": "6c16430fa998ee8c95723020a8f77b148d9bf211134a71b05c819970db08d152"
+      "bytes": 5221,
+      "sha256": "a9e7495432bd54fd4f5b09ff40c29907c53de0a63cf545bed3b055407550801c"
     },
     {
       "path": "FloeAgent/LinuxGuest/acceleration/opencl/include/clspv/Sampler.h",
@@ -865,6 +866,21 @@
       "path": "FloeAgent/LinuxGuest/acceleration/opencl/scripts/verify_sysroot.py",
       "bytes": 3123,
       "sha256": "f2636e962dca72dce802b67538e85b79f6d9001cb9e59ee14a3731cf749ab48c"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/graphics/README.md",
+      "bytes": 1788,
+      "sha256": "7718ba851e12ab62f6f4374e8be37c44fe32f022bb5043bb63558efc65ac54cf"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/graphics/floe_gl_probe.py",
+      "bytes": 20637,
+      "sha256": "a9a1f34317989062743ee749459b3118bb816be94b44c1cfe3ef977f0df4b96e"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/opencl/tools/floe_opencl_probe.py",
+      "bytes": 34513,
+      "sha256": "7438959d105980339116a5273097b5fef226555ed7246e294085ba673ed79363"
     }
   ],
   "patchesForSharedPaths": [

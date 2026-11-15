@@ -23,7 +23,8 @@ BLAS = REPO / "FloeAgent" / "LinuxGuest" / "acceleration" / "blas"
 BLENDER = REPO / "FloeAgent" / "LinuxGuest" / "acceleration" / "blender"
 OPENCL = REPO / "FloeAgent" / "LinuxGuest" / "acceleration" / "opencl"
 ACCEL = REPO / "FloeAgent" / "LinuxGuest" / "acceleration" / "floe-accel"
-ROOTS = (VIDEO_HOST, VIDEO_GUEST, VIDEO_CLIENT, BLAS, BLENDER, OPENCL)
+ROOTS = (VIDEO_HOST, VIDEO_GUEST, VIDEO_CLIENT, BLAS, BLENDER, OPENCL,
+         ACCEL.parent / "graphics")
 PRIVATE = re.compile(r"/(?:Volumes|Users|home)/[A-Za-z0-9_.-]+/|job-[0-9a-f]{6,}")
 
 
@@ -58,6 +59,9 @@ def main() -> int:
         BLAS / "scripts/install-floe-blas.sh",
         BLENDER / "floe-blender",
         BLENDER / "install.sh",
+        ACCEL.parent / "graphics/floe_gl_probe.py",
+        OPENCL / "tools/floe_opencl_probe.py",
+        REPO / "FloeAgent" / "Qualification" / "Graphics" / "acceleration_guest_checks.sh",
         OPENCL / "PINS.json",
         OPENCL / "patches/0001-floe-private-icd-output-name.patch",
         OPENCL / "scripts/build_clvk_runtime_aarch64.sh",
@@ -97,9 +101,14 @@ def main() -> int:
 
     if (ACCEL).is_file():
         accel = ACCEL.read_text()
-        for command in ("status", "graphics", "video", "compute", "blender"):
+        for command in ("status", "graphics", "info", "egl", "video", "compute",
+                        "opencl", "blender", "floe-gl-probe", "floe-opencl-probe",
+                        "--capabilities"):
             add(command in accel, f"floe-accel missing {command} entry")
         add("A Linux guest is required" in accel, "floe-accel lost its Linux-only guard")
+        add("renderD128" not in accel, "floe-accel status hardcodes a DRM node index")
+        add("/dev/video0" not in accel and "/dev/video1" not in accel,
+            "floe-accel status hardcodes a V4L2 node index")
 
     pins = OPENCL / "PINS.json"
     if pins.is_file():

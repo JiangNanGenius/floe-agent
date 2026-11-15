@@ -14,16 +14,118 @@ helper() {
     exec "$name" "$@"
 }
 
+# Device and ICD discovery deliberately scans the real kernel interfaces
+# instead of assuming fixed node indexes. Names are never echoed into JSON;
+# only bounded counts/booleans leave this script.
+count_render() {
+    count=0
+    for path in /dev/dri/renderD*; do
+        [ -e "$path" ] && count=$((count + 1))
+    done
+    printf '%s' "$count"
+}
+count_card() {
+    count=0
+    for path in /dev/dri/card*; do
+        [ -e "$path" ] && count=$((count + 1))
+    done
+    printf '%s' "$count"
+}
+count_dri() { printf '%s' "$(( $(count_render) + $(count_card) ))"; }
+has_render_node() {
+    for path in /dev/dri/renderD*; do
+        [ -e "$path" ] && return 0
+    done
+    return 1
+}
+has_card_node() {
+    for path in /dev/dri/card*; do
+        [ -e "$path" ] && return 0
+    done
+    return 1
+}
+count_video() {
+    count=0
+    for path in /dev/video*; do
+        [ -e "$path" ] && count=$((count + 1))
+    done
+    printf '%s' "$count"
+}
+count_icd() {
+    count=0
+    for path in /etc/OpenCL/vendors/*.icd; do
+        [ -f "$path" ] && count=$((count + 1))
+    done
+    # ocl-icd accepts a directory or a colon-separated list; keep counting
+    # bounded entries only. Unreadable or absent paths are not declared.
+    if [ -n "${OCL_ICD_VENDORS:-}" ]; then
+        old_ifs=$IFS; IFS=:
+        for entry in $OCL_ICD_VENDORS; do
+            if [ "$entry" = /etc/OpenCL/vendors ]; then
+                continue
+            elif [ -d "$entry" ]; then
+                for path in "$entry"/*.icd; do
+                    [ -f "$path" ] && count=$((count + 1))
+                done
+            elif [ -f "$entry" ]; then
+                count=$((count + 1))
+            fi
+        done
+        IFS=$old_ifs
+    fi
+    if [ -n "${OCL_ICD_FILENAMES:-}" ]; then
+        old_ifs=$IFS; IFS=:
+        for entry in $OCL_ICD_FILENAMES; do
+            [ -f "$entry" ] && count=$((count + 1))
+        done
+        IFS=$old_ifs
+    fi
+    printf '%s' "$count"
+}
+has_opencl_loader() {
+    for path in /usr/lib/aarch64-linux-gnu/libOpenCL.so.1 \
+                /usr/lib/libOpenCL.so.1 /usr/local/lib/libOpenCL.so.1 \
+                /usr/lib/aarch64-linux-gnu/libOpenCL.so; do
+        [ -r "$path" ] && return 0
+    done
+    if have ldconfig && ldconfig -p 2>/dev/null | grep -q 'libOpenCL\.so\.1'; then
+        return 0
+    fi
+    return 1
+}
+has_opencl_compiler() {
+    have clspv && return 0
+    [ -x /usr/lib/floe-opencl/clspv ]
+}
+has_egl_library() {
+    for path in /usr/lib/aarch64-linux-gnu/libEGL.so.1 /usr/lib/libEGL.so.1 \
+                /usr/local/lib/libEGL.so.1 /usr/lib/aarch64-linux-gnu/libEGL.so; do
+        [ -r "$path" ] && return 0
+    done
+    return 1
+}
+has_opencl_probe() {
+    # The probe is a Python 3 program; an installed file without its
+    # interpreter is not usable and must not enable the service.
+    have floe-opencl-probe && have python3
+}
+has_glx_inspector() { have floe-gl-probe || have glxinfo; }
+has_egl_inspector() { have floe-gl-probe || have eglinfo || have es2_info; }
+
 usage() {
     cat <<'EOF'
 floe-accel status [--json]
-floe-accel graphics status | info
+floe-accel graphics status
+floe-accel graphics info
+floe-accel graphics egl
 floe-accel video list --json
 floe-accel video decode|encode [CODEC OPTIONS...]
 floe-accel compute status
 floe-accel compute mode off|auto|on
 floe-accel compute run [--mode off|auto|on] -- COMMAND [ARGS...]
 floe-accel compute probe [--size N]
+floe-accel compute opencl status
+floe-accel compute opencl probe [--device gpu|cpu|any] [--size N]
 floe-accel blender status --json
 floe-accel blender open --backend gpu|software
 floe-accel blender edit|export|render [SCENE OPTIONS...]
@@ -32,8 +134,12 @@ Programs execute inside the current Linux environment. Video and compute
 availability is measured by the relevant backend; installed files alone do
 not prove acceleration. Blender GPU requests never silently become CPU.
 Compute probes report actual GPU submissions and fallbacks separately.
-Open Screen in Floe before launching an interactive graphical application.
-Headless compute, video and editing do not need a screen or full desktop.
+OpenGL/GLX uses the current project display; `graphics egl` is headless only
+when the installed EGL platform supports it. OpenCL status and probe enumerate
+the real ICD through the system loader; a missing ICD or device is reported,
+never synthesized. Open Screen in Floe before launching an interactive
+graphical application. Headless compute, video and editing do not need a
+screen or full desktop.
 VM RAM and GPU allocation limits remain in Floe's existing environment settings.
 EOF
 }
@@ -42,16 +148,40 @@ status() {
     # Presence only. Probes below report actual backend/device support.
     # Deliberately do not echo environment values or arbitrary command output
     # into JSON: a status read never turns data into shell or JSON syntax.
+    dri_count=$(count_dri)
+    render_count=$(count_render)
+    card_count=$(count_card)
+    video_count=$(count_video)
+    video_roles=""
+    if [ "$video_count" -gt 0 ] && have floe-codec; then
+        video_roles=$(floe-codec node-roles 2>/dev/null) || video_roles=""
+    fi
+    icd_count=$(count_icd)
     printf '{"schemaVersion":1,"graphics":{"deviceNodePresent":'
-    json_bool test -c /dev/dri/renderD128
+    if [ "$dri_count" -gt 0 ]; then printf true; else printf false; fi
     printf ',"inspectorInstalled":'; json_bool have vulkaninfo
+    printf ',"renderNodePresent":'; json_bool has_render_node
+    printf ',"cardNodePresent":'; json_bool has_card_node
+    printf ',"renderNodeCount":%s' "$render_count"
+    printf ',"cardNodeCount":%s' "$card_count"
+    printf ',"glxInspectorInstalled":'; json_bool has_glx_inspector
+    printf ',"eglInspectorInstalled":'; json_bool has_egl_inspector
+    printf ',"eglLibraryInstalled":'; json_bool has_egl_library
+    printf ',"glProbeInstalled":'; json_bool have floe-gl-probe
     printf '},"video":{"clientInstalled":'; json_bool have floe-codec
-    printf ',"decoderNodePresent":'; json_bool test -c /dev/video0
-    printf ',"encoderNodePresent":'; json_bool test -c /dev/video1
+    printf ',"decoderNodePresent":'
+    case "$video_roles" in "decode "*) printf true ;; *) printf false ;; esac
+    printf ',"encoderNodePresent":'
+    case "$video_roles" in *" encode") printf true ;; *) printf false ;; esac
+    printf ',"videoNodeCount":%s' "$video_count"
     printf '},"compute":{"runnerInstalled":'; json_bool have floe-blas-run
     printf ',"probeInstalled":'; json_bool have floe-blas-probe
     printf ',"providerInstalled":'
     json_bool test -r /usr/local/lib/floe-acceleration/libfloe_blas.so
+    printf ',"openCLLoaderInstalled":'; json_bool has_opencl_loader
+    printf ',"openCLICDCount":%s' "$icd_count"
+    printf ',"openCLProbeInstalled":'; json_bool has_opencl_probe
+    printf ',"openCLCompilerInstalled":'; json_bool has_opencl_compiler
     printf '},"blender":{"launcherInstalled":'; json_bool have floe-blender
     printf ',"applicationInstalled":'; json_bool have blender
     printf '}}\n'
@@ -61,17 +191,36 @@ command_name="${1:---help}"
 [ "$#" -eq 0 ] || shift
 case "$command_name" in
     --help|-h|help) usage ;;
+    --capabilities)
+        # Machine-readable contract marker used by the App to prefer a current
+        # installed dispatcher. Older installs do not answer this entry.
+        printf 'floe-accel-api: 2\n' ;;
     status)
         [ "$#" -eq 0 ] || { [ "$#" -eq 1 ] && [ "$1" = --json ]; } || fail 'Use status [--json].' 2
         status ;;
     graphics)
         operation="${1:-status}"
         [ "$#" -eq 0 ] || shift
-        [ "$#" -eq 0 ] || fail 'Use graphics status|info.' 2
+        [ "$#" -eq 0 ] || fail 'Use graphics status|info|egl.' 2
         case "$operation" in
-            status) helper vulkaninfo --summary ;;
-            info) [ -n "${DISPLAY:-}" ] || fail 'Open Screen in Floe first.'; helper glxinfo -B ;;
-            *) fail 'Use graphics status|info.' 2 ;;
+            status)
+                # Pure device enumeration must not inherit the runner's
+                # preset DISPLAY/WAYLAND_DISPLAY: vulkaninfo would try an
+                # XCB/Wayland WSI path and fail when no screen is open. Keep
+                # `graphics info` on the real project display.
+                have vulkaninfo || fail 'Missing vulkaninfo. Update the Linux component or install the required package.'
+                unset DISPLAY WAYLAND_DISPLAY
+                exec vulkaninfo --summary ;;
+            info)
+                [ -n "${DISPLAY:-}" ] || fail 'Open Screen in Floe first.' 69
+                if have floe-gl-probe; then exec floe-gl-probe glx; fi
+                helper glxinfo -B ;;
+            egl)
+                if have floe-gl-probe; then exec floe-gl-probe egl; fi
+                if have eglinfo; then exec eglinfo; fi
+                if have es2_info; then exec es2_info; fi
+                fail 'Headless OpenGL probe is not installed. Update the Linux component.' 69 ;;
+            *) fail 'Use graphics status|info|egl.' 2 ;;
         esac ;;
     video) [ "$#" -gt 0 ] || set -- list --json; helper floe-codec "$@" ;;
     compute)
@@ -84,7 +233,15 @@ case "$command_name" in
                 case "$1" in off|auto|on) helper floe-blas-run --set-mode "$1" ;; *) fail 'Invalid compute mode.' 2 ;; esac ;;
             run) [ "$#" -gt 0 ] || fail 'A command is required.' 2; helper floe-blas-run "$@" ;;
             probe) helper floe-blas-probe "$@" ;;
-            *) fail 'Use compute status|mode|run|probe.' 2 ;;
+            opencl)
+                opencl_operation="${1:-status}"
+                [ "$#" -eq 0 ] || shift
+                case "$opencl_operation" in
+                    status) [ "$#" -eq 0 ] || fail 'Use compute opencl status.' 2; helper floe-opencl-probe status ;;
+                    probe) helper floe-opencl-probe run "$@" ;;
+                    *) fail 'Use compute opencl status|probe.' 2 ;;
+                esac ;;
+            *) fail 'Use compute status|mode|run|probe|opencl.' 2 ;;
         esac ;;
     blender) [ "$#" -gt 0 ] || set -- status --json; helper floe-blender "$@" ;;
     *) usage >&2; exit 2 ;;

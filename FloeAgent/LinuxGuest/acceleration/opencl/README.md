@@ -72,13 +72,40 @@ SONAME/symlink and payload checks.
 compile-time default. IL APIs return `CL_INVALID_OPERATION` in the
 IL-disabled profile.
 
+## Guest probe
+
+`tools/floe_opencl_probe.py` is the runtime probe used by
+`floe-accel compute opencl status` and `floe-accel compute opencl probe`.
+Install it as `/usr/local/bin/floe-opencl-probe` (0755,
+`#!/usr/bin/env python3`). It loads the system `libOpenCL.so.1` (normally
+ocl-icd), enumerates the real platforms and devices, and reports loader,
+ICD-entry and device facts. `run` submits fill/copy/readback/map commands and
+verifies the bytes; when `CL_DEVICE_COMPILER_AVAILABLE` is true it also builds
+and runs a small kernel. A missing loader, ICD, device or compiler is an
+explicit failure/limitation, never synthesized from a filename or a source
+tree.
+
+This probe does not install the CLVK/ocl-icd/clspv payload and does not make
+the CLVK source build runnable. The image still needs the admitted runtime
+package. On an image without it, `status` returns exit 3 (loader missing) or
+exit 4 (no ICD platform); that is the expected missing-component path.
+
+On the M5 Pro Venus device, Debian Rusticl 25.0.7-2+deb13u1 exposes a Zink
+GPU but its compute path terminates the graphics host. The probe lists this
+device with a diagnostic and selects another usable device for automatic
+checks. An explicit request for the affected GPU returns the diagnostic
+before creating a context. Vulkan BLAS and OpenGL use their own paths.
+
 ## Truth boundary
 
-- The existing `v8` image does not contain this runtime and must not declare
-  OpenCL. `FloeAgent/LinuxGuest/image/graphics/CAPABILITY-POLICY.json` gates
-  the `openCL` capability on the installed library, ICD and `clspv`.
-- No ARM64 compiler build, ICD load, kernel build, numerical result, OpenCL
-  conformance or App/iPad acceptance is present. Those are separate native
-  and installed-image gates.
+- The stock `v8` image does not contain this CLVK runtime. An installed
+  toolkit may add a different ICD; OpenCL is declared only after a real
+  loader/device/kernel run, never from a source tree or a filename.
+  `FloeAgent/LinuxGuest/image/graphics/CAPABILITY-POLICY.json` gates the
+  `openCL` capability on the installed library, ICD and `clspv`.
+- No CLVK ARM64 compiler build, CLVK ICD load, CLVK kernel build, CLVK
+  numerical result, OpenCL conformance or App/iPad acceptance is present.
+  A separate guest probe run against a different ICD does not change these
+  CLVK gates.
 - Do not copy upstream trees or build artifacts into this directory; the
   producer is reproducible from the pins above and the retained patches.

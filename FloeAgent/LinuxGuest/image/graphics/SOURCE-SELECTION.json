@@ -1051,7 +1051,7 @@
     ]
   },
   "sourceLocks": {
-    "acceleration": "ACCELERATION-SOURCE-LOCK.json (171 files; video/blas/blender/opencl source bytes and patch locks)",
+    "acceleration": "ACCELERATION-SOURCE-LOCK.json (174 files; video/blas/blender/opengl/opencl source bytes and patch locks)",
     "hostMesaPatches": "patches/host-mesa-30da3918/SERIES.json (96 ordered patches)",
     "guestMesaPatch": "patches/guest-mesa-25.0.7/0001-floe-x11-cpu-present-complete.patch (sha256 0877816a...)",
     "arm64Engine": "FloeAgent/ThirdParty/ARM64EMU/PROVENANCE.json (114 file hashes, ABI4/35 units)"

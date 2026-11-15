@@ -1,0 +1,4 @@
+{
+  "zh-Hans": "在 Linux 终端打开加速面板，在当前 Debian ARM64 环境安装加速工具，然后运行矩阵计算，查看设备、计算结果及 OpenGL、OpenCL 状态。在图片工作台用 Apple Pencil 建立选区，调整羽化，跨选区边缘绘画或擦除，再保存并重新打开。也请尝试创建并预览游戏工程。",
+  "en-US": "Open acceleration in the Linux terminal. Install the tools in your Debian arm64 environment, run a matrix calculation and check the device, result, OpenGL and OpenCL status. In the image workbench, make a selection with Apple Pencil, feather its edge, draw or erase across it, then save and reopen. Also try creating and previewing a game project."
+}
