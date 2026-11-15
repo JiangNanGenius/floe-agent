@@ -122,7 +122,7 @@ class RuntimeEnvironmentCatalogReaderTest {
         assertEquals(listOf("shared", "tpl"), ids(result))
         assertFalse(result.has("projectID"))
         assertFalse(result.has("workspaceOwnerID"))
-        assertEquals(emptyList<String?>(), source.calls.map { it.first })
+        assertEquals(listOf<String?>(null), source.calls.map { it.first })
     }
 
     @Test
@@ -301,9 +301,9 @@ class RuntimeEnvironmentCatalogReaderTest {
         }
         val source = Source(listOf(page(rows, total = rows.size)))
         assertEquals("replyTooLarge",
-            refusalCode { reader(source, maximumResultBytes = 8_192).read(project) })
+            refusalCode { reader(source, pageLimit = rows.size, maximumResultBytes = 8_192).read(project) })
 
-        val fits = reader(Source(listOf(page(rows, total = rows.size))))
+        val fits = reader(Source(listOf(page(rows, total = rows.size))), pageLimit = rows.size)
         assertEquals(rows.size, ids(fits.read(project)).size)
     }
 
