@@ -88,6 +88,26 @@ public extension FloeCADDocument {
         let saved = await save()
         guard saved.succeeded, change == session.changeCount, !isClosed else { throw CADBuildingError.invalid(saved.error ?? "The design changed while preparing the study.") }
         try Task.checkCancellation()
+        return try buildingProfessionalSnapshot(model: model, action: action, structural: structural, change: change)
+    }
+
+    /// Use only selected committed native meshes and semantic floor records.
+    /// The interchange service applies the disk revision fence before publication.
+    func buildingIFCInterchangeInput(_ scope: CADBuildingExportScope) throws -> Data {
+        guard !isClosed, !isReadOnly, !hasUnsavedChanges, !hasUnfinishedBuildingDraftingInput,
+              let original = try building() else { throw CADBuildingError.invalid("Save the current building before exporting IFC.") }
+        let selection = try buildingExportSelection(scope)
+        guard !selection.elements.isEmpty, Set(selection.elements.flatMap(\.bodyIDs)) == Set(selection.bodyIDs) else {
+            throw CADBuildingError.invalid("IFC requires authored building elements for every selected body. Choose a building floor or element scope.")
+        }
+        let scoped = try selection.modelCopy(from: original)
+        let package = try buildingProfessionalSnapshot(model: scoped, action: .ifc, structural: .init(), change: session.changeCount)
+        guard let input = package.files["input.json"] else { throw CADBuildingError.invalid("The IFC input is missing.") }
+        return input
+    }
+
+    private func buildingProfessionalSnapshot(model: CADBuildingDocument, action: CADBuildingProfessionalAction,
+                                             structural: CADBuildingStructuralSettings, change: Int) throws -> CADBuildingProfessionalPackage {
         if action == .structure {
             guard structural.elasticModulusNPerMM2.isFinite, (1...1e7).contains(structural.elasticModulusNPerMM2),
                   structural.poissonRatio.isFinite, (0..<0.5).contains(structural.poissonRatio),

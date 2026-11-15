@@ -12,20 +12,32 @@ struct BuildingNativeRoomOption:Identifiable,Equatable {
 }
 
 struct BuildingNativeModelPanel:View {
+    private enum Mode:String,CaseIterable {case walls,native}
     @Bindable var project:BuildingEditorProjectSession
     @Environment(\.locale) private var locale
     @State private var choosingRooms=false
+    @State private var mode=Mode.walls
     private func copy(_ zh:String,_ en:String)->String {locale.language.languageCode?.identifier=="zh" ? zh:en}
     var body:some View {
         VStack(spacing:0) {
-            HStack {
+            HStack(spacing:10) {
+                Picker(copy("模型工作台","Model workspace"),selection:$mode) {
+                    Text(copy("墙体平面","Wall plan")).tag(Mode.walls)
+                    Text(copy("原生建筑","Native building")).tag(Mode.native)
+                }.pickerStyle(.segmented).frame(maxWidth:360)
+                .accessibilityIdentifier("building.model.mode")
+                Spacer()
                 Button {choosingRooms=true} label:{Label(copy("关联房间资料","Link room records"),systemImage:"link")}
                     .accessibilityIdentifier("building.rooms.link")
-                Spacer()
             }.padding(.horizontal,12).padding(.vertical,8)
             Divider()
-            FloeBuildingWorkbenchView(document:project.nativeDocument,hostOwnsProjectSave:true)
-                .disabled(project.busy)
+            if mode == .walls {
+                BuildingWallPlanEditor(project:project)
+                    .disabled(project.busy)
+            } else {
+                FloeBuildingWorkbenchView(document:project.nativeDocument,hostOwnsProjectSave:true)
+                    .disabled(project.busy)
+            }
         }
         .sheet(isPresented:$choosingRooms){BuildingRoomLinkSheet(project:project)}
     }

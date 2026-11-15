@@ -60,6 +60,36 @@ final class SkillHubDiscoveryUITests: XCTestCase {
         }
     }
 
+    func testCreateAndImportStayInSkillHub() throws {
+        let addMenu = app.buttons["skills.add"].firstMatch
+        let rows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "skills.authoring.record."))
+        for (entry, control) in [("skills.authoring.import", "skills.authoring.chooseFolder"),
+                                 ("skills.authoring.create", "skills.authoring.generate")] {
+            let before = Set(rows.allElementsBoundByIndex.map(\.identifier))
+            addMenu.tap()
+            let action = app.buttons[entry].firstMatch
+            XCTAssertTrue(action.waitForExistence(timeout: 5))
+            action.tap()
+            XCTAssertTrue(app.buttons[control].firstMatch.waitForExistence(timeout: 10))
+            app.buttons["skills.authoring.close"].firstMatch.tap()
+            let newRow = try XCTUnwrap(Set(rows.allElementsBoundByIndex.map(\.identifier)).subtracting(before).first,
+                                       "Only the new draft created by this test may be settled")
+            app.descendants(matching: .any).matching(identifier: "sidebar.task_center").firstMatch.tap()
+            XCTAssertTrue(app.buttons["workbench.overview.new_task"].firstMatch.waitForExistence(timeout: 10))
+            XCTAssertFalse(rows.firstMatch.exists)
+            XCTAssertFalse(app.buttons[entry].firstMatch.exists)
+            app.descendants(matching: .any).matching(identifier: "sidebar.skills").firstMatch.tap()
+            let draft = app.buttons[newRow].firstMatch
+            XCTAssertTrue(draft.waitForExistence(timeout: 10))
+            draft.tap()
+            app.buttons["skills.authoring.cancelDraft"].firstMatch.tap()
+            let done = app.buttons["skills.authoring.done"].firstMatch
+            XCTAssertTrue(done.waitForExistence(timeout: 5))
+            done.tap()
+            XCTAssertTrue(addMenu.waitForExistence(timeout: 8))
+        }
+    }
+
     // MARK: - 1. Row/card taps open the unified native detail page
 
     func testHubRowOpensUnifiedNativeDetail() throws {

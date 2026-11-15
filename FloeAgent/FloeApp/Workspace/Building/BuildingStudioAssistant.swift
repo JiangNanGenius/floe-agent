@@ -50,7 +50,11 @@ struct BuildingStudioReference: Encodable {
         let parts = directory.resolvingSymlinksInPath().standardizedFileURL.pathComponents
         let home = URL(fileURLWithPath: NSHomeDirectory()).resolvingSymlinksInPath().standardizedFileURL.pathComponents
         let location = parts.starts(with: home) ? "home/" + parts.dropFirst(home.count).joined(separator: "/") : directory.resolvingSymlinksInPath().standardizedFileURL.path
-        let id = AppDesignResultPublicationPort.deterministicUUID("floe.building.assistant|\(context.projectID)|\(location)")
+        // A personal record owns one assistant identity even if the package is
+        // copied to another path. CAD-entry projects keep the location-bound
+        // identity so two independent CAD documents cannot share a mount.
+        let id = context.spaceRecordID
+            ?? AppDesignResultPublicationPort.deterministicUUID("floe.building.assistant|\(context.projectID)|\(location)")
         if let previous = mounts[id] {
             guard previous.presenterID == presenterID, previous.isCurrent else { throw PersonalFileAssistantLifecycleError.stopping }
             return previous

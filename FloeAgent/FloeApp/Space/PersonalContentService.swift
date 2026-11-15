@@ -12,6 +12,8 @@ import FloeMusicCore
 import FloeMeetings
 import FloeChemistryCore
 import FloeCAD
+import FloeBuildingProject
+import FloeBuildingEditor
 import FloeLaTeXCore
 import FloeElectronicsCore
 import FloeElectronicsUI
@@ -76,6 +78,8 @@ actor PersonalContentService {
                 let saved = await document.save()
                 await document.close()
                 guard saved.succeeded else { throw PersonalContentError.storageUnavailable }
+            case .building:
+                try await BuildingProjectSpaceOriginal.create(spaceRecordID: id, title: title, directory: directory)
             case .canvas:
                 let repository = try FileCanvasRepository(root: directory.appendingPathComponent("Canvas"))
                 let page = CanvasPageSnapshot(name: IDELanguageRunText.t("画布", "Canvas"))
@@ -137,6 +141,8 @@ actor PersonalContentService {
         case .cad2D, .cad3D:
             let document = try await FloeCADDocument.open(at: location.url.appendingPathComponent("Document.floecad"))
             await document.close()
+        case .building:
+            _ = try BuildingProjectSpaceOriginal.verify(spaceRecordID: record.id, title: record.title, directory: location.url)
         case .canvas:
             _ = try await FileCanvasRepository(root: location.url.appendingPathComponent("Canvas")).load(canvasID: record.id)
         case .diagram:
@@ -179,6 +185,7 @@ actor PersonalContentService {
     }
 
     func importFile(_ source: URL, folders: [String]) async throws -> PersonalContentRecord {
+        if BuildingProjectDocumentType.recognizes(source) { return try await importBuilding(source, folders: folders) }
         if ["floegis", "geojson", "gpkg", "gpx", "kml", "kmz", "asc", "mbtiles"].contains(source.pathExtension.lowercased()) { return try await importGeography(source, folders: folders) }
         if source.pathExtension.lowercased()=="floeeda" {return try await importElectronics(source,folders:folders)}
         if source.pathExtension.lowercased()=="tex" {return try await importLaTeX(source,folders:folders)}
@@ -207,6 +214,65 @@ actor PersonalContentService {
                 guard let copyResult else { throw PersonalContentError.storageUnavailable }
                 try copyResult.get()
             }.value
+        }
+    }
+
+    func importBuilding(_ source: URL, title: String? = nil, folders: [String], id: UUID = UUID()) async throws -> PersonalContentRecord {
+        let name = title ?? source.deletingPathExtension().lastPathComponent
+        let library = try library()
+        let record = try await library.create(kind: .building, title: name, in: folders, id: id) { directory, owner in
+            try await Task.detached(priority: .userInitiated) {
+                let lease = DocumentIntakeProviderLease(url: source)
+                defer { lease.release() }
+                var coordinationError: NSError?
+                var result: Result<Void, Error>?
+                NSFileCoordinator().coordinate(readingItemAt: source, options: [], error: &coordinationError) { readable in
+                    result = Result {
+                        _ = try BuildingProjectSpaceOriginal.importPortable(spaceRecordID: owner, title: name,
+                            from: readable, directory: directory)
+                        _ = try BuildingProjectSpaceOriginal.verify(spaceRecordID: owner, title: name, directory: directory)
+                    }
+                }
+                if let coordinationError { throw coordinationError }
+                guard let result else { throw PersonalContentError.storageUnavailable }
+                try result.get()
+            }.value
+        }
+        try await verify(record)
+        return record
+    }
+
+    /// The native editor supplies its own verified receipt and file. Reopening a receipt
+    /// resolves the same independent Space record, including any edits made to that copy.
+    func publishBuildingCopy(_ copy: BuildingProjectCopyReceipt, at source: URL) async throws -> PersonalContentRecord {
+        guard let expectedHash = copy.contentSHA256, !expectedHash.isEmpty else { throw PersonalContentError.invalidProject }
+        let kind: PersonalContentKind
+        switch copy.kind {
+        case .building: kind = .building
+        case .cad2D: kind = .cad2D
+        case .cad3D: kind = .cad3D
+        }
+        let library = try library()
+        return try await library.create(kind: kind, title: copy.title, id: copy.id) { target, id in
+            if kind == .building {
+                try await Task.detached(priority: .userInitiated) {
+                    _ = try BuildingProjectSpaceOriginal.importPortable(spaceRecordID: id, title: copy.title,
+                                                                       from: source, directory: target)
+                    let imported = try BuildingProjectSpaceOriginal.verify(spaceRecordID: id, title: copy.title, directory: target)
+                    guard imported.contentDigest == expectedHash, imported.generationID == copy.sourceGenerationID else {
+                        throw PersonalContentError.changedDocument
+                    }
+                }.value
+            } else {
+                guard let identity = await FloeCADDocument.storedIdentity(at: source),
+                      let modelHash = identity.modelSHA256, !modelHash.isEmpty,
+                      identity.revision == copy.cadRevision, identity.contentSHA256 == expectedHash else {
+                    throw PersonalContentError.changedDocument
+                }
+                try await BuildingEditorProjectSession.importNativeDocumentPackage(from: source,
+                    expected: (identity.revision, expectedHash, modelHash),
+                    to: target.appendingPathComponent("Document.floecad", isDirectory: true))
+            }
         }
     }
 
@@ -276,6 +342,7 @@ extension PersonalContentKind {
         case .latex: IDELanguageRunText.t("LaTeX 论文", "LaTeX document")
         case .electronics: IDELanguageRunText.t("电路设计", "Electronics")
         case .geography: IDELanguageRunText.t("地图编辑器", "Map Editor")
+        case .building: IDELanguageRunText.t("建筑工程", "Building project")
         case .cad2D: IDELanguageRunText.t("二维设计", "2D design")
         case .cad3D: IDELanguageRunText.t("三维设计", "3D design")
         case .printing: IDELanguageRunText.t("3D 打印", "3D printing")
@@ -298,6 +365,7 @@ extension PersonalContentKind {
         case .latex: "doc.richtext"
         case .electronics: "cpu"
         case .geography: "map"
+        case .building: "building.2"
         case .cad2D: "ruler"
         case .cad3D: "cube.transparent"
         case .printing: "printer"
@@ -310,6 +378,6 @@ extension PersonalContentKind {
     // Keep their record kinds readable for existing projects and results.
     // Game projects use their own create flow (empty project first), not the
     // generic studio.create kind list.
-    static var creationKinds: [Self] { [.canvas, .diagram, .latex, .music, .meeting, .chemistry, .biology, .document, .drawing, .image, .video, .cad2D, .cad3D, .electronics, .geography] }
+    static var creationKinds: [Self] { [.canvas, .diagram, .latex, .music, .meeting, .chemistry, .biology, .document, .drawing, .image, .video, .building, .cad2D, .cad3D, .electronics, .geography] }
 }
 #endif

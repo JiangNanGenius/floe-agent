@@ -4,7 +4,7 @@
 // Pure and deterministic: no network, no Keychain, no app target. The bundled
 // catalog is read from the checkout so the shipped defaults are part of the
 // contract, and the staged content-hub envelope is checked for the
-// catalog-aware minimum app version (1.7.69).
+// catalog-aware minimum app version (1.8.34).
 
 import Foundation
 import Testing
@@ -124,7 +124,7 @@ struct SearchProviderCatalogTests {
     func bundledCatalogMatchesCompiledAdapters() throws {
         let index = try Self.bundledIndex()
         #expect(index.document.id == "floe.search.providers")
-        #expect(index.document.version == "1.2.1")
+        #expect(index.document.version == "1.3.0")
         #expect(index.entries.count == 11)
         let mapping = Dictionary(uniqueKeysWithValues: index.entries.map { ($0.presetID, $0.adapterKind) })
         #expect(mapping == [
@@ -266,10 +266,10 @@ struct SearchProviderCatalogTests {
         )
         #expect(envelope["id"] as? String == "floe.search.providers")
         #expect(envelope["kind"] as? String == "providers")
-        #expect(envelope["version"] as? String == "1.2.1")
+        #expect(envelope["version"] as? String == "1.3.0")
         // The updated catalog requires this app's full compiled adapter set,
-        // including Moonshot; older DeepSeek-only builds must not install it.
-        #expect(envelope["minimumAppVersion"] as? String == "1.7.69")
+        // including the DeepSeek Responses route.
+        #expect(envelope["minimumAppVersion"] as? String == "1.8.34")
         #expect(envelope["containsScripts"] as? Bool == false)
         #expect((envelope["releaseNotes"] as? [String: String])?["en"]?.isEmpty == false)
         #expect((envelope["releaseNotes"] as? [String: String])?["zh-Hans"]?.isEmpty == false)
@@ -301,7 +301,7 @@ struct SearchProviderCatalogTests {
         #expect(deepSeekEntry.adapterKind == "deepseek")
         #expect(deepSeekEntry.defaultEndpoint == "https://api.deepseek.com/v1/tools/search")
         #expect(deepSeekEntry.credentialKeys == ["apiKey"])
-        #expect(deepSeekEntry.optionFields.map(\.key) == [DeepSeekSearchOptions.Key.needContent])
+        #expect(deepSeekEntry.optionFields.map(\.key) == [DeepSeekSearchOptions.Key.searchWhileThinking, DeepSeekSearchOptions.Key.needContent])
         #expect(deepSeekEntry.optionFields.first?.defaultValue == "false")
         let deepSeek = try #require(SearchProviderDraftFactory.draftInstance(
             for: deepSeekEntry,

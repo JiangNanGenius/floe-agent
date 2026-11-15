@@ -80,12 +80,13 @@ nonisolated struct NativeToolboxUSBSource: ToolboxUSBSource {
 /// RAM-only native selection. Nothing here is decoded from tool arguments,
 /// capture records or settings. The existing task/lease policy still applies.
 nonisolated struct ToolboxUSBOpenRequest: Sendable {
-    let source: any ToolboxUSBSource
-    let selection: USBRegistrySelection
+    fileprivate let source: any ToolboxUSBSource
+    fileprivate let selection: USBRegistrySelection
+    fileprivate let generation: UUID
     let device: USBRegistryDevice
     let settings: USBSerialSettings
     let title: String
-    let isCurrent: @MainActor @Sendable () -> Bool
+    fileprivate let isCurrent: @MainActor @Sendable () -> Bool
     @MainActor func validate() throws {
         try Task.checkCancellation()
         guard isCurrent() else { throw ToolboxUSBFailure.changedDevice }
@@ -129,18 +130,28 @@ nonisolated struct ToolboxUSBOpenRequest: Sendable {
     var canDiscover: Bool { source != nil && !searching }
     var canConnect: Bool { selectedDevice != nil && !searching }
 
+    private func configuredPackage() throws -> USBDriverPackageInspection {
+        let package = inspect()
+        switch package {
+        case .notIncluded: throw ToolboxUSBFailure.notIncluded
+        case .unconfigured: throw ToolboxUSBFailure.unconfigured
+        case .invalid(let reason): throw ToolboxUSBFailure.invalidPackage(reason)
+        case .bundledUnverified: return package
+        }
+    }
+
+    func validateSelection(_ request: ToolboxUSBOpenRequest?) throws {
+        _ = try configuredPackage()
+        guard let request else { throw ToolboxUSBFailure.chooseDevice }
+        guard request.generation == generation, selectedID == request.device.id else { throw ToolboxUSBFailure.changedDevice }
+        try request.validate()
+    }
+
     func reset() {
         generation = UUID(); operation?.cancel(); operation = nil
         source = nil; selectedID = nil
-        let package = inspect() // Local bundle metadata only, never a USB query.
         do {
-            switch package {
-            case .notIncluded: throw ToolboxUSBFailure.notIncluded
-            case .unconfigured: throw ToolboxUSBFailure.unconfigured
-            case .invalid(let reason): throw ToolboxUSBFailure.invalidPackage(reason)
-            case .bundledUnverified: break
-            }
-            source = try makeSource(package); state = .ready
+            source = try makeSource(configuredPackage()); state = .ready
         } catch { state = .failed(.from(error)) }
     }
     @discardableResult func refresh() -> Task<Void, Never> {
@@ -173,7 +184,7 @@ nonisolated struct ToolboxUSBOpenRequest: Sendable {
               let device = selectedDevice else { throw ToolboxUSBFailure.chooseDevice }
         let selection = try snapshot.select(registryEntryID: device.id), stamp = generation
         let ordinal = (devices.firstIndex(where: { $0.id == device.id }) ?? 0) + 1
-        return .init(source: source, selection: selection, device: device, settings: settings,
+        return .init(source: source, selection: selection, generation: stamp, device: device, settings: settings,
             title: IDELanguageRunText.t("USB 串口 ", "USB serial device ") + String(ordinal),
             isCurrent: { [weak self] in self?.generation == stamp && self?.selectedID == device.id })
     }

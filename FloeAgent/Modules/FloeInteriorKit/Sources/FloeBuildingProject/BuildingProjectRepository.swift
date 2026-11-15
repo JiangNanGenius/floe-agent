@@ -401,12 +401,18 @@ public final class BuildingProjectRepository: @unchecked Sendable {
 
     public func createWorkingCopy(
         initialProjectName: String? = nil,
+        initialProjectID: ProjectID? = nil,
         from generationID: String? = nil,
         initialEditorState: Data = Data("{}".utf8),
         cancellation: BuildingProjectCancellation? = nil
     ) throws -> BuildingProjectWorkingCopy {
         try configuration.validate()
         if let cancellation { try cancellation.check() }
+        if initialProjectID != nil, initialProjectName == nil {
+            throw BuildingProjectError.invalidWorkingCopy(
+                "initialProjectID requires the first project's name"
+            )
+        }
 
         let base: BuildingProjectGeneration?
         if let generationID {
@@ -420,6 +426,11 @@ public final class BuildingProjectRepository: @unchecked Sendable {
         if base != nil, initialProjectName != nil {
             throw BuildingProjectError.invalidWorkingCopy(
                 "initialProjectName is only valid when the repository has no published generation"
+            )
+        }
+        if base != nil, initialProjectID != nil {
+            throw BuildingProjectError.invalidWorkingCopy(
+                "initialProjectID is only valid for a new project"
             )
         }
 
@@ -499,7 +510,16 @@ public final class BuildingProjectRepository: @unchecked Sendable {
         } else {
             let name = initialProjectName ?? ""
             try BuildingProjectFileSystem.ensureDirectory(recordsDirectory)
-            let store = try ProjectRecordsStore.createProject(at: recordsDirectory, name: name)
+            let store: ProjectRecordsStore
+            if let initialProjectID {
+                store = try ProjectRecordsStore.createProject(
+                    at: recordsDirectory,
+                    name: name,
+                    projectID: initialProjectID
+                )
+            } else {
+                store = try ProjectRecordsStore.createProject(at: recordsDirectory, name: name)
+            }
             let projectID = store.projectID
             try store.close()
             try BuildingProjectFileSystem.ensureDirectory(cadDirectory)

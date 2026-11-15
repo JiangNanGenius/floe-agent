@@ -25,6 +25,15 @@ public enum GameProjectSelectionSource: String, Codable, Equatable, Sendable {
     case restored
 }
 
+/// Whether the durable choice is backed by an actual recognized marker at the
+/// selected root. `.manualUnverified` records a user/AI choice made without
+/// deterministic evidence. It stays editable and readable, but it is never
+/// presented as recognized or used to unlock run/build.
+public enum GameProjectSelectionVerification: String, Codable, Equatable, Sendable {
+    case evidenceMatched
+    case manualUnverified
+}
+
 public enum GameProjectEngineStarterSource: String, Codable, Equatable, Sendable {
     case bundledTemplate
     case delegatedProvider
@@ -68,6 +77,9 @@ public struct GameProjectEngineCapability: Equatable, Sendable {
     public let starterReadiness: GameStarterReadiness
     public let starterSource: GameProjectEngineStarterSource
     public let prerequisites: [GameProjectPrerequisiteState]
+    /// Bounded metadata only. It is evidence, never permission or a promise
+    /// that the project is complete, licensed or runnable.
+    public let recognizedEvidence: [GameEngineEvidence]
     public let recognizedMarkerPaths: [GameRelativePath]
     public let preparedRuntimePackPresent: Bool?
     public let sourceLicense: String
@@ -76,6 +88,7 @@ public struct GameProjectEngineCapability: Equatable, Sendable {
     init(engine: GameEngineID, displayName: String, starterReadiness: GameStarterReadiness,
          starterSource: GameProjectEngineStarterSource,
          prerequisites: [GameProjectPrerequisiteState],
+         recognizedEvidence: [GameEngineEvidence] = [],
          recognizedMarkerPaths: [GameRelativePath],
          preparedRuntimePackPresent: Bool?, sourceLicense: String, engineLicense: String) {
         self.engine = engine
@@ -83,6 +96,7 @@ public struct GameProjectEngineCapability: Equatable, Sendable {
         self.starterReadiness = starterReadiness
         self.starterSource = starterSource
         self.prerequisites = prerequisites
+        self.recognizedEvidence = recognizedEvidence
         self.recognizedMarkerPaths = recognizedMarkerPaths
         self.preparedRuntimePackPresent = preparedRuntimePackPresent
         self.sourceLicense = sourceLicense
@@ -102,7 +116,8 @@ public struct GameProjectEngineCapability: Equatable, Sendable {
         }
         return .init(engine: engine, displayName: displayName,
                      starterReadiness: starterReadiness, starterSource: starterSource,
-                     prerequisites: updated, recognizedMarkerPaths: recognizedMarkerPaths,
+                     prerequisites: updated, recognizedEvidence: recognizedEvidence,
+                     recognizedMarkerPaths: recognizedMarkerPaths,
                      preparedRuntimePackPresent: preparedRuntimePackPresent,
                      sourceLicense: sourceLicense, engineLicense: engineLicense)
     }
@@ -132,6 +147,9 @@ public enum GameProjectSelectionAmbiguity: Hashable, Sendable {
     case noEngineRecognized(root: GameRelativePath?)
     case noEngineRecognizedAnywhere
     case persistedSelectionInvalidated(root: GameRelativePath?, engine: GameEngineID?)
+    /// The user (or the project assistant, after the user confirmed it) chose
+    /// an engine without deterministic marker evidence. Never unlock run/build.
+    case manualSelectionUnverified(root: GameRelativePath?, engine: GameEngineID)
 }
 
 /// Only the injected host model/task callback can produce this type. The
@@ -207,6 +225,52 @@ public struct GameProjectSelectionRecommendationRequest: Equatable, Sendable {
 public typealias GameProjectSelectionRecommendationHandler =
     @Sendable (GameProjectSelectionRecommendationRequest) async throws -> GameProjectAIEngineRecommendation?
 
+/// An advisory root/engine proposal made by the current project assistant.
+/// Producing it never persists a selection. Only the user's explicit
+/// confirmation in the project setup surface can turn it into the durable
+/// record, and that path revalidates the exact revision and evidence.
+public struct GameProjectSelectionProposal: Equatable, Sendable {
+    public let id: UUID
+    public let projectID: UUID
+    public let owner: GameProjectOwner
+    public let environmentID: String?
+    public let rootURL: URL
+    public let baseRevision: String
+    public let selectedRoot: GameRelativePath?
+    public let selectedEngine: GameEngineID
+    public let verification: GameProjectSelectionVerification
+    public let rationale: String
+    /// Host-supplied tool/model identity; never invented by this package.
+    public let generatedBy: String
+    /// Project-relative files the host actually observed. Imported file
+    /// contents remain untrusted data, not instructions or permission.
+    public let evidencePaths: [GameRelativePath]
+    public let createdAt: Date
+
+    init(id: UUID = UUID(), projectID: UUID, owner: GameProjectOwner,
+         environmentID: String?, rootURL: URL, baseRevision: String,
+         selectedRoot: GameRelativePath?, selectedEngine: GameEngineID,
+         verification: GameProjectSelectionVerification, rationale: String,
+         generatedBy: String, evidencePaths: [GameRelativePath],
+         createdAt: Date = Date()) {
+        self.id = id
+        self.projectID = projectID
+        self.owner = owner
+        self.environmentID = environmentID
+        self.rootURL = rootURL
+        self.baseRevision = baseRevision
+        self.selectedRoot = selectedRoot
+        self.selectedEngine = selectedEngine
+        self.verification = verification
+        self.rationale = rationale
+        self.generatedBy = generatedBy
+        self.evidencePaths = evidencePaths
+        self.createdAt = createdAt
+    }
+
+    public var isManualUnverified: Bool { verification == .manualUnverified }
+}
+
 public struct GameProjectHostPrerequisiteReport: Equatable, Sendable {
     public let engine: GameEngineID
     public let kind: GameStarterPrerequisiteKind
@@ -270,6 +334,9 @@ public struct GameProjectSelectionSnapshot: Equatable, Sendable {
     public let selectedRoot: GameRelativePath?
     public let selectedEngine: GameEngineID?
     public let selectionSource: GameProjectSelectionSource?
+    /// Nil when nothing is selected. `.manualUnverified` means the root/engine
+    /// pair was chosen without recognized marker evidence.
+    public let selectionVerification: GameProjectSelectionVerification?
     public let ambiguities: [GameProjectSelectionAmbiguity]
     public let aiRecommendation: GameProjectAIEngineRecommendation?
     public let heuristicRecommendation: GameProjectHeuristicRecommendation?
@@ -283,6 +350,7 @@ public struct GameProjectSelectionSnapshot: Equatable, Sendable {
          state: GameProjectSelectionState, selectedRoot: GameRelativePath?,
          selectedEngine: GameEngineID?,
          selectionSource: GameProjectSelectionSource?,
+         selectionVerification: GameProjectSelectionVerification? = nil,
          ambiguities: [GameProjectSelectionAmbiguity],
          aiRecommendation: GameProjectAIEngineRecommendation?,
          heuristicRecommendation: GameProjectHeuristicRecommendation?,
@@ -302,6 +370,7 @@ public struct GameProjectSelectionSnapshot: Equatable, Sendable {
         self.selectedRoot = selectedRoot
         self.selectedEngine = selectedEngine
         self.selectionSource = selectionSource
+        self.selectionVerification = selectionVerification
         self.ambiguities = ambiguities
         self.aiRecommendation = aiRecommendation
         self.heuristicRecommendation = heuristicRecommendation
@@ -310,6 +379,18 @@ public struct GameProjectSelectionSnapshot: Equatable, Sendable {
     }
 
     public var requiresExplicitChoice: Bool { state == .ambiguous }
+
+    /// A manual choice is readable/editable but cannot unlock run/build: the
+    /// host has no actual marker proving which engine reads this tree.
+    public var isManualUnverified: Bool {
+        selectionVerification == .manualUnverified
+    }
+
+    /// Root/engine pairs that are not recognized but still exist as real
+    /// folders. They are offered for an explicit manual choice.
+    public var unrecognizedRoots: [GameProjectSelectionChoice] {
+        choices.filter { $0.engines.isEmpty }
+    }
 
     public var selectedChoice: GameProjectSelectionChoice? {
         choices.first { $0.root == selectedRoot }
@@ -323,6 +404,7 @@ public struct GameProjectSelectionSnapshot: Equatable, Sendable {
     /// still performs its own route/prerequisite checks.
     public var runSelection: GameProjectRunSelection? {
         guard state == .automatic || state == .confirmed,
+              selectionVerification != .manualUnverified,
               let engine = selectedEngine,
               choices.contains(where: { choice in
                   choice.root == selectedRoot
@@ -347,6 +429,7 @@ public struct GameProjectSelectionSnapshot: Equatable, Sendable {
               directoryCount: directoryCount, isEmptyProject: isEmptyProject,
               choices: choices, state: state, selectedRoot: selectedRoot,
               selectedEngine: selectedEngine, selectionSource: selectionSource,
+              selectionVerification: selectionVerification,
               ambiguities: ambiguities, aiRecommendation: aiRecommendation,
               heuristicRecommendation: heuristicRecommendation,
               diagnostics: diagnostics, persisted: value)
@@ -359,6 +442,7 @@ public struct GameProjectSelectionSnapshot: Equatable, Sendable {
               directoryCount: directoryCount, isEmptyProject: isEmptyProject,
               choices: choices, state: state, selectedRoot: selectedRoot,
               selectedEngine: selectedEngine, selectionSource: selectionSource,
+              selectionVerification: selectionVerification,
               ambiguities: ambiguities, aiRecommendation: aiRecommendation,
               heuristicRecommendation: heuristicRecommendation,
               diagnostics: value, persisted: persisted)
@@ -427,6 +511,19 @@ public enum GameProjectFlowError: Error, Equatable, Sendable {
     case contextHandoff(String)
     case project(GameProjectError)
     case starter(GameStarterError)
+    /// A manual choice requires the caller to acknowledge that no marker was
+    /// recognized. This is a host/user consent check, not a model hint.
+    case manualSelectionNotAcknowledged
+    /// An empty project must be seeded with a real starter or an import before
+    /// an engine/root selection can be persisted.
+    case emptyProjectSelection
+    /// An assistant proposal cannot become a selection without the user's
+    /// explicit confirmation in the project setup surface.
+    case proposalNotConfirmed
+    case proposalNotFound
+    case proposalStale
+    case proposalEvidenceInvalid(GameRelativePath)
+    case proposalInvalid(String)
 }
 
 extension GameProjectFlowError: LocalizedError {
@@ -465,6 +562,26 @@ extension GameProjectFlowError: LocalizedError {
             return zh ? "游戏工程操作失败。" : "The game project operation failed."
         case .starter:
             return zh ? "新游戏创建失败。" : "The new game could not be created."
+        case .manualSelectionNotAcknowledged:
+            return zh ? "尚未确认在缺少识别依据时手动选择引擎。"
+                : "Manual selection without recognized evidence was not acknowledged."
+        case .emptyProjectSelection:
+            return zh ? "请先创建起始工程或导入文件，再选择引擎。"
+                : "Create starter files or import files before choosing an engine."
+        case .proposalNotConfirmed:
+            return zh ? "这个引擎建议尚未在工程中由你确认。"
+                : "This engine proposal has not been confirmed by you in the project."
+        case .proposalNotFound:
+            return zh ? "引擎建议已失效，请重新读取工程。"
+                : "The engine proposal is no longer available. Inspect the project again."
+        case .proposalStale:
+            return zh ? "工程内容已变化，请重新读取后再建议。"
+                : "The project changed. Inspect it again before proposing."
+        case .proposalEvidenceInvalid:
+            return zh ? "建议引用了不属于此工程的文件。"
+                : "The proposal cites a file that does not belong to this project."
+        case .proposalInvalid:
+            return zh ? "引擎建议无效。" : "The engine proposal is invalid."
         }
     }
 }

@@ -1,13 +1,109 @@
 // SPDX-License-Identifier: MPL-2.0
-#if canImport(UIKit)
 import SwiftUI
-import PencilKit
-import Observation
 
-import FloeCore
-enum NotesBrushKind: String, CaseIterable, Codable {
+enum NotesBrushKind: String, CaseIterable, Codable, Sendable {
     case pen, fountainPen, monoline, pencil, crayon, watercolor, reed, marker
 
+    static let ordinaryPens = allCases.filter { $0 != .marker }
+}
+
+/// Writing silhouettes use the same 24-point design in the rack, toolbar and Pencil wheel.
+struct NotesBrushGlyph: Shape {
+    let kind: NotesBrushKind
+
+    func path(in rect: CGRect) -> Path {
+        var glyph = Path()
+        func stroke(_ path: Path, _ width: CGFloat = 1.6) {
+            glyph.addPath(path.strokedPath(StrokeStyle(lineWidth: width, lineCap: .round, lineJoin: .round)))
+        }
+        func line(_ points: [(CGFloat, CGFloat)], closed: Bool = false) -> Path {
+            var path = Path()
+            guard let first = points.first else { return path }
+            path.move(to: CGPoint(x: first.0, y: first.1))
+            for p in points.dropFirst() { path.addLine(to: CGPoint(x: p.0, y: p.1)) }
+            if closed { path.closeSubpath() }
+            return path
+        }
+        switch kind {
+        case .pen:
+            // Ballpoint barrel, side clip and the small ball at the end of its cone.
+            stroke(line([(6,17),(7,13),(15,4),(19,7),(11,16),(6,19)], closed: true))
+            stroke(line([(13.6,5.7),(16.3,8.1)]))
+            stroke(line([(19.1,8.3),(19.4,10),(15.8,14)]))
+            glyph.addEllipse(in: CGRect(x: 3.8, y: 19, width: 2.8, height: 2.8))
+        case .fountainPen:
+            // The nib's shoulders, breather hole and central slit stay visible at toolbar size.
+            var nib = Path()
+            nib.move(to: CGPoint(x: 12, y: 2))
+            nib.addQuadCurve(to: CGPoint(x: 19, y: 13.5), control: CGPoint(x: 14.6, y: 7.8))
+            nib.addLine(to: CGPoint(x: 16.3, y: 19))
+            nib.addLine(to: CGPoint(x: 7.7, y: 19))
+            nib.addLine(to: CGPoint(x: 5, y: 13.5))
+            nib.addQuadCurve(to: CGPoint(x: 12, y: 2), control: CGPoint(x: 9.4, y: 7.8))
+            nib.closeSubpath()
+            stroke(nib, 1.8)
+            stroke(line([(12,3),(12,10.7)]), 1.3)
+            glyph.addEllipse(in: CGRect(x: 10.6, y: 10.8, width: 2.8, height: 2.8))
+            stroke(line([(8.1,21.5),(15.9,21.5)]))
+        case .monoline:
+            // Fineliner with a straight barrel and a narrow metal tube at the tip.
+            stroke(line([(9.3,2.6),(14.7,2.6),(14.7,12),(13,15.7),(11,15.7),(9.3,12)], closed: true))
+            stroke(line([(9.7,11),(14.3,11)]), 1.4)
+            stroke(line([(12,16.2),(12,19)]), 1.4)
+            stroke(line([(4.2,21.5),(19.8,21.5)]), 1.3)
+        case .pencil:
+            stroke(line([(3.6,20.5),(4.8,14.7),(15.8,3.7),(20.1,8),(9.1,19)], closed: true))
+            stroke(line([(4.8,14.7),(9.1,19)]), 1.3)
+            stroke(line([(13.8,5.8),(18.1,10.1)]), 1.3)
+            stroke(line([(7.6,16.4),(15.7,8.3)]), 1.1)
+            glyph.addPath(line([(3.6,20.5),(4.4,16.9),(7.1,19.6)], closed: true))
+        case .crayon:
+            stroke(line([(7.7,8.7),(10.5,3.2),(13.4,3.2),(16.3,8.7),(16.3,20.4),
+                         (15,21.7),(9,21.7),(7.7,20.4)], closed: true))
+            stroke(line([(8,9),(16,9)]), 1.5)
+            stroke(line([(8.2,13.7),(15.8,16.3)]), 1.9)
+            stroke(line([(8.2,16.9),(15.8,19.5)]), 1.4)
+        case .watercolor:
+            // A pointed soft tuft, a metal ferrule and a tapering wooden handle.
+            var tuft = Path()
+            tuft.move(to: CGPoint(x: 10.6, y: 12.2))
+            tuft.addQuadCurve(to: CGPoint(x: 13.4, y: 5), control: CGPoint(x: 8.7, y: 8.6))
+            tuft.addQuadCurve(to: CGPoint(x: 16.2, y: 1.6), control: CGPoint(x: 15.3, y: 3.6))
+            tuft.addQuadCurve(to: CGPoint(x: 14.4, y: 13.9), control: CGPoint(x: 21.4, y: 9))
+            tuft.closeSubpath()
+            glyph.addPath(tuft)
+            stroke(line([(10.2,13),(14,14.7),(12.5,17.3),(8.8,15.6)], closed: true), 1.3)
+            stroke(line([(9.2,16.1),(4.8,21.1),(5.9,22),(11.9,17.1)]), 1.5)
+        case .reed:
+            // A broad oblique calligraphy nib and a thick-to-thin sample stroke.
+            stroke(line([(8.1,2.5),(15.8,2.5),(15.3,10.3),(9.1,14.3),(8.2,10.6)], closed: true))
+            stroke(line([(12.7,7),(12.1,11.5)]), 1.3)
+            var flourish = Path()
+            flourish.move(to: CGPoint(x: 10.2, y: 14))
+            flourish.addQuadCurve(to: CGPoint(x: 17.6, y: 16.7), control: CGPoint(x: 9.4, y: 17))
+            flourish.addQuadCurve(to: CGPoint(x: 5, y: 21.1), control: CGPoint(x: 16.7, y: 22.4))
+            flourish.addQuadCurve(to: CGPoint(x: 12.2, y: 19.2), control: CGPoint(x: 11, y: 20.7))
+            flourish.addQuadCurve(to: CGPoint(x: 10.2, y: 14), control: CGPoint(x: 6.3, y: 18.3))
+            glyph.addPath(flourish)
+        case .marker:
+            // Wide chisel nib and the broad band it leaves on a page.
+            stroke(line([(5.5,12.2),(13.7,3.1),(19.8,8.5),(11.6,17.4),(7.7,16.8)], closed: true))
+            stroke(line([(6.5,11.4),(12.8,16.7)]), 1.4)
+            glyph.addPath(line([(7.5,15.8),(10.1,17.4),(7.5,19),(4.1,19)], closed: true))
+            glyph.addRoundedRect(in: CGRect(x: 3, y: 20.4, width: 18, height: 2.5), cornerSize: CGSize(width: 1, height: 1))
+        }
+        let scale = min(rect.width, rect.height) / 24
+        return glyph.applying(CGAffineTransform(a: scale, b: 0, c: 0, d: scale,
+            tx: rect.midX - 12 * scale, ty: rect.midY - 12 * scale))
+    }
+}
+
+#if canImport(UIKit)
+import PencilKit
+import Observation
+import FloeCore
+
+extension NotesBrushKind {
     var title: String {
         switch self {
         case .pen: FloeL10n.l("notes.notes_ink_preferences.ballpoint_pen")
@@ -22,19 +118,6 @@ enum NotesBrushKind: String, CaseIterable, Codable {
     }
 
 
-    /// Same label as `title` but as a SwiftUI `LocalizedStringKey`.
-    var keyTitle: LocalizedStringKey {
-        switch self {
-        case .pen: "notes.notes_ink_preferences.ballpoint_pen"
-        case .fountainPen: "notes.notes_ink_preferences.fountain_pen"
-        case .monoline: "notes.notes_ink_preferences.fine_liner"
-        case .pencil: "notes.notes_ink_preferences.pencil"
-        case .crayon: "notes.notes_ink_preferences.crayon"
-        case .watercolor: "notes.notes_ink_preferences.watercolor"
-        case .reed: "notes.notes_ink_preferences.calligraphy_pen"
-        case .marker: "notes.notes_ink_preferences.highlighter"
-        }
-    }
     var inkType: PKInkingTool.InkType {
         switch self {
         case .pen: .pen
@@ -45,14 +128,6 @@ enum NotesBrushKind: String, CaseIterable, Codable {
         case .watercolor: .watercolor
         case .reed: .reed
         case .marker: .marker
-        }
-    }
-    var icon: String {
-        switch self {
-        case .pencil, .crayon: "pencil"
-        case .marker: "highlighter"
-        case .watercolor: "paintbrush.pointed"
-        default: "pencil.tip"
         }
     }
     var widthRange: ClosedRange<Double> {
@@ -160,10 +235,10 @@ struct NotesBrushPicker: View {
     var body: some View {
         let columns = dynamicTypeSize.isAccessibilitySize ? 2 : 4
         LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: columns), spacing: 4) {
-            ForEach(NotesBrushKind.allCases, id: \.self) { kind in
+            ForEach(NotesBrushKind.ordinaryPens, id: \.self) { kind in
                 Button { select(kind) } label: {
                     VStack(spacing: 2) {
-                        Image(systemName: kind.icon).font(.title3)
+                        NotesBrushGlyph(kind: kind).frame(width: 25, height: 25)
                             .frame(width: 32, height: 30)
                             .background(selected == kind ? Color.accentColor.opacity(0.14) : .clear, in: Circle())
                         Text(kind.title).font(.caption2.weight(selected == kind ? .semibold : .regular))
@@ -234,6 +309,7 @@ struct NotesInkOptionsPanel: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
+                NotesBrushGlyph(kind: selected).frame(width: 23, height: 23).accessibilityHidden(true)
                 Text(selected.title).font(.headline)
                 Spacer(minLength: 8)
                 Button("workspace.workspace_canvas_view.done", action: close)
@@ -253,8 +329,10 @@ struct NotesInkOptionsPanel: View {
                         .accessibilityLabel("notes.notes_ink_preferences.brush_thickness")
                         .accessibilityValue("\(Self.formattedWidth(config.width)) pt · \(Int(((config.opacity ?? 1) * 100).rounded()))%")
                         .accessibilityIdentifier("notes.ink.preview")
-                    NotesBrushPicker(selected: selected, select: select)
-                    Divider()
+                    if selected != .marker {
+                        NotesBrushPicker(selected: selected, select: select)
+                        Divider()
+                    }
                     widthControls
                     Divider()
                     transparencyControls
@@ -265,8 +343,8 @@ struct NotesInkOptionsPanel: View {
                 .padding(.bottom, 12)
             }.accessibilityIdentifier("notes.ink.parameters")
         }
-        .frame(width: 320)
-        .frame(idealHeight: 500, maxHeight: 540)
+        .frame(minWidth: 0, idealWidth: 320, maxWidth: 320)
+        .frame(idealHeight: selected == .marker ? 385 : 500, maxHeight: 540)
     }
 
     private var widthControls: some View {

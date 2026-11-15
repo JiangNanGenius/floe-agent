@@ -47,7 +47,7 @@ public actor SQLiteSkillAuthoringStore {
         }
     }
 
-    /// Both unfinished and settled records can be projected in Task Center.
+    /// The Skill Hub shows unfinished work and acknowledged history.
     /// Ordinary chat history still uses ConversationStore's normal visibility.
     public func all(includeAcknowledged: Bool = true) async throws -> [SkillAuthoringRecord] {
         try await database.reader { db in

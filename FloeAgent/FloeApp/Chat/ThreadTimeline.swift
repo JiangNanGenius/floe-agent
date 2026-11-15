@@ -313,7 +313,7 @@ enum ThreadTimelineItem: Identifiable, Hashable {
     case userMessage(PersistedMessage)
     /// The final assistant answer of the selected run (from an
     /// `.assistantText` event or the legacy message fallback).
-    case assistantMessage(text: String, idSuffix: String)
+    case assistantMessage(text: String, idSuffix: String, sentAt: Date)
     /// Persisted run event (status / reasoning / tool / approval / error).
     case event(RunEventRecord)
     /// A collapsible group of consecutive reasoning/tool steps between two
@@ -339,7 +339,7 @@ enum ThreadTimelineItem: Identifiable, Hashable {
             return "earlier-events.\(runID.uuidString)"
         case .userMessage(let message):
             return "user.\(message.id.uuidString)"
-        case .assistantMessage(_, let idSuffix):
+        case .assistantMessage(_, let idSuffix, _):
             return "assistant.\(idSuffix)"
         case .event(let record):
             return "event.\(record.id.uuidString)"
@@ -458,7 +458,7 @@ enum ThreadTimelineBuilder {
             // sentence (applied / rejected / failed / adopted); an unknown
             // decision vocabulary keeps the existing generic summary.
             if let notice = ProposalDecisionPresentation.trustedNotice(for: message) {
-                return .assistantMessage(text: notice.summary, idSuffix: message.id.uuidString)
+                return .assistantMessage(text: notice.summary, idSuffix: message.id.uuidString, sentAt: message.createdAt)
             }
             // The trusted internal notices (design-assistant confirmation and
             // structured proposal decision) are internal structured events.
@@ -467,11 +467,11 @@ enum ThreadTimelineBuilder {
             // the same marker) and every unrecognized system notice keep their
             // existing rendering.
             if let summary = InternalNoticeProjection.userFacingSummary(for: message) {
-                return .assistantMessage(text: summary, idSuffix: message.id.uuidString)
+                return .assistantMessage(text: summary, idSuffix: message.id.uuidString, sentAt: message.createdAt)
             }
             return message.role == "user"
                 ? .userMessage(message)
-                : .assistantMessage(text: message.content, idSuffix: message.id.uuidString)
+                : .assistantMessage(text: message.content, idSuffix: message.id.uuidString, sentAt: message.createdAt)
         }
         return result
     }
@@ -622,7 +622,7 @@ enum ThreadTimelineBuilder {
                   date.map({ next.createdAt <= $0 }) ?? true {
                 flushStepGroup()
                 items.append(next.role == "assistant"
-                    ? .assistantMessage(text: next.content, idSuffix: next.id.uuidString) : .userMessage(next))
+                    ? .assistantMessage(text: next.content, idSuffix: next.id.uuidString, sentAt: next.createdAt) : .userMessage(next))
                 guidedMessages.removeFirst()
             }
         }
@@ -641,7 +641,7 @@ enum ThreadTimelineBuilder {
                     flushStepGroup()
                     items.append(.assistantMessage(
                         text: text,
-                        idSuffix: event.id.uuidString
+                        idSuffix: event.id.uuidString, sentAt: event.createdAt
                     ))
                     finalReplyRendered = true
                 }
@@ -696,7 +696,7 @@ enum ThreadTimelineBuilder {
             if let latest = assistantMessages.last, !latest.content.isEmpty {
                 items.append(.assistantMessage(
                     text: latest.content,
-                    idSuffix: latest.id.uuidString
+                    idSuffix: latest.id.uuidString, sentAt: latest.createdAt
                 ))
                 finalReplyRendered = true
             }

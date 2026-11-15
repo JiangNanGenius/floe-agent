@@ -16,6 +16,8 @@ struct BuildingProjectWorkspaceView: View {
     let assetLibraryDirectory: URL
     let launch: BuildingEditorLaunch
     var importingNativeDocument: URL? = nil
+    var spaceRecordID: UUID? = nil
+    var opensAssistantOnLoad: Bool = false
     let onFinished: () -> Void
     @EnvironmentObject private var environment: AppEnvironment
     @State private var finished = false
@@ -24,6 +26,7 @@ struct BuildingProjectWorkspaceView: View {
     @State private var buildingMount: BuildingStudioMount?
     @State private var assistant: StudioAssistantDocument?
     @State private var assistantError: String?
+    @State private var openedAssistantOnLoad = false
 
     private struct DeliveryPreview: Identifiable {
         let url: URL
@@ -36,12 +39,12 @@ struct BuildingProjectWorkspaceView: View {
                                   launch: launch,
                                   hostActions: BuildingEditorHostActions(
                                     requestAssistant: { context in
-                                        do {
-                                            let mount = try environment.studioCoordinator.buildingProjects.attach(
-                                                context, directory: projectDirectory, presenterID: presenterID)
-                                            buildingMount = mount
-                                            assistant = .building(mount)
-                                        } catch { assistantError = error.localizedDescription }
+                                        openAssistant(context)
+                                    },
+                                    projectDidMount: { context in
+                                        guard opensAssistantOnLoad, !openedAssistantOnLoad else { return }
+                                        openedAssistantOnLoad = true
+                                        openAssistant(context)
                                     },
                                     beforeDeparture: { _ in
                                         if let mount = buildingMount {
@@ -52,10 +55,20 @@ struct BuildingProjectWorkspaceView: View {
                                     },
                                     didClose: { finished = true },
                                     previewFile: { preview = DeliveryPreview(url: $0) },
+                                    encodeDWG: { try await CADDrawingModelBridge.encodeDWG($0) },
+                                    encodeIFC: { data in
+                                        let host = CADBuildingLocalIFCHost()
+                                        defer { host.close() }
+                                        return try await host.run(input: data).ifc
+                                    },
+                                    publishCopy: { receipt, url in
+                                        _ = try await PersonalContentService.shared.publishBuildingCopy(receipt, at: url)
+                                    },
                                     registerIndependentCAD: { handoff in
                                         _ = try await Self.addToSpace(handoff)
                                     }),
-                                  importingNativeDocument: importingNativeDocument)
+                                  importingNativeDocument: importingNativeDocument,
+                                  spaceRecordID: spaceRecordID)
             .interactiveDismissDisabled(true)
             .onChange(of: finished) { _, value in if value { onFinished() } }
             .onDisappear {
@@ -85,6 +98,17 @@ struct BuildingProjectWorkspaceView: View {
                 }
             }
             .accessibilityIdentifier("cad.building.project.surface")
+    }
+
+    /// One native assistant path for both the toolbar and "ask AI on open".
+    /// The mount is created only from the project's real tool context.
+    private func openAssistant(_ context: BuildingEditorToolContext) {
+        do {
+            let mount = try environment.studioCoordinator.buildingProjects.attach(
+                context, directory: projectDirectory, presenterID: presenterID)
+            buildingMount = mount
+            assistant = .building(mount)
+        } catch { assistantError = error.localizedDescription }
     }
 
     @discardableResult

@@ -10,7 +10,7 @@ public enum SerialTransport: String, Codable, Sendable, CaseIterable {
     case tcp, udp, bluetooth, webSocket, usb
 }
 public enum SerialProtocol: String, Codable, Sendable, CaseIterable {
-    case raw, modbusTCP, modbusRTU, mqtt311, mqtt5, webSocketMessage
+    case raw, modbusTCP, modbusRTU, modbusASCII, mqtt311, mqtt5, webSocketMessage
 }
 public struct SerialEndpoint: Codable, Equatable, Sendable {
     public var title: String

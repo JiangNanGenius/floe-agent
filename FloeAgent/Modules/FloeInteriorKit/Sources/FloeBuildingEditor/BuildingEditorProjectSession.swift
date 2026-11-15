@@ -13,6 +13,7 @@ import FloeBuildingCAD
 
 public enum BuildingEditorProjectError: Error {
     case closed, busy, missingIdentity, changedDuringCapture, projectMismatch, missingResource
+    case staleBuilding
     case importSourceUnavailable
     case roomNameConflict(RoomID),missingRoomReference(RoomID)
 }
@@ -28,6 +29,7 @@ extension BuildingEditorProjectError: LocalizedError {
         case .changedDuringCapture: return text("文件在保存过程中发生变化，请重试。", "The files changed while being saved. Retry.")
         case .projectMismatch: return text("工程身份不一致，请关闭后重新打开。", "The project identity does not match. Close and reopen it.")
         case .missingResource: return text("工程的固定资源缺失，请从备份恢复。", "A pinned project resource is missing. Restore it from a backup.")
+        case .staleBuilding: return text("建筑模型已被其他操作修改，请刷新后重试。", "The building model changed in another operation. Refresh and retry.")
         case .importSourceUnavailable: return text("无法复制所选 CAD 图形。请先保存文件，并确认它可以读取。", "The selected CAD drawing could not be copied. Save it first and confirm the file is readable.")
         case .roomNameConflict: return text("房间名称有两种修改。请在“关联房间资料”中选择采用哪一边。", "Both room names changed. Choose one in Link room records.")
         case .missingRoomReference: return text("关联的房间已不存在。请在“关联房间资料”中重新关联或解除关联。", "A linked room is missing. Relink or unlink it in Link room records.")
@@ -42,24 +44,40 @@ extension BuildingEditorProjectError: LocalizedError {
 public final class BuildingEditorProjectSession {
     public let projectDirectory: URL
     public let assetLibrary: FurnitureAssetLibrary
+    /// The Space record that owns this package, when one exists. The assistant
+    /// mount and tool readback use this identity; CAD-entry projects keep nil.
+    public let spaceRecordID: UUID?
+    var encodeDWG: (@MainActor (Data) async throws -> Data)?
+    var encodeIFC: (@MainActor (Data) async throws -> Data)?
+    var publishIndependentCopy: (@MainActor (BuildingProjectCopyReceipt, URL) async throws -> Void)?
     let repository: BuildingProjectRepository
     private(set) var workingCopy: BuildingProjectWorkingCopy
     private(set) var workspace: BuildingWorkspaceService
     private(set) var cad: FloeBuildingCADSession
-    private(set) var state: BuildingEditorProjectState
+    var state: BuildingEditorProjectState
     private(set) var published: BuildingProjectGeneration?
     private(set) var recordsRevision: Int
-    private(set) var busy=false
+    var busy=false
     private(set) var closed=false
     private(set) var mountID=UUID()
     public private(set) var publicationWarning:String?
-    private var stateChanged=false
+    var stateChanged=false
     private var cancellation: BuildingProjectCancellation?
     var furniture: BuildingFurnitureWorkspace?
     var deliveries:BuildingDeliveryWorkspace?
     private(set) var roomOptions:[RoomRecord]=[]
     private(set) var nativeRoomOptions:[BuildingNativeRoomOption]=[]
     private var selectedRecordsRoomID:RoomID?
+    /// In-memory wall edit history. Native CAD undo covers geometry, while the
+    /// paired finish snapshot keeps face edits and geometry in one undo step.
+    var wallUndoRecords:[BuildingWallHistoryEntry]=[]
+    var wallRedoRecords:[BuildingWallHistoryEntry]=[]
+    var lastObservedWallChangeCount:Int?
+    var canUndoWallChange:Bool { !wallUndoRecords.isEmpty }
+    var canRedoWallChange:Bool { !wallRedoRecords.isEmpty }
+    func clearWallHistory() {
+        wallUndoRecords.removeAll();wallRedoRecords.removeAll();lastObservedWallChangeCount=nil
+    }
 
     public var projectID: ProjectID {state.projectID}
     public var nativeDocument: FloeCADDocument {cad.document}
@@ -73,15 +91,17 @@ public final class BuildingEditorProjectSession {
     private init(repository:BuildingProjectRepository,workingCopy:BuildingProjectWorkingCopy,
                  workspace:BuildingWorkspaceService,cad:FloeBuildingCADSession,
                  library:FurnitureAssetLibrary,state:BuildingEditorProjectState,
-                 published:BuildingProjectGeneration?,recordsRevision:Int){
+                 published:BuildingProjectGeneration?,recordsRevision:Int,spaceRecordID:UUID?){
         self.repository=repository;projectDirectory=repository.rootURL;self.workingCopy=workingCopy
         self.workspace=workspace;self.cad=cad;assetLibrary=library;self.state=state
-        self.published=published;self.recordsRevision=recordsRevision
+        self.published=published;self.recordsRevision=recordsRevision;self.spaceRecordID=spaceRecordID
     }
 
-    public static func create(at directory:URL,name:String,assetLibraryDirectory:URL) async throws -> BuildingEditorProjectSession {
+    public static func create(at directory:URL,name:String,assetLibraryDirectory:URL,
+                              projectID:ProjectID? = nil,spaceRecordID:UUID? = nil) async throws -> BuildingEditorProjectSession {
         try await create(at:directory,name:name,assetLibraryDirectory:assetLibraryDirectory,
-                         repositoryConfiguration:.default,importingNativeDocument:nil)
+                         repositoryConfiguration:.default,importingNativeDocument:nil,
+                         initialProjectID:projectID,spaceRecordID:spaceRecordID)
     }
 
     /// Create a project whose first native document is a verified copy of an
@@ -89,27 +109,33 @@ public final class BuildingEditorProjectSession {
     /// project owns the copy and every later edit, save and undo. A document
     /// still being edited must be saved by its current owner first.
     public static func create(at directory:URL,name:String,assetLibraryDirectory:URL,
-                              importingNativeDocument source:URL) async throws -> BuildingEditorProjectSession {
+                              importingNativeDocument source:URL,
+                              projectID:ProjectID? = nil,spaceRecordID:UUID? = nil) async throws -> BuildingEditorProjectSession {
         try await create(at:directory,name:name,assetLibraryDirectory:assetLibraryDirectory,
-                         repositoryConfiguration:.default,importingNativeDocument:source)
+                         repositoryConfiguration:.default,importingNativeDocument:source,
+                         initialProjectID:projectID,spaceRecordID:spaceRecordID)
     }
 
     static func create(at directory:URL,name:String,assetLibraryDirectory:URL,
                        repositoryConfiguration:BuildingProjectConfiguration) async throws -> BuildingEditorProjectSession {
         try await create(at:directory,name:name,assetLibraryDirectory:assetLibraryDirectory,
-                         repositoryConfiguration:repositoryConfiguration,importingNativeDocument:nil)
+                         repositoryConfiguration:repositoryConfiguration,importingNativeDocument:nil,
+                         initialProjectID:nil,spaceRecordID:nil)
     }
 
     static func create(at directory:URL,name:String,assetLibraryDirectory:URL,
                        repositoryConfiguration:BuildingProjectConfiguration,
-                       importingNativeDocument source:URL?) async throws -> BuildingEditorProjectSession {
+                       importingNativeDocument source:URL?,
+                       initialProjectID:ProjectID? = nil,
+                       spaceRecordID:UUID? = nil) async throws -> BuildingEditorProjectSession {
         // Refuse an unreadable source before any project directory or working
         // copy exists. The verified start identity also fences the copy below.
         let importIdentity:(revision:Int,contentSHA256:String,modelSHA256:String)?
         if let source { importIdentity = try await verifiedNativeImportSource(source) }
         else { importIdentity = nil }
         let repository=try await Task.detached{try BuildingProjectRepository.create(at:directory,configuration:repositoryConfiguration)}.value
-        let copy=try await Task.detached{try repository.createWorkingCopy(initialProjectName:name)}.value
+        let copy=try await Task.detached{try repository.createWorkingCopy(initialProjectName:name,
+            initialProjectID:initialProjectID)}.value
         let workspace=BuildingWorkspaceService(projectDirectory:copy.recordsDirectoryURL,creationPolicy:.requireExisting)
         var opened:FloeBuildingCADSession?
         do {
@@ -125,7 +151,7 @@ public final class BuildingEditorProjectSession {
             opened=cad
             let session=BuildingEditorProjectSession(repository:repository,workingCopy:copy,workspace:workspace,cad:cad,
                 library:FurnitureAssetLibrary(rootURL:assetLibraryDirectory),state:.init(projectID:metadata.project.id),
-                published:nil,recordsRevision:metadata.project.revision)
+                published:nil,recordsRevision:metadata.project.revision,spaceRecordID:spaceRecordID)
             try await session.checkpoint();session.prepareFurnitureWorkspace();return session
         }
         catch {
@@ -153,7 +179,7 @@ public final class BuildingEditorProjectSession {
     /// Copy one saved native package into the new working copy and verify the
     /// copied bytes against the identity read before the project was created.
     /// The source is never opened for writing.
-    static func importNativeDocumentPackage(from source:URL,
+    public static func importNativeDocumentPackage(from source:URL,
             expected:(revision:Int,contentSHA256:String,modelSHA256:String),to destination:URL) async throws {
         let sourceURL=source.standardizedFileURL
         guard !FileManager.default.fileExists(atPath:destination.path) else {
@@ -195,7 +221,8 @@ public final class BuildingEditorProjectSession {
     }
 
     public static func open(at directory:URL,assetLibraryDirectory:URL,
-                            choice:BuildingEditorOpenChoice = .published) async throws -> BuildingEditorProjectSession {
+                            choice:BuildingEditorOpenChoice = .published,
+                            spaceRecordID:UUID? = nil) async throws -> BuildingEditorProjectSession {
         let repository=try await Task.detached{try BuildingProjectRepository.open(at:directory)}.value
         // Opening a project never publishes an unfinished staging generation.
         // A working copy is restored only by an explicit caller/user choice.
@@ -239,7 +266,8 @@ public final class BuildingEditorProjectSession {
             }
             let session=BuildingEditorProjectSession(repository:repository,workingCopy:copy,workspace:workspace,cad:cad,
                 library:FurnitureAssetLibrary(rootURL:assetLibraryDirectory),state:state,
-                published:generation,recordsRevision:metadata.project.revision)
+                published:generation,recordsRevision:metadata.project.revision,
+                spaceRecordID:spaceRecordID)
             try await session.verifyPinnedResources()
             if case .workingCopy=choice {session.stateChanged=true}
             session.prepareFurnitureWorkspace()
@@ -393,7 +421,7 @@ public final class BuildingEditorProjectSession {
 
     private func requireOpen() throws {if closed{throw BuildingEditorProjectError.closed}}
 
-    private func refreshBuildingReferences() throws {
+    func refreshBuildingReferences() throws {
         var manifest=cad.manifest
         guard let model=try cad.building() else {manifest.building=nil;try cad.installManifest(manifest);return}
         let valid=Set(model.elements.map(\.id)),previous=manifest.building?.rooms ?? []
@@ -683,7 +711,9 @@ public final class BuildingEditorProjectSession {
         return content
     }
 
-    public func assistantContext() -> BuildingEditorToolContext {BuildingEditorToolContext(owner:self)}
+    public func assistantContext() -> BuildingEditorToolContext {
+        BuildingEditorToolContext(owner:self,spaceRecordID:spaceRecordID)
+    }
     public func executeRecordCommand(_ command:BuildingWorkspaceCommand,expectedRevision:Int?=nil) async throws -> BuildingWorkspaceCommandResult {
         try requireOpen();guard !busy else{throw BuildingEditorProjectError.busy}
         busy=true;defer{busy=false}
@@ -704,7 +734,9 @@ public final class BuildingEditorProjectSession {
     func reopenSavedMount() async throws {
         try requireOpen();guard !busy,furniture?.busy != true else{throw BuildingEditorProjectError.busy}
         busy=true;defer{busy=false}
-        let fresh=try await Self.open(at:projectDirectory,assetLibraryDirectory:assetLibrary.rootURL)
+        clearWallHistory()
+        let fresh=try await Self.open(at:projectDirectory,assetLibraryDirectory:assetLibrary.rootURL,
+            spaceRecordID:spaceRecordID)
         let previous=workingCopy
         await furniture?.stop()
         await deliveries?.stop()
@@ -730,6 +762,7 @@ public final class BuildingEditorProjectSession {
     public func close(discardWorkingCopy:Bool=true) async throws {
         try requireOpen();guard !busy else{throw BuildingEditorProjectError.busy}
         busy=true;defer{busy=false}
+        clearWallHistory()
         await furniture?.stop()
         await deliveries?.stop()
         var diagnostics:[String]=[]

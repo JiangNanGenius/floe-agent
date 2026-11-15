@@ -344,6 +344,7 @@ final class CloudASRSettingsStore: ObservableObject {
 
     enum ProviderPreset: String, CaseIterable, Sendable {
         case openAI
+        case deepSeek
         case volcenginePayAsYouGo
         case volcengineAgentPlan
         case alibabaPayAsYouGo
@@ -352,6 +353,7 @@ final class CloudASRSettingsStore: ObservableObject {
         var provider: ASRProviderKind {
             switch self {
             case .openAI: return .openaiCompatible
+            case .deepSeek: return .deepSeek
             case .volcenginePayAsYouGo, .volcengineAgentPlan: return .volcengine
             case .alibabaPayAsYouGo, .alibabaTokenPlan: return .alibaba
             }
@@ -359,7 +361,7 @@ final class CloudASRSettingsStore: ObservableObject {
 
         var route: ASRBillingRoute {
             switch self {
-            case .openAI, .volcenginePayAsYouGo, .alibabaPayAsYouGo:
+            case .openAI, .deepSeek, .volcenginePayAsYouGo, .alibabaPayAsYouGo:
                 return .payAsYouGo
             case .volcengineAgentPlan: return .agentPlan
             case .alibabaTokenPlan: return .tokenPlan
@@ -368,6 +370,7 @@ final class CloudASRSettingsStore: ObservableObject {
 
         func makeProfile() -> ASRProfile {
             switch self {
+            case .deepSeek: return ASRProfile.deepSeek()
             case .openAI:
                 return ASRProfile.openAICompatible(
                     name: "OpenAI", fileEndpoint: ASRProviderRouting.openAIFileBase)
@@ -390,6 +393,7 @@ final class CloudASRSettingsStore: ObservableObject {
 
         static func preset(for profile: ASRProfile) -> ProviderPreset? {
             switch (profile.provider, profile.billingRoute) {
+            case (.deepSeek, .payAsYouGo): return .deepSeek
             case (.openaiCompatible, .payAsYouGo):
                 return .openAI
             case (.volcengine, .payAsYouGo): return .volcenginePayAsYouGo

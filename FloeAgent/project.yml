@@ -309,6 +309,14 @@ targets:
             CFBundleURLSchemes:
               - floe
         UTExportedTypeDeclarations:
+          - UTTypeIdentifier: org.floeagent.building-project
+            UTTypeDescription: Floe Building Project
+            UTTypeConformsTo:
+              - com.apple.package
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - floebuilding
+              public.mime-type: application/vnd.floe.building-project
           - UTTypeIdentifier: org.floeagent.note
             UTTypeDescription: Floe Note
             UTTypeConformsTo:
@@ -326,6 +334,11 @@ targets:
                 - floecanvas
               public.mime-type: application/vnd.floe.canvas
         CFBundleDocumentTypes:
+          - CFBundleTypeName: Floe Building Project
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Owner
+            LSItemContentTypes:
+              - org.floeagent.building-project
           - CFBundleTypeName: Floe Note
             CFBundleTypeRole: Viewer
             LSHandlerRank: Owner
@@ -777,8 +790,8 @@ targets:
         # Xcode's debug dylib moves those callbacks out of that image.
         ENABLE_DEBUG_DYLIB: NO
         SWIFT_STRICT_CONCURRENCY: complete
-        MARKETING_VERSION: "1.8.33"
-        CURRENT_PROJECT_VERSION: "354"
+        MARKETING_VERSION: "1.8.34"
+        CURRENT_PROJECT_VERSION: "355"
         FLOE_GITHUB_OAUTH_CLIENT_ID: "Ov23litEyLPjXVLEDzWW"
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: FloeApp/Entitlements/Floe.entitlements
@@ -861,8 +874,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeScreenShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.8.33"
-        CURRENT_PROJECT_VERSION: "354"
+        MARKETING_VERSION: "1.8.34"
+        CURRENT_PROJECT_VERSION: "355"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -912,8 +925,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.8.33"
-        CURRENT_PROJECT_VERSION: "354"
+        MARKETING_VERSION: "1.8.34"
+        CURRENT_PROJECT_VERSION: "355"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -956,8 +969,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeWidgets
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.8.33"
-        CURRENT_PROJECT_VERSION: "354"
+        MARKETING_VERSION: "1.8.34"
+        CURRENT_PROJECT_VERSION: "355"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -1009,8 +1022,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeFileProvider
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.8.33"
-        CURRENT_PROJECT_VERSION: "354"
+        MARKETING_VERSION: "1.8.34"
+        CURRENT_PROJECT_VERSION: "355"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -1383,6 +1396,7 @@ targets:
       - path: FloeFileProvider/SharedDocumentsFileProviderBridge.swift
       - path: Tests/FloeAppTests/NotesMarkdownPaginationTests.swift
       - path: Tests/FloeAppTests/NotesInkRefreshTests.swift
+      - path: Tests/FloeAppTests/NotesBrushPaletteTests.swift
       - path: Tests/FloeAppTests/DesignBuiltinNodeTests.swift
       - path: Tests/FloeAppTests/OfficePresentationOpeningTests.swift
       - path: Tests/FloeAppTests/OfficeSelectedObjectSaveTests.swift
@@ -1953,6 +1967,8 @@ targets:
       - path: Tests/FloePersistenceTests/UserQuestionStoreTests.swift
       - path: Tests/FloeAgentRuntimeTests/UserQuestionTests.swift
       - path: Tests/FloeExecutionTests/DeepSeekSearchTests.swift
+      - path: Tests/FloeProvidersTests/DeepSeekSpeechTests.swift
+      - path: Tests/FloeAppTests/DeepSeekSpeech/DeepSeekSpeechRoutingTests.swift
       - path: Tests/FloeExecutionTests/SearchProviderCatalogTests.swift
       - path: Tests/FloeExecutionTests/MoonshotDatasourceTests.swift
       - path: Tests/FloeWorkbenchTests/CadDocumentSupportTests.swift
@@ -2337,6 +2353,9 @@ targets:
       - path: Tests/FloeAgentRuntimeTests/RuntimeTestDoubles.swift
       - path: Tests/FloeAgentRuntimeTests/DependencyWaitTests.swift
       - path: Tests/FloeAppTests/NativeToolboxIntegrationTests.swift
+      - path: Tests/FloeAppTests/ToolboxModbusSessionTests.swift
+      - path: Modules/FloeInteriorKit/Tests/FloeBuildingEditorTests/BuildingInterchangeExportTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADBuildingScopedExportTests.swift
       - path: Tests/FloeAppTests/OrdinaryToolboxSessionTests.swift
       - path: Tests/FloeAppTests/ToolboxConnectionInputTests.swift
       - path: Tests/FloeAppTests/SpaceEditorPresentationTests.swift

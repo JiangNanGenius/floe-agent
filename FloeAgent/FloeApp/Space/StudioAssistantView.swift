@@ -11,6 +11,8 @@ import FloeNotes
 struct StudioAssistantView: View {
     let document: StudioAssistantDocument
     var onClose: (() -> Void)? = nil
+    var composerInput: ThreadComposerInput? = nil
+    var onInputConsumed: (UUID) -> Void = { _ in }
     var embedded = false
     var showsMeetingHelp = true
     @EnvironmentObject private var environment: AppEnvironment
@@ -20,8 +22,10 @@ struct StudioAssistantView: View {
     @State private var restarting = false
     @State private var showingArchive = false
 
-    init(record: PersonalContentRecord, onClose: (() -> Void)? = nil, embedded: Bool = false, showsMeetingHelp: Bool = true) {
+    init(record: PersonalContentRecord, composerInput: ThreadComposerInput? = nil, onInputConsumed: @escaping (UUID) -> Void = { _ in }, onClose: (() -> Void)? = nil, embedded: Bool = false, showsMeetingHelp: Bool = true) {
         self.init(document: .personal(record), onClose: onClose, embedded: embedded, showsMeetingHelp: showsMeetingHelp)
+        self.composerInput = composerInput
+        self.onInputConsumed = onInputConsumed
     }
     init(document: StudioAssistantDocument, onClose: (() -> Void)? = nil, embedded: Bool = false, showsMeetingHelp: Bool = true) {
         self.document = document; self.onClose = onClose; self.embedded = embedded; self.showsMeetingHelp = showsMeetingHelp
@@ -86,7 +90,7 @@ struct StudioAssistantView: View {
             Group {
                 if let conversationID {
                     ThreadDetailView(conversationID: conversationID, center: environment.conversationCenter,
-                        embedded: true, documentAssistant: true, ownsNavigationTitle: false)
+                        composerInput: composerInput, embedded: true, documentAssistant: true, ownsNavigationTitle: false, onInputConsumed: onInputConsumed)
                         .id(conversationID)
                         .disabled(restarting)
                 } else if let diagnostic {
@@ -216,6 +220,8 @@ struct EditorAssistantArchivedHistory: View {
                         Text(message.content).textSelection(.enabled)
                         AttachmentChipRow(items: AttachmentChipItem.items(in: message.parts), alignment: .leading,
                             onOpen: { item in Task { await preview(message: message, attachmentID: item.attachmentID) } })
+                        ChatMessageFooter(sentAt: message.createdAt, messageID: message.id.uuidString,
+                                          userText: message.role == "user" ? message.content : nil)
                     }
                 }
                 ForEach(runs) { run in

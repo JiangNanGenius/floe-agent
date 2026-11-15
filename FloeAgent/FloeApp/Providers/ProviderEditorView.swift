@@ -10,6 +10,7 @@
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
+import LocalAuthentication
 import FloeCore
 import FloeProviders
 
@@ -18,6 +19,24 @@ struct ProviderEditorView: View {
     @StateObject private var viewModel: ProviderEditorViewModel
     @Environment(\.dismiss) private var dismiss
     @FocusState private var isEndpointFocused: Bool
+    private enum ConnectionAction { case save, test, refresh }
+    private enum EditorNotice {
+        case http(ProviderEditorViewModel.HTTPApproval, ConnectionAction)
+        case verification(ProviderEditorViewModel.HTTPApproval, ConnectionAction)
+        case error(String)
+        var title: LocalizedStringKey {
+            switch self {
+            case .http: "providers.http_warning.title"
+            case .verification: "providers.http_warning.verification_title"
+            case .error: "providers.save_failed"
+            }
+        }
+    }
+
+    @State private var httpNotice: EditorNotice?
+    @State private var authentication: Task<Void, Never>?
+    private var notice: EditorNotice? { httpNotice ?? viewModel.saveErrorMessage.map(EditorNotice.error) }
+
     @State private var showModelPicker = false
     @State private var editingModel: ModelProfile?
     @State private var showsCatalogPicker = false
@@ -66,6 +85,9 @@ struct ProviderEditorView: View {
             }
             presetSection
             serviceOffersSection
+            if DeepSeekSpeechAPI.isOfficialConnection(URL(string: viewModel.baseURLString.trimmingCharacters(in: .whitespacesAndNewlines))) {
+                DeepSeekProviderSpeechSection(environment: viewModel.center.environment)
+            }
             if viewModel.formSpec.showsProtocolPicker {
                 protocolSection
             }
@@ -127,7 +149,7 @@ struct ProviderEditorView: View {
                     .accessibilityIdentifier("action.cancel")
             }
             ToolbarItem(placement: .confirmationAction) {
-                Button { save() } label: {
+                Button { requestConnectionAction(.save) } label: {
                     if viewModel.isSaving {
                         // Visible in-flight state so repeated taps are
                         // discouraged and the user sees the write running.
@@ -136,26 +158,35 @@ struct ProviderEditorView: View {
                         Text("action.save")
                     }
                 }
-                    .disabled(viewModel.isSaving)
+                    .disabled(viewModel.isSaving || authentication != nil)
                     .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
                     .accessibilityIdentifier("action.save")
             }
         }
-        // A save failure is shown immediately regardless of form scroll
-        // position (the inline section at the bottom could be off-screen).
-        // Only a Save-path error opens this alert; connection-test and
-        // discovery failures keep their inline context.
-        .alert(
-            "providers.save_failed",
-            isPresented: Binding(
-                get: { viewModel.saveErrorMessage != nil },
-                set: { presented in if !presented { viewModel.saveErrorMessage = nil } }
-            )
-        ) {
-            Button("providers.save_failed.ok", role: .cancel) {}
-        } message: {
-            Text(viewModel.saveErrorMessage ?? "")
+        .alert(notice?.title ?? "", isPresented: Binding(
+            get: { notice != nil },
+            set: { if !$0 { httpNotice = nil; viewModel.saveErrorMessage = nil } }
+        ), presenting: notice) { notice in
+            switch notice {
+            case let .http(request, action):
+                Button("action.cancel", role: .cancel) {}
+                Button("providers.http_warning.confirm") { verifyHTTP(request, for: action) }
+            case let .verification(request, action):
+                Button("action.cancel", role: .cancel) {}
+                Button("action.retry") { verifyHTTP(request, for: action) }
+            case .error:
+                Button("providers.save_failed.ok", role: .cancel) {}
+            }
+        } message: { notice in
+            switch notice {
+            case let .http(request, _):
+                Text(verbatim: [URL(string: request.endpoint)?.host ?? "",
+                                String(localized: "providers.http_warning.message")].joined(separator: "\n\n"))
+            case .verification: Text("providers.http_warning.authentication_failed")
+            case let .error(message): Text(verbatim: message)
+            }
         }
+        .onDisappear { authentication?.cancel(); authentication = nil }
         .task { await viewModel.load() }
         .onChange(of: catalogOwner.installStates) { _, _ in viewModel.updateCatalog(catalog) }
         // RQ05: a corrected value never keeps showing the old finding; the
@@ -460,10 +491,7 @@ struct ProviderEditorView: View {
                     .font(FloeTheme.Typography.evidence)
                 fieldIssuesText(.nonSecretHeader)
             }
-            if viewModel.selectedPreset.defaultBaseURL.scheme == "http" {
-                Toggle("providers.allow_plain_http", isOn: $viewModel.allowsPlainHTTP)
-                fieldIssuesText(.plainHTTP)
-            }
+            fieldIssuesText(.plainHTTP)
         } header: {
             Text("providers.endpoint")
         } footer: {
@@ -561,7 +589,7 @@ struct ProviderEditorView: View {
     private var testSection: some View {
         Section {
             Button {
-                Task { await viewModel.testConnection() }
+                requestConnectionAction(.test)
             } label: {
                 HStack {
                     Text("providers.test_connection")
@@ -633,7 +661,7 @@ struct ProviderEditorView: View {
             // re-feeds the verified merge; it never stamps chat models).
             if viewModel.supportsModelListingRefresh {
                 Button {
-                    Task { await viewModel.refreshModels() }
+                    requestConnectionAction(.refresh)
                 } label: {
                     Label("providers.refresh_models", systemImage: "arrow.clockwise")
                 }
@@ -746,6 +774,43 @@ struct ProviderEditorView: View {
     }
 
     // MARK: - Save
+
+    private func requestConnectionAction(_ action: ConnectionAction) {
+        guard authentication == nil else { return }
+        isEndpointFocused = false
+        if let request = viewModel.pendingHTTPApproval {
+            viewModel.saveErrorMessage = nil
+            httpNotice = .http(request, action)
+        } else {
+            perform(action)
+        }
+    }
+
+    private func verifyHTTP(_ request: ProviderEditorViewModel.HTTPApproval, for action: ConnectionAction) {
+        guard authentication == nil else { return }
+        authentication = Task { @MainActor in
+            defer { authentication = nil }
+            do {
+                if try await viewModel.confirmHTTP(request, authenticate: {
+                    try await DeviceOwnerAuthenticator.authenticate(reason: String(localized: "providers.http_warning.reason"))
+                }) { perform(action) }
+            } catch let error as LAError where [.userCancel, .appCancel, .systemCancel].contains(error.code) {
+                return
+            } catch {
+                if !Task.isCancelled, viewModel.pendingHTTPApproval == request {
+                    httpNotice = .verification(request, action)
+                }
+            }
+        }
+    }
+
+    private func perform(_ action: ConnectionAction) {
+        switch action {
+        case .test: Task { await viewModel.testConnection() }
+        case .refresh: Task { await viewModel.refreshModels() }
+        case .save: save()
+        }
+    }
 
     private func save() {
         // A rejected save must leave the field's correction visible instead

@@ -237,13 +237,31 @@ public actor WorkbenchImageRenderer {
             case .group: unplaced = try applyAdjustment(sourceAdjustment, to: compose(parent: layer.id,canvas:canvas))
             case .adjustment: throw WorkbenchImageError.unsupportedSource("adjustment layer cannot be used as clipping base")
             }
-            if let mask = layer.mask, mask.isEnabled {
-                unplaced = unplaced.applyingFilter("CIBlendWithAlphaMask", parameters: [kCIInputBackgroundImageKey: clear, kCIInputMaskImageKey: try coverage(mask,canvas:canvas)])
-            }
             // A group is a stable parent coordinate frame. A child's overflow
             // must not move that frame's pivot as its CI extent grows.
-            let groupCenter=layer.contentKind == .group ? CGPoint(x:canvas.width/2,y:canvas.height/2):nil
-            var placed = try place(image: unplaced, layer: legacy, canvas: canvas,imageCenter:groupCenter)
+            var pivot = layer.contentKind == .group ? CGPoint(x:canvas.width/2,y:canvas.height/2):nil
+            if let mask = layer.mask {
+                let strokes = mask.featherStrokes ?? []
+                if mask.isEnabled && (strokes.isEmpty || mask.vector != nil || !mask.strokes.isEmpty || mask.isInverted) {
+                    var alpha = try coverage(mask,canvas:canvas)
+                    let baseline = unplaced.applyingFilter("CIBlendWithAlphaMask",parameters:[kCIInputBackgroundImageKey:clear,kCIInputMaskImageKey:alpha])
+                    let center = pivot ?? CGPoint(x:baseline.extent.width/2,y:baseline.extent.height/2)
+                    for stroke in strokes where stroke.editsMask {
+                        alpha = try MediaNativeFeatherBrush.apply(stroke,to:alpha,center:center,clippedTo:extent)
+                    }
+                    unplaced = unplaced.applyingFilter("CIBlendWithAlphaMask",parameters:[kCIInputBackgroundImageKey:clear,kCIInputMaskImageKey:alpha])
+                }
+                let alphaStrokes = strokes.filter { !$0.editsMask }
+                if !alphaStrokes.isEmpty {
+                    let center = pivot ?? CGPoint(x:unplaced.extent.width/2,y:unplaced.extent.height/2)
+                    pivot = center
+                    let area = unplaced.extent.union(extent).insetBy(dx:-200,dy:-200)
+                    for stroke in alphaStrokes {
+                        unplaced = try MediaNativeFeatherBrush.apply(stroke,to:unplaced,center:center,clippedTo:area)
+                    }
+                }
+            }
+            var placed = try place(image: unplaced, layer: legacy, canvas: canvas,imageCenter:pivot)
             if let space=layer.canvasSpace { placed=placed.transformed(by:space.transform.cgAffineTransform) }
             if layer.adjustment.effectRegion != nil {
                 placed = try applyAdjustment(layer.adjustment, to: placed.cropped(to: CGRect(origin: .zero, size: parentCanvas)))

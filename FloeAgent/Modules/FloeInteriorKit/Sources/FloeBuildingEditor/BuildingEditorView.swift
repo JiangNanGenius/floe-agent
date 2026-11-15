@@ -11,19 +11,33 @@ import FloeBuildingAssets
 @MainActor
 public struct BuildingEditorHostActions {
     public var requestAssistant: ((BuildingEditorToolContext) -> Void)?
+    /// Called once after the real project session (and its Records/CAD mount)
+    /// exists. The host may use this for an explicit "ask AI on open" request;
+    /// it must not create an assistant before this point.
+    public var projectDidMount: ((BuildingEditorToolContext) -> Void)?
     public var beforeDeparture: (Bool) async throws -> Bool
     public var departureEnded: () -> Void
     public var didClose: () -> Void
     public var previewFile: ((URL) -> Void)?
+    public var encodeDWG: (@MainActor (Data) async throws -> Data)?
+    public var encodeIFC: (@MainActor (Data) async throws -> Data)?
+    public var publishCopy: (@MainActor (BuildingProjectCopyReceipt, URL) async throws -> Void)?
     public var registerIndependentCAD: (@MainActor (BuildingIndependentCADHandoff) async throws -> Void)?
 
     public init(requestAssistant:((BuildingEditorToolContext)->Void)?=nil,
+                projectDidMount:((BuildingEditorToolContext)->Void)?=nil,
                 beforeDeparture:@escaping (Bool) async throws -> Bool={_ in true},
                 departureEnded:@escaping ()->Void={},didClose:@escaping ()->Void={},
                 previewFile:((URL)->Void)?=nil,
+                encodeDWG: (@MainActor (Data) async throws -> Data)?=nil,
+                encodeIFC: (@MainActor (Data) async throws -> Data)?=nil,
+                publishCopy:(@MainActor (BuildingProjectCopyReceipt, URL) async throws -> Void)?=nil,
                 registerIndependentCAD:(@MainActor (BuildingIndependentCADHandoff) async throws->Void)?=nil) {
-        self.requestAssistant=requestAssistant;self.beforeDeparture=beforeDeparture
+        self.requestAssistant=requestAssistant;self.projectDidMount=projectDidMount
+        self.beforeDeparture=beforeDeparture
         self.departureEnded=departureEnded;self.didClose=didClose;self.previewFile=previewFile
+        self.encodeDWG=encodeDWG;self.encodeIFC=encodeIFC
+        self.publishCopy=publishCopy
         self.registerIndependentCAD=registerIndependentCAD
     }
 }
@@ -52,7 +66,8 @@ public struct BuildingEditorView: View {
                     }
                 }
             } else {
-                BuildingWorkbenchView(workspace:project.workspace,actions:actions) {
+                BuildingWorkbenchView(workspace: project.workspace, actions: actions,
+                                      saveAsForm: AnyView(BuildingSaveAsForm(project: project))) {
                     BuildingNativeModelPanel(project:project)
                 } furniture: {
                     if let furniture=project.furniture {BuildingFurniturePanel(workspace:furniture)}

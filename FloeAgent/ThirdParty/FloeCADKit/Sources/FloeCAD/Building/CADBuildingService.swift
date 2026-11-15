@@ -16,6 +16,16 @@ struct SetBuildingFeaturesCommand: DocumentCommand {
 nonisolated enum CADBuildingGeometry {
     static func recipe(_ model: CADBuildingDocument) throws -> [FeatureNode] {
         try model.validate()
+        if let context = model.exportContext, !context.references.isEmpty {
+            var expanded = model; expanded.exportContext = nil; expanded.elements += context.references
+            let wanted = Set(model.elements.flatMap(\.bodyIDs))
+            let walls = Set(model.elements.filter { $0.kind == .wall }.map(\.id))
+            let cutters = Set(expanded.elements.filter { $0.hostID.map(walls.contains) == true }
+                .map { CADBuildingIdentity.uuid($0.id, "opening-tool") })
+            return try recipe(expanded).filter { node in
+                cutters.contains(node.id.raw) || node.outputBodyIDs.contains { wanted.contains($0.raw) }
+            }
+        }
         var nodes: [FeatureNode] = []
         func primitive(_ element: CADBuildingElement, role: String = "shape", name: String? = nil,
                        spec: PrimitiveSpec, at centre: SIMD3<Double>, rotation: simd_quatd = simd_quatd(angle: 0, axis: SIMD3(0,1,0)),

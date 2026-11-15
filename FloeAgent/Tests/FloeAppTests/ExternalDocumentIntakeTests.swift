@@ -33,6 +33,9 @@ import UniformTypeIdentifiers
 import FloeCore
 import FloeNotes
 import FloeWorkspace
+import FloeBuildingProject
+import FloeBuildingEditor
+import FloeCAD
 @testable import FloeApp
 
 // MARK: - Fixtures
@@ -666,6 +669,80 @@ struct ExternalDocumentIntakeQueueTests {
 @Suite("External document intake center")
 @MainActor
 struct ExternalDocumentIntakeCenterTests {
+    @Test func savesWallAsIndependentBuildingPlanAndModelInSpace() async throws {
+        let root = intakeRoot("building-save-as")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = PersonalContentService(root: root.appendingPathComponent("Library"))
+        let original = try await service.create(kind: .building, title: "House")
+        let library = try await service.library()
+        let source = try await library.resolve(original.id)
+        let package = BuildingProjectSpaceOriginal.projectURL(directory: source.url)
+        let editor = try await BuildingEditorProjectSession.open(at: package, assetLibraryDirectory: root.appendingPathComponent("Assets"),
+                                                               spaceRecordID: original.id)
+        let wallState = try editor.wallSnapshot()
+        let change = try await editor.applyWallCommand(.addWall(storeyID: nil, a: [0,0], b: [4000,0],
+            thicknessMM: 220, heightMM: 2700, name: "West"), expectedChangeCount: wallState.changeCount, expectedWallRevision: wallState.wallRevision)
+        let wall = try #require(change.wallID)
+        try await editor.checkpoint()
+        let frozen = try BuildingProjectRepository.verifyProjectDirectory(at: package)
+        for kind in [BuildingProjectCopyKind.building, .cad2D, .cad3D] {
+            let file: BuildingProjectCopyReceipt
+            if kind == .building { file = try await editor.saveBuildingCopy(title: "House copy") }
+            else { file = try await editor.exportCADCopy(kind: kind, title: "West wall", scope: .elements([wall])) }
+            let copyURL = editor.projectCopyURL(file)
+            let published = try await service.publishBuildingCopy(file, at: copyURL)
+            let retry = try await service.publishBuildingCopy(file, at: copyURL)
+            #expect(retry.id == file.id && published.id == file.id && file.id != original.id)
+            let location = try await library.resolve(file.id)
+            if kind == .building {
+                let copied = try BuildingProjectRepository.verifyProjectDirectory(at: BuildingProjectSpaceOriginal.projectURL(directory: location.url))
+                #expect(copied.contentDigest == frozen.contentDigest)
+            } else {
+                let document = try await FloeCADDocument.open(at: location.url.appendingPathComponent("Document.floecad"))
+                #expect(document.contentSHA256 == file.contentSHA256)
+                if kind == .cad3D {
+                    #expect(try document.building()?.elements.map(\.id) == [wall])
+                }
+                document.close()
+            }
+        }
+        let exchange = try await editor.exportExchangeFile(format: .dxf, scope: .elements([wall]), title: "West wall")
+        let exchangeFiles = try editor.exchangeFiles()
+        #expect(exchange.byteCount > 0 && exchangeFiles.contains(exchange.url))
+        try await editor.close()
+        #expect(try BuildingProjectRepository.verifyProjectDirectory(at: package).contentDigest == frozen.contentDigest)
+    }
+
+    @Test func buildingPackageOpensAsAnIndependentSpaceProject() async throws {
+        let root = intakeRoot("building-open")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = PersonalContentService(root: root.appendingPathComponent("Library"))
+        let original = try await service.create(kind: .building, title: "Studio")
+        let library = try await service.library()
+        let location = try await library.resolve(original.id)
+        let package = root.appendingPathComponent("Shared studio.floebuilding", isDirectory: true)
+        let repository = try BuildingProjectRepository.open(at: BuildingProjectSpaceOriginal.projectURL(directory: location.url))
+        let frozen = try repository.exportPortableCopy(to: package)
+
+        let center = DocumentIntakeCenter(root: root.appendingPathComponent("Intake"), buildings: service)
+        #expect(DocumentIntakeKind.classify(fileExtension: "FLOEBUILDING", contentType: nil) == .building)
+        #expect(!ImportDestinationCenter.isAmbiguousExternalOpen(package))
+        let event = try #require(center.submit(package, sceneID: "building-scene"))
+        center.markStoresReady()
+        #expect(await waitUntil(30) { center.lastReceipt?.id == event })
+        let presentation = try #require(center.takePresentation(sceneID: "building-scene"))
+        let copyID = try #require(presentation.documentID)
+        #expect(presentation.kind == .building && copyID != original.id)
+        let copy = try await library.resolve(copyID)
+        #expect(copy.record.kind == .building && copy.record.title == "Shared studio")
+        try await service.verify(copy.record)
+        let restored = try BuildingProjectRepository.verifyProjectDirectory(at: BuildingProjectSpaceOriginal.projectURL(directory: copy.url))
+        #expect(restored.contentDigest == frozen.contentDigest)
+        #expect(try BuildingProjectRepository.verifyPortableCopy(at: package).contentDigest == frozen.contentDigest)
+        center.presentNotes(presentation)
+        #expect(center.noteOpenRequest == nil)
+    }
+
     @Test func coldInputQueuesBeforeReadinessAndImportsAfterward() async throws {
         let root = intakeRoot("center-cold")
         let sourceRoot = intakeRoot("center-cold-source")

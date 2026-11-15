@@ -11,6 +11,13 @@ struct GameProjectSelectionIntent: Sendable {
     let engine: GameEngineID
 }
 
+/// Explicit manual choice. The caller has already acknowledged, at the host UI
+/// boundary, that no recognized marker may exist for this root/engine pair.
+struct GameProjectManualSelectionIntent: Sendable {
+    let root: GameRelativePath?
+    let engine: GameEngineID
+}
+
 struct GameProjectSelectionResolution: Sendable {
     let snapshot: GameProjectSelectionSnapshot
     let shouldPersist: Bool
@@ -50,7 +57,9 @@ struct GameProjectSelectionResolver: Sendable {
     func resolve(project capturedProject: GameStoredProject,
                  context: GameProjectContext,
                  loadedRecord: GameProjectSelectionRecord?,
-                 intent: GameProjectSelectionIntent?) async throws -> GameProjectSelectionResolution {
+                 intent: GameProjectSelectionIntent?,
+                 manualIntent: GameProjectManualSelectionIntent? = nil)
+        async throws -> GameProjectSelectionResolution {
         try Task.checkCancellation()
         try GameProjectSelectionValidation.project(capturedProject, context: context)
         try await GameProjectSelectionValidation.currentContext(context, contexts: contexts)
@@ -73,8 +82,20 @@ struct GameProjectSelectionResolver: Sendable {
         let heuristic = heuristicRecommendation(choices: probed.choices,
                                                 isEmptyProject: isEmpty)
 
-        let selection = try resolveSelection(project: project, choices: probed.choices,
+        let selection: Selection
+        if let manualIntent {
+            guard intent == nil else {
+                throw GameProjectFlowError.proposalInvalid(
+                    "A manual choice and a recognized choice cannot be combined.")
+            }
+            selection = try resolveManualSelection(project: project,
+                                                   choices: probed.choices,
+                                                   loadedRecord: loadedRecord,
+                                                   intent: manualIntent)
+        } else {
+            selection = try resolveSelection(project: project, choices: probed.choices,
                                              loadedRecord: loadedRecord, intent: intent)
+        }
 
         try await GameProjectSelectionValidation.currentProject(project,
                                                                repository: repository)
@@ -96,6 +117,7 @@ struct GameProjectSelectionResolver: Sendable {
             selectedRoot: selection.root,
             selectedEngine: selection.engine,
             selectionSource: selection.source,
+            selectionVerification: selection.verification,
             ambiguities: selection.ambiguities,
             aiRecommendation: ai,
             heuristicRecommendation: heuristic,
@@ -143,8 +165,13 @@ struct GameProjectSelectionResolver: Sendable {
                 for candidate in inspection.candidates {
                     do {
                         let descriptor = try catalog.descriptor(for: candidate.engine)
+                        // Inspection evidence is relative to the selected root.
+                        // The snapshot and AI tools promise project-relative
+                        // paths, so rebase it before exposing the capability.
+                        let evidence = try rebasedEvidence(candidate.evidence,
+                                                           root: discoveredRoot.root)
                         capabilities.append(capability(for: candidate.engine,
-                                                       evidence: candidate.evidence,
+                                                       evidence: evidence,
                                                        descriptor: descriptor))
                     } catch {
                         catalogDiagnostic = GameProjectSelectionText.bounded(error)
@@ -179,6 +206,17 @@ struct GameProjectSelectionResolver: Sendable {
                                 diagnostic: diagnostic))
         }
         return (choices: result, diagnostics: diagnostics)
+    }
+
+    private func rebasedEvidence(_ evidence: [GameEngineEvidence],
+                                 root: GameRelativePath?) throws
+        -> [GameEngineEvidence] {
+        guard let root else { return evidence }
+        return try evidence.map { item in
+            GameEngineEvidence(
+                path: try GameRelativePath(root.value + "/" + item.path.value),
+                kind: item.kind, versionHint: item.versionHint)
+        }
     }
 
     private func resolvedRootURL(for root: GameRelativePath?,
@@ -225,11 +263,13 @@ struct GameProjectSelectionResolver: Sendable {
                                          host: .unverified)
         }
         let paths = Array(Set(evidence.map(\.path))).sorted { $0.value < $1.value }
+        let boundedEvidence = Array(evidence.prefix(64))
         return .init(engine: engine,
                      displayName: descriptor.displayName,
                      starterReadiness: descriptor.readiness,
                      starterSource: starterSource,
                      prerequisites: prerequisites,
+                     recognizedEvidence: boundedEvidence,
                      recognizedMarkerPaths: paths,
                      preparedRuntimePackPresent: descriptor.runtimePack == nil
                         ? nil : resources.pack(for: engine) != nil,
@@ -358,6 +398,7 @@ struct GameProjectSelectionResolver: Sendable {
         let root: GameRelativePath?
         let engine: GameEngineID?
         let source: GameProjectSelectionSource?
+        let verification: GameProjectSelectionVerification?
         let ambiguities: [GameProjectSelectionAmbiguity]
         let shouldPersist: Bool
         let shouldRemove: Bool
@@ -382,17 +423,42 @@ struct GameProjectSelectionResolver: Sendable {
                 throw GameProjectFlowError.unknownEngine(intent.engine)
             }
             return .init(state: .confirmed, root: intent.root, engine: intent.engine,
-                         source: .explicit, ambiguities: ambiguities,
+                         source: .explicit, verification: .evidenceMatched,
+                         ambiguities: ambiguities,
                          shouldPersist: true, shouldRemove: loadedRecord != nil)
         }
 
         var shouldRemove = false
         if let record = loadedRecord {
-            if let choice = choices.first(where: { $0.root == record.selectedRoot }),
-               choice.engines.contains(where: { $0.engine == record.selectedEngine }) {
+            let recognized = choices.first(where: { $0.root == record.selectedRoot })?
+                .engines.contains(where: { $0.engine == record.selectedEngine }) == true
+            if record.effectiveVerification == .manualUnverified {
+                let rootStillReal = Self.rootExists(project: project, root: record.selectedRoot)
+                let engineStillKnown = (try? catalog.descriptor(for: record.selectedEngine)) != nil
+                if rootStillReal, engineStillKnown {
+                    // Keep the user's manual choice readable/editable. If the
+                    // tree later gains a real marker, upgrade the record.
+                    let verification: GameProjectSelectionVerification =
+                        recognized ? .evidenceMatched : .manualUnverified
+                    var restoredAmbiguities: [GameProjectSelectionAmbiguity] = []
+                    if verification == .manualUnverified {
+                        restoredAmbiguities.append(.manualSelectionUnverified(
+                            root: record.selectedRoot, engine: record.selectedEngine))
+                    }
+                    return .init(state: .confirmed, root: record.selectedRoot,
+                                 engine: record.selectedEngine, source: .restored,
+                                 verification: verification,
+                                 ambiguities: restoredAmbiguities,
+                                 shouldPersist: record.baseRevision != project.revision
+                                     || verification != record.effectiveVerification,
+                                 shouldRemove: false)
+                }
+            } else if recognized {
                 return .init(state: .confirmed, root: record.selectedRoot,
                              engine: record.selectedEngine, source: .restored,
-                             ambiguities: [], shouldPersist: record.baseRevision != project.revision,
+                             verification: .evidenceMatched,
+                             ambiguities: [],
+                             shouldPersist: record.baseRevision != project.revision,
                              shouldRemove: false)
             }
             shouldRemove = true
@@ -403,15 +469,15 @@ struct GameProjectSelectionResolver: Sendable {
         let isEmpty = project.files.isEmpty && project.directories.isEmpty
         if isEmpty {
             return .init(state: .empty, root: nil, engine: nil, source: nil,
-                         ambiguities: ambiguities, shouldPersist: false,
-                         shouldRemove: shouldRemove)
+                         verification: nil, ambiguities: ambiguities,
+                         shouldPersist: false, shouldRemove: shouldRemove)
         }
 
         guard !choices.isEmpty else {
             ambiguities.append(.noEngineRecognized(root: nil))
             return .init(state: .unresolved, root: nil, engine: nil, source: nil,
-                         ambiguities: ambiguities, shouldPersist: false,
-                         shouldRemove: shouldRemove)
+                         verification: nil, ambiguities: ambiguities,
+                         shouldPersist: false, shouldRemove: shouldRemove)
         }
 
         if choices.count > 1 {
@@ -424,26 +490,138 @@ struct GameProjectSelectionResolver: Sendable {
                 ambiguities.append(.noEngineRecognizedAnywhere)
             }
             return .init(state: .ambiguous, root: nil, engine: nil, source: nil,
-                         ambiguities: ambiguities, shouldPersist: false,
-                         shouldRemove: shouldRemove)
+                         verification: nil, ambiguities: ambiguities,
+                         shouldPersist: false, shouldRemove: shouldRemove)
         }
 
         let only = choices[0]
         if only.engines.count == 1, let engine = only.engines.first?.engine {
             return .init(state: .automatic, root: only.root, engine: engine,
-                         source: .automatic, ambiguities: ambiguities,
+                         source: .automatic, verification: .evidenceMatched,
+                         ambiguities: ambiguities,
                          shouldPersist: true, shouldRemove: shouldRemove)
         }
         if only.engines.count > 1 {
             ambiguities.append(.multipleEngines(
                 root: only.root, engines: only.engines.map(\.engine)))
             return .init(state: .ambiguous, root: nil, engine: nil, source: nil,
-                         ambiguities: ambiguities, shouldPersist: false,
-                         shouldRemove: shouldRemove)
+                         verification: nil, ambiguities: ambiguities,
+                         shouldPersist: false, shouldRemove: shouldRemove)
         }
         ambiguities.append(.noEngineRecognized(root: only.root))
         return .init(state: .unresolved, root: nil, engine: nil, source: nil,
-                     ambiguities: ambiguities, shouldPersist: false,
-                     shouldRemove: shouldRemove)
+                     verification: nil, ambiguities: ambiguities,
+                     shouldPersist: false, shouldRemove: shouldRemove)
+    }
+
+    /// Explicit manual choice. It never pretends recognition: a root without a
+    /// catalog marker is recorded as `.manualUnverified` and remains readable
+    /// and editable, but `runSelection` stays nil.
+    private func resolveManualSelection(project: GameStoredProject,
+                                        choices: [GameProjectSelectionChoice],
+                                        loadedRecord: GameProjectSelectionRecord?,
+                                        intent: GameProjectManualSelectionIntent)
+        throws -> Selection {
+        guard !project.files.isEmpty || !project.directories.isEmpty else {
+            throw GameProjectFlowError.emptyProjectSelection
+        }
+        try Self.validateRoot(project: project, root: intent.root)
+        guard (try? catalog.descriptor(for: intent.engine)) != nil else {
+            throw GameProjectFlowError.unknownEngine(intent.engine)
+        }
+        let recognized = choices.contains { choice in
+            choice.root == intent.root
+                && choice.engines.contains(where: { $0.engine == intent.engine })
+        }
+        var ambiguities: [GameProjectSelectionAmbiguity] = []
+        if choices.count > 1 {
+            ambiguities.append(.multipleRoots(roots: choices.map(\.root)))
+        }
+        let verification: GameProjectSelectionVerification =
+            recognized ? .evidenceMatched : .manualUnverified
+        if verification == .manualUnverified {
+            ambiguities.append(.manualSelectionUnverified(
+                root: intent.root, engine: intent.engine))
+        }
+        return .init(state: .confirmed, root: intent.root, engine: intent.engine,
+                     source: .explicit, verification: verification,
+                     ambiguities: ambiguities,
+                     shouldPersist: true, shouldRemove: loadedRecord != nil)
+    }
+
+    /// Builds an advisory proposal. It performs the same ownership, revision
+    /// and discovery validation as a selection, but writes nothing.
+    func proposal(project capturedProject: GameStoredProject,
+                  context: GameProjectContext,
+                  root: GameRelativePath?,
+                  engine: GameEngineID,
+                  evidencePaths: [GameRelativePath],
+                  rationale: String,
+                  generatedBy: String) async throws
+        -> GameProjectSelectionProposal {
+        try Task.checkCancellation()
+        try GameProjectSelectionValidation.project(capturedProject, context: context)
+        try await GameProjectSelectionValidation.currentContext(context, contexts: contexts)
+        try await GameProjectSelectionValidation.currentProject(capturedProject,
+                                                               repository: repository)
+        let resolution = try await resolve(project: capturedProject, context: context,
+                                           loadedRecord: nil, intent: nil)
+        let snapshot = resolution.snapshot
+        guard !snapshot.isEmptyProject else {
+            throw GameProjectFlowError.emptyProjectSelection
+        }
+        try Self.validateRoot(project: capturedProject, root: root)
+        guard (try? catalog.descriptor(for: engine)) != nil else {
+            throw GameProjectFlowError.unknownEngine(engine)
+        }
+        let cleanRationale = rationale.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanRationale.isEmpty,
+              GameProjectSelectionText.validIdentifier(cleanRationale, maximum: 4_096),
+              GameProjectSelectionText.validIdentifier(generatedBy) else {
+            throw GameProjectFlowError.proposalInvalid(
+                "The proposal needs a bounded rationale and a host-supplied identity.")
+        }
+        guard evidencePaths.count <= 32 else {
+            throw GameProjectFlowError.proposalInvalid(
+                "A proposal may cite at most 32 project files.")
+        }
+        let knownPaths = Set(capturedProject.files.map(\.path))
+        for path in evidencePaths where !knownPaths.contains(path) {
+            throw GameProjectFlowError.proposalEvidenceInvalid(path)
+        }
+        let capability = snapshot.choices.first { $0.root == root }?.engines
+            .first { $0.engine == engine }
+        if let capability {
+            let actual = Set(capability.recognizedEvidence.map(\.path))
+            for path in evidencePaths where !actual.contains(path) {
+                throw GameProjectFlowError.proposalEvidenceInvalid(path)
+            }
+        }
+        let effectiveEvidence: [GameRelativePath]
+        if evidencePaths.isEmpty, let capability {
+            effectiveEvidence = Array(capability.recognizedEvidence.prefix(16).map(\.path))
+        } else {
+            effectiveEvidence = evidencePaths
+        }
+        return .init(projectID: capturedProject.projectID, owner: capturedProject.owner,
+                     environmentID: context.environmentID, rootURL: context.rootURL,
+                     baseRevision: capturedProject.revision,
+                     selectedRoot: root, selectedEngine: engine,
+                     verification: capability == nil ? .manualUnverified : .evidenceMatched,
+                     rationale: GameProjectSelectionText.bounded(cleanRationale,
+                                                                 maximum: 4_096),
+                     generatedBy: GameProjectSelectionText.bounded(generatedBy),
+                     evidencePaths: effectiveEvidence)
+    }
+
+    static func rootExists(project: GameStoredProject, root: GameRelativePath?) -> Bool {
+        guard let root else { return true }
+        return project.directories.contains(root)
+    }
+
+    static func validateRoot(project: GameStoredProject, root: GameRelativePath?) throws {
+        guard rootExists(project: project, root: root) else {
+            throw GameProjectFlowError.rootNotAvailable(root)
+        }
     }
 }

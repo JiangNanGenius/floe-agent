@@ -150,7 +150,7 @@ import PencilKit
         let brushes: [(String, PKInkingTool.InkType)] = [
             ("pen", .pen), ("fountainPen", .fountainPen), ("monoline", .monoline),
             ("pencil", .pencil), ("crayon", .crayon), ("watercolor", .watercolor),
-            ("reed", .reed), ("marker", .marker)
+            ("reed", .reed)
         ]
         for (name, inkType) in brushes {
             app.buttons["palette.brushes"].tap()
@@ -161,20 +161,10 @@ import PencilKit
                 shot.name = "native-brush-picker"; shot.lifetime = .keepAlways; add(shot)
             }
             button.tap()
-            // Prove the selection actually reached the fixture before dismissing
-            // the panel. A tap absorbed during the popover animation otherwise
-            // surfaces later as a misleading canvas timeout. The marker keeps
-            // the previous pen kind, so check its tool label instead.
-            if name == "marker" {
-                // NotesInkTool raw values are fixed Chinese strings, not localized.
-                let markerTool = expectation(for: NSPredicate(format: "label == %@", "荧光笔"),
-                                             evaluatedWith: app.staticTexts["palette.selectedTool"])
-                wait(for: [markerTool], timeout: 5)
-            } else {
-                let picked = expectation(for: NSPredicate(format: "label == %@", name),
-                                         evaluatedWith: app.staticTexts["palette.selectedPen"])
-                wait(for: [picked], timeout: 5)
-            }
+            XCTAssertFalse(app.buttons["notes.ink.brush.marker"].exists)
+            let picked = expectation(for: NSPredicate(format: "label == %@", name),
+                                     evaluatedWith: app.staticTexts["palette.selectedPen"])
+            wait(for: [picked], timeout: 5)
             app.buttons["palette.brushes.done"].tap()
             let closed = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: button)
             wait(for: [closed], timeout: 10)
@@ -183,6 +173,25 @@ import PencilKit
             let applied = expectation(for: NSPredicate(format: "value == %@", inkType.rawValue), evaluatedWith: canvas)
             wait(for: [applied], timeout: 10)
         }
+        app.buttons["palette.open.center"].tap()
+        let marker = app.buttons["notes.pencil.quickMenu.highlighter"]
+        XCTAssertTrue(marker.waitForExistence(timeout: 5))
+        marker.tap()
+        let canvas = app.descendants(matching: .any).matching(identifier: "palette.canvas").firstMatch
+        let highlighted = expectation(for: NSPredicate(format: "value == %@", PKInkingTool.InkType.marker.rawValue), evaluatedWith: canvas)
+        wait(for: [highlighted], timeout: 10)
+        XCTAssertEqual(app.staticTexts["palette.selectedPen"].label, "reed")
+        app.buttons["palette.brushes"].tap()
+        XCTAssertTrue(app.sliders["notes.ink.width.slider"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["notes.ink.brush.fountainPen"].exists)
+        app.buttons["palette.brushes.done"].tap()
+        XCTAssertTrue(app.buttons["palette.brushes.done"].waitForNonExistence(timeout: 5))
+        app.buttons["palette.open.center"].tap()
+        let pen = app.buttons["notes.pencil.quickMenu.pencil.tip"]
+        XCTAssertTrue(pen.waitForExistence(timeout: 5))
+        pen.tap()
+        let restored = expectation(for: NSPredicate(format: "value == %@", PKInkingTool.InkType.reed.rawValue), evaluatedWith: canvas)
+        wait(for: [restored], timeout: 10)
         app.buttons["palette.brushes"].tap()
         app.buttons["notes.ink.brush.fountainPen"].tap()
         let remembered = expectation(for: NSPredicate(format: "label == %@", "fountainPen"),

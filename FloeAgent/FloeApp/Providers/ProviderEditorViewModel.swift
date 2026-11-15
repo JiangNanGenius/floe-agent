@@ -110,7 +110,37 @@ final class ProviderEditorViewModel: ObservableObject {
     @Published var selectedProtocol: ModelProtocol
     /// User-facing provider name (editable; falls back to the preset label).
     @Published var displayName: String
-    @Published var baseURLString: String
+    @Published var baseURLString: String {
+        didSet {
+            if oldValue.trimmingCharacters(in: .whitespacesAndNewlines) != trimmedEndpoint {
+                endpointRevision &+= 1
+                allowsPlainHTTP = false
+            }
+        }
+    }
+    private var endpointRevision: UInt64 = 0
+
+    struct HTTPApproval: Equatable {
+        let endpoint: String
+        let revision: UInt64
+    }
+
+    private var trimmedEndpoint: String { baseURLString.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    var pendingHTTPApproval: HTTPApproval? {
+        guard !allowsPlainHTTP, let url = URL(string: trimmedEndpoint),
+              url.scheme?.lowercased() == "http", url.host?.isEmpty == false,
+              url.user == nil, url.password == nil else { return nil }
+        return HTTPApproval(endpoint: trimmedEndpoint, revision: endpointRevision)
+    }
+
+    func confirmHTTP(_ request: HTTPApproval, authenticate: @MainActor () async throws -> Bool) async rethrows -> Bool {
+        guard pendingHTTPApproval == request, try await authenticate(),
+              !Task.isCancelled, pendingHTTPApproval == request else { return false }
+        allowsPlainHTTP = true
+        invalidateFieldIssues(matching: .plainHTTP)
+        return true
+    }
     /// Persisted routing region. The field is only exposed when a saved
     /// provider already carries a value or when a shipped adapter contract
     /// requires one. Today no chat/image/video adapter consumes

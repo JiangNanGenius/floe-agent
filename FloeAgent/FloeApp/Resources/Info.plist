@@ -16,6 +16,18 @@
 	<array>
 		<dict>
 			<key>CFBundleTypeName</key>
+			<string>Floe Building Project</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Owner</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>org.floeagent.building-project</string>
+			</array>
+		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
 			<string>Floe Note</string>
 			<key>CFBundleTypeRole</key>
 			<string>Viewer</string>
@@ -196,6 +208,25 @@
 	</array>
 	<key>UTExportedTypeDeclarations</key>
 	<array>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>com.apple.package</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>Floe Building Project</string>
+			<key>UTTypeIdentifier</key>
+			<string>org.floeagent.building-project</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>floebuilding</string>
+				</array>
+				<key>public.mime-type</key>
+				<string>application/vnd.floe.building-project</string>
+			</dict>
+		</dict>
 		<dict>
 			<key>UTTypeConformsTo</key>
 			<array>

@@ -51,6 +51,7 @@ final class DocumentIntakeCenter: ObservableObject {
     private let stagingRoot: URL?
     private let limits: DocumentIntakeLimits
     private let notes: any NotesDocumentImporting
+    private let buildings: PersonalContentService
     private let canvas: any CanvasDocumentImporting
     private let now: @Sendable () -> Date
     private let availabilityError: DocumentIntakeFailure?
@@ -87,11 +88,13 @@ final class DocumentIntakeCenter: ObservableObject {
         limits: DocumentIntakeLimits = .production,
         notes: any NotesDocumentImporting = LiveNotesDocumentImporter.live,
         canvas: any CanvasDocumentImporting = LiveCanvasDocumentImporter(),
+        buildings: PersonalContentService = .shared,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.limits = limits
         self.notes = notes
         self.canvas = canvas
+        self.buildings = buildings
         self.now = now
         if let root, let queue = try? DocumentIntakeQueue(root: root, limits: limits, now: now) {
             self.queue = queue
@@ -392,6 +395,25 @@ final class DocumentIntakeCenter: ObservableObject {
         drainIfPossible()
     }
 
+    private func existingDocumentCommit(_ record: DocumentIntakeRecord) async throws -> DocumentIntakeCommit? {
+        let id = record.plannedRootDocumentID
+        if record.kind == .building {
+            do {
+                let location = try await buildings.library().resolve(id)
+                guard location.record.kind == .building else { throw PersonalContentError.invalidProject }
+                try await buildings.verify(location.record)
+                return DocumentIntakeCommit(rootDocumentID: id, title: location.record.title, committedAt: now())
+            } catch PersonalContentError.missingDocument { return nil }
+        }
+        guard record.kind.importsIntoNotes else { return nil }
+        let existing: NoteDocument?
+        do { existing = try await notes.existingDocument(id: id) }
+        catch { throw DocumentIntakeError.notesUnavailable }
+        guard let existing else { return nil }
+        let ids = (try? await notes.documentIDs(inBundle: existing.id)) ?? [existing.id]
+        return DocumentIntakeCommit(rootDocumentID: existing.id, documentIDs: ids, title: existing.title, committedAt: now())
+    }
+
     private func importClaim(_ claim: DocumentIntakeClaim) async {
         guard let queue else { return }
         let record = claim.record
@@ -400,22 +422,8 @@ final class DocumentIntakeCenter: ObservableObject {
 
             // Exact crash recovery: the pre-allocated destination identity is
             // the only proof used. A title or content match is never enough.
-            if record.kind.importsIntoNotes {
-                var existing: NoteDocument?
-                do {
-                    existing = try await notes.existingDocument(id: record.plannedRootDocumentID)
-                } catch {
-                    throw DocumentIntakeError.notesUnavailable
-                }
-                if let existing {
-                    let ids = (try? await notes.documentIDs(inBundle: existing.id)) ?? [existing.id]
-                    let commit = DocumentIntakeCommit(
-                        rootDocumentID: existing.id,
-                        documentIDs: ids,
-                        canvasID: nil,
-                        title: existing.title,
-                        committedAt: now()
-                    )
+            if record.kind != .floeCanvas {
+                if let commit = try await existingDocumentCommit(record) {
                     try await queue.markCommitted(claim, commit: commit)
                     await didCommit(record: record, commit: commit)
                     return
@@ -444,7 +452,10 @@ final class DocumentIntakeCenter: ObservableObject {
             let intact: Bool
             do {
                 intact = try await Task.detached(priority: .utility) {
-                    try DocumentIntakeStorage.verifySHA256(
+                    if record.kind == .building {
+                        return try DocumentIntakeStorage.verifyBuilding(at: payloadURL, digest: digest, byteCount: byteCount)
+                    }
+                    return try DocumentIntakeStorage.verifySHA256(
                         at: payloadURL,
                         expectedDigest: digest,
                         expectedByteCount: byteCount
@@ -461,7 +472,11 @@ final class DocumentIntakeCenter: ObservableObject {
             try Task.checkCancellation()
 
             let commit: DocumentIntakeCommit
-            if record.kind == .floeCanvas {
+            if record.kind == .building {
+                let title = (record.displayName as NSString).deletingPathExtension
+                let project = try await buildings.importBuilding(claim.payloadURL, title: title, folders: [], id: record.plannedRootDocumentID)
+                commit = DocumentIntakeCommit(rootDocumentID: project.id, title: project.title, committedAt: now())
+            } else if record.kind == .floeCanvas {
                 let outcome = try await canvas.importCanvas(
                     from: claim.payloadURL,
                     plannedCanvasID: record.plannedRootDocumentID
@@ -529,17 +544,9 @@ final class DocumentIntakeCenter: ObservableObject {
         let record = claim.record
         // Cancellation after a real commit returns the actual receipt; it
         // never claims to undo it.
-        if record.kind.importsIntoNotes {
+        if record.kind != .floeCanvas {
             do {
-                if let existing = try await notes.existingDocument(id: record.plannedRootDocumentID) {
-                    let ids = (try? await notes.documentIDs(inBundle: existing.id)) ?? [existing.id]
-                    let commit = DocumentIntakeCommit(
-                        rootDocumentID: existing.id,
-                        documentIDs: ids,
-                        canvasID: nil,
-                        title: existing.title,
-                        committedAt: now()
-                    )
+                if let commit = try await existingDocumentCommit(record) {
                     try await queue.markCommitted(claim, commit: commit)
                     await didCommit(record: record, commit: commit)
                     return
@@ -602,17 +609,9 @@ final class DocumentIntakeCenter: ObservableObject {
         let record = claim.record
         // A failure after the real commit still recovers the exact committed
         // identity; the durable input is never the thing that is lost.
-        if record.kind.importsIntoNotes {
+        if record.kind != .floeCanvas {
             do {
-                if let existing = try await notes.existingDocument(id: record.plannedRootDocumentID) {
-                    let ids = (try? await notes.documentIDs(inBundle: existing.id)) ?? [existing.id]
-                    let commit = DocumentIntakeCommit(
-                        rootDocumentID: existing.id,
-                        documentIDs: ids,
-                        canvasID: nil,
-                        title: existing.title,
-                        committedAt: now()
-                    )
+                if let commit = try await existingDocumentCommit(record) {
                     try await queue.markCommitted(claim, commit: commit)
                     await didCommit(record: record, commit: commit)
                     return
@@ -872,17 +871,9 @@ final class DocumentIntakeCenter: ObservableObject {
             guard let claim else { continue }
             defer { claim.lock.close() }
             guard !storageSuspended else { break }
-            if record.kind.importsIntoNotes {
+            if record.kind != .floeCanvas {
                 do {
-                    if let existing = try await notes.existingDocument(id: record.plannedRootDocumentID) {
-                        let ids = (try? await notes.documentIDs(inBundle: existing.id)) ?? [existing.id]
-                        let commit = DocumentIntakeCommit(
-                            rootDocumentID: existing.id,
-                            documentIDs: ids,
-                            canvasID: nil,
-                            title: existing.title,
-                            committedAt: now()
-                        )
+                    if let commit = try await existingDocumentCommit(record) {
                         try await queue.markCommitted(claim, commit: commit)
                         await didCommit(record: record, commit: commit)
                         continue
@@ -964,7 +955,7 @@ final class DocumentIntakeCenter: ObservableObject {
     /// request and adopts the exact imported identity without discarding an
     /// unsaved current note.
     func presentNotes(_ presentation: DocumentIntakePresentation) {
-        guard let documentID = presentation.documentID else { return }
+        guard presentation.kind.importsIntoNotes, let documentID = presentation.documentID else { return }
         noteOpenRequest = DocumentIntakeNoteOpenRequest(
             id: UUID(),
             eventID: presentation.id,
@@ -1135,9 +1126,11 @@ final class DocumentIntakeCenter: ObservableObject {
     // MARK: Helpers
 
     private func successMessage(for kind: DocumentIntakeKind) -> String {
-        kind == .floeCanvas
-            ? FloeL10n.l("document.intake.saved_in_canvas")
-            : FloeL10n.l("document.intake.saved_in_notes")
+        switch kind {
+        case .building: IDELanguageRunText.t("建筑工程已存入空间", "Building project saved in Space")
+        case .floeCanvas: FloeL10n.l("document.intake.saved_in_canvas")
+        default: FloeL10n.l("document.intake.saved_in_notes")
+        }
     }
 
     private func showNeedsReviewNotice(eventID: UUID) {

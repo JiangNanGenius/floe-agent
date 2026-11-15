@@ -42,6 +42,27 @@ struct GameIDEGameRunScreen: View {
                                 begin(selection: (root, engine))
                             }
                             .disabled(launchTask != nil)
+                        } else if let snapshot = request.session.project.selectionSnapshot,
+                                  snapshot.runSelection == nil {
+                            // Unresolved, empty or a manual/unverified choice.
+                            // Never auto-launch arbitrary files and never
+                            // substitute the recorded creation hint.
+                            ContentUnavailableView {
+                                Label(copy("还不能试玩", "Not ready to play"),
+                                      systemImage: "gamecontroller")
+                            } description: {
+                                Text(snapshot.isManualUnverified
+                                    ? copy("当前引擎是手动选择，没有识别依据。请在工程设置中确认识别到的引擎后再试玩。",
+                                           "The engine is a manual choice without recognized evidence. Confirm a recognized engine in project setup before playing.")
+                                    : copy("还没有确认可运行的游戏目录和引擎。请在工程设置中选择或导入后再试玩。",
+                                           "No runnable game folder and engine are confirmed. Choose or import one in project setup before playing."))
+                            } actions: {
+                                Button(copy("返回工程设置", "Back to project setup")) {
+                                    Task { await close() }
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .accessibilityIdentifier("game.ide.run.backToSetup")
+                            }
                         } else if launchTask != nil {
                             Spacer()
                             ProgressView(copy("正在准备试玩", "Preparing play"))
@@ -77,7 +98,8 @@ struct GameIDEGameRunScreen: View {
         .interactiveDismissDisabled(true)
         .task {
             guard !started, launchTask == nil else { return }
-            if request.session.project.selectionSnapshot?.requiresExplicitChoice != true { begin() }
+            guard let snapshot = request.session.project.selectionSnapshot else { return }
+            if !snapshot.requiresExplicitChoice, snapshot.runSelection != nil { begin() }
         }
     }
 
@@ -85,6 +107,12 @@ struct GameIDEGameRunScreen: View {
 
     private func begin(selection: (GameRelativePath?, GameEngineID)? = nil) {
         guard launchTask == nil, !closing else { return }
+        guard selection != nil
+                || request.session.project.selectionSnapshot?.runSelection != nil else {
+            error = copy("请先在工程设置中确认游戏目录和引擎。",
+                         "Confirm a game folder and engine in project setup first.")
+            return
+        }
         error = nil
         launchTask = Task { @MainActor in
             defer { launchTask = nil }

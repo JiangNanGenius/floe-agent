@@ -51,7 +51,7 @@ struct AssistantMessageView: View {
                         .font(FloeTheme.Typography.metadata)
                         .frame(minHeight: FloeTheme.minimumTarget)
                     }
-                    copyButton
+                    ChatMessageCopyButton(text: text)
                 }
             }
             if allowsReadAloud, speechService.failureOwnerID == playbackOwnerID, let failureKey = speechService.failureKey {
@@ -68,19 +68,6 @@ struct AssistantMessageView: View {
         .accessibilityLabel(String(localized: "thread.role.assistant"))
         .accessibilityIdentifier("thread.assistant_message")
         .onDisappear { speechService.clearFailure(ownerID: playbackOwnerID) }
-    }
-
-    private var copyButton: some View {
-        Button {
-            UIPasteboard.general.string = text
-        } label: {
-            Label("workspace.workspace_canvas_view.copy", systemImage: "doc.on.doc")
-                .font(FloeTheme.Typography.metadata)
-                .foregroundStyle(.secondary)
-        }
-        .buttonStyle(.plain)
-        .frame(minHeight: FloeTheme.minimumTarget)
-        .accessibilityLabel("workspace.workspace_canvas_view.copy")
     }
 
     private var ownsPlayback: Bool {

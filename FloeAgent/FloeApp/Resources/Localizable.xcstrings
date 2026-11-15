@@ -72782,6 +72782,102 @@
         }
       }
     },
+    "providers.http_warning.verification_title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unable to verify your identity"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未能验证身份"
+          }
+        }
+      }
+    },
+    "providers.http_warning.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "HTTP connection is not secure"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "HTTP 连接不安全"
+          }
+        }
+      }
+    },
+    "providers.http_warning.message": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "API keys and other data sent over HTTP can be read or changed by others. Continue only if you trust this connection."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "通过 HTTP 传输的 API 密钥和其他数据可能被他人读取或篡改。请仅在信任此连接时继续。"
+          }
+        }
+      }
+    },
+    "providers.http_warning.confirm": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verify and Continue"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "验证并继续"
+          }
+        }
+      }
+    },
+    "providers.http_warning.reason": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Confirm use of this unsecured HTTP endpoint."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "确认使用此不安全的 HTTP 接口。"
+          }
+        }
+      }
+    },
+    "providers.http_warning.authentication_failed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verification failed. The HTTP endpoint was not approved."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "验证失败，未允许使用 HTTP 接口。"
+          }
+        }
+      }
+    },
     "providers.allow_plain_http": {
       "extractionState": "manual",
       "localizations": {
@@ -100523,6 +100619,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "Could not read the files. Please choose them again."
+          }
+        }
+      }
+    },
+    "skills.authoring.history": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Creation and import history"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "创建与导入记录"
           }
         }
       }

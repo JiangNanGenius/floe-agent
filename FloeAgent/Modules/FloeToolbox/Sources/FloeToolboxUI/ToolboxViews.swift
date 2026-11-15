@@ -119,12 +119,49 @@ public struct SerialAssistantSetupView: View {
             if configuration.protocolType == .modbus {
                 Picker(text("数据封装","Framing"),selection:$configuration.modbusFraming) {
                     Text(text("按设备说明选择","Choose for your device")).tag(Optional<ModbusFraming>.none)
-                    Text("MBAP").tag(Optional(ModbusFraming.mbap))
-                    Text("RTU / CRC").tag(Optional(ModbusFraming.rtu))
+                    ForEach(configuration.availableModbusFramings,id:\.self) { framing in
+                        Text(framingLabel(framing)).tag(Optional(framing))
+                    }
                 }
+                .accessibilityIdentifier("toolbox.serial.framing")
+                Text(configuration.framingGuidance(locale:toolboxLocale))
+                    .font(.caption).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("toolbox.serial.framingHint")
             }
             if connected { Text(text("断开连接后可更改设置。","Disconnect to change these settings.")).font(.caption).foregroundStyle(.secondary) }
-        }.disabled(connected)
+        }
+        .onChange(of: configuration.connection) { _, _ in
+            if let framing = configuration.modbusFraming,
+               !configuration.availableModbusFramings.contains(framing) {
+                configuration.modbusFraming = nil
+            }
+        }
+        .disabled(connected)
+    }
+    private func framingLabel(_ framing: ModbusFraming) -> String {
+        switch framing {
+        case .mbap: "MBAP"
+        case .rtu: text("RTU（CRC）","RTU (CRC)")
+        case .ascii: text("ASCII（LRC）","ASCII (LRC)")
+        }
+    }
+}
+extension SerialAssistantConfiguration {
+    /// Connection capability determines which framings are offered; the
+    /// text keeps serial-line and gateway/passthrough use distinguishable.
+    func framingGuidance(locale: Locale) -> String {
+        func text(_ zh: String,_ en: String) -> String { locale.language.languageCode?.identifier == "zh" ? zh : en }
+        switch connection {
+        case .bluetooth, .usb:
+            return text("串口：RTU 使用 CRC，ASCII 使用 LRC。按设备说明选择。",
+                        "Serial: RTU uses CRC and ASCII uses LRC. Choose what the device documents.")
+        case .tcp:
+            return text("原生 Modbus TCP 使用 MBAP。串口透传网关按设备说明选择 RTU 或 ASCII。",
+                        "Native Modbus TCP uses MBAP. For a serial passthrough gateway, choose RTU or ASCII as documented.")
+        case .udp:
+            return text("UDP 按设备说明选择。部分网关透传 RTU/ASCII，部分设备支持 MBAP 数据报。",
+                        "Use the device's UDP format. Some gateways carry RTU or ASCII. Some devices support MBAP datagrams.")
+        }
     }
 }
 
@@ -447,7 +484,11 @@ public struct SerialClientPanel: View {
                 VStack(alignment: .leading) { HStack { sendFormat; lineEnding }; clearAfterSending }
             }
             TextField(model.hexadecimal ? "01 03 00 00" : text("发送内容","Payload"),text:$model.input,axis:.vertical)
-                .lineLimit(1...5).textFieldStyle(.roundedBorder).textInputAutocapitalization(.never).autocorrectionDisabled()
+                .lineLimit(1...5).textFieldStyle(.roundedBorder)
+                #if os(iOS)
+                .textInputAutocapitalization(.never)
+                #endif
+                .autocorrectionDisabled()
                 .accessibilityIdentifier("toolbox.serial.payload")
             HStack {
                 Button(text("发送","Send"),systemImage:"paperplane") { Task { await model.send() } }

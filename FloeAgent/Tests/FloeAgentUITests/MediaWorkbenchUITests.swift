@@ -89,6 +89,56 @@ final class MediaWorkbenchUITests: XCTestCase {
                        "a replacing selection does not inherit the previous feather")
     }
 
+    func testSmudgeGroupFeatherAndRememberedRailLayout() {
+        let app = XCUIApplication()
+        app.launchArguments += ["-ui-testing", "-ui-testing-ipad", "--ui-test-workbench-fixture",
+                                "-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
+        app.launch()
+        XCUIDevice.shared.orientation = .portrait
+        let layout = app.buttons["media.v2.rail.layout"]
+        XCTAssertTrue(layout.waitForExistence(timeout: 45))
+        let original = layout.value as? String
+        func columns(_ count: Int) {
+            layout.tap()
+            let choice = app.buttons["media.v2.rail.columns." + String(count)]
+            XCTAssertTrue(choice.waitForExistence(timeout: 5))
+            choice.tap()
+            let value = NSPredicate(format: "value == %@", String(count))
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: value, object: layout)], timeout: 5), .completed)
+        }
+        columns(2)
+        app.terminate()
+        app.launch()
+        XCTAssertTrue(layout.waitForExistence(timeout: 40))
+        XCTAssertEqual(layout.value as? String, "2")
+        columns(1)
+        defer { if original == "2" && layout.isHittable { columns(2) } }
+        let rail = any(app, "media.v2.imageToolRail")
+        let group = app.buttons["media.v2.toolGroup.smudge"]
+        for _ in 0..<4 where !group.isHittable { rail.swipeUp() }
+        XCTAssertTrue(group.isHittable)
+        group.tap()
+        let feather = app.buttons["media.v2.tool.image.feather-brush"]
+        XCTAssertTrue(feather.waitForExistence(timeout: 5))
+        feather.tap()
+        XCTAssertTrue(any(app, "media.v2.feather.diameter").waitForExistence(timeout: 8))
+        XCTAssertTrue(any(app, "media.v2.feather.strength").exists)
+        for id in ["view.zoom-in", "view.zoom-out", "view.fit"] {
+            XCTAssertFalse(rail.descendants(matching: .any).matching(identifier: "media.v2.tool." + id).firstMatch.exists)
+        }
+        let zoom = any(app, "media.v2.zoom.value")
+        let plus = app.buttons["media.v2.zoom.in"]
+        XCTAssertTrue(plus.isHittable && app.buttons["media.v2.zoom.out"].exists && zoom.exists)
+        app.buttons["media.v2.fitCanvas"].tap()
+        let changed: NSPredicate
+        if let value = zoom.value as? String { changed = NSPredicate(format: "value != %@", value) }
+        else { changed = NSPredicate(format: "label != %@", zoom.label) }
+        plus.tap()
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: changed, object: zoom)], timeout: 5), .completed)
+        app.buttons["media.v2.fitCanvas"].tap()
+        keepScreenshot(app, "单列工具栏与涂抹组羽化笔刷")
+    }
+
     private func any(_ app: XCUIApplication, _ identifier: String) -> XCUIElement {
         app.descendants(matching: .any).matching(identifier: identifier).firstMatch
     }

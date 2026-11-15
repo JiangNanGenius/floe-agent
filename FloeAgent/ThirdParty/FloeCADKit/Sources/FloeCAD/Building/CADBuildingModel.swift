@@ -90,6 +90,8 @@ public nonisolated struct CADBuildingDocument: Codable, Equatable, Sendable {
     public var sources: [CADSketchTransferEnvelope] = []
     public var jurisdiction = CADBuildingJurisdiction()
     public var rules: [CADBuildingRule] = []
+    /// Partial native exports keep relationship context separate from selected geometry.
+    public var exportContext: CADBuildingExportContext?
     public init(name: String = FloeCADStrings.text("cad.building.defaultName","Building")) {
         self.name = name
         storeys = [CADBuildingStorey(name: FloeCADStrings.text("cad.building.groundFloor","Ground floor"))]
@@ -110,6 +112,17 @@ public nonisolated struct CADBuildingDocument: Codable, Equatable, Sendable {
         return data
     }
     public func validate() throws {
+        if let context = exportContext {
+            let ids = Set(elements.map(\.id)), hosts = Set(elements.compactMap(\.hostID))
+            guard elements.count + context.references.count <= 1000, context.sourceLayers.count <= 8192,
+                  context.references.allSatisfy({ !ids.contains($0.id) && (hosts.contains($0.id) || $0.hostID.map(ids.contains) == true) }),
+                  context.sourceLayers.allSatisfy({ ids.contains($0.elementID) && $0.sourceSHA256.utf8.count == 64 && $0.sourceSHA256.allSatisfy(\.isHexDigit) && $0.sourceName.utf8.count <= 1024 && $0.layer.utf8.count <= 1024 && $0.handle.utf8.count <= 128 }) else {
+                throw CADBuildingError.invalid("Invalid building export references.")
+            }
+            var expanded = self; expanded.exportContext = nil; expanded.elements += context.references
+            try expanded.validate()
+            return
+        }
         func validText(_ text: String) -> Bool { !text.isEmpty && text.utf8.count <= 1024 }
         guard schemaVersion == 1, validText(name), (1...128).contains(storeys.count), elements.count <= 1000,
               sources.count <= 8, rules.count <= 256,
@@ -168,10 +181,16 @@ public nonisolated struct CADBuildingDocument: Codable, Equatable, Sendable {
         func object(_ value: Any, _ keys: Set<String>) throws -> [String: Any] {
             guard let row = value as? [String: Any], Set(row.keys).isSubset(of: keys) else { throw CADBuildingError.invalid(FloeCADStrings.text("cad.building.error.thisBuildingContainsNewerOrInvalidRecords","This building contains newer or invalid records.")) }; return row
         }
-        let root = try object(raw, ["schemaVersion","id","name","storeys","elements","sources","jurisdiction","rules"])
+        let root = try object(raw, ["schemaVersion","id","name","storeys","elements","sources","jurisdiction","rules","exportContext"])
         guard root["schemaVersion"] as? Int == 1 else { throw CADBuildingError.invalid(FloeCADStrings.text("cad.building.error.thisBuildingUsesANewerFormat","This building uses a newer format.")) }
         for row in root["storeys"] as? [Any] ?? [] { _ = try object(row, ["id","name","elevationMM","heightMM"]) }
-        for row in root["elements"] as? [Any] ?? [] { _ = try object(row, ["id","storeyID","kind","name","a","b","thicknessMM","heightMM","baseOffsetMM","hostID","offsetMM","widthMM","sourceHandle","stepCount"]) }
+        let elementKeys: Set<String> = ["id","storeyID","kind","name","a","b","thicknessMM","heightMM","baseOffsetMM","hostID","offsetMM","widthMM","sourceHandle","stepCount"]
+        for row in root["elements"] as? [Any] ?? [] { _ = try object(row, elementKeys) }
+        if let context = root["exportContext"] {
+            let value = try object(context, ["references","sourceLayers"])
+            for row in value["references"] as? [Any] ?? [] { _ = try object(row, elementKeys) }
+            for row in value["sourceLayers"] as? [Any] ?? [] { _ = try object(row, ["elementID","sourceSHA256","sourceName","handle","layer"]) }
+        }
         for row in root["sources"] as? [Any] ?? [] { try CADSketchTransferEnvelope.validateStoredJSONObject(row) }
         if let row = root["jurisdiction"] { _ = try object(row, ["country","subdivision","buildingUse","edition"]) }
         for row in root["rules"] as? [Any] ?? [] { _ = try object(row, ["id","metric","minimum","clause","sourceURL"]) }

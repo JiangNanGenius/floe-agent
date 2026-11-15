@@ -122,20 +122,28 @@ import FloeElectronicsCore
         let root = temporary(); defer { try? FileManager.default.removeItem(at: root) }
         let store = try await EDAProjectStore.create(root: root, project: EDABuiltinLibrary.makeProject(title: "Footprints"))
         let session = try await EDWorkbenchSession(store: store)
-        let original = try XCTUnwrap(session.project.footprints.first)
+        let original = try XCTUnwrap(session.project.footprints.first { definition in
+            definition.graphicLayers?.contains(where: { $0 != nil }) == true
+        })
         var edited = original
         let pad = EDAPad(number: EDLibraryEditing.nextPadNumber(original.pads), position: .init(1.27, 0))
         edited.pads.append(pad)
-        edited.graphics.removeAll()
+        for index in edited.graphics.indices.reversed() {
+            try EDAGraphicEditing.remove(at: index, graphics: &edited.graphics, layers: &edited.graphicLayers)
+        }
         try await session.apply([.putFootprintDefinition(edited)], expectedRevision: 0)
+        let saved = try XCTUnwrap(session.project.footprints.first { $0.id == original.id })
+        XCTAssertEqual(saved.pads.last, pad)
         XCTAssertFalse(session.isDirty)
 
         var removed = edited
         removed.pads.removeAll { $0.id == pad.id }
         try await session.apply([.putFootprintDefinition(removed)], expectedRevision: 1)
         let reopened = try await EDWorkbenchSession(store: store)
-        XCTAssertEqual(reopened.project.footprints.first(where: { $0.id == original.id })?.pads.map(\.id), original.pads.map(\.id))
-        XCTAssertEqual(reopened.project.footprints.first(where: { $0.id == original.id })?.graphics.count, 0)
+        let persisted = try XCTUnwrap(reopened.project.footprints.first { $0.id == original.id })
+        XCTAssertEqual(persisted.pads.map(\.id), original.pads.map(\.id))
+        XCTAssertTrue(persisted.graphics.isEmpty)
+        XCTAssertEqual(persisted.graphicLayers, [])
     }
 
     func testStaleDefinitionEditKeepsProposalAndReportsConflict() async throws {

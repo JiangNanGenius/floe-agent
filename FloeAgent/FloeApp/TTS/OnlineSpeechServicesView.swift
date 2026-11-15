@@ -75,7 +75,7 @@ private struct SpeechProfileDraft: Identifiable {
     let value: TTSSettingsSnapshot
 }
 
-private struct SpeechProfileEditor: View {
+struct SpeechProfileEditor: View {
     let initial: TTSSettingsSnapshot
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
@@ -89,6 +89,7 @@ private struct SpeechProfileEditor: View {
     @State private var voices: [String: String] = [:]
     @State private var fetching = false
     @State private var testing = false
+    @State private var selectAfterSave = false
     /// Explicitly revealed stored key. Hidden by default, unrelated to the
     /// new/replacement `key` field above, and owned by a generation fence.
     @State private var savedKeyReveal = SpeechSavedKeyRevealOwner()
@@ -157,19 +158,27 @@ private struct SpeechProfileEditor: View {
                     }
                 }
                 Section {
-                    TextField("voice.settings.model", text: $draft.modelID)
-                        .keyboardType(.asciiCapable)
-                        .textInputAutocapitalization(.never).autocorrectionDisabled()
-                    Menu("voice.settings.model.choose") {
-                        ForEach(suggestedModels, id: \.self) { model in Button(model) { draft.modelID = model } }
-                    }
-                    TextField("voice.settings.voice.id", text: $draft.voiceID)
-                        .keyboardType(.asciiCapable)
-                        .textInputAutocapitalization(.never).autocorrectionDisabled()
-                    if !catalogueVoices.isEmpty {
-                        Menu("voice.settings.voice.choose") {
-                            ForEach(catalogueVoices) { voice in
-                                Button(voice.displayName) { draft.voiceID = voice.voiceID }
+                    if draft.provider == .deepSeek {
+                        Picker(FloeL10n.isChinese ? "音色" : "Voice", selection: $draft.voiceID) {
+                            Text(FloeL10n.isChinese ? "海星" : "Stella").tag("stella")
+                            Text(FloeL10n.isChinese ? "暗潮" : "Tide").tag("tide")
+                        }
+                        Toggle(FloeL10n.isChinese ? "保存后用于朗读" : "Use for read-aloud after saving", isOn: $selectAfterSave)
+                    } else {
+                        TextField("voice.settings.model", text: $draft.modelID)
+                            .keyboardType(.asciiCapable)
+                            .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        Menu("voice.settings.model.choose") {
+                            ForEach(suggestedModels, id: \.self) { model in Button(model) { draft.modelID = model } }
+                        }
+                        TextField("voice.settings.voice.id", text: $draft.voiceID)
+                            .keyboardType(.asciiCapable)
+                            .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        if !catalogueVoices.isEmpty {
+                            Menu("voice.settings.voice.choose") {
+                                ForEach(catalogueVoices) { voice in
+                                    Button(voice.displayName) { draft.voiceID = voice.voiceID }
+                                }
                             }
                         }
                     }
@@ -200,7 +209,7 @@ private struct SpeechProfileEditor: View {
                             testing = true
                             playback.preview(FloeL10n.l("voice.settings.audition.sample"), settings: draft, credential: enteredCredential.isEmpty ? nil : enteredCredential)
                         }
-                    }.disabled(voiceActive || !canAuthenticate || draft.modelID.isEmpty || draft.voiceID.isEmpty)
+                    }.disabled(voiceActive || !canAuthenticate || (draft.provider != .deepSeek && draft.modelID.isEmpty) || draft.voiceID.isEmpty)
                 }
                 if let message = failure ?? (testing ? playback.failureKey : nil) {
                     Section { Text(LocalizedStringKey(message)).foregroundStyle(.red) }
@@ -217,6 +226,9 @@ private struct SpeechProfileEditor: View {
                     ToolbarItem(placement: .confirmationAction) { Button("action.save") {
                         do {
                             try settings.saveProfile(draft, credential: key)
+                            if draft.provider == .deepSeek && selectAfterSave {
+                                _ = settings.selectSource(.online(provider: .deepSeek, route: .payAsYouGo))
+                            }
                             let catalogueName = catalogueVoices
                                 .first { $0.voiceID == draft.voiceID }?.displayName
                             if let name = catalogueName ?? voices[draft.voiceID] {
@@ -225,7 +237,7 @@ private struct SpeechProfileEditor: View {
                             key = ""; dismiss()
                         }
                         catch { failure = Self.saveFailureKey(for: error) }
-                    }.disabled(!canAuthenticate || draft.modelID.isEmpty || draft.voiceID.isEmpty) }
+                    }.disabled(!canAuthenticate || (draft.provider != .deepSeek && draft.modelID.isEmpty) || draft.voiceID.isEmpty) }
                 }
                 .onAppear { prepareDefaults() }
                 .onChange(of: draft.openAIBaseURL) { _, _ in invalidateSavedKeyReveal() }
@@ -337,6 +349,7 @@ private struct SpeechProfileEditor: View {
     }
     private func prepareDefaults() {
         if draft.modelID.isEmpty { draft.modelID = suggestedModels.first ?? "" }
+        if draft.provider == .deepSeek && draft.voiceID.isEmpty { draft.voiceID = "stella" }
         if draft.provider == .openAI && draft.voiceID.isEmpty { draft.voiceID = "alloy" }
     }
     private func fetchVoices() async {

@@ -18,9 +18,11 @@ import FloeElectronicsCore
         p.boards[0].cutouts = [[.init(50, 50), .init(55, 50), .init(55, 55), .init(50, 55)]]
         return p
     }
-    private func root() throws -> URL {
-        let base = try #require(ProcessInfo.processInfo.environment["FLOE_INSPECTOR_TEST_TEMP"])
-        return URL(fileURLWithPath: base).appendingPathComponent(UUID().uuidString)
+    private func root() -> URL {
+        let base = ProcessInfo.processInfo.environment["FLOE_INSPECTOR_TEST_TEMP"].map {
+            URL(fileURLWithPath: $0, isDirectory: true)
+        } ?? FileManager.default.temporaryDirectory
+        return base.appendingPathComponent(UUID().uuidString, isDirectory: true)
     }
 
     @Test func dirtySameIdentityDraftRetainsInputUntilExplicitReload() {
@@ -41,7 +43,7 @@ import FloeElectronicsCore
     }
 
     @Test func trackPropertiesSaveUndoRedoAndReopenWithoutReplacingBoardState() async throws {
-        let initial = fixture(), directory = try root(); defer { try? FileManager.default.removeItem(at: directory) }
+        let initial = fixture(), directory = root(); defer { try? FileManager.default.removeItem(at: directory) }
         let store = try await EDAProjectStore.create(root: directory, project: initial)
         let session = try await EDWorkbenchSession(store: store)
         var value = initial.boards[0].tracks[0]; value.width = 0.65; value.layer = "B.Cu"; value.points[1] = .init(19, 14)
@@ -57,7 +59,7 @@ import FloeElectronicsCore
     }
 
     @Test func viaAndStraightSlotPropertiesPreserveIdentityAndOtherManufacturingValues() async throws {
-        let initial = fixture(), directory = try root(); defer { try? FileManager.default.removeItem(at: directory) }
+        let initial = fixture(), directory = root(); defer { try? FileManager.default.removeItem(at: directory) }
         let store = try await EDAProjectStore.create(root: directory, project: initial)
         let session = try await EDWorkbenchSession(store: store)
         var via = initial.boards[0].vias[0]; via.position = .init(22, 13); via.diameter = 0.9; via.drill = 0.4
@@ -74,7 +76,7 @@ import FloeElectronicsCore
 
     @Test func lockedTrackAndFootprintDeletionCannotBeBypassedByAnUnsavedUnlock() async throws {
         var initial = fixture(); initial.boards[0].tracks[0].locked = true; initial.boards[0].footprints[0].locked = true
-        let directory = try root(); defer { try? FileManager.default.removeItem(at: directory) }
+        let directory = root(); defer { try? FileManager.default.removeItem(at: directory) }
         let store = try await EDAProjectStore.create(root: directory, project: initial)
         let session = try await EDWorkbenchSession(store: store), boardID = initial.boards[0].id
         for id in [initial.boards[0].tracks[0].id, initial.boards[0].footprints[0].id] {
@@ -91,7 +93,7 @@ import FloeElectronicsCore
     }
 
     @Test func missingSelectionOrWrongBoardCannotRecreateOrEditAnotherObject() async throws {
-        let initial = fixture(), directory = try root(); defer { try? FileManager.default.removeItem(at: directory) }
+        let initial = fixture(), directory = root(); defer { try? FileManager.default.removeItem(at: directory) }
         let store = try await EDAProjectStore.create(root: directory, project: initial)
         let session = try await EDWorkbenchSession(store: store)
         var removed = initial.boards[0].tracks[0]; removed.id = UUID()
@@ -103,7 +105,7 @@ import FloeElectronicsCore
     }
 
     @Test func externalWriterCASPreservesDirtyDraftAndReloadReadsActualOriginal() async throws {
-        let initial = fixture(), directory = try root(); defer { try? FileManager.default.removeItem(at: directory) }
+        let initial = fixture(), directory = root(); defer { try? FileManager.default.removeItem(at: directory) }
         let store = try await EDAProjectStore.create(root: directory, project: initial)
         let a = try await EDWorkbenchSession(store: store), b = try await EDWorkbenchSession(store: store)
         var draft = EDInspectorDraft(a.project.boards[0].tracks[0], revision: a.revision); draft.value.width = 0.55
@@ -124,7 +126,7 @@ import FloeElectronicsCore
     }
 
     @Test func libraryPinPadAndGraphicLayerEditsUseExistingSaveAndUndo() async throws {
-        let initial = fixture(), directory = try root(); defer { try? FileManager.default.removeItem(at: directory) }
+        let initial = fixture(), directory = root(); defer { try? FileManager.default.removeItem(at: directory) }
         let store = try await EDAProjectStore.create(root: directory, project: initial)
         let session = try await EDWorkbenchSession(store: store)
         var symbol = initial.symbols[0]; symbol.pins[0].position = .init(-7, 3); symbol.pins[0].unit = 0; symbol.pins[0].type = .powerInput
@@ -143,7 +145,7 @@ import FloeElectronicsCore
     }
 
     @Test func boardSettingsRetainAllUntouchedGeometryAndGraphicAssignments() async throws {
-        let initial = fixture(), directory = try root(); defer { try? FileManager.default.removeItem(at: directory) }
+        let initial = fixture(), directory = root(); defer { try? FileManager.default.removeItem(at: directory) }
         let store = try await EDAProjectStore.create(root: directory, project: initial)
         let session = try await EDWorkbenchSession(store: store)
         var draft = EDInspectorDraft(initial.boards[0], revision: session.revision)
@@ -163,7 +165,7 @@ import FloeElectronicsCore
         let component = EDAComponent(symbolID: initial.symbols[0].id, reference: "U1", value: "Controller", fields: ["manufacturer": "QA"], excludedVariants: ["Prototype"])
         let placement = EDASymbolPlacement(componentID: component.id, position: .init(4, 5))
         initial.components = [component]; initial.sheets[0].symbols = [placement]
-        let directory = try root(); defer { try? FileManager.default.removeItem(at: directory) }
+        let directory = root(); defer { try? FileManager.default.removeItem(at: directory) }
         let store = try await EDAProjectStore.create(root: directory, project: initial), session = try await EDWorkbenchSession(store: store)
         var part = try #require(EDComponentInspectorValue.read(session.project, sheetID: initial.sheets[0].id, placementID: placement.id))
         part.component.value = "MCU"; part.placement.position = .init(7, 9); part.placement.angle = 90; part.placement.mirrored = true

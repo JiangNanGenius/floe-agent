@@ -29,8 +29,11 @@ import FloeElectronicsCore
         for point in local ?? outline { try draft.append(point.transformed(origin:pad.position,angle:pad.angle)) }
         return draft
     }
-    private func root() throws -> URL {
-        URL(fileURLWithPath:try #require(ProcessInfo.processInfo.environment["FLOE_POLYGON_TEST_TEMP"])).appendingPathComponent(UUID().uuidString)
+    private func root() -> URL {
+        let base = ProcessInfo.processInfo.environment["FLOE_POLYGON_TEST_TEMP"].map {
+            URL(fileURLWithPath: $0, isDirectory: true)
+        } ?? FileManager.default.temporaryDirectory
+        return base.appendingPathComponent(UUID().uuidString, isDirectory: true)
     }
     private func edited(_ p: EDAProject, _ edits: [EDAEdit]) throws -> EDAProject {
         var editor=try EDAEditingSession(project:p);try editor.apply(edits,expectedRevision:p.revision);return editor.project
@@ -55,7 +58,7 @@ import FloeElectronicsCore
     }
 
     @Test func realFinishSavesReopensChecksExportsAndUndoesOneOriginalTransaction() async throws {
-        let p=try fixture(),dir=try root();defer{try? FileManager.default.removeItem(at:dir)}
+        let p=try fixture(),dir=root();defer{try? FileManager.default.removeItem(at:dir)}
         let store=try await EDAProjectStore.create(root:dir,project:p),session=try await EDWorkbenchSession(store:store)
         let plan=try draft(p).plan(),before=try await store.load()
         var callbacks=0;session.onSaved={_ in callbacks+=1}
@@ -90,7 +93,7 @@ import FloeElectronicsCore
     }
 
     @Test func cancellationClosedOldSourceAndActualExternalCASCannotOverwriteTheOriginal() async throws {
-        let p=try fixture(),dir=try root();defer{try? FileManager.default.removeItem(at:dir)}
+        let p=try fixture(),dir=root();defer{try? FileManager.default.removeItem(at:dir)}
         let store=try await EDAProjectStore.create(root:dir,project:p),session=try await EDWorkbenchSession(store:store),plan=try draft(p).plan()
         var replacement=p;replacement.title="same-revision replacement"
         #expect(throws:EDAError.self){try plan.validateSource(replacement)}

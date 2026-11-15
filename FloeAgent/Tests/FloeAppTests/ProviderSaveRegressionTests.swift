@@ -36,6 +36,44 @@ import FloeExecution
 @MainActor
 struct ProviderSaveRegressionTests {
 
+    @Test("Only a successful confirmation for the current HTTP endpoint can enter the save request")
+    func plainHTTPRequiresCurrentVerifiedEndpoint() async throws {
+        let environment = AppEnvironment.preview()
+        try await environment.database.migrate()
+        let lan = try #require(URL(string: "http://10.0.0.25:8080/v1"))
+        let profile = ProviderProfile(id: UUID(), kind: .openAI, wireProtocol: .openAIChatCompletions,
+                                      baseURL: try #require(URL(string: "https://example.com/v1")), allowsPlainHTTP: false)
+        try await environment.configurationStore.saveProvider(profile)
+        let editor = ProviderEditorViewModel(center: environment.conversationCenter, existing: profile)
+        editor.baseURLString = lan.absoluteString
+        let request = try #require(editor.pendingHTTPApproval)
+        let cancelled = await editor.confirmHTTP(request) { false }
+        #expect(!cancelled)
+        #expect(!editor.allowsPlainHTTP)
+        let stale = await editor.confirmHTTP(request) {
+            editor.baseURLString = "http://10.0.0.27:8080/v1"
+            editor.baseURLString = lan.absoluteString
+            return true
+        }
+        #expect(!stale)
+        let current = try #require(editor.pendingHTTPApproval)
+        let approved = await editor.confirmHTTP(current) { true }
+        #expect(approved)
+        #expect(editor.pendingHTTPApproval == nil)
+        let draft = try editor.buildProfile()
+        #expect(draft.baseURL == lan && draft.allowsPlainHTTP)
+        let saved = await editor.save()
+        #expect(saved)
+        let value = try #require(try await environment.configurationStore.provider(id: profile.id))
+        #expect(value.baseURL == lan && value.allowsPlainHTTP)
+        let reopened = ProviderEditorViewModel(center: environment.conversationCenter, existing: value)
+        #expect(reopened.pendingHTTPApproval == nil)
+        reopened.baseURLString = "http://10.0.0.27:8080/v1"
+        #expect(reopened.pendingHTTPApproval != nil && !reopened.allowsPlainHTTP)
+        reopened.baseURLString = "https://example.com/v1"
+        #expect(reopened.pendingHTTPApproval == nil && !reopened.allowsPlainHTTP)
+    }
+
     // MARK: - Bundled content
 
     @Test("Every shipped preset builds a provider identity the save gate accepts")

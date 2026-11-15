@@ -54,7 +54,7 @@ final class SkillAuthoringCoordinator: ObservableObject {
     }
 
     var shelfRecords: [SkillAuthoringRecord] { records.filter { !$0.acknowledged && !$0.isPromoted } }
-    var taskCenterRecords: [SkillAuthoringRecord] { records.filter { !$0.isPromoted } }
+    var historyRecords: [SkillAuthoringRecord] { records.filter { $0.acknowledged && !$0.isPromoted } }
     func record(_ id: UUID) -> SkillAuthoringRecord? { records.first { $0.id == id } }
     func draftText(_ id: UUID) -> String { drafts.authoringDraft(for: id).text }
     func isWorking(_ id: UUID) -> Bool { operations[id] != nil }
@@ -80,7 +80,7 @@ final class SkillAuthoringCoordinator: ObservableObject {
         } catch { errors[id] = message(error) }
     }
 
-    func reload() async {
+    func reload(completing operationID: UUID? = nil) async {
         do {
             if !restored {
                 restored = true
@@ -96,7 +96,7 @@ final class SkillAuthoringCoordinator: ObservableObject {
                     do { packages[value.id] = try storage().descriptor(ownerID: value.id, id: id) }
                     catch { packages[value.id] = nil; errors[value.id] = message(error, fallback: "skills.authoring.error.source") }
                 }
-                if value.phase == .needsUser, !isWorking(value.id),
+                if value.phase == .needsUser, value.id == operationID || !isWorking(value.id),
                    let runID = value.attempt?.binding.runID,
                    let body = try? await backend.finalBody(ownerID: value.id, runID: runID),
                    let question = try? SkillAuthoringPackageStorage.question(from: body) {
@@ -271,8 +271,11 @@ final class SkillAuthoringCoordinator: ObservableObject {
         operations[id] = Task { [weak self] in
             await work(epoch)
             guard let self, self.operationIDs[id] == epoch else { return }
-            self.operations[id] = nil; self.operationIDs[id] = nil
-            await self.reload()
+            await self.reload(completing: id)
+            guard self.operationIDs[id] == epoch else { return }
+            self.objectWillChange.send()
+            self.operations[id] = nil
+            self.operationIDs[id] = nil
         }
     }
 

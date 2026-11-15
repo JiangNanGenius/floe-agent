@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #if canImport(UIKit)
 import SwiftUI
+import FloeBuildingProject
 import FloeCore
 import FloeNotes
 import UniformTypeIdentifiers
@@ -86,7 +87,7 @@ struct SpaceRootView: View {
     // The accepted Files preview filters the same directory. These choices
     // never create categories, move originals, or expose editor internals.
     private enum PersonalFileFilter: String, CaseIterable, Identifiable {
-        case all, document, drawing, video, cad
+        case all, document, drawing, video, building, cad
         var id: Self { self }
         var title: String {
             switch self {
@@ -94,6 +95,7 @@ struct SpaceRootView: View {
             case .document: IDELanguageRunText.t("文档", "Documents")
             case .drawing: IDELanguageRunText.t("绘画／图片", "Drawing / images")
             case .video: IDELanguageRunText.t("视频", "Video")
+            case .building: PersonalContentKind.building.title
             case .cad: "CAD"
             }
         }
@@ -103,6 +105,7 @@ struct SpaceRootView: View {
             case .document: kind == .document || kind == .latex
             case .drawing: [.image, .drawing, .canvas].contains(kind)
             case .video: kind == .video
+            case .building: kind == .building
             case .cad: [.cad2D, .cad3D].contains(kind)
             }
         }
@@ -316,7 +319,7 @@ struct SpaceRootView: View {
             get: { notice != nil }, set: { if !$0 { notice = nil } })) {
             Button(IDELanguageRunText.t("好", "OK"), role: .cancel) { notice = nil }
         } message: { Text(notice ?? "") }
-        .fileImporter(isPresented: $importing, allowedContentTypes: [.content], allowsMultipleSelection: false) { result in
+        .fileImporter(isPresented: $importing, allowedContentTypes: [.content, BuildingProjectDocumentType.contentType], allowsMultipleSelection: false) { result in
             Task {
                 do {
                     guard let file = try result.get().first else { return }
@@ -453,6 +456,7 @@ struct SpaceRootView: View {
             overviewEntry(IDELanguageRunText.t("绘画／图片", "Drawing / image"), kind.drawing.systemImage, .create(.work(.drawing))),
             overviewEntry(kind.video.title, kind.video.systemImage, .create(.work(.video))),
             overviewEntry(kind.music.title, kind.music.systemImage, .create(.work(.music))),
+            overviewEntry(kind.building.title, kind.building.systemImage, .create(.work(.building))),
             overviewEntry(kind.cad2D.title, kind.cad2D.systemImage, .create(.work(.cad2D))),
             overviewEntry(kind.cad3D.title, kind.cad3D.systemImage, .create(.work(.cad3D))),
             overviewEntry(kind.chemistry.title, kind.chemistry.systemImage, .create(.work(.chemistry))),
@@ -476,6 +480,7 @@ struct SpaceRootView: View {
                 overviewEntry(kind.music.title, kind.music.systemImage, .create(.work(.music)))
             ]),
             OverviewGroup(id: "design", title: IDELanguageRunText.t("设计与工程", "Design & engineering"), entries: [
+                overviewEntry(kind.building.title, kind.building.systemImage, .create(.work(.building))),
                 overviewEntry(kind.cad2D.title, kind.cad2D.systemImage, .create(.work(.cad2D))),
                 overviewEntry(kind.cad3D.title, kind.cad3D.systemImage, .create(.work(.cad3D))),
                 overviewEntry(kind.electronics.title, kind.electronics.systemImage, .create(.work(.electronics))),
@@ -774,7 +779,7 @@ struct SpaceRootView: View {
                     }
                 } label: { Label("CAD", systemImage: "cube.transparent") }
                 .accessibilityIdentifier("space.new.cad")
-                ForEach([PersonalContentKind.diagram, .music, .latex, .electronics, .geography], id: \.self) { kind in
+                ForEach([PersonalContentKind.building, .diagram, .music, .latex, .electronics, .geography], id: \.self) { kind in
                     Button(kind.title, systemImage: kind.systemImage) { requestCreation(.work(kind)) }
                         .accessibilityIdentifier("space.create." + kind.rawValue)
                 }

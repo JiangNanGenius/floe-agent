@@ -174,6 +174,8 @@ enum TTSSpeechHTTP {
         let statusCode: Int
         let logID: String?
         let chunks: TTSSpeechByteChunks
+        let contentLength: Int64
+        let mimeType: String?
     }
 
     static func open(
@@ -193,7 +195,8 @@ enum TTSSpeechHTTP {
             throw classifyHTTPStatus(
                 provider: provider, statusCode: http.statusCode, logID: logID, route: route)
         }
-        return Opened(statusCode: http.statusCode, logID: logID, chunks: chunks)
+        return Opened(statusCode: http.statusCode, logID: logID, chunks: chunks,
+                      contentLength: http.expectedContentLength, mimeType: http.mimeType?.lowercased())
     }
 
     /// POSTs a JSON body and returns the incremental byte sequence.

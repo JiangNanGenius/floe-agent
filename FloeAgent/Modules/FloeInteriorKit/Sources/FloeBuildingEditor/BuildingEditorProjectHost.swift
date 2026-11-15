@@ -17,6 +17,9 @@ public struct BuildingEditorProjectHost:View {
     /// A saved native package this new project starts from. Only read; the
     /// project copy is verified before any generation is published.
     private let importingNativeDocument:URL?
+    /// The Space record identity when this package is owned by a personal
+    /// record. The assistant mount uses this ID instead of a path-derived one.
+    private let spaceRecordID:UUID?
     @Environment(\.locale) private var locale
     @State private var session:BuildingEditorProjectSession?
     @State private var recovery:BuildingEditorRecoveryOptions?
@@ -25,12 +28,15 @@ public struct BuildingEditorProjectHost:View {
     @State private var failure:String?
     @State private var ownedTask:Task<Void,Never>?
     @State private var closed=false
+    @State private var notifiedMount=false
 
     public init(projectDirectory:URL,assetLibraryDirectory:URL,launch:BuildingEditorLaunch = .open,
                 hostActions:BuildingEditorHostActions = .init(),
-                importingNativeDocument:URL? = nil) {
+                importingNativeDocument:URL? = nil,
+                spaceRecordID:UUID? = nil) {
         directory=projectDirectory;library=assetLibraryDirectory;self.launch=launch;actions=hostActions
         self.importingNativeDocument=importingNativeDocument
+        self.spaceRecordID=spaceRecordID
     }
     private func copy(_ zh:String,_ en:String)->String {locale.language.languageCode?.identifier=="zh" ? zh:en}
     public var body:some View {
@@ -98,13 +104,14 @@ public struct BuildingEditorProjectHost:View {
                 let created:BuildingEditorProjectSession
                 if let importingNativeDocument {
                     created=try await BuildingEditorProjectSession.create(at:directory,name:name,
-                        assetLibraryDirectory:library,importingNativeDocument:importingNativeDocument)
+                        assetLibraryDirectory:library,importingNativeDocument:importingNativeDocument,
+                        spaceRecordID:spaceRecordID)
                 } else {
                     created=try await BuildingEditorProjectSession.create(at:directory,name:name,
-                        assetLibraryDirectory:library)
+                        assetLibraryDirectory:library,spaceRecordID:spaceRecordID)
                 }
                 guard !Task.isCancelled else {try? await created.close(discardWorkingCopy:false);return}
-                session=created
+                mount(created)
             }
             }
         }
@@ -125,7 +132,7 @@ public struct BuildingEditorProjectHost:View {
         var configured=actions
         configured.didClose={
             failure=session?.publicationWarning
-            closed=true;session=nil
+            closed=true;unmount()
             actions.didClose()
         }
         return configured
@@ -134,12 +141,29 @@ public struct BuildingEditorProjectHost:View {
         run {
             let options=try await BuildingEditorProjectSession.recoveryOptions(at:directory)
             if options.workingCopies.isEmpty {
-                session=try await BuildingEditorProjectSession.open(at:directory,assetLibraryDirectory:library)
+                mount(try await BuildingEditorProjectSession.open(at:directory,assetLibraryDirectory:library,
+                    spaceRecordID:spaceRecordID))
             } else {recovery=options}
         }
     }
     private func open(_ choice:BuildingEditorOpenChoice) {
-        run {session=try await BuildingEditorProjectSession.open(at:directory,assetLibraryDirectory:library,choice:choice)}
+        run {mount(try await BuildingEditorProjectSession.open(at:directory,assetLibraryDirectory:library,
+            choice:choice,spaceRecordID:spaceRecordID))}
+    }
+    /// Notify the host only after Records, CAD and the editor state are all
+    /// mounted. A one-shot guard keeps recovery/reopen from opening a second
+    /// assistant conversation for the same presentation.
+    private func mount(_ value:BuildingEditorProjectSession) {
+        value.publishIndependentCopy = actions.publishCopy
+        value.encodeDWG = actions.encodeDWG
+        value.encodeIFC = actions.encodeIFC
+        session=value
+        guard !notifiedMount else{return}
+        notifiedMount=true
+        actions.projectDidMount?(value.assistantContext())
+    }
+    private func unmount() {
+        session=nil;notifiedMount=false
     }
 }
 #endif

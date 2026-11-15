@@ -115,7 +115,7 @@ enum MediaV2CommandError: Error, LocalizedError {
 
 extension MediaV2Session {
     static let localToolIDs: Set<String> = [
-        "image.remove-asset", "video.remove-asset",
+        "image.remove-asset", "video.remove-asset", "image.feather-brush",
         "image.remove", "image.content-fill", "image.heal", "image.patch", "image.smudge", "image.clone", "image.gradient", "image.blur-brush", "image.sharpen-brush", "image.layer-effect",
         "image.perspective", "image.distort", "image.wand", "image.subject", "image.refine-edge", "image.expand", "image.smooth", "image.background", "image.curves", "image.balance", "image.lut", "image.denoise",
         "image.rectangle", "image.ellipse", "image.lasso", "image.polygon", "image.feather", "image.inverse", "image.deselect",
@@ -299,6 +299,11 @@ extension MediaV2Session {
                 if actor == .model, input.objectID != nil { throw MediaV2CommandError.invalidInput }
                 insertLayer(.strokes(.init(strokes: [stroke])), name: WorkbenchText.t("笔迹", "Brush stroke"))
             }
+        case "image.feather-brush":
+            guard let layer, let points = input.points else { throw MediaV2CommandError.missingSelection }
+            let mask = try MediaNativeFeatherBrush.appending(to:layer,document:document,points:points,
+                diameter:input.number ?? featherDiameter,strength:input.secondary ?? featherStrength,selection:region)
+            actions.append(.setLayerMask(id:layer.id,expectedRevision:layer.revision,mask:mask))
         case "image.eraser":
             guard let layer, let points = input.points else { throw MediaV2CommandError.missingSelection }
             // The trail is the erase operation; the selection is only its

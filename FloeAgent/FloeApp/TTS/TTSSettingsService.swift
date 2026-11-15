@@ -194,6 +194,13 @@ final class TTSSettingsService: ObservableObject {
         } else {
             saved.openAIBaseURL = nil
         }
+        if saved.provider == .deepSeek {
+            guard saved.billingRoute == .payAsYouGo, DeepSeekSpeechAPI.voices.contains(saved.voiceID) else {
+                throw TTSSynthesisError.invalidConfiguration("invalid DeepSeek speech profile")
+            }
+            saved.modelID = ""
+            saved.connectionProviderID = nil
+        }
         let key = credential.trimmingCharacters(in: .whitespacesAndNewlines)
         // A key issued by one service is never silently reused for another:
         // a host/port change requires entering the new service's key even
@@ -798,7 +805,7 @@ final class TTSSettingsService: ObservableObject {
                to: settings.openAIBaseURL) {
             throw TTSSettingsFailure.credentialChangedRequiresNewKey
         }
-        if let id = settings.connectionProviderID { return try await resolveConnection(id) }
+        if settings.provider != .deepSeek, let id = settings.connectionProviderID { return try await resolveConnection(id) }
         guard let data = try? readDedicatedCredential(for: settings),
               let value = String(data: data, encoding: .utf8), !value.isEmpty else {
             throw TTSSynthesisError.credentialMissing(provider: settings.provider, route: settings.billingRoute)

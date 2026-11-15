@@ -10,6 +10,7 @@
 #if canImport(SwiftUI) && canImport(UIKit)
 import Foundation
 import CryptoKit
+import FloeBuildingProject
 #if canImport(Darwin)
 import Darwin
 #endif
@@ -155,6 +156,34 @@ enum DocumentIntakeStorage {
 
     static func hex(_ digest: SHA256.Digest) -> String {
         digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func stageBuilding(from source: URL, to target: URL, maximumBytes: Int64) throws -> (digest: String, byteCount: Int64) {
+        guard maximumBytes > 0 else { throw DocumentIntakeError.tooLarge(maximumBytes) }
+        var configuration = BuildingProjectConfiguration.default
+        configuration.limits.maxTotalBytes = min(configuration.limits.maxTotalBytes, Int(maximumBytes))
+        configuration.limits.maxSingleFileBytes = min(configuration.limits.maxSingleFileBytes, configuration.limits.maxTotalBytes)
+        try Task.checkCancellation()
+        let receipt = try BuildingProjectRepository.copyPortableCopy(from: source, to: target, configuration: configuration)
+        try Task.checkCancellation()
+        let result = try buildingFingerprint(at: target, receipt: receipt)
+        guard result.byteCount <= maximumBytes else { throw DocumentIntakeError.tooLarge(maximumBytes) }
+        return result
+    }
+
+    static func verifyBuilding(at url: URL, digest: String, byteCount: Int64) throws -> Bool {
+        let receipt = try BuildingProjectRepository.verifyPortableCopy(at: url)
+        let actual = try buildingFingerprint(at: url, receipt: receipt)
+        return actual.digest == digest && actual.byteCount == byteCount
+    }
+
+    private static func buildingFingerprint(at url: URL, receipt: BuildingProjectPortableCopyReceipt) throws -> (digest: String, byteCount: Int64) {
+        guard let manifestBytes = fileSize(url.appendingPathComponent("Manifest.json")) else { throw DocumentIntakeError.damaged }
+        let metadata = url.appendingPathComponent("Generations").appendingPathComponent(receipt.generationID)
+            .appendingPathComponent("Generation.json")
+        let generation = try sha256(of: metadata, maximumBytes: Int64(BuildingProjectConfiguration.default.limits.maxManifestBytes))
+        let digest = hex(SHA256.hash(data: Data((receipt.contentDigest + generation.digest).utf8)))
+        return (digest, Int64(receipt.totalByteCount) + manifestBytes + generation.byteCount)
     }
 }
 

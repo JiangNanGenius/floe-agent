@@ -14,6 +14,7 @@
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
+import FloeCore
 import FloeModels
 
 /// One attachment chip: the display name plus the REAL part kind (an image
@@ -88,6 +89,51 @@ struct AttachmentChipRow: View {
     }
 }
 
+/// The timestamp belongs to the persisted message or assistant text event.
+struct ChatMessageFooter: View {
+    let sentAt: Date
+    let messageID: String
+    var userText: String? = nil
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Text(sentAt, format: .dateTime.year().month(.abbreviated).day().hour().minute())
+                .font(FloeTheme.Typography.metadata)
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("thread.message.date.\(messageID)")
+            if let userText, let text = CredentialMessagePart.clipboardText(userText) {
+                ChatMessageCopyButton(text: text)
+                    .accessibilityIdentifier("thread.user.copy.\(messageID)")
+            }
+        }
+    }
+}
+
+struct ChatMessageCopyButton: View {
+    let text: String
+    @State private var copied = false
+
+    var body: some View {
+        Button {
+            UIPasteboard.general.string = text
+            copied = true
+        } label: {
+            Label(copied ? IDELanguageRunText.t("已复制", "Copied") : FloeL10n.l("workspace.workspace_canvas_view.copy"),
+                  systemImage: copied ? "checkmark" : "doc.on.doc")
+                .font(FloeTheme.Typography.metadata)
+                .foregroundStyle(.secondary)
+                .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .task(id: copied) {
+            guard copied else { return }
+            try? await Task.sleep(for: .seconds(2))
+            if !Task.isCancelled { copied = false }
+        }
+    }
+}
+
 /// One user message: right-aligned bubble + attachment chips.
 struct UserMessageBubble: View {
     let text: String
@@ -155,6 +201,20 @@ struct CredentialMessagePart: Identifiable {
     let id: Int
     let kind: Kind
     let value: String
+
+    /// Copy the displayed message, preserving whitespace and excluding credential handles.
+    static func clipboardText(_ text: String) -> String? {
+        guard !text.isEmpty else { return nil }
+        guard text.contains("⟨credential:") else { return text }
+        let parts = parse(text)
+        guard parts.contains(where: { $0.kind == .text && !$0.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) else { return nil }
+        return parts.map { part in
+            switch part.kind {
+            case .text: return part.value
+            case .credential: return String(localized: "chat.user_message_bubble.secure_credentials")
+            }
+        }.joined()
+    }
 
     static func parse(_ text: String) -> [Self] {
         let pattern = #"⟨credential:[0-9A-Fa-f-]{36}⟩"#

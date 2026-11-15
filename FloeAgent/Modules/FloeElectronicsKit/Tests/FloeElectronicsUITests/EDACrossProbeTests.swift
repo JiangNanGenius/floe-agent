@@ -99,7 +99,15 @@ import FloeElectronicsCore
         #expect(try EDACrossProbe.resolve(p, selection: schematic(p)).variant == nil)
         #expect(try EDACrossProbe.resolve(p, selection: schematic(p), variant: "Default").targets.count == 1)
         #expect(throws: EDACrossProbeError.selectOneComponent) { try EDACrossProbe.resolve(p, selection: .none) }
-        #expect(!EDACrossProbe.isComponentSelection(p, selection: .init(context: .symbol(definitionID: p.symbols[0].id), objectIDs: [p.symbols[0].pins[0].id])))
+        let symbol = p.symbols[0]
+        let pinSelection = EDASelection(context: .symbol(definitionID: symbol.id), objectIDs: [symbol.pins[0].id])
+        let pinIsComponent = EDACrossProbe.isComponentSelection(p, selection: pinSelection)
+        #expect(pinIsComponent == false)
+        #expect(throws: EDACrossProbeError.selectOneComponent) { try EDACrossProbe.resolve(p, selection: pinSelection) }
+        let placedSymbolIsComponent = EDACrossProbe.isComponentSelection(p, selection: schematic(p))
+        let placedFootprintIsComponent = EDACrossProbe.isComponentSelection(p, selection: board(p))
+        #expect(placedSymbolIsComponent)
+        #expect(placedFootprintIsComponent)
     }
 
     @Test func excessiveTargetsAndGeometryRefuseInsteadOfTruncatingOrHangingNavigation() throws {

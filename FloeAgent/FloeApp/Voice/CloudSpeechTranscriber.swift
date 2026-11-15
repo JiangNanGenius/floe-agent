@@ -466,11 +466,6 @@ private struct CloudUtteranceState {
         }
     }
 
-    var wavData: Data {
-        CloudPCMCodec.wav(
-            pcm16: frames.reduce(into: Data()) { $0.append($1.pcm) },
-            sampleRate: sampleRate)
-    }
 }
 
 /// Per-utterance live recovery accounting. `retries` counts only fresh
@@ -1170,18 +1165,28 @@ final class CloudSpeechTranscriber: SpeechTranscribing, @unchecked Sendable {
     private func transcribeBatch(_ state: CloudUtteranceState) async throws -> String {
         let credential = try await credentialProvider()
         try Task.checkCancellation()
-        let duration = max(state.duration, 0.01)
-        let request = ASRFileTranscriptionRequest(
-            profile: profile,
-            audio: state.wavData,
-            filename: "utterance.wav",
-            mimeType: "audio/wav",
-            languages: language.recognitionCode.map { [$0] } ?? [],
-            sourceDurationSeconds: duration)
-        let result = try await CloudSpeechTimeout.run(seconds: Self.finalTimeoutSeconds) {
-            try await self.fileAdapter.transcribe(request, credential: credential)
+        let pcm = state.frames.reduce(into: Data()) { $0.append($1.pcm) }
+        guard !pcm.isEmpty else { return "" }
+        let deepSeek = profile.provider == .deepSeek
+        let maximumBytes = deepSeek
+            ? min(Int(DeepSeekSpeechAPI.maximumAudioSeconds) * state.sampleRate * 2,
+                  DeepSeekSpeechAPI.maximumFileBytes - 44)
+            : pcm.count
+        var texts = [String]()
+        for start in stride(from: 0, to: pcm.count, by: max(2, maximumBytes)) {
+            try Task.checkCancellation()
+            let part = Data(pcm[start..<min(start + maximumBytes, pcm.count)])
+            let request = ASRFileTranscriptionRequest(
+                profile: profile, audio: CloudPCMCodec.wav(pcm16: part, sampleRate: state.sampleRate),
+                filename: "utterance.wav", mimeType: "audio/wav",
+                languages: language.recognitionCode.map { [$0] } ?? [],
+                sourceDurationSeconds: Double(part.count / 2) / Double(state.sampleRate))
+            let result = try await CloudSpeechTimeout.run(seconds: deepSeek ? 600 : Self.finalTimeoutSeconds) {
+                try await self.fileAdapter.transcribe(request, credential: credential)
+            }
+            if !result.text.isEmpty { texts.append(result.text) }
         }
-        return result.text
+        return texts.joined(separator: "\n")
     }
 
     // MARK: - Local recovery

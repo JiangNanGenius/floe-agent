@@ -1069,7 +1069,7 @@ final class ThreadDetailViewModel: ObservableObject {
             return allEvents.first(where: { $0.id == eventID })?.runID
         }
         for item in items {
-            guard case .assistantMessage(let text, let suffix) = item,
+            guard case .assistantMessage(let text, let suffix, _) = item,
                   ConversationSearchText.visibleText(markdown: text)
                     == ConversationSearchText.visibleText(markdown: message.content),
                   eventRunID(suffix) == message.runID else { continue }

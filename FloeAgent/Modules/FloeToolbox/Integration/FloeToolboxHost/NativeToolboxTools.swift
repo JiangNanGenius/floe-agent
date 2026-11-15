@@ -31,6 +31,7 @@ public struct ToolboxAIHostContext: Sendable {
         var names: Set<String> = [ToolboxCaptureAction.name]
         if let serial,[SerialProtocol.raw,.webSocketMessage].contains(serial.endpoint.wireProtocol) { names.insert(ToolboxSerialSendAction.name) }
         if serial?.endpoint.transport == .webSocket { names.formUnion([ToolboxWebSocketSendAction.name,ToolboxWebSocketReceiveAction.name]) }
+        if serial?.endpoint.wireProtocol == .raw || modbus != nil { names.formUnion([ToolboxModbusBuildAction.name,ToolboxModbusDecodeAction.name]) }
         if modbus != nil { names.formUnion([ToolboxModbusReadAction.name,ToolboxModbusWriteAction.name]) }
         if mqtt != nil { names.formUnion([ToolboxMQTTPublishAction.name,ToolboxMQTTSubscriptionAction.name]) }
         if http != nil { names.formUnion([ToolboxHTTPReadAction.name,ToolboxHTTPWriteAction.name]) }
@@ -54,10 +55,12 @@ public protocol ToolboxNativeAction: Sendable {
     /// The existing task policy still intersects every label.
     static var additionalRiskLabels: Set<RiskLabel> { get }
     static func validate(_ args: Arguments) throws
+    static func authorize(_ args: Arguments,host: ToolboxAIHostContext,context: ToolContext) async throws
     static func perform(_ args: Arguments,host: ToolboxAIHostContext) async throws -> String
 }
 public extension ToolboxNativeAction {
     static var additionalRiskLabels: Set<RiskLabel> { [] }
+    static func authorize(_ args: Arguments,host: ToolboxAIHostContext,context: ToolContext) async throws {}
 }
 /// Registers with the existing catalog/runner. Discovery must only expose applicable tools
 /// for the run's frozen host capabilities. Mutations retain existing policy and Core approval.
@@ -85,6 +88,8 @@ public struct ToolboxNativeTool<Action: ToolboxNativeAction>: AgentTool {
               Action.readOnly || context.approvalGrantID != nil else { throw ToolboxError.denied }
         let host = try await resolve(context); try await host.check(context)
         guard host.availableToolNames.contains(Self.name) else { throw ClientError.unsupported }
+        try await Action.authorize(args,host:host,context:context)
+        try await host.check(context)
         do {
             let result = try await Action.perform(args,host:host); try await host.check(context)
             return ToolExecutionOutput(summary:result,fullOutputSHA256:SHA256.hash(data:Data(result.utf8)).map { String(format:"%02x",$0) }.joined(),maximumSummaryCharacters:65536,capturedOutput:result)
@@ -205,7 +210,15 @@ public enum ToolboxSerialSendAction: ToolboxNativeAction {
 public struct ToolboxModbusArguments: Decodable,Sendable {
     public let unit: UInt8; public let address: UInt16; public let function: UInt8; public let quantity: UInt16?; public let values: [UInt16]?
     public func operation(read: Bool) throws -> ModbusOperation {
-        if read { guard (1...4).contains(function),let quantity else { throw ClientError.invalidConfiguration }; return .read(function:function,quantity:quantity) }
+        if read { guard (1...4).contains(function) else { throw ClientError.invalidConfiguration } }
+        else { guard [5,6,15,16].contains(function) else { throw ClientError.invalidConfiguration } }
+        return try Self.operation(function:function,quantity:quantity,values:values)
+    }
+    public static func operation(function: UInt8,quantity: UInt16?,values: [UInt16]?) throws -> ModbusOperation {
+        if [1,2,3,4].contains(function) {
+            guard let quantity else { throw ClientError.invalidConfiguration }
+            return .read(function:function,quantity:quantity)
+        }
         guard let values else { throw ClientError.invalidConfiguration }
         switch function {
         case 5: guard values.count == 1,values[0] <= 1 else { throw ClientError.invalidConfiguration }; return .singleCoil(values[0] == 1)
@@ -220,8 +233,8 @@ private let toolboxModbusSchema = #"{"type":"object","properties":{"unit":{"type
 private func toolboxModbus(_ args: ToolboxModbusArguments,host: ToolboxAIHostContext,read: Bool) async throws -> String {
     guard let client = host.modbus else { throw ClientError.unsupported }
     let result = try await client.exchange(unit:args.unit,address:args.address,operation:args.operation(read:read))
-    struct Result: Encodable { let broadcast: Bool; let fields: [String:String] }
-    return try toolboxJSON(Result(broadcast:result.broadcast,fields:result.report?.fields ?? [:]))
+    struct Result: Encodable { let broadcast: Bool; let writeEchoVerified: Bool; let fields: [String:String] }
+    return try toolboxJSON(Result(broadcast:result.broadcast,writeEchoVerified:result.writeEchoVerified,fields:result.report?.fields ?? [:]))
 }
 public enum ToolboxModbusReadAction: ToolboxNativeAction {
     public typealias Arguments = ToolboxModbusArguments
@@ -234,9 +247,110 @@ public enum ToolboxModbusWriteAction: ToolboxNativeAction {
     public typealias Arguments = ToolboxModbusArguments
     public static let name = "toolbox.modbus.write", description = "Write current device coils/registers using functions05/06/15/16 and existing approval. Unconfirmed results must not be replayed."
     public static var schema: String { toolboxModbusSchema }; public static let readOnly = false
-    public static func validate(_ args: Arguments) throws { _ = try ModbusRequestBuilder.build(unit:args.unit,address:args.address,operation:args.operation(read:false),rtu:true) }
+    public static func validate(_ args: Arguments) throws { _ = try ModbusRequestBuilder.build(unit:args.unit,address:args.address,operation:args.operation(read:false),framing:.mbap) }
+    public static func authorize(_ args: Arguments,host: ToolboxAIHostContext,context: ToolContext) async throws {
+        guard let client = host.modbus else { throw ClientError.unsupported }
+        _ = try await client.preview(unit:args.unit,address:args.address,operation:args.operation(read:false))
+        if context.approvalOrigin == .humanCard { return }
+        let endpoint = client.session.endpoint
+        let destination = endpoint.host.map { "\($0):\(endpoint.port ?? 0)" } ?? endpoint.title
+        let values = args.values ?? []
+        let shown = values.prefix(12).map(String.init).joined(separator:", ")
+        let suffix = values.count > 12 ? " … (\(values.count))" : ""
+        let zh = Locale.preferredLanguages.first?.hasPrefix("zh") == true
+        let detail = zh ? "向 \(destination) 写入 Modbus FC\(args.function)，单元 \(args.unit)，地址 \(args.address)，值 \(shown)\(suffix)。" :
+            "Write Modbus FC\(args.function) on \(destination), unit \(args.unit), address \(args.address), values \(shown)\(suffix)."
+        guard let handle = context.nestedApproval, await handle.request(reason:detail) == .allowed else { throw ToolboxError.denied }
+    }
     public static func perform(_ args: Arguments,host: ToolboxAIHostContext) async throws -> String { try await toolboxModbus(args,host:host,read:false) }
 }
+public struct ToolboxModbusBuildArguments: Decodable,Sendable {
+    public let unit: UInt8; public let address: UInt16; public let function: UInt8
+    public let quantity: UInt16?; public let values: [UInt16]?
+    public let framing: String?; public let transactionID: UInt16?
+    public func operation() throws -> ModbusOperation {
+        try ToolboxModbusArguments.operation(function:function,quantity:quantity,values:values)
+    }
+    public func selectedFraming() throws -> ModbusFraming {
+        guard let framing else { return .mbap }
+        guard let value = ModbusFraming(rawValue:framing) else { throw ClientError.invalidConfiguration }
+        return value
+    }
+}
+private struct ToolboxModbusFrameReceipt: Encodable {
+    let framing: String; let requestHex: String; let asciiText: String?
+    let frames: [String:String]; let fields: [String:String]; let sent: Bool
+}
+private func toolboxModbusBuild(_ args: ToolboxModbusBuildArguments) throws -> String {
+    let operation = try args.operation(), selected = try args.selectedFraming()
+    let transaction = args.transactionID ?? 0
+    var frames: [String:String] = [:], asciiText: String?
+    for candidate in ModbusFraming.allCases {
+        if let frame = try? ModbusRequestBuilder.build(unit:args.unit,address:args.address,operation:operation,
+                                                       transactionID:transaction,framing:candidate) {
+            frames[candidate.rawValue] = frame.hex
+            if candidate == .ascii { asciiText = String(decoding:frame,as:UTF8.self) }
+        }
+    }
+    guard let requestHex = frames[selected.rawValue], let request = try? Data(hex:requestHex) else {
+        throw ClientError.invalidConfiguration
+    }
+    let report = try ModbusCodec.decode(request,framing:selected,response:false)
+    return try toolboxJSON(ToolboxModbusFrameReceipt(framing:selected.rawValue,requestHex:requestHex,
+        asciiText:asciiText,frames:frames,fields:report.fields,sent:false))
+}
+public enum ToolboxModbusBuildAction: ToolboxNativeAction {
+    public typealias Arguments = ToolboxModbusBuildArguments
+    public static let name = "toolbox.modbus.build", description = "Build the exact request for one of Modbus functions01-04/05/06/15/16 in MBAP, RTU/CRC and ASCII/LRC without sending. Returns every supported framing plus the decoded fields; a built frame is not a sent frame."
+    public static var schema: String { toolboxModbusBuildSchema }; public static let readOnly = true
+    public static func validate(_ args: Arguments) throws {
+        _ = try ModbusRequestBuilder.build(unit:args.unit,address:args.address,operation:args.operation(),rtu:false)
+    }
+    public static func perform(_ args: Arguments,host: ToolboxAIHostContext) async throws -> String { try toolboxModbusBuild(args) }
+}
+public struct ToolboxModbusDecodeArguments: Decodable,Sendable {
+    public let frame: String; public let framing: String?; public let encoding: String?
+}
+public enum ToolboxModbusDecodeAction: ToolboxNativeAction {
+    public typealias Arguments = ToolboxModbusDecodeArguments
+    public static let name = "toolbox.modbus.decode", description = "Decode and convert one manually supplied MBAP/RTU/ASCII Modbus frame. Read-only: it never sends or writes."
+    public static var schema: String { toolboxModbusDecodeSchema }; public static let readOnly = true
+    public static func validate(_ args: Arguments) throws {
+        guard args.frame.utf8.count <= 4096, !args.frame.isEmpty else { throw ClientError.invalidConfiguration }
+        if let framing = args.framing { guard ModbusFraming(rawValue:framing) != nil else { throw ClientError.invalidConfiguration } }
+        if let encoding = args.encoding { guard ["hex","text"].contains(encoding) else { throw ClientError.invalidConfiguration } }
+    }
+    public static func perform(_ args: Arguments,host: ToolboxAIHostContext) async throws -> String {
+        guard args.frame.utf8.count <= 4096, !args.frame.isEmpty else { throw ClientError.invalidConfiguration }
+        let trimmed = args.frame.trimmingCharacters(in:.whitespacesAndNewlines)
+        let bytes: Data
+        if args.encoding == "text" || trimmed.hasPrefix(":") {
+            var text = trimmed
+            if text.hasPrefix(":"), !text.hasSuffix("\r\n") { text += "\r\n" }
+            bytes = Data(text.utf8)
+        } else { bytes = try Data(hex:args.frame) }
+        let framing: ModbusFraming
+        if let name = args.framing {
+            guard let value = ModbusFraming(rawValue:name) else { throw ClientError.invalidConfiguration }
+            framing = value
+        } else if bytes.first == 0x3a { framing = .ascii }
+        else if bytes.count >= 6, bytes[2] == 0, bytes[3] == 0,
+                (Int(bytes[4]) << 8 | Int(bytes[5])) + 6 == bytes.count { framing = .mbap }
+        else { framing = .rtu }
+        let report = try ModbusCodec.decodeAuto(bytes,framing:framing)
+        var frames: [String:String] = [:], asciiText: String?
+        for target in ModbusFraming.allCases {
+            if let converted = try? ModbusCodec.convert(bytes,from:framing,to:target) {
+                frames[target.rawValue] = converted.hex
+                if target == .ascii { asciiText = String(decoding:converted,as:UTF8.self) }
+            }
+        }
+        struct Result: Encodable { let framing: String; let byteCount: Int; let fields: [String:String]; let frames: [String:String]; let asciiText: String? }
+        return try toolboxJSON(Result(framing:framing.rawValue,byteCount:bytes.count,fields:report.fields,frames:frames,asciiText:asciiText))
+    }
+}
+private let toolboxModbusBuildSchema = #"{"type":"object","properties":{"unit":{"type":"integer","minimum":0,"maximum":255},"address":{"type":"integer","minimum":0,"maximum":65535},"function":{"type":"integer","enum":[1,2,3,4,5,6,15,16]},"quantity":{"type":"integer","minimum":1,"maximum":2000},"values":{"type":"array","items":{"type":"integer","minimum":0,"maximum":65535},"maxItems":1968},"framing":{"type":"string","enum":["mbap","rtu","ascii"]},"transactionID":{"type":"integer","minimum":0,"maximum":65535}},"required":["unit","address","function"],"additionalProperties":false}"#
+private let toolboxModbusDecodeSchema = #"{"type":"object","properties":{"frame":{"type":"string","maxLength":4096},"framing":{"type":"string","enum":["mbap","rtu","ascii"]},"encoding":{"type":"string","enum":["hex","text"]}},"required":["frame"],"additionalProperties":false}"#
 public enum ToolboxMQTTPublishAction: ToolboxNativeAction {
     public struct Arguments: Decodable,Sendable { public let topic: String; public let data: String; public let qos: UInt8?; public let retained: Bool? }
     public static let name = "toolbox.mqtt.publish", description = "Publish through the current MQTT client's packet-ID/QoS state and existing approval. QoS0 confirms sending only."
@@ -298,6 +412,7 @@ public enum NativeToolboxTools {
             FloeTools.ToolCatalog.register(ToolboxNativeTool<A>.self); registry.register(ToolboxNativeTool<A>(resolve:resolve))
         }
         add(ToolboxCaptureAction.self); add(ToolboxSerialSendAction.self); add(ToolboxModbusReadAction.self); add(ToolboxModbusWriteAction.self)
+        add(ToolboxModbusBuildAction.self); add(ToolboxModbusDecodeAction.self)
         add(ToolboxMQTTPublishAction.self); add(ToolboxMQTTSubscriptionAction.self); add(ToolboxHTTPReadAction.self); add(ToolboxHTTPWriteAction.self)
         add(ToolboxWebSocketSendAction.self); add(ToolboxWebSocketReceiveAction.self); add(ToolboxTerminalRunAction.self)
     }

@@ -27,6 +27,14 @@ final class GameWorkspaceProjectSession {
     let selection: GameProjectSelectionCoordinator
     private(set) var project: GameStoredProject
     private(set) var selectionSnapshot: GameProjectSelectionSnapshot?
+    /// One assistant proposal for this live project. It is advisory only and
+    /// is never written to the selection store until the user approves it in
+    /// the project setup surface.
+    private(set) var pendingSelectionProposal: GameProjectSelectionProposal?
+    /// The most recent proposal the user actually accepted. It lets the
+    /// assistant's confirm action report the already-persisted selection
+    /// without granting it a new confirmation path.
+    private(set) var lastConfirmedSelectionProposalID: UUID?
     private(set) var isClosed = false
     private(set) var operationInProgress = false
     private(set) var importSummary: String?
@@ -154,6 +162,85 @@ final class GameWorkspaceProjectSession {
         try requireCurrent()
         guard generation == epoch else { throw GameIDEBridgeError.superseded }
         selectionSnapshot = snapshot
+        pendingSelectionProposal = nil
+    }
+
+    /// The user explicitly chose an engine/root pair without deterministic
+    /// marker evidence. The caller (UI) owns the acknowledgement prompt.
+    func selectManual(root: GameRelativePath?, engine: GameEngineID,
+                      acknowledgingUnverified: Bool) async throws {
+        try await prepareForHandoff()
+        let epoch = generation
+        let snapshot = try await selection.selectManual(
+            root: root, engine: engine, context: context,
+            acknowledgingUnverified: acknowledgingUnverified)
+        try requireCurrent()
+        guard generation == epoch else { throw GameIDEBridgeError.superseded }
+        selectionSnapshot = snapshot
+        pendingSelectionProposal = nil
+    }
+
+    /// Records one assistant proposal against the fresh revision. No selection
+    /// is persisted and no run/build authority is created.
+    @discardableResult
+    func proposeSelection(root: GameRelativePath?, engine: GameEngineID,
+                          evidencePaths: [GameRelativePath], rationale: String,
+                          generatedBy: String) async throws
+        -> GameProjectSelectionProposal {
+        try await prepareForHandoff()
+        let epoch = generation
+        let proposal = try await selection.proposeSelection(
+            root: root, engine: engine, evidencePaths: evidencePaths,
+            rationale: rationale, generatedBy: generatedBy, context: context)
+        try requireCurrent()
+        guard generation == epoch else { throw GameIDEBridgeError.superseded }
+        pendingSelectionProposal = proposal
+        return proposal
+    }
+
+    /// The user's explicit confirmation in the project setup surface. This is
+    /// the only method that persists a proposal.
+    @discardableResult
+    func confirmSelectionProposal(_ proposal: GameProjectSelectionProposal)
+        async throws -> GameProjectSelectionSnapshot {
+        guard pendingSelectionProposal?.id == proposal.id else {
+            throw GameProjectFlowError.proposalNotFound
+        }
+        let epoch = generation
+        let snapshot = try await selection.confirmProposal(
+            proposal, context: context, userConfirmed: true)
+        try requireCurrent()
+        guard generation == epoch else { throw GameIDEBridgeError.superseded }
+        selectionSnapshot = snapshot
+        pendingSelectionProposal = nil
+        lastConfirmedSelectionProposalID = proposal.id
+        return snapshot
+    }
+
+    /// Assistant status/confirmation surface. It can only report a selection
+    /// the user already confirmed; otherwise it fails with
+    /// `.proposalNotConfirmed` and changes nothing.
+    func assistantConfirmSelectionProposal(id: UUID) async throws
+        -> GameProjectSelectionSnapshot {
+        if lastConfirmedSelectionProposalID == id,
+           let snapshot = selectionSnapshot, snapshot.persisted {
+            return snapshot
+        }
+        guard pendingSelectionProposal?.id == id else {
+            throw GameProjectFlowError.proposalNotFound
+        }
+        throw GameProjectFlowError.proposalNotConfirmed
+    }
+
+    func discardSelectionProposal(id: UUID? = nil) {
+        guard let pendingSelectionProposal else { return }
+        guard id == nil || pendingSelectionProposal.id == id else { return }
+        self.pendingSelectionProposal = nil
+    }
+
+    var isPendingSelectionProposalStale: Bool {
+        guard let proposal = pendingSelectionProposal else { return false }
+        return proposal.baseRevision != project.revision
     }
 
     func initializeStarter(engine: GameEngineID) async throws {

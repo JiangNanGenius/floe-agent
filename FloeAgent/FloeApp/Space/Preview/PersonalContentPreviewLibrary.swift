@@ -97,6 +97,21 @@ extension PersonalContentPreviewService {
             inner = try await savedChemical(ownerID: owner, projectID: record.id,
                 root: directory.appendingPathComponent("Chemistry", isDirectory: true),
                 maximumPixelSize: maximumPixelSize, validate: validate)
+        case .building:
+            let project = BuildingProjectSpaceOriginal.projectURL(directory: directory)
+            let (manifest, cad) = try await personalPreviewOffMain {
+                let manifest = try PersonalPreviewFile(root: directory, url: project.appendingPathComponent("Manifest.json"),
+                                                       maximumBytes: 1024 * 1024)
+                let generation = try JSONDecoder().decode(SavedBuildingPreviewHeader.self, from: manifest.data()).generationID
+                guard !generation.isEmpty, !generation.hasPrefix("."),
+                      generation == (generation as NSString).lastPathComponent,
+                      !generation.contains("\0") else { throw PersonalContentPreviewError.sourceChanged }
+                let cad = project.appendingPathComponent("Generations").appendingPathComponent(generation)
+                    .appendingPathComponent("CAD/Document.floecad", isDirectory: true)
+                return (manifest, cad)
+            }
+            inner = try await savedCAD(ownerID: owner, objectID: record.id.uuidString, package: cad,
+                maximumPixelSize: maximumPixelSize, validate: { try await validate(); try manifest.validate() })
         case .game, .canvas, .diagram, .music, .meeting, .printing, .manufacturing:
             inner = try await remainingLibraryRequest(record: record, directory: directory, ownerID: owner,
                 maximumPixelSize: maximumPixelSize, validate: validate)
@@ -168,5 +183,6 @@ extension PersonalContentPreviewService {
 }
 
 private nonisolated struct SavedCADPreviewHeader: Decodable, Sendable { let revision: Int; let thumbnailSHA256: String? }
+private nonisolated struct SavedBuildingPreviewHeader: Decodable, Sendable { let generationID: String }
 private nonisolated struct SavedChemicalPreviewHead: Decodable, Sendable { let projectID: UUID; let revision: UInt64; let digest: String }
 #endif

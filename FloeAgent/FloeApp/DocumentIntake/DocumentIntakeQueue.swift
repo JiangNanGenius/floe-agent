@@ -263,7 +263,7 @@ actor DocumentIntakeQueue {
             }
             // The receipt must carry the exact pre-allocated Notes identity
             // or a real canvas identity. A mismatched commit is never stored.
-            if record.kind.importsIntoNotes {
+            if record.kind != .floeCanvas {
                 guard commit.rootDocumentID == record.plannedRootDocumentID,
                       commit.canvasID == nil else {
                     throw DocumentIntakeError.importFailed
@@ -458,10 +458,7 @@ actor DocumentIntakeQueue {
                 guard stagingIsAbandoned(directory) else { continue }
                 if let record = try? loadRecord(at: directory),
                    record.state == .pending,
-                   let payloadSize = DocumentIntakeStorage.fileSize(
-                       directory.appendingPathComponent(record.stagedFileName, isDirectory: false)
-                   ),
-                   payloadSize == record.byteCount {
+                   (try? validatePayload(record, in: directory)) != nil {
                     // A staging copy whose content is already pending or
                     // committed must not import a second time after a reopen.
                     if try hasMatchingEntryUnlocked(record) {
@@ -623,7 +620,12 @@ actor DocumentIntakeQueue {
     }
 
     private func validatePayload(_ record: DocumentIntakeRecord, in directory: URL) throws -> URL {
-        let payload = directory.appendingPathComponent(record.stagedFileName, isDirectory: false)
+        let payload = directory.appendingPathComponent(record.stagedFileName, isDirectory: record.kind == .building)
+        if record.kind == .building {
+            guard DocumentIntakeStorage.isContained(payload, in: root),
+                  DocumentIntakeStorage.isDirectoryNotSymlink(payload) else { throw DocumentIntakeError.damaged }
+            return payload
+        }
         guard DocumentIntakeStorage.isContained(payload, in: root),
               DocumentIntakeStorage.isRegularFileNotSymlink(payload),
               let size = DocumentIntakeStorage.fileSize(payload),

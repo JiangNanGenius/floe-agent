@@ -49,6 +49,9 @@ struct GameProjectBuildScreen: View {
     @State private var hookError: String?
 
     private var engine: GameEngineID? { session.project.selectionSnapshot?.selectedEngine }
+    private var canBuild: Bool {
+        session.project.selectionSnapshot?.runSelection != nil
+    }
     private var supportsDeveloperHooks: Bool {
         guard let engine else { return false }
         return [.unity, .godot, .gdevelop, .cocosCreator].contains(engine)
@@ -63,6 +66,19 @@ struct GameProjectBuildScreen: View {
     var body: some View {
         NavigationStack {
             Form {
+                if !canBuild {
+                    Section {
+                        Label(IDELanguageRunText.t("还不能构建", "Not ready to build"),
+                              systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.orange)
+                        Text(session.project.selectionSnapshot?.isManualUnverified == true
+                            ? IDELanguageRunText.t("当前引擎是手动选择，没有识别依据。请先在工程设置中确认识别到的引擎。",
+                                                   "The current engine is a manual choice without recognized evidence. Confirm a recognized engine in project setup first.")
+                            : IDELanguageRunText.t("请先在工程设置中确认可运行的游戏目录和引擎，再构建。",
+                                                   "Confirm a runnable game folder and engine in project setup before building."))
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
                 Section(IDELanguageRunText.t("构建目标", "Build target")) {
                     Picker(IDELanguageRunText.t("输出", "Output"), selection: $output) {
                         Text(IDELanguageRunText.t("Web 试玩包", "Web bundle")).tag(GameBuildArguments.Output.web)
@@ -379,7 +395,7 @@ struct GameProjectBuildScreen: View {
                             Text(building ? IDELanguageRunText.t("正在构建…", "Building…")
                                   : IDELanguageRunText.t("开始构建", "Build"))
                         }
-                    }.disabled(building || engine == nil || selectedRoutes.isEmpty
+                    }.disabled(building || !canBuild || engine == nil || selectedRoutes.isEmpty
                         || (usesCI && !sourceUploadConsent)
                         || (includeSourceCompanion && sourceSnapshot == nil))
                     if building {
@@ -402,6 +418,7 @@ struct GameProjectBuildScreen: View {
             }
             .interactiveDismissDisabled(building)
             .task {
+                guard canBuild else { return }
                 await load()
                 await loadHookScenes()
             }

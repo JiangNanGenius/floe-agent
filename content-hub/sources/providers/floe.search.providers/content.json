@@ -1,16 +1,16 @@
 {
   "schemaVersion": 1,
   "id": "floe.search.providers",
-  "version": "1.2.1",
+  "version": "1.3.0",
   "kind": "providers",
-  "minimumAppVersion": "1.7.69",
+  "minimumAppVersion": "1.8.34",
   "sourceRevision": "",
   "containsScripts": false,
   "requiredCapabilities": [],
   "dependencies": [],
   "releaseNotes": {
-    "en": "Simplifies provider names while keeping Kimi Code accounts distinct.",
-    "zh-Hans": "简化供应商名称，保留 Kimi Code 账号标识。"
+    "en": "Adds an optional DeepSeek search-while-thinking mode.",
+    "zh-Hans": "DeepSeek 搜索新增可选的深度思考模式。"
   },
   "privacy": {
     "zh-Hans": "本包仅包含声明式目录数据，不含密钥、令牌或可执行代码。",

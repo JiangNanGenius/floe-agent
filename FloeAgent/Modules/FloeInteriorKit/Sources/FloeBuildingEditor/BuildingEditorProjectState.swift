@@ -22,8 +22,32 @@ struct BuildingEditorProjectState: Codable, Equatable, Sendable {
     var native: FloeBuildingCADManifest = .init()
     var roomLinks: [BuildingEditorRoomLink] = []
     var assetPins: [FurnitureAssetPin] = []
+    /// Wall face finishes keyed by the native wall ID. Geometry stays in CAD;
+    /// this is project metadata saved in the same immutable editor-state file.
+    var wallFinishes: [InteriorWallFinishAssignment] = []
+    /// Monotonic CAS token for wall geometry and face finishes. It advances on
+    /// every accepted wall command, including finish-only edits that do not
+    /// change the native building change count.
+    var wallRevision: Int = 0
 
     init(projectID: ProjectID) {self.projectID=projectID}
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, projectID, native, roomLinks, assetPins, wallFinishes, wallRevision
+    }
+
+    /// Additive decoding keeps older editor-state files readable. A missing
+    /// wallFinishes array means "no finishes recorded", never a reset failure.
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try values.decode(Int.self, forKey: .schemaVersion)
+        projectID = try values.decode(ProjectID.self, forKey: .projectID)
+        native = try values.decode(FloeBuildingCADManifest.self, forKey: .native)
+        roomLinks = try values.decodeIfPresent([BuildingEditorRoomLink].self, forKey: .roomLinks) ?? []
+        assetPins = try values.decodeIfPresent([FurnitureAssetPin].self, forKey: .assetPins) ?? []
+        wallFinishes = try values.decodeIfPresent([InteriorWallFinishAssignment].self, forKey: .wallFinishes) ?? []
+        wallRevision = try values.decodeIfPresent(Int.self, forKey: .wallRevision) ?? 0
+    }
 
     func validate(expectedProjectID: ProjectID) throws {
         guard schemaVersion==1,native.schemaVersion==1,projectID==expectedProjectID else {
@@ -31,9 +55,14 @@ struct BuildingEditorProjectState: Codable, Equatable, Sendable {
         }
         guard roomLinks.count<=10_000,assetPins.count<=2048,native.cabinets.count<=1024,
               native.furniture.count<=2048,native.sheets.count<=1024,
-              native.cabinets.reduce(0,{$0+$1.panelBindings.count})<=10_000 else {
+              native.cabinets.reduce(0,{$0+$1.panelBindings.count})<=10_000,
+              wallFinishes.count<=2048 else {
             throw BuildingProjectStateError.budget
         }
+        guard wallRevision >= 0, Set(wallFinishes.map(\.wallID)).count == wallFinishes.count else {
+            throw BuildingProjectStateError.duplicateReference
+        }
+        for assignment in wallFinishes { _ = try assignment.validated() }
         guard Set(roomLinks.map(\.recordsRoomID)).count==roomLinks.count,
               Set(roomLinks.map(\.nativeRoomID)).count==roomLinks.count,
               Set(native.cabinets.map(\.cabinetID)).count==native.cabinets.count,

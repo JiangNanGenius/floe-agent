@@ -40,10 +40,8 @@ private struct PaletteFixture: View {
                     .accessibilityIdentifier("palette.brushes")
                     .popover(isPresented: $showingBrushes) {
                         NotesInkOptionsPanel(selected: tool == .marker ? .marker : inkPreferences.selectedPen,
-                            preferences: inkPreferences, select: { kind in
-                                if kind == .marker { tool = .marker }
-                                else { inkPreferences.select(kind); tool = .pen }
-                            }, close: { showingBrushes = false }, doneIdentifier: "palette.brushes.done")
+                            preferences: inkPreferences, select: inkPreferences.select,
+                            close: { showingBrushes = false }, doneIdentifier: "palette.brushes.done")
                             .presentationCompactAdaptation(.popover)
                     }
             }.frame(height: 52)

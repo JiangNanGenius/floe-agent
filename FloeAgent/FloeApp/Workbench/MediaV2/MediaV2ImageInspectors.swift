@@ -115,7 +115,7 @@ struct MediaV2SelectionFeatherEditor: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(WorkbenchText.t("羽化选区", "Feather selection")).font(.headline)
+            Text(WorkbenchText.t("羽化选区边缘", "Feather selection edges")).font(.headline)
             MediaV2NumberField(title: WorkbenchText.t("半径", "Radius"), value: $pixels,
                                suffix: "px", maximumFractionDigits: 1)
                 .accessibilityIdentifier("media.v2.feather.radius")

@@ -40,6 +40,7 @@ public enum ASRAdapterFactory {
                 "this model does not support file transcription")
         }
         switch profile.provider {
+        case .deepSeek: return DeepSeekTranscriptionAdapter()
         case .openaiCompatible:
             #if canImport(FoundationNetworking)
             throw ASRTranscriptionError.invalidConfiguration(
@@ -91,6 +92,7 @@ public enum ASRAdapterFactory {
             return nil
         }
         switch profile.provider {
+        case .deepSeek: return nil
         case .openaiCompatible:
             #if canImport(FoundationNetworking)
             throw ASRTranscriptionError.invalidConfiguration(

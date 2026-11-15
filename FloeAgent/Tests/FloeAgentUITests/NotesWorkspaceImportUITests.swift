@@ -24,12 +24,7 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         if ipad { app.launchArguments.append("-ui-testing-ipad") }
         app.launch()
         defer { app.terminate() }
-        if !ipad {
-            let sidebar = app.buttons["phone.sidebar.open"]
-            XCTAssertTrue(sidebar.waitForExistence(timeout: 15)); sidebar.tap()
-        }
-        let notes = app.staticTexts["sidebar.notes"].firstMatch
-        XCTAssertTrue(notes.waitForExistence(timeout: 15)); notes.tap()
+        openNotesLibrary(app, ipad: ipad)
         let create = creationControl(app)
         XCTAssertTrue(create.waitForExistence(timeout: 15))
         wait(for: [expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: create)], timeout: 10)
@@ -95,12 +90,7 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         if ipad { app.launchArguments.append("-ui-testing-ipad") }
         app.launch()
         defer { app.terminate() }
-        if !ipad {
-            let sidebar = app.buttons["phone.sidebar.open"]
-            XCTAssertTrue(sidebar.waitForExistence(timeout: 15)); sidebar.tap()
-        }
-        let notes = app.staticTexts["sidebar.notes"].firstMatch
-        XCTAssertTrue(notes.waitForExistence(timeout: 15)); notes.tap()
+        openNotesLibrary(app, ipad: ipad)
         let create = creationControl(app)
         XCTAssertTrue(create.waitForExistence(timeout: 15))
         wait(for: [expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: create)], timeout: 10)
@@ -515,12 +505,7 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         app.launch()
         defer { app.terminate() }
         if ipad { requireLandscapeAfterLaunch(app) }
-        if !ipad {
-            let sidebar = app.buttons["phone.sidebar.open"]
-            XCTAssertTrue(sidebar.waitForExistence(timeout: 15)); sidebar.tap()
-        }
-        let notes = app.staticTexts["sidebar.notes"].firstMatch
-        XCTAssertTrue(notes.waitForExistence(timeout: 15)); notes.tap()
+        openNotesLibrary(app, ipad: ipad)
         // The fixture is seeded at launch through the same Notes importer as a
         // user file import; open it through the real library card.
         let card = revealCard(app, kind: "office", title: fixtureTitle)
@@ -2121,7 +2106,31 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         XCTAssertTrue(inkOptions.isHittable)
         inkOptions.tap()
         let fountain = app.buttons["notes.ink.brush.fountainPen"]
+        let watercolor = app.buttons["notes.ink.brush.watercolor"]
+        let done = app.buttons["notes.ink.done"]
+        let preview = app.descendants(matching: .any).matching(identifier: "notes.ink.preview").firstMatch
+        XCTAssertTrue(preview.waitForExistence(timeout: 5))
+        XCTAssertFalse(fountain.exists)
+        XCTAssertFalse(watercolor.exists)
+        let markerWidth = app.buttons["notes.ink.width.preset.3"]
+        XCTAssertTrue(markerWidth.isHittable)
+        markerWidth.tap()
+        XCTAssertTrue(markerWidth.isSelected)
+        let markerPreview = try XCTUnwrap(preview.value as? String)
+        done.tap()
+        XCTAssertTrue(done.waitForNonExistence(timeout: 10))
+
+        let writingPen = app.buttons["notes.tool.pencil.tip"]
+        if !writingPen.isHittable { writingTools.swipeRight() }
+        XCTAssertTrue(writingPen.isHittable)
+        writingPen.tap()
+        XCTAssertTrue(writingPen.isSelected)
+        XCTAssertFalse(toolbarMarker.isSelected)
+        if !inkOptions.isHittable { writingTools.swipeLeft() }
+        inkOptions.tap()
         XCTAssertTrue(fountain.waitForExistence(timeout: 5))
+        XCTAssertTrue(watercolor.exists)
+        XCTAssertFalse(app.buttons["notes.ink.brush.marker"].exists)
         capture("notes-native-brushes")
         fountain.tap()
         for index in 0..<5 {
@@ -2130,8 +2139,6 @@ final class NotesWorkspaceImportUITests: XCTestCase {
             XCTAssertTrue(dot.isHittable)
             assertTouchTarget(dot)
         }
-        let preview = app.descendants(matching: .any)
-            .matching(identifier: "notes.ink.preview").firstMatch
         XCTAssertTrue(preview.waitForExistence(timeout: 5))
         app.buttons["notes.ink.width.preset.4"].tap()
         let quickPreview = try XCTUnwrap(preview.value as? String)
@@ -2146,7 +2153,6 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         app.buttons["notes.ink.done"].tap()
         let inkClosed = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: fountain)
         wait(for: [inkClosed], timeout: 10)
-        let writingPen = app.buttons["notes.tool.pencil.tip"]
         if !writingPen.isHittable { writingTools.swipeRight() }
         XCTAssertTrue(writingPen.isSelected)
         if !inkOptions.isHittable { writingTools.swipeLeft() }
@@ -2155,10 +2161,21 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         XCTAssertTrue(fountain.isSelected)
         XCTAssertEqual(preview.value as? String, savedPreview,
                        "PDF handwriting must retain the fine width after reopening settings")
-        app.buttons["notes.ink.brush.marker"].tap()
-        app.buttons["notes.ink.done"].tap()
-        let markerPanelClosed = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: fountain)
-        wait(for: [markerPanelClosed], timeout: 10)
+        XCTAssertFalse(app.buttons["notes.ink.brush.marker"].exists)
+        done.tap()
+        XCTAssertTrue(done.waitForNonExistence(timeout: 10))
+        if !toolbarMarker.isHittable { writingTools.swipeRight() }
+        toolbarMarker.tap()
+        XCTAssertTrue(toolbarMarker.isSelected)
+        XCTAssertFalse(writingPen.isSelected)
+        if !inkOptions.isHittable { writingTools.swipeLeft() }
+        inkOptions.tap()
+        XCTAssertTrue(preview.waitForExistence(timeout: 5))
+        XCTAssertFalse(fountain.exists)
+        XCTAssertTrue(markerWidth.isSelected)
+        XCTAssertEqual(preview.value as? String, markerPreview)
+        done.tap()
+        XCTAssertTrue(done.waitForNonExistence(timeout: 10))
         if !quickMenu.isHittable { writingTools.swipeRight() }
         let headerToggle = app.buttons["notes.header.toggle"]
         assertTouchTarget(headerToggle)
@@ -2500,16 +2517,39 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         if ipad {
             requireLandscapeAfterLaunch(app)
         }
-        if !ipad {
-            let sidebar = app.buttons["phone.sidebar.open"]
-            XCTAssertTrue(sidebar.waitForExistence(timeout: 15))
-            sidebar.tap()
-        }
-        let notes = app.staticTexts["sidebar.notes"].firstMatch
-        XCTAssertTrue(notes.waitForExistence(timeout: 15))
-        notes.tap()
+        openNotesLibrary(app, ipad: ipad)
         XCTAssertTrue(creationControl(app).waitForExistence(timeout: 15))
         return app
+    }
+
+    private func openNotesLibrary(_ app: XCUIApplication, ipad: Bool,
+                                  file: StaticString = #filePath, line: UInt = #line) {
+        if !ipad {
+            let sidebar = app.buttons["phone.sidebar.open"]
+            XCTAssertTrue(sidebar.waitForExistence(timeout: 15), file: file, line: line)
+            sidebar.tap()
+        }
+        // The historical sidebar identifier now opens Space on its Overview section.
+        let space = app.staticTexts["sidebar.notes"].firstMatch
+        XCTAssertTrue(space.waitForExistence(timeout: 15), file: file, line: line)
+        space.tap()
+
+        let sections = app.segmentedControls["space.sections"]
+        let menu = app.buttons["space.sections"]
+        XCTAssertTrue(waitUntil(timeout: 15) { sections.exists || menu.exists },
+                      "Space must expose its section picker", file: file, line: line)
+        let notes: XCUIElement
+        if sections.exists {
+            notes = sections.buttons["手记"]
+        } else {
+            menu.tap()
+            // The overview also has a “手记” quick action that creates a new note.
+            notes = app.buttons.matching(NSPredicate(
+                format: "label == %@ AND identifier != %@", "手记", "space.quick.newNote"
+            )).element(boundBy: 0)
+        }
+        XCTAssertTrue(notes.waitForExistence(timeout: 15), file: file, line: line)
+        notes.tap()
     }
 
     private func creationControl(_ app: XCUIApplication) -> XCUIElement {
@@ -2695,16 +2735,11 @@ final class NotesWorkspaceImportUITests: XCTestCase {
         if ipad {
             requireLandscapeAfterLaunch(app)
         }
-        if !ipad {
-            let sidebar = app.buttons["phone.sidebar.open"]
-            XCTAssertTrue(sidebar.waitForExistence(timeout: 15))
-            sidebar.tap()
-        }
-        let notes = app.staticTexts["sidebar.notes"].firstMatch
-        XCTAssertTrue(notes.waitForExistence(timeout: 15))
-        notes.tap()
+        openNotesLibrary(app, ipad: ipad)
         let create = creationControl(app)
         XCTAssertTrue(create.waitForExistence(timeout: 15))
+        wait(for: [expectation(for: NSPredicate(format: "enabled == true AND hittable == true"),
+                               evaluatedWith: create)], timeout: 15)
         capture("notes-library")
         create.tap()
         let importWorkspace = app.buttons["notes.import.workspace"]

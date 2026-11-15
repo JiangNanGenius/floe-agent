@@ -74,9 +74,6 @@ struct HomeOverviewView: View {
             Section {
                 workSessionRow
             }
-            if !authoring.taskCenterRecords.isEmpty {
-                Section { SkillAuthoringRows(coordinator: authoring, taskCenter: true) }
-            }
             if !runningTasks.isEmpty {
                 Section("home.home_overview_view.running") {
                     ForEach(runningTasks) { conversation in
@@ -496,7 +493,6 @@ struct HomeOverviewView: View {
             && viewModel.fileAssistantTasks.isEmpty
             && schedules.isEmpty
             && cleanupReminders.isEmpty
-            && authoring.taskCenterRecords.isEmpty
             && archivedTasks.isEmpty
     }
 

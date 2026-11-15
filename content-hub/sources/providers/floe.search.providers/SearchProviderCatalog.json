@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "floe.search.providers",
-  "version": "1.2.1",
+  "version": "1.3.0",
   "entries": [
     {
       "presetID": "bocha",
@@ -116,8 +116,8 @@
         "zh-Hans": "DeepSeek 搜索"
       },
       "blurb": {
-        "en": "Official web search with long summaries and optional page content.",
-        "zh-Hans": "官方网页搜索，提供长摘要和可选网页正文。"
+        "en": "Search the web directly or let DeepSeek research a question across sources.",
+        "zh-Hans": "直接查找网页，或让 DeepSeek 多步检索并给出来源。"
       },
       "defaultEndpoint": "https://api.deepseek.com/v1/tools/search",
       "endpointRequired": false,
@@ -132,6 +132,15 @@
         }
       ],
       "optionFields": [
+        {
+          "key": "searchWhileThinking",
+          "kind": "bool",
+          "defaultValue": "false",
+          "label": {
+            "en": "Search while thinking",
+            "zh-Hans": "深度思考搜索"
+          }
+        },
         {
           "key": "needContent",
           "kind": "bool",

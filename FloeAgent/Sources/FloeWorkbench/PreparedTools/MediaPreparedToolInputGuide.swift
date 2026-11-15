@@ -174,6 +174,8 @@ public enum MediaPreparedToolInputGuide {
             try add(id,["number":4],requiresTarget:false,selection:true,"number is radius in canvas pixels. image.expand supports negative radius to contract. Native coverage and holes are retained.")
         }
         try add("image.gradient",["points":[["x":0.1,"y":0.1],["x":0.9,"y":0.9]],"color":"#3366FF","text":"#FFFFFF","number":1,"flag":false],target:layer?.id,"Two normalized endpoints; color/text are endpoint colors; number=opacity0...1; flag=radial. Add selectionFence to limit an existing selection.")
+        try add("image.feather-brush",["points":line,"number":24,"secondary":0.65],target:layer?.id,
+                "Apply one local feather stroke to this layer's existing mask edge or transparent edge. Points are normalized, number is diameter in canvas pixels (1...200) and secondary is strength (0.01...1).")
         for id in ["image.smudge","image.blur-brush","image.sharpen-brush"] {
             try add(id,["points":line,"number":16,"secondary":id == "image.smudge" ? 0.5:12],target:layer?.id,"points is a normalized stroke; number=diameter in canvas pixels. secondary is smudge strength0...1, blur radius0...200, or sharpen amount0...200 respectively.")
         }

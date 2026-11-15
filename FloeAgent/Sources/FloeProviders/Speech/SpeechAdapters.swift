@@ -58,13 +58,15 @@ func ttssRunStream(
 func ttssForwardRawPCM(
     _ chunks: TTSSpeechByteChunks,
     request: TTSSynthesisRequest,
-    sender: TTSAudioChunkSender
+    sender: TTSAudioChunkSender,
+    completeResponse: TTSSpeechHTTP.Opened? = nil
 ) async throws {
     var sequence = 0
     var received = 0
+    let maximumBytes = completeResponse == nil ? TTSSpeechLimits.maxSegmentAudioBytes : 30 * 60 * 24_000 * 2
     for try await chunk in chunks {
         received += chunk.count
-        if received > TTSSpeechLimits.maxSegmentAudioBytes {
+        if received > maximumBytes || (completeResponse != nil && !chunk.count.isMultiple(of: 2)) {
             throw TTSSynthesisError.streamTruncated(provider: request.provider)
         }
         for piece in TTSSpeechPCMChunking.split(chunk) {
@@ -75,6 +77,11 @@ func ttssForwardRawPCM(
             sequence += 1
         }
     }
+    if let response = completeResponse,
+       received == 0 || (response.contentLength >= 0 && response.contentLength != Int64(received)) {
+        throw TTSSynthesisError.streamTruncated(provider: request.provider)
+    }
+    try Task.checkCancellation()
     try await sender.send(TTSAudioChunk(
         sessionID: request.sessionID, segmentIndex: request.segmentIndex,
         sequence: sequence, pcm: Data(),
@@ -397,6 +404,7 @@ struct TTSMissingLocalSpeechProvider: TTSSpeechProviding {
 public final class TTSSpeechService: Sendable {
     private let session: URLSession
     private let volcengine: VolcengineSpeechAdapter
+    private let deepSeek: DeepSeekSpeechAdapter
     private let elevenLabs: ElevenLabsSpeechAdapter
     private let openAI: OpenAISpeechAdapter
     private let alibaba: AlibabaSpeechAdapter
@@ -418,6 +426,7 @@ public final class TTSSpeechService: Sendable {
     ) {
         let resolved = session ?? ProviderTransport.session(ephemeral: true)
         self.session = resolved
+        self.deepSeek = DeepSeekSpeechAdapter(session: session)
         self.volcengine = VolcengineSpeechAdapter(session: resolved)
         self.elevenLabs = ElevenLabsSpeechAdapter(session: resolved)
         self.openAI = OpenAISpeechAdapter(session: resolved)
@@ -433,6 +442,7 @@ public final class TTSSpeechService: Sendable {
         case .volcengine: return volcengine
         case .elevenLabs: return elevenLabs
         case .openAI: return openAI
+        case .deepSeek: return deepSeek
         case .alibaba: return alibaba
         }
     }
@@ -471,6 +481,7 @@ public final class TTSSpeechService: Sendable {
         switch provider {
         case .apple: return Self.appleVoices()
         case .onDevice: return []
+        case .deepSeek: return DeepSeekSpeechAdapter.voices
         case .openAI: return OpenAISpeechAdapter.builtInVoices
         case .volcengine:
             return VolcengineSpeechAdapter.catalogueVoices(forModel: modelID ?? "")
@@ -495,6 +506,7 @@ public final class TTSSpeechService: Sendable {
         switch provider {
         case .apple: return []
         case .onDevice: return []   // local model IDs come from the host's model store
+        case .deepSeek: return []
         case .openAI: return OpenAISpeechAdapter.supportedModels
         case .elevenLabs: return ElevenLabsSpeechAdapter.supportedModels
         case .volcengine: return ["doubao-seed-tts-2.0", "doubao-seed-tts-1.0"]
@@ -525,6 +537,7 @@ public final class TTSSpeechService: Sendable {
             return Self.appleVoices()
         case .onDevice:
             return []   // local voices/model IDs are the host model store's truth
+        case .deepSeek: return DeepSeekSpeechAdapter.voices
         case .openAI:
             return OpenAISpeechAdapter.builtInVoices
         case .volcengine, .alibaba:

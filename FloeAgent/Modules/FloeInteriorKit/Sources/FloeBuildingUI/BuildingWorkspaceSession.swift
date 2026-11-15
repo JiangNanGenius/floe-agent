@@ -21,7 +21,12 @@ final class BuildingWorkspaceSession {
         didSet {if let project=snapshot?.project{projectActions?.recordsChanged(project.id,project.revision)}}
     }
     var editorsReady=false
-    var section:BuildingSection? = .project
+    var section:BuildingSection? {
+        didSet {
+            guard !suppressSectionPersistence, let section else { return }
+            UserDefaults.standard.set(section.rawValue, forKey: sectionStorageKey)
+        }
+    }
     var selectedRoomID:RoomID? {
         didSet {projectActions?.roomSelectionChanged(selectedRoomID)}
     }
@@ -75,8 +80,31 @@ final class BuildingWorkspaceSession {
     private var cancelCalculation:(()->Void)?
     private var cancelledOperations:Set<UUID>=[]
     private var wantedMetadataRevision:Int?
-    init(directory:URL){service=BuildingWorkspaceService(projectDirectory:directory);projectActions=nil}
-    init(service:BuildingWorkspaceService,projectActions:BuildingWorkbenchProjectActions){self.service=service;self.projectActions=projectActions}
+    private let sectionStorageKey:String
+    private var suppressSectionPersistence = true
+    init(directory:URL){
+        let service=BuildingWorkspaceService(projectDirectory:directory)
+        self.service=service;projectActions=nil
+        sectionStorageKey = "floe.building.workspace.section." + directory.standardizedFileURL.path
+        section = .project
+        suppressSectionPersistence = false
+    }
+    init(service:BuildingWorkspaceService,projectActions:BuildingWorkbenchProjectActions,
+         initialSection:BuildingSection = .model, integrated:Bool = true){
+        self.service=service;self.projectActions=projectActions
+        sectionStorageKey = "floe.building.workspace.section." + service.directoryURL.standardizedFileURL.path
+        let saved=UserDefaults.standard.string(forKey:sectionStorageKey).flatMap(BuildingSection.init(rawValue:))
+        if integrated, let saved, Self.availableSections(integrated:true).contains(saved) {
+            section = saved
+        } else {
+            section = integrated ? initialSection : .project
+        }
+        suppressSectionPersistence = false
+    }
+
+    private static func availableSections(integrated:Bool)->[BuildingSection] {
+        BuildingSection.allCases.filter{integrated || ![.model,.furniture,.deliverables].contains($0)}
+    }
     var canCancel:Bool{cancelCalculation != nil}
     var activeKind:BuildingComponentKind? {
         switch section {

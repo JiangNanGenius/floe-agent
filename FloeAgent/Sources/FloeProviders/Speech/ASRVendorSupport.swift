@@ -382,7 +382,7 @@ enum ASRVendorAudioDetector {
             throw ASRTranscriptionError.invalidConfiguration(
                 "WAV audio must be uncompressed PCM16; convert it to PCM16 WAV first")
         }
-        guard let channels, channels == 1 else {
+        guard let channels, channels == 1 || (provider == .deepSeek && channels == 2) else {
             throw ASRTranscriptionError.invalidConfiguration(
                 "WAV audio must be mono; convert it to mono PCM16 WAV first")
         }
@@ -403,7 +403,10 @@ enum ASRVendorAudioDetector {
             throw ASRTranscriptionError.invalidConfiguration(
                 "WAV sample rate is not supported; use 16 kHz audio")
         }
-        let duration = Double(dataSize) / Double(rate * 2)
+        if provider == .deepSeek, !TTSAudioFormat.supportedSampleRates.contains(rate) || Int(dataSize) % (2 * Int(channels)) != 0 {
+            throw ASRTranscriptionError.invalidConfiguration("DeepSeek requires complete PCM16 frames at a supported WAV sample rate")
+        }
+        let duration = Double(dataSize) / Double(rate * 2 * Int(channels))
         return WAVInfo(
             sampleRate: rate,
             channels: Int(channels),

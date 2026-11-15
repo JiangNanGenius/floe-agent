@@ -15,6 +15,7 @@ import FloeToolboxWorkbenches
 @MainActor final class ToolboxCenter: ObservableObject {
     static let toolNames: Set<String> = [ToolboxCaptureAction.name, ToolboxSerialSendAction.name,
         ToolboxModbusReadAction.name, ToolboxModbusWriteAction.name,
+        ToolboxModbusBuildAction.name, ToolboxModbusDecodeAction.name,
         ToolboxMQTTPublishAction.name, ToolboxMQTTSubscriptionAction.name,
         ToolboxHTTPReadAction.name, ToolboxHTTPWriteAction.name,
         ToolboxWebSocketSendAction.name, ToolboxWebSocketReceiveAction.name,
@@ -70,8 +71,9 @@ import FloeToolboxWorkbenches
         failureDetails[.serialAssistant] = failure.details
     }
 
-    init(environment: AppEnvironment) {
+    init(environment: AppEnvironment, usbDevices: ToolboxUSBDevices? = nil) {
         self.environment = environment
+        usbStorage = usbDevices
         taskSessions = ToolboxTaskSessions(environment: environment)
         assistantLedger = Set((UserDefaults.standard.stringArray(forKey: Self.assistantLedgerKey) ?? [])
             .compactMap(UUID.init(uuidString:)))
@@ -92,10 +94,12 @@ import FloeToolboxWorkbenches
         let generation = UUID(); generations[tool] = generation
         historyAttempts[tool] = history.begin(.connection(tool: tool, setup: setup), attemptID: generation)
         connecting.insert(tool); failures[tool] = nil; failureDetails[tool] = nil
+        let usbSelection = tool == .serialAssistant && setup.serial.connection == .usb ? usbDevices : nil
         operations[tool] = Task { [weak self] in
             await previous?.close()
             do {
                 let connection = try await ToolboxConnection.open(tool: tool, setup: setup, environment: environment,
+                    usbDevices: usbSelection,
                     onUSBFailure: { [weak self] failure in
                         guard let self, self.generations[tool] == generation else { return }
                         self.reportUSBFailure(failure)
@@ -302,7 +306,7 @@ import FloeToolboxWorkbenches
         case .http: names.formUnion([ToolboxHTTPReadAction.name, ToolboxHTTPWriteAction.name])
         case .webSocket: names.formUnion([ToolboxWebSocketSendAction.name, ToolboxWebSocketReceiveAction.name])
         case .mqtt: names.formUnion([ToolboxMQTTPublishAction.name, ToolboxMQTTSubscriptionAction.name])
-        case .serialAssistant: names.formUnion([ToolboxSerialSendAction.name, ToolboxModbusReadAction.name, ToolboxModbusWriteAction.name])
+        case .serialAssistant: names.formUnion([ToolboxSerialSendAction.name, ToolboxModbusReadAction.name, ToolboxModbusWriteAction.name, ToolboxModbusBuildAction.name, ToolboxModbusDecodeAction.name])
         default: break
         }
         return names

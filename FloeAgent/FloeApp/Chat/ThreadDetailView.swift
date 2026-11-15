@@ -766,7 +766,7 @@ struct ThreadDetailView: View {
                     // sequence → live tail → approvals → terminal last.
                     // "Completed" can never float above the final reply.
                     ForEach(viewModel.timeline) { item in
-                        timelineRow(item)
+                        datedTimelineRow(item)
                             .id(item.id)
                             .transition(viewModel.isRunning ? FloeTheme.stepTransition(reduceMotion: reduceMotion) : .identity)
                     }
@@ -914,6 +914,26 @@ struct ThreadDetailView: View {
 
     /// Renders one unified timeline row.
     @ViewBuilder
+    private func datedTimelineRow(_ item: ThreadTimelineItem) -> some View {
+        switch item {
+        case .userMessage(let message):
+            VStack(alignment: .trailing, spacing: 2) {
+                timelineRow(item)
+                ChatMessageFooter(sentAt: message.createdAt, messageID: message.id.uuidString,
+                    userText: PlanConfirmationSnapshot.from(message: message) == nil ? message.content : nil)
+            }
+            .frame(maxWidth: .infinity, alignment: .trailing)
+        case .assistantMessage(_, let id, let sentAt):
+            VStack(alignment: .leading, spacing: 2) {
+                timelineRow(item)
+                ChatMessageFooter(sentAt: sentAt, messageID: id)
+            }
+        default:
+            timelineRow(item)
+        }
+    }
+
+    @ViewBuilder
     private func timelineRow(_ item: ThreadTimelineItem) -> some View {
         switch item {
         case .earlierEvents(let runID):
@@ -939,7 +959,7 @@ struct ThreadDetailView: View {
                 })
             }
 
-        case .assistantMessage(let text, let idSuffix):
+        case .assistantMessage(let text, let idSuffix, _):
             // A task-level assistant message may carry REAL returned
             // attachments (e.g. the adopted design result returned by the
             // publication port). Render them through the same shared chip

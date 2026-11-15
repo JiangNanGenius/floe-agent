@@ -172,8 +172,19 @@ struct SkillsView: View {
             .pickerStyle(.segmented)
             .padding(.horizontal, 20).padding(.vertical, 10)
             if !authoring.shelfRecords.isEmpty {
-                VStack(spacing: 12) { SkillAuthoringRows(coordinator: authoring) }
+                VStack(spacing: 12) { SkillAuthoringRows(coordinator: authoring, records: authoring.shelfRecords) }
                     .padding(.horizontal, 20).padding(.vertical, 10)
+            }
+            if !authoring.historyRecords.isEmpty {
+                DisclosureGroup(FloeL10n.l("skills.authoring.history")) {
+                    ScrollView {
+                        LazyVStack(spacing: 12) {
+                            SkillAuthoringRows(coordinator: authoring, records: authoring.historyRecords)
+                        }
+                    }
+                    .frame(maxHeight: 160)
+                }
+                .padding(.horizontal, 20).padding(.vertical, 6)
             }
             if MacBridgeConnectionCenter.isMac && macBridge.hasPairing {
                 Picker("mac.skills.target", selection: $useMacOriginals) {
@@ -277,9 +288,11 @@ struct SkillsView: View {
                     Button("plugins.import", systemImage: "square.and.arrow.down") {
                         Task { await authoring.open(kind: .importing) }
                     }
+                    .accessibilityIdentifier("skills.authoring.import")
                     Button("skills.creator", systemImage: "plus") {
                         Task { await authoring.open(kind: .creation) }
                     }
+                    .accessibilityIdentifier("skills.authoring.create")
                     Button("skills.hub.connect_mcp", systemImage: "network") { mcpSheet = .connect }
                     Button("skills.mcp.creation.title", systemImage: "plus.app") { mcpSheet = .create }
                 } label: { Label("skills.hub.add", systemImage: "plus") }
