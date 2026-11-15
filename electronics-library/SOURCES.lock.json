@@ -1,0 +1,770 @@
+{
+  "schemaVersion": 1,
+  "upstreams": {
+    "kicad-symbols": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+    "kicad-footprints": "a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d"
+  },
+  "license": "CC-BY-SA-4.0 with KiCad design exception",
+  "files": [
+    {
+      "path": "kicad-symbols/4xxx.kicad_symdir/4017.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/4xxx.kicad_symdir/4017.kicad_sym",
+      "bytes": 5719,
+      "sha256": "38d7e43e3f5d8ca446d7d2b3a89a40fb54df93379696ccc90281adce2d5e45a9"
+    },
+    {
+      "path": "kicad-symbols/74xx.kicad_symdir/74HC00.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/74xx.kicad_symdir/74HC00.kicad_sym",
+      "bytes": 1348,
+      "sha256": "bd84a5f824c17a969ab8a2e3b75e5006d578ccd5861637d09b97675013d7b0e8"
+    },
+    {
+      "path": "kicad-symbols/74xx.kicad_symdir/74HC04.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/74xx.kicad_symdir/74HC04.kicad_sym",
+      "bytes": 1375,
+      "sha256": "fa51c87ab73c9280e91e466ac9f66cfc1c38dabe394c3f80242021e35ea344f2"
+    },
+    {
+      "path": "kicad-symbols/74xx.kicad_symdir/74HC595.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/74xx.kicad_symdir/74HC595.kicad_sym",
+      "bytes": 5683,
+      "sha256": "20f4937a51a34b399bb9a8a676db952d4ca55817331548a2544ef039019df775"
+    },
+    {
+      "path": "kicad-symbols/74xx.kicad_symdir/74LS00.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/74xx.kicad_symdir/74LS00.kicad_sym",
+      "bytes": 14562,
+      "sha256": "d1f1056595d9b778d1e9f51ef1945e2d35d5d73d3a1436b57b63b0156df8112b"
+    },
+    {
+      "path": "kicad-symbols/74xx.kicad_symdir/74LS04.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/74xx.kicad_symdir/74LS04.kicad_sym",
+      "bytes": 6432,
+      "sha256": "ecbf63f043015fde72127be7b9d1ead4a7fb94d99c61da6282c827503da75492"
+    },
+    {
+      "path": "kicad-symbols/Amplifier_Operational.kicad_symdir/LM2902.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/Amplifier_Operational.kicad_symdir/LM2902.kicad_sym",
+      "bytes": 6033,
+      "sha256": "d07067b1587475266c94c0692ff632d93c0f885ce54e7c8ce43c07fceb455cf4"
+    },
+    {
+      "path": "kicad-symbols/Amplifier_Operational.kicad_symdir/LM2904.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/Amplifier_Operational.kicad_symdir/LM2904.kicad_sym",
+      "bytes": 4244,
+      "sha256": "29ee56ff220ad1a341943f0bc181bae1ba7d1f5b69ed63c5cf64b137ea414abf"
+    },
+    {
+      "path": "kicad-symbols/Amplifier_Operational.kicad_symdir/LM324.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/Amplifier_Operational.kicad_symdir/LM324.kicad_sym",
+      "bytes": 1524,
+      "sha256": "3ec15bc67463da8ddcfee7ae3f744333b08ae87c50497f03182098e6729b0175"
+    },
+    {
+      "path": "kicad-symbols/Amplifier_Operational.kicad_symdir/LM358.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/Amplifier_Operational.kicad_symdir/LM358.kicad_sym",
+      "bytes": 1604,
+      "sha256": "8f1c5305cd5f1b0fa886834aadc33a9c5b87238e5ec1189ab8b68f893683dedc"
+    },
+    {
+      "path": "kicad-symbols/Comparator.kicad_symdir/LM2903.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/Comparator.kicad_symdir/LM2903.kicad_sym",
+      "bytes": 4666,
+      "sha256": "4bf0f362db42378dffedf55c2e6601626807c774c144b1374a94687a0530d5f6"
+    },
+    {
+      "path": "kicad-symbols/Comparator.kicad_symdir/LM393.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/Comparator.kicad_symdir/LM393.kicad_sym",
+      "bytes": 1494,
+      "sha256": "5b65d0aa0fd859771d2558418ed42e6cdec3d065b4c13e3bc149b38d866e3e37"
+    },
+    {
+      "path": "kicad-symbols/Connector_Generic.kicad_symdir/Conn_01x02.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/Connector_Generic.kicad_symdir/Conn_01x02.kicad_sym",
+      "bytes": 2519,
+      "sha256": "0fa71012f16ff9329d578174b763d6aee9b64f3b5112db4416a0cf5df7491fdc"
+    },
+    {
+      "path": "kicad-symbols/Connector_Generic.kicad_symdir/Conn_01x04.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/Connector_Generic.kicad_symdir/Conn_01x04.kicad_sym",
+      "bytes": 3310,
+      "sha256": "6047a81578c35a3eb39e5bb055d85acb20523327c75cf327fa436cb33acbd69b"
+    },
+    {
+      "path": "kicad-symbols/Connector_Generic.kicad_symdir/Conn_01x06.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/Connector_Generic.kicad_symdir/Conn_01x06.kicad_sym",
+      "bytes": 4102,
+      "sha256": "fb6e672a9de615bc9825439ebde56a262e2e82ab22eec217f6b4dbf2604d950e"
+    },
+    {
+      "path": "kicad-symbols/Device.kicad_symdir/C.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/Device.kicad_symdir/C.kicad_sym",
+      "bytes": 2347,
+      "sha256": "533df5a016c224a83701e2e66b767864f39fc44c972a2a4f821987f1fd99573e"
+    },
+    {
+      "path": "kicad-symbols/Device.kicad_symdir/C_Polarized.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/Device.kicad_symdir/C_Polarized.kicad_sym",
+      "bytes": 2685,
+      "sha256": "e0371fff515df9a22bc5e6d82a2164943da1d389e2ccf0d220ff03d7d77cc87a"
+    },
+    {
+      "path": "kicad-symbols/Device.kicad_symdir/Crystal.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/Device.kicad_symdir/Crystal.kicad_sym",
+      "bytes": 2802,
+      "sha256": "f3e250c89e52deccef0f88cd5f8e19e2aa2a242a9ec2ea2da7f89f84c6f39e55"
+    },
+    {
+      "path": "kicad-symbols/Device.kicad_symdir/Crystal_GND24.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/Device.kicad_symdir/Crystal_GND24.kicad_sym",
+      "bytes": 4332,
+      "sha256": "84b419f45f564b391ab81579eb3c84f301ffad816f7488f98a13129a16073b3b"
+    },
+    {
+      "path": "kicad-symbols/Device.kicad_symdir/L.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/Device.kicad_symdir/L.kicad_sym",
+      "bytes": 2648,
+      "sha256": "ea666fa611b3d896b47a0d12a8f2975511f696384535d3cc85bd039fb9259042"
+    },
+    {
+      "path": "kicad-symbols/Device.kicad_symdir/LED.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/Device.kicad_symdir/LED.kicad_sym",
+      "bytes": 3098,
+      "sha256": "e85b6faf1f41fab98385fbaf44f9cbb87ca7f79c4948d6dba92c73a733db5982"
+    },
+    {
+      "path": "kicad-symbols/Device.kicad_symdir/R.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/Device.kicad_symdir/R.kicad_sym",
+      "bytes": 2106,
+      "sha256": "db1dd3eb60dbcc9e239d107e2d123ee253aefdd841186076e9df39444d4e11c7"
+    },
+    {
+      "path": "kicad-symbols/Device.kicad_symdir/R_Potentiometer.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/Device.kicad_symdir/R_Potentiometer.kicad_sym",
+      "bytes": 3232,
+      "sha256": "476a6f7487403633505ca9c8b81f8cde89c04b0c3d012dbacc409e918d7381c9"
+    },
+    {
+      "path": "kicad-symbols/Diode.kicad_symdir/1N4001.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/Diode.kicad_symdir/1N4001.kicad_sym",
+      "bytes": 2905,
+      "sha256": "344b1e29dd03b2df38f31cdd4c44adf4a2623c594d08c5a740f8026d70660d95"
+    },
+    {
+      "path": "kicad-symbols/Diode.kicad_symdir/1N4007.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/Diode.kicad_symdir/1N4007.kicad_sym",
+      "bytes": 1407,
+      "sha256": "fcf4d65cc82a85f2b0001dc787e01547e5a6b1fc871db5221127baba94d94a8f"
+    },
+    {
+      "path": "kicad-symbols/Diode.kicad_symdir/1N4148.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/Diode.kicad_symdir/1N4148.kicad_sym",
+      "bytes": 1419,
+      "sha256": "9d91a0596d0be93558a0f083185733b69080fce7b8d342b10dfe9c73b39d6dfb"
+    },
+    {
+      "path": "kicad-symbols/Diode.kicad_symdir/SB120.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/Diode.kicad_symdir/SB120.kicad_sym",
+      "bytes": 2692,
+      "sha256": "c90276110eb99eff8d64cbc6a4892872f67447a32c35537222a87f0ff062d1a3"
+    },
+    {
+      "path": "kicad-symbols/Diode.kicad_symdir/SS14.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/Diode.kicad_symdir/SS14.kicad_sym",
+      "bytes": 1359,
+      "sha256": "ec33d5d07426cc2ac44801667dc1fea6666048773931751a179c2ac78522fd3c"
+    },
+    {
+      "path": "kicad-symbols/LICENSE.md",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/LICENSE.md",
+      "bytes": 2101,
+      "sha256": "45d2bce75e5a4208f5afb01b8fb2c406e700371c4fe2b5f5cd5c443d46db4d8f"
+    },
+    {
+      "path": "kicad-symbols/MCU_Module.kicad_symdir/RaspberryPi_Pico.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/MCU_Module.kicad_symdir/RaspberryPi_Pico.kicad_sym",
+      "bytes": 19209,
+      "sha256": "720a2d3b6dbb0cda01b851f1a72425b91f3a91cd30bcc9e974e1e38cba599a6c"
+    },
+    {
+      "path": "kicad-symbols/MCU_RaspberryPi.kicad_symdir/RP2040.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/MCU_RaspberryPi.kicad_symdir/RP2040.kicad_sym",
+      "bytes": 16796,
+      "sha256": "d2a498bceee0e62cc48021861f628d7c7ed5099354bdc261241395be1665eb99"
+    },
+    {
+      "path": "kicad-symbols/MCU_ST_STM32F1.kicad_symdir/STM32F103C8Tx.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/MCU_ST_STM32F1.kicad_symdir/STM32F103C8Tx.kicad_sym",
+      "bytes": 1587,
+      "sha256": "b3a1e6859258730c5c0a39b7bb201ad63cf76be92cb577dbd4e67ad87b32f453"
+    },
+    {
+      "path": "kicad-symbols/MCU_ST_STM32F1.kicad_symdir/STM32F103C_8-B_Tx.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/MCU_ST_STM32F1.kicad_symdir/STM32F103C_8-B_Tx.kicad_sym",
+      "bytes": 19419,
+      "sha256": "eb6bc0b7d14bd685cc24d9b0a77f6ad427eb7383eecbe29bafb1b33bb01dcc55"
+    },
+    {
+      "path": "kicad-symbols/README.md",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/README.md",
+      "bytes": 1925,
+      "sha256": "6e17839da62034cb4941fc9ab27a78642e3e7d3b7c9a75a32e776637781457cf"
+    },
+    {
+      "path": "kicad-symbols/RF_Module.kicad_symdir/ESP-01.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/RF_Module.kicad_symdir/ESP-01.kicad_sym",
+      "bytes": 3741,
+      "sha256": "244760413f4f661c2e123b33fab8d8cdf20393d134bc0fe699c1a1edc09ab1bb"
+    },
+    {
+      "path": "kicad-symbols/RF_Module.kicad_symdir/ESP32-WROOM-32.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/RF_Module.kicad_symdir/ESP32-WROOM-32.kicad_sym",
+      "bytes": 11695,
+      "sha256": "09b18ab56ea7ecb84dec922f0393eb207dc4c12eb61ececdc813d4f822fa50c6"
+    },
+    {
+      "path": "kicad-symbols/Reference_Voltage.kicad_symdir/TL431LP.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/Reference_Voltage.kicad_symdir/TL431LP.kicad_sym",
+      "bytes": 3068,
+      "sha256": "2fb41073075730262b6baf7cd9aedd199fa3310c1fafb4ce84647e3fdb5782aa"
+    },
+    {
+      "path": "kicad-symbols/Regulator_Linear.kicad_symdir/AMS1117-3.3.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/Regulator_Linear.kicad_symdir/AMS1117-3.3.kicad_sym",
+      "bytes": 1501,
+      "sha256": "d5d0e2a664b0f5a5bfadc07b821cc7796d0592283cff5a39eb7faac79fd25f8b"
+    },
+    {
+      "path": "kicad-symbols/Regulator_Linear.kicad_symdir/AP1117-15.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/Regulator_Linear.kicad_symdir/AP1117-15.kicad_sym",
+      "bytes": 2529,
+      "sha256": "96e109b8667b858a9bd64177b19f858fc2894b9393fcf04d9ecacf3f0e5c154c"
+    },
+    {
+      "path": "kicad-symbols/Regulator_Linear.kicad_symdir/L7805.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/Regulator_Linear.kicad_symdir/L7805.kicad_sym",
+      "bytes": 2684,
+      "sha256": "914752c784fe6cec8995789f16ea83c34f0c78cc35cf14583a4eb1b65d9ed499"
+    },
+    {
+      "path": "kicad-symbols/Regulator_Linear.kicad_symdir/LM317_TO-220.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/Regulator_Linear.kicad_symdir/LM317_TO-220.kicad_sym",
+      "bytes": 2552,
+      "sha256": "efef8a26e4b576a20da010e0e2d7ba80eb17a87fd7eae131879c31f06a335371"
+    },
+    {
+      "path": "kicad-symbols/Relay.kicad_symdir/G5LE-1.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/Relay.kicad_symdir/G5LE-1.kicad_sym",
+      "bytes": 5135,
+      "sha256": "2640413431486585c16ddee0aa0cb0430922a3f0dbf50398cc3aa91b00743ff7"
+    },
+    {
+      "path": "kicad-symbols/Sensor.kicad_symdir/BME280.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/Sensor.kicad_symdir/BME280.kicad_sym",
+      "bytes": 3902,
+      "sha256": "d194dfcae6dc11d852b349df938c2b95f08ef803bababdf2792ee2bec11cb55a"
+    },
+    {
+      "path": "kicad-symbols/Sensor_Temperature.kicad_symdir/DS18B20.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/Sensor_Temperature.kicad_symdir/DS18B20.kicad_sym",
+      "bytes": 1455,
+      "sha256": "3a782c6470688ecbe9d86ac782cb9b76062990091acb67e2ffe7c8f151104a88"
+    },
+    {
+      "path": "kicad-symbols/Sensor_Temperature.kicad_symdir/MAX31820.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/Sensor_Temperature.kicad_symdir/MAX31820.kicad_sym",
+      "bytes": 4105,
+      "sha256": "eee055950d543a6fbad7b01028e1b68411422636791363caef3b56b9356ab176"
+    },
+    {
+      "path": "kicad-symbols/Switch.kicad_symdir/SW_Push.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/Switch.kicad_symdir/SW_Push.kicad_sym",
+      "bytes": 2474,
+      "sha256": "650beb4ee58eda52928926b1eb0ad8b11dedaacc9ad1334bb4d3a920c38c9814"
+    },
+    {
+      "path": "kicad-symbols/Switch.kicad_symdir/SW_SPDT.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/Switch.kicad_symdir/SW_SPDT.kicad_sym",
+      "bytes": 2841,
+      "sha256": "74d9e28cbf9a2c0dd56f876b52d54112aaebee2650caff1aac50e0236e8281b4"
+    },
+    {
+      "path": "kicad-symbols/Transistor_BJT.kicad_symdir/2N3904.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/Transistor_BJT.kicad_symdir/2N3904.kicad_sym",
+      "bytes": 1517,
+      "sha256": "66449dee8da71c5f5ede229041d72739ed1936622bdf725a117c3bb252ceb17d"
+    },
+    {
+      "path": "kicad-symbols/Transistor_BJT.kicad_symdir/2N3906.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/Transistor_BJT.kicad_symdir/2N3906.kicad_sym",
+      "bytes": 1519,
+      "sha256": "cb92e585a33524b631f9cc988f7b25ed0c6c84aea2116eeb79607b45a89281d2"
+    },
+    {
+      "path": "kicad-symbols/Transistor_BJT.kicad_symdir/Q_NPN_EBC.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/Transistor_BJT.kicad_symdir/Q_NPN_EBC.kicad_sym",
+      "bytes": 3402,
+      "sha256": "291388ce8ef25a8e98e9a5745ee498bafb2fbaff9db2747cf8e07b74bcee019a"
+    },
+    {
+      "path": "kicad-symbols/Transistor_BJT.kicad_symdir/Q_PNP_EBC.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/Transistor_BJT.kicad_symdir/Q_PNP_EBC.kicad_sym",
+      "bytes": 3403,
+      "sha256": "2b88ff104a5a8c716c99d6369921a23a5e29a2cabdc06b8e90e44358d025bc3d"
+    },
+    {
+      "path": "kicad-symbols/Transistor_FET.kicad_symdir/2N7002.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/Transistor_FET.kicad_symdir/2N7002.kicad_sym",
+      "bytes": 1526,
+      "sha256": "12f0895ef64e148ef00c1a7a696b014105081928729db65a5fd50cf84d6fb442"
+    },
+    {
+      "path": "kicad-symbols/Transistor_FET.kicad_symdir/BSS138.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/Transistor_FET.kicad_symdir/BSS138.kicad_sym",
+      "bytes": 1513,
+      "sha256": "c213af5065805989b69dcfed54c69e578768566b3fec4d789d3befe4cdcef323"
+    },
+    {
+      "path": "kicad-symbols/Transistor_FET.kicad_symdir/Q_NMOS_GSD.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/Transistor_FET.kicad_symdir/Q_NMOS_GSD.kicad_sym",
+      "bytes": 4430,
+      "sha256": "00e9d626faf0e7630687d29a091eb4ce05b128e996476b57980d6c873bc411c7"
+    },
+    {
+      "path": "kicad-footprints/Button_Switch_SMD.pretty/SW_SPST_TL3342.kicad_mod",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-footprints",
+      "revision": "a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d",
+      "url": "https://gitlab.com/kicad/libraries/kicad-footprints/-/raw/a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d/Button_Switch_SMD.pretty/SW_SPST_TL3342.kicad_mod",
+      "bytes": 9216,
+      "sha256": "577769688431da794711a13d96a801907e1d9cb997b32f0d623e0bbd4e2e7884"
+    },
+    {
+      "path": "kicad-footprints/Capacitor_SMD.pretty/C_0603_1608Metric.kicad_mod",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-footprints",
+      "revision": "a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d",
+      "url": "https://gitlab.com/kicad/libraries/kicad-footprints/-/raw/a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d/Capacitor_SMD.pretty/C_0603_1608Metric.kicad_mod",
+      "bytes": 1928,
+      "sha256": "fe0dbfefbb181a0466f93a8de52d84ba7b00fcd9acdbb69575f4128a0af4e405"
+    },
+    {
+      "path": "kicad-footprints/Capacitor_SMD.pretty/C_0805_2012Metric.kicad_mod",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-footprints",
+      "revision": "a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d",
+      "url": "https://gitlab.com/kicad/libraries/kicad-footprints/-/raw/a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d/Capacitor_SMD.pretty/C_0805_2012Metric.kicad_mod",
+      "bytes": 2030,
+      "sha256": "62775a51fe74ba7f1b572de327bdbd3fc92582721b2abcaa47787865590d89cb"
+    },
+    {
+      "path": "kicad-footprints/Capacitor_THT.pretty/CP_Radial_D5.0mm_P2.00mm.kicad_mod",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-footprints",
+      "revision": "a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d",
+      "url": "https://gitlab.com/kicad/libraries/kicad-footprints/-/raw/a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d/Capacitor_THT.pretty/CP_Radial_D5.0mm_P2.00mm.kicad_mod",
+      "bytes": 16180,
+      "sha256": "fd0a251de515130de6e789ffb786d43c746b83178e437feb9fc4f39b6ea9ef39"
+    },
+    {
+      "path": "kicad-footprints/Connector_PinHeader_2.54mm.pretty/PinHeader_1x02_P2.54mm_Vertical.kicad_mod",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-footprints",
+      "revision": "a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d",
+      "url": "https://gitlab.com/kicad/libraries/kicad-footprints/-/raw/a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d/Connector_PinHeader_2.54mm.pretty/PinHeader_1x02_P2.54mm_Vertical.kicad_mod",
+      "bytes": 2809,
+      "sha256": "5301303268f72ba9cc94b7fdbac355951933e6854272ce8d300b679b86b5d45d"
+    },
+    {
+      "path": "kicad-footprints/Connector_PinHeader_2.54mm.pretty/PinHeader_1x04_P2.54mm_Vertical.kicad_mod",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-footprints",
+      "revision": "a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d",
+      "url": "https://gitlab.com/kicad/libraries/kicad-footprints/-/raw/a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d/Connector_PinHeader_2.54mm.pretty/PinHeader_1x04_P2.54mm_Vertical.kicad_mod",
+      "bytes": 3051,
+      "sha256": "571d2d16b49795f8f9a91f96cc83fd2adf49890cd66c377189c44204ebd03c29"
+    },
+    {
+      "path": "kicad-footprints/Connector_PinHeader_2.54mm.pretty/PinHeader_1x06_P2.54mm_Vertical.kicad_mod",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-footprints",
+      "revision": "a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d",
+      "url": "https://gitlab.com/kicad/libraries/kicad-footprints/-/raw/a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d/Connector_PinHeader_2.54mm.pretty/PinHeader_1x06_P2.54mm_Vertical.kicad_mod",
+      "bytes": 3332,
+      "sha256": "5f2993c50dbd5024384bf6fa972fcd10d40d0837039e1e371b326a27d9f5b8b7"
+    },
+    {
+      "path": "kicad-footprints/Crystal.pretty/Crystal_HC49-U_Vertical.kicad_mod",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-footprints",
+      "revision": "a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d",
+      "url": "https://gitlab.com/kicad/libraries/kicad-footprints/-/raw/a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d/Crystal.pretty/Crystal_HC49-U_Vertical.kicad_mod",
+      "bytes": 2825,
+      "sha256": "46a257cbaf91540167742153b4f9221daab10ad984df91390f21d575d7791249"
+    },
+    {
+      "path": "kicad-footprints/Crystal.pretty/Crystal_SMD_3225-4Pin_3.2x2.5mm.kicad_mod",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-footprints",
+      "revision": "a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d",
+      "url": "https://gitlab.com/kicad/libraries/kicad-footprints/-/raw/a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d/Crystal.pretty/Crystal_SMD_3225-4Pin_3.2x2.5mm.kicad_mod",
+      "bytes": 2150,
+      "sha256": "7648bca15399a8bd7856b5da6a1d2bc3a87049dc63958f8e8a3ab7409941a8e4"
+    },
+    {
+      "path": "kicad-footprints/Diode_SMD.pretty/D_SMA.kicad_mod",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-footprints",
+      "revision": "a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d",
+      "url": "https://gitlab.com/kicad/libraries/kicad-footprints/-/raw/a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d/Diode_SMD.pretty/D_SMA.kicad_mod",
+      "bytes": 4551,
+      "sha256": "f7cba3b52ed8b34dce89170722de58324eac04e9e61a095e0eab37b9ca93cb7f"
+    },
+    {
+      "path": "kicad-footprints/Diode_THT.pretty/D_DO-35_SOD27_P7.62mm_Horizontal.kicad_mod",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-footprints",
+      "revision": "a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d",
+      "url": "https://gitlab.com/kicad/libraries/kicad-footprints/-/raw/a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d/Diode_THT.pretty/D_DO-35_SOD27_P7.62mm_Horizontal.kicad_mod",
+      "bytes": 3248,
+      "sha256": "a053fbe6259d61a2f1c9a216214de690fddddfa9b2c8add5063bada8b33ff4c6"
+    },
+    {
+      "path": "kicad-footprints/Diode_THT.pretty/D_DO-41_SOD81_P10.16mm_Horizontal.kicad_mod",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-footprints",
+      "revision": "a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d",
+      "url": "https://gitlab.com/kicad/libraries/kicad-footprints/-/raw/a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d/Diode_THT.pretty/D_DO-41_SOD81_P10.16mm_Horizontal.kicad_mod",
+      "bytes": 3295,
+      "sha256": "f7a156e9b80a77d5d232d68b3f1b1e81b7bf99703017f9124da667d1d31af41e"
+    },
+    {
+      "path": "kicad-footprints/Inductor_SMD.pretty/L_0805_2012Metric.kicad_mod",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-footprints",
+      "revision": "a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d",
+      "url": "https://gitlab.com/kicad/libraries/kicad-footprints/-/raw/a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d/Inductor_SMD.pretty/L_0805_2012Metric.kicad_mod",
+      "bytes": 1931,
+      "sha256": "22f5100d304229ddc07ba8218e3b631d6db4f8fe0b5c310b078c7e41ad56517d"
+    },
+    {
+      "path": "kicad-footprints/LED_SMD.pretty/LED_0603_1608Metric.kicad_mod",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-footprints",
+      "revision": "a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d",
+      "url": "https://gitlab.com/kicad/libraries/kicad-footprints/-/raw/a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d/LED_SMD.pretty/LED_0603_1608Metric.kicad_mod",
+      "bytes": 2437,
+      "sha256": "7931ed1efba34cb13c8d74a60eb1dca4b0be57d950c38e08c3e7f007db500a1c"
+    },
+    {
+      "path": "kicad-footprints/LED_THT.pretty/LED_D5.0mm.kicad_mod",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-footprints",
+      "revision": "a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d",
+      "url": "https://gitlab.com/kicad/libraries/kicad-footprints/-/raw/a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d/LED_THT.pretty/LED_D5.0mm.kicad_mod",
+      "bytes": 2430,
+      "sha256": "efba51d29b26d31bbf3957a5813ee41872a071099d3f28bf6354a857f7129392"
+    },
+    {
+      "path": "kicad-footprints/LICENSE.md",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-footprints",
+      "revision": "a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d",
+      "url": "https://gitlab.com/kicad/libraries/kicad-footprints/-/raw/a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d/LICENSE.md",
+      "bytes": 2101,
+      "sha256": "45d2bce75e5a4208f5afb01b8fb2c406e700371c4fe2b5f5cd5c443d46db4d8f"
+    },
+    {
+      "path": "kicad-footprints/Module.pretty/RaspberryPi_Pico_Common_Unspecified.kicad_mod",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-footprints",
+      "revision": "a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d",
+      "url": "https://gitlab.com/kicad/libraries/kicad-footprints/-/raw/a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d/Module.pretty/RaspberryPi_Pico_Common_Unspecified.kicad_mod",
+      "bytes": 81804,
+      "sha256": "33791fb55439f47d12d8dd6c9925ebf18c24e50cb7e6d2e89d0606e97b44daf5"
+    },
+    {
+      "path": "kicad-footprints/Package_DFN_QFN.pretty/QFN-56-1EP_7x7mm_P0.4mm_EP3.2x3.2mm.kicad_mod",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-footprints",
+      "revision": "a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d",
+      "url": "https://gitlab.com/kicad/libraries/kicad-footprints/-/raw/a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d/Package_DFN_QFN.pretty/QFN-56-1EP_7x7mm_P0.4mm_EP3.2x3.2mm.kicad_mod",
+      "bytes": 12551,
+      "sha256": "cd4fb53a6c4469b8d1ddc0fc4a50183990f7c46ba103308526761a1f0e915769"
+    },
+    {
+      "path": "kicad-footprints/Package_DIP.pretty/DIP-14_W7.62mm.kicad_mod",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-footprints",
+      "revision": "a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d",
+      "url": "https://gitlab.com/kicad/libraries/kicad-footprints/-/raw/a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d/Package_DIP.pretty/DIP-14_W7.62mm.kicad_mod",
+      "bytes": 4453,
+      "sha256": "45cf0d69e6038dc3015e395a519a24069fcfff2d70340934683d4241b2098762"
+    },
+    {
+      "path": "kicad-footprints/Package_DIP.pretty/DIP-16_W7.62mm.kicad_mod",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-footprints",
+      "revision": "a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d",
+      "url": "https://gitlab.com/kicad/libraries/kicad-footprints/-/raw/a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d/Package_DIP.pretty/DIP-16_W7.62mm.kicad_mod",
+      "bytes": 4719,
+      "sha256": "d9f5f5a3dbebef059800781d37575e4120e5ae5e7fd96001eda365f65de94485"
+    },
+    {
+      "path": "kicad-footprints/Package_DIP.pretty/DIP-8_W7.62mm.kicad_mod",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-footprints",
+      "revision": "a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d",
+      "url": "https://gitlab.com/kicad/libraries/kicad-footprints/-/raw/a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d/Package_DIP.pretty/DIP-8_W7.62mm.kicad_mod",
+      "bytes": 3641,
+      "sha256": "222fb44370968119abbd978176814cc43a71bc32ac2de275d8a3c418c0830fc6"
+    },
+    {
+      "path": "kicad-footprints/Package_LGA.pretty/Bosch_LGA-8_2.5x2.5mm_P0.65mm_ClockwisePinNumbering.kicad_mod",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-footprints",
+      "revision": "a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d",
+      "url": "https://gitlab.com/kicad/libraries/kicad-footprints/-/raw/a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d/Package_LGA.pretty/Bosch_LGA-8_2.5x2.5mm_P0.65mm_ClockwisePinNumbering.kicad_mod",
+      "bytes": 5397,
+      "sha256": "14464b7a437e7efb0fa9947b89a7d3825242f3ed82d649fe2ca45fad5d3dda86"
+    },
+    {
+      "path": "kicad-footprints/Package_QFP.pretty/LQFP-48_7x7mm_P0.5mm.kicad_mod",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-footprints",
+      "revision": "a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d",
+      "url": "https://gitlab.com/kicad/libraries/kicad-footprints/-/raw/a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d/Package_QFP.pretty/LQFP-48_7x7mm_P0.5mm.kicad_mod",
+      "bytes": 11179,
+      "sha256": "1ccc5ad4d95398a4c6eb4b4cd1c429865368d06b8373613c6fcb332b53106ee0"
+    },
+    {
+      "path": "kicad-footprints/Package_SO.pretty/SOIC-14_3.9x8.7mm_P1.27mm.kicad_mod",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-footprints",
+      "revision": "a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d",
+      "url": "https://gitlab.com/kicad/libraries/kicad-footprints/-/raw/a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d/Package_SO.pretty/SOIC-14_3.9x8.7mm_P1.27mm.kicad_mod",
+      "bytes": 5356,
+      "sha256": "a885b619b22880c9559522d2bf865b059d80453b95a98defc9e6ceef284da1fc"
+    },
+    {
+      "path": "kicad-footprints/Package_SO.pretty/SOIC-16_3.9x9.9mm_P1.27mm.kicad_mod",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-footprints",
+      "revision": "a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d",
+      "url": "https://gitlab.com/kicad/libraries/kicad-footprints/-/raw/a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d/Package_SO.pretty/SOIC-16_3.9x9.9mm_P1.27mm.kicad_mod",
+      "bytes": 5724,
+      "sha256": "f9b5075740f7816c540ae1137f025d659beaec522ed7b86b1a5274cc9a2d8a25"
+    },
+    {
+      "path": "kicad-footprints/Package_SO.pretty/SOIC-8_3.9x4.9mm_P1.27mm.kicad_mod",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-footprints",
+      "revision": "a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d",
+      "url": "https://gitlab.com/kicad/libraries/kicad-footprints/-/raw/a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d/Package_SO.pretty/SOIC-8_3.9x4.9mm_P1.27mm.kicad_mod",
+      "bytes": 4582,
+      "sha256": "074ecb2092b24fa4b4b9cdd7c926fc587b0d7d6d21e7341e57935fd42d36894f"
+    },
+    {
+      "path": "kicad-footprints/Package_TO_SOT_SMD.pretty/SOT-223-3_TabPin2.kicad_mod",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-footprints",
+      "revision": "a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d",
+      "url": "https://gitlab.com/kicad/libraries/kicad-footprints/-/raw/a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d/Package_TO_SOT_SMD.pretty/SOT-223-3_TabPin2.kicad_mod",
+      "bytes": 4420,
+      "sha256": "8ae5f03e2c16377abed15e51af6864e23a934e1457b97fb7ea930e17fa99f11d"
+    },
+    {
+      "path": "kicad-footprints/Package_TO_SOT_SMD.pretty/SOT-23.kicad_mod",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-footprints",
+      "revision": "a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d",
+      "url": "https://gitlab.com/kicad/libraries/kicad-footprints/-/raw/a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d/Package_TO_SOT_SMD.pretty/SOT-23.kicad_mod",
+      "bytes": 4485,
+      "sha256": "0d88c86c1b6d8c1aae4aa8c09386264c089d4451a128b6ccd63ed253f4300b15"
+    },
+    {
+      "path": "kicad-footprints/Package_TO_SOT_THT.pretty/TO-220-3_Vertical.kicad_mod",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-footprints",
+      "revision": "a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d",
+      "url": "https://gitlab.com/kicad/libraries/kicad-footprints/-/raw/a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d/Package_TO_SOT_THT.pretty/TO-220-3_Vertical.kicad_mod",
+      "bytes": 2956,
+      "sha256": "b395d252c6407196b991269be7e3873f5f8b335f0b554387d60152164a239fe5"
+    },
+    {
+      "path": "kicad-footprints/Package_TO_SOT_THT.pretty/TO-92_Inline.kicad_mod",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-footprints",
+      "revision": "a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d",
+      "url": "https://gitlab.com/kicad/libraries/kicad-footprints/-/raw/a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d/Package_TO_SOT_THT.pretty/TO-92_Inline.kicad_mod",
+      "bytes": 3785,
+      "sha256": "19731cf8b8c297aa1405bb1441d8b9e1828eddbe919b0084f9dbfac29c9a36fc"
+    },
+    {
+      "path": "kicad-footprints/Potentiometer_THT.pretty/Potentiometer_Bourns_3296W_Vertical.kicad_mod",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-footprints",
+      "revision": "a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d",
+      "url": "https://gitlab.com/kicad/libraries/kicad-footprints/-/raw/a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d/Potentiometer_THT.pretty/Potentiometer_Bourns_3296W_Vertical.kicad_mod",
+      "bytes": 2641,
+      "sha256": "6d2547bdf6885984bb561dd44a76b89e3e270d386debe2e385fe997ad316db11"
+    },
+    {
+      "path": "kicad-footprints/README.md",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-footprints",
+      "revision": "a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d",
+      "url": "https://gitlab.com/kicad/libraries/kicad-footprints/-/raw/a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d/README.md",
+      "bytes": 706,
+      "sha256": "b948b5a049bb18c3ef79ca0efe70c2fa35efed68b16b592ac4a25ce614fe8c22"
+    },
+    {
+      "path": "kicad-footprints/RF_Module.pretty/ESP-01.kicad_mod",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-footprints",
+      "revision": "a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d",
+      "url": "https://gitlab.com/kicad/libraries/kicad-footprints/-/raw/a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d/RF_Module.pretty/ESP-01.kicad_mod",
+      "bytes": 5434,
+      "sha256": "c3429c6f0f91c04b218418f8ec175a746c3bfddc9e1e0a6558f803d2e16c0232"
+    },
+    {
+      "path": "kicad-footprints/RF_Module.pretty/ESP32-WROOM-32.kicad_mod",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-footprints",
+      "revision": "a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d",
+      "url": "https://gitlab.com/kicad/libraries/kicad-footprints/-/raw/a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d/RF_Module.pretty/ESP32-WROOM-32.kicad_mod",
+      "bytes": 16290,
+      "sha256": "af11e3ded30556624b02dbdb6b72e7ee6ec829fa0c549365b154eb273f7dbf7c"
+    },
+    {
+      "path": "kicad-footprints/Relay_THT.pretty/Relay_SPDT_Omron-G5LE-1.kicad_mod",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-footprints",
+      "revision": "a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d",
+      "url": "https://gitlab.com/kicad/libraries/kicad-footprints/-/raw/a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d/Relay_THT.pretty/Relay_SPDT_Omron-G5LE-1.kicad_mod",
+      "bytes": 6259,
+      "sha256": "bac3747d3acf9e6500799eb331657568ed40dd0513ab1c33bbb8bfc577b88559"
+    },
+    {
+      "path": "kicad-footprints/Resistor_SMD.pretty/R_0603_1608Metric.kicad_mod",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-footprints",
+      "revision": "a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d",
+      "url": "https://gitlab.com/kicad/libraries/kicad-footprints/-/raw/a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d/Resistor_SMD.pretty/R_0603_1608Metric.kicad_mod",
+      "bytes": 1943,
+      "sha256": "7190ac4a00125b807e54129ef0d87d87f2a658eeb74d025a7028203419b09f23"
+    },
+    {
+      "path": "kicad-footprints/Resistor_SMD.pretty/R_0805_2012Metric.kicad_mod",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-footprints",
+      "revision": "a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d",
+      "url": "https://gitlab.com/kicad/libraries/kicad-footprints/-/raw/a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d/Resistor_SMD.pretty/R_0805_2012Metric.kicad_mod",
+      "bytes": 1945,
+      "sha256": "f050b6a50cc7e6f86291fb7aa8f87b0d02255e21cfbddf291cdccc87e5889794"
+    },
+    {
+      "path": "kicad-footprints/Resistor_SMD.pretty/R_1206_3216Metric.kicad_mod",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-footprints",
+      "revision": "a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d",
+      "url": "https://gitlab.com/kicad/libraries/kicad-footprints/-/raw/a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d/Resistor_SMD.pretty/R_1206_3216Metric.kicad_mod",
+      "bytes": 1943,
+      "sha256": "c7320668dc81bbb954cb4f15e4e7a766c120059343d43551468c8f7ccc8fde37"
+    },
+    {
+      "path": "kicad-symbols/MCU_Module.kicad_symdir/Arduino_Nano_v3.x.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/MCU_Module.kicad_symdir/Arduino_Nano_v3.x.kicad_sym",
+      "bytes": 1514,
+      "sha256": "6b3b2ea2bf0d25541bed14f0d1bdd47620cd155793f0a47e78d7af1e59f0cf63"
+    },
+    {
+      "path": "kicad-symbols/MCU_Module.kicad_symdir/Arduino_Nano_v2.x.kicad_sym",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-symbols",
+      "revision": "afdc05ba339e77e4d5ead103cf7adba6976c3861",
+      "url": "https://gitlab.com/kicad/libraries/kicad-symbols/-/raw/afdc05ba339e77e4d5ead103cf7adba6976c3861/MCU_Module.kicad_symdir/Arduino_Nano_v2.x.kicad_sym",
+      "bytes": 9226,
+      "sha256": "c37d9714a2a4e28e9b21abcfb87cf02974e52afe791860b778e70fff0514c490"
+    },
+    {
+      "path": "kicad-footprints/Module.pretty/Arduino_Nano.kicad_mod",
+      "repository": "https://gitlab.com/kicad/libraries/kicad-footprints",
+      "revision": "a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d",
+      "url": "https://gitlab.com/kicad/libraries/kicad-footprints/-/raw/a0dcd398e7ea4b00cdeb91efc35f09cceaa9097d/Module.pretty/Arduino_Nano.kicad_mod",
+      "bytes": 12134,
+      "sha256": "97ad3cbbf882807c49c583b7ad9073c0911707b17c3dfdd753ca9eca4c9653c6"
+    }
+  ]
+}

@@ -1,0 +1,626 @@
+{
+  "schemaVersion": 1,
+  "version": "1.0.0",
+  "bindings": [
+    {
+      "category": "passives",
+      "family": "Device",
+      "name": "R",
+      "symbolIdentifier": "Device:R",
+      "footprintIdentifier": "Resistor_SMD:R_0603_1608Metric",
+      "bindingSource": "Floe explicit curated binding",
+      "symbolPaths": [
+        "Device.kicad_symdir/R.kicad_sym"
+      ],
+      "footprintPath": "Resistor_SMD.pretty/R_0603_1608Metric.kicad_mod"
+    },
+    {
+      "category": "passives",
+      "family": "Device",
+      "name": "R",
+      "symbolIdentifier": "Device:R",
+      "footprintIdentifier": "Resistor_SMD:R_0805_2012Metric",
+      "bindingSource": "Floe explicit curated binding",
+      "symbolPaths": [
+        "Device.kicad_symdir/R.kicad_sym"
+      ],
+      "footprintPath": "Resistor_SMD.pretty/R_0805_2012Metric.kicad_mod"
+    },
+    {
+      "category": "passives",
+      "family": "Device",
+      "name": "R",
+      "symbolIdentifier": "Device:R",
+      "footprintIdentifier": "Resistor_SMD:R_1206_3216Metric",
+      "bindingSource": "Floe explicit curated binding",
+      "symbolPaths": [
+        "Device.kicad_symdir/R.kicad_sym"
+      ],
+      "footprintPath": "Resistor_SMD.pretty/R_1206_3216Metric.kicad_mod"
+    },
+    {
+      "category": "passives",
+      "family": "Device",
+      "name": "C",
+      "symbolIdentifier": "Device:C",
+      "footprintIdentifier": "Capacitor_SMD:C_0603_1608Metric",
+      "bindingSource": "Floe explicit curated binding",
+      "symbolPaths": [
+        "Device.kicad_symdir/C.kicad_sym"
+      ],
+      "footprintPath": "Capacitor_SMD.pretty/C_0603_1608Metric.kicad_mod"
+    },
+    {
+      "category": "passives",
+      "family": "Device",
+      "name": "C",
+      "symbolIdentifier": "Device:C",
+      "footprintIdentifier": "Capacitor_SMD:C_0805_2012Metric",
+      "bindingSource": "Floe explicit curated binding",
+      "symbolPaths": [
+        "Device.kicad_symdir/C.kicad_sym"
+      ],
+      "footprintPath": "Capacitor_SMD.pretty/C_0805_2012Metric.kicad_mod"
+    },
+    {
+      "category": "passives",
+      "family": "Device",
+      "name": "C_Polarized",
+      "symbolIdentifier": "Device:C_Polarized",
+      "footprintIdentifier": "Capacitor_THT:CP_Radial_D5.0mm_P2.00mm",
+      "bindingSource": "Floe explicit curated binding",
+      "symbolPaths": [
+        "Device.kicad_symdir/C_Polarized.kicad_sym"
+      ],
+      "footprintPath": "Capacitor_THT.pretty/CP_Radial_D5.0mm_P2.00mm.kicad_mod"
+    },
+    {
+      "category": "passives",
+      "family": "Device",
+      "name": "L",
+      "symbolIdentifier": "Device:L",
+      "footprintIdentifier": "Inductor_SMD:L_0805_2012Metric",
+      "bindingSource": "Floe explicit curated binding",
+      "symbolPaths": [
+        "Device.kicad_symdir/L.kicad_sym"
+      ],
+      "footprintPath": "Inductor_SMD.pretty/L_0805_2012Metric.kicad_mod"
+    },
+    {
+      "category": "passives",
+      "family": "Device",
+      "name": "R_Potentiometer",
+      "symbolIdentifier": "Device:R_Potentiometer",
+      "footprintIdentifier": "Potentiometer_THT:Potentiometer_Bourns_3296W_Vertical",
+      "bindingSource": "Floe explicit curated binding",
+      "symbolPaths": [
+        "Device.kicad_symdir/R_Potentiometer.kicad_sym"
+      ],
+      "footprintPath": "Potentiometer_THT.pretty/Potentiometer_Bourns_3296W_Vertical.kicad_mod"
+    },
+    {
+      "category": "diodes-leds",
+      "family": "Diode",
+      "name": "1N4148",
+      "symbolIdentifier": "Diode:1N4148",
+      "footprintIdentifier": "Diode_THT:D_DO-35_SOD27_P7.62mm_Horizontal",
+      "bindingSource": "KiCad Footprint property",
+      "symbolPaths": [
+        "Diode.kicad_symdir/1N4148.kicad_sym",
+        "Diode.kicad_symdir/1N4001.kicad_sym"
+      ],
+      "footprintPath": "Diode_THT.pretty/D_DO-35_SOD27_P7.62mm_Horizontal.kicad_mod"
+    },
+    {
+      "category": "diodes-leds",
+      "family": "Diode",
+      "name": "1N4007",
+      "symbolIdentifier": "Diode:1N4007",
+      "footprintIdentifier": "Diode_THT:D_DO-41_SOD81_P10.16mm_Horizontal",
+      "bindingSource": "KiCad Footprint property",
+      "symbolPaths": [
+        "Diode.kicad_symdir/1N4007.kicad_sym",
+        "Diode.kicad_symdir/1N4001.kicad_sym"
+      ],
+      "footprintPath": "Diode_THT.pretty/D_DO-41_SOD81_P10.16mm_Horizontal.kicad_mod"
+    },
+    {
+      "category": "diodes-leds",
+      "family": "Diode",
+      "name": "SS14",
+      "symbolIdentifier": "Diode:SS14",
+      "footprintIdentifier": "Diode_SMD:D_SMA",
+      "bindingSource": "KiCad Footprint property",
+      "symbolPaths": [
+        "Diode.kicad_symdir/SS14.kicad_sym",
+        "Diode.kicad_symdir/SB120.kicad_sym"
+      ],
+      "footprintPath": "Diode_SMD.pretty/D_SMA.kicad_mod"
+    },
+    {
+      "category": "diodes-leds",
+      "family": "Device",
+      "name": "LED",
+      "symbolIdentifier": "Device:LED",
+      "footprintIdentifier": "LED_SMD:LED_0603_1608Metric",
+      "bindingSource": "Floe explicit curated binding",
+      "symbolPaths": [
+        "Device.kicad_symdir/LED.kicad_sym"
+      ],
+      "footprintPath": "LED_SMD.pretty/LED_0603_1608Metric.kicad_mod"
+    },
+    {
+      "category": "diodes-leds",
+      "family": "Device",
+      "name": "LED",
+      "symbolIdentifier": "Device:LED",
+      "footprintIdentifier": "LED_THT:LED_D5.0mm",
+      "bindingSource": "Floe explicit curated binding",
+      "symbolPaths": [
+        "Device.kicad_symdir/LED.kicad_sym"
+      ],
+      "footprintPath": "LED_THT.pretty/LED_D5.0mm.kicad_mod"
+    },
+    {
+      "category": "transistors-mosfets",
+      "family": "Transistor_BJT",
+      "name": "2N3904",
+      "symbolIdentifier": "Transistor_BJT:2N3904",
+      "footprintIdentifier": "Package_TO_SOT_THT:TO-92_Inline",
+      "bindingSource": "KiCad Footprint property",
+      "symbolPaths": [
+        "Transistor_BJT.kicad_symdir/2N3904.kicad_sym",
+        "Transistor_BJT.kicad_symdir/Q_NPN_EBC.kicad_sym"
+      ],
+      "footprintPath": "Package_TO_SOT_THT.pretty/TO-92_Inline.kicad_mod"
+    },
+    {
+      "category": "transistors-mosfets",
+      "family": "Transistor_BJT",
+      "name": "2N3906",
+      "symbolIdentifier": "Transistor_BJT:2N3906",
+      "footprintIdentifier": "Package_TO_SOT_THT:TO-92_Inline",
+      "bindingSource": "KiCad Footprint property",
+      "symbolPaths": [
+        "Transistor_BJT.kicad_symdir/2N3906.kicad_sym",
+        "Transistor_BJT.kicad_symdir/Q_PNP_EBC.kicad_sym"
+      ],
+      "footprintPath": "Package_TO_SOT_THT.pretty/TO-92_Inline.kicad_mod"
+    },
+    {
+      "category": "transistors-mosfets",
+      "family": "Transistor_FET",
+      "name": "2N7002",
+      "symbolIdentifier": "Transistor_FET:2N7002",
+      "footprintIdentifier": "Package_TO_SOT_SMD:SOT-23",
+      "bindingSource": "KiCad Footprint property",
+      "symbolPaths": [
+        "Transistor_FET.kicad_symdir/2N7002.kicad_sym",
+        "Transistor_FET.kicad_symdir/Q_NMOS_GSD.kicad_sym"
+      ],
+      "footprintPath": "Package_TO_SOT_SMD.pretty/SOT-23.kicad_mod"
+    },
+    {
+      "category": "transistors-mosfets",
+      "family": "Transistor_FET",
+      "name": "BSS138",
+      "symbolIdentifier": "Transistor_FET:BSS138",
+      "footprintIdentifier": "Package_TO_SOT_SMD:SOT-23",
+      "bindingSource": "KiCad Footprint property",
+      "symbolPaths": [
+        "Transistor_FET.kicad_symdir/BSS138.kicad_sym",
+        "Transistor_FET.kicad_symdir/Q_NMOS_GSD.kicad_sym"
+      ],
+      "footprintPath": "Package_TO_SOT_SMD.pretty/SOT-23.kicad_mod"
+    },
+    {
+      "category": "power",
+      "family": "Regulator_Linear",
+      "name": "AMS1117-3.3",
+      "symbolIdentifier": "Regulator_Linear:AMS1117-3.3",
+      "footprintIdentifier": "Package_TO_SOT_SMD:SOT-223-3_TabPin2",
+      "bindingSource": "KiCad Footprint property",
+      "symbolPaths": [
+        "Regulator_Linear.kicad_symdir/AMS1117-3.3.kicad_sym",
+        "Regulator_Linear.kicad_symdir/AP1117-15.kicad_sym"
+      ],
+      "footprintPath": "Package_TO_SOT_SMD.pretty/SOT-223-3_TabPin2.kicad_mod"
+    },
+    {
+      "category": "power",
+      "family": "Regulator_Linear",
+      "name": "L7805",
+      "symbolIdentifier": "Regulator_Linear:L7805",
+      "footprintIdentifier": "Package_TO_SOT_THT:TO-220-3_Vertical",
+      "bindingSource": "Floe explicit curated binding",
+      "symbolPaths": [
+        "Regulator_Linear.kicad_symdir/L7805.kicad_sym"
+      ],
+      "footprintPath": "Package_TO_SOT_THT.pretty/TO-220-3_Vertical.kicad_mod"
+    },
+    {
+      "category": "power",
+      "family": "Regulator_Linear",
+      "name": "LM317_TO-220",
+      "symbolIdentifier": "Regulator_Linear:LM317_TO-220",
+      "footprintIdentifier": "Package_TO_SOT_THT:TO-220-3_Vertical",
+      "bindingSource": "KiCad Footprint property",
+      "symbolPaths": [
+        "Regulator_Linear.kicad_symdir/LM317_TO-220.kicad_sym"
+      ],
+      "footprintPath": "Package_TO_SOT_THT.pretty/TO-220-3_Vertical.kicad_mod"
+    },
+    {
+      "category": "power",
+      "family": "Reference_Voltage",
+      "name": "TL431LP",
+      "symbolIdentifier": "Reference_Voltage:TL431LP",
+      "footprintIdentifier": "Package_TO_SOT_THT:TO-92_Inline",
+      "bindingSource": "KiCad Footprint property",
+      "symbolPaths": [
+        "Reference_Voltage.kicad_symdir/TL431LP.kicad_sym"
+      ],
+      "footprintPath": "Package_TO_SOT_THT.pretty/TO-92_Inline.kicad_mod"
+    },
+    {
+      "category": "analog-opamps",
+      "family": "Amplifier_Operational",
+      "name": "LM358",
+      "symbolIdentifier": "Amplifier_Operational:LM358",
+      "footprintIdentifier": "Package_DIP:DIP-8_W7.62mm",
+      "bindingSource": "Floe explicit curated binding",
+      "symbolPaths": [
+        "Amplifier_Operational.kicad_symdir/LM358.kicad_sym",
+        "Amplifier_Operational.kicad_symdir/LM2904.kicad_sym"
+      ],
+      "footprintPath": "Package_DIP.pretty/DIP-8_W7.62mm.kicad_mod"
+    },
+    {
+      "category": "analog-opamps",
+      "family": "Amplifier_Operational",
+      "name": "LM358",
+      "symbolIdentifier": "Amplifier_Operational:LM358",
+      "footprintIdentifier": "Package_SO:SOIC-8_3.9x4.9mm_P1.27mm",
+      "bindingSource": "Floe explicit curated binding",
+      "symbolPaths": [
+        "Amplifier_Operational.kicad_symdir/LM358.kicad_sym",
+        "Amplifier_Operational.kicad_symdir/LM2904.kicad_sym"
+      ],
+      "footprintPath": "Package_SO.pretty/SOIC-8_3.9x4.9mm_P1.27mm.kicad_mod"
+    },
+    {
+      "category": "analog-opamps",
+      "family": "Amplifier_Operational",
+      "name": "LM324",
+      "symbolIdentifier": "Amplifier_Operational:LM324",
+      "footprintIdentifier": "Package_DIP:DIP-14_W7.62mm",
+      "bindingSource": "Floe explicit curated binding",
+      "symbolPaths": [
+        "Amplifier_Operational.kicad_symdir/LM324.kicad_sym",
+        "Amplifier_Operational.kicad_symdir/LM2902.kicad_sym"
+      ],
+      "footprintPath": "Package_DIP.pretty/DIP-14_W7.62mm.kicad_mod"
+    },
+    {
+      "category": "analog-opamps",
+      "family": "Amplifier_Operational",
+      "name": "LM324",
+      "symbolIdentifier": "Amplifier_Operational:LM324",
+      "footprintIdentifier": "Package_SO:SOIC-14_3.9x8.7mm_P1.27mm",
+      "bindingSource": "Floe explicit curated binding",
+      "symbolPaths": [
+        "Amplifier_Operational.kicad_symdir/LM324.kicad_sym",
+        "Amplifier_Operational.kicad_symdir/LM2902.kicad_sym"
+      ],
+      "footprintPath": "Package_SO.pretty/SOIC-14_3.9x8.7mm_P1.27mm.kicad_mod"
+    },
+    {
+      "category": "analog-opamps",
+      "family": "Comparator",
+      "name": "LM393",
+      "symbolIdentifier": "Comparator:LM393",
+      "footprintIdentifier": "Package_DIP:DIP-8_W7.62mm",
+      "bindingSource": "Floe explicit curated binding",
+      "symbolPaths": [
+        "Comparator.kicad_symdir/LM393.kicad_sym",
+        "Comparator.kicad_symdir/LM2903.kicad_sym"
+      ],
+      "footprintPath": "Package_DIP.pretty/DIP-8_W7.62mm.kicad_mod"
+    },
+    {
+      "category": "analog-opamps",
+      "family": "Comparator",
+      "name": "LM393",
+      "symbolIdentifier": "Comparator:LM393",
+      "footprintIdentifier": "Package_SO:SOIC-8_3.9x4.9mm_P1.27mm",
+      "bindingSource": "Floe explicit curated binding",
+      "symbolPaths": [
+        "Comparator.kicad_symdir/LM393.kicad_sym",
+        "Comparator.kicad_symdir/LM2903.kicad_sym"
+      ],
+      "footprintPath": "Package_SO.pretty/SOIC-8_3.9x4.9mm_P1.27mm.kicad_mod"
+    },
+    {
+      "category": "digital-logic",
+      "family": "74xx",
+      "name": "74HC00",
+      "symbolIdentifier": "74xx:74HC00",
+      "footprintIdentifier": "Package_DIP:DIP-14_W7.62mm",
+      "bindingSource": "Floe explicit curated binding",
+      "symbolPaths": [
+        "74xx.kicad_symdir/74HC00.kicad_sym",
+        "74xx.kicad_symdir/74LS00.kicad_sym"
+      ],
+      "footprintPath": "Package_DIP.pretty/DIP-14_W7.62mm.kicad_mod"
+    },
+    {
+      "category": "digital-logic",
+      "family": "74xx",
+      "name": "74HC00",
+      "symbolIdentifier": "74xx:74HC00",
+      "footprintIdentifier": "Package_SO:SOIC-14_3.9x8.7mm_P1.27mm",
+      "bindingSource": "Floe explicit curated binding",
+      "symbolPaths": [
+        "74xx.kicad_symdir/74HC00.kicad_sym",
+        "74xx.kicad_symdir/74LS00.kicad_sym"
+      ],
+      "footprintPath": "Package_SO.pretty/SOIC-14_3.9x8.7mm_P1.27mm.kicad_mod"
+    },
+    {
+      "category": "digital-logic",
+      "family": "74xx",
+      "name": "74HC04",
+      "symbolIdentifier": "74xx:74HC04",
+      "footprintIdentifier": "Package_DIP:DIP-14_W7.62mm",
+      "bindingSource": "Floe explicit curated binding",
+      "symbolPaths": [
+        "74xx.kicad_symdir/74HC04.kicad_sym",
+        "74xx.kicad_symdir/74LS04.kicad_sym"
+      ],
+      "footprintPath": "Package_DIP.pretty/DIP-14_W7.62mm.kicad_mod"
+    },
+    {
+      "category": "digital-logic",
+      "family": "74xx",
+      "name": "74HC04",
+      "symbolIdentifier": "74xx:74HC04",
+      "footprintIdentifier": "Package_SO:SOIC-14_3.9x8.7mm_P1.27mm",
+      "bindingSource": "Floe explicit curated binding",
+      "symbolPaths": [
+        "74xx.kicad_symdir/74HC04.kicad_sym",
+        "74xx.kicad_symdir/74LS04.kicad_sym"
+      ],
+      "footprintPath": "Package_SO.pretty/SOIC-14_3.9x8.7mm_P1.27mm.kicad_mod"
+    },
+    {
+      "category": "digital-logic",
+      "family": "74xx",
+      "name": "74HC595",
+      "symbolIdentifier": "74xx:74HC595",
+      "footprintIdentifier": "Package_DIP:DIP-16_W7.62mm",
+      "bindingSource": "Floe explicit curated binding",
+      "symbolPaths": [
+        "74xx.kicad_symdir/74HC595.kicad_sym"
+      ],
+      "footprintPath": "Package_DIP.pretty/DIP-16_W7.62mm.kicad_mod"
+    },
+    {
+      "category": "digital-logic",
+      "family": "74xx",
+      "name": "74HC595",
+      "symbolIdentifier": "74xx:74HC595",
+      "footprintIdentifier": "Package_SO:SOIC-16_3.9x9.9mm_P1.27mm",
+      "bindingSource": "Floe explicit curated binding",
+      "symbolPaths": [
+        "74xx.kicad_symdir/74HC595.kicad_sym"
+      ],
+      "footprintPath": "Package_SO.pretty/SOIC-16_3.9x9.9mm_P1.27mm.kicad_mod"
+    },
+    {
+      "category": "digital-logic",
+      "family": "4xxx",
+      "name": "4017",
+      "symbolIdentifier": "4xxx:4017",
+      "footprintIdentifier": "Package_DIP:DIP-16_W7.62mm",
+      "bindingSource": "Floe explicit curated binding",
+      "symbolPaths": [
+        "4xxx.kicad_symdir/4017.kicad_sym"
+      ],
+      "footprintPath": "Package_DIP.pretty/DIP-16_W7.62mm.kicad_mod"
+    },
+    {
+      "category": "microcontrollers",
+      "family": "MCU_ST_STM32F1",
+      "name": "STM32F103C8Tx",
+      "symbolIdentifier": "MCU_ST_STM32F1:STM32F103C8Tx",
+      "footprintIdentifier": "Package_QFP:LQFP-48_7x7mm_P0.5mm",
+      "bindingSource": "KiCad Footprint property",
+      "symbolPaths": [
+        "MCU_ST_STM32F1.kicad_symdir/STM32F103C8Tx.kicad_sym",
+        "MCU_ST_STM32F1.kicad_symdir/STM32F103C_8-B_Tx.kicad_sym"
+      ],
+      "footprintPath": "Package_QFP.pretty/LQFP-48_7x7mm_P0.5mm.kicad_mod"
+    },
+    {
+      "category": "microcontrollers",
+      "family": "MCU_RaspberryPi",
+      "name": "RP2040",
+      "symbolIdentifier": "MCU_RaspberryPi:RP2040",
+      "footprintIdentifier": "Package_DFN_QFN:QFN-56-1EP_7x7mm_P0.4mm_EP3.2x3.2mm",
+      "bindingSource": "KiCad Footprint property",
+      "symbolPaths": [
+        "MCU_RaspberryPi.kicad_symdir/RP2040.kicad_sym"
+      ],
+      "footprintPath": "Package_DFN_QFN.pretty/QFN-56-1EP_7x7mm_P0.4mm_EP3.2x3.2mm.kicad_mod"
+    },
+    {
+      "category": "connectors",
+      "family": "Connector_Generic",
+      "name": "Conn_01x02",
+      "symbolIdentifier": "Connector_Generic:Conn_01x02",
+      "footprintIdentifier": "Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical",
+      "bindingSource": "Floe explicit curated binding",
+      "symbolPaths": [
+        "Connector_Generic.kicad_symdir/Conn_01x02.kicad_sym"
+      ],
+      "footprintPath": "Connector_PinHeader_2.54mm.pretty/PinHeader_1x02_P2.54mm_Vertical.kicad_mod"
+    },
+    {
+      "category": "connectors",
+      "family": "Connector_Generic",
+      "name": "Conn_01x04",
+      "symbolIdentifier": "Connector_Generic:Conn_01x04",
+      "footprintIdentifier": "Connector_PinHeader_2.54mm:PinHeader_1x04_P2.54mm_Vertical",
+      "bindingSource": "Floe explicit curated binding",
+      "symbolPaths": [
+        "Connector_Generic.kicad_symdir/Conn_01x04.kicad_sym"
+      ],
+      "footprintPath": "Connector_PinHeader_2.54mm.pretty/PinHeader_1x04_P2.54mm_Vertical.kicad_mod"
+    },
+    {
+      "category": "connectors",
+      "family": "Connector_Generic",
+      "name": "Conn_01x06",
+      "symbolIdentifier": "Connector_Generic:Conn_01x06",
+      "footprintIdentifier": "Connector_PinHeader_2.54mm:PinHeader_1x06_P2.54mm_Vertical",
+      "bindingSource": "Floe explicit curated binding",
+      "symbolPaths": [
+        "Connector_Generic.kicad_symdir/Conn_01x06.kicad_sym"
+      ],
+      "footprintPath": "Connector_PinHeader_2.54mm.pretty/PinHeader_1x06_P2.54mm_Vertical.kicad_mod"
+    },
+    {
+      "category": "switches-relays",
+      "family": "Switch",
+      "name": "SW_Push",
+      "symbolIdentifier": "Switch:SW_Push",
+      "footprintIdentifier": "Button_Switch_SMD:SW_SPST_TL3342",
+      "bindingSource": "Floe explicit curated binding",
+      "symbolPaths": [
+        "Switch.kicad_symdir/SW_Push.kicad_sym"
+      ],
+      "footprintPath": "Button_Switch_SMD.pretty/SW_SPST_TL3342.kicad_mod"
+    },
+    {
+      "category": "switches-relays",
+      "family": "Switch",
+      "name": "SW_SPDT",
+      "symbolIdentifier": "Switch:SW_SPDT",
+      "footprintIdentifier": "",
+      "bindingSource": "KiCad Footprint property",
+      "symbolPaths": [
+        "Switch.kicad_symdir/SW_SPDT.kicad_sym"
+      ]
+    },
+    {
+      "category": "switches-relays",
+      "family": "Relay",
+      "name": "G5LE-1",
+      "symbolIdentifier": "Relay:G5LE-1",
+      "footprintIdentifier": "Relay_THT:Relay_SPDT_Omron-G5LE-1",
+      "bindingSource": "KiCad Footprint property",
+      "symbolPaths": [
+        "Relay.kicad_symdir/G5LE-1.kicad_sym"
+      ],
+      "footprintPath": "Relay_THT.pretty/Relay_SPDT_Omron-G5LE-1.kicad_mod"
+    },
+    {
+      "category": "crystals",
+      "family": "Device",
+      "name": "Crystal",
+      "symbolIdentifier": "Device:Crystal",
+      "footprintIdentifier": "Crystal:Crystal_HC49-U_Vertical",
+      "bindingSource": "Floe explicit curated binding",
+      "symbolPaths": [
+        "Device.kicad_symdir/Crystal.kicad_sym"
+      ],
+      "footprintPath": "Crystal.pretty/Crystal_HC49-U_Vertical.kicad_mod"
+    },
+    {
+      "category": "crystals",
+      "family": "Device",
+      "name": "Crystal_GND24",
+      "symbolIdentifier": "Device:Crystal_GND24",
+      "footprintIdentifier": "Crystal:Crystal_SMD_3225-4Pin_3.2x2.5mm",
+      "bindingSource": "Floe explicit curated binding",
+      "symbolPaths": [
+        "Device.kicad_symdir/Crystal_GND24.kicad_sym"
+      ],
+      "footprintPath": "Crystal.pretty/Crystal_SMD_3225-4Pin_3.2x2.5mm.kicad_mod"
+    },
+    {
+      "category": "sensors",
+      "family": "Sensor_Temperature",
+      "name": "DS18B20",
+      "symbolIdentifier": "Sensor_Temperature:DS18B20",
+      "footprintIdentifier": "Package_TO_SOT_THT:TO-92_Inline",
+      "bindingSource": "KiCad Footprint property",
+      "symbolPaths": [
+        "Sensor_Temperature.kicad_symdir/DS18B20.kicad_sym",
+        "Sensor_Temperature.kicad_symdir/MAX31820.kicad_sym"
+      ],
+      "footprintPath": "Package_TO_SOT_THT.pretty/TO-92_Inline.kicad_mod"
+    },
+    {
+      "category": "sensors",
+      "family": "Sensor",
+      "name": "BME280",
+      "symbolIdentifier": "Sensor:BME280",
+      "footprintIdentifier": "Package_LGA:Bosch_LGA-8_2.5x2.5mm_P0.65mm_ClockwisePinNumbering",
+      "bindingSource": "KiCad Footprint property",
+      "symbolPaths": [
+        "Sensor.kicad_symdir/BME280.kicad_sym"
+      ],
+      "footprintPath": "Package_LGA.pretty/Bosch_LGA-8_2.5x2.5mm_P0.65mm_ClockwisePinNumbering.kicad_mod"
+    },
+    {
+      "category": "modules",
+      "family": "RF_Module",
+      "name": "ESP32-WROOM-32",
+      "symbolIdentifier": "RF_Module:ESP32-WROOM-32",
+      "footprintIdentifier": "RF_Module:ESP32-WROOM-32",
+      "bindingSource": "KiCad Footprint property",
+      "symbolPaths": [
+        "RF_Module.kicad_symdir/ESP32-WROOM-32.kicad_sym"
+      ],
+      "footprintPath": "RF_Module.pretty/ESP32-WROOM-32.kicad_mod"
+    },
+    {
+      "category": "modules",
+      "family": "RF_Module",
+      "name": "ESP-01",
+      "symbolIdentifier": "RF_Module:ESP-01",
+      "footprintIdentifier": "RF_Module:ESP-01",
+      "bindingSource": "KiCad Footprint property",
+      "symbolPaths": [
+        "RF_Module.kicad_symdir/ESP-01.kicad_sym"
+      ],
+      "footprintPath": "RF_Module.pretty/ESP-01.kicad_mod"
+    },
+    {
+      "category": "modules",
+      "family": "MCU_Module",
+      "name": "RaspberryPi_Pico",
+      "symbolIdentifier": "MCU_Module:RaspberryPi_Pico",
+      "footprintIdentifier": "Module:RaspberryPi_Pico_Common_Unspecified",
+      "bindingSource": "KiCad Footprint property",
+      "symbolPaths": [
+        "MCU_Module.kicad_symdir/RaspberryPi_Pico.kicad_sym"
+      ],
+      "footprintPath": "Module.pretty/RaspberryPi_Pico_Common_Unspecified.kicad_mod"
+    },
+    {
+      "category": "modules",
+      "family": "MCU_Module",
+      "name": "Arduino_Nano_v3.x",
+      "symbolIdentifier": "MCU_Module:Arduino_Nano_v3.x",
+      "footprintIdentifier": "Module:Arduino_Nano",
+      "footprintPath": "Module.pretty/Arduino_Nano.kicad_mod",
+      "bindingSource": "KiCad Footprint property",
+      "symbolPaths": [
+        "MCU_Module.kicad_symdir/Arduino_Nano_v3.x.kicad_sym",
+        "MCU_Module.kicad_symdir/Arduino_Nano_v2.x.kicad_sym"
+      ]
+    }
+  ]
+}
