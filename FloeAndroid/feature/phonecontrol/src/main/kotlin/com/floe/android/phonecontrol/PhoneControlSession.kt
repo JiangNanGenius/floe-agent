@@ -21,6 +21,7 @@ import android.view.Display
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.app.KeyguardManager
+import com.floe.android.contracts.OwnedExternalViewLaunch
 import java.util.UUID
 import kotlin.math.max
 
@@ -62,9 +63,13 @@ internal class PhoneControlSession(
     private var lastContentChangeAt = 0L
     private var suppressUserTouchUntil = 0L
     private val ownInputEcho = PhoneOwnInputEcho()
-    @Volatile var lastUserInteractionAt: Long = SystemClock.elapsedRealtime()
-        private set
-    @Volatile var lastUserInteractionWallMillis: Long = System.currentTimeMillis()
+    private val ownedViewTransition = PhoneOwnedViewTransition()
+    private var principalEpoch: Long = 0L
+    private var principalGeneration: Long = 0L
+    // Session construction is NOT human presence. A service reconnect or a
+    // fresh client must never look like a user touch newer than an earlier
+    // presence approval; only an observed signal publishes a stamp.
+    @Volatile var lastInteraction: PhoneInteractionStamp? = null
         private set
     private val unlocker = PhoneControlUnlocker(service, mainHandler,
         suppressGeneratedEvents = { until ->
@@ -81,6 +86,7 @@ internal class PhoneControlSession(
     fun unlockForTask(principal: PhoneControlPrincipal, operationToken: String, credential: CharArray,
         isCurrent: () -> Boolean, taskIsCurrent: () -> Boolean,
         complete: (PhoneUnlockResult) -> Unit) {
+        notePrincipal(principal)
         unlocker.unlock(principal.owner, operationToken, credential, isCurrent, taskIsCurrent) { result ->
             if (result == PhoneUnlockResult.UNLOCKED || result == PhoneUnlockResult.ALREADY_UNLOCKED) {
                 onScreenInteractive()
@@ -129,6 +135,7 @@ internal class PhoneControlSession(
             complete(PhoneControlResult.Denied(PhoneControlDenial.SERVICE_DISCONNECTED))
             return
         }
+        notePrincipal(principal)
         PhoneControlPolicy.grantDenial(principal, grant)?.let {
             complete(PhoneControlResult.Denied(it))
             return
@@ -260,6 +267,7 @@ internal class PhoneControlSession(
             complete(PhoneControlResult.Denied(PhoneControlDenial.SERVICE_DISCONNECTED))
             return
         }
+        notePrincipal(principal)
         PhoneControlPolicy.grantDenial(principal, grant)?.let {
             complete(PhoneControlResult.Denied(it))
             return
@@ -318,6 +326,10 @@ internal class PhoneControlSession(
 
     fun arm(principal: PhoneControlPrincipal): PhoneControlResult<PhoneControlStatus> {
         if (closed) return PhoneControlResult.Denied(PhoneControlDenial.SERVICE_DISCONNECTED)
+        notePrincipal(principal)
+        // An explicit arm is a new admission decision; it never inherits a
+        // prior launch's semantic attribution.
+        clearOwnedViewTransition("explicit_arm")
         if (inFlightId != null || unlocker.isSettling) {
             return PhoneControlResult.Denied(PhoneControlDenial.OPERATION_IN_FLIGHT)
         }
@@ -340,6 +352,7 @@ internal class PhoneControlSession(
     fun launchApplication(principal: PhoneControlPrincipal, grant: PhoneControlGrant,
                           packageName: String): PhoneControlResult<PhoneControlActionResult> {
         if (closed) return PhoneControlResult.Denied(PhoneControlDenial.SERVICE_DISCONNECTED)
+        notePrincipal(principal)
         if (inFlightId != null) return PhoneControlResult.Denied(PhoneControlDenial.OPERATION_IN_FLIGHT)
         lockedDenial()?.let { return it }
         PhoneControlPolicy.grantDenial(principal, grant)?.let { return PhoneControlResult.Denied(it) }
@@ -360,6 +373,7 @@ internal class PhoneControlSession(
         latest = null
         fence.onPageChanged()
         suppressOwnInput()
+        armOwnedViewTransition(principal, packageName, null)
         // Isolate the ONE OS dispatch from post-start publication. Only the
         // closed known non-dispatch exceptions may become a retryable
         // rejection; any other exception after the call was attempted is an
@@ -370,11 +384,13 @@ internal class PhoneControlSession(
             service.startActivity(target)
             PhoneControlDispatch.ACCEPTED
         } catch (_: ActivityNotFoundException) {
+            clearOwnedViewTransition("launch_not_dispatched")
             return PhoneControlResult.Failed(
                 PhoneControlFailure.ACTION_REJECTED,
                 "The authorized target has no launchable activity",
             )
         } catch (_: SecurityException) {
+            clearOwnedViewTransition("launch_not_dispatched")
             return PhoneControlResult.Failed(
                 PhoneControlFailure.ACTION_REJECTED,
                 "The authorized target refused the activity launch",
@@ -418,6 +434,7 @@ internal class PhoneControlSession(
             complete(PhoneControlResult.Denied(PhoneControlDenial.SERVICE_DISCONNECTED))
             return
         }
+        notePrincipal(principal)
         if (inFlightId != null) {
             complete(PhoneControlResult.Denied(PhoneControlDenial.OPERATION_IN_FLIGHT))
             return
@@ -485,6 +502,12 @@ internal class PhoneControlSession(
             complete(PhoneControlResult.Failed(PhoneControlFailure.CANCELLED))
             return
         }
+        // Only the EXACT package/component this session is about to launch can
+        // own the external app's transition/loading semantics. The record is
+        // armed immediately before the OS dispatch; a definite non-dispatch
+        // clears it, an unknown post-call outcome keeps it (the Activity may
+        // already exist and start loading).
+        armOwnedViewTransition(principal, request.packageName, request.className)
         // The OS dispatch boundary is separate from every post-start effect.
         // Only the closed known no-dispatch exceptions are a retryable
         // rejection; any other exception after the call was attempted has an
@@ -492,10 +515,12 @@ internal class PhoneControlSession(
         try {
             service.startActivity(intent)
         } catch (_: ActivityNotFoundException) {
+            clearOwnedViewTransition("document_view_not_dispatched")
             complete(PhoneControlResult.Failed(PhoneControlFailure.ACTION_REJECTED,
                 "The target document VIEW handler is not installed"))
             return
         } catch (_: SecurityException) {
+            clearOwnedViewTransition("document_view_not_dispatched")
             complete(PhoneControlResult.Failed(PhoneControlFailure.ACTION_REJECTED,
                 "The target refused the document VIEW grant"))
             return
@@ -542,6 +567,7 @@ internal class PhoneControlSession(
             complete(PhoneControlResult.Denied(PhoneControlDenial.SERVICE_DISCONNECTED))
             return
         }
+        notePrincipal(principal)
         PhoneControlPolicy.grantDenial(principal, grant)?.let {
             complete(PhoneControlResult.Denied(it))
             return
@@ -1304,6 +1330,7 @@ internal class PhoneControlSession(
             complete(PhoneControlResult.Denied(PhoneControlDenial.SERVICE_DISCONNECTED))
             return
         }
+        notePrincipal(principal)
         PhoneControlPolicy.grantDenial(principal, grant)?.let {
             complete(PhoneControlResult.Denied(it))
             return
@@ -1522,6 +1549,8 @@ internal class PhoneControlSession(
 
     private fun applyGlobalBlocker(blocker: PhoneControlBlocker) {
         if (closed) return
+        clearOwnedViewTransition("global_blocker")
+        clearOwnedExternalLaunchSignal("global_blocker")
         fence.block(blocker)
         latest = null
         abortInFlight(blocker, "phone control was fenced: ${blocker.name}")
@@ -1531,6 +1560,7 @@ internal class PhoneControlSession(
     fun release(owner: PhoneControlOwner) {
         if (closed) return
         if (fence.release(owner)) {
+            clearOwnedViewTransition("owner_released")
             // The task's automatic UI ownership ends here even when the host
             // closed the client before finish(); the wake-lease drop is
             // exact-owner guarded and idempotent after any earlier finish path.
@@ -1543,6 +1573,8 @@ internal class PhoneControlSession(
 
     fun onScreenOff() {
         if (closed) return
+        clearOwnedViewTransition("screen_off")
+        clearOwnedExternalLaunchSignal("screen_off")
         // End owned wake resources before anything else touches the screen-off
         // path: never fight a manual power key, and a pending unlock attempt
         // conservatively settles as user takeover instead of re-waking.
@@ -1643,8 +1675,14 @@ internal class PhoneControlSession(
     fun onOwnAppUserInteraction() {
         if (closed) return
         val now = SystemClock.elapsedRealtime()
-        lastUserInteractionAt = now
-        lastUserInteractionWallMillis = System.currentTimeMillis()
+        clearOwnedViewTransition("own_app_user_touch")
+        clearOwnedExternalLaunchSignal("own_app_user_touch")
+        lastInteraction = PhoneInteractionStamp(
+            elapsedRealtimeMillis = now,
+            wallMillis = System.currentTimeMillis(),
+            source = PhoneUserInteractionSource.OWN_APP_TOUCH,
+            semanticPackage = null,
+        )
         if (fence.state().owner != null) {
             runCatching { android.util.Log.i("FloePhoneUnlock", "OWN_APP_USER_INTERACTION") }
         }
@@ -1657,7 +1695,20 @@ internal class PhoneControlSession(
         PhoneControlRuntime.publish()
     }
 
-    fun onPlatformUserInteraction(eventUptimeMillis: Long? = null) {
+    /**
+     * An external app's semantic click/scroll event. Floe's own package never
+     * arrives here (see [onOwnAppSemanticEvent]).
+     *
+     * A semantic event from the EXACT package this session just launched,
+     * inside the bounded [PhoneOwnedViewTransition] window, is the target
+     * app's own transition/loading semantics: it never marks human presence,
+     * never releases wake/relock and never fences the run. Every other
+     * external semantic event keeps the conservative takeover path.
+     */
+    fun onExternalSemanticInteraction(
+        packageName: String?,
+        eventUptimeMillis: Long? = null,
+    ) {
         if (closed) return
         val now = SystemClock.elapsedRealtime()
         if (now <= suppressUserTouchUntil) return
@@ -1669,12 +1720,107 @@ internal class PhoneControlSession(
             runCatching { android.util.Log.i("FloePhoneUnlock", "LATE_OWN_INPUT_ECHO_IGNORED") }
             return
         }
-        lastUserInteractionAt = now
-        val lag = eventUptimeMillis?.let { (SystemClock.uptimeMillis() - it).coerceIn(0, 60_000) } ?: 0
-        lastUserInteractionWallMillis = System.currentTimeMillis() - lag
+        val state = fence.state()
+        if (ownedViewTransition.absorbs(
+                packageName = packageName,
+                eventUptimeMillis = eventUptimeMillis,
+                fenceOwner = state.owner,
+                fenceBlocked = state.blocker != null,
+                nowUptimeMillis = SystemClock.uptimeMillis(),
+                currentEpoch = principalEpoch,
+                currentGeneration = principalGeneration,
+            )
+        ) {
+            // Closed diagnostic token only: no package, text, coordinates or
+            // per-event payload. It identifies the affected device observe.
+            runCatching {
+                android.util.Log.i("FloePhoneControl", "owned_view_semantic_event_ignored")
+            }
+            return
+        }
+        // The foreground artifact handoff starts the viewer directly from
+        // Floe's Activity (outside this service session), so its target
+        // loading traffic is correlated through the trusted process-local
+        // host record. Only an armed session with the same task/run and
+        // known epoch may attribute it. Foreground VIEW itself remains
+        // available without a phone-control session.
+        if (state.blocker == null && state.owner != null && principalEpoch > 0L &&
+            OwnedExternalViewLaunch.matchActive(
+                targetPackage = packageName,
+                eventUptimeMillis = eventUptimeMillis,
+                nowUptimeMillis = SystemClock.uptimeMillis(),
+                nowElapsedRealtimeMillis = now,
+                expectedNativeEpoch = principalEpoch,
+                expectedTaskID = state.owner?.taskID?.toString(),
+                expectedRunID = state.owner?.runID?.toString(),
+            ) != null
+        ) {
+            runCatching {
+                android.util.Log.i("FloePhoneControl", "owned_external_view_semantic_event_ignored")
+            }
+            return
+        }
+        acceptHumanInteraction(
+            source = PhoneUserInteractionSource.PLATFORM_SEMANTIC,
+            packageName = packageName,
+            eventUptimeMillis = eventUptimeMillis,
+            nowElapsedRealtimeMillis = now,
+        )
+    }
+
+    /**
+     * A raw platform touch-interaction start. This is the unambiguous human
+     * signal (including a scroll gesture, whose raw start precedes the
+     * semantic scroll event). It always takes over; an owned-view transition
+     * never absorbs it.
+     */
+    fun onRawTouchInteraction(eventUptimeMillis: Long? = null) {
+        if (closed) return
+        val now = SystemClock.elapsedRealtime()
+        if (now <= suppressUserTouchUntil) return
+        if (eventUptimeMillis != null && ownInputEcho.isOwnEcho(eventUptimeMillis)) {
+            runCatching { android.util.Log.i("FloePhoneUnlock", "LATE_OWN_INPUT_ECHO_IGNORED") }
+            return
+        }
+        acceptHumanInteraction(
+            source = PhoneUserInteractionSource.PLATFORM_RAW_TOUCH,
+            packageName = null,
+            eventUptimeMillis = eventUptimeMillis,
+            nowElapsedRealtimeMillis = now,
+        )
+    }
+
+    private fun acceptHumanInteraction(
+        source: PhoneUserInteractionSource,
+        packageName: String?,
+        eventUptimeMillis: Long?,
+        nowElapsedRealtimeMillis: Long,
+    ) {
+        // A real signal ends any owned-transition attribution immediately:
+        // later external semantics are re-evaluated as conservative human
+        // input instead of inheriting this one-time launch record.
+        val clearReason = if (source == PhoneUserInteractionSource.PLATFORM_RAW_TOUCH) {
+            "raw_touch"
+        } else {
+            "external_semantic"
+        }
+        clearOwnedViewTransition(clearReason)
+        clearOwnedExternalLaunchSignal(clearReason)
+        val lag = eventUptimeMillis
+            ?.let { (SystemClock.uptimeMillis() - it).coerceIn(0, 60_000) } ?: 0
+        lastInteraction = PhoneInteractionStamp(
+            elapsedRealtimeMillis = nowElapsedRealtimeMillis,
+            wallMillis = System.currentTimeMillis() - lag,
+            source = source,
+            semanticPackage = packageName
+                ?.takeIf { source == PhoneUserInteractionSource.PLATFORM_SEMANTIC },
+        )
         if (fence.state().owner != null) {
             val token = if (lag > 1_500) "OWNED_PHONE_USER_EVENT_LATE" else "OWNED_PHONE_USER_EVENT_FRESH"
-            runCatching { android.util.Log.i("FloePhoneUnlock", token) }
+            runCatching {
+                android.util.Log.i("FloePhoneUnlock",
+                    "$token source=${source.name.lowercase()}")
+            }
         }
         unlocker.userInteraction()
         if (fence.state().owner == null && inFlightId == null) return
@@ -1687,6 +1833,8 @@ internal class PhoneControlSession(
 
     fun onServiceInterrupt() {
         if (closed) return
+        clearOwnedViewTransition("service_interrupted")
+        clearOwnedExternalLaunchSignal("service_interrupted")
         abortInFlight(null, "the accessibility service interrupted feedback")
         PhoneControlRuntime.publish()
     }
@@ -1694,6 +1842,8 @@ internal class PhoneControlSession(
     fun shutdown(blocker: PhoneControlBlocker) {
         if (closed) return
         closed = true
+        clearOwnedViewTransition("session_shutdown")
+        clearOwnedExternalLaunchSignal("session_shutdown")
         unlocker.close()
         fence.block(blocker)
         latest = null
@@ -2134,6 +2284,60 @@ internal class PhoneControlSession(
                 " page=${observation.pageGeneration}" +
                 " remaining_ms=${observation.expiresAtElapsedRealtimeMillis - SystemClock.elapsedRealtime()}",
         )
+    }
+
+    /**
+     * Records the exact live grant generation of the latest operation. A
+     * changed epoch/generation ends any launch-transition attribution: the
+     * record can never transfer to a new call, a new native epoch or a
+     * restarted runtime, even for the same task/run identity.
+     */
+    private fun notePrincipal(principal: PhoneControlPrincipal) {
+        if (principal.epoch == principalEpoch && principal.generation == principalGeneration) return
+        principalEpoch = principal.epoch
+        principalGeneration = principal.generation
+        clearOwnedViewTransition("principal_changed")
+    }
+
+    /** Arms attribution for ONE Agent-owned external launch/VIEW. */
+    private fun armOwnedViewTransition(
+        principal: PhoneControlPrincipal,
+        targetPackage: String,
+        targetComponent: String?,
+    ) {
+        val record = ownedViewTransition.arm(
+            owner = principal.owner,
+            epoch = principal.epoch,
+            generation = principal.generation,
+            targetPackage = targetPackage,
+            targetComponent = targetComponent,
+            uptimeMillis = SystemClock.uptimeMillis(),
+        ) ?: return
+        // Closed diagnostic token only: no package/component identity, text,
+        // path or task id enters the log.
+        runCatching {
+            android.util.Log.i(
+                "FloePhoneControl",
+                "owned_view_transition_armed component=${if (record.targetComponent == null) 0 else 1}",
+            )
+        }
+    }
+
+    private fun clearOwnedViewTransition(reason: String) {
+        if (ownedViewTransition.clear() == null) return
+        // Closed reason token only. The record's package/component identity
+        // stays in RAM and never reaches a log or retained diagnostic.
+        runCatching {
+            android.util.Log.i("FloePhoneControl", "owned_view_transition_cleared reason=$reason")
+        }
+    }
+
+    private fun clearOwnedExternalLaunchSignal(reason: String) {
+        if (OwnedExternalViewLaunch.clear() == null) return
+        // Closed reason token only: the task/run/target never reach a log.
+        runCatching {
+            android.util.Log.i("FloePhoneControl", "owned_external_launch_cleared reason=$reason")
+        }
     }
 
     private fun suppressOwnInput() {

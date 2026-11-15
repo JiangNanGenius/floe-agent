@@ -39,6 +39,7 @@ import com.floe.android.DeviceAccessPresentation
 import com.floe.android.DeviceAccessRootUi
 import com.floe.android.DeviceAccessScreenScopeUi
 import com.floe.android.DeviceAccessTargetsUi
+import com.floe.android.contracts.OwnedExternalViewLaunch
 import com.floe.android.DeviceAccessTaskControlUi
 import com.floe.android.DeviceAccessTaskPhaseUi
 import com.floe.android.DeviceAccessUiError
@@ -83,6 +84,7 @@ import com.floe.android.phonecontrol.PhoneControlStatus
 import com.floe.android.phonecontrol.PhoneControlStructuredRouting
 import com.floe.android.phonecontrol.PhoneControlStructuredSource
 import com.floe.android.phonecontrol.PhoneControlUnavailable
+import com.floe.android.phonecontrol.PhoneUserInteractionSource
 import com.floe.android.rootsystem.AccessActionResult
 import com.floe.android.rootsystem.AdbStatus
 import com.floe.android.rootsystem.AuthorityDecision
@@ -440,6 +442,27 @@ internal class DeviceAccessHost(
         // or Home means this viewer did not come forward; a secure/protected
         // or unattributable page stays unknown rather than a fabricated
         // failure or success.
+        // The host's own dispatch is the trusted correlation for the target
+        // app's transition/loading semantics. It never asserts visibility.
+        // The same bounded process-local fact covers the foreground artifact
+        // route (outside this session) and a service rebind.
+        runCatching {
+            OwnedExternalViewLaunch.note(
+                taskID = owner.taskID.toString(),
+                runID = owner.runID.toString(),
+                nativeEpoch = principal.epoch,
+                hostGeneration = request.hostGeneration,
+                targetPackage = request.packageName,
+                targetComponent = request.className,
+                uptimeMillis = SystemClock.uptimeMillis(),
+                elapsedRealtimeMillis = SystemClock.elapsedRealtime(),
+                isCurrentHost = {
+                    !closed && host.nativeRootEpoch() == request.nativeEpoch &&
+                        host.commandClient.generation() == request.hostGeneration &&
+                        !isOwnerStopped(owner)
+                },
+            )
+        }
         val viewerVisible = observeArtifactViewerForeground(
             client, principal, request.packageName, stillCurrent)
         automationControls.operationFinished(
@@ -988,6 +1011,7 @@ internal class DeviceAccessHost(
     fun close() {
         if (closed) return
         closed = true
+        OwnedExternalViewLaunch.clear()
         if (host.artifactHandoffTargetAuthority === artifactHandoffAuthority) {
             host.artifactHandoffTargetAuthority = null
         }
@@ -2390,6 +2414,7 @@ internal class DeviceAccessHost(
         val ended = automatedOwner.get()?.takeUnless { isOwnerRunLive(it) }
         if (ended != null && automatedOwner.compareAndSet(ended, null)) {
             runCatching { android.util.Log.i("FloePhoneUnlock", "AUTOMATION_RUN_NO_LONGER_LIVE") }
+            OwnedExternalViewLaunch.clearForOwner(ended.taskID.toString(), ended.runID.toString())
             if (explicitResumeOwner == ended) explicitResumeOwner = null
             if (armedOwner == ended) armedOwner = null
             if (readbackOwner == ended) readbackOwner = null
@@ -2977,6 +3002,7 @@ internal class DeviceAccessHost(
                 val pause = phonePause.pause(owner, System.currentTimeMillis())
                 if (!preferences.edit().putString(KEY_PHONE_PAUSE, pause.encode()).commit()) resumeFailed()
                 armedOwner = null
+                OwnedExternalViewLaunch.clearForOwner(owner.taskID.toString(), owner.runID.toString())
                 // Fences live gestures/observations but DOES NOT cancel the
                 // Agent run or its independent background operations.
                 phoneClient?.takeover()
@@ -3080,6 +3106,7 @@ internal class DeviceAccessHost(
             publish()
             return
         }
+        OwnedExternalViewLaunch.clearForOwner(owner.taskID.toString(), owner.runID.toString())
         // Dedupe only the SAME still-current stop owner/generation. A pending
         // A cleanup must not swallow an immediate Stop of a newly active B.
         val stop = claimTaskStop(owner, takeOver)
@@ -4275,10 +4302,40 @@ internal class DeviceAccessHost(
         val keyguard = context.getSystemService(KeyguardManager::class.java)
         automatedOwner.set(owner)
         automationControls.show(owner, titleFor(owner), settings.floatingControls)
-        if (!keyguard.isKeyguardLocked && asClient.userIsActive() &&
-            call.presenceApprovedAtMillis < asClient.lastUserInteractionWallMillis()) {
-            val token = if (armedOwner == owner) "PRESENCE_RECHECK_SAME_TASK" else "INITIAL_PHONE_PRESENCE_REQUIRED"
-            runCatching { android.util.Log.i("FloePhoneUnlock", token) }
+        val presenceNow = SystemClock.elapsedRealtime()
+        val interaction = asClient.lastInteraction()
+        if (!keyguard.isKeyguardLocked &&
+            PhonePresenceGate.requiresHumanApproval(
+                nowElapsedRealtimeMillis = presenceNow,
+                interaction = interaction,
+                presenceApprovedAtMillis = call.presenceApprovedAtMillis,
+            )
+        ) {
+            val token = if (armedOwner == owner) {
+                "PRESENCE_RECHECK_SAME_TASK"
+            } else {
+                "INITIAL_PHONE_PRESENCE_REQUIRED"
+            }
+            runCatching {
+                val source = interaction?.source ?: PhoneUserInteractionSource.NONE
+                val age = (presenceNow -
+                    (interaction?.elapsedRealtimeMillis ?: 0L)).coerceAtLeast(0)
+                android.util.Log.i(
+                    "FloePhoneUnlock",
+                    "$token cause=${source.name.lowercase()} age_ms=$age" +
+                        " approved=${if (call.presenceApprovedAtMillis > 0) 1 else 0}",
+                )
+            }
+            // This required question keeps its existing durable
+            // question/notification lifecycle; the live waiting state is
+            // visible while Floe is backgrounded. Cancel/deny/Stop settles the
+            // same parked request and never fabricates presence.
+            automationControls.operationFinished(
+                owner,
+                automationActionLabel(call),
+                PhoneAutomationOperationState.WAITING,
+                null,
+            )
             return@withLock PlatformToolOutcome.Failure("device_presence_required")
         }
         armingOwner = owner
@@ -4860,6 +4917,7 @@ internal class DeviceAccessHost(
         }
         bindPhoneCall(call)
         try {
+            val actionHostGeneration = host.commandClient.generation()
             val result = withTimeout(20_000) {
                 when (source) {
                     PhoneControlStructuredSource.ADB_UI_AUTOMATION -> {
@@ -4898,6 +4956,30 @@ internal class DeviceAccessHost(
                         readbackOwner = owner
                         PlatformToolOutcome.Failure("device_stopped_by_user")
                     } else {
+                        if (action is PhoneControlAction.Launch &&
+                            result.value.dispatch == PhoneControlDispatch.ACCEPTED
+                        ) {
+                            // Only a real accepted OS start arms the host
+                            // correlation; a rejected/unknown dispatch never
+                            // claims the target's later semantics.
+                            runCatching {
+                                OwnedExternalViewLaunch.note(
+                                    taskID = owner.taskID.toString(),
+                                    runID = owner.runID.toString(),
+                                    nativeEpoch = principal.epoch,
+                                    hostGeneration = actionHostGeneration,
+                                    targetPackage = action.packageName,
+                                    targetComponent = null,
+                                    uptimeMillis = SystemClock.uptimeMillis(),
+                                    elapsedRealtimeMillis = SystemClock.elapsedRealtime(),
+                                    isCurrentHost = {
+                                        !closed && host.nativeRootEpoch() == principal.epoch &&
+                                            host.commandClient.generation() == actionHostGeneration &&
+                                            !isOwnerStopped(owner)
+                                    },
+                                )
+                            }
+                        }
                         val value = result.value
                         if (value.dispatch == PhoneControlDispatch.UNKNOWN) {
                             // A possible partial/exception dispatch is never

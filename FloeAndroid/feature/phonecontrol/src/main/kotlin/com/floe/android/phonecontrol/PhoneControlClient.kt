@@ -264,11 +264,32 @@ class PhoneControlClient internal constructor(
         } finally { frozen.fill('\u0000') }
     }
 
-    fun lastUserInteractionWallMillis(): Long = PhoneControlRuntime.session()?.lastUserInteractionWallMillis ?: Long.MAX_VALUE
+    /** Snapshot of the last observed human signal; null means none. */
+    fun lastInteraction(): PhoneInteractionStamp? =
+        PhoneControlRuntime.session()?.lastInteraction
+
+    fun lastUserInteractionWallMillis(): Long = lastInteraction()?.wallMillis ?: Long.MAX_VALUE
+
+    /** Closed cause of the last accepted human signal; NONE means none. */
+    fun lastUserInteractionSource(): PhoneUserInteractionSource =
+        lastInteraction()?.source ?: PhoneUserInteractionSource.NONE
+
+    /** Monotonic arrival stamp of that signal, or 0 when none was observed. */
+    fun lastUserInteractionElapsedRealtimeMillis(): Long =
+        lastInteraction()?.elapsedRealtimeMillis ?: 0L
+
+    /**
+     * Exact external package of the last accepted semantic signal. The host
+     * uses it only to correlate its OWN recorded launch with the session's
+     * signal; it is never logged and grants nothing.
+     */
+    fun lastUserInteractionPackage(): String? = lastInteraction()?.semanticPackage
 
     fun userIsActive(idleMillis: Long = 15_000): Boolean {
         val session = PhoneControlRuntime.session() ?: return true
-        return android.os.SystemClock.elapsedRealtime() - session.lastUserInteractionAt < idleMillis
+        val stamp = session.lastInteraction ?: return false
+        if (stamp.elapsedRealtimeMillis <= 0L) return false
+        return android.os.SystemClock.elapsedRealtime() - stamp.elapsedRealtimeMillis < idleMillis
     }
 
     /** Relocks only when this exact task unlocked and no user subsequently took over. */

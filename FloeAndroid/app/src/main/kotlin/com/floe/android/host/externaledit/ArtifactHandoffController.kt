@@ -11,6 +11,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import androidx.core.content.FileProvider
 import com.floe.android.FloeApplication
+import com.floe.android.contracts.OwnedExternalViewLaunch
 import com.floe.android.host.G04WorkspaceBridgeClient
 import com.floe.android.host.RuntimeHost
 import com.floe.android.host.WorkspaceOfficeSnapshotStager
@@ -777,6 +778,25 @@ internal class ArtifactHandoffController(
                     try {
                         target.startActivity(intent)
                         started = true
+                        // Trusted host fact for the Full phone-control session:
+                        // this exact task/run/runtime generation just started
+                        // this exact viewer. It grants nothing and is inert on
+                        // builds without phone control; it only lets the
+                        // session attribute the viewer's own loading semantics
+                        // instead of treating them as fresh human input.
+                        runCatching {
+                            OwnedExternalViewLaunch.note(
+                                taskID = record.owner.taskID.toString(),
+                                runID = runID,
+                                nativeEpoch = binding.owner.nativeEpoch,
+                                hostGeneration = binding.owner.hostGeneration,
+                                targetPackage = launch.packageName,
+                                targetComponent = launch.className,
+                                uptimeMillis = android.os.SystemClock.uptimeMillis(),
+                                elapsedRealtimeMillis = android.os.SystemClock.elapsedRealtime(),
+                                isCurrentHost = binding.current,
+                            )
+                        }
                     } catch (_: ActivityNotFoundException) {
                         throw Failure("launchRejected")
                     } catch (_: SecurityException) {

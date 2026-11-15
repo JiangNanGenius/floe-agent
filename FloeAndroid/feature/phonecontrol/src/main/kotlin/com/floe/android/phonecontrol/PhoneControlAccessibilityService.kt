@@ -59,7 +59,8 @@ class PhoneControlAccessibilityService : AccessibilityService() {
             // after an automatic unlock): a genuine user touch on Floe's own
             // Activity is reported by the trusted own-App hook, so these must
             // never fence the run. External events keep the conservative
-            // user-takeover path.
+            // user-takeover path except for the exact package this session
+            // just launched inside its bounded owned-transition window.
             AccessibilityEvent.TYPE_VIEW_SCROLLED,
             AccessibilityEvent.TYPE_VIEW_CLICKED -> {
                 when (
@@ -71,14 +72,18 @@ class PhoneControlAccessibilityService : AccessibilityService() {
                     PhoneInteractionOrigin.OWN_APP_SEMANTIC ->
                         session.onOwnAppSemanticEvent()
                     PhoneInteractionOrigin.EXTERNAL_SEMANTIC ->
-                        session.onPlatformUserInteraction(event.eventTime)
+                        session.onExternalSemanticInteraction(
+                            packageName = event.packageName?.toString(),
+                            eventUptimeMillis = event.eventTime,
+                        )
                 }
             }
 
-            // Raw touch interaction: stays the conservative takeover signal,
-            // with the session's existing own-dispatch echo attribution.
+            // Raw touch interaction: the unambiguous human signal, with the
+            // session's existing own-dispatch echo attribution. The session's
+            // owned-view transition never absorbs this.
             AccessibilityEvent.TYPE_TOUCH_INTERACTION_START ->
-                session.onPlatformUserInteraction(event.eventTime)
+                session.onRawTouchInteraction(event.eventTime)
         }
     }
 
