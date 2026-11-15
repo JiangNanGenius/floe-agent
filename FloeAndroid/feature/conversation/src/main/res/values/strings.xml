@@ -412,12 +412,12 @@
     <string name="jobs_sheet_title">Background jobs</string>
     <string name="jobs_sheet_refresh">Refresh</string>
     <string name="jobs_empty">No background jobs for this task.</string>
-    <string name="jobs_load_failed">Couldn't load background jobs.</string>
+    <string name="jobs_load_failed">Unable to load background jobs.</string>
     <string name="jobs_retry">Try Again</string>
     <string name="jobs_truncated">Showing the most recent jobs.</string>
     <string name="jobs_cancel">Cancel Job</string>
     <string name="jobs_cancelling">Cancelling…</string>
-    <string name="jobs_cancel_failed">Couldn't cancel this job. Its state above is unchanged.</string>
+    <string name="jobs_cancel_failed">Unable to cancel this job. Its state above is unchanged.</string>
     <string name="jobs_result_available">Result available</string>
     <string name="jobs_result_unavailable">No result</string>
     <string name="jobs_dependency_pending">The task is waiting for this job.</string>
