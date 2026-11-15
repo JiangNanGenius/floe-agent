@@ -18,7 +18,9 @@
 //   refused outright.
 
 import Foundation
-#if canImport(Darwin)
+#if os(Android)
+import Android
+#elseif canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
 import Glibc
