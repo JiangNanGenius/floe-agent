@@ -181,6 +181,28 @@ class RunOutputCardPresentationTest {
     }
 
     @Test
+    fun finishedSaveKeepsOpenAndRetryAvailableWithoutRevivingStaleCards() {
+        for (terminal in listOf("saved", "cancelled", "failed")) {
+            val finished = card(action = terminal)
+            val rows: List<TimelineRowUi> = listOf(
+                TimelineRowUi.RunOutputGroup("run-1", listOf(finished)))
+            assertTrue(terminal, RunOutputCardPresentation.permitsAction(terminal))
+            assertTrue(terminal, rows.runOutputIsActionable(finished))
+            val missing = card(availability = "missing", action = terminal)
+            assertFalse(listOf<TimelineRowUi>(
+                TimelineRowUi.RunOutputGroup("run-1", listOf(missing)))
+                .runOutputIsActionable(finished))
+        }
+        for (state in listOf("saving", "unknown")) {
+            assertFalse(state, RunOutputCardPresentation.permitsAction(state))
+            val refused = card(action = state)
+            assertFalse(listOf<TimelineRowUi>(
+                TimelineRowUi.RunOutputGroup("run-1", listOf(refused)))
+                .runOutputIsActionable(refused))
+        }
+    }
+
+    @Test
     fun typeShortLabelAndIdentityFieldsStayDisplayOnly() {
         assertEquals("DOCX", RunOutputCardPresentation.typeShortLabel(
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document"))

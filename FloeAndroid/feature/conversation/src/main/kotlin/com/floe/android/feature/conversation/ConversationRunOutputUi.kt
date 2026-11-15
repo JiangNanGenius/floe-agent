@@ -136,6 +136,13 @@ internal object RunOutputCardPresentation {
     fun showsBusy(actionStateRaw: String?): Boolean =
         actionStateRaw == ACTION_SAVING
 
+    /** Completed save outcomes are status captions, not live operations.
+     * Saving and unknown states still refuse a second action. */
+    fun permitsAction(actionStateRaw: String?): Boolean =
+        actionStateRaw == null || actionStateRaw in setOf(
+            ACTION_SAVED, ACTION_CANCELLED, ACTION_FAILED, ACTION_OPEN_BLOCKED,
+        )
+
     /** Label resource for a transient action state (null = idle). */
     fun actionStateLabelRes(actionStateRaw: String?): Int? = when (actionStateRaw) {
         ACTION_SAVING -> R.string.run_output_saving
@@ -176,17 +183,14 @@ internal object RunOutputCardPresentation {
 
 /** Does the CURRENT projection still carry this exact actionable card? A
  * card replaced by a refresh (or projected away) can never be tapped, and an
- * in-flight save or terminal save state stays fenced exactly as before. The
- * ONLY tolerated state is the advisory ACTION_OPEN_BLOCKED refusal note: it
- * captions a past busy refusal without disabling recovery — the card must
- * stay re-tappable so closing the live viewer and tapping Open again works. */
+ * in-flight save stays fenced. Completed save outcomes and a past busy
+ * refusal remain captions: available bytes can be opened or saved again. */
 internal fun List<TimelineRowUi>.runOutputIsActionable(card: RunOutputCardUi): Boolean =
     filterIsInstance<TimelineRowUi.RunOutputGroup>()
         .firstOrNull { it.runId == card.runId }
         ?.outputs
         ?.any { it.outputId == card.outputId && RunOutputCardPresentation.isActionable(it.availabilityRaw) &&
-            (it.actionStateRaw == null ||
-                it.actionStateRaw == RunOutputCardPresentation.ACTION_OPEN_BLOCKED) } == true
+            RunOutputCardPresentation.permitsAction(it.actionStateRaw) } == true
 
 /* --------------------------- timeline rows ---------------------------- */
 
@@ -284,13 +288,13 @@ private fun RunOutputCardRow(card: RunOutputCardUi, holder: ConversationFlowHold
                 if (RunOutputCardPresentation.supportsOpen(card.mimeType, card.displayName)) {
                     RunOutputActionButton(
                         label = stringResource(R.string.run_output_open),
-                        enabled = true,
+                        enabled = RunOutputCardPresentation.permitsAction(card.actionStateRaw),
                         onClick = { holder.openRunOutput(card) },
                     )
                 }
                 RunOutputActionButton(
                     label = stringResource(R.string.run_output_save),
-                    enabled = true,
+                    enabled = RunOutputCardPresentation.permitsAction(card.actionStateRaw),
                     onClick = { holder.saveRunOutput(card) },
                 )
             }

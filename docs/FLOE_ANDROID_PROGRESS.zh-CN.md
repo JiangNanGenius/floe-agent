@@ -6,9 +6,13 @@
 
 OpenCode单个Normal/auto代码包已交接，主线程补齐Office宿主入口；真实Kotlin生产对象编译和五组JVM suite共56项通过。测试启动器首次用了错误类名，原失败保留；修正启动参数后运行同一批已编译对象，不修改断言。Swift及原生组件输入未改，下一私有Full包复用native63；本节尚不代表新安装包或三星预览验收。
 
+随后C03实际Full包在三星保留数据安装，签名／封装通过，旧成果PNG真实显示、MP4实际播放推进并结束，两份SAF副本与原ZIP成员逐字节一致。补查保存后再次打开发现静默拒绝，原15秒无预览记录保留：显示层仍启用按钮，但点击层只允许空状态或忙碌拒绝提示，错误地拦住保存终态。主线程小修复允许已保存／已取消／失败状态再次操作，仍拒绝保存中、未知状态和失效成果；57项JVM及真实生产对象编译通过，新C04包实机复测待完成。
+
 此前Full124C02的自然任务已正常完成：215组工具请求／结果全部配对，其中197成功、18失败，之后交付5项成果；日历两项实际保存并重开，原始ZIP通过正常“保存副本”取得且摘要一致。媒体已打开不等于完整播放验收，原失败、生成ICS的夏令时边界及后台资源退休证据不足仍保留。公开版本保持1.0.14／123，本批不发布124。
 
 English: Legacy annotated output names now share a conservative title/extension/export-name projection across cards, viewers, Office and Save Copy, preserving original seals and existing validation. Real changed Kotlin objects and56 focused JVM tests passed; the initial runner-name failure is retained. Native inputs are unchanged and new APK/device acceptance is pending. The earlier Full124C02 natural task completed with215 paired tool calls and five outputs; calendar reopen and the original ZIP were verified separately. Public1.0.14 remains unchanged;124 stays private.
+
+Samsung C03 subsequently rendered the original PNG, played the MP4 and saved exact-byte copies. A retained15-second post-save reopen refusal exposed a click-gate defect: completed save captions were treated as live work. The focused fix restores Open/retry for known completed save outcomes while retaining busy/unknown/stale fences. Real production objects and57 JVM tests passed; C04 device confirmation remains pending.
 
 ## 1.0.15／124候选：屏幕控制收尾、稳定观察与原生文件回执（2026-11-16）
 
