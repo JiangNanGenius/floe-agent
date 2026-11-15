@@ -414,6 +414,7 @@ struct FileToolsTests {
             .init(path: "new/note.txt", content: "hello"), context: fixture.context
         )
         #expect(output.summary.contains("bytes=5"))
+        #expect(output.summary.contains(#" paths={"path":"new/note.txt"} change=created saved=true"#))
         #expect(output.artifacts.count == 1)
         #expect(output.artifacts.first?.mimeType == "text/x-diff")
         #expect(try fixture.read("new/note.txt") == "hello")
@@ -450,14 +451,45 @@ struct FileToolsTests {
         )
         #expect(output.summary.contains("created=doc.md"))
         #expect(output.summary.contains("bytes=9"))
+        #expect(output.summary.contains(" change=modified saved=true"))
         #expect(output.artifacts.count == 1)
         #expect(try fixture.read("doc.md") == "v2-longer")
 
         // Creating at a fresh path still succeeds with the flag set.
-        _ = try await tool.execute(
+        let fresh = try await tool.execute(
             .init(path: "fresh.md", content: "new", overwrite: true), context: fixture.context
         )
+        #expect(fresh.summary.contains(" change=created saved=true"))
         #expect(try fixture.read("fresh.md") == "new")
+    }
+
+    @Test("Receipts distinguish empty creation, identical saves, byte-only edits and unavailable baselines")
+    func committedFileChanges() async throws {
+        let fixture = try makeFixture()
+        let create = WorkspaceCreateFileTool(environment: fixture.environment)
+        let write = WorkspaceWriteFileTool(environment: fixture.environment)
+        let replace = WorkspaceReplaceTextTool(environment: fixture.environment)
+        let path = "docs/a \"name\"\n bytes=3"
+        let created = try await create.execute(.init(path: path, content: ""), context: fixture.context)
+        #expect(created.summary.contains(#" paths={"path":"docs/a \"name\"\n bytes=3"} change=created saved=true"#))
+        let empty = try await create.execute(.init(path: path, content: "", overwrite: true), context: fixture.context)
+        #expect(empty.summary.contains(" change=unchanged saved=true"))
+        let firstWrite = try await write.execute(.init(path: "./else.txt", content: ""), context: fixture.context)
+        #expect(firstWrite.summary.contains(#" paths={"path":"else.txt"} change=created saved=true"#))
+        try fixture.write("unicode.txt", "é")
+        let updated = try await write.execute(.init(path: "unicode.txt", content: "e\u{301}"), context: fixture.context)
+        #expect(updated.summary.contains(" change=modified saved=true"))
+        #expect(try fixture.readData("unicode.txt") == Data("e\u{301}".utf8))
+        let replaced = try await replace.execute(.init(path: "unicode.txt", oldText: "e\u{301}", newText: "e\u{301}"), context: fixture.context)
+        #expect(replaced.summary.contains(" change=unchanged saved=true"))
+        try fixture.writeData("binary.txt", Data([0, 0xff]))
+        let saved = try await create.execute(.init(path: "binary.txt", content: "text", overwrite: true), context: fixture.context)
+        #expect(saved.summary.contains(" change=saved saved=true"))
+        let binary = Data([0, 0xff])
+        try fixture.writeData("binary.txt", binary)
+        let compared = try await write.execute(.init(path: "binary.txt", content: "text",
+            expectedSHA256: WorkspaceFileService.sha256Hex(of: binary)), context: fixture.context)
+        #expect(compared.summary.contains(" change=modified saved=true"))
     }
 
     @Test("writeFile overwrites and detects mtime/sha conflicts")
@@ -709,9 +741,14 @@ struct FileToolsTests {
         #expect(output.summary.contains("hunks=1"))
         #expect(output.summary.contains("added=1"))
         #expect(output.summary.contains("removed=1"))
+        #expect(output.summary.contains(" change=modified saved=true"))
         #expect(output.artifacts.count == 1)
         #expect(output.artifacts.first?.relativePath.hasPrefix("ChangeArtifacts/") == true)
         #expect(try fixture.read("code.swift") == "one\ntwo\nTHREE\nfour\nfive\n")
+        let noOp = "--- a/code.swift\n+++ b/code.swift\n@@ -3,1 +3,1 @@\n-THREE\n+THREE\n"
+        let reapplied = try await tool.execute(.init(path: "code.swift", patch: noOp), context: fixture.context)
+        #expect(reapplied.summary.contains("added=1 removed=1"))
+        #expect(reapplied.summary.contains(" change=unchanged saved=true"))
     }
 
     @Test("applyPatch failure leaves the file untouched")
@@ -808,6 +845,7 @@ struct FileToolsTests {
             .init(from: "old.txt", to: "renamed/new.txt"), context: fixture.context
         )
         #expect(output.summary.contains("old.txt -> renamed/new.txt"))
+        #expect(output.summary.hasSuffix(#" paths={"from":"old.txt","kind":"file","path":"renamed/new.txt"}"#))
         #expect(!fixture.exists("old.txt"))
         #expect(try fixture.read("renamed/new.txt") == "data")
 
@@ -836,10 +874,12 @@ struct FileToolsTests {
         )
         let tool = WorkspaceDeleteFileTool(environment: fixture.environment)
 
-        _ = try await tool.execute(.init(path: "gone.txt"), context: fixture.context)
+        let removed = try await tool.execute(.init(path: "keep/../gone.txt"), context: fixture.context)
+        #expect(removed.summary.hasSuffix(#" paths={"kind":"file","path":"gone.txt"}"#))
         #expect(!fixture.exists("gone.txt"))
 
-        _ = try await tool.execute(.init(path: "empty-dir"), context: fixture.context)
+        let folder = try await tool.execute(.init(path: "empty-dir"), context: fixture.context)
+        #expect(folder.summary.hasSuffix(#" paths={"kind":"directory","path":"empty-dir"}"#))
         #expect(!fixture.exists("empty-dir"))
 
         // Non-empty directory refused.
@@ -879,6 +919,30 @@ struct FileToolsTests {
         #expect(!fixture.exists("tree"))
     }
 
+    @Test("Mounted delete receipts use the resolved virtual path and preserve version checks beyond the read budget")
+    func mountedDeletionReceiptAndCAS() throws {
+        let fixture = try makeFixture()
+        try fixture.write("picked/real/item.txt", "first version")
+        let mount = fixture.root.appendingPathComponent("picked", isDirectory: true)
+        try FileManager.default.createSymbolicLink(atPath: mount.appendingPathComponent("alias").path, withDestinationPath: "real")
+        let service = WorkspaceFileService(guard: .init(rootURL: fixture.root, maxReadBytes: 1, mounts: ["Picked": mount]))
+        let path = "Mounts/Picked/alias/item.txt"
+        let previous = try service.deletionMetadata(path)
+        try fixture.write("picked/real/item.txt", "later version")
+        #expect(throws: WorkspaceToolError.self) {
+            try service.managedFileOutput("deleted=\(path) recursive=false", path: path) {
+                try service.delete(path, expectedMetadata: previous)
+            }
+        }
+        #expect(try fixture.read("picked/real/item.txt") == "later version")
+        let current = try service.deletionMetadata(path)
+        let deleted = try service.managedFileOutput("deleted=\(path) recursive=false", path: path) {
+            try service.delete(path, expectedMetadata: current)
+        }
+        #expect(deleted.summary.hasSuffix(#" paths={"kind":"file","path":"Mounts/Picked/real/item.txt"}"#))
+        #expect(!fixture.exists("picked/real/item.txt"))
+    }
+
     @Test("mutating the workspace root is always rejected")
     func rejectsRootMutation() async throws {
         let fixture = try makeFixture()
@@ -910,11 +974,13 @@ struct FileToolsTests {
             .init(from: "src.txt", to: "copied.txt"), context: fixture.context
         )
         #expect(fileOut.summary.contains("src.txt -> copied.txt"))
+        #expect(fileOut.summary.hasSuffix(#" paths={"from":"src.txt","kind":"file","path":"copied.txt"}"#))
         #expect(try fixture.read("copied.txt") == "data")
 
-        _ = try await tool.execute(
+        let directory = try await tool.execute(
             .init(from: "dir", to: "dir-copy"), context: fixture.context
         )
+        #expect(directory.summary.hasSuffix(#" paths={"from":"dir","kind":"directory","path":"dir-copy"}"#))
         #expect(try fixture.read("dir-copy/inner.txt") == "y")
         #expect(try fixture.read("dir/inner.txt") == "y")
     }

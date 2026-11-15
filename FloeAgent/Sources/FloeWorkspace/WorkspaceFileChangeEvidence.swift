@@ -6,11 +6,73 @@ import FloeTools
 
 
 enum WorkspaceFileChangeEvidence {
+    enum Change: String { case created, modified, unchanged, saved }
+
+    enum Baseline {
+        case missing, existing(String), verifiedSHA256(String), unavailable
+
+        var previewText: String? {
+            switch self {
+            case .missing: ""
+            case .existing(let text): text
+            case .verifiedSHA256, .unavailable: nil
+            }
+        }
+
+        func change(saving text: String) -> Change {
+            switch self {
+            case .missing: .created
+            case .existing(let original): original.utf8.elementsEqual(text.utf8) ? .unchanged : .modified
+            case .verifiedSHA256(let digest): WorkspaceFileService.sha256Hex(of: Data(text.utf8)) == digest.lowercased() ? .unchanged : .modified
+            case .unavailable: .saved
+            }
+        }
+
+        func afterSuccessfulCAS(expectedSHA256: String?) -> Self {
+            if case .unavailable = self, let expectedSHA256 { return .verifiedSHA256(expectedSHA256) }
+            return self
+        }
+    }
+
+    struct WrittenFile {
+        let outcome: WriteOutcome
+        let baseline: Baseline
+        let content: String
+        let path: String?
+    }
+
+    /// Keep paths readable by the existing redactor. JSON also preserves names
+    /// containing spaces, newlines or strings that look like summary fields.
+    static func paths(_ path: String?, from: String? = nil, kind: String? = nil, change: Change? = nil) -> String {
+        guard let path else { return " paths={}" }
+        var fields = ["path": path]
+        fields["from"] = from
+        fields["kind"] = kind
+        fields["change"] = change?.rawValue
+        guard let data = try? JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys, .withoutEscapingSlashes]) else {
+            return " paths={}"
+        }
+        return " paths=" + String(decoding: data, as: UTF8.self)
+    }
+
+    static func networkPath(_ route: NetworkWorkspaceMountRegistry.Route) -> String? {
+        var components = [Substring]()
+        for component in route.relativePath.split(separator: "/") {
+            switch component {
+            case ".": continue
+            case "..":
+                guard components.popLast() != nil else { return nil }
+            default: components.append(component)
+            }
+        }
+        return ([route.mount.virtualRoot] + components.map(String.init)).joined(separator: "/")
+    }
+
     /// Preserve the legacy patch engine. Presentation uses its same real
     /// hunk grouping, with actual line units (empty files have zero lines,
     /// and newline-at-EOF changes do not become phantom blank lines).
     static func diff(original: String, modified: String, label: String) -> String? {
-        guard original != modified else { return "" }
+        guard !original.utf8.elementsEqual(modified.utf8) else { return "" }
         func units(_ text: String) -> [String] {
             guard !text.isEmpty else { return [] }
             var parts = text.components(separatedBy: "\n")
@@ -26,7 +88,9 @@ enum WorkspaceFileChangeEvidence {
         guard old.count <= 20_000, new.count <= 20_000,
               old.count * new.count <= 2_000_000 else { return nil }
         let hunks = WorkspaceFileService.diffHunks(old: old, new: new, context: 3)
-        guard !hunks.isEmpty else { return "" }
+        // The legacy line engine uses Swift's Unicode-equivalent comparison.
+        // Byte-different spellings can therefore have no representable hunk.
+        guard !hunks.isEmpty else { return nil }
         let name = label.replacingOccurrences(of: "\r", with: "\\r")
             .replacingOccurrences(of: "\n", with: "\\n").replacingOccurrences(of: "\t", with: "\\t")
         var out = "--- a/\(name)\n+++ b/\(name)\n"
@@ -69,59 +133,125 @@ enum WorkspaceFileChangeEvidence {
 
     /// Run only AFTER an acknowledged commit. Optional presentation failures
     /// must not turn a saved mutation into a retryable write failure.
-    static func savedOutput(_ summary: String, artifactBuilder: () throws -> [ToolArtifactReference]) -> ToolExecutionOutput {
+    static func savedOutput(_ summary: String, path: String?, change: Change,
+                            artifactBuilder: () throws -> [ToolArtifactReference]) -> ToolExecutionOutput {
+        let receipt = summary + paths(path) + " change=\(change.rawValue) saved=true"
         do {
             let artifacts = try artifactBuilder()
-            return WorkspaceToolSupport.output(summary + " saved=true preview=\(artifacts.isEmpty ? "unavailable" : "available")", artifacts: artifacts)
+            return WorkspaceToolSupport.output(receipt + " preview=\(artifacts.isEmpty ? "unavailable" : "available")", artifacts: artifacts)
         } catch {
-            return WorkspaceToolSupport.output(summary + " saved=true preview=unavailable\nThe file is saved. Its optional preview is unavailable; do not repeat the write.")
+            return WorkspaceToolSupport.output(receipt + " preview=unavailable\nThe file is saved. Its optional preview is unavailable; do not repeat the write.")
         }
     }
 
-    static func savedOutput(_ summary: String, original: String?, modified: String, path: String, runID: UUID) -> ToolExecutionOutput {
-        savedOutput(summary) { try artifacts(original: original, modified: modified, path: path, runID: runID) }
+    static func savedOutput(_ summary: String, baseline: Baseline, modified: String, path: String?,
+                            requestedPath: String, runID: UUID) -> ToolExecutionOutput {
+        savedOutput(summary, path: path, change: baseline.change(saving: modified)) {
+            let original: String?
+            if case .missing = baseline, modified.isEmpty {
+                // No earlier file existed. Its preview must not say that
+                // the saved empty file is identical to a previous version.
+                original = nil
+            } else { original = baseline.previewText }
+            return try artifacts(original: original, modified: modified, path: path ?? requestedPath, runID: runID)
+        }
     }
 
     /// Called inside the existing recursive mutation lock. A failed optional
     /// baseline is explicit comparison-unavailable; cancellation still wins.
-    static func localBaseline(service: WorkspaceFileService, path: String, cancellation: CancellationToken) throws -> String? {
-        do { return try service.readFileForEditing(path, cancellation: cancellation).text }
+    static func localBaseline(service: WorkspaceFileService, path: String, cancellation: CancellationToken) throws -> Baseline {
+        do { return .existing(try service.readFileForEditing(path, cancellation: cancellation).text) }
         catch let error as WorkspaceToolError {
             try cancellation.throwIfCancelled()
-            if case .notFound = error { return "" }
-            return nil
+            if case .notFound = error { return .missing }
+            return .unavailable
         } catch {
             try cancellation.throwIfCancelled()
-            return nil
+            return .unavailable
         }
     }
 
     static func remoteBaseline(bytes: Data, before: NetworkWorkspaceFileMetadata,
                                after: NetworkWorkspaceFileMetadata) -> String? {
+        remoteChangeBaseline(bytes: bytes, before: before, after: after).previewText
+    }
+
+    static func remoteChangeBaseline(bytes: Data, before: NetworkWorkspaceFileMetadata,
+                                     after: NetworkWorkspaceFileMetadata) -> Baseline {
         guard let tag = before.entityTag, !tag.isEmpty, tag == after.entityTag,
               before.byteCount == after.byteCount, before.byteCount == bytes.count,
-              !bytes.contains(0) else { return nil }
-        return String(data: bytes, encoding: .utf8)
+              !before.isDirectory, !after.isDirectory else { return .unavailable }
+        if let text = WorkspaceTextPolicy.decodeUTF8(bytes) { return .existing(text) }
+        return .verifiedSHA256(WorkspaceFileService.sha256Hex(of: bytes))
     }
 }
 
 extension WorkspaceFileService {
+    /// Convert the guard's resolved local URL back to its workspace or virtual
+    /// mount namespace. Never include a host filesystem path in a receipt.
+    func receiptPath(_ path: String, resolved: URL? = nil) -> String? {
+        guard let url = resolved ?? (try? guardResolver.resolve(path)) else { return nil }
+        let components = Self.normalizedRelativePath(path).split(separator: "/")
+        if components.count >= 2, components[0] == "Mounts" {
+            let prefix = components.prefix(2).joined(separator: "/")
+            if let mount = try? guardResolver.resolve(prefix) {
+                if url.path == mount.path { return prefix }
+                if url.path.hasPrefix(mount.path + "/") {
+                    return prefix + "/" + Self.relativePath(of: url.path, under: mount.path)
+                }
+            }
+        }
+        let root = guardResolver.rootURL.path
+        guard url.path.hasPrefix(root + "/") else { return nil }
+        return Self.relativePath(of: url.path, under: root)
+    }
+
+    /// Capture identity while the ordinary move/copy/delete owns the same
+    /// recursive lock. Optional stat information never makes a mutation fail.
+    func managedFileOutput(_ summary: String, from: String? = nil, path: String,
+                           mutation: () throws -> Void) throws -> ToolExecutionOutput {
+        let lock = WorkspaceMutationLocks.lock(for: guardResolver.rootURL)
+        lock.lock(); defer { lock.unlock() }
+        let target = try? guardResolver.resolve(path)
+        let relativePath = target.flatMap { receiptPath(path, resolved: $0) }
+        let sourcePath = from.flatMap { receiptPath($0) }
+        func kind() -> String? {
+            guard let target, let attributes = try? FileManager.default.attributesOfItem(atPath: target.path),
+                  let type = attributes[.type] as? FileAttributeType else { return nil }
+            switch type {
+            case .typeRegular: return "file"
+            case .typeDirectory: return "directory"
+            default: return nil
+            }
+        }
+        // The deletion target disappears at commit. For transfers inspect
+        // the destination once the transaction (including companions) succeeded.
+        let deletedKind = from == nil ? kind() : nil
+        try mutation()
+        let itemKind = from == nil ? deletedKind : kind()
+        return WorkspaceToolSupport.output(summary + WorkspaceFileChangeEvidence.paths(relativePath, from: sourcePath, kind: itemKind))
+    }
+
     /// Hold the shared mutation lock across the full baseline and original
     /// guarded writer. Existing conflict, freeze, size and cancellation
     /// checks remain in the original create/write implementations.
     func createFileWithChangeBaseline(_ path: String, content: String, overwrite: Bool,
-                                     cancellation: CancellationToken) throws -> (WriteOutcome, String?) {
+                                     cancellation: CancellationToken) throws -> WorkspaceFileChangeEvidence.WrittenFile {
         let lock = WorkspaceMutationLocks.lock(for: guardResolver.rootURL)
         lock.lock(); defer { lock.unlock() }
-        let baseline = overwrite ? try WorkspaceFileChangeEvidence.localBaseline(service: self, path: path, cancellation: cancellation) : ""
-        return (try createFile(path, content: content, overwrite: overwrite, cancellation: cancellation), baseline)
+        let baseline = overwrite ? try WorkspaceFileChangeEvidence.localBaseline(service: self, path: path, cancellation: cancellation) : .missing
+        let canonical = receiptPath(path)
+        let outcome = try createFile(path, content: content, overwrite: overwrite, cancellation: cancellation)
+        return .init(outcome: outcome, baseline: baseline, content: content, path: canonical)
     }
     func writeFileWithChangeBaseline(_ path: String, content: String, expectedMtime: Double?, expectedSHA256: String?,
-                                    cancellation: CancellationToken) throws -> (WriteOutcome, String?) {
+                                    cancellation: CancellationToken, knownBaseline: WorkspaceFileChangeEvidence.Baseline? = nil) throws -> WorkspaceFileChangeEvidence.WrittenFile {
         let lock = WorkspaceMutationLocks.lock(for: guardResolver.rootURL)
         lock.lock(); defer { lock.unlock() }
-        let baseline = try WorkspaceFileChangeEvidence.localBaseline(service: self, path: path, cancellation: cancellation)
-        return (try writeFile(path, content: content, expectedMtime: expectedMtime, expectedSHA256: expectedSHA256, cancellation: cancellation), baseline)
+        let baseline = try knownBaseline ?? WorkspaceFileChangeEvidence.localBaseline(service: self, path: path, cancellation: cancellation)
+        let canonical = receiptPath(path)
+        let outcome = try writeFile(path, content: content, expectedMtime: expectedMtime, expectedSHA256: expectedSHA256, cancellation: cancellation)
+        return .init(outcome: outcome, baseline: baseline.afterSuccessfulCAS(expectedSHA256: expectedSHA256), content: content, path: canonical)
     }
 
     /// Verify the real on-disk digest as well as the decoded text. An encoding
@@ -146,7 +276,7 @@ extension WorkspaceFileService {
     func writeFileFromSourceWithChangeBaseline(
         _ path: String, sourcePath: String, expectedSourceSHA256: String,
         expectedMtime: Double?, expectedSHA256: String?, cancellation: CancellationToken
-    ) throws -> (WriteOutcome, String?, String) {
+    ) throws -> WorkspaceFileChangeEvidence.WrittenFile {
         let lock = WorkspaceMutationLocks.lock(for: guardResolver.rootURL)
         lock.lock(); defer { lock.unlock() }
         try cancellation.throwIfCancelled()
@@ -154,13 +284,15 @@ extension WorkspaceFileService {
             throw WorkspaceToolError.invalidArguments("sourcePath and path must identify different files")
         }
         let content = try verifiedSourceText(sourcePath, expectedSHA256: expectedSourceSHA256, cancellation: cancellation)
-        let prior = try WorkspaceFileChangeEvidence.localBaseline(service: self, path: path, cancellation: cancellation)
+        let canonical = receiptPath(path)
+        let compareExisting = expectedMtime != nil || expectedSHA256 != nil
+        let prior = compareExisting ? try WorkspaceFileChangeEvidence.localBaseline(service: self, path: path, cancellation: cancellation) : .missing
         // Revalidate after optional baseline I/O and before the target writer.
         _ = try verifiedSourceText(sourcePath, expectedSHA256: expectedSourceSHA256, cancellation: cancellation)
         try cancellation.throwIfCancelled()
         try Task.checkCancellation()
         let outcome: WriteOutcome
-        if expectedMtime != nil || expectedSHA256 != nil {
+        if compareExisting {
             outcome = try writeFile(path, content: content, expectedMtime: expectedMtime,
                 expectedSHA256: expectedSHA256, cancellation: cancellation)
         } else {
@@ -168,7 +300,7 @@ extension WorkspaceFileService {
             // A retry cannot replace a target whose version was never observed.
             outcome = try createFile(path, content: content, overwrite: false, cancellation: cancellation)
         }
-        return (outcome, prior, content)
+        return .init(outcome: outcome, baseline: prior.afterSuccessfulCAS(expectedSHA256: expectedSHA256), content: content, path: canonical)
     }
 
 }

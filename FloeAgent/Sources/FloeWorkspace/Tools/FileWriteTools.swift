@@ -78,13 +78,13 @@ public struct WorkspaceCreateFileTool: AgentTool {
             } catch let error as NetworkWorkspaceError where error.code == .notFound {
                 // Expected for create-only semantics.
             }
-            var baseline: String?
+            var baseline = WorkspaceFileChangeEvidence.Baseline.unavailable
             if let priorMetadata, priorMetadata.byteCount >= 0, priorMetadata.byteCount <= environment.maxReadBytes,
                priorMetadata.entityTag?.isEmpty == false {
                 do {
                     let previous = try await route.adapter.read(path: route.relativePath, offset: 0, limit: environment.maxReadBytes)
                     let after = try await route.adapter.metadata(path: route.relativePath)
-                    baseline = WorkspaceFileChangeEvidence.remoteBaseline(bytes: previous, before: priorMetadata, after: after)
+                    baseline = WorkspaceFileChangeEvidence.remoteChangeBaseline(bytes: previous, before: priorMetadata, after: after)
                 } catch {
                     // Optional comparison failure is visible in its saved-file preview.
                     // Cancellation cannot be converted into permission to write.
@@ -94,15 +94,18 @@ public struct WorkspaceCreateFileTool: AgentTool {
             }
             let data = Data(args.content.utf8)
             let result = try await route.adapter.write(path: route.relativePath, data: data, expectedEntityTag: expectedEntityTag)
+            // A missing preflight plus an unconditional PUT does not prove
+            // creation. Only a complete conditional overwrite has a baseline.
             return WorkspaceFileChangeEvidence.savedOutput("created=\(args.path) bytes=\(data.count) sha256=\(WorkspaceFileService.sha256Hex(of: data)) mtime=\(result.modifiedAt?.timeIntervalSince1970 ?? 0) network=true",
-                original: baseline, modified: args.content, path: args.path, runID: context.runID)
+                baseline: baseline, modified: args.content, path: WorkspaceFileChangeEvidence.networkPath(route),
+                requestedPath: args.path, runID: context.runID)
         }
         let service = try environment.makeService(context: context)
-        let (outcome, prior) = try service.createFileWithChangeBaseline(args.path, content: args.content,
+        let saved = try service.createFileWithChangeBaseline(args.path, content: args.content,
             overwrite: args.overwrite == true, cancellation: context.cancellation)
         return WorkspaceFileChangeEvidence.savedOutput(
-            "created=\(args.path) bytes=\(outcome.bytesWritten) sha256=\(outcome.sha256) mtime=\(outcome.mtime)",
-            original: prior, modified: args.content, path: args.path, runID: context.runID)
+            "created=\(args.path) bytes=\(saved.outcome.bytesWritten) sha256=\(saved.outcome.sha256) mtime=\(saved.outcome.mtime)",
+            baseline: saved.baseline, modified: saved.content, path: saved.path, requestedPath: args.path, runID: context.runID)
     }
 }
 
@@ -223,27 +226,25 @@ public struct WorkspaceWriteFileTool: AgentTool {
             try context.cancellation.throwIfCancelled()
             try Task.checkCancellation()
             let result = try await route.adapter.write(path: route.relativePath, data: data, expectedEntityTag: metadata.entityTag)
-            let baseline = WorkspaceFileChangeEvidence.remoteBaseline(bytes: previous, before: before, after: metadata)
+            let baseline = WorkspaceFileChangeEvidence.remoteChangeBaseline(bytes: previous, before: before, after: metadata)
             return WorkspaceFileChangeEvidence.savedOutput(
                 "written=\(args.path) bytes=\(data.count) sha256=\(WorkspaceFileService.sha256Hex(of: data)) mtime=\(result.modifiedAt?.timeIntervalSince1970 ?? 0) network=true",
-                original: baseline, modified: content, path: args.path, runID: context.runID)
+                baseline: baseline, modified: content, path: WorkspaceFileChangeEvidence.networkPath(route),
+                requestedPath: args.path, runID: context.runID)
         }
-        let outcome: WriteOutcome
-        let prior: String?
-        let content: String
+        let saved: WorkspaceFileChangeEvidence.WrittenFile
         if let source = args.sourcePath, let expected = args.expectedSourceSHA256 {
-            (outcome, prior, content) = try service.writeFileFromSourceWithChangeBaseline(
+            saved = try service.writeFileFromSourceWithChangeBaseline(
                 args.path, sourcePath: source, expectedSourceSHA256: expected,
                 expectedMtime: args.expectedMtime, expectedSHA256: args.expectedSHA256,
                 cancellation: context.cancellation)
         } else if let inline = args.content {
-            content = inline
-            (outcome, prior) = try service.writeFileWithChangeBaseline(args.path, content: inline,
+            saved = try service.writeFileWithChangeBaseline(args.path, content: inline,
                 expectedMtime: args.expectedMtime, expectedSHA256: args.expectedSHA256, cancellation: context.cancellation)
         } else { throw WorkspaceToolError.invalidArguments("Missing text source") }
         return WorkspaceFileChangeEvidence.savedOutput(
-            "written=\(args.path) bytes=\(outcome.bytesWritten) sha256=\(outcome.sha256) mtime=\(outcome.mtime)",
-            original: prior, modified: content, path: args.path, runID: context.runID)
+            "written=\(args.path) bytes=\(saved.outcome.bytesWritten) sha256=\(saved.outcome.sha256) mtime=\(saved.outcome.mtime)",
+            baseline: saved.baseline, modified: saved.content, path: saved.path, requestedPath: args.path, runID: context.runID)
     }
 }
 
@@ -320,18 +321,21 @@ public struct WorkspaceApplyPatchTool: AgentTool {
             let temporaryFile = temporaryRoot.appendingPathComponent("remote.txt")
             try original.write(to: temporaryFile, options: .atomic)
             let temporaryService = WorkspaceFileService(guard: WorkspacePathGuard(rootURL: temporaryRoot, maxReadBytes: environment.maxReadBytes, maxWriteBytes: environment.maxWriteBytes))
-            let outcome = try temporaryService.applyPatch("remote.txt", patch: args.patch, cancellation: context.cancellation)
+            let (outcome, changed, _) = try temporaryService.applyPatchWithChange("remote.txt", patch: args.patch, cancellation: context.cancellation)
             let updated = try Data(contentsOf: temporaryFile)
             _ = try await route.adapter.write(path: route.relativePath, data: updated, expectedEntityTag: metadata.entityTag)
             return WorkspaceFileChangeEvidence.savedOutput(
-                "patched=\(args.path) hunks=\(outcome.hunksApplied) added=\(outcome.linesAdded) removed=\(outcome.linesRemoved) sha256=\(outcome.sha256) network=true") {
+                "patched=\(args.path) hunks=\(outcome.hunksApplied) added=\(outcome.linesAdded) removed=\(outcome.linesRemoved) sha256=\(outcome.sha256) network=true",
+                path: WorkspaceFileChangeEvidence.networkPath(route),
+                change: metadata.entityTag?.isEmpty == false ? (changed ? .modified : .unchanged) : .saved) {
                 try WorkspaceToolSupport.changeArtifact(diff: args.patch, runID: context.runID).map { [$0] } ?? []
             }
         }
         let service = try environment.makeService(context: context)
-        let outcome = try service.applyPatch(args.path, patch: args.patch, cancellation: context.cancellation)
+        let (outcome, changed, path) = try service.applyPatchWithChange(args.path, patch: args.patch, cancellation: context.cancellation)
         return WorkspaceFileChangeEvidence.savedOutput(
-            "patched=\(args.path) hunks=\(outcome.hunksApplied) added=\(outcome.linesAdded) removed=\(outcome.linesRemoved) sha256=\(outcome.sha256)") {
+            "patched=\(args.path) hunks=\(outcome.hunksApplied) added=\(outcome.linesAdded) removed=\(outcome.linesRemoved) sha256=\(outcome.sha256)",
+            path: path, change: changed ? .modified : .unchanged) {
             try WorkspaceToolSupport.changeArtifact(diff: args.patch, runID: context.runID).map { [$0] } ?? []
         }
     }

@@ -1,5 +1,7 @@
 import Foundation
 import Testing
+import FloeCore
+import FloeTools
 @testable import FloeWorkspace
 
 @Suite("FloeWorkspace.NetworkMounts", .serialized)
@@ -82,6 +84,70 @@ struct NetworkWorkspaceMountTests {
         }
     }
 
+    @Test("Network copy verifies a complete stable source before writing the destination")
+    func copyKeepsExistingTargetOnUnverifiedInput() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let context = ToolContext(runID: UUID(), cancellation: CancellationToken())
+        let environment = WorkspaceToolEnvironment(rootProvider: { root }, maxReadBytes: 8, maxWriteBytes: 4)
+        let mount = NetworkWorkspaceMount(workspaceID: UUID(), name: "Team", transport: .webDAV,
+            endpoint: try #require(URL(string: "https://dav.example.test/")), username: "", credentialRef: nil)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [NetworkMockURLProtocol.self]
+        let adapter = try WebDAVWorkspaceMountAdapter(mount: mount, credentialResolver: { _ in Data() },
+            session: URLSession(configuration: configuration))
+        let source = NetworkWorkspaceMountRegistry.Route(mount: mount, relativePath: "source", adapter: adapter)
+        let target = NetworkWorkspaceMountRegistry.Route(mount: mount, relativePath: "target", adapter: adapter)
+        let copier = WorkspaceCopyFileTool(environment: environment)
+        for scenario in ["valid", "empty", "overRead", "overWrite", "truncated", "oversent", "changed", "untaggedChange",
+                         "unknownSize", "invalidSize", "unknownType", "directory", "failedProperties"] {
+            let prior = Data("existing target".utf8)
+            var targetBytes = prior
+            var reads = 0, writes = 0, inspections = 0
+            let size = ["empty": "0", "overRead": "9", "overWrite": "5", "invalidSize": "n/a"][scenario] ?? "3"
+            NetworkMockURLProtocol.handler = { request in
+                switch request.httpMethod {
+                case "PROPFIND":
+                    inspections += 1
+                    let type = scenario == "unknownType" ? "" : scenario == "directory"
+                        ? "<d:resourcetype><d:collection/></d:resourcetype>" : "<d:resourcetype/>"
+                    let length = scenario == "unknownSize" ? "" : "<d:getcontentlength>\(size)</d:getcontentlength>"
+                    let tag = scenario == "changed" && inspections > 1 ? "r2" : "r1"
+                    let version = scenario == "untaggedChange" ? "" : "<d:getetag>\(tag)</d:getetag>"
+                    let status = scenario == "failedProperties" ? "404 Not Found" : "200 OK"
+                    let xml = "<d:multistatus xmlns:d=\"DAV:\"><d:response><d:href>/source</d:href><d:propstat><d:prop>" +
+                        type + length + version + "</d:prop><d:status>HTTP/1.1 \(status)</d:status></d:propstat></d:response></d:multistatus>"
+                    return (207, [:], Data(xml.utf8))
+                case "GET":
+                    reads += 1
+                    if scenario == "empty" { return (416, ["Content-Range": "bytes */0"], Data()) }
+                    let bytes = scenario == "truncated" ? "xy" : scenario == "oversent" ? "abcd" :
+                        (scenario == "untaggedChange" && reads > 1 ? "xyz" : "abc")
+                    return (206, [:], Data(bytes.utf8))
+                case "PUT":
+                    writes += 1
+                    targetBytes = try NetworkMockURLProtocol.body(of: request)
+                    return (204, [:], Data())
+                default: return (500, [:], Data())
+                }
+            }
+            let succeeds = scenario == "valid" || scenario == "empty"
+            do {
+                let output = try await copier.copyNetwork(.init(from: "Network/Team/source", to: "Network/Team/target"),
+                    from: source, to: target, context: context)
+                #expect(succeeds, "\(scenario) must stop before writing")
+                #expect(!output.outcomeUnknown)
+                #expect(output.summary.hasSuffix(#" paths={"change":"saved","from":"Network/Team/source","kind":"file","path":"Network/Team/target"}"#))
+            } catch {
+                #expect(!succeeds, "\(scenario) unexpected failure: \(error)")
+            }
+            #expect(writes == (succeeds ? 1 : 0), "\(scenario)")
+            #expect(targetBytes == (succeeds ? Data((scenario == "valid" ? "abc" : "").utf8) : prior), "\(scenario)")
+            if ["overRead", "overWrite", "unknownSize", "invalidSize", "unknownType", "directory", "failedProperties"].contains(scenario) {
+                #expect(reads == 0, "\(scenario)")
+            }
+        }
+    }
+
     @Test("WebDAV authentication failure is structured and non-retryable")
     func authenticationFailureIsStructured() async throws {
         let mount = NetworkWorkspaceMount(
@@ -113,6 +179,20 @@ struct NetworkWorkspaceMountTests {
 
 private final class NetworkMockURLProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var handler: ((URLRequest) throws -> (Int, [String: String], Data))?
+
+    static func body(of request: URLRequest) throws -> Data {
+        if let data = request.httpBody { return data }
+        guard let stream = request.httpBodyStream else { return Data() }
+        stream.open(); defer { stream.close() }
+        var data = Data()
+        var bytes = [UInt8](repeating: 0, count: 64)
+        while true {
+            let count = stream.read(&bytes, maxLength: bytes.count)
+            guard count >= 0 else { throw stream.streamError ?? URLError(.cannotDecodeRawData) }
+            if count == 0 { return data }
+            data.append(contentsOf: bytes.prefix(count))
+        }
+    }
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }

@@ -121,7 +121,7 @@ struct LargeTextFileToolsTests {
         let tool = WorkspaceWriteFileTool(environment: f.environment)
         let output = try await tool.execute(.init(path: "target.txt", expectedSHA256: original.sha256,
             sourcePath: "draft.txt", expectedSourceSHA256: digest), context: f.context)
-        #expect(output.summary.contains("saved=true"))
+        #expect(output.summary.contains(" change=modified saved=true"))
         #expect(try f.read("target.txt") == longText)
         #expect(try f.read("draft.txt") == longText)
         do {
@@ -132,7 +132,8 @@ struct LargeTextFileToolsTests {
             guard case .conflict = error else { Issue.record("unexpected error: \(error)"); return }
         }
         // No target precondition is create-only, never a blind replacement.
-        _ = try await tool.execute(.init(path: "new-final.txt", sourcePath: "draft.txt", expectedSourceSHA256: digest), context: f.context)
+        let newTarget = try await tool.execute(.init(path: "new-final.txt", sourcePath: "draft.txt", expectedSourceSHA256: digest), context: f.context)
+        #expect(newTarget.summary.contains(" change=created saved=true"))
         #expect(try f.read("new-final.txt") == longText)
         let replaceArguments = try JSONSerialization.data(withJSONObject: ["path":"new-final.txt", "oldText":longText, "newText":longText + "end"])
         _ = try ToolCall(id: "large-replace", toolName: "workspace.replaceText", argumentsJSON: replaceArguments, scope: .local)
@@ -240,8 +241,8 @@ struct LargeTextFileToolsTests {
         let replaced = try await WorkspaceReplaceTextTool(environment: f.environment).execute(.init(path: "file.txt", oldText: "two", newText: "TWO"), context: f.context)
         let patch = "--- a/file.txt\n+++ b/file.txt\n@@ -1,2 +1,2 @@\n TWO\n-three\n+THREE\n"
         let patched = try await WorkspaceApplyPatchTool(environment: f.environment).execute(.init(path: "file.txt", patch: patch), context: f.context)
-        for result in [created, written, appended, replaced, patched] {
-            #expect(result.summary.contains("saved=true"))
+        for (result, change) in [(created, "created"), (written, "modified"), (appended, "modified"), (replaced, "modified"), (patched, "modified")] {
+            #expect(result.summary.contains(" change=\(change) saved=true"))
             #expect(result.summary.contains("preview=unavailable"))
             #expect(result.artifacts.isEmpty)
             #expect(result.exitStatus == nil || result.exitStatus == 0)

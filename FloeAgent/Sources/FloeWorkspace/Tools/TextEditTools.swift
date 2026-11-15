@@ -42,9 +42,10 @@ enum WorkspaceTextEdit {
             try Task.checkCancellation()
             _ = try await route.adapter.write(path: route.relativePath, data: data, expectedEntityTag: entityTag)
             // The acknowledged conditional write binds these complete bytes to the original token.
-            let baseline = WorkspaceFileChangeEvidence.remoteBaseline(bytes: bytes, before: metadata, after: metadata)
+            let baseline = WorkspaceFileChangeEvidence.remoteChangeBaseline(bytes: bytes, before: metadata, after: metadata)
             return WorkspaceFileChangeEvidence.savedOutput("edited=\(path) bytes=\(data.count) sha256=\(WorkspaceFileService.sha256Hex(of: data)) network=true",
-                original: baseline, modified: updated, path: path, runID: context.runID)
+                baseline: baseline, modified: updated, path: WorkspaceFileChangeEvidence.networkPath(route),
+                requestedPath: path, runID: context.runID)
         }
         let original = try service.readFileForEditing(path, cancellation: context.cancellation).text
         let digest = WorkspaceFileService.sha256Hex(of: Data(original.utf8))
@@ -56,10 +57,11 @@ enum WorkspaceTextEdit {
         }
         try context.cancellation.throwIfCancelled()
         try Task.checkCancellation()
-        let outcome = try service.writeFile(path, content: updated, expectedSHA256: digest, cancellation: context.cancellation)
+        let saved = try service.writeFileWithChangeBaseline(path, content: updated, expectedMtime: nil,
+            expectedSHA256: digest, cancellation: context.cancellation, knownBaseline: .existing(original))
         return WorkspaceFileChangeEvidence.savedOutput(
-            "edited=\(path) bytes=\(outcome.bytesWritten) sha256=\(outcome.sha256) mtime=\(outcome.mtime)",
-            original: original, modified: updated, path: path, runID: context.runID)
+            "edited=\(path) bytes=\(saved.outcome.bytesWritten) sha256=\(saved.outcome.sha256) mtime=\(saved.outcome.mtime)",
+            baseline: saved.baseline, modified: saved.content, path: saved.path, requestedPath: path, runID: context.runID)
     }
 
     static func decode(_ data: Data) throws -> String {

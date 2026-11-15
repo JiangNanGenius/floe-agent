@@ -71,13 +71,19 @@ public struct WorkspaceMoveFileTool: AgentTool {
             }
             let metadata = try await fromRoute.adapter.metadata(path: fromRoute.relativePath)
             try await fromRoute.adapter.move(from: fromRoute.relativePath, to: toRoute.relativePath, expectedEntityTag: metadata.entityTag)
-            return WorkspaceToolSupport.output("moved=\(args.from) -> \(args.to) network=true")
+            let moved: NetworkWorkspaceFileMetadata?
+            if metadata.entityTag?.isEmpty == false { moved = metadata }
+            else { moved = try? await toRoute.adapter.metadata(path: toRoute.relativePath) }
+            let paths = WorkspaceFileChangeEvidence.paths(WorkspaceFileChangeEvidence.networkPath(toRoute),
+                from: WorkspaceFileChangeEvidence.networkPath(fromRoute), kind: moved.map { $0.isDirectory ? "directory" : "file" })
+            return WorkspaceToolSupport.output("moved=\(args.from) -> \(args.to) network=true" + paths)
         } else if fromRoute != nil || toRoute != nil {
             throw NetworkWorkspaceError(code: .unsupported, stage: "move", retryable: false, safeDetail: "Moving between local and network storage is not supported; use copy then delete explicitly.")
         }
         let service = try environment.makeService(context: context)
-        try service.move(args.from, to: args.to, cancellation: context.cancellation)
-        return WorkspaceToolSupport.output("moved=\(args.from) -> \(args.to)")
+        return try service.managedFileOutput("moved=\(args.from) -> \(args.to)", from: args.from, path: args.to) {
+            try service.move(args.from, to: args.to, cancellation: context.cancellation)
+        }
     }
 }
 
@@ -138,11 +144,25 @@ public struct WorkspaceDeleteFileTool: AgentTool {
                 throw NetworkWorkspaceError(code: .unsupported, stage: "delete", retryable: false, safeDetail: "Recursive network deletion is intentionally unsupported; delete children explicitly.")
             }
             try await route.adapter.delete(path: route.relativePath, expectedEntityTag: metadata.entityTag)
-            return WorkspaceToolSupport.output("deleted=\(args.path) recursive=false network=true")
+            let summary = "deleted=\(args.path) recursive=false network=true"
+            // WebDAV accepts HTTP 202. Acknowledgment alone doesn't establish
+            // that this path has disappeared. Optional readback cannot turn
+            // an already accepted delete into a retryable mutation.
+            if route.mount.transport == .webDAV {
+                do {
+                    _ = try await route.adapter.metadata(path: route.relativePath)
+                    return WorkspaceToolSupport.output(summary + " paths={}")
+                } catch let error as NetworkWorkspaceError where error.code == .notFound {
+                    // The server confirms absence.
+                } catch { return WorkspaceToolSupport.output(summary + " paths={}") }
+            }
+            return WorkspaceToolSupport.output(summary + WorkspaceFileChangeEvidence.paths(
+                WorkspaceFileChangeEvidence.networkPath(route), kind: metadata.isDirectory ? "directory" : "file"))
         }
         let service = try environment.makeService(context: context)
-        try service.delete(args.path, recursive: args.recursive ?? false, cancellation: context.cancellation)
-        return WorkspaceToolSupport.output("deleted=\(args.path) recursive=\(args.recursive ?? false)")
+        return try service.managedFileOutput("deleted=\(args.path) recursive=\(args.recursive ?? false)", path: args.path) {
+            try service.delete(args.path, recursive: args.recursive ?? false, cancellation: context.cancellation)
+        }
     }
 }
 
@@ -204,17 +224,53 @@ public struct WorkspaceCopyFileTool: AgentTool {
         let fromRoute = try await environment.networkRoute(path: args.from, context: context)
         let toRoute = try await environment.networkRoute(path: args.to, context: context)
         if let fromRoute, let toRoute {
-            guard fromRoute.mount.id == toRoute.mount.id else {
-                throw NetworkWorkspaceError(code: .unsupported, stage: "copy", retryable: false, safeDetail: "Copying between different network mounts is not supported.")
-            }
-            let data = try await fromRoute.adapter.read(path: fromRoute.relativePath, offset: 0, limit: environment.maxReadBytes)
-            _ = try await toRoute.adapter.write(path: toRoute.relativePath, data: data, expectedEntityTag: nil)
-            return WorkspaceToolSupport.output("copied=\(args.from) -> \(args.to) network=true")
+            return try await copyNetwork(args, from: fromRoute, to: toRoute, context: context)
         } else if fromRoute != nil || toRoute != nil {
             throw NetworkWorkspaceError(code: .unsupported, stage: "copy", retryable: false, safeDetail: "Use workspace.readFile/writeFile for an explicit bounded local/network transfer.")
         }
         let service = try environment.makeService(context: context)
-        try service.copy(args.from, to: args.to, cancellation: context.cancellation)
-        return WorkspaceToolSupport.output("copied=\(args.from) -> \(args.to)")
+        return try service.managedFileOutput("copied=\(args.from) -> \(args.to)", from: args.from, path: args.to) {
+            try service.copy(args.from, to: args.to, cancellation: context.cancellation)
+        }
+    }
+
+    func copyNetwork(_ args: Arguments, from fromRoute: NetworkWorkspaceMountRegistry.Route,
+                     to toRoute: NetworkWorkspaceMountRegistry.Route, context: ToolContext) async throws -> ToolExecutionOutput {
+        guard fromRoute.mount.id == toRoute.mount.id else {
+            throw NetworkWorkspaceError(code: .unsupported, stage: "copy", retryable: false, safeDetail: "Copying between different network mounts is not supported.")
+        }
+        let source = try await fromRoute.adapter.metadataForCopy(path: fromRoute.relativePath)
+        guard !source.isDirectory else { throw WorkspaceToolError.isDirectory(args.from) }
+        guard source.byteCount >= 0 else {
+            throw WorkspaceToolError.invalidArguments("The source file has no confirmed byte length")
+        }
+        let limit = min(environment.maxReadBytes, environment.maxWriteBytes)
+        guard source.byteCount <= limit else { throw WorkspaceToolError.tooLarge(limit: limit) }
+        // A one-byte range on an empty resource verifies that the server has
+        // no bytes. When the read budget itself is zero, the confirmed
+        // empty length is checked again below without requesting a byte.
+        let readLimit = min(environment.maxReadBytes, max(1, Int(source.byteCount)))
+        let data = readLimit == 0 ? Data() : try await fromRoute.adapter.read(path: fromRoute.relativePath, offset: 0, limit: readLimit)
+        guard data.count == source.byteCount else {
+            throw WorkspaceToolError.invalidArguments("Incomplete source file; refresh it before copying")
+        }
+        if !data.isEmpty, source.entityTag?.isEmpty != false, source.modifiedAt == nil {
+            let verified = try await fromRoute.adapter.read(path: fromRoute.relativePath, offset: 0, limit: readLimit)
+            guard verified == data else { throw WorkspaceToolError.conflict(expected: "stable source file", actual: "source changed") }
+        }
+        let current = try await fromRoute.adapter.metadataForCopy(path: fromRoute.relativePath)
+        guard current == source else { throw WorkspaceToolError.conflict(expected: "stable source file", actual: "source changed") }
+        try context.cancellation.throwIfCancelled()
+        try Task.checkCancellation()
+        let copied = try await toRoute.adapter.write(path: toRoute.relativePath, data: data, expectedEntityTag: nil)
+        guard !copied.isDirectory, copied.byteCount == data.count else {
+            var output = WorkspaceToolSupport.output("Cannot confirm the completed copy. Inspect the destination before retrying.")
+            output.outcomeUnknown = true
+            return output
+        }
+        let summary = "copied=\(args.from) -> \(args.to) network=true"
+        let paths = WorkspaceFileChangeEvidence.paths(WorkspaceFileChangeEvidence.networkPath(toRoute),
+            from: WorkspaceFileChangeEvidence.networkPath(fromRoute), kind: "file", change: .saved)
+        return WorkspaceToolSupport.output(summary + paths)
     }
 }

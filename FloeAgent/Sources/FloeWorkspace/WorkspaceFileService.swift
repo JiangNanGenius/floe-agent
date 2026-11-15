@@ -599,6 +599,12 @@ public struct WorkspaceFileService: Sendable {
         patch: String,
         cancellation: CancellationToken? = nil
     ) throws -> PatchOutcome {
+        try applyPatchWithChange(path, patch: patch, cancellation: cancellation).outcome
+    }
+
+    func applyPatchWithChange(
+        _ path: String, patch: String, cancellation: CancellationToken?
+    ) throws -> (outcome: PatchOutcome, changed: Bool, path: String?) {
         let mutationLock = WorkspaceMutationLocks.lock(for: guardResolver.rootURL)
         mutationLock.lock(); defer { mutationLock.unlock() }
 
@@ -655,12 +661,13 @@ public struct WorkspaceFileService: Sendable {
 
         let patched = lines.joined(separator: "\n")
         let outcome = try performWrite(url, path: path, content: patched)
-        return PatchOutcome(
+        let patchOutcome = PatchOutcome(
             hunksApplied: applied,
             linesAdded: added,
             linesRemoved: removed,
             sha256: outcome.sha256
         )
+        return (patchOutcome, !originalData.elementsEqual(patched.utf8), receiptPath(path, resolved: url))
     }
 
     // MARK: - Move / Delete

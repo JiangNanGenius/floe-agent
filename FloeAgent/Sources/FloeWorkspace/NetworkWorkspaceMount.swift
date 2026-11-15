@@ -122,10 +122,19 @@ public protocol WorkspaceMountAdapter: Sendable {
     func list(path: String) async throws -> [NetworkWorkspaceEntry]
     func read(path: String, offset: Int, limit: Int?) async throws -> Data
     func metadata(path: String) async throws -> NetworkWorkspaceFileMetadata
+    func metadataForCopy(path: String) async throws -> NetworkWorkspaceFileMetadata
     func write(path: String, data: Data, expectedEntityTag: String?) async throws -> NetworkWorkspaceFileMetadata
     func createDirectory(path: String) async throws
     func move(from: String, to: String, expectedEntityTag: String?) async throws
     func delete(path: String, expectedEntityTag: String?) async throws
+}
+
+public extension WorkspaceMountAdapter {
+    /// Filesystem adapters obtain size and type from stat. WebDAV verifies
+    /// that the requested properties were actually returned for this file.
+    func metadataForCopy(path: String) async throws -> NetworkWorkspaceFileMetadata {
+        try await metadata(path: path)
+    }
 }
 
 public typealias NetworkCredentialResolver = @Sendable (UUID) async throws -> Data
@@ -278,17 +287,44 @@ public actor WebDAVWorkspaceMountAdapter: WorkspaceMountAdapter {
             request.setValue("bytes=\(offset)-\(end.map(String.init) ?? "")", forHTTPHeaderField: "Range")
         }
         let (data, response) = try await perform(request, stage: "read")
+        if response.statusCode == 416, offset == 0, limit != nil,
+           response.value(forHTTPHeaderField: "Content-Range")?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "bytes */0" {
+            return Data()
+        }
         try require(response, allowed: [200, 206], stage: "read")
         return data
     }
 
     public func metadata(path: String) async throws -> NetworkWorkspaceFileMetadata {
+        try await resourceMetadata(path: path, forCopy: false)
+    }
+
+    public func metadataForCopy(path: String) async throws -> NetworkWorkspaceFileMetadata {
+        try await resourceMetadata(path: path, forCopy: true)
+    }
+
+    private func resourceMetadata(path: String, forCopy: Bool) async throws -> NetworkWorkspaceFileMetadata {
         var request = try await request(method: "PROPFIND", path: path)
         request.setValue("0", forHTTPHeaderField: "Depth")
         request.httpBody = Data(#"<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/><d:getcontentlength/><d:getlastmodified/><d:getetag/></d:prop></d:propfind>"#.utf8)
         let (data, response) = try await perform(request, stage: "metadata")
         try require(response, allowed: [207], stage: "metadata")
-        guard let row = WebDAVMultiStatusParser.parse(data: data).first else {
+        let rows = WebDAVMultiStatusParser.parse(data: data, forCopy: forCopy)
+        if forCopy {
+            let target = url(path: path)
+            guard let row = rows.first(where: {
+                !$0.href.isEmpty && URL(string: $0.href, relativeTo: target)?.absoluteURL.standardized.path == target.standardized.path
+            }) else {
+                throw NetworkWorkspaceError(code: .protocolFailure, stage: "copy", retryable: false, safeDetail: "WebDAV did not identify the requested source.")
+            }
+            if row.isDirectory { throw WorkspaceToolError.isDirectory(path) }
+            let metadata = row.copyProperties
+            guard metadata.isRegularFile == true, let size = metadata.byteCount, size >= 0 else {
+                throw NetworkWorkspaceError(code: .protocolFailure, stage: "copy", retryable: false, safeDetail: "WebDAV did not confirm the source file type and length.")
+            }
+            return NetworkWorkspaceFileMetadata(path: path, isDirectory: false, byteCount: size, modifiedAt: metadata.modifiedAt, entityTag: metadata.entityTag)
+        }
+        guard let row = rows.first else {
             throw NetworkWorkspaceError(code: .protocolFailure, stage: "metadata", retryable: false, safeDetail: "WebDAV response did not include resource metadata.")
         }
         return NetworkWorkspaceFileMetadata(path: path, isDirectory: row.isDirectory, byteCount: row.byteCount, modifiedAt: row.modifiedAt, entityTag: row.entityTag)
@@ -409,6 +445,21 @@ private struct WebDAVResponseRow: Sendable {
     var byteCount: Int64 = 0
     var modifiedAt: Date?
     var entityTag: String?
+    var copyProperties = WebDAVCopyProperties()
+}
+
+private struct WebDAVCopyProperties: Sendable {
+    var isRegularFile: Bool?
+    var byteCount: Int64?
+    var modifiedAt: Date?
+    var entityTag: String?
+
+    mutating func merge(_ group: Self) {
+        isRegularFile = group.isRegularFile ?? isRegularFile
+        byteCount = group.byteCount ?? byteCount
+        modifiedAt = group.modifiedAt ?? modifiedAt
+        entityTag = group.entityTag ?? entityTag
+    }
 }
 
 private final class WebDAVMultiStatusParser: NSObject, XMLParserDelegate, @unchecked Sendable {
@@ -416,9 +467,14 @@ private final class WebDAVMultiStatusParser: NSObject, XMLParserDelegate, @unche
     private var row: WebDAVResponseRow?
     private var currentElement = ""
     private var text = ""
+    private var propertyGroup: WebDAVCopyProperties?
+    private var insideResourceType = false
+    private var groupSucceeded = false
+    private var collectCopyProperties = false
 
-    static func parse(data: Data) -> [WebDAVResponseRow] {
+    static func parse(data: Data, forCopy: Bool = false) -> [WebDAVResponseRow] {
         let delegate = WebDAVMultiStatusParser()
+        delegate.collectCopyProperties = forCopy
         let parser = XMLParser(data: data)
         parser.delegate = delegate
         guard parser.parse() else { return [] }
@@ -428,6 +484,16 @@ private final class WebDAVMultiStatusParser: NSObject, XMLParserDelegate, @unche
     func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?, qualifiedName qName: String?, attributes attributeDict: [String: String] = [:]) {
         currentElement = elementName.lowercased()
         text = ""
+        if collectCopyProperties, currentElement.hasSuffix("propstat") {
+            propertyGroup = WebDAVCopyProperties()
+            groupSucceeded = false
+        }
+        if propertyGroup != nil, currentElement.hasSuffix("resourcetype") {
+            insideResourceType = true
+            propertyGroup?.isRegularFile = true
+        } else if insideResourceType {
+            propertyGroup?.isRegularFile = false
+        }
         if currentElement.hasSuffix("response") { row = WebDAVResponseRow() }
         if currentElement.hasSuffix("collection") { row?.isDirectory = true }
     }
@@ -437,6 +503,22 @@ private final class WebDAVMultiStatusParser: NSObject, XMLParserDelegate, @unche
     func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName qName: String?) {
         let element = elementName.lowercased()
         let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if propertyGroup != nil {
+            if element.hasSuffix("resourcetype") { insideResourceType = false }
+            if element.hasSuffix("getcontentlength"), value.utf8.allSatisfy({ (48...57).contains($0) }) {
+                propertyGroup?.byteCount = Int64(value)
+            }
+            if element.hasSuffix("getetag"), !value.isEmpty { propertyGroup?.entityTag = value }
+            if element.hasSuffix("getlastmodified") { propertyGroup?.modifiedAt = Self.httpDate.date(from: value) }
+            if element.hasSuffix("status") {
+                let parts = value.split(separator: " ")
+                groupSucceeded = parts.count >= 2 && Int(parts[1]).map { (200..<300).contains($0) } == true
+            }
+            if element.hasSuffix("propstat") {
+                if groupSucceeded, let propertyGroup { row?.copyProperties.merge(propertyGroup) }
+                propertyGroup = nil
+            }
+        }
         if element.hasSuffix("href") { row?.href = value }
         else if element.hasSuffix("getcontentlength") { row?.byteCount = Int64(value) ?? 0 }
         else if element.hasSuffix("getetag") { row?.entityTag = value }
