@@ -16,16 +16,19 @@ import org.junit.Test
 class DeviceArtifact113OverlayStatusTest {
 
     @Test
-    fun settledScreenWorkHidesBubbleUntilTheNextRealOperation() {
+    fun consecutiveScreenStepsKeepOneWindowUntilTheSequenceEnds() {
         fun visible(state: PhoneAutomationOperationState?) =
             PhoneAutomationStatusText.showsOverlay(false, false, state)
         assertFalse(visible(null))
         assertTrue(visible(PhoneAutomationOperationState.RUNNING))
         for (settled in listOf(PhoneAutomationOperationState.DONE,
-            PhoneAutomationOperationState.FAILED, PhoneAutomationOperationState.UNKNOWN,
-            PhoneAutomationOperationState.CANCELLED)) {
-            repeat(3) { assertFalse(visible(settled)) }
+            PhoneAutomationOperationState.FAILED, PhoneAutomationOperationState.UNKNOWN)) {
+            assertTrue(visible(settled))
         }
+        assertFalse(visible(PhoneAutomationOperationState.CANCELLED))
+        // Background-work/session-stop clears the operation; a live Agent
+        // task alone must never recreate the floating control.
+        assertFalse(visible(null))
         assertTrue(visible(PhoneAutomationOperationState.RUNNING))
     }
 

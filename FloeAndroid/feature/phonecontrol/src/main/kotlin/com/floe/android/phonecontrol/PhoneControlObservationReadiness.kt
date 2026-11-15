@@ -17,6 +17,8 @@ internal interface PhoneObservationReadinessDriver {
     fun stillCurrent(): Boolean
     fun blocker(): PhoneControlBlocker?
     fun keyguardLocked(): Boolean
+    /** Event timing only; no background node reads. */
+    fun lastUiActivityAt(): Long = 0L
     /** One fresh capture attempt; null means the active window is genuinely
      *  not published yet, never an authorization decision. */
     fun capture(): PhoneControlCapture?
@@ -31,6 +33,10 @@ internal interface PhoneObservationReadinessDriver {
  * the exact completion second, and the framework had not yet re-published the
  * active accessibility window — the old single-shot capture mapped that
  * ordinary transition instant to OBSERVATION_FAILED and the model stopped.
+ * Explicit screen observations also opt into the existing minimum/quiet
+ * interval before their first capture so pending window events are processed
+ * first. This delays capture, never extends an observation's lifetime or
+ * changes permission, window-invalidation or action-validation rules.
  *
  * Rules, mirroring the existing post-action settle lifecycle:
  *  - fence first: an existing blocker, or a keyguard relock, terminates with
@@ -52,6 +58,7 @@ internal class PhoneControlObservationReadiness(
     private val driver: PhoneObservationReadinessDriver,
     private val deadlineMs: Long = PhoneControlLimits.SETTLE_TIMEOUT_MS,
     private val pollMs: Long = 60L,
+    private val settleBeforeCapture: Boolean = false,
 ) {
     fun start(complete: (PhoneControlResult<PhoneControlCapture>) -> Unit) {
         val startedAt = driver.now
@@ -66,6 +73,13 @@ internal class PhoneControlObservationReadiness(
             }
             if (driver.keyguardLocked()) {
                 complete(PhoneControlResult.Denied(PhoneControlDenial.DEVICE_LOCKED))
+                return
+            }
+            val elapsed = driver.now - startedAt
+            if (settleBeforeCapture && elapsed < deadlineMs &&
+                (elapsed < PhoneControlLimits.SETTLE_MIN_MS ||
+                    driver.now - driver.lastUiActivityAt() < PhoneControlLimits.SETTLE_QUIET_MS)) {
+                driver.after(pollMs) { poll() }
                 return
             }
             val capture = driver.capture()

@@ -2936,7 +2936,10 @@ internal class DeviceAccessHost(
      * exact owner's latest action and its actual settled state.
      */
     private fun onPlatformToolStarted(call: PlatformToolCall) {
-        if (call.tool !in DeviceAccessToolCatalog.DEVICE_INTERACTION_NAMES) return
+        if (call.tool !in DeviceAccessToolCatalog.DEVICE_INTERACTION_NAMES) {
+            automationControls.backgroundWorkStarted(ownerOf(call))
+            return
+        }
         automationControls.operationStarted(ownerOf(call), automationActionLabel(call))
     }
 
@@ -7607,12 +7610,17 @@ internal class DeviceAccessHost(
         // constants) — never a prefix rule, so unknown phone.* tools never
         // stop the service session.
         if (call.tool in DeviceAccessToolCatalog.DEVICE_INTERACTION_NAMES) {
+            val owner = ownerOf(call)
+            // End this owner's presentation before waiting for the service's
+            // stop callback. A delayed status/result must not restore its
+            // bubble while the Agent's unrelated work remains live.
+            automatedOwner.compareAndSet(owner, null)
+            automationControls.clear(expectedOwner = owner)
             // The actual phone session is being stopped: its RAM-only screen
             // consent cannot outlive that service state. Both structured
             // backends are fenced; no action is replayed on the other.
             screenShare.clear()
             runCatching { phoneClient?.stop() }
-            val owner = ownerOf(call)
             armedBackend = null
             if (armedOwner == owner) armedOwner = null
             readbackOwner = null

@@ -42,12 +42,10 @@ enum WorkspaceTextEdit {
         try check(expectedSHA256, actual: digest)
         let updated = try transform(original)
         let outcome = try service.writeFile(path, content: updated, expectedSHA256: digest, cancellation: context.cancellation)
-        let artifact = try WorkspaceToolSupport.changeArtifact(
-            diff: service.diff(original: original, modified: updated, label: path), runID: context.runID
-        )
-        return WorkspaceToolSupport.output(
+        return WorkspaceToolSupport.savedOutput(
             "edited=\(path) bytes=\(outcome.bytesWritten) sha256=\(outcome.sha256) mtime=\(outcome.mtime)",
-            artifacts: artifact.map { [$0] } ?? []
+            diff: service.diff(original: original, modified: updated, label: path),
+            runID: context.runID, environment: environment
         )
     }
 

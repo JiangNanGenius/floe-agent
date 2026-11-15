@@ -19,15 +19,23 @@ public struct WorkspaceToolEnvironment: Sendable {
     public var maxReadBytes: Int
     /// Maximum write size applied to every guard created from the root.
     public var maxWriteBytes: Int
+    /// The existing generation-owned artifact authority. Android never
+    /// derives writable evidence storage from Foundation's host defaults.
+    public var artifactGate: (any RunOutputOperationGate)?
+    public var artifactEpoch: UInt64?
 
     public init(
         rootProvider: @escaping @Sendable () -> URL?,
         maxReadBytes: Int = 10 * 1024 * 1024,
-        maxWriteBytes: Int = 4 * 1024 * 1024
+        maxWriteBytes: Int = 4 * 1024 * 1024,
+        artifactGate: (any RunOutputOperationGate)? = nil,
+        artifactEpoch: UInt64? = nil
     ) {
         self.rootProvider = rootProvider
         self.maxReadBytes = maxReadBytes
         self.maxWriteBytes = maxWriteBytes
+        self.artifactGate = artifactGate
+        self.artifactEpoch = artifactEpoch
     }
 
     /// Builds a file service for the current workspace root. Agent
@@ -143,24 +151,44 @@ enum WorkspaceToolSupport {
         )
     }
 
-    /// Persists a bounded, digest-addressed unified diff in Floe's own
-    /// Application Support directory. The workspace itself is never used as
-    /// an evidence store, so reviewing a change cannot modify user files.
-    static func changeArtifact(diff: String, runID: UUID) throws -> ToolArtifactReference? {
+    /// Called only after a real file commit. An optional comparison failure
+    /// must never invite the model to repeat an already successful mutation.
+    static func savedOutput(
+        _ summary: String, diff: String, runID: UUID,
+        environment: WorkspaceToolEnvironment
+    ) -> ToolExecutionOutput {
+        do {
+            let artifact = try changeArtifact(diff: diff, runID: runID, environment: environment)
+            return output(summary + " saved=true preview=\(artifact == nil ? "unavailable" : "available")",
+                          artifacts: artifact.map { [$0] } ?? [])
+        } catch {
+            return output(summary + " saved=true preview=unavailable\n" +
+                "The file is saved. Its optional comparison is unavailable; do not repeat the write.")
+        }
+    }
+
+    /// One bounded diff under the root captured atomically with the existing
+    /// run-output lease. Retired generations cannot redirect the write or
+    /// advertise its receipt. The user's workspace is never the evidence store.
+    static func changeArtifact(
+        diff: String, runID: UUID, environment: WorkspaceToolEnvironment
+    ) throws -> ToolArtifactReference? {
         guard !diff.isEmpty else { return nil }
         let data = Data(diff.utf8)
         guard data.count <= 512 * 1024 else { return nil }
         let digest = WorkspaceFileService.sha256Hex(of: data)
-        let support = try FileManager.default.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        )
+        guard let gate = environment.artifactGate,
+              let expectedEpoch = environment.artifactEpoch,
+              let ticket = gate.beginPublication(runID: runID) else {
+            throw WorkspaceToolError.invalidArguments("The comparison store is not bound")
+        }
+        defer { gate.endPublication(ticket) }
+        guard ticket.epoch == expectedEpoch, gate.isPublicationCurrent(ticket),
+              let root = ticket.artifactRoot else {
+            throw WorkspaceToolError.invalidArguments("The comparison store generation ended")
+        }
         let relativeDirectory = "ChangeArtifacts/\(runID.uuidString)"
-        let directory = support
-            .appendingPathComponent("FloeAgent", isDirectory: true)
-            .appendingPathComponent(relativeDirectory, isDirectory: true)
+        let directory = root.appendingPathComponent(relativeDirectory, isDirectory: true)
         try FileManager.default.createDirectory(
             at: directory,
             withIntermediateDirectories: true
@@ -169,6 +197,13 @@ enum WorkspaceToolSupport {
         let url = directory.appendingPathComponent(name, isDirectory: false)
         if !FileManager.default.fileExists(atPath: url.path) {
             try data.write(to: url, options: [.atomic])
+        }
+        _ = try FloeArtifactStore.resolve(
+            "\(relativeDirectory)/\(name)", allowed: [.change],
+            maxBytes: 512 * 1024, expectedSHA256: digest, root: root
+        )
+        guard gate.isPublicationCurrent(ticket) else {
+            throw WorkspaceToolError.invalidArguments("The comparison store generation ended")
         }
         return ToolArtifactReference(
             id: UUID(),
@@ -264,7 +299,7 @@ public struct WorkspaceListDirectoryTool: AgentTool {
                 "\(entry.isDirectory ? "dir" : "file")\t\(entry.byteCount)\tNetwork/\(route.mount.name)/\(entry.path)"
             }
             lines.insert("path=\(args.path) entries=\(page.count) network=true", at: 0)
-            if end < entries.count { lines.append("nextPageToken=\(end)") }
+            if end < entries.count { lines.insert("nextPageToken=\(end)", at: 1) }
             return WorkspaceToolSupport.output(lines.joined(separator: "\n"))
         }
         let service = try environment.makeService(context: context)
@@ -282,7 +317,9 @@ public struct WorkspaceListDirectoryTool: AgentTool {
         }
         lines.insert("path=\(args.path) entries=\(page.entries.count)", at: 0)
         if let token = page.nextPageToken {
-            lines.append("nextPageToken=\(token)")
+            // The bounded summary can truncate the entry rows. Keep its
+            // continuation cursor ahead of them so later pages stay reachable.
+            lines.insert("nextPageToken=\(token)", at: 1)
         }
         return WorkspaceToolSupport.output(lines.joined(separator: "\n"))
     }

@@ -96,10 +96,9 @@ public struct WorkspaceCreateFileTool: AgentTool {
         } else {
             diff = service.diff(original: "", modified: args.content, label: args.path)
         }
-        let artifact = try WorkspaceToolSupport.changeArtifact(diff: diff, runID: context.runID)
-        return WorkspaceToolSupport.output(
+        return WorkspaceToolSupport.savedOutput(
             "created=\(args.path) bytes=\(outcome.bytesWritten) sha256=\(outcome.sha256) mtime=\(outcome.mtime)",
-            artifacts: artifact.map { [$0] } ?? []
+            diff: diff, runID: context.runID, environment: environment
         )
     }
 }
@@ -242,13 +241,10 @@ public struct WorkspaceWriteFileTool: AgentTool {
             let result = try await route.adapter.write(path: route.relativePath, data: data, expectedEntityTag: metadata.entityTag)
             let diff = String(decoding: previous, as: UTF8.self)
             let localService = try environment.makeService(context: context)
-            let artifact = try WorkspaceToolSupport.changeArtifact(
-                diff: localService.diff(original: diff, modified: content, label: args.path),
-                runID: context.runID
-            )
-            return WorkspaceToolSupport.output(
+            return WorkspaceToolSupport.savedOutput(
                 "written=\(args.path) bytes=\(data.count) sha256=\(WorkspaceFileService.sha256Hex(of: data)) mtime=\(result.modifiedAt?.timeIntervalSince1970 ?? 0) network=true",
-                artifacts: artifact.map { [$0] } ?? []
+                diff: localService.diff(original: diff, modified: content, label: args.path),
+                runID: context.runID, environment: environment
             )
         }
         let service = try environment.makeService(context: context)
@@ -280,10 +276,9 @@ public struct WorkspaceWriteFileTool: AgentTool {
         } else {
             diff = ""
         }
-        let artifact = try WorkspaceToolSupport.changeArtifact(diff: diff, runID: context.runID)
-        return WorkspaceToolSupport.output(
+        return WorkspaceToolSupport.savedOutput(
             "written=\(args.path) bytes=\(outcome.bytesWritten) sha256=\(outcome.sha256) mtime=\(outcome.mtime)",
-            artifacts: artifact.map { [$0] } ?? []
+            diff: diff, runID: context.runID, environment: environment
         )
     }
 }
@@ -361,18 +356,16 @@ public struct WorkspaceApplyPatchTool: AgentTool {
             let outcome = try temporaryService.applyPatch("remote.txt", patch: args.patch, cancellation: context.cancellation)
             let updated = try Data(contentsOf: temporaryFile)
             _ = try await route.adapter.write(path: route.relativePath, data: updated, expectedEntityTag: metadata.entityTag)
-            let artifact = try WorkspaceToolSupport.changeArtifact(diff: args.patch, runID: context.runID)
-            return WorkspaceToolSupport.output(
+            return WorkspaceToolSupport.savedOutput(
                 "patched=\(args.path) hunks=\(outcome.hunksApplied) added=\(outcome.linesAdded) removed=\(outcome.linesRemoved) sha256=\(outcome.sha256) network=true",
-                artifacts: artifact.map { [$0] } ?? []
+                diff: args.patch, runID: context.runID, environment: environment
             )
         }
         let service = try environment.makeService(context: context)
         let outcome = try service.applyPatch(args.path, patch: args.patch, cancellation: context.cancellation)
-        let artifact = try WorkspaceToolSupport.changeArtifact(diff: args.patch, runID: context.runID)
-        return WorkspaceToolSupport.output(
+        return WorkspaceToolSupport.savedOutput(
             "patched=\(args.path) hunks=\(outcome.hunksApplied) added=\(outcome.linesAdded) removed=\(outcome.linesRemoved) sha256=\(outcome.sha256)",
-            artifacts: artifact.map { [$0] } ?? []
+            diff: args.patch, runID: context.runID, environment: environment
         )
     }
 }

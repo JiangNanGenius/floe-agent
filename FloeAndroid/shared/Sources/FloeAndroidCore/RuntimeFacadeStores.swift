@@ -473,9 +473,9 @@ public actor AndroidRuntimeStoreOwner {
             // epoch); the per-call root still comes only from the trusted
             // `ToolContext.workspaceRootURL`, never a UI-global or
             // first-project fallback. Registration is idempotent (the
-            // registry replaces by name) and independent of the run-output
-            // artifact binding below.
-            C08WorkspaceFileTools.install()
+            // registry replaces by name). Optional change previews reuse the
+            // SAME generation-bound run-output authority installed below.
+            C08WorkspaceFileTools.install(artifactEpoch: identity.epoch)
             if RuntimeFacadeRunOutput.shared.install(
                 artifactRootPath: identity.root.artifactStoreURL.path,
                 epoch: identity.epoch

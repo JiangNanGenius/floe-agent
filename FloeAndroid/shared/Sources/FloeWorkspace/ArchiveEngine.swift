@@ -38,6 +38,9 @@ import Foundation
 import ZIPFoundation
 import FloeCore
 import FloeTools
+#if canImport(Android)
+import Android
+#endif
 
 // MARK: - Public types
 
@@ -1293,7 +1296,13 @@ public enum ArchiveEngine {
     static func isContained(_ candidate: URL, in root: URL) -> Bool {
         let base = root.standardizedFileURL.path
         let path = candidate.standardizedFileURL.path
-        return path.hasPrefix(base + "/")
+        if path.hasPrefix(base + "/") { return true }
+        // Foundation can retain /var for an existing root while reporting
+        // its child under /private/var. Accept only the physical alias of
+        // this same trusted root, with the directory boundary still intact.
+        var resolved = [CChar](repeating: 0, count: Int(PATH_MAX))
+        guard realpath(base, &resolved) != nil else { return false }
+        return path.hasPrefix(String(cString: resolved) + "/")
     }
 
     /// A symlink is preserved only when its target resolves inside the

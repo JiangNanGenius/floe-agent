@@ -147,30 +147,15 @@ internal class PhoneControlSession(
         lockedDenial()?.let { complete(it); return }
         claimDenial(principal.owner)?.let { complete(it); return }
         PhoneControlRuntime.publish()
-        val ticket = fence.ticket(principal.owner)
-            ?: run {
-                complete(PhoneControlResult.Denied(PhoneControlDenial.FOREIGN_RUN))
-                return
-            }
-        val normalized = request.normalized()
-        val first = snapshotter.capture(
-            owner = principal.owner,
-            ticket = ticket,
-            request = normalized,
-            keyguardLocked = keyguardLocked(),
-            isCancelled = { closed },
-        )
-        if (first != null) {
-            complete(acceptObservation(principal, grant, first, normalized))
+        if (fence.ticket(principal.owner) == null) {
+            complete(PhoneControlResult.Denied(PhoneControlDenial.FOREIGN_RUN))
             return
         }
-        // The active accessibility window can stay unpublished for a bounded
-        // interval right after an in-call automatic unlock (demonstrated
-        // Samsung first-observe failure: keyguard already reported unlocked at
-        // the failure second while no active window root existed yet). Wait
-        // inside the existing bounded settle lifecycle instead of failing the
-        // observation; every terminal path below is owned by the existing
-        // fence/cancel/abort machinery.
+        val normalized = request.normalized()
+        // Let pending window/popup/overlay events settle BEFORE minting the
+        // observation, including when a root is already available. Otherwise
+        // a queued child-window event can invalidate it just after delivery.
+        // This also retains the bounded post-unlock root-readiness path.
         val opId = UUID.randomUUID().toString()
         inFlightId = opId
         pendingClientToken = operationToken
@@ -186,6 +171,7 @@ internal class PhoneControlSession(
                 override fun stillCurrent(): Boolean = !closed && inFlightId == opId
                 override fun blocker(): PhoneControlBlocker? = fence.state().blocker
                 override fun keyguardLocked(): Boolean = this@PhoneControlSession.keyguardLocked()
+                override fun lastUiActivityAt(): Long = max(lastWindowChangeAt, lastContentChangeAt)
                 override fun capture(): PhoneControlCapture? {
                     val live = fence.ticket(principal.owner) ?: return null
                     return snapshotter.capture(
@@ -197,6 +183,7 @@ internal class PhoneControlSession(
                     )
                 }
             },
+            settleBeforeCapture = true,
         ).start { result ->
             if (inFlightId != opId) return@start
             when (result) {

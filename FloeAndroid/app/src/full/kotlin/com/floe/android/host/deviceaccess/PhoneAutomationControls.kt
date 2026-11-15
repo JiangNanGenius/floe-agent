@@ -51,8 +51,8 @@ import kotlin.math.min
  * actions; four seconds without a user touch collapses it again. Collapsing
  * is presentation only: it never pauses, resumes, takes over, executes or
  * changes permissions. Only a real RUNNING operation animates; waiting and
- * paused states stay static. Settled operations hide the bubble; the latest
- * result remains in the notification until the control session ends.
+ * paused states stay static. Consecutive screen operations reuse one window;
+ * background work or the end of screen control removes the bubble.
  *
  * The status is fed from the real claimed platform tool lifecycle (started ->
  * actual outcome) and from the typed background document-view verification.
@@ -125,6 +125,7 @@ internal class PhoneAutomationControls(
     /** A start that arrived before [show] bound the same owner. RAM-only and
      * replaced by the next start/finish; never a history buffer. */
     private var pendingOperation: Pair<PhoneControlOwner, String>? = null
+    private var clearAfterOperation = false
 
     fun show(owner: PhoneControlOwner, title: String, overlay: Boolean, paused: Boolean = false,
              waitingForUser: Boolean = false) {
@@ -142,6 +143,7 @@ internal class PhoneAutomationControls(
                 this.operationOwner = null
             }
             if (this.owner != owner || this.paused != paused) {
+                clearAfterOperation = false
                 removeOverlay()
                 token = UUID.randomUUID().toString()
             }
@@ -178,10 +180,24 @@ internal class PhoneAutomationControls(
                 return@post
             }
             if (this.owner != owner) return@post
+            clearAfterOperation = false
             operation = PhoneAutomationStatusText.operation(
                 label, PhoneAutomationOperationState.RUNNING)
             operationOwner = owner
             render()
+        }
+    }
+
+    /** The same task moved on to real non-screen work. Do not disturb an
+     * in-flight screen operation; retire its window at that operation's end. */
+    fun backgroundWorkStarted(owner: PhoneControlOwner) {
+        main.post {
+            if (this.owner == owner && (paused || waitingForUser)) return@post
+            if (this.owner == owner && operation?.state == PhoneAutomationOperationState.RUNNING) {
+                clearAfterOperation = true
+            } else {
+                clear(expectedOwner = owner)
+            }
         }
     }
 
@@ -211,7 +227,11 @@ internal class PhoneAutomationControls(
                 note,
             )
             operationOwner = owner
-            render()
+            if (clearAfterOperation && !paused && !waitingForUser) {
+                clear(expectedOwner = owner)
+            } else {
+                render()
+            }
         }
     }
 
@@ -783,6 +803,7 @@ internal class PhoneAutomationControls(
             operation = null
             operationOwner = null
             pendingOperation = null
+            clearAfterOperation = false
             removeOverlay()
             notifications.cancel(NOTIFICATION)
             if (PhoneAutomationRelay.controls === this) PhoneAutomationRelay.controls = null

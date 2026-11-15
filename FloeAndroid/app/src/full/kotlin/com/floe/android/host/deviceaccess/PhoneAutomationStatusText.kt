@@ -29,12 +29,12 @@ internal object PhoneAutomationStatusText {
     const val MAX_LABEL = 32
     const val MAX_NOTE = 48
 
-    /** Background task progress or a retained result must not leave a
-     * resident bubble. A fresh real screen operation can show it again. */
+    /** A live screen sequence reuses one window between steps. The owner
+     * gate and background-work/stop callbacks retire the whole presentation;
+     * an idle Agent task with no screen operation never creates a bubble. */
     fun showsOverlay(paused: Boolean, waitingForUser: Boolean,
                      state: PhoneAutomationOperationState?): Boolean =
-        paused || waitingForUser || state == PhoneAutomationOperationState.RUNNING ||
-            state == PhoneAutomationOperationState.WAITING
+        paused || waitingForUser || (state != null && state != PhoneAutomationOperationState.CANCELLED)
 
     /**
      * One inert single-line display value. Control characters (including

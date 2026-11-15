@@ -54,6 +54,8 @@ class PhoneControlObservationReadinessTest {
         var current = true
         var blocker: PhoneControlBlocker? = null
         var locked = false
+        var lastUiActivity = 0L
+        var continuouslyChanging = false
         var scheduledPolls = 0
         var cancelledPolls = 0
         var duringCapture: (() -> Unit)? = null
@@ -85,6 +87,7 @@ class PhoneControlObservationReadinessTest {
         override fun stillCurrent() = current
         override fun blocker() = blocker
         override fun keyguardLocked() = locked
+        override fun lastUiActivityAt() = if (continuouslyChanging) now else lastUiActivity
         override fun capture(): PhoneControlCapture? {
             captureCalls += 1
             duringCapture?.invoke()
@@ -93,6 +96,52 @@ class PhoneControlObservationReadinessTest {
     }
 
     private fun gate(driver: Driver) = PhoneControlObservationReadiness(driver)
+
+    @Test fun stableObservationWaitsForPendingWindowEventsBeforeCapturing() {
+        val driver = Driver()
+        driver.enqueueCaptures(canary)
+        val outcomes = mutableListOf<PhoneControlResult<PhoneControlCapture>>()
+        PhoneControlObservationReadiness(driver, settleBeforeCapture = true).start { outcomes += it }
+        driver.advance(250)
+        driver.lastUiActivity = driver.now
+        driver.advance(360)
+        assertEquals(0, driver.captureCalls)
+        assertTrue(outcomes.isEmpty())
+        driver.advance(420)
+        assertEquals(1, driver.captureCalls)
+        assertSame(canary, (outcomes.single() as PhoneControlResult.Ok).value)
+        assertEquals(0, driver.pending())
+    }
+
+    @Test fun stopDuringStabilityWaitWinsWithoutReadingTheScreen() {
+        val driver = Driver()
+        driver.enqueueCaptures(canary)
+        val outcomes = mutableListOf<PhoneControlResult<PhoneControlCapture>>()
+        PhoneControlObservationReadiness(driver, settleBeforeCapture = true).start { outcomes += it }
+        driver.advance(180)
+        driver.blocker = PhoneControlBlocker.STOPPED
+        driver.advance(2_000)
+        assertEquals(0, driver.captureCalls)
+        assertEquals(PhoneControlDenial.STOPPED,
+            (outcomes.single() as PhoneControlResult.Denied).reason)
+        assertEquals(0, driver.pending())
+    }
+
+    @Test fun continuousEventsDoNotExtendTheExistingReadinessDeadline() {
+        val driver = Driver()
+        driver.continuouslyChanging = true
+        driver.enqueueCaptures(null)
+        val outcomes = mutableListOf<PhoneControlResult<PhoneControlCapture>>()
+        PhoneControlObservationReadiness(driver, settleBeforeCapture = true).start { outcomes += it }
+        driver.advance(PhoneControlLimits.SETTLE_TIMEOUT_MS - 1)
+        assertTrue(outcomes.isEmpty())
+        assertEquals(0, driver.captureCalls)
+        driver.advance(PhoneControlLimits.SETTLE_TIMEOUT_MS + 60)
+        assertEquals(1, driver.captureCalls)
+        assertEquals(PhoneControlFailure.OBSERVATION_FAILED,
+            (outcomes.single() as PhoneControlResult.Failed).reason)
+        assertEquals(0, driver.pending())
+    }
 
     @Test fun fenceArrivingDuringCapturePreventsPublication() {
         val driver = Driver()

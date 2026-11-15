@@ -111,15 +111,107 @@ final class C08WorkspaceFileToolTests: XCTestCase {
 
     // MARK: - Real reachability
 
+    func testCommittedEditsUseTheBoundArtifactRootAndVerifiedReceipts() async throws {
+        let root = try makeRoot(), artifacts = try makeRoot("c08-artifacts")
+        let facade = RuntimeFacadeRunOutput()
+        XCTAssertTrue(facade.install(artifactRootPath: artifacts.path, epoch: 41))
+        let registry = ToolRunnerRegistry()
+        C08WorkspaceFileTools.install(into: registry, isAvailable: { true },
+                                      artifactGate: facade, artifactEpoch: 41)
+        let ctx = context(root: root)
+        let calls: [(String, [String: Any], String)] = [
+            ("workspace.createFile", ["path": "receipt.txt", "content": "one\n"], "one\n"),
+            ("workspace.appendFile", ["path": "receipt.txt", "content": "two\n"], "one\ntwo\n"),
+            ("workspace.replaceText", ["path": "receipt.txt", "oldText": "two", "newText": "three"], "one\nthree\n"),
+            ("workspace.writeFile", ["path": "receipt.txt", "content": "four\n"], "four\n"),
+        ]
+        for (name, arguments, expected) in calls {
+            let result = try await run(name, arguments, context: ctx, registry: registry)
+            XCTAssertEqual(try read("receipt.txt", in: root), expected)
+            XCTAssertTrue(result.summary.contains("saved=true"), result.summary)
+            let reference = try XCTUnwrap(result.artifacts.first)
+            let url = try FloeArtifactStore.resolve(reference.relativePath, allowed: [.change],
+                maxBytes: 512 * 1024, expectedSHA256: reference.sha256, root: artifacts)
+            XCTAssertTrue(url.path.hasPrefix(artifacts.path + "/ChangeArtifacts/"))
+            XCTAssertEqual(try Data(contentsOf: url).count, reference.byteCount)
+            XCTAssertEqual(facade.activeLeaseCount, 0)
+        }
+    }
+
+    func testPreviewFailureDoesNotMisreportOrRepeatACommittedWrite() async throws {
+        let root = try makeRoot(), owned = try makeRoot("c08-unavailable-artifacts")
+        let invalidDirectory = owned.appendingPathComponent("plain-file")
+        try Data("preserve".utf8).write(to: invalidDirectory)
+        let facade = RuntimeFacadeRunOutput()
+        XCTAssertTrue(facade.install(artifactRootPath: invalidDirectory.path, epoch: 42))
+        let registry = ToolRunnerRegistry()
+        C08WorkspaceFileTools.install(into: registry, isAvailable: { true },
+                                      artifactGate: facade, artifactEpoch: 42)
+        let ctx = context(root: root)
+        let created = try await run("workspace.createFile", ["path": "saved.txt", "content": "first"],
+                                    context: ctx, registry: registry)
+        XCTAssertTrue(created.summary.contains("saved=true preview=unavailable"), created.summary)
+        XCTAssertTrue(created.artifacts.isEmpty)
+        let edited = try await run("workspace.replaceText", ["path": "saved.txt", "oldText": "first", "newText": "second"],
+                                   context: ctx, registry: registry)
+        XCTAssertEqual(try read("saved.txt", in: root), "second")
+        XCTAssertTrue(edited.summary.contains("saved=true preview=unavailable"), edited.summary)
+        XCTAssertTrue(edited.summary.contains("do not repeat the write"), edited.summary)
+        XCTAssertTrue(edited.artifacts.isEmpty)
+        XCTAssertEqual(try Data(contentsOf: invalidDirectory), Data("preserve".utf8))
+        XCTAssertEqual(facade.activeLeaseCount, 0)
+        do {
+            _ = try await run("workspace.createFile", ["path": "saved.txt", "content": "must not replace"],
+                              context: ctx, registry: registry)
+            XCTFail("A primary create conflict must still throw")
+        } catch { XCTAssertEqual(try read("saved.txt", in: root), "second") }
+    }
+
+    func testOldArtifactBindingNeverWritesIntoTheNextGeneration() async throws {
+        let root = try makeRoot(), oldArtifacts = try makeRoot("c08-old-artifacts")
+        let newArtifacts = try makeRoot("c08-new-artifacts")
+        let facade = RuntimeFacadeRunOutput()
+        XCTAssertTrue(facade.install(artifactRootPath: oldArtifacts.path, epoch: 43))
+        let registry = ToolRunnerRegistry()
+        C08WorkspaceFileTools.install(into: registry, isAvailable: { true },
+                                      artifactGate: facade, artifactEpoch: 43)
+        facade.retire(epoch: 43)
+        XCTAssertTrue(facade.install(artifactRootPath: newArtifacts.path, epoch: 44))
+        let result = try await run("workspace.createFile", ["path": "saved.txt", "content": "committed"],
+                                  context: context(root: root), registry: registry)
+        XCTAssertEqual(try read("saved.txt", in: root), "committed")
+        XCTAssertTrue(result.summary.contains("saved=true preview=unavailable"), result.summary)
+        XCTAssertTrue(result.artifacts.isEmpty)
+        XCTAssertFalse(exists("ChangeArtifacts", in: oldArtifacts))
+        XCTAssertFalse(exists("ChangeArtifacts", in: newArtifacts))
+        XCTAssertEqual(facade.activeLeaseCount, 0)
+    }
+
+    func testArchiveExtractionKeepsValidFilesAndRefusesEscapingEntries() async throws {
+        let root = try makeRoot("c08-hostile-zip")
+        // Synthetic stored ZIP: one valid file, traversal, absolute path and
+        // an escaping Unix symlink. Generated with Python's standard zipfile.
+        let bytes = try XCTUnwrap(Data(base64Encoded: "UEsDBBQAAAAAAAAAIVyPKKQfBAAAAAQAAAAIAAAAZ29vZC50eHRzYWZlUEsDBBQAAAAAAAAAIVyA61XaBwAAAAcAAAANAAAALi4vZXNjYXBlLnR4dGJsb2NrZWRQSwMEFAAAAAAAAAAhXIDrVdoHAAAABwAAAA0AAAAvYWJzb2x1dGUudHh0YmxvY2tlZFBLAwQUAAAAAAAAACFcQEr/sQ0AAAANAAAACwAAAGVzY2FwZS5saW5rLi4vLi4vb3V0c2lkZVBLAQIUAxQAAAAAAAAAIVyPKKQfBAAAAAQAAAAIAAAAAAAAAAAAAACkgQAAAABnb29kLnR4dFBLAQIUAxQAAAAAAAAAIVyA61XaBwAAAAcAAAANAAAAAAAAAAAAAACkgSoAAAAuLi9lc2NhcGUudHh0UEsBAhQDFAAAAAAAAAAhXIDrVdoHAAAABwAAAA0AAAAAAAAAAAAAAKSBXAAAAC9hYnNvbHV0ZS50eHRQSwECFAMUAAAAAAAAACFcQEr/sQ0AAAANAAAACwAAAAAAAAAAAAAA/6GOAAAAZXNjYXBlLmxpbmtQSwUGAAAAAAQABADlAAAAxAAAAAAA"))
+        try bytes.write(to: root.appendingPathComponent("hostile.zip"))
+        let result = try await run("workspace.archive", ["action": "extract", "source": "hostile.zip", "destinationDir": "unpacked"],
+                                  context: context(root: root), registry: install())
+        XCTAssertEqual(try read("unpacked/good.txt", in: root), "safe")
+        XCTAssertFalse(exists("escape.txt", in: root))
+        XCTAssertFalse(exists("unpacked/escape.link", in: root))
+        XCTAssertTrue(result.summary.contains("entries=1"), result.summary)
+        XCTAssertTrue(result.summary.contains("skipped=3"), result.summary)
+    }
+
     func testArchiveRunnerExtractsActualBytesWithoutOverwriting() async throws {
         let root = try makeRoot()
         try write("archive receipt\n", to: "input.txt", in: root)
         let registry = install()
         let ctx = context(root: root)
-        _ = try await run("workspace.archive", ["action": "create", "source": "input.txt", "destinationFile": "sample.zip"], context: ctx, registry: registry)
-        _ = try await run("workspace.archive", ["action": "extract", "source": "sample.zip", "destinationDir": "unpacked"], context: ctx, registry: registry)
+        let created = try await run("workspace.archive", ["action": "create", "source": "input.txt", "destinationFile": "sample.zip"], context: ctx, registry: registry)
+        let extracted = try await run("workspace.archive", ["action": "extract", "source": "sample.zip", "destinationDir": "unpacked"], context: ctx, registry: registry)
         let output = root.appendingPathComponent("unpacked/input.txt")
-        XCTAssertEqual(try String(contentsOf: output, encoding: .utf8), "archive receipt\n")
+        XCTAssertEqual(try String(contentsOf: output, encoding: .utf8), "archive receipt\n",
+                       "create: \(created.summary); extract: \(extracted.summary)")
         do {
             _ = try await run("workspace.archive", ["action": "extract", "source": "sample.zip", "destinationDir": "unpacked"], context: ctx, registry: registry)
             XCTFail("Existing extraction destination must not be overwritten")

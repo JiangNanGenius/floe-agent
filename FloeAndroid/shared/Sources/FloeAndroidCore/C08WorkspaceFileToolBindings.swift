@@ -102,12 +102,15 @@ public enum C08WorkspaceFileTools {
     @discardableResult
     public static func install(
         into registry: ToolRunnerRegistry = .shared,
-        isAvailable: @escaping @Sendable () -> Bool = { G02NativeRootEpoch.readback() != nil }
+        isAvailable: @escaping @Sendable () -> Bool = { G02NativeRootEpoch.readback() != nil },
+        artifactGate: (any RunOutputOperationGate)? = RuntimeFacadeRunOutput.shared,
+        artifactEpoch: UInt64? = G02NativeRootEpoch.readback()
     ) -> WorkspaceToolEnvironment {
         // Rootless on purpose: `WorkspaceToolEnvironment.rootURL(context:)`
         // prefers the trusted per-run context root and, with no provider,
         // fails closed instead of falling back to an App/UI workspace.
-        let environment = WorkspaceToolEnvironment(rootProvider: { nil })
+        let environment = WorkspaceToolEnvironment(
+            rootProvider: { nil }, artifactGate: artifactGate, artifactEpoch: artifactEpoch)
 
         ToolCatalog.register(WorkspaceListDirectoryTool.self)
         ToolCatalog.register(WorkspaceReadFileTool.self)
