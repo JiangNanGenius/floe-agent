@@ -7,11 +7,12 @@ struct MediaV2NumberField: View {
     let title: String
     @Binding var value: Double
     var suffix = ""
+    var maximumFractionDigits = 3
     var body: some View {
         HStack {
             Text(title).font(.caption)
             Spacer(minLength: 6)
-            TextField(title, value: $value, format: .number.precision(.fractionLength(0...3)))
+            TextField(title, value: $value, format: .number.precision(.fractionLength(0...maximumFractionDigits)))
                 .multilineTextAlignment(.trailing).textFieldStyle(.roundedBorder)
                 .keyboardType(.numbersAndPunctuation).frame(width: 88)
             if !suffix.isEmpty { Text(suffix).font(.caption2).foregroundStyle(.secondary) }
@@ -115,30 +116,20 @@ struct MediaV2SelectionFeatherEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text(WorkbenchText.t("羽化选区", "Feather selection")).font(.headline)
-            Text(WorkbenchText.t("柔化当前选区的边缘，画布会实时预览。",
-                                  "Soften the edges of the current selection; the canvas previews it live."))
-                .font(.caption).foregroundStyle(.secondary)
-            MediaV2NumberField(title: WorkbenchText.t("半径", "Radius"), value: $pixels, suffix: "px")
+            MediaV2NumberField(title: WorkbenchText.t("半径", "Radius"), value: $pixels,
+                               suffix: "px", maximumFractionDigits: 1)
                 .accessibilityIdentifier("media.v2.feather.radius")
-            Slider(value: $pixels, in: 0...max(0.5, maximum))
+            Slider(value: $pixels, in: 0...max(0.5, maximum), step: 0.1)
                 .accessibilityLabel(WorkbenchText.t("羽化半径", "Feather radius"))
                 .accessibilityIdentifier("media.v2.feather.slider")
+            if let error { Text(error).font(.caption).foregroundStyle(.red) }
             HStack {
-                Button(WorkbenchText.t("清除", "Clear")) { pixels = 0; syncDraft() }
+                Button(WorkbenchText.t("清零", "Reset to 0")) { pixels = 0 }
                     .frame(minHeight: 44)
                     .accessibilityIdentifier("media.v2.feather.clear")
                 Spacer()
-                Text(WorkbenchText.t("仅影响当前选区", "Current selection only"))
-                    .font(.caption2).foregroundStyle(.secondary)
-            }
-            Text(WorkbenchText.t("不会改变画笔硬度或图层蒙版已有的边缘。",
-                                  "Brush hardness and existing layer-mask edges are not changed."))
-                .font(.caption2).foregroundStyle(.secondary)
-            if let error { Text(error).font(.caption).foregroundStyle(.red) }
-            HStack {
                 Button(WorkbenchText.t("取消", "Cancel")) { cancel() }.frame(minHeight: 44)
                     .accessibilityIdentifier("media.v2.feather.cancel")
-                Spacer()
                 Button(WorkbenchText.t("应用", "Apply")) { apply() }.buttonStyle(.borderedProminent)
                     .disabled(applying || session.selection == nil || !pixels.isFinite || pixels < 0
                         || pixels > maximum || session.saving || session.processingTool || session.document.canvas == nil)

@@ -290,7 +290,10 @@ extension MediaV2Session {
             ctx.draw(pixel, in: CGRect(x: 0, y: 0, width: 1, height: 1)); colorHex = String(format: "#%02X%02X%02X", bytes[0], bytes[1], bytes[2]); selectionOnly = true
         case "image.brush":
             guard let points = input.points, !points.isEmpty else { throw MediaV2CommandError.invalidInput }
-            let stroke = ImageFreehandStroke(points: points, width: input.number ?? brushWidth, colorHex: input.color ?? colorHex, hardness: 1 - brushHardness, opacity: brushOpacity)
+            // Capture the exact fenced selection into the stroke itself. The
+            // renderer clips this stroke's coverage to it; the mutable session
+            // selection and earlier strokes are never rewritten.
+            let stroke = MediaNativeStrokeFence.brush(points: points, width: input.number ?? brushWidth, colorHex: input.color ?? colorHex, hardness: 1 - brushHardness, opacity: brushOpacity, selection: region)
             if let layer, case .strokes(var strokes) = layer.content { strokes.strokes.append(stroke); try layerContent(.strokes(strokes)) }
             else {
                 if actor == .model, input.objectID != nil { throw MediaV2CommandError.invalidInput }
@@ -298,7 +301,11 @@ extension MediaV2Session {
             }
         case "image.eraser":
             guard let layer, let points = input.points else { throw MediaV2CommandError.missingSelection }
-            var mask = layer.mask ?? .init(); mask.strokes.append(.init(points: points, width: input.number ?? brushWidth, hardness: 1 - brushHardness, restore: input.flag ?? eraserRestores, region: region))
+            // The trail is the erase operation; the selection is only its
+            // clip. `region` stays reserved for a real whole-block cut/restore
+            // and is deliberately not set here, so an active selection cannot
+            // erase the entire region on one tap.
+            var mask = layer.mask ?? .init(); mask.strokes.append(MediaNativeStrokeFence.eraser(points: points, width: input.number ?? brushWidth, hardness: 1 - brushHardness, restore: input.flag ?? eraserRestores, selection: region))
             actions.append(.setLayerMask(id: layer.id, expectedRevision: layer.revision, mask: mask))
         case "image.fill": insertLayer(.raster(.init(source: .solidColor(input.color ?? colorHex))), name: WorkbenchText.t("填色", "Fill"), mask: region.map { .init(vector: $0) })
         case "image.layer-mask", "image.vector-mask":

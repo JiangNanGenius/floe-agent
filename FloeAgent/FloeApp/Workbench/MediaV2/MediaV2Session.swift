@@ -361,9 +361,13 @@ import FloeTools
     }
     func addStroke(_ points: [ImageFreehandStroke.Point]) {
         guard !points.isEmpty else { return }
-        let stroke = ImageFreehandStroke(points: points, width: brushWidth, colorHex: colorHex, hardness: 1 - brushHardness, opacity: brushOpacity)
+        // The same per-stroke fence as the performTool route: the stroke keeps
+        // the selection as it existed now, and rendering clips only its own
+        // coverage. The eraser trail remains a trail; the selection is a clip,
+        // never a whole-region cut.
+        let stroke = MediaNativeStrokeFence.brush(points: points, width: brushWidth, colorHex: colorHex, hardness: 1 - brushHardness, opacity: brushOpacity, selection: selection)
         if tool == "image.eraser" {
-            updateLayer { layer in var mask = layer.mask ?? .init(); mask.strokes.append(.init(points: points, width: brushWidth, hardness: 1 - brushHardness, restore: false, region: selection)); layer.mask = mask }
+            updateLayer { layer in var mask = layer.mask ?? .init(); mask.strokes.append(MediaNativeStrokeFence.eraser(points: points, width: brushWidth, hardness: 1 - brushHardness, restore: eraserRestores, selection: selection)); layer.mask = mask }
         } else if let layer = selectedLayer, case .strokes(var content) = layer.content {
             content.strokes.append(stroke); updateLayer { $0.content = .strokes(content) }
         } else { addLayer(.strokes(.init(strokes: [stroke])), name: WorkbenchText.t("笔迹", "Brush stroke")) }

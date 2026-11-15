@@ -333,7 +333,8 @@ public enum MediaProjectCommandCoding {
             return ImageMaskStroke(points: points,
                                    width: stroke["width"].flatMap(number) ?? 24,
                                    hardness: stroke["hardness"].flatMap(number),
-                                   restore: bool(stroke, "restore") ?? false)
+                                   restore: bool(stroke, "restore") ?? false,
+                                   clip: try selection(stroke["clip"]))
         }
         return ImageLayerMask(strokes: strokes)
     }
@@ -446,7 +447,8 @@ public enum MediaProjectCommandCoding {
                                        width: stroke["width"].flatMap(number) ?? 4,
                                        colorHex: stroke["color_hex"].flatMap(stringValue) ?? "#000000",
                                        hardness: stroke["hardness"].flatMap(number),
-                                       opacity: stroke["opacity"].flatMap(number))
+                                       opacity: stroke["opacity"].flatMap(number),
+                                       clip: try selection(stroke["clip"]))
         }
         return ImageFreehandContent(strokes: strokes)
     }
@@ -509,7 +511,8 @@ public enum MediaProjectCommandCoding {
                                    width: value["width"].flatMap(number) ?? 4,
                                    colorHex: optionalString(value, "color_hex") ?? "#000000",
                                    hardness: value["hardness"].flatMap(number),
-                                   opacity: value["opacity"].flatMap(number))
+                                   opacity: value["opacity"].flatMap(number),
+                                   clip: try selection(value["clip"]))
     }
 
     private static func maskStroke(_ value: [String: AnyCodableValue]) throws -> ImageMaskStroke {
@@ -525,7 +528,8 @@ public enum MediaProjectCommandCoding {
         return ImageMaskStroke(points: points,
                                width: value["width"].flatMap(number) ?? 24,
                                hardness: value["hardness"].flatMap(number),
-                               restore: bool(value, "restore") ?? false)
+                               restore: bool(value, "restore") ?? false,
+                               clip: try selection(value["clip"]))
     }
 
     private static func boolValue(_ value: AnyCodableValue) -> Bool? {

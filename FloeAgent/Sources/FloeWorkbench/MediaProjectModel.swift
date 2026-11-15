@@ -207,14 +207,23 @@ public struct ImageFreehandStroke: Sendable, Codable, Hashable {
     public var hardness: Double?
     /// Stroke opacity 0...1. nil = 1.
     public var opacity: Double?
+    /// Complete selection snapshot captured when the stroke was painted. The
+    /// stroke's own coverage is clipped to it at render time, so only the
+    /// pixels under the active selection change; previous strokes, other
+    /// layers and everything outside the selection keep their pixels. nil
+    /// means the stroke is unclipped (legacy and ordinary painting). A later
+    /// selection change never rewrites this snapshot.
+    public var clip: ImageSelection?
 
     public init(points: [Point], width: Double = 4, colorHex: String = "#000000",
-                hardness: Double? = nil, opacity: Double? = nil) {
+                hardness: Double? = nil, opacity: Double? = nil,
+                clip: ImageSelection? = nil) {
         self.points = points
         self.width = width
         self.colorHex = colorHex
         self.hardness = hardness
         self.opacity = opacity
+        self.clip = clip
     }
 }
 
@@ -239,12 +248,19 @@ public struct ImageMaskStroke: Sendable, Codable, Hashable {
     /// as the displayed selection — a selection cut erases exactly what the
     /// marching-ants show, feather included.
     public var region: ImageSelection?
+    /// Selection fence captured when this erase/restore stroke was dragged.
+    /// When set, the stroke only changes pixels inside this snapshot; the
+    /// trail and everything else outside it stay untouched. This is separate
+    /// from `region`: `region` is the real whole-block cut/restore operation
+    /// and keeps that storage meaning for existing files, while `clip` only
+    /// limits a brush trail. nil = whole canvas (legacy strokes).
+    public var clip: ImageSelection?
 
     public init(points: [ImageFreehandStroke.Point], width: Double = 24,
                 hardness: Double? = nil, restore: Bool = false,
-                region: ImageSelection? = nil) {
+                region: ImageSelection? = nil, clip: ImageSelection? = nil) {
         self.points = points; self.width = width; self.hardness = hardness
-        self.restore = restore; self.region = region
+        self.restore = restore; self.region = region; self.clip = clip
     }
 }
 

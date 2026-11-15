@@ -75,3 +75,40 @@ public enum MediaNativeSelection {
 private extension Optional where Wrapped == CGImage {
     func unwrapSelectionImage() throws -> CGImage {guard let self else{throw MediaPreparedCoreError.invalidOperation("invalid selection image")};return self}
 }
+
+public extension ImageSelection {
+    /// The complete selection snapshot attached to one stroke. "Nothing
+    /// selected" is no fence at all, so painting stays unclipped instead of
+    /// being hidden by an empty mask. Both the UI and model command routes
+    /// capture this exact value at stroke-creation time; the renderer never
+    /// consults the later, mutable project selection.
+    var strokeFence: ImageSelection? { isEmpty ? nil : self }
+}
+
+/// One shared construction policy for the two stroke entry points (the native
+/// session and the studio.media/image.* tool routes). It captures the complete
+/// selection snapshot per stroke and keeps the eraser's whole-region cut
+/// semantics in `region` separate from the trail's selection clip.
+public enum MediaNativeStrokeFence {
+    public static func clip(for selection: ImageSelection?) -> ImageSelection? {
+        selection?.strokeFence
+    }
+
+    public static func brush(points: [ImageFreehandStroke.Point], width: Double,
+                             colorHex: String, hardness: Double?, opacity: Double?,
+                             selection: ImageSelection?) -> ImageFreehandStroke {
+        ImageFreehandStroke(points: points, width: width, colorHex: colorHex,
+                            hardness: hardness, opacity: opacity,
+                            clip: clip(for: selection))
+    }
+
+    /// An eraser stroke always remains a trail: `region` is reserved for a
+    /// real whole-block cut/restore and is never synthesized from a brush
+    /// selection. The selection only clips this trail's coverage.
+    public static func eraser(points: [ImageFreehandStroke.Point], width: Double,
+                              hardness: Double?, restore: Bool,
+                              selection: ImageSelection?) -> ImageMaskStroke {
+        ImageMaskStroke(points: points, width: width, hardness: hardness,
+                        restore: restore, region: nil, clip: clip(for: selection))
+    }
+}

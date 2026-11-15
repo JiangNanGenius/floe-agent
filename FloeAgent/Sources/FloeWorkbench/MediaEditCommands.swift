@@ -816,6 +816,10 @@ public enum MediaEditCommandApplier {
     }
 
     private static func validateSelection(_ selection: ImageSelection) throws {
+        if let bitmap = selection.bitmap {
+            do { try bitmap.validate() }
+            catch { throw MediaCommandError.validation("selection coverage is invalid") }
+        }
         guard selection.shapes.count <= 64 else {
             throw MediaCommandError.validation("selection supports at most 64 shapes")
         }
@@ -847,11 +851,16 @@ public enum MediaEditCommandApplier {
             throw MediaCommandError.validation("mask supports at most 512 strokes")
         }
         for stroke in mask.strokes {
-            guard (2...512).contains(stroke.points.count) else {
-                throw MediaCommandError.validation("mask stroke needs 2...512 points")
+            // A region stroke is a complete whole-block cut/restore and does
+            // not need a brush trail (the existing cut command stores an
+            // empty trail). Path strokes still require a real 2+ point trail.
+            let isRegion = stroke.region != nil
+            guard isRegion ? stroke.points.count <= 512 : (2...512).contains(stroke.points.count) else {
+                throw MediaCommandError.validation("mask stroke needs a 2...512 point trail (region strokes may have none)")
             }
-            guard stroke.width.isFinite, (1...2048).contains(stroke.width) else {
-                throw MediaCommandError.validation("mask stroke width must be 1...2048")
+            guard stroke.width.isFinite,
+                  (isRegion ? (0...2048).contains(stroke.width) : (1...2048).contains(stroke.width)) else {
+                throw MediaCommandError.validation("mask stroke width must be 0...2048 for region strokes, 1...2048 otherwise")
             }
             if let hardness = stroke.hardness {
                 guard hardness.isFinite, (0...1).contains(hardness) else {
@@ -864,6 +873,8 @@ public enum MediaEditCommandApplier {
                     throw MediaCommandError.validation("mask points must be normalized 0...1")
                 }
             }
+            if let region = stroke.region { try validateSelection(region) }
+            if let clip = stroke.clip { try validateSelection(clip) }
         }
     }
 
@@ -884,6 +895,7 @@ public enum MediaEditCommandApplier {
                   stroke.points.allSatisfy({ (0...2).contains($0.x) && (0...2).contains($0.y) }) else {
                 throw MediaCommandError.validation("invalid freehand stroke")
             }
+            if let clip = stroke.clip { try validateSelection(clip) }
         }
     }
 

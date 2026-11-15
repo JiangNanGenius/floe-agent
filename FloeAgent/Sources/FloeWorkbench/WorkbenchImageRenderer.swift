@@ -226,7 +226,11 @@ public actor WorkbenchImageRenderer {
                 for stroke in strokes.strokes {
                     try Task.checkCancellation()
                     let cg = try MediaPreparedImageDocumentAdapter.renderStroke(stroke, sourceWidth: Int(canvas.width), sourceHeight: Int(canvas.height))
-                    image = CIImage(cgImage: cg).composited(over: image)
+                    // The selection snapshot is applied per stroke, never as a
+                    // mask on the whole layer, so earlier strokes and pixels
+                    // outside the fence keep their exact content.
+                    let strokeImage = try clip(stroke.clip, image: CIImage(cgImage: cg), canvas: canvas)
+                    image = strokeImage.composited(over: image)
                 }
                 unplaced = try applyAdjustment(sourceAdjustment, to: image)
             case .vectorPaths(let path): unplaced = try applyAdjustment(sourceAdjustment, to: vectorImage(path, canvas: canvas))
@@ -570,7 +574,8 @@ public actor WorkbenchImageRenderer {
                     width: stroke.width, opacity: max(0, min(stroke.opacity ?? 1, 1)),
                     hardness: 1 - max(0, min(stroke.hardness ?? 0, 1)), color: UIColorLike.cgColor(stroke.colorHex),
                     profile: .init(usesPressureForOpacity: false), isCancelled: { Task.isCancelled })
-                output = CIImage(cgImage: image).composited(over: output)
+                let strokeImage = try clip(stroke.clip, image: CIImage(cgImage: image), canvas: canvas)
+                output = strokeImage.composited(over: output)
                 continue
             }
             let pressures = stroke.points.compactMap(\.pressure)
@@ -602,7 +607,7 @@ public actor WorkbenchImageRenderer {
                 blur.setValue(CGFloat(hardness * max(1, width) * 0.6), forKey: kCIInputRadiusKey)
                 strokeImage = (blur.outputImage ?? strokeImage).cropped(to: strokeImage.extent)
             }
-            output = strokeImage.composited(over: output)
+            output = try clip(stroke.clip, image: strokeImage, canvas: canvas).composited(over: output)
         }
         return output
     }
@@ -616,14 +621,32 @@ public actor WorkbenchImageRenderer {
         return try blend(input, withAlphaMask: mask)
     }
 
+    /// Applies a stroke's captured selection fence to its own coverage only.
+    /// `CIBlendWithMask` multiplies the stroke alpha by the shared selection
+    /// coverage, so hard edges clip exactly, feather produces a soft edge and
+    /// inverted/bitmap selections share one rasterizer with the canvas
+    /// overlay. nil, deselected and empty selections are a no-op.
+    func clip(_ selection: ImageSelection?, image: CIImage, canvas: CGSize) throws -> CIImage {
+        guard let selection, !selection.isEmpty else { return image }
+        guard let mask = ImageSelectionRasterizer.maskImage(for: selection, canvas: canvas) else {
+            // A real, non-empty fence that cannot be rasterized must fail
+            // closed. Returning the unclipped stroke would paint the whole
+            // trail, which is exactly the bug this fence prevents.
+            throw WorkbenchImageError.encodeFailed("stroke selection clip could not be rasterized")
+        }
+        return try blend(image, withAlphaMask: mask)
+    }
+
     /// Applies erase/restore mask strokes in order: erase hides pixels, a later
     /// restore reveals them again; the original pixels are never modified.
     func applyMask(_ mask: ImageLayerMask, to input: CIImage, canvas: CGSize) throws -> CIImage {
         var maskImage = CIImage(color: CIColor(red: 1, green: 1, blue: 1, alpha: 1))
             .cropped(to: CGRect(origin: .zero, size: canvas))
         for stroke in mask.strokes {
-            if let region = stroke.region,
-               let regionMask = ImageSelectionRasterizer.maskImage(for: region, canvas: canvas) {
+            if let region = stroke.region, !region.isEmpty {
+                guard let regionMask = ImageSelectionRasterizer.maskImage(for: region, canvas: canvas) else {
+                    throw WorkbenchImageError.encodeFailed("region mask could not be rasterized")
+                }
                 // Region stroke (selection cut/restore): use the SAME mask
                 // pipeline as the displayed selection — operations
                 // (replace/add/subtract), inverted and feather included.
@@ -664,6 +687,11 @@ public actor WorkbenchImageRenderer {
                 blur.setValue(CGFloat(hardness * max(1, stroke.width) * 0.6), forKey: kCIInputRadiusKey)
                 strokeImage = (blur.outputImage ?? strokeImage).cropped(to: strokeImage.extent)
             }
+            // A brush-trail fence limits only this stroke's erase/restore
+            // coverage. The stroke path still runs, so dragging the eraser
+            // clears the trail — not the whole selected region — and prior
+            // mask strokes keep their result.
+            strokeImage = try clip(stroke.clip, image: strokeImage, canvas: canvas)
             maskImage = strokeImage.composited(over: maskImage)
         }
         return try blend(input, withAlphaMask: maskImage)

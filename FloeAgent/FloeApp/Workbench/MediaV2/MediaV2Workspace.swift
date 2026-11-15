@@ -218,7 +218,7 @@ struct MediaV2Workspace: View {
     private func imageOptionsBar(wide: Bool, compact: Bool = false) -> some View {
         VStack(spacing: 0) {
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 10) {
+                HStack(spacing: wide ? 10 : 6) {
                     Label(currentToolTitle, systemImage: MediaV2ImageToolLayout.entry(for: session.tool)?.icon ?? "slider.horizontal.3")
                         .font(.callout.weight(.semibold)).lineLimit(1)
                         .accessibilityIdentifier("media.v2.options.tool")
@@ -282,8 +282,15 @@ struct MediaV2Workspace: View {
                         deselectButton(showTitle: false)
                     }
                     if session.tool != "view.pan" {
-                        Button(WorkbenchText.t("更多设置", "More settings"), systemImage: "slider.horizontal.3") { openProperties(wide: wide) }
-                            .frame(minHeight: 44)
+                        Button { openProperties(wide: wide) } label: {
+                            if !wide && MediaV2ImageToolLayout.selectionTools.contains(session.tool) {
+                                Image(systemName: "slider.horizontal.3").frame(width: 44, height: 44)
+                            } else {
+                                Label(WorkbenchText.t("更多设置", "More settings"), systemImage: "slider.horizontal.3")
+                                    .frame(minHeight: 44)
+                            }
+                        }
+                            .accessibilityLabel(WorkbenchText.t("更多设置", "More settings"))
                             .accessibilityIdentifier("media.v2.options.more")
                     }
                 }.padding(.horizontal, 12).frame(minHeight: 50)

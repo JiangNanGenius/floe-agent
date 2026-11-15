@@ -34,4 +34,8 @@
 
 选工具后，在同一条参数栏调整当前工具。矩形、椭圆、套索等工具在画布建立选区；有选区时可以预览羽化半径，确认后用于本次选区，也可取消预览。笔刷硬度属于笔刷，蒙版柔边跟随当前图层。图层蒙版支持撤销、重做和重开。Pencil 和指针可以直接在画布编辑，双指平移或缩放画布。iPad 保留常用工具栏，窄屏将工具和参数移到画布下方。输入事件、压力、坐标换算和接管回归与真机书写手感分别验证。
 
+每次落笔时记录当时的选区。跨过选区的画笔和橡皮按该选区的实际像素覆盖范围生效，羽化会让边缘逐渐变淡。拖动橡皮只擦除沿途像素，之前的笔迹、其他图层和选区外的像素保留。保存后再改变选区也不会改变旧笔迹；旧工程继续按原来的语义重放整块剪切。
+
+在固定 iPad 模拟器上，已从图片编辑器进入画布，拖出矩形、调节并应用羽化、反选、取消和重选。紧凑宽度下，整排选区命令可以同时看见，羽化面板显示以像素为单位的半径。渲染测试读回了硬边、羽化、反选、位图选区、带压力的笔迹和橡皮轨迹的像素，并核对保存重开的结果。尚未用实体 Apple Pencil 验证压感和掌托手感。
+
 操作设计参考了 Adobe 的选区和蒙版优化、Procreate 的选区工具栏，以及 UIKit 的 Pencil 输入处理。[Photoshop iPad](https://helpx.adobe.com/photoshop/ipad/select-and-mask/select-mask-on-ipad.html) · [Procreate](https://help.procreate.com/procreate/handbook/selections/selections-interface) · [Apple UIKit](https://developer.apple.com/documentation/uikit/handling-input-from-apple-pencil)

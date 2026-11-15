@@ -210,6 +210,7 @@ public enum MediaPreparedIntegrity {
                     }
                 }
             }
+            if let clip = stroke.clip { try validate(selection: clip) }
         }
     }
 
@@ -251,8 +252,12 @@ public enum MediaPreparedIntegrity {
             throw MediaPreparedCoreError.invalidDocument("mask supports at most 512 strokes")
         }
         for stroke in mask.strokes {
-            guard (2...512).contains(stroke.points.count),
-                  stroke.width.isFinite, (1...2_048).contains(stroke.width) else {
+            // Region strokes are whole-block cut/restore snapshots and may
+            // have no brush trail; path strokes need a real trail.
+            let isRegion = stroke.region != nil
+            guard isRegion ? stroke.points.count <= 512 : (2...512).contains(stroke.points.count),
+                  stroke.width.isFinite,
+                  (isRegion ? (0...2_048).contains(stroke.width) : (1...2_048).contains(stroke.width)) else {
                 throw MediaPreparedCoreError.invalidDocument("invalid mask stroke")
             }
             if let hardness = stroke.hardness {
@@ -267,6 +272,7 @@ public enum MediaPreparedIntegrity {
                 }
             }
             if let region = stroke.region { try validate(selection: region) }
+            if let clip = stroke.clip { try validate(selection: clip) }
         }
         if let vector = mask.vector { try validate(selection: vector) }
     }
