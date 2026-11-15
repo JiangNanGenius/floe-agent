@@ -1,0 +1,4 @@
+{
+  "zh-Hans": "在尚未初始化 Git 的工作区打开并刷新「源码管理」，检查能否直接初始化或克隆仓库。初始化后，检查暂存、提交和同步按钮是否对齐，文字是否清晰。",
+  "en-US": "Open and refresh Source Control in a workspace without a Git repository. Check that you can initialize or clone a repository. After initialization, check the alignment and readability of the staging, commit, and sync controls."
+}
