@@ -2,6 +2,7 @@
 package com.floe.android.host
 
 import android.app.Activity
+import java.util.UUID
 
 /**
  * Channel-neutral lifecycle seam for an OPTIONAL platform extension that is
@@ -45,6 +46,9 @@ interface RuntimePlatformExtension {
 
     /** Notification only: authoritative holder activity changed, including in background. */
     fun onRunActivityChanged() = Unit
+
+    /** Presentation only, from an admitted native workspace grant, never tool arguments. */
+    fun onBackgroundWorkStarted(epoch: Long, taskID: UUID, runID: UUID) = Unit
 
     fun close() = Unit
 }

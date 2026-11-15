@@ -989,6 +989,14 @@ internal class DeviceAccessHost(
         if (!closed) publish()
     }
 
+    fun onBackgroundWorkStarted(epoch: Long, taskID: UUID, runID: UUID) {
+        if (closed || host.nativeRootEpoch() != epoch) return
+        val owner = PhoneControlOwner(taskID, runID)
+        if (automatedOwner.get() == owner && !isOwnerStopped(owner)) {
+            automationControls.backgroundWorkStarted(owner)
+        }
+    }
+
     /**
      * Explicit presentation entry: the stateless settings page was composed.
      * The presentation is a one-shot StateFlow projection, and a run can have

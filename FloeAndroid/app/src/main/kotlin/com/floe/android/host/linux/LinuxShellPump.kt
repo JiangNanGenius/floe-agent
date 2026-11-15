@@ -47,6 +47,9 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
      */
     @Volatile
     internal var runForeground: (() -> RunForegroundBinding?)? = null
+    /** UI-only lifecycle handoff; identities come from the native-minted grant. */
+    @Volatile
+    internal var onBackgroundWorkStarted: ((Long, UUID, UUID) -> Unit)? = null
     private val epoch = AtomicLong()
     private val starts = Mutex()
     private val admissionClosed = AtomicBoolean()
@@ -996,6 +999,14 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
             // completed; the key must survive that close ordering).
             owned.grantSessionKey = grant.sessionKey
             check(grant.projectID == payload.getString("projectID"))
+            if (epoch.get() == acceptedEpoch) {
+                grant.conversationID?.let { taskID ->
+                    runCatching {
+                        onBackgroundWorkStarted?.invoke(acceptedEpoch,
+                            UUID.fromString(taskID), UUID.fromString(grant.runID))
+                    }
+                }
+            }
             owned.latency.mark(LinuxTerminalLatency.Phase.GRANT)
             RuntimeExecutionTrace.mark(Stage.PUMP_GRANT_READY)
             // A transport failure may follow accepted dispatch. Never replay it.

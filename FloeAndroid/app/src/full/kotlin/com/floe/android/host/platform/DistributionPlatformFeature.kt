@@ -6,6 +6,7 @@ import android.content.Context
 import com.floe.android.host.RuntimeHost
 import com.floe.android.host.RuntimePlatformExtension
 import com.floe.android.host.deviceaccess.DeviceAccessHost
+import java.util.UUID
 
 /**
  * FULL-channel factory. The real controller is Application-owned through the
@@ -76,6 +77,10 @@ private class FullRuntimePlatformExtension(
 
     override fun onRunActivityChanged() {
         device?.onRunActivityChanged()
+    }
+
+    override fun onBackgroundWorkStarted(epoch: Long, taskID: UUID, runID: UUID) {
+        device?.onBackgroundWorkStarted(epoch, taskID, runID)
     }
 
     override fun close() {

@@ -726,6 +726,9 @@ class FloeApplication : Application() {
             // route. Capture the host instance: the runtimeHost property is
             // assigned only after this block returns.
             linuxShell.runForeground = { host.runForeground }
+            linuxShell.onBackgroundWorkStarted = { epoch, taskID, runID ->
+                host.platformExtension?.onBackgroundWorkStarted(epoch, taskID, runID)
+            }
         }
         // G05-R3 Alpha14 (user requirement): GitHub full-channel App
         // self-update. Application-owned, data-only creation here; checks,
