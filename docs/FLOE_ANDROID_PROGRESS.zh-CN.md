@@ -1,5 +1,16 @@
 # Floe Android 分目标实施记录
 
+## 1.0.12／121 原生项目目录分页源码候选（2026-11-15）
+
+在1.0.12／120私有候选的三星实际运行时回执中，环境目录明确返回`authority_replyTooLarge`。原生全量目录编码先于Kotlin项目过滤，导致累计目录超过64KiB时，连当前项目也无法读取。本批增加严格的原生`listPage`，在编码前按真实项目工作区身份过滤；调用方验证分页、快照、归属、完整性和取消，不提高接口大小上限、不截断为成功。旧`list`和`handshake`报文保持。
+
+源码所有者已停止写入。11项新增Swift目录回归通过；256记录的真实注册表夹具让旧全量报文达到81,583字节并拒绝，同一注册表的项目分页只有1,611字节、4行。原生模块63项中62项通过，另1项原有允许字段夹具遗漏既存`layerFormat`，在未改源码快照同样失败，原断言与证据保留。Kotlin分页用例仅作者编译，实际JVM、Native59／ARM64、Full121、三星新项目首次发送和发布仍待完成。
+
+全局聚合目录仍有明确上限，计划任务选择与容器清理的全局读取列为未闭合，不把本批称为全部目录能力完成。120是未发布的诊断候选，下一份成套APK使用121以区分实际软件更新并验证数据保留。
+
+English: The real Samsung receipt identifies the oversized native catalog. The additive native page operation scopes before serialization and preserves all wire/ownership limits. Eleven new Swift tests passed; the large real-registry fixture reproduces the old refusal and a bounded scoped response. One pre-existing metadata allowlist test fails equally on pristine source and remains intact. Actual Kotlin execution, Native59/ARM64, Full121, first-Send hardware acceptance and publication remain pending; large global consumers remain known gaps.
+
+
 ## 1.0.12／120 首次执行绑定诊断源码候选（2026-11-15）
 
 真实任务出现 Linux 状态已就绪、但本轮目录缺少终端执行工具的断点。现有原始记录保留；旧任务不继续。执行目标解析现在保留可区分的工作区归属、环境目录和原生代际失败；目录拒绝有完整类型，短暂读取失败仅作一次有界恢复，权限、迁移及取消拒绝不会自动重试。没有真实任务环境绑定时继续拒绝执行。

@@ -328,31 +328,26 @@ internal class LinuxRuntimeOperations(
         "environment.list" -> {
             fields(request.payload, setOf("projectID"))
             configure()
-            val result = authority.list()
-            if (!request.payload.has("projectID")) result else {
-                val projectID = java.util.UUID.fromString(request.payload.getString("projectID"))
+            // Full120 catalog-paging repair: the scoped catalog is fetched
+            // through the ADDITIVE bounded native `listPage` path. The legacy
+            // global `list` reply is deliberately NOT fetched and then
+            // filtered here: one large registry overflows the native 64 KiB
+            // wire ceiling (`authority_replyTooLarge`) before the requested
+            // project rows are ever visible. The reader validates the trusted
+            // project echo, page continuity and the runtime reply bound; it
+            // fails explicitly instead of returning a partial catalog.
+            val projectID = if (request.payload.has("projectID")) {
+                java.util.UUID.fromString(request.payload.getString("projectID"))
                     .toString().uppercase(java.util.Locale.ROOT)
-                val expected = File(File(root, "Workspaces").canonicalFile, projectID)
-                val workspace = expected.canonicalFile
-                check(workspace.path == expected.path) { "workspaceIdentityChanged" }
-                val owner = java.security.MessageDigest.getInstance("SHA-256")
-                    .digest(workspace.path.toByteArray(Charsets.UTF_8))
-                    .joinToString("") { "%02x".format(it.toInt() and 0xff) }
-                val rows = result.getJSONArray("environments")
-                val projects = (0 until rows.length()).map { rows.getJSONObject(it) }
-                    .filter { it.optString("kind") == "project" && it.optString("ownerID") == owner }
-                val ids = projects.map { it.getString("id") }.toSet()
-                val scoped = org.json.JSONArray()
-                for (index in 0 until rows.length()) {
-                    val row = rows.getJSONObject(index)
-                    if (row.getString("id") in ids ||
-                        (row.optString("kind") == "session" && row.optString("parentID") in ids)) {
-                        scoped.put(row)
-                    }
-                }
-                result.put("environments", scoped).put("projectID", projectID)
-                    .put("workspaceOwnerID", owner)
+            } else {
+                null
             }
+            RuntimeEnvironmentCatalogReader(
+                RuntimeCatalogPageSource { requested, cursor, limit ->
+                    authority.listPage(requested, cursor, limit)
+                },
+                cancelled = cancelled,
+            ).read(projectID)
         }
         "shell.start" -> {
             // G07.3A: every in-flight start id is exposed for target-scoped

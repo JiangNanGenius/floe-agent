@@ -50,8 +50,31 @@ internal class LinuxAuthorityClient(context: Context) {
             .put("baseRevision", baseRevision))
     }
 
+    /**
+     * FROZEN legacy global metadata reply. Every sorted registry row in ONE
+     * native reply; an inventory that encodes past the 64 KiB wire ceiling
+     * fails closed with `replyTooLarge`. New callers that may face a large
+     * registry MUST use [listPage] instead. Retained because the bounded
+     * workspace-cleanup ownership proof still reads it, and because the
+     * version-1 legacy shape is intentionally unchanged.
+     */
     @Synchronized fun list(): JSONObject = exchange("list")
     @Synchronized fun handshake(): JSONObject = exchange("handshake")
+
+    /**
+     * ADDITIVE bounded metadata page (`listPage`). [projectID] is the already
+     * validated canonical uppercase project UUID (null = global); [cursor] is
+     * the opaque continuation returned by the previous page (null = first);
+     * [limit] is 1..200 complete rows. The native authority filters the
+     * trusted project BEFORE encoding and fits only complete rows within the
+     * frozen 64 KiB reply ceiling.
+     */
+    @Synchronized fun listPage(projectID: String?, cursor: String?, limit: Int): JSONObject {
+        val payload = JSONObject().put("limit", limit)
+        if (projectID != null) payload.put("projectID", projectID)
+        if (cursor != null) payload.put("cursor", cursor)
+        return exchange("listPage", payload)
+    }
 
     @Synchronized fun acquire(payload: JSONObject): Lease {
         val arguments = JSONObject().put("projectID", payload.getString("projectID"))

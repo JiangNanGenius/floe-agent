@@ -222,29 +222,92 @@ public actor FloeLinuxAuthority {
 
     /// Environment metadata ONLY (registry records). No layer paths, no
     /// variables, no process or lease data.
+    ///
+    /// This is the FROZEN legacy shape: every sorted registry row in ONE
+    /// reply. Callers that need a bounded view of a large registry must use
+    /// `listPage(_:)`, which filters a trusted project server-side and pages
+    /// within the same 65536-byte wire ceiling. Both paths share ONE metadata
+    /// projection (`LinuxAuthorityCatalog.rows`), so they can never drift.
     public func list() async throws -> LinuxAuthorityEnvironmentList {
         guard let config = configuration else { throw LinuxAuthorityError(code: .notConfigured, message: "configure the authority with trusted roots first") }
         let baseRevision = await config.registry.baseRevision
         let records = await config.registry.all()
-        let metadata = records.sorted { $0.id < $1.id }.map { record in
-            LinuxAuthorityEnvironmentMetadata(
-                id: record.id,
-                kind: record.kind.rawValue,
-                ownerID: record.ownerID,
-                name: record.name,
-                state: record.state.rawValue,
-                baseRevision: record.baseRevision,
-                requiresRebuild: record.requiresRebuild,
-                rebuildReason: record.rebuildReason,
-                executionBackend: record.executionBackend?.rawValue,
-                bytes: record.bytes,
-                packageCount: record.packageCount,
-                parentID: record.parentID,
-                templateID: record.templateID,
-                layerFormat: record.layerFormat
-            )
+        return LinuxAuthorityEnvironmentList(baseRevision: baseRevision,
+                                             environments: LinuxAuthorityCatalog.rows(records, scope: .all))
+    }
+
+    // MARK: - Bounded metadata enumeration (additive `listPage`)
+
+    /// One bounded page of environment metadata.
+    ///
+    /// The trusted project selection is resolved to the ORIGINAL workspace
+    /// owner (`sha256(canonical workspace path)`) and applied to the ORIGINAL
+    /// registry records BEFORE any reply is encoded, so a large global
+    /// registry can never overflow a scoped read. The cursor binds the exact
+    /// scoped inventory snapshot; an inventory that changed between pages is
+    /// a typed `catalogChanged` retryable refusal instead of a mixed snapshot.
+    ///
+    /// Read-only: this never creates a workspace, record, layer, lease or
+    /// configuration and never touches ownership, readiness or storage.
+    public func listPage(_ request: LinuxAuthorityListPageRequest) async throws -> LinuxAuthorityEnvironmentPage {
+        guard let config = configuration else { throw LinuxAuthorityError(code: .notConfigured, message: "configure the authority with trusted roots first") }
+        let scope = try Self.catalogScope(request.projectID,
+                                         workspacesRoot: config.workspacesRoot.canonicalPath)
+        let limit = try Self.catalogPageLimit(request.limit)
+        let baseRevision = await config.registry.baseRevision
+        let records = await config.registry.all()
+        let rows = LinuxAuthorityCatalog.rows(records, scope: scope)
+        let fingerprint = LinuxAuthorityCatalogCursor.fingerprint(scope: scope,
+                                                                 baseRevision: baseRevision,
+                                                                 rows: rows)
+        let offset: Int
+        if let raw = request.cursor {
+            guard let decoded = LinuxAuthorityCatalogCursor.decode(raw) else {
+                throw LinuxAuthorityError(code: .invalidWire,
+                                          message: "cursor must be a bounded version-1 catalog cursor (v1.<64 hex>.<offset>)")
+            }
+            guard decoded.fingerprint == fingerprint else {
+                throw LinuxAuthorityError(code: .catalogChanged,
+                                          message: "the environment catalog changed since this cursor was issued; restart enumeration without a cursor")
+            }
+            guard decoded.offset <= rows.count else {
+                throw LinuxAuthorityError(code: .invalidWire,
+                                          message: "cursor offset is outside the current catalog inventory")
+            }
+            offset = decoded.offset
+        } else {
+            offset = 0
         }
-        return LinuxAuthorityEnvironmentList(baseRevision: baseRevision, environments: metadata)
+        return try LinuxAuthorityCatalogPageBuilder.page(scope: scope,
+                                                         baseRevision: baseRevision,
+                                                         fingerprint: fingerprint,
+                                                         rows: rows,
+                                                         offset: offset,
+                                                         limit: limit)
+    }
+
+    /// Resolves the caller's optional project selection. A project id is the
+    /// SAME canonical UUID identity the acquire path accepts; its owner digest
+    /// is derived from the EXACT workspace path that path would use, without
+    /// creating the workspace. Absent = the global (all-kinds) enumeration.
+    private static func catalogScope(_ raw: String?, workspacesRoot: String) throws -> LinuxAuthorityCatalogScope {
+        guard let raw else { return .all }
+        let projectID = try canonicalUUID(raw, field: "projectID")
+        let workspacePath = try LinuxAuthorityRootPolicy.existingWorkspacePath(
+            parentCanonicalPath: workspacesRoot, name: projectID.uuidString)
+        return .project(projectID: projectID,
+                        workspaceOwnerID: FloeDigest.sha256Hex(Data(workspacePath.utf8)))
+    }
+
+    /// Bounded page size: absent means the authority default; anything outside
+    /// 1...maximumRowsPerPage is a wire-shape refusal (never silently clamped).
+    private static func catalogPageLimit(_ raw: Int?) throws -> Int {
+        guard let raw else { return LinuxAuthorityCatalog.defaultRowsPerPage }
+        guard raw >= 1, raw <= LinuxAuthorityCatalog.maximumRowsPerPage else {
+            throw LinuxAuthorityError(code: .invalidWire,
+                                      message: "limit must be an integer within 1-\(LinuxAuthorityCatalog.maximumRowsPerPage)")
+        }
+        return raw
     }
 
     // MARK: - Lease acquisition
@@ -579,6 +642,8 @@ public actor FloeLinuxAuthority {
             return .configure(try await configure(request))
         case .list:
             return .list(try await list())
+        case .listPage(let request):
+            return .listPage(try await listPage(request))
         case .acquire(let request):
             return .acquire(try await acquire(request))
         case .markStarted(let request):

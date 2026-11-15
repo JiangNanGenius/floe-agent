@@ -64,11 +64,18 @@ public enum LinuxAuthorityWire {
     /// Encodes a reply; an oversized reply fails closed as `replyTooLarge`
     /// (the caller must never see truncated JSON). Deterministic key order.
     static func encodeReply(_ reply: LinuxAuthorityReply) -> Data {
+        if let data = encodeReplyData(reply) { return data }
+        return failureData(code: .replyTooLarge, message: "the authority reply exceeded the 65536-byte wire ceiling", requestID: reply.requestID)
+    }
+
+    /// Deterministic reply bytes, or nil when the encoded reply would exceed
+    /// the ceiling. The bounded `listPage` pager uses this to fit only
+    /// COMPLETE rows before committing to a reply; it never truncates and
+    /// never turns an overflow into an empty/successful page.
+    static func encodeReplyData(_ reply: LinuxAuthorityReply) -> Data? {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        guard let data = try? encoder.encode(reply), data.count <= maximumBytes else {
-            return failureData(code: .replyTooLarge, message: "the authority reply exceeded the 65536-byte wire ceiling", requestID: reply.requestID)
-        }
+        guard let data = try? encoder.encode(reply), data.count <= maximumBytes else { return nil }
         return data
     }
 
@@ -174,6 +181,12 @@ public enum LinuxAuthorityErrorCode: String, Codable, Sendable {
     case noResolvedEnvironment
     case backendNotSelectable
     case cancelled
+    // Bounded metadata enumeration (`listPage`).
+    /// The registry inventory behind a supplied catalog cursor no longer
+    /// matches the snapshot that cursor was issued for (a record was added,
+    /// removed or changed between pages). The caller must restart enumeration
+    /// without a cursor; no page is returned from a mixed inventory.
+    case catalogChanged
     // Last-resort guard; never expected.
     case internalError
 }
@@ -263,9 +276,12 @@ public struct LinuxAuthorityRequest: Codable, Sendable, Equatable {
 /// - payload-free operations are bare strings: `"handshake"`, `"list"`;
 /// - payload operations are single-key objects:
 ///   `{"configure":{…}}`, `{"acquire":{…}}`, `{"markStarted":{…}}`,
-///   `{"cancel":{…}}`, `{"complete":{…}}`, `{"abandon":{…}}`.
+///   `{"cancel":{…}}`, `{"complete":{…}}`, `{"abandon":{…}}` and the
+///   ADDITIVE bounded metadata enumerator `{"listPage":{…}}`.
 /// Any other shape (object with 0 or ≥2 keys, wrong type, unknown name) is
-/// `invalidWire` — no silent acceptance of near-miss spellings.
+/// `invalidWire` — no silent acceptance of near-miss spellings. The legacy
+/// bare-string `list` stays byte-frozen; `listPage` is a new name, never a
+/// replacement.
 public enum LinuxAuthorityOperation: Codable, Sendable, Equatable {
     case handshake
     case configure(LinuxAuthorityConfigureRequest)
@@ -275,6 +291,7 @@ public enum LinuxAuthorityOperation: Codable, Sendable, Equatable {
     case cancel(LinuxAuthorityLeaseRequest)
     case complete(LinuxAuthorityCompleteRequest)
     case abandon(LinuxAuthorityLeaseRequest)
+    case listPage(LinuxAuthorityListPageRequest)
 
     public func encode(to encoder: Encoder) throws {
         switch self {
@@ -302,6 +319,9 @@ public enum LinuxAuthorityOperation: Codable, Sendable, Equatable {
         case .abandon(let payload):
             var container = encoder.container(keyedBy: AnyCodingKey.self)
             try container.encode(payload, forKey: AnyCodingKey(stringValue: "abandon"))
+        case .listPage(let payload):
+            var container = encoder.container(keyedBy: AnyCodingKey.self)
+            try container.encode(payload, forKey: AnyCodingKey(stringValue: "listPage"))
         }
     }
 
@@ -329,6 +349,7 @@ public enum LinuxAuthorityOperation: Codable, Sendable, Equatable {
         case "cancel": self = .cancel(try container.decode(LinuxAuthorityLeaseRequest.self, forKey: key))
         case "complete": self = .complete(try container.decode(LinuxAuthorityCompleteRequest.self, forKey: key))
         case "abandon": self = .abandon(try container.decode(LinuxAuthorityLeaseRequest.self, forKey: key))
+        case "listPage": self = .listPage(try container.decode(LinuxAuthorityListPageRequest.self, forKey: key))
         // Bare-string names decoded above must not arrive as object keys.
         case "handshake", "list": throw LinuxAuthorityWireError.invalidOperationShape(key.stringValue)
         default: throw LinuxAuthorityWireError.unknownOperation(key.stringValue)
@@ -500,6 +521,43 @@ public struct LinuxAuthorityLeaseRequest: Codable, Sendable, Equatable {
     }
 }
 
+/// ADDITIVE bounded metadata enumeration. Every field is optional so the
+/// SAME operation serves a first global page (`{}`) and an explicitly scoped
+/// project page. Strict decoding rejects unknown keys; semantic validation
+/// (canonical UUID, bounded cursor/limit, registry-scope resolution) happens
+/// in the authority before any reply is built.
+///
+/// - `projectID`: a canonical 8-4-4-4-12 UUID. When present the authority
+///   filters the ORIGINAL registry metadata server-side (project row owned by
+///   the derived workspace owner + that project's session rows) BEFORE any
+///   wire encoding; foreign project/session rows never enter the reply.
+/// - `cursor`: an opaque `v1.<64 lowercase hex>.<offset>` continuation minted
+///   only by this authority. It binds the exact scoped inventory snapshot.
+/// - `limit`: 1...200 complete rows per page; absent uses the authority
+///   default. Byte fitting may return FEWER complete rows and a next cursor,
+///   never a truncated row.
+public struct LinuxAuthorityListPageRequest: Codable, Sendable, Equatable {
+    public var projectID: String?
+    public var cursor: String?
+    public var limit: Int?
+
+    public init(projectID: String? = nil, cursor: String? = nil, limit: Int? = nil) {
+        self.projectID = projectID
+        self.cursor = cursor
+        self.limit = limit
+    }
+
+    private static let allowedKeys: Set<String> = ["projectID", "cursor", "limit"]
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: AnyCodingKey.self)
+        try LinuxAuthorityStrict.rejectUnknown(container, allowed: Self.allowedKeys)
+        projectID = try LinuxAuthorityStrict.optional(String.self, "projectID", in: container)
+        cursor = try LinuxAuthorityStrict.optional(String.self, "cursor", in: container)
+        limit = try LinuxAuthorityStrict.optional(Int.self, "limit", in: container)
+    }
+}
+
 /// The trusted service's quiescence attestation. `exitStatus` is the raw
 /// waitpid-style status the service reaped for the bound identity;
 /// `reaped` must be true. The authority records the attestation and uses it
@@ -625,9 +683,11 @@ public enum LinuxAuthorityResult: Codable, Sendable, Equatable {
     case cancel(LinuxAuthorityLeaseStateInfo)
     case complete(LinuxAuthorityCompleteInfo)
     case abandon(LinuxAuthorityAbandonInfo)
+    /// Additive bounded metadata pages. The legacy `list` result stays frozen.
+    case listPage(LinuxAuthorityEnvironmentPage)
 
     private enum CodingKeys: String, CodingKey {
-        case handshake, configure, list, acquire, markStarted, cancel, complete, abandon
+        case handshake, configure, list, acquire, markStarted, cancel, complete, abandon, listPage
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -641,6 +701,7 @@ public enum LinuxAuthorityResult: Codable, Sendable, Equatable {
         case .cancel(let value): try container.encode(value, forKey: .cancel)
         case .complete(let value): try container.encode(value, forKey: .complete)
         case .abandon(let value): try container.encode(value, forKey: .abandon)
+        case .listPage(let value): try container.encode(value, forKey: .listPage)
         }
     }
 
@@ -655,6 +716,7 @@ public enum LinuxAuthorityResult: Codable, Sendable, Equatable {
         case .cancel: self = .cancel(try container.decode(LinuxAuthorityLeaseStateInfo.self, forKey: .cancel))
         case .complete: self = .complete(try container.decode(LinuxAuthorityCompleteInfo.self, forKey: .complete))
         case .abandon: self = .abandon(try container.decode(LinuxAuthorityAbandonInfo.self, forKey: .abandon))
+        case .listPage: self = .listPage(try container.decode(LinuxAuthorityEnvironmentPage.self, forKey: .listPage))
         case nil: throw LinuxAuthorityWireError.invalidEnvelopeShape
         }
     }
@@ -780,6 +842,57 @@ public struct LinuxAuthorityEnvironmentMetadata: Codable, Sendable, Equatable {
         self.parentID = parentID
         self.templateID = templateID
         self.layerFormat = layerFormat
+    }
+}
+
+/// One bounded page of environment metadata (additive `listPage` result).
+/// `nextCursor` is ALWAYS present (null on the terminal page) and
+/// `projectID`/`workspaceOwnerID` are always present (null for an unscoped
+/// enumeration) so a Kotlin/JSON consumer never distinguish absent vs null.
+/// `total` is the COMPLETE filtered inventory size the cursor snapshot covers;
+/// `environments.count + offset == total` exactly on the terminal page.
+public struct LinuxAuthorityEnvironmentPage: Codable, Sendable, Equatable {
+    public var baseRevision: String
+    public var environments: [LinuxAuthorityEnvironmentMetadata]
+    public var nextCursor: String?
+    /// Canonical uppercase project UUID this page is scoped to; null = global.
+    public var projectID: String?
+    /// sha256 of the canonical project workspace path (the registry owner id);
+    /// a hash only, never the workspace path itself. Null = global.
+    public var workspaceOwnerID: String?
+    /// "all" or "project" — the scope this page was actually built for.
+    public var scope: String
+    /// Complete filtered row count for the cursor snapshot.
+    public var total: Int
+
+    public init(baseRevision: String, environments: [LinuxAuthorityEnvironmentMetadata],
+                nextCursor: String?, projectID: String?, workspaceOwnerID: String?,
+                scope: String, total: Int) {
+        self.baseRevision = baseRevision
+        self.environments = environments
+        self.nextCursor = nextCursor
+        self.projectID = projectID
+        self.workspaceOwnerID = workspaceOwnerID
+        self.scope = scope
+        self.total = total
+    }
+
+    // EXPLICIT encode: the optional keys stay PRESENT as null (the legacy
+    // reply keeps `requestID` present for the same reason). Synthesized
+    // encoding would drop nil keys and make consumers guess.
+    private enum CodingKeys: String, CodingKey {
+        case baseRevision, environments, nextCursor, projectID, workspaceOwnerID, scope, total
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(baseRevision, forKey: .baseRevision)
+        try container.encode(environments, forKey: .environments)
+        try container.encode(nextCursor, forKey: .nextCursor)
+        try container.encode(projectID, forKey: .projectID)
+        try container.encode(workspaceOwnerID, forKey: .workspaceOwnerID)
+        try container.encode(scope, forKey: .scope)
+        try container.encode(total, forKey: .total)
     }
 }
 

@@ -120,6 +120,33 @@ enum LinuxAuthorityRootPolicy {
         }
     }
 
+    /// Read-only counterpart of `workspace(...)` for metadata-only callers.
+    ///
+    /// Resolves the EXACT canonical child path a project workspace must occupy
+    /// (`parentCanonicalPath/<name>`) WITHOUT creating, touching or deleting
+    /// anything. A missing leaf is NOT an error: no registry record can own it,
+    /// so the caller's scoped enumeration legitimately returns no rows. An
+    /// existing leaf that resolves anywhere else (a symlink escape) fails
+    /// closed exactly like the acquire path's `workspaceIdentityChanged` gate.
+    static func existingWorkspacePath(parentCanonicalPath: String, name: String) throws -> String {
+        guard validateNameComponent(name) else {
+            throw LinuxAuthorityError(code: .workspaceUnavailable, message: "workspace name component is not a safe canonical identifier")
+        }
+        let expected = parentCanonicalPath + "/" + name
+        var info = stat()
+        let present = expected.withCString { lstat($0, &info) } == 0
+        guard present else { return expected }
+        guard let canonical = posixRealpath(expected), canonical == expected else {
+            throw LinuxAuthorityError(code: .workspaceUnavailable, message: "workspace symlinks outside its canonical location under the configured workspaces root")
+        }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: canonical, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            throw LinuxAuthorityError(code: .workspaceUnavailable, message: "workspace path exists and is not a directory")
+        }
+        return expected
+    }
+
     /// Creates/resolves one explicit workspace `parentCanonical/<name>` under
     /// a validated parent. The result must be EXACTLY the expected child: a
     /// symlink (in the name or as a leaf) that redirects elsewhere fails
