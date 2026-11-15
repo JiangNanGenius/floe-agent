@@ -68,6 +68,8 @@ struct AESession {
     uint32_t gpu_optional;
     uint64_t gpu_budget_bytes;
     char *gpu_app_group;
+    uint32_t video_enabled,video_max_sessions;
+    uint64_t video_host_owned_limit;
     fenv_t guest_environment[A64_MAX_CPUS];
 };
 extern _Thread_local AESession *ae_current;

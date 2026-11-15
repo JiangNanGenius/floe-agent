@@ -32,6 +32,10 @@ import FloeTools
     @ObservationIgnored var compoundCanonicalCoordinator:MediaPreparedCoordinator?
     var tool = "image.brush"
     var selection: ImageSelection?
+    /// Live feather preview for the active selection editor. This is UI state
+    /// only: it is never part of the document, a command payload or a saved
+    /// mask until the user applies it through `image.feather`.
+    var selectionFeatherDraftPixels: Double?
     var imageWarpDraft: MediaV2ImageWarpDraft?
     @ObservationIgnored var imageWarpSelections: [UUID: MediaV2WarpSelectionDelta] = [:]
     @ObservationIgnored var imageWarpSelectionOrder: [UUID] = []

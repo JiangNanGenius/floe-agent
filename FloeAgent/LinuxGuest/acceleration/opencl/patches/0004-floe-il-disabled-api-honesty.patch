@@ -1,0 +1,43 @@
+--- a/src/api.cpp
++++ b/src/api.cpp
+@@ -5762,13 +5762,26 @@
+ 
+ cl_program cvk_create_program_with_il(cl_context context, const void* il,
+                                       size_t length, cl_int* errcode_ret) {
++#if !ENABLE_SPIRV_IL
++    // No IL is advertised or buildable in this profile. Return the OpenCL
++    // error instead of creating a program that can never be built.
++    if (errcode_ret != nullptr) {
++        *errcode_ret = CL_INVALID_OPERATION;
++    }
++    return nullptr;
++#endif
++
+     if (!is_valid_context(context)) {
+-        *errcode_ret = CL_INVALID_CONTEXT;
++        if (errcode_ret != nullptr) {
++            *errcode_ret = CL_INVALID_CONTEXT;
++        }
+         return nullptr;
+     }
+ 
+     if ((il == nullptr) || (length == 0)) {
+-        *errcode_ret = CL_INVALID_VALUE;
++        if (errcode_ret != nullptr) {
++            *errcode_ret = CL_INVALID_VALUE;
++        }
+         return nullptr;
+     }
+ 
+@@ -5777,7 +5790,10 @@
+ 
+     auto program = new cvk_program(icd_downcast(context), il, length);
+ 
+-    *errcode_ret = program->parse_user_spec_constants();
++    cl_int parse_result = program->parse_user_spec_constants();
++    if (errcode_ret != nullptr) {
++        *errcode_ret = parse_result;
++    }
+ 
+     return program;
+ }

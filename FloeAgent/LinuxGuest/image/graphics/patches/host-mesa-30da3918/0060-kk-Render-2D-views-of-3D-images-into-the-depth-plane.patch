@@ -1,0 +1,122 @@
+From 0b19f896ad49f98ebf500e251921bd38f37b2d5d Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Sat, 3 Oct 2026 00:21:09 -0400
+Subject: [PATCH] kk: Render 2D views of 3D images into the depth plane of the
+ 3D texture
+
+Generated-by: LLM
+---
+ src/kosmickrisp/bridge/mtl_render_state.h |  3 +++
+ src/kosmickrisp/bridge/mtl_render_state.m | 10 ++++++++++
+ src/kosmickrisp/vulkan/kk_cmd_draw.c      |  8 +++++++-
+ src/kosmickrisp/vulkan/kk_image_view.c    | 17 ++++++++++++++++-
+ src/kosmickrisp/vulkan/kk_image_view.h    |  1 +
+ 5 files changed, 37 insertions(+), 2 deletions(-)
+
+diff --git a/src/kosmickrisp/bridge/mtl_render_state.h b/src/kosmickrisp/bridge/mtl_render_state.h
+index 5f96f15b6bd..c9021613015 100644
+--- a/src/kosmickrisp/bridge/mtl_render_state.h
++++ b/src/kosmickrisp/bridge/mtl_render_state.h
+@@ -43,6 +43,9 @@ void mtl_render_pass_attachment_descriptor_set_level(
+ void mtl_render_pass_attachment_descriptor_set_slice(
+    mtl_render_pass_attachment_descriptor *descriptor, uint32_t slice);
+ 
++void mtl_render_pass_attachment_descriptor_set_depth_plane(
++   mtl_render_pass_attachment_descriptor *descriptor, uint32_t depth_plane);
++
+ void mtl_render_pass_attachment_descriptor_set_load_action(
+    mtl_render_pass_attachment_descriptor *descriptor,
+    enum mtl_load_action action);
+diff --git a/src/kosmickrisp/bridge/mtl_render_state.m b/src/kosmickrisp/bridge/mtl_render_state.m
+index 13c06c830b0..a1af91d6849 100644
+--- a/src/kosmickrisp/bridge/mtl_render_state.m
++++ b/src/kosmickrisp/bridge/mtl_render_state.m
+@@ -86,6 +86,16 @@
+    }
+ }
+ 
++void
++mtl_render_pass_attachment_descriptor_set_depth_plane(
++   mtl_render_pass_attachment_descriptor *descriptor, uint32_t depth_plane)
++{
++   @autoreleasepool {
++      MTLRenderPassAttachmentDescriptor *desc = (MTLRenderPassAttachmentDescriptor *)descriptor;
++      desc.depthPlane = depth_plane;
++   }
++}
++
+ void
+ mtl_render_pass_attachment_descriptor_set_load_action(
+    mtl_render_pass_attachment_descriptor *descriptor,
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_draw.c b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+index e2acad9c4a3..bf3ab9c07f2 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_draw.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+@@ -131,12 +131,18 @@ kk_fill_common_attachment_description(
+       descriptor, iview->planes[0].mtl_handle_render);
+    /* If a view is being used e.g. for format change, it already points to the
+     * required slice and level */
++   bool depth_plane = iview->planes[0].render_depth_plane;
+    if (!iview->planes[0].render_is_view) {
+       mtl_render_pass_attachment_descriptor_set_level(descriptor,
+                                                       iview->vk.base_mip_level);
+       mtl_render_pass_attachment_descriptor_set_slice(
+-         descriptor, iview->vk.base_array_layer);
++         descriptor, depth_plane ? 0u : iview->vk.base_array_layer);
++   } else {
++      mtl_render_pass_attachment_descriptor_set_level(descriptor, 0u);
++      mtl_render_pass_attachment_descriptor_set_slice(descriptor, 0u);
+    }
++   mtl_render_pass_attachment_descriptor_set_depth_plane(
++      descriptor, depth_plane ? iview->vk.base_array_layer : 0u);
+ 
+    /* STORE_OP_NONE behaves like DONT_CARE if there are writes
+     * (CLEAR or DONT_CARE are writes).
+diff --git a/src/kosmickrisp/vulkan/kk_image_view.c b/src/kosmickrisp/vulkan/kk_image_view.c
+index 0f9ae14f24b..95e292e8d8f 100644
+--- a/src/kosmickrisp/vulkan/kk_image_view.c
++++ b/src/kosmickrisp/vulkan/kk_image_view.c
+@@ -247,12 +247,27 @@ kk_image_view_init(struct kk_device *dev, struct kk_image_view *view,
+             mtl_texture_get_gpu_resource_id(
+                view->planes[view_plane].mtl_handle_input);
+ 
++         bool render_3d = image->vk.image_type == VK_IMAGE_TYPE_3D &&
++                          view->vk.view_type != VK_IMAGE_VIEW_TYPE_3D;
++         view->planes[view_plane].render_depth_plane = render_3d;
++
+          /* Handle mutable formats */
+          view->planes[view_plane].render_is_view = requires_format_change;
+-         if (requires_format_change) {
++         if (requires_format_change && render_3d) {
++            struct kk_view_layout layout_3d = view_layout;
++            layout_3d.view_type = VK_IMAGE_VIEW_TYPE_3D;
++            layout_3d.base_array_layer = 0u;
++            layout_3d.array_len = 1u;
++            view->planes[view_plane].mtl_handle_render =
++               mtl_new_texture_view_with_no_swizzle(
++                  image->planes[image_plane].mtl_handle, &layout_3d);
++         } else if (requires_format_change) {
+             view_layout.view_type = original_type;
+             view->planes[view_plane].mtl_handle_render =
+                mtl_new_texture_view_with_no_swizzle(mtl_handle, &view_layout);
++         } else if (render_3d) {
++            view->planes[view_plane].mtl_handle_render =
++               mtl_retain(image->planes[image_plane].mtl_handle);
+          } else /* Subresource indices will be set in attachment descriptor */
+             view->planes[view_plane].mtl_handle_render = mtl_retain(mtl_handle);
+       }
+diff --git a/src/kosmickrisp/vulkan/kk_image_view.h b/src/kosmickrisp/vulkan/kk_image_view.h
+index 64507b304a6..6e2b06b79c7 100644
+--- a/src/kosmickrisp/vulkan/kk_image_view.h
++++ b/src/kosmickrisp/vulkan/kk_image_view.h
+@@ -36,6 +36,7 @@ struct kk_image_view {
+        * render */
+       mtl_texture *mtl_handle_render;
+       bool render_is_view;
++      bool render_depth_plane;
+ 
+       /* Input attachment handle. Required since input attachments needs to be
+        * arrays, and sampled may not be */
+-- 
+2.54.0 (Apple Git-157)
+

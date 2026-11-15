@@ -47,6 +47,7 @@ let package = Package(
         .package(path: "../FloeMacBridge"),
         .package(path: "ThirdParty/WasmKit"),
         .package(path: "Modules/FloeNativeCharts"),
+        .package(path: "Modules/FloeLinuxVideo"),
         .package(url: "https://github.com/apple/swift-system", exact: "1.8.0"),
         .package(url: "https://github.com/groue/GRDB.swift.git", exact: "7.8.0"),
         .package(url: "https://github.com/apple/swift-nio.git", exact: "2.88.0"),
@@ -215,6 +216,15 @@ let package = Package(
             publicHeadersPath: "include"
         ),
         .target(
+            name: "FloeLinuxGPU",
+            dependencies: [],
+            path: "Sources/FloeLinuxGPU",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+                .enableExperimentalFeature("StrictConcurrency")
+            ]
+        ),
+        .target(
             name: "FloeVirtualGPU",
             dependencies: ["FloeGPUBinary"],
             path: "ThirdParty/FloeVirtualGPU",
@@ -241,7 +251,12 @@ let package = Package(
         // enabled only for guest images declaring the corresponding drivers.
         .target(
             name: "FloeARM64Engine",
-            dependencies: ["FloeSlirpBinary", "FloeVirtualGPU"],
+            dependencies: [
+                "FloeSlirpBinary", "FloeVirtualGPU",
+                .product(name: "FloeLinuxVideoNative", package: "FloeLinuxVideo"),
+                .product(name: "FloeLinuxVideoHost", package: "FloeLinuxVideo"),
+                .product(name: "FloeLinuxVideoBroker", package: "FloeLinuxVideo")
+            ],
             path: "ThirdParty/ARM64EMU",
             exclude: ["Source", "Bridge", "Tools", "PROVENANCE.json"],
             sources: ["Sources"],
@@ -279,7 +294,11 @@ let package = Package(
                 .linkedFramework("Foundation", .when(platforms: [.iOS, .macOS])),
                 .linkedFramework("CoreFoundation", .when(platforms: [.iOS, .macOS])),
                 .linkedFramework("AppKit", .when(platforms: [.macOS])),
-                .linkedFramework("Carbon", .when(platforms: [.macOS]))
+                .linkedFramework("Carbon", .when(platforms: [.macOS])),
+                .linkedFramework("CoreMedia", .when(platforms: [.iOS, .macOS])),
+                .linkedFramework("CoreVideo", .when(platforms: [.iOS, .macOS])),
+                .linkedFramework("VideoToolbox", .when(platforms: [.iOS, .macOS])),
+                .linkedFramework("ImageIO", .when(platforms: [.iOS, .macOS]))
             ]
         ),
         .target(
@@ -377,6 +396,8 @@ let package = Package(
                 .product(name: "SystemPackage", package: "swift-system"),
                 "FloeCore", "FloeTools", "FloeSSH", "FloeWorkspace", "FloeSecurity",
                 .product(name: "FloeToolboxDiagnostics", package: "FloeToolbox"),
+                // Optional verified graphics capabilities; no renderer code.
+                "FloeLinuxGPU",
                 // Interpreted shared ARM64 Linux, without a host fallback.
                 "FloeARM64Engine",
                 .product(name: "ZIPFoundation", package: "ZIPFoundation"),
@@ -890,6 +911,15 @@ let package = Package(
                 .product(name: "WAT", package: "WasmKit"), .product(name: "Crypto", package: "swift-crypto")
             ],
             path: "Tests/FloeExecutionTests",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+                .enableExperimentalFeature("StrictConcurrency")
+            ]
+        ),
+        .testTarget(
+            name: "FloeLinuxGPUTests",
+            dependencies: ["FloeLinuxGPU"],
+            path: "Tests/FloeLinuxGPUTests",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
                 .enableExperimentalFeature("StrictConcurrency")

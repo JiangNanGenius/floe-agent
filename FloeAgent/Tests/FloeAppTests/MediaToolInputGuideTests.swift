@@ -10,6 +10,68 @@ import FloeWorkspace
 
 @Suite("Native media example payloads",.serialized)
 @MainActor struct MediaToolInputGuideTests {
+    @Test func imageToolbarUsesAvailableToolsAndSeparatesSelectionActions() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("image-toolbar-contract-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let session = try await interactionSession(root: root, drawing: false)
+        let catalogIDs = Set(session.applicableTools.map(\.id))
+        let imageIDs = Set(MediaV2ImageToolLayout.entries.map(\.id).filter { $0.hasPrefix("image.") })
+        #expect(imageIDs.isSubset(of: catalogIDs))
+        #expect(imageIDs.isSubset(of: MediaV2Session.localToolIDs))
+        #expect(imageIDs.isDisjoint(with: MediaV2ImageToolLayout.selectionActions))
+        #expect(MediaV2ImageToolLayout.selectionTools.allSatisfy(MediaV2ImageToolLayout.editsCanvas))
+        #expect(MediaV2ImageToolLayout.selectionActions.allSatisfy { !MediaV2ImageToolLayout.editsCanvas($0) })
+        #expect(!MediaV2ImageToolLayout.editsCanvas("view.pan"))
+        #expect(!MediaV2ImageToolLayout.editsCanvas("image.curves"))
+    }
+
+    @Test func featherControlsRoundTripPixelsAndKeepTheDrawingTool() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("image-feather-pixels-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let session = try await interactionSession(root: root, drawing: false)
+        session.tool = "image.rectangle"
+        var input = MediaV2ToolInput()
+        input.points = [.init(x: 0.2, y: 0.2), .init(x: 0.8, y: 0.8)]
+        input.expectedRevision = session.document.revision
+        _ = try await session.performTool("image.rectangle", input: input)
+        let revision = session.document.revision
+        let shapes = try #require(session.selection).shapes
+        for pixels in [6.0, 0.0, 24.0] {
+            var feather = MediaV2ToolInput()
+            feather.number = pixels; feather.expectedRevision = revision
+            _ = try await session.performTool("image.feather", input: feather)
+            #expect(abs(session.selectionFeatherPixelRadius - pixels) < 0.000001)
+            #expect(session.selection?.shapes == shapes)
+            #expect(session.document.revision == revision)
+            #expect(session.tool == "image.rectangle")
+        }
+        var action = MediaV2ToolInput(); action.expectedRevision = revision
+        _ = try await session.performTool("image.inverse", input: action)
+        #expect(session.selection?.inverted == true)
+        #expect(session.selectionFeatherPixelRadius == 24)
+        _ = try await session.performTool("image.deselect", input: action)
+        #expect(session.selection == nil && session.selectionFeatherPixelRadius == 0)
+        #expect(session.tool == "image.rectangle" && session.document.revision == revision)
+    }
+
+    @Test func touchSelectionAndHandNavigationRestoreTheCorrectInkInput() {
+        let controller = MediaV2CanvasViewportController(content: Color.white)
+        let resetID = UUID()
+        controller.update(content: .white, canvasSize: CGSize(width: 600, height: 400), zoom: 1,
+            resetID: resetID,
+            fingerDrawing: MediaV2ImageToolLayout.reservesFingerForEditing("image.rectangle", fingerDrawing: false)) { _ in }
+        #expect(controller.scrollView.panGestureRecognizer.minimumNumberOfTouches == 2)
+        controller.update(content: .white, canvasSize: CGSize(width: 600, height: 400), zoom: 1,
+            resetID: resetID, fingerDrawing: true, navigationOnly: true) { _ in }
+        let pan = controller.scrollView.panGestureRecognizer
+        #expect(pan.minimumNumberOfTouches == 1)
+        #expect(Set(pan.allowedTouchTypes) == Set([UITouch.TouchType.direct, .pencil, .indirectPointer].map { NSNumber(value: $0.rawValue) }))
+        controller.update(content: .white, canvasSize: CGSize(width: 600, height: 400), zoom: 1,
+            resetID: resetID, fingerDrawing: true, navigationOnly: false) { _ in }
+        #expect(pan.minimumNumberOfTouches == 2)
+        #expect(pan.allowedTouchTypes == [NSNumber(value: UITouch.TouchType.direct.rawValue)])
+    }
+
     @Test func sourceFileWriteAdvancesOnlyCommittedBaselineAndPreservesExternalEdits() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("image-source-cas-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -495,5 +557,145 @@ import FloeWorkspace
         let unavailable=try #require(examples.first{$0.toolID=="video.duck"})
         #expect(unavailable.inputJSON==nil && unavailable.unavailableReason?.isEmpty==false)
     }
+    @Test func imageToolLayoutKeepsCommonToolsVisibleAndContextual() {
+        let ids = MediaV2ImageToolLayout.entries.map(\.id)
+        #expect(Set(ids).count == ids.count, "one rail entry per tool")
+        for id in ["move", "image.rectangle", "image.ellipse", "image.lasso", "image.polygon", "image.wand",
+                   "image.crop", "image.brush", "image.eraser", "image.clone", "image.heal", "image.patch",
+                   "image.remove", "image.content-fill", "image.blur-brush", "image.text", "image.curves", "view.pan"] {
+            #expect(ids.contains(id), "common tools stay on the visible rail")
+        }
+        let sections = MediaV2ImageToolLayout.compactSections
+        #expect(sections.map(\.id) == ["selection", "retouch", "paint", "create", "adjust", "canvas"])
+        let sectioned = sections.flatMap(\.entries).map(\.id)
+        #expect(sectioned.count == ids.count, "every tool appears in exactly one compact section")
+        #expect(Set(sectioned) == Set(ids))
+        #expect(MediaV2ImageToolLayout.retouchTools.contains("image.remove"))
+        #expect(MediaV2ImageToolLayout.retouchTools.contains("image.content-fill"))
+        #expect(!MediaV2ImageToolLayout.retouchTools.contains("image.curves"))
+        #expect(MediaV2ImageToolLayout.adjustTools.contains("image.curves"))
+        #expect(MediaV2ImageToolLayout.tapTools == Set(["image.wand", "image.polygon", "image.eyedropper"]))
+        #expect(MediaV2ImageToolLayout.editsCanvas("image.rectangle"))
+        #expect(MediaV2ImageToolLayout.editsCanvas("image.crop"))
+        #expect(MediaV2ImageToolLayout.editsCanvas("image.brush"))
+        #expect(!MediaV2ImageToolLayout.editsCanvas("image.feather"))
+        #expect(!MediaV2ImageToolLayout.editsCanvas("image.inverse"))
+        #expect(!MediaV2ImageToolLayout.editsCanvas("image.anchor"))
+        #expect(MediaV2ImageToolLayout.reservesFingerForEditing("image.rectangle", fingerDrawing: false))
+        #expect(!MediaV2ImageToolLayout.reservesFingerForEditing("image.brush", fingerDrawing: false))
+        #expect(MediaV2ImageToolLayout.reservesFingerForEditing("image.brush", fingerDrawing: true))
+        #expect(!MediaV2ImageToolLayout.reservesFingerForEditing("view.pan", fingerDrawing: false))
+    }
+
+    @Test func featherDraftPreviewsWithoutMutatingTheSelection() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("image-feather-draft-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let session = try await interactionSession(root: root, drawing: false)
+        var input = MediaV2ToolInput()
+        input.points = [.init(x: 0.2, y: 0.2), .init(x: 0.8, y: 0.8)]
+        input.expectedRevision = session.document.revision
+        _ = try await session.performTool("image.rectangle", input: input)
+        let applied = try #require(session.selection)
+        #expect(session.selectionDisplayFeatherPixels == 0)
+        session.selectionFeatherDraftPixels = 12
+        #expect(abs(session.selectionDisplayFeatherPixels - 12) < 0.000001)
+        #expect(session.selection == applied, "the draft never mutates the committed selection")
+        #expect(session.selectionFeatherPixelRadius == 0)
+        session.selectionFeatherDraftPixels = 0
+        #expect(session.selectionDisplayFeatherPixels == 0)
+        session.selectionFeatherDraftPixels = nil
+        #expect(session.selectionDisplay == applied)
+    }
+
+    @Test func canvasTouchPolicyKeepsPencilOwnershipAndCancelsSecondFinger() {
+        var pencil = MediaV2CanvasTouchPolicy(allowsFinger: true)
+        let pencilBegan = pencil.began(.pencil, otherTouches: 2)
+        let palmBegan = pencil.began(.direct, otherTouches: 1)
+        #expect(pencilBegan == .begin, "a resting palm does not reject the Pencil")
+        #expect(palmBegan == .ignore)
+        let pencilFinished = pencil.finished()
+        #expect(pencilFinished)
+
+        var secondFinger = MediaV2CanvasTouchPolicy(allowsFinger: true)
+        let firstBegan = secondFinger.began(.direct, otherTouches: 1)
+        let secondBegan = secondFinger.began(.direct, otherTouches: 2)
+        #expect(firstBegan == .begin)
+        #expect(secondBegan == .cancel)
+        let secondFingerFinished = secondFinger.finished()
+        #expect(!secondFingerFinished, "a cancelled selection never commits")
+
+        var fingerDisabled = MediaV2CanvasTouchPolicy(allowsFinger: false)
+        let rejectedFinger = fingerDisabled.began(.direct, otherTouches: 1)
+        let acceptedPencil = fingerDisabled.began(.pencil, otherTouches: 1)
+        #expect(rejectedFinger == .ignore)
+        #expect(acceptedPencil == .begin)
+        let fingerDisabledCommit = fingerDisabled.finished()
+        #expect(fingerDisabledCommit)
+
+        var pencilTakesOver = MediaV2CanvasTouchPolicy(allowsFinger: true)
+        let fingerDraft = pencilTakesOver.began(.direct, otherTouches: 1)
+        let replacement = pencilTakesOver.began(.pencil, otherTouches: 1)
+        #expect(fingerDraft == .begin)
+        #expect(replacement == .begin)
+        let pencilTakesOverCommit = pencilTakesOver.finished()
+        #expect(pencilTakesOverCommit)
+    }
+
+    @Test func fingerToPencilStrokeCommitsAndAPalmDoesNotCancelIt() {
+        var policy = MediaV2CanvasTouchPolicy(allowsFinger: true)
+        let fingerDraft = policy.began(.direct, otherTouches: 1)
+        let pencilDraft = policy.began(.pencil, otherTouches: 1)
+        #expect(fingerDraft == .begin)
+        #expect(pencilDraft == .begin, "Pencil replaces the finger draft")
+        #expect(policy.source == .pencil)
+        let palm = policy.began(.direct, otherTouches: 1)
+        #expect(palm == .ignore, "a resting palm is ignored")
+        let pencilCommit = policy.finished()
+        #expect(pencilCommit, "the Pencil lift still commits")
+
+        let view = MediaV2CanvasTouchView()
+        var began = 0, ended = 0, cancelled = 0
+        view.onBegan = { _ in began += 1 }
+        view.onEnded = { _ in ended += 1 }
+        view.onCancelled = { cancelled += 1 }
+        let fingerBegan = view.admitBegan(.direct, at: .init(x: 1, y: 1), otherTouches: 1)
+        let pencilBegan = view.admitBegan(.pencil, at: .init(x: 2, y: 2), otherTouches: 1)
+        #expect(fingerBegan)
+        #expect(pencilBegan)
+        #expect(cancelled == 1, "the replaced finger draft is explicitly discarded")
+        #expect(began == 2)
+        let palmBegan = view.admitBegan(.direct, at: .init(x: 3, y: 3), otherTouches: 1)
+        #expect(!palmBegan)
+        #expect(cancelled == 1, "palm contact never cancels the Pencil")
+        #expect(view.isEditing)
+        let committed = view.finishActiveEdit(at: .init(x: 4, y: 4))
+        #expect(committed)
+        #expect(ended == 1)
+        #expect(!view.isEditing)
+    }
+
+    @Test func secondFingerCancelsTheCanvasEditBeforeNavigationTakesOver() {
+        var policy = MediaV2CanvasTouchPolicy(allowsFinger: true)
+        let firstBegan = policy.began(.direct, otherTouches: 1)
+        let secondBegan = policy.began(.direct, otherTouches: 2)
+        #expect(firstBegan == .begin)
+        #expect(secondBegan == .cancel)
+        let cancelledCommit = policy.finished()
+        #expect(!cancelledCommit, "a cancelled marquee never commits")
+
+        let view = MediaV2CanvasTouchView()
+        var ended = 0, cancelled = 0
+        view.onBegan = { _ in }
+        view.onEnded = { _ in ended += 1 }
+        view.onCancelled = { cancelled += 1 }
+        let began = view.admitBegan(.direct, at: .init(x: 1, y: 1), otherTouches: 1)
+        let secondBeganView = view.admitBegan(.direct, at: .init(x: 2, y: 2), otherTouches: 2)
+        #expect(began)
+        #expect(!secondBeganView)
+        #expect(cancelled == 1)
+        #expect(ended == 0)
+        #expect(!view.isEditing)
+    }
+
 }
 #endif

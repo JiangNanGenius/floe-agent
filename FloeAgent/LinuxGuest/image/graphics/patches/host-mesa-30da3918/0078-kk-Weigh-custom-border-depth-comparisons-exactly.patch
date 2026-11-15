@@ -1,0 +1,272 @@
+From a45d5802cdfcfc9ff1d7aa8a4aae51e1785edb35 Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Sat, 3 Oct 2026 21:33:13 -0400
+Subject: [PATCH] kk: Weigh custom border depth comparisons exactly
+
+Generated-by: LLM
+---
+ src/compiler/nir/nir.c                        |  3 +
+ src/compiler/nir/nir.h                        |  2 +
+ src/compiler/nir/nir_print.c                  |  3 +
+ src/compiler/nir/nir_validate.c               |  3 +
+ src/compiler/spirv/spirv_to_nir.c             |  1 +
+ src/kosmickrisp/vulkan/kk_descriptor_set.c    |  6 ++
+ src/kosmickrisp/vulkan/kk_descriptor_types.h  |  4 +-
+ .../vulkan/kk_nir_lower_custom_border.c       | 68 ++++++++++++++-----
+ .../vulkan/kk_nir_lower_descriptors.c         | 12 ++++
+ src/kosmickrisp/vulkan/kk_shader.h            |  2 +
+ 10 files changed, 87 insertions(+), 17 deletions(-)
+
+diff --git a/src/compiler/nir/nir.c b/src/compiler/nir/nir.c
+index f33a164f570..180c5f19f10 100644
+--- a/src/compiler/nir/nir.c
++++ b/src/compiler/nir/nir.c
+@@ -3476,6 +3476,7 @@ nir_tex_instr_need_sampler(const nir_tex_instr *instr)
+    case nir_texop_samples_identical:
+    case nir_texop_descriptor_amd:
+    case nir_texop_image_min_lod_agx:
++   case nir_texop_image_flags_kk:
+    case nir_texop_fragment_mask_fetch_amd:
+    case nir_texop_fragment_fetch_amd:
+    case nir_texop_resinfo_intel:
+@@ -3530,6 +3531,7 @@ nir_tex_instr_result_size(const nir_tex_instr *instr)
+    case nir_texop_lod_bias:
+    case nir_texop_fragment_mask_fetch_amd:
+    case nir_texop_image_min_lod_agx:
++   case nir_texop_image_flags_kk:
+    case nir_texop_has_custom_border_color_agx:
+    case nir_texop_sparse_residency_intel:
+    case nir_texop_sparse_residency_txf_intel:
+@@ -3584,6 +3586,7 @@ nir_tex_instr_is_query(const nir_tex_instr *instr)
+    case nir_texop_custom_border_color_agx:
+    case nir_texop_has_custom_border_color_agx:
+    case nir_texop_sampler_minmax_kk:
++   case nir_texop_image_flags_kk:
+    case nir_texop_hdr_dim_nv:
+    case nir_texop_tex_type_nv:
+    case nir_texop_sample_pos_nv:
+diff --git a/src/compiler/nir/nir.h b/src/compiler/nir/nir.h
+index be80cdb0853..ab487ac48fe 100644
+--- a/src/compiler/nir/nir.h
++++ b/src/compiler/nir/nir.h
+@@ -2687,6 +2687,8 @@ typedef enum nir_texop {
+    nir_texop_custom_border_color_agx,
+    /** Returns the sampler's emulated min/max reduction flags */
+    nir_texop_sampler_minmax_kk,
++   /** Returns the image view's KosmicKrisp flags */
++   nir_texop_image_flags_kk,
+    /** Maps to TXQ.DIMENSION */
+    nir_texop_hdr_dim_nv,
+    /** Maps to TXQ.TEXTURE_TYPE */
+diff --git a/src/compiler/nir/nir_print.c b/src/compiler/nir/nir_print.c
+index cabe502abdb..4a1fa7e43af 100644
+--- a/src/compiler/nir/nir_print.c
++++ b/src/compiler/nir/nir_print.c
+@@ -2014,6 +2014,9 @@ print_tex_instr(nir_tex_instr *instr, print_state *state)
+    case nir_texop_sampler_minmax_kk:
+       fprintf(fp, "sampler_minmax_kk ");
+       break;
++   case nir_texop_image_flags_kk:
++      fprintf(fp, "image_flags_kk ");
++      break;
+    case nir_texop_hdr_dim_nv:
+       fprintf(fp, "hdr_dim_nv ");
+       break;
+diff --git a/src/compiler/nir/nir_validate.c b/src/compiler/nir/nir_validate.c
+index e7982704e41..b4d5385edef 100644
+--- a/src/compiler/nir/nir_validate.c
++++ b/src/compiler/nir/nir_validate.c
+@@ -1052,6 +1052,9 @@ validate_tex_src_texture_deref(nir_tex_instr *instr, validate_state *state,
+    case nir_texop_custom_border_color_agx:
+    case nir_texop_sampler_minmax_kk:
+       break;
++   case nir_texop_image_flags_kk:
++      validate_assert(state, instr->dest_type == nir_type_uint32);
++      break;
+    case nir_texop_lod:
+    case nir_texop_lod_bias:
+       validate_assert(state, nir_alu_type_get_base_type(instr->dest_type) == nir_type_float);
+diff --git a/src/compiler/spirv/spirv_to_nir.c b/src/compiler/spirv/spirv_to_nir.c
+index d06a16f76f0..2596fd1c02b 100644
+--- a/src/compiler/spirv/spirv_to_nir.c
++++ b/src/compiler/spirv/spirv_to_nir.c
+@@ -3935,6 +3935,7 @@ vtn_handle_texture(struct vtn_builder *b, SpvOp opcode,
+       vtn_fail("unexpected nir_texop_*_agx");
+       break;
+    case nir_texop_sampler_minmax_kk:
++   case nir_texop_image_flags_kk:
+       vtn_fail("unexpected nir_texop_*_kk");
+       break;
+    case nir_texop_hdr_dim_nv:
+diff --git a/src/kosmickrisp/vulkan/kk_descriptor_set.c b/src/kosmickrisp/vulkan/kk_descriptor_set.c
+index e205ace6ced..69407daef46 100644
+--- a/src/kosmickrisp/vulkan/kk_descriptor_set.c
++++ b/src/kosmickrisp/vulkan/kk_descriptor_set.c
+@@ -17,9 +17,11 @@
+ #include "kk_image_view.h"
+ #include "kk_physical_device.h"
+ #include "kk_sampler.h"
++#include "kk_shader.h"
+ 
+ #include "util/format/u_format.h"
+ #include "util/half_float.h"
++#include "vk_format.h"
+ 
+ static inline uint32_t
+ align_u32(uint32_t v, uint32_t a)
+@@ -85,6 +87,10 @@ get_sampled_image_view_desc(VkDescriptorType descriptor_type,
+          float min_lod = MAX2(view->vk.min_lod - view->vk.base_mip_level, 0.0);
+          desc[plane].image_min_lod_fp16 = _mesa_float_to_half(min_lod);
+          desc[plane].image_min_lod_uint16 = min_lod;
++
++         if ((view->vk.aspects & VK_IMAGE_ASPECT_DEPTH_BIT) &&
++             vk_format_is_unorm(vk_format_depth_only(view->vk.view_format)))
++            desc[plane].image_flags |= KK_IMAGE_FLAG_UNORM_DEPTH;
+       }
+    }
+ 
+diff --git a/src/kosmickrisp/vulkan/kk_descriptor_types.h b/src/kosmickrisp/vulkan/kk_descriptor_types.h
+index 13d9d8183e8..c02267afd2b 100644
+--- a/src/kosmickrisp/vulkan/kk_descriptor_types.h
++++ b/src/kosmickrisp/vulkan/kk_descriptor_types.h
+@@ -29,7 +29,9 @@ struct kk_sampled_image_descriptor {
+    uint16_t sampler_minmax_flags;
+    uint32_t border[4];
+    uint64_t residency_gpu_resource_id;
+-   uint64_t pad_to_power_2[2];
++   uint16_t image_flags;
++   uint16_t pad16[3];
++   uint64_t pad_to_power_2;
+ };
+ 
+ static_assert(sizeof(struct kk_sampled_image_descriptor) == 64,
+diff --git a/src/kosmickrisp/vulkan/kk_nir_lower_custom_border.c b/src/kosmickrisp/vulkan/kk_nir_lower_custom_border.c
+index 04348b9ff87..63c931ecb5a 100644
+--- a/src/kosmickrisp/vulkan/kk_nir_lower_custom_border.c
++++ b/src/kosmickrisp/vulkan/kk_nir_lower_custom_border.c
+@@ -109,19 +109,8 @@ lower(nir_builder *b, nir_tex_instr *tex, UNUSED void *_data)
+    nir_push_if(b, has_custom);
+    nir_def *replaced = NULL;
+    {
+-      /* Sample again, this time with clamp-to-0 instead of clamp-to-1 */
+-      nir_instr *clone_instr = nir_instr_clone(b->shader, &tex->instr);
+-      nir_builder_instr_insert(b, clone_instr);
+-
+-      nir_tex_instr *tex_0 = nir_instr_as_tex(clone_instr);
+-      nir_def *clamp_to_0 = &tex_0->def;
+-      if (tex->is_sparse)
+-         clamp_to_0 = nir_trim_vector(b, clamp_to_0, 4);
+-
+-      tex_0->backend_flags |= KK_TEXTURE_FLAG_CLAMP_TO_0;
+-
+       /* Grab the border colour */
+-      nir_def *border = query_custom_border(b, tex_0);
++      nir_def *border = query_custom_border(b, tex);
+ 
+       if (tex->is_shadow) {
+          nir_def *flags = nir_channel(
+@@ -132,14 +121,61 @@ lower(nir_builder *b, nir_tex_instr *tex, UNUSED void *_data)
+          nir_def *op = nir_iand_imm(
+             b, nir_ushr_imm(b, flags, KK_SAMPLER_COMPARE_OP_SHIFT),
+             KK_SAMPLER_COMPARE_OP_MASK);
++         nir_def *image_flags = nir_build_texture_query(
++            b, tex, nir_texop_image_flags_kk, 1, nir_type_uint32, false, false);
++         nir_def *unorm =
++            nir_test_mask(b, image_flags, KK_IMAGE_FLAG_UNORM_DEPTH);
++
+          int ref_idx = nir_tex_instr_src_index(tex, nir_tex_src_comparator);
+-         nir_def *ref = nir_f2f32(b, tex->src[ref_idx].src.ssa);
+-         nir_def *depth = nir_fsat(b, nir_f2f32(b, nir_channel(b, border, 0)));
++         nir_def *ref_src = tex->src[ref_idx].src.ssa;
++         nir_def *ref = nir_f2f32(b, ref_src);
++         nir_def *depth = nir_f2f32(b, nir_channel(b, border, 0));
++         ref = nir_bcsel(b, unorm, nir_fsat(b, ref), ref);
++         depth = nir_bcsel(b, unorm, nir_fsat(b, depth), depth);
+          nir_def *at_border = compare_depth(b, op, ref, depth);
+          nir_def *at_one = compare_depth(b, op, ref, nir_imm_float(b, 1.0));
+-         replaced = nir_bcsel(b, nir_ieq(b, at_border, at_one), clamp_to_1,
+-                              clamp_to_0);
++
++         nir_def *exact = nir_ior(b, nir_ieq_imm(b, op, VK_COMPARE_OP_EQUAL),
++                                  nir_ieq_imm(b, op, VK_COMPARE_OP_NOT_EQUAL));
++         nir_def *split_ref =
++            nir_bcsel(b, exact, nir_imm_floatN_t(b, 1.0, ref_src->bit_size),
++                      nir_imm_floatN_t(b, 0.5, ref_src->bit_size));
++
++         nir_tex_instr *split_1 =
++            nir_instr_as_tex(nir_instr_clone(b->shader, &tex->instr));
++         nir_builder_instr_insert(b, &split_1->instr);
++         nir_src_rewrite(&split_1->src[ref_idx].src, split_ref);
++
++         nir_tex_instr *split_0 =
++            nir_instr_as_tex(nir_instr_clone(b->shader, &tex->instr));
++         split_0->backend_flags |= KK_TEXTURE_FLAG_CLAMP_TO_0;
++         nir_builder_instr_insert(b, &split_0->instr);
++         nir_src_rewrite(&split_0->src[ref_idx].src, split_ref);
++
++         nir_def *weight_1 = &split_1->def;
++         nir_def *weight_0 = &split_0->def;
++         if (tex->is_sparse) {
++            weight_1 = nir_trim_vector(b, weight_1, 4);
++            weight_0 = nir_trim_vector(b, weight_0, 4);
++         }
++         nir_def *weight = nir_fabs(b, nir_fsub(b, weight_1, weight_0));
++
++         unsigned bit_size = clamp_to_1->bit_size;
++         nir_def *delta = nir_fsub(b, nir_b2fN(b, at_border, bit_size),
++                                   nir_b2fN(b, at_one, bit_size));
++         replaced = nir_ffma(b, weight, delta, clamp_to_1);
+       } else {
++         /* Sample again, this time with clamp-to-0 instead of clamp-to-1 */
++         nir_instr *clone_instr = nir_instr_clone(b->shader, &tex->instr);
++         nir_builder_instr_insert(b, clone_instr);
++
++         nir_tex_instr *tex_0 = nir_instr_as_tex(clone_instr);
++         nir_def *clamp_to_0 = &tex_0->def;
++         if (tex->is_sparse)
++            clamp_to_0 = nir_trim_vector(b, clamp_to_0, 4);
++
++         tex_0->backend_flags |= KK_TEXTURE_FLAG_CLAMP_TO_0;
++
+          if (tex->op == nir_texop_tg4) {
+             border =
+                nir_replicate(b, nir_channel(b, border, tex->component), 4);
+diff --git a/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c b/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c
+index b2d7e702f43..7d022ce6282 100644
+--- a/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c
++++ b/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c
+@@ -589,6 +589,18 @@ lower_tex(nir_builder *b, nir_tex_instr *tex,
+       return true;
+    }
+ 
++   if (tex->op == nir_texop_image_flags_kk) {
++      unsigned offs =
++         offsetof(struct kk_sampled_image_descriptor, image_flags);
++
++      nir_def *flags = load_resource_deref_desc(
++         b, 1, 16, nir_src_as_deref(nir_src_for_ssa(texture)),
++         plane_offset_B + offs, ctx);
++
++      nir_def_replace(&tex->def, nir_u2u32(b, flags));
++      return true;
++   }
++
+    if (tex->op == nir_texop_has_custom_border_color_agx) {
+       unsigned offs = offsetof(struct kk_sampled_image_descriptor,
+                                clamp_0_sampler_index_or_negative);
+diff --git a/src/kosmickrisp/vulkan/kk_shader.h b/src/kosmickrisp/vulkan/kk_shader.h
+index 9ee0295790a..49f3211a8b3 100644
+--- a/src/kosmickrisp/vulkan/kk_shader.h
++++ b/src/kosmickrisp/vulkan/kk_shader.h
+@@ -215,6 +215,8 @@ bool kk_nir_lower_fs_multiview(nir_shader *nir, uint32_t view_mask);
+ #define KK_SAMPLER_COMPARE_OP_SHIFT 6
+ #define KK_SAMPLER_COMPARE_OP_MASK  0x7
+ 
++#define KK_IMAGE_FLAG_UNORM_DEPTH 0x1
++
+ bool kk_nir_lower_custom_border(nir_shader *nir);
+ bool kk_nir_lower_compute_derivatives(nir_shader *nir);
+ bool kk_nir_lower_compute_lod_queries(nir_shader *nir);
+-- 
+2.54.0 (Apple Git-157)
+

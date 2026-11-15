@@ -1,0 +1,27 @@
+{
+  "buttons" : [
+    {
+      "id" : "reset",
+      "keys" : [
+        "z"
+      ],
+      "label" : "Z"
+    }
+  ],
+  "engine" : "gdevelop",
+  "movement" : {
+    "down" : [
+      "down"
+    ],
+    "left" : [
+      "left"
+    ],
+    "right" : [
+      "right"
+    ],
+    "up" : [
+      "up"
+    ]
+  },
+  "schemaVersion" : 1
+}

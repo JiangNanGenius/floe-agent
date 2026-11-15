@@ -36,8 +36,12 @@ public enum MediaNativeSelection {
         }else{for i in alpha.indices{if i%4096==0{try Task.checkCancellation()};if matches(i){alpha[i]=255}}}
         return try .init(width:w,height:h,alpha:Data(alpha))
     }
-    public static func flattened(_ selection:ImageSelection,width:Int,height:Int) throws -> ImageSelectionBitmap {
-        let scale=min(1,2048/Double(max(width,height))),w=max(1,Int(Double(width)*scale)),h=max(1,Int(Double(height)*scale))
+    /// Flattens a selection to a coverage bitmap. `maxEdge` bounds the work
+    /// buffer: 2048 for edit commands that need fidelity, a smaller value for
+    /// live canvas overlays that only display the effect.
+    public static func flattened(_ selection:ImageSelection,width:Int,height:Int,maxEdge:Int = 2048) throws -> ImageSelectionBitmap {
+        guard maxEdge >= 1 else{throw MediaPreparedCoreError.invalidOperation("invalid selection preview size")}
+        let scale=min(1,Double(maxEdge)/Double(max(width,height))),w=max(1,Int(Double(width)*scale)),h=max(1,Int(Double(height)*scale))
         guard let image=ImageSelectionRasterizer.maskImage(for:selection,canvas:.init(width:w,height:h)),let cg=CIContext(options:[.cacheIntermediates:false]).createCGImage(image,from:.init(x:0,y:0,width:w,height:h)) else{throw MediaPreparedCoreError.invalidOperation("select an area first")}
         return try coverage(cg)
     }

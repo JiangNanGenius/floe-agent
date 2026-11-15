@@ -1,0 +1,1091 @@
+{
+  "schemaVersion": 1,
+  "catalogID": "floe-game-build-routes-20261112",
+  "engineCount": 20,
+  "entries": [
+    {
+      "engine": "unity",
+      "runMode": "externalBuild",
+      "runRouteID": "external.unity-webgl",
+      "externalKind": "unityWebGL",
+      "executor": "githubCI",
+      "buildRoutes": [
+        {
+          "id": "unity-web",
+          "kind": "webBundle",
+          "producer": "ci",
+          "platform": "web",
+          "artifactName": "unity-web.zip",
+          "proof": "commandOnly",
+          "playable": true,
+          "executor": "githubCI",
+          "note": "Playable through WebKit after a real user-licensed Unity WebGL build; this plan does not claim an executed build."
+        },
+        {
+          "id": "unity-windows",
+          "kind": "nativeInstaller",
+          "producer": "ci",
+          "platform": "windows",
+          "artifactName": "unity-windows.zip",
+          "proof": "commandOnly",
+          "playable": true,
+          "executor": "githubCI",
+          "note": "Unsigned StandaloneWindows64 build; user signs/distributes."
+        },
+        {
+          "id": "unity-macos",
+          "kind": "nativeInstaller",
+          "producer": "ci",
+          "platform": "macOS",
+          "artifactName": "unity-macos.zip",
+          "proof": "commandOnly",
+          "playable": true,
+          "executor": "githubCI",
+          "note": "Unsigned macOS .app in a zip; user signs for Gatekeeper."
+        },
+        {
+          "id": "unity-ios",
+          "kind": "nativeProject",
+          "producer": "ci",
+          "platform": "ios",
+          "artifactName": "unity-ios-xcodeproj.zip",
+          "proof": "commandOnly",
+          "playable": false,
+          "executor": "githubCI",
+          "note": "Xcode project only. This is not an installable IPA from the template; the user's signing/export pipeline is required."
+        },
+        {
+          "id": "unity-source",
+          "kind": "sourceArchive",
+          "producer": "sourceArchive",
+          "platform": null,
+          "artifactName": "unity-source.zip",
+          "proof": "sourceQualified",
+          "playable": false,
+          "executor": "onDevice",
+          "note": "Byte-preserving source snapshot of the exact saved revision; never presented as playable."
+        }
+      ],
+      "requiredArtifacts": [
+        "unity-web.zip",
+        "unity-windows.zip",
+        "unity-macos.zip",
+        "unity-ios-xcodeproj.zip"
+      ],
+      "prerequisites": [
+        "unity-editor:2022.3 LTS or the project's ProjectVersion.txt",
+        "unity-webgl-module:matching editor",
+        "unity-windows-module:matching editor",
+        "unity-macos-module:matching editor",
+        "unity-ios-module:matching editor"
+      ],
+      "status": "implementedSource+unexecutedExternalBuild",
+      "notes": [
+        "External build route is source-implemented but NOT executed in this source-only package; requires the listed toolchain/CI and a later native/CI window."
+      ],
+      "unexecutedExternalBuild": true,
+      "testEvidence": "static_check only; Swift contract tests source-ready, not executed"
+    },
+    {
+      "engine": "godot",
+      "runMode": "externalBuild",
+      "runRouteID": "external.godot-web",
+      "externalKind": "godotWeb",
+      "executor": "mainLinuxShell",
+      "buildRoutes": [
+        {
+          "id": "godot-web",
+          "kind": "webBundle",
+          "producer": "ci",
+          "platform": "web",
+          "artifactName": "godot-web.zip",
+          "proof": "actualBuildAndRuntime",
+          "playable": true,
+          "executor": "githubCI",
+          "note": "Actual headless Web export and actual WebKit run are recorded; changed source must be rebuilt and reverified."
+        },
+        {
+          "id": "godot-windows",
+          "kind": "nativeInstaller",
+          "producer": "ci",
+          "platform": "windows",
+          "artifactName": "godot-windows.zip",
+          "proof": "commandOnly",
+          "playable": true,
+          "executor": "githubCI",
+          "note": "Exported exe+pck in a zip; unsigned, user signs/distributes."
+        },
+        {
+          "id": "godot-linux",
+          "kind": "nativeInstaller",
+          "producer": "ci",
+          "platform": "linux",
+          "artifactName": "godot-linux.zip",
+          "proof": "commandOnly",
+          "playable": true,
+          "executor": "githubCI",
+          "note": "Exported Linux binary in a zip; unsigned, user signs/distributes."
+        },
+        {
+          "id": "godot-source",
+          "kind": "sourceArchive",
+          "producer": "sourceArchive",
+          "platform": null,
+          "artifactName": "godot-source.zip",
+          "proof": "sourceQualified",
+          "playable": false,
+          "executor": "onDevice",
+          "note": "Byte-preserving source snapshot of the exact saved revision; never presented as playable."
+        }
+      ],
+      "requiredArtifacts": [
+        "godot-web.zip",
+        "godot-windows.zip",
+        "godot-linux.zip"
+      ],
+      "prerequisites": [
+        "godot-editor:4.x matching the project",
+        "godot-export-templates:matching editor"
+      ],
+      "status": "implementedSource+unexecutedExternalBuild",
+      "notes": [
+        "External build route is source-implemented but NOT executed in this source-only package; requires the listed toolchain/CI and a later native/CI window.",
+        "Run external provider uses the Linux guest Godot CLI; build catalog also has the reviewed Godot CI template."
+      ],
+      "unexecutedExternalBuild": true,
+      "testEvidence": "static_check only; Swift contract tests source-ready, not executed"
+    },
+    {
+      "engine": "cocosCreator",
+      "runMode": "externalBuild",
+      "runRouteID": "external.cocos-web",
+      "externalKind": "cocosWeb",
+      "executor": "githubCI",
+      "buildRoutes": [
+        {
+          "id": "cocos-web",
+          "kind": "webBundle",
+          "producer": "ci",
+          "platform": "web",
+          "artifactName": "cocos-web.zip",
+          "proof": "commandOnly",
+          "playable": true,
+          "executor": "githubCI",
+          "note": "Cocos Creator 3.8.x CLI Web build on a GUI-capable macOS or Windows user runner; this template uses the documented macOS host. Web requests do not require Android SDK/NDK."
+        },
+        {
+          "id": "cocos-android-project",
+          "kind": "nativeProject",
+          "producer": "ci",
+          "platform": "android",
+          "artifactName": "cocos-android-project.zip",
+          "proof": "commandOnly",
+          "playable": false,
+          "executor": "githubCI",
+          "note": "Cocos --build produces a native Android project, not an APK. The same-workspace template runs the documented Make/Gradle stage and only then claims an APK."
+        },
+        {
+          "id": "cocos-android-apk",
+          "kind": "nativeInstaller",
+          "producer": "ci",
+          "platform": "android",
+          "artifactName": "cocos-android.apk",
+          "proof": "commandOnly",
+          "playable": true,
+          "executor": "githubCI",
+          "note": "Only when the same-workspace Cocos stage=make/Gradle succeeds and the APK manifest/dex are verified; unsigned, user signs."
+        },
+        {
+          "id": "cocos-creator-source",
+          "kind": "sourceArchive",
+          "producer": "sourceArchive",
+          "platform": null,
+          "artifactName": "cocos-creator-source.zip",
+          "proof": "sourceQualified",
+          "playable": false,
+          "executor": "onDevice",
+          "note": "Byte-preserving source snapshot of the exact saved revision; never presented as playable."
+        }
+      ],
+      "requiredArtifacts": [
+        "cocos-web.zip",
+        "cocos-android-project.zip",
+        "cocos-android.apk"
+      ],
+      "prerequisites": [
+        "cocos-creator:3.8.6 or the project's 3.8.x version",
+        "android-sdk:API 34+",
+        "android-ndk:matching Cocos"
+      ],
+      "status": "implementedSource+unexecutedExternalBuild",
+      "notes": [
+        "External build route is source-implemented but NOT executed in this source-only package; requires the listed toolchain/CI and a later native/CI window."
+      ],
+      "unexecutedExternalBuild": true,
+      "testEvidence": "static_check only; Swift contract tests source-ready, not executed"
+    },
+    {
+      "engine": "gdevelop",
+      "runMode": "externalBuild",
+      "runRouteID": "external.gdevelop-web",
+      "externalKind": "gdevelopWeb",
+      "executor": "githubCI",
+      "buildRoutes": [
+        {
+          "id": "gdevelop-web",
+          "kind": "webBundle",
+          "producer": "hostExporter",
+          "platform": "web",
+          "artifactName": "gdevelop-web.zip",
+          "proof": "actualExporterAndRuntime",
+          "playable": true,
+          "executor": "hostExporter",
+          "note": "Official GDevelop 5.6.287 SDK export, byte-verified 77-file manifest and actual WebKit/Playwright input proof. The editor/manual-only route is retired."
+        },
+        {
+          "id": "gdevelop-ci-web",
+          "kind": "webBundle",
+          "producer": "ci",
+          "platform": "web",
+          "artifactName": "gdevelop-web.zip",
+          "proof": "commandOnly",
+          "playable": true,
+          "executor": "githubCI",
+          "note": "Linux CI route using the pinned official Linux SDK and Floe exporter helper; not executed in this source stage."
+        },
+        {
+          "id": "gdevelop-source",
+          "kind": "sourceArchive",
+          "producer": "sourceArchive",
+          "platform": null,
+          "artifactName": "gdevelop-source.zip",
+          "proof": "sourceQualified",
+          "playable": false,
+          "executor": "onDevice",
+          "note": "Byte-preserving source snapshot of the exact saved revision; never presented as playable."
+        }
+      ],
+      "requiredArtifacts": [
+        "gdevelop-web.zip",
+        "gdevelop-web.zip"
+      ],
+      "prerequisites": [
+        "gdevelop-sdk:5.6.287 (source cfaccd2c20bba2b43fea529523042249c90b9a41)",
+        "python3:3.11+"
+      ],
+      "status": "implementedSource+unexecutedExternalBuild",
+      "notes": [
+        "External build route is source-implemented but NOT executed in this source-only package; requires the listed toolchain/CI and a later native/CI window."
+      ],
+      "unexecutedExternalBuild": true,
+      "testEvidence": "static_check only; Swift contract tests source-ready, not executed"
+    },
+    {
+      "engine": "phaser",
+      "runMode": "externalBuild",
+      "runRouteID": "external.web-bundle",
+      "externalKind": "webBundle",
+      "executor": "githubCI",
+      "buildRoutes": [
+        {
+          "id": "phaser-web",
+          "kind": "webBundle",
+          "producer": "ci",
+          "platform": "web",
+          "artifactName": "phaser-web.zip",
+          "proof": "actualRuntime",
+          "playable": true,
+          "executor": "githubCI",
+          "note": "Playable through the existing WebKit route. A qualified runtime baseline is recorded; changed source requires a new run."
+        },
+        {
+          "id": "phaser-source",
+          "kind": "sourceArchive",
+          "producer": "sourceArchive",
+          "platform": null,
+          "artifactName": "phaser-source.zip",
+          "proof": "sourceQualified",
+          "playable": false,
+          "executor": "onDevice",
+          "note": "Byte-preserving source snapshot of the exact saved revision; never presented as playable."
+        }
+      ],
+      "requiredArtifacts": [
+        "phaser-web.zip"
+      ],
+      "prerequisites": [
+        "node-lts:20.x"
+      ],
+      "status": "implementedSource+unexecutedExternalBuild",
+      "notes": [
+        "External build route is source-implemented but NOT executed in this source-only package; requires the listed toolchain/CI and a later native/CI window.",
+        "A self-contained Web export is served statically; npm source uses the reviewed script-web CI job, not local project scripts."
+      ],
+      "unexecutedExternalBuild": true,
+      "testEvidence": "static_check only; Swift contract tests source-ready, not executed"
+    },
+    {
+      "engine": "kaplay",
+      "runMode": "externalBuild",
+      "runRouteID": "external.web-bundle",
+      "externalKind": "webBundle",
+      "executor": "githubCI",
+      "buildRoutes": [
+        {
+          "id": "kaplay-web",
+          "kind": "webBundle",
+          "producer": "ci",
+          "platform": "web",
+          "artifactName": "kaplay-web.zip",
+          "proof": "actualRuntime",
+          "playable": true,
+          "executor": "githubCI",
+          "note": "Playable through the existing WebKit route. A qualified runtime baseline is recorded; changed source requires a new run."
+        },
+        {
+          "id": "kaplay-source",
+          "kind": "sourceArchive",
+          "producer": "sourceArchive",
+          "platform": null,
+          "artifactName": "kaplay-source.zip",
+          "proof": "sourceQualified",
+          "playable": false,
+          "executor": "onDevice",
+          "note": "Byte-preserving source snapshot of the exact saved revision; never presented as playable."
+        }
+      ],
+      "requiredArtifacts": [
+        "kaplay-web.zip"
+      ],
+      "prerequisites": [
+        "node-lts:20.x"
+      ],
+      "status": "implementedSource+unexecutedExternalBuild",
+      "notes": [
+        "External build route is source-implemented but NOT executed in this source-only package; requires the listed toolchain/CI and a later native/CI window.",
+        "A self-contained Web export is served statically; npm source uses the reviewed script-web CI job, not local project scripts."
+      ],
+      "unexecutedExternalBuild": true,
+      "testEvidence": "static_check only; Swift contract tests source-ready, not executed"
+    },
+    {
+      "engine": "babylon",
+      "runMode": "externalBuild",
+      "runRouteID": "external.web-bundle",
+      "externalKind": "webBundle",
+      "executor": "githubCI",
+      "buildRoutes": [
+        {
+          "id": "babylon-web",
+          "kind": "webBundle",
+          "producer": "ci",
+          "platform": "web",
+          "artifactName": "babylon-web.zip",
+          "proof": "actualRuntime",
+          "playable": true,
+          "executor": "githubCI",
+          "note": "Playable through the existing WebKit route. A qualified runtime baseline is recorded; changed source requires a new run."
+        },
+        {
+          "id": "babylon-source",
+          "kind": "sourceArchive",
+          "producer": "sourceArchive",
+          "platform": null,
+          "artifactName": "babylon-source.zip",
+          "proof": "sourceQualified",
+          "playable": false,
+          "executor": "onDevice",
+          "note": "Byte-preserving source snapshot of the exact saved revision; never presented as playable."
+        }
+      ],
+      "requiredArtifacts": [
+        "babylon-web.zip"
+      ],
+      "prerequisites": [
+        "node-lts:20.x"
+      ],
+      "status": "implementedSource+unexecutedExternalBuild",
+      "notes": [
+        "External build route is source-implemented but NOT executed in this source-only package; requires the listed toolchain/CI and a later native/CI window.",
+        "A self-contained Web export is served statically; npm source uses the reviewed script-web CI job, not local project scripts."
+      ],
+      "unexecutedExternalBuild": true,
+      "testEvidence": "static_check only; Swift contract tests source-ready, not executed"
+    },
+    {
+      "engine": "playcanvas",
+      "runMode": "externalBuild",
+      "runRouteID": "external.web-bundle",
+      "externalKind": "webBundle",
+      "executor": "githubCI",
+      "buildRoutes": [
+        {
+          "id": "playcanvas-web",
+          "kind": "webBundle",
+          "producer": "ci",
+          "platform": "web",
+          "artifactName": "playcanvas-web.zip",
+          "proof": "actualRuntime",
+          "playable": true,
+          "executor": "githubCI",
+          "note": "Playable through the existing WebKit route. A qualified runtime baseline is recorded; changed source requires a new run."
+        },
+        {
+          "id": "playcanvas-source",
+          "kind": "sourceArchive",
+          "producer": "sourceArchive",
+          "platform": null,
+          "artifactName": "playcanvas-source.zip",
+          "proof": "sourceQualified",
+          "playable": false,
+          "executor": "onDevice",
+          "note": "Byte-preserving source snapshot of the exact saved revision; never presented as playable."
+        }
+      ],
+      "requiredArtifacts": [
+        "playcanvas-web.zip"
+      ],
+      "prerequisites": [
+        "node-lts:20.x"
+      ],
+      "status": "implementedSource+unexecutedExternalBuild",
+      "notes": [
+        "External build route is source-implemented but NOT executed in this source-only package; requires the listed toolchain/CI and a later native/CI window.",
+        "A self-contained Web export is served statically; npm source uses the reviewed script-web CI job, not local project scripts."
+      ],
+      "unexecutedExternalBuild": true,
+      "testEvidence": "static_check only; Swift contract tests source-ready, not executed"
+    },
+    {
+      "engine": "ink",
+      "runMode": "narrativeAssembly",
+      "runRouteID": "narrative.ink",
+      "externalKind": null,
+      "executor": "onDevice",
+      "buildRoutes": [
+        {
+          "id": "ink-web",
+          "kind": "webBundle",
+          "producer": "hostExporter",
+          "platform": "web",
+          "artifactName": "ink-web.zip",
+          "proof": "actualExporterAndRuntime",
+          "playable": true,
+          "executor": "hostExporter",
+          "note": "Playable through the existing WebKit route. The narrative adapter/WebKit evidence covers the current source boundary."
+        },
+        {
+          "id": "ink-source",
+          "kind": "sourceArchive",
+          "producer": "sourceArchive",
+          "platform": null,
+          "artifactName": "ink-source.zip",
+          "proof": "sourceQualified",
+          "playable": false,
+          "executor": "onDevice",
+          "note": "Byte-preserving source snapshot of the exact saved revision; never presented as playable."
+        }
+      ],
+      "requiredArtifacts": [
+        "ink-web.zip"
+      ],
+      "prerequisites": [
+        "node-lts:20.x"
+      ],
+      "status": "existingAdapterOrOnDevice",
+      "notes": [],
+      "unexecutedExternalBuild": true,
+      "testEvidence": "static_check only; Swift contract tests source-ready, not executed"
+    },
+    {
+      "engine": "twine",
+      "runMode": "narrativeAssembly",
+      "runRouteID": "narrative.twine",
+      "externalKind": null,
+      "executor": "onDevice",
+      "buildRoutes": [
+        {
+          "id": "twine-web",
+          "kind": "webBundle",
+          "producer": "hostExporter",
+          "platform": "web",
+          "artifactName": "twine-web.zip",
+          "proof": "actualExporterAndRuntime",
+          "playable": true,
+          "executor": "hostExporter",
+          "note": "Playable through the existing WebKit route. The narrative adapter/WebKit evidence covers the current source boundary."
+        },
+        {
+          "id": "twine-source",
+          "kind": "sourceArchive",
+          "producer": "sourceArchive",
+          "platform": null,
+          "artifactName": "twine-source.zip",
+          "proof": "sourceQualified",
+          "playable": false,
+          "executor": "onDevice",
+          "note": "Byte-preserving source snapshot of the exact saved revision; never presented as playable."
+        }
+      ],
+      "requiredArtifacts": [
+        "twine-web.zip"
+      ],
+      "prerequisites": [
+        "node-lts:20.x"
+      ],
+      "status": "existingAdapterOrOnDevice",
+      "notes": [],
+      "unexecutedExternalBuild": true,
+      "testEvidence": "static_check only; Swift contract tests source-ready, not executed"
+    },
+    {
+      "engine": "wasm4",
+      "runMode": "narrativeAssembly",
+      "runRouteID": "narrative.wasm4",
+      "externalKind": null,
+      "executor": "onDevice",
+      "buildRoutes": [
+        {
+          "id": "wasm4-web",
+          "kind": "webBundle",
+          "producer": "hostExporter",
+          "platform": "web",
+          "artifactName": "wasm4-web.zip",
+          "proof": "actualExporterAndRuntime",
+          "playable": true,
+          "executor": "hostExporter",
+          "note": "Actual WASM-4 adapter artifact and WebKit run; runtime notices are retained."
+        },
+        {
+          "id": "wasm4-windows",
+          "kind": "nativeInstaller",
+          "producer": "ci",
+          "platform": "windows",
+          "artifactName": "wasm4-windows.exe",
+          "proof": "commandOnly",
+          "playable": true,
+          "executor": "githubCI",
+          "note": "Documented `w4 bundle --windows` executable; user CI must run it and verify the output."
+        },
+        {
+          "id": "wasm4-macos",
+          "kind": "nativeInstaller",
+          "producer": "ci",
+          "platform": "macOS",
+          "artifactName": "wasm4-macos",
+          "proof": "commandOnly",
+          "playable": true,
+          "executor": "githubCI",
+          "note": "Documented `w4 bundle --mac` executable; unsigned, user signs."
+        },
+        {
+          "id": "wasm4-linux",
+          "kind": "nativeInstaller",
+          "producer": "ci",
+          "platform": "linux",
+          "artifactName": "wasm4-linux",
+          "proof": "commandOnly",
+          "playable": true,
+          "executor": "githubCI",
+          "note": "Documented `w4 bundle --linux` executable; unsigned."
+        },
+        {
+          "id": "wasm4-source",
+          "kind": "sourceArchive",
+          "producer": "sourceArchive",
+          "platform": null,
+          "artifactName": "wasm4-source.zip",
+          "proof": "sourceQualified",
+          "playable": false,
+          "executor": "onDevice",
+          "note": "Byte-preserving source snapshot of the exact saved revision; never presented as playable."
+        }
+      ],
+      "requiredArtifacts": [
+        "wasm4-web.zip",
+        "wasm4-windows.exe",
+        "wasm4-macos",
+        "wasm4-linux"
+      ],
+      "prerequisites": [
+        "wasm4-cli:0.3.x or project pin"
+      ],
+      "status": "implementedSource+unexecutedExternalBuild",
+      "notes": [],
+      "unexecutedExternalBuild": true,
+      "testEvidence": "static_check only; Swift contract tests source-ready, not executed"
+    },
+    {
+      "engine": "tic80",
+      "runMode": "narrativeAssembly",
+      "runRouteID": "narrative.tic80",
+      "externalKind": null,
+      "executor": "onDevice",
+      "buildRoutes": [
+        {
+          "id": "tic80-web",
+          "kind": "webBundle",
+          "producer": "hostExporter",
+          "platform": "web",
+          "artifactName": "tic80-web.zip",
+          "proof": "actualExporterAndRuntime",
+          "playable": true,
+          "executor": "hostExporter",
+          "note": "Actual TIC-80 adapter artifact and WebKit trace/game-frame proof; the selected source/relink bundle is paired for distribution."
+        },
+        {
+          "id": "tic80-native",
+          "kind": "nativeInstaller",
+          "producer": "userEditor",
+          "platform": "windows",
+          "artifactName": "tic80-native.zip",
+          "proof": "userPrerequisite",
+          "playable": false,
+          "executor": "userEditor",
+          "note": "A TIC-80 standalone native export requires the user's licensed/installed TIC-80 toolchain; this plan does not fabricate one."
+        },
+        {
+          "id": "tic80-source",
+          "kind": "sourceArchive",
+          "producer": "sourceArchive",
+          "platform": null,
+          "artifactName": "tic80-source.zip",
+          "proof": "sourceQualified",
+          "playable": false,
+          "executor": "onDevice",
+          "note": "Byte-preserving source snapshot of the exact saved revision; never presented as playable."
+        }
+      ],
+      "requiredArtifacts": [
+        "tic80-web.zip",
+        "tic80-native.zip"
+      ],
+      "prerequisites": [
+        "tic80-editor:user-installed TIC-80 toolchain"
+      ],
+      "status": "existingAdapterOrOnDevice",
+      "notes": [],
+      "unexecutedExternalBuild": true,
+      "testEvidence": "static_check only; Swift contract tests source-ready, not executed"
+    },
+    {
+      "engine": "microStudio",
+      "runMode": "narrativeAssembly",
+      "runRouteID": "narrative.microStudio",
+      "externalKind": null,
+      "executor": "onDevice",
+      "buildRoutes": [
+        {
+          "id": "microstudio-web",
+          "kind": "webBundle",
+          "producer": "hostExporter",
+          "platform": "web",
+          "artifactName": "microstudio-web.zip",
+          "proof": "actualExporterAndRuntime",
+          "playable": true,
+          "executor": "hostExporter",
+          "note": "Actual microStudio adapter artifact and WebKit run; project source/assets retain their terms."
+        },
+        {
+          "id": "microStudio-source",
+          "kind": "sourceArchive",
+          "producer": "sourceArchive",
+          "platform": null,
+          "artifactName": "microStudio-source.zip",
+          "proof": "sourceQualified",
+          "playable": false,
+          "executor": "onDevice",
+          "note": "Byte-preserving source snapshot of the exact saved revision; never presented as playable."
+        }
+      ],
+      "requiredArtifacts": [
+        "microstudio-web.zip"
+      ],
+      "prerequisites": [
+        "microstudio-runtime:pinned adapter resource pack"
+      ],
+      "status": "existingAdapterOrOnDevice",
+      "notes": [],
+      "unexecutedExternalBuild": true,
+      "testEvidence": "static_check only; Swift contract tests source-ready, not executed"
+    },
+    {
+      "engine": "love",
+      "runMode": "portableAssembly",
+      "runRouteID": "portable.love-js",
+      "externalKind": null,
+      "executor": "mainLinuxShell",
+      "buildRoutes": [
+        {
+          "id": "love-web",
+          "kind": "webBundle",
+          "producer": "hostExporter",
+          "platform": "web",
+          "artifactName": "love-web.zip",
+          "proof": "actualExporterAndRuntime",
+          "playable": true,
+          "executor": "hostExporter",
+          "note": "Actual love.js artifact and WebKit run; cross-new-player acknowledged-close save proof retained. Distribution requires the paired source/relink bundle."
+        },
+        {
+          "id": "love-native",
+          "kind": "nativeInstaller",
+          "producer": "userEditor",
+          "platform": "windows",
+          "artifactName": "love-native.zip",
+          "proof": "userPrerequisite",
+          "playable": true,
+          "executor": "userEditor",
+          "note": "Package the `.love` file with the user's official LÖVE Windows runtime; Floe does not redistribute the runtime."
+        },
+        {
+          "id": "love-source",
+          "kind": "sourceArchive",
+          "producer": "sourceArchive",
+          "platform": null,
+          "artifactName": "love-source.zip",
+          "proof": "sourceQualified",
+          "playable": false,
+          "executor": "onDevice",
+          "note": "Byte-preserving source snapshot of the exact saved revision; never presented as playable."
+        }
+      ],
+      "requiredArtifacts": [
+        "love-web.zip",
+        "love-native.zip"
+      ],
+      "prerequisites": [
+        "love-runtime:11.4/11.5 user-supplied official runtime"
+      ],
+      "status": "existingAdapterOrOnDevice",
+      "notes": [],
+      "unexecutedExternalBuild": true,
+      "testEvidence": "static_check only; Swift contract tests source-ready, not executed"
+    },
+    {
+      "engine": "renpy",
+      "runMode": "portableAssembly",
+      "runRouteID": "portable.renpy-web",
+      "externalKind": null,
+      "executor": "mainLinuxShell",
+      "buildRoutes": [
+        {
+          "id": "renpy-web",
+          "kind": "webBundle",
+          "producer": "hostExporter",
+          "platform": "web",
+          "artifactName": "renpy-web.zip",
+          "proof": "actualExporterAndRuntime",
+          "playable": true,
+          "executor": "hostExporter",
+          "note": "Actual Ren'Py Web artifact and WebKit opening/choice proof; distribution requires the paired source/relink bundle; durable new-player engine saves are not claimed."
+        },
+        {
+          "id": "renpy-windows",
+          "kind": "nativeInstaller",
+          "producer": "userEditor",
+          "platform": "windows",
+          "artifactName": "renpy-windows.zip",
+          "proof": "userPrerequisite",
+          "playable": true,
+          "executor": "userEditor",
+          "note": "Official Ren'Py SDK distribution build; user supplies the SDK and signing/distribution choice."
+        },
+        {
+          "id": "renpy-macos",
+          "kind": "nativeInstaller",
+          "producer": "userEditor",
+          "platform": "macOS",
+          "artifactName": "renpy-macos.zip",
+          "proof": "userPrerequisite",
+          "playable": true,
+          "executor": "userEditor",
+          "note": "Official Ren'Py SDK macOS app zip; user signs for Gatekeeper."
+        },
+        {
+          "id": "renpy-linux",
+          "kind": "nativeInstaller",
+          "producer": "userEditor",
+          "platform": "linux",
+          "artifactName": "renpy-linux.zip",
+          "proof": "userPrerequisite",
+          "playable": true,
+          "executor": "userEditor",
+          "note": "Official Ren'Py SDK Linux distribution tar/zip; user distributes under Ren'Py's terms."
+        },
+        {
+          "id": "renpy-source",
+          "kind": "sourceArchive",
+          "producer": "sourceArchive",
+          "platform": null,
+          "artifactName": "renpy-source.zip",
+          "proof": "sourceQualified",
+          "playable": false,
+          "executor": "onDevice",
+          "note": "Byte-preserving source snapshot of the exact saved revision; never presented as playable."
+        }
+      ],
+      "requiredArtifacts": [
+        "renpy-web.zip",
+        "renpy-windows.zip",
+        "renpy-macos.zip",
+        "renpy-linux.zip"
+      ],
+      "prerequisites": [
+        "renpy-sdk:8.5.3.26051504 or project version"
+      ],
+      "status": "existingAdapterOrOnDevice",
+      "notes": [],
+      "unexecutedExternalBuild": true,
+      "testEvidence": "static_check only; Swift contract tests source-ready, not executed"
+    },
+    {
+      "engine": "rpgMakerXP",
+      "runMode": "guestRuntime",
+      "runRouteID": "guest.rgss-rpgMakerXP",
+      "externalKind": null,
+      "executor": "mainLinuxShell",
+      "buildRoutes": [
+        {
+          "id": "rpgmakerxp-windows",
+          "kind": "nativeInstaller",
+          "producer": "userEditor",
+          "platform": "windows",
+          "artifactName": "rpgmakerxp-windows.zip",
+          "proof": "userPrerequisite",
+          "playable": true,
+          "executor": "userEditor",
+          "note": "Package the user's licensed RGSS player/RTP and project files; no runtime is redistributed. The private RGSS guest has no built binary and is not claimed."
+        },
+        {
+          "id": "rpgmakerxp-source",
+          "kind": "sourceArchive",
+          "producer": "sourceArchive",
+          "platform": null,
+          "artifactName": "rpgmakerxp-source.zip",
+          "proof": "sourceQualified",
+          "playable": false,
+          "executor": "onDevice",
+          "note": "Byte-preserving source snapshot of the exact saved revision; never presented as playable."
+        }
+      ],
+      "requiredArtifacts": [
+        "rpgmakerxp-windows.zip"
+      ],
+      "prerequisites": [
+        "rpgmakerxp-editor:user-licensed editor"
+      ],
+      "status": "existingAdapterOrOnDevice",
+      "notes": [
+        "No Web engine is claimed; the imported RGSS project needs a guest/native RGSS runtime. Source is preserved."
+      ],
+      "unexecutedExternalBuild": false,
+      "testEvidence": "static_check; on-device path has no external execution"
+    },
+    {
+      "engine": "rpgMakerVX",
+      "runMode": "guestRuntime",
+      "runRouteID": "guest.rgss-rpgMakerVX",
+      "externalKind": null,
+      "executor": "mainLinuxShell",
+      "buildRoutes": [
+        {
+          "id": "rpgmakervx-windows",
+          "kind": "nativeInstaller",
+          "producer": "userEditor",
+          "platform": "windows",
+          "artifactName": "rpgmakervx-windows.zip",
+          "proof": "userPrerequisite",
+          "playable": true,
+          "executor": "userEditor",
+          "note": "Package the user's licensed RGSS2 player/RTP and project files; no runtime is redistributed."
+        },
+        {
+          "id": "rpgmakervx-source",
+          "kind": "sourceArchive",
+          "producer": "sourceArchive",
+          "platform": null,
+          "artifactName": "rpgmakervx-source.zip",
+          "proof": "sourceQualified",
+          "playable": false,
+          "executor": "onDevice",
+          "note": "Byte-preserving source snapshot of the exact saved revision; never presented as playable."
+        }
+      ],
+      "requiredArtifacts": [
+        "rpgmakervx-windows.zip"
+      ],
+      "prerequisites": [
+        "rpgmakervx-editor:user-licensed editor"
+      ],
+      "status": "existingAdapterOrOnDevice",
+      "notes": [
+        "No Web engine is claimed; the imported RGSS project needs a guest/native RGSS runtime. Source is preserved."
+      ],
+      "unexecutedExternalBuild": false,
+      "testEvidence": "static_check; on-device path has no external execution"
+    },
+    {
+      "engine": "rpgMakerVXAce",
+      "runMode": "guestRuntime",
+      "runRouteID": "guest.rgss-rpgMakerVXAce",
+      "externalKind": null,
+      "executor": "mainLinuxShell",
+      "buildRoutes": [
+        {
+          "id": "rpgmakervxace-windows",
+          "kind": "nativeInstaller",
+          "producer": "userEditor",
+          "platform": "windows",
+          "artifactName": "rpgmakervxace-windows.zip",
+          "proof": "userPrerequisite",
+          "playable": true,
+          "executor": "userEditor",
+          "note": "Package the user's licensed RGSS3 player/RTP and project files; no runtime is redistributed."
+        },
+        {
+          "id": "rpgmakervxace-source",
+          "kind": "sourceArchive",
+          "producer": "sourceArchive",
+          "platform": null,
+          "artifactName": "rpgmakervxace-source.zip",
+          "proof": "sourceQualified",
+          "playable": false,
+          "executor": "onDevice",
+          "note": "Byte-preserving source snapshot of the exact saved revision; never presented as playable."
+        }
+      ],
+      "requiredArtifacts": [
+        "rpgmakervxace-windows.zip"
+      ],
+      "prerequisites": [
+        "rpgmakervxace-editor:user-licensed editor"
+      ],
+      "status": "existingAdapterOrOnDevice",
+      "notes": [
+        "No Web engine is claimed; the imported RGSS project needs a guest/native RGSS runtime. Source is preserved."
+      ],
+      "unexecutedExternalBuild": false,
+      "testEvidence": "static_check; on-device path has no external execution"
+    },
+    {
+      "engine": "rpgMakerMV",
+      "runMode": "portableAssembly",
+      "runRouteID": "portable.mv",
+      "externalKind": null,
+      "executor": "onDevice",
+      "buildRoutes": [
+        {
+          "id": "rpgmakermv-web",
+          "kind": "webBundle",
+          "producer": "hostExporter",
+          "platform": "web",
+          "artifactName": "rpgmakermv-web.zip",
+          "proof": "actualExporterAndRuntime",
+          "playable": true,
+          "executor": "hostExporter",
+          "note": "Actual portable-kit Web assembly/runtime with the official MIT CoreScript; user project assets/data retain their terms."
+        },
+        {
+          "id": "rpgmakermv-windows",
+          "kind": "nativeInstaller",
+          "producer": "userEditor",
+          "platform": "windows",
+          "artifactName": "rpgmakermv-windows.zip",
+          "proof": "userPrerequisite",
+          "playable": true,
+          "executor": "userEditor",
+          "note": "RPG Maker MV Windows deployment must be produced by the user's licensed editor; no NW.js runtime is redistributed."
+        },
+        {
+          "id": "rpgmakermv-source",
+          "kind": "sourceArchive",
+          "producer": "sourceArchive",
+          "platform": null,
+          "artifactName": "rpgmakermv-source.zip",
+          "proof": "sourceQualified",
+          "playable": false,
+          "executor": "onDevice",
+          "note": "Byte-preserving source snapshot of the exact saved revision; never presented as playable."
+        }
+      ],
+      "requiredArtifacts": [
+        "rpgmakermv-web.zip",
+        "rpgmakermv-windows.zip"
+      ],
+      "prerequisites": [
+        "rpgmakermv-editor:user-licensed editor for native deployment"
+      ],
+      "status": "existingAdapterOrOnDevice",
+      "notes": [
+        "Web assembly uses the existing MIT CoreScript/on-device MV assembler; native deployment remains a user-editor route."
+      ],
+      "unexecutedExternalBuild": true,
+      "testEvidence": "static_check only; Swift contract tests source-ready, not executed"
+    },
+    {
+      "engine": "rpgMakerMZ",
+      "runMode": "externalBuild",
+      "runRouteID": "external.rpgmaker-mz-web",
+      "externalKind": "rpgMakerMZWeb",
+      "executor": "userEditor",
+      "buildRoutes": [
+        {
+          "id": "rpgmakermz-web",
+          "kind": "webBundle",
+          "producer": "hostExporter",
+          "platform": "web",
+          "artifactName": "rpgmakermz-web.zip",
+          "proof": "sourceQualified",
+          "playable": true,
+          "executor": "userEditor",
+          "note": "Only a project that already carries the user's official MZ Web deployment is packaged; otherwise the user must export from their licensed editor. No MZ runtime is redistributed."
+        },
+        {
+          "id": "rpgmakermz-windows",
+          "kind": "nativeInstaller",
+          "producer": "userEditor",
+          "platform": "windows",
+          "artifactName": "rpgmakermz-windows.zip",
+          "proof": "userPrerequisite",
+          "playable": true,
+          "executor": "userEditor",
+          "note": "User-licensed editor deployment; no runtime is redistributed."
+        },
+        {
+          "id": "rpgmakermz-source",
+          "kind": "sourceArchive",
+          "producer": "sourceArchive",
+          "platform": null,
+          "artifactName": "rpgmakermz-source.zip",
+          "proof": "sourceQualified",
+          "playable": false,
+          "executor": "onDevice",
+          "note": "Byte-preserving source snapshot of the exact saved revision; never presented as playable."
+        }
+      ],
+      "requiredArtifacts": [
+        "rpgmakermz-web.zip",
+        "rpgmakermz-windows.zip"
+      ],
+      "prerequisites": [
+        "rpgmakermz-editor:user-licensed editor"
+      ],
+      "status": "implementedSource+unexecutedExternalBuild",
+      "notes": [
+        "External build route is source-implemented but NOT executed in this source-only package; requires the listed toolchain/CI and a later native/CI window.",
+        "MZ Web needs a user-supplied licensed deployment tool; no engine/runtime is bundled or downloaded."
+      ],
+      "unexecutedExternalBuild": true,
+      "testEvidence": "static_check only; Swift contract tests source-ready, not executed"
+    }
+  ],
+  "notes": [
+    "Generated from build-routes.v1.json; routes/artifacts are catalog-identical.",
+    "No external engine build, CI dispatch, SDK download or device run is claimed by this matrix.",
+    "executor=mainLinuxShell means the Main binding runs through LocalShellService + ToolEnvironmentRouting with a real saved run/lease.",
+    "executor=githubCI means GitHubActionsBuildCIAdapter with an immutable source snapshot and provenance verification.",
+    "executor=onDevice means deterministic byte copy/assembly with no process execution.",
+    "executor=userEditor/userEditor means a user-supplied licensed tool is required; Floe does not bundle or fake it."
+  ]
+}

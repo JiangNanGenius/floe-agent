@@ -781,7 +781,7 @@ struct ThreadDetailView: View {
                            return false
                        }),
                        let runID = viewModel.selectedRun?.id,
-                       timerCardLegacyAnswerID(runID: runID) == nil {
+                       legacyAnswerID(runID: runID) == nil {
                         let timerProjection = InlineTimerBodyProjection.project(
                             text: "", events: viewModel.eventsByRun[runID] ?? [], isStreaming: true)
                         if !timerProjection.isEmpty {
@@ -963,14 +963,14 @@ struct ThreadDetailView: View {
             let searchRanges = searchQuery.ranges(in: visibleSearchText)
             // Bind timer creations to this exact durable answer. Search rows
             // flatten the body and get no cards.
+            let owningRunID = answerRunID(persisted: persisted, idSuffix: idSuffix)
             #if canImport(AlarmKit)
-            let timerRunID = timerCardRunID(persisted: persisted, idSuffix: idSuffix)
             let timerProjection: [InlineTimerCardSource] = searchRanges.isEmpty
                 ? InlineTimerBodyProjection.project(
                     text: text,
-                    events: timerRunID.flatMap { viewModel.eventsByRun[$0] } ?? [],
+                    events: owningRunID.flatMap { viewModel.eventsByRun[$0] } ?? [],
                     answerID: UUID(uuidString: idSuffix),
-                    legacyAnswerID: timerRunID.flatMap { timerCardLegacyAnswerID(runID: $0) })
+                    legacyAnswerID: owningRunID.flatMap { legacyAnswerID(runID: $0) })
                 : []
             #endif
             Group {
@@ -1009,6 +1009,13 @@ struct ThreadDetailView: View {
             #if canImport(AlarmKit)
             .environment(\.inlineTimerProjection, timerProjection)
             #endif
+            if searchRanges.isEmpty, let owningRunID, let answerID = UUID(uuidString: idSuffix),
+               let run = viewModel.runs.first(where: { $0.id == owningRunID }),
+               RunStateLocalizer.isTerminal(run.state),
+               (FinalAnswerSpeech.answer(runID: owningRunID, events: viewModel.eventsByRun[owningRunID] ?? [],
+                                         messages: viewModel.messages)?.id ?? legacyAnswerID(runID: owningRunID)) == answerID {
+                RunFileChangesDisclosure(runID: owningRunID, conversationID: run.conversationID)
+            }
 
         case .event(let event):
             ThreadEventView(
@@ -1084,11 +1091,10 @@ struct ThreadDetailView: View {
         }
     }
 
-    #if canImport(AlarmKit)
     /// Read only the body's proven loaded run. An unbound legacy message
     /// may adopt timers only when it is one run's actual terminal fallback;
     /// arbitrary task-level messages never borrow the selected run.
-    private func timerCardRunID(persisted: PersistedMessage?, idSuffix: String) -> UUID? {
+    private func answerRunID(persisted: PersistedMessage?, idSuffix: String) -> UUID? {
         if let runID = persisted?.runID { return runID }
         if let eventID = UUID(uuidString: idSuffix),
            let found = viewModel.eventsByRun.first(where: { _, events in
@@ -1097,14 +1103,14 @@ struct ThreadDetailView: View {
             return found
         }
         guard let messageID = persisted?.id else { return nil }
-        let legacyRuns = viewModel.runs.filter { timerCardLegacyAnswerID(runID: $0.id) == messageID }
+        let legacyRuns = viewModel.runs.filter { legacyAnswerID(runID: $0.id) == messageID }
         return legacyRuns.count == 1 ? legacyRuns.first?.id : nil
     }
 
     /// Match ThreadTimeline's legacy fallback selection from already-loaded
     /// state: terminal run, no rendered assistantText, then its last bound
     /// non-interactive assistant message or last unbound message in its window.
-    private func timerCardLegacyAnswerID(runID: UUID) -> UUID? {
+    private func legacyAnswerID(runID: UUID) -> UUID? {
         guard let run = viewModel.runs.first(where: { $0.id == runID }),
               RunStateLocalizer.isTerminal(run.state) else { return nil }
         let events = viewModel.eventsByRun[runID] ?? []
@@ -1126,7 +1132,6 @@ struct ThreadDetailView: View {
         guard let latest = candidates.last, !latest.content.isEmpty else { return nil }
         return latest.id
     }
-    #endif
 
     // MARK: - State toolbar (status + Stop/Retry + inspector)
 

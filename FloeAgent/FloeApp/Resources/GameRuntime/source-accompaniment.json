@@ -1,0 +1,1198 @@
+{
+  "generatedFrom": "portable-mpl distribution lock, exact source packages and validated source bundles",
+  "kind": "floe-game-runtime-source-accompaniment",
+  "limits": [
+    "This catalog is product metadata, not a legal opinion or Apple/App Store approval.",
+    "No source package, source bundle or archive is bundled in the default App payload.",
+    "Unpublished source material must not be treated as delivered by the presence of this catalog.",
+    "The LGPL components are statically linked in WASM; no dynamic-link or process-split exemption is claimed."
+  ],
+  "packs": {
+    "babylon-9.35.0": {
+      "distributionLockSHA256": null,
+      "engines": [
+        "babylon"
+      ],
+      "helperSources": [],
+      "licenses": [
+        {
+          "bundled": true,
+          "bytes": 9226,
+          "path": "licenses/ENGINE.txt",
+          "sha256": "9362ea9ea17cb221a20cbbd63f404710834cc273d2a9a7b60314fd68ab702cd6"
+        },
+        {
+          "bundled": true,
+          "bytes": 46,
+          "path": "licenses/NOTICE.md",
+          "sha256": "225463efd81558f120a6e0cdd7f4c1007ed486006d1228c4849fee0c49715823"
+        }
+      ],
+      "packID": "babylon-9.35.0",
+      "pairedSourceID": null,
+      "profileID": null,
+      "publication": {
+        "detail": "Reviewed Apache-2.0 runtime pack; the exact license and NOTICE travel in the signed pack. No LGPL source/relink obligation applies.",
+        "distributionReady": false,
+        "publicURL": null,
+        "state": "apache-runtime-only",
+        "writtenOfferCreated": false
+      },
+      "relink": [],
+      "sourceBundle": null,
+      "sourceFiles": [],
+      "sourcePackages": []
+    },
+    "kaplay-3001.0.0": {
+      "distributionLockSHA256": null,
+      "engines": [
+        "kaplay"
+      ],
+      "helperSources": [],
+      "licenses": [
+        {
+          "bundled": true,
+          "bytes": 1072,
+          "path": "licenses/ENGINE.txt",
+          "sha256": "4d8513caec72ba8f202fa550f10de67bef19fc9ab8739403bd6d76d7788247d9"
+        }
+      ],
+      "packID": "kaplay-3001.0.0",
+      "pairedSourceID": null,
+      "profileID": null,
+      "publication": {
+        "detail": "Reviewed MIT runtime pack; the exact upstream notice travels in the signed pack. No LGPL source/relink obligation applies.",
+        "distributionReady": false,
+        "publicURL": null,
+        "state": "mit-runtime-only",
+        "writtenOfferCreated": false
+      },
+      "relink": [],
+      "sourceBundle": null,
+      "sourceFiles": [],
+      "sourcePackages": []
+    },
+    "lovejs-11.4.1": {
+      "distributionLockSHA256": "f7d2d360606303ee47936cd5d44fa6fe903c6ce5f484247d29593cac65aa7d28",
+      "engines": [
+        "love"
+      ],
+      "helperSources": [
+        {
+          "bytes": 2009,
+          "path": "Scripts/Distribution/README.md",
+          "sha256": "7bc2e890694217f52615f5cf9cd297b462438e28a4a196144f3dbfee627c07a0"
+        },
+        {
+          "bytes": 20831,
+          "path": "Scripts/Distribution/check_distribution.py",
+          "sha256": "24824625d6c26c0d8e04d56881c72eb400c5fb78fab564b8f6f69dd26e18441f"
+        },
+        {
+          "bytes": 102646,
+          "path": "Scripts/Distribution/distribution-lock.json",
+          "sha256": "f7d2d360606303ee47936cd5d44fa6fe903c6ce5f484247d29593cac65aa7d28"
+        },
+        {
+          "bytes": 1734,
+          "path": "Scripts/Distribution/patches/love/EmscriptenPersistence.js",
+          "sha256": "aa76c4655dbf3848158e0a4738c37fc5eb5733519a70b3606bb571cdce9c96be"
+        },
+        {
+          "bytes": 507,
+          "path": "Scripts/Distribution/patches/love/EmscriptenPersistence.js.orig",
+          "sha256": "2176225739b95988edef11554233e6d6eb7a2a4ff78375b9021c5a482f4227de"
+        },
+        {
+          "bytes": 1392,
+          "path": "Scripts/Distribution/patches/love/EmscriptenPersistence.js.patch",
+          "sha256": "2720cdba6c9179137cdbe5957c7a4516542b6c49f30c5a3be5172dabee45e1f4"
+        },
+        {
+          "bytes": 4361,
+          "path": "Scripts/Distribution/patches/love/LOVE-PERSISTENCE.md",
+          "sha256": "443af8f5471b094bf35af0e6a5a16c69fa30f68066dee4b94fcd71126195cba7"
+        },
+        {
+          "bytes": 3032,
+          "path": "Scripts/Distribution/patches/love/floe-persist.js",
+          "sha256": "af79a82d4279ba6a8c7378e45dcb0cdd1ab139ce72db7be92f95bd51cf99eb51"
+        }
+      ],
+      "licenses": [
+        {
+          "bundled": true,
+          "bytes": 5093,
+          "path": "licenses/EMSCRIPTEN-2.0.0-LICENSE.txt",
+          "sha256": "620a78084fc7ca97c0b5dea9abf891f3ffcadfdbf305276f099c9c4e12fc1d86"
+        },
+        {
+          "bundled": true,
+          "bytes": 1060,
+          "path": "licenses/ENET-MIT.txt",
+          "sha256": "678ecf38808fd8cdfe0d07ae2edde62d99f00c96b59357e3334042d28cedd4e5"
+        },
+        {
+          "bundled": true,
+          "bytes": 16726,
+          "path": "licenses/FLOE-MPL-2.0.txt",
+          "sha256": "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04"
+        },
+        {
+          "bundled": true,
+          "bytes": 369,
+          "path": "licenses/FLOE-PERSISTENCE-NOTICE.txt",
+          "sha256": "7817fef9be26e44f85ff36bb3536e664b97e82ffdd30e68f6a2aa7ed42026eae"
+        },
+        {
+          "bundled": true,
+          "bytes": 2100,
+          "path": "licenses/FLOE-love_persistence_patch.py",
+          "sha256": "e678aa5191f9ed39591c27fedd11e7e3242e638dfa2afbb519653e6cd78ef2ef"
+        },
+        {
+          "bundled": true,
+          "bytes": 6742,
+          "path": "licenses/FREETYPE-2.8.1-FTL.txt",
+          "sha256": "4a9a548027a2c1d37788519dea833294c9c81f1ebc280e817f41f50d0c642d78"
+        },
+        {
+          "bundled": true,
+          "bytes": 57,
+          "path": "licenses/LIBMODPLUG-0.8.8.4-COPYING.txt",
+          "sha256": "49942e7b3b175f549e751feb08b5270ca6f6c5fb7a1be9f9517db275ec32c92e"
+        },
+        {
+          "bundled": true,
+          "bytes": 1466,
+          "path": "licenses/LIBOGG-1.3.2-COPYING.txt",
+          "sha256": "d2ab5758336489da61c12cc5bb757da5339c4ae9001f9bb0562b4370249af814"
+        },
+        {
+          "bundled": true,
+          "bytes": 1470,
+          "path": "licenses/LIBTHEORA-1.1.1-COPYING.txt",
+          "sha256": "8417fad7da775735564e209484a2e011e0fa201e94f01fdbee6e4977e478e6fc"
+        },
+        {
+          "bundled": true,
+          "bytes": 1470,
+          "path": "licenses/LIBVORBIS-1.3.5-COPYING.txt",
+          "sha256": "5c0905d21494102e4d579a3c42216f8de1c2ac738443db4f189f93a01ca31a93"
+        },
+        {
+          "bundled": true,
+          "bytes": 9330,
+          "path": "licenses/LOVE-11.4-COMPONENT-ADDENDUM.md",
+          "sha256": "2602226576f929b4681ec34532ba6939d222590e2a04f81776e6dacee2089161"
+        },
+        {
+          "bundled": true,
+          "bytes": 67058,
+          "path": "licenses/LOVE-11.4-LICENSE.txt",
+          "sha256": "4605993b18eb43800ca12ac7fe904c040f9ab39c5e5616dd02eb1ed4ed47deac"
+        },
+        {
+          "bundled": true,
+          "bytes": 1528,
+          "path": "licenses/LUA-5.1.5-COPYRIGHT.txt",
+          "sha256": "ee5e3e82af1e1b543c4f216e399d7c8cfee797711913f349e385101c4ae60a79"
+        },
+        {
+          "bundled": true,
+          "bytes": 2935,
+          "path": "licenses/LUAJIT-2.1.0-COPYRIGHT.txt",
+          "sha256": "43fc251179d900f9948e51dd3cc93733d1219f2db060faaa0c8100ad054f54d8"
+        },
+        {
+          "bundled": true,
+          "bytes": 40718,
+          "path": "licenses/MPG123-1.25.6-COPYING.txt",
+          "sha256": "f40e0dd86b27b52e429b693a87b3ca63ae0a98a4d142e77207aa6bdf1db7a295"
+        },
+        {
+          "bundled": true,
+          "bytes": 23330,
+          "path": "licenses/OPENAL-SOFT-1.19.1-COPYING.txt",
+          "sha256": "d808ce217e5b611854da622b57ec29fe545584c48bc5352fae72a4b6e5074a15"
+        },
+        {
+          "bundled": true,
+          "bytes": 1737,
+          "path": "licenses/README-PREPARED.md",
+          "sha256": "dc6f89918c14c4dd418f5b29466a0a828e5b969ec2f4db170456b143f76d223a"
+        },
+        {
+          "bundled": true,
+          "bytes": 930,
+          "path": "licenses/SDL2-2.0.10-COPYING.txt",
+          "sha256": "a7c8d0b3167c502921192585a582eb8477ad9862330f4d8b9e4a8bb4c1a9d29e"
+        },
+        {
+          "bundled": true,
+          "bytes": 1329,
+          "path": "licenses/ZLIB-1.2.11-LICENSE.txt",
+          "sha256": "5b305a8fcbfac28f3238dfe6db82016dbc72b986be3034e843648f89ffc2bfb5"
+        },
+        {
+          "bundled": true,
+          "bytes": 1082,
+          "path": "licenses/love.js-MIT.txt",
+          "sha256": "a5c6a1286581e6a104f81647835791b7ec4148dcf1951633d23fcb3198f7c7fb"
+        }
+      ],
+      "packID": "lovejs-11.4.1",
+      "pairedSourceID": "love-runtime-and-source-2",
+      "profileID": "portable-love",
+      "publication": {
+        "detail": "Exact source packages and source bundle are validated local bytes only. Publish them with the runtime or provide an LGPL-2.1 section 6(c) written offer before claiming distribution readiness.",
+        "distributionReady": false,
+        "publicURL": null,
+        "state": "unpublished",
+        "writtenOfferCreated": false
+      },
+      "relink": [
+        {
+          "bytes": 3042,
+          "path": "love/RELINK.md",
+          "sha256": "570749fdc5c6ba19a077e7c48dccea52ace82d1e960f28e002b82d19fba8abf5"
+        }
+      ],
+      "sourceBundle": {
+        "bytes": 65677333,
+        "fileCount": 425,
+        "id": "love-runtime-and-source-2.zip",
+        "sha256": "53ba7351dcc12c9bf3136e444926edd18549aadd84dfa580240b19fe6a1888d9",
+        "verifiedSourceFiles": 25
+      },
+      "sourcePackages": [
+        {
+          "bytes": 5093,
+          "path": "love/EMSCRIPTEN-2.0.0-LICENSE.txt",
+          "sha256": "620a78084fc7ca97c0b5dea9abf891f3ffcadfdbf305276f099c9c4e12fc1d86"
+        },
+        {
+          "bytes": 1060,
+          "path": "love/ENET-MIT.txt",
+          "sha256": "678ecf38808fd8cdfe0d07ae2edde62d99f00c96b59357e3334042d28cedd4e5"
+        },
+        {
+          "bytes": 6742,
+          "path": "love/FREETYPE-2.8.1-FTL.txt",
+          "sha256": "4a9a548027a2c1d37788519dea833294c9c81f1ebc280e817f41f50d0c642d78"
+        },
+        {
+          "bytes": 57,
+          "path": "love/LIBMODPLUG-0.8.8.4-COPYING.txt",
+          "sha256": "49942e7b3b175f549e751feb08b5270ca6f6c5fb7a1be9f9517db275ec32c92e"
+        },
+        {
+          "bytes": 1466,
+          "path": "love/LIBOGG-1.3.2-COPYING.txt",
+          "sha256": "d2ab5758336489da61c12cc5bb757da5339c4ae9001f9bb0562b4370249af814"
+        },
+        {
+          "bytes": 1470,
+          "path": "love/LIBTHEORA-1.1.1-COPYING.txt",
+          "sha256": "8417fad7da775735564e209484a2e011e0fa201e94f01fdbee6e4977e478e6fc"
+        },
+        {
+          "bytes": 1470,
+          "path": "love/LIBVORBIS-1.3.5-COPYING.txt",
+          "sha256": "5c0905d21494102e4d579a3c42216f8de1c2ac738443db4f189f93a01ca31a93"
+        },
+        {
+          "bytes": 67058,
+          "path": "love/LOVE-11.4-LICENSE.txt",
+          "sha256": "4605993b18eb43800ca12ac7fe904c040f9ab39c5e5616dd02eb1ed4ed47deac"
+        },
+        {
+          "bytes": 1082,
+          "path": "love/LOVE.JS-MIT.txt",
+          "sha256": "a5c6a1286581e6a104f81647835791b7ec4148dcf1951633d23fcb3198f7c7fb"
+        },
+        {
+          "bytes": 1528,
+          "path": "love/LUA-5.1.5-COPYRIGHT.txt",
+          "sha256": "ee5e3e82af1e1b543c4f216e399d7c8cfee797711913f349e385101c4ae60a79"
+        },
+        {
+          "bytes": 2935,
+          "path": "love/LUAJIT-2.1.0-COPYRIGHT.txt",
+          "sha256": "43fc251179d900f9948e51dd3cc93733d1219f2db060faaa0c8100ad054f54d8"
+        },
+        {
+          "bytes": 40718,
+          "path": "love/MPG123-1.25.6-COPYING.txt",
+          "sha256": "f40e0dd86b27b52e429b693a87b3ca63ae0a98a4d142e77207aa6bdf1db7a295"
+        },
+        {
+          "bytes": 487454,
+          "path": "love/MPG123-MEGASOURCE-DELTA.diff",
+          "sha256": "2c2fb1465ce82ef4caabd93e8b3f2fa03d389ee28900cd8e36513dc16a7b35dc"
+        },
+        {
+          "bytes": 23330,
+          "path": "love/OPENAL-SOFT-1.19.1-COPYING.txt",
+          "sha256": "d808ce217e5b611854da622b57ec29fe545584c48bc5352fae72a4b6e5074a15"
+        },
+        {
+          "bytes": 930,
+          "path": "love/SDL2-2.0.10-COPYING.txt",
+          "sha256": "a7c8d0b3167c502921192585a582eb8477ad9862330f4d8b9e4a8bb4c1a9d29e"
+        },
+        {
+          "bytes": 6687747,
+          "path": "love/SDL2-version_22.zip",
+          "sha256": "500d5d73e4405c07ebd05ed64555058f1c2d2ca20c0b637728477556baf1dcde"
+        },
+        {
+          "bytes": 1329,
+          "path": "love/ZLIB-1.2.11-LICENSE.txt",
+          "sha256": "5b305a8fcbfac28f3238dfe6db82016dbc72b986be3034e843648f89ffc2bfb5"
+        },
+        {
+          "bytes": 5187,
+          "path": "love/ZLIB-1.2.11-README.txt",
+          "sha256": "7960b6b1cc63e619abb77acaea5427159605afee8c8b362664f4effc7d7f7d15"
+        },
+        {
+          "bytes": 3629686,
+          "path": "love/davidobot-love-a79ab87.tar.gz",
+          "sha256": "332228dcadb9a373c1c35d40e67db1907d9111da0933208eaaeecc183ac8467e"
+        },
+        {
+          "bytes": 18556784,
+          "path": "love/davidobot-megasource-b1faef45.tar.gz",
+          "sha256": "67edb387bbd4e12b0225a0a1857245a40c802fb304e04bd7341a8d4bb9795467"
+        },
+        {
+          "bytes": 6560275,
+          "path": "love/love.js-11.4.1.tgz",
+          "sha256": "9eb2db1f789254faed8e5cf7eeeded46a7e56ecbc931c88be809526c448d25fb"
+        },
+        {
+          "bytes": 4612895,
+          "path": "love/lovejs-8f9a7b85.tar.gz",
+          "sha256": "b4d3733c2fd00bd49ecc90b10146c51fbe19010c8c58da974975856e091355d9"
+        },
+        {
+          "bytes": 953389,
+          "path": "love/mpg123-1.25.6-megasource.tar.gz",
+          "sha256": "69ab144133efa88014f3994e09d6e56265e7c5a4e1d131a61e96e68e39f6777f"
+        },
+        {
+          "bytes": 919169,
+          "path": "love/mpg123-1.25.6.tar.bz2",
+          "sha256": "0f0458c9b87799bc2c9bf9455279cc4d305e245db43b51a39ef27afe025c5a8e"
+        }
+      ]
+    },
+    "narrative-runtime": {
+      "distributionLockSHA256": null,
+      "engines": [
+        "ink",
+        "twine",
+        "wasm4",
+        "tic80",
+        "microStudio"
+      ],
+      "helperSources": [],
+      "licenses": [
+        {
+          "bundled": true,
+          "bytes": 1121,
+          "path": "inkjs/LICENSE.inkjs.txt",
+          "sha256": "040e957a77e3e19432e265cb549d5c3b4ca6f3551e24d22b81785ffd1bc2b67b"
+        },
+        {
+          "bundled": true,
+          "bytes": 1074,
+          "path": "microstudio/LICENSE.microstudio.txt",
+          "sha256": "0089ad4274aa599e2809e721a580e8f652a6a0397875f82fe12a2877db12d602"
+        },
+        {
+          "bundled": true,
+          "bytes": 1341,
+          "path": "sugarcube/LICENSE.sugarcube.txt",
+          "sha256": "bb227ad97f6422347e1e64ad9211d40215e92edf47940c1382973c2a27eb8b27"
+        },
+        {
+          "bundled": true,
+          "bytes": 13282,
+          "path": "sugarcube/THIRD-PARTY-NOTICES.txt",
+          "sha256": "ccfc10de3c1ea3c1fa7c49473b1ef79d51f251febde5e763b86f5a4be9e81a1c"
+        },
+        {
+          "bundled": true,
+          "bytes": 1114,
+          "path": "sugarcube/licenses/es5-shim-4.5.14-LICENSE.txt",
+          "sha256": "68f7e459f79180b490520f06eddb1715650d5f1af5583ff3f8447e795b2a6a2f"
+        },
+        {
+          "bundled": true,
+          "bytes": 1381,
+          "path": "sugarcube/licenses/es6-shim-0.35.4-LICENSE.txt",
+          "sha256": "ac03daa0b0495dcff2c6c6541a2b5808c32ea14ddf8804709dcfdb3f7a46543e"
+        },
+        {
+          "bundled": true,
+          "bytes": 1097,
+          "path": "sugarcube/licenses/jquery-3.7.1-LICENSE.txt",
+          "sha256": "d4db9ebe6f29f5168eac45ad713f055623ac5d0dcd5ba92da23d650ae012020d"
+        },
+        {
+          "bundled": true,
+          "bytes": 1062,
+          "path": "sugarcube/licenses/jquery-throttle-debounce-1.1-LICENSE.txt",
+          "sha256": "1c53a0aa7fd459dab0d144cdc89a13686597ddbcf106fb9dee81435d3d8631be"
+        },
+        {
+          "bundled": true,
+          "bytes": 1064,
+          "path": "sugarcube/licenses/lz-string-1.5.0-LICENSE.txt",
+          "sha256": "433fc9dfe659dbfb1e91eed8351f13651e97bfa3ac6d03394c3d63f61d4bbc80"
+        },
+        {
+          "bundled": true,
+          "bytes": 1074,
+          "path": "sugarcube/licenses/normalize.css-3.0.3-LICENSE.txt",
+          "sha256": "8781bc9996713938f6baea8a10c8426f9ae06778e562fafe5353669ae6c05f07"
+        },
+        {
+          "bundled": true,
+          "bytes": 1070,
+          "path": "tic80/LICENSE.tic80.txt",
+          "sha256": "f78d627327e763b070de95b2da58c5f040343a5290961d7fc88c578ae4c59f33"
+        },
+        {
+          "bundled": true,
+          "bytes": 643,
+          "path": "tic80/LICENSES/0BSD.txt",
+          "sha256": "e3f18c71e10d673590eb9856c1d79dd3b4b0d65404efb5e8584dbede7edd608b"
+        },
+        {
+          "bundled": true,
+          "bytes": 1460,
+          "path": "tic80/LICENSES/BSD-3-Clause.txt",
+          "sha256": "5a93d5831e1297ab10fe643e1a631e83be392896da14ee2951285a79012df69d"
+        },
+        {
+          "bundled": true,
+          "bytes": 34674,
+          "path": "tic80/LICENSES/GPL-3.0-or-later.txt",
+          "sha256": "fb981668c18a279e285fc4d83fba1e836cc84dd4daa73c9697d3cfd2d8aca6e0"
+        },
+        {
+          "bundled": true,
+          "bytes": 1070,
+          "path": "tic80/LICENSES/Gravity-MIT.txt",
+          "sha256": "640152b59af917876ef4728ddb7f8824e42b6fbab8ee6fd5ba59cfd8c1e21e74"
+        },
+        {
+          "bundled": true,
+          "bytes": 26940,
+          "path": "tic80/LICENSES/LGPL-2.1-or-later-blip_buf.txt",
+          "sha256": "319daefe38ebeead3df178e5937898a52d67c0c795f54f1c0bb10ac3b9cffb63"
+        },
+        {
+          "bundled": true,
+          "bytes": 26001,
+          "path": "tic80/LICENSES/LGPL-2.1-or-later.txt",
+          "sha256": "5749785c8bdefafcb5d798270ed0a967036fe2ca63dcedade1627565dfef81d2"
+        },
+        {
+          "bundled": true,
+          "bytes": 922,
+          "path": "tic80/LICENSES/LicenseRef-Public-Domain.txt",
+          "sha256": "407aad5685ffaa4f6fd27b89cde6606629bf081da5bc156841ed22dae998544a"
+        },
+        {
+          "bundled": true,
+          "bytes": 1078,
+          "path": "tic80/LICENSES/MIT.txt",
+          "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
+        },
+        {
+          "bundled": true,
+          "bytes": 1066,
+          "path": "tic80/LICENSES/MiniScript2-MIT.txt",
+          "sha256": "9ead32bdfceaaf8a62992d936e529bee491f1fab1dc28bf9a35383acb2843e70"
+        },
+        {
+          "bundled": true,
+          "bytes": 1211,
+          "path": "tic80/LICENSES/Unlicense.txt",
+          "sha256": "0bdebfeda07d45dada625ae1317c6f833186e798b171d0db640bcf32e92a8240"
+        },
+        {
+          "bundled": true,
+          "bytes": 838,
+          "path": "tic80/LICENSES/Zlib.txt",
+          "sha256": "bfb1112d49db5b1daecdfef24bd7e2f3ea0bafb33aa67aa0ab51e2bf8407c03d"
+        },
+        {
+          "bundled": true,
+          "bytes": 1551,
+          "path": "tic80/LICENSES/libpng-2.0.txt",
+          "sha256": "f207d0f7375b977f76ce2437962c1c12a646f15cda3df48d5472ac95eb68e8ff"
+        },
+        {
+          "bundled": true,
+          "bytes": 2679,
+          "path": "tic80/LICENSES/miniaudio-MIT-0-or-Unlicense.txt",
+          "sha256": "bd3d6cac4cc7cedde4d51c00a8e157ecdc675b6b98d201945c66fc62728e7e9d"
+        },
+        {
+          "bundled": true,
+          "bytes": 7384,
+          "path": "tic80/THIRD-PARTY-NOTICES.md",
+          "sha256": "ce637ceabf8794820a9a328189cea9cb3310e4179c490b2bb8babd7628edf567"
+        },
+        {
+          "bundled": true,
+          "bytes": 949,
+          "path": "tic80/source/CURRENT-BUILD-AND-RELINK.json",
+          "sha256": "34d17969bc251feec9ff944c1f637fa8982dd4eaf0ff41ef1fae1ca6a19749cb"
+        },
+        {
+          "bundled": true,
+          "bytes": 3225,
+          "path": "tic80/source/SOURCE-OFFER.md",
+          "sha256": "066b181f1cca08ec5b85adaf064438fc281bbe58e0f8934c6d0e4f395f461d78"
+        },
+        {
+          "bundled": true,
+          "bytes": 2923598,
+          "path": "tic80/source/TIC-80-b3dbd59-source.tar.gz",
+          "sha256": "d5d95c1e591602ce9574d363fadaab60cc5433e368c07a1745a288040c21e569"
+        },
+        {
+          "bundled": true,
+          "bytes": 95,
+          "path": "tic80/source/TIC-80-b3dbd59-source.tar.gz.sha256",
+          "sha256": "bb5e75b26e902b8661599b596b99ac01f7531b3c3b37ea8b1857569b254e3267"
+        },
+        {
+          "bundled": true,
+          "bytes": 37410174,
+          "path": "tic80/source/TIC80-EXACT-CORRESPONDING-SOURCE.zip",
+          "sha256": "5717a89efbb1604e0bbc903154827efe973e306cec7b9ed7882e0b3e3548d08e"
+        },
+        {
+          "bundled": true,
+          "bytes": 2983,
+          "path": "tic80/source/TIC80-SUBMODULE-PINS.json",
+          "sha256": "65ba3e857571f0f1738300bb1c04e06120bdd8d769070f9c36d046ae90e4edab"
+        },
+        {
+          "bundled": true,
+          "bytes": 51181,
+          "path": "tic80/source/blip-buf-330226d-source.tar.gz",
+          "sha256": "e86870ecb4b7c3feac6afbf5ddd0aff809e14b2d16d9bde251b712fd4ecd6d99"
+        },
+        {
+          "bundled": true,
+          "bytes": 97,
+          "path": "tic80/source/blip-buf-330226d-source.tar.gz.sha256",
+          "sha256": "3465e4e865ba05ce08b3f421c48c8b88aba5d01bf4b07ae6a91a29abaa4d860e"
+        },
+        {
+          "bundled": true,
+          "bytes": 725,
+          "path": "wasm4/LICENSE.wasm4.txt",
+          "sha256": "57dece2bb0324db24532eba37aa2f9103e2f7f96bfbfea535358bf66ba5a1f1b"
+        },
+        {
+          "bundled": true,
+          "bytes": 6570,
+          "path": "wasm4/THIRD-PARTY-NOTICES.txt",
+          "sha256": "0dc82dd67d5a6e704ad06d9c3b9dc8e15a3f84e5739992f054740b8b40ba86b5"
+        }
+      ],
+      "packID": "narrative-runtime",
+      "profileID": null,
+      "publication": {
+        "detail": "TIC-80 exact source/relink files are already inside this reviewed pack. Other narrative engines are self-contained MIT/ISC runtimes; no public source offer is claimed for this collection.",
+        "distributionReady": false,
+        "publicURL": null,
+        "state": "bundled-source-present",
+        "writtenOfferCreated": false
+      },
+      "relink": [],
+      "sourceBundle": null,
+      "sourceFiles": [
+        {
+          "bundled": true,
+          "bytes": 949,
+          "path": "tic80/source/CURRENT-BUILD-AND-RELINK.json",
+          "sha256": "34d17969bc251feec9ff944c1f637fa8982dd4eaf0ff41ef1fae1ca6a19749cb"
+        },
+        {
+          "bundled": true,
+          "bytes": 3225,
+          "path": "tic80/source/SOURCE-OFFER.md",
+          "sha256": "066b181f1cca08ec5b85adaf064438fc281bbe58e0f8934c6d0e4f395f461d78"
+        },
+        {
+          "bundled": true,
+          "bytes": 2923598,
+          "path": "tic80/source/TIC-80-b3dbd59-source.tar.gz",
+          "sha256": "d5d95c1e591602ce9574d363fadaab60cc5433e368c07a1745a288040c21e569"
+        },
+        {
+          "bundled": true,
+          "bytes": 95,
+          "path": "tic80/source/TIC-80-b3dbd59-source.tar.gz.sha256",
+          "sha256": "bb5e75b26e902b8661599b596b99ac01f7531b3c3b37ea8b1857569b254e3267"
+        },
+        {
+          "bundled": true,
+          "bytes": 37410174,
+          "path": "tic80/source/TIC80-EXACT-CORRESPONDING-SOURCE.zip",
+          "sha256": "5717a89efbb1604e0bbc903154827efe973e306cec7b9ed7882e0b3e3548d08e"
+        },
+        {
+          "bundled": true,
+          "bytes": 2983,
+          "path": "tic80/source/TIC80-SUBMODULE-PINS.json",
+          "sha256": "65ba3e857571f0f1738300bb1c04e06120bdd8d769070f9c36d046ae90e4edab"
+        },
+        {
+          "bundled": true,
+          "bytes": 51181,
+          "path": "tic80/source/blip-buf-330226d-source.tar.gz",
+          "sha256": "e86870ecb4b7c3feac6afbf5ddd0aff809e14b2d16d9bde251b712fd4ecd6d99"
+        },
+        {
+          "bundled": true,
+          "bytes": 97,
+          "path": "tic80/source/blip-buf-330226d-source.tar.gz.sha256",
+          "sha256": "3465e4e865ba05ce08b3f421c48c8b88aba5d01bf4b07ae6a91a29abaa4d860e"
+        }
+      ],
+      "sourcePackages": []
+    },
+    "phaser-3.90.0": {
+      "engines": [
+        "phaser"
+      ],
+      "helperSources": [],
+      "licenses": [
+        {
+          "bundled": true,
+          "bytes": 1100,
+          "path": "LICENSE.phaser.md",
+          "sha256": "c3123cd25de4eccf1fd5a5a0a6fc872299116d1dbbb48b00f2554a4c35220a65"
+        },
+        {
+          "bundled": true,
+          "bytes": 14546,
+          "path": "THIRD-PARTY-NOTICES.txt",
+          "sha256": "fd57bb945a3993569b6eae1833d25e9eb1e2a988cca541ba8dc770b0b7b7792b"
+        }
+      ],
+      "packID": "phaser-3.90.0",
+      "profileID": null,
+      "publication": {
+        "detail": "MIT runtime; the exact reviewed bytes and notices travel in the pack. No source offer is claimed beyond the upstream project.",
+        "distributionReady": false,
+        "publicURL": null,
+        "state": "mit-runtime-only",
+        "writtenOfferCreated": false
+      },
+      "relink": [],
+      "sourceBundle": null,
+      "sourceCommit": "a9965625f49cf366584f454556b039e06e8adad6",
+      "sourcePackages": []
+    },
+    "playcanvas-2.24.0": {
+      "distributionLockSHA256": null,
+      "engines": [
+        "playcanvas"
+      ],
+      "helperSources": [],
+      "licenses": [
+        {
+          "bundled": true,
+          "bytes": 1064,
+          "path": "licenses/ENGINE.txt",
+          "sha256": "42fa51ddd556be151a29f381fb97ee975825dcc454e805ea3ea9c079cca04d34"
+        }
+      ],
+      "packID": "playcanvas-2.24.0",
+      "pairedSourceID": null,
+      "profileID": null,
+      "publication": {
+        "detail": "Reviewed MIT runtime pack; the exact upstream notice travels in the signed pack. No LGPL source/relink obligation applies.",
+        "distributionReady": false,
+        "publicURL": null,
+        "state": "mit-runtime-only",
+        "writtenOfferCreated": false
+      },
+      "relink": [],
+      "sourceBundle": null,
+      "sourceFiles": [],
+      "sourcePackages": []
+    },
+    "renpy-8.5.3-sdk": {
+      "distributionLockSHA256": "f7d2d360606303ee47936cd5d44fa6fe903c6ce5f484247d29593cac65aa7d28",
+      "engines": [
+        "renpy"
+      ],
+      "helperSources": [
+        {
+          "bytes": 2009,
+          "path": "Scripts/Distribution/README.md",
+          "sha256": "7bc2e890694217f52615f5cf9cd297b462438e28a4a196144f3dbfee627c07a0"
+        },
+        {
+          "bytes": 20831,
+          "path": "Scripts/Distribution/check_distribution.py",
+          "sha256": "24824625d6c26c0d8e04d56881c72eb400c5fb78fab564b8f6f69dd26e18441f"
+        },
+        {
+          "bytes": 102646,
+          "path": "Scripts/Distribution/distribution-lock.json",
+          "sha256": "f7d2d360606303ee47936cd5d44fa6fe903c6ce5f484247d29593cac65aa7d28"
+        },
+        {
+          "bytes": 1734,
+          "path": "Scripts/Distribution/patches/love/EmscriptenPersistence.js",
+          "sha256": "aa76c4655dbf3848158e0a4738c37fc5eb5733519a70b3606bb571cdce9c96be"
+        },
+        {
+          "bytes": 507,
+          "path": "Scripts/Distribution/patches/love/EmscriptenPersistence.js.orig",
+          "sha256": "2176225739b95988edef11554233e6d6eb7a2a4ff78375b9021c5a482f4227de"
+        },
+        {
+          "bytes": 1392,
+          "path": "Scripts/Distribution/patches/love/EmscriptenPersistence.js.patch",
+          "sha256": "2720cdba6c9179137cdbe5957c7a4516542b6c49f30c5a3be5172dabee45e1f4"
+        },
+        {
+          "bytes": 4361,
+          "path": "Scripts/Distribution/patches/love/LOVE-PERSISTENCE.md",
+          "sha256": "443af8f5471b094bf35af0e6a5a16c69fa30f68066dee4b94fcd71126195cba7"
+        },
+        {
+          "bytes": 3032,
+          "path": "Scripts/Distribution/patches/love/floe-persist.js",
+          "sha256": "af79a82d4279ba6a8c7378e45dcb0cdd1ab139ce72db7be92f95bd51cf99eb51"
+        }
+      ],
+      "licenses": [],
+      "packID": "renpy-8.5.3-sdk",
+      "pairedSourceID": "renpy-runtime-and-source-1",
+      "profileID": "portable-renpy",
+      "publication": {
+        "detail": "The SDK download is not redistributed by Floe and is not a source offer. Ren'Py/renpy-build source and relink documents remain local and unpublished.",
+        "distributionReady": false,
+        "publicURL": null,
+        "state": "unpublished",
+        "writtenOfferCreated": false
+      },
+      "relink": [
+        {
+          "bytes": 2906,
+          "path": "renpy/RELINK.md",
+          "sha256": "a64b93bc41a8a791b922f6d9a165e84e149acbf03b65a7d6a50a8aafd2adda0f"
+        }
+      ],
+      "sourceBundle": {
+        "bytes": 505738285,
+        "fileCount": 299,
+        "id": "renpy-runtime-and-source-1.zip",
+        "sha256": "422108e7961a3c5c3d700b4ebaf20994bb5069643197d079c642a42ffbf2c9f6",
+        "verifiedSourceFiles": 32
+      },
+      "sourcePackages": [
+        {
+          "bytes": 2069618,
+          "path": "renpy/chardet-5.2.0.tar.gz",
+          "sha256": "1b3b6ff479a8c414bc3fa2c0852995695c4a026dcd6d0633b2dd092ca39c1cf7"
+        },
+        {
+          "bytes": 14089207,
+          "path": "renpy/ffmpeg-4.3.1.tar.gz",
+          "sha256": "45035f15d6f192772de2309c846e1d60472694f479679354a39c699719e53772"
+        },
+        {
+          "bytes": 2074943,
+          "path": "renpy/fribidi-1.0.7.tar.bz2",
+          "sha256": "5ab5f21e9f2fc57b4b40f8ea8f14dba78a5cc46d9cf94bc5e00a58e6886a935d"
+        },
+        {
+          "bytes": 68211384,
+          "path": "renpy/renpy-39895c1.tar.gz",
+          "sha256": "706daeeeb8dfe5e441d2697fbbb8bfc530dc2999ebda2bc81d15a5a2b3393448"
+        },
+        {
+          "bytes": 166255505,
+          "path": "renpy/renpy-8.5.3-sdkarm.tar.bz2",
+          "sha256": "0579782517f203ba3535dcc2dab54e34bfc318f2f2a7510a5130b6f809f901f6"
+        },
+        {
+          "bytes": 210470838,
+          "path": "renpy/renpy-build-7bfab40.tar.gz",
+          "sha256": "15f15bc524f6b8b173ba8671d1992140051c7d9455ac81a24338a433a5127446"
+        },
+        {
+          "bytes": 60348,
+          "path": "renpy/renpy-lgpl-src.tar.gz",
+          "sha256": "5f9c584a2779492c12b6e0037aacbc204376ea43c4f9687ce24f4131c77b8822"
+        }
+      ]
+    },
+    "renpy-8.5.3-web": {
+      "distributionLockSHA256": "f7d2d360606303ee47936cd5d44fa6fe903c6ce5f484247d29593cac65aa7d28",
+      "engines": [
+        "renpy"
+      ],
+      "helperSources": [
+        {
+          "bytes": 2009,
+          "path": "Scripts/Distribution/README.md",
+          "sha256": "7bc2e890694217f52615f5cf9cd297b462438e28a4a196144f3dbfee627c07a0"
+        },
+        {
+          "bytes": 20831,
+          "path": "Scripts/Distribution/check_distribution.py",
+          "sha256": "24824625d6c26c0d8e04d56881c72eb400c5fb78fab564b8f6f69dd26e18441f"
+        },
+        {
+          "bytes": 102646,
+          "path": "Scripts/Distribution/distribution-lock.json",
+          "sha256": "f7d2d360606303ee47936cd5d44fa6fe903c6ce5f484247d29593cac65aa7d28"
+        },
+        {
+          "bytes": 1734,
+          "path": "Scripts/Distribution/patches/love/EmscriptenPersistence.js",
+          "sha256": "aa76c4655dbf3848158e0a4738c37fc5eb5733519a70b3606bb571cdce9c96be"
+        },
+        {
+          "bytes": 507,
+          "path": "Scripts/Distribution/patches/love/EmscriptenPersistence.js.orig",
+          "sha256": "2176225739b95988edef11554233e6d6eb7a2a4ff78375b9021c5a482f4227de"
+        },
+        {
+          "bytes": 1392,
+          "path": "Scripts/Distribution/patches/love/EmscriptenPersistence.js.patch",
+          "sha256": "2720cdba6c9179137cdbe5957c7a4516542b6c49f30c5a3be5172dabee45e1f4"
+        },
+        {
+          "bytes": 4361,
+          "path": "Scripts/Distribution/patches/love/LOVE-PERSISTENCE.md",
+          "sha256": "443af8f5471b094bf35af0e6a5a16c69fa30f68066dee4b94fcd71126195cba7"
+        },
+        {
+          "bytes": 3032,
+          "path": "Scripts/Distribution/patches/love/floe-persist.js",
+          "sha256": "af79a82d4279ba6a8c7378e45dcb0cdd1ab139ce72db7be92f95bd51cf99eb51"
+        }
+      ],
+      "licenses": [
+        {
+          "bundled": true,
+          "bytes": 1316,
+          "path": "licenses/AOM-3.5.0-LICENSE.txt",
+          "sha256": "4764a286d8b2faeaf42f4418e7d7a28d58fc8fd4d00a3d0a7f44b0a4099de7f2"
+        },
+        {
+          "bundled": true,
+          "bytes": 3791,
+          "path": "licenses/ASSIMP-5.4.3-LICENSE.txt",
+          "sha256": "147874443d242b4e2bae97036e26ec9d6b37f706174c1bd5ecfcc8c1294cef51"
+        },
+        {
+          "bundled": true,
+          "bytes": 1084,
+          "path": "licenses/BROTLI-1.1.0-LICENSE.txt",
+          "sha256": "3d180008e36922a4e8daec11c34c7af264fed5962d07924aea928c38e8663c94"
+        },
+        {
+          "bundled": true,
+          "bytes": 1896,
+          "path": "licenses/BZIP2-1.0.8-LICENSE.txt",
+          "sha256": "c6dbbf828498be844a89eaa3b84adbab3199e342eb5cb2ed2f0d4ba7ec0f38a3"
+        },
+        {
+          "bundled": true,
+          "bytes": 26530,
+          "path": "licenses/CHARDET-5.2.0-LICENSE.txt",
+          "sha256": "dc626520dcd53a22f727af3ee42c770e56c97a64fe3adb063799d8ab032fe551"
+        },
+        {
+          "bundled": true,
+          "bytes": 5093,
+          "path": "licenses/EMSCRIPTEN-3.1.67-LICENSE.txt",
+          "sha256": "620a78084fc7ca97c0b5dea9abf891f3ffcadfdbf305276f099c9c4e12fc1d86"
+        },
+        {
+          "bundled": true,
+          "bytes": 26526,
+          "path": "licenses/FFMPEG-4.3.1-COPYING.LGPLv2.1.txt",
+          "sha256": "b634ab5640e258563c536e658cad87080553df6f34f62269a21d554844e58bfe"
+        },
+        {
+          "bundled": true,
+          "bytes": 6743,
+          "path": "licenses/FREETYPE-2.13.3-FTL.txt",
+          "sha256": "08c135755dd589039470f1fdbb400daaabaaa50d0b366d19cebff4d22986baa1"
+        },
+        {
+          "bundled": true,
+          "bytes": 26440,
+          "path": "licenses/FRIBIDI-1.0.7-COPYING.txt",
+          "sha256": "32434afcc8666ba060e111d715bfdb6c2d5dd8a35fa4d3ab8ad67d8f850d2f2b"
+        },
+        {
+          "bundled": true,
+          "bytes": 1971,
+          "path": "licenses/HARFBUZZ-8.0.1-COPYING.txt",
+          "sha256": "ba8f810f2455c2f08e2d56bb49b72f37fcf68f1f4fade38977cfd7372050ad64"
+        },
+        {
+          "bundled": true,
+          "bytes": 25270,
+          "path": "licenses/LGPL-2.0.txt",
+          "sha256": "cc535c21133c895b56b374c8a1dc1eb948d99003ed2b47372069456b62f42b24"
+        },
+        {
+          "bundled": true,
+          "bytes": 26419,
+          "path": "licenses/LGPL-2.1.txt",
+          "sha256": "20e50fe7aae3e56378ebf0417d9de904f55a0e61e4df315333e632a4d3555d95"
+        },
+        {
+          "bundled": true,
+          "bytes": 18799,
+          "path": "licenses/LIBAVIF-0.11.1-LICENSE.txt",
+          "sha256": "10952217a6d404de8bf8a997fbea9b88f682df1fe98cb9b9f467ade641525639"
+        },
+        {
+          "bundled": true,
+          "bytes": 5343,
+          "path": "licenses/LIBJPEG-TURBO-1.5.3-LICENSE.md",
+          "sha256": "5c08657eda60b7946a913ee22ac73603335a468a6aa95204506a1586a8d677ee"
+        },
+        {
+          "bundled": true,
+          "bytes": 5345,
+          "path": "licenses/LIBPNG-1.6.43-LICENSE.txt",
+          "sha256": "7317e078e2d3b5d7ba5a6159e650945153262b44b76f6700f8e9edb261c5143e"
+        },
+        {
+          "bundled": true,
+          "bytes": 1496,
+          "path": "licenses/LIBWEBP-1.3.2-COPYING.txt",
+          "sha256": "5aec868f669e384a22372a4e8a1a6cd7d44c64cd451f960ca69cc170d1e13acf"
+        },
+        {
+          "bundled": true,
+          "bytes": 1506,
+          "path": "licenses/LIBYUV-LICENSE.txt",
+          "sha256": "2b2cc1180c7e6988328ad2033b04b80117419db9c4c584918bbb3cfec7e9364f"
+        },
+        {
+          "bundled": true,
+          "bytes": 13936,
+          "path": "licenses/PYTHON-3.12.8-LICENSE.txt",
+          "sha256": "3b2f81fe21d181c499c59a256c8e1968455d6689d269aa85373bfb6af41da3bf"
+        },
+        {
+          "bundled": true,
+          "bytes": 1454,
+          "path": "licenses/README-PREPARED.md",
+          "sha256": "f8dfb4df337fe0bdccd8739f811264aee982c7aa5b2b05876022c151b7873224"
+        },
+        {
+          "bundled": true,
+          "bytes": 7491,
+          "path": "licenses/RENPY-8.5.3-COMPONENT-ADDENDUM.md",
+          "sha256": "09992d9a02919a0fdceaa332017f70a9149aac8f028fe79be414c3871368025f"
+        },
+        {
+          "bundled": true,
+          "bytes": 101413,
+          "path": "licenses/RENPY-LICENSE.txt",
+          "sha256": "b5d4610dfb530c53d5ce681e913f313903948616eb7b4ff8e8ddd19337852c1e"
+        },
+        {
+          "bundled": true,
+          "bytes": 1653,
+          "path": "licenses/RENPY-WEB-NOTICE.md",
+          "sha256": "5d0135947779d22a5220ad011ce70b9196c1825abb6dab2f17dfaaede640b4ed"
+        },
+        {
+          "bundled": true,
+          "bytes": 884,
+          "path": "licenses/SDL2-2.0.20-COPYING.txt",
+          "sha256": "fcb07e07ac6bc8b2fcf047b50431ef4ebe5b619d7ca7c82212018309a9067426"
+        },
+        {
+          "bundled": true,
+          "bytes": 878,
+          "path": "licenses/SDL2_IMAGE-2.6.2-LICENSE.txt",
+          "sha256": "28aabfed22b3cb0b7e23ef40385e4f66297c960082f029c96d073cc1d4e008d5"
+        },
+        {
+          "bundled": true,
+          "bytes": 3330,
+          "path": "licenses/XZ-5.4.2-COPYING.txt",
+          "sha256": "72d7ef9c98be319fd34ce88b45203b36d5936f9c49e82bf3198ffee5e0c7d87e"
+        },
+        {
+          "bundled": true,
+          "bytes": 1328,
+          "path": "licenses/ZLIB-1.3.1-LICENSE.txt",
+          "sha256": "02421fcfbfb1d656ef0b6ff4cd3c39f2946f08c3219fa42db482add7ce1f53ea"
+        },
+        {
+          "bundled": true,
+          "bytes": 1454,
+          "path": "README-PREPARED.md",
+          "sha256": "f8dfb4df337fe0bdccd8739f811264aee982c7aa5b2b05876022c151b7873224"
+        }
+      ],
+      "packID": "renpy-8.5.3-web",
+      "pairedSourceID": "renpy-runtime-and-source-1",
+      "profileID": "portable-renpy",
+      "publication": {
+        "detail": "Official Web runtime download is a binary artifact, not source accompaniment. The exact Ren'Py/renpy-build source and relink bundle are validated local bytes only and are unpublished.",
+        "distributionReady": false,
+        "publicURL": null,
+        "state": "unpublished",
+        "writtenOfferCreated": false
+      },
+      "relink": [
+        {
+          "bytes": 2906,
+          "path": "renpy/RELINK.md",
+          "sha256": "a64b93bc41a8a791b922f6d9a165e84e149acbf03b65a7d6a50a8aafd2adda0f"
+        }
+      ],
+      "sourceBundle": {
+        "bytes": 505738285,
+        "fileCount": 299,
+        "id": "renpy-runtime-and-source-1.zip",
+        "sha256": "422108e7961a3c5c3d700b4ebaf20994bb5069643197d079c642a42ffbf2c9f6",
+        "verifiedSourceFiles": 32
+      },
+      "sourcePackages": [
+        {
+          "bytes": 2069618,
+          "path": "renpy/chardet-5.2.0.tar.gz",
+          "sha256": "1b3b6ff479a8c414bc3fa2c0852995695c4a026dcd6d0633b2dd092ca39c1cf7"
+        },
+        {
+          "bytes": 14089207,
+          "path": "renpy/ffmpeg-4.3.1.tar.gz",
+          "sha256": "45035f15d6f192772de2309c846e1d60472694f479679354a39c699719e53772"
+        },
+        {
+          "bytes": 2074943,
+          "path": "renpy/fribidi-1.0.7.tar.bz2",
+          "sha256": "5ab5f21e9f2fc57b4b40f8ea8f14dba78a5cc46d9cf94bc5e00a58e6886a935d"
+        },
+        {
+          "bytes": 68211384,
+          "path": "renpy/renpy-39895c1.tar.gz",
+          "sha256": "706daeeeb8dfe5e441d2697fbbb8bfc530dc2999ebda2bc81d15a5a2b3393448"
+        },
+        {
+          "bytes": 166255505,
+          "path": "renpy/renpy-8.5.3-sdkarm.tar.bz2",
+          "sha256": "0579782517f203ba3535dcc2dab54e34bfc318f2f2a7510a5130b6f809f901f6"
+        },
+        {
+          "bytes": 210470838,
+          "path": "renpy/renpy-build-7bfab40.tar.gz",
+          "sha256": "15f15bc524f6b8b173ba8671d1992140051c7d9455ac81a24338a433a5127446"
+        },
+        {
+          "bytes": 60348,
+          "path": "renpy/renpy-lgpl-src.tar.gz",
+          "sha256": "5f9c584a2779492c12b6e0037aacbc204376ea43c4f9687ce24f4131c77b8822"
+        }
+      ]
+    },
+    "rpg-maker-mv-corescript-1.3b": {
+      "engines": [
+        "rpgMakerMV"
+      ],
+      "helperSources": [],
+      "licenses": [
+        {
+          "bundled": true,
+          "bytes": 1064,
+          "path": "licenses/FPSMETER-MIT.txt",
+          "sha256": "4e6e8310a0784e2b18a3f96e6a0f29f8522f33af5ce4e7b8d2f5ba6f5d141599"
+        },
+        {
+          "bundled": true,
+          "bytes": 1083,
+          "path": "licenses/IPHONE-INLINE-VIDEO-MIT.txt",
+          "sha256": "3df4d390a2bed3edf787dcac30390c68d35bbcd5c52f477b1e0faf71b4dc4834"
+        },
+        {
+          "bundled": true,
+          "bytes": 1086,
+          "path": "licenses/LZ-STRING-MIT.txt",
+          "sha256": "dcfcb96e3b0fccfbbd3633f2ee6f7eae65e1980e7448d9553f93ab4060a7021b"
+        },
+        {
+          "bundled": true,
+          "bytes": 1092,
+          "path": "licenses/PIXI-MIT.txt",
+          "sha256": "d3109477c60054718630f887a9417e7e808dbc81132b7d6a91d875e36f2fc52e"
+        },
+        {
+          "bundled": true,
+          "bytes": 1083,
+          "path": "licenses/PIXI-PICTURE-MIT.txt",
+          "sha256": "26cecbff89fcb3c0ccd3bcd2776432448149f5ce6fe33700d3cd41029a139545"
+        },
+        {
+          "bundled": true,
+          "bytes": 1083,
+          "path": "licenses/PIXI-TILEMAP-MIT.txt",
+          "sha256": "26cecbff89fcb3c0ccd3bcd2776432448149f5ce6fe33700d3cd41029a139545"
+        },
+        {
+          "bundled": true,
+          "bytes": 1089,
+          "path": "licenses/RPG-MAKER-MV-CORESCRIPT-MIT.txt",
+          "sha256": "e3563d4b3ff63e95a154f75d207444d71c108dc1bb64f0bb8230c5ee65a13922"
+        }
+      ],
+      "packID": "rpg-maker-mv-corescript-1.3b",
+      "profileID": "portable-mv",
+      "publication": {
+        "detail": "The official CoreScript MIT source is the prepared runtime tree; no LGPL relink obligation applies. Original notices travel in the pack.",
+        "distributionReady": false,
+        "publicURL": null,
+        "state": "mit-source-included",
+        "writtenOfferCreated": false
+      },
+      "relink": [],
+      "sourceBundle": null,
+      "sourceCommit": "182e31449707ba7e406db0485c44c2a9d11e2dcd",
+      "sourcePackages": []
+    }
+  },
+  "productionPublication": {
+    "detail": "No public runtime or source publication was performed by this source task. A draft publication manifest is valid only after Root executes the producer and records real archive hashes; recipe existence alone is not readiness.",
+    "publicURL": null,
+    "state": "unpublished",
+    "writtenOfferCreated": false
+  },
+  "schemaVersion": 1,
+  "sourceDepot": {
+    "id": "portable-mpl-source-packages",
+    "logicalRoot": "source-packages",
+    "manifestName": "SHA256SUMS",
+    "manifestSHA256": "cf71ebdad5ca83a583b9b35eadbedbbbb031fa5a5316c1919dd755160c8d4a66"
+  }
+}

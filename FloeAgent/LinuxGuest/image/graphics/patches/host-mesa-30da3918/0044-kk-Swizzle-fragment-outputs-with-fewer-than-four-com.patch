@@ -1,0 +1,43 @@
+From 6b6855bc08417a5c544569386f5ee9d0310bf76f Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Fri, 2 Oct 2026 15:47:21 -0400
+Subject: [PATCH] kk: Swizzle fragment outputs with fewer than four components
+
+Generated-by: LLM
+---
+ src/kosmickrisp/vulkan/kk_shader.c | 18 +++++++++++++++---
+ 1 file changed, 15 insertions(+), 3 deletions(-)
+
+diff --git a/src/kosmickrisp/vulkan/kk_shader.c b/src/kosmickrisp/vulkan/kk_shader.c
+index eaa39c5ff9d..7d7c9f7d6a1 100644
+--- a/src/kosmickrisp/vulkan/kk_shader.c
++++ b/src/kosmickrisp/vulkan/kk_shader.c
+@@ -322,10 +322,22 @@ kk_nir_swizzle_fragment_output(nir_builder *b, nir_intrinsic_instr *intrin,
+             channel_swizzle[channel_unswizzle[i]] = i;
+ 
+          b->cursor = nir_before_instr(&intrin->instr);
+-         nir_def *to_replace = intrin->src[0].ssa;
+-         nir_def *swizzled = nir_swizzle(b, to_replace, channel_swizzle,
+-                                         to_replace->num_components);
++         nir_def *value = intrin->src[0].ssa;
++         unsigned first = nir_intrinsic_component(intrin);
++         unsigned mask = nir_intrinsic_write_mask(intrin);
++         nir_def *undef = nir_undef(b, 1, value->bit_size);
++         nir_def *channels[4] = {undef, undef, undef, undef};
++         for (unsigned i = 0; i < value->num_components; i++) {
++            if ((mask & BITFIELD_BIT(i)) && first + i < 4)
++               channels[first + i] = nir_channel(b, value, i);
++         }
++
++         nir_def *swizzled = nir_swizzle(b, nir_vec(b, channels, 4),
++                                         channel_swizzle, 4);
+          nir_src_rewrite(&intrin->src[0], swizzled);
++         intrin->num_components = 4;
++         nir_intrinsic_set_component(intrin, 0);
++         nir_intrinsic_set_write_mask(intrin, 0xf);
+       } else {
+          b->cursor = nir_after_instr(&intrin->instr);
+          nir_def *to_replace = &intrin->def;
+-- 
+2.54.0 (Apple Git-157)
+

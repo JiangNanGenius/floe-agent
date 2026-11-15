@@ -1,0 +1,285 @@
+{
+  "gameTitle": "Glimmerfen",
+  "versionId": 1,
+  "currencyUnit": "Glimmer",
+  "partyMembers": [
+    1
+  ],
+  "startMapId": 1,
+  "startX": 2,
+  "startY": 2,
+  "title1Name": "FloeTitle",
+  "title2Name": "",
+  "titleBgm": {
+    "name": "",
+    "volume": 90,
+    "pitch": 100,
+    "pan": 0
+  },
+  "battleBgm": {
+    "name": "",
+    "volume": 90,
+    "pitch": 100,
+    "pan": 0
+  },
+  "battleEndMe": {
+    "name": "",
+    "volume": 90,
+    "pitch": 100,
+    "pan": 0
+  },
+  "gameoverMe": {
+    "name": "",
+    "volume": 90,
+    "pitch": 100,
+    "pan": 0
+  },
+  "victoryMe": {
+    "name": "",
+    "volume": 90,
+    "pitch": 100,
+    "pan": 0
+  },
+  "defeatMe": {
+    "name": "",
+    "volume": 90,
+    "pitch": 100,
+    "pan": 0
+  },
+  "sounds": [
+    {
+      "name": "",
+      "volume": 90,
+      "pitch": 100,
+      "pan": 0
+    },
+    {
+      "name": "",
+      "volume": 90,
+      "pitch": 100,
+      "pan": 0
+    },
+    {
+      "name": "",
+      "volume": 90,
+      "pitch": 100,
+      "pan": 0
+    },
+    {
+      "name": "",
+      "volume": 90,
+      "pitch": 100,
+      "pan": 0
+    },
+    {
+      "name": "",
+      "volume": 90,
+      "pitch": 100,
+      "pan": 0
+    },
+    {
+      "name": "",
+      "volume": 90,
+      "pitch": 100,
+      "pan": 0
+    },
+    {
+      "name": "",
+      "volume": 90,
+      "pitch": 100,
+      "pan": 0
+    },
+    {
+      "name": "",
+      "volume": 90,
+      "pitch": 100,
+      "pan": 0
+    },
+    {
+      "name": "",
+      "volume": 90,
+      "pitch": 100,
+      "pan": 0
+    },
+    {
+      "name": "",
+      "volume": 90,
+      "pitch": 100,
+      "pan": 0
+    },
+    {
+      "name": "",
+      "volume": 90,
+      "pitch": 100,
+      "pan": 0
+    },
+    {
+      "name": "",
+      "volume": 90,
+      "pitch": 100,
+      "pan": 0
+    },
+    {
+      "name": "",
+      "volume": 90,
+      "pitch": 100,
+      "pan": 0
+    },
+    {
+      "name": "",
+      "volume": 90,
+      "pitch": 100,
+      "pan": 0
+    },
+    {
+      "name": "",
+      "volume": 90,
+      "pitch": 100,
+      "pan": 0
+    },
+    {
+      "name": "",
+      "volume": 90,
+      "pitch": 100,
+      "pan": 0
+    },
+    {
+      "name": "",
+      "volume": 90,
+      "pitch": 100,
+      "pan": 0
+    },
+    {
+      "name": "",
+      "volume": 90,
+      "pitch": 100,
+      "pan": 0
+    },
+    {
+      "name": "",
+      "volume": 90,
+      "pitch": 100,
+      "pan": 0
+    },
+    {
+      "name": "",
+      "volume": 90,
+      "pitch": 100,
+      "pan": 0
+    },
+    {
+      "name": "",
+      "volume": 90,
+      "pitch": 100,
+      "pan": 0
+    },
+    {
+      "name": "",
+      "volume": 90,
+      "pitch": 100,
+      "pan": 0
+    },
+    {
+      "name": "",
+      "volume": 90,
+      "pitch": 100,
+      "pan": 0
+    },
+    {
+      "name": "",
+      "volume": 90,
+      "pitch": 100,
+      "pan": 0
+    }
+  ],
+  "elements": [
+    "",
+    "Fire",
+    "Ice",
+    "Spark"
+  ],
+  "switches": [
+    null,
+    "ferry_available",
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null
+  ],
+  "variables": [
+    null,
+    "rope_count",
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null
+  ],
+  "terms": {
+    "basic": [
+      "Level",
+      "HP",
+      "MP",
+      "TP"
+    ],
+    "commands": [
+      "Fight",
+      "Escape",
+      "Attack",
+      "Guard",
+      "Item",
+      "Skill",
+      "Equip",
+      "Status",
+      "Formation",
+      "Save",
+      "Options"
+    ],
+    "params": [
+      "Attack",
+      "Defense",
+      "Spirit",
+      "Agility"
+    ],
+    "messages": {}
+  },
+  "hasEncryptedImages": false,
+  "hasEncryptedAudio": false,
+  "encryptionKey": "",
+  "advanced": {
+    "gameId": 812001,
+    "screenWidth": 816,
+    "screenHeight": 624,
+    "windowWidth": 816,
+    "windowHeight": 624
+  }
+}

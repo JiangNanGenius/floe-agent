@@ -1,0 +1,199 @@
+{
+  "license": "MPL-2.0",
+  "originalFixtures": true,
+  "noRTP": true,
+  "archives": [
+    {
+      "engine": "xp",
+      "version": 1,
+      "archive": "xp.rgssad",
+      "sha256": "12bdaa713b26d7bb60faff4ed1b8c132aa81b5088e84be84994e6f87c0216cec",
+      "files": [
+        {
+          "path": "Data/Actors.rxdata",
+          "rawNameBase64": "RGF0YVxBY3RvcnMucnhkYXRh",
+          "bytes": 2953,
+          "sha256": "a675a721c44533f8185f187d4cb37ad9d226d75ca098b84e0e6c2b52e900e7ef"
+        },
+        {
+          "path": "Data/CommonEvents.rxdata",
+          "rawNameBase64": "RGF0YVxDb21tb25FdmVudHMucnhkYXRh",
+          "bytes": 251,
+          "sha256": "c9268ccc3619a0c37223a2539e950cc29779331737af1618ee7ab750c5427be0"
+        },
+        {
+          "path": "Data/Enemies.rxdata",
+          "rawNameBase64": "RGF0YVxFbmVtaWVzLnJ4ZGF0YQ==",
+          "bytes": 565,
+          "sha256": "f802d022fb0d1fc8bc11f7d57f21287cc12314249ea87a8573f2f7c7007a76f0"
+        },
+        {
+          "path": "Data/Items.rxdata",
+          "rawNameBase64": "RGF0YVxJdGVtcy5yeGRhdGE=",
+          "bytes": 490,
+          "sha256": "a75255f8c659e93e623815da82ac03146ba2e6a1bb622781c935fda80018bab7"
+        },
+        {
+          "path": "Data/Map001.rxdata",
+          "rawNameBase64": "RGF0YVxNYXAwMDEucnhkYXRh",
+          "bytes": 2619,
+          "sha256": "a45cf98df09f85fc03c47a91a2db63139f3869f13a11194d0ff777c52a305f9a"
+        },
+        {
+          "path": "Data/Scripts.rxdata",
+          "rawNameBase64": "RGF0YVxTY3JpcHRzLnJ4ZGF0YQ==",
+          "bytes": 170,
+          "sha256": "c186d1708b8e9900aa2863827af416c2af8549e79b7cde049c68c546bfeaeefb"
+        },
+        {
+          "path": "Data/States.rxdata",
+          "rawNameBase64": "RGF0YVxTdGF0ZXMucnhkYXRh",
+          "bytes": 700,
+          "sha256": "ebb39de9f0463cef651d975b65e885c2aab1b69b90ab734c68bf443ece3d4d99"
+        },
+        {
+          "path": "Data/System.rxdata",
+          "rawNameBase64": "RGF0YVxTeXN0ZW0ucnhkYXRh",
+          "bytes": 1298,
+          "sha256": "c4d8823c89ff65b719bedbfd049d951b4c1f3c160c700bc26ff62d7e94f9dad3"
+        },
+        {
+          "path": "Data/Tilesets.rxdata",
+          "rawNameBase64": "RGF0YVxUaWxlc2V0cy5yeGRhdGE=",
+          "bytes": 5,
+          "sha256": "bdd415a7fd4af0f98eab2cca8cb0d6ad8bb6c36a01239e1018720d534c4b606a"
+        },
+        {
+          "path": "Notes/日本語.txt",
+          "rawNameBase64": "Tm90ZXNc5pel5pys6KqeLnR4dA==",
+          "bytes": 13,
+          "sha256": "e159960e3b42dfd836a977aa253a2e6e9c96246c55c27b698a6fc5c9c7f7c43a"
+        },
+        {
+          "path": "Graphics/Tilesets/ソラ.bin",
+          "rawNameBase64": "R3JhcGhpY3NcVGlsZXNldHNcg1yDiS5iaW4=",
+          "bytes": 253,
+          "sha256": "1211b6885890be48f89934ec5246f1ce3cfff46c626cfcd686d5fdce9b1fb830"
+        },
+        {
+          "path": "Binary/large-tail.bin",
+          "rawNameBase64": "QmluYXJ5XGxhcmdlLXRhaWwuYmlu",
+          "bytes": 131079,
+          "sha256": "9ad4f09f38f496df39bfb69a39cd4543c9b72ce556c5c1ef23d9c6aa15b7d2a9"
+        },
+        {
+          "path": "Binary/empty.bin",
+          "rawNameBase64": "QmluYXJ5XGVtcHR5LmJpbg==",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      ]
+    },
+    {
+      "engine": "vx",
+      "version": 1,
+      "archive": "vx.rgss2a",
+      "sha256": "059b4a49fea1bd6a12ab406cb3d883cab7f6234c9fa180b51b33f022709764c8",
+      "files": [
+        {
+          "path": "Data/Actors.rvdata",
+          "rawNameBase64": "RGF0YVxBY3RvcnMucnZkYXRh",
+          "bytes": 1605,
+          "sha256": "9e0315100e19d0dda19b387be987f9f2a036a5b719d16af6f400fa61ef7ad502"
+        },
+        {
+          "path": "Data/Map002.rvdata",
+          "rawNameBase64": "RGF0YVxNYXAwMDIucnZkYXRh",
+          "bytes": 1134,
+          "sha256": "e169fc45f6bd49e09d4f57e1e420376451fcf0ea08e55d63d5307c8b17752ce4"
+        },
+        {
+          "path": "Data/Scripts.rvdata",
+          "rawNameBase64": "RGF0YVxTY3JpcHRzLnJ2ZGF0YQ==",
+          "bytes": 44,
+          "sha256": "9ac05f6c7db634e61329f612abd345a1e2d2a83ef53d8d58b1fda51be536da98"
+        },
+        {
+          "path": "Notes/日本語.txt",
+          "rawNameBase64": "Tm90ZXNc5pel5pys6KqeLnR4dA==",
+          "bytes": 13,
+          "sha256": "e159960e3b42dfd836a977aa253a2e6e9c96246c55c27b698a6fc5c9c7f7c43a"
+        },
+        {
+          "path": "Graphics/Tilesets/ソラ.bin",
+          "rawNameBase64": "R3JhcGhpY3NcVGlsZXNldHNcg1yDiS5iaW4=",
+          "bytes": 253,
+          "sha256": "1211b6885890be48f89934ec5246f1ce3cfff46c626cfcd686d5fdce9b1fb830"
+        },
+        {
+          "path": "Binary/large-tail.bin",
+          "rawNameBase64": "QmluYXJ5XGxhcmdlLXRhaWwuYmlu",
+          "bytes": 131079,
+          "sha256": "9ad4f09f38f496df39bfb69a39cd4543c9b72ce556c5c1ef23d9c6aa15b7d2a9"
+        },
+        {
+          "path": "Binary/empty.bin",
+          "rawNameBase64": "QmluYXJ5XGVtcHR5LmJpbg==",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      ]
+    },
+    {
+      "engine": "ace",
+      "version": 3,
+      "archive": "ace.rgss3a",
+      "sha256": "2e4a02a641af35db3214aba299752d9d1ba18bb580f9450970200a66267fb85c",
+      "files": [
+        {
+          "path": "Data/Actors.rvdata2",
+          "rawNameBase64": "RGF0YVxBY3RvcnMucnZkYXRhMg==",
+          "bytes": 1713,
+          "sha256": "378171e5063e4d5bf0b41a772d8ec5447472c3f791866651c65208b76ae3a492"
+        },
+        {
+          "path": "Data/CommonEvents.rvdata2",
+          "rawNameBase64": "RGF0YVxDb21tb25FdmVudHMucnZkYXRhMg==",
+          "bytes": 170,
+          "sha256": "8868c83c869ac52ac5eb6650146aa7821e9f62ad72c9662abb00c148593320e9"
+        },
+        {
+          "path": "Data/Map003.rvdata2",
+          "rawNameBase64": "RGF0YVxNYXAwMDMucnZkYXRhMg==",
+          "bytes": 1139,
+          "sha256": "624a3aef147b35b81eae7751bb647192a64a35eeb3376a5945fcca0d563a9f11"
+        },
+        {
+          "path": "Data/Scripts.rvdata2",
+          "rawNameBase64": "RGF0YVxTY3JpcHRzLnJ2ZGF0YTI=",
+          "bytes": 63,
+          "sha256": "a8942f2db41804e98ad1f6bf3b8cb980675b2284b0980d49438e2a9f9e3f1ec5"
+        },
+        {
+          "path": "Notes/日本語.txt",
+          "rawNameBase64": "Tm90ZXNc5pel5pys6KqeLnR4dA==",
+          "bytes": 13,
+          "sha256": "e159960e3b42dfd836a977aa253a2e6e9c96246c55c27b698a6fc5c9c7f7c43a"
+        },
+        {
+          "path": "Graphics/Tilesets/ソラ.bin",
+          "rawNameBase64": "R3JhcGhpY3NcVGlsZXNldHNcg1yDiS5iaW4=",
+          "bytes": 253,
+          "sha256": "1211b6885890be48f89934ec5246f1ce3cfff46c626cfcd686d5fdce9b1fb830"
+        },
+        {
+          "path": "Binary/large-tail.bin",
+          "rawNameBase64": "QmluYXJ5XGxhcmdlLXRhaWwuYmlu",
+          "bytes": 131079,
+          "sha256": "9ad4f09f38f496df39bfb69a39cd4543c9b72ce556c5c1ef23d9c6aa15b7d2a9"
+        },
+        {
+          "path": "Binary/empty.bin",
+          "rawNameBase64": "QmluYXJ5XGVtcHR5LmJpbg==",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+[
+  null,
+  {
+    "id": 1,
+    "name": "Mired",
+    "iconIndex": 5,
+    "restriction": 0,
+    "priority": 50,
+    "removeAtBattleEnd": false,
+    "removeByRestriction": false,
+    "autoRemovalTiming": 0,
+    "minTurns": 1,
+    "maxTurns": 3,
+    "message1": " sinks into the mud.",
+    "message2": "",
+    "message3": "",
+    "message4": " shakes it off.",
+    "note": "Original Floe starter state.",
+    "traits": []
+  }
+]

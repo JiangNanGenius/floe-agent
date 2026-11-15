@@ -1,0 +1,608 @@
+From 652396b3907d6d0df99a0d6ab242550cb1a064c8 Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Sat, 24 Oct 2026 19:30:16 -0400
+Subject: [PATCH] kk: Support depth bounds on pre-family 10 Apple GPUs via
+ fragment shader variant
+
+Generated-by: LLM
+---
+ src/kosmickrisp/vulkan/kk_cmd_buffer.c      |   7 +
+ src/kosmickrisp/vulkan/kk_cmd_buffer.h      |   8 +-
+ src/kosmickrisp/vulkan/kk_cmd_draw.c        | 124 ++++++++++++-
+ src/kosmickrisp/vulkan/kk_physical_device.c |   2 +-
+ src/kosmickrisp/vulkan/kk_physical_device.h |   6 +
+ src/kosmickrisp/vulkan/kk_shader.c          | 193 +++++++++++++++++---
+ src/kosmickrisp/vulkan/kk_shader.h          |  17 +-
+ 7 files changed, 313 insertions(+), 44 deletions(-)
+
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_buffer.c b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+index d9be86a3f3e..361f715fa67 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+@@ -48,6 +48,11 @@ kk_cmd_release_resources(struct kk_device *dev, struct kk_cmd_buffer *cmd)
+ 
+    kk_cmd_pool_free_bo_list(pool, &cmd->uploader.bos);
+ 
++   util_dynarray_foreach(&cmd->depth_bounds_textures, mtl_texture *, tex) {
++      mtl_release(*tex);
++   }
++   util_dynarray_clear(&cmd->depth_bounds_textures);
++
+    /* Release all BOs used as descriptor buffers for submissions */
+    util_dynarray_foreach(&cmd->large_bos, struct kk_bo *, bo) {
+       kk_destroy_bo(dev, *bo);
+@@ -95,6 +100,7 @@ kk_destroy_cmd_buffer(struct vk_command_buffer *vk_cmd_buffer)
+ 
+    kk_cmd_release_resources(dev, cmd);
+    util_dynarray_fini(&cmd->large_bos);
++   util_dynarray_fini(&cmd->depth_bounds_textures);
+    util_dynarray_fini(&cmd->post_render_writes);
+    util_dynarray_fini(&cmd->post_render_stats);
+    util_dynarray_fini(&cmd->ts_resolves);
+@@ -143,6 +149,7 @@ kk_create_cmd_buffer(struct vk_command_pool *vk_pool,
+    }
+ 
+    cmd->large_bos = UTIL_DYNARRAY_INIT;
++   cmd->depth_bounds_textures = UTIL_DYNARRAY_INIT;
+ 
+    cmd->vk.dynamic_graphics_state.vi = &cmd->state.gfx._dynamic_vi;
+    cmd->vk.dynamic_graphics_state.ms.sample_locations =
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_buffer.h b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+index 86e0b158175..eced6407731 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.h
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+@@ -41,6 +41,8 @@ struct kk_root_descriptor_table {
+          float clip_z_coeff;
+ 
+          float viewport_z_range[KK_MAX_VIEWPORTS * 2];
++         uint64_t depth_bounds_texture;
++         float depth_bounds[2];
+          bool emulate_depth_clamp;
+          bool emulate_viewport_z;
+       } draw;
+@@ -145,6 +147,7 @@ struct kk_rendering_state {
+    VkSampleLocationEXT sample_locations[KK_MAX_SAMPLES];
+    bool force_attachment_store;
+    bool rendering_to_whole_framebuffer;
++   bool depth_in_memory;
+ };
+ 
+ /* Dirty tracking bits for state not tracked by vk_dynamic_graphics_state or
+@@ -161,7 +164,8 @@ struct kk_graphics_state {
+    struct kk_per_draw_data per_draw_data;
+ 
+    mtl_depth_stencil_state *depth_stencil_state;
+-   bool fs_stats_bound;
++   uint8_t fs_variant_bound;
++   bool depth_bounds_active;
+    mtl_render_pass_descriptor *render_pass_descriptor;
+    bool is_depth_stencil_dynamic;
+    bool is_cull_front_and_back;
+@@ -329,6 +333,8 @@ struct kk_cmd_buffer {
+    /* Owned large BOs */
+    struct util_dynarray large_bos;
+ 
++   struct util_dynarray depth_bounds_textures;
++
+    /* Does the command buffer use the geometry heap? */
+    bool uses_heap;
+    bool keep_heap;
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_draw.c b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+index 9694a1498a9..eabbb3bd4d2 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_draw.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+@@ -869,7 +869,7 @@ static uint64_t
+ kk_stats_fs_counter(struct kk_cmd_buffer *cmd)
+ {
+    struct kk_shader *vs = cmd->state.shaders[MESA_SHADER_VERTEX];
+-   if (!vs || !vs->info.has_fs_stats)
++   if (!vs || !(vs->info.fs_variant_mask & BITFIELD_BIT(KK_FS_VARIANT_STATS)))
+       return 0u;
+ 
+    return cmd->state.stats.addr[KK_STAT_FS_INVOCATIONS];
+@@ -1054,21 +1054,23 @@ kk_flush_pipeline(struct kk_cmd_buffer *cmd)
+       mtl_set_depth_stencil_state(enc, gfx->depth_stencil_state);
+    }
+ 
+-   bool fs_stats = kk_stats_fs_counter(cmd) != 0u;
+-   if (IS_SHADER_DIRTY(VERTEX) || fs_stats != gfx->fs_stats_bound) {
++   unsigned variant =
++      (kk_stats_fs_counter(cmd) != 0u ? KK_FS_VARIANT_STATS : 0u) |
++      (gfx->depth_bounds_active ? KK_FS_VARIANT_DEPTH_BOUNDS : 0u);
++   if (IS_SHADER_DIRTY(VERTEX) || variant != gfx->fs_variant_bound) {
+       struct kk_shader *vs = cmd->state.shaders[MESA_SHADER_VERTEX];
+       mtl_render_pipeline_state *render = vs->pipeline.gfx.render;
+-      if (fs_stats) {
+-         mtl_render_pipeline_state *counted =
+-            kk_shader_get_stats_pipeline(device, vs);
+-         if (counted)
+-            render = counted;
++      if (variant) {
++         mtl_render_pipeline_state *variant_render =
++            kk_shader_get_fs_variant_pipeline(device, vs, variant);
++         if (variant_render)
++            render = variant_render;
+          else
+             vk_command_buffer_set_error(&cmd->vk,
+                                         VK_ERROR_OUT_OF_DEVICE_MEMORY);
+       }
+       mtl_render_set_pipeline_state(enc, render);
+-      gfx->fs_stats_bound = fs_stats;
++      gfx->fs_variant_bound = variant;
+       if (gfx->depth_stencil_state)
+          mtl_set_depth_stencil_state(enc, gfx->depth_stencil_state);
+    }
+@@ -1594,7 +1596,7 @@ kk_flush_dynamic_state(struct kk_cmd_buffer *cmd)
+ 
+    if ((IS_DIRTY(DS_DEPTH_BOUNDS_TEST_ENABLE) ||
+         IS_DIRTY(DS_DEPTH_BOUNDS_TEST_BOUNDS)) &&
+-       pdev->vk.supported_features.depthBounds) {
++       kk_has_native_depth_bounds(pdev)) {
+       /* Metal does not expose a separate flag for enabling the depth bounds
+        * test. Instead, it treats [0, 1] as disabled. */
+       bool bounds_enable = dyn->ds.depth.bounds_test.enable;
+@@ -1652,12 +1654,114 @@ kk_flush_dynamic_state(struct kk_cmd_buffer *cmd)
+    }
+ }
+ 
++static uint64_t
++kk_depth_bounds_copy(struct kk_cmd_buffer *cmd, struct kk_image_view *iview)
++{
++   struct kk_device *dev = kk_cmd_buffer_device(cmd);
++   struct kk_image *image = container_of(iview->vk.image, struct kk_image, vk);
++   struct kk_image_plane *plane = &image->planes[iview->planes[0].image_plane];
++
++   struct kk_bo *bo;
++   VkResult result = kk_alloc_bo(dev, &cmd->vk.base, plane->layout.size_B,
++                                 plane->layout.align_B, &bo);
++   if (result != VK_SUCCESS) {
++      vk_command_buffer_set_error(&cmd->vk, result);
++      return iview->planes[0].input_gpu_resource_id;
++   }
++   util_dynarray_append(&cmd->large_bos, bo);
++
++   mtl_texture *copy =
++      mtl_new_texture_with_descriptor(bo->mtl_handle, &plane->layout, 0);
++   util_dynarray_append(&cmd->depth_bounds_textures, copy);
++
++   uint32_t level = iview->vk.base_mip_level;
++   struct mtl_size size = {
++      .x = u_minify(plane->layout.width_px, level),
++      .y = u_minify(plane->layout.height_px, level),
++      .z = 1,
++   };
++   struct mtl_origin origin = {0, 0, 0};
++   mtl_compute_encoder *enc = cs_get_compute(cmd);
++   for (uint32_t l = 0; l < iview->vk.layer_count; l++) {
++      uint32_t slice = iview->vk.base_array_layer + l;
++      mtl_copy_from_texture_to_texture(enc, plane->mtl_handle, slice, level,
++                                       origin, size, copy, slice, level,
++                                       origin);
++   }
++
++   const struct kk_va_format *format =
++      kk_get_va_format(iview->planes[0].format);
++   struct kk_view_layout view_layout = {
++      .view_type = VK_IMAGE_VIEW_TYPE_2D_ARRAY,
++      .sample_count_sa = plane->layout.sample_count_sa,
++      .format = {.pipe = iview->planes[0].format,
++                 .mtl = format->mtl_pixel_format},
++      .base_array_layer = iview->vk.base_array_layer,
++      .array_len = iview->vk.layer_count,
++      .swizzle = {.channels = {PIPE_SWIZZLE_X, PIPE_SWIZZLE_Y, PIPE_SWIZZLE_Z,
++                               PIPE_SWIZZLE_W}},
++      .base_level = level,
++      .num_levels = 1,
++   };
++   mtl_texture *view = mtl_new_texture_view_with(copy, &view_layout);
++   util_dynarray_append(&cmd->depth_bounds_textures, view);
++
++   return mtl_texture_get_gpu_resource_id(view);
++}
++
++static void
++kk_flush_depth_bounds(struct kk_cmd_buffer *cmd)
++{
++   struct kk_device *dev = kk_cmd_buffer_device(cmd);
++   struct kk_physical_device *pdev = kk_device_physical(dev);
++   struct kk_graphics_state *gfx = &cmd->state.gfx;
++   struct kk_descriptor_state *desc = &gfx->descriptors;
++   const struct vk_dynamic_graphics_state *dyn =
++      &cmd->vk.dynamic_graphics_state;
++   struct kk_image_view *iview = gfx->render.depth_att.iview;
++   struct kk_shader *vs = cmd->state.shaders[MESA_SHADER_VERTEX];
++
++   gfx->depth_bounds_active = false;
++   if (kk_has_native_depth_bounds(pdev))
++      return;
++
++   bool has_depth =
++      iview != NULL && (iview->vk.aspects & VK_IMAGE_ASPECT_DEPTH_BIT);
++   bool writes_depth =
++      has_depth && dyn->ds.depth.test_enable && dyn->ds.depth.write_enable;
++
++   if (!dyn->ds.depth.bounds_test.enable || !has_depth || vs == NULL ||
++       !(vs->info.fs_variant_mask &
++         BITFIELD_BIT(KK_FS_VARIANT_DEPTH_BOUNDS))) {
++      if (writes_depth)
++         gfx->render.depth_in_memory = false;
++      return;
++   }
++
++   if (cmd->metal.render != NULL && !gfx->render.depth_in_memory) {
++      kk_apply_attachment_store_ops(cmd, true);
++      cs_end(cmd);
++      kk_cmd_buffer_dirty_all_gfx(cmd);
++      gfx->need_to_start_render_pass = true;
++   }
++   gfx->render.depth_in_memory = !writes_depth;
++
++   desc->root.draw.depth_bounds_texture =
++      writes_depth ? kk_depth_bounds_copy(cmd, iview)
++                   : iview->planes[0].input_gpu_resource_id;
++   desc->root.draw.depth_bounds[0] = dyn->ds.depth.bounds_test.min;
++   desc->root.draw.depth_bounds[1] = dyn->ds.depth.bounds_test.max;
++   desc->root_dirty = true;
++   gfx->depth_bounds_active = true;
++}
++
+ static void
+ kk_flush_gfx_state(struct kk_cmd_buffer *cmd)
+ {
+    struct kk_graphics_state *gfx = &cmd->state.gfx;
+    struct kk_descriptor_state *desc = &gfx->descriptors;
+ 
++   kk_flush_depth_bounds(cmd);
+    kk_flush_render_pass(cmd);
+    kk_flush_pipeline(cmd);
+ 
+diff --git a/src/kosmickrisp/vulkan/kk_physical_device.c b/src/kosmickrisp/vulkan/kk_physical_device.c
+index d71177dda45..b1634a9ac75 100644
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c
+@@ -232,7 +232,7 @@ kk_get_device_features(
+       /* Vulkan 1.0 */
+       .alphaToOne = true,
+       .depthBiasClamp = true,
+-      .depthBounds = pdev->info.gpu_apple_family >= 10,
++      .depthBounds = true,
+       .depthClamp = true,
+       .drawIndirectFirstInstance = true,
+       .dualSrcBlend = true,
+diff --git a/src/kosmickrisp/vulkan/kk_physical_device.h b/src/kosmickrisp/vulkan/kk_physical_device.h
+index 940d3b1ebb4..ee05d9ac548 100644
+--- a/src/kosmickrisp/vulkan/kk_physical_device.h
++++ b/src/kosmickrisp/vulkan/kk_physical_device.h
+@@ -110,4 +110,10 @@ kk_has_native_sampler_minmax(const struct kk_physical_device *pdev)
+    return pdev->info.gpu_apple_family >= 10;
+ }
+ 
++static inline bool
++kk_has_native_depth_bounds(const struct kk_physical_device *pdev)
++{
++   return pdev->info.gpu_apple_family >= 10;
++}
++
+ #endif // KK_PHYSICAL_DEVICE_H
+diff --git a/src/kosmickrisp/vulkan/kk_shader.c b/src/kosmickrisp/vulkan/kk_shader.c
+index b1e55a95093..79a65cd737b 100644
+--- a/src/kosmickrisp/vulkan/kk_shader.c
++++ b/src/kosmickrisp/vulkan/kk_shader.c
+@@ -646,6 +646,121 @@ lower_subpass_dim(nir_builder *b, nir_tex_instr *tex, UNUSED void *_data)
+    return true;
+ }
+ 
++static bool
++kk_fs_may_use_depth_bounds(const struct vk_graphics_pipeline_state *state)
++{
++   if (state->rp->depth_attachment_format == VK_FORMAT_UNDEFINED)
++      return false;
++
++   if (BITSET_TEST(state->dynamic, MESA_VK_DYNAMIC_DS_DEPTH_BOUNDS_TEST_ENABLE))
++      return true;
++
++   return state->ds == NULL || state->ds->depth.bounds_test.enable;
++}
++
++static nir_def *
++kk_load_root_constant(nir_builder *b, unsigned num_components,
++                      unsigned bit_size, unsigned offset)
++{
++   nir_def *root = nir_load_buffer_ptr_kk(b, 1, 64, .binding = 0);
++   return nir_build_load_global_constant(
++      b, num_components, bit_size, nir_iadd_imm(b, root, offset),
++      .align_mul = bit_size / 8, .access = ACCESS_CAN_SPECULATE);
++}
++
++static bool
++kk_lower_fs_depth_bounds(nir_shader *nir,
++                         const struct vk_graphics_pipeline_state *state)
++{
++   const bool multisampled =
++      state->ms && state->ms->rasterization_samples > 1;
++   const unsigned samples = multisampled ? state->ms->rasterization_samples : 1;
++
++   nir->info.fs.early_fragment_tests = false;
++
++   nir_function_impl *impl = nir_shader_get_entrypoint(nir);
++   nir_builder b = nir_builder_at(nir_before_impl(impl));
++
++   nir_def *bounds = kk_load_root_constant(
++      &b, 2, 32,
++      offsetof(struct kk_root_descriptor_table, draw.depth_bounds));
++   nir_def *root = nir_load_buffer_ptr_kk(&b, 1, 64, .binding = 0);
++   nir_def *handle_addr = nir_iadd_imm(
++      &b, root,
++      offsetof(struct kk_root_descriptor_table, draw.depth_bounds_texture));
++   enum glsl_sampler_dim dim =
++      multisampled ? GLSL_SAMPLER_DIM_MS : GLSL_SAMPLER_DIM_2D;
++   nir_def *handle = nir_load_texture_handle_kk(
++      &b, 1, 64, handle_addr, .dest_type = nir_type_float32,
++      .image_dim = dim, .image_array = true);
++
++   nir_def *frag_coord =
++      nir_f2i32(&b, nir_trim_vector(&b, nir_load_frag_coord(&b), 2));
++   nir_def *coord =
++      nir_vec3(&b, nir_channel(&b, frag_coord, 0),
++               nir_channel(&b, frag_coord, 1), nir_load_layer_id(&b));
++
++   nir_def *covered = nir_imm_int(&b, 0);
++   for (unsigned i = 0; i < samples; i++) {
++      nir_tex_instr *tex = nir_tex_instr_create(b.shader, 3);
++      tex->op = multisampled ? nir_texop_txf_ms : nir_texop_txf;
++      tex->sampler_dim = dim;
++      tex->is_array = true;
++      tex->dest_type = nir_type_float32;
++      tex->coord_components = 3;
++      tex->src[0] = nir_tex_src_for_ssa(nir_tex_src_coord, coord);
++      tex->src[1] = nir_tex_src_for_ssa(
++         multisampled ? nir_tex_src_ms_index : nir_tex_src_lod,
++         nir_imm_int(&b, multisampled ? i : 0));
++      tex->src[2] = nir_tex_src_for_ssa(nir_tex_src_texture_handle, handle);
++      nir_def_init(&tex->instr, &tex->def, 4, 32);
++      nir_builder_instr_insert(&b, &tex->instr);
++      nir_def *depth = nir_channel(&b, &tex->def, 0);
++      nir_def *pass = nir_iand(
++         &b, nir_fge(&b, depth, nir_channel(&b, bounds, 0)),
++         nir_fge(&b, nir_channel(&b, bounds, 1), depth));
++      covered = nir_ior(&b, covered,
++                        nir_bcsel(&b, pass, nir_imm_int(&b, 1u << i),
++                                  nir_imm_int(&b, 0)));
++   }
++
++   if (multisampled) {
++      bool writes_mask = false;
++      nir_foreach_block(block, impl) {
++         nir_foreach_instr(instr, block) {
++            if (instr->type != nir_instr_type_intrinsic)
++               continue;
++            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
++            if (intr->intrinsic != nir_intrinsic_store_output ||
++                nir_intrinsic_io_semantics(intr).location !=
++                   FRAG_RESULT_SAMPLE_MASK)
++               continue;
++            b.cursor = nir_before_instr(instr);
++            nir_src_rewrite(&intr->src[0],
++                            nir_iand(&b, intr->src[0].ssa, covered));
++            writes_mask = true;
++         }
++      }
++
++      if (!writes_mask) {
++         b.cursor = nir_after_impl(impl);
++         struct nir_io_semantics io_semantics = {
++            .location = FRAG_RESULT_SAMPLE_MASK,
++            .num_slots = 1u,
++         };
++         nir_store_output(&b, covered, nir_imm_int(&b, 0u), .base = 0u,
++                          .range = 1u, .write_mask = 0x1, .component = 0u,
++                          .src_type = nir_type_uint32,
++                          .io_semantics = io_semantics);
++      }
++   }
++
++   b.cursor = nir_after_impl(impl);
++   nir_discard_if(&b, nir_ieq_imm(&b, covered, 0));
++
++   return nir_progress(true, impl, nir_metadata_none);
++}
++
+ static void
+ kk_lower_fs(struct kk_device *dev, nir_shader *nir,
+             const struct vk_graphics_pipeline_state *state)
+@@ -1037,9 +1152,11 @@ kk_shader_destroy(struct vk_device *vk_dev, struct kk_shader *shader,
+ 
+       /* Graphics pipeline. */
+       mtl_release(pipe->gfx.render);
+-      if (pipe->gfx.render_stats)
+-         mtl_release(pipe->gfx.render_stats);
+-      pipe->gfx.render_stats = NULL;
++      for (uint32_t i = 0; i < ARRAY_SIZE(pipe->gfx.render_variants); i++) {
++         if (pipe->gfx.render_variants[i])
++            mtl_release(pipe->gfx.render_variants[i]);
++         pipe->gfx.render_variants[i] = NULL;
++      }
+       if (pipe->gfx.ds_handle)
+          mtl_release(pipe->gfx.ds_handle);
+       pipe->gfx.render = NULL;
+@@ -1067,7 +1184,8 @@ kk_shader_destroy(struct vk_device *vk_dev, struct kk_shader *shader,
+    kk_msl_free(&shader->gs_main);
+    kk_msl_free(&shader->gs_count);
+    kk_msl_free(&shader->gs_pre);
+-   kk_msl_free(&shader->fs_stats);
++   for (uint32_t i = 0; i < ARRAY_SIZE(shader->fs_variants); i++)
++      kk_msl_free(&shader->fs_variants[i]);
+ 
+    vk_shader_free(&dev->vk, pAllocator, &shader->vk);
+ }
+@@ -1605,11 +1723,25 @@ kk_compile_shader(struct kk_device *dev, nir_shader *nir,
+    }
+ 
+    if (stage == MESA_SHADER_FRAGMENT) {
+-      nir_shader *counted = nir_shader_clone(NULL, nir);
+-      kk_nir_count_fs_invocations(counted);
+-      kk_compile_msl(pdev, counted, state, &shader->fs_stats,
+-                     &shader->info.atomic64_locked);
+-      shader->info.has_fs_stats = true;
++      unsigned variant_bits = KK_FS_VARIANT_STATS;
++      nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
++      if (!kk_has_native_depth_bounds(pdev) &&
++          !(nir->info.fs.early_fragment_tests && nir->info.writes_memory) &&
++          kk_fs_may_use_depth_bounds(state))
++         variant_bits |= KK_FS_VARIANT_DEPTH_BOUNDS;
++
++      for (unsigned v = 1; v < KK_FS_VARIANT_COUNT; v++) {
++         if (v & ~variant_bits)
++            continue;
++         nir_shader *variant = nir_shader_clone(NULL, nir);
++         if (v & KK_FS_VARIANT_DEPTH_BOUNDS)
++            NIR_PASS(_, variant, kk_lower_fs_depth_bounds, state);
++         if (v & KK_FS_VARIANT_STATS)
++            kk_nir_count_fs_invocations(variant);
++         kk_compile_msl(pdev, variant, state, &shader->fs_variants[v - 1],
++                        &shader->info.atomic64_locked);
++         shader->info.fs_variant_mask |= BITFIELD_BIT(v);
++      }
+    }
+ 
+    /* The geometry stage's own slot holds its rasterization VS */
+@@ -1912,10 +2044,9 @@ gather_graphics_pipeline_create_info(
+       mesa_shader_stage stage = s->info.stage;
+       kk_msl_copy(&vs->msl_data[stage], &s->msl_data[stage]);
+ 
+-      if (s->info.has_fs_stats) {
+-         kk_msl_copy(&vs->fs_stats, &s->fs_stats);
+-         info->has_fs_stats = true;
+-      }
++      u_foreach_bit(v, s->info.fs_variant_mask)
++         kk_msl_copy(&vs->fs_variants[v - 1], &s->fs_variants[v - 1]);
++      info->fs_variant_mask |= s->info.fs_variant_mask;
+ 
+       info->vs.additional_stages_bits |= BITFIELD_BIT(stage);
+ 
+@@ -2108,18 +2239,21 @@ kk_compile_graphics_pipeline(struct kk_device *device, struct kk_shader *vs)
+ }
+ 
+ mtl_render_pipeline_state *
+-kk_shader_get_stats_pipeline(struct kk_device *dev, struct kk_shader *vs)
+-{
+-   mtl_render_pipeline_state *render = p_atomic_read(&vs->pipeline.gfx.render_stats);
+-   if (render || !vs->info.has_fs_stats)
++kk_shader_get_fs_variant_pipeline(struct kk_device *dev, struct kk_shader *vs,
++                                  unsigned variant)
++{
++   assert(variant > 0 && variant < KK_FS_VARIANT_COUNT);
++   mtl_render_pipeline_state **slot =
++      &vs->pipeline.gfx.render_variants[variant - 1];
++   mtl_render_pipeline_state *render = p_atomic_read(slot);
++   if (render || !(vs->info.fs_variant_mask & BITFIELD_BIT(variant)))
+       return render;
+ 
+-   render = kk_new_render_pipeline(dev, vs, &vs->fs_stats);
++   render = kk_new_render_pipeline(dev, vs, &vs->fs_variants[variant - 1]);
+    if (render == NULL)
+       return NULL;
+ 
+-   mtl_render_pipeline_state *old =
+-      p_atomic_cmpxchg(&vs->pipeline.gfx.render_stats, NULL, render);
++   mtl_render_pipeline_state *old = p_atomic_cmpxchg(slot, NULL, render);
+    if (old) {
+       mtl_release(render);
+       return old;
+@@ -2481,9 +2615,14 @@ kk_compile_shaders(struct vk_device *device, uint32_t shader_count,
+    } else {
+       if (empty_fs_index != UINT32_MAX) {
+          struct kk_shader *empty = shaders[empty_fs_index];
+-         kk_msl_free(&empty->fs_stats);
+-         memset(&empty->fs_stats, 0, sizeof(empty->fs_stats));
+-         empty->info.has_fs_stats = false;
++         u_foreach_bit(v, empty->info.fs_variant_mask) {
++            if (!(v & KK_FS_VARIANT_STATS))
++               continue;
++            kk_msl_free(&empty->fs_variants[v - 1]);
++            memset(&empty->fs_variants[v - 1], 0,
++                   sizeof(empty->fs_variants[v - 1]));
++            empty->info.fs_variant_mask &= ~BITFIELD_BIT(v);
++         }
+       }
+       gather_graphics_pipeline_create_info(state, shaders, total_shaders);
+       shaders[0]->info.vs.xfb_passthrough = passthrough_index != UINT32_MAX;
+@@ -2554,8 +2693,8 @@ kk_shader_serialize(struct vk_device *vk_dev, const struct vk_shader *vk_shader,
+       kk_msl_serialize(&shader->gs_count, blob);
+    if (gs && gs->xfb)
+       kk_msl_serialize(&shader->gs_pre, blob);
+-   if (shader->info.has_fs_stats)
+-      kk_msl_serialize(&shader->fs_stats, blob);
++   u_foreach_bit(v, shader->info.fs_variant_mask)
++      kk_msl_serialize(&shader->fs_variants[v - 1], blob);
+ 
+    return !blob->out_of_memory;
+ }
+@@ -2634,8 +2773,8 @@ kk_deserialize_shader(struct vk_device *vk_dev, struct blob_reader *blob,
+          goto fail;
+    }
+ 
+-   if (info.has_fs_stats) {
+-      result = kk_msl_deserialize(blob, &shader->fs_stats);
++   u_foreach_bit(v, info.fs_variant_mask) {
++      result = kk_msl_deserialize(blob, &shader->fs_variants[v - 1]);
+       if (result != VK_SUCCESS)
+          goto fail;
+    }
+diff --git a/src/kosmickrisp/vulkan/kk_shader.h b/src/kosmickrisp/vulkan/kk_shader.h
+index 5e20544075f..bd0f6e491f1 100644
+--- a/src/kosmickrisp/vulkan/kk_shader.h
++++ b/src/kosmickrisp/vulkan/kk_shader.h
+@@ -50,7 +50,7 @@ kk_tess_info_merge(struct kk_tess_info a, struct kk_tess_info b)
+ struct kk_shader_info {
+    mesa_shader_stage stage;
+    bool uses_per_draw_data;
+-   bool has_fs_stats;
++   uint8_t fs_variant_mask;
+    uint8_t atomic64_locked;
+ 
+    /* Required for fragment shader cull distance discards. */
+@@ -124,12 +124,18 @@ struct kk_shader_info {
+  * dispatched with */
+ #define KK_POLY_WG_SIZE 64u
+ 
++enum kk_fs_variant {
++   KK_FS_VARIANT_STATS = BITFIELD_BIT(0),
++   KK_FS_VARIANT_DEPTH_BOUNDS = BITFIELD_BIT(1),
++   KK_FS_VARIANT_COUNT = 4,
++};
++
+ /* Metal handles for binding. */
+ struct kk_pipeline_handles {
+    union {
+       struct {
+          mtl_render_pipeline_state *render;
+-         mtl_render_pipeline_state *render_stats;
++         mtl_render_pipeline_state *render_variants[KK_FS_VARIANT_COUNT - 1];
+          /* VS, TCS, TES and the GS compute pass at most run before the render
+           * pipeline. */
+          mtl_compute_pipeline_state *pre_render[4];
+@@ -158,7 +164,7 @@ struct kk_shader {
+    struct msl_compile_data gs_main;
+    struct msl_compile_data gs_count;
+    struct msl_compile_data gs_pre;
+-   struct msl_compile_data fs_stats;
++   struct msl_compile_data fs_variants[KK_FS_VARIANT_COUNT - 1];
+ };
+ 
+ VK_DEFINE_NONDISP_HANDLE_CASTS(kk_shader, vk.base, VkShaderEXT,
+@@ -192,8 +198,9 @@ bool kk_nir_add_device_barrier_workaround(nir_shader *nir);
+ 
+ bool kk_nir_lower_poly(struct nir_shader *nir);
+ 
+-mtl_render_pipeline_state *kk_shader_get_stats_pipeline(struct kk_device *dev,
+-                                                        struct kk_shader *vs);
++mtl_render_pipeline_state *
++kk_shader_get_fs_variant_pipeline(struct kk_device *dev, struct kk_shader *vs,
++                                  unsigned variant);
+ bool kk_nir_lower_null_images(nir_shader *nir);
+ 
+ bool kk_nir_lower_textures(nir_shader *nir);
+-- 
+2.54.0 (Apple Git-157)
+

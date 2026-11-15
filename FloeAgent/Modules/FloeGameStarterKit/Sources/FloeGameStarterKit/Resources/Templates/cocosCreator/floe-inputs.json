@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "engine": "cocosCreator",
+  "movement": {
+    "left": [
+      "left"
+    ],
+    "right": [
+      "right"
+    ],
+    "up": [
+      "up"
+    ],
+    "down": [
+      "down"
+    ]
+  },
+  "buttons": [
+    {
+      "id": "confirm",
+      "label": "Z (also Enter/Space)",
+      "keys": [
+        "z"
+      ]
+    },
+    {
+      "id": "cancel",
+      "label": "X (also Esc)",
+      "keys": [
+        "x"
+      ]
+    },
+    {
+      "id": "pageLeft",
+      "label": "Q",
+      "keys": [
+        "q"
+      ]
+    },
+    {
+      "id": "pageRight",
+      "label": "W",
+      "keys": [
+        "w"
+      ]
+    },
+    {
+      "id": "save",
+      "label": "F5",
+      "keys": [
+        "f5"
+      ]
+    },
+    {
+      "id": "load",
+      "label": "F9",
+      "keys": [
+        "f9"
+      ]
+    }
+  ]
+}

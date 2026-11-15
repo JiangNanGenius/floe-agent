@@ -1,0 +1,25 @@
+From 28e7b97cba64c9219d00172ec83e5424b9b9f1cf Mon Sep 17 00:00:00 2001
+From: junminlee2004 <junminlee2004@gmail.com>
+Date: Sun, 27 Sep 2026 13:26:17 -0400
+Subject: [PATCH] poly: Strip KosmicKrisp image fences with geometry shader
+ stores
+
+---
+ src/poly/nir/poly_nir_lower_gs.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/src/poly/nir/poly_nir_lower_gs.c b/src/poly/nir/poly_nir_lower_gs.c
+index e13f4cdd3c7..2722e2d6f14 100644
+--- a/src/poly/nir/poly_nir_lower_gs.c
++++ b/src/poly/nir/poly_nir_lower_gs.c
+@@ -637,6 +637,7 @@ strip_side_effect_from_main(nir_builder *b, nir_intrinsic_instr *intr,
+    case nir_intrinsic_image_store:
+    case nir_intrinsic_bindless_image_store:
+    case nir_intrinsic_fence_pbe_to_tex_agx:
++   case nir_intrinsic_bindless_image_fence_kk:
+       if (data) {
+          nir_instr_remove(&intr->instr);
+          return true;
+-- 
+2.54.0 (Apple Git-157)
+

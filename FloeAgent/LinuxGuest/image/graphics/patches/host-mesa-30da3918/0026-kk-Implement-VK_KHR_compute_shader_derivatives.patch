@@ -1,0 +1,409 @@
+From 71674d1541723350df05983c834114b91d0758dd Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Thu, 1 Oct 2026 13:46:07 -0400
+Subject: [PATCH] kk: Implement VK_KHR_compute_shader_derivatives
+
+Generated-by: LLM
+---
+ src/compiler/nir/nir_builtin_builder.h        |   3 +
+ src/compiler/nir/nir_lower_tex.c              |  31 ++--
+ .../vulkan/kk_nir_lower_compute_derivatives.c | 164 ++++++++++++++++++
+ src/kosmickrisp/vulkan/kk_physical_device.c   |   8 +
+ src/kosmickrisp/vulkan/kk_sampler.c           |  33 ++--
+ src/kosmickrisp/vulkan/kk_shader.c            |  11 ++
+ src/kosmickrisp/vulkan/kk_shader.h            |   2 +
+ src/kosmickrisp/vulkan/meson.build            |   1 +
+ 8 files changed, 221 insertions(+), 32 deletions(-)
+ create mode 100644 src/kosmickrisp/vulkan/kk_nir_lower_compute_derivatives.c
+
+diff --git a/src/compiler/nir/nir_builtin_builder.h b/src/compiler/nir/nir_builtin_builder.h
+index dc76d7f3bd8..3e9f1ec5727 100644
+--- a/src/compiler/nir/nir_builtin_builder.h
++++ b/src/compiler/nir/nir_builtin_builder.h
+@@ -64,6 +64,9 @@ nir_tanh_emulated(struct nir_builder *nb, nir_def *src);
+ nir_def *
+ nir_get_texture_size(nir_builder *b, nir_tex_instr *tex);
+ 
++nir_def *
++nir_tex_gradient_lod(nir_builder *b, nir_tex_instr *tex);
++
+ static inline nir_def *
+ nir_fisnan(nir_builder *b, nir_def *x)
+ {
+diff --git a/src/compiler/nir/nir_lower_tex.c b/src/compiler/nir/nir_lower_tex.c
+index 6c4b7cf43a4..f6900912cd8 100644
+--- a/src/compiler/nir/nir_lower_tex.c
++++ b/src/compiler/nir/nir_lower_tex.c
+@@ -690,11 +690,10 @@ replace_gradient_with_lod(nir_builder *b, nir_def *lod, nir_tex_instr *tex)
+    tex->op = nir_texop_txl;
+ }
+ 
+-static void
+-lower_gradient_cube_map(nir_builder *b, nir_tex_instr *tex)
++static nir_def *
++gradient_cube_map_lod(nir_builder *b, nir_tex_instr *tex)
+ {
+    assert(tex->sampler_dim == GLSL_SAMPLER_DIM_CUBE);
+-   assert(tex->op == nir_texop_txd);
+ 
+    /* Use textureSize() to get the width and height of LOD 0 */
+    nir_def *size = nir_i2f32(b, nir_get_texture_size(b, tex));
+@@ -832,21 +831,15 @@ lower_gradient_cube_map(nir_builder *b, nir_tex_instr *tex)
+                         nir_imm_float(b, 0.5f),
+                         nir_flog2(b, nir_fmul(b, L, nir_fmul(b, L, M)))));
+ 
+-   /* 3. Replace the gradient instruction with an equivalent lod instruction */
+-   replace_gradient_with_lod(b, lod, tex);
++   return lod;
+ }
+ 
+-static void
+-lower_gradient(nir_builder *b, nir_tex_instr *tex)
++nir_def *
++nir_tex_gradient_lod(nir_builder *b, nir_tex_instr *tex)
+ {
+    /* Cubes are more complicated and have their own function */
+-   if (tex->sampler_dim == GLSL_SAMPLER_DIM_CUBE) {
+-      lower_gradient_cube_map(b, tex);
+-      return;
+-   }
+-
+-   assert(tex->sampler_dim != GLSL_SAMPLER_DIM_CUBE);
+-   assert(tex->op == nir_texop_txd);
++   if (tex->sampler_dim == GLSL_SAMPLER_DIM_CUBE)
++      return gradient_cube_map_lod(b, tex);
+ 
+    /* Use textureSize() to get the width and height of LOD 0 */
+    unsigned component_mask;
+@@ -888,10 +881,16 @@ lower_gradient(nir_builder *b, nir_tex_instr *tex)
+    }
+ 
+    /* lod = log2(rho).  We're ignoring GL state biases for now. */
+-   nir_def *lod = nir_flog2(b, rho);
++   return nir_flog2(b, rho);
++}
++
++static void
++lower_gradient(nir_builder *b, nir_tex_instr *tex)
++{
++   assert(tex->op == nir_texop_txd);
+ 
+    /* Replace the gradient instruction with an equivalent lod instruction */
+-   replace_gradient_with_lod(b, lod, tex);
++   replace_gradient_with_lod(b, nir_tex_gradient_lod(b, tex), tex);
+ }
+ 
+ /* tex(s, coord) = txd(s, coord, dfdx(coord), dfdy(coord)) */
+diff --git a/src/kosmickrisp/vulkan/kk_nir_lower_compute_derivatives.c b/src/kosmickrisp/vulkan/kk_nir_lower_compute_derivatives.c
+new file mode 100644
+index 00000000000..30b5c34909b
+--- /dev/null
++++ b/src/kosmickrisp/vulkan/kk_nir_lower_compute_derivatives.c
+@@ -0,0 +1,164 @@
++/*
++ * Copyright 2026 David Andrews
++ * SPDX-License-Identifier: MIT
++ */
++
++#include "kk_shader.h"
++
++#include "nir_builder.h"
++#include "nir_builtin_builder.h"
++
++static nir_def *
++quad_derivative(nir_builder *b, nir_def *value, bool vertical, bool fine)
++{
++   nir_def *lanes[4];
++   for (unsigned i = 0; i < 4; i++)
++      lanes[i] = nir_quad_broadcast(b, value, nir_imm_int(b, i));
++
++   const unsigned step = vertical ? 2 : 1;
++   nir_def *first = nir_fsub(b, lanes[step], lanes[0]);
++   if (!fine)
++      return first;
++
++   nir_def *second = nir_fsub(b, lanes[3], lanes[3 - step]);
++   nir_def *lane = nir_load_subgroup_invocation(b);
++   nir_def *in_second = nir_test_mask(b, lane, vertical ? 1 : 2);
++   return nir_bcsel(b, in_second, second, first);
++}
++
++static bool
++lower_derivative(nir_builder *b, nir_intrinsic_instr *intrin, void *data)
++{
++   bool vertical, fine;
++   switch (intrin->intrinsic) {
++   case nir_intrinsic_ddx:
++   case nir_intrinsic_ddx_coarse:
++      vertical = false;
++      fine = false;
++      break;
++   case nir_intrinsic_ddx_fine:
++      vertical = false;
++      fine = true;
++      break;
++   case nir_intrinsic_ddy:
++   case nir_intrinsic_ddy_coarse:
++      vertical = true;
++      fine = false;
++      break;
++   case nir_intrinsic_ddy_fine:
++      vertical = true;
++      fine = true;
++      break;
++   default:
++      return false;
++   }
++
++   b->cursor = nir_before_instr(&intrin->instr);
++   nir_def_replace(&intrin->def,
++                   quad_derivative(b, intrin->src[0].ssa, vertical, fine));
++   return true;
++}
++
++static nir_def *
++half_bits_to_float(nir_builder *b, nir_def *bits)
++{
++   return nir_f2f32(b, nir_u2u16(b, bits));
++}
++
++static bool
++lower_tex(nir_builder *b, nir_tex_instr *tex, void *data)
++{
++   if (tex->op != nir_texop_tex && tex->op != nir_texop_txb)
++      return false;
++
++   b->cursor = nir_before_instr(&tex->instr);
++
++   nir_def *coord = nir_get_tex_src(tex, nir_tex_src_coord);
++   if (tex->is_array)
++      coord = nir_trim_vector(b, coord, coord->num_components - 1);
++
++   nir_def *ddx = quad_derivative(b, coord, false, false);
++   nir_def *ddy = quad_derivative(b, coord, true, false);
++
++   if (tex->op == nir_texop_txb) {
++      nir_def *bias = nir_steal_tex_src(tex, nir_tex_src_bias);
++      nir_def *scale = nir_fexp2(b, nir_f2f32(b, bias));
++      ddx = nir_fmul(b, ddx, scale);
++      ddy = nir_fmul(b, ddy, scale);
++   }
++
++   nir_tex_instr_add_src(tex, nir_tex_src_ddx, ddx);
++   nir_tex_instr_add_src(tex, nir_tex_src_ddy, ddy);
++   tex->op = nir_texop_txd;
++   return true;
++}
++
++static bool
++lower_lod(nir_builder *b, nir_tex_instr *tex, void *data)
++{
++   if (tex->op != nir_texop_lod)
++      return false;
++
++   b->cursor = nir_before_instr(&tex->instr);
++
++   nir_def *coord = nir_get_tex_src(tex, nir_tex_src_coord);
++   nir_tex_instr_add_src(tex, nir_tex_src_ddx,
++                         quad_derivative(b, coord, false, false));
++   nir_tex_instr_add_src(tex, nir_tex_src_ddy,
++                         quad_derivative(b, coord, true, false));
++
++   nir_def *lod = nir_tex_gradient_lod(b, tex);
++   nir_def *bias = nir_steal_tex_src(tex, nir_tex_src_bias);
++   if (bias)
++      lod = nir_fadd(b, lod, nir_f2f32(b, bias));
++
++   nir_def *limits = nir_build_texture_query(
++      b, tex, nir_texop_sampler_minmax_kk, 3, nir_type_uint32, false, false);
++   nir_def *levels = nir_build_texture_query(b, tex, nir_texop_query_levels, 1,
++                                             nir_type_int32, false, false);
++
++   nir_def *level =
++      nir_fclamp(b, lod, half_bits_to_float(b, nir_channel(b, limits, 1)),
++                 half_bits_to_float(b, nir_channel(b, limits, 2)));
++   level = nir_fclamp(b, level, nir_imm_float(b, 0.0f),
++                      nir_i2f32(b, nir_iadd_imm(b, levels, -1)));
++
++   nir_def *mip_linear = nir_test_mask(b, nir_channel(b, limits, 0),
++                                       KK_SAMPLER_MINMAX_MIP_LINEAR);
++   nir_def *nearest = nir_fadd_imm(
++      b, nir_fceil(b, nir_fadd_imm(b, level, 0.5)), -1.0);
++   level = nir_bcsel(b, mip_linear, level, nearest);
++
++   nir_def_replace(&tex->def, nir_vec2(b, level, lod));
++   return true;
++}
++
++static bool
++has_compute_derivatives(const nir_shader *nir)
++{
++   return nir->info.stage == MESA_SHADER_COMPUTE &&
++          nir->info.derivative_group != DERIVATIVE_GROUP_NONE;
++}
++
++bool
++kk_nir_lower_compute_derivatives(nir_shader *nir)
++{
++   if (!has_compute_derivatives(nir))
++      return false;
++
++   bool progress = false;
++   NIR_PASS(progress, nir, nir_shader_tex_pass, lower_tex,
++            nir_metadata_control_flow, NULL);
++   NIR_PASS(progress, nir, nir_shader_intrinsics_pass, lower_derivative,
++            nir_metadata_control_flow, NULL);
++   return progress;
++}
++
++bool
++kk_nir_lower_compute_lod_queries(nir_shader *nir)
++{
++   if (!has_compute_derivatives(nir))
++      return false;
++
++   return nir_shader_tex_pass(nir, lower_lod, nir_metadata_control_flow, NULL);
++}
+diff --git a/src/kosmickrisp/vulkan/kk_physical_device.c b/src/kosmickrisp/vulkan/kk_physical_device.c
+index 84ae7e7831f..523a1673173 100644
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c
+@@ -143,6 +143,7 @@ kk_get_device_extensions(const struct kk_instance *instance,
+ 
+       /* Optional extensions */
+       .KHR_calibrated_timestamps = true,
++      .KHR_compute_shader_derivatives = true,
+       .KHR_deferred_host_operations = true,
+       .KHR_maintenance7 = true,
+       .KHR_maintenance8 = true,
+@@ -405,6 +406,10 @@ kk_get_device_features(
+       .robustImageAccess2 = true,
+       .nullDescriptor = true,
+ 
++      /* VK_KHR_compute_shader_derivatives */
++      .computeDerivativeGroupQuads = true,
++      .computeDerivativeGroupLinear = true,
++
+       /* VK_KHR_shader_expect_assume */
+       .shaderExpectAssume = true,
+ 
+@@ -793,6 +798,9 @@ kk_get_device_properties(
+       .uniformTexelBufferOffsetSingleTexelAlignment = true,
+       .maxBufferSize = pdev->info.max_buffer_size,
+ 
++      /* VK_KHR_compute_shader_derivatives */
++      .meshAndTaskShaderDerivatives = false,
++
+       /* VK_KHR_push_descriptor */
+       .maxPushDescriptors = KK_MAX_PUSH_DESCRIPTORS,
+ 
+diff --git a/src/kosmickrisp/vulkan/kk_sampler.c b/src/kosmickrisp/vulkan/kk_sampler.c
+index 4d347b38fce..32ab79b93d1 100644
+--- a/src/kosmickrisp/vulkan/kk_sampler.c
++++ b/src/kosmickrisp/vulkan/kk_sampler.c
+@@ -238,28 +238,29 @@ kk_CreateSampler(VkDevice device, const VkSamplerCreateInfo *pCreateInfo,
+    sampler->lod_min_fp16 = _mesa_float_to_half(pCreateInfo->minLod);
+    sampler->lod_max_fp16 = _mesa_float_to_half(pCreateInfo->maxLod);
+ 
++   sampler->minmax_flags =
++      (pCreateInfo->minFilter == VK_FILTER_LINEAR
++          ? KK_SAMPLER_MINMAX_MIN_LINEAR
++          : 0) |
++      (pCreateInfo->magFilter == VK_FILTER_LINEAR
++          ? KK_SAMPLER_MINMAX_MAG_LINEAR
++          : 0) |
++      (pCreateInfo->mipmapMode == VK_SAMPLER_MIPMAP_MODE_LINEAR
++          ? KK_SAMPLER_MINMAX_MIP_LINEAR
++          : 0) |
++      (pCreateInfo->unnormalizedCoordinates ? KK_SAMPLER_MINMAX_UNNORMALIZED
++                                            : 0);
++
+    const VkSamplerReductionModeCreateInfo *reduction_info =
+       vk_find_struct_const(pCreateInfo->pNext,
+                            SAMPLER_REDUCTION_MODE_CREATE_INFO);
+    if (reduction_info && !kk_has_native_sampler_minmax(kk_device_physical(dev)) &&
+        reduction_info->reductionMode !=
+           VK_SAMPLER_REDUCTION_MODE_WEIGHTED_AVERAGE) {
+-      sampler->minmax_flags =
+-         (reduction_info->reductionMode == VK_SAMPLER_REDUCTION_MODE_MIN
+-             ? KK_SAMPLER_MINMAX_MIN
+-             : KK_SAMPLER_MINMAX_MAX) |
+-         (pCreateInfo->minFilter == VK_FILTER_LINEAR
+-             ? KK_SAMPLER_MINMAX_MIN_LINEAR
+-             : 0) |
+-         (pCreateInfo->magFilter == VK_FILTER_LINEAR
+-             ? KK_SAMPLER_MINMAX_MAG_LINEAR
+-             : 0) |
+-         (pCreateInfo->mipmapMode == VK_SAMPLER_MIPMAP_MODE_LINEAR
+-             ? KK_SAMPLER_MINMAX_MIP_LINEAR
+-             : 0) |
+-         (pCreateInfo->unnormalizedCoordinates
+-             ? KK_SAMPLER_MINMAX_UNNORMALIZED
+-             : 0);
++      sampler->minmax_flags |=
++         reduction_info->reductionMode == VK_SAMPLER_REDUCTION_MODE_MIN
++            ? KK_SAMPLER_MINMAX_MIN
++            : KK_SAMPLER_MINMAX_MAX;
+    }
+ 
+    *pSampler = kk_sampler_to_handle(sampler);
+diff --git a/src/kosmickrisp/vulkan/kk_shader.c b/src/kosmickrisp/vulkan/kk_shader.c
+index c57e71e39c8..946e896aaaa 100644
+--- a/src/kosmickrisp/vulkan/kk_shader.c
++++ b/src/kosmickrisp/vulkan/kk_shader.c
+@@ -81,6 +81,9 @@ kk_preprocess_nir(UNUSED struct vk_physical_device *vk_pdev, nir_shader *nir,
+    nir_lower_compute_system_values_options csv_options = {
+       .has_base_global_invocation_id = 0,
+       .has_base_workgroup_id = true,
++      .shuffle_local_ids_for_quad_derivatives = true,
++      .lower_local_invocation_index =
++         nir->info.derivative_group == DERIVATIVE_GROUP_QUADS,
+    };
+    NIR_PASS(_, nir, nir_lower_compute_system_values, &csv_options);
+ }
+@@ -732,9 +735,17 @@ kk_lower_nir(struct kk_device *dev, nir_shader *nir, bool emulated_stage,
+    NIR_PASS(_, nir, nir_vk_lower_ycbcr_tex, lookup_ycbcr_conversion,
+             &ycbcr_state);
+ 
++   if (nir->info.stage == MESA_SHADER_COMPUTE &&
++       nir->info.derivative_group != DERIVATIVE_GROUP_NONE) {
++      const nir_lower_tex_options txp_options = {.lower_txp = ~0u};
++      NIR_PASS(_, nir, nir_lower_tex, &txp_options);
++      NIR_PASS(_, nir, kk_nir_lower_compute_derivatives);
++   }
++
+    /* Common msl texture lowering needs to happen after ycbcr lowering and
+     * before descriptor lowering. */
+    NIR_PASS(_, nir, msl_lower_textures);
++   NIR_PASS(_, nir, kk_nir_lower_compute_lod_queries);
+ 
+    /* Lower push constants before lower_descriptors */
+    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_push_const,
+diff --git a/src/kosmickrisp/vulkan/kk_shader.h b/src/kosmickrisp/vulkan/kk_shader.h
+index e07c61d4b8c..0725005cea0 100644
+--- a/src/kosmickrisp/vulkan/kk_shader.h
++++ b/src/kosmickrisp/vulkan/kk_shader.h
+@@ -212,6 +212,8 @@ bool kk_nir_lower_fs_multiview(nir_shader *nir, uint32_t view_mask);
+ #define KK_SAMPLER_MINMAX_UNNORMALIZED 0x20
+ 
+ bool kk_nir_lower_custom_border(nir_shader *nir);
++bool kk_nir_lower_compute_derivatives(nir_shader *nir);
++bool kk_nir_lower_compute_lod_queries(nir_shader *nir);
+ bool kk_nir_lower_sampler_minmax(nir_shader *nir);
+ bool kk_nir_lower_ssbo_residency(nir_shader *nir,
+                                  nir_address_format addr_format, bool guard);
+diff --git a/src/kosmickrisp/vulkan/meson.build b/src/kosmickrisp/vulkan/meson.build
+index 9095bcf5cb3..465d8f6b736 100644
+--- a/src/kosmickrisp/vulkan/meson.build
++++ b/src/kosmickrisp/vulkan/meson.build
+@@ -90,6 +90,7 @@ kk_files = files(
+   'kk_image.c',
+   'kk_instance.h',
+   'kk_instance.c',
++  'kk_nir_lower_compute_derivatives.c',
+   'kk_nir_lower_custom_border.c',
+   'kk_nir_lower_sampler_minmax.c',
+   'kk_nir_lower_ssbo_residency.c',
+-- 
+2.54.0 (Apple Git-157)
+

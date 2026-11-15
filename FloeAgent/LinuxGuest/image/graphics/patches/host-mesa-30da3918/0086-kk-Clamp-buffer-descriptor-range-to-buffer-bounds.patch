@@ -1,0 +1,30 @@
+From f1769a547a249534953378b83d0ee094895b9e83 Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Sat, 24 Oct 2026 19:30:16 -0400
+Subject: [PATCH] kk: Clamp buffer descriptor range to buffer bounds
+
+Generated-by: LLM
+---
+ src/kosmickrisp/vulkan/kk_buffer.h | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/src/kosmickrisp/vulkan/kk_buffer.h b/src/kosmickrisp/vulkan/kk_buffer.h
+index 61db828e239..c3fcb129311 100644
+--- a/src/kosmickrisp/vulkan/kk_buffer.h
++++ b/src/kosmickrisp/vulkan/kk_buffer.h
+@@ -51,9 +51,11 @@ kk_buffer_addr_range(const struct kk_buffer *buffer, uint64_t offset,
+    if (buffer == NULL)
+       return (struct kk_addr_range){.range = 0};
+ 
++   uint64_t avail = buffer->vk.size - MIN2(offset, buffer->vk.size);
++
+    return (struct kk_addr_range){
+       .addr = vk_buffer_address(&buffer->vk, offset),
+-      .range = vk_buffer_range(&buffer->vk, offset, range),
++      .range = range == VK_WHOLE_SIZE ? avail : MIN2(range, avail),
+    };
+ }
+ 
+-- 
+2.54.0 (Apple Git-157)
+

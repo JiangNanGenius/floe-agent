@@ -1,0 +1,28 @@
+From 8ad57bf056757443b7db9538a18c99b26ab01b2e Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Thu, 1 Oct 2026 15:33:09 -0400
+Subject: [PATCH] kk: Allow storage usage on sparse residency images
+
+Generated-by: LLM
+---
+ src/kosmickrisp/vulkan/kk_image.c | 4 ----
+ 1 file changed, 4 deletions(-)
+
+diff --git a/src/kosmickrisp/vulkan/kk_image.c b/src/kosmickrisp/vulkan/kk_image.c
+index 50ec9f888a3..582964e7013 100644
+--- a/src/kosmickrisp/vulkan/kk_image.c
++++ b/src/kosmickrisp/vulkan/kk_image.c
+@@ -338,10 +338,6 @@ kk_GetPhysicalDeviceImageFormatProperties2(
+                           pImageFormatInfo->tiling, &sparse_tile_px))
+       return VK_ERROR_FORMAT_NOT_SUPPORTED;
+ 
+-   if ((pImageFormatInfo->flags & VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT) &&
+-       (pImageFormatInfo->usage & VK_IMAGE_USAGE_STORAGE_BIT))
+-      return VK_ERROR_FORMAT_NOT_SUPPORTED;
+-
+    /* From the Vulkan 1.3.279 spec:
+     *
+     *    VUID-VkImageCreateInfo-tiling-04121
+-- 
+2.54.0 (Apple Git-157)
+

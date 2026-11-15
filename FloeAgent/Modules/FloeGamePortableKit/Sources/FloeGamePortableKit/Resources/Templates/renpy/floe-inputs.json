@@ -1,0 +1,76 @@
+{
+  "schemaVersion": 1,
+  "engine": "renpy",
+  "movement": {
+    "left": [
+      "left"
+    ],
+    "right": [
+      "right"
+    ],
+    "up": [
+      "up"
+    ],
+    "down": [
+      "down"
+    ]
+  },
+  "buttons": [
+    {
+      "id": "confirm",
+      "label": "Enter",
+      "keys": [
+        "enter"
+      ]
+    },
+    {
+      "id": "cancel",
+      "label": "Esc",
+      "keys": [
+        "escape"
+      ]
+    },
+    {
+      "id": "action1",
+      "label": "Ctrl",
+      "keys": [
+        "control"
+      ]
+    },
+    {
+      "id": "action2",
+      "label": "Tab",
+      "keys": [
+        "tab"
+      ]
+    },
+    {
+      "id": "action3",
+      "label": "PgUp",
+      "keys": [
+        "pageUp"
+      ]
+    },
+    {
+      "id": "action4",
+      "label": "PgDn",
+      "keys": [
+        "pageDown"
+      ]
+    },
+    {
+      "id": "quicksave",
+      "label": "Save / F5",
+      "keys": [
+        "f5"
+      ]
+    },
+    {
+      "id": "quickload",
+      "label": "Load / F9",
+      "keys": [
+        "f9"
+      ]
+    }
+  ]
+}

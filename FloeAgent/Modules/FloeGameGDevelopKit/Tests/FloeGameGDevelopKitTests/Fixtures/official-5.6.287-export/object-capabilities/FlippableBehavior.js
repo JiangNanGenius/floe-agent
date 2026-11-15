@@ -1,0 +1,2 @@
+var gdjs;(function(i){class o extends i.RuntimeBehavior{constructor(e,n,t){super(e,n,t);this.object=t}usesLifecycleFunction(){return!1}applyBehaviorOverriding(e){return!0}onDeActivate(){}onDestroy(){}doStepPreEvents(e){}doStepPostEvents(e){}flipX(e){this.object.flipX(e)}flipY(e){this.object.flipY(e)}isFlippedX(){return this.object.isFlippedX()}isFlippedY(){return this.object.isFlippedY()}}i.FlippableBehavior=o,i.registerBehavior("FlippableCapability::FlippableBehavior",i.FlippableBehavior)})(gdjs||(gdjs={}));
+//# sourceMappingURL=FlippableBehavior.js.map

@@ -1,0 +1,32 @@
+diff --git a/src/kosmickrisp/vulkan/meson.build b/src/kosmickrisp/vulkan/meson.build
+--- a/src/kosmickrisp/vulkan/meson.build
++++ b/src/kosmickrisp/vulkan/meson.build
+@@ -218,3 +218,17 @@
+   
+   devenv.append('VK_DRIVER_FILES', kosmickrisp_icd.full_path())
+ endif
++
++# Link an iOS component executable to prove the complete static dependency closure.
++# This is never launched by the producer and is not an App/device/GPU test.
++if get_option('floe-kk-embedded')
++  executable(
++    'floe-kk-link-check',
++    files('floe_kk_link_check.c'),
++    include_directories : [inc_include, inc_src],
++    dependencies : [kk_deps],
++    link_whole : [libkk],
++    link_language : 'cpp',
++    install : false,
++  )
++endif
+diff --git a/src/kosmickrisp/vulkan/floe_kk_link_check.c b/src/kosmickrisp/vulkan/floe_kk_link_check.c
+new file mode 100644
+--- /dev/null
++++ b/src/kosmickrisp/vulkan/floe_kk_link_check.c
+@@ -0,0 +1,6 @@
++/* SPDX-License-Identifier: Apache-2.0 */
++/* Link qualification only: the build never launches this target. */
++#include "floe_kk_resolver.h"
++int main(void) {
++    return FloeKKGetInstanceProcAddr(VK_NULL_HANDLE, "vkCreateInstance") ? 0 : 1;
++}

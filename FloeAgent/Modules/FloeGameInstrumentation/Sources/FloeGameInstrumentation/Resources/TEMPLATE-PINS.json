@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "catalogVersion": "1.0.0",
+  "frozenSourceRevision": "3763b5ce836c0fb7b980b02a2becaa5c6234100f",
+  "sdkRelativeRoot": "FloeAgent/Modules/FloeGameDeveloperKit",
+  "templates": [
+    {
+      "id": "unityBridge",
+      "resource": "Templates/unity-floe-developer.cs",
+      "sdkPath": "Sources/FloeGameDeveloperCore/Resources/Project/unity-floe-developer.cs",
+      "sha256": "7f4a9eca74d9c6c22312af6961a8d61db74e60dfbc1b88ca96c64dba983a3171",
+      "bytes": 5403
+    },
+    {
+      "id": "unityJSLibrary",
+      "resource": "Templates/unity-floe-developer.jslib",
+      "sdkPath": "Sources/FloeGameDeveloperCore/Resources/Project/unity-floe-developer.jslib",
+      "sha256": "2ffe0da3a40018a11edbe4c148025475114a4ebd8ff4b74601516dee5a043f01",
+      "bytes": 1723
+    },
+    {
+      "id": "unityBehaviour",
+      "resource": "Templates/unity-floe-developer-behaviour.cs",
+      "sdkPath": "Sources/FloeGameDeveloperCore/Resources/Project/unity-floe-developer-behaviour.cs",
+      "sha256": "4a03d98ae94ca4511f73b6f0c2f06139058453924189b1d64fda7bc5fff8102f",
+      "bytes": 1121
+    },
+    {
+      "id": "godotAutoload",
+      "resource": "Templates/godot-floe-developer.gd",
+      "sdkPath": "Sources/FloeGameDeveloperCore/Resources/Project/godot-floe-developer.gd",
+      "sha256": "a63c6120ee04fa91f332a9f177134401c5aefee8ad2c838a8886f4a7e382dd0d",
+      "bytes": 3249
+    }
+  ],
+  "license": {
+    "resource": "LICENSE",
+    "sdkPath": "LICENSE",
+    "sha256": "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04",
+    "bytes": 16726,
+    "id": "license"
+  },
+  "localAmendment": {
+    "owner": "Floe MPL-2.0",
+    "baseFrozenSourceRevision": "3763b5ce836c0fb7b980b02a2becaa5c6234100f",
+    "patches": [
+      {
+        "resource": "Templates/unity-floe-developer.cs",
+        "baseSHA256": "b1cd4727eecf673f70ec9359e91ead331dda6dcc7b3773409ce91e5fa443df60",
+        "installedSHA256": "7f4a9eca74d9c6c22312af6961a8d61db74e60dfbc1b88ca96c64dba983a3171",
+        "reason": "explicit developer host gate before starting an automatic player loop"
+      },
+      {
+        "resource": "Templates/unity-floe-developer.jslib",
+        "baseSHA256": "0a303bad51decd8df6ee8e30a643f504db6d67eb6a471a96ce154d5b68627abc",
+        "installedSHA256": "2ffe0da3a40018a11edbe4c148025475114a4ebd8ff4b74601516dee5a043f01",
+        "reason": "explicit developer host gate before starting an automatic player loop"
+      },
+      {
+        "resource": "Templates/unity-floe-developer-behaviour.cs",
+        "baseSHA256": "70bbcc1e0dbb0816b6d7658cb34dfaaab85a63ba0f8e4b43727cd5b0357fe6cb",
+        "installedSHA256": "4a03d98ae94ca4511f73b6f0c2f06139058453924189b1d64fda7bc5fff8102f",
+        "reason": "explicit developer host gate before starting an automatic player loop"
+      },
+      {
+        "resource": "Templates/godot-floe-developer.gd",
+        "baseSHA256": "8a6fca07dfdfca9fbe9d65074e190a6a7bd5e7e8cf083a111b5beceb270a48d9",
+        "installedSHA256": "a63c6120ee04fa91f332a9f177134401c5aefee8ad2c838a8886f4a7e382dd0d",
+        "reason": "explicit developer host gate before starting an automatic player loop"
+      }
+    ],
+    "frozenSDKUnchanged": true
+  }
+}

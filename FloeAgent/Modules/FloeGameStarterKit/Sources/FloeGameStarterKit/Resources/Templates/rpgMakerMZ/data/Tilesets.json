@@ -1,0 +1,20 @@
+[
+  null,
+  {
+    "id": 1,
+    "mode": 0,
+    "name": "Glimmerfen Tiles",
+    "tilesetNames": [
+      "",
+      "",
+      "",
+      "",
+      "",
+      "FloeTiles",
+      "",
+      "",
+      ""
+    ],
+    "note": "Original Floe synthetic starter tileset. No RTP content."
+  }
+]

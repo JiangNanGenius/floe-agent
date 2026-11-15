@@ -1,0 +1,191 @@
+From 14c27e2b1389e46cfc99c9b219f80406e7a44fe4 Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Fri, 2 Oct 2026 21:33:00 -0400
+Subject: [PATCH] kk: Wait for all queue work before switching to locked
+ atomics or tearing down
+
+Generated-by: LLM
+---
+ src/kosmickrisp/vulkan/kk_device.c |  7 +++--
+ src/kosmickrisp/vulkan/kk_queue.c  | 44 ++++++++++++++++++++++++++----
+ src/kosmickrisp/vulkan/kk_queue.h  |  3 +-
+ 3 files changed, 45 insertions(+), 9 deletions(-)
+
+diff --git a/src/kosmickrisp/vulkan/kk_device.c b/src/kosmickrisp/vulkan/kk_device.c
+index 3ee0fc96f4e..1fb8bce1abf 100644
+--- a/src/kosmickrisp/vulkan/kk_device.c
++++ b/src/kosmickrisp/vulkan/kk_device.c
+@@ -260,11 +260,11 @@ kk_device_lock_atomic64(struct kk_device *dev, uint32_t classes)
+       return;
+ 
+    simple_mtx_lock(&dev->atomic64.lock);
++   if (dev->has_queue)
++      kk_queue_wait_for_idle(&dev->queue);
+    uint32_t *flags = dev->atomic64.bo->cpu;
+    u_foreach_bit(c, classes)
+       p_atomic_set(&flags[c], 1u);
+-   if (dev->has_queue)
+-      kk_queue_wait_for_commits(&dev->queue);
+    p_atomic_set(&dev->atomic64.locked, dev->atomic64.locked | classes);
+    simple_mtx_unlock(&dev->atomic64.lock);
+ }
+@@ -443,6 +443,9 @@ kk_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
+       mtl_stop_gpu_capture();
+    }
+ 
++   if (dev->has_queue)
++      kk_queue_wait_for_idle(&dev->queue);
++
+    /* Meta first since it may destroy Vulkan objects */
+    kk_device_finish_meta(dev);
+    kk_device_finish_lib(dev);
+diff --git a/src/kosmickrisp/vulkan/kk_queue.c b/src/kosmickrisp/vulkan/kk_queue.c
+index c2121dc4719..d186a57f8d3 100644
+--- a/src/kosmickrisp/vulkan/kk_queue.c
++++ b/src/kosmickrisp/vulkan/kk_queue.c
+@@ -27,14 +27,22 @@ struct kk_commit_data {
+ };
+ 
+ void
+-kk_queue_wait_for_commits(struct kk_queue *queue)
++kk_queue_wait_for_idle(struct kk_queue *queue)
+ {
+    mtx_lock(&queue->mutex);
+-   while (queue->commits_in_flight > 0u)
++   while (queue->work_in_flight > 0u)
+       cnd_wait(&queue->cond, &queue->mutex);
+    mtx_unlock(&queue->mutex);
+ }
+ 
++static void
++kk_queue_work_done_locked(struct kk_queue *queue)
++{
++   assert(queue->work_in_flight > 0u);
++   if (--queue->work_in_flight == 0u)
++      cnd_broadcast(&queue->cond);
++}
++
+ static void
+ kk_queue_release_cmd_buffer_locked(struct kk_queue *queue,
+                                    struct kk_cmd_buffer *cmd)
+@@ -58,7 +66,12 @@ check_device_lost(struct kk_device *dev, struct mtl_feedback_data *data)
+ static void
+ commit_callback(struct mtl_feedback_data *data)
+ {
+-   check_device_lost((struct kk_device *)data->user_data, data);
++   struct kk_device *dev = (struct kk_device *)data->user_data;
++   check_device_lost(dev, data);
++
++   mtx_lock(&dev->queue.mutex);
++   kk_queue_work_done_locked(&dev->queue);
++   mtx_unlock(&dev->queue.mutex);
+ }
+ 
+ static void
+@@ -75,6 +88,7 @@ rerecord_commit_callback(struct mtl_feedback_data *data)
+    mtx_lock(&queue->mutex);
+ 
+    kk_queue_release_cmd_buffer_locked(queue, commit->cmd);
++   vk_free(&dev->vk.alloc, commit);
+ 
+    assert(queue->commits_in_flight > 0u);
+    if (--queue->commits_in_flight == 0u) {
+@@ -82,10 +96,9 @@ rerecord_commit_callback(struct mtl_feedback_data *data)
+                           kk_cmd_pool_to_handle(queue->cmd_pool), 0u);
+       cnd_broadcast(&queue->cond);
+    }
++   kk_queue_work_done_locked(queue);
+ 
+    mtx_unlock(&queue->mutex);
+-
+-   vk_free(&dev->vk.alloc, commit);
+ }
+ 
+ static bool
+@@ -165,6 +178,7 @@ rerecord_and_commit_cmd_buffer(struct kk_queue *queue,
+    kk_device_make_resources_resident(dev);
+ 
+    queue->commits_in_flight++;
++   queue->work_in_flight++;
+    kk_queue_commit(queue, rerecord, rerecord_commit_callback, commit);
+ 
+    mtx_unlock(&queue->mutex);
+@@ -429,6 +443,9 @@ kk_queue_bind_sparse(struct kk_queue *queue, struct vk_queue_submit *submit,
+    }
+ }
+ 
++static VkResult kk_queue_submit_locked(struct kk_queue *queue,
++                                       struct vk_queue_submit *submit);
++
+ static VkResult
+ kk_queue_submit(struct vk_queue *vk_queue, struct vk_queue_submit *submit)
+ {
+@@ -438,6 +455,17 @@ kk_queue_submit(struct vk_queue *vk_queue, struct vk_queue_submit *submit)
+    if (vk_queue_is_lost(&queue->vk))
+       return VK_ERROR_DEVICE_LOST;
+ 
++   simple_mtx_lock(&dev->atomic64.lock);
++   VkResult result = kk_queue_submit_locked(queue, submit);
++   simple_mtx_unlock(&dev->atomic64.lock);
++   return result;
++}
++
++static VkResult
++kk_queue_submit_locked(struct kk_queue *queue, struct vk_queue_submit *submit)
++{
++   struct kk_device *dev = kk_queue_device(queue);
++
+    for (struct vk_sync_wait *wait = submit->waits,
+                             *end = submit->waits + submit->wait_count;
+         wait != end; ++wait) {
+@@ -478,6 +506,9 @@ kk_queue_submit(struct vk_queue *vk_queue, struct vk_queue_submit *submit)
+          if (result != VK_SUCCESS)
+             return result;
+       } else if (kk_cmd_buffer_has_work(cmd_buffer)) {
++         mtx_lock(&queue->mutex);
++         queue->work_in_flight++;
++         mtx_unlock(&queue->mutex);
+          kk_queue_commit(queue, cmd_buffer, commit_callback, dev);
+       }
+ 
+@@ -551,6 +582,7 @@ kk_queue_init(struct kk_device *dev, struct kk_queue *queue,
+ 
+    queue->free_cmd_buffers = UTIL_DYNARRAY_INIT;
+    queue->commits_in_flight = 0u;
++   queue->work_in_flight = 0u;
+    mtx_init(&queue->mutex, mtx_plain);
+    cnd_init(&queue->cond);
+ 
+@@ -567,7 +599,7 @@ void
+ kk_queue_finish(struct kk_device *dev, struct kk_queue *queue)
+ {
+    /* There may be in-flight command buffers, wait for them to finish. */
+-   kk_queue_wait_for_commits(queue);
++   kk_queue_wait_for_idle(queue);
+ 
+    mtl_command_queue_remove_residency_set(queue->mtl_handle,
+                                           dev->residency_set.handle);
+diff --git a/src/kosmickrisp/vulkan/kk_queue.h b/src/kosmickrisp/vulkan/kk_queue.h
+index f9f990af9ea..7bde7504640 100644
+--- a/src/kosmickrisp/vulkan/kk_queue.h
++++ b/src/kosmickrisp/vulkan/kk_queue.h
+@@ -29,6 +29,7 @@ struct kk_queue {
+    struct kk_cmd_pool *cmd_pool;
+    struct util_dynarray free_cmd_buffers;
+    uint32_t commits_in_flight;
++   uint32_t work_in_flight;
+    mtx_t mutex;
+    cnd_t cond;
+ };
+@@ -43,7 +44,7 @@ VkResult kk_queue_init(struct kk_device *dev, struct kk_queue *queue,
+                        const VkDeviceQueueCreateInfo *pCreateInfo,
+                        uint32_t index_in_family);
+ 
+-void kk_queue_wait_for_commits(struct kk_queue *queue);
++void kk_queue_wait_for_idle(struct kk_queue *queue);
+ 
+ void kk_queue_finish(struct kk_device *dev, struct kk_queue *queue);
+ 
+-- 
+2.54.0 (Apple Git-157)
+

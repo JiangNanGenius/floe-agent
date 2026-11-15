@@ -1,0 +1,143 @@
+{
+ "schemaVersion": 1,
+ "endianness": "little-endian, ARM64 LP64 layouts per abi/HOST_ABI.json",
+ "fixtures": [
+  {
+   "name": "cmd_open",
+   "file": "cmd_open.bin",
+   "bytes": 8,
+   "description": "VIRTIO_MEDIA_CMD_OPEN",
+   "fields": {}
+  },
+  {
+   "name": "resp_open_ok",
+   "file": "resp_open_ok.bin",
+   "bytes": 12,
+   "description": "OPEN success, session_id=0x11223344",
+   "fields": {
+    "session_id": 287454020
+   }
+  },
+  {
+   "name": "resp_open_refused",
+   "file": "resp_open_refused.bin",
+   "bytes": 8,
+   "description": "OPEN refused (session limit)",
+   "fields": {}
+  },
+  {
+   "name": "cmd_close",
+   "file": "cmd_close.bin",
+   "bytes": 12,
+   "description": "VIRTIO_MEDIA_CMD_CLOSE session 0x11223344",
+   "fields": {}
+  },
+  {
+   "name": "cmd_ioctl_querycap",
+   "file": "cmd_ioctl_querycap.bin",
+   "bytes": 16,
+   "description": "VIDIOC_QUERYCAP (_IOC_NR=0) session 1",
+   "fields": {}
+  },
+  {
+   "name": "cmd_ioctl_qbuf",
+   "file": "cmd_ioctl_qbuf.bin",
+   "bytes": 16,
+   "description": "VIDIOC_QBUF (_IOC_NR=15) session 1",
+   "fields": {}
+  },
+  {
+   "name": "payload_querycap_resp",
+   "file": "payload_querycap_resp.bin",
+   "bytes": 104,
+   "description": "struct v4l2_capability (104)",
+   "fields": {
+    "driver": "virtio-media",
+    "card": "Floe VideoToolbox Decoder",
+    "caps": "0x1c000",
+    "device_caps": "0xc000"
+   }
+  },
+  {
+   "name": "payload_qbuf_out_mplane",
+   "file": "payload_qbuf_out_mplane.bin",
+   "bytes": 152,
+   "description": "QBUF OUTPUT_MPLANE buf idx0 + 1 plane",
+   "fields": {
+    "index": 0,
+    "type": 10,
+    "memory": 1,
+    "planes": 1,
+    "bytesused": 32768,
+    "mem_offset": 10485760
+   }
+  },
+  {
+   "name": "payload_reqbufs",
+   "file": "payload_reqbufs.bin",
+   "bytes": 20,
+   "description": "VIDIOC_REQBUFS payload",
+   "fields": {
+    "count": 4,
+    "type": 10,
+    "memory": 1
+   }
+  },
+  {
+   "name": "cmd_mmap",
+   "file": "cmd_mmap.bin",
+   "bytes": 20,
+   "description": "CMD_MMAP session 1 offset 0xA00000 RW",
+   "fields": {
+    "offset": 10485760,
+    "flags": 1
+   }
+  },
+  {
+   "name": "resp_mmap",
+   "file": "resp_mmap.bin",
+   "bytes": 20,
+   "description": "MMAP resp driver_addr=0x200000 len=0x10000",
+   "fields": {
+    "driver_addr": 2097152,
+    "len": 65536
+   }
+  },
+  {
+   "name": "cmd_munmap",
+   "file": "cmd_munmap.bin",
+   "bytes": 16,
+   "description": "CMD_MUNMAP driver_addr=0x200000",
+   "fields": {
+    "driver_addr": 2097152
+   }
+  },
+  {
+   "name": "evt_error",
+   "file": "evt_error.bin",
+   "bytes": 16,
+   "description": "EVT_ERROR session 1 errno=-5 EIO",
+   "fields": {}
+  },
+  {
+   "name": "evt_dqbuf",
+   "file": "evt_dqbuf.bin",
+   "bytes": 608,
+   "description": "EVT_DQBUF session 1 capture buf 2",
+   "fields": {
+    "index": 2,
+    "type": 9,
+    "bytesused": 73728
+   }
+  },
+  {
+   "name": "evt_event_eos",
+   "file": "evt_event_eos.bin",
+   "bytes": 144,
+   "description": "EVT_EVENT session 1 EOS",
+   "fields": {
+    "event_type": "EOS"
+   }
+  }
+ ]
+}

@@ -1,0 +1,290 @@
+{
+  "schema": 2,
+  "package": {
+    "name": "floe-opencl-clvk-runtime",
+    "version": "0.2~clvk399abf00-externalclspv-1+floeopencl2",
+    "architecture": "arm64",
+    "description": "Private OpenCL 3.0 ICD runtime over the Floe Venus Vulkan GPU with an externally supplied verified clspv",
+    "payloadPrefixes": [
+      "usr/lib/floe-opencl",
+      "usr/share/floe-opencl",
+      "usr/bin/floe-opencl-register",
+      "usr/share/doc/floe-opencl-clvk"
+    ]
+  },
+  "sourcePhase": {
+    "sourceOnly": true,
+    "nativeOrCrossCompilationRun": false,
+    "cmakeConfigureRun": false,
+    "externalCompilerExecuted": false,
+    "vmOrGpuRun": false,
+    "note": "Only public metadata, small pinned header copies, patches, text/AST/shell/apply, synthetic ELF manifest checks and package-contract checks were performed. No CLVK/clspv build, ICD load, kernel build or GPU result is claimed."
+  },
+  "predecessor": {
+    "scope": "FloeAgent/LinuxGuest/acceleration/opencl",
+    "sourceReadySHA256": "33786fb08e643ca54a07410f12bb102e716a8ca840dbe3473316ba22140be935",
+    "note": "Read-only source package. This package adds the runtime-only profile, external compiler admission and runtime package gate; it does not modify predecessor bytes."
+  },
+  "profiles": {
+    "external-runtime": {
+      "status": "implemented-source-only-unbuilt",
+      "compilerAvailableCompileFlag": true,
+      "onlineCompiler": false,
+      "spirvIlDefault": false,
+      "builds": [
+        "OpenCL (genuine CLVK ICD) and required SPIRV-Tools"
+      ],
+      "doesNotConfigureOrBuild": [
+        "LLVM",
+        "clspv",
+        "llvm-spirv",
+        "clang tablegen",
+        "libclc host bitcode"
+      ],
+      "compiler": "external ARM64 Linux clspv process supplied and verified at package/admission time",
+      "optionalCapabilities": "SPIR-V IL and cl_khr_il_program are absent unless --enable-spirv-il and a verified external llvm-spirv are supplied"
+    },
+    "external-runtime-il": {
+      "status": "implemented-source-only-unbuilt",
+      "compilerAvailableCompileFlag": true,
+      "onlineCompiler": false,
+      "spirvIlDefault": true,
+      "requires": "verified external clspv plus verified external llvm-spirv",
+      "note": "Separate optional profile. Not the default component build."
+    },
+    "full-original": {
+      "status": "unchanged predecessor route",
+      "compilerAvailableCompileFlag": true,
+      "onlineCompiler": false,
+      "spirvIlDefault": true,
+      "requires": "LLVM, clspv, SPIRV-LLVM-Translator, host tablegen and libclc as pinned by the predecessor",
+      "note": "External mode defaults OFF; the original full profile remains exactly the predecessor's build path."
+    }
+  },
+  "components": {
+    "clvk": {
+      "kind": "git",
+      "repo": "https://github.com/kpet/clvk",
+      "commit": "399abf00c30b6d1d7a65d7ac06beee60b5991d7b",
+      "tree": "76685cd7d5ec7ba634f04a9d966299faba9ced64",
+      "license": "Apache-2.0",
+      "licenseFile": "licenses/clvk-LICENSE",
+      "role": "OpenCL 3.0 ICD/runtime implementation",
+      "sourceDir": "externally supplied clean checkout at the pinned commit",
+      "requiredForBuild": true,
+      "submodules": {
+        "external/OpenCL-Headers": "386ca390b2f52efeb3e1a55a500690eb8013f60e",
+        "external/SPIRV-Headers": "2b7475f6d664efbad4d4315c94ecec9640831e5b",
+        "external/SPIRV-LLVM-Translator": "c4a6b42303c6b45a64ede3d1c0399dce2d90f3fc",
+        "external/SPIRV-Tools": "ba9a9e32160e2500ce1e48cc563a8fedaf596e6e",
+        "external/clspv": "7ee3a40e652b3649d175758f72d7af98b9450a68"
+      }
+    },
+    "clspv-header": {
+      "kind": "vendored-public-header",
+      "repo": "https://github.com/google/clspv",
+      "commit": "7ee3a40e652b3649d175758f72d7af98b9450a68",
+      "tree": "a5de315ace53c50cf8ec1dbca8f3b89839472636",
+      "license": "Apache-2.0 WITH LLVM-exception",
+      "licenseFile": "licenses/clspv-LICENSE",
+      "role": "Only external/clspv/include/clspv/Sampler.h is needed by clvk's offline compiler path; it contains sampler/reflection constants and no LLVM dependency.",
+      "vendoredPath": "include/clspv/Sampler.h",
+      "vendoredSHA256": "bb95baefb816e1430f8266d7703f0ed43ff71b6e89facf556a97fea8fa2e4987",
+      "sourceSHA256": "bb95baefb816e1430f8266d7703f0ed43ff71b6e89facf556a97fea8fa2e4987",
+      "requiredForBuild": true,
+      "buildsClspvToolchain": false
+    },
+    "opencl-headers": {
+      "kind": "git",
+      "repo": "https://github.com/KhronosGroup/OpenCL-Headers",
+      "commit": "386ca390b2f52efeb3e1a55a500690eb8013f60e",
+      "tree": "d3a2c90329d8e3647dc2405084d508292390a35f",
+      "license": "Apache-2.0",
+      "licenseFile": "licenses/opencl-headers-LICENSE",
+      "role": "OpenCL API/ICD headers",
+      "requiredForBuild": true,
+      "sizeClass": "small"
+    },
+    "spirv-headers": {
+      "kind": "git",
+      "repo": "https://github.com/KhronosGroup/SPIRV-Headers",
+      "commit": "2b7475f6d664efbad4d4315c94ecec9640831e5b",
+      "tree": "d32102dcf5b644c393ee605222d9da3feec64eb7",
+      "license": "Apache-2.0 AND MIT (see LICENSE)",
+      "licenseFile": "licenses/spirv-headers-LICENSE",
+      "role": "SPIR-V grammar/headers used by CLVK and SPIRV-Tools",
+      "requiredForBuild": true,
+      "sizeClass": "small"
+    },
+    "spirv-tools": {
+      "kind": "git",
+      "repo": "https://github.com/KhronosGroup/SPIRV-Tools",
+      "commit": "ba9a9e32160e2500ce1e48cc563a8fedaf596e6e",
+      "tree": "9efb82f9bddb172231c18b5f4ecaa75ba2f862ab",
+      "license": "Apache-2.0",
+      "licenseFile": "licenses/spirv-tools-LICENSE",
+      "role": "SPIR-V parsing/validation/linking required by the genuine CLVK ICD; not an LLVM component",
+      "requiredForBuild": true,
+      "sizeClass": "medium"
+    },
+    "llvm": {
+      "kind": "git",
+      "repo": "https://github.com/llvm/llvm-project",
+      "commit": "71a85ef89fc1997205104b72447e0dc2c4ad83da",
+      "tree": "6dc100ccefd9362877d2ae887b02af670c7a4871",
+      "license": "Apache-2.0 WITH LLVM-exception",
+      "licenseFile": "licenses/llvm-LICENSE.TXT",
+      "role": "External clspv compiler provenance only; NOT a runtime build input in external-runtime profile",
+      "requiredForBuild": false,
+      "requiredForCompilerProvenance": true,
+      "downloadPolicy": "not downloaded or built by this source package"
+    },
+    "spirv-llvm-translator": {
+      "kind": "git",
+      "repo": "https://github.com/KhronosGroup/SPIRV-LLVM-Translator",
+      "commit": "c4a6b42303c6b45a64ede3d1c0399dce2d90f3fc",
+      "tree": "595ddc1ac8072f141a7c1aad1199d23ab9f4a6c5",
+      "license": "Apache-2.0 WITH LLVM-exception",
+      "licenseFile": "licenses/spirv-llvm-translator-LICENSE.TXT",
+      "role": "Only the external llvm-spirv executable in the optional external-runtime-il profile; NOT built or linked by the runtime",
+      "requiredForBuild": false,
+      "requiredForOptionalIl": true
+    },
+    "ocl-icd": {
+      "kind": "debian-binary",
+      "sourcePackage": "ocl-icd",
+      "version": "2.3.3-1",
+      "binaryPackage": "ocl-icd-libopencl1",
+      "binaryArchitecture": "arm64",
+      "binaryURL": "https://deb.debian.org/debian/pool/main/o/ocl-icd/ocl-icd-libopencl1_2.3.3-1_arm64.deb",
+      "binarySHA256": "eadc1b9341c36dbac2ad2f1ae159f55533512cec888425d53e42abacd814742b",
+      "binaryBytes": 42684,
+      "license": "BSD-2-Clause",
+      "licenseFile": "licenses/ocl-icd-COPYING",
+      "role": "Debian 13 OpenCL ICD loader dependency; not replaced by this package",
+      "loaderFacts": {
+        "defaultVendorDirectory": "/etc/OpenCL/vendors",
+        "vendorPathOverride": "OPENCL_VENDOR_PATH",
+        "singleIcdOrDirectoryOverride": "OCL_ICD_VENDORS",
+        "icdFileContent": "first line is a filesystem path passed to dlopen"
+      }
+    },
+    "vulkan": {
+      "kind": "debian-system-dependency",
+      "headersCommit": "952f776f6573aafbb62ea717d871cd1d6816c387",
+      "loaderPackage": "libvulkan1",
+      "loaderVersion": "1.4.309.0-1",
+      "loaderSHA256": "f5f576d8b9e5703702a9f3254c8c5d130bef17da9db4aecd46ba86cec7a08930",
+      "license": "Apache-2.0",
+      "licenseFile": "licenses/vulkan-headers-LICENSE.md",
+      "role": "System Vulkan loader/headers; the matched private Venus ICD is selected by VK_DRIVER_FILES",
+      "sysrootPaths": {
+        "usr/include/vulkan/vulkan.h": "c3c0635de74ae3dd38268d6a4cb767b36e07135e68fa6f64b777e2d4d2db7d1a",
+        "usr/include/vulkan/vulkan_core.h": "39f358bb99f7be5206524d119de4a5b5ab5c515c329c2857ff395d37e6387b4c",
+        "usr/lib/aarch64-linux-gnu/libvulkan.so.1.4.309": "22b6ce3145007566e3e47ce1f379135ba9b83e734cba2edc2d0c3e1b28ffeea7"
+      },
+      "requiredForRuntime": true
+    }
+  },
+  "externalCompilerAdmission": {
+    "target": "aarch64-unknown-linux-gnu",
+    "executableName": "clspv",
+    "installPath": "/usr/lib/floe-opencl/clspv",
+    "requiredProvenance": {
+      "clvkCommit": "399abf00c30b6d1d7a65d7ac06beee60b5991d7b",
+      "clspvCommit": "7ee3a40e652b3649d175758f72d7af98b9450a68",
+      "llvmCommit": "71a85ef89fc1997205104b72447e0dc2c4ad83da",
+      "reflectionABI": "nonsemantic-clspv-reflection-v1",
+      "openCLCVersions": [
+        "1.0",
+        "1.1",
+        "1.2",
+        "3.0"
+      ],
+      "spirvArchitectures": [
+        "spirv32",
+        "spirv64"
+      ]
+    },
+    "elf": {
+      "class": 64,
+      "endianness": "little",
+      "machine": 183,
+      "machineName": "EM_AARCH64",
+      "allowedTypes": [
+        2,
+        3
+      ],
+      "allowedInterpreters": [
+        "/lib/ld-linux-aarch64.so.1"
+      ],
+      "forbiddenNeededPrefixes": [
+        "libOpenCL.so",
+        "libvulkan.so",
+        "libLLVM",
+        "libclang"
+      ],
+      "allowedNeededBasenames": [
+        "libc.so.6",
+        "libm.so.6",
+        "libdl.so.2",
+        "libpthread.so.0",
+        "librt.so.1",
+        "libstdc++.so.6",
+        "libgcc_s.so.1",
+        "libz.so.1",
+        "libzstd.so.1",
+        "ld-linux-aarch64.so.1"
+      ]
+    },
+    "requiredEmbeddedMarker": "clspv",
+    "libclc": {
+      "runtimeResourcesRequired": false,
+      "note": "The pinned clspv build embeds its libclc bitcode. If a future compiler build needs external libclc resources, the manifest must list and hash every file and packaging must verify them."
+    },
+    "limitations": [
+      "Structural ELF checks plus a declared provenance manifest prove ABI and immutable bytes, not the origin of a binary.",
+      "The manifest is an owner-supplied attestation; the validator never executes the compiler on the source host.",
+      "A malicious-but-structurally-valid compiler that lies in its manifest is outside this static validator's threat model."
+    ]
+  },
+  "privatePatches": [
+    {
+      "file": "patches/0001-floe-private-icd-output-name.patch",
+      "purpose": "Rename only the shared ICD target to libfloe_clvk (SONAME libfloe_clvk.so.1) so ocl-icd can dlopen it without colliding with the system libOpenCL.so.1 loader.",
+      "behaviorChange": "None in the exported OpenCL API; library basename/SONAME only.",
+      "source": "copied byte-for-byte from predecessor",
+      "sha256": "19fed7af297b17f0486b09b8da8dc7cf74861096ac8156b58dab8dfc04b7d37b",
+      "bytes": 490
+    },
+    {
+      "file": "patches/0002-floe-external-clspv-runtime.patch",
+      "purpose": "Add CLVK_EXTERNAL_CLSPV. In external mode the top-level project does not add_subdirectory(clspv) or SPIRV-LLVM-Translator, does not set LLVM/toolchain projects, and the OpenCL target only sees the pinned clspv public header plus the configured external executable paths.",
+      "behaviorChange": "None when CLVK_EXTERNAL_CLSPV=OFF (full original profile). In external mode compiler support stays ON and the offline clspv process path is preserved.",
+      "sha256": "7ce9e7422e7e4a883fb61de4e32a4a56b24304ee99712b4c4dac3a004cac606e",
+      "bytes": 8189
+    },
+    {
+      "file": "patches/0003-floe-runtime-compiler-admission.patch",
+      "purpose": "Make CL_DEVICE_COMPILER_AVAILABLE reflect whether the configured offline clspv executable is actually executable, instead of compile-time support alone.",
+      "behaviorChange": "Only reduces a false compiler-available claim when the external executable is missing or not executable; clBuildProgram then returns CL_COMPILER_NOT_AVAILABLE.",
+      "sha256": "52b36b6c9e7a8f9d3f1df706888e12c7dbe763dfcb8b8a9e8ea3a886c487098f",
+      "bytes": 1023
+    },
+    {
+      "file": "patches/0004-floe-il-disabled-api-honesty.patch",
+      "purpose": "When CLVK_ENABLE_SPIRV_IL is OFF, clCreateProgramWithIL/clCreateProgramWithILKHR return CL_INVALID_OPERATION instead of creating a program that can never be built; the extension and IL device info remain absent.",
+      "behaviorChange": "Only in the explicitly IL-disabled external-runtime profile; the full and external-runtime-il profiles are unchanged.",
+      "sha256": "b0d39e4897226d226c98caae2fffeb1a2cf4bc6b027d2027f84973fd43e9f2f3",
+      "bytes": 1260
+    }
+  ],
+  "toolchain": {
+    "target": "aarch64-unknown-linux-gnu",
+    "debianSuite": "trixie",
+    "sysroot": "externally supplied Debian trixie arm64 sysroot",
+    "knownCompiler": "Apple clang 21.0.0 --target=aarch64-unknown-linux-gnu + -fuse-ld=lld (declared, not run for CLVK)",
+    "jobs": 6,
+    "note": "No ARM64 CMake configure, compile or link is performed in this source phase. The producer fails closed on any missing pinned input and never downloads."
+  }
+}

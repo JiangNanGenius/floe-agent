@@ -1,0 +1,41 @@
+From 32f0768937d794af4afe7062ca6b93059af49bfc Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Sat, 3 Oct 2026 17:28:19 -0400
+Subject: [PATCH 68/69] kk: Render depth/stencil views into the image's own
+ texture
+
+Generated-by: LLM
+---
+ src/kosmickrisp/vulkan/kk_image_view.c | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/src/kosmickrisp/vulkan/kk_image_view.c b/src/kosmickrisp/vulkan/kk_image_view.c
+index 95e292e8d8f..ea6c2bcec6e 100644
+--- a/src/kosmickrisp/vulkan/kk_image_view.c
++++ b/src/kosmickrisp/vulkan/kk_image_view.c
+@@ -252,8 +252,11 @@ kk_image_view_init(struct kk_device *dev, struct kk_image_view *view,
+          view->planes[view_plane].render_depth_plane = render_3d;
+ 
+          /* Handle mutable formats */
+-         view->planes[view_plane].render_is_view = requires_format_change;
+-         if (requires_format_change && render_3d) {
++         bool render_format_change =
++            requires_format_change &&
++            !util_format_is_depth_or_stencil(plane->layout.format.pipe);
++         view->planes[view_plane].render_is_view = render_format_change;
++         if (render_format_change && render_3d) {
+             struct kk_view_layout layout_3d = view_layout;
+             layout_3d.view_type = VK_IMAGE_VIEW_TYPE_3D;
+             layout_3d.base_array_layer = 0u;
+@@ -261,7 +264,7 @@ kk_image_view_init(struct kk_device *dev, struct kk_image_view *view,
+             view->planes[view_plane].mtl_handle_render =
+                mtl_new_texture_view_with_no_swizzle(
+                   image->planes[image_plane].mtl_handle, &layout_3d);
+-         } else if (requires_format_change) {
++         } else if (render_format_change) {
+             view_layout.view_type = original_type;
+             view->planes[view_plane].mtl_handle_render =
+                mtl_new_texture_view_with_no_swizzle(mtl_handle, &view_layout);
+-- 
+2.54.0 (Apple Git-157)
+

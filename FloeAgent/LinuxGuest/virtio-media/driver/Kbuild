@@ -1,0 +1,2 @@
+obj-m := virtio-media.o
+virtio-media-y := scatterlist_builder.o virtio_media_ioctls.o virtio_media_driver.o

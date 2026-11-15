@@ -1,0 +1,222 @@
+diff --git a/src/poly/geometry.h b/src/poly/geometry.h
+--- a/src/poly/geometry.h
++++ b/src/poly/geometry.h
+@@ -49,6 +49,27 @@
+    POLY_GS_SHAPE_STATIC_PER_INSTANCE,
+ };
+ 
++/* The ABI stores primitive and raster counts in 32 bits. Check products
++ * before either CPU or GPU setup narrows them or uses them for allocation. */
++static inline bool
++poly_gs_draw_fits_u32(enum poly_gs_shape shape, uint32_t max_indices,
++                      enum mesa_prim prim, uint32_t vertices,
++                      uint32_t instances)
++{
++   const uint64_t prims = u_decomposed_prims_for_vertices(prim, vertices);
++   const uint64_t total = prims * instances;
++   if (total > 0xffffffffull || (uint64_t)vertices * instances > 0xffffffffull)
++      return false;
++
++   uint64_t raster = max_indices;
++   if (shape == POLY_GS_SHAPE_DYNAMIC_INDEXED)
++      raster *= total;
++   else if (shape == POLY_GS_SHAPE_STATIC_PER_INSTANCE)
++      raster *= prims;
++
++   return raster <= 0xffffffffull;
++}
++
+ static inline unsigned
+ poly_gs_rast_vertices(enum poly_gs_shape shape, unsigned max_indices,
+                       unsigned input_primitives, unsigned instance_count)
+@@ -117,27 +138,35 @@
+ 
+ #ifdef __OPENCL_VERSION__
+ static inline uint
+-poly_heap_alloc_offs(global struct poly_heap *heap, uint size_B)
+-{
+-   size_B = align(size_B, 16);
+-
+-   uint offs =
+-      atomic_fetch_add((volatile atomic_uint *)(&heap->bottom), size_B);
+-
+-   /* Use printf+abort because assert is stripped from release builds. */
+-   if (heap->bottom >= heap->size) {
+-      printf(
+-         "FATAL: GPU heap overflow, allocating size %u, at offset %u, heap size %u!",
+-         size_B, offs, heap->size);
+-
+-      abort();
+-   }
+-
+-   return offs;
++poly_heap_alloc_offs(global struct poly_heap *heap, uint64_t size_B)
++{
++   /* Never narrow a size product or wrap the alignment before checking it.
++    * Exact fills are valid. A failed reservation must not advance/wrap bottom
++    * and let another invocation write an overlapping allocation. */
++   const uint64_t aligned = size_B <= heap->size
++                               ? (size_B + 15ull) & ~15ull : size_B;
++   volatile global atomic_uint *bottom =
++      (volatile global atomic_uint *)(&heap->bottom);
++   uint offs = atomic_load(bottom);
++
++   for (;;) {
++      if (aligned > heap->size || offs > heap->size - aligned) {
++         /* Explicit device failure remains until bounded GS batching exists;
++          * do not silently truncate a legal draw or write outside the heap. */
++         printf("FATAL: GPU heap exhausted before allocation, offset %u, heap size %u!",
++                offs, heap->size);
++         abort();
++         return 0;
++      }
++
++      const uint end = offs + (uint)aligned;
++      if (atomic_compare_exchange_strong(bottom, &offs, end))
++         return offs;
++   }
+ }
+ 
+ static inline global void *
+-poly_heap_alloc(global struct poly_heap *heap, uint size_B)
++poly_heap_alloc(global struct poly_heap *heap, uint64_t size_B)
+ {
+    return heap->base + poly_heap_alloc_offs(heap, size_B);
+ }
+@@ -620,6 +649,13 @@
+                              int is_prefix_summing, uint max_indices,
+                              enum poly_gs_shape shape)
+ {
++   if (!poly_gs_draw_fits_u32(shape, max_indices, prim,
++                              vertex_count, instance_count)) {
++      printf("FATAL: indirect GS count exceeds the 32-bit parameter ABI!");
++      abort();
++      return;
++   }
++
+    poly_vertex_params_set_draw(vp, vertex_count, instance_count);
+    poly_geometry_params_set_draw(p, prim, shape, max_indices,
+                                  vertex_count, instance_count);
+@@ -638,12 +674,12 @@
+    }
+ 
+    /* We need to allocate VS and GS count buffers, do so now */
+-   uint vertex_buffer_size =
+-      poly_tcs_in_size(vertex_count * instance_count, vs_outputs);
++   uint64_t vertex_buffer_size = (uint64_t)vertex_count * instance_count *
++                                 util_bitcount64(vs_outputs) * 16;
+ 
+    if (is_prefix_summing) {
+       p->count_buffer = poly_heap_alloc(
+-         heap, p->input_primitives * p->count_buffer_stride);
++         heap, (uint64_t)p->input_primitives * p->count_buffer_stride);
+    }
+ 
+    vp->output_buffer = (uintptr_t)poly_heap_alloc(heap, vertex_buffer_size);
+@@ -652,7 +688,7 @@
+ 
+    if (shape == POLY_GS_SHAPE_DYNAMIC_INDEXED) {
+       const uint32_t index_offset =
+-         poly_heap_alloc_offs(heap, p->draw.index_count * 4);
++         poly_heap_alloc_offs(heap, (uint64_t)p->draw.index_count * 4);
+       p->draw.first_index = index_offset / 4;
+       p->output_index_buffer = (global uint *)(heap->base + index_offset);
+    }
+diff --git a/src/kosmickrisp/libkk/kk_geometry.cl b/src/kosmickrisp/libkk/kk_geometry.cl
+--- a/src/kosmickrisp/libkk/kk_geometry.cl
++++ b/src/kosmickrisp/libkk/kk_geometry.cl
+@@ -29,7 +29,7 @@
+ 
+    /* Allocate 4-byte indices */
+    uint32_t elsize_B = sizeof(uint32_t);
+-   uint32_t size_B = total * elsize_B;
++   uint64_t size_B = (uint64_t)total * elsize_B;
+    uint alloc_B = poly_heap_alloc_offs(p->heap, size_B);
+    p->index_buffer = (global uint32_t *)(((uintptr_t)p->heap->base) + alloc_B);
+ 
+@@ -59,7 +59,7 @@
+ 
+    if (vertex_buffer_stride) {
+       p->vertex_buffer = (global uchar *)poly_heap_alloc(
+-         heap, p->input_primitives * vertex_buffer_stride);
++         heap, (uint64_t)p->input_primitives * vertex_buffer_stride);
+    }
+ 
+    vp->groups[0] = (vp->grid[0] + vp->grid[3] - 1) / vp->grid[3];
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_draw.c b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+--- a/src/kosmickrisp/vulkan/kk_cmd_draw.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+@@ -1239,8 +1239,18 @@
+ 
+    if (!indirect) {
+       uint32_t verts = data->grid.size.x, instances = data->grid.size.y;
+-      unsigned vb_size =
+-         poly_tcs_in_size(verts * instances, vs->info.vs.outputs_written);
++      const uint64_t vertices = (uint64_t)verts * instances;
++      if (vertices > UINT32_MAX) {
++         vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_DEVICE_MEMORY);
++         return 0;
++      }
++      const uint64_t vb_bytes =
++         vertices * util_bitcount64(vs->info.vs.outputs_written) * 16;
++      if (vb_bytes > UINT32_MAX) {
++         vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_DEVICE_MEMORY);
++         return 0;
++      }
++      const uint32_t vb_size = (uint32_t)vb_bytes;
+ 
+       /* Allocate if there are any outputs, or use the null sink to trap
+        * reads if there aren't. Those reads are undefined but should not
+@@ -1424,8 +1434,26 @@
+       if (shape == POLY_GS_SHAPE_DYNAMIC_INDEXED)
+          gfx->gs.index = kk_heap_indices(cmd);
+    } else {
++      if (!poly_gs_draw_fits_u32(shape, max_indices, mode,
++                                 draw->grid.size.x, draw->grid.size.y)) {
++         vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_DEVICE_MEMORY);
++         return 0;
++      }
++
+       poly_geometry_params_set_draw(&params, mode, shape, max_indices,
+                                     draw->grid.size.x, draw->grid.size.y);
++
++      const uint64_t count_bytes =
++         (uint64_t)params.input_primitives * params.count_buffer_stride;
++      const uint64_t index_bytes = (uint64_t)params.draw.index_count * 4;
++      const uint64_t vertex_bytes =
++         (uint64_t)params.input_primitives * gs->vertex_buffer_stride;
++      if ((gs->prefix_sum && count_bytes > UINT32_MAX) ||
++          (shape == POLY_GS_SHAPE_DYNAMIC_INDEXED && index_bytes > UINT32_MAX) ||
++          (gs->materialize && vertex_bytes > UINT32_MAX)) {
++         vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_DEVICE_MEMORY);
++         return 0;
++      }
+ 
+       gfx->gs.index_count = params.draw.index_count;
+       gfx->gs.instance_count = params.draw.instance_count;
+@@ -1433,13 +1461,12 @@
+       if (gs->prefix_sum) {
+          params.count_buffer =
+             kk_pool_alloc(cmd,
+-                          MAX2(params.input_primitives *
+-                                  params.count_buffer_stride, 4u),
++                          MAX2((uint32_t)count_bytes, 4u),
+                           4).gpu;
+       }
+ 
+       if (shape == POLY_GS_SHAPE_DYNAMIC_INDEXED) {
+-         uint32_t size_B = gfx->gs.index_count * sizeof(uint32_t);
++         uint32_t size_B = (uint32_t)index_bytes;
+          params.output_index_buffer = kk_pool_alloc(cmd, size_B, 4).gpu;
+          gfx->gs.index.addr = params.output_index_buffer;
+          gfx->gs.index.range = size_B;
+@@ -1448,8 +1475,7 @@
+       if (gs->materialize) {
+          params.vertex_buffer =
+             kk_pool_alloc(cmd,
+-                          MAX2(params.input_primitives *
+-                                  gs->vertex_buffer_stride, 4u),
++                          MAX2((uint32_t)vertex_bytes, 4u),
+                           4).gpu;
+       }
+    }

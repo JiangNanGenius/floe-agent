@@ -28,6 +28,7 @@ struct MediaWorkbenchView: View {
     var onMakeVariant: ((ImageExportOptions) async throws -> Void)?
 
     @Environment(\.dismiss) private var dismiss
+    @State private var openingFailureForProject: UUID?
 
     var body: some View {
         Group {
@@ -41,9 +42,23 @@ struct MediaWorkbenchView: View {
                 MusicWorkbenchContextView(context: context, onExported: onExported)
                     .navigationTitle(context.session.document.name)
                     .navigationBarTitleDisplayMode(.inline)
-            } else if center.project?.prepared != nil {
-                ProgressView(WorkbenchText.t("正在打开工作区…", "Opening workspace…"))
-                    .task(id: center.project?.id) { _ = await center.usePreparedWorkspace() }
+            } else if let project = center.project, project.prepared != nil {
+                if openingFailureForProject == project.id {
+                    ContentUnavailableView {
+                        Label(WorkbenchText.t("无法打开工作区", "Could not open workspace"), systemImage: "photo")
+                    } description: {
+                        Text(center.alert?.message ?? WorkbenchText.t("请重新打开这份工程。", "Reopen this project."))
+                    } actions: {
+                        Button(WorkbenchText.t("重试", "Retry")) { openingFailureForProject = nil }
+                    }
+                } else {
+                    ProgressView(WorkbenchText.t("正在打开工作区…", "Opening workspace…"))
+                        .task(id: project.id) {
+                            if !(await center.usePreparedWorkspace()), center.project?.id == project.id, !Task.isCancelled {
+                                openingFailureForProject = project.id
+                            }
+                        }
+                }
             } else {
                 imageVideoBody
             }
@@ -444,7 +459,7 @@ struct WorkbenchBootstrapSheet: View {
         // error (with an explicit "start new edit" option), never a silent
         // fresh start that orphans the saved edits.
         if !ignoringSavedProject, let resumeProjectID {
-            let opened = await center.openProject(id: resumeProjectID)
+            let opened = await center.openProjectForEditing(id: resumeProjectID)
             if opened {
                 ready = true
                 return
@@ -464,7 +479,7 @@ struct WorkbenchBootstrapSheet: View {
             return
         }
         if kind == .image, let url = urls.first {
-            _ = await center.startImageProject(sourceURL: url, owner: owner)
+            _ = await center.startImageProject(sourceURL: url, owner: owner, preparedForEditing: true)
         } else {
             _ = await center.startVideoProject(clipURLs: urls, musicURL: musicURL, owner: owner)
         }
@@ -483,7 +498,7 @@ struct WorkbenchBootstrapSheet: View {
     private func resume(_ candidate: MediaProjectStore.ProjectSummary) async {
         ready = false
         failure = nil
-        let opened = await center.openProject(id: candidate.id)
+        let opened = await center.openProjectForEditing(id: candidate.id)
         if !opened {
             failure = center.alert?.message
                 ?? WorkbenchText.t("无法打开已保存的项目。", "Could not open the saved project.")
@@ -589,7 +604,7 @@ struct WorkbenchProjectLibraryView: View {
                                 // Switching flushes the open project first; a
                                 // failed save keeps the library up with the
                                 // error instead of replacing the draft.
-                                if await center.openProject(id: summary.id) {
+                                if await center.openProjectForEditing(id: summary.id) {
                                     switchError = nil
                                     dismiss()
                                 } else {

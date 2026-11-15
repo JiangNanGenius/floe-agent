@@ -8,8 +8,8 @@
 // the engine ever sees it. The private writable disk is the caller's own
 // sandbox copy — never a bundle path, never a shared/base image.
 //
-// ABI discipline: this layer builds `floe_ae_config_v3` for
-// FLOE_AE_ABI_VERSION == 3. Version 3 keeps the version-2 device contract
+// ABI discipline: this layer builds `floe_ae_config_v4` for
+// FLOE_AE_ABI_VERSION == 4. Version 4 keeps the version-3 contract
 // byte-for-byte and appends the opt-in online memory section: when
 // `onlineMemoryEnabled` is true the engine boots with <=256 MiB visible RAM
 // and the guest virtio-mem driver plugs the managed region up to `ramMiB`,
@@ -107,6 +107,16 @@ public struct ARM64MachineConfig: Sendable, Equatable {
     public var gpuAllowsCPUFallback: Bool
     public var gpuBudgetMiB: Int
     public var gpuAppGroupIdentifier: String?
+    /// ABI4 opt-in: build the standard virtio-media decoder/encoder nodes and
+    /// the additive typed native-codec broker. Only a verified image whose
+    /// manifest declares video acceleration sets this.
+    public var videoEnabled: Bool
+    /// Per-node V4L2 session ceiling, 0 = engine default 4 (maximum 4).
+    public var videoMaxSessionsPerNode: Int
+    /// Per-node host-owned byte ceiling in MiB; 0 = 128 MiB, else 16...512.
+    public var videoHostOwnedLimitMiB: Int
+    /// Allow proven native software formats when hardware is unavailable.
+    public var videoAllowNativeSoftware: Bool
     /// Immutable possible vCPU count, 1...FLOE_AE_MAX_VCPUS. The engine may
     /// run harts concurrently within this topology; it is never mutated
     /// online (a shape change is a full stop → create cycle).
@@ -139,6 +149,10 @@ public struct ARM64MachineConfig: Sendable, Equatable {
         gpuAllowsCPUFallback: Bool = false,
         gpuBudgetMiB: Int = 1024,
         gpuAppGroupIdentifier: String? = nil,
+        videoEnabled: Bool = false,
+        videoMaxSessionsPerNode: Int = 0,
+        videoHostOwnedLimitMiB: Int = 0,
+        videoAllowNativeSoftware: Bool = false,
         virtioConsoles: Int = 0,
         networkEnabled: Bool = false,
         dnsServerIPv4: String? = nil,
@@ -159,6 +173,10 @@ public struct ARM64MachineConfig: Sendable, Equatable {
         self.gpuAllowsCPUFallback = gpuAllowsCPUFallback
         self.gpuBudgetMiB = gpuBudgetMiB
         self.gpuAppGroupIdentifier = gpuAppGroupIdentifier
+        self.videoEnabled = videoEnabled
+        self.videoMaxSessionsPerNode = videoMaxSessionsPerNode
+        self.videoHostOwnedLimitMiB = videoHostOwnedLimitMiB
+        self.videoAllowNativeSoftware = videoAllowNativeSoftware
         self.virtioConsoles = virtioConsoles
         self.networkEnabled = networkEnabled
         self.dnsServerIPv4 = dnsServerIPv4
@@ -172,9 +190,9 @@ public struct ARM64MachineConfig: Sendable, Equatable {
     /// engine; catching caller errors before create keeps the one-live-machine
     /// slot free for an immediate retry.
     public func validated() throws -> ARM64MachineConfig {
-        guard Self.engineABIVersion == 3 else {
+        guard Self.engineABIVersion == 4 else {
             throw ARM64MachineError.invalidConfiguration(
-                "engine ABI version is \(Self.engineABIVersion); this adapter pins ABI 3 and never reinterprets a newer config layout"
+                "engine ABI version is \(Self.engineABIVersion); this adapter pins ABI 4 and never reinterprets a newer config layout"
             )
         }
         guard possibleVCPUs >= 1 && possibleVCPUs <= Int(FLOE_AE_MAX_VCPUS) else {
@@ -190,6 +208,12 @@ public struct ARM64MachineConfig: Sendable, Equatable {
         }
         guard (1...2048).contains(gpuBudgetMiB) else {
             throw ARM64MachineError.invalidConfiguration("GPU budget must be 1...2048 MiB")
+        }
+        guard (0...4).contains(videoMaxSessionsPerNode) else {
+            throw ARM64MachineError.invalidConfiguration("videoMaxSessionsPerNode must be 0...4")
+        }
+        guard videoHostOwnedLimitMiB == 0 || (16...512).contains(videoHostOwnedLimitMiB) else {
+            throw ARM64MachineError.invalidConfiguration("videoHostOwnedLimitMiB must be 0 or 16...512")
         }
         if let group = gpuAppGroupIdentifier,
            (!group.hasPrefix("group.") || group.utf8.contains(0)) {
@@ -290,7 +314,7 @@ enum SHA256Hex {
 /// live for the whole call on every path (the engine deep-copies again
 /// internally; staging keeps Swift-side ownership explicit and leak-free).
 ///
-/// The staged struct is always `floe_ae_config_v3`: the version-2 prefix is
+/// The staged struct carries the ABI 4 video options after its ABI 3 prefix. The ABI 2 section is
 /// filled exactly as before and the appended memory section is zeroed unless
 /// `onlineMemoryEnabled`, in which case `memory.enabled` opts the engine into
 /// the virtio-mem managed region (boot RAM + live-pluggable remainder).
@@ -300,43 +324,44 @@ final class ARM64StagedConfig: @unchecked Sendable {
     private var shareCount = 0
     private var forwardArray: UnsafeMutablePointer<floe_ae_net_forward>?
     private var forwardCount = 0
-    private(set) var cConfig = floe_ae_config_v3()
+    private(set) var cConfig = floe_ae_config_v4()
 
     init(_ config: ARM64MachineConfig) {
-        memset(&cConfig, 0, MemoryLayout<floe_ae_config_v3>.size)
-        cConfig.v2.machine.abi_version = UInt32(FLOE_AE_ABI_VERSION)
-        // The engine validates machine.struct_size against the base struct,
-        // the version-2 layout, and (for abi_version == 3) the full v3
-        // layout; advertise the v3 size here. A future ABI bump changes this
-        // staging code deliberately, never by reinterpretation.
-        cConfig.v2.machine.struct_size = UInt32(MemoryLayout<floe_ae_config_v3>.size)
-        cConfig.v2.machine.ram_mib = UInt32(config.ramMiB)
-        cConfig.v2.machine.requested_vcpus = UInt32(config.possibleVCPUs)
-        cConfig.v2.machine.firmware_path = stage(config.firmware.path)
-        cConfig.v2.machine.kernel_path = config.kernel.map { stage($0.path) }
-        cConfig.v2.machine.initrd_path = config.initrd.map { stage($0.path) }
-        cConfig.v2.machine.command_line = config.commandLine.map { stage($0) }
-        cConfig.v2.machine.private_writable_disk_path = stage(config.privateWritableDiskPath)
-        cConfig.v2.machine.input_capacity = UInt32(config.inputCapacity)
-        cConfig.v2.machine.output_capacity = UInt32(config.outputCapacity)
+        memset(&cConfig, 0, MemoryLayout<floe_ae_config_v4>.size)
+        cConfig.v3.v2.machine.abi_version = UInt32(FLOE_AE_ABI_VERSION)
+        // The ABI version and full byte count describe the same staged layout.
+        cConfig.v3.v2.machine.struct_size = UInt32(MemoryLayout<floe_ae_config_v4>.size)
+        cConfig.v3.v2.machine.ram_mib = UInt32(config.ramMiB)
+        cConfig.v3.v2.machine.requested_vcpus = UInt32(config.possibleVCPUs)
+        cConfig.v3.v2.machine.firmware_path = stage(config.firmware.path)
+        cConfig.v3.v2.machine.kernel_path = config.kernel.map { stage($0.path) }
+        cConfig.v3.v2.machine.initrd_path = config.initrd.map { stage($0.path) }
+        cConfig.v3.v2.machine.command_line = config.commandLine.map { stage($0) }
+        cConfig.v3.v2.machine.private_writable_disk_path = stage(config.privateWritableDiskPath)
+        cConfig.v3.v2.machine.input_capacity = UInt32(config.inputCapacity)
+        cConfig.v3.v2.machine.output_capacity = UInt32(config.outputCapacity)
 
-        cConfig.v2.devices.struct_size = UInt32(MemoryLayout<floe_ae_devices_config>.size)
-        cConfig.v2.devices.network_enabled = config.networkEnabled ? 1 : 0
-        cConfig.v2.devices.virtio_consoles = UInt32(config.virtioConsoles)
-        cConfig.v2.devices.share_count = UInt32(config.shares.count)
-        cConfig.v2.devices.forward_count = UInt32(config.forwards.count)
-        cConfig.v2.devices.dns_server = config.dnsServerIPv4.map { stage($0) }
+        cConfig.v3.v2.devices.struct_size = UInt32(MemoryLayout<floe_ae_devices_config>.size)
+        cConfig.v3.v2.devices.network_enabled = config.networkEnabled ? 1 : 0
+        cConfig.v3.v2.devices.virtio_consoles = UInt32(config.virtioConsoles)
+        cConfig.v3.v2.devices.share_count = UInt32(config.shares.count)
+        cConfig.v3.v2.devices.forward_count = UInt32(config.forwards.count)
+        cConfig.v3.v2.devices.dns_server = config.dnsServerIPv4.map { stage($0) }
 
-        cConfig.memory.struct_size = UInt32(MemoryLayout<floe_ae_memory_config>.size)
-        cConfig.memory.enabled = config.onlineMemoryEnabled ? 1 : 0
-        cConfig.memory.boot_ram_mib = 0   /* engine default: min(ramMiB, 256) */
-        cConfig.gpu.struct_size = UInt32(MemoryLayout<floe_ae_gpu_config>.size)
-        cConfig.gpu.enabled = config.gpuEnabled ? 1 : 0
+        cConfig.v3.memory.struct_size = UInt32(MemoryLayout<floe_ae_memory_config>.size)
+        cConfig.v3.memory.enabled = config.onlineMemoryEnabled ? 1 : 0
+        cConfig.v3.memory.boot_ram_mib = 0   /* engine default: min(ramMiB, 256) */
+        cConfig.v3.gpu.struct_size = UInt32(MemoryLayout<floe_ae_gpu_config>.size)
+        cConfig.v3.gpu.enabled = config.gpuEnabled ? 1 : 0
         if config.gpuEnabled && config.gpuAllowsCPUFallback {
-            cConfig.gpu.reserved.0 = UInt64(FLOE_AE_GPU_ALLOW_CPU_FALLBACK)
+            cConfig.v3.gpu.reserved.0 = UInt64(FLOE_AE_GPU_ALLOW_CPU_FALLBACK)
         }
-        cConfig.gpu.budget_bytes = UInt64(config.gpuBudgetMiB) * 1_048_576
-        cConfig.gpu.app_group_identifier = config.gpuAppGroupIdentifier.map { stage($0) }
+        cConfig.v3.gpu.budget_bytes = UInt64(config.gpuBudgetMiB) * 1_048_576
+        cConfig.v3.gpu.app_group_identifier = config.gpuAppGroupIdentifier.map { stage($0) }
+        cConfig.video.struct_size = UInt32(MemoryLayout<floe_ae_video_config>.size)
+        cConfig.video.enabled = config.videoEnabled ? 1 : 0
+        cConfig.video.max_sessions_per_node = UInt32(config.videoMaxSessionsPerNode)
+        cConfig.video.max_host_owned_bytes_per_node = UInt64(config.videoHostOwnedLimitMiB) * 1_048_576
 
         if !config.shares.isEmpty {
             shareCount = config.shares.count
@@ -351,7 +376,7 @@ final class ARM64StagedConfig: @unchecked Sendable {
                 staged.guest_gid = config.shares[index].guestGID
                 pointer[index] = staged
             }
-            cConfig.v2.devices.shares = UnsafePointer(shareArray)
+            cConfig.v3.v2.devices.shares = UnsafePointer(shareArray)
         }
         if !config.forwards.isEmpty {
             forwardCount = config.forwards.count
@@ -364,7 +389,7 @@ final class ARM64StagedConfig: @unchecked Sendable {
                 staged.guest_port = config.forwards[index].guestPort
                 pointer[index] = staged
             }
-            cConfig.v2.devices.forwards = UnsafePointer(forwardArray)
+            cConfig.v3.v2.devices.forwards = UnsafePointer(forwardArray)
         }
     }
 

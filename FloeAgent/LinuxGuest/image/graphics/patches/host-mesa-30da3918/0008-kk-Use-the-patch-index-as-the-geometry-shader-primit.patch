@@ -1,0 +1,76 @@
+From a6422d3ce6e8d40bbf119c56cac790d61fcf5137 Mon Sep 17 00:00:00 2001
+From: junminlee2004 <junminlee2004@gmail.com>
+Date: Sun, 27 Sep 2026 12:12:01 -0400
+Subject: [PATCH] kk: Use the patch index as the geometry shader primitive ID
+
+---
+ src/kosmickrisp/vulkan/kk_shader.c | 46 ++++++++++++++++++++++++++++++
+ 1 file changed, 46 insertions(+)
+
+diff --git a/src/kosmickrisp/vulkan/kk_shader.c b/src/kosmickrisp/vulkan/kk_shader.c
+index 282daf3c44c..704e84d8d0a 100644
+--- a/src/kosmickrisp/vulkan/kk_shader.c
++++ b/src/kosmickrisp/vulkan/kk_shader.c
+@@ -1651,6 +1651,44 @@ kk_forward_gs_primitive_id(nir_shader *gs, nir_shader *fs)
+    nir_shader_gather_info(fs, nir_shader_get_entrypoint(fs));
+ }
+ 
++static bool
++load_patch_id(nir_builder *b, nir_intrinsic_instr *intr, UNUSED void *data)
++{
++   if (intr->intrinsic != nir_intrinsic_load_primitive_id)
++      return false;
++
++   b->cursor = nir_before_instr(&intr->instr);
++   nir_def *patch_id = nir_load_per_vertex_input(
++      b, 1, 32, nir_imm_int(b, 0), nir_imm_int(b, 0),
++      .dest_type = nir_type_uint32,
++      .io_semantics.location = VARYING_SLOT_PRIMITIVE_ID,
++      .io_semantics.num_slots = 1);
++   nir_def_replace(&intr->def, patch_id);
++   return true;
++}
++
++/* After tessellation, the GS primitive ID is the patch index the tessellation
++ * shaders read, but poly numbers the tessellated primitives. Pass the TES
++ * primitive ID to the GS as an input. */
++static void
++kk_forward_tes_primitive_id(nir_shader *tes, nir_shader *gs)
++{
++   if (!nir_shader_intrinsics_pass(gs, load_patch_id, nir_metadata_control_flow,
++                                   NULL))
++      return;
++
++   nir_function_impl *impl = nir_shader_get_entrypoint(tes);
++   nir_builder b = nir_builder_at(nir_after_impl(impl));
++   nir_store_output(&b, nir_load_primitive_id(&b), nir_imm_int(&b, 0),
++                    .src_type = nir_type_uint32,
++                    .io_semantics.location = VARYING_SLOT_PRIMITIVE_ID,
++                    .io_semantics.num_slots = 1);
++   nir_progress(true, impl, nir_metadata_control_flow);
++
++   nir_shader_gather_info(tes, impl);
++   nir_shader_gather_info(gs, nir_shader_get_entrypoint(gs));
++}
++
+ static VkResult
+ kk_compile_shaders(struct vk_device *device, uint32_t shader_count,
+                    struct vk_shader_compile_info *infos,
+@@ -1718,6 +1756,14 @@ kk_compile_shaders(struct vk_device *device, uint32_t shader_count,
+    nir_opt_varyings_bulk(nir_shaders, total_shaders, true, UINT32_MAX,
+                          UINT32_MAX, nir_opts, NULL);
+ 
++   /* After linking, so nir_opt_varyings leaves the new slot alone */
++   if (total_shaders >= 3u &&
++       nir_shaders[total_shaders - 3u]->info.stage == MESA_SHADER_TESS_EVAL &&
++       nir_shaders[total_shaders - 2u]->info.stage == MESA_SHADER_GEOMETRY) {
++      kk_forward_tes_primitive_id(nir_shaders[total_shaders - 3u],
++                                  nir_shaders[total_shaders - 2u]);
++   }
++
+    for (uint32_t i = 0; i < total_shaders; i++) {
+       struct kk_shader *prev_stage = i > 0 ? shaders[i - 1] : NULL;
+       result =
+-- 
+2.54.0 (Apple Git-157)
+

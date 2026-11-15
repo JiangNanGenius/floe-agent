@@ -21,6 +21,7 @@ import FloeCore
 @MainActor struct CADFromDrawingWorkspaceView: View {
     let destination: CADFromDrawingDestination
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @State private var saving = false
     @State private var error: String?
     @State private var prepared = false
@@ -28,6 +29,7 @@ import FloeCore
     @State private var professional: CADBuildingProfessionalAction?
     @State private var saveTask: Task<Void, Never>?
     @State private var saveGeneration = UUID()
+    @State private var projectCovered = false
     private var document: FloeCADDocument { destination.document }
     private var isBuilding: Bool { destination.transfer.purpose == .buildingFloorplan }
     private func t(_ zh: String, _ en: String) -> String { FloeL10n.isChinese ? zh : en }
@@ -36,13 +38,17 @@ import FloeCore
         NavigationStack {
             Group {
                 if isBuilding {
-                    FloeBuildingWorkbenchView(document: document, incomingPlan: destination.transfer) { professional = $0 }
+                    FloeBuildingWorkbenchView(document: document, incomingPlan: destination.transfer,
+                                              hostOwnsProjectSave: true) { professional = $0 }
                 } else {
                     FloeCADWorkbenchView(document: document)
                 }
             }
             .environment(\.cadWorkbenchTransientlyCovered, true)
             .modifier(CADLibrarySketchImportEntry(document: document))
+            .modifier(CADBuildingProjectEntry(document: document, root: destination.sourceRoot,
+                                              blocked: saving,
+                                              onCoverChange: { projectCovered = $0 }))
             .modifier(CADOfflineRenderEntry(document: document, root: destination.sourceRoot,
                 workspaceID: destination.workspaceID, conversationID: destination.conversationID))
             .navigationTitle(document.name)
@@ -85,8 +91,14 @@ import FloeCore
         // Closing is an explicit save/release. A failed save keeps this owner
         // and its editable draft visible for retry.
         .interactiveDismissDisabled(true)
+        .onChange(of: scenePhase) { _, phase in
+            // The embedded building editor leaves the project save to this
+            // owner, so keep the background flush it previously provided.
+            guard isBuilding, phase != .active, !saving, !document.isClosed, document.hasUnsavedChanges else { return }
+            Task { _ = await document.save() }
+        }
         .onDisappear {
-            if !building, professional == nil {
+            if !building, !projectCovered, professional == nil {
                 saveGeneration = UUID(); saveTask?.cancel(); saveTask = nil
             }
         }

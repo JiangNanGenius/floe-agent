@@ -15,6 +15,8 @@ typedef struct AEParallelCallbacks {
     void (*gpu_service)(struct VirtIOGPU *);
     bool (*device_quiesce)(struct VirtIOGPU *);
     int  (*device_quiesce_drain)(struct VirtIOGPU *);
+    bool (*video_has_work)(Machine *);
+    void (*video_service)(Machine *);
 } AEParallelCallbacks;
 typedef struct AEParallelResult { u64 instructions,resets,observed_sequence;unsigned reason;int error; } AEParallelResult;
 /* Internal diagnostic, not a public ABI or model tool. Read only at public

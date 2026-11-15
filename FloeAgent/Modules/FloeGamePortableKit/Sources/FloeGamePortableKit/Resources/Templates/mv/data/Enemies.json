@@ -1,0 +1,1 @@
+[null,{"id":1,"name":"Static Wisp","note":"Original starter enemy.","battlerName":"","battlerHue":0,"exp":4,"gold":2,"params":[80,0,12,8,10,8,10,10],"actions":[{"skillId":1,"conditionType":0,"conditionParam1":0,"conditionParam2":0,"rating":5}],"traits":[],"dropItems":[]}]

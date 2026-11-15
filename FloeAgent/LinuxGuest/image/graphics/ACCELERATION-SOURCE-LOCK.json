@@ -1,0 +1,937 @@
+{
+  "schema": "floe.linux-acceleration.source-lock.v1",
+  "generatedAt": "2026-11-15",
+  "purpose": "Exact readable source files included for video, BLAS, Blender and OpenCL acceleration. Hashes are of the checked-in source bytes; no compiled artifact is listed.",
+  "roots": [
+    "FloeAgent/Modules/FloeLinuxVideo",
+    "FloeAgent/LinuxGuest/virtio-media",
+    "FloeAgent/LinuxGuest/acceleration/video",
+    "FloeAgent/LinuxGuest/acceleration/blas",
+    "FloeAgent/LinuxGuest/acceleration/blender",
+    "FloeAgent/LinuxGuest/acceleration/opencl"
+  ],
+  "files": [
+    {
+      "path": "FloeAgent/Modules/FloeLinuxVideo/LICENSE",
+      "bytes": 16726,
+      "sha256": "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04"
+    },
+    {
+      "path": "FloeAgent/Modules/FloeLinuxVideo/Package.swift",
+      "bytes": 2198,
+      "sha256": "121aa335a6ae5673dc20451865ee99f3575d9614f19861ad6557e370e5aa519c"
+    },
+    {
+      "path": "FloeAgent/Modules/FloeLinuxVideo/README-host.md",
+      "bytes": 8753,
+      "sha256": "26e38c80cdfd12ed6033717f5a7129ca153d69c27aee363943938894cd2a9e1b"
+    },
+    {
+      "path": "FloeAgent/Modules/FloeLinuxVideo/README.md",
+      "bytes": 1177,
+      "sha256": "f18e6c2aa7b256193eff4f92563c7199d5672e84c6849671fd4fdf0734704456"
+    },
+    {
+      "path": "FloeAgent/Modules/FloeLinuxVideo/Sources/FloeLinuxVideoBroker/FLVBrokerServer.c",
+      "bytes": 32793,
+      "sha256": "333bd83568bb9c334e2c0a19f63d630795e14c475c853d34fd9e2e814344724e"
+    },
+    {
+      "path": "FloeAgent/Modules/FloeLinuxVideo/Sources/FloeLinuxVideoBroker/include/floe_linux_video_broker.h",
+      "bytes": 4110,
+      "sha256": "71e4710ef5cfdf002538987dd898e950f453961e940086ad37472dc1c9c48c69"
+    },
+    {
+      "path": "FloeAgent/Modules/FloeLinuxVideo/Sources/FloeLinuxVideoBroker/include/floe_linux_video_broker_wire.h",
+      "bytes": 5005,
+      "sha256": "0b470b8fab54453071f37bf6c40b23b1c9d8fc1cc3dc3d547ecb756ad6e5579d"
+    },
+    {
+      "path": "FloeAgent/Modules/FloeLinuxVideo/Sources/FloeLinuxVideoHost/FLVBitstream.h",
+      "bytes": 4628,
+      "sha256": "8514e69304eb63783a80eb0d33b796f7580ec9fc5c57fb69749c934d35a9ea48"
+    },
+    {
+      "path": "FloeAgent/Modules/FloeLinuxVideo/Sources/FloeLinuxVideoHost/FLVBitstream.m",
+      "bytes": 26776,
+      "sha256": "482f378ee906a406141c7f69ee2cf681de07e55c1703c024b181a69834816865"
+    },
+    {
+      "path": "FloeAgent/Modules/FloeLinuxVideo/Sources/FloeLinuxVideoHost/FLVCodecRegistry.h",
+      "bytes": 2958,
+      "sha256": "418c7024929b2f675954c60441abd77227693e2bf7a6a23d64b1903ca137f4aa"
+    },
+    {
+      "path": "FloeAgent/Modules/FloeLinuxVideo/Sources/FloeLinuxVideoHost/FLVCodecRegistry.m",
+      "bytes": 30996,
+      "sha256": "16b089b3528750f21396e474b1e519ee63afa81dccbef3ccf0ab1e227ba7fe56"
+    },
+    {
+      "path": "FloeAgent/Modules/FloeLinuxVideo/Sources/FloeLinuxVideoHost/FLVFormatDescription.h",
+      "bytes": 1226,
+      "sha256": "5d2366ccb7117d2c3c0cabd14817ad252a528419fa973e261c5d7b57cb3c71d2"
+    },
+    {
+      "path": "FloeAgent/Modules/FloeLinuxVideo/Sources/FloeLinuxVideoHost/FLVFormatDescription.m",
+      "bytes": 6707,
+      "sha256": "efac97d0b26afa205b212b1bd3d7d9c5fb1b9e82cf2662a4579570956b67cc85"
+    },
+    {
+      "path": "FloeAgent/Modules/FloeLinuxVideo/Sources/FloeLinuxVideoHost/FLVHostContext.h",
+      "bytes": 1773,
+      "sha256": "6fef2b08e48a5263a96cdd9a28efc56ccbd6411d2fee21450f9a822f05ab0a55"
+    },
+    {
+      "path": "FloeAgent/Modules/FloeLinuxVideo/Sources/FloeLinuxVideoHost/FLVHostContext.m",
+      "bytes": 4797,
+      "sha256": "c31cf62ae90b592079c3eec31e6ac5994812967ec2595e4685b3ba352fa69f76"
+    },
+    {
+      "path": "FloeAgent/Modules/FloeLinuxVideo/Sources/FloeLinuxVideoHost/FLVHostPublic.m",
+      "bytes": 5334,
+      "sha256": "631e609a1b374fdd371e389186a1c7241684b7dc17639570c097db4fb5857c4d"
+    },
+    {
+      "path": "FloeAgent/Modules/FloeLinuxVideo/Sources/FloeLinuxVideoHost/FLVImageIOFallback.h",
+      "bytes": 2608,
+      "sha256": "96b0debc1119de2ef8191ef454b5733a775add8265873f739abfa64af8468441"
+    },
+    {
+      "path": "FloeAgent/Modules/FloeLinuxVideo/Sources/FloeLinuxVideoHost/FLVImageIOFallback.m",
+      "bytes": 13924,
+      "sha256": "d2d1542a616815722d4db01292634fbd20f28127faa6cae92dc97fad802b545b"
+    },
+    {
+      "path": "FloeAgent/Modules/FloeLinuxVideo/Sources/FloeLinuxVideoHost/FLVInternal.h",
+      "bytes": 2810,
+      "sha256": "80a4d5a4c0ce85c1936cef19a1a88094db2103372b183f69f9c3a2a4a3d0b61a"
+    },
+    {
+      "path": "FloeAgent/Modules/FloeLinuxVideo/Sources/FloeLinuxVideoHost/FLVPixelFormats.m",
+      "bytes": 2106,
+      "sha256": "614d92e0fa6f08804ca13008b8f3eafae37090aca67a641277d42e43936b5f28"
+    },
+    {
+      "path": "FloeAgent/Modules/FloeLinuxVideo/Sources/FloeLinuxVideoHost/FLVProbeSamples.h",
+      "bytes": 1329,
+      "sha256": "58b3c7f8735a265f0cbb2f3113ed3b05cbfe02a63f1f8409c1bab87d21aca646"
+    },
+    {
+      "path": "FloeAgent/Modules/FloeLinuxVideo/Sources/FloeLinuxVideoHost/FLVProbeSamples.m",
+      "bytes": 886599,
+      "sha256": "13118b4cdae7eb002df62c14883c2a7dcd262edd5d55a719acd9558d4bbbe1a8"
+    },
+    {
+      "path": "FloeAgent/Modules/FloeLinuxVideo/Sources/FloeLinuxVideoHost/FLVQueue.h",
+      "bytes": 1907,
+      "sha256": "f356159e300782639d7903ece4ff07c3735ba2d389a60ee621f9dfc7096bb69b"
+    },
+    {
+      "path": "FloeAgent/Modules/FloeLinuxVideo/Sources/FloeLinuxVideoHost/FLVSessionContext.h",
+      "bytes": 3343,
+      "sha256": "0fc5a060abfca1da0d8e2fe4eb3934f449d47e745e7f9a61adea28d881075923"
+    },
+    {
+      "path": "FloeAgent/Modules/FloeLinuxVideo/Sources/FloeLinuxVideoHost/FLVSessionContext.m",
+      "bytes": 66043,
+      "sha256": "72a23fd47d1a33e3c0361e8317a25e7783cc1d598b3ddcbdc50072bb30bd757f"
+    },
+    {
+      "path": "FloeAgent/Modules/FloeLinuxVideo/Sources/FloeLinuxVideoHost/Include/FloeLinuxVideoHost.h",
+      "bytes": 323,
+      "sha256": "a652525d7a48ab5db1223f987c7e7c32204bd488b3358256f27d18597dfb8bfb"
+    },
+    {
+      "path": "FloeAgent/Modules/FloeLinuxVideo/Sources/FloeLinuxVideoNative/FLVApiVersion.c",
+      "bytes": 346,
+      "sha256": "775159c6094ce64146d65374fa2a0b1f6f3ca4e31a0cdc5d48cfbe05b4198f6f"
+    },
+    {
+      "path": "FloeAgent/Modules/FloeLinuxVideo/Sources/FloeLinuxVideoNative/include/floe_linux_video.h",
+      "bytes": 6907,
+      "sha256": "c05f632edde19dcd795040946f823f1c76b325b67c95b38c66af75b31dee38b8"
+    },
+    {
+      "path": "FloeAgent/Modules/FloeLinuxVideo/tests/FLVProbeSamples_empty.m",
+      "bytes": 381,
+      "sha256": "4e22262c7024e39345d9bc5252ab58f856998118ea08c80e9998bd6a7b565602"
+    },
+    {
+      "path": "FloeAgent/Modules/FloeLinuxVideo/tests/build_ios_objects.sh",
+      "bytes": 2011,
+      "sha256": "1ef0d45b0650ac8b51e835dab2b461c045720ff9f34ecdb8320f1f38f3d62245"
+    },
+    {
+      "path": "FloeAgent/Modules/FloeLinuxVideo/tests/build_macos.sh",
+      "bytes": 1724,
+      "sha256": "2a28438cea52bd68c52edc6831a94fde0adaac955a644665586f946206e2999c"
+    },
+    {
+      "path": "FloeAgent/Modules/FloeLinuxVideo/tests/build_macos_archive.sh",
+      "bytes": 1809,
+      "sha256": "a7b0c8cb47f1e0faf995da02a67a969c35999a2c87013c90b312a782ec45c9f2"
+    },
+    {
+      "path": "FloeAgent/Modules/FloeLinuxVideo/tests/flv_test_cancel_ownership.m",
+      "bytes": 13803,
+      "sha256": "89cff325697706c006b3ea0c7f33cf6948ffbf4e51b1c22e8a07a820f52a2a01"
+    },
+    {
+      "path": "FloeAgent/Modules/FloeLinuxVideo/tests/flv_test_capabilities.m",
+      "bytes": 3850,
+      "sha256": "b3c750798e58d94e0efaa02f1c22a1fa63da63c34187bb72a56dc4a773d1d19a"
+    },
+    {
+      "path": "FloeAgent/Modules/FloeLinuxVideo/tests/flv_test_imageio_jpeg.m",
+      "bytes": 8838,
+      "sha256": "83df8385536c03c969242fe9a1111bed1fbe7f62c63ffe82707fdcd20c132626"
+    },
+    {
+      "path": "FloeAgent/Modules/FloeLinuxVideo/tests/flv_test_malformed_limits.m",
+      "bytes": 9736,
+      "sha256": "265971e06f0cbd57fe33111303a37f7d2913403286d6cd5a2df49d3a485d83d6"
+    },
+    {
+      "path": "FloeAgent/Modules/FloeLinuxVideo/tests/flv_test_prores_encode.m",
+      "bytes": 13489,
+      "sha256": "109dfa0f24c5e2a8d526016af4f638184c478dc290bce0601193a72d8a62c8b9"
+    },
+    {
+      "path": "FloeAgent/Modules/FloeLinuxVideo/tests/flv_test_roundtrip.m",
+      "bytes": 35259,
+      "sha256": "06735bad49833d35b804f4647df352252e66fea44ea2a6fa84bf1d2ff2543b8e"
+    },
+    {
+      "path": "FloeAgent/Modules/FloeLinuxVideo/tests/flv_test_software_fallback.m",
+      "bytes": 13369,
+      "sha256": "25c4bb22a4007c1a3bfa652e93f69e5c7807287b812cb7b42d9d8e4e0fe26ee6"
+    },
+    {
+      "path": "FloeAgent/Modules/FloeLinuxVideo/tests/flv_test_util.h",
+      "bytes": 2478,
+      "sha256": "9a352ee449a05f4538c7c1d8e5ffb63009442150969170e91f3b7a48aa45bae1"
+    },
+    {
+      "path": "FloeAgent/Modules/FloeLinuxVideo/tests/flv_test_util.m",
+      "bytes": 5691,
+      "sha256": "3767f56b5b337c8f269d18bd54057392b22a2525942e5762477e52c63423c2dd"
+    },
+    {
+      "path": "FloeAgent/Modules/FloeLinuxVideo/tests/gen_fixtures.sh",
+      "bytes": 13778,
+      "sha256": "44226edf852cd0dc74c1b7c7e1cc6fd02e87d07ed60631a53f03a7f66bd61761"
+    },
+    {
+      "path": "FloeAgent/Modules/FloeLinuxVideo/tests/run_bounded.sh",
+      "bytes": 1617,
+      "sha256": "1507e5f1c78a3f6c8ded8c2c071647e97ecc93bc3561e298b86e30e181cf0500"
+    },
+    {
+      "path": "FloeAgent/Modules/FloeLinuxVideo/tests/run_tests.sh",
+      "bytes": 7393,
+      "sha256": "0d0c15e01f1f87da796f6a3fec6d3f6a911a40ff6982d1c172d72b6aec4079e7"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/LICENSE",
+      "bytes": 1443,
+      "sha256": "83d0dc0dba8549e6678aafaaf0ce4f3b2a1c6a4239b46a1a8ad16d2a68381031"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/LICENSE.GPL-2.0",
+      "bytes": 18092,
+      "sha256": "8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/README.md",
+      "bytes": 3273,
+      "sha256": "3e7409639980f3eac72cebbe27d0321f8fe9229f6ab9c3a69da9542ce9186f5e"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/UPSTREAM.md",
+      "bytes": 1712,
+      "sha256": "46f7ca65c89cade5c3a08160991184fba2f08f8003b52a19522ec373a58372ec"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/abi/HOST_ABI.json",
+      "bytes": 17060,
+      "sha256": "04178e9c03a052609f62d62018a53e4ad563b424e77da9c49c33192a6decd61f"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/boot_overlay/README.md",
+      "bytes": 2358,
+      "sha256": "acd7c4ea4a29d3f39c54d5dfa972447a4ea790f4f6135c09c86fbc0c891bf8e4"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/boot_overlay/image_gate.py",
+      "bytes": 4663,
+      "sha256": "2300f168638c699e000b99781243898fb4080cefb0dd461ece91734675bb048a"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/boot_overlay/install_recipe.py",
+      "bytes": 13194,
+      "sha256": "9b6c992df6605bf69f58cc4ef5b748845ee791c94d94a68b0b195120b818bc45"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/config/build-inputs.json",
+      "bytes": 1563,
+      "sha256": "80a56f6b800b8237e7bbd8e2b4b0865dac84beb8b01957cb61963c39251016a8"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/config/video-module-pins.json",
+      "bytes": 1808,
+      "sha256": "8cfce5fa036b343fb738ca116765a57c3f1d240be0203fec2e5cb5240f660b2f"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/docs/codec-mapping.md",
+      "bytes": 4353,
+      "sha256": "c6cc575177aaa91e11ad66a47422b6318b8742791d6f14248bdf9b9b54df361a"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/docs/driver-probe-plan.md",
+      "bytes": 3306,
+      "sha256": "6671df02de265f9b0a6cfd5c9bce1d3682ad95d21fffd4aabbeffecdfe0e4e2c"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/docs/ffmpeg-commands.md",
+      "bytes": 3328,
+      "sha256": "971758f5f41f3ae9f8c7e944ca7a8e16b4e31a7996e42a2d5f642d43e7f3b274"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/docs/kernel-prerequisites.md",
+      "bytes": 4679,
+      "sha256": "42e0a68c7636493b8c83a35aeb2e9884743d65e2e7bf768eab068ac2855b145b"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/docs/linux-host-kbuild-fallback.md",
+      "bytes": 3504,
+      "sha256": "5ac6c9c3d8089802a1081d3c7e45faaaaa990edd9d15f3c14e7e46be3e757f1e"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/driver/Kbuild",
+      "bytes": 108,
+      "sha256": "f054c196600277c6b238939938b978d85d7e391e5e1d00479b0b38595ac17a5f"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/driver/Makefile",
+      "bytes": 77,
+      "sha256": "a74cedd1e8da43b89446b9e29120d6c1970becf1930ac6d930775aca6a6cfb38"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/driver/protocol.h",
+      "bytes": 8278,
+      "sha256": "d543e4c561c3d7ec3f5520efef73a153f1d6c2cbcc7c2fc7901f907944d1ec3c"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/driver/scatterlist_builder.c",
+      "bytes": 16851,
+      "sha256": "bccecfddfb5a3a5b23d1a79fa635c45ab00df36019cb09210bdd5b82107868ac"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/driver/scatterlist_builder.h",
+      "bytes": 4040,
+      "sha256": "325a3b1c9d37faad4597e5a2b80659b4d050d267777d16469f9badc710ca6c5e"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/driver/session.h",
+      "bytes": 4637,
+      "sha256": "11340e3d2782ece1a1eaa70b9f1aa97a425f1b6df2220b5d6aba60699db59b51"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/driver/virtio_media.h",
+      "bytes": 2866,
+      "sha256": "769e8d04cfc363415ab4e6a76e1f33650b118dacf3ed0690aeb1ab0e794a7507"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/driver/virtio_media_driver.c",
+      "bytes": 27821,
+      "sha256": "a06c4f53f7e9512efc929c5e876ffc112805b80327b4e3ca5f67ee9062edb8d7"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/driver/virtio_media_ioctls.c",
+      "bytes": 39711,
+      "sha256": "0ceffdcaf9e0b9ce12c7cfe58b842a90c8c280ff8e8da04b14103ea1f249ccd7"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/fixtures/cmd_close.bin",
+      "bytes": 12,
+      "sha256": "72892d52ed6c172b238f9cf3034e26f544b8b62ad20c0ba73b3ee06b9ab443eb"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/fixtures/cmd_ioctl_qbuf.bin",
+      "bytes": 16,
+      "sha256": "e5980d6b0118c09c4900ea32ffd38cd4639ff5ef6414e375da35e80585f0462a"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/fixtures/cmd_ioctl_querycap.bin",
+      "bytes": 16,
+      "sha256": "284d6881760eaeafc23427f4aa0ce359fa5cb205d4da8bd6a1bb7acc0a4ffd4c"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/fixtures/cmd_mmap.bin",
+      "bytes": 20,
+      "sha256": "f7fc5e5cbf7fb353436bed4dd771ec331c461998c4ec02d083a39eef02db5905"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/fixtures/cmd_munmap.bin",
+      "bytes": 16,
+      "sha256": "ac4eea3839a1a12f2e5f6417eb9b1471cb3cf592a225dff18e67461b25e19deb"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/fixtures/cmd_open.bin",
+      "bytes": 8,
+      "sha256": "7c9fa136d4413fa6173637e883b6998d32e1d675f88cddff9dcbcf331820f4b8"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/fixtures/evt_dqbuf.bin",
+      "bytes": 608,
+      "sha256": "ebadac7fe411bd801060054d77d6b8343428cd62741d840b3a90586fd2656837"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/fixtures/evt_error.bin",
+      "bytes": 16,
+      "sha256": "533398ed97d3c0d0a82ebdd473d974e227d8a98f363d0bdf329ee006af91891a"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/fixtures/evt_event_eos.bin",
+      "bytes": 144,
+      "sha256": "25f98343925918aa585ac51173898580b91996c0a56680aa4a1e21465dda2eb6"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/fixtures/fixtures.h",
+      "bytes": 4757,
+      "sha256": "faba8686ff6def520dafc8f9c729529d9e428b87ec9d9d98f6f5f742ec696b3d"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/fixtures/fixtures.json",
+      "bytes": 2984,
+      "sha256": "5fdcfb1973d23b03d5e36b424d4338c1621c7b03189a03ae04701a8ea27906b1"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/fixtures/payload_qbuf_out_mplane.bin",
+      "bytes": 152,
+      "sha256": "236c803e84e0bcd99d0992b83199213b754b906bd691bdfa6a8fdb59082d0287"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/fixtures/payload_querycap_resp.bin",
+      "bytes": 104,
+      "sha256": "d37b5fed16abec531385956effdbf2d5808dec5d9f2d6f7bb974d4292f60967f"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/fixtures/payload_reqbufs.bin",
+      "bytes": 20,
+      "sha256": "ed421fdb7b9502aee83b0a6b5900c685d9425cbacefd4a0245e8474bf6d9b70c"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/fixtures/resp_mmap.bin",
+      "bytes": 20,
+      "sha256": "511eece75646c1368b11a9499702e1d2a9cb9eaa5ae4a9bc0631d11e49e69a60"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/fixtures/resp_open_ok.bin",
+      "bytes": 12,
+      "sha256": "937a32d8dcbede701aebc1d1af40ab95c432265ac775bd3640f016ca5861466d"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/fixtures/resp_open_refused.bin",
+      "bytes": 8,
+      "sha256": "7f5bda6ed8349e4685050b827f517c47333c101f735ea2bcf7b6670173208898"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/scripts/abi_probe.c",
+      "bytes": 5947,
+      "sha256": "2e9492860d082e2cd3af11e17effc664762ad90a0ff7d182adfc6c4831364d15"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/scripts/abi_probe_out.jsonl",
+      "bytes": 8295,
+      "sha256": "05ea358a3d8ea9846a43b25ad048e20e226cc53a0f4f9015a3e817a7d5232d09"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/scripts/build_module.py",
+      "bytes": 18266,
+      "sha256": "45111451c9f92c18f781fa980265cfb2eff1752939aab0de7b3fb29a93abb70e"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/scripts/gen_fixtures.py",
+      "bytes": 1356,
+      "sha256": "88eb526dfafc63c0202cfcd8fc4e7a0e5287df6157293b9d67e97398a9d4cb00"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/scripts/gen_fixtures_c.c",
+      "bytes": 13899,
+      "sha256": "b526bb76b8a06915da6f4971f5475549ee6fb87b3c98627c63f263a921646140"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/scripts/uapi-shim/linux/bits.h",
+      "bytes": 139,
+      "sha256": "1d52a95ce83561de5b5e2b674c68b6ee94b1e7c62fccdeb889239c0bffa447c0"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/scripts/uapi-shim/linux/compiler.h",
+      "bytes": 121,
+      "sha256": "e616e24e415c0dea984b2f5e26664c71bd23cf2ea3b8489c9361a4dc5b11faa5"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/scripts/uapi-shim/linux/compiler_types.h",
+      "bytes": 69,
+      "sha256": "76bcafbc181473b4db99f0cab0f8349db7102b8eb530ae2faad985b8802191ed"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/scripts/uapi-shim/protocol_types.h",
+      "bytes": 421,
+      "sha256": "25ed7007ea8800016f7a2d3b71b69bb2377dae3f25978ec7b0cc93fc2aa7916e"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/tools/fvm_qual.c",
+      "bytes": 28460,
+      "sha256": "fb9c43522ed5fdd20254db94a222b0f72579fd8b3721c20e2c2decb0beac8c49"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/tools/proto_harness.c",
+      "bytes": 8885,
+      "sha256": "f1e89697f5bddf44f966d04f42a7d29b23550b1288365337ff7dc5c8e2f69805"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/video/INTEGRATION.md",
+      "bytes": 2905,
+      "sha256": "d9ffee2358299671e9995e3f803104afb2960a53cdaa205f0dde4b7d902af519"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/video/LICENSE",
+      "bytes": 16726,
+      "sha256": "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/video/Makefile",
+      "bytes": 809,
+      "sha256": "3c8256ba39d54e157cbe2b2a1ccb5388f90d509791a32edd34e4b10caa0fd563"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/video/README.md",
+      "bytes": 3609,
+      "sha256": "7e02a0f5343ec32b592aa79e239b98172d3f47549213f432833b8408f0186e75"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/video/floe_codec.c",
+      "bytes": 31140,
+      "sha256": "3bd1ff442d143f3a1609942fda075eb308e09f9c62e7317a78a645aaaa9314d3"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/video/floe_codec_broker.c",
+      "bytes": 13629,
+      "sha256": "cb383fb649559fae9b5cbe814fe8cc6befec62f5780d3d1cbb85afcc02c07f92"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/video/floe_codec_broker.h",
+      "bytes": 3087,
+      "sha256": "2fb66845243eb026a7b19af86c952f1737f004203b40eff49e4015ec6866d0f6"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/video/floe_codec_v4l2.c",
+      "bytes": 16199,
+      "sha256": "ceefa091a6c92859555d9015cbfe5f5c9df4bd1ff6f161c28982e3869966d473"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/video/floe_codec_v4l2.h",
+      "bytes": 1516,
+      "sha256": "372cbddf377dfd1e84ddcde2fe5fd19ef9fd86c4b44dc359bc659c000a2d9d62"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/blas/LICENSE",
+      "bytes": 10847,
+      "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/blas/Makefile",
+      "bytes": 3012,
+      "sha256": "c5edf8672ab0db870a48c827328b49fd06569e4f80876824caab3d29e42d65fc"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/blas/NOTICE",
+      "bytes": 1566,
+      "sha256": "9f2849e06545e7442377fa170af1f506383d8316751bb2e11398b13fc8ddcb68"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/blas/README.md",
+      "bytes": 10176,
+      "sha256": "5efdba9fe712e46555d6300baaea0470190fd1f6ee83774c6034f2711e5e7e77"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/blas/build/BUILD-INPUTS.json",
+      "bytes": 2477,
+      "sha256": "500db67c47b6972586a54a623c305e370d5db57095c71db64166814e1347a32c"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/blas/build/BUILD-RECIPE.txt",
+      "bytes": 6476,
+      "sha256": "e3a63ec21139c0fd21b51a26071f24f2a82cc6c41f5c44ee4e92d4d5a3539d72"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/blas/build/build_spirv.py",
+      "bytes": 12243,
+      "sha256": "7dd6768ab8c21e98c6eaa3a3cf94b6dc91fd467364b60908e8c6a843cb6b873c"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/blas/image/activation/floe-blas.env",
+      "bytes": 1162,
+      "sha256": "ff5567d307885fe58108a852a0cb9a8ded064d555f64435ca97aef83690c9399"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/blas/include/floe_blas.h",
+      "bytes": 2882,
+      "sha256": "c81575dc0b9378c219384de2f2078d29f65b9cb2b8294f65bbac3bc42b0864a2"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/blas/include/floe_blas_cblas.h",
+      "bytes": 2557,
+      "sha256": "a9208bed6f0907cbb248d8ec8feb2b43547139405c2e5d277fefee32365dac19"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/blas/scripts/floe-blas-activate.sh",
+      "bytes": 1261,
+      "sha256": "e15c60fd25b62764f23b8f33fa19d42c8e271ff384daace4711f081213e902a0"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/blas/scripts/floe-blas-run",
+      "bytes": 6717,
+      "sha256": "a30e9060d05ae455d1e1fa62d4737aeddb9afdd4e592a436834b10d7c7a8afbf"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/blas/scripts/floe-blas-shell.sh",
+      "bytes": 5278,
+      "sha256": "caea6293f8294877908e9a68e2a8e8682d1ff5203c5764d0a610c043b0c3b9d8"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/blas/scripts/install-floe-blas.sh",
+      "bytes": 5157,
+      "sha256": "5a24c2d4709ebdc665db78def71e4c3d88f69b341684e7b059fb1c8c65547b85"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/blas/shaders/floe_blas_gemv.comp",
+      "bytes": 1164,
+      "sha256": "36938315490be5d9007adfa759e102eb0e0b1fd9ee87196fc4bd9447784777c3"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/blas/shaders/floe_blas_matmul.comp",
+      "bytes": 1574,
+      "sha256": "5b7197039b6e59693ba1e942e01023ded7ef5d69de79c76b7b687308ce085148"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/blas/src/floe_blas.c",
+      "bytes": 50366,
+      "sha256": "e78b169749c8330754ee79aa3b34d91295ec363632f304afdf74ab6065b3bea4"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/blas/src/floe_blas_activate.c",
+      "bytes": 4911,
+      "sha256": "b19a8daa241ce561c760b7e6680eabbdc196072f9d254b72e021763de690a6a5"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/blas/src/floe_blas_activate.h",
+      "bytes": 1356,
+      "sha256": "6484a4a09b533056cf62a64277a8a2d7f545522e1341131b1271d05a62d40db9"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/blas/src/floe_blas_internal.h",
+      "bytes": 3811,
+      "sha256": "f50061775044b5ff71176e52b1ea5dfa84c0c92496d9ff5d32054c4972be831f"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/blas/src/floe_blas_policy.c",
+      "bytes": 4967,
+      "sha256": "d79e4db56defcb5ba15b9735c54243a721871362e448493b49660427a2e52a1e"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/blas/src/floe_blas_policy.h",
+      "bytes": 1665,
+      "sha256": "7b7baaeb75517f026a9ad35799866c877f3806aecedba9464b273c90dac03d86"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/blas/src/floe_blas_vk.c",
+      "bytes": 42851,
+      "sha256": "c85106ab0d76cad3cc796f9cb828eeadc2eaf7004acf5afc919d3eb2278f5045"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/blas/tests/README.md",
+      "bytes": 3989,
+      "sha256": "051dc00b7a66ba0b4252f36cc98b6b32601eed7a33bf0f5d630e04b286e123be"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/blas/tests/hostile_path_fixture.py",
+      "bytes": 4093,
+      "sha256": "aa3be10d950ecb0064db5608ec437ac95719e0cbc896c0eba2315e558ec52e2a"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/blas/tests/numpy_blas_compare.py",
+      "bytes": 7651,
+      "sha256": "f380768c3d0c6898a97144eb3175c5096dea82b9ed2faeaf702456aeb6a38976"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/blas/tests/run_source_checks.py",
+      "bytes": 15847,
+      "sha256": "1d2e868a9be38b2e8ca5f864bba5cc6e5ee48e40f3c5060b6c07259b618d5df7"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/blas/tests/test_provider_abi.c",
+      "bytes": 20714,
+      "sha256": "45eb2861209642b8bb54beb713613f95ea81bd0009fba4e6d29f37719bc536b3"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/blas/tools/floe_blas_probe.c",
+      "bytes": 9565,
+      "sha256": "bda918a7117a8ab98cd3f84b7db94f765e0795c4c0affd3a773daaa629a239f5"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/blender/LICENSE",
+      "bytes": 16726,
+      "sha256": "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/blender/README.md",
+      "bytes": 9102,
+      "sha256": "ab87715dbff25c8ba9ee5e4dd9fc5b04ac07d6a760d54efca5430253ee3dd3c8"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/blender/blender_ops.py",
+      "bytes": 30496,
+      "sha256": "16876d6719527da8923ba5017b07142147b7788d845f3808e1e4b594d7aa1c9e"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/blender/floe-blender",
+      "bytes": 1458,
+      "sha256": "517adb3899820a6fb78eb7cd5f0687d94b8a39bab7c3d4dfc75f38770762c4ac"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/blender/floe_blender.py",
+      "bytes": 78568,
+      "sha256": "f87947b8b7fa67011ebac946d2c564eb92756677925a0c37141ee003bc1cec1c"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/blender/install.sh",
+      "bytes": 4603,
+      "sha256": "08960b049ed345eb6141f5107b3ce21ac1e10ea10564152abfc98bc4f6b0da2f"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/blender/tests/contract_check.py",
+      "bytes": 27933,
+      "sha256": "79999129dc45b9e2ad153c278d475ba861323999a89d7b26e2c9bf9a55355814"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/blender/tests/linux_run.py",
+      "bytes": 652,
+      "sha256": "91e2eb7477c11cf4090e485e0426da42c8bad1e58e9f571fba12a1fba07a292f"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/opencl/PINS.json",
+      "bytes": 13421,
+      "sha256": "4572e37fb5dfb7817bb1c71a16b41bb2c738f9d3c90d6a8b2c8e3aa947358bba"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/opencl/README.md",
+      "bytes": 3708,
+      "sha256": "6c16430fa998ee8c95723020a8f77b148d9bf211134a71b05c819970db08d152"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/opencl/include/clspv/Sampler.h",
+      "bytes": 1729,
+      "sha256": "bb95baefb816e1430f8266d7703f0ed43ff71b6e89facf556a97fea8fa2e4987"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/opencl/licenses/LICENSES.json",
+      "bytes": 2507,
+      "sha256": "6e8566503da1862f0fde161f5494f5f16048ecb31fce2fc55f374fadababc856"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/opencl/licenses/clspv-LICENSE",
+      "bytes": 27827,
+      "sha256": "2050d82ea19614989deac39163c471b6e753659dfd4e4e88c6f724624db59f32"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/opencl/licenses/clvk-LICENSE",
+      "bytes": 11358,
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/opencl/licenses/libclc-LICENSE.TXT",
+      "bytes": 16469,
+      "sha256": "3c536c052db9afd997809e38785c9f2a9e54e2892330fa7c5b438e18a7413479"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/opencl/licenses/llvm-LICENSE.TXT",
+      "bytes": 15141,
+      "sha256": "8d85c1057d742e597985c7d4e6320b015a9139385cff4cbae06ffc0ebe89afee"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/opencl/licenses/ocl-icd-COPYING",
+      "bytes": 1396,
+      "sha256": "6b10d78a1971cf0a97feb5140f0821cbe53cfd06771852eef7dc3bd7f771251e"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/opencl/licenses/opencl-headers-LICENSE",
+      "bytes": 11358,
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/opencl/licenses/spirv-headers-LICENSE",
+      "bytes": 23503,
+      "sha256": "ea43b1de38a6f90c488800d66dec1ed671e68cda530266bc96951fb5b6307613"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/opencl/licenses/spirv-llvm-translator-LICENSE.TXT",
+      "bytes": 3281,
+      "sha256": "e3bc36440fc927c62d5cc24efeefe225a14d4e34ffeb0c92e430625cce9ee444"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/opencl/licenses/spirv-tools-LICENSE",
+      "bytes": 11358,
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/opencl/licenses/vulkan-headers-LICENSE.md",
+      "bytes": 458,
+      "sha256": "ac24e5ea920e4318e4d02c4086ae51f53cfb03feed06c18df1019e7ada1ec7bc"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/opencl/patches/0001-floe-private-icd-output-name.patch",
+      "bytes": 490,
+      "sha256": "19fed7af297b17f0486b09b8da8dc7cf74861096ac8156b58dab8dfc04b7d37b"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/opencl/patches/0002-floe-external-clspv-runtime.patch",
+      "bytes": 8189,
+      "sha256": "7ce9e7422e7e4a883fb61de4e32a4a56b24304ee99712b4c4dac3a004cac606e"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/opencl/patches/0003-floe-runtime-compiler-admission.patch",
+      "bytes": 1023,
+      "sha256": "52b36b6c9e7a8f9d3f1df706888e12c7dbe763dfcb8b8a9e8ea3a886c487098f"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/opencl/patches/0004-floe-il-disabled-api-honesty.patch",
+      "bytes": 1260,
+      "sha256": "b0d39e4897226d226c98caae2fffeb1a2cf4bc6b027d2027f84973fd43e9f2f3"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/opencl/runtime/floe-clvk.icd",
+      "bytes": 39,
+      "sha256": "4e45e6c5a7835800ec39b717314fbcb9f96cf10f8ac045dba31f02052371d688"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/opencl/runtime/floe-opencl-env.sh",
+      "bytes": 2265,
+      "sha256": "78ad83633f17fdc8ce6b95966ca72fb35584e1179857f4f49d98fea02e63384b"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/opencl/runtime/floe-opencl-register",
+      "bytes": 1173,
+      "sha256": "06414d7c9c2180e1533cdce0c0bf25e510f3d066489158fa9ac85f560980528a"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/opencl/scripts/build_clvk_runtime_aarch64.sh",
+      "bytes": 18735,
+      "sha256": "186ccdfc3316d6362dd08c06f441181cf2652e415fd4a6c3f3349c406cbc3ad7"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/opencl/scripts/package_opencl_runtime.py",
+      "bytes": 19734,
+      "sha256": "3ef741b94aa4f3d1692d1575e442ddcd4027456c7a763dbc960fe2611428041c"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/opencl/scripts/toolchains/aarch64-linux-floe.cmake",
+      "bytes": 2682,
+      "sha256": "5bcf71a85b0d871b9540a66d2c3ca215db78653a93d6e398d903ffcb1bf63241"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/opencl/scripts/verify_external_toolchain.py",
+      "bytes": 14636,
+      "sha256": "c4e7cc63a8227070c9767342b031247d44038d307f38497c04f7ed1054d8b230"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/opencl/scripts/verify_private_stage.py",
+      "bytes": 3690,
+      "sha256": "1a3e0f7402401aeb0ca7367712f341afba4214eb95834c2a46370d556fe2640d"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/opencl/scripts/verify_runtime_profile.py",
+      "bytes": 10183,
+      "sha256": "aca2306b5470ce55b458d8f4d5ae51908d3015b5e5d7c481f5cb3dbefcde0b29"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/opencl/scripts/verify_source_tree.py",
+      "bytes": 2297,
+      "sha256": "c44b10f1b8ae718614b270c8fdf8ab65d9867d4f4a2124fc3840aca69521b03b"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/opencl/scripts/verify_sysroot.py",
+      "bytes": 3123,
+      "sha256": "f2636e962dca72dce802b67538e85b79f6d9001cb9e59ee14a3731cf749ab48c"
+    }
+  ],
+  "patchesForSharedPaths": [
+    {
+      "file": "0001-arm64emu-deferred-release-lifetime.patch",
+      "bytes": 26143,
+      "sha256": "efecbba259edbb0b94c240014c253d116a3c1518e7124751abb3b0af9705a017"
+    },
+    {
+      "file": "0002-arm64emu-adapter-ledger-fault.patch",
+      "bytes": 1166,
+      "sha256": "cce5427973e33722e963d12a5c150a1a2b1421c400ee29284c931948a5518c97"
+    },
+    {
+      "file": "0003-floelinuxgpu-package-and-manifest.patch",
+      "bytes": 3946,
+      "sha256": "7df57dbc46ad7908b3d6e85e8bf2d531753919eb86727b8372c2fc2ed96555fa"
+    },
+    {
+      "file": "0004-acceleration-terminal-ui.patch",
+      "bytes": 46148,
+      "sha256": "5943dc5f22eb70ccb7e4e2d54a652fc6c071761e253c32fde77f0c8facc1e2ef"
+    },
+    {
+      "file": "0005-arm64emu-abi4-video.patch",
+      "bytes": 95837,
+      "sha256": "9c0175d08e867de0550a6f09605de82dbd618ca5c222a6ae3c18ae88ac813ab7"
+    },
+    {
+      "file": "0006-package-floelinuxvideo.patch",
+      "bytes": 2085,
+      "sha256": "e944c5d8f063e37f34ba42e20e7c3b28803b835257fb8ff1992e0febc6425eb0"
+    },
+    {
+      "file": "0007-project-floelinuxvideo.patch",
+      "bytes": 372,
+      "sha256": "e8c1ce062e559aae5e6c3d2562ff39f15c047bed136b6f97480d7985f724401d"
+    },
+    {
+      "file": "0008-floeexecution-abi4-video.patch",
+      "bytes": 25308,
+      "sha256": "3b7067ad32db04c5d0d92aa5c39bc4c74ac674e0c803a010432c9675db7392a5"
+    },
+    {
+      "file": "0010-arm64emu-provenance-abi4.patch",
+      "bytes": 2025,
+      "sha256": "91ab9fe3ed7e75c8295fd9776c217b769e5bb45a56dff92d51f96a4bad23c474"
+    },
+    {
+      "file": "0011-shared-video-settings.patch",
+      "bytes": 11920,
+      "sha256": "648203514631d88c46464bd6be47937324dda107e56099f602af6af4a605ab39"
+    }
+  ],
+  "licenses": {
+    "videoHost": "FloeAgent/Modules/FloeLinuxVideo/LICENSE",
+    "videoGuest": "FloeAgent/LinuxGuest/virtio-media/LICENSE",
+    "videoClient": "FloeAgent/LinuxGuest/acceleration/video/LICENSE",
+    "blas": "FloeAgent/LinuxGuest/acceleration/blas/LICENSE",
+    "blender": "FloeAgent/LinuxGuest/acceleration/blender/LICENSE",
+    "opencl": "FloeAgent/LinuxGuest/acceleration/opencl/licenses"
+  },
+  "notIncluded": [
+    "compiled .a/.so/.deb/.o/.dylib",
+    "kernel module binaries",
+    "guest images or disks",
+    "upstream clvk/LLVM/clspv trees (pinned at build time)",
+    "private qualification evidence"
+  ]
+}

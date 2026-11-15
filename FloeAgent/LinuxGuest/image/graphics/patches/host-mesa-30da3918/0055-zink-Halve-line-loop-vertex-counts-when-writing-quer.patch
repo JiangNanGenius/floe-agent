@@ -1,0 +1,34 @@
+From a624b81cc0ffe6283f72d8d7d52e0adc88d45d18 Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Fri, 2 Oct 2026 23:18:26 -0400
+Subject: [PATCH] zink: Halve line loop vertex counts when writing query
+ results to a buffer
+
+Generated-by: LLM
+---
+ src/gallium/drivers/zink/zink_query.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/zink/zink_query.c b/src/gallium/drivers/zink/zink_query.c
+index aea6c01b77e..b568277d0c2 100644
+--- a/src/gallium/drivers/zink/zink_query.c
++++ b/src/gallium/drivers/zink/zink_query.c
+@@ -1490,10 +1490,14 @@ zink_get_query_result_resource(struct pipe_context *pctx,
+     * - Chapter 18. Queries
+     */
+    size_flags |= VK_QUERY_RESULT_WAIT_BIT;
++   struct zink_query_start *last_start = util_dynarray_top_ptr(&query->starts, struct zink_query_start);
++   bool halve_line_loop = query->type == PIPE_QUERY_PIPELINE_STATISTICS_SINGLE &&
++                          query->index == PIPE_STAT_QUERY_IA_VERTICES &&
++                          last_start->was_line_loop;
+    if (!is_time_query(query) && !is_bool_query(query)) {
+       if (num_queries == 1 && !is_emulated_primgen(query) &&
+                               query->type != PIPE_QUERY_PRIMITIVES_EMITTED &&
+-                              !is_bool_query(query)) {
++                              !is_bool_query(query) && !halve_line_loop) {
+          if (size_flags == VK_QUERY_RESULT_64_BIT) {
+             if (query->needs_update)
+                update_qbo(ctx, query);
+-- 
+2.54.0 (Apple Git-157)
+

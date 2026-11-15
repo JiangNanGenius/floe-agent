@@ -1,0 +1,40 @@
+/* SPDX-License-Identifier: MPL-2.0 */
+/* FloeGameNarrativeKit Ink shell support (MPL-2.0). */
+html, body {
+  margin: 0;
+  background: #101820;
+  color: #e8f0e8;
+  font: 17px/1.55 ui-serif, Georgia, serif;
+}
+#wrap {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 28px 20px 96px;
+}
+#text { white-space: pre-wrap; }
+.choice {
+  display: block;
+  margin: 10px 0;
+  padding: 10px 14px;
+  border: 1px solid #3c5a48;
+  border-radius: 8px;
+  background: #182b22;
+  color: #cfe8d4;
+  cursor: pointer;
+  font: inherit;
+}
+.choice.sel {
+  outline: 2px solid #ffd76a;
+  background: #22392c;
+}
+#hint {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 8px;
+  text-align: center;
+  background: #0b1210;
+  color: #7fa88c;
+  font: 13px system-ui;
+}

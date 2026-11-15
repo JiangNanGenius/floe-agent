@@ -1,0 +1,21 @@
+; SPDX-License-Identifier: MIT
+; Copyright (c) 2026 Floe contributors. See licenses/FLOE-STARTER-MIT.txt.
+config_version=5
+
+[application]
+config/name="Floe Godot game"
+run/main_scene="res://main.tscn"
+
+[display]
+window/size/viewport_width=800
+window/size/viewport_height=480
+window/stretch/mode="canvas_items"
+
+[rendering]
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+textures/default_filters/use_nearest_mipmap_filter=false
+environment/defaults/default_clear_color=Color(0.078, 0.169, 0.149, 1)
+
+[audio]
+driver/enable_input=false

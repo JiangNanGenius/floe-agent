@@ -57,6 +57,12 @@ struct ExecutionEnvironmentView: View {
     @State private var sharedMemoryMB = 512
     @State private var sharedGPUMemoryMB = 1024
     @State private var sharedGPUStatus: ARM64GPUBudget?
+    /// Live video truth; nil while stopped or when the backend has no video.
+    @State private var sharedVideoStatus: ARM64VideoStatus?
+    /// Persisted native-software policy preference (not a launch shape).
+    @State private var sharedVideoNativeSoftware = true
+    @State private var videoPolicyBusy = false
+    @State private var videoPolicyError: (requested: Bool, message: String)?
     /// Live online-memory truth (desired/effective/plugged) read from the
     /// runtime owner; nil while stopped or when the backend has no device.
     @State private var sharedMemoryStatus: LinuxSharedMemoryStatus?
@@ -81,7 +87,8 @@ struct ExecutionEnvironmentView: View {
     }
 
     private var proposedSharedConfiguration: LinuxGuestLifecycleConfig {
-        .init(vcpus: sharedCPUs, memoryMB: sharedMemoryMB, gpuMemoryMB: sharedGPUMemoryMB)
+        .init(vcpus: sharedCPUs, memoryMB: sharedMemoryMB, gpuMemoryMB: sharedGPUMemoryMB,
+              videoNativeSoftware: sharedVideoNativeSoftware)
     }
 
     private var graphicsStatus: GraphicsStatus {
@@ -168,6 +175,33 @@ struct ExecutionEnvironmentView: View {
                         Text("execution.shared.gpu_unavailable").font(.footnote).foregroundStyle(.secondary)
                     case .idle:
                         EmptyView()
+                    }
+                    if let video = sharedVideoStatus {
+                        if video.present {
+                            LabeledContent("execution.shared.video_hardware_outputs",
+                                           value: "\(video.hardwareOutputs)")
+                            LabeledContent("execution.shared.video_software_outputs",
+                                           value: "\(video.nativeSoftwareOutputs)")
+                            Toggle("execution.shared.video_allow_software",
+                                   isOn: Binding(
+                                       get: { sharedVideoNativeSoftware },
+                                       set: { value in Task { await applyVideoPolicy(value) } }))
+                                .disabled(videoPolicyBusy || linuxBusy)
+                            Text("execution.shared.video_software_note")
+                                .font(.footnote).foregroundStyle(.secondary)
+                            if let error = videoPolicyError {
+                                Text("execution.shared.video_failed")
+                                    .font(.subheadline).foregroundStyle(.red)
+                                Text(error.message).font(.caption).foregroundStyle(.secondary)
+                                Button("execution.shared.video_retry") {
+                                    Task { await applyVideoPolicy(error.requested) }
+                                }
+                                .disabled(videoPolicyBusy || linuxBusy)
+                            }
+                        } else {
+                            Text("execution.shared.video_unavailable")
+                                .font(.footnote).foregroundStyle(.secondary)
+                        }
                     }
                     if sharedRuntimeRunning {
                         LabeledContent("execution.shared.projects", value: String(sharedRunningIDs.count))
@@ -541,6 +575,27 @@ struct ExecutionEnvironmentView: View {
         } catch { linuxError = error.localizedDescription }
         sharedMemoryStatus = await service.sharedMemoryStatus()
         sharedGPUStatus = await service.sharedGPUStatus()
+        sharedVideoStatus = await service.sharedVideoStatus()
+        sharedVideoNativeSoftware = sharedConfiguration?.resolvedVideoNativeSoftware
+            ?? sharedVideoStatus?.nativeSoftwareEnabled ?? true
+    }
+
+    @MainActor private func applyVideoPolicy(_ enabled: Bool) async {
+        guard !videoPolicyBusy, let service = center.environment.linuxGuestService else { return }
+        let previous = sharedVideoNativeSoftware
+        sharedVideoNativeSoftware = enabled
+        videoPolicyBusy = true
+        videoPolicyError = nil
+        defer { videoPolicyBusy = false }
+        do {
+            try await service.setSharedVideoNativeSoftware(enabled)
+            sharedConfiguration = await service.sharedGuestConfiguration()
+            sharedVideoStatus = await service.sharedVideoStatus()
+        } catch {
+            videoPolicyError = (enabled, error.localizedDescription)
+            sharedVideoStatus = await service.sharedVideoStatus()
+            sharedVideoNativeSoftware = sharedVideoStatus?.nativeSoftwareEnabled ?? previous
+        }
     }
 
     private func gpuMemoryLabel(_ bytes: UInt64) -> String {
@@ -557,9 +612,14 @@ struct ExecutionEnvironmentView: View {
         if sharedRuntimeRunning {
             sharedMemoryStatus = await service.sharedMemoryStatus()
             sharedGPUStatus = await service.sharedGPUStatus()
+            sharedVideoStatus = await service.sharedVideoStatus()
+            if !videoPolicyBusy, let video = sharedVideoStatus {
+                sharedVideoNativeSoftware = video.nativeSoftwareEnabled
+            }
         } else {
             sharedMemoryStatus = nil
             sharedGPUStatus = nil
+            sharedVideoStatus = nil
         }
     }
 
@@ -619,6 +679,7 @@ struct ExecutionEnvironmentView: View {
             sharedCPUs = sharedConfiguration?.vcpus ?? 2
             sharedMemoryMB = sharedConfiguration?.memoryMB ?? 512
             sharedGPUMemoryMB = sharedConfiguration?.resolvedGPUMemoryMB ?? 1024
+            sharedVideoNativeSoftware = sharedConfiguration?.resolvedVideoNativeSoftware ?? true
             await refreshSharedResources(service)
         }
         if linuxImageModel == nil {

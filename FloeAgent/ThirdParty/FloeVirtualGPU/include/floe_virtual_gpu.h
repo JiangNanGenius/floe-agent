@@ -2,7 +2,7 @@
 /* Copyright 2026 Floe contributors */
 /* floe_virtual_gpu.h — FloeVirtualGPU host-side session ABI.
  *
- * This is the host package's own surface (owned by job-3b20af3971fb4693).
+ * This is the host package's own surface, owned by the FloeVirtualGPU target.
  * The transport-facing vtable is FloeVirtioGPUBackend, owned by the transport
  * package (ARM64EMU Bridge/virtio_gpu_backend.h); this session API is what a
  * Swift/native host or the qualification binary drives, and what the
@@ -65,6 +65,12 @@ typedef struct FloeGPUDeviceInfo {
     uint32_t venus_capset_size;        /* sizeof(struct virgl_renderer_capset_venus) */
     uint32_t num_capsets;
     bool venus_enabled;
+    /* Physical capacity is NOT the enforceable session quota. On Apple
+     * Silicon the unified VkMemoryHeap size (and VK_EXT_memory_budget's
+     * heapBudget) is the device-wide physical capacity; Floe admits
+     * allocations against session_budget_bytes. Report both and never
+     * present the physical heap size as this session's allowance. */
+    uint64_t session_budget_bytes;     /* enforceable per-session ceiling (target) */
 } FloeGPUDeviceInfo;
 
 /* Budget state + set_budget result semantics (contract §2):
@@ -188,6 +194,10 @@ FloeGPUBudgetResult floe_gpu_set_budget(FloeGPUSession *s,
                                         uint64_t requested_bytes);
 FloeGPUBudgetResult floe_gpu_get_budget(FloeGPUSession *s);
 FloeGPUMemoryLedger floe_gpu_get_ledger(FloeGPUSession *s);
+/* Non-zero when a ledger invariant was violated (reservation mismatch, counter
+ * overflow/underflow). The ledger is then NOT trustworthy and every further
+ * allocation is refused; assert builds already aborted at the violation. */
+int floe_gpu_ledger_faulted(FloeGPUSession *s);
 
 /* ---- scanout -------------------------------------------------------------
  * v1 serves an XRGB8888 top-down pixmap converted from the actual resource

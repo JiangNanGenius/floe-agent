@@ -1,0 +1,44 @@
+From ea245ef6a72ec8d459b4972095aebba581a81eb0 Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Sun, 4 Oct 2026 02:14:49 -0400
+Subject: [PATCH] kk: Return a lost device from a wait whose event is never
+ signalled
+
+Generated-by: LLM
+---
+ src/kosmickrisp/vulkan/kk_sync.c | 18 +++++++++++++++---
+ 1 file changed, 15 insertions(+), 3 deletions(-)
+
+diff --git a/src/kosmickrisp/vulkan/kk_sync.c b/src/kosmickrisp/vulkan/kk_sync.c
+index f44200c379e..a764c95928b 100644
+--- a/src/kosmickrisp/vulkan/kk_sync.c
++++ b/src/kosmickrisp/vulkan/kk_sync.c
+@@ -76,10 +76,22 @@ kk_timeline_wait(struct vk_device *device, struct vk_sync *sync,
+       timeout_ms =
+          (rel_timeout_ns / 1000000) + (rel_timeout_ns % 1000000 ? 1 : 0);
+    }
+-   int completed = mtl_shared_event_wait_until_signaled_value(
+-      timeline->mtl_handle, wait_value, timeout_ms);
++   const uint64_t slice_ms = 100u;
++   for (;;) {
++      const uint64_t wait_ms = MIN2(timeout_ms, slice_ms);
++      if (mtl_shared_event_wait_until_signaled_value(timeline->mtl_handle,
++                                                     wait_value, wait_ms))
++         return VK_SUCCESS;
+ 
+-   return completed != 0 ? VK_SUCCESS : VK_TIMEOUT;
++      if (vk_device_is_lost(device))
++         return VK_ERROR_DEVICE_LOST;
++
++      if (timeout_ms != OS_TIMEOUT_INFINITE) {
++         if (timeout_ms <= slice_ms)
++            return VK_TIMEOUT;
++         timeout_ms -= wait_ms;
++      }
++   }
+ }
+ 
+ const struct vk_sync_type kk_sync_type = {
+-- 
+2.54.0 (Apple Git-157)
+

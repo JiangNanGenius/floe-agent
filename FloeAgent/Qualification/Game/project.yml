@@ -1,0 +1,83 @@
+name: FloeGameQualification
+options:
+  deploymentTarget:
+    iOS: '26.0'
+settings:
+  base:
+    ARCHS: arm64
+    SWIFT_VERSION: '6.0'
+    CODE_SIGNING_ALLOWED: NO
+    GENERATE_INFOPLIST_FILE: YES
+    MARKETING_VERSION: '1.0'
+    CURRENT_PROJECT_VERSION: '1'
+packages:
+  FloeGameKit:
+    path: ../../Modules/FloeGameKit
+  FloeGameAuthoringKit:
+    path: ../../Modules/FloeGameAuthoringKit
+  FloeGameTouchKit:
+    path: ../../Modules/FloeGameTouchKit
+  FloeGameBuildKit:
+    path: ../../Modules/FloeGameBuildKit
+  FloeGameEditingKit:
+    path: ../../Modules/FloeGameEditingKit
+  FloeRPGProjectKit:
+    path: ../../Modules/FloeRPGProjectKit
+targets:
+  FloeGameQualification:
+    type: application
+    platform: iOS
+    sources:
+      - path: App
+      - path: Resources
+        type: group
+        buildPhase: resources
+    dependencies:
+      - package: FloeGameKit
+        product: FloeGameCore
+      - package: FloeGameKit
+        product: FloeGameWebKit
+      - package: FloeGameAuthoringKit
+        product: FloeGameAuthoringUI
+      - package: FloeGameTouchKit
+        product: FloeGameTouchUI
+      - package: FloeGameBuildKit
+        product: FloeGameBuildKit
+      - package: FloeGameEditingKit
+        product: FloeGameEditingUI
+      - package: FloeRPGProjectKit
+        product: FloeRPGCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.game.qualification
+        TARGETED_DEVICE_FAMILY: '1,2'
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Floe Game Components
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleLocalizations: [en, zh-Hans]
+        UIFileSharingEnabled: YES
+        LSSupportsOpeningDocumentsInPlace: YES
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+  GameUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [UITests]
+    dependencies:
+      - target: FloeGameQualification
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.game.qualification.uitests
+schemes:
+  FloeGameQualification:
+    build:
+      targets:
+        FloeGameQualification: all
+        GameUITests: [test]
+    test:
+      targets: [GameUITests]

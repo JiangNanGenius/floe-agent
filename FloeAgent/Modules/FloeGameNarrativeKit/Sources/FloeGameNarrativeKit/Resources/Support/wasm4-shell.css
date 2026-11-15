@@ -1,0 +1,12 @@
+/* SPDX-License-Identifier: MPL-2.0 */
+/* FloeGameNarrativeKit WASM-4 shell support (MPL-2.0). */
+html, body {
+  margin: 0;
+  height: 100%;
+  background: #202020;
+  overflow: hidden;
+}
+wasm4-app {
+  width: 100%;
+  height: 100%;
+}

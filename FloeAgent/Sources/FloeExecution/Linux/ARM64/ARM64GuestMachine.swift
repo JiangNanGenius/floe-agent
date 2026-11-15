@@ -496,6 +496,62 @@ public final class ARM64GuestMachine: @unchecked Sendable {
         }
     }
 
+    /// Video service snapshot between slices. `present == false` is an honest
+    /// unavailable result (video disabled for this machine), not an error.
+    public func videoStatus() async throws -> ARM64VideoStatus {
+        try await enqueueOperation { handle, token in
+            var info = floe_ae_video_info()
+            memset(&info, 0, MemoryLayout<floe_ae_video_info>.size)
+            info.struct_size = UInt32(MemoryLayout<floe_ae_video_info>.size)
+            let infoCode = floe_ae_video_get_info(handle, &info)
+            guard infoCode == FLOE_AE_OK else {
+                token.resume(throwing: ARM64MachineError.engineBusy(
+                    "video_get_info: \(ARM64EngineCode.name(infoCode))"))
+                return
+            }
+            var backend = floe_ae_video_backend_info()
+            memset(&backend, 0, MemoryLayout<floe_ae_video_backend_info>.size)
+            backend.struct_size = UInt32(MemoryLayout<floe_ae_video_backend_info>.size)
+            let backendCode = floe_ae_video_get_backend_info(handle, &backend)
+            guard backendCode == FLOE_AE_OK else {
+                token.resume(throwing: ARM64MachineError.engineBusy(
+                    "video_get_backend_info: \(ARM64EngineCode.name(backendCode))"))
+                return
+            }
+            token.resume(returning: ARM64VideoStatus(
+                present: info.nodes > 0,
+                hardwareOutputs: backend.hardware_outputs,
+                nativeSoftwareOutputs: backend.native_software_outputs,
+                nativeSoftwareEnabled: backend.native_software_enabled != 0,
+                nativeSoftwareFormats: Int(backend.native_software_formats),
+                sessions: info.native_sessions,
+                inflight: info.inflight,
+                hostOwnedBytes: info.host_owned_bytes,
+                errorCount: info.errors))
+        }
+    }
+
+    /// Change hardware-only vs allow-proven-native-software between file
+    /// sessions. BUSY means at least one V4L2 or broker session is live.
+    public func setVideoNativeSoftware(_ enabled: Bool) async throws {
+        let _: Void = try await enqueueOperation { handle, token in
+            let code = floe_ae_video_set_native_software(handle, enabled ? 1 : 0)
+            switch Int(code) {
+            case FLOE_AE_OK:
+                token.resume()
+            case FLOE_AE_BUSY:
+                token.resume(throwing: ARM64MachineError.engineBusy(
+                    "video policy change: file sessions are active"))
+            case FLOE_AE_UNSUPPORTED:
+                token.resume(throwing: ARM64MachineError.invalidConfiguration(
+                    "video acceleration is unavailable for this machine"))
+            default:
+                token.resume(throwing: ARM64MachineError.engineBusy(
+                    "video_set_native_software: \(ARM64EngineCode.name(code))"))
+            }
+        }
+    }
+
     /// Real winsize push: the next guest-visible poll raises the virtio
     /// config-change interrupt; no SIGWINCH, no host terminal management.
     public func setWindowSize(channel: UInt32, cols: UInt16, rows: UInt16) async throws {
@@ -781,6 +837,15 @@ public final class ARM64GuestMachine: @unchecked Sendable {
                     code: createCode,
                     detail: "floe_ae_create refused the staged config (one live machine per process is engine-enforced)"
                 )
+            }
+            if config.videoEnabled {
+                let policyCode = floe_ae_video_set_native_software(
+                    handle, config.videoAllowNativeSoftware ? 1 : 0)
+                guard policyCode == FLOE_AE_OK else {
+                    throw ARM64MachineError.createFailed(
+                        code: policyCode,
+                        detail: "video policy could not be applied at create")
+                }
             }
             stateLock.lock()
             engineHandle = handle

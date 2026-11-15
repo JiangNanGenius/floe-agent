@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "engine": "love",
+  "movement": {
+    "left": [
+      "left"
+    ],
+    "right": [
+      "right"
+    ],
+    "up": [
+      "up"
+    ],
+    "down": [
+      "down"
+    ]
+  },
+  "buttons": [
+    {
+      "id": "confirm",
+      "label": "Z",
+      "keys": [
+        "z"
+      ]
+    },
+    {
+      "id": "cancel",
+      "label": "X",
+      "keys": [
+        "x"
+      ]
+    },
+    {
+      "id": "action1",
+      "label": "S",
+      "keys": [
+        "s"
+      ]
+    },
+    {
+      "id": "action2",
+      "label": "L",
+      "keys": [
+        "l"
+      ]
+    },
+    {
+      "id": "action3",
+      "label": "Esc",
+      "keys": [
+        "escape"
+      ]
+    }
+  ]
+}

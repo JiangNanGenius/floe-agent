@@ -1,0 +1,26 @@
+From 6d57d800455cae89bb8b1206079d96d9bd4595e4 Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Sat, 3 Oct 2026 11:10:05 -0400
+Subject: [PATCH] kk: Report the 6 bits of mipmap precision Apple GPUs have
+
+Generated-by: LLM
+---
+ src/kosmickrisp/vulkan/kk_physical_device.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/kosmickrisp/vulkan/kk_physical_device.c b/src/kosmickrisp/vulkan/kk_physical_device.c
+index 43b1e057302..d71177dda45 100644
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c
+@@ -647,7 +647,7 @@ kk_get_device_properties(
+                                   pdev->info.max_workgroup_count[2]},
+       .subPixelPrecisionBits = 8,
+       .subTexelPrecisionBits = 8,
+-      .mipmapPrecisionBits = 8,
++      .mipmapPrecisionBits = 6,
+       .maxDrawIndexedIndexValue = UINT32_MAX,
+       .maxDrawIndirectCount = UINT16_MAX,
+       .maxSamplerLodBias = 15,
+-- 
+2.54.0 (Apple Git-157)
+

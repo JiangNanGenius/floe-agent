@@ -1,0 +1,2 @@
+var gdjs;(function(e){class n extends e.RuntimeBehavior{constructor(t,i,a){super(t,i,a);this.object=a}usesLifecycleFunction(){return!1}applyBehaviorOverriding(t){return!0}onDeActivate(){}onDestroy(){}doStepPreEvents(t){}doStepPostEvents(t){}setOpacity(t){this.object.setOpacity(t)}getOpacity(){return this.object.getOpacity()}}e.OpacityBehavior=n,e.registerBehavior("OpacityCapability::OpacityBehavior",e.OpacityBehavior)})(gdjs||(gdjs={}));
+//# sourceMappingURL=OpacityBehavior.js.map

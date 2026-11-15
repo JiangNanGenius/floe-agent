@@ -1,0 +1,46 @@
+--- a/src/kosmickrisp/vulkan/kk_buffer_view.c
++++ b/src/kosmickrisp/vulkan/kk_buffer_view.c
+@@ -66,28 +66,42 @@
+ VKAPI_ATTR VkResult VKAPI_CALL
+ kk_CreateBufferView(VkDevice _device, const VkBufferViewCreateInfo *pCreateInfo,
+                     const VkAllocationCallbacks *pAllocator,
+                     VkBufferView *pBufferView)
+ {
+    VK_FROM_HANDLE(kk_device, dev, _device);
++
++   /* vk_buffer_view_create() -> vk_buffer_view_init() divides the range by
++    * vk_format_get_blocksize(format) before this driver can inspect the
++    * view.  Reject formats without a pipe mapping first so a corrupt/unknown
++    * enum cannot reach that division (or the later NULL Metal lookup). */
++   enum pipe_format p_format = vk_format_to_pipe_format(pCreateInfo->format);
++   if (p_format == PIPE_FORMAT_NONE)
++      return vk_error(dev, VK_ERROR_FORMAT_NOT_SUPPORTED);
++
+    struct kk_buffer_view *view =
+       vk_buffer_view_create(&dev->vk, pCreateInfo, pAllocator, sizeof(*view));
+    if (!view)
+       return vk_error(dev, VK_ERROR_OUT_OF_HOST_MEMORY);
+ 
+-   enum pipe_format p_format = vk_format_to_pipe_format(view->vk.format);
+    struct kk_buffer *buffer =
+       container_of(view->vk.buffer, struct kk_buffer, vk);
+    uint32_t el_size_B = util_format_get_blocksize(p_format);
+ 
+    if (kk_is_rgb32_format(p_format)) {
+       view->rgb32_addr = vk_buffer_address(&buffer->vk, view->vk.offset);
+       goto residency;
+    }
+ 
+    const struct kk_va_format *supported_format = kk_get_va_format(p_format);
++   if (supported_format == NULL) {
++      /* A view format without a Metal mapping (for example D24) cannot create
++       * a texel buffer; fail creation instead of dereferencing NULL below. */
++      vk_buffer_view_destroy(&dev->vk, pAllocator, &view->vk);
++      return vk_error(dev, VK_ERROR_FORMAT_NOT_SUPPORTED);
++   }
+ 
+    /* If we reached here, we support reading at least */
+    enum mtl_texture_usage usage = MTL_TEXTURE_USAGE_SHADER_READ;
+    if (supported_format->texel_buffer.write)
+       usage |= MTL_TEXTURE_USAGE_SHADER_WRITE;
+ 

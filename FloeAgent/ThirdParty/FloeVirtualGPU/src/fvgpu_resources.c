@@ -46,7 +46,18 @@ int floe_gpu_resource_create_blob(FloeGPUSession *s,uint32_t ctx,uint32_t id,
     enum virgl_resource_fd_type type;int fd=-1;uint32_t map_info=0;
     struct virgl_resource_vulkan_info vk_info={0};
     if(!vkr_renderer_create_resource(ctx,id,blob_id,size,flags,&type,&fd,&map_info,&vk_info)) {
+        fvgpu_trace("ev=create-fail ctx=%u res=%u bytes=%llu blob=%llu flags=%u",
+            ctx,id,(unsigned long long)size,(unsigned long long)blob_id,flags);
         memset(e,0,sizeof(*e));return FLOE_GPU_RESP_OUT_OF_MEMORY;
+    }
+    /* A HOST3D blob may reference a device-memory object whose exported shm is
+     * smaller than the guest-requested size.  Require the requested bytes to
+     * be backed; the page-rounded tail may be mmap zero-fill. */
+    if(type==VIRGL_RESOURCE_FD_SHM&&!fvgpu_shm_fd_covers(fd,size)) {
+        fvgpu_trace("ev=create-fail ctx=%u res=%u bytes=%llu blob=%llu reason=shm-short",
+            ctx,id,(unsigned long long)size,(unsigned long long)blob_id);
+        close(fd);vkr_renderer_destroy_resource(ctx,id);memset(e,0,sizeof(*e));
+        return FLOE_GPU_RESP_ERR_UNSPEC;
     }
     uint64_t key=vkr_renderer_resource_accounting_key(ctx,id);
     if(fd<0||!key||!vkr_accounting_ref(key)) {
@@ -54,6 +65,9 @@ int floe_gpu_resource_create_blob(FloeGPUSession *s,uint32_t ctx,uint32_t id,
     }
     e->ctx_id=ctx;e->creator_alive=true;e->context_mask=1ull<<slot;e->accounting_key=key;
     e->is_blob=true;e->fd=fd;e->fd_type=type;e->blob_size=rounded;
+    fvgpu_trace("ev=create ctx=%u res=%u bytes=%llu blob=%llu flags=%u key=%llu fdtype=%d",
+        ctx,id,(unsigned long long)rounded,(unsigned long long)blob_id,flags,
+        (unsigned long long)key,(int)type);
     /* Mappable Apple blobs are SHM; an opaque fd is not assumed mmap-able. */
     if(flags&VIRGL_RENDERER_BLOB_FLAG_USE_MAPPABLE) {
         int rc=floe_gpu_resource_map_transport(s,id,0,ptr,mapped_size);
@@ -69,13 +83,17 @@ int floe_gpu_resource_map_transport(FloeGPUSession *s,uint32_t id,uint64_t offse
         if(mapped==MAP_FAILED) return FLOE_GPU_RESP_ERR_UNSPEC;
         e->ptr=mapped;e->size=e->blob_size;
     }
-    *ptr=(uint8_t *)e->ptr+offset;*len=e->size-offset;return FLOE_GPU_RESP_OK;
+    *ptr=(uint8_t *)e->ptr+offset;*len=e->size-offset;
+    fvgpu_trace("ev=map res=%u off=%llu len=%llu",id,(unsigned long long)offset,
+        (unsigned long long)*len);
+    return FLOE_GPU_RESP_OK;
 }
 int floe_gpu_resource_unmap_transport(FloeGPUSession *s,uint32_t id) {
     struct fvgpu_resource_entry *e=fvgpu_resource_find(s,id);
     if(!e||!e->ptr) return FLOE_GPU_RESP_INVALID;
     if(munmap(e->ptr,(size_t)e->size)) return FLOE_GPU_RESP_ERR_UNSPEC;
     e->ptr=NULL;e->size=0; /* keep resource fd/length/ref for a later remap */
+    fvgpu_trace("ev=unmap res=%u",id);
     return FLOE_GPU_RESP_OK;
 }
 int floe_gpu_resource_attach_iov(FloeGPUSession *s,uint32_t id,const struct iovec *iov,uint32_t niov) {
@@ -95,7 +113,10 @@ int floe_gpu_ctx_attach_resource(FloeGPUSession *s,uint32_t ctx,uint32_t id) {
     if(!vkr_renderer_resource_accounting_import(ctx,id,e->accounting_key)) {
         vkr_renderer_destroy_resource(ctx,id);return FLOE_GPU_RESP_ERR_UNSPEC;
     }
-    e->context_mask|=1ull<<slot;return FLOE_GPU_RESP_OK;
+    e->context_mask|=1ull<<slot;
+    fvgpu_trace("ev=attach ctx=%u res=%u key=%llu mask=%llx",ctx,id,
+        (unsigned long long)e->accounting_key,(unsigned long long)e->context_mask);
+    return FLOE_GPU_RESP_OK;
 }
 int floe_gpu_ctx_detach_resource(FloeGPUSession *s,uint32_t ctx,uint32_t id) {
     int slot=context_slot(s,ctx);struct fvgpu_resource_entry *e=fvgpu_resource_find(s,id);
@@ -103,18 +124,27 @@ int floe_gpu_ctx_detach_resource(FloeGPUSession *s,uint32_t ctx,uint32_t id) {
     /* The creating resource remains until UNREF; imported context aliases can
      * be removed independently. A recreated context has a cleared slot bit. */
     if(e->creator_alive&&ctx==e->ctx_id&&(e->context_mask&(1ull<<slot))) return FLOE_GPU_RESP_OK;
-    if(e->context_mask&(1ull<<slot)) {vkr_renderer_destroy_resource(ctx,id);e->context_mask&=~(1ull<<slot);}
+    if(e->context_mask&(1ull<<slot)) {
+        vkr_renderer_destroy_resource(ctx,id);e->context_mask&=~(1ull<<slot);
+        fvgpu_trace("ev=detach ctx=%u res=%u mask=%llx",ctx,id,
+            (unsigned long long)e->context_mask);
+    }
     return FLOE_GPU_RESP_OK;
 }
 int floe_gpu_resource_unref(FloeGPUSession *s,uint32_t id) {
     struct fvgpu_resource_entry *e=fvgpu_resource_find(s,id);
     if(!e) return FLOE_GPU_RESP_INVALID;
+    uint64_t released=e->blob_size;uint64_t key=e->accounting_key;
+    bool mapped=e->ptr!=NULL;bool creator=e->creator_alive;
     if(e->ptr) {munmap(e->ptr,(size_t)e->size);e->ptr=NULL;}
     if(e->fd>=0) {close(e->fd);e->fd=-1;}
     for(unsigned i=0;i<FVGPU_MAX_CONTEXTS;i++)
         if((e->context_mask&(1ull<<i))&&s->contexts[i].used)
             vkr_renderer_destroy_resource(s->contexts[i].ctx_id,id);
     vkr_accounting_unref(e->accounting_key);
+    fvgpu_trace("ev=unref res=%u bytes=%llu key=%llu mapped=%u creator=%u mask=%llx",
+        id,(unsigned long long)released,(unsigned long long)key,
+        mapped?1u:0u,creator?1u:0u,(unsigned long long)e->context_mask);
     memset(e,0,sizeof(*e));return FLOE_GPU_RESP_OK;
 }
 void fvgpu_resources_destroy_all(FloeGPUSession *s) {

@@ -498,6 +498,7 @@ static AEParallelResult parallel_epoch(AESession *s,u64 max_ns,u64 max_insn,cons
          * guest memory, used ring and IRQ publication happen here, never on a
          * renderer thread. */
         if(m->gpu&&fn->gpu_has_work&&fn->gpu_has_work(m->gpu)){fn->gpu_service(m->gpu);io_work=true;}
+        if(fn->video_has_work&&fn->video_has_work(m)){fn->video_service(m);io_work=true;}
         }
         pthread_mutex_lock(&p->mutex);
         /* A completed budget/deadline or a new control/fault is not PARKED.
@@ -520,7 +521,15 @@ static AEParallelResult parallel_epoch(AESession *s,u64 max_ns,u64 max_insn,cons
          * decision is what lets an all-WFI machine drain instead of parking
          * with mappings queued forever. */
         if(m->gpu&&fn->device_quiesce&&fn->device_quiesce(m->gpu)){
-            if(busy(p)){pthread_cond_wait(&p->changed,&p->mutex);continue;}
+            if(busy(p)){
+                /* Board service above dropped this mutex. A worker may have
+                 * posted an RPC and its wake before we reacquired it; that
+                 * worker now needs the coordinator to service the mailbox.
+                 * Recheck under this same mutex before parking, then let the
+                 * loop top handle it while backing remains pinned. */
+                if(pending(p)<0)pthread_cond_wait(&p->changed,&p->mutex);
+                continue;
+            }
             pthread_mutex_unlock(&p->mutex);
             m->parallel_ops=NULL;
             if(fn->device_quiesce_drain)fn->device_quiesce_drain(m->gpu);

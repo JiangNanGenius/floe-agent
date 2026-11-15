@@ -86,10 +86,11 @@ int platform_build(Machine *m) {
     if (m->gpu_enabled) first_fixed = VIRTIO_MMIO_SLOT_GPU;         /* 31 */
     if (m->vmem_wanted && VIRTIO_MMIO_SLOT_MEM < first_fixed)
         first_fixed = VIRTIO_MMIO_SLOT_MEM;                         /* 30 */
+    if (m->video_enabled) first_fixed = FLOE_VIDEO_DECODER_SLOT;      /* 28,29 */
     int slot_ceiling = first_fixed - 1;
     if (m->n_drives + MAX_SHARES + m->n_consoles_req > slot_ceiling) {  /* net=slot0, disks, shares, consoles */
         fprintf(stderr, "too many virtio-mmio devices (%d disks + %d share slots + "
-                        "%d consoles > %d slots; %d reserved for mem/gpu)\n",
+                        "%d consoles > %d slots; %d fixed slots reserved)\n",
                 m->n_drives, MAX_SHARES, m->n_consoles_req, slot_ceiling,
                 32 - first_fixed);
         return -1;
@@ -110,6 +111,20 @@ int platform_build(Machine *m) {
     }
     for (int i = 0; i < m->n_consoles_req; i++)              /* slots after disks + share block */
         if (!virtio_console_create(m, m->gic, 1 + m->n_drives + MAX_SHARES + i)) return -6;
+    if (m->video_enabled) {
+        VirtIOMediaOptions options={0};
+        options.max_sessions=m->video_max_sessions;
+        options.host_owned_limit=m->video_host_owned_limit;
+        options.wake_fd=m->video_wake_fd;
+        options.broker_port=m->video_broker_port;
+        options.broker_token=m->video_broker_token;
+        options.direction=2; /* FLV_DECODE, fixed internal host ABI */
+        m->video[0]=virtio_media_create(m,m->gic,FLOE_VIDEO_DECODER_SLOT,&options);
+        if(!m->video[0])return -6;
+        options.direction=1; /* FLV_ENCODE */
+        m->video[1]=virtio_media_create(m,m->gic,FLOE_VIDEO_ENCODER_SLOT,&options);
+        if(!m->video[1])return -6;
+    }
     /* virtio-gpu on its fixed slot. It MUST be registered before the catch-all
      * empty-transport stub below, because find_dev dispatches first-match and
      * the stub covers slots 2..31. */
@@ -170,6 +185,7 @@ void machine_reset(Machine *m, u64 entry, unsigned reset_el) {
     if (m->net)   virtio_net_reset(m->net);
     if (m->gpu)   virtio_gpu_reset(m->gpu);   /* cancel fences, release apertures */
     if (m->vmem)  virtio_mem_reset(m->vmem);         /* spec: unplug all on system reset */
+    for(unsigned i=0;i<2;i++)if(m->video[i])virtio_media_reset(m->video[i]);
     for (int i = 0; i < m->n_vcon; i++)
         virtio_console_reset(m->vcon[i]);          /* background-polled: quiesce explicitly */
     flash_cfi_reset(m);
@@ -227,7 +243,7 @@ void machine_tick(Machine *m) {
  * no armed timer to reach a deadline. */
 static void check_wake_source(Machine *m, bool timer_armed, bool has_input) {
     if (m->cpu.halted && !timer_armed && !has_input && !m->cpu.irq_line &&
-        !m->uart && !m->n_vcon && !m->net && !m->rtc && !m->gpu)
+        !m->uart && !m->n_vcon && !m->net && !m->rtc && !m->gpu && !m->video[0] && !m->video[1])
         m->deadlock = true;
 }
 

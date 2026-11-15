@@ -1,0 +1,91 @@
+#!/bin/sh
+# SPDX-License-Identifier: MPL-2.0
+# Common entry for the resolved Linux guest. No native-host fallback.
+set -u
+
+fail() { printf 'floe-accel: %s\n' "$1" >&2; exit "${2:-69}"; }
+[ "$(uname -s)" = Linux ] && [ -r /proc/self/status ] || fail 'A Linux guest is required.' 126
+
+have() { command -v "$1" >/dev/null 2>&1; }
+json_bool() { if "$@"; then printf true; else printf false; fi; }
+helper() {
+    name="$1"; shift
+    have "$name" || fail "Missing $name. Update the Linux component or install the required package."
+    exec "$name" "$@"
+}
+
+usage() {
+    cat <<'EOF'
+floe-accel status [--json]
+floe-accel graphics status | info
+floe-accel video list --json
+floe-accel video decode|encode [CODEC OPTIONS...]
+floe-accel compute status
+floe-accel compute mode off|auto|on
+floe-accel compute run [--mode off|auto|on] -- COMMAND [ARGS...]
+floe-accel compute probe [--size N]
+floe-accel blender status --json
+floe-accel blender open --backend gpu|software
+floe-accel blender edit|export|render [SCENE OPTIONS...]
+
+Programs execute inside the current Linux environment. Video and compute
+availability is measured by the relevant backend; installed files alone do
+not prove acceleration. Blender GPU requests never silently become CPU.
+Compute probes report actual GPU submissions and fallbacks separately.
+Open Screen in Floe before launching an interactive graphical application.
+Headless compute, video and editing do not need a screen or full desktop.
+VM RAM and GPU allocation limits remain in Floe's existing environment settings.
+EOF
+}
+
+status() {
+    # Presence only. Probes below report actual backend/device support.
+    # Deliberately do not echo environment values or arbitrary command output
+    # into JSON: a status read never turns data into shell or JSON syntax.
+    printf '{"schemaVersion":1,"graphics":{"deviceNodePresent":'
+    json_bool test -c /dev/dri/renderD128
+    printf ',"inspectorInstalled":'; json_bool have vulkaninfo
+    printf '},"video":{"clientInstalled":'; json_bool have floe-codec
+    printf ',"decoderNodePresent":'; json_bool test -c /dev/video0
+    printf ',"encoderNodePresent":'; json_bool test -c /dev/video1
+    printf '},"compute":{"runnerInstalled":'; json_bool have floe-blas-run
+    printf ',"probeInstalled":'; json_bool have floe-blas-probe
+    printf ',"providerInstalled":'
+    json_bool test -r /usr/local/lib/floe-acceleration/libfloe_blas.so
+    printf '},"blender":{"launcherInstalled":'; json_bool have floe-blender
+    printf ',"applicationInstalled":'; json_bool have blender
+    printf '}}\n'
+}
+
+command_name="${1:---help}"
+[ "$#" -eq 0 ] || shift
+case "$command_name" in
+    --help|-h|help) usage ;;
+    status)
+        [ "$#" -eq 0 ] || { [ "$#" -eq 1 ] && [ "$1" = --json ]; } || fail 'Use status [--json].' 2
+        status ;;
+    graphics)
+        operation="${1:-status}"
+        [ "$#" -eq 0 ] || shift
+        [ "$#" -eq 0 ] || fail 'Use graphics status|info.' 2
+        case "$operation" in
+            status) helper vulkaninfo --summary ;;
+            info) [ -n "${DISPLAY:-}" ] || fail 'Open Screen in Floe first.'; helper glxinfo -B ;;
+            *) fail 'Use graphics status|info.' 2 ;;
+        esac ;;
+    video) [ "$#" -gt 0 ] || set -- list --json; helper floe-codec "$@" ;;
+    compute)
+        operation="${1:-status}"
+        [ "$#" -eq 0 ] || shift
+        case "$operation" in
+            status) [ "$#" -eq 0 ] || fail 'Use compute status.' 2; helper floe-blas-run --status ;;
+            mode)
+                [ "$#" -eq 1 ] || fail 'Use compute mode off|auto|on.' 2
+                case "$1" in off|auto|on) helper floe-blas-run --set-mode "$1" ;; *) fail 'Invalid compute mode.' 2 ;; esac ;;
+            run) [ "$#" -gt 0 ] || fail 'A command is required.' 2; helper floe-blas-run "$@" ;;
+            probe) helper floe-blas-probe "$@" ;;
+            *) fail 'Use compute status|mode|run|probe.' 2 ;;
+        esac ;;
+    blender) [ "$#" -gt 0 ] || set -- status --json; helper floe-blender "$@" ;;
+    *) usage >&2; exit 2 ;;
+esac

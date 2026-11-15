@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "runtimeTemplateSource": "FloeAgent/Modules/FloeGameRuntimeKit/Sources/FloeGameRuntime/Resources",
+  "runtimeTemplateHashes": {
+    "kaplay.js": "db5b52900fc3bfc20054e9a1da5953bb1ca539b98ea520e5a4d74accdfb855bc",
+    "babylon.js": "d29edc8a47f9086afc6f2efaaa4fa759c667e0bcf90e75278fe179df0960e9e9",
+    "playcanvas.js": "2c478ea6d8c9388bcffcdc570f0b35bfe5cabb33c2c8c24cd5d888e529fc72d4",
+    "common.js": "59fffacef6193419e9c6ee0e7602ca73a93f8a7685bae1d56b79b4c7326c79fc",
+    "index.html": "f74ddee4f2c71fc42e307a07e4379406d8d86569e979d68011fbbff822aa6c8c",
+    "LICENSE-FLOE-STARTER-MIT.txt": "ef0597ad9e20dd323562f13bd781bd24056a7a892fa355b683993049d06b225e"
+  },
+  "godotTemplateHashes": {
+    "project.godot": "fccca6952cb65db45dfc8549fe59fc01fea557fe7821709640ec53416251efb4",
+    "main.tscn": "ed94543090ffe02e1848881d1920e508d9ab80970410b0fa2aad2e1900e70620",
+    "main.gd": "2cbe11cb36428eb47d103f7c0620fdb4823038df559d869ce1271c2128cc337a",
+    "bridge.js": "4266a4bfa433cd5da4037f0b24dac69ef94c49fec1cca5bab5cb195f866ac34b",
+    "GODOT-LICENSE.txt": "b0435e3b3e4e55238f05f4b306f30524a1b2e20147810d436eaa554fa6855c80",
+    "GODOT-THIRD-PARTY.txt": "cb1980c88089573bcacd7221d777c689bb8bbd778799f24c27fca0fe5f774d6d",
+    "LICENSE-FLOE-STARTER-MIT.txt": "ef0597ad9e20dd323562f13bd781bd24056a7a892fa355b683993049d06b225e"
+  },
+  "staticTemplates": {
+    "rpgMakerXP": {
+      "root": "Templates/rpgMakerXP",
+      "files": 34,
+      "bytes": 29273,
+      "treeSHA256": "5f059e25978d84889b631a4d73a59690d0695ddcfa7e6c0eb7481dc663c01635"
+    },
+    "rpgMakerVX": {
+      "root": "Templates/rpgMakerVX",
+      "files": 27,
+      "bytes": 24963,
+      "treeSHA256": "e25151d6fd65210f6ed9ef783bf94d18238d624ad070a4c1ae06fb0c8d9d5d83"
+    },
+    "rpgMakerVXAce": {
+      "root": "Templates/rpgMakerVXAce",
+      "files": 27,
+      "bytes": 24980,
+      "treeSHA256": "9d357786f29c8a40d720342be762f4d8abb1b55c2e6d4a3d272b02ce9c6a06fb"
+    },
+    "rpgMakerMZ": {
+      "root": "Templates/rpgMakerMZ",
+      "files": 27,
+      "bytes": 51834,
+      "treeSHA256": "05432253a211f347fb16f1e5f372f83d75da8d2c240e3d935ff8fb117af12fc5"
+    },
+    "godot": {
+      "root": "Templates/godot",
+      "files": 9,
+      "bytes": 109141,
+      "treeSHA256": "28530bff195ea0e7e510941ea017dce554ddaa4a11d99791479d9cf3966b6662"
+    },
+    "cocosCreator": {
+      "root": "Templates/cocosCreator",
+      "files": 19,
+      "bytes": 18766,
+      "treeSHA256": "52e3d3171edfb192b42c77b65075ea417d96c81c2492f2fa8be6f03776dc1fad"
+    },
+    "unity": {
+      "root": "Templates/unity",
+      "files": 17,
+      "bytes": 36144,
+      "treeSHA256": "e193977d3d0bda759921b4e831db9bf7daa5461034d43e2eb39cd85b02895444"
+    }
+  }
+}

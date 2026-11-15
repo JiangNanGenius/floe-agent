@@ -1,0 +1,33 @@
+{
+  "sourceCommits": {
+    "corescript": "182e31449707ba7e406db0485c44c2a9d11e2dcd",
+    "tapir": "a56b1946b69a408db2ff5f79b48a6682cd7dd957"
+  },
+  "files": [
+    {
+      "upstream": "corescript",
+      "path": "ReferenceSources/corescript/dist/rpg_core.js",
+      "sha256": "cce476804212b28049fef8b5c117577d0e356eac4abe33804628931e1826dd41"
+    },
+    {
+      "upstream": "corescript",
+      "path": "ReferenceSources/corescript/LICENSE",
+      "sha256": "e3563d4b3ff63e95a154f75d207444d71c108dc1bb64f0bb8230c5ee65a13922"
+    },
+    {
+      "upstream": "tapir",
+      "path": "ReferenceSources/tapir/src/Tilemap.c",
+      "sha256": "a80244433afa04c9bba6cbed0760cb551fe6cb193a004259b40974dfaa215ca0"
+    },
+    {
+      "upstream": "tapir",
+      "path": "ReferenceSources/tapir/COPYRIGHT",
+      "sha256": "ecf3c15b8db0e2025d17f44f9de86fa3ca587d2abad8f2b82a3283819ef565ac"
+    },
+    {
+      "upstream": "tapir",
+      "path": "ReferenceSources/tapir/LICENSE-MIT",
+      "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+    }
+  ]
+}

@@ -364,7 +364,8 @@ struct FilePreviewView: View {
         }) {
             WorkspaceIDEView(
                 initialRelativePath: displayedPath,
-                center: center
+                center: center,
+                conversationID: conversationID
             ) {
                 Task { await load() }
             }

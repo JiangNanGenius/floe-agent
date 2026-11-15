@@ -71,6 +71,9 @@ final class DurationAdvisoryRelay: @unchecked Sendable {
 @MainActor
 final class AppEnvironment: ObservableObject {
     lazy var studioCoordinator = StudioCoordinator(environment: self)
+    /// One App-owned game workspace/execution registry shared by Space UI and
+    /// its assistant tools. It creates no second file tree, IDE or Git layer.
+    lazy var gameWorkspaces = GameWorkspaceRegistry(environment: self)
     lazy var fontDesignAIHost = FontDesignAIHost(environment: self)
     lazy var heavyEditorAppTools = HeavyEditorAppTools(environment: self, font: fontDesignAIHost)
     lazy var chemistryEnvironmentJobs = ChemistryEnvironmentJobAdapter(environment: self)
@@ -1967,7 +1970,7 @@ final class AppEnvironment: ObservableObject {
         // Workspace file tools (T04/T05).
         registerWorkspaceTools(
             rootProvider: WorkspaceCenter.toolRootProvider,
-            compressedArchiveHandler: localPythonService.map(ArchiveCompressedBridge.makeHandler),
+            compressedArchiveHandler: ArchiveCompressedBridge.makeHandler(),
             macAbsoluteReader: macAbsoluteFileReader
         )
         registerWorkspaceImportOutputTool(conversations: conversationStore, runs: runStore)

@@ -9,7 +9,7 @@ import FloeNotes
 
 /// One persisted work conversation; presentation never chooses a read/edit mode.
 struct StudioAssistantView: View {
-    let record: PersonalContentRecord
+    let document: StudioAssistantDocument
     var onClose: (() -> Void)? = nil
     var embedded = false
     var showsMeetingHelp = true
@@ -20,6 +20,13 @@ struct StudioAssistantView: View {
     @State private var restarting = false
     @State private var showingArchive = false
 
+    init(record: PersonalContentRecord, onClose: (() -> Void)? = nil, embedded: Bool = false, showsMeetingHelp: Bool = true) {
+        self.init(document: .personal(record), onClose: onClose, embedded: embedded, showsMeetingHelp: showsMeetingHelp)
+    }
+    init(document: StudioAssistantDocument, onClose: (() -> Void)? = nil, embedded: Bool = false, showsMeetingHelp: Bool = true) {
+        self.document = document; self.onClose = onClose; self.embedded = embedded; self.showsMeetingHelp = showsMeetingHelp
+    }
+
     var body: some View {
         Group {
             if embedded {
@@ -27,7 +34,7 @@ struct StudioAssistantView: View {
             } else {
                 NavigationStack {
                     assistantContent
-                        .navigationTitle(title + " · " + record.title)
+                        .navigationTitle(title + " · " + document.title)
                         .navigationBarTitleDisplayMode(.inline)
                         .toolbar {
                             ToolbarItem(placement: .confirmationAction) {
@@ -41,12 +48,12 @@ struct StudioAssistantView: View {
         }
         .presentationDetents([.large])
         .sheet(isPresented: $showingArchive) {
-            EditorAssistantArchiveView(owner: .file(record.id), center: environment.conversationCenter)
+            EditorAssistantArchiveView(owner: .file(document.id), center: environment.conversationCenter)
         }
         .task { await prepare() }
     }
     private var title: String {
-        record.kind == .meeting ? IDELanguageRunText.t("会议助手", "Meeting assistant")
+        document.isMeeting ? IDELanguageRunText.t("会议助手", "Meeting assistant")
             : IDELanguageRunText.t("作品助手", "Work assistant")
     }
     private var assistantContent: some View {
@@ -70,7 +77,7 @@ struct StudioAssistantView: View {
                 .padding(.horizontal, 12)
                 if let diagnostic { Text(diagnostic).font(.callout).foregroundStyle(.red).padding(8) }
             }
-            if record.kind == .meeting && showsMeetingHelp {
+            if document.isMeeting && showsMeetingHelp {
                 Text(IDELanguageRunText.t("可回答会议问题、整理笔记和待办", "Ask about the meeting or organize notes and to-dos"))
                     .font(.subheadline).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -100,7 +107,7 @@ struct StudioAssistantView: View {
         defer { restarting = false }
         do {
             environment.voiceInput.stop()
-            let next = try await environment.studioCoordinator.restartAssistant(for: record, expectedConversationID: previous)
+            let next = try await environment.studioCoordinator.restartAssistant(for: document, expectedConversationID: previous)
             guard conversationID == previous else { return }
             conversationID = next
             diagnostic = nil
@@ -110,7 +117,7 @@ struct StudioAssistantView: View {
     @MainActor private func prepare() async {
         diagnostic = nil
         do {
-            let id = try await environment.studioCoordinator.assistant(for: record)
+            let id = try await environment.studioCoordinator.assistant(for: document)
             try Task.checkCancellation()
             conversationID = id
         } catch is CancellationError { }

@@ -76,6 +76,18 @@ basic image adds no science stack beyond the existing NumPy.
    exact TigerVNC, xterm, Mesa/Vulkan and shared-library package versions
    from packages.lock.tsv through a real APT/dpkg transaction. Keep the base
    clean and `/state` empty; do not bake a test project or running screen in.
+   Install `../../acceleration/floe-accel` as
+   `/base/usr/local/bin/floe-accel` with mode 0755. Stage optional video,
+   standard BLAS and Blender components through their own reviewed install
+   recipes in `../../acceleration/`; retain their license notices. The
+   dispatcher reports missing components explicitly and never substitutes
+   a native-host process. The base need not bundle Blender itself: users
+   may install the standard ARM64 Linux package in their environment.
+   With the BLAS launcher and provider installed, this runner checks optional
+   activation assets for each newly launched task child. Mode changes apply
+   to new processes without a VM reboot; an already running interpreter
+   retains its loaded libraries. Use `floe-accel compute run -- COMMAND`
+   explicitly from an older interactive shell when needed.
 5. Run build-initrd.py with those binaries and pinned official packages.
    It verifies and selects only the declared boot files.
 6. Record SHA-512 and sizes for firmware, kernel, initrd and clean disk in

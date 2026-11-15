@@ -1649,6 +1649,42 @@ static void task_iso_cleanup(const char *d) { (void)d; }
 // the child would never see EOF. With concurrent commands, the child must
 // also not inherit other commands' pipe ends, so every runner-side fd is
 // O_CLOEXEC and only the three dup2 targets survive exec.
+// Apply the optional standard BLAS provider to actual task children, not
+// this shared runner. Installed assets are checked on EVERY new command,
+// so installing/enabling acceleration needs no VM restart. The wrapper
+// owns policy/fallback and preserves a caller's existing LD_PRELOAD.
+// This is guest-only; the standalone non-Linux fixture retains execvp.
+static void floe_exec_accelerated(int argc, char *const argv[]) {
+#ifdef __linux__
+    static const char wrapper[] = "/usr/local/bin/floe-blas-run";
+    static const char provider[] = "/usr/local/lib/floe-acceleration/libfloe_blas.so";
+    const char *name = argc > 0 && argv && argv[0] ? strrchr(argv[0], '/') : NULL;
+    name = name ? name + 1 : (argc > 0 && argv ? argv[0] : NULL);
+    // The explicit entry is already activating itself; never wrap the
+    // supervisor/runner or recursively activate the activation wrapper.
+    int skip = !name || !strcmp(name, "floe-blas-run") ||
+        !strcmp(name, "floe-exec") || !strcmp(name, "floe-supervisord") ||
+        !strcmp(name, "floe-project-supervisor");
+    if (!skip && argc > 0 && argc < 65536 &&
+        access("/dev/dri/renderD128", F_OK) == 0 &&
+        access(wrapper, X_OK) == 0 && access(provider, R_OK) == 0) {
+        char **activated = calloc((size_t)argc + 3, sizeof *activated);
+        if (activated) {
+            activated[0] = (char *)wrapper;
+            activated[1] = (char *)"--";
+            for (int i = 0; i < argc; i++) activated[i + 2] = argv[i];
+            execv(wrapper, activated);
+            // If the optional wrapper vanished or cannot execute, retain
+            // the original guest CPU path. No partial math was submitted.
+            free(activated);
+        }
+    }
+#else
+    (void)argc;
+#endif
+    execvp(argv[0], argv);
+}
+
 static pid_t spawn_command_child(
     const exec_request *req,
     const char *cwd,
@@ -1692,7 +1728,7 @@ static pid_t spawn_command_child(
             _exit(126);
         }
         if (req->argc > 0 && req->argv[0][0] != '\0') {
-            execvp(req->argv[0], req->argv);
+            floe_exec_accelerated(req->argc, req->argv);
             int saved = errno;
             if (saved == ENOENT) {
                 child_message("floe-exec: %s: command not found\n", req->argv[0]);
@@ -2679,7 +2715,7 @@ static void start_session(pty_session *s, const char *token, open_request *req) 
             _exit(126);
         }
         if (req->argc > 0 && req->argv[0][0] != '\0') {
-            execvp(req->argv[0], req->argv);
+            floe_exec_accelerated(req->argc, req->argv);
             int saved = errno;
             if (saved == ENOENT) {
                 child_message("floe-exec: %s: command not found\n", req->argv[0]);
@@ -2767,7 +2803,7 @@ static void do_spawn(const char *token, const unsigned char *payload, size_t ple
             _exit(126);
         }
         if (req.argc > 0 && req.argv[0] != NULL && req.argv[0][0] != '\0') {
-            execvp(req.argv[0], req.argv);
+            floe_exec_accelerated(req.argc, req.argv);
             int saved = errno;
             if (saved == ENOENT) {
                 child_message("floe-exec: %s: command not found\n", req.argv[0]);

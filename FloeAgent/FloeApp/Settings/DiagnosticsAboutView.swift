@@ -78,6 +78,17 @@ struct DiagnosticsAboutView: View {
                     }
                     .frame(minHeight: FloeTheme.minimumTarget)
                 }
+                #if canImport(CoreAI)
+                if #available(iOS 27.0, *) {
+                    NavigationLink {
+                        CoreAIModelInspectionView()
+                    } label: {
+                        Label(CoreAIModelInspectionView.title, systemImage: "list.bullet.rectangle")
+                    }
+                    .frame(minHeight: FloeTheme.minimumTarget)
+                    .accessibilityIdentifier("diagnostics.coreai")
+                }
+                #endif
             }
 
             Section("diagnostics.logging.settings") {

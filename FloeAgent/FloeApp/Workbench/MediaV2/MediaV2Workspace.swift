@@ -28,27 +28,45 @@ struct MediaV2Workspace: View {
     @State private var showingProviderSettings = false
     @State private var showingImageExport = false
     @State private var showingToolPicker = false
+    @State private var compactToolSection: MediaV2ImageToolSection?
+    @State private var showingSelectionFeather = false
     @State private var pickedTool: String?
     @State private var inspectorIsInline = false
     @AppStorage(MediaDrawingInputPolicy.preferenceKey) private var fingerDrawing = false
     var body: some View {
         GeometryReader { geometry in
             let wide = geometry.size.width >= 1050
+            let compactTools = UIDevice.current.userInterfaceIdiom == .phone || geometry.size.width < 700
             VStack(spacing: 0) {
                 toolbar(wide: wide, compact: geometry.size.width < 600)
                 Divider()
-                toolCategories(wide: wide)
-                Divider()
+                if session.project.kind == .image {
+                    if !compactTools { imageOptionsBar(wide: wide); Divider() }
+                } else { toolCategories(wide: wide); Divider() }
                 HStack(alignment: .top, spacing: 0) {
-                    toolRail(wide: wide)
+                    if session.project.kind == .image {
+                        if !compactTools {
+                            MediaV2ImageToolRail(selectedTool: session.tool, color: paintColor,
+                                onChoose: { selectTool($0, wide: wide) }, onSearch: { showingToolPicker = true })
+                                .disabled(session.saving || session.processingTool)
+                        }
+                    } else { toolRail(wide: wide) }
                     if wide && objectsVisible { objectPanel.frame(width: 224); Divider() }
                     VStack(spacing: 0) {
                         MediaV2Preview(session: session)
-                        previewControls
+                        previewControls(wide: wide)
                         if session.project.kind == .video { Divider(); MediaV2Timeline(session: session).frame(height: max(190, min(260, geometry.size.height * 0.32))) }
                     }.frame(maxWidth: .infinity, maxHeight: .infinity)
                     if wide && inspectorVisible { Divider(); propertiesPanel.frame(width: 288) }
                 }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top).clipped()
+                if session.project.kind == .image && compactTools {
+                    Divider()
+                    imageOptionsBar(wide: false, compact: true)
+                    Divider()
+                    MediaV2CompactImageTools(selectedTool: session.tool,
+                        onSection: { compactToolSection = $0 }, onSearch: { showingToolPicker = true })
+                        .disabled(session.saving || session.processingTool)
+                }
                 Divider()
                 status
             }.frame(width: geometry.size.width, height: geometry.size.height, alignment: .top).clipped()
@@ -85,14 +103,13 @@ struct MediaV2Workspace: View {
         }
         .sheet(isPresented: $showingProviderSettings) { MediaV2ProviderConfigurationView() }
         .sheet(isPresented: $showingImageExport) { MediaV2ImageExportSheet(session: session) }
-        .sheet(isPresented: $showingToolPicker, onDismiss: {
-            if let pickedTool {
-                self.pickedTool = nil
-                selectTool(pickedTool, wide: inspectorIsInline)
-            }
-        }) {
-            MediaV2ToolPicker(tools: session.applicableTools, selectedTool: session.tool,
-                categoryTitle: categoryTitle) { pickedTool = $0 }
+        .sheet(isPresented: $showingToolPicker, onDismiss: usePickedTool) {
+            MediaV2ToolPicker(tools: session.applicableTools, isImage: session.project.kind == .image,
+                selectedTool: session.tool, categoryTitle: categoryTitle) { pickedTool = $0 }
+        }
+        .sheet(item: $compactToolSection, onDismiss: usePickedTool) { section in
+            MediaV2CompactToolPicker(section: section, selectedTool: session.tool) { pickedTool = $0 }
+                .presentationDetents([.medium, .large])
         }
         .fullScreenCover(item:$session.compoundEditorRoute) { route in
             MediaV2CompoundEditor(rootSession:session,route:route,onAssistant:onAssistant)
@@ -198,6 +215,174 @@ struct MediaV2Workspace: View {
             }
         }.padding(.horizontal, compact ? 6 : 10).background(Color(uiColor: .secondarySystemBackground))
     }
+    private func imageOptionsBar(wide: Bool, compact: Bool = false) -> some View {
+        VStack(spacing: 0) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 10) {
+                    Label(currentToolTitle, systemImage: MediaV2ImageToolLayout.entry(for: session.tool)?.icon ?? "slider.horizontal.3")
+                        .font(.callout.weight(.semibold)).lineLimit(1)
+                        .accessibilityIdentifier("media.v2.options.tool")
+                    Divider().frame(height: 24)
+                    if MediaV2ImageToolLayout.selectionTools.contains(session.tool) {
+                        Picker(WorkbenchText.t("选区模式", "Selection mode"), selection: $session.selectionMode) {
+                            Text(WorkbenchText.t("新建", "New")).tag(ImageSelectionOperation.replace)
+                            Text(WorkbenchText.t("添加", "Add")).tag(ImageSelectionOperation.add)
+                            Text(WorkbenchText.t("减去", "Subtract")).tag(ImageSelectionOperation.subtract)
+                        }.pickerStyle(.segmented).frame(width: compact ? 190 : 210, height: 44)
+                            .accessibilityIdentifier("media.v2.selection.mode")
+                        if session.tool == "image.wand" {
+                            MediaV2ToolValuePopover(title: WorkbenchText.t("容差", "Tolerance"), value: session.wandTolerance,
+                                range: 0...1, percent: true) { session.wandTolerance = $0 }
+                        }
+                        featherButton
+                        invertButton(showTitle: false)
+                        deselectButton(showTitle: false)
+                        subjectMenu
+                        if session.tool == "image.polygon" { polygonMenu }
+                    } else if MediaV2Session.usesDirectStroke(session.tool) {
+                        if compact {
+                            Toggle(WorkbenchText.t("手指绘画", "Finger drawing"), isOn: $fingerDrawing)
+                                .toggleStyle(.button).frame(minHeight: 44)
+                            ColorPicker(WorkbenchText.t("绘画颜色", "Paint color"), selection: paintColor, supportsOpacity: false)
+                                .labelsHidden().frame(minWidth: 44, minHeight: 44)
+                                .accessibilityIdentifier("media.v2.paintColor")
+                        }
+                        MediaV2ToolValuePopover(title: WorkbenchText.t("大小", "Size"), value: session.brushWidth,
+                            range: 1...200, suffix: "px") { session.brushWidth = $0 }
+                        MediaV2ToolValuePopover(title: WorkbenchText.t("不透明度", "Opacity"), value: session.brushOpacity,
+                            range: 0.01...1, percent: true) { session.brushOpacity = $0 }
+                        MediaV2ToolValuePopover(title: WorkbenchText.t("硬度", "Hardness"), value: session.brushHardness,
+                            range: 0...1, percent: true) { session.brushHardness = $0 }
+                        if ["image.clone", "image.heal"].contains(session.tool) {
+                            Button(WorkbenchText.t("设置取样点", "Set sample point"), systemImage: "scope") { session.clonePickSource = true }
+                                .frame(minHeight: 44)
+                                .tint(session.clonePickSource ? Color.accentColor : Color.primary)
+                                .accessibilityIdentifier("media.v2.paint.samplePoint")
+                        }
+                        if session.tool == "image.eraser" {
+                            Toggle(WorkbenchText.t("恢复", "Restore"), isOn: $session.eraserRestores).fixedSize()
+                        }
+                        if !compact { MediaDrawingInputMenu() }
+                    } else if session.tool == "view.pan" {
+                        Text(WorkbenchText.t("拖动移动画布，双指缩放。", "Drag to move the canvas; pinch to zoom."))
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else if MediaV2ImageToolLayout.tapTools.contains(session.tool) {
+                        Text(canvasTapHint).font(.caption).foregroundStyle(.secondary)
+                        if session.tool == "image.eyedropper" {
+                            Circle().fill(paintColor.wrappedValue).frame(width: 22, height: 22)
+                                .overlay(Circle().stroke(Color.secondary.opacity(0.4), lineWidth: 1))
+                                .accessibilityHidden(true)
+                            Text(session.colorHex.uppercased()).font(.caption.monospaced()).foregroundStyle(.secondary)
+                        }
+                    }
+                    if !compact && session.selection != nil && !MediaV2ImageToolLayout.selectionTools.contains(session.tool) {
+                        Divider().frame(height: 24)
+                        featherButton
+                        invertButton(showTitle: false)
+                        deselectButton(showTitle: false)
+                    }
+                    if session.tool != "view.pan" {
+                        Button(WorkbenchText.t("更多设置", "More settings"), systemImage: "slider.horizontal.3") { openProperties(wide: wide) }
+                            .frame(minHeight: 44)
+                            .accessibilityIdentifier("media.v2.options.more")
+                    }
+                }.padding(.horizontal, 12).frame(minHeight: 50)
+            }
+            if compact && session.selection != nil {
+                Divider()
+                HStack(spacing: 16) {
+                    if !MediaV2ImageToolLayout.selectionTools.contains(session.tool) { featherButton }
+                    invertButton(showTitle: true)
+                    deselectButton(showTitle: true)
+                    Spacer(minLength: 0)
+                }.frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12)
+            }
+        }
+        .background(Color(uiColor: .secondarySystemBackground))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("media.v2.toolOptions")
+        .disabled(session.saving || session.processingTool)
+    }
+    private var canvasTapHint: String {
+        switch session.tool {
+        case "image.wand":
+            return WorkbenchText.t("点按画布选择相近颜色的区域。", "Tap the canvas to select a similar color region.")
+        case "image.polygon":
+            return WorkbenchText.t("点按画布添加顶点，闭合后生成选区。", "Tap the canvas to add vertices, then close the selection.")
+        default:
+            return WorkbenchText.t("点按画布取色。", "Tap the canvas to sample a color.")
+        }
+    }
+    private var featherButton: some View {
+        Button { showingSelectionFeather = true } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "wind")
+                Text(WorkbenchText.t("羽化", "Feather") + " "
+                    + session.selectionDisplayFeatherPixels.formatted(.number.precision(.fractionLength(0...1))) + " px")
+            }.font(.callout).frame(minHeight: 44)
+        }.disabled(session.selection == nil)
+            .accessibilityLabel(WorkbenchText.t("羽化", "Feather"))
+            .accessibilityValue(session.selectionDisplayFeatherPixels.formatted(.number.precision(.fractionLength(0...1))) + " px")
+            .accessibilityIdentifier("media.v2.selection.feather")
+            .accessibilityHint(session.selection == nil
+                ? WorkbenchText.t("先建立选区，再调整羽化。", "Create a selection before adjusting feather.")
+                : WorkbenchText.t("柔化当前选区的边缘。", "Soften the edges of the current selection."))
+            .popover(isPresented: $showingSelectionFeather) {
+                MediaV2SelectionFeatherEditor(session: session)
+            }
+    }
+    private func invertButton(showTitle: Bool) -> some View {
+        Button { performImageAction("image.inverse") } label: {
+            if showTitle {
+                Label(WorkbenchText.t("反选", "Invert"), systemImage: "circle.lefthalf.filled").font(.callout).frame(minHeight: 44)
+            } else {
+                Image(systemName: "circle.lefthalf.filled").frame(width: 44, height: 44)
+            }
+        }.buttonStyle(.plain)
+            .disabled(session.selection == nil)
+            .accessibilityLabel(WorkbenchText.t("反选", "Invert selection"))
+            .accessibilityIdentifier("media.v2.selection.inverse")
+    }
+    private func deselectButton(showTitle: Bool) -> some View {
+        Button { performImageAction("image.deselect") } label: {
+            if showTitle {
+                Label(WorkbenchText.t("取消选择", "Deselect"), systemImage: "xmark.circle").font(.callout).frame(minHeight: 44)
+            } else {
+                Image(systemName: "xmark.circle").frame(width: 44, height: 44)
+            }
+        }.buttonStyle(.plain)
+            .disabled(session.selection == nil)
+            .accessibilityLabel(WorkbenchText.t("取消选择", "Deselect"))
+            .accessibilityIdentifier("media.v2.selection.deselect")
+    }
+    private var subjectMenu: some View {
+        Menu {
+            Button(WorkbenchText.t("选择主体", "Select subject"), systemImage: "person.crop.rectangle") { performImageAction("image.subject") }
+            Button(WorkbenchText.t("移除背景", "Remove background"), systemImage: "person.crop.circle.badge.minus") { performImageAction("image.background") }
+        } label: {
+            Label(WorkbenchText.t("主体", "Subject"), systemImage: "person.crop.rectangle")
+                .font(.callout).frame(minHeight: 44)
+        }.disabled(session.selectedLayer == nil || session.selectedLayer?.isLocked == true)
+            .accessibilityIdentifier("media.v2.selection.subject")
+    }
+    private var polygonMenu: some View {
+        Menu {
+            Button(WorkbenchText.t("闭合选区", "Close selection"), systemImage: "checkmark") { closePolygon() }
+                .disabled(session.polygonPoints.count < 3)
+            Button(WorkbenchText.t("清除顶点", "Clear vertices"), systemImage: "trash") { session.polygonPoints = [] }
+                .disabled(session.polygonPoints.isEmpty)
+        } label: {
+            Label(WorkbenchText.t("顶点 \(session.polygonPoints.count)", "Vertices \(session.polygonPoints.count)"),
+                  systemImage: "point.3.connected.trianglepath.dotted")
+                .font(.callout).frame(minHeight: 44)
+        }.accessibilityIdentifier("media.v2.selection.polygon")
+    }
+    private func closePolygon() {
+        var input = MediaV2ToolInput()
+        input.points = session.polygonPoints; input.property = session.selectionMode.rawValue
+        input.expectedRevision = session.document.revision
+        Task { do { _ = try await session.performTool("image.polygon", input: input) } catch { session.diagnostic = error.localizedDescription } }
+    }
     private func toolCategories(wide: Bool) -> some View {
         HStack(spacing: 0) {
             ScrollView(.horizontal, showsIndicators: false) {
@@ -253,13 +438,50 @@ struct MediaV2Workspace: View {
     }
     private func selectTool(_ id: String, wide: Bool) {
         guard !session.saving, !session.processingTool else { return }
+        // Selection refinements are actions on a region, never drawing tools.
+        if id == "image.feather" {
+            guard session.selection != nil else {
+                session.diagnostic = WorkbenchText.t("请先在画布上建立选区。", "Create a selection on the canvas first.")
+                return
+            }
+            showingSelectionFeather = true
+            return
+        }
+        if ["image.inverse", "image.deselect", "image.subject"].contains(id) {
+            performImageAction(id)
+            return
+        }
+        if id == "view.zoom-in" { session.zoom = min(4, session.zoom * 1.25); return }
+        if id == "view.zoom-out" { session.zoom = max(0.25, session.zoom / 1.25); return }
+        if id == "view.fit" { session.fitCanvas(); return }
+        if id != session.tool { session.selectionFeatherDraftPixels = nil }
         session.tool = id
-        // Ink and selection stay on the canvas. Parameter tools reveal the
-        // same inspector in both layouts instead of leaving compact taps inert.
+        // Canvas tools preserve the user's panel visibility. Parameter tools
+        // reveal their inspector after the picker has finished dismissing.
         let directImageTool = session.project.kind == .image &&
-            (MediaV2Session.usesDirectStroke(id) || ["move", "image.rectangle", "image.ellipse", "image.lasso", "image.polygon", "image.eyedropper"].contains(id))
-        if wide { inspectorVisible = true }
+            (MediaV2ImageToolLayout.editsCanvas(id) || id == "view.pan")
+        if wide && !directImageTool { inspectorVisible = true }
         else if session.project.kind == .image && !directImageTool { compactPanel = "properties" }
+    }
+    private func usePickedTool() {
+        guard let pickedTool else { return }
+        self.pickedTool = nil
+        selectTool(pickedTool, wide: inspectorIsInline)
+    }
+    private var currentToolTitle: String {
+        MediaV2ImageToolLayout.entry(for: session.tool)?.title
+            ?? session.applicableTools.first(where: { $0.id == session.tool })?.localizedTitle(languageCode: WorkbenchText.isChinese ? "zh" : "en")
+            ?? WorkbenchText.t("移动", "Move")
+    }
+    private func openProperties(wide: Bool) {
+        if wide { inspectorVisible = true } else { compactPanel = "properties" }
+    }
+    private func performImageAction(_ id: String) {
+        var input = MediaV2ToolInput()
+        input.expectedRevision = session.document.revision
+        input.objectID = session.selectedLayerID
+        input.color = session.colorHex
+        Task { do { _ = try await session.performTool(id, input: input) } catch { session.diagnostic = error.localizedDescription } }
     }
     private func addTextLayer(wide: Bool) {
         Task {
@@ -438,9 +660,12 @@ struct MediaV2Workspace: View {
         }.accessibilityIdentifier("media.v2.inspector")
     }
     @ViewBuilder private var toolProperties: some View {
-        let descriptor = session.applicableTools.first { $0.id == session.tool }
-        Text(descriptor?.localizedTitle(languageCode: WorkbenchText.isChinese ? "zh" : "en") ?? WorkbenchText.t("移动", "Move")).font(.headline)
-        if ["image.remove","image.content-fill"].contains(session.tool) {
+        Text(currentToolTitle).font(.headline)
+        if session.tool == "view.pan" {
+            Text(WorkbenchText.t("拖动画布可调整视图位置。", "Drag the canvas to change the view position."))
+                .font(.caption).foregroundStyle(.secondary)
+            Button(WorkbenchText.t("适应画布", "Fit canvas")) { session.fitCanvas() }.frame(minHeight: 44)
+        } else if ["image.remove","image.content-fill"].contains(session.tool) {
             MediaV2ContentFillInspector(session:session,onImport:{beginImport()})
         } else if ["image.boolean","image.path-text","image.outline"].contains(session.tool) {
             MediaV2VectorTextInspector(session:session)
@@ -476,7 +701,7 @@ struct MediaV2Workspace: View {
             MediaV2ImageWarpInspector(session: session)
         } else if MediaV2Session.extendedImageTools.contains(session.tool) {
             MediaV2NativeSelectionInspector(session:session)
-        } else if session.project.kind == .image, ["image.rectangle", "image.ellipse", "image.lasso", "image.polygon", "image.feather", "image.inverse", "image.deselect", "image.layer-mask", "image.vector-mask", "image.clip-mask"].contains(session.tool) {
+        } else if session.project.kind == .image, ["image.rectangle", "image.ellipse", "image.lasso", "image.polygon", "image.layer-mask", "image.vector-mask", "image.clip-mask"].contains(session.tool) {
             MediaV2SelectionInspector(session: session)
         } else if session.tool == "video.nest" {
             MediaV2CompoundInspector(session:session)
@@ -512,10 +737,14 @@ struct MediaV2Workspace: View {
             MusicValueSlider(title: WorkbenchText.t("硬度", "Hardness"), value: session.brushHardness, range: 0...1) { session.brushHardness = $0 }
             MusicValueSlider(title: WorkbenchText.t("不透明度", "Opacity"), value: session.brushOpacity, range: 0.01...1) { session.brushOpacity = $0 }
             if session.tool == "image.eraser" { Toggle(WorkbenchText.t("恢复擦除区域", "Restore erased area"), isOn: $session.eraserRestores).frame(minHeight: 44) }
-        } else if session.tool == "image.feather" || session.tool == "video.video-feather" {
+        } else if session.tool == "video.video-feather" {
             MusicValueSlider(title: WorkbenchText.t("羽化半径", "Feather radius"), value: number, range: 0...200, suffix: "px") { number = $0; run(session.tool) }
             Text(WorkbenchText.t("半径按原画布像素计算。", "Radius uses original canvas pixels.")).font(.caption2).foregroundStyle(.secondary)
-            if session.project.kind == .image { Button(WorkbenchText.t("应用为图层蒙版", "Apply as layer mask")) { run("image.layer-mask") }.frame(minHeight: 44).disabled(session.selection == nil) }
+        } else if session.tool == "image.fill" {
+            Text(WorkbenchText.t("使用当前颜色填充整个画布或当前选区。",
+                                  "Fill the whole canvas or the active selection with the current color."))
+                .font(.caption).foregroundStyle(.secondary)
+            Button(WorkbenchText.t("填充", "Fill")) { run("image.fill") }.frame(minHeight: 44)
         } else if session.tool == "image.text" || session.tool == "video.caption" {
             TextField(WorkbenchText.t("文字", "Text"), text: $text, axis: .vertical).textFieldStyle(.roundedBorder)
             Button(WorkbenchText.t("应用文字", "Apply text")) { run(session.tool) }.frame(minHeight: 44)
@@ -543,7 +772,7 @@ struct MediaV2Workspace: View {
     private func clipProperties(track: MediaPreparedTrack, clip: MediaPreparedClip) -> some View {
         MediaV2ClipTimingInspector(session: session, track: track, clip: clip).id(clip.id)
     }
-    private var previewControls: some View {
+    private func previewControls(wide: Bool) -> some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
             if session.project.kind == .video {
@@ -555,12 +784,10 @@ struct MediaV2Workspace: View {
                 MusicIconButton("forward.end", WorkbenchText.t("下一帧", "Next frame")) { session.scrub(session.playhead + 1 / (session.document.trackGraph.frameRate?.seconds ?? 30)) }
                 Text(MusicWorkbenchFormat.time(session.playhead)).font(.caption.monospacedDigit())
             }
-            Spacer()
             if session.project.kind == .image {
-                Text(session.applicableTools.first(where: { $0.id == session.tool })?.localizedTitle(languageCode: WorkbenchText.isChinese ? "zh" : "en") ?? WorkbenchText.t("移动", "Move"))
-                    .font(.caption.weight(.medium)).lineLimit(1)
-                    .accessibilityIdentifier("media.v2.currentTool")
+                targetLayerButton(wide: wide)
             }
+            Spacer()
             Button(WorkbenchText.t("适应画布", "Fit canvas")) { session.fitCanvas() }.font(.caption).frame(minHeight: 44)
                 .accessibilityIdentifier("media.v2.fitCanvas")
             MusicIconButton("minus.magnifyingglass", WorkbenchText.t("缩小", "Zoom out")) { session.zoom = max(0.25, session.zoom / 1.25) }
@@ -572,8 +799,40 @@ struct MediaV2Workspace: View {
                     : WorkbenchText.t("用 Pencil 或鼠标绘画；手指移动画布，双指缩放。", "Draw with Pencil or a pointer; drag to pan and pinch to zoom."))
                     .font(.caption).foregroundStyle(.secondary).lineLimit(2)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12).padding(.bottom, 8)
+            } else if session.project.kind == .image, MediaV2ImageToolLayout.editsCanvas(session.tool) {
+                Text(WorkbenchText.t("用 Pencil 或单指编辑；双指移动与缩放。", "Edit with Pencil or one finger; use two to pan and zoom."))
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12).padding(.bottom, 8)
             }
         }.background(Color(uiColor: .secondarySystemBackground))
+    }
+    private func targetLayerButton(wide: Bool) -> some View {
+        let layer = session.selectedLayer
+        let title = layer?.name ?? WorkbenchText.t("未选择图层", "No layer selected")
+        return Button {
+            if wide { objectsVisible = true } else { compactPanel = "objects" }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: targetLayerIcon(layer))
+                Text(title).lineLimit(1)
+                if layer?.isLocked == true { Image(systemName: "lock.fill").font(.caption2) }
+                Image(systemName: "chevron.down").font(.caption2)
+            }.font(.caption).frame(minHeight: 44)
+        }.buttonStyle(.plain)
+            .accessibilityLabel(WorkbenchText.t("当前图层：", "Current layer: ") + title)
+            .accessibilityHint(WorkbenchText.t("打开图层列表", "Open the layer list"))
+            .accessibilityIdentifier("media.v2.targetLayer")
+    }
+    private func targetLayerIcon(_ layer: MediaPreparedLayer?) -> String {
+        guard let kind = layer?.contentKind else { return "square.dashed" }
+        switch kind {
+        case .text: return "character.cursor.ibeam"
+        case .group: return "folder"
+        case .strokes: return "paintbrush"
+        case .vectorPaths: return "square.on.circle"
+        case .raster: return "photo"
+        default: return "square.dashed"
+        }
     }
     private var status: some View {
         HStack(spacing: 6) {
@@ -640,17 +899,275 @@ extension MediaV2Session {
     }
 }
 
+struct MediaV2ImageToolEntry: Identifiable, Hashable, Sendable {
+    let id: String
+    let icon: String
+    let chinese: String
+    let english: String
+    let shortEnglish: String?
+    init(_ id: String, _ icon: String, _ chinese: String, _ english: String, short: String? = nil) {
+        self.id = id; self.icon = icon; self.chinese = chinese; self.english = english; shortEnglish = short
+    }
+    @MainActor var title: String { WorkbenchText.t(chinese, english) }
+    @MainActor var shortTitle: String { WorkbenchText.t(chinese, shortEnglish ?? english) }
+}
+
+struct MediaV2ImageToolGroup: Identifiable, Sendable {
+    let id: String
+    let entries: [MediaV2ImageToolEntry]
+    init(_ entries: [MediaV2ImageToolEntry]) { self.entries = entries; id = entries[0].id }
+}
+
+struct MediaV2ImageToolSection: Identifiable, Sendable {
+    let id: String
+    let icon: String
+    let chinese: String
+    let english: String
+    let entries: [MediaV2ImageToolEntry]
+    @MainActor var title: String { WorkbenchText.t(chinese, english) }
+}
+
+@MainActor enum MediaV2ImageToolLayout {
+    static let selectionTools: Set<String> = ["image.rectangle", "image.ellipse", "image.lasso", "image.polygon", "image.wand"]
+    static let selectionActions: Set<String> = ["image.feather", "image.inverse", "image.deselect", "image.subject"]
+    /// Tools whose primary canvas action is a single tap, never a drag.
+    static let tapTools: Set<String> = ["image.wand", "image.polygon", "image.eyedropper"]
+    /// A tap may wobble by this many canvas points and still count as a tap.
+    static let tapSlop: CGFloat = 12
+    static let paintTools: Set<String> = ["image.brush", "image.eraser", "image.gradient", "image.fill", "image.eyedropper"]
+    static let retouchTools: Set<String> = ["image.clone", "image.heal", "image.patch", "image.remove", "image.content-fill", "image.blur-brush", "image.sharpen-brush", "image.smudge"]
+    static let adjustTools: Set<String> = ["image.curves", "image.exposure", "image.levels", "image.hsl", "image.white-balance", "image.bw"]
+    static let createTools: Set<String> = ["image.text", "image.pen", "image.shape"]
+    static let canvasTools: Set<String> = ["move", "image.crop", "image.resize", "image.canvas-size", "image.perspective", "image.distort", "view.pan", "view.zoom-in", "view.zoom-out", "view.fit"]
+    static let clusters: [[MediaV2ImageToolGroup]] = [
+        [
+            .init([.init("move", "cursorarrow", "移动", "Move")]),
+            .init([.init("image.rectangle", "rectangle.dashed", "矩形选区", "Rectangular marquee", short: "Marquee"), .init("image.ellipse", "circle.dashed", "椭圆选区", "Elliptical marquee", short: "Ellipse")]),
+            .init([.init("image.lasso", "lasso", "套索", "Lasso"), .init("image.polygon", "point.3.connected.trianglepath.dotted", "多边形", "Polygonal lasso", short: "Polygon")]),
+            .init([.init("image.wand", "wand.and.rays", "魔棒", "Magic wand", short: "Wand")]),
+            .init([.init("image.crop", "crop", "裁剪", "Crop"), .init("image.resize", "arrow.up.left.and.arrow.down.right", "图像尺寸", "Image size", short: "Size"), .init("image.canvas-size", "rectangle.expand.vertical", "画布尺寸", "Canvas size", short: "Canvas")]),
+            .init([.init("image.perspective", "perspective", "透视", "Perspective"), .init("image.distort", "move.3d", "变形", "Distort")]),
+            .init([.init("image.eyedropper", "eyedropper", "吸管", "Eyedropper")])
+        ], [
+            .init([.init("image.brush", "paintbrush.pointed", "画笔", "Brush")]),
+            .init([.init("image.eraser", "eraser", "橡皮", "Eraser")]),
+            .init([.init("image.fill", "drop.fill", "填色", "Fill")]),
+            .init([.init("image.gradient", "rectangle.lefthalf.filled", "渐变", "Gradient")])
+        ], [
+            .init([.init("image.clone", "seal", "仿制", "Clone stamp", short: "Clone")]),
+            .init([.init("image.heal", "bandage", "修复", "Healing brush", short: "Healing"), .init("image.patch", "bandage.fill", "修补", "Patch")]),
+            .init([.init("image.remove", "wand.and.stars", "移除", "Remove object", short: "Remove"), .init("image.content-fill", "sparkles", "内容填充", "Content-aware fill", short: "Content fill")]),
+            .init([.init("image.blur-brush", "drop.halffull", "模糊", "Blur brush", short: "Blur"), .init("image.sharpen-brush", "triangle", "锐化", "Sharpen brush", short: "Sharpen"), .init("image.smudge", "hand.draw", "涂抹", "Smudge")])
+        ], [
+            .init([.init("image.text", "character.cursor.ibeam", "文字", "Text")]),
+            .init([.init("image.pen", "point.topleft.down.to.point.bottomright.curvepath", "钢笔", "Pen")]),
+            .init([.init("image.shape", "square.on.circle", "形状", "Shape")]),
+            .init([.init("image.curves", "slider.horizontal.3", "曲线", "Curves"), .init("image.exposure", "plusminus.circle", "曝光", "Exposure"), .init("image.levels", "chart.bar", "色阶", "Levels"), .init("image.hsl", "paintpalette", "色相饱和", "Hue and saturation", short: "HSL"), .init("image.white-balance", "thermometer.medium", "白平衡", "White balance", short: "Balance"), .init("image.bw", "circle.lefthalf.filled", "黑白", "Black and white", short: "B&W")])
+        ], [
+            .init([.init("view.pan", "hand.raised", "抓手", "Hand")]),
+            .init([.init("view.zoom-in", "plus.magnifyingglass", "放大", "Zoom in"), .init("view.zoom-out", "minus.magnifyingglass", "缩小", "Zoom out"), .init("view.fit", "arrow.up.left.and.arrow.down.right", "适应", "Fit canvas", short: "Fit")])
+        ]
+    ]
+    static var groups: [MediaV2ImageToolGroup] { clusters.flatMap { $0 } }
+    static var entries: [MediaV2ImageToolEntry] { groups.flatMap(\.entries) }
+    static var compactSections: [MediaV2ImageToolSection] {
+        [
+            .init(id: "selection", icon: "lasso", chinese: "选择", english: "Select", entries: entries.filter { selectionTools.contains($0.id) }),
+            .init(id: "retouch", icon: "bandage", chinese: "修图", english: "Retouch", entries: entries.filter { retouchTools.contains($0.id) }),
+            .init(id: "paint", icon: "paintbrush.pointed", chinese: "绘画", english: "Paint", entries: entries.filter { paintTools.contains($0.id) }),
+            .init(id: "create", icon: "textformat", chinese: "创作", english: "Create", entries: entries.filter { createTools.contains($0.id) }),
+            .init(id: "adjust", icon: "slider.horizontal.3", chinese: "调色", english: "Adjust", entries: entries.filter { adjustTools.contains($0.id) }),
+            .init(id: "canvas", icon: "crop", chinese: "画布", english: "Canvas", entries: entries.filter { canvasTools.contains($0.id) })
+        ]
+    }
+    static func entry(for id: String) -> MediaV2ImageToolEntry? { entries.first { $0.id == id } }
+    static func editsCanvas(_ id: String) -> Bool {
+        MediaV2Session.usesDirectStroke(id) || selectionTools.contains(id) || tapTools.contains(id)
+            || ["move", "image.crop"].contains(id) || MediaV2Session.imageWarpToolIDs.contains(id)
+    }
+    static func reservesFingerForEditing(_ id: String, fingerDrawing: Bool) -> Bool {
+        // Selecting, cropping and moving objects use one finger even when
+        // finger painting is off. The hand tool always leaves one finger for pan.
+        editsCanvas(id) && (!MediaV2Session.usesDirectStroke(id) || fingerDrawing)
+    }
+}
+
+private struct MediaV2ImageToolRail: View {
+    let selectedTool: String
+    @Binding var color: Color
+    let onChoose: (String) -> Void
+    let onSearch: () -> Void
+    private let columns = [GridItem(.fixed(60), spacing: 4), GridItem(.fixed(60), spacing: 4)]
+    var body: some View {
+        VStack(spacing: 0) {
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(spacing: 8) {
+                    ForEach(MediaV2ImageToolLayout.clusters.indices, id: \.self) { index in
+                        if index > 0 { Divider().padding(.horizontal, 4) }
+                        LazyVGrid(columns: columns, spacing: 4) {
+                            ForEach(MediaV2ImageToolLayout.clusters[index]) { group in
+                                MediaV2ImageToolCell(group: group, selectedTool: selectedTool, onChoose: onChoose)
+                            }
+                        }
+                    }
+                }.padding(.vertical, 6)
+            }
+            Divider()
+            ColorPicker(WorkbenchText.t("绘画颜色", "Paint color"), selection: $color, supportsOpacity: false)
+                .labelsHidden().frame(minWidth: 44, minHeight: 44)
+                .accessibilityIdentifier("media.v2.paintColor")
+            Button(action: onSearch) {
+                Label(WorkbenchText.t("全部工具", "All tools"), systemImage: "magnifyingglass")
+                    .font(.caption).frame(maxWidth: .infinity, minHeight: 44)
+            }.buttonStyle(.plain).accessibilityLabel(WorkbenchText.t("查找全部工具", "Find all tools"))
+                .accessibilityIdentifier("media.v2.tools.search")
+        }
+        .frame(width: 132)
+        .background(Color(uiColor: .secondarySystemBackground))
+        .overlay(alignment: .trailing) { Divider() }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("media.v2.imageToolRail")
+    }
+}
+
+private struct MediaV2ImageToolCell: View {
+    let group: MediaV2ImageToolGroup
+    let selectedTool: String
+    let onChoose: (String) -> Void
+    @State private var rememberedID: String?
+    private var entry: MediaV2ImageToolEntry {
+        group.entries.first { $0.id == selectedTool } ?? group.entries.first { $0.id == rememberedID } ?? group.entries[0]
+    }
+    private var selected: Bool { group.entries.contains { $0.id == selectedTool } }
+    var body: some View {
+        Group {
+            if group.entries.count > 1 {
+                Menu {
+                    ForEach(group.entries) { item in
+                        Button { choose(item.id) } label: {
+                            Label(item.title, systemImage: item.icon)
+                            if item.id == entry.id { Image(systemName: "checkmark") }
+                        }
+                    }
+                } label: { tile }
+                    .menuIndicator(.hidden)
+                    .accessibilityHint(WorkbenchText.t("点按可展开同组工具。", "Tap to choose a tool in this group."))
+            } else { Button { choose(entry.id) } label: { tile } }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(entry.title)
+        .accessibilityIdentifier("media.v2.tool.\(entry.id)")
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .help(entry.title)
+        .onChange(of: selectedTool) { _, id in if group.entries.contains(where: { $0.id == id }) { rememberedID = id } }
+    }
+    private var tile: some View {
+        VStack(spacing: 3) {
+            Image(systemName: entry.icon).font(.title3).frame(height: 24)
+            Text(entry.shortTitle).font(.caption2).lineLimit(2).multilineTextAlignment(.center)
+        }
+        .frame(width: 60).frame(minHeight: 64)
+        .background(selected ? Color.accentColor.opacity(0.14) : .clear, in: RoundedRectangle(cornerRadius: 6))
+        .overlay(alignment: .bottomTrailing) {
+            if group.entries.count > 1 { Image(systemName: "chevron.down").font(.caption2).imageScale(.small).padding(2).accessibilityHidden(true) }
+        }
+        .contentShape(Rectangle())
+    }
+    private func choose(_ id: String) { rememberedID = id; onChoose(id) }
+}
+
+private struct MediaV2CompactImageTools: View {
+    let selectedTool: String
+    let onSection: (MediaV2ImageToolSection) -> Void
+    let onSearch: () -> Void
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(MediaV2ImageToolLayout.compactSections) { section in
+                let selected = section.entries.contains { $0.id == selectedTool }
+                Button { onSection(section) } label: {
+                    VStack(spacing: 4) {
+                        Image(systemName: section.icon).font(.title3)
+                        Text(section.title).font(.caption2).lineLimit(2)
+                    }.frame(maxWidth: .infinity, minHeight: 58)
+                        .foregroundStyle(selected ? Color.accentColor : Color.primary)
+                }.buttonStyle(.plain)
+                    .accessibilityLabel(section.title)
+                    .accessibilityIdentifier("media.v2.compactTools.\(section.id)")
+                    .accessibilityAddTraits(selected ? .isSelected : [])
+            }
+            Button(action: onSearch) {
+                Image(systemName: "magnifyingglass").frame(width: 44, height: 58)
+            }.buttonStyle(.plain).accessibilityLabel(WorkbenchText.t("查找全部工具", "Find all tools"))
+                .accessibilityIdentifier("media.v2.tools.search")
+        }.padding(.horizontal, 4).background(Color(uiColor: .secondarySystemBackground))
+            .accessibilityIdentifier("media.v2.compactImageTools")
+    }
+}
+
+private struct MediaV2CompactToolPicker: View {
+    let section: MediaV2ImageToolSection
+    let selectedTool: String
+    let onSelect: (String) -> Void
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        NavigationStack {
+            List(section.entries) { item in
+                Button {
+                    onSelect(item.id); dismiss()
+                } label: {
+                    HStack {
+                        Label(item.title, systemImage: item.icon).foregroundStyle(.primary)
+                        Spacer()
+                        if selectedTool == item.id { Image(systemName: "checkmark").foregroundStyle(Color.accentColor) }
+                    }.frame(minHeight: 44)
+                }.accessibilityIdentifier("media.v2.pickTool.\(item.id)")
+                    .accessibilityAddTraits(selectedTool == item.id ? .isSelected : [])
+            }
+            .navigationTitle(section.title).navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button(WorkbenchText.t("完成", "Done")) { dismiss() } } }
+        }
+    }
+}
+
+private struct MediaV2ToolValuePopover: View {
+    let title: String
+    let value: Double
+    let range: ClosedRange<Double>
+    var suffix = ""
+    var percent = false
+    let onChange: (Double) -> Void
+    @State private var showing = false
+    private var scale: Double { percent ? 100 : 1 }
+    var body: some View {
+        Button { showing = true } label: {
+            Text("\(title) \((value * scale).formatted(.number.precision(.fractionLength(0...1))))\(percent ? "%" : suffix)")
+                .font(.callout).frame(minHeight: 44)
+        }
+        .popover(isPresented: $showing) {
+            VStack(spacing: 14) {
+                MusicValueSlider(title: title, value: value * scale,
+                    range: (range.lowerBound * scale)...(range.upperBound * scale), suffix: percent ? "%" : suffix) { onChange($0 / scale) }
+                Button(WorkbenchText.t("完成", "Done")) { showing = false }.frame(minHeight: 44)
+            }.padding(18).frame(width: 280)
+        }
+    }
+}
+
 private struct MediaV2ToolPicker: View {
     let tools: [MediaPreparedToolDescriptor]
+    let isImage: Bool
     let selectedTool: String
     let categoryTitle: (String) -> String
     let onSelect: (String) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var search = ""
 
-    private var showsMove: Bool {
+    private var navigationMatches: [MediaV2ImageToolEntry] {
         let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
-        return query.isEmpty || "移动".localizedCaseInsensitiveContains(query) || "Move".localizedCaseInsensitiveContains(query)
+        return MediaV2ImageToolLayout.entries.filter {
+            ($0.id == "move" || (isImage && $0.id.hasPrefix("view.")))
+                && (query.isEmpty || $0.chinese.localizedCaseInsensitiveContains(query) || $0.english.localizedCaseInsensitiveContains(query))
+        }
     }
 
     private var matches: [MediaPreparedToolDescriptor] {
@@ -663,29 +1180,31 @@ private struct MediaV2ToolPicker: View {
         }
     }
     private var categories: [String] {
-        matches.reduce(into: []) { if !$0.contains($1.category) { $0.append($1.category) } }
+        matches.filter { !MediaV2ImageToolLayout.selectionActions.contains($0.id) }
+            .reduce(into: []) { if !$0.contains($1.category) { $0.append($1.category) } }
     }
     var body: some View {
         NavigationStack {
             List {
-                if showsMove {
+                if !navigationMatches.isEmpty {
                     Section {
-                        Button {
-                            onSelect("move")
-                            dismiss()
-                        } label: {
-                            HStack {
-                                Label(WorkbenchText.t("移动", "Move"), systemImage: "cursorarrow").foregroundStyle(.primary)
-                                Spacer()
-                                if selectedTool == "move" { Image(systemName: "checkmark").foregroundStyle(Color.accentColor) }
-                            }.frame(minHeight: 44)
-                        }.accessibilityIdentifier("media.v2.pickTool.move")
-                            .accessibilityAddTraits(selectedTool == "move" ? .isSelected : [])
+                        ForEach(navigationMatches) { item in
+                            Button {
+                                onSelect(item.id); dismiss()
+                            } label: {
+                                HStack {
+                                    Label(item.title, systemImage: item.icon).foregroundStyle(.primary)
+                                    Spacer()
+                                    if selectedTool == item.id { Image(systemName: "checkmark").foregroundStyle(Color.accentColor) }
+                                }.frame(minHeight: 44)
+                            }.accessibilityIdentifier("media.v2.pickTool.\(item.id)")
+                                .accessibilityAddTraits(selectedTool == item.id ? .isSelected : [])
+                        }
                     }
                 }
                 ForEach(categories, id: \.self) { category in
                     Section(categoryTitle(category)) {
-                        ForEach(matches.filter { $0.category == category }) { tool in
+                        ForEach(matches.filter { $0.category == category && !MediaV2ImageToolLayout.selectionActions.contains($0.id) }) { tool in
                             Button {
                                 onSelect(tool.id)
                                 dismiss()
@@ -701,10 +1220,20 @@ private struct MediaV2ToolPicker: View {
                         }
                     }
                 }
+                let actions = matches.filter { MediaV2ImageToolLayout.selectionActions.contains($0.id) }
+                if !actions.isEmpty {
+                    Section(WorkbenchText.t("选区操作", "Selection actions")) {
+                        ForEach(actions) { action in
+                            Button(action.localizedTitle(languageCode: WorkbenchText.isChinese ? "zh" : "en")) {
+                                onSelect(action.id); dismiss()
+                            }.frame(minHeight: 44).accessibilityIdentifier("media.v2.pickAction.\(action.id)")
+                        }
+                    }
+                }
             }
-            .overlay { if matches.isEmpty && !showsMove { ContentUnavailableView.search(text: search) } }
+            .overlay { if matches.isEmpty && navigationMatches.isEmpty { ContentUnavailableView.search(text: search) } }
             .searchable(text: $search, prompt: WorkbenchText.t("搜索裁剪、画笔、调色…", "Search crop, brush, color…"))
-            .navigationTitle(WorkbenchText.t("全部工具", "All tools"))
+            .navigationTitle(WorkbenchText.t("工具与操作", "Tools and actions"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button(WorkbenchText.t("完成", "Done")) { dismiss() } } }
         }

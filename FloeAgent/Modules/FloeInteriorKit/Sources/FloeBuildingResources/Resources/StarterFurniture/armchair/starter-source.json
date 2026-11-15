@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "assetID": "floe.starter.absfrm.armchair",
+  "version": "1.9.3",
+  "name": "Armchair",
+  "category": "seating",
+  "author": "absfrm",
+  "originalTitle": "chair",
+  "originalSourceURL": "http://www.blendswap.com/blends/view/54641",
+  "catalogSource": "Sweet Home 3D BlendSwap CC0 subset",
+  "catalogVersion": "1.9.3",
+  "catalogArchiveSHA256": "f87b1689df18a1b4302446dcb51922eca4d93ae9f388cf86624eb633f3068c39",
+  "license": "CC0-1.0",
+  "licenseEvidenceFile": "BLENDSWAP_LICENSE.txt",
+  "licenseEvidenceMeaning": "Original notice retained byte-for-byte; not inferred from a public download URL",
+  "declaredDimensionsMM": {
+    "width": 594,
+    "depth": 627,
+    "height": 1050
+  },
+  "sizeBasis": "catalog-declared dimensions; raw source units are unspecified",
+  "rawBounds": {
+    "minimum": [
+      -32.007305,
+      0.141129,
+      -42.7187
+    ],
+    "maximum": [
+      33.058857,
+      115.15596,
+      25.961786
+    ]
+  },
+  "fileSHA256": {
+    "BLENDSWAP_LICENSE.txt": "8189691e94a7987c4cbf42c6159bdf87fd0e0ef28c431403656e81f0d32cf495",
+    "armchair.mtl": "84bc77ecd7fff853255c51c5022707814e8a588dc53cb22be5db63b74e445223",
+    "armchair.obj": "4da2ca4ee1b573dfd5feaee4b689794a362f8da6df2f89adb79886c4ab8cd0ce"
+  }
+}

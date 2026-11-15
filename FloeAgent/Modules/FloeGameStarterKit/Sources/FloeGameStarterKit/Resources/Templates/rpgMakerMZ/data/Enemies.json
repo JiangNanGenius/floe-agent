@@ -1,0 +1,25 @@
+[
+  null,
+  {
+    "id": 1,
+    "name": "Marsh Wisp",
+    "battlerName": "",
+    "battlerHue": 0,
+    "params": [
+      120,
+      30,
+      25,
+      12,
+      8,
+      15,
+      95,
+      5
+    ],
+    "exp": 15,
+    "gold": 8,
+    "dropItems": [],
+    "actions": [],
+    "traits": [],
+    "note": "Original Floe starter enemy."
+  }
+]

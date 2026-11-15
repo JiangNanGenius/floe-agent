@@ -2,9 +2,9 @@
 
 Pinned upstream: [`sylirre/arm64emu-system`](https://github.com/sylirre/arm64emu-system) at `55c8128cb02d8ba3809f6579f7c6d316537e0546`.
 
-Floe embeds an ARM64 interpreter without host JIT or downloaded native host code. Upstream source retains Apache-2.0 notices; Floe's bridge and translation-unit wrappers retain MPL-2.0 notices, except the unchanged Apache-2.0 GPU transport adapter. `PROVENANCE.json` records source digests and the current 34 compiled units. `Source/NOTICE` includes device-tree attribution. The earlier A6/A9 staging descriptions are historical; ARM64 is the App's existing Linux execution path.
+Floe embeds an ARM64 interpreter without host JIT or downloaded native host code. Upstream source retains Apache-2.0 notices; Floe's bridge and translation-unit wrappers retain MPL-2.0 notices, except the unchanged Apache-2.0 GPU transport adapter. `PROVENANCE.json` records source digests and the current 35 compiled units. `Source/NOTICE` includes device-tree attribution. The earlier A6/A9 staging descriptions are historical; ARM64 is the App's existing Linux execution path.
 
-The existing version-3 public ABI supports one live machine, 1–5 virtual CPUs, bounded console buffers, a caller-owned writable disk, event-based parking and explicit stop/join/destruction. The host owns worker lifetime. Per-CPU state isolation, MMU state and execution tickets remain intact. Successful creation is separate from Linux or service readiness.
+The existing version-3 public ABI supports one live machine, 1–5 virtual CPUs, bounded console buffers, a caller-owned writable disk, event-based parking and explicit stop/join/destruction. The additive version-4 create appends the opt-in video service: two standard virtio-media/V4L2 nodes (decoder slot 28, encoder slot 29) plus a loopback typed native-codec broker. Versions 1–3 keep their exact layouts and no video node; a video-disabled version-4 create is a machine with no video device. The host owns worker lifetime. Per-CPU state isolation, MMU state and execution tickets remain intact. Successful creation is separate from Linux or service readiness.
 
 The engine compiles the byte-identical Apache-2.0 transport adapter at
 `Bridge/fvgpu_virtio_backend_adapter.c` through
@@ -28,8 +28,8 @@ GPU transport adapter 已逐字迁至 `Bridge/fvgpu_virtio_backend_adapter.c`，
 适配器和 transport 回调属于同一目标；FloeVirtualGPU 保留公开 session API，
 不反向依赖 engine。ABI、fence 和生命周期不变；此前 33 单元资格仍作为历史记录保留。
 
-本目录是 App 现有 ARM64 Linux 解释执行引擎，不使用宿主 JIT。保留上游 Apache-2.0、自有桥接 MPL-2.0 及设备树归属；`PROVENANCE.json` 固定源码摘要和当前 34 个编译单元。旧 A6/A9 准备阶段说明不再代表当前接入状态。
+本目录是 App 现有 ARM64 Linux 解释执行引擎，不使用宿主 JIT。保留上游 Apache-2.0、自有桥接 MPL-2.0 及设备树归属；`PROVENANCE.json` 固定源码摘要和当前 35 个编译单元。旧 A6/A9 准备阶段说明不再代表当前接入状态。
 
-公共 ABI 保持现有版本 3；实例、CPU worker、目录共享、控制台背压和销毁沿用现有生命周期。网络采用固定版本 FloeSlirp 及有界设备队列，按实际协商执行 checksum/TSO，测量选用 RX GSO 关闭配置。SDK 隐私清单由 Swift Package 资源包携带。完整许可、对应源码和重链接方法见依赖 README。
+公共 ABI 在版本 3 基础上增加版本 4 的可选视频服务；版本 1–3 的布局与无视频设备行为保持不变，版本 4 关闭视频时也不创建任何视频节点。实例、CPU worker、目录共享、控制台背压和销毁沿用现有生命周期。网络采用固定版本 FloeSlirp 及有界设备队列，按实际协商执行 checksum/TSO，测量选用 RX GSO 关闭配置。SDK 隐私清单由 Swift Package 资源包携带。完整许可、对应源码和重链接方法见依赖 README。
 
 对象编译、组件协议检查、真实 Linux/Node、完整 App/Simulator、物理 M1 与 Apple 审核分别记录。不得以组件结果或历史多核指标推断当前 M1 网页表现。CRC 只读核对命令不会修改源码。

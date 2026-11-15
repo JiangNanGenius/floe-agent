@@ -1,0 +1,125 @@
+{"name":"sizeof(struct virtio_media_cmd_header)","size":8}
+{"name":"sizeof(struct virtio_media_resp_header)","size":8}
+{"name":"sizeof(struct virtio_media_cmd_open)","size":8}
+{"name":"sizeof(struct virtio_media_resp_open)","size":16}
+{"name":"sizeof(struct virtio_media_cmd_close)","size":16}
+{"name":"sizeof(struct virtio_media_cmd_ioctl)","size":16}
+{"name":"sizeof(struct virtio_media_resp_ioctl)","size":8}
+{"name":"sizeof(struct virtio_media_cmd_mmap)","size":20}
+{"name":"sizeof(struct virtio_media_resp_mmap)","size":24}
+{"name":"sizeof(struct virtio_media_cmd_munmap)","size":16}
+{"name":"sizeof(struct virtio_media_resp_munmap)","size":8}
+{"name":"sizeof(struct virtio_media_sg_entry)","size":16}
+{"name":"sizeof(struct virtio_media_event_header)","size":8}
+{"name":"sizeof(struct virtio_media_event_error)","size":16}
+{"name":"sizeof(struct virtio_media_event_dqbuf)","size":608}
+{"name":"sizeof(struct virtio_media_event_event)","size":144}
+{"name":"struct virtio_media_cmd_ioctl.hdr","offset":0,"size":8}
+{"name":"struct virtio_media_cmd_ioctl.session_id","offset":8,"size":4}
+{"name":"struct virtio_media_cmd_ioctl.code","offset":12,"size":4}
+{"name":"struct virtio_media_cmd_mmap.hdr","offset":0,"size":8}
+{"name":"struct virtio_media_cmd_mmap.session_id","offset":8,"size":4}
+{"name":"struct virtio_media_cmd_mmap.flags","offset":12,"size":4}
+{"name":"struct virtio_media_cmd_mmap.offset","offset":16,"size":4}
+{"name":"struct virtio_media_resp_mmap.hdr","offset":0,"size":8}
+{"name":"struct virtio_media_resp_mmap.driver_addr","offset":8,"size":8}
+{"name":"struct virtio_media_resp_mmap.len","offset":16,"size":8}
+{"name":"struct virtio_media_event_dqbuf.hdr","offset":0,"size":8}
+{"name":"struct virtio_media_event_dqbuf.buffer","offset":8,"size":88}
+{"name":"struct virtio_media_event_dqbuf.planes","offset":96,"size":512}
+{"name":"struct virtio_media_event_event.hdr","offset":0,"size":8}
+{"name":"struct virtio_media_event_event.event","offset":8,"size":136}
+{"name":"struct virtio_media_cmd_munmap.hdr","offset":0,"size":8}
+{"name":"struct virtio_media_cmd_munmap.driver_addr","offset":8,"size":8}
+{"name":"struct virtio_media_cmd_close.session_id","offset":8,"size":4}
+{"name":"struct virtio_media_resp_open.session_id","offset":8,"size":4}
+{"name":"sizeof(struct v4l2_ext_controls)","size":32}
+{"name":"sizeof(struct v4l2_capability)","size":104}
+{"name":"struct v4l2_capability.driver","offset":0,"size":16}
+{"name":"struct v4l2_capability.card","offset":16,"size":32}
+{"name":"struct v4l2_capability.bus_info","offset":48,"size":32}
+{"name":"struct v4l2_capability.version","offset":80,"size":4}
+{"name":"struct v4l2_capability.capabilities","offset":84,"size":4}
+{"name":"struct v4l2_capability.device_caps","offset":88,"size":4}
+{"name":"sizeof(struct v4l2_format)","size":208}
+{"name":"sizeof(struct v4l2_fmtdesc)","size":64}
+{"name":"sizeof(struct v4l2_frmsizeenum)","size":44}
+{"name":"sizeof(struct v4l2_frmivalenum)","size":52}
+{"name":"sizeof(struct v4l2_requestbuffers)","size":20}
+{"name":"struct v4l2_requestbuffers.count","offset":0,"size":4}
+{"name":"struct v4l2_requestbuffers.type","offset":4,"size":4}
+{"name":"struct v4l2_requestbuffers.memory","offset":8,"size":4}
+{"name":"sizeof(struct v4l2_plane)","size":64}
+{"name":"struct v4l2_plane.bytesused","offset":0,"size":4}
+{"name":"struct v4l2_plane.length","offset":4,"size":4}
+{"name":"struct v4l2_plane.m","offset":8,"size":8}
+{"name":"struct v4l2_plane.data_offset","offset":16,"size":4}
+{"name":"sizeof(struct v4l2_buffer)","size":88}
+{"name":"struct v4l2_buffer.index","offset":0,"size":4}
+{"name":"struct v4l2_buffer.type","offset":4,"size":4}
+{"name":"struct v4l2_buffer.bytesused","offset":8,"size":4}
+{"name":"struct v4l2_buffer.flags","offset":12,"size":4}
+{"name":"struct v4l2_buffer.field","offset":16,"size":4}
+{"name":"struct v4l2_buffer.timestamp","offset":24,"size":16}
+{"name":"struct v4l2_buffer.timecode","offset":40,"size":16}
+{"name":"struct v4l2_buffer.sequence","offset":56,"size":4}
+{"name":"struct v4l2_buffer.memory","offset":60,"size":4}
+{"name":"struct v4l2_buffer.m","offset":64,"size":8}
+{"name":"struct v4l2_buffer.length","offset":72,"size":4}
+{"name":"struct v4l2_buffer.reserved2","offset":76,"size":4}
+{"name":"struct v4l2_buffer.request_fd","offset":80,"size":4}
+{"name":"sizeof(struct v4l2_create_buffers)","size":256}
+{"name":"sizeof(struct v4l2_event)","size":136}
+{"name":"sizeof(struct v4l2_event_subscription)","size":32}
+{"name":"sizeof(struct v4l2_queryctrl)","size":68}
+{"name":"sizeof(struct v4l2_control)","size":8}
+{"name":"sizeof(struct v4l2_streamparm)","size":204}
+{"name":"sizeof(struct v4l2_selection)","size":64}
+{"name":"sizeof(struct v4l2_crop)","size":20}
+{"name":"sizeof(struct v4l2_standard)","size":72}
+{"name":"sizeof(struct v4l2_input)","size":80}
+{"name":"sizeof(struct v4l2_output)","size":72}
+{"name":"sizeof(struct v4l2_decoder_cmd)","size":72}
+{"name":"sizeof(struct v4l2_encoder_cmd)","size":40}
+{"name":"VIDIOC_QUERYCAP","value":2154321408,"payload_size":104,"dir":2,"nr":0}
+{"name":"VIDIOC_ENUM_FMT","value":3225441794,"payload_size":64,"dir":3,"nr":2}
+{"name":"VIDIOC_G_FMT","value":3234878980,"payload_size":208,"dir":3,"nr":4}
+{"name":"VIDIOC_S_FMT","value":3234878981,"payload_size":208,"dir":3,"nr":5}
+{"name":"VIDIOC_TRY_FMT","value":3234879040,"payload_size":208,"dir":3,"nr":64}
+{"name":"VIDIOC_REQBUFS","value":3222558216,"payload_size":20,"dir":3,"nr":8}
+{"name":"VIDIOC_QUERYBUF","value":3227014665,"payload_size":88,"dir":3,"nr":9}
+{"name":"VIDIOC_QBUF","value":3227014671,"payload_size":88,"dir":3,"nr":15}
+{"name":"VIDIOC_DQBUF","value":3227014673,"payload_size":88,"dir":3,"nr":17}
+{"name":"VIDIOC_STREAMON","value":1074026002,"payload_size":4,"dir":1,"nr":18}
+{"name":"VIDIOC_STREAMOFF","value":1074026003,"payload_size":4,"dir":1,"nr":19}
+{"name":"VIDIOC_CREATE_BUFS","value":3238024796,"payload_size":256,"dir":3,"nr":92}
+{"name":"VIDIOC_PREPARE_BUF","value":3227014749,"payload_size":88,"dir":3,"nr":93}
+{"name":"VIDIOC_SUBSCRIBE_EVENT","value":1075861082,"payload_size":32,"dir":1,"nr":90}
+{"name":"VIDIOC_UNSUBSCRIBE_EVENT","value":1075861083,"payload_size":32,"dir":1,"nr":91}
+{"name":"VIDIOC_DQEVENT","value":2156418649,"payload_size":136,"dir":2,"nr":89}
+{"name":"VIDIOC_G_CTRL","value":3221771803,"payload_size":8,"dir":3,"nr":27}
+{"name":"VIDIOC_S_CTRL","value":3221771804,"payload_size":8,"dir":3,"nr":28}
+{"name":"VIDIOC_QUERYCTRL","value":3225703972,"payload_size":68,"dir":3,"nr":36}
+{"name":"VIDIOC_G_PARM","value":3234616853,"payload_size":204,"dir":3,"nr":21}
+{"name":"VIDIOC_S_PARM","value":3234616854,"payload_size":204,"dir":3,"nr":22}
+{"name":"VIDIOC_G_SELECTION","value":3225441886,"payload_size":64,"dir":3,"nr":94}
+{"name":"VIDIOC_S_SELECTION","value":3225441887,"payload_size":64,"dir":3,"nr":95}
+{"name":"VIDIOC_DECODER_CMD","value":3225966176,"payload_size":72,"dir":3,"nr":96}
+{"name":"VIDIOC_TRY_DECODER_CMD","value":3225966177,"payload_size":72,"dir":3,"nr":97}
+{"name":"VIDIOC_ENCODER_CMD","value":3223869005,"payload_size":40,"dir":3,"nr":77}
+{"name":"VIDIOC_G_CROP","value":3222558267,"payload_size":20,"dir":3,"nr":59}
+{"name":"VIDIOC_S_CROP","value":1075074620,"payload_size":20,"dir":1,"nr":60}
+{"name":"VIDIOC_ENUM_FRAMESIZES","value":3224131146,"payload_size":44,"dir":3,"nr":74}
+{"name":"VIDIOC_ENUM_FRAMEINTERVALS","value":3224655435,"payload_size":52,"dir":3,"nr":75}
+{"name":"VIDIOC_ENUMINPUT","value":3226490394,"payload_size":80,"dir":3,"nr":26}
+{"name":"VIDIOC_ENUMOUTPUT","value":3225966128,"payload_size":72,"dir":3,"nr":48}
+{"name":"VIDIOC_G_STD","value":2148029975,"payload_size":8,"dir":2,"nr":23}
+{"name":"VIDIOC_S_STD","value":1074288152,"payload_size":8,"dir":1,"nr":24}
+{"name":"VIDIOC_G_INPUT","value":2147767846,"payload_size":4,"dir":2,"nr":38}
+{"name":"VIDIOC_S_INPUT","value":3221509671,"payload_size":4,"dir":3,"nr":39}
+{"name":"VIDIOC_G_OUTPUT","value":2147767854,"payload_size":4,"dir":2,"nr":46}
+{"name":"VIDIOC_S_OUTPUT","value":3221509679,"payload_size":4,"dir":3,"nr":47}
+{"name":"VIDEO_MAX_PLANES","value":8}
+{"name":"V4L2_BUF_TYPE_VIDEO_CAPTURE_M2M_REMOVED","note":"use V4L2_BUF_TYPE_VIDEO_CAPTURE","value":1}
+{"name":"V4L2_BUF_TYPE_VIDEO_OUTPUT_M2M_REMOVED","note":"use V4L2_BUF_TYPE_VIDEO_OUTPUT","value":2}
+{"name":"V4L2_MEMORY_MMAP","value":1}

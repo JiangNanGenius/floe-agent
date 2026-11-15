@@ -1,0 +1,28 @@
+/* SPDX-License-Identifier: MPL-2.0 */
+/* FloeGameNarrativeKit TIC-80 shell support (MPL-2.0). */
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #1a1c2c;
+}
+#canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  image-rendering: pixelated;
+  touch-action: none;
+}
+#hint {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 6px;
+  text-align: center;
+  color: #5a6988;
+  font: 12px monospace;
+  pointer-events: none;
+}

@@ -1,0 +1,57 @@
+From 2adc3646e57ca96fe703d5857486c96eb6087a26 Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Sat, 3 Oct 2026 02:27:05 -0400
+Subject: [PATCH] kk: Advertise custom border colours by default
+
+Generated-by: LLM
+---
+ src/kosmickrisp/vulkan/kk_debug.c           | 1 -
+ src/kosmickrisp/vulkan/kk_debug.h           | 2 --
+ src/kosmickrisp/vulkan/kk_physical_device.c | 4 ++--
+ 3 files changed, 2 insertions(+), 5 deletions(-)
+
+diff --git a/src/kosmickrisp/vulkan/kk_debug.c b/src/kosmickrisp/vulkan/kk_debug.c
+index c4c4b9127a6..1fb09975041 100644
+--- a/src/kosmickrisp/vulkan/kk_debug.c
++++ b/src/kosmickrisp/vulkan/kk_debug.c
+@@ -20,7 +20,6 @@ enum kk_experimental kk_mesa_experimental_flags = 0;
+ 
+ const struct debug_named_value experimental_flags[] = {
+    {"all", UINT64_MAX},
+-   {"custom_border", KK_EXPERIMENTAL_CUSTOM_BORDER},
+    {"image_view_min_lod", KK_EXPERIMENTAL_IMAGE_VIEW_MIN_LOD},
+    {"m5_optimize_e5b9g9r9", KK_EXPERIMENTAL_M5_OPTIMIZE_E5B9G9R9},
+    {"dgc", KK_EXPERIMENTAL_DEVICE_GENERATED_COMMANDS},
+diff --git a/src/kosmickrisp/vulkan/kk_debug.h b/src/kosmickrisp/vulkan/kk_debug.h
+index 0ff3ebee1e3..4949a588cdb 100644
+--- a/src/kosmickrisp/vulkan/kk_debug.h
++++ b/src/kosmickrisp/vulkan/kk_debug.h
+@@ -19,8 +19,6 @@ extern enum kk_debug kk_mesa_debug_flags;
+ #define KK_DEBUG(flag) unlikely(kk_mesa_debug_flags &KK_DEBUG_##flag)
+ 
+ enum kk_experimental {
+-   /* Advertise custom border features */
+-   KK_EXPERIMENTAL_CUSTOM_BORDER = 1ull << 0,
+    /* Advertise image view min LOD feature */
+    KK_EXPERIMENTAL_IMAGE_VIEW_MIN_LOD = 1ull << 1,
+    /* Using allowGPUOptimizedContents on M5 for this format causes
+diff --git a/src/kosmickrisp/vulkan/kk_physical_device.c b/src/kosmickrisp/vulkan/kk_physical_device.c
+index 56d68f41095..43b1e057302 100644
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c
+@@ -172,10 +172,10 @@ kk_get_device_extensions(const struct kk_instance *instance,
+       .EXT_attachment_feedback_loop_layout = true,
+       .EXT_attachment_feedback_loop_dynamic_state = true,
+       .EXT_blend_operation_advanced = true,
+-      .EXT_border_color_swizzle = KK_EXPERIMENTAL(CUSTOM_BORDER),
++      .EXT_border_color_swizzle = true,
+       .EXT_calibrated_timestamps = true,
+       .EXT_conditional_rendering = true,
+-      .EXT_custom_border_color = KK_EXPERIMENTAL(CUSTOM_BORDER),
++      .EXT_custom_border_color = true,
+       .EXT_custom_resolve = true,
+       .EXT_debug_marker = true,
+       .EXT_depth_clip_control = true,
+-- 
+2.54.0 (Apple Git-157)
+

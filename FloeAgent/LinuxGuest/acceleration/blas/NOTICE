@@ -1,0 +1,31 @@
+Floe guest standard-BLAS Vulkan provider
+========================================
+
+Copyright 2026 Floe.
+
+This package's original provider, shader, probe, scripts and tests are
+licensed under the Apache License, Version 2.0; see LICENSE.  The containing
+Floe repository is distributed under its own Mozilla Public License 2.0; these
+Apache-2.0 source files retain their stated license.
+
+Build-time dependencies that are not redistributed here
+--------------------------------------------------------
+- Vulkan headers from Debian trixie libvulkan-dev 1.4.309.0-1 (Vulkan-Headers,
+  Apache-2.0).  The build reads the headers from the pinned cross sysroot; no
+  Vulkan header is copied into this directory.
+- glslangValidator or glslc (glslang / SPIRV-Tools, BSD-3-Clause and related
+  notices) is invoked only by the build operator to compile the checked-in
+  GLSL.  The compiler binary is not redistributed.
+- The provider dlopens the guest's existing libvulkan.so.1 (Debian
+  vulkan-loader) and does not link or redistribute it.
+- The guest's libblas3 / liblapack3 and NumPy remain untouched.  The provider
+  only interposes the listed LP64 float32 symbols at run time and delegates
+  everything else to the loaded original objects.
+
+Reused design inputs
+--------------------
+The Vulkan loader/queue/buffer/flush/vendor-selection pattern follows the
+Apache-2.0 Floe Linux virtual-GPU matmul qualification prototype
+(2026-11-10).
+The shaders and the general layout/stride interface in this package are new;
+no fixed-size proof shader is shipped as a general pipeline.

@@ -104,6 +104,17 @@ typedef struct VirtIOGPUInfo {
     uint32_t fences_outstanding;  /* fenced commands awaiting exact completion */
     uint32_t aperture_mapped;     /* aperture ranges currently registered */
     uint64_t aperture_bytes;      /* aperture bytes currently registered */
+    /* Lifetime diagnostics (bounded, no guest payload). A healthy exit leaves
+     * pending_releases and deferred_commands at zero and releases_done equal
+     * to the number of deferred unmap/unref releases the drain completed. */
+    uint32_t pending_releases;    /* records waiting for the quiet drain */
+    uint32_t deferred_commands;   /* responses held for the quiet drain */
+    uint64_t releases_done;       /* full resource releases by the drain */
+    uint64_t releases_bytes;      /* logical bytes returned by those releases */
+    uint64_t unrefs_coalesced;    /* UNREFs merged into a deferred unmap */
+    uint64_t unmaps_deferred;     /* UNMAP_BLOB operations deferred */
+    uint64_t resource_exhausted;  /* resource table full failures */
+    uint64_t invariant_faults;    /* logical-byte invariant violations */
     uint64_t features;            /* features actually advertised */
     uint32_t status, isr;
     bool     needs_reset;

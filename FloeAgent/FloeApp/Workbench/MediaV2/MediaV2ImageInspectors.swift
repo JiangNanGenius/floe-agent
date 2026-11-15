@@ -21,60 +21,162 @@ struct MediaV2NumberField: View {
 
 struct MediaV2SelectionInspector: View {
     @Bindable var session: MediaV2Session
-    @State private var feather = 12.0
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(WorkbenchText.t("选区与蒙版", "Selection and masks")).font(.headline)
-            Picker(WorkbenchText.t("选区运算", "Selection operation"), selection: $session.selectionMode) {
-                Text(WorkbenchText.t("新建", "New")).tag(ImageSelectionOperation.replace)
-                Text(WorkbenchText.t("添加", "Add")).tag(ImageSelectionOperation.add)
-                Text(WorkbenchText.t("减去", "Subtract")).tag(ImageSelectionOperation.subtract)
-            }.pickerStyle(.segmented)
-            Menu(WorkbenchText.t("选择工具", "Selection tool")) {
-                Button(WorkbenchText.t("矩形", "Rectangle")) { session.tool = "image.rectangle" }
-                Button(WorkbenchText.t("椭圆", "Ellipse")) { session.tool = "image.ellipse" }
-                Button(WorkbenchText.t("套索", "Lasso")) { session.tool = "image.lasso" }
-                Button(WorkbenchText.t("多边形", "Polygon")) { session.tool = "image.polygon" }
-            }.frame(minHeight: 44)
-            if session.tool == "image.polygon" {
-                Text(WorkbenchText.t("点按画布添加顶点。", "Tap the canvas to add vertices.")).font(.caption).foregroundStyle(.secondary)
-                HStack {
-                    Button(WorkbenchText.t("闭合多边形", "Close polygon")) {
-                        var input = MediaV2ToolInput(); input.points = session.polygonPoints; input.property = session.selectionMode.rawValue
-                        perform("image.polygon", input)
-                    }.disabled(session.polygonPoints.count < 3)
-                    Spacer()
-                    Button(WorkbenchText.t("取消", "Cancel")) { session.polygonPoints = [] }
-                }.frame(minHeight: 44)
+            if let selection = session.selection {
+                Text(selectionSummary(selection)).font(.caption).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text(WorkbenchText.t("羽化在工具选项栏调整；选区本身是临时状态。",
+                                      "Adjust feather in the tool options bar; the selection itself is temporary."))
+                    .font(.caption2).foregroundStyle(.secondary)
+            } else {
+                Text(WorkbenchText.t("在画布上拖动建立矩形、椭圆或套索选区，或点按使用魔棒。",
+                                      "Drag on the canvas to make a rectangular, elliptical or lasso selection, or tap with the magic wand."))
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Toggle(WorkbenchText.t("显示选区", "Show selection"), isOn: $session.showSelection).frame(minHeight: 44)
-            MediaV2NumberField(title: WorkbenchText.t("羽化半径", "Feather radius"), value: $feather, suffix: "px")
-            Button(WorkbenchText.t("应用羽化", "Apply feather")) {
-                var input = MediaV2ToolInput(); input.number = feather; perform("image.feather", input)
-            }.frame(minHeight: 44).disabled(session.selection == nil)
-            HStack {
-                Button(WorkbenchText.t("反选", "Invert")) { perform("image.inverse") }
-                Spacer()
-                Button(WorkbenchText.t("取消选择", "Deselect")) { perform("image.deselect") }
-            }.frame(minHeight: 44)
+            Divider()
             Button(WorkbenchText.t("应用为图层蒙版", "Apply as layer mask")) { perform("image.layer-mask") }
                 .frame(minHeight: 44).disabled(session.selection == nil || session.selectedLayer == nil)
+                .accessibilityIdentifier("media.v2.selection.applyMask")
             Button(WorkbenchText.t("剪贴到下方图层", "Clip to layer below")) { perform("image.clip-mask") }
                 .frame(minHeight: 44).disabled(session.selectedLayer == nil)
-            if session.selectedLayer?.mask != nil {
-                Button(WorkbenchText.t("移除图层蒙版", "Remove layer mask")) { var input = MediaV2ToolInput(); input.flag = false; perform("image.layer-mask", input) }.frame(minHeight: 44)
+            if let mask = session.selectedLayer?.mask {
+                Text(mask.vector == nil
+                    ? WorkbenchText.t("该图层使用画笔蒙版，边缘由画笔硬度决定。",
+                                       "This layer uses a painted mask; edge softness follows brush hardness.")
+                    : WorkbenchText.t("该图层蒙版保留创建时的羽化，与当前选区羽化相互独立。",
+                                       "This layer mask keeps the feather it was created with, independent of the current selection."))
+                    .font(.caption2).foregroundStyle(.secondary)
+                Button(WorkbenchText.t("移除图层蒙版", "Remove layer mask")) {
+                    var input = MediaV2ToolInput(); input.flag = false; perform("image.layer-mask", input)
+                }.frame(minHeight: 44)
             }
             if session.selectedLayer?.clip != nil {
-                Button(WorkbenchText.t("解除剪贴", "Release clipping")) { var input = MediaV2ToolInput(); input.flag = false; perform("image.clip-mask", input) }.frame(minHeight: 44)
+                Button(WorkbenchText.t("解除剪贴", "Release clipping")) {
+                    var input = MediaV2ToolInput(); input.flag = false; perform("image.clip-mask", input)
+                }.frame(minHeight: 44)
             }
         }
-        .onAppear {
-            if let canvas = session.document.canvas { feather = (session.selection?.feather ?? 0) * Double(min(canvas.width, canvas.height)) }
+    }
+    private func selectionSummary(_ selection: ImageSelection) -> String {
+        var parts: [String] = []
+        if let canvas = session.document.canvas {
+            let px = selection.feather * Double(min(canvas.width, canvas.height))
+            parts.append(WorkbenchText.t("羽化 \(Int(px.rounded())) px", "Feather \(Int(px.rounded())) px"))
         }
+        if !selection.shapes.isEmpty {
+            parts.append(WorkbenchText.t("\(selection.shapes.count) 个形状", "\(selection.shapes.count) shapes"))
+        }
+        if selection.bitmap != nil { parts.append(WorkbenchText.t("像素选区", "Pixel selection")) }
+        if selection.inverted { parts.append(WorkbenchText.t("已反选", "Inverted")) }
+        return parts.joined(separator: " · ")
     }
     private func perform(_ id: String, _ supplied: MediaV2ToolInput = .init()) {
         var input = supplied; input.expectedRevision = session.document.revision
         Task { do { _ = try await session.performTool(id, input: input) } catch { session.diagnostic = error.localizedDescription } }
+    }
+}
+
+extension MediaV2Session {
+    /// The kernel stores a normalized radius; the UI displays and submits
+    /// pixels through the existing `image.feather` command contract.
+    var selectionFeatherPixelRadius: Double {
+        guard let canvas = document.canvas else { return 0 }
+        return (selection?.feather ?? 0) * Double(min(canvas.width, canvas.height))
+    }
+    /// Shown while the feather editor is open: the pending radius on top of
+    /// the selection, without mutating the actual selection.
+    var selectionDisplayFeatherPixels: Double {
+        guard let canvas = document.canvas else { return 0 }
+        let normalized = selectionDisplay?.feather ?? 0
+        return normalized * Double(min(canvas.width, canvas.height))
+    }
+    var selectionDisplay: ImageSelection? {
+        guard var value = selection, let canvas = document.canvas else { return selection }
+        if let draft = selectionFeatherDraftPixels, draft.isFinite {
+            value.feather = min(0.5, max(0, draft / Double(min(canvas.width, canvas.height))))
+        }
+        return value
+    }
+}
+
+struct MediaV2SelectionFeatherEditor: View {
+    @Bindable var session: MediaV2Session
+    @Environment(\.dismiss) private var dismiss
+    @State private var pixels = 0.0
+    @State private var applying = false
+    @State private var error: String?
+    private var maximum: Double {
+        guard let canvas = session.document.canvas else { return 0 }
+        return Double(min(canvas.width, canvas.height)) * 0.5
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(WorkbenchText.t("羽化选区", "Feather selection")).font(.headline)
+            Text(WorkbenchText.t("柔化当前选区的边缘，画布会实时预览。",
+                                  "Soften the edges of the current selection; the canvas previews it live."))
+                .font(.caption).foregroundStyle(.secondary)
+            MediaV2NumberField(title: WorkbenchText.t("半径", "Radius"), value: $pixels, suffix: "px")
+                .accessibilityIdentifier("media.v2.feather.radius")
+            Slider(value: $pixels, in: 0...max(0.5, maximum))
+                .accessibilityLabel(WorkbenchText.t("羽化半径", "Feather radius"))
+                .accessibilityIdentifier("media.v2.feather.slider")
+            HStack {
+                Button(WorkbenchText.t("清除", "Clear")) { pixels = 0; syncDraft() }
+                    .frame(minHeight: 44)
+                    .accessibilityIdentifier("media.v2.feather.clear")
+                Spacer()
+                Text(WorkbenchText.t("仅影响当前选区", "Current selection only"))
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+            Text(WorkbenchText.t("不会改变画笔硬度或图层蒙版已有的边缘。",
+                                  "Brush hardness and existing layer-mask edges are not changed."))
+                .font(.caption2).foregroundStyle(.secondary)
+            if let error { Text(error).font(.caption).foregroundStyle(.red) }
+            HStack {
+                Button(WorkbenchText.t("取消", "Cancel")) { cancel() }.frame(minHeight: 44)
+                    .accessibilityIdentifier("media.v2.feather.cancel")
+                Spacer()
+                Button(WorkbenchText.t("应用", "Apply")) { apply() }.buttonStyle(.borderedProminent)
+                    .disabled(applying || session.selection == nil || !pixels.isFinite || pixels < 0
+                        || pixels > maximum || session.saving || session.processingTool || session.document.canvas == nil)
+                    .accessibilityIdentifier("media.v2.feather.apply")
+            }
+        }.padding(18).frame(width: 300)
+            .onAppear {
+                pixels = session.selectionFeatherPixelRadius
+                syncDraft()
+            }
+            .onChange(of: pixels) { _, value in
+                guard !applying else { return }
+                session.selectionFeatherDraftPixels = value.isFinite ? min(maximum, max(0, value)) : nil
+            }
+            .onDisappear { session.selectionFeatherDraftPixels = nil }
+    }
+    private func syncDraft() {
+        session.selectionFeatherDraftPixels = pixels.isFinite ? min(maximum, max(0, pixels)) : nil
+    }
+    private func cancel() {
+        session.selectionFeatherDraftPixels = nil
+        dismiss()
+    }
+    private func apply() {
+        guard !applying else { return }
+        applying = true; error = nil
+        let radius = min(maximum, max(0, pixels))
+        var input = MediaV2ToolInput(); input.number = radius; input.expectedRevision = session.document.revision
+        Task {
+            defer { applying = false }
+            do {
+                _ = try await session.performTool("image.feather", input: input)
+                dismiss()
+            } catch {
+                self.error = error.localizedDescription
+                session.diagnostic = error.localizedDescription
+            }
+        }
     }
 }
 

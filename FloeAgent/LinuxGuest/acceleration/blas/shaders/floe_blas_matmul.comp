@@ -1,0 +1,48 @@
+#version 450
+/*
+ * General float32 GEMM: C = alpha * op(A) * op(B) + beta * C.
+ *
+ * All layouts are reduced to row/column strides on the host:
+ *   A(i,k) = a[i * a_row_stride + k * a_col_stride]
+ * The same convention is used for B and C.  A 16x8 workgroup maps one
+ * invocation to one output element, so no fixed matrix size is assumed.
+ * The host bounds every index below 2^30 floats, which keeps the uint
+ * arithmetic here exact for the accepted calls.
+ */
+layout(local_size_x = 16, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer A { float a[]; };
+layout(set = 0, binding = 1, std430) readonly buffer B { float b[]; };
+layout(set = 0, binding = 2, std430) buffer C { float c[]; };
+
+layout(push_constant) uniform Params {
+    uint m;
+    uint n;
+    uint k;
+    uint a_row_stride;
+    uint a_col_stride;
+    uint b_row_stride;
+    uint b_col_stride;
+    uint c_row_stride;
+    uint c_col_stride;
+    float alpha;
+    float beta;
+} p;
+
+void main() {
+    uint column = gl_GlobalInvocationID.x;
+    uint row = gl_GlobalInvocationID.y;
+    if (row >= p.m || column >= p.n) return;
+
+    uint a_base = row * p.a_row_stride;
+    uint b_base = column * p.b_col_stride;
+    float sum = 0.0;
+    for (uint inner = 0u; inner < p.k; ++inner) {
+        sum += a[a_base + inner * p.a_col_stride] *
+               b[b_base + inner * p.b_row_stride];
+    }
+
+    uint c_index = row * p.c_row_stride + column * p.c_col_stride;
+    float previous = (p.beta != 0.0) ? c[c_index] : 0.0;
+    c[c_index] = p.alpha * sum + p.beta * previous;
+}

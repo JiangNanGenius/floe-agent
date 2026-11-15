@@ -1,0 +1,810 @@
+From e21c4734ba38580ed8b7e96d9754c17a59109e5a Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Thu, 1 Oct 2026 14:03:53 -0400
+Subject: [PATCH] kk: Support denormal preserve and flush-to-zero modes for
+ 32-bit floats
+
+Generated-by: LLM
+---
+ src/kosmickrisp/vulkan/kk_nir_lower_denorm.c | 699 +++++++++++++++++++
+ src/kosmickrisp/vulkan/kk_physical_device.c  |   8 +-
+ src/kosmickrisp/vulkan/kk_shader.c           |  15 +
+ src/kosmickrisp/vulkan/kk_shader.h           |   4 +
+ src/kosmickrisp/vulkan/meson.build           |   1 +
+ 5 files changed, 723 insertions(+), 4 deletions(-)
+ create mode 100644 src/kosmickrisp/vulkan/kk_nir_lower_denorm.c
+
+diff --git a/src/kosmickrisp/vulkan/kk_nir_lower_denorm.c b/src/kosmickrisp/vulkan/kk_nir_lower_denorm.c
+new file mode 100644
+index 00000000000..d413ca721cd
+--- /dev/null
++++ b/src/kosmickrisp/vulkan/kk_nir_lower_denorm.c
+@@ -0,0 +1,699 @@
++/*
++ * Copyright 2026 David Andrews
++ * SPDX-License-Identifier: MIT
++ */
++
++#include "kk_shader.h"
++
++#include "nir_builder.h"
++
++#define SIGN_BIT 0x80000000u
++#define MAG_MASK 0x7fffffffu
++#define EXP_MASK 0x7f800000u
++#define MANT_MASK 0x007fffffu
++#define HIDDEN_BIT 0x00800000u
++
++struct soft_float {
++   nir_def *sign;
++   nir_def *exp;
++   nir_def *sig;
++};
++
++static nir_def *
++fmag(nir_builder *b, nir_def *x)
++{
++   return nir_iand_imm(b, x, MAG_MASK);
++}
++
++static nir_def *
++fsign_bit(nir_builder *b, nir_def *x)
++{
++   return nir_iand_imm(b, x, SIGN_BIT);
++}
++
++static nir_def *
++is_nan(nir_builder *b, nir_def *x)
++{
++   return nir_ult(b, nir_imm_int(b, EXP_MASK), fmag(b, x));
++}
++
++static nir_def *
++is_nan_or_inf(nir_builder *b, nir_def *x)
++{
++   return nir_uge_imm(b, fmag(b, x), EXP_MASK);
++}
++
++static nir_def *
++is_zero(nir_builder *b, nir_def *x)
++{
++   return nir_ieq_imm(b, fmag(b, x), 0);
++}
++
++static nir_def *
++is_denorm(nir_builder *b, nir_def *x)
++{
++   nir_def *mag = fmag(b, x);
++   return nir_iand(b, nir_ine_imm(b, mag, 0), nir_ult_imm(b, mag, HIDDEN_BIT));
++}
++
++static nir_def *
++is_special(nir_builder *b, nir_def *x)
++{
++   return nir_ior(b, is_zero(b, x), is_nan_or_inf(b, x));
++}
++
++static nir_def *
++normal_stand_in(nir_builder *b, nir_def *x)
++{
++   nir_def *tiny = nir_ior_imm(b, fsign_bit(b, x), HIDDEN_BIT);
++   return nir_bcsel(b, is_denorm(b, x), tiny, x);
++}
++
++static nir_def *
++order_key(nir_builder *b, nir_def *x)
++{
++   nir_def *mag = fmag(b, x);
++   return nir_bcsel(b, nir_ine_imm(b, fsign_bit(b, x), 0), nir_ineg(b, mag),
++                    mag);
++}
++
++static struct soft_float
++unpack(nir_builder *b, nir_def *x)
++{
++   nir_def *mag = fmag(b, x);
++   nir_def *biased = nir_ushr_imm(b, mag, 23);
++   nir_def *mant = nir_iand_imm(b, mag, MANT_MASK);
++   nir_def *normal = nir_ine_imm(b, biased, 0);
++   nir_def *shift = nir_iadd_imm(b, nir_uclz(b, mant), -8);
++
++   return (struct soft_float){
++      .sign = fsign_bit(b, x),
++      .exp = nir_bcsel(b, normal, nir_iadd_imm(b, biased, -127),
++                       nir_isub_imm(b, -126, shift)),
++      .sig = nir_bcsel(b, normal, nir_ior_imm(b, mant, HIDDEN_BIT),
++                       nir_ishl(b, mant, shift)),
++   };
++}
++
++static nir_def *
++round_pack(nir_builder *b, nir_def *sign, nir_def *sig, nir_def *lsb_exp)
++{
++   nir_def *hi = nir_u2u32(b, nir_ushr_imm(b, sig, 32));
++   nir_def *lo = nir_u2u32(b, sig);
++   nir_def *msb = nir_bcsel(b, nir_ine_imm(b, hi, 0),
++                            nir_isub_imm(b, 63, nir_uclz(b, hi)),
++                            nir_isub_imm(b, 31, nir_uclz(b, lo)));
++   nir_def *exp = nir_iadd(b, msb, lsb_exp);
++   nir_def *normal = nir_ige_imm(b, exp, -126);
++   nir_def *target = nir_imax(b, nir_iadd_imm(b, exp, -23),
++                              nir_imm_int(b, -149));
++   nir_def *shift = nir_isub(b, target, lsb_exp);
++
++   nir_def *left = nir_ishl(b, sig, nir_ineg(b, nir_imin(b, shift, nir_imm_int(b, 0))));
++
++   nir_def *rshift = nir_iclamp(b, shift, nir_imm_int(b, 1), nir_imm_int(b, 63));
++   nir_def *one = nir_imm_int64(b, 1);
++   nir_def *half = nir_ishl(b, one, nir_iadd_imm(b, rshift, -1));
++   nir_def *rem =
++      nir_iand(b, sig, nir_isub(b, nir_ishl(b, one, rshift), one));
++   nir_def *right = nir_ushr(b, sig, rshift);
++   nir_def *odd = nir_ine_imm(b, nir_iand_imm(b, right, 1), 0);
++   nir_def *up = nir_ior(b, nir_ult(b, half, rem),
++                         nir_iand(b, nir_ieq(b, rem, half), odd));
++   right = nir_iadd(b, right, nir_b2i64(b, up));
++
++   nir_def *tiny_up =
++      nir_iand(b, nir_ieq_imm(b, shift, 64),
++               nir_ult(b, nir_imm_int64(b, 1ull << 63), sig));
++   nir_def *tiny = nir_b2i64(b, tiny_up);
++
++   nir_def *q = nir_bcsel(b, nir_ile_imm(b, shift, 0), left,
++                          nir_bcsel(b, nir_ige_imm(b, shift, 64), tiny, right));
++
++   nir_def *base = nir_bcsel(
++      b, normal, nir_ishl_imm(b, nir_iadd_imm(b, exp, 126), 23),
++      nir_imm_int(b, 0));
++   nir_def *bits = nir_iadd(b, base, nir_u2u32(b, q));
++   bits = nir_bcsel(b, nir_ige_imm(b, exp, 128), nir_imm_int(b, EXP_MASK),
++                    bits);
++   bits = nir_bcsel(b, nir_ieq_imm(b, sig, 0), nir_imm_int(b, 0), bits);
++   return nir_ior(b, sign, bits);
++}
++
++static nir_def *
++soft_add(nir_builder *b, nir_def *x, nir_def *y)
++{
++   struct soft_float a = unpack(b, x);
++   struct soft_float c = unpack(b, y);
++
++   nir_def *x_zero = nir_ieq_imm(b, a.sig, 0);
++   nir_def *y_zero = nir_ieq_imm(b, c.sig, 0);
++   nir_def *x_big =
++      nir_iand(b, nir_inot(b, x_zero),
++               nir_ior(b, y_zero, nir_ige(b, a.exp, c.exp)));
++
++   nir_def *big_exp = nir_bcsel(b, x_big, a.exp, c.exp);
++   nir_def *small_exp = nir_bcsel(b, x_big, c.exp, a.exp);
++   nir_def *big_sig = nir_bcsel(b, x_big, a.sig, c.sig);
++   nir_def *small_sig = nir_bcsel(b, x_big, c.sig, a.sig);
++   nir_def *big_sign = nir_bcsel(b, x_big, a.sign, c.sign);
++
++   nir_def *big = nir_ishl_imm(b, nir_u2u64(b, big_sig), 32);
++   nir_def *small = nir_ishl_imm(b, nir_u2u64(b, small_sig), 32);
++
++   nir_def *distance = nir_isub(b, big_exp, small_exp);
++   nir_def *far = nir_ige_imm(b, distance, 64);
++   nir_def *d = nir_iclamp(b, distance, nir_imm_int(b, 0), nir_imm_int(b, 63));
++   nir_def *one = nir_imm_int64(b, 1);
++   nir_def *lost =
++      nir_iand(b, small, nir_isub(b, nir_ishl(b, one, d), one));
++   nir_def *shifted = nir_ior(
++      b, nir_ushr(b, small, d), nir_b2i64(b, nir_ine_imm(b, lost, 0)));
++   shifted = nir_bcsel(b, far, nir_b2i64(b, nir_ine_imm(b, small, 0)),
++                       shifted);
++
++   nir_def *same_sign = nir_ieq(b, a.sign, c.sign);
++   nir_def *small_wins = nir_ult(b, big, shifted);
++   nir_def *diff = nir_bcsel(b, small_wins, nir_isub(b, shifted, big),
++                             nir_isub(b, big, shifted));
++   nir_def *sig = nir_bcsel(b, same_sign, nir_iadd(b, big, shifted), diff);
++
++   nir_def *small_sign = nir_ixor(b, big_sign, nir_imm_int(b, SIGN_BIT));
++   nir_def *diff_sign = nir_bcsel(b, small_wins, small_sign, big_sign);
++   diff_sign = nir_bcsel(b, nir_ieq_imm(b, diff, 0), nir_imm_int(b, 0),
++                         diff_sign);
++   nir_def *sign = nir_bcsel(b, same_sign, a.sign, diff_sign);
++
++   return round_pack(b, sign, sig, nir_iadd_imm(b, big_exp, -23 - 32));
++}
++
++static nir_def *
++soft_mul(nir_builder *b, nir_def *x, nir_def *y)
++{
++   struct soft_float a = unpack(b, x);
++   struct soft_float c = unpack(b, y);
++
++   nir_def *sig = nir_imul(b, nir_u2u64(b, a.sig), nir_u2u64(b, c.sig));
++   return round_pack(b, nir_ixor(b, a.sign, c.sign), sig,
++                     nir_iadd_imm(b, nir_iadd(b, a.exp, c.exp), -46));
++}
++
++static nir_def *
++soft_div(nir_builder *b, nir_def *x, nir_def *y)
++{
++   struct soft_float a = unpack(b, x);
++   struct soft_float c = unpack(b, y);
++
++   nir_def *num = nir_ishl_imm(b, nir_u2u64(b, a.sig), 32);
++   nir_def *den = nir_imax(b, nir_u2u64(b, c.sig), nir_imm_int64(b, 1));
++   nir_def *quot = nir_udiv(b, num, den);
++   nir_def *rem = nir_isub(b, num, nir_imul(b, quot, den));
++   nir_def *sig = nir_ior(b, nir_ishl_imm(b, quot, 1),
++                          nir_b2i64(b, nir_ine_imm(b, rem, 0)));
++   return round_pack(b, nir_ixor(b, a.sign, c.sign), sig,
++                     nir_iadd_imm(b, nir_isub(b, a.exp, c.exp), -33));
++}
++
++static nir_def *
++native_is_exact(nir_builder *b, nir_def *native, nir_def *x, nir_def *y)
++{
++   nir_def *denorm = nir_ior(b, is_denorm(b, x), is_denorm(b, y));
++   return nir_iand(b, nir_inot(b, denorm), nir_inot(b, is_zero(b, native)));
++}
++
++static nir_def *
++emu_add(nir_builder *b, nir_def *x, nir_def *y)
++{
++   nir_def *native = nir_fadd(b, x, y);
++   nir_def *use_native =
++      nir_ior(b, nir_ior(b, is_nan_or_inf(b, x), is_nan_or_inf(b, y)),
++              native_is_exact(b, native, x, y));
++   return nir_bcsel(b, use_native, native, soft_add(b, x, y));
++}
++
++static nir_def *
++emu_neg(nir_builder *b, nir_def *x)
++{
++   return nir_ixor(b, x, nir_imm_int(b, SIGN_BIT));
++}
++
++static nir_def *
++emu_sub(nir_builder *b, nir_def *x, nir_def *y)
++{
++   return emu_add(b, x, emu_neg(b, y));
++}
++
++static nir_def *
++emu_mul(nir_builder *b, nir_def *x, nir_def *y)
++{
++   nir_def *native =
++      nir_fmul(b, normal_stand_in(b, x), normal_stand_in(b, y));
++   nir_def *use_native =
++      nir_ior(b, nir_ior(b, is_special(b, x), is_special(b, y)),
++              native_is_exact(b, native, x, y));
++   return nir_bcsel(b, use_native, native, soft_mul(b, x, y));
++}
++
++static nir_def *
++emu_div(nir_builder *b, nir_def *x, nir_def *y)
++{
++   nir_def *native =
++      nir_fdiv(b, normal_stand_in(b, x), normal_stand_in(b, y));
++   nir_def *use_native =
++      nir_ior(b, nir_ior(b, is_special(b, x), is_special(b, y)),
++              native_is_exact(b, native, x, y));
++   return nir_bcsel(b, use_native, native, soft_div(b, x, y));
++}
++
++static nir_def *
++emu_fma(nir_builder *b, nir_def *x, nir_def *y, nir_def *z)
++{
++   nir_def *native = nir_ffma(b, normal_stand_in(b, x), normal_stand_in(b, y),
++                              normal_stand_in(b, z));
++   nir_def *special =
++      nir_ior(b, is_nan_or_inf(b, x),
++              nir_ior(b, is_nan_or_inf(b, y), is_nan_or_inf(b, z)));
++   nir_def *denorm =
++      nir_ior(b, is_denorm(b, x), nir_ior(b, is_denorm(b, y), is_denorm(b, z)));
++   nir_def *exact =
++      nir_iand(b, nir_inot(b, denorm), nir_inot(b, is_zero(b, native)));
++   return nir_bcsel(b, nir_ior(b, special, exact), native,
++                    emu_add(b, emu_mul(b, x, y), z));
++}
++
++static nir_def *
++emu_flt(nir_builder *b, nir_def *x, nir_def *y)
++{
++   nir_def *ordered = nir_inot(b, nir_ior(b, is_nan(b, x), is_nan(b, y)));
++   return nir_iand(b, ordered, nir_ilt(b, order_key(b, x), order_key(b, y)));
++}
++
++static nir_def *
++emu_fge(nir_builder *b, nir_def *x, nir_def *y)
++{
++   nir_def *ordered = nir_inot(b, nir_ior(b, is_nan(b, x), is_nan(b, y)));
++   return nir_iand(b, ordered, nir_ige(b, order_key(b, x), order_key(b, y)));
++}
++
++static nir_def *
++emu_feq(nir_builder *b, nir_def *x, nir_def *y)
++{
++   nir_def *ordered = nir_inot(b, nir_ior(b, is_nan(b, x), is_nan(b, y)));
++   return nir_iand(b, ordered, nir_ieq(b, order_key(b, x), order_key(b, y)));
++}
++
++static nir_def *
++emu_minmax(nir_builder *b, nir_def *x, nir_def *y, bool max)
++{
++   nir_def *x_first = max ? nir_ilt(b, order_key(b, y), order_key(b, x))
++                          : nir_ilt(b, order_key(b, x), order_key(b, y));
++   nir_def *pick = nir_bcsel(b, x_first, x, y);
++   return nir_bcsel(b, is_nan(b, x), y, nir_bcsel(b, is_nan(b, y), x, pick));
++}
++
++static nir_def *
++emu_round(nir_builder *b, nir_op op, nir_def *x)
++{
++   nir_def *negative = nir_ine_imm(b, fsign_bit(b, x), 0);
++   nir_def *zero = fsign_bit(b, x);
++   nir_def *tiny;
++   switch (op) {
++   case nir_op_ffloor:
++      tiny = nir_bcsel(b, negative, nir_imm_float(b, -1.0f), zero);
++      break;
++   case nir_op_fceil:
++      tiny = nir_bcsel(b, negative, zero, nir_imm_float(b, 1.0f));
++      break;
++   default:
++      tiny = zero;
++      break;
++   }
++   nir_def *native = nir_build_alu1(b, op, x);
++   return nir_bcsel(b, is_denorm(b, x), tiny, native);
++}
++
++static nir_def *
++int_to_float_exact(nir_builder *b, nir_def *sig)
++{
++   return nir_u2f32(b, sig);
++}
++
++static nir_def *
++pow2(nir_builder *b, nir_def *exp)
++{
++   return nir_ishl_imm(b, nir_iadd_imm(b, exp, 127), 23);
++}
++
++static nir_def *
++emu_sqrt(nir_builder *b, nir_def *x, bool reciprocal)
++{
++   struct soft_float a = unpack(b, x);
++   nir_def *k = nir_iadd_imm(b, a.exp, -23);
++   nir_def *odd = nir_ine_imm(b, nir_iand_imm(b, k, 1), 0);
++   nir_def *m = int_to_float_exact(b, a.sig);
++   m = nir_bcsel(b, odd, nir_fmul_imm(b, m, 2.0), m);
++   nir_def *half_k = nir_ishr_imm(b, nir_isub(b, k, nir_b2i32(b, odd)), 1);
++
++   nir_def *root = reciprocal ? nir_frsq(b, m) : nir_fsqrt(b, m);
++   nir_def *scaled =
++      nir_fmul(b, root, pow2(b, reciprocal ? nir_ineg(b, half_k) : half_k));
++   nir_def *native = reciprocal ? nir_frsq(b, x) : nir_fsqrt(b, x);
++   nir_def *positive_denorm =
++      nir_iand(b, is_denorm(b, x), nir_ieq_imm(b, fsign_bit(b, x), 0));
++   return nir_bcsel(b, positive_denorm, scaled, native);
++}
++
++static nir_def *
++emu_log2(nir_builder *b, nir_def *x)
++{
++   struct soft_float a = unpack(b, x);
++   nir_def *scaled =
++      nir_fadd(b, nir_flog2(b, int_to_float_exact(b, a.sig)),
++               nir_i2f32(b, nir_iadd_imm(b, a.exp, -23)));
++   nir_def *positive_denorm =
++      nir_iand(b, is_denorm(b, x), nir_ieq_imm(b, fsign_bit(b, x), 0));
++   return nir_bcsel(b, positive_denorm, scaled, nir_flog2(b, x));
++}
++
++static nir_def *
++emu_exp2(nir_builder *b, nir_def *x)
++{
++   nir_def *native = nir_fexp2(b, x);
++   nir_def *shifted = nir_fexp2(b, nir_fadd_imm(b, x, 64.0));
++   struct soft_float v = unpack(b, shifted);
++   nir_def *small = round_pack(b, nir_imm_int(b, 0), nir_u2u64(b, v.sig),
++                               nir_iadd_imm(b, v.exp, -23 - 64));
++   nir_def *below = nir_iand(
++      b, nir_inot(b, is_nan_or_inf(b, x)),
++      nir_ilt(b, order_key(b, x), order_key(b, nir_imm_float(b, -125.0f))));
++   return nir_bcsel(b, below, small, native);
++}
++
++static nir_def *
++emu_ldexp(nir_builder *b, nir_def *x, nir_def *exp)
++{
++   struct soft_float a = unpack(b, x);
++   nir_def *e = nir_iclamp(b, exp, nir_imm_int(b, -1000), nir_imm_int(b, 1000));
++   nir_def *soft = round_pack(b, a.sign, nir_u2u64(b, a.sig),
++                              nir_iadd(b, nir_iadd_imm(b, a.exp, -23), e));
++   return nir_bcsel(b, is_special(b, x), x, soft);
++}
++
++static nir_def *
++emu_sat(nir_builder *b, nir_def *x)
++{
++   nir_def *key = order_key(b, x);
++   nir_def *low = nir_ior(b, is_nan(b, x), nir_ile_imm(b, key, 0));
++   nir_def *high = nir_ige_imm(b, key, 0x3f800000);
++   return nir_bcsel(b, low, nir_imm_float(b, 0.0f),
++                    nir_bcsel(b, high, nir_imm_float(b, 1.0f), x));
++}
++
++static nir_def *
++emu_sign(nir_builder *b, nir_def *x)
++{
++   nir_def *negative = nir_ine_imm(b, fsign_bit(b, x), 0);
++   nir_def *one = nir_bcsel(b, negative, nir_imm_float(b, -1.0f),
++                            nir_imm_float(b, 1.0f));
++   return nir_bcsel(b, is_nan(b, x), nir_imm_float(b, 0.0f),
++                    nir_bcsel(b, is_zero(b, x), x, one));
++}
++
++static nir_def *
++emu_trunc(nir_builder *b, nir_def *x)
++{
++   return emu_round(b, nir_op_ftrunc, x);
++}
++
++static nir_def *
++emulate(nir_builder *b, nir_op op, nir_def **s)
++{
++   switch (op) {
++   case nir_op_fadd:
++      return emu_add(b, s[0], s[1]);
++   case nir_op_fsub:
++      return emu_sub(b, s[0], s[1]);
++   case nir_op_fmul:
++      return emu_mul(b, s[0], s[1]);
++   case nir_op_fdiv:
++      return emu_div(b, s[0], s[1]);
++   case nir_op_frcp:
++      return emu_div(b, nir_imm_float(b, 1.0f), s[0]);
++   case nir_op_ffma:
++      return emu_fma(b, s[0], s[1], s[2]);
++   case nir_op_flrp:
++      return emu_add(
++         b, emu_mul(b, s[0], emu_sub(b, nir_imm_float(b, 1.0f), s[2])),
++         emu_mul(b, s[1], s[2]));
++   case nir_op_frem:
++      return emu_sub(
++         b, s[0], emu_mul(b, s[1], emu_trunc(b, emu_div(b, s[0], s[1]))));
++   case nir_op_fmod:
++      return emu_sub(
++         b, s[0],
++         emu_mul(b, s[1], emu_round(b, nir_op_ffloor, emu_div(b, s[0], s[1]))));
++   case nir_op_flt:
++      return emu_flt(b, s[0], s[1]);
++   case nir_op_fge:
++      return emu_fge(b, s[0], s[1]);
++   case nir_op_feq:
++      return emu_feq(b, s[0], s[1]);
++   case nir_op_fneu:
++      return nir_inot(b, emu_feq(b, s[0], s[1]));
++   case nir_op_fmin:
++      return emu_minmax(b, s[0], s[1], false);
++   case nir_op_fmax:
++      return emu_minmax(b, s[0], s[1], true);
++   case nir_op_fsat:
++      return emu_sat(b, s[0]);
++   case nir_op_fabs:
++      return fmag(b, s[0]);
++   case nir_op_fneg:
++      return emu_neg(b, s[0]);
++   case nir_op_fsign:
++      return emu_sign(b, s[0]);
++   case nir_op_fisfinite:
++      return nir_ult_imm(b, fmag(b, s[0]), EXP_MASK);
++   case nir_op_fisnormal: {
++      nir_def *biased = nir_ushr_imm(b, fmag(b, s[0]), 23);
++      return nir_iand(b, nir_ine_imm(b, biased, 0),
++                      nir_ine_imm(b, biased, 255));
++   }
++   case nir_op_ffloor:
++   case nir_op_fceil:
++   case nir_op_ftrunc:
++   case nir_op_fround_even:
++      return emu_round(b, op, s[0]);
++   case nir_op_ffract:
++      return emu_sub(b, s[0], emu_round(b, nir_op_ffloor, s[0]));
++   case nir_op_fsqrt:
++      return emu_sqrt(b, s[0], false);
++   case nir_op_frsq:
++      return emu_sqrt(b, s[0], true);
++   case nir_op_flog2:
++      return emu_log2(b, s[0]);
++   case nir_op_fexp2:
++      return emu_exp2(b, s[0]);
++   case nir_op_fpow:
++      return emu_exp2(b, emu_mul(b, emu_log2(b, s[0]), s[1]));
++   case nir_op_fsin:
++      return nir_bcsel(b, is_denorm(b, s[0]), s[0], nir_fsin(b, s[0]));
++   case nir_op_ldexp:
++      return emu_ldexp(b, s[0], s[1]);
++   case nir_op_f2f16:
++   case nir_op_f2f16_rtne:
++   case nir_op_f2f16_rtz:
++      return nir_bcsel(
++         b, is_denorm(b, s[0]),
++         nir_u2u16(b, nir_ushr_imm(b, fsign_bit(b, s[0]), 16)),
++         nir_build_alu1(b, op, s[0]));
++   default:
++      UNREACHABLE("not an emulated operation");
++   }
++}
++
++static bool
++is_emulated(const nir_alu_instr *alu)
++{
++   switch (alu->op) {
++   case nir_op_flt:
++   case nir_op_fge:
++   case nir_op_feq:
++   case nir_op_fneu:
++   case nir_op_fisfinite:
++   case nir_op_fisnormal:
++   case nir_op_f2f16:
++   case nir_op_f2f16_rtne:
++   case nir_op_f2f16_rtz:
++      return alu->src[0].src.ssa->bit_size == 32;
++   case nir_op_fadd:
++   case nir_op_fsub:
++   case nir_op_fmul:
++   case nir_op_fdiv:
++   case nir_op_frcp:
++   case nir_op_ffma:
++   case nir_op_flrp:
++   case nir_op_frem:
++   case nir_op_fmod:
++   case nir_op_fmin:
++   case nir_op_fmax:
++   case nir_op_fsat:
++   case nir_op_fabs:
++   case nir_op_fneg:
++   case nir_op_fsign:
++   case nir_op_ffloor:
++   case nir_op_fceil:
++   case nir_op_ftrunc:
++   case nir_op_fround_even:
++   case nir_op_ffract:
++   case nir_op_fsqrt:
++   case nir_op_frsq:
++   case nir_op_flog2:
++   case nir_op_fexp2:
++   case nir_op_fpow:
++   case nir_op_fsin:
++   case nir_op_ldexp:
++   case nir_op_fdot2:
++   case nir_op_fdot3:
++   case nir_op_fdot4:
++      return alu->def.bit_size == 32;
++   default:
++      return false;
++   }
++}
++
++static bool
++lower_alu(nir_builder *b, nir_alu_instr *alu, void *data)
++{
++   if (!is_emulated(alu))
++      return false;
++
++   b->cursor = nir_before_instr(&alu->instr);
++   b->fp_math_ctrl = nir_fp_no_fast_math;
++
++   unsigned num_srcs = nir_op_infos[alu->op].num_inputs;
++   nir_def *srcs[NIR_ALU_MAX_INPUTS];
++   for (unsigned i = 0; i < num_srcs; i++)
++      srcs[i] = nir_ssa_for_alu_src(b, alu, i);
++
++   if (alu->op == nir_op_fdot2 || alu->op == nir_op_fdot3 ||
++       alu->op == nir_op_fdot4) {
++      nir_def *sum = NULL;
++      for (unsigned c = 0; c < srcs[0]->num_components; c++) {
++         nir_def *product = emu_mul(b, nir_channel(b, srcs[0], c),
++                                    nir_channel(b, srcs[1], c));
++         sum = sum ? emu_add(b, sum, product) : product;
++      }
++      nir_def_replace(&alu->def, sum);
++      return true;
++   }
++
++   nir_def *comps[NIR_MAX_VEC_COMPONENTS];
++   for (unsigned c = 0; c < alu->def.num_components; c++) {
++      nir_def *scalar[NIR_ALU_MAX_INPUTS];
++      for (unsigned i = 0; i < num_srcs; i++)
++         scalar[i] = nir_channel(b, srcs[i], c);
++      comps[c] = emulate(b, alu->op, scalar);
++   }
++
++   nir_def_replace(&alu->def, nir_vec(b, comps, alu->def.num_components));
++   return true;
++}
++
++static bool
++lower_ldexp(nir_builder *b, nir_alu_instr *alu, void *data)
++{
++   if (alu->op != nir_op_ldexp || alu->def.bit_size != 32)
++      return false;
++
++   return lower_alu(b, alu, data);
++}
++
++bool
++kk_nir_lower_denorm_preserve_ldexp(nir_shader *nir)
++{
++   if (!(nir->info.float_controls_execution_mode &
++         FLOAT_CONTROLS_DENORM_PRESERVE_FP32))
++      return false;
++
++   return nir_shader_alu_pass(nir, lower_ldexp, nir_metadata_control_flow,
++                              NULL);
++}
++
++bool
++kk_nir_lower_denorm_preserve(nir_shader *nir)
++{
++   if (!(nir->info.float_controls_execution_mode &
++         FLOAT_CONTROLS_DENORM_PRESERVE_FP32))
++      return false;
++
++   return nir_shader_alu_pass(nir, lower_alu, nir_metadata_control_flow, NULL);
++}
++
++static nir_def *
++flush(nir_builder *b, nir_def *x)
++{
++   nir_def *comps[NIR_MAX_VEC_COMPONENTS];
++   for (unsigned c = 0; c < x->num_components; c++) {
++      nir_def *v = nir_channel(b, x, c);
++      comps[c] = nir_bcsel(b, is_denorm(b, v), fsign_bit(b, v), v);
++   }
++   return nir_vec(b, comps, x->num_components);
++}
++
++static bool
++flush_result(nir_builder *b, nir_alu_instr *alu, void *data)
++{
++   switch (alu->op) {
++   case nir_op_fneg:
++   case nir_op_fabs:
++   case nir_op_fmin:
++   case nir_op_fmax:
++   case nir_op_fsat:
++   case nir_op_fsign:
++      break;
++   default:
++      return false;
++   }
++
++   if (alu->def.bit_size != 32)
++      return false;
++
++   b->cursor = nir_after_instr(&alu->instr);
++   nir_def *flushed = flush(b, &alu->def);
++   nir_def_rewrite_uses_after(&alu->def, flushed);
++   return true;
++}
++
++static bool
++lower_canonicalize(nir_builder *b, nir_alu_instr *alu, void *data)
++{
++   if (alu->op != nir_op_fcanonicalize)
++      return false;
++
++   b->cursor = nir_before_instr(&alu->instr);
++   nir_def *src = nir_ssa_for_alu_src(b, alu, 0);
++   const bool ftz = alu->def.bit_size == 32 &&
++                    (b->shader->info.float_controls_execution_mode &
++                     FLOAT_CONTROLS_DENORM_FLUSH_TO_ZERO_FP32);
++   nir_def_replace(&alu->def, ftz ? flush(b, src) : src);
++   return true;
++}
++
++bool
++kk_nir_lower_denorm_flush(nir_shader *nir)
++{
++   if (!(nir->info.float_controls_execution_mode &
++         FLOAT_CONTROLS_DENORM_FLUSH_TO_ZERO_FP32))
++      return false;
++
++   return nir_shader_alu_pass(nir, flush_result, nir_metadata_control_flow,
++                              NULL);
++}
++
++bool
++kk_nir_lower_fcanonicalize(nir_shader *nir)
++{
++   return nir_shader_alu_pass(nir, lower_canonicalize,
++                              nir_metadata_control_flow, NULL);
++}
+diff --git a/src/kosmickrisp/vulkan/kk_physical_device.c b/src/kosmickrisp/vulkan/kk_physical_device.c
+index 523a1673173..455a7df0f5d 100644
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c
+@@ -728,16 +728,16 @@ kk_get_device_properties(
+       .independentResolve = true,
+       .driverID = VK_DRIVER_ID_MESA_KOSMICKRISP,
+       .conformanceVersion = (VkConformanceVersion){1, 4, 6, 2},
+-      .denormBehaviorIndependence = VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE,
++      .denormBehaviorIndependence = VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_ALL,
+       .roundingModeIndependence = VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE,
+       .shaderSignedZeroInfNanPreserveFloat16 = true,
+       .shaderSignedZeroInfNanPreserveFloat32 = true,
+       .shaderSignedZeroInfNanPreserveFloat64 = false,
+-      .shaderDenormPreserveFloat16 = false,
+-      .shaderDenormPreserveFloat32 = false,
++      .shaderDenormPreserveFloat16 = true,
++      .shaderDenormPreserveFloat32 = true,
+       .shaderDenormPreserveFloat64 = false,
+       .shaderDenormFlushToZeroFloat16 = false,
+-      .shaderDenormFlushToZeroFloat32 = false,
++      .shaderDenormFlushToZeroFloat32 = true,
+       .shaderDenormFlushToZeroFloat64 = false,
+       .shaderRoundingModeRTEFloat16 = true,
+       .shaderRoundingModeRTEFloat32 = true,
+diff --git a/src/kosmickrisp/vulkan/kk_shader.c b/src/kosmickrisp/vulkan/kk_shader.c
+index 946e896aaaa..7c81d2752fe 100644
+--- a/src/kosmickrisp/vulkan/kk_shader.c
++++ b/src/kosmickrisp/vulkan/kk_shader.c
+@@ -74,6 +74,8 @@ kk_preprocess_nir(UNUSED struct vk_physical_device *vk_pdev, nir_shader *nir,
+     */
+    nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
+ 
++   NIR_PASS(_, nir, kk_nir_lower_denorm_preserve_ldexp);
++
+    msl_preprocess_nir(nir);
+ 
+    /* Cannot be part of msl_preprocess_nir since clc does not expose
+@@ -1090,7 +1092,20 @@ kk_compile_msl(struct kk_physical_device *pdev, nir_shader *nir,
+ {
+    NIR_PASS(_, nir, kk_nir_lower_poly);
+ 
++   if (nir->info.float_controls_execution_mode &
++       FLOAT_CONTROLS_DENORM_PRESERVE_FP32) {
++      NIR_PASS(_, nir, nir_opt_algebraic);
++      NIR_PASS(_, nir, kk_nir_lower_denorm_preserve);
++   }
++   NIR_PASS(_, nir, kk_nir_lower_denorm_flush);
++
+    msl_optimize_nir(nir);
++   bool canonicalized = false;
++   NIR_PASS(canonicalized, nir, kk_nir_lower_fcanonicalize);
++   if (canonicalized) {
++      NIR_PASS(_, nir, nir_opt_copy_prop);
++      NIR_PASS(_, nir, nir_opt_dce);
++   }
+    modify_nir_info(nir);
+ 
+    struct nir_to_msl_options translate_options = {
+diff --git a/src/kosmickrisp/vulkan/kk_shader.h b/src/kosmickrisp/vulkan/kk_shader.h
+index 0725005cea0..94c9c9d9c21 100644
+--- a/src/kosmickrisp/vulkan/kk_shader.h
++++ b/src/kosmickrisp/vulkan/kk_shader.h
+@@ -214,6 +214,10 @@ bool kk_nir_lower_fs_multiview(nir_shader *nir, uint32_t view_mask);
+ bool kk_nir_lower_custom_border(nir_shader *nir);
+ bool kk_nir_lower_compute_derivatives(nir_shader *nir);
+ bool kk_nir_lower_compute_lod_queries(nir_shader *nir);
++bool kk_nir_lower_denorm_preserve(nir_shader *nir);
++bool kk_nir_lower_denorm_preserve_ldexp(nir_shader *nir);
++bool kk_nir_lower_denorm_flush(nir_shader *nir);
++bool kk_nir_lower_fcanonicalize(nir_shader *nir);
+ bool kk_nir_lower_sampler_minmax(nir_shader *nir);
+ bool kk_nir_lower_ssbo_residency(nir_shader *nir,
+                                  nir_address_format addr_format, bool guard);
+diff --git a/src/kosmickrisp/vulkan/meson.build b/src/kosmickrisp/vulkan/meson.build
+index 465d8f6b736..b6358e03147 100644
+--- a/src/kosmickrisp/vulkan/meson.build
++++ b/src/kosmickrisp/vulkan/meson.build
+@@ -92,6 +92,7 @@ kk_files = files(
+   'kk_instance.c',
+   'kk_nir_lower_compute_derivatives.c',
+   'kk_nir_lower_custom_border.c',
++  'kk_nir_lower_denorm.c',
+   'kk_nir_lower_sampler_minmax.c',
+   'kk_nir_lower_ssbo_residency.c',
+   'kk_nir_lower_descriptors.c',
+-- 
+2.54.0 (Apple Git-157)
+

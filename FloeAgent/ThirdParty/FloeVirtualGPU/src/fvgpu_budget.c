@@ -38,7 +38,8 @@ static FloeGPUBudgetResult fill_locked(FloeGPUSession *s) {
     r.actual_limit_bytes=s->budget.limit_bytes;
     r.live_bytes=fvgpu_live_locked(s);
     r.pending_target_bytes=s->budget.target_bytes;
-    if(s->budget.pending) strcpy(r.reason,"below-live-pending-release");
+    if(s->ledger_faults) strcpy(r.reason,"ledger-invariant-fault");
+    else if(s->budget.pending) strcpy(r.reason,"below-live-pending-release");
     else if(s->budget.clamped) strcpy(r.reason,"capacity-or-process-headroom");
     return r;
 }
@@ -56,9 +57,16 @@ FloeGPUBudgetResult fvgpu_budget_set(FloeGPUSession *s,uint64_t requested) {
     }
     s->budget.requested_bytes=requested;s->budget.target_bytes=target;
     s->budget.clamped=target!=requested;
+    s->info.session_budget_bytes=target;
     fvgpu_budget_settle_locked(s);
     FloeGPUBudgetResult r=fill_locked(s);
-    pthread_mutex_unlock(&s->ledger_lock);return r;
+    uint64_t pending_lower=s->budget.pending_lower_bytes;
+    pthread_mutex_unlock(&s->ledger_lock);
+    fvgpu_trace("ev=budget requested=%llu target=%llu actual=%llu live=%llu pending=%llu reason=%s",
+        (unsigned long long)r.requested_bytes,(unsigned long long)r.pending_target_bytes,
+        (unsigned long long)r.actual_limit_bytes,(unsigned long long)r.live_bytes,
+        (unsigned long long)pending_lower,r.reason);
+    return r;
 }
 FloeGPUBudgetResult floe_gpu_set_budget(FloeGPUSession *s,uint64_t requested) {
     return fvgpu_budget_set(s,requested);

@@ -571,6 +571,7 @@ struct FloeCADEditorView: View {
     @State private var buildingNavigationLease: AnyObject?
     @State private var showMeshInspector = false
     @Environment(\.cadBuildingWorkspaceActive) private var buildingWorkspaceActive
+    @Environment(\.cadHostOwnsProjectSave) private var hostOwnsProjectSave
     /// User-named design versions (E34) sheet.
     @State private var showVersions = false
     /// E31-R3: the units prompt's prepared probe plus the manual import
@@ -733,13 +734,13 @@ struct FloeCADEditorView: View {
             // keeps the semantic MODEL identity exact, and the cancel route
             // verifies that identity plus the session's own committed
             // revision before treating the model as untouched.
-            guard !document.isClosed, !transientlyCovered, !showBuildingWorkspace else { return }
+            guard !document.isClosed, !hostOwnsProjectSave, !transientlyCovered, !showBuildingWorkspace else { return }
             viewModel?.saveThumbnail()
             Task { _ = await document.save() }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .background || phase == .inactive {
-                guard !document.isClosed else { return }
+                guard !document.isClosed, !hostOwnsProjectSave else { return }
                 viewModel?.saveThumbnail()
                 Task { _ = await document.save() }
             }
@@ -1701,21 +1702,23 @@ struct FloeCADEditorView: View {
                 }
                 .accessibilityIdentifier("ExportExchange")
             }
-            Divider()
-            // Full-fidelity FloeCAD project package: sketches, features,
-            // variables, assembly and drawings. Mesh exports above are
-            // geometry-only; this commits the versioned package (off-main,
-            // revision-guarded) that reopens as a live document.
-            Button(draftingOnly ? CAD2DDraftingText.text("保存图纸", "Save Drawing")
-                   : FloeCADStrings.text("cad.ui.export.saveProject", "Save Project")) {
-                Task {
-                    let outcome = await document.save()
-                    if let error = outcome.error {
-                        viewModel.errorMessage = "Save failed: \(error)"
+            if !hostOwnsProjectSave {
+                Divider()
+                // Full-fidelity FloeCAD project package: sketches, features,
+                // variables, assembly and drawings. Mesh exports above are
+                // geometry-only; this commits the versioned package (off-main,
+                // revision-guarded) that reopens as a live document.
+                Button(draftingOnly ? CAD2DDraftingText.text("保存图纸", "Save Drawing")
+                       : FloeCADStrings.text("cad.ui.export.saveProject", "Save Project")) {
+                    Task {
+                        let outcome = await document.save()
+                        if let error = outcome.error {
+                            viewModel.errorMessage = "Save failed: \(error)"
+                        }
                     }
                 }
+                .accessibilityIdentifier("SaveProjectButton")
             }
-            .accessibilityIdentifier("SaveProjectButton")
             Divider()
             Button(FloeCADStrings.label("cad.ui.export.pngScreenshot", "PNG Screenshot…")) {
                 showScreenshotOptions = true

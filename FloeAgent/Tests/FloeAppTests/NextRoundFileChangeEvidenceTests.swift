@@ -150,5 +150,59 @@ import FloeTools
         try Data("tampered".utf8).write(to: root.appendingPathComponent(artifact.relativePath))
         XCTAssertThrowsError(try VerifiedChatInlineArtifact.load(artifact, runID: fixture.run, tool: "workspace.createFile", root: root))
     }
+
+    private func event(_ run: UUID, _ tool: String, _ output: ToolExecutionOutput, status: String = "ok") throws -> RunEventRecord {
+        let fields = [
+            "tool": tool, "id": UUID().uuidString, "status": status, "summary": output.summary,
+            "artifactRefsJSON": String(decoding: try JSONEncoder().encode(output.artifacts), as: UTF8.self)
+        ]
+        return .init(runID: run, sequence: 1, kind: .toolResult,
+                     payloadJSON: String(decoding: try JSONEncoder().encode(fields), as: UTF8.self))
+    }
+
+    func testReplyChangeListUsesActualSavedPathAndOrderedEvidence() async throws {
+        let fixture = try Fixture(); defer { fixture.close() }
+        let path = #"note paths={"path":"other"} change=created saved=true.txt"#
+        let create = try await WorkspaceCreateFileTool(environment: fixture.environment)
+            .execute(.init(path: path, content: ""), context: fixture.context)
+        let fill = try await WorkspaceWriteFileTool(environment: fixture.environment)
+            .execute(.init(path: path, content: "actual", expectedSHA256: FloeDigest.sha256Hex(Data())), context: fixture.context)
+        let unchanged = try await WorkspaceWriteFileTool(environment: fixture.environment)
+            .execute(.init(path: path, content: "actual", expectedSHA256: FloeDigest.sha256Hex(Data("actual".utf8))), context: fixture.context)
+        let root = try FloeArtifactStore.root()
+        var changes = RunFileChangeList(runID: fixture.run, conversationID: UUID())
+        changes.consume(try event(UUID(), "workspace.createFile", create), artifactRoot: root)
+        changes.consume(try event(fixture.run, "workspace.createFile", create, status: "failed"), artifactRoot: root)
+        changes.consume(try event(fixture.run, "workspace.readFile", create), artifactRoot: root)
+        XCTAssertTrue(changes.changes.isEmpty)
+        changes.consume(try event(fixture.run, "workspace.createFile", create), artifactRoot: root)
+        changes.consume(try event(fixture.run, "workspace.writeFile", fill), artifactRoot: root)
+        let stored = changes.changes
+        XCTAssertEqual(stored.map(\.path), [path])
+        XCTAssertEqual(stored.first?.action, .added)
+        XCTAssertEqual(stored.first?.evidence.count, create.artifacts.count + fill.artifacts.count)
+        changes.consume(try event(fixture.run, "workspace.writeFile", unchanged), artifactRoot: root)
+        XCTAssertEqual(changes.changes, stored)
+        let delete = try await WorkspaceDeleteFileTool(environment: fixture.environment)
+            .execute(.init(path: path, recursive: false), context: fixture.context)
+        changes.consume(try event(fixture.run, "workspace.deleteFile", delete), artifactRoot: root)
+        XCTAssertTrue(changes.changes.isEmpty)
+    }
+
+    func testReplyChangeListHidesUnknownPathsAndDirectoriesAndDistinguishesRemoteCopies() throws {
+        let run = UUID()
+        var changes = RunFileChangeList(runID: run, conversationID: UUID())
+        func receipt(_ summary: String) -> ToolExecutionOutput {
+            .init(summary: summary, fullOutputSHA256: FloeDigest.sha256Hex(Data(summary.utf8)))
+        }
+        let digest = FloeDigest.sha256Hex(Data())
+        changes.consume(try event(run, "workspace.writeFile", receipt("written=fallback bytes=0 sha256=\(digest) paths={} change=saved saved=true preview=unavailable")), artifactRoot: nil)
+        changes.consume(try event(run, "workspace.deleteFile", receipt(#"deleted=folder recursive=true paths={"kind":"directory","path":"folder"}"#)), artifactRoot: nil)
+        changes.consume(try event(run, "workspace.deleteFile", receipt("deleted=unconfirmed recursive=false network=true paths={}")), artifactRoot: nil)
+        XCTAssertTrue(changes.changes.isEmpty)
+        changes.consume(try event(run, "workspace.copyFile", receipt(#"copied=a -> b network=true paths={"change":"saved","from":"mount/a","kind":"file","path":"mount/b"}"#)), artifactRoot: nil)
+        XCTAssertEqual(changes.changes.map(\.path), ["mount/b"])
+        XCTAssertEqual(changes.changes.first?.action, .saved)
+    }
 }
 #endif

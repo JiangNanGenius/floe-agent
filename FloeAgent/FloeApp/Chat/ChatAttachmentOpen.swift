@@ -145,7 +145,8 @@ struct ChatAttachmentOpenSheet: View {
     var body: some View {
         Group {
             if let path, WorkspaceFileType.isCode(path) || WorkspaceFileType.isHTML(path) {
-                WorkspaceIDEView(initialRelativePath: path, center: workspace)
+                WorkspaceIDEView(initialRelativePath: path, center: workspace,
+                                 conversationID: request.conversationID)
             } else {
                 NavigationStack {
                     Group {

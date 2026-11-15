@@ -1,0 +1,28 @@
+From eefed492756499f00c8d5b499649c1bbd08a9725 Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Wed, 30 Sep 2026 19:19:02 -0400
+Subject: [PATCH] kk: Support geometry shaders in device-generated commands
+
+Generated-by: LLM
+---
+ src/kosmickrisp/vulkan/kk_physical_device.c | 4 +---
+ 1 file changed, 1 insertion(+), 3 deletions(-)
+
+diff --git a/src/kosmickrisp/vulkan/kk_physical_device.c b/src/kosmickrisp/vulkan/kk_physical_device.c
+index 847f65d50d4..1e3783d02d7 100644
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c
+@@ -807,9 +807,7 @@ kk_get_device_properties(
+          VK_INDIRECT_COMMANDS_INPUT_MODE_VULKAN_INDEX_BUFFER_EXT |
+          VK_INDIRECT_COMMANDS_INPUT_MODE_DXGI_INDEX_BUFFER_EXT,
+       .supportedIndirectCommandsShaderStages =
+-         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT |
+-         VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT |
+-         VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT,
++         VK_SHADER_STAGE_ALL_GRAPHICS | VK_SHADER_STAGE_COMPUTE_BIT,
+       .supportedIndirectCommandsShaderStagesPipelineBinding = 0,
+       .supportedIndirectCommandsShaderStagesShaderBinding = 0,
+       .deviceGeneratedCommandsTransformFeedback = false,
+-- 
+2.54.0 (Apple Git-157)
+

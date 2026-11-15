@@ -1,0 +1,27 @@
+From 62722f9791621081b4a7ba0d07203fe649c23702 Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Thu, 1 Oct 2026 10:33:07 -0400
+Subject: [PATCH] kk: Report failure to build the statistics pipeline
+
+Generated-by: LLM
+---
+ src/kosmickrisp/vulkan/kk_cmd_draw.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_draw.c b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+index e7b0e00b811..bbb498d8dec 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_draw.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+@@ -1050,6 +1050,9 @@ kk_flush_pipeline(struct kk_cmd_buffer *cmd)
+             kk_shader_get_stats_pipeline(device, vs);
+          if (counted)
+             render = counted;
++         else
++            vk_command_buffer_set_error(&cmd->vk,
++                                        VK_ERROR_OUT_OF_DEVICE_MEMORY);
+       }
+       mtl_render_set_pipeline_state(enc, render);
+       gfx->fs_stats_bound = fs_stats;
+-- 
+2.54.0 (Apple Git-157)
+

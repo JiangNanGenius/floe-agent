@@ -1,0 +1,10 @@
+{
+  "name": "Glimmerfen",
+  "buildPath": "project://build",
+  "startScene": "e2f7c9a4-2b7d-4f7e-8a1c-3d5b6e9f0a21",
+  "debug": true,
+  "md5Cache": false,
+  "mainBundleCompressionType": "merge_all_json",
+  "platform": "web-mobile",
+  "outputName": "web-mobile"
+}

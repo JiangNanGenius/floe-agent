@@ -1,0 +1,90 @@
+name: InteriorEditorQualification
+options:
+  deploymentTarget:
+    iOS: '26.0'
+packages:
+  FloeInteriorKit:
+    path: ../../../Modules/FloeInteriorKit
+  FloeCADKit:
+    path: ../../../ThirdParty/FloeCADKit
+settings:
+  base:
+    SWIFT_VERSION: '6.0'
+    ARCHS: arm64
+    ONLY_ACTIVE_ARCH: YES
+    CODE_SIGNING_ALLOWED: NO
+    GENERATE_INFOPLIST_FILE: YES
+    ENABLE_TESTABILITY: YES
+targets:
+  InteriorEditorHost:
+    type: application
+    platform: iOS
+    sources: [EditorHost.swift]
+    dependencies:
+      - package: FloeInteriorKit
+        product: FloeBuildingEditor
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.floe.qualification.interior-editor
+        TARGETED_DEVICE_FAMILY: '1,2'
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+  InteriorEditorChecks:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - ../../../Modules/FloeInteriorKit/Tests/FloeBuildingEditorTests
+      - ../../../Modules/FloeInteriorKit/Tests/FloeBuildingCADTests
+    dependencies:
+      - target: InteriorEditorNativeTestHost
+      - package: FloeInteriorKit
+        product: FloeBuildingEditor
+      - package: FloeInteriorKit
+        product: FloeBuildingCAD
+      - package: FloeInteriorKit
+        product: FloeInteriorCore
+      - package: FloeInteriorKit
+        product: FloeBuildingResources
+      - package: FloeInteriorKit
+        product: FloeBuildingRecords
+      - package: FloeInteriorKit
+        product: FloeBuildingProject
+      - package: FloeInteriorKit
+        product: FloeBuildingWorkspace
+      - package: FloeInteriorKit
+        product: FloeBuildingUI
+      - package: FloeCADKit
+        product: FloeCAD
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.floe.qualification.interior-editor-checks
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/InteriorEditorNativeTestHost.app/InteriorEditorNativeTestHost
+        BUNDLE_LOADER: $(TEST_HOST)
+  InteriorEditorNativeTestHost:
+    type: application
+    platform: iOS
+    sources: [../NativeHost.swift]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.floe.qualification.interior-editor-native-host
+        TARGETED_DEVICE_FAMILY: '2'
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+  InteriorEditorUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [EditorUITests.swift]
+    dependencies:
+      - target: InteriorEditorHost
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.floe.qualification.interior-editor-ui-tests
+        TEST_TARGET_NAME: InteriorEditorHost
+schemes:
+  InteriorEditorHost:
+    build:
+      targets:
+        InteriorEditorHost: all
+    test:
+      targets: [InteriorEditorChecks, InteriorEditorUITests]
+      parallelizable: false

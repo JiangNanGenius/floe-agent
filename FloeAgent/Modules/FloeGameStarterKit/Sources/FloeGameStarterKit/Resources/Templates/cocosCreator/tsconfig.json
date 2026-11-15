@@ -1,0 +1,9 @@
+{
+  "extends": "./temp/tsconfig.cocos.json",
+  "compilerOptions": {
+    "strict": false,
+    "target": "ES2015",
+    "module": "ES2015",
+    "experimentalDecorators": true
+  }
+}

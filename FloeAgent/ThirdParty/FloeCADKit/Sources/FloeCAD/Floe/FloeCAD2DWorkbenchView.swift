@@ -46,6 +46,13 @@ public extension FloeCADDocument {
     @MainActor func activate2DWorkspace() {
         guard !isClosed else { return }
         let model = viewModel()
+        #if canImport(UIKit)
+        if let owner = model.buildingDraftingOwner {
+            do { try owner.ensureActiveSketch() }
+            catch { model.errorMessage = error.localizedDescription }
+            return
+        }
+        #endif
         model.planarNavigationOnly = true
         if session.document.sketches.isEmpty, !isReadOnly {
             let sketch = Sketch(name: FloeCADStrings.text("cad.sketch", "Sketch"), plane: .worldXY)

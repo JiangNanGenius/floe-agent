@@ -1,0 +1,24 @@
+[
+  null,
+  {
+    "id": 1,
+    "name": "Ferry Hook",
+    "iconIndex": 3,
+    "description": "A balanced hook for pulling lines.",
+    "price": 40,
+    "wtypeId": 1,
+    "etypeId": 1,
+    "params": [
+      0,
+      8,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "traits": [],
+    "note": "Original Floe starter weapon."
+  }
+]

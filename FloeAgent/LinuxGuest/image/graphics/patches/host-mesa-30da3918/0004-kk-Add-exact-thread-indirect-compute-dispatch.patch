@@ -1,0 +1,115 @@
+From 19549fbc5cd7484984597354f16aab8bbcfe99c5 Mon Sep 17 00:00:00 2001
+From: junminlee2004 <junminlee2004@gmail.com>
+Date: Thu, 24 Sep 2026 12:24:41 -0400
+Subject: [PATCH] kk: Add exact-thread indirect compute dispatch
+
+---
+ src/kosmickrisp/bridge/mtl_encoder.h       |  3 +++
+ src/kosmickrisp/bridge/mtl_encoder.m       | 10 ++++++++++
+ src/kosmickrisp/bridge/stubs/mtl_encoder.c |  6 ++++++
+ src/kosmickrisp/vulkan/kk_cmd_buffer.h     | 13 ++++++++++++-
+ src/kosmickrisp/vulkan/kk_cmd_draw.c       |  2 ++
+ 5 files changed, 33 insertions(+), 1 deletion(-)
+
+diff --git a/src/kosmickrisp/bridge/mtl_encoder.h b/src/kosmickrisp/bridge/mtl_encoder.h
+index 02fe86f4f35..90a4238957b 100644
+--- a/src/kosmickrisp/bridge/mtl_encoder.h
++++ b/src/kosmickrisp/bridge/mtl_encoder.h
+@@ -71,6 +71,9 @@ void mtl_dispatch_threads(mtl_compute_encoder *encoder,
+ void mtl_dispatch_threadgroups_with_indirect_buffer(
+    mtl_compute_encoder *encoder, uint64_t addr, struct mtl_size local_size);
+ 
++void mtl_dispatch_threads_with_indirect_buffer(mtl_compute_encoder *encoder,
++                                               uint64_t addr);
++
+ /* MTLRenderEncoder */
+ mtl_render_encoder *mtl_new_render_command_encoder_with_descriptor(
+    mtl_command_buffer *command_buffer, mtl_render_pass_descriptor *descriptor);
+diff --git a/src/kosmickrisp/bridge/mtl_encoder.m b/src/kosmickrisp/bridge/mtl_encoder.m
+index 2c355627c13..04247430ee4 100644
+--- a/src/kosmickrisp/bridge/mtl_encoder.m
++++ b/src/kosmickrisp/bridge/mtl_encoder.m
+@@ -264,6 +264,16 @@
+    }
+ }
+ 
++void
++mtl_dispatch_threads_with_indirect_buffer(mtl_compute_encoder *encoder,
++                                          uint64_t addr)
++{
++   @autoreleasepool {
++      id<MTL4ComputeCommandEncoder> enc = (id<MTL4ComputeCommandEncoder>)encoder;
++      [enc dispatchThreadsWithIndirectBuffer:addr];
++   }
++}
++
+ /* MTLRenderEncoder */
+ 
+ /* Encoder commands */
+diff --git a/src/kosmickrisp/bridge/stubs/mtl_encoder.c b/src/kosmickrisp/bridge/stubs/mtl_encoder.c
+index 57810abf185..7ef9fe8e306 100644
+--- a/src/kosmickrisp/bridge/stubs/mtl_encoder.c
++++ b/src/kosmickrisp/bridge/stubs/mtl_encoder.c
+@@ -124,6 +124,12 @@ mtl_dispatch_threadgroups_with_indirect_buffer(mtl_compute_encoder *encoder,
+ {
+ }
+ 
++void
++mtl_dispatch_threads_with_indirect_buffer(mtl_compute_encoder *encoder,
++                                          uint64_t addr)
++{
++}
++
+ /* MTLRenderEncoder */
+ mtl_render_encoder *
+ mtl_new_render_command_encoder_with_descriptor(
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_buffer.h b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+index 46dfa33f6ec..6b688341e49 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.h
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+@@ -352,6 +352,8 @@ bool kk_attachment_do_renderpass_resolve(const struct kk_attachment *attachment,
+ enum kk_grid_mode {
+    KK_GRID_DIRECT = 0u,
+    KK_GRID_INDIRECT,
++   /* Thread counts, then threadgroup size, like poly's grids */
++   KK_GRID_INDIRECT_LOCAL,
+ };
+ struct kk_grid {
+    enum kk_grid_mode mode;
+@@ -391,10 +393,19 @@ kk_grid_indirect(uint64_t addr)
+    };
+ }
+ 
++static struct kk_grid
++kk_grid_indirect_local(uint64_t addr)
++{
++   return (struct kk_grid){
++      .mode = KK_GRID_INDIRECT_LOCAL,
++      .addr = addr,
++   };
++}
++
+ static bool
+ kk_grid_is_indirect(struct kk_grid grid)
+ {
+-   return grid.mode == KK_GRID_INDIRECT;
++   return grid.mode != KK_GRID_DIRECT;
+ }
+ 
+ void kk_dispatch_precomp(struct kk_cmd_buffer *cmd, struct kk_grid grid,
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_draw.c b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+index b05dc75eaed..1bb775efd88 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_draw.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+@@ -1925,6 +1925,8 @@ kk_dispatch_compute(mtl_compute_encoder *enc, struct kk_grid grid,
+ {
+    if (grid.mode == KK_GRID_DIRECT)
+       mtl_dispatch_threads(enc, grid.size, local_size);
++   else if (grid.mode == KK_GRID_INDIRECT_LOCAL)
++      mtl_dispatch_threads_with_indirect_buffer(enc, grid.addr);
+    else
+       mtl_dispatch_threadgroups_with_indirect_buffer(enc, grid.addr,
+                                                      local_size);
+-- 
+2.54.0 (Apple Git-157)
+

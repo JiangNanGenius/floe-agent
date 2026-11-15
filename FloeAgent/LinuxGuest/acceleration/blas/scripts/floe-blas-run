@@ -1,0 +1,222 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+#
+# Floe guest standard-BLAS activation entry.
+#
+#   floe-blas-run --status
+#   floe-blas-run -- python3 existing_script.py
+#   floe-blas-run --mode off|auto|on -- COMMAND ARGS
+#   floe-blas-run --set-mode off|auto|on
+#
+# Bare `--` is the normal primary-runner form: the per-environment policy is
+# read from FLOE_BLAS_MODE or $XDG_CONFIG_HOME/floe-acceleration/blas.conf
+# (falling back to $HOME/.config/floe-acceleration/blas.conf), and the command
+# runs untouched when the provider or GPU node is unavailable.  Existing
+# LD_PRELOAD entries are preserved.  This script is guest-only; it is never
+# installed or sourced on the macOS host.
+set -u
+
+SELF_DIR=$(dirname -- "$0")
+SELF_DIR=$(CDPATH= cd -- "$SELF_DIR" 2>/dev/null && pwd) || SELF_DIR=.
+SHELL_LIBRARY=
+for candidate in \
+    /usr/local/lib/floe-acceleration/floe-blas-shell.sh \
+    "$SELF_DIR/floe-blas-shell.sh" \
+    "$SELF_DIR/../lib/floe-acceleration/floe-blas-shell.sh"; do
+    if [ -r "$candidate" ]; then
+        # shellcheck source=floe-blas-shell.sh
+        . "$candidate"
+        SHELL_LIBRARY=$candidate
+        break
+    fi
+done
+if [ -z "$SHELL_LIBRARY" ]; then
+    printf 'floe-blas-run: shared policy file is missing\n' >&2
+    exit 2
+fi
+
+usage() {
+    cat <<'EOF'
+usage: floe-blas-run --status
+       floe-blas-run [--mode off|auto|on] -- COMMAND [ARGS...]
+       floe-blas-run --set-mode off|auto|on
+
+  --status              print one-line JSON activation/readiness facts
+  --mode MODE           per-command override; requires -- COMMAND
+  --set-mode MODE       atomically write the per-environment config
+  -- COMMAND [ARGS...]  run COMMAND with lazy provider activation
+  FLOE_BLAS_MODE        environment override: off, auto or on
+EOF
+}
+
+mode_valid() {
+    case "$1" in
+        off|auto|on) return 0 ;;
+    esac
+    return 1
+}
+
+json_boolean() {
+    if [ "$1" = 1 ]; then printf 'true'; else printf 'false'; fi
+}
+
+status_json() {
+    floe_blas_activation_state
+    _guest=0
+    floe_blas_is_guest && _guest=1
+    _library_present=0
+    [ -f "$FLOE_BLAS_LIBRARY_PATH" ] && _library_present=1
+    _library_trusted=0
+    floe_blas_trusted_file "$FLOE_BLAS_LIBRARY_PATH" 0 && _library_trusted=1
+    _gpu_node=0
+    [ -c "$FLOE_BLAS_RENDER_NODE" ] && _gpu_node=1
+    _icd=0
+    floe_blas_trusted_file "$FLOE_BLAS_ICD_PATH" 0 && _icd=1
+    _active=0
+    floe_blas_preload_contains && _active=1
+    _config=$(floe_blas_config_path 2>/dev/null || true)
+    _config_state=unset
+    if [ -n "$_config" ]; then
+        if floe_blas_json_safe "$_config"; then
+            _config_state=ok
+        else
+            _config_state=unsupported-bytes
+        fi
+    fi
+    printf '{"ok":true,"kind":"floe-blas-status","version":"%s",' \
+        "$FLOE_BLAS_LIBRARY_VERSION"
+    printf '"guest":%s,"mode":"%s","modeSource":"%s",' \
+        "$(json_boolean "$_guest")" "$FLOE_BLAS_RESOLVED_MODE" \
+        "$FLOE_BLAS_MODE_SOURCE"
+    printf '"library":"%s","libraryPresent":%s,"libraryTrusted":%s,' \
+        "$FLOE_BLAS_LIBRARY_PATH" "$(json_boolean "$_library_present")" \
+        "$(json_boolean "$_library_trusted")"
+    printf '"gpuNode":"%s","gpuNodePresent":%s,' \
+        "$FLOE_BLAS_RENDER_NODE" "$(json_boolean "$_gpu_node")"
+    printf '"icd":"%s","icdPresent":%s,' \
+        "$FLOE_BLAS_ICD_PATH" "$(json_boolean "$_icd")"
+    printf '"wouldActivate":%s,"preloadActive":%s,"detail":"%s",' \
+        "$(json_boolean "$([ "$FLOE_BLAS_ACTIVATION_RESULT" = active ] && echo 1 || echo 0)")" \
+        "$(json_boolean "$_active")" "$FLOE_BLAS_ACTIVATION_DETAIL"
+    printf '"configPath":'
+    if [ "$_config_state" = ok ]; then
+        printf '"%s"' "$_config"
+    else
+        printf 'null'
+    fi
+    printf ',"configPathState":"%s"}\n' "$_config_state"
+}
+
+set_mode_persistent() {
+    _mode=$1
+    if ! floe_blas_is_guest; then
+        printf 'floe-blas-run: refusing to write guest policy on a non-Linux host\n' >&2
+        return 3
+    fi
+    _path=$(floe_blas_config_path 2>/dev/null) || {
+        printf 'floe-blas-run: HOME or XDG_CONFIG_HOME is not absolute\n' >&2
+        return 3
+    }
+    if ! floe_blas_json_safe "$_path"; then
+        printf 'floe-blas-run: config path contains unsupported JSON bytes\n' >&2
+        return 3
+    fi
+    _directory=${_path%/*}
+    mkdir -p -m 700 "$_directory" || return 3
+    chmod 700 "$_directory" 2>/dev/null || return 3
+    _temporary=$(mktemp "$_directory/.blas.conf.XXXXXX") || return 3
+    if ! (umask 077; printf 'mode=%s\n' "$_mode" > "$_temporary") ||
+       ! chmod 600 "$_temporary" ||
+       ! mv -f "$_temporary" "$_path"; then
+        rm -f "$_temporary"
+        return 3
+    fi
+    printf '{"ok":true,"kind":"floe-blas-config","mode":"%s","configPath":"%s"}\n' \
+        "$_mode" "$_path"
+    return 0
+}
+
+command_mode=
+set_mode=
+do_status=0
+remaining=0
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --status)
+            do_status=1
+            shift
+            ;;
+        --set-mode)
+            if [ $# -lt 2 ] || ! mode_valid "$2"; then
+                printf 'floe-blas-run: --set-mode needs off|auto|on\n' >&2
+                exit 2
+            fi
+            set_mode=$2
+            shift 2
+            ;;
+        --mode)
+            if [ $# -lt 2 ] || ! mode_valid "$2"; then
+                printf 'floe-blas-run: --mode needs off|auto|on\n' >&2
+                exit 2
+            fi
+            command_mode=$2
+            shift 2
+            ;;
+        --)
+            shift
+            remaining=1
+            break
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        -*)
+            printf 'floe-blas-run: unknown option: %s\n' "$1" >&2
+            exit 2
+            ;;
+        *)
+            remaining=1
+            break
+            ;;
+    esac
+done
+
+if [ "$do_status" -eq 1 ]; then
+    if [ "$remaining" -eq 1 ] || [ -n "$set_mode" ] || [ -n "$command_mode" ]; then
+        printf 'floe-blas-run: --status takes no other arguments\n' >&2
+        exit 2
+    fi
+    status_json
+    exit 0
+fi
+
+if [ -n "$set_mode" ]; then
+    if [ "$remaining" -eq 1 ] || [ -n "$command_mode" ]; then
+        printf 'floe-blas-run: --set-mode takes no command\n' >&2
+        exit 2
+    fi
+    set_mode_persistent "$set_mode" || exit $?
+    exit 0
+fi
+
+if [ "$remaining" -eq 0 ] || [ $# -eq 0 ]; then
+    usage >&2
+    exit 2
+fi
+
+if [ -n "$command_mode" ]; then
+    FLOE_BLAS_MODE=$command_mode
+    export FLOE_BLAS_MODE
+fi
+
+floe_blas_activate_shell
+if [ "$FLOE_BLAS_RESOLVED_MODE" = on ] &&
+   [ "$FLOE_BLAS_ACTIVATION_RESULT" != active ]; then
+    printf 'floe-blas-run: GPU provider was requested but is unavailable (%s)\n' \
+        "$FLOE_BLAS_ACTIVATION_DETAIL" >&2
+    exit 3
+fi
+
+exec "$@"

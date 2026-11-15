@@ -20,19 +20,21 @@ extension CADBuildingProfessionalAction {
 /// A dedicated domain workspace over the SAME live CAD document. Tool/plan
 /// selection is local to this view; geometry, undo and persistence are shared.
 public struct FloeBuildingWorkbenchView: View {
-    private enum Mode: String, CaseIterable { case plan, model, drawings }
+    private enum Mode: String, CaseIterable { case plan, drafting, model, drawings }
     private struct Inspection: Identifiable {
         let id = UUID()
         let rows: [CADBuildingCheck]
     }
     let document: FloeCADDocument
     let incomingPlan: CADSketchTransferEnvelope?
+    let hostOwnsProjectSave: Bool
     let onProfessionalRequest: ((CADBuildingProfessionalAction) -> Void)?
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.cadBuildingProfessionalPresenter) private var professionalPresenter
     @State private var model = CADBuildingDocument()
     @State private var floorID: UUID?
     @State private var mode = Mode.plan
+    @State private var drafting: CADBuildingDraftingSession?
     @State private var drawingWall = false
     @State private var wallStart: [Double]?
     @State private var editedElement: CADBuildingElement?
@@ -47,8 +49,10 @@ public struct FloeBuildingWorkbenchView: View {
     @State private var fileImportGeneration=UUID()
 
     public init(document: FloeCADDocument, incomingPlan: CADSketchTransferEnvelope? = nil,
+                hostOwnsProjectSave: Bool = false,
                 onProfessionalRequest: ((CADBuildingProfessionalAction) -> Void)? = nil) {
         self.document=document; self.incomingPlan=incomingPlan; self.onProfessionalRequest=onProfessionalRequest
+        self.hostOwnsProjectSave=hostOwnsProjectSave
     }
     private var floor: CADBuildingStorey { model.storeys.first { $0.id == floorID } ?? model.storeys[0] }
     private var elements: [CADBuildingElement] { model.elements.filter { $0.storeyID == floor.id } }
@@ -56,22 +60,28 @@ public struct FloeBuildingWorkbenchView: View {
 
     public var body: some View {
         VStack(spacing:0) {
-            HStack {
-                Picker(text("floor","Floor"),selection:$floorID) {
-                    ForEach(model.storeys) { floor in Text(floor.name).tag(Optional(floor.id)) }
-                }.pickerStyle(.menu).accessibilityIdentifier("building.floor")
-                Spacer(minLength:8)
-                Picker(text("workspace","Workspace"),selection:$mode) {
-                    Text(text("plan","Plan")).tag(Mode.plan)
-                    Text(text("model","Model")).tag(Mode.model)
-                    Text(text("drawings","Drawings")).tag(Mode.drawings)
-                }.pickerStyle(.segmented).frame(maxWidth:360).accessibilityIdentifier("building.mode")
-                Spacer(minLength:8)
-                Button { showSettings=true } label:{ Label(text("settings","Building settings"),systemImage:"building.2.crop.circle") }
-                    .labelStyle(.iconOnly).frame(minWidth:44,minHeight:44).accessibilityIdentifier("building.settings")
-            }.padding(.horizontal,12)
+            header
             Divider()
             switch mode {
+            case .drafting:
+                VStack(spacing: 0) {
+                    if let drafting, let issue = drafting.issue {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(issue).font(.callout)
+                            if drafting.canMoveToFloor {
+                                Button(CAD2DDraftingText.text("将线稿移至当前楼层标高", "Move drawing to floor elevation")) {
+                                    do { try drafting.moveDrawingToCurrentFloor() }
+                                    catch { message = error.localizedDescription }
+                                }.accessibilityIdentifier("building.drafting.moveToFloor")
+                            } else {
+                                Button(CAD2DDraftingText.text("重新核对线稿平面", "Review drawing plane")) { drafting.reviewPlane() }
+                                    .accessibilityIdentifier("building.drafting.reviewPlane")
+                            }
+                        }.padding(12)
+                    }
+                    FloeCAD2DWorkbenchView(document: document)
+                        .disabled(drafting == nil || drafting?.issue != nil)
+                }.accessibilityIdentifier("building.drafting.workspace")
             case .model: FloeCADWorkbenchView(document:document)
             case .drawings:
                 CADDrawingPanelView(document:document,viewModel:document.viewModel())
@@ -97,12 +107,16 @@ public struct FloeBuildingWorkbenchView: View {
                 }.padding(12).background(.bar).accessibilityIdentifier("building.message")
             }
         }
+        .environment(\.cadBuildingWorkspaceActive, true)
+        .environment(\.cadHostOwnsProjectSave, hostOwnsProjectSave)
         .toolbar {
             ToolbarItemGroup(placement:.topBarTrailing) {
-                Button { document.session.undo(); reload() } label:{ Label(text("undo","Undo"),systemImage:"arrow.uturn.backward") }
-                    .disabled(!document.session.undoStack.canUndo).accessibilityIdentifier("building.undo")
-                Button { document.session.redo(); reload() } label:{ Label(text("redo","Redo"),systemImage:"arrow.uturn.forward") }
-                    .disabled(!document.session.undoStack.canRedo).accessibilityIdentifier("building.redo")
+                if mode == .plan || mode == .drawings {
+                    Button { document.session.undo(); reload() } label:{ Label(text("undo","Undo"),systemImage:"arrow.uturn.backward") }
+                        .disabled(!document.session.undoStack.canUndo).accessibilityIdentifier("building.undo")
+                    Button { document.session.redo(); reload() } label:{ Label(text("redo","Redo"),systemImage:"arrow.uturn.forward") }
+                        .disabled(!document.session.undoStack.canRedo).accessibilityIdentifier("building.redo")
+                }
                 Menu {
                     Button(text("import","Import floor plan…"),systemImage:"square.and.arrow.down") { choosingFile=true }
                     Button(text("makeDrawing","Create drawings"),systemImage:"doc.richtext") { makeDrawing() }
@@ -121,7 +135,10 @@ public struct FloeBuildingWorkbenchView: View {
                 .accessibilityIdentifier("building.tools")
             }
         }
-        .task { reload(); importPlan=incomingPlan }
+        .task {
+            reload(); importPlan=incomingPlan
+            if mode == .drafting, drafting == nil { changeMode(.drafting) }
+        }
         .onChange(of:document.buildingChangeCount) { _,_ in reload() }
         .onChange(of:floorID) { _,_ in wallStart=nil }
         .sheet(item:$editedElement) { element in
@@ -180,7 +197,11 @@ public struct FloeBuildingWorkbenchView: View {
                 } catch { if !Task.isCancelled,fileImportGeneration == generation { message=error.localizedDescription } }
             }
         }
-        .onDisappear { fileImportTask?.cancel();fileImportTask=nil;fileImportGeneration=UUID();loading=false }
+        .onDisappear {
+            fileImportTask?.cancel();fileImportTask=nil;fileImportGeneration=UUID();loading=false
+            drafting?.end(); drafting = nil
+            if mode == .drafting { mode = .plan }
+        }
         .overlay { if loading { ProgressView().padding(20).background(.bar,in:RoundedRectangle(cornerRadius:12)) } }
     }
     private var planToolbar: some View {
@@ -210,10 +231,64 @@ public struct FloeBuildingWorkbenchView: View {
             }
         }.listStyle(.sidebar)
     }
+    private var floorPicker: some View {
+        Picker(text("floor", "Floor"), selection: floorSelection) {
+            ForEach(model.storeys) { floor in Text(floor.name).tag(Optional(floor.id)) }
+        }.pickerStyle(.menu).accessibilityIdentifier("building.floor")
+    }
+    private var modePicker: some View {
+        Picker(text("workspace", "Workspace"), selection: modeSelection) {
+            Text(text("plan", "Plan")).tag(Mode.plan)
+            Text(CAD2DDraftingText.text("二维 CAD", "2D CAD")).tag(Mode.drafting)
+            Text(text("model", "Model")).tag(Mode.model)
+            Text(text("drawings", "Drawings")).tag(Mode.drawings)
+        }.pickerStyle(.segmented).accessibilityIdentifier("building.mode")
+    }
+    private var settingsButton: some View {
+        Button { showSettings = true } label: {
+            Label(text("settings", "Building settings"), systemImage: "building.2.crop.circle")
+        }.labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44).accessibilityIdentifier("building.settings")
+    }
+    @ViewBuilder private var header: some View {
+        if sizeClass == .compact {
+            VStack(spacing: 8) {
+                HStack { floorPicker; Spacer(minLength: 8); settingsButton }
+                modePicker
+            }.padding(.horizontal, 12).padding(.bottom, 8)
+        } else {
+            HStack {
+                floorPicker; Spacer(minLength: 8)
+                modePicker.frame(maxWidth: 440)
+                Spacer(minLength: 8); settingsButton
+            }.padding(.horizontal, 12)
+        }
+    }
+    private var modeSelection: Binding<Mode> { Binding(get: { mode }, set: changeMode) }
+    private var floorSelection: Binding<UUID?> {
+        Binding(get: { floorID }, set: { next in
+            guard let next else { return }
+            do {
+                if mode == .drafting, let drafting { try drafting.selectStorey(next) }
+                floorID = next; wallStart = nil
+            } catch { message = error.localizedDescription }
+        })
+    }
+    private func changeMode(_ next: Mode) {
+        do {
+            if next == .drafting {
+                if drafting == nil {
+                    let initial = try document.building() == nil ? model : nil
+                    drafting = try CADBuildingDraftingSession(document: document, storeyID: floor.id, initialBuilding: initial)
+                }
+            } else { drafting?.end(); drafting = nil }
+            mode = next; wallStart = nil; drawingWall = false
+        } catch { message = error.localizedDescription }
+    }
     private func reload() {
         do { if let existing=try document.building() { model=existing }
-            else { model=CADBuildingDocument(name:document.name) }
-            if !model.storeys.contains(where:{$0.id == floorID}) { floorID=model.storeys[0].id }
+            else { model=drafting?.initialBuildingForNavigation ?? CADBuildingDocument(name:document.name) }
+            if !model.storeys.contains(where:{$0.id == floorID}), mode != .drafting { floorID=model.storeys[0].id }
+            drafting?.refresh()
         } catch { message=error.localizedDescription }
     }
     private func commit(_ next: CADBuildingDocument,expectedChangeCount:Int?=nil) throws {
@@ -230,8 +305,12 @@ public struct FloeBuildingWorkbenchView: View {
         } catch { message=error.localizedDescription }
     }
     private func makeDrawing() {
-        do { _=try document.createBuildingDrawing(storeyID:floor.id); mode = .drawings }
-        catch { mode = .drawings;message=error.localizedDescription }
+        if mode == .drafting, !model.storeys.contains(where: { $0.id == floorID }) {
+            message = CAD2DDraftingText.text("请先选择当前工程中的楼层。", "Choose a current project floor first.")
+            return
+        }
+        do { _=try document.createBuildingDrawing(storeyID:floor.id); changeMode(.drawings) }
+        catch { changeMode(.drawings);message=error.localizedDescription }
     }
 }
 

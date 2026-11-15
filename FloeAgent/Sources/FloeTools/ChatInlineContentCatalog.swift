@@ -182,7 +182,8 @@ public enum ChatInlineContentCatalog {
                 && artifact.byteCount <= 8 * 1_024 * 1_024
         }
         let imageProducers: Set<String> = ["image.generate", "image.playground", "image.view", "image.inspect",
-            "document.pdf.render", "browser.screenshot", "browser.observe", "vnc.observe", "studio.run"]
+            "document.pdf.render", "browser.screenshot", "browser.observe", "vnc.observe", "studio.run",
+            "game.run"]
         return imageProducers.contains(tool) && VerifiedToolImageArtifact.namespaces.contains(String(path[0]))
             && ProviderImageEvidencePolicy.canonicalMIMEType(artifact.mimeType) != nil
             && artifact.byteCount <= VerifiedToolImageArtifact.maximumStoredImageBytes

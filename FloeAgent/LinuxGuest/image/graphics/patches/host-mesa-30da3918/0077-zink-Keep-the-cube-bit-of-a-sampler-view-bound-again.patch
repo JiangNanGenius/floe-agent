@@ -1,0 +1,35 @@
+From f875f6f674890e85e0ff04a3dfce66bee61319ab Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Sat, 3 Oct 2026 21:08:37 -0400
+Subject: [PATCH] zink: Keep the cube bit of a sampler view bound again to its
+ slot
+
+Generated-by: LLM
+---
+ src/gallium/drivers/zink/zink_context.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/src/gallium/drivers/zink/zink_context.c b/src/gallium/drivers/zink/zink_context.c
+index e17815079ec..e5643b9ddd9 100644
+--- a/src/gallium/drivers/zink/zink_context.c
++++ b/src/gallium/drivers/zink/zink_context.c
+@@ -2441,6 +2441,8 @@ zink_set_sampler_views(struct pipe_context *pctx,
+          struct zink_sampler_view *b = zink_sampler_view(pview);
+ 
+          if (a == b) {
++            if (b && b->cube_array)
++               ctx->di.cubes[shader_type] |= BITFIELD_BIT(start_slot + i);
+             continue;
+          }
+ 
+@@ -2532,6 +2534,7 @@ zink_set_sampler_views(struct pipe_context *pctx,
+    for (unsigned i = 0; i < unbind_num_trailing_slots; ++i) {
+       unsigned slot = start_slot + num_views + i;
+       update |= !!ctx->sampler_views[shader_type][slot];
++      ctx->di.cubes[shader_type] &= ~BITFIELD_BIT(slot);
+       unbind_samplerview(ctx, shader_type, slot);
+       pipe_sampler_view_reference(&ctx->sampler_views[shader_type][slot], NULL);
+       update_descriptor_state_sampler(ctx, shader_type, slot, NULL);
+-- 
+2.54.0 (Apple Git-157)
+

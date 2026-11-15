@@ -1,0 +1,28 @@
+From 529bd84f7b1134e91f7e4c66ef777bc7d413d2aa Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Thu, 1 Oct 2026 13:38:33 -0400
+Subject: [PATCH] kk: Check that a buffer reports its sparse tier before
+ reading it
+
+Generated-by: LLM
+---
+ src/kosmickrisp/bridge/mtl_buffer.m | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/kosmickrisp/bridge/mtl_buffer.m b/src/kosmickrisp/bridge/mtl_buffer.m
+index 9dd1cd3ed38..5bbeb946939 100644
+--- a/src/kosmickrisp/bridge/mtl_buffer.m
++++ b/src/kosmickrisp/bridge/mtl_buffer.m
+@@ -70,7 +70,8 @@
+       id<MTLBuffer> buf = (id<MTLBuffer>)buffer;
+       MTLTextureDescriptor *descriptor = [mtl_new_texture_descriptor(layout) autorelease];
+       descriptor.resourceOptions = buf.resourceOptions;
+-      if (buf.sparseBufferTier != MTLBufferSparseTierNone)
++      if ([buf respondsToSelector:@selector(sparseBufferTier)] &&
++          buf.sparseBufferTier != MTLBufferSparseTierNone)
+          descriptor.placementSparsePageSize = MTLSparsePageSize64;
+       id<MTLTexture> texture = [buf newTextureWithDescriptor:descriptor offset:offset bytesPerRow:layout->linear_stride_B];
+ 
+-- 
+2.54.0 (Apple Git-157)
+

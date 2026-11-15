@@ -14,7 +14,7 @@ public struct VerifiedToolImageArtifact: Sendable {
     public static let namespaces: Set<String> = [
         "BrowserArtifacts", "GeneratedImages", "VNCArtifacts",
         "CADViewportArtifacts", "CADAnimationFrames", "EngineeringObservations",
-        "ImageInspectionArtifacts"
+        "ImageInspectionArtifacts", "GameArtifacts"
     ]
 
     public let reference: ToolArtifactReference

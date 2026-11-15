@@ -1,0 +1,3 @@
+#ifndef LINUX_COMPILER_TYPES_H
+#define LINUX_COMPILER_TYPES_H
+#endif

@@ -32,6 +32,8 @@
 #include "virtio_gpu.h"
 #include "virtio_gpu_protocol.h"
 #include "virtio_gpu_shm.h"
+#include "virtio_gpu_pending.h"
+#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -225,14 +227,7 @@ typedef struct VirtIOGPU {
      * is still mapped and a worker may still hold a D-TLB host pointer into it.
      * So unmap_blob / resource_unref / ctx_destroy AND the completion-ring
      * reset all wait for the real all-worker drain instead of running inline. */
-    struct {
-        bool in_use;
-        u32  res_id;
-        bool backend_mapped;      /* call resource_unmap_blob first */
-        bool release_resource;    /* then free the resource table slot */
-        u64  off, len;            /* aperture range still registered */
-        u64  charged;             /* logical bytes to return on release */
-    } pend_res[GPU_MAX_ORPHANS];
+    VGPendingRelease pend_res[GPU_MAX_ORPHANS];
     struct { bool in_use; u32 ctx_id; } pend_ctx[GPU_MAX_CONTEXTS];
     bool pend_ring_reset;         /* completion ring reset awaits the drain */
     bool teardown;                /* a device-wide teardown is in progress */
@@ -248,7 +243,62 @@ typedef struct VirtIOGPU {
     _Atomic u32  cb_inflight;
     /* diagnostics */
     u64 stat_cmds, stat_fences, stat_deferred_unmaps, stat_bad_chain;
+    u64 stat_unref_coalesced;   /* RESOURCE_UNREF merged into a deferred unmap */
+    u64 stat_release_done;      /* full releases completed by the quiet drain */
+    u64 stat_release_bytes;     /* logical bytes returned by those releases */
+    u64 stat_res_exhausted;     /* resource table full (honest failure count) */
+    u64 stat_invariant_faults;  /* logical-byte invariants violated (device failed) */
 } VirtIOGPU;
+
+
+/* ---- bounded opt-in lifetime tracing -----------------------------------
+ * FLOE_GPU_TRACE=1 enables; FLOE_GPU_TRACE_LIMIT caps emitted lines (default
+ * 4096, clamped 16..65536). Only resource/context ids, byte counts and
+ * lifecycle state are printed: no guest payload, no path, no secret. */
+static int vgpu_trace_enabled = -1;
+static unsigned vgpu_trace_limit = 4096u;
+static _Atomic unsigned vgpu_trace_events;
+
+static unsigned vgpu_trace_parse_limit(const char *value) {
+    if (!value || !*value) return 4096u;
+    char *end = NULL;
+    unsigned long n = strtoul(value, &end, 10);
+    if (end == value || (end && *end) || n < 16ul) return 4096u;
+    return n > 65536ul ? 65536u : (unsigned)n;
+}
+
+static void vgpu_trace_init(void) {
+    const char *mode = getenv("FLOE_GPU_TRACE");
+    vgpu_trace_enabled = (mode && *mode && strcmp(mode, "0") != 0);
+    vgpu_trace_limit = vgpu_trace_parse_limit(getenv("FLOE_GPU_TRACE_LIMIT"));
+}
+
+__attribute__((format(printf, 1, 2)))
+static void vgpu_trace(const char *fmt, ...) {
+    if (vgpu_trace_enabled < 0) vgpu_trace_init();
+    if (!vgpu_trace_enabled) return;
+    unsigned n = atomic_fetch_add_explicit(&vgpu_trace_events, 1u, memory_order_relaxed);
+    if (n >= vgpu_trace_limit) {
+        if (n == vgpu_trace_limit) {
+            flockfile(stderr);
+            fprintf(stderr, "vgpu:trace status=disabled events=%u limit=%u\n",
+                    n, vgpu_trace_limit);
+            funlockfile(stderr);
+        }
+        return;
+    }
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    flockfile(stderr);
+    fprintf(stderr, "vgpu:trace t=%llu ",
+            (unsigned long long)ts.tv_sec * 1000ull + (unsigned long long)(ts.tv_nsec / 1000000));
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    fputc('\n', stderr);
+    funlockfile(stderr);
+}
 
 static void gpu_settle_budget(VirtIOGPU *v) {
     if(v->be&&v->be->get_budget) {
@@ -762,23 +812,31 @@ static bool gpu_build_iov(VirtIOGPU *v, const u8 *entries, u32 nr,
     return true;
 }
 
+/* fence/completion helper defined with the command path below */
+static bool cmd_needs_backend_fence(u32 type);
+
 /* --------------------------------------------------- quiesce bookkeeping */
 /* Record an aperture range that must be released once every hart is parked.
  * The registry keeps the segment fully mapped (and the backend keeps its pages)
  * until then, so no access can dangle in the meantime. */
 static bool pend_add(VirtIOGPU *v, u32 res_id, bool backend_mapped,
                      bool release_resource, u64 off, u64 len, u64 charged) {
-    for (u32 i = 0; i < GPU_MAX_ORPHANS; i++) {
-        if (v->pend_res[i].in_use) continue;
-        v->pend_res[i].in_use = true;
-        v->pend_res[i].res_id = res_id;
-        v->pend_res[i].backend_mapped = backend_mapped;
-        v->pend_res[i].release_resource = release_resource;
-        v->pend_res[i].off = off; v->pend_res[i].len = len;
-        v->pend_res[i].charged = charged;
-        return true;
-    }
-    return false;   /* table full: caller must NOT release the backing */
+    bool ok = vg_pending_add(v->pend_res, GPU_MAX_ORPHANS, res_id,
+                             backend_mapped, release_resource, off, len, charged);
+    /* Table full: the caller must NOT release the backing. */
+    return ok;
+}
+
+/* RESOURCE_UNREF arrived while a deferred UNMAP_BLOB is still in flight for the
+ * same resource. The guest has dropped its object, so the pending unmap record
+ * must become a full release; otherwise the drain would unmap the aperture and
+ * then forget the resource, stranding its slot and backend fd/pages until a
+ * device reset. The logical charge moves to the pending record exactly once. */
+static bool pend_escalate_release(VirtIOGPU *v, VGResource *r) {
+    if (!vg_pending_escalate(v->pend_res, GPU_MAX_ORPHANS, r->id, r->charged))
+        return false;
+    r->charged = 0;
+    return true;
 }
 
 static void request_quiesce(VirtIOGPU *v) {
@@ -822,7 +880,26 @@ int virtio_gpu_quiesce_drain(struct VirtIOGPU *v) {
                 if (v->be && v->be->resource_unref) v->be->resource_unref(v->be->opaque, id);
                 memset(r, 0, sizeof(*r));
             }
-            v->live_bytes -= v->pend_res[i].charged;
+            if (v->pend_res[i].charged <= v->live_bytes) {
+                v->live_bytes -= v->pend_res[i].charged;
+                v->stat_release_done++;
+                v->stat_release_bytes += v->pend_res[i].charged;
+                vgpu_trace("ev=drain-release res=%u bytes=%llu backend_mapped=%u",
+                           id, (unsigned long long)v->pend_res[i].charged,
+                           v->pend_res[i].backend_mapped ? 1u : 0u);
+            } else {
+                /* The resource was really unmapped/unreffed above, but the
+                 * logical byte ledger disagrees. Keep the charge, do NOT
+                 * report a normal release, and fail the device so the guest
+                 * resets instead of operating on an untrustworthy budget. */
+                v->stat_invariant_faults++;
+                vgpu_trace("ev=invariant-fault what=drain-charge res=%u live=%llu charged=%llu",
+                           id, (unsigned long long)v->live_bytes,
+                           (unsigned long long)v->pend_res[i].charged);
+                gpu_needs_reset(v);
+            }
+        } else {
+            vgpu_trace("ev=drain-unmap-only res=%u", id);
         }
         memset(&v->pend_res[i], 0, sizeof(v->pend_res[i]));
     }
@@ -854,12 +931,33 @@ int virtio_gpu_quiesce_drain(struct VirtIOGPU *v) {
         v->pend_ring_reset = false;
     }
 
-    /* Step 5: complete the commands that were held for the quiescent drain. */
-    for (u32 i = 0; i < GPU_MAX_INFLIGHT; i++) {
-        VGCmd *c = &v->inflight[i];
-        if (!c->active || !c->deferred) continue;
+    /* Step 5: complete the commands that were held for the quiescent drain.
+     * Walk in submit_seq order, not slot order, so a fenced deferred command on
+     * a timeline registers its backend fence in submission order. A fenced
+     * command that needs a backend fence must get a real token here; otherwise
+     * it would never satisfy c->fence_done and gpu_retire() would hold it (and
+     * its response) forever. Commands without a backend-fence type complete
+     * inline, exactly like the normal dispatch path. */
+    for (u64 seq = v->oldest_seq; seq < v->next_seq; seq++) {
+        VGCmd *c = &v->inflight[seq % GPU_MAX_INFLIGHT];
+        if (!c->active || c->submit_seq != seq || !c->deferred) continue;
         c->deferred = false;
         resp_ok(c);
+        if (c->fenced && cmd_needs_backend_fence(c->req_type) &&
+            v->be && v->be->create_fence) {
+            FloeGPUFenceID fid;
+            memset(&fid, 0, sizeof(fid));
+            fid.ctx_id = c->req_ctx_id;
+            fid.ring_idx = c->req_ring_idx;
+            fid.ring_valid = c->ring_valid ? 1u : 0u;
+            fid.fence_id = c->req_fence_id;
+            if (v->be->create_fence(v->be->opaque, &fid) == 0)
+                c->fence_registered = true;
+            else
+                c->fence_done = true;      /* backend declines: inline complete */
+        } else if (c->fenced) {
+            c->fence_done = true;
+        }
     }
     v->teardown = false;
     v->needs_quiesce = false;
@@ -926,7 +1024,29 @@ static void h_resource_unref(VirtIOGPU *v, VGCmd *c, const VGChain *ch) {
     u32 id = rd32(b);
     VGResource *r = res_find(v, id);
     if (!r) { resp_err(c, VIRTIO_GPU_RESP_ERR_INVALID_RESOURCE_ID); return; }
-    if (r->unmap_pending) { resp_ok(c); return; }   /* release already in flight */
+    if (r->unmap_pending) {
+        /* A deferred UNMAP_BLOB is in flight. The guest has already dropped its
+         * object, so the pending record must escalate to a full release;
+         * acking here without that step is the per-client resource leak fixed
+         * by this patch (slot, renderer resource and backend fd/pages stayed
+         * charged until reset). Publish the response only after the drain has
+         * really unmapped and unreffed. */
+        if (!pend_escalate_release(v, r)) {
+            /* No pending record to upgrade: fail closed, keep everything
+             * alive and fail the device rather than invent a release. */
+            v->stat_invariant_faults++;
+            vgpu_trace("ev=invariant-fault what=unref-escalate res=%u", id);
+            gpu_needs_reset(v);
+            resp_err(c, VIRTIO_GPU_RESP_ERR_OUT_OF_MEMORY);
+            return;
+        }
+        v->stat_unref_coalesced++;
+        request_quiesce(v);
+        v->quiesce_pending_ops++;
+        c->deferred = true;
+        vgpu_trace("ev=unref-deferred res=%u ctx=%u", id, c->req_ctx_id);
+        return;
+    }
     if (v->scanout_active && v->scanout_res == id) { v->scanout_active = false; v->scanout_res = 0; }
     if (r->mapped) {
         int rc = floe_gpu_shm_unmap(v->m, FLOE_GPU_SHM_BASE + r->map_off, r->map_len);
@@ -945,9 +1065,11 @@ static void h_resource_unref(VirtIOGPU *v, VGCmd *c, const VGChain *ch) {
                 return;
             }
             r->unmap_pending = true;
+            r->charged = 0;                     /* pending record owns the charge */
             request_quiesce(v);
             v->quiesce_pending_ops++;
             c->deferred = true;                 /* resp_ready stays false */
+            vgpu_trace("ev=unref-deferred-mapped res=%u ctx=%u", id, c->req_ctx_id);
             return;
         }
         if (r->backend_mapped && v->be && v->be->resource_unmap_blob)
@@ -956,8 +1078,22 @@ static void h_resource_unref(VirtIOGPU *v, VGCmd *c, const VGChain *ch) {
     }
     if (r->backing_attached && v->be && v->be->resource_detach_backing)
         v->be->resource_detach_backing(v->be->opaque, id);
-    if (r->charged) { v->live_bytes -= r->charged; r->charged = 0; }
+    u64 released = r->charged;
+    if (r->charged) {
+        if (r->charged <= v->live_bytes) v->live_bytes -= r->charged;
+        else {
+            v->stat_invariant_faults++;
+            vgpu_trace("ev=invariant-fault what=unref-charge res=%u live=%llu charged=%llu",
+                       id, (unsigned long long)v->live_bytes,
+                       (unsigned long long)r->charged);
+            gpu_needs_reset(v);
+        }
+        r->charged = 0;
+    }
     if (v->be && v->be->resource_unref) v->be->resource_unref(v->be->opaque, id);
+    vgpu_trace("ev=unref res=%u ctx=%u bytes=%llu live=%llu",
+               id, c->req_ctx_id, (unsigned long long)released,
+               (unsigned long long)v->live_bytes);
     memset(r, 0, sizeof(*r));
     resp_ok(c);
 }
@@ -1173,6 +1309,8 @@ static void h_ctx_destroy(VirtIOGPU *v, VGCmd *c) {
     if (!cx) { resp_err(c, VIRTIO_GPU_RESP_ERR_INVALID_CONTEXT_ID); return; }
     int rc = (v->be && v->be->ctx_destroy)
         ? v->be->ctx_destroy(v->be->opaque, c->req_ctx_id) : 0;
+    vgpu_trace("ev=ctx-destroy ctx=%u rc=%d resources=%u",
+               c->req_ctx_id, rc, res_count(v));
     ctx_cancel_fences(v, c->req_ctx_id);
     if (rc) { resp_rc(c, rc); return; }
     memset(cx, 0, sizeof(*cx));
@@ -1331,8 +1469,12 @@ static void h_resource_create_blob(VirtIOGPU *v, VGCmd *c, const VGChain *ch) {
         resp_err(c, VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER); return;  /* HOST3D takes no entries */
     }
     VGResource *r = res_alloc(v, id);
-    if (!r) { resp_err(c, res_find(v, id) ? VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER
-                                          : VIRTIO_GPU_RESP_ERR_OUT_OF_MEMORY); return; }
+    if (!r) {
+        if (!res_find(v, id)) v->stat_res_exhausted++;
+        resp_err(c, res_find(v, id) ? VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER
+                                    : VIRTIO_GPU_RESP_ERR_OUT_OF_MEMORY);
+        return;
+    }
     r->kind = VG_RES_BLOB; r->blob_mem = blob_mem; r->blob_flags = blob_flags;
     r->blob_id = blob_id; r->size = size; r->ctx_id = c->req_ctx_id;
     memcpy(r->iov, iov, sizeof(struct iovec) * niov);
@@ -1344,6 +1486,10 @@ static void h_resource_create_blob(VirtIOGPU *v, VGCmd *c, const VGChain *ch) {
     if (rc) { r->in_use = false; resp_rc(c, rc); return; }
     r->charged = charged;
     v->live_bytes += charged;
+    vgpu_trace("ev=create-blob res=%u ctx=%u mem=%u flags=%u blob=%llu bytes=%llu live=%llu",
+               id, c->req_ctx_id, blob_mem, blob_flags,
+               (unsigned long long)blob_id, (unsigned long long)charged,
+               (unsigned long long)v->live_bytes);
     resp_ok(c);
 }
 
@@ -1444,6 +1590,9 @@ static void h_resource_map_blob(VirtIOGPU *v, VGCmd *c, const VGChain *ch) {
     }
     r->mapped = true; r->backend_mapped = (host != NULL);
     r->map_off = off; r->map_len = len;
+    vgpu_trace("ev=map res=%u ctx=%u off=%llu len=%llu backend=%u",
+               id, r->ctx_id, (unsigned long long)off, (unsigned long long)len,
+               host ? 1u : 0u);
     resp_hdr(c, VIRTIO_GPU_RESP_OK_MAP_INFO);
     /* Write-combining: host-visible GPU memory is not cache-coherent with this
      * guest CPU model, and WC is what the Linux driver expects for virtio-gpu
@@ -1474,11 +1623,22 @@ static void h_resource_unmap_blob(VirtIOGPU *v, VGCmd *c, const VGChain *ch) {
         request_quiesce(v);
         v->quiesce_pending_ops++;
         c->deferred = true;                     /* resp_ready stays false */
+        v->stat_deferred_unmaps++;
+        vgpu_trace("ev=unmap-deferred res=%u ctx=%u off=%llu len=%llu",
+                   id, r->ctx_id, (unsigned long long)r->map_off,
+                   (unsigned long long)r->map_len);
+        return;
+    }
+    if (rc != FLOE_REGION_OK) {
+        /* Never drop a live aperture registration: the guest still believes the
+         * range is mapped. Fail the command and keep the resource intact. */
+        resp_err(c, VIRTIO_GPU_RESP_ERR_UNSPEC);
         return;
     }
     r->mapped = false; r->backend_mapped = false;
-    if (rc == FLOE_REGION_OK && v->be && v->be->resource_unmap_blob)
+    if (v->be && v->be->resource_unmap_blob)
         v->be->resource_unmap_blob(v->be->opaque, id);
+    vgpu_trace("ev=unmap res=%u ctx=%u", id, r->ctx_id);
     resp_ok(c);
 }
 
@@ -1858,6 +2018,9 @@ static void gpu_write(void *opaque, u64 off, unsigned size, u64 val) {
  *     that reused the same (ctx, ring, fence_id) identity. */
 static void gpu_release_all(VirtIOGPU *v, bool quiescent_ok) {
     v->teardown = true;
+    vgpu_trace("ev=release-all quiescent=%u resources=%u contexts=%u live=%llu",
+               quiescent_ok ? 1u : 0u, res_count(v), ctx_count(v),
+               (unsigned long long)v->live_bytes);
     /* Phase A.1: cancel outstanding fences so no late completion references a
      * released identity. The backend contract requires cancel_fence to
      * guarantee no later completion for that identity. */
@@ -1888,6 +2051,7 @@ static void gpu_release_all(VirtIOGPU *v, bool quiescent_ok) {
                 if (pend_add(v, r->id, r->backend_mapped, true, r->map_off,
                              r->map_len, r->charged)) {
                     r->unmap_pending = true;
+                    r->charged = 0;             /* pending record owns the charge */
                     v->needs_quiesce = true;
                     continue;
                 }
@@ -1897,10 +2061,42 @@ static void gpu_release_all(VirtIOGPU *v, bool quiescent_ok) {
             }
             r->mapped = false; r->backend_mapped = false;
         }
-        if (r->unmap_pending) { v->needs_quiesce = true; continue; }
+        if (r->unmap_pending) {
+            /* Teardown reached with an unmap-only deferral. The device is
+             * going away, so the drain must release the resource, not merely
+             * unmap it. Escalation moves the logical charge once. A missing
+             * record is an invariant violation; keep the page mapped and fail
+             * the device rather than free a resource without a release. */
+            if (!pend_escalate_release(v, r)) {
+                v->stat_invariant_faults++;
+                vgpu_trace("ev=invariant-fault what=teardown-escalate res=%u", r->id);
+                gpu_needs_reset(v);
+            }
+            v->needs_quiesce = true;
+            continue;
+        }
         if (r->backing_attached && v->be && v->be->resource_detach_backing)
             v->be->resource_detach_backing(v->be->opaque, r->id);
         if (v->be && v->be->resource_unref) v->be->resource_unref(v->be->opaque, r->id);
+        /* The resource is really unreffed now, so its logical charge must be
+         * returned here as well; otherwise a device reset leaves a phantom
+         * live_bytes charge that outlives every resource. */
+        if (r->charged) {
+            if (r->charged <= v->live_bytes) {
+                v->live_bytes -= r->charged;
+                v->stat_release_done++;
+                v->stat_release_bytes += r->charged;
+                vgpu_trace("ev=teardown-release res=%u bytes=%llu",
+                           r->id, (unsigned long long)r->charged);
+            } else {
+                v->stat_invariant_faults++;
+                vgpu_trace("ev=invariant-fault what=teardown-charge res=%u live=%llu charged=%llu",
+                           r->id, (unsigned long long)v->live_bytes,
+                           (unsigned long long)r->charged);
+                gpu_needs_reset(v);
+            }
+            r->charged = 0;
+        }
         memset(r, 0, sizeof(*r));
     }
 
@@ -2064,6 +2260,10 @@ int virtio_gpu_set_budget(struct VirtIOGPU *v, u64 bytes,
     u64 target=pending?pending:bytes;
     v->pending_target=v->budget_bytes>target?target:0;
     gpu_settle_budget(v);
+    vgpu_trace("ev=budget-set requested=%llu actual=%llu pending=%llu live=%llu",
+               (unsigned long long)bytes, (unsigned long long)v->budget_bytes,
+               (unsigned long long)v->pending_target,
+               (unsigned long long)v->live_bytes);
     if (actual_out) *actual_out = v->budget_bytes;
     if (pending_target_out) *pending_target_out = v->pending_target;
     return 0;
@@ -2092,6 +2292,16 @@ void virtio_gpu_get_info(struct VirtIOGPU *v, VirtIOGPUInfo *out) {
         for (u32 i = 0; i < GPU_MAX_RESOURCES; i++)
             if (v->res[i].in_use && v->res[i].mapped) out->aperture_bytes += v->res[i].map_len;
     }
+    for (u32 i = 0; i < GPU_MAX_ORPHANS; i++)
+        if (v->pend_res[i].in_use) out->pending_releases++;
+    for (u32 i = 0; i < GPU_MAX_INFLIGHT; i++)
+        if (v->inflight[i].active && v->inflight[i].deferred) out->deferred_commands++;
+    out->releases_done = v->stat_release_done;
+    out->releases_bytes = v->stat_release_bytes;
+    out->unrefs_coalesced = v->stat_unref_coalesced;
+    out->unmaps_deferred = v->stat_deferred_unmaps;
+    out->resource_exhausted = v->stat_res_exhausted;
+    out->invariant_faults = v->stat_invariant_faults;
     out->features = v->features;
     out->status = v->status;
     out->isr = v->isr;

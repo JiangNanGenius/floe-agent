@@ -1,0 +1,675 @@
+From ceb2425a741cef893df3b1e94cc06ac93982bc84 Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Thu, 1 Oct 2026 14:45:15 -0400
+Subject: [PATCH] kk: Implement 64-bit atomics on buffers and shared memory
+
+Generated-by: LLM
+---
+ src/kosmickrisp/compiler/nir_to_msl.c         |  13 +-
+ src/kosmickrisp/vulkan/kk_cmd_buffer.c        |   1 +
+ src/kosmickrisp/vulkan/kk_cmd_buffer.h        |   1 +
+ src/kosmickrisp/vulkan/kk_device.c            |  30 +-
+ src/kosmickrisp/vulkan/kk_device.h            |   8 +
+ .../vulkan/kk_nir_lower_atomic64.c            | 353 ++++++++++++++++++
+ src/kosmickrisp/vulkan/kk_physical_device.c   |   2 +
+ src/kosmickrisp/vulkan/kk_queue.c             |   2 +-
+ src/kosmickrisp/vulkan/kk_queue.h             |   2 +
+ src/kosmickrisp/vulkan/kk_shader.c            |  21 +-
+ src/kosmickrisp/vulkan/kk_shader.h            |   9 +
+ src/kosmickrisp/vulkan/meson.build            |   1 +
+ 12 files changed, 433 insertions(+), 10 deletions(-)
+ create mode 100644 src/kosmickrisp/vulkan/kk_nir_lower_atomic64.c
+
+diff --git a/src/kosmickrisp/compiler/nir_to_msl.c b/src/kosmickrisp/compiler/nir_to_msl.c
+index ab245615fea..8f06c458c8a 100644
+--- a/src/kosmickrisp/compiler/nir_to_msl.c
++++ b/src/kosmickrisp/compiler/nir_to_msl.c
+@@ -736,6 +736,8 @@ instrinsic_needs_dest_type(nir_intrinsic_instr *instr)
+        op == nir_intrinsic_bindless_image_atomic_swap ||
+        op == nir_intrinsic_bindless_image_sparse_load)
+       return false;
++   if (op == nir_intrinsic_global_atomic && instr->def.bit_size == 64)
++      return false;
+    return info->has_dest;
+ }
+ 
+@@ -967,8 +969,15 @@ atomic_to_msl(struct nir_to_msl_ctx *ctx, nir_intrinsic_instr *instr,
+    const char *atomic_op = atomic_op_to_msl(nir_intrinsic_atomic_op(instr));
+    const char *mem_order = "memory_order_relaxed";
+ 
+-   P(ctx, "%s_explicit((%s atomic_%s*)", atomic_op, scope,
+-     msl_type_for_def(ctx->types, &instr->def));
++   if (instr->def.bit_size == 64) {
++      const bool is_max = nir_intrinsic_atomic_op(instr) == nir_atomic_op_umax;
++      assert(is_max || nir_intrinsic_atomic_op(instr) == nir_atomic_op_umin);
++      P_IND(ctx, "%s_explicit((%s atomic_ulong*)",
++            is_max ? "atomic_max" : "atomic_min", scope);
++   } else {
++      P(ctx, "%s_explicit((%s atomic_%s*)", atomic_op, scope,
++        msl_type_for_def(ctx->types, &instr->def));
++   }
+    if (shared)
+       P(ctx, "&shared_data[%u + ", nir_intrinsic_base(instr));
+    src_to_msl(ctx, &instr->src[0]);
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_buffer.c b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+index ee30aad7213..431b1673a9e 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+@@ -846,6 +846,7 @@ kk_upload_descriptor_root(struct kk_cmd_buffer *cmd,
+    root->addr = root_ptr.gpu;
+    root->sparse_residency =
+       dev->sparse_residency.bo ? dev->sparse_residency.bo->gpu : 0u;
++   root->atomic64 = dev->atomic64.bo->gpu;
+ 
+    memcpy(root_ptr.cpu, root, sizeof(*root));
+    desc->root_dirty = false;
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_buffer.h b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+index 9cac5bb538d..fc71b9da7cd 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.h
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+@@ -62,6 +62,7 @@ struct kk_root_descriptor_table {
+    uint8_t set_dynamic_buffer_start[KK_MAX_SETS];
+ 
+    uint64_t sparse_residency;
++   uint64_t atomic64;
+    uint32_t zero;
+ };
+ 
+diff --git a/src/kosmickrisp/vulkan/kk_device.c b/src/kosmickrisp/vulkan/kk_device.c
+index 6e841e0c611..3ee0fc96f4e 100644
+--- a/src/kosmickrisp/vulkan/kk_device.c
++++ b/src/kosmickrisp/vulkan/kk_device.c
+@@ -253,6 +253,22 @@ kk_get_timestamp(struct vk_device *device, uint64_t *timestamp)
+    return VK_SUCCESS;
+ }
+ 
++void
++kk_device_lock_atomic64(struct kk_device *dev, uint32_t classes)
++{
++   if ((p_atomic_read(&dev->atomic64.locked) & classes) == classes)
++      return;
++
++   simple_mtx_lock(&dev->atomic64.lock);
++   uint32_t *flags = dev->atomic64.bo->cpu;
++   u_foreach_bit(c, classes)
++      p_atomic_set(&flags[c], 1u);
++   if (dev->has_queue)
++      kk_queue_wait_for_commits(&dev->queue);
++   p_atomic_set(&dev->atomic64.locked, dev->atomic64.locked | classes);
++   simple_mtx_unlock(&dev->atomic64.lock);
++}
++
+ static void
+ kk_device_finish_sparse_residency(struct kk_device *dev)
+ {
+@@ -363,9 +379,16 @@ kk_CreateDevice(VkPhysicalDevice physicalDevice,
+       simple_mtx_init(&dev->sparse_residency.lock, mtx_plain);
+    }
+ 
+-   result = kk_device_init_lib(dev);
++   result = kk_alloc_bo(dev, &dev->vk.base, KK_ATOMIC64_ARENA_SIZE, 8u,
++                        &dev->atomic64.bo);
+    if (result != VK_SUCCESS)
+       goto fail_sparse_residency;
++   memset(dev->atomic64.bo->cpu, 0, KK_ATOMIC64_ARENA_SIZE);
++   simple_mtx_init(&dev->atomic64.lock, mtx_plain);
++
++   result = kk_device_init_lib(dev);
++   if (result != VK_SUCCESS)
++      goto fail_atomic64;
+ 
+    if (pdev->settings.gpu_capture_enabled) {
+       const char *capture_directory =
+@@ -377,6 +400,9 @@ kk_CreateDevice(VkPhysicalDevice physicalDevice,
+ 
+    return VK_SUCCESS;
+ 
++fail_atomic64:
++   simple_mtx_destroy(&dev->atomic64.lock);
++   kk_destroy_bo(dev, dev->atomic64.bo);
+ fail_sparse_residency:
+    kk_device_finish_sparse_residency(dev);
+ fail_sampler_heap:
+@@ -427,6 +453,8 @@ kk_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
+    if (dev->heap)
+       kk_destroy_bo(dev, dev->heap);
+ 
++   simple_mtx_destroy(&dev->atomic64.lock);
++   kk_destroy_bo(dev, dev->atomic64.bo);
+    kk_device_finish_sparse_residency(dev);
+ 
+    if (dev->has_queue) {
+diff --git a/src/kosmickrisp/vulkan/kk_device.h b/src/kosmickrisp/vulkan/kk_device.h
+index ea535c54224..33534de675b 100644
+--- a/src/kosmickrisp/vulkan/kk_device.h
++++ b/src/kosmickrisp/vulkan/kk_device.h
+@@ -113,8 +113,16 @@ struct kk_device {
+       struct util_idalloc tags;
+       simple_mtx_t lock;
+    } sparse_residency;
++
++   struct {
++      struct kk_bo *bo;
++      simple_mtx_t lock;
++      uint32_t locked;
++   } atomic64;
+ };
+ 
++void kk_device_lock_atomic64(struct kk_device *dev, uint32_t classes);
++
+ VK_DEFINE_HANDLE_CASTS(kk_device, vk.base, VkDevice, VK_OBJECT_TYPE_DEVICE)
+ 
+ static inline void
+diff --git a/src/kosmickrisp/vulkan/kk_nir_lower_atomic64.c b/src/kosmickrisp/vulkan/kk_nir_lower_atomic64.c
+new file mode 100644
+index 00000000000..1a630c727a4
+--- /dev/null
++++ b/src/kosmickrisp/vulkan/kk_nir_lower_atomic64.c
+@@ -0,0 +1,353 @@
++/*
++ * Copyright 2026 David Andrews
++ * SPDX-License-Identifier: MIT
++ */
++
++#include "kk_cmd_buffer.h"
++#include "kk_shader.h"
++
++#include "nir_builder.h"
++
++enum target_kind {
++   TARGET_GLOBAL,
++   TARGET_SHARED,
++};
++
++struct target {
++   enum target_kind kind;
++   nir_def *addr;
++   unsigned base;
++};
++
++static nir_def *
++load_arena(nir_builder *b)
++{
++   nir_def *root = nir_load_buffer_ptr_kk(b, 1, 64, .binding = 0);
++   return nir_build_load_global_constant(
++      b, 1, 64,
++      nir_iadd_imm(b, root,
++                   offsetof(struct kk_root_descriptor_table, atomic64)),
++      .align_mul = 8, .access = ACCESS_CAN_SPECULATE);
++}
++
++static nir_def *
++load_locked_flag(nir_builder *b, unsigned class)
++{
++   return nir_build_load_global(b, 1, 32,
++                                nir_iadd_imm(b, load_arena(b), 4u * class),
++                                .align_mul = 4, .access = ACCESS_ATOMIC);
++}
++
++static nir_def *
++lock_address(nir_builder *b, const struct target *t)
++{
++   nir_def *key = t->kind == TARGET_GLOBAL
++                     ? nir_u2u32(b, nir_ushr_imm(b, t->addr, 3))
++                     : nir_iadd_imm(b, nir_ushr_imm(b, t->addr, 3), t->base);
++   nir_def *slot = nir_iand_imm(b, key, KK_ATOMIC64_LOCK_COUNT - 1u);
++   nir_def *offset =
++      nir_iadd_imm(b, nir_ishl_imm(b, slot, 2), KK_ATOMIC64_LOCK_OFFSET);
++   return nir_iadd(b, load_arena(b), nir_u2u64(b, offset));
++}
++
++static void
++fence(nir_builder *b, const struct target *t)
++{
++   nir_barrier(b, .execution_scope = SCOPE_NONE, .memory_scope = SCOPE_DEVICE,
++               .memory_semantics = NIR_MEMORY_ACQ_REL,
++               .memory_modes = t->kind == TARGET_GLOBAL ? nir_var_mem_ssbo
++                                                        : nir_var_mem_shared);
++}
++
++static nir_def *
++load_value(nir_builder *b, const struct target *t)
++{
++   if (t->kind == TARGET_GLOBAL)
++      return nir_build_load_global(b, 1, 64, t->addr, .align_mul = 8);
++
++   return nir_load_shared(b, 1, 64, t->addr, .base = t->base, .align_mul = 8);
++}
++
++static void
++store_value(nir_builder *b, const struct target *t, nir_def *value)
++{
++   if (t->kind == TARGET_GLOBAL)
++      nir_build_store_global(b, value, t->addr, .align_mul = 8,
++                             .write_mask = 1);
++   else
++      nir_store_shared(b, value, t->addr, .base = t->base, .align_mul = 8,
++                       .write_mask = 1);
++}
++
++static nir_def *
++apply(nir_builder *b, nir_atomic_op op, nir_def *old, nir_def *data,
++      nir_def *swap)
++{
++   switch (op) {
++   case nir_atomic_op_iadd:
++      return nir_iadd(b, old, data);
++   case nir_atomic_op_imin:
++      return nir_imin(b, old, data);
++   case nir_atomic_op_umin:
++      return nir_umin(b, old, data);
++   case nir_atomic_op_imax:
++      return nir_imax(b, old, data);
++   case nir_atomic_op_umax:
++      return nir_umax(b, old, data);
++   case nir_atomic_op_iand:
++      return nir_iand(b, old, data);
++   case nir_atomic_op_ior:
++      return nir_ior(b, old, data);
++   case nir_atomic_op_ixor:
++      return nir_ixor(b, old, data);
++   case nir_atomic_op_xchg:
++      return data;
++   case nir_atomic_op_cmpxchg:
++      return nir_bcsel(b, nir_ieq(b, old, data), swap, old);
++   default:
++      UNREACHABLE("not an integer atomic operation");
++   }
++}
++
++static nir_def *
++critical_section(nir_builder *b, const struct target *t, nir_atomic_op op,
++                 nir_def *data, nir_def *swap)
++{
++   fence(b, t);
++   nir_def *old = load_value(b, t);
++   store_value(b, t, apply(b, op, old, data, swap));
++   fence(b, t);
++   return old;
++}
++
++static nir_def *
++try_lock(nir_builder *b, nir_def *lock)
++{
++   nir_def *held = nir_global_atomic_swap(b, 32, lock, nir_imm_int(b, 0),
++                                          nir_imm_int(b, 1),
++                                          .atomic_op = nir_atomic_op_cmpxchg);
++   return nir_ieq_imm(b, held, 0);
++}
++
++static nir_def *
++unlock(nir_builder *b, nir_def *lock)
++{
++   return nir_global_atomic(b, 32, lock, nir_imm_int(b, 0),
++                            .atomic_op = nir_atomic_op_xchg);
++}
++
++static nir_def *
++locked_in_turns(nir_builder *b, const struct target *t, nir_atomic_op op,
++                nir_def *data, nir_def *swap)
++{
++   nir_function_impl *impl = b->impl;
++   nir_variable *result =
++      nir_local_variable_create(impl, glsl_uint64_t_type(), "atomic64_old");
++   nir_variable *turn =
++      nir_local_variable_create(impl, glsl_uint_type(), "atomic64_turn");
++
++   nir_def *lock = lock_address(b, t);
++   nir_def *lane = nir_load_subgroup_invocation(b);
++   nir_store_var(b, turn, nir_imm_int(b, 0), 1);
++   nir_store_var(b, result, nir_imm_int64(b, 0), 1);
++
++   nir_push_loop(b);
++   {
++      nir_def *j = nir_load_var(b, turn);
++      nir_break_if(b, nir_uge_imm(b, j, 32));
++      nir_push_if(b, nir_ieq(b, j, lane));
++      {
++         nir_push_loop(b);
++         nir_break_if(b, try_lock(b, lock));
++         nir_pop_loop(b, NULL);
++
++         nir_store_var(b, result, critical_section(b, t, op, data, swap), 1);
++         unlock(b, lock);
++      }
++      nir_pop_if(b, NULL);
++      nir_store_var(b, turn, nir_iadd_imm(b, j, 1), 1);
++   }
++   nir_pop_loop(b, NULL);
++
++   return nir_load_var(b, result);
++}
++
++static nir_def *
++locked_by_state(nir_builder *b, const struct target *t, nir_atomic_op op,
++                nir_def *data, nir_def *swap)
++{
++   nir_function_impl *impl = b->impl;
++   nir_variable *result =
++      nir_local_variable_create(impl, glsl_uint64_t_type(), "atomic64_old");
++   nir_variable *state =
++      nir_local_variable_create(impl, glsl_uint_type(), "atomic64_state");
++
++   nir_def *lock = lock_address(b, t);
++   nir_store_var(b, state, nir_imm_int(b, 0), 1);
++   nir_store_var(b, result, nir_imm_int64(b, 0), 1);
++
++   nir_push_loop(b);
++   {
++      nir_def *s = nir_load_var(b, state);
++      nir_break_if(b, nir_ieq_imm(b, s, 2));
++      nir_push_if(b, nir_ieq_imm(b, s, 1));
++      {
++         nir_store_var(b, result, critical_section(b, t, op, data, swap), 1);
++         nir_store_var(b, state, nir_iadd_imm(b, unlock(b, lock), 1), 1);
++      }
++      nir_push_else(b, NULL);
++      {
++         nir_store_var(b, state, nir_b2i32(b, try_lock(b, lock)), 1);
++      }
++      nir_pop_if(b, NULL);
++   }
++   nir_pop_loop(b, NULL);
++
++   return nir_load_var(b, result);
++}
++
++static nir_def *
++locked(nir_builder *b, const struct target *t, nir_atomic_op op, nir_def *data,
++       nir_def *swap)
++{
++   const mesa_shader_stage stage = b->shader->info.stage;
++   if (stage == MESA_SHADER_COMPUTE || stage == MESA_SHADER_FRAGMENT)
++      return locked_in_turns(b, t, op, data, swap);
++
++   return locked_by_state(b, t, op, data, swap);
++}
++
++static bool
++is_atomic64(const nir_intrinsic_instr *intrin)
++{
++   switch (intrin->intrinsic) {
++   case nir_intrinsic_global_atomic:
++   case nir_intrinsic_global_atomic_swap:
++   case nir_intrinsic_shared_atomic:
++   case nir_intrinsic_shared_atomic_swap:
++      return intrin->def.bit_size == 64;
++   case nir_intrinsic_load_global:
++   case nir_intrinsic_load_global_constant_offset:
++      return intrin->def.bit_size == 64 &&
++             (nir_intrinsic_access(intrin) & ACCESS_ATOMIC);
++   case nir_intrinsic_store_global:
++      return intrin->src[0].ssa->bit_size == 64 &&
++             (nir_intrinsic_access(intrin) & ACCESS_ATOMIC);
++   default:
++      return false;
++   }
++}
++
++static void
++lower_atomic(nir_builder *b, nir_intrinsic_instr *intrin, uint8_t *locked_out)
++{
++   b->cursor = nir_before_instr(&intrin->instr);
++
++   if (intrin->intrinsic == nir_intrinsic_load_global ||
++       intrin->intrinsic == nir_intrinsic_load_global_constant_offset) {
++      fence(b, &(struct target){.kind = TARGET_GLOBAL});
++      nir_intrinsic_set_access(intrin,
++                               nir_intrinsic_access(intrin) & ~ACCESS_ATOMIC);
++      return;
++   }
++
++   if (intrin->intrinsic == nir_intrinsic_store_global) {
++      struct target t = {.kind = TARGET_GLOBAL, .addr = intrin->src[1].ssa};
++      locked(b, &t, nir_atomic_op_xchg, intrin->src[0].ssa, NULL);
++      *locked_out |= BITFIELD_BIT(KK_ATOMIC64_BUFFER);
++      nir_instr_remove(&intrin->instr);
++      return;
++   }
++
++   const nir_atomic_op op = nir_intrinsic_atomic_op(intrin);
++   const bool is_swap = intrin->intrinsic == nir_intrinsic_global_atomic_swap ||
++                        intrin->intrinsic == nir_intrinsic_shared_atomic_swap;
++   const bool is_global = intrin->intrinsic == nir_intrinsic_global_atomic ||
++                          intrin->intrinsic == nir_intrinsic_global_atomic_swap;
++
++   struct target t = {
++      .kind = is_global ? TARGET_GLOBAL : TARGET_SHARED,
++      .addr = intrin->src[0].ssa,
++      .base = is_global ? 0 : nir_intrinsic_base(intrin),
++   };
++   nir_def *data = intrin->src[1].ssa;
++   nir_def *swap = is_swap ? intrin->src[2].ssa : NULL;
++
++   const bool native = is_global && nir_def_is_unused(&intrin->def) &&
++                       (op == nir_atomic_op_umax || op == nir_atomic_op_umin);
++   if (native) {
++      nir_push_if(b, nir_ieq_imm(b, load_locked_flag(b, KK_ATOMIC64_BUFFER), 0));
++      nir_global_atomic(b, 64, t.addr, data, .atomic_op = op);
++      nir_push_else(b, NULL);
++      locked(b, &t, op, data, swap);
++      nir_pop_if(b, NULL);
++      nir_instr_remove(&intrin->instr);
++      return;
++   }
++
++   if (is_global)
++      *locked_out |= BITFIELD_BIT(KK_ATOMIC64_BUFFER);
++
++   nir_def_replace(&intrin->def, locked(b, &t, op, data, swap));
++}
++
++static bool
++has_atomic64(nir_shader *nir)
++{
++   nir_foreach_function_impl(impl, nir) {
++      nir_foreach_block(block, impl) {
++         nir_foreach_instr(instr, block) {
++            if (instr->type == nir_instr_type_intrinsic &&
++                is_atomic64(nir_instr_as_intrinsic(instr)))
++               return true;
++         }
++      }
++   }
++   return false;
++}
++
++bool
++kk_nir_lower_atomic64(nir_shader *nir, uint8_t *locked_out)
++{
++   if (!has_atomic64(nir))
++      return false;
++
++   bool cleaned;
++   do {
++      cleaned = false;
++      NIR_PASS(cleaned, nir, nir_lower_vars_to_ssa);
++      NIR_PASS(cleaned, nir, nir_opt_copy_prop);
++      NIR_PASS(cleaned, nir, nir_opt_constant_folding);
++      NIR_PASS(cleaned, nir, nir_opt_dead_cf);
++      NIR_PASS(cleaned, nir, nir_opt_dce);
++   } while (cleaned);
++
++   bool progress = false;
++
++   nir_foreach_function_impl(impl, nir) {
++      struct util_dynarray atomics;
++      util_dynarray_init(&atomics, NULL);
++
++      nir_foreach_block(block, impl) {
++         nir_foreach_instr(instr, block) {
++            if (instr->type != nir_instr_type_intrinsic)
++               continue;
++            nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
++            if (is_atomic64(intrin))
++               util_dynarray_append(&atomics, intrin);
++         }
++      }
++
++      nir_builder b = nir_builder_create(impl);
++      util_dynarray_foreach(&atomics, nir_intrinsic_instr *, intrin)
++         lower_atomic(&b, *intrin, locked_out);
++
++      if (util_dynarray_num_elements(&atomics, nir_intrinsic_instr *)) {
++         progress = true;
++         nir_progress(true, impl, nir_metadata_none);
++      }
++      util_dynarray_fini(&atomics);
++   }
++
++   return progress;
++}
+diff --git a/src/kosmickrisp/vulkan/kk_physical_device.c b/src/kosmickrisp/vulkan/kk_physical_device.c
+index 455a7df0f5d..43558c78d46 100644
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c
+@@ -313,6 +313,8 @@ kk_get_device_features(
+       .shaderFloat16 = true,
+       .shaderInputAttachmentArrayDynamicIndexing = true,
+       .shaderInputAttachmentArrayNonUniformIndexing = true,
++      .shaderBufferInt64Atomics = true,
++      .shaderSharedInt64Atomics = true,
+       .shaderInt8 = true,
+       .shaderOutputLayer = true,
+       .shaderOutputViewportIndex = true,
+diff --git a/src/kosmickrisp/vulkan/kk_queue.c b/src/kosmickrisp/vulkan/kk_queue.c
+index bdd7c8ca38a..96063da7253 100644
+--- a/src/kosmickrisp/vulkan/kk_queue.c
++++ b/src/kosmickrisp/vulkan/kk_queue.c
+@@ -26,7 +26,7 @@ struct kk_commit_data {
+    struct kk_cmd_buffer *cmd;
+ };
+ 
+-static void
++void
+ kk_queue_wait_for_commits(struct kk_queue *queue)
+ {
+    mtx_lock(&queue->mutex);
+diff --git a/src/kosmickrisp/vulkan/kk_queue.h b/src/kosmickrisp/vulkan/kk_queue.h
+index ddc9a3cb9c4..f9f990af9ea 100644
+--- a/src/kosmickrisp/vulkan/kk_queue.h
++++ b/src/kosmickrisp/vulkan/kk_queue.h
+@@ -43,6 +43,8 @@ VkResult kk_queue_init(struct kk_device *dev, struct kk_queue *queue,
+                        const VkDeviceQueueCreateInfo *pCreateInfo,
+                        uint32_t index_in_family);
+ 
++void kk_queue_wait_for_commits(struct kk_queue *queue);
++
+ void kk_queue_finish(struct kk_device *dev, struct kk_queue *queue);
+ 
+ #endif
+diff --git a/src/kosmickrisp/vulkan/kk_shader.c b/src/kosmickrisp/vulkan/kk_shader.c
+index 7c81d2752fe..24b3069df67 100644
+--- a/src/kosmickrisp/vulkan/kk_shader.c
++++ b/src/kosmickrisp/vulkan/kk_shader.c
+@@ -1088,9 +1088,10 @@ kk_nir_count_fs_invocations(nir_shader *nir)
+ static void
+ kk_compile_msl(struct kk_physical_device *pdev, nir_shader *nir,
+                const struct vk_graphics_pipeline_state *state,
+-               struct msl_compile_data *data)
++               struct msl_compile_data *data, uint8_t *atomic64_locked)
+ {
+    NIR_PASS(_, nir, kk_nir_lower_poly);
++   NIR_PASS(_, nir, kk_nir_lower_atomic64, atomic64_locked);
+ 
+    if (nir->info.float_controls_execution_mode &
+        FLOAT_CONTROLS_DENORM_PRESERVE_FP32) {
+@@ -1238,13 +1239,15 @@ kk_compile_shader(struct kk_device *dev, nir_shader *nir,
+          count->info.stage = MESA_SHADER_COMPUTE;
+          memset(&count->info.cs, 0, sizeof(count->info.cs));
+          count->xfb_info = NULL;
+-         kk_compile_msl(pdev, count, state, &shader->gs_count);
++         kk_compile_msl(pdev, count, state, &shader->gs_count,
++                        &shader->info.atomic64_locked);
+       } else {
+          ralloc_free(count);
+       }
+ 
+       if (shader->info.gs.xfb)
+-         kk_compile_msl(pdev, pre_gs, state, &shader->gs_pre);
++         kk_compile_msl(pdev, pre_gs, state, &shader->gs_pre,
++                        &shader->info.atomic64_locked);
+       else
+          ralloc_free(pre_gs);
+ 
+@@ -1259,7 +1262,8 @@ kk_compile_shader(struct kk_device *dev, nir_shader *nir,
+       NIR_PASS(_, rast, kk_nir_lower_descriptors, robustness, 0, NULL,
+                false);
+       kk_compile_msl(pdev, rast, state,
+-                     &shader->msl_data[MESA_SHADER_GEOMETRY]);
++                     &shader->msl_data[MESA_SHADER_GEOMETRY],
++                     &shader->info.atomic64_locked);
+ 
+       nir->info.stage = MESA_SHADER_COMPUTE;
+       memset(&nir->info.cs, 0, sizeof(nir->info.cs));
+@@ -1269,14 +1273,18 @@ kk_compile_shader(struct kk_device *dev, nir_shader *nir,
+    if (stage == MESA_SHADER_FRAGMENT) {
+       nir_shader *counted = nir_shader_clone(NULL, nir);
+       kk_nir_count_fs_invocations(counted);
+-      kk_compile_msl(pdev, counted, state, &shader->fs_stats);
++      kk_compile_msl(pdev, counted, state, &shader->fs_stats,
++                     &shader->info.atomic64_locked);
+       shader->info.has_fs_stats = true;
+    }
+ 
+    /* The geometry stage's own slot holds its rasterization VS */
+    kk_compile_msl(pdev, nir, state,
+                   stage == MESA_SHADER_GEOMETRY ? &shader->gs_main
+-                                                : &shader->msl_data[stage]);
++                                                : &shader->msl_data[stage],
++                  &shader->info.atomic64_locked);
++
++   kk_device_lock_atomic64(dev, shader->info.atomic64_locked);
+ 
+    *shader_out = shader;
+ 
+@@ -2258,6 +2266,7 @@ kk_deserialize_shader(struct vk_device *vk_dev, struct blob_reader *blob,
+       goto fail;
+ 
+    shader->info = info;
++   kk_device_lock_atomic64(dev, shader->info.atomic64_locked);
+ 
+    if (shader->info.stage == MESA_SHADER_VERTEX) {
+       u_foreach_bit(stage, shader->info.vs.additional_stages_bits) {
+diff --git a/src/kosmickrisp/vulkan/kk_shader.h b/src/kosmickrisp/vulkan/kk_shader.h
+index 94c9c9d9c21..5a187fd92d3 100644
+--- a/src/kosmickrisp/vulkan/kk_shader.h
++++ b/src/kosmickrisp/vulkan/kk_shader.h
+@@ -51,6 +51,7 @@ struct kk_shader_info {
+    mesa_shader_stage stage;
+    bool uses_per_draw_data;
+    bool has_fs_stats;
++   uint8_t atomic64_locked;
+ 
+    /* Required for fragment shader cull distance discards. */
+    uint8_t num_cull_distances;
+@@ -214,6 +215,14 @@ bool kk_nir_lower_fs_multiview(nir_shader *nir, uint32_t view_mask);
+ bool kk_nir_lower_custom_border(nir_shader *nir);
+ bool kk_nir_lower_compute_derivatives(nir_shader *nir);
+ bool kk_nir_lower_compute_lod_queries(nir_shader *nir);
++#define KK_ATOMIC64_BUFFER      0
++#define KK_ATOMIC64_IMAGE       1
++#define KK_ATOMIC64_LOCK_COUNT  4096u
++#define KK_ATOMIC64_LOCK_OFFSET 64u
++#define KK_ATOMIC64_ARENA_SIZE  \
++   (KK_ATOMIC64_LOCK_OFFSET + 4u * KK_ATOMIC64_LOCK_COUNT)
++
++bool kk_nir_lower_atomic64(nir_shader *nir, uint8_t *locked);
+ bool kk_nir_lower_denorm_preserve(nir_shader *nir);
+ bool kk_nir_lower_denorm_preserve_ldexp(nir_shader *nir);
+ bool kk_nir_lower_denorm_flush(nir_shader *nir);
+diff --git a/src/kosmickrisp/vulkan/meson.build b/src/kosmickrisp/vulkan/meson.build
+index b6358e03147..952273b3673 100644
+--- a/src/kosmickrisp/vulkan/meson.build
++++ b/src/kosmickrisp/vulkan/meson.build
+@@ -90,6 +90,7 @@ kk_files = files(
+   'kk_image.c',
+   'kk_instance.h',
+   'kk_instance.c',
++  'kk_nir_lower_atomic64.c',
+   'kk_nir_lower_compute_derivatives.c',
+   'kk_nir_lower_custom_border.c',
+   'kk_nir_lower_denorm.c',
+-- 
+2.54.0 (Apple Git-157)
+

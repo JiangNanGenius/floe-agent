@@ -1,0 +1,24 @@
+[
+  null,
+  {
+    "id": 1,
+    "name": "Oilskin",
+    "iconIndex": 4,
+    "description": "Keeps the fen rain out.",
+    "price": 30,
+    "atypeId": 1,
+    "etypeId": 1,
+    "params": [
+      0,
+      0,
+      4,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "traits": [],
+    "note": "Original Floe starter armor."
+  }
+]

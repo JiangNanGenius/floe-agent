@@ -1,0 +1,73 @@
+From 4812d89a20a909213f6f44a25bec73e87ddbf596 Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Wed, 30 Sep 2026 19:54:38 -0400
+Subject: [PATCH] kk: Keep the geometry heap alive across the draws of one
+ command
+
+Generated-by: LLM
+---
+ src/kosmickrisp/vulkan/kk_cmd_buffer.c | 1 +
+ src/kosmickrisp/vulkan/kk_cmd_buffer.h | 4 +++-
+ src/kosmickrisp/vulkan/kk_cmd_draw.c   | 5 +++++
+ 3 files changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_buffer.c b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+index 22f4bf7f3f1..947f0f04fae 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+@@ -170,6 +170,7 @@ kk_reset_cmd_buffer_internal(struct kk_cmd_buffer *cmd)
+ 
+    memset(&cmd->state, 0, sizeof(cmd->state));
+    cmd->uses_heap = false;
++   cmd->keep_heap = false;
+ }
+ 
+ static void
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_buffer.h b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+index 20e585458b8..4d9f004f201 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.h
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+@@ -273,6 +273,7 @@ struct kk_cmd_buffer {
+ 
+    /* Does the command buffer use the geometry heap? */
+    bool uses_heap;
++   bool keep_heap;
+    /* Set at vkBeginCommandBuffer. One-time-submit buffers skip command
+     * enqueueing in the trampolines since they can never be replayed. */
+    bool one_time_submit;
+@@ -331,7 +332,8 @@ kk_cmd_buffer_dirty_all_gfx(struct kk_cmd_buffer *cmd)
+    /* We just flushed out the heap use. If we want to use it again, we'll need
+     * to queue a free for it again.
+     */
+-   cmd->uses_heap = false;
++   if (!cmd->keep_heap)
++      cmd->uses_heap = false;
+ }
+ 
+ void kk_cmd_release_dynamic_ds_state(struct kk_cmd_buffer *cmd);
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_draw.c b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+index d6713d4cc40..f1fff7a2797 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_draw.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+@@ -2365,6 +2365,9 @@ kk_draw_flushed(struct kk_cmd_buffer *cmd, struct kk_draw_command *data,
+    if (gs_restart && !kk_convert_to_indirect_draw(cmd, data))
+       return;
+ 
++   bool keep_heap = cmd->keep_heap;
++   cmd->keep_heap |= cmd->uses_heap;
++
+    for (uint32_t i = 0; i < data->draw_count; i++) {
+       struct kk_draw_data draw_data = build_draw_data(cmd, data, i);
+       uint64_t root = roots && roots->base ? roots->base + i * roots->stride_B : 0;
+@@ -2391,6 +2394,8 @@ kk_draw_flushed(struct kk_cmd_buffer *cmd, struct kk_draw_command *data,
+ 
+       kk_dispatch_draw(cmd, draw_data);
+    }
++
++   cmd->keep_heap = keep_heap;
+ }
+ 
+ static void
+-- 
+2.54.0 (Apple Git-157)
+

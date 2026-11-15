@@ -267,17 +267,19 @@ extension MediaV2Session {
             let shape = ImageSelectionShape(kind: kind, operation: operation, points: points)
             if operation == .replace { selection = .init(shapes: [shape]) }
             else { var next = selection ?? .init(); next.shapes.append(shape); selection = next }
-            polygonPoints = []; selectionOnly = true
+            polygonPoints = []; selectionFeatherDraftPixels = nil; selectionOnly = true
         case "image.feather":
             if actor == .model, !fencedSelection { throw MediaV2CommandError.missingSelection }
             guard var next = selection, let canvas = document.canvas else { throw MediaV2CommandError.missingSelection }
-            next.feather = min(0.5, max(0, (input.number ?? 12) / Double(min(canvas.width, canvas.height)))); selection = next; selectionOnly = true
+            next.feather = min(0.5, max(0, (input.number ?? 12) / Double(min(canvas.width, canvas.height))))
+            selection = next; selectionFeatherDraftPixels = nil; selectionOnly = true
         case "image.inverse":
             if actor == .model, !fencedSelection { throw MediaV2CommandError.missingSelection }
-            var next = selection ?? .init(); next.inverted.toggle(); selection = next; selectionOnly = true
+            var next = selection ?? .init(); next.inverted.toggle(); selection = next
+            selectionFeatherDraftPixels = nil; selectionOnly = true
         case "image.deselect":
             if actor == .model, !fencedSelection { throw MediaV2CommandError.missingSelection }
-            selection = nil; selectionOnly = true
+            selection = nil; selectionFeatherDraftPixels = nil; selectionOnly = true
         case "image.eyedropper":
             guard let image = preview, let p = input.points?.first else { throw MediaV2CommandError.invalidInput }
             let x = min(image.width - 1, max(0, Int(p.x * Double(image.width))))

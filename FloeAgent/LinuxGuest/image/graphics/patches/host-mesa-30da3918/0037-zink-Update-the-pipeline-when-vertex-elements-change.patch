@@ -1,0 +1,30 @@
+From e0e3f77eafcd877d3bf6076732ac2fe340e3a930 Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Fri, 2 Oct 2026 14:23:19 -0400
+Subject: [PATCH] zink: Update the pipeline when vertex elements change without
+ dynamic vertex input
+
+Generated-by: LLM
+---
+ src/gallium/drivers/zink/zink_draw.cpp | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/zink/zink_draw.cpp b/src/gallium/drivers/zink/zink_draw.cpp
+index 996a0342db2..5371413fc07 100644
+--- a/src/gallium/drivers/zink/zink_draw.cpp
++++ b/src/gallium/drivers/zink/zink_draw.cpp
+@@ -699,7 +699,10 @@ zink_draw(struct pipe_context *pctx,
+       zink_emit_stream_output_targets(pctx);
+ 
+    bool pipeline_changed = false;
+-   if (ctx->gfx_pipeline_state.dirty || rp_state != ctx->gfx_pipeline_state.rp_state || ctx->gfx_dirty || ctx->dirty_gfx_stages || prim_changed || BATCH_CHANGED) {
++   const bool vertex_input_changed = DYNAMIC_STATE != ZINK_DYNAMIC_VERTEX_INPUT && DYNAMIC_STATE != ZINK_DYNAMIC_VERTEX_INPUT2 &&
++                                     ctx->vertex_state_changed;
++   if (ctx->gfx_pipeline_state.dirty || rp_state != ctx->gfx_pipeline_state.rp_state || ctx->gfx_dirty || ctx->dirty_gfx_stages || prim_changed ||
++       vertex_input_changed || BATCH_CHANGED) {
+       if (!update_gfx_pipeline<DYNAMIC_STATE, BATCH_CHANGED>(ctx, bs, mode, &pipeline_changed))
+          return;
+    }
+-- 
+2.54.0 (Apple Git-157)
+

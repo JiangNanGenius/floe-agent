@@ -1,0 +1,87 @@
+{
+  "version": 1,
+  "packs": [
+    {
+      "engine": "kaplay",
+      "package": "kaplay",
+      "version": "3001.0.0",
+      "license": "MIT",
+      "gitHead": "f41e7d0bd9ab3d6de8ef29bc7ce20fbfb619223c",
+      "tarballURL": "https://registry.npmjs.org/kaplay/-/kaplay-3001.0.0.tgz",
+      "tarballIntegrity": "sha512-c9K1VrgMUOphgXjMOegWBrJIB3giVDajGrIKdX7TAc0/xcNH0HREZjsjAlTqz3F1IDeUDtfNDiE5vuGX+PIsLg==",
+      "files": [
+        {
+          "path": "runtime/engine.js",
+          "packagePath": "dist/kaplay.js",
+          "sha256": "d772c29d33ce675981976de8385fa632d286de282c09290848a213bc2f5e50a6",
+          "bytes": 191767,
+          "url": "https://cdn.jsdelivr.net/npm/kaplay@3001.0.0/dist/kaplay.js"
+        },
+        {
+          "path": "licenses/ENGINE.txt",
+          "packagePath": "LICENSE",
+          "sha256": "4d8513caec72ba8f202fa550f10de67bef19fc9ab8739403bd6d76d7788247d9",
+          "bytes": 1072,
+          "url": "https://cdn.jsdelivr.net/npm/kaplay@3001.0.0/LICENSE"
+        }
+      ]
+    },
+    {
+      "engine": "babylon",
+      "package": "babylonjs",
+      "version": "9.35.0",
+      "license": "Apache-2.0",
+      "gitHead": "00bc37c78dc519e229a709beebd5ed2099e8aba8",
+      "tarballURL": "https://registry.npmjs.org/babylonjs/-/babylonjs-9.35.0.tgz",
+      "tarballIntegrity": "sha512-RiJFpxzRx3r32kTU5fotyt4VGTCEukDbUPqHyn/7Fuoh3RjeuDeS90YZu/y6gIZmIJp8IAACT07AG93/chynpA==",
+      "files": [
+        {
+          "path": "runtime/engine.js",
+          "packagePath": "babylon.js",
+          "sha256": "e7489b1ba1044cb296b6cad3a5732309cc18fdc6873fd009dc585de34e4388e2",
+          "bytes": 8876104,
+          "url": "https://cdn.jsdelivr.net/npm/babylonjs@9.35.0/babylon.js"
+        },
+        {
+          "path": "licenses/ENGINE.txt",
+          "packagePath": "license.md",
+          "sha256": "9362ea9ea17cb221a20cbbd63f404710834cc273d2a9a7b60314fd68ab702cd6",
+          "bytes": 9226,
+          "url": "https://cdn.jsdelivr.net/npm/babylonjs@9.35.0/license.md"
+        },
+        {
+          "path": "licenses/NOTICE.md",
+          "packagePath": "NOTICE.md",
+          "sha256": "225463efd81558f120a6e0cdd7f4c1007ed486006d1228c4849fee0c49715823",
+          "bytes": 46,
+          "url": "https://cdn.jsdelivr.net/npm/babylonjs@9.35.0/NOTICE.md"
+        }
+      ]
+    },
+    {
+      "engine": "playcanvas",
+      "package": "playcanvas",
+      "version": "2.24.0",
+      "license": "MIT",
+      "gitHead": "0d07e104eef005a7d678c87a290206dcbcfecc84",
+      "tarballURL": "https://registry.npmjs.org/playcanvas/-/playcanvas-2.24.0.tgz",
+      "tarballIntegrity": "sha512-1zWNMmEPK+/g55knPERlnutr4BoqhhfDVa1Kyn7AwrrCpVkmc1HHRsd7O8nP3SoEjvtKnlpXutqkQIMBZC10dg==",
+      "files": [
+        {
+          "path": "runtime/engine.js",
+          "packagePath": "build/playcanvas.js",
+          "sha256": "6151c8a059ea40779a39ee3f1ccbbc3a9efb9c63e5b276a7bede915a1a3bbd7b",
+          "bytes": 4689849,
+          "url": "https://cdn.jsdelivr.net/npm/playcanvas@2.24.0/build/playcanvas.js"
+        },
+        {
+          "path": "licenses/ENGINE.txt",
+          "packagePath": "LICENSE",
+          "sha256": "42fa51ddd556be151a29f381fb97ee975825dcc454e805ea3ea9c079cca04d34",
+          "bytes": 1064,
+          "url": "https://cdn.jsdelivr.net/npm/playcanvas@2.24.0/LICENSE"
+        }
+      ]
+    }
+  ]
+}

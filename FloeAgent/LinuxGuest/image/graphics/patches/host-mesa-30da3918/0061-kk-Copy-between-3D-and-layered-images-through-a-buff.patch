@@ -1,0 +1,121 @@
+From f8d42f550b787e96380fc0cbc854a1ae62d2ddca Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Sat, 3 Oct 2026 00:21:09 -0400
+Subject: [PATCH] kk: Copy between 3D and layered images through a buffer slice
+ by slice
+
+Generated-by: LLM
+---
+ src/kosmickrisp/vulkan/kk_cmd_copy.c | 67 +++++++++++++++++-----------
+ 1 file changed, 42 insertions(+), 25 deletions(-)
+
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_copy.c b/src/kosmickrisp/vulkan/kk_cmd_copy.c
+index 67bb33ffbd3..413f22bdaad 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_copy.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_copy.c
+@@ -189,13 +189,8 @@ copy_through_buffer(struct kk_cmd_buffer *cmd, struct kk_image *src,
+ 
+    struct kk_buffer_image_copy_info info;
+ 
+-   /* Metal requires this value to be 0 for 2D images, otherwise the number
+-    * of bytes between each 2D image of a 3D texture */
+-   info.mtl_data.buffer_2d_image_size_B =
+-      src_plane->layout.depth_px == 1u ? 0u : buffer_size_2d_B;
+    info.mtl_data.buffer_stride_B = buffer_stride_B;
+    info.mtl_data.buffer = buffer;
+-   info.buffer_slice_size_B = buffer_size_2d_B;
+ 
+    struct mtl_size src_size = vk_extent_3d_to_mtl_size(&region->extent);
+    struct mtl_size dst_size = vk_extent_3d_to_mtl_size(&region->extent);
+@@ -222,26 +217,41 @@ copy_through_buffer(struct kk_cmd_buffer *cmd, struct kk_image *src,
+    struct mtl_origin dst_origin =
+       vk_offset_3d_to_mtl_origin(&region->dstOffset);
+ 
+-   /* Texture->Buffer->Texture */
+-   /* TODO_KOSMICKRISP:
+-    *
+-    * 1. We don't handle 3D to 2D array nor vice-versa in this path. Unsure if
+-    * it's even needed, can compressed textures be 3D?
+-    *
+-    * 2. Split into texture to buffer then buffers to texture to reduce
+-    * dependencies.
+-    */
+-   for (uint32_t slice_idx = 0;
+-        slice_idx <
+-        vk_image_subresource_layer_count(&src->vk, &region->srcSubresource);
+-        ++slice_idx) {
++   uint32_t layer_count =
++      vk_image_subresource_layer_count(&src->vk, &region->srcSubresource);
++   const uint32_t dst_layer_count =
++      vk_image_subresource_layer_count(&dst->vk, &region->dstSubresource);
++   size_t src_slice = region->srcSubresource.baseArrayLayer;
++   size_t dst_slice = region->dstSubresource.baseArrayLayer;
++   size_t *src_increase = &src_slice;
++   size_t *dst_increase = &dst_slice;
++
++   if (layer_count < dst_layer_count) {
++      layer_count = dst_layer_count;
++      src_increase = &src_origin.z;
++      src_size.z = 1u;
++      dst_size.z = 1u;
++   } else if (dst_layer_count < layer_count) {
++      dst_increase = &dst_origin.z;
++      src_size.z = 1u;
++      dst_size.z = 1u;
++   }
++
++   const size_t src_2d_image_size_B =
++      src_plane->layout.depth_px == 1u ? 0u : buffer_size_2d_B;
++   const size_t dst_2d_image_size_B =
++      dst_plane->layout.depth_px == 1u ? 0u : buffer_size_2d_B;
++   info.buffer_slice_size_B = buffer_size_2d_B * src_size.z;
++
++   for (uint32_t l = 0; l < layer_count;
++        ++l, ++(*src_increase), ++(*dst_increase)) {
+       info.mtl_data.image = src_plane->mtl_handle;
+       info.mtl_data.image_size = src_size;
+       info.mtl_data.image_origin = src_origin;
+-      info.mtl_data.image_slice =
+-         region->srcSubresource.baseArrayLayer + slice_idx;
++      info.mtl_data.image_slice = src_slice;
+       info.mtl_data.image_level = region->srcSubresource.mipLevel;
+       info.mtl_data.buffer_offset_B = buffer_offset;
++      info.mtl_data.buffer_2d_image_size_B = src_2d_image_size_B;
+       info.mtl_data.options = src_options;
+       mtl_copy_from_texture_to_buffer(encoder, &info.mtl_data);
+ 
+@@ -250,9 +260,9 @@ copy_through_buffer(struct kk_cmd_buffer *cmd, struct kk_image *src,
+       info.mtl_data.image = dst_plane->mtl_handle;
+       info.mtl_data.image_size = dst_size;
+       info.mtl_data.image_origin = dst_origin;
+-      info.mtl_data.image_slice =
+-         region->dstSubresource.baseArrayLayer + slice_idx;
++      info.mtl_data.image_slice = dst_slice;
+       info.mtl_data.image_level = region->dstSubresource.mipLevel;
++      info.mtl_data.buffer_2d_image_size_B = dst_2d_image_size_B;
+       info.mtl_data.options = dst_options;
+       mtl_copy_from_buffer_to_texture(encoder, &info.mtl_data);
+ 
+@@ -377,9 +387,16 @@ kk_CmdCopyImage2(VkCommandBuffer commandBuffer,
+             util_format_get_stride(src_format, region->extent.width);
+          const uint32_t buffer_size_2d_B = util_format_get_2d_size(
+             src_format, buffer_stride_B, region->extent.height);
+-         const uint32_t layer_count =
+-            vk_image_subresource_layer_count(&src->vk, &region->srcSubresource);
+-         buffer_size += buffer_size_2d_B * layer_count;
++         const uint32_t layer_count = MAX2(
++            vk_image_subresource_layer_count(&src->vk, &region->srcSubresource),
++            vk_image_subresource_layer_count(&dst->vk,
++                                             &region->dstSubresource));
++         const uint32_t depth =
++            src_plane->layout.depth_px == 1u ||
++                  dst->planes[dst_index].layout.depth_px == 1u
++               ? 1u
++               : region->extent.depth;
++         buffer_size += (size_t)buffer_size_2d_B * layer_count * depth;
+       }
+    }
+ 
+-- 
+2.54.0 (Apple Git-157)
+

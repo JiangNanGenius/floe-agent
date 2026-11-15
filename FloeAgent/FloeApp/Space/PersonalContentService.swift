@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #if canImport(UIKit)
 import Foundation
+import FloeGameCore
 import FloeCanvasCore
 import FloeCanvasIntegration
 import FloeCanvasTemplates
@@ -114,6 +115,9 @@ actor PersonalContentService {
                 try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
                 let database = try MeetingDatabase(path: destination.appendingPathComponent("meeting.sqlite").path)
                 _ = try await MeetingService(database: database).createMeeting(id: MeetingID(id), title: title)
+            case .game:
+                try await GameProjectLibraryRecord.create(id: id, title: title, engine: nil,
+                    directory: directory)
             default:
                 throw PersonalContentError.invalidProject
             }
@@ -160,6 +164,11 @@ actor PersonalContentService {
             let file = location.url.appendingPathComponent("Meeting/meeting.sqlite")
             guard FileManager.default.fileExists(atPath: file.path) else { throw PersonalContentError.invalidProject }
             _ = try await MeetingService(database: MeetingDatabase(path: file.path)).meeting(MeetingID(record.id))
+        case .game:
+            let paths = try await SpaceGameOriginal.read(id: record.id, directory: location.url)
+            let repository = try FileGameProjectRepository(directory: paths.history)
+            let project = try await repository.open(record.id, owner: .space(recordID: record.id))
+            guard project.projectID == record.id else { throw PersonalContentError.invalidProject }
         case .manufacturing:
             let data = try Data(contentsOf: location.url.appendingPathComponent("Manufacturing/draft.json"))
             guard data.count <= 32_000_000 else { throw PersonalContentError.invalidProject }
@@ -272,6 +281,7 @@ extension PersonalContentKind {
         case .printing: IDELanguageRunText.t("3D 打印", "3D printing")
         case .manufacturing: IDELanguageRunText.t("加工", "Manufacturing")
         case .document: IDELanguageRunText.t("文件", "File")
+        case .game: IDELanguageRunText.t("游戏", "Game")
         }
     }
     var systemImage: String {
@@ -293,10 +303,13 @@ extension PersonalContentKind {
         case .printing: "printer"
         case .manufacturing: "gearshape.2"
         case .document: "doc"
+        case .game: "gamecontroller"
         }
     }
     // Printing and machining are created from CAD's Manufacturing workspace.
     // Keep their record kinds readable for existing projects and results.
+    // Game projects use their own create flow (empty project first), not the
+    // generic studio.create kind list.
     static var creationKinds: [Self] { [.canvas, .diagram, .latex, .music, .meeting, .chemistry, .biology, .document, .drawing, .image, .video, .cad2D, .cad3D, .electronics, .geography] }
 }
 #endif

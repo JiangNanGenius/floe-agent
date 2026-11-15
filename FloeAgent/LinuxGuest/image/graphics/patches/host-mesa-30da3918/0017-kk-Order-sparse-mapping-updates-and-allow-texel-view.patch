@@ -1,0 +1,114 @@
+From 3003c801dce9a6d2a3a83a761e6817c2a2b80c99 Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Wed, 30 Sep 2026 22:01:36 -0400
+Subject: [PATCH] kk: Order sparse mapping updates and allow texel views of
+ sparse buffers
+
+Generated-by: LLM
+---
+ src/kosmickrisp/bridge/mtl_buffer.m           |  2 ++
+ src/kosmickrisp/bridge/mtl_command_queue.h    |  3 ++
+ src/kosmickrisp/bridge/mtl_command_queue.m    | 30 +++++++++++++++++++
+ .../bridge/stubs/mtl_command_queue.c          |  6 ++++
+ src/kosmickrisp/vulkan/kk_queue.c             |  3 ++
+ 5 files changed, 44 insertions(+)
+
+diff --git a/src/kosmickrisp/bridge/mtl_buffer.m b/src/kosmickrisp/bridge/mtl_buffer.m
+index dedb309e7fd..9dd1cd3ed38 100644
+--- a/src/kosmickrisp/bridge/mtl_buffer.m
++++ b/src/kosmickrisp/bridge/mtl_buffer.m
+@@ -70,6 +70,8 @@
+       id<MTLBuffer> buf = (id<MTLBuffer>)buffer;
+       MTLTextureDescriptor *descriptor = [mtl_new_texture_descriptor(layout) autorelease];
+       descriptor.resourceOptions = buf.resourceOptions;
++      if (buf.sparseBufferTier != MTLBufferSparseTierNone)
++         descriptor.placementSparsePageSize = MTLSparsePageSize64;
+       id<MTLTexture> texture = [buf newTextureWithDescriptor:descriptor offset:offset bytesPerRow:layout->linear_stride_B];
+ 
+       return texture;
+diff --git a/src/kosmickrisp/bridge/mtl_command_queue.h b/src/kosmickrisp/bridge/mtl_command_queue.h
+index c900c293ede..52d7eba03c3 100644
+--- a/src/kosmickrisp/bridge/mtl_command_queue.h
++++ b/src/kosmickrisp/bridge/mtl_command_queue.h
+@@ -57,6 +57,9 @@ void mtl_command_queue_update_texture_mappings(
+    mtl_command_queue *queue, mtl_texture *texture, mtl_heap *heap,
+    const struct mtl_sparse_texture_mapping *mappings, uint32_t count);
+ 
++void mtl_command_queue_commit_mapping_barrier(mtl_command_queue *queue,
++                                              mtl_device *device);
++
+ void mtl_command_queue_commit(mtl_command_queue *queue,
+                               mtl_command_buffer **command_buffers,
+                               uint32_t count, mtl_commit_options *options);
+diff --git a/src/kosmickrisp/bridge/mtl_command_queue.m b/src/kosmickrisp/bridge/mtl_command_queue.m
+index d529f3e1d68..7762f5e3441 100644
+--- a/src/kosmickrisp/bridge/mtl_command_queue.m
++++ b/src/kosmickrisp/bridge/mtl_command_queue.m
+@@ -148,6 +148,36 @@
+    }
+ }
+ 
++void
++mtl_command_queue_commit_mapping_barrier(mtl_command_queue *queue,
++                                         mtl_device *device)
++{
++   @autoreleasepool {
++      id<MTL4CommandQueue> q = (id<MTL4CommandQueue>)queue;
++      id<MTLDevice> dev = (id<MTLDevice>)device;
++      id<MTL4CommandAllocator> allocator = [dev newCommandAllocator];
++      id<MTL4CommandBuffer> cmd_buf = [dev newCommandBuffer];
++      [cmd_buf beginCommandBufferWithAllocator:allocator];
++      id<MTL4ComputeCommandEncoder> enc = [cmd_buf computeCommandEncoder];
++      [enc barrierAfterQueueStages:MTLStageResourceState
++                      beforeStages:MTLStageDispatch
++                 visibilityOptions:MTL4VisibilityOptionDevice];
++      [enc barrierAfterStages:MTLStageDispatch
++            beforeQueueStages:MTLStageVertex | MTLStageFragment |
++                              MTLStageDispatch | MTLStageBlit
++            visibilityOptions:MTL4VisibilityOptionDevice];
++      [enc endEncoding];
++      [cmd_buf endCommandBuffer];
++
++      MTL4CommitOptions *options = [[MTL4CommitOptions new] autorelease];
++      [options addFeedbackHandler:^(id<MTL4CommitFeedback> feedback) {
++         [cmd_buf release];
++         [allocator release];
++      }];
++      [q commit:&cmd_buf count:1 options:options];
++   }
++}
++
+ void
+ mtl_command_queue_commit(mtl_command_queue *queue,
+                          mtl_command_buffer **command_buffers, uint32_t count,
+diff --git a/src/kosmickrisp/bridge/stubs/mtl_command_queue.c b/src/kosmickrisp/bridge/stubs/mtl_command_queue.c
+index e76ee25f435..97e2bb529e9 100644
+--- a/src/kosmickrisp/bridge/stubs/mtl_command_queue.c
++++ b/src/kosmickrisp/bridge/stubs/mtl_command_queue.c
+@@ -79,3 +79,9 @@ mtl_command_queue_update_texture_mappings(
+    const struct mtl_sparse_texture_mapping *mappings, uint32_t count)
+ {
+ }
++
++void
++mtl_command_queue_commit_mapping_barrier(mtl_command_queue *queue,
++                                         mtl_device *device)
++{
++}
+diff --git a/src/kosmickrisp/vulkan/kk_queue.c b/src/kosmickrisp/vulkan/kk_queue.c
+index 15f83baf10e..7cd2402f3be 100644
+--- a/src/kosmickrisp/vulkan/kk_queue.c
++++ b/src/kosmickrisp/vulkan/kk_queue.c
+@@ -336,6 +336,9 @@ kk_queue_submit(struct vk_queue *vk_queue, struct vk_queue_submit *submit)
+    kk_device_make_resources_resident(dev);
+ 
+    kk_queue_bind_sparse(queue, submit);
++   if (vk_queue_submit_has_bind(submit))
++      mtl_command_queue_commit_mapping_barrier(queue->mtl_handle,
++                                               dev->mtl_handle);
+ 
+    for (uint32_t i = 0; i < submit->command_buffer_count; ++i) {
+       struct kk_cmd_buffer *cmd_buffer =
+-- 
+2.54.0 (Apple Git-157)
+

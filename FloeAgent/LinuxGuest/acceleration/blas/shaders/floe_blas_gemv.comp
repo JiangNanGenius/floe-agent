@@ -1,0 +1,36 @@
+#version 450
+/*
+ * General float32 GEMV: y = alpha * op(A) * x + beta * y.
+ *
+ * The host gathers x and any original y into compact, increment-free storage
+ * buffers, so this shader only sees n_out, the reduction length k, and the
+ * two strides for op(A).  A negative strided vector is handled by the host
+ * before the upload; the numerical operation is unchanged.
+ */
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer A { float a[]; };
+layout(set = 0, binding = 1, std430) readonly buffer X { float x[]; };
+layout(set = 0, binding = 2, std430) buffer Y { float y[]; };
+
+layout(push_constant) uniform Params {
+    uint n_out;
+    uint k;
+    uint a_row_stride;
+    uint a_col_stride;
+    float alpha;
+    float beta;
+} p;
+
+void main() {
+    uint index = gl_GlobalInvocationID.x;
+    if (index >= p.n_out) return;
+
+    uint base = index * p.a_row_stride;
+    float sum = 0.0;
+    for (uint inner = 0u; inner < p.k; ++inner)
+        sum += a[base + inner * p.a_col_stride] * x[inner];
+
+    float previous = (p.beta != 0.0) ? y[index] : 0.0;
+    y[index] = p.alpha * sum + p.beta * previous;
+}

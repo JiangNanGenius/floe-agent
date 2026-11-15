@@ -1,0 +1,81 @@
+From fbd20d15141bf8bee13c8bc56c1ddc9f0568738b Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Sat, 3 Oct 2026 00:14:20 -0400
+Subject: [PATCH] poly: Forward geometry shader outputs per component when
+ their types differ
+
+Generated-by: LLM
+---
+ src/poly/nir/poly_nir_lower_gs.c | 38 ++++++++++++++++++++++++++------
+ 1 file changed, 31 insertions(+), 7 deletions(-)
+
+diff --git a/src/poly/nir/poly_nir_lower_gs.c b/src/poly/nir/poly_nir_lower_gs.c
+index 80dac1a14f6..507de7c047d 100644
+--- a/src/poly/nir/poly_nir_lower_gs.c
++++ b/src/poly/nir/poly_nir_lower_gs.c
+@@ -211,6 +211,7 @@ struct lower_output_to_var_slot {
+    nir_variable *output_var;
+    nir_variable *selected_var;
+    nir_alu_type type;
++   nir_alu_type component_types[4];
+    unsigned nr_components;
+ };
+ 
+@@ -230,14 +231,18 @@ collect_output_types(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+    gl_varying_slot slot = sem.location + nir_src_as_uint(intr->src[1]);
+    struct lower_output_to_var_slot *output = &outputs[slot];
+ 
++   nir_alu_type type = nir_intrinsic_src_type(intr);
+    if (output->type == nir_type_invalid) {
+-      output->type = nir_intrinsic_src_type(intr);
+-   } else {
+-      /* Stores to the same varying must always have the same type */
+-      assert(output->type == nir_intrinsic_src_type(intr));
++      output->type = type;
++   } else if (output->type != type) {
++      assert(nir_alu_type_get_type_size(output->type) ==
++             nir_alu_type_get_type_size(type));
++      output->type =
++         nir_type_uint | nir_alu_type_get_type_size(output->type);
+    }
+ 
+    unsigned component = nir_intrinsic_component(intr);
++   output->component_types[component] = type;
+    output->nr_components = MAX2(output->nr_components, component + 1);
+ 
+    return false;
+@@ -868,9 +873,28 @@ create_gs_rast_shader(const nir_shader *gs, const struct lower_gs_state *state)
+             nir_bcsel(b, nir_ieq(b, rs.stream, rast_stream), value, killed);
+       }
+ 
+-      nir_store_output(b, value, nir_imm_int(b, 0),
+-                       .src_type = output->type,
+-                       .io_semantics.location = slot);
++      bool mixed = false;
++      for (unsigned c = 0; c < output->nr_components; c++) {
++         if (output->component_types[c] != nir_type_invalid &&
++             output->component_types[c] != output->type)
++            mixed = true;
++      }
++
++      if (!mixed) {
++         nir_store_output(b, value, nir_imm_int(b, 0),
++                          .src_type = output->type,
++                          .io_semantics.location = slot);
++         continue;
++      }
++
++      for (unsigned c = 0; c < output->nr_components; c++) {
++         if (output->component_types[c] == nir_type_invalid)
++            continue;
++         nir_store_output(b, nir_channel(b, value, c), nir_imm_int(b, 0),
++                          .component = c,
++                          .src_type = output->component_types[c],
++                          .io_semantics.location = slot);
++      }
+    }
+ 
+    /* The geometry shader might not write point size - ensure it does, if we're
+-- 
+2.54.0 (Apple Git-157)
+

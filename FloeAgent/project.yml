@@ -51,6 +51,8 @@ packages:
     path: Modules/FloeInteractiveContent
   FloeNativeCharts:
     path: Modules/FloeNativeCharts
+  FloeLinuxVideo:
+    path: Modules/FloeLinuxVideo
   FloeManufacturingKit:
     path: Modules/FloeManufacturingKit
   FloeSimulationKit:
@@ -77,6 +79,60 @@ packages:
     path: Modules/FloeScoreKit
   FloeFontKit:
     path: Modules/FloeFontKit
+  FloeGameKit:
+    path: Modules/FloeGameKit
+  FloeGameAuthoringKit:
+    path: Modules/FloeGameAuthoringKit
+  FloeGameEditingKit:
+    path: Modules/FloeGameEditingKit
+  FloeGameIDEBridge:
+    path: Modules/FloeGameIDEBridge
+  FloeGameRunKit:
+    path: Modules/FloeGameRunKit
+  FloeGameBuildKit:
+    path: Modules/FloeGameBuildKit
+  FloeGameStarterKit:
+    path: Modules/FloeGameStarterKit
+  FloeGameRuntimeKit:
+    path: Modules/FloeGameRuntimeKit
+  FloeGameTouchKit:
+    path: Modules/FloeGameTouchKit
+  FloeGameSpriteKit:
+    path: Modules/FloeGameSpriteKit
+  FloeGameDeveloperKit:
+    path: Modules/FloeGameDeveloperKit
+  FloeGameRGSSKit:
+    path: Modules/FloeGameRGSSKit
+  FloeGamePortableKit:
+    path: Modules/FloeGamePortableKit
+  FloeGameNarrativeKit:
+    path: Modules/FloeGameNarrativeKit
+  FloeGameGDevelopKit:
+    path: Modules/FloeGameGDevelopKit
+  FloeRPGProjectKit:
+    path: Modules/FloeRPGProjectKit
+  FloeRPGTilesetKit:
+    path: Modules/FloeRPGTilesetKit
+  FloeRPGDeploymentKit:
+    path: Modules/FloeRPGDeploymentKit
+  FloeGameWorkspaceHost:
+    path: Modules/FloeGameWorkspaceHost
+  FloeGameAppIntegration:
+    path: Modules/FloeGameAppIntegration
+  FloeGameProjectFlow:
+    path: Modules/FloeGameProjectFlow
+  FloeGameExecutionBridge:
+    path: Modules/FloeGameExecutionBridge
+  FloeGameRGSSHost:
+    path: Modules/FloeGameRGSSHost
+  FloeGameProjectIntegration:
+    path: Modules/FloeGameProjectIntegration
+  FloeGamePlayIntegration:
+    path: Modules/FloeGamePlayIntegration
+  FloeGameInstrumentation:
+    path: Modules/FloeGameInstrumentation
+  FloeInteriorKit:
+    path: Modules/FloeInteriorKit
   FloeHeavyEditorsHostAdapter:
     path: Qualification/HeavyEditors/Integration/FloeHeavyEditorsHostAdapter
   FloeHeavyEditorSupport:
@@ -150,6 +206,7 @@ targets:
           - Resources/LocalSpeech
           - Resources/Shortcuts
           - Resources/Printing
+          - Resources/GameRuntime
           - Resources/BuildingNative
           - Resources/CADNativeRender
           # Per-extension privacy manifests: each extension copies its own
@@ -171,6 +228,11 @@ targets:
         buildPhase: resources
       - path: FloeApp/Resources/Printing
         type: folder
+        buildPhase: resources
+      - path: FloeApp/Resources/GameRuntime
+        type: folder
+        buildPhase: resources
+      - path: LinuxGuest/acceleration/floe-accel
         buildPhase: resources
       - path: FloeApp/Resources/BuildingNative
         type: folder
@@ -488,6 +550,72 @@ targets:
         product: FloeScoreKit
       - package: FloeFontKit
         product: FloeFontKit
+      - package: FloeGameKit
+        product: FloeGameCore
+      - package: FloeGameKit
+        product: FloeGameWebKit
+      - package: FloeGameAuthoringKit
+        product: FloeGameAuthoring
+      - package: FloeGameAuthoringKit
+        product: FloeGameAuthoringUI
+      - package: FloeGameEditingKit
+        product: FloeGameEditingCore
+      - package: FloeGameEditingKit
+        product: FloeGameEditingUI
+      - package: FloeGameIDEBridge
+        product: FloeGameIDEBridge
+      - package: FloeGameRunKit
+        product: FloeGameRunKit
+      - package: FloeGamePortableKit
+        product: FloeGamePortableKit
+      - package: FloeGameBuildKit
+        product: FloeGameBuildKit
+      - package: FloeGameStarterKit
+        product: FloeGameStarterKit
+      - package: FloeGameRuntimeKit
+        product: FloeGameRuntime
+      - package: FloeGameTouchKit
+        product: FloeGameTouch
+      - package: FloeGameTouchKit
+        product: FloeGameTouchUI
+      - package: FloeGameSpriteKit
+        product: FloeGameSpriteUI
+      - package: FloeGameDeveloperKit
+        product: FloeGameDeveloperCore
+      - package: FloeGameDeveloperKit
+        product: FloeGameDeveloperWebKit
+      - package: FloeGameDeveloperKit
+        product: FloeGameDeveloperUI
+      - package: FloeGameRGSSKit
+        product: FloeGameRGSS
+      - package: FloeRPGProjectKit
+        product: FloeRPGCore
+      - package: FloeRPGTilesetKit
+        product: FloeRPGTilesetUI
+      - package: FloeRPGDeploymentKit
+        product: FloeRPGDeployment
+      - package: FloeGameWorkspaceHost
+        product: FloeGameWorkspaceHost
+      - package: FloeGameAppIntegration
+        product: FloeGameAppIntegration
+      - package: FloeGameProjectFlow
+        product: FloeGameProjectFlow
+      - package: FloeGameProjectFlow
+        product: FloeGameProjectSelectionUI
+      - package: FloeGameExecutionBridge
+        product: FloeGameExecutionBridge
+      - package: FloeGameRGSSHost
+        product: FloeGameRGSSHostCore
+      - package: FloeGameRGSSHost
+        product: FloeGameRGSSHostLinux
+      - package: FloeGameProjectIntegration
+        product: FloeGameProjectIntegration
+      - package: FloeGamePlayIntegration
+        product: FloeGamePlayIntegration
+      - package: FloeGameInstrumentation
+        product: FloeGameInstrumentation
+      - package: FloeInteriorKit
+        product: FloeBuildingEditor
       - package: FloeHeavyEditorsHostAdapter
         product: FloeHeavyEditorsHostAdapter
       - package: FloeHeavyEditorSupport
@@ -1657,6 +1785,7 @@ targets:
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADHybridModelingTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADSketchTransferTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADBuildingWorkflowTests.swift
+      - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADBuildingDraftingTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADOfflineRenderTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/CADThumbnailIsolationTests.swift
       - path: ThirdParty/FloeCADKit/Tests/FloeCADKitTests/ViewportRenderTests.swift
@@ -1862,6 +1991,9 @@ targets:
       Debug: Vendor/Office/native-host.xcconfig
       Release: Vendor/Office/native-host.xcconfig
     sources:
+      - path: Tests/FloeAppTests/GameRuntimeBindings
+      - path: Modules/FloeInteriorKit/Tests/FloeBuildingEditorTests/BuildingProjectNativeImportTests.swift
+      - path: Modules/FloeInteriorKit/Tests/FloeBuildingEditorTests/BuildingDraftingProjectIntegrationTests.swift
       # 345: focused cloud-settings, font and retired-tool regressions.
       - path: Tests/FloeAppTests/ApplicationSettingsSyncCoordinatorTests.swift
       - path: Tests/FloeCoreTests/ApplicationSettingPolicyTests.swift
@@ -2233,6 +2365,14 @@ targets:
       - path: Tests/FloeWorkbenchTests/CadDocumentToolTests.swift
       - path: Tests/FloeAppTests/CadNativeObservationTests.swift
     dependencies:
+      - package: FloeGameKit
+        product: FloeGameCore
+      - package: FloeGameBuildKit
+        product: FloeGameBuildKit
+      - package: FloeGameExecutionBridge
+        product: FloeGameExecutionBridge
+      - package: FloeGamePortableKit
+        product: FloeGamePortableKit
       - package: ZIPFoundation
         product: ZIPFoundation
       - package: FloeAgentPackages

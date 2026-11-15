@@ -45,7 +45,10 @@ void fvgpu_enqueue_completion(uint32_t ctx,uint32_t ring,uint64_t fence) {
             n->c=(FloeGPUFenceCompletion){.ctx_id=ctx,.ring_idx=ring,.fence_id=fence};n->next=NULL;
             if(s->comp_tail) s->comp_tail->next=n;else s->comp_head=n;
             s->comp_tail=n;s->comp_depth++;
-        } else s->comp_overflow=true;
+        } else if(!s->comp_overflow) {
+            s->comp_overflow=true;
+            fvgpu_trace("ev=completion-overflow cap=%u",FVGPU_COMPLETION_CAPACITY);
+        }
         pthread_cond_signal(&s->comp_cond);
         /* Without this, all-WFI Linux can sleep forever: its coordinator has
          * no reason to poll our private completion queue after GPU retirement. */

@@ -1,0 +1,1059 @@
+{
+  "schema": "floe.linux-graphics.source-selection.v1",
+  "status": "selected-public-inputs-native-build-unrun-in-this-intake",
+  "generatedAt": "2026-11-15",
+  "purpose": "Reproducible public source/build selection for the Linux graphics stack. Nothing here claims a new native build, App runtime or device result.",
+  "streams": {
+    "installedGuestMesa": {
+      "name": "Debian Mesa 25.0.7 guest frontend and Venus ICD",
+      "productionRole": "The Linux guest graphics path used by the shipped v8 image; only this stream can be built into a guest image.",
+      "sourcePackage": "mesa",
+      "sourceVersion": "25.0.7-2+deb13u1",
+      "origArchive": {
+        "file": "mesa_25.0.7.orig.tar.xz",
+        "url": "https://deb.debian.org/debian/pool/main/m/mesa/mesa_25.0.7.orig.tar.xz",
+        "sha256": "592272df3cf01e85e7db300c449df5061092574d099da275d19e97ef0510f8a6",
+        "bytes": 46849080
+      },
+      "debianPatchArchive": {
+        "file": "mesa_25.0.7-2+deb13u1.debian.tar.xz",
+        "url": "https://deb.debian.org/debian/pool/main/m/mesa/mesa_25.0.7-2+deb13u1.debian.tar.xz",
+        "sha256": "7ea51db6f4c6a39d28269975b7f652e37333a283819557c5901cbd3eccee446a",
+        "bytes": 112628,
+        "role": "reference only; the Floe build applies its own patch series to the orig tree"
+      },
+      "patches": [
+        {
+          "file": "patches/guest-mesa-25.0.7/0001-floe-x11-cpu-present-complete.patch",
+          "sha256": "0877816a0aa5291a38ffb830a36abee5673bea34babb24d8a1ad050332fb0704",
+          "bytes": 59708,
+          "purpose": "Complete X11 CPU-present path for present-aware Vulkan WSI, with FIFO pacing, resize, error rollback and init/destroy cleanup. Supersedes the original combined/worker/primary intermediate patches."
+        }
+      ],
+      "verifiedAgainst": "Debian mesa_25.0.7.orig.tar.xz extracted at its archive root (the same public archive pinned above); read-only WSI V2 patch apply check passed 2026-11-15. No private host path is part of this record.",
+      "artifacts": [
+        "libvulkan_virtio.so",
+        "virtio_icd.aarch64.json",
+        "libgallium-25.0.7.so",
+        "libGLX_floe.so.0.0.0",
+        "floe_icd.aarch64.json"
+      ],
+      "buildOptions": {
+        "venus": [
+          "--buildtype=release",
+          "-Dplatforms=x11",
+          "-Dvulkan-drivers=virtio",
+          "-Dgallium-drivers=[]",
+          "-Dopengl=false",
+          "-Dglx=disabled",
+          "-Degl=disabled",
+          "-Dgbm=disabled",
+          "-Dglvnd=disabled",
+          "-Dgles1=disabled",
+          "-Dgles2=disabled",
+          "-Dllvm=disabled",
+          "-Ddraw-use-llvm=false",
+          "-Dexpat=disabled",
+          "-Dzlib=disabled",
+          "-Dzstd=disabled",
+          "-Dlibunwind=disabled",
+          "-Dlmsensors=disabled",
+          "-Dvalgrind=disabled",
+          "-Dbuild-tests=false",
+          "-Dtools=[]",
+          "-Dshader-cache=disabled"
+        ],
+        "frontend": [
+          "--buildtype=release",
+          "-Dglx=dri",
+          "-Dglx-direct=true",
+          "-Dglvnd=enabled",
+          "-Dglvnd-vendor-name=floe",
+          "-Degl=disabled",
+          "-Dgbm=disabled",
+          "-Dplatforms=x11",
+          "-Dgallium-drivers=softpipe,zink",
+          "-Dvulkan-drivers=",
+          "-Dllvm=disabled",
+          "-Dexpat=disabled",
+          "-Dzlib=disabled",
+          "-Dzstd=enabled",
+          "-Dlibunwind=disabled",
+          "-Dlmsensors=disabled",
+          "-Dvalgrind=disabled",
+          "-Dbuild-tests=false",
+          "-Dtools=",
+          "-Dshared-glapi=enabled",
+          "-Dshader-cache=enabled",
+          "-Dshader-cache-max-size=64M"
+        ],
+        "venusLinkArgs": [
+          "-Wl,-z,nodelete"
+        ],
+        "note": "The nodelete link flag is required because the pinned Venus ICD must survive an X server client process exit; it is the only configuration difference in the accepted nodelete rebuild."
+      },
+      "qualification": "Actual interpreted ARM64 Linux six-frame WSI/resize/pixels, geometry 17 runs and logic 21 cases passed on the private macOS host; the frontend/OpenGL and Blender GUI/CLI paths also passed there. Those receipts remain their original artifacts and are not relabeled by this intake."
+    },
+    "nextHostKosmicKrisp": {
+      "name": "Mesa KosmicKrisp host backend (macOS host only; iOS port unbuilt)",
+      "productionRole": "Next macOS host backend for private Linux acceleration. It is NOT an iOS/App backend: the static iOS component and generated compiler tools were never built, and upstream documents no iOS support. Do not link these macOS archives into the App.",
+      "sourceArchives": [
+        {
+          "file": "mesa-30da39187d8d3cf03c58ecd2bebb497b84501f51.tar.gz",
+          "url": "https://gitlab.freedesktop.org/mesa/mesa/-/archive/30da39187d8d3cf03c58ecd2bebb497b84501f51/mesa-30da39187d8d3cf03c58ecd2bebb497b84501f51.tar.gz",
+          "sha256": "74c234fda0351d71a104f6bd99984d1a3b085386a85df06c300778e4970fc465",
+          "bytes": 134235283
+        },
+        {
+          "file": "hadron-f2f162e2b3af1f914040113c44eef2cceb30865a.tar.gz",
+          "url": "https://codeload.github.com/Broyojo/hadron/tar.gz/f2f162e2b3af1f914040113c44eef2cceb30865a",
+          "sha256": "8ea1cdedc7c69e76ffbff76b30f397e27ecbea1096fc829832fb83882c1d708a",
+          "bytes": 673281
+        }
+      ],
+      "patchSeries": {
+        "schema": "floe.host-mesa-patch-series.v1",
+        "count": 96,
+        "patches": [
+          {
+            "order": 1,
+            "file": "0001-kk-Add-VK_EXT_device_generated_commands.patch",
+            "source": "inputs/patches/mesa/0001-kk-Add-VK_EXT_device_generated_commands.patch",
+            "sha256": "21bc8ccd6d2453d6e125cd2ed384e24e8edeed5b858a53fdbaebcbe9034e68c2",
+            "bytes": 31094,
+            "applyCwd": ""
+          },
+          {
+            "order": 2,
+            "file": "0002-kk-Support-single-texel-alignment-for-texel-buffer-v.patch",
+            "source": "inputs/patches/mesa/0002-kk-Support-single-texel-alignment-for-texel-buffer-v.patch",
+            "sha256": "7aeb249d73b2c38239c884f0bce9ffc04b92c5137f5e03f26182f9a20beea544",
+            "bytes": 8196,
+            "applyCwd": ""
+          },
+          {
+            "order": 3,
+            "file": "0003-kk-Split-timestamp-query-pools-across-Metal-counter-.patch",
+            "source": "inputs/patches/mesa/0003-kk-Split-timestamp-query-pools-across-Metal-counter-.patch",
+            "sha256": "85dc7359d2227affd05123616c097ed373eaaa545cfed2a963ce1cef2e614772",
+            "bytes": 6157,
+            "applyCwd": ""
+          },
+          {
+            "order": 4,
+            "file": "0004-kk-Add-exact-thread-indirect-compute-dispatch.patch",
+            "source": "inputs/patches/mesa/0004-kk-Add-exact-thread-indirect-compute-dispatch.patch",
+            "sha256": "0d6db09a05d5f4b6f566bbbc5970aba98c7ccabc56e94861befa45552332930a",
+            "bytes": 4160,
+            "applyCwd": ""
+          },
+          {
+            "order": 5,
+            "file": "0005-kk-Implement-geometry-shaders-with-poly.patch",
+            "source": "inputs/patches/mesa/0005-kk-Implement-geometry-shaders-with-poly.patch",
+            "sha256": "439aa56e88035402f75779c89586b31f07b3045589accd6f09305290d1b64fa9",
+            "bytes": 46442,
+            "applyCwd": ""
+          },
+          {
+            "order": 6,
+            "file": "0006-kk-Draw-adjacency-topologies-without-a-geometry-shad.patch",
+            "source": "inputs/patches/mesa/0006-kk-Draw-adjacency-topologies-without-a-geometry-shad.patch",
+            "sha256": "c1614d3af2c0abaa90b28018c5ca90432a526601539741a82d13a1b7ab8a63a4",
+            "bytes": 8234,
+            "applyCwd": ""
+          },
+          {
+            "order": 7,
+            "file": "0007-kk-Advertise-geometryShader.patch",
+            "source": "inputs/patches/mesa/0007-kk-Advertise-geometryShader.patch",
+            "sha256": "272e8bd15e51bfa1c3b0b6e0ea6038a0108f5de31fcb3ff15f42f4987d6fc7bb",
+            "bytes": 837,
+            "applyCwd": ""
+          },
+          {
+            "order": 8,
+            "file": "0008-kk-Use-the-patch-index-as-the-geometry-shader-primit.patch",
+            "source": "inputs/patches/mesa/0008-kk-Use-the-patch-index-as-the-geometry-shader-primit.patch",
+            "sha256": "88269c0a171996a302c2ebab26f5fef78f512812fdc80506a3d7ba9d407b3412",
+            "bytes": 3112,
+            "applyCwd": ""
+          },
+          {
+            "order": 9,
+            "file": "0009-poly-Strip-KosmicKrisp-image-fences-with-geometry-sh.patch",
+            "source": "inputs/patches/mesa/0009-poly-Strip-KosmicKrisp-image-fences-with-geometry-sh.patch",
+            "sha256": "ed4795fa24ff444c4f3347c869d132b20bff9316c3719e69bde24b973b7eaf55",
+            "bytes": 890,
+            "applyCwd": ""
+          },
+          {
+            "order": 10,
+            "file": "0010-kk-Support-geometry-shaders-in-device-generated-comm.patch",
+            "source": "inputs/patches/mesa/0010-kk-Support-geometry-shaders-in-device-generated-comm.patch",
+            "sha256": "ff5d77b76d16c57e6510ee648bd424488374bf0ca3751eb198136d3580b7b3cb",
+            "bytes": 1301,
+            "applyCwd": ""
+          },
+          {
+            "order": 11,
+            "file": "0011-kk-Copy-DGC-index-buffers-without-decomposition-for-.patch",
+            "source": "inputs/patches/mesa/0011-kk-Copy-DGC-index-buffers-without-decomposition-for-.patch",
+            "sha256": "2abdf29eb6a76cf05cc637aed6e3230cd9d55fe88fcdaa8e3320969904cbe4a8",
+            "bytes": 1985,
+            "applyCwd": ""
+          },
+          {
+            "order": 12,
+            "file": "0012-kk-Keep-the-geometry-heap-alive-across-the-draws-of-.patch",
+            "source": "inputs/patches/mesa/0012-kk-Keep-the-geometry-heap-alive-across-the-draws-of-.patch",
+            "sha256": "ea80634b249be3d2aefffbeb97e29b9482b3a3a074ab2f47ff72eee9d694685e",
+            "bytes": 2649,
+            "applyCwd": ""
+          },
+          {
+            "order": 13,
+            "file": "0013-kk-Dispatch-indirect-tessellation-VS-and-TCS-with-ex.patch",
+            "source": "inputs/patches/mesa/0013-kk-Dispatch-indirect-tessellation-VS-and-TCS-with-ex.patch",
+            "sha256": "d27155710c3e2edf142d447388ef9f4c8adef05b7fbcdede5581f080e0b21d85",
+            "bytes": 3679,
+            "applyCwd": ""
+          },
+          {
+            "order": 14,
+            "file": "0014-kk-Add-VK_EXT_transform_feedback.patch",
+            "source": "inputs/patches/mesa/0014-kk-Add-VK_EXT_transform_feedback.patch",
+            "sha256": "c49682ef1f1ead75314bb23dd21b0bdbb8e7427acb273b08c902494064d6b948",
+            "bytes": 43747,
+            "applyCwd": ""
+          },
+          {
+            "order": 15,
+            "file": "0015-kk-Add-sparse-buffers.patch",
+            "source": "inputs/patches/mesa/0015-kk-Add-sparse-buffers.patch",
+            "sha256": "ca2dafbbb431d097edc1cd0cdc853586a960b8d28a32e72ee3f4b22486a3369b",
+            "bytes": 13404,
+            "applyCwd": ""
+          },
+          {
+            "order": 16,
+            "file": "0016-kk-Add-sparse-images-and-shader-residency.patch",
+            "source": "inputs/patches/mesa/0016-kk-Add-sparse-images-and-shader-residency.patch",
+            "sha256": "925678783a0b37fa55acc7878a8d8947aafcf50d85c42db693601f61dd5b3989",
+            "bytes": 39104,
+            "applyCwd": ""
+          },
+          {
+            "order": 17,
+            "file": "0017-kk-Order-sparse-mapping-updates-and-allow-texel-view.patch",
+            "source": "inputs/patches/mesa/0017-kk-Order-sparse-mapping-updates-and-allow-texel-view.patch",
+            "sha256": "9da40f1639b1c8215fa8b9253ef7b54e04fd788f2d9e58099e3d0f078a9176b6",
+            "bytes": 5024,
+            "applyCwd": ""
+          },
+          {
+            "order": 18,
+            "file": "0018-kk-Emulate-sampler-min-max-reduction-before-Apple-fa.patch",
+            "source": "inputs/patches/mesa/0018-kk-Emulate-sampler-min-max-reduction-before-Apple-fa.patch",
+            "sha256": "b4c1bbffbe47b23fb0f6df02b131ae5d64aba1b413950bcf93d82737cd7acebf",
+            "bytes": 26790,
+            "applyCwd": ""
+          },
+          {
+            "order": 19,
+            "file": "0019-kk-Add-pipeline-statistics-queries.patch",
+            "source": "inputs/patches/mesa/0019-kk-Add-pipeline-statistics-queries.patch",
+            "sha256": "06c458facc7ad84cc86dc613f4da8cb58e01b2c9901c4f69ec42f18698d0623d",
+            "bytes": 48621,
+            "applyCwd": ""
+          },
+          {
+            "order": 20,
+            "file": "0020-kk-Unroll-DGC-strips-with-restart-for-geometry-shade.patch",
+            "source": "inputs/patches/mesa/0020-kk-Unroll-DGC-strips-with-restart-for-geometry-shade.patch",
+            "sha256": "bf3311c7dc3bdf94529248f7fd0efb9464c4c274592f217ff041e13c1f0e74d0",
+            "bytes": 3610,
+            "applyCwd": ""
+          },
+          {
+            "order": 21,
+            "file": "0021-kk-Report-failure-to-build-the-statistics-pipeline.patch",
+            "source": "inputs/patches/mesa/0021-kk-Report-failure-to-build-the-statistics-pipeline.patch",
+            "sha256": "b90b0d048f258127baa79655bb40094f8cdfdedfba5911a7133f738a7af880b3",
+            "bytes": 964,
+            "applyCwd": ""
+          },
+          {
+            "order": 22,
+            "file": "0022-kk-Fix-gaps-in-the-sampler-min-max-emulation.patch",
+            "source": "inputs/patches/mesa/0022-kk-Fix-gaps-in-the-sampler-min-max-emulation.patch",
+            "sha256": "d4a3185749ab0a0f20e8c8445eadf6102de65711ca1114a37989336ecde551df",
+            "bytes": 17422,
+            "applyCwd": ""
+          },
+          {
+            "order": 23,
+            "file": "0023-kk-Report-one-sample-for-sparse-images.patch",
+            "source": "inputs/patches/mesa/0023-kk-Report-one-sample-for-sparse-images.patch",
+            "sha256": "76ec8871cd18f36a612ffa82a02c22702bafd22c28350601aac4a8510005df0d",
+            "bytes": 1051,
+            "applyCwd": ""
+          },
+          {
+            "order": 24,
+            "file": "0024-kk-Discard-writes-to-unbound-sparse-buffers-and-repo.patch",
+            "source": "inputs/patches/mesa/0024-kk-Discard-writes-to-unbound-sparse-buffers-and-repo.patch",
+            "sha256": "329ccfa59b2a1cc4ae10a839b243f677222fb8ee10add6da59d019b375f07804",
+            "bytes": 53349,
+            "applyCwd": ""
+          },
+          {
+            "order": 25,
+            "file": "0025-kk-Check-that-a-buffer-reports-its-sparse-tier-befor.patch",
+            "source": "inputs/patches/mesa/0025-kk-Check-that-a-buffer-reports-its-sparse-tier-befor.patch",
+            "sha256": "9e74fd73891f8e13b99a2dcfad10eae4df40f46e2cc3886a46a30b26fbd616a5",
+            "bytes": 1174,
+            "applyCwd": ""
+          },
+          {
+            "order": 26,
+            "file": "0026-kk-Implement-VK_KHR_compute_shader_derivatives.patch",
+            "source": "inputs/patches/mesa/0026-kk-Implement-VK_KHR_compute_shader_derivatives.patch",
+            "sha256": "d160dd5e8c1e3ff0ab19dfbd3c78706a06ab943789a6ad040c6867bc5a5567f5",
+            "bytes": 14969,
+            "applyCwd": ""
+          },
+          {
+            "order": 27,
+            "file": "0027-kk-Support-denormal-preserve-and-flush-to-zero-modes.patch",
+            "source": "inputs/patches/mesa/0027-kk-Support-denormal-preserve-and-flush-to-zero-modes.patch",
+            "sha256": "149d9fbf0e92e9174ec0f9d8c7898516a0a5e3b2ce8d495279ddb15edc037212",
+            "bytes": 26993,
+            "applyCwd": ""
+          },
+          {
+            "order": 28,
+            "file": "0028-kk-Implement-64-bit-atomics-on-buffers-and-shared-me.patch",
+            "source": "inputs/patches/mesa/0028-kk-Implement-64-bit-atomics-on-buffers-and-shared-me.patch",
+            "sha256": "68247c54ee67a5912566918937dd17f4fdca88318dc0306da6dbf03112fc3b2c",
+            "bytes": 24114,
+            "applyCwd": ""
+          },
+          {
+            "order": 29,
+            "file": "0029-kk-Implement-VK_EXT_shader_image_atomic_int64.patch",
+            "source": "inputs/patches/mesa/0029-kk-Implement-VK_EXT_shader_image_atomic_int64.patch",
+            "sha256": "4b52884e5de2d159f070de1284717a56c447749fdbaf58e39b2307b4f49c7079",
+            "bytes": 20761,
+            "applyCwd": ""
+          },
+          {
+            "order": 30,
+            "file": "0030-kk-Allow-storage-usage-on-sparse-residency-images.patch",
+            "source": "inputs/patches/mesa/0030-kk-Allow-storage-usage-on-sparse-residency-images.patch",
+            "sha256": "28284e6acf1718fc3b8651f0b7a63fda370b2ae2f1d5d4acd8964efc0068ad47",
+            "bytes": 994,
+            "applyCwd": ""
+          },
+          {
+            "order": 31,
+            "file": "0031-kk-Leave-MSL-temporaries-uninitialised-and-skip-the-.patch",
+            "source": "inputs/patches/mesa/0031-kk-Leave-MSL-temporaries-uninitialised-and-skip-the-.patch",
+            "sha256": "8296b18b0b1963692c67d744add29f03903fb6962a221019dcbf4e97788988d3",
+            "bytes": 1662,
+            "applyCwd": ""
+          },
+          {
+            "order": 32,
+            "file": "0032-kk-Query-residency-of-writable-sparse-images-through.patch",
+            "source": "inputs/patches/mesa/0032-kk-Query-residency-of-writable-sparse-images-through.patch",
+            "sha256": "9d13dbdbf159488231b6151680c875bd9114466077352905a21a29afaf94fc6e",
+            "bytes": 25917,
+            "applyCwd": ""
+          },
+          {
+            "order": 33,
+            "file": "0033-kk-Save-MSL-that-fails-to-compile-in-MESA_KK_FAILED_.patch",
+            "source": "inputs/patches/mesa/0033-kk-Save-MSL-that-fails-to-compile-in-MESA_KK_FAILED_.patch",
+            "sha256": "6964a4ed65982ec57892376fe818512782d253c98834550aef4d4fa6a4767287",
+            "bytes": 1490,
+            "applyCwd": ""
+          },
+          {
+            "order": 34,
+            "file": "0034-egl-surfaceless-Try-Zink-when-there-is-no-DRM-device.patch",
+            "source": "inputs/patches/mesa/0034-egl-surfaceless-Try-Zink-when-there-is-no-DRM-device.patch",
+            "sha256": "4516dc0fe4f06237a1a6ff95eb35cf0c6c5e0c0dd6364d2830f42f7fd753a29e",
+            "bytes": 1102,
+            "applyCwd": ""
+          },
+          {
+            "order": 35,
+            "file": "0035-zink-Create-kopper-surfaces-from-Metal-layers.patch",
+            "source": "inputs/patches/mesa/0035-zink-Create-kopper-surfaces-from-Metal-layers.patch",
+            "sha256": "21e960a353a7d35f20b94d8dea900846ed4cc31fc3a7587bf022a05cd2e12dff",
+            "bytes": 4246,
+            "applyCwd": ""
+          },
+          {
+            "order": 36,
+            "file": "0036-egl-surfaceless-Window-surfaces-on-a-CAMetalLayer-wi.patch",
+            "source": "inputs/patches/mesa/0036-egl-surfaceless-Window-surfaces-on-a-CAMetalLayer-wi.patch",
+            "sha256": "b0664f8cf7c27c4bbdd618fe9c83df55db5c463c15f06d0ff32f97f1c3fcd756",
+            "bytes": 11513,
+            "applyCwd": ""
+          },
+          {
+            "order": 37,
+            "file": "0037-zink-Update-the-pipeline-when-vertex-elements-change.patch",
+            "source": "inputs/patches/mesa/0037-zink-Update-the-pipeline-when-vertex-elements-change.patch",
+            "sha256": "a5f2abeb41a600a21fc193878e628891b8d96037eddf532771712d9daddfc4fa",
+            "bytes": 1429,
+            "applyCwd": ""
+          },
+          {
+            "order": 38,
+            "file": "0038-kk-Reinterpret-fragment-outputs-that-do-not-match-th.patch",
+            "source": "inputs/patches/mesa/0038-kk-Reinterpret-fragment-outputs-that-do-not-match-th.patch",
+            "sha256": "ca0a3f822813057ecd3007d0f9575f0037c883546079fdb84f21df655e990dda",
+            "bytes": 3501,
+            "applyCwd": ""
+          },
+          {
+            "order": 39,
+            "file": "0039-kk-Scalarize-clip-and-cull-distance-loads.patch",
+            "source": "inputs/patches/mesa/0039-kk-Scalarize-clip-and-cull-distance-loads.patch",
+            "sha256": "a68f55cbe71a8e21a2bae5faad31d124910c6df5cffbc5a143607c31619567c5",
+            "bytes": 1634,
+            "applyCwd": ""
+          },
+          {
+            "order": 40,
+            "file": "0040-kk-Limit-the-levels-of-the-2D-array-twin-of-3D-image.patch",
+            "source": "inputs/patches/mesa/0040-kk-Limit-the-levels-of-the-2D-array-twin-of-3D-image.patch",
+            "sha256": "5fbad21961c3b560c8286a044f0e635428b6a5e7637993bcdafcbca318966473",
+            "bytes": 1143,
+            "applyCwd": ""
+          },
+          {
+            "order": 41,
+            "file": "0041-zink-Do-not-declare-that-Inf-and-NaN-are-absent.patch",
+            "source": "inputs/patches/mesa/0041-zink-Do-not-declare-that-Inf-and-NaN-are-absent.patch",
+            "sha256": "1d727322dfd2db2b357ada37b3d160bf1e3002d1773071b33862b8e401d6f46a",
+            "bytes": 1408,
+            "applyCwd": ""
+          },
+          {
+            "order": 42,
+            "file": "0042-kk-Keep-the-vertex-order-when-unrolling-draws-withou.patch",
+            "source": "inputs/patches/mesa/0042-kk-Keep-the-vertex-order-when-unrolling-draws-withou.patch",
+            "sha256": "2c25608de06c3ae34ea827d5170b44d9991b4ff3d6b4e97ec096005f680960e2",
+            "bytes": 1359,
+            "applyCwd": ""
+          },
+          {
+            "order": 43,
+            "file": "0043-kk-Key-vertex-shaders-on-the-assembled-primitive-typ.patch",
+            "source": "inputs/patches/mesa/0043-kk-Key-vertex-shaders-on-the-assembled-primitive-typ.patch",
+            "sha256": "4d146088aad8ec6f3b20dd81bfbb4209096b6bfb80bbd60f1b549fec9cfbdd56",
+            "bytes": 1854,
+            "applyCwd": ""
+          },
+          {
+            "order": 44,
+            "file": "0044-kk-Swizzle-fragment-outputs-with-fewer-than-four-com.patch",
+            "source": "inputs/patches/mesa/0044-kk-Swizzle-fragment-outputs-with-fewer-than-four-com.patch",
+            "sha256": "5673924cf1bee295dbcc78767d6d45235356af0bfccaf597cf57890732bbe176",
+            "bytes": 1930,
+            "applyCwd": ""
+          },
+          {
+            "order": 45,
+            "file": "0045-kk-Implement-draws-from-a-transform-feedback-byte-co.patch",
+            "source": "inputs/patches/mesa/0045-kk-Implement-draws-from-a-transform-feedback-byte-co.patch",
+            "sha256": "563c70e147bbb1c9fac30ceff1527207b96e5d1a4d1d447f67d4bb92d16d7837",
+            "bytes": 4108,
+            "applyCwd": ""
+          },
+          {
+            "order": 46,
+            "file": "0046-kk-Round-the-emulated-fused-multiply-add-once.patch",
+            "source": "inputs/patches/mesa/0046-kk-Round-the-emulated-fused-multiply-add-once.patch",
+            "sha256": "919942289f1465c05eab2c59e61b7670327752421fdb604c98e9547f446c4881",
+            "bytes": 4600,
+            "applyCwd": ""
+          },
+          {
+            "order": 47,
+            "file": "0047-kk-Wait-for-all-queue-work-before-switching-to-locke.patch",
+            "source": "inputs/patches/mesa/0047-kk-Wait-for-all-queue-work-before-switching-to-locke.patch",
+            "sha256": "1313f88592504f00fc8b745bb9ddf19f47defeeff120bf252a086bd667603a5d",
+            "bytes": 6619,
+            "applyCwd": ""
+          },
+          {
+            "order": 48,
+            "file": "0048-kk-Lock-64-bit-atomic-loads-and-stores-everywhere-an.patch",
+            "source": "inputs/patches/mesa/0048-kk-Lock-64-bit-atomic-loads-and-stores-everywhere-an.patch",
+            "sha256": "82afc0b323e9d990cbf4543b4689dba9ddb998b196b281bb6a47ebced6628c27",
+            "bytes": 9641,
+            "applyCwd": ""
+          },
+          {
+            "order": 49,
+            "file": "0049-kk-Allow-sparse-binding-on-1D-multisampled-and-depth.patch",
+            "source": "inputs/patches/mesa/0049-kk-Allow-sparse-binding-on-1D-multisampled-and-depth.patch",
+            "sha256": "a65a676fd169fad7b4c3edb668e8f142ec8b1337a0029bb6705bb909b94e7d66",
+            "bytes": 4561,
+            "applyCwd": ""
+          },
+          {
+            "order": 50,
+            "file": "0050-kk-Merge-color-outputs-written-per-component-before-.patch",
+            "source": "inputs/patches/mesa/0050-kk-Merge-color-outputs-written-per-component-before-.patch",
+            "sha256": "071e957b948565579a1548ef0de721f310f5c9df743cd855f1419d36a723d648",
+            "bytes": 5674,
+            "applyCwd": ""
+          },
+          {
+            "order": 51,
+            "file": "0051-kk-Keep-block-compressed-formats-out-of-sparse-image.patch",
+            "source": "inputs/patches/mesa/0051-kk-Keep-block-compressed-formats-out-of-sparse-image.patch",
+            "sha256": "3a452668cdf55906291a597578b5992810433f364771e975f376173c85b63c15",
+            "bytes": 914,
+            "applyCwd": ""
+          },
+          {
+            "order": 52,
+            "file": "0052-zink-Count-each-query-start-once-when-copying-result.patch",
+            "source": "inputs/patches/mesa/0052-zink-Count-each-query-start-once-when-copying-result.patch",
+            "sha256": "ca97a0c5a3ac27935717106f4b09e5473c46297b4e9946de9c33e0ed6bd88ccb",
+            "bytes": 1042,
+            "applyCwd": ""
+          },
+          {
+            "order": 53,
+            "file": "0053-zink-End-the-render-pass-before-restarting-queries-f.patch",
+            "source": "inputs/patches/mesa/0053-zink-End-the-render-pass-before-restarting-queries-f.patch",
+            "sha256": "eb3870028ae0fa3631a9bf1039dd426f459661fa167a5dd6262483a75f3652ff",
+            "bytes": 1756,
+            "applyCwd": ""
+          },
+          {
+            "order": 54,
+            "file": "0054-kk-Support-uniform-texel-buffers-in-three-component-.patch",
+            "source": "inputs/patches/mesa/0054-kk-Support-uniform-texel-buffers-in-three-component-.patch",
+            "sha256": "0aa0df8144b8d48fddb28cac2c4731d3679fa04ca542835df9c85cc2ec6877ea",
+            "bytes": 10121,
+            "applyCwd": ""
+          },
+          {
+            "order": 55,
+            "file": "0055-zink-Halve-line-loop-vertex-counts-when-writing-quer.patch",
+            "source": "inputs/patches/mesa/0055-zink-Halve-line-loop-vertex-counts-when-writing-quer.patch",
+            "sha256": "4eb757070fa261dbec257b9741fbbb691c0f04cda5e93c614923a13c44bc6bdd",
+            "bytes": 1540,
+            "applyCwd": ""
+          },
+          {
+            "order": 56,
+            "file": "0056-kk-Count-primitives-and-vertices-between-restart-ind.patch",
+            "source": "inputs/patches/mesa/0056-kk-Count-primitives-and-vertices-between-restart-ind.patch",
+            "sha256": "a729c5c9b659aab37587c11ee6e991fd66d48bab134132a10bf291343b881191",
+            "bytes": 6195,
+            "applyCwd": ""
+          },
+          {
+            "order": 57,
+            "file": "0057-kk-Give-each-component-of-a-user-varying-its-own-Met.patch",
+            "source": "inputs/patches/mesa/0057-kk-Give-each-component-of-a-user-varying-its-own-Met.patch",
+            "sha256": "3b91c51897c8c35e566e4a341a6869c3fea28cda71b31973849f32e846829789",
+            "bytes": 20200,
+            "applyCwd": ""
+          },
+          {
+            "order": 58,
+            "file": "0058-poly-Forward-geometry-shader-outputs-per-component-w.patch",
+            "source": "inputs/patches/mesa/0058-poly-Forward-geometry-shader-outputs-per-component-w.patch",
+            "sha256": "78ace36bf18e8316b5445fa30d1383291243666095fd6b3e137fb80cfd98dfdc",
+            "bytes": 3116,
+            "applyCwd": ""
+          },
+          {
+            "order": 59,
+            "file": "0059-kk-Report-the-124-fragment-input-components-Metal-al.patch",
+            "source": "inputs/patches/mesa/0059-kk-Report-the-124-fragment-input-components-Metal-al.patch",
+            "sha256": "ad5aab69ccc6986aa4068defbb2a168abb02fefdb9c076e7c9e693dd8bf5c631",
+            "bytes": 1027,
+            "applyCwd": ""
+          },
+          {
+            "order": 60,
+            "file": "0060-kk-Render-2D-views-of-3D-images-into-the-depth-plane.patch",
+            "source": "inputs/patches/mesa/0060-kk-Render-2D-views-of-3D-images-into-the-depth-plane.patch",
+            "sha256": "a360e28ab5af96ecf9a082f7822603c01551c496acabe96c03fd8b1dc871fc98",
+            "bytes": 5602,
+            "applyCwd": ""
+          },
+          {
+            "order": 61,
+            "file": "0061-kk-Copy-between-3D-and-layered-images-through-a-buff.patch",
+            "source": "inputs/patches/mesa/0061-kk-Copy-between-3D-and-layered-images-through-a-buff.patch",
+            "sha256": "73bad2c68493cd8cfc03140b4423e60c3cbd3278f14ce155bc48c4cdae3b45bd",
+            "bytes": 5237,
+            "applyCwd": ""
+          },
+          {
+            "order": 62,
+            "file": "0062-zink-Only-expose-sparse-textures-when-the-driver-has.patch",
+            "source": "inputs/patches/mesa/0062-zink-Only-expose-sparse-textures-when-the-driver-has.patch",
+            "sha256": "f202e78d7655f9bfe9af0408adc09c504d006611b2dd1b13df86cedebbfb48b9",
+            "bytes": 1696,
+            "applyCwd": ""
+          },
+          {
+            "order": 63,
+            "file": "0063-kk-Keep-the-residency-code-of-sparse-samples-out-of-.patch",
+            "source": "inputs/patches/mesa/0063-kk-Keep-the-residency-code-of-sparse-samples-out-of-.patch",
+            "sha256": "184ca1fd372d25fa16b0b3fc71ba49639c7d1227e8e982349a9f2b7f6a3ddad1",
+            "bytes": 3447,
+            "applyCwd": ""
+          },
+          {
+            "order": 64,
+            "file": "0064-kk-Advertise-custom-border-colours-by-default.patch",
+            "source": "inputs/patches/mesa/0064-kk-Advertise-custom-border-colours-by-default.patch",
+            "sha256": "347327b6c07248679c9a6cb597b857605df127cc8dd761bb30db78d3b26a195c",
+            "bytes": 2558,
+            "applyCwd": ""
+          },
+          {
+            "order": 65,
+            "file": "0065-kk-Remove-dead-code-after-leaving-SSA-so-no-untyped-.patch",
+            "source": "inputs/patches/mesa/0065-kk-Remove-dead-code-after-leaving-SSA-so-no-untyped-.patch",
+            "sha256": "0e382dd057d613496ff47e5216a7255a0d476a9f2620d23c593b6152d24a5fc3",
+            "bytes": 856,
+            "applyCwd": ""
+          },
+          {
+            "order": 66,
+            "file": "0066-kk-Take-flat-inputs-from-the-last-vertex-without-reo.patch",
+            "source": "inputs/patches/mesa/0066-kk-Take-flat-inputs-from-the-last-vertex-without-reo.patch",
+            "sha256": "dddc0aff11320a03d89689bedf2c435f34945638cc462c694c4a41238712e603",
+            "bytes": 18282,
+            "applyCwd": ""
+          },
+          {
+            "order": 67,
+            "file": "0067-kk-Report-the-6-bits-of-mipmap-precision-Apple-GPUs-.patch",
+            "source": "inputs/patches/mesa/0067-kk-Report-the-6-bits-of-mipmap-precision-Apple-GPUs-.patch",
+            "sha256": "8cb52dd0084b4f9d80c1ae74e5bf51b64dbbd1092ad0a4d73ced36f4f5e86cd0",
+            "bytes": 979,
+            "applyCwd": ""
+          },
+          {
+            "order": 68,
+            "file": "0068-kk-Render-depth-stencil-views-into-the-image-s-own-t.patch",
+            "source": "inputs/patches/mesa/0068-kk-Render-depth-stencil-views-into-the-image-s-own-t.patch",
+            "sha256": "ac44007cdb10ee9c5cee6d4b5e6e30d4489418493d97bb0e0011dc17d57951c4",
+            "bytes": 1920,
+            "applyCwd": ""
+          },
+          {
+            "order": 69,
+            "file": "0069-nir-Keep-atan2-s-scaled-division-from-being-reassoci.patch",
+            "source": "inputs/patches/mesa/0069-nir-Keep-atan2-s-scaled-division-from-being-reassoci.patch",
+            "sha256": "6949917ab77965e98bc061527600d8fbfefe1781fd8af2860163a0e64229de92",
+            "bytes": 1353,
+            "applyCwd": ""
+          },
+          {
+            "order": 70,
+            "file": "0070-kk-Leave-the-thread-limit-of-emulation-passes-dispat.patch",
+            "source": "inputs/patches/mesa/0070-kk-Leave-the-thread-limit-of-emulation-passes-dispat.patch",
+            "sha256": "e0a3945d71703ef12625d6d02d184b2a1b1ee6a6e10e593be069e30cdca84ba4",
+            "bytes": 4079,
+            "applyCwd": ""
+          },
+          {
+            "order": 71,
+            "file": "0071-zink-Lower-all-subgroup-operations-to-one-invocation.patch",
+            "source": "inputs/patches/mesa/0071-zink-Lower-all-subgroup-operations-to-one-invocation.patch",
+            "sha256": "bb9b522cec3ce41d3557f5dc10b07dacfb74417b0b4bdc733bbc185cc7138bd8",
+            "bytes": 3935,
+            "applyCwd": ""
+          },
+          {
+            "order": 72,
+            "file": "0072-kk-Clear-16-bit-depth-to-the-nearest-value-instead-o.patch",
+            "source": "inputs/patches/mesa/0072-kk-Clear-16-bit-depth-to-the-nearest-value-instead-o.patch",
+            "sha256": "74724b7b36dab0f1475874c72ee1d5338093cd4a347032e219de4f6a86531d51",
+            "bytes": 1617,
+            "applyCwd": ""
+          },
+          {
+            "order": 73,
+            "file": "0073-kk-Apply-custom-border-colours-to-depth-comparisons.patch",
+            "source": "inputs/patches/mesa/0073-kk-Apply-custom-border-colours-to-depth-comparisons.patch",
+            "sha256": "f27328809065c64ff2829c52e0971a0689dd3cc16e734a52d47e4b751b27c831",
+            "bytes": 7017,
+            "applyCwd": ""
+          },
+          {
+            "order": 74,
+            "file": "0074-poly-kk-Run-geometry-shaders-with-side-effects-once-.patch",
+            "source": "inputs/patches/mesa/0074-poly-kk-Run-geometry-shaders-with-side-effects-once-.patch",
+            "sha256": "449770e7739dfd28a21916890e076c1721eb3a7f226db52ea0863cf3103e88f7",
+            "bytes": 22352,
+            "applyCwd": ""
+          },
+          {
+            "order": 75,
+            "file": "0075-zink-Lower-mediump-to-16-bits-only-in-fragment-shade.patch",
+            "source": "inputs/patches/mesa/0075-zink-Lower-mediump-to-16-bits-only-in-fragment-shade.patch",
+            "sha256": "1993d0dbb4b2a46305c4ebb4254e10f730979245d8f0d628aa51e34234f13319",
+            "bytes": 1307,
+            "applyCwd": ""
+          },
+          {
+            "order": 76,
+            "file": "0076-kk-Dispatch-emulation-passes-as-indirect-threadgroup.patch",
+            "source": "inputs/patches/mesa/0076-kk-Dispatch-emulation-passes-as-indirect-threadgroup.patch",
+            "sha256": "7a07f740cddf1f66e24fb7a948bf2ea226477e757e7aaef4b0eadc0ca6022b41",
+            "bytes": 12670,
+            "applyCwd": ""
+          },
+          {
+            "order": 77,
+            "file": "0077-zink-Keep-the-cube-bit-of-a-sampler-view-bound-again.patch",
+            "source": "inputs/patches/mesa/0077-zink-Keep-the-cube-bit-of-a-sampler-view-bound-again.patch",
+            "sha256": "c2a44d4961afb6adddf7f609dec16256dafc3892b3ceca4076b569bf417957d3",
+            "bytes": 1399,
+            "applyCwd": ""
+          },
+          {
+            "order": 78,
+            "file": "0078-kk-Weigh-custom-border-depth-comparisons-exactly.patch",
+            "source": "inputs/patches/mesa/0078-kk-Weigh-custom-border-depth-comparisons-exactly.patch",
+            "sha256": "00e4c55eb68990c1fbeaf802fecb42919516dc2e0614886b3c39b1580b84455f",
+            "bytes": 11825,
+            "applyCwd": ""
+          },
+          {
+            "order": 79,
+            "file": "0079-kk-Lock-64-bit-atomics-without-lane-turns-and-wait-l.patch",
+            "source": "inputs/patches/mesa/0079-kk-Lock-64-bit-atomics-without-lane-turns-and-wait-l.patch",
+            "sha256": "b52f383502ee7bb05a3c6ce65a90d3ad6f225a7386e9ee00647172b4115a0ba4",
+            "bytes": 4686,
+            "applyCwd": ""
+          },
+          {
+            "order": 80,
+            "file": "0080-kk-Return-a-lost-device-from-a-wait-whose-event-is-n.patch",
+            "source": "inputs/patches/mesa/0080-kk-Return-a-lost-device-from-a-wait-whose-event-is-n.patch",
+            "sha256": "4fbad4ee62c1eeb3f3fba91402bf97c59aab9a0e272e6125802f07bf94fd774a",
+            "bytes": 1525,
+            "applyCwd": ""
+          },
+          {
+            "order": 81,
+            "file": "0081-nir-kk-Add-the-sampler-LOD-bias-as-a-32-bit-float.patch",
+            "source": "inputs/patches/mesa/0081-nir-kk-Add-the-sampler-LOD-bias-as-a-32-bit-float.patch",
+            "sha256": "ca947118e43ae051296bd90de3ebcd167efdcc64b3d41e3a4d22a66e42aa000c",
+            "bytes": 7123,
+            "applyCwd": ""
+          },
+          {
+            "order": 82,
+            "file": "0082-util-Make-the-emulated-barrier-return-to-one-serial-.patch",
+            "source": "inputs/patches/mesa/0082-util-Make-the-emulated-barrier-return-to-one-serial-.patch",
+            "sha256": "5b76a0c2938554b362adbba1a9aae65e8d401e570676fdce179a3dabb30001d0",
+            "bytes": 2151,
+            "applyCwd": ""
+          },
+          {
+            "order": 83,
+            "file": "0083-zink-Fix-races-between-a-batch-s-submission-and-wait.patch",
+            "source": "inputs/patches/mesa/0083-zink-Fix-races-between-a-batch-s-submission-and-wait.patch",
+            "sha256": "ced0a4db9ab68f93e8cdd9d59b18423d57c3cd5a3c3011913f0ca5e792e997fb",
+            "bytes": 2810,
+            "applyCwd": ""
+          },
+          {
+            "order": 84,
+            "file": "0084-egl-surfaceless-Expose-EGL_EXT_present_opaque-for-Me.patch",
+            "source": "inputs/patches/mesa/0084-egl-surfaceless-Expose-EGL_EXT_present_opaque-for-Me.patch",
+            "sha256": "28bdf6f43fc1196b4bb52609ca121671c8452fe57698c2682b4d2058f59d4ec6",
+            "bytes": 1047,
+            "applyCwd": ""
+          },
+          {
+            "order": 85,
+            "file": "0085-kk-Support-depth-bounds-on-pre-family-10-Apple-GPUs-.patch",
+            "source": "inputs/patches/mesa/0085-kk-Support-depth-bounds-on-pre-family-10-Apple-GPUs-.patch",
+            "sha256": "bb786ca6670fb46e119f2c0565985fca8e34564d8ad5ee619d05172fc7d87b4c",
+            "bytes": 24465,
+            "applyCwd": ""
+          },
+          {
+            "order": 86,
+            "file": "0086-kk-Clamp-buffer-descriptor-range-to-buffer-bounds.patch",
+            "source": "inputs/patches/mesa/0086-kk-Clamp-buffer-descriptor-range-to-buffer-bounds.patch",
+            "sha256": "a00d9e3b01ff870278c458fa1d6bfa38c2bf4d1a3226db8483828f5fefb2a62e",
+            "bytes": 1025,
+            "applyCwd": ""
+          },
+          {
+            "order": 87,
+            "file": "0087-floe-ios-static-headless-component.patch",
+            "source": "floe/0001-floe-ios-static-headless-component.patch",
+            "sha256": "6bc1c81e5f780b822f2f8fd4ae8549aeb52dbb40ac39cc24d556690852b24e80",
+            "bytes": 6484,
+            "applyCwd": ""
+          },
+          {
+            "order": 88,
+            "file": "0088-floe-embedded-kosmickrisp-resolver.patch",
+            "source": "floe/0003-floe-embedded-kosmickrisp-resolver.patch",
+            "sha256": "e0bd13e2844e4c51a3806a07f53d3f0391151959a028f3da388c1b25b59e09dc",
+            "bytes": 2560,
+            "applyCwd": ""
+          },
+          {
+            "order": 89,
+            "file": "0089-floe-ios-static-dependency-link-check.patch",
+            "source": "floe/0004-floe-ios-static-dependency-link-check.patch",
+            "sha256": "4c6d7c546067f5eec7ff7d7a911ec72eba7240cb6307c11a1ce9839d30471562",
+            "bytes": 1164,
+            "applyCwd": ""
+          },
+          {
+            "order": 90,
+            "file": "0090-floe-poly-bound-static-gs-topology.patch",
+            "source": "floe/0006-poly-bound-static-gs-topology-before-scratch-access.patch",
+            "sha256": "1d70371b10f2988c864cc60aff260a9fa6c391854c24b037b8b29361bbdf90cd",
+            "bytes": 1955,
+            "applyCwd": ""
+          },
+          {
+            "order": 91,
+            "file": "0091-floe-poly-check-gs-size-products.patch",
+            "source": "floe/0007-poly-check-gs-size-products-and-reserve-heap-without-wrap.patch",
+            "sha256": "598c367296414525b236ee1700d728bef18e63b6834667958a8ebcbb1d1558cf",
+            "bytes": 8814,
+            "applyCwd": ""
+          },
+          {
+            "order": 92,
+            "file": "0092-floe-poly-uint64-literal-portability.patch",
+            "source": "primary-review/I128_FIX02/OPENCL_UINT64_LITERALS.patch",
+            "sha256": "e2ce363b2622025cb0d6d1f3d897250151a819733bd0deedd5a065a68f714c11",
+            "bytes": 1146,
+            "applyCwd": ""
+          },
+          {
+            "order": 93,
+            "file": "0093-floe-kk-memory-types.patch",
+            "source": "memory/MEMORY_TYPES.patch",
+            "sha256": "0b2072dc9b21b605b5ac02d2d4219888d47e2d5be264a3221825b0e999d89c1a",
+            "bytes": 4058,
+            "applyCwd": "src/kosmickrisp/vulkan"
+          },
+          {
+            "order": 94,
+            "file": "0094-kk-shader-validate-cache-deserialize.patch",
+            "source": "hardening/0001-kk-shader-validate-cache-deserialize.patch",
+            "sha256": "76635e7d78510b316fe480bb5cc264070832bdf7ba5bc8bf5f6fe8f7dc4931b6",
+            "bytes": 5822,
+            "applyCwd": ""
+          },
+          {
+            "order": 95,
+            "file": "0095-vk-pipeline-cache-trailing-data.patch",
+            "source": "hardening/0002-vk-pipeline-cache-trailing-data.patch",
+            "sha256": "37d14e8f105a51590c4437f4f6ab7a13ac5f3cb5e4905e979a589cf36363d2c9",
+            "bytes": 1182,
+            "applyCwd": ""
+          },
+          {
+            "order": 96,
+            "file": "0096-kk-buffer-view-unsupported-format.patch",
+            "source": "hardening/0003-kk-buffer-view-unsupported-format.patch",
+            "sha256": "f13e631d1f4ee06a241c73cbf9d00275a4f8789253511f26001d28e2e8412f28",
+            "bytes": 2062,
+            "applyCwd": ""
+          }
+        ]
+      },
+      "applyOrderNote": "Apply 0001..0092 in filename order from the Mesa tree root. 0093 applies with -p1 from src/kosmickrisp/vulkan because the memory-type fix was authored against that directory. 0094..0096 apply from the tree root after 0093.",
+      "buildOptions": [
+        "-Dfloe-kk-embedded=true",
+        "-Ddefault_library=static",
+        "-Dplatforms=macos",
+        "-Dvulkan-drivers=kosmickrisp",
+        "-Dgallium-drivers=[]",
+        "-Dtools=[]",
+        "-Dopengl=false",
+        "-Degl=disabled",
+        "-Dglx=disabled",
+        "-Dgbm=disabled",
+        "-Dgles1=disabled",
+        "-Dgles2=disabled",
+        "-Dllvm=disabled",
+        "-Ddraw-use-llvm=false",
+        "-Dmesa-clc=system",
+        "-Dprecomp-compiler=system",
+        "-Dshader-cache=disabled",
+        "-Dzstd=disabled",
+        "-Dxmlconfig=disabled",
+        "-Dexpat=disabled",
+        "-Dbuild-tests=false",
+        "-Db_lto=false",
+        "-Db_ndebug=false"
+      ],
+      "target": "src/kosmickrisp/vulkan/floe-kk-link-check (static component link only); the iOS static port uses the same series plus the floe static headless/resolver patches",
+      "knownLimits": [
+        "The iOS component/tools build is UNRUN and officially unsupported upstream.",
+        "The fixed 128 MiB geometry-shader indirect heap remains; oversized indirect draws fail explicitly.",
+        "No OpenGL/Blender/iOS pixel or performance claim is made from source."
+      ],
+      "qualification": "Actual macOS-hosted interpreted Linux passed six WSI frames, 17 geometry runs, 21 logic cases, OpenGL transform feedback, Blender GUI Workbench and background CLI with zero-error rejection of CPU/software Vulkan. That is macOS-host evidence only."
+    }
+  },
+  "deferredComponents": {
+    "openCL": {
+      "status": "SOURCE_INCLUDED_EXTERNAL_COMPILER_AND_ICD_UNRUN",
+      "pins": {
+        "clvk": {
+          "repo": "https://github.com/kpet/clvk",
+          "commit": "399abf00c30b6d1d7a65d7ac06beee60b5991d7b",
+          "license": "Apache-2.0"
+        },
+        "clspvHeader": {
+          "repo": "https://github.com/google/clspv",
+          "commit": "7ee3a40e652b3649d175758f72d7af98b9450a68",
+          "license": "Apache-2.0 WITH LLVM-exception"
+        },
+        "oclIcd": {
+          "package": "ocl-icd-libopencl1",
+          "version": "2.3.3-1",
+          "debSha256": "eadc1b9341c36dbac2ad2f1ae159f55533512cec888425d53e42abacd814742b"
+        }
+      },
+      "blocker": "No verified ARM64 Linux clspv/LLVM compiler, no ICD load or kernel execution. The external-runtime profile is source-only and packaging is refused without an admitted compiler manifest.",
+      "capability": "Must remain unavailable; never advertise OpenCL from this source selection alone."
+    },
+    "linuxVideo": {
+      "status": "SOURCE_INCLUDED_APP_IMAGE_AND_NATIVE_UNRUN",
+      "blocker": "The ABI4 engine must be compiled with the included source, a guest kernel module built for the exact image kernel, and a new image qualified. The current v8 image has no video node.",
+      "capability": "Must remain unavailable in the App; no video node, hardware codec or ProRes claim from this source alone.",
+      "selectedSource": {
+        "guestDriver": "FloeAgent/LinuxGuest/virtio-media",
+        "guestClient": "FloeAgent/LinuxGuest/acceleration/video",
+        "hostModule": "FloeAgent/Modules/FloeLinuxVideo",
+        "engineIntegration": "A separate scoped patch appends the ABI4 virtio-media device and broker wiring to FloeAgent/ThirdParty/ARM64EMU; the combined qualification artifact is not part of the public source tree.",
+        "combinedArtifactSHA256": "397da70e97194f4c26a3469b00fe8e60fd870b87b1b25c8486b004e8591406cb"
+      }
+    },
+    "metalRebase": {
+      "status": "SOURCE_ONLY_NATIVE_UNBUILT",
+      "pins": {
+        "MoltenVK": "b5680e33d7dca891667adea0b4c35ffe905d1a66",
+        "SPIRV-Cross": "84173e8d2ba913b65276062d90e8c19dcbc0136d",
+        "moltenvkPatches": 52,
+        "spirvCrossPatches": 54,
+        "pairedSeriesSHA256": "88a8f603141e3fb09504b50406ea586bc1a869b4fb911c2edaec021fe4cc6c86"
+      },
+      "blocker": "No rebuilt xcframework, no App link or GPU run. The shipped FloeGPU binary remains virglrenderer+MoltenVK 1.4.2.",
+      "capability": "Do not replace the shipped binary or claim newer Metal features."
+    },
+    "blenderAndBLAS": {
+      "status": "SOURCE_INCLUDED_RUNTIME_UNRUN",
+      "blender": "FloeAgent/LinuxGuest/acceleration/blender",
+      "blas": "FloeAgent/LinuxGuest/acceleration/blas",
+      "blocker": "Blender 4.3+ guest package and a new image; BLAS SPIR-V generation and a real GPU runtime are unrun. Blender GPU admission remains feature-gated; software is a separate explicit choice.",
+      "capability": "No Blender or general BLAS capability may be advertised from source presence."
+    }
+  },
+  "licenses": {
+    "Mesa": "MIT and per-file notices; LICENSES/Mesa/ retained from the selected tree",
+    "Hadron": "LICENSES/Hadron-LICENSE and Hadron-LICENSE.hadron",
+    "virglrenderer": "MIT; LICENSES/virglrenderer-LICENSE.txt",
+    "MoltenVK": "Apache-2.0; shipped copy in Vendor/FloeGPU/LICENSES",
+    "clvk": "Apache-2.0 (deferred, not shipped)",
+    "clspv": "Apache-2.0 WITH LLVM-exception (deferred, not shipped)"
+  },
+  "truthBoundaries": [
+    "No source file here proves iOS execution or physical-iPad capability.",
+    "Only artifacts listed as installed in a verified image manifest may be advertised by the App.",
+    "macOS host archives and Linux guest shared objects are platform-distinct; never mix them.",
+    "The existing v8 image and its runtime evidence remain the current installed baseline."
+  ],
+  "accelerationSources": {
+    "note": "Floe-owned acceleration sources included in the controlled project tree. They are source-only; no installed image or App capability is implied.",
+    "sources": [
+      {
+        "product": "Linux video",
+        "paths": [
+          "FloeAgent/Modules/FloeLinuxVideo",
+          "FloeAgent/LinuxGuest/virtio-media",
+          "FloeAgent/LinuxGuest/acceleration/video"
+        ],
+        "status": "SOURCE_INCLUDED_NATIVE_AND_IMAGE_UNRUN",
+        "licenses": [
+          "MPL-2.0",
+          "GPL-2.0 (guest kernel module)"
+        ]
+      },
+      {
+        "product": "Standard BLAS",
+        "paths": [
+          "FloeAgent/LinuxGuest/acceleration/blas"
+        ],
+        "status": "SOURCE_INCLUDED_BUILD_AND_IMAGE_UNRUN",
+        "licenses": [
+          "Apache-2.0"
+        ]
+      },
+      {
+        "product": "Blender workbench",
+        "paths": [
+          "FloeAgent/LinuxGuest/acceleration/blender"
+        ],
+        "status": "SOURCE_INCLUDED_BLENDER_RUNTIME_UNRUN",
+        "licenses": [
+          "MPL-2.0"
+        ]
+      },
+      {
+        "product": "OpenCL runtime",
+        "paths": [
+          "FloeAgent/LinuxGuest/acceleration/opencl"
+        ],
+        "status": "SOURCE_INCLUDED_EXTERNAL_COMPILER_AND_ICD_UNRUN",
+        "licenses": [
+          "Apache-2.0",
+          "BSD-2-Clause (ocl-icd package)",
+          "per-file upstream notices"
+        ]
+      },
+      {
+        "product": "Acceleration dispatcher",
+        "paths": [
+          "FloeAgent/LinuxGuest/acceleration/floe-accel",
+          "FloeAgent/LinuxGuest/acceleration/README.md"
+        ],
+        "status": "SOURCE_INCLUDED_GUEST_BACKENDS_UNRUN",
+        "licenses": [
+          "MPL-2.0"
+        ]
+      }
+    ]
+  },
+  "sourceLocks": {
+    "acceleration": "ACCELERATION-SOURCE-LOCK.json (171 files; video/blas/blender/opencl source bytes and patch locks)",
+    "hostMesaPatches": "patches/host-mesa-30da3918/SERIES.json (96 ordered patches)",
+    "guestMesaPatch": "patches/guest-mesa-25.0.7/0001-floe-x11-cpu-present-complete.patch (sha256 0877816a...)",
+    "arm64Engine": "FloeAgent/ThirdParty/ARM64EMU/PROVENANCE.json (114 file hashes, ABI4/35 units)"
+  }
+}

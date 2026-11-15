@@ -85,6 +85,7 @@ extension MediaV2Session {
         let operation=ImageSelectionOperation(rawValue:input.property ?? "replace") ?? .replace
         if actor == .model && operation != .replace && !fencedSelection{throw MediaV2CommandError.missingSelection}
         selection=try MediaNativeSelection.combine(bitmap,with:region,operation:operation)
+        selectionFeatherDraftPixels=nil
         return .init(documentID:document.id,revision:document.revision,toolID:id,groupID:nil,selectionOnly:true)
     }
 }

@@ -1,0 +1,14 @@
+[
+  null,
+  {
+    "id": 1,
+    "name": "Tide Step",
+    "animation1Name": "",
+    "animation2Name": "",
+    "position": 1,
+    "frameMax": 4,
+    "frames": [],
+    "timings": [],
+    "note": "Original Floe starter animation."
+  }
+]

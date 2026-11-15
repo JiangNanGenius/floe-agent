@@ -1,0 +1,26 @@
+From 8a3a29e126b7a358d23958748e5cd852c7d742b0 Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Fri, 2 Oct 2026 13:12:49 -0400
+Subject: [PATCH] egl/surfaceless: Try Zink when there is no DRM device
+
+Generated-by: LLM
+---
+ src/egl/drivers/dri2/platform_surfaceless.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/egl/drivers/dri2/platform_surfaceless.c b/src/egl/drivers/dri2/platform_surfaceless.c
+index 8fbb9a60ed4..0930c13670d 100644
+--- a/src/egl/drivers/dri2/platform_surfaceless.c
++++ b/src/egl/drivers/dri2/platform_surfaceless.c
+@@ -389,7 +389,7 @@ dri2_initialize_surfaceless(_EGLDisplay *disp)
+     */
+    driver_loaded = surfaceless_probe_device(disp, disp->Options.ForceSoftware,
+                                             disp->Options.Zink);
+-   if (!driver_loaded && disp->Options.ForceSoftware) {
++   if (!driver_loaded && (disp->Options.ForceSoftware || disp->Options.Zink)) {
+       _eglLog(_EGL_DEBUG, "Falling back to surfaceless swrast without DRM.");
+       driver_loaded = surfaceless_probe_device_sw(disp);
+    }
+-- 
+2.54.0 (Apple Git-157)
+

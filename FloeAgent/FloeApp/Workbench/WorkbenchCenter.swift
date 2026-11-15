@@ -397,12 +397,12 @@ final class WorkbenchCenter: ObservableObject {
 
     // MARK: - Project lifecycle
 
-    /// Existing originals upgrade only by this explicit user action. The
-    /// existing store, owner root and tool target identity are retained.
+    /// The editor keeps the project ID, owner, imported assets and source root.
     @discardableResult
     func usePreparedWorkspace() async -> Bool {
-        guard let opening = project, await saveNow() else { return false }
-        let token = sessionToken
+        guard let opening = project, let token = sessionToken else { return false }
+        if mediaV2Context?.session.project.id == opening.id { return true }
+        guard await saveNow(), sessionToken == token, project?.id == opening.id else { return false }
         do {
             let session = try await MediaV2Session.open(projectID: opening.id, root: mediaRoot(), store: store, upgrade: true)
             guard project?.id == opening.id, sessionToken == token else { return false }
@@ -469,7 +469,7 @@ final class WorkbenchCenter: ObservableObject {
     /// could not be written; in both cases the open session is preserved and
     /// the source file is untouched.
     @discardableResult
-    func startImageProject(sourceURL: URL, owner: Owner) async -> Bool {
+    func startImageProject(sourceURL: URL, owner: Owner, preparedForEditing: Bool = false) async -> Bool {
         guard await closeProject() else { return false }
         let token = UUID()
         sessionToken = token
@@ -504,6 +504,7 @@ final class WorkbenchCenter: ObservableObject {
             try MediaTransactions.apply(.addAsset(asset), to: &project)
             let layer = ImageLayer(kind: .image, name: WorkbenchText.t("底图", "Base image"), assetID: asset.id)
             try MediaTransactions.apply(.addImageLayer(layer), to: &project)
+            if preparedForEditing { project = try MediaPreparedUpgrade.upgrade(project) }
             try await self.store.save(project)
             guard self.sessionToken == token else { return }
             self.project = project
@@ -660,6 +661,18 @@ final class WorkbenchCenter: ObservableObject {
             unsavedChanges = false
         }
         return opened && sessionToken == token
+    }
+
+    /// A user opening a saved image for editing uses the same canvas as a new
+    /// image. A failed conversion leaves its original editor and error intact.
+    func openProjectForEditing(id: UUID) async -> Bool {
+        guard await openProject(id: id), let opening = project, opening.id == id else { return false }
+        if opening.kind == .image && opening.prepared == nil {
+            let token = sessionToken
+            _ = await usePreparedWorkspace()
+            return sessionToken == token && project?.id == id
+        }
+        return true
     }
 
     /// Flushes the open project and tears the editing session down. Returns

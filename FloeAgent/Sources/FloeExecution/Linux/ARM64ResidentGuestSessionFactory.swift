@@ -79,6 +79,10 @@ public final class ARM64ResidentGuestSessionFactory: LinuxGuestSessionCreating, 
     public func sharedMachinePhase() async -> LinuxSharedMachinePhase? { await resident.machinePhase() }
     public func sharedMemoryStatus() async -> LinuxSharedMemoryStatus? { await resident.memoryStatus() }
     public func sharedGPUStatus() async -> ARM64GPUBudget? { await resident.gpuStatus() }
+    public func sharedVideoStatus() async -> ARM64VideoStatus? { await resident.videoStatus() }
+    public func setSharedVideoNativeSoftware(_ enabled: Bool) async throws {
+        try await resident.setVideoNativeSoftware(enabled)
+    }
     public func powerOffSharedMachine() async throws { try await resident.powerOff() }
     public func configureSharedMachine(_ configuration: LinuxGuestLifecycleConfig) async throws {
         try await resident.configure(configuration)
@@ -166,9 +170,12 @@ private actor ARM64ResidentGuestOwner {
         }
         try await acquireLifecycle()
         defer { releaseLifecycle() }
-        let previousGPU = LinuxGuestLifecycleConfig.load(from: root)?.resolvedGPUMemoryMB
+        let saved = LinuxGuestLifecycleConfig.load(from: root)
+        let previousGPU = saved?.resolvedGPUMemoryMB
             ?? shape?.resolvedGPUMemoryMB ?? 1024
-        let configuration = request.updating(gpuMemoryMB: request.gpuMemoryMB ?? previousGPU)
+        let configuration = request.updating(
+            gpuMemoryMB: request.gpuMemoryMB ?? previousGPU,
+            videoNativeSoftware: request.videoNativeSoftware ?? saved?.videoNativeSoftware ?? shape?.videoNativeSoftware)
         var gpuAttempted = false
         do {
             try await configureCPUAndMemoryUnlocked(configuration)
@@ -388,9 +395,11 @@ private actor ARM64ResidentGuestOwner {
 
     private func ensureMachine(descriptor: LinuxGuestEnvironmentDescriptor, image: LinuxGuestImage,
                                directory: URL, limits: LinuxGuestLimits) async throws {
+        let savedPreference = LinuxGuestLifecycleConfig.load(from: root)
         let requested = LinuxGuestLifecycleConfig(vcpus: descriptor.vcpus ?? 2,
             memoryMB: descriptor.ramMB ?? 512,
-            gpuMemoryMB: LinuxGuestLifecycleConfig.load(from: root)?.resolvedGPUMemoryMB ?? 1024)
+            gpuMemoryMB: savedPreference?.resolvedGPUMemoryMB ?? 1024,
+            videoNativeSoftware: savedPreference?.videoNativeSoftware)
         if let machine, machine.state == .running {
             guard imageID == image.id, shape == requested else {
                 throw LinuxGuestError.invalidConfiguration("Stop active projects before changing the shared runtime")
@@ -431,6 +440,8 @@ private actor ARM64ResidentGuestOwner {
             gpuAllowsCPUFallback: true,
             gpuBudgetMiB: requested.resolvedGPUMemoryMB,
             gpuAppGroupIdentifier: FloeL10n.appGroupIdentifier,
+            videoEnabled: image.deviceCapabilities?.videoAcceleration == true,
+            videoAllowNativeSoftware: requested.resolvedVideoNativeSoftware,
             virtioConsoles: 9, networkEnabled: true)
         let created = try ARM64GuestMachine(ownership: .init(label: "resident"), config: config)
         machine = created; diskUse = use; publishedMachine = true
@@ -568,6 +579,32 @@ private actor ARM64ResidentGuestOwner {
         defer { releaseLifecycle() }
         guard let machine, machine.state == .running else { return nil }
         return try? await machine.gpuBudget()
+    }
+
+    func videoStatus() async -> ARM64VideoStatus? {
+        do { try await acquireLifecycle(cancellable: false) } catch { return nil }
+        defer { releaseLifecycle() }
+        guard let machine, machine.state == .running else { return nil }
+        return try? await machine.videoStatus()
+    }
+
+    func setVideoNativeSoftware(_ enabled: Bool) async throws {
+        try await acquireLifecycle(cancellable: false)
+        defer { releaseLifecycle() }
+        guard let machine, machine.state == .running, let current = shape else {
+            throw ARM64MachineError.notRunning
+        }
+        // The saved memory target may differ from the live shape during a
+        // pending shrink. A video preference must preserve both independently.
+        let previous = LinuxGuestLifecycleConfig.load(from: root) ?? current
+        try previous.updating(videoNativeSoftware: enabled).save(to: root)
+        do {
+            try await machine.setVideoNativeSoftware(enabled)
+            shape = current.updating(videoNativeSoftware: enabled)
+        } catch {
+            try previous.save(to: root)
+            throw error
+        }
     }
 
     private func noteMemoryReservation(_ budget: ARM64MemoryBudget) {

@@ -1,0 +1,411 @@
+# Floe game CI template — WASM-4 (HTML plus documented native bundles)
+# Exported from FloeGameBuildKit (deterministic; safe to diff).
+# NOT auto-dispatched. The host binds an explicit source transport, a source
+# digest/revision, the requested target set and the run branch/ref, then
+# dispatches through its existing GitHub jobs service. Engine code runs only
+# on the user's CI runner; an unsupported or unconfigured target fails in
+# prepare with an actionable message.
+name: floe-game-build-wasm4
+on:
+  workflow_dispatch:
+    inputs:
+      source_transport:
+        description: repository commit or an explicit prior artifact
+        required: true
+        type: choice
+        options:
+        - repository
+        - artifact
+      source_sha256:
+        description: canonical source digest (64 lowercase hex)
+        required: true
+        type: string
+      source_revision:
+        description: saved project revision echoed into provenance
+        required: true
+        type: string
+      game_root:
+        description: selected project-relative game root (empty selects the whole project)
+        required: false
+        type: string
+      selected_source_sha256:
+        description: canonical digest of the selected game root (empty for the whole project)
+        required: false
+        type: string
+      source_commit:
+        description: published repository commit SHA (repository transport only)
+        required: false
+        type: string
+      source_run_id:
+        description: prior Actions run id (artifact transport only)
+        required: false
+        type: string
+      source_artifact_name:
+        description: prior artifact name (artifact transport only)
+        required: false
+        type: string
+      source_repository:
+        description: owner/repo for a cross-repository source artifact
+        required: false
+        type: string
+        default: ${{ github.repository }}
+      engine:
+        description: engine id
+        required: true
+        type: string
+        default: wasm4
+      engine_version:
+        description: engine version from inspection metadata
+        required: false
+        type: string
+      artifact_prefix:
+        description: artifact name prefix
+        required: true
+        type: string
+        default: wasm4
+      targets:
+        description: comma-separated target ids; empty selects the template default (web,native)
+        required: false
+        type: string
+        default: ''
+permissions:
+  contents: read
+  actions: read
+env:
+  FLOE_SOURCE_TRANSPORT: ${{ inputs.source_transport }}
+  FLOE_SOURCE_SHA256: ${{ inputs.source_sha256 }}
+  FLOE_SOURCE_REVISION: ${{ inputs.source_revision }}
+  FLOE_GAME_ROOT: ${{ inputs.game_root }}
+  FLOE_SELECTED_SOURCE_SHA256: ${{ inputs.selected_source_sha256 }}
+  FLOE_SOURCE_COMMIT: ${{ inputs.source_commit }}
+  FLOE_ENGINE: ${{ inputs.engine }}
+  FLOE_ENGINE_VERSION: ${{ inputs.engine_version }}
+  FLOE_ARTIFACT_PREFIX: ${{ inputs.artifact_prefix }}
+  FLOE_TEMPLATE_ID: floe-game-build-wasm4
+jobs:
+  prepare:
+    outputs:
+      targets: ${{ steps.resolve_targets.outputs.targets }}
+      game_root: ${{ steps.resolve_selected_root.outputs.game_root }}
+      selected_source_sha256: ${{ steps.resolve_selected_root.outputs.selected_source_sha256 }}
+    runs-on: ubuntu-latest
+    steps:
+    - name: Resolve and validate requested targets
+      id: resolve_targets
+      env:
+        FLOE_TARGET_ALLOWED: web,native
+        FLOE_TARGET_DEFAULTS: web,native
+        FLOE_TARGETS_INPUT: ${{ inputs.targets }}
+      run: "python3 - <<'PY'\nimport os, sys\n\ndef fail(message):\n    print(\"Floe target selection rejected: \" + message, file=sys.stderr)\n    sys.exit(1)\n\nallowed = [value for value in os.environ.get(\"FLOE_TARGET_ALLOWED\", \"\").split(\",\") if value]\ndefaults = [value for value in os.environ.get(\"FLOE_TARGET_DEFAULTS\", \"\").split(\",\") if value]\nraw = os.environ.get(\"FLOE_TARGETS_INPUT\", \"\").strip()\ncompat_target = os.environ.get(\"FLOE_COMPAT_TARGET\", \"\").strip()\ncompat_value = os.environ.get(\"FLOE_COMPAT_VALUE\", \"\").strip().lower()\nif not allowed or not defaults:\n    fail(\"the template target contract is empty\")\nif not set(defaults) <= set(allowed):\n    fail(\"default targets are not a subset of allowed targets\")\nif raw:\n    requested = [value.strip() for value in raw.split(\",\") if value.strip()]\n    if not requested:\n        fail(\"the targets input is present but contains no target id\")\n    if len(requested) != len(set(requested)):\n        fail(\"duplicate target id in the targets input\")\n    for target in requested:\n        if target not in allowed:\n            fail(\"unsupported target '\" + target + \"'; allowed: \" + \", \".join(allowed))\n    chosen = [target for target in allowed if target in requested]\nelse:\n    chosen = [target for target in allowed if target in defaults]\n    # Deprecated compatibility input (Cocos build_android): only affects the\n    # implicit default set; an explicit targets value always wins.\n    if compat_target and compat_value == \"false\" and compat_target in chosen:\n        chosen = [target for target in chosen if target != compat_target]\nif not chosen:\n    fail(\"no target was selected\")\nwith open(os.environ[\"GITHUB_OUTPUT\"], \"a\", encoding=\"utf-8\") as output:\n    output.write(\"targets=\" + \",\".join(chosen) + \"\\n\")\nprint(\"Floe requested targets: \" + \",\".join(chosen))\nPY"
+    - name: Checkout exact repository source
+      if: inputs.source_transport == 'repository'
+      uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      with:
+        ref: ${{ inputs.source_commit }}
+        path: src
+        fetch-depth: 0
+        persist-credentials: false
+    - name: Download explicit source artifact
+      if: inputs.source_transport == 'artifact'
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: ${{ inputs.source_artifact_name }}
+        path: .floe-source-artifact
+        run-id: ${{ inputs.source_run_id }}
+        repository: ${{ inputs.source_repository }}
+        github-token: ${{ secrets.FLOE_SOURCE_TOKEN }}
+    - name: Verify source digest and identity before engine code
+      run: "python3 - <<'PY'\nimport hashlib, json, os, pathlib, shutil, subprocess, sys, zipfile\n\ndef fail(message):\n    print(\"Floe source transport rejected: \" + message, file=sys.stderr)\n    sys.exit(1)\n\ndef digest_tree(root):\n    root = pathlib.Path(root)\n    if not root.is_dir():\n        fail(\"source tree is missing\")\n    rows = []\n    for current, dirs, files in os.walk(root):\n        dirs[:] = sorted(d for d in dirs if d not in {\".git\", \".floe\", \"out\"})\n        for name in sorted(files):\n            path = pathlib.Path(current) / name\n            if path.is_symlink():\n                fail(\"symbolic link in source: \" + str(path))\n            data = path.read_bytes()\n            relative = str(path.relative_to(root)).replace(os.sep, \"/\")\n            executable = \"1\" if os.access(str(path), os.X_OK) else \"0\"\n            rows.append(relative + \":\" + hashlib.sha256(data).hexdigest() + \":\" + str(len(data)) + \":\" + executable)\n    return hashlib.sha256(\"\\n\".join(sorted(rows)).encode(\"utf-8\")).hexdigest(), rows\n\ndef safe_extract(archive, destination):\n    destination = pathlib.Path(destination)\n    destination.mkdir(parents=True, exist_ok=True)\n    with zipfile.ZipFile(archive) as bundle:\n        for item in bundle.infolist():\n            name = item.filename.replace(\"\\\\\", \"/\")\n            target = (destination / name).resolve()\n            base = destination.resolve()\n            if target != base and not str(target).startswith(str(base) + os.sep):\n                fail(\"zip-slip entry: \" + name)\n            mode = (item.external_attr >> 16) & 0o170000\n            if mode == 0o120000:\n                fail(\"symbolic link entry: \" + name)\n            if item.is_dir():\n                target.mkdir(parents=True, exist_ok=True)\n            else:\n                target.parent.mkdir(parents=True, exist_ok=True)\n                with bundle.open(item) as source, open(target, \"wb\") as output:\n                    shutil.copyfileobj(source, output)\n\ntransport = os.environ[\"FLOE_SOURCE_TRANSPORT\"].strip()\nexpected = os.environ[\"FLOE_SOURCE_SHA256\"].strip().lower()\nrevision = os.environ[\"FLOE_SOURCE_REVISION\"].strip()\ncommit = os.environ.get(\"FLOE_SOURCE_COMMIT\", \"\").strip()\nif len(expected) != 64 or any(c not in \"0123456789abcdef\" for c in expected):\n    fail(\"source_sha256 must be 64 lowercase hex characters\")\nif transport == \"repository\":\n    if len(commit) < 40 or any(c not in \"0123456789abcdef\" for c in commit.lower()):\n        fail(\"repository transport requires a full source_commit SHA\")\n    if not pathlib.Path(\"src\").is_dir():\n        fail(\"repository checkout is missing\")\n    try:\n        head = subprocess.check_output([\"git\", \"-C\", \"src\", \"rev-parse\", \"HEAD\"], text=True).strip().lower()\n    except Exception:\n        fail(\"repository checkout has no readable git HEAD\")\n    if head != commit.lower():\n        fail(\"checked-out commit does not match source_commit\")\nelif transport == \"artifact\":\n    candidates = sorted(pathlib.Path(\".floe-source-artifact\").rglob(\"*.zip\"))\n    if len(candidates) != 1:\n        fail(\"artifact transport requires exactly one source zip, found \" + str(len(candidates)))\n    digest = hashlib.sha256(candidates[0].read_bytes()).hexdigest()\n    if digest != expected:\n        fail(\"downloaded source zip digest does not match source_sha256\")\n    if pathlib.Path(\"src\").exists():\n        fail(\"src already exists\")\n    safe_extract(candidates[0], \"src\")\nelse:\n    fail(\"unknown source transport: \" + transport)\n\ndigest, rows = digest_tree(\"src\")\nif digest != expected:\n    fail(\"source tree canonical digest does not match source_sha256\")\nmanifest = {\n    \"schemaVersion\": 1,\n    \"sourceSHA256\": digest,\n    \"sourceRevision\": revision,\n    \"transport\": transport,\n    \"fileCount\": len(rows),\n    \"engine\": os.environ.get(\"FLOE_ENGINE\", \"\"),\n}\npathlib.Path(\".floe-source-provenance.json\").write_text(json.dumps(manifest, indent=2,\
+        \ sort_keys=True) + \"\\n\")\nprint(\"Floe source verified: \" + digest + \" (\" + str(len(rows)) + \" files)\")\nPY"
+    - name: Resolve selected game root and verify its digest
+      id: resolve_selected_root
+      run: |
+        python3 - <<'PY'
+        import hashlib, json, os, pathlib, sys
+
+        def fail(message):
+            print("Floe selected game root rejected: " + message, file=sys.stderr)
+            sys.exit(1)
+
+        def digest_tree(root):
+            root = pathlib.Path(root)
+            if not root.is_dir():
+                fail("selected game root is missing")
+            rows = []
+            for current, dirs, files in os.walk(root):
+                dirs[:] = sorted(d for d in dirs if d not in {".git", ".floe", "out"})
+                for name in sorted(dirs + files):
+                    path = pathlib.Path(current) / name
+                    if path.is_symlink():
+                        fail("symbolic link in source: " + str(path))
+                for name in sorted(files):
+                    path = pathlib.Path(current) / name
+                    data = path.read_bytes()
+                    relative = str(path.relative_to(root)).replace(os.sep, "/")
+                    executable = "1" if os.access(str(path), os.X_OK) else "0"
+                    rows.append(relative + ":" + hashlib.sha256(data).hexdigest() + ":" + str(len(data)) + ":" + executable)
+            return hashlib.sha256("\n".join(sorted(rows)).encode("utf-8")).hexdigest()
+
+        raw = os.environ.get("FLOE_GAME_ROOT", "").strip()
+        expected = os.environ.get("FLOE_SELECTED_SOURCE_SHA256", "").strip().lower()
+        if raw != raw.strip("/"):
+            fail("game_root must not start or end with '/'")
+        if any(ord(character) < 32 for character in raw):
+            fail("game_root must not contain control characters")
+        selected_digest = ""
+        if raw:
+            components = raw.split("/")
+            if any(component in {"", ".", ".."} or "\\" in component or ":" in component
+                   for component in components):
+                fail("unsafe game_root")
+            source = pathlib.Path("src").joinpath(*components)
+            if source.is_symlink() or not source.is_dir():
+                fail("game_root is missing, not a directory or a symlink")
+            selected_digest = digest_tree(source)
+            if len(expected) != 64 or any(character not in "0123456789abcdef" for character in expected):
+                fail("selected_source_sha256 must be 64 lowercase hex characters for a nested game root")
+            if selected_digest != expected:
+                fail("selected source digest does not match selected_source_sha256")
+        elif expected:
+            fail("selected_source_sha256 must be empty for the project root")
+        path = pathlib.Path(".floe-source-provenance.json")
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        manifest["selectionSchemaVersion"] = 1
+        manifest["gameRoot"] = raw
+        manifest["selectedSourceSHA256"] = selected_digest
+        path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+            output.write("game_root=" + raw + "\n")
+            output.write("selected_source_sha256=" + selected_digest + "\n")
+        print("Floe selected game root verified: " + (raw or ".") + " (" + (selected_digest or "project root") + ")")
+        PY
+    - name: Remove VCS metadata before upload
+      run: rm -rf src/.git
+    - name: Upload verified source tree
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: floe-source
+        path: src
+        if-no-files-found: error
+        retention-days: 1
+    - name: Upload source provenance
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: floe-source-provenance
+        path: .floe-source-provenance.json
+        if-no-files-found: error
+        retention-days: 1
+  web:
+    needs: prepare
+    env:
+      FLOE_GAME_ROOT: ${{ needs.prepare.outputs.game_root }}
+      FLOE_SELECTED_SOURCE_SHA256: ${{ needs.prepare.outputs.selected_source_sha256 }}
+    runs-on: ubuntu-latest
+    steps:
+    - name: Download verified source
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: floe-source
+        path: src
+    - name: Materialize selected game source
+      run: |
+        python3 - <<'PY'
+        import hashlib, os, pathlib, shutil, sys
+
+        def fail(message):
+            print("Floe selected game source rejected: " + message, file=sys.stderr)
+            sys.exit(1)
+
+        def digest_tree(root):
+            root = pathlib.Path(root)
+            rows = []
+            for current, dirs, files in os.walk(root):
+                dirs[:] = sorted(d for d in dirs if d not in {".git", ".floe", "out"})
+                for name in sorted(dirs + files):
+                    path = pathlib.Path(current) / name
+                    if path.is_symlink():
+                        fail("symbolic link in source: " + str(path))
+                for name in sorted(files):
+                    path = pathlib.Path(current) / name
+                    data = path.read_bytes()
+                    relative = str(path.relative_to(root)).replace(os.sep, "/")
+                    executable = "1" if os.access(str(path), os.X_OK) else "0"
+                    rows.append(relative + ":" + hashlib.sha256(data).hexdigest() + ":" + str(len(data)) + ":" + executable)
+            return hashlib.sha256("\n".join(sorted(rows)).encode("utf-8")).hexdigest()
+
+        raw = os.environ.get("FLOE_GAME_ROOT", "").strip().strip("/")
+        if any(ord(character) < 32 for character in raw):
+            fail("game_root must not contain control characters")
+        expected = os.environ.get("FLOE_SELECTED_SOURCE_SHA256", "").strip().lower()
+        selected = pathlib.Path("selected-src")
+        if selected.exists():
+            shutil.rmtree(selected)
+        if raw:
+            source = pathlib.Path("src").joinpath(*raw.split("/"))
+            if source.is_symlink() or not source.is_dir():
+                fail("game_root is missing, not a directory or a symlink")
+            shutil.copytree(source, selected)
+        else:
+            shutil.copytree("src", selected)
+        actual = digest_tree(selected)
+        if raw and actual != expected:
+            fail("selected source digest does not match selected_source_sha256")
+        if not raw and expected:
+            fail("selected_source_sha256 must be empty for the project root")
+        with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+            output.write("selected_digest=" + actual + "\n")
+        print("Floe selected game source verified: " + (raw or ".") + " (" + actual + ")")
+        PY
+    - name: Require the w4 CLI
+      run: command -v w4 || { echo "The w4 CLI is required; see https://wasm4.org/docs/reference/cli/" >&2; exit 1; }
+    - name: Assemble WASM-4 Web artifact
+      run: 'CART=$(find selected-src -maxdepth 3 -name "*.wasm" | head -1)
+
+        test -n "$CART"
+
+        w4 bundle --html index.html --title "$FLOE_ENGINE_VERSION" "$CART"
+
+        test -s index.html
+
+        zip -j wasm4-web.zip index.html'
+    - name: Upload wasm4-web.zip
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: wasm4-web.zip
+        path: wasm4-web.zip
+        if-no-files-found: error
+    if: needs.prepare.result == 'success' && (contains(format(',{0},', needs.prepare.outputs.targets), ',web,'))
+  native:
+    needs: prepare
+    env:
+      FLOE_GAME_ROOT: ${{ needs.prepare.outputs.game_root }}
+      FLOE_SELECTED_SOURCE_SHA256: ${{ needs.prepare.outputs.selected_source_sha256 }}
+    runs-on: ubuntu-latest
+    steps:
+    - name: Download verified source
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: floe-source
+        path: src
+    - name: Materialize selected game source
+      run: |
+        python3 - <<'PY'
+        import hashlib, os, pathlib, shutil, sys
+
+        def fail(message):
+            print("Floe selected game source rejected: " + message, file=sys.stderr)
+            sys.exit(1)
+
+        def digest_tree(root):
+            root = pathlib.Path(root)
+            rows = []
+            for current, dirs, files in os.walk(root):
+                dirs[:] = sorted(d for d in dirs if d not in {".git", ".floe", "out"})
+                for name in sorted(dirs + files):
+                    path = pathlib.Path(current) / name
+                    if path.is_symlink():
+                        fail("symbolic link in source: " + str(path))
+                for name in sorted(files):
+                    path = pathlib.Path(current) / name
+                    data = path.read_bytes()
+                    relative = str(path.relative_to(root)).replace(os.sep, "/")
+                    executable = "1" if os.access(str(path), os.X_OK) else "0"
+                    rows.append(relative + ":" + hashlib.sha256(data).hexdigest() + ":" + str(len(data)) + ":" + executable)
+            return hashlib.sha256("\n".join(sorted(rows)).encode("utf-8")).hexdigest()
+
+        raw = os.environ.get("FLOE_GAME_ROOT", "").strip().strip("/")
+        if any(ord(character) < 32 for character in raw):
+            fail("game_root must not contain control characters")
+        expected = os.environ.get("FLOE_SELECTED_SOURCE_SHA256", "").strip().lower()
+        selected = pathlib.Path("selected-src")
+        if selected.exists():
+            shutil.rmtree(selected)
+        if raw:
+            source = pathlib.Path("src").joinpath(*raw.split("/"))
+            if source.is_symlink() or not source.is_dir():
+                fail("game_root is missing, not a directory or a symlink")
+            shutil.copytree(source, selected)
+        else:
+            shutil.copytree("src", selected)
+        actual = digest_tree(selected)
+        if raw and actual != expected:
+            fail("selected source digest does not match selected_source_sha256")
+        if not raw and expected:
+            fail("selected_source_sha256 must be empty for the project root")
+        with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+            output.write("selected_digest=" + actual + "\n")
+        print("Floe selected game source verified: " + (raw or ".") + " (" + actual + ")")
+        PY
+    - name: Require the w4 CLI
+      run: command -v w4 || { echo "The w4 CLI is required; see https://wasm4.org/docs/reference/cli/" >&2; exit 1; }
+    - name: Bundle documented native executables
+      run: 'CART=$(find selected-src -maxdepth 3 -name "*.wasm" | head -1)
+
+        test -n "$CART"
+
+        w4 bundle --windows wasm4-windows.exe --mac wasm4-macos --linux wasm4-linux "$CART"
+
+        test -s wasm4-windows.exe
+
+        test -s wasm4-macos
+
+        test -s wasm4-linux
+
+        file wasm4-windows.exe wasm4-macos wasm4-linux'
+    - name: Upload wasm4-windows.exe
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: wasm4-windows.exe
+        path: wasm4-windows.exe
+        if-no-files-found: error
+    - name: Upload wasm4-macos
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: wasm4-macos
+        path: wasm4-macos
+        if-no-files-found: error
+    - name: Upload wasm4-linux
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: wasm4-linux
+        path: wasm4-linux
+        if-no-files-found: error
+    if: needs.prepare.result == 'success' && (contains(format(',{0},', needs.prepare.outputs.targets), ',native,'))
+  provenance:
+    needs:
+    - prepare
+    - web
+    - native
+    runs-on: ubuntu-latest
+    if: always()
+    env:
+      FLOE_TARGET_ARTIFACTS: '{"native":["wasm4-windows.exe","wasm4-macos","wasm4-linux"],"web":["wasm4-web.zip"]}'
+      FLOE_EFFECTIVE_TARGETS: ${{ needs.prepare.outputs.targets }}
+      FLOE_ARTIFACT_PREFIX: ${{ inputs.artifact_prefix }}
+      FLOE_PREPARE_RESULT: ${{ needs.prepare.result }}
+    steps:
+    - name: Require successful target preparation
+      if: needs.prepare.result != 'success'
+      run: 'echo ''The prepare job did not succeed; no requested target was built.'' >&2
+
+        exit 1'
+    - name: Download source provenance
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        name: floe-source-provenance
+        path: .
+    - name: Download all built artifacts
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        pattern: wasm4-*
+        path: artifacts
+        merge-multiple: true
+    - name: Write build provenance after verifying the requested target artifacts
+      run: "python3 - <<'PY'\nimport hashlib, json, os, pathlib, sys\n\ndef fail(message):\n    print(\"Floe build provenance rejected: \" + message, file=sys.stderr)\n    sys.exit(1)\n\nif os.environ.get(\"FLOE_PREPARE_RESULT\", \"\") != \"success\":\n    fail(\"the prepare job did not succeed; requested targets were not built\")\ntargets = [value for value in os.environ.get(\"FLOE_EFFECTIVE_TARGETS\", \"\").split(\",\") if value]\nif not targets:\n    fail(\"no effective target was selected\")\ntry:\n    by_target = json.loads(os.environ[\"FLOE_TARGET_ARTIFACTS\"])\nexcept Exception:\n    fail(\"the template artifact contract is not valid JSON\")\nprefix = os.environ.get(\"FLOE_ARTIFACT_PREFIX\", \"\")\n\ndef resolve(name):\n    return name.replace(\"{{FLOE_ARTIFACT_PREFIX}}\", prefix)\n\nexpected = {}\nfor target in targets:\n    if target not in by_target:\n        fail(\"effective target has no artifact contract: \" + target)\n    for name in by_target[target]:\n        resolved = resolve(name)\n        if not resolved or \"..\" in resolved or \"/\" in resolved or \"\\\\\" in resolved:\n            fail(\"unsafe artifact name in the template contract: \" + name)\n        if resolved in expected and expected[resolved] != target:\n            fail(\"artifact \" + resolved + \" is claimed by multiple targets\")\n        expected[resolved] = target\nif not expected:\n    fail(\"no expected artifacts for the selected targets\")\n\nsource_path = pathlib.Path(\"floe-source-provenance.json\")\nif not source_path.is_file():\n    source_path = pathlib.Path(\".floe-source-provenance.json\")\nsource = json.loads(source_path.read_text())\nartifacts = {}\nfor path in sorted(pathlib.Path(\"artifacts\").rglob(\"*\")):\n    if path.is_file():\n        relative = str(path.relative_to(\"artifacts\")).replace(os.sep, \"/\")\n        data = path.read_bytes()\n        if not data:\n            fail(\"empty artifact: \" + relative)\n        artifacts[relative] = {\"sha256\": hashlib.sha256(data).hexdigest(), \"bytes\": len(data)}\nmissing = sorted(set(expected) - set(artifacts))\nunexpected = sorted(set(artifacts) - set(expected))\nif missing:\n    fail(\"requested target artifacts are missing: \" + \", \".join(missing))\nif unexpected:\n    fail(\"unrequested artifacts were produced: \" + \", \".join(unexpected))\nrecord = {\n    \"schemaVersion\": 2,\n    \"jobID\": os.environ.get(\"GITHUB_RUN_ID\", \"\"),\n    \"sourceSHA256\": source[\"sourceSHA256\"],\n    \"sourceRevision\": source[\"sourceRevision\"],\n    \"engine\": source.get(\"engine\", \"\"),\n    \"template\": os.environ[\"FLOE_TEMPLATE_ID\"],\n    \"sourceTransport\": source[\"transport\"],\n    \"selectionSchemaVersion\": source.get(\"selectionSchemaVersion\", 0),\n    \"gameRoot\": source.get(\"gameRoot\", \"\"),\n    \"selectedSourceSHA256\": source.get(\"selectedSourceSHA256\", \"\"),\n    \"targets\": targets,\n    \"artifactPrefix\": prefix,\n    \"artifacts\": artifacts,\n}\npathlib.Path(\"floe-build-provenance.json\").write_text(json.dumps(record, indent=2, sort_keys=True) + \"\\n\")\nprint(json.dumps(record, sort_keys=True))\nPY"
+    - name: Upload build provenance
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: floe-build-provenance
+        path: floe-build-provenance.json
+        if-no-files-found: error
+        retention-days: 7

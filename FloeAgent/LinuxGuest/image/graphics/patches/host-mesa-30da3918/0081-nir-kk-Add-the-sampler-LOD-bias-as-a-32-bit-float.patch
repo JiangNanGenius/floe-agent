@@ -1,0 +1,166 @@
+From d445a17ace1ed80ef3d59d033b94926391829fa1 Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Sun, 4 Oct 2026 03:33:07 -0400
+Subject: [PATCH] nir,kk: Add the sampler LOD bias as a 32-bit float
+
+Generated-by: LLM
+---
+ src/compiler/nir/nir.h                            |  6 ++++++
+ src/compiler/nir/nir_lower_tex.c                  | 11 ++++++-----
+ src/kosmickrisp/compiler/msl_nir_lower_common.c   |  1 +
+ src/kosmickrisp/vulkan/kk_descriptor_set.c        |  2 +-
+ src/kosmickrisp/vulkan/kk_descriptor_types.h      |  5 +++--
+ src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c |  4 ++--
+ src/kosmickrisp/vulkan/kk_sampler.c               |  2 +-
+ src/kosmickrisp/vulkan/kk_sampler.h               |  2 +-
+ 8 files changed, 21 insertions(+), 12 deletions(-)
+
+diff --git a/src/compiler/nir/nir.h b/src/compiler/nir/nir.h
+index ab487ac48fe..1db3e21b8a0 100644
+--- a/src/compiler/nir/nir.h
++++ b/src/compiler/nir/nir.h
+@@ -6545,6 +6545,12 @@ typedef struct nir_lower_tex_options {
+     */
+    bool lower_sampler_lod_bias;
+ 
++   /**
++    * If true, the sampler LOD bias is queried and added as a 32-bit float
++    * instead of a 16-bit one.
++    */
++   bool sampler_lod_bias_32bit;
++
+    /* Turns nir_op_tex and other ops with an implicit derivative, in stages
+     * without implicit derivatives (like the vertex shader) to have an explicit
+     * LOD with a value of 0.
+diff --git a/src/compiler/nir/nir_lower_tex.c b/src/compiler/nir/nir_lower_tex.c
+index f6900912cd8..b62f0c8ae83 100644
+--- a/src/compiler/nir/nir_lower_tex.c
++++ b/src/compiler/nir/nir_lower_tex.c
+@@ -1423,11 +1423,12 @@ nir_lower_lod_zero_width(nir_builder *b, nir_tex_instr *tex)
+ }
+ 
+ static void
+-lower_sampler_lod_bias(nir_builder *b, nir_tex_instr *tex)
++lower_sampler_lod_bias(nir_builder *b, nir_tex_instr *tex, bool bias_32bit)
+ {
+    b->cursor = nir_before_instr(&tex->instr);
+-   nir_def *bias = nir_build_texture_query(b, tex, nir_texop_lod_bias, 1,
+-                                           nir_type_float16, false, false);
++   nir_def *bias = nir_build_texture_query(
++      b, tex, nir_texop_lod_bias, 1,
++      bias_32bit ? nir_type_float32 : nir_type_float16, false, false);
+ 
+    if (tex->op == nir_texop_txd) {
+       /* For txd, the computed level-of-detail is log2(rho) where rho should
+@@ -1451,7 +1452,7 @@ lower_sampler_lod_bias(nir_builder *b, nir_tex_instr *tex)
+ 
+       nir_def *orig = nir_steal_tex_src(tex, src);
+       if (orig) {
+-         bias = nir_fadd(b, bias, nir_f2f16(b, orig));
++         bias = nir_fadd(b, bias, nir_f2fN(b, orig, bias->bit_size));
+       }
+ 
+       nir_tex_instr_add_src(tex, src, bias);
+@@ -1777,7 +1778,7 @@ nir_lower_tex_block(nir_block *block, nir_builder *b,
+       /* Although tg4 takes a sampler, it ignores the LOD bias. */
+       if (options->lower_sampler_lod_bias &&
+           nir_tex_instr_need_sampler(tex) && tex->op != nir_texop_tg4) {
+-         lower_sampler_lod_bias(b, tex);
++         lower_sampler_lod_bias(b, tex, options->sampler_lod_bias_32bit);
+          progress = true;
+       }
+ 
+diff --git a/src/kosmickrisp/compiler/msl_nir_lower_common.c b/src/kosmickrisp/compiler/msl_nir_lower_common.c
+index 49cabdebae1..56983ff7849 100644
+--- a/src/kosmickrisp/compiler/msl_nir_lower_common.c
++++ b/src/kosmickrisp/compiler/msl_nir_lower_common.c
+@@ -194,6 +194,7 @@ msl_lower_textures(nir_shader *nir)
+    nir_lower_tex_options lower_tex_options = {
+       .lower_txp = ~0u,
+       .lower_sampler_lod_bias = true,
++      .sampler_lod_bias_32bit = true,
+ 
+       /* We don't use 1D textures because they are really limited in Metal */
+       .lower_1d = true,
+diff --git a/src/kosmickrisp/vulkan/kk_descriptor_set.c b/src/kosmickrisp/vulkan/kk_descriptor_set.c
+index 69407daef46..1e28c40c5d1 100644
+--- a/src/kosmickrisp/vulkan/kk_descriptor_set.c
++++ b/src/kosmickrisp/vulkan/kk_descriptor_set.c
+@@ -111,7 +111,7 @@ get_sampled_image_view_desc(VkDescriptorType descriptor_type,
+          uint8_t sampler_plane = MIN2(plane, sampler->plane_count - 1u);
+          assert(sampler->planes[sampler_plane].hw->handle);
+          desc[plane].sampler_index = sampler->planes[sampler_plane].hw->index;
+-         desc[plane].sampler_lod_bias_fp16 = sampler->lod_bias_fp16;
++         desc[plane].sampler_lod_bias = sampler->lod_bias;
+          desc[plane].sampler_lod_min_fp16 = sampler->lod_min_fp16;
+          desc[plane].sampler_lod_max_fp16 = sampler->lod_max_fp16;
+          desc[plane].sampler_minmax_flags = sampler->minmax_flags;
+diff --git a/src/kosmickrisp/vulkan/kk_descriptor_types.h b/src/kosmickrisp/vulkan/kk_descriptor_types.h
+index c02267afd2b..968821d7a02 100644
+--- a/src/kosmickrisp/vulkan/kk_descriptor_types.h
++++ b/src/kosmickrisp/vulkan/kk_descriptor_types.h
+@@ -19,7 +19,7 @@ struct kk_sampled_image_descriptor {
+     */
+    int16_t clamp_0_sampler_index_or_negative;
+ 
+-   uint16_t sampler_lod_bias_fp16;
++   uint16_t pad_lod_bias;
+    uint16_t sampler_lod_min_fp16;
+    uint16_t sampler_lod_max_fp16;
+ 
+@@ -30,7 +30,8 @@ struct kk_sampled_image_descriptor {
+    uint32_t border[4];
+    uint64_t residency_gpu_resource_id;
+    uint16_t image_flags;
+-   uint16_t pad16[3];
++   uint16_t pad16;
++   float sampler_lod_bias;
+    uint64_t pad_to_power_2;
+ };
+ 
+diff --git a/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c b/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c
+index 7d022ce6282..ed87d0101ee 100644
+--- a/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c
++++ b/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c
+@@ -561,10 +561,10 @@ lower_tex(nir_builder *b, nir_tex_instr *tex,
+     */
+    if (tex->op == nir_texop_lod_bias) {
+       unsigned offs =
+-         offsetof(struct kk_sampled_image_descriptor, sampler_lod_bias_fp16);
++         offsetof(struct kk_sampled_image_descriptor, sampler_lod_bias);
+ 
+       nir_def *bias = load_resource_deref_desc(
+-         b, 1, 16, nir_src_as_deref(nir_src_for_ssa(sampler)),
++         b, 1, 32, nir_src_as_deref(nir_src_for_ssa(sampler)),
+          plane_offset_B + offs, ctx);
+ 
+       nir_def_replace(&tex->def, bias);
+diff --git a/src/kosmickrisp/vulkan/kk_sampler.c b/src/kosmickrisp/vulkan/kk_sampler.c
+index c37a439bb9f..ccf5455bace 100644
+--- a/src/kosmickrisp/vulkan/kk_sampler.c
++++ b/src/kosmickrisp/vulkan/kk_sampler.c
+@@ -234,7 +234,7 @@ kk_CreateSampler(VkDevice device, const VkSamplerCreateInfo *pCreateInfo,
+    }
+ 
+    /* LOD data passed in the descriptor set */
+-   sampler->lod_bias_fp16 = _mesa_float_to_half(pCreateInfo->mipLodBias);
++   sampler->lod_bias = pCreateInfo->mipLodBias;
+    sampler->lod_min_fp16 = _mesa_float_to_half(pCreateInfo->minLod);
+    sampler->lod_max_fp16 = _mesa_float_to_half(pCreateInfo->maxLod);
+ 
+diff --git a/src/kosmickrisp/vulkan/kk_sampler.h b/src/kosmickrisp/vulkan/kk_sampler.h
+index e6a436b1ea3..c0823034c8c 100644
+--- a/src/kosmickrisp/vulkan/kk_sampler.h
++++ b/src/kosmickrisp/vulkan/kk_sampler.h
+@@ -25,7 +25,7 @@ struct kk_sampler {
+    bool has_border;
+ 
+    uint8_t plane_count;
+-   uint16_t lod_bias_fp16;
++   float lod_bias;
+    uint16_t lod_min_fp16;
+    uint16_t lod_max_fp16;
+    uint16_t minmax_flags;
+-- 
+2.54.0 (Apple Git-157)
+

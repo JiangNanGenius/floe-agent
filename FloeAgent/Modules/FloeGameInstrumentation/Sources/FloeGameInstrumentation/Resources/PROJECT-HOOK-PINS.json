@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "catalogVersion": "1.0.0",
+  "frozenSourceRevision": "3763b5ce836c0fb7b980b02a2becaa5c6234100f",
+  "sdkRelativeRoot": "FloeAgent/Modules",
+  "templates": [
+    {
+      "id": "gdevelopBridge",
+      "resource": "Templates/gdevelop-floe-developer.js",
+      "sdkPath": "FloeGameGDevelopKit/Sources/FloeGameGDevelopKit/Resources/gdevelop-export-bridge.js",
+      "sha256": "0dbe693fc5f82f0feea97383b3243e4d98e71eacd6d6823e39ad02d2a17eac85",
+      "bytes": 23449
+    },
+    {
+      "id": "cocosBridge",
+      "resource": "Templates/cocos-floe-developer.ts",
+      "sdkPath": "FloeGameDeveloperKit/Sources/FloeGameDeveloperCore/Resources/Project/cocos-floe-developer.ts",
+      "sha256": "586578a4de9b266573ff00b188b9db8702dcaff0840d4d38ff4ddd6281530453",
+      "bytes": 7270
+    }
+  ],
+  "license": {
+    "resource": "LICENSE",
+    "sdkPath": "FloeGameInstrumentation/LICENSE",
+    "sha256": "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04",
+    "bytes": 16726,
+    "id": "license"
+  }
+}

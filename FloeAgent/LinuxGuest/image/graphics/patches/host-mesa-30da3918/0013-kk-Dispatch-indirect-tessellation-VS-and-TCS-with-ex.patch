@@ -1,0 +1,94 @@
+From eb7fbd8dde0fc2771234174f2d96e3240b11b5da Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Wed, 30 Sep 2026 19:54:38 -0400
+Subject: [PATCH] kk: Dispatch indirect tessellation VS and TCS with exact
+ thread counts
+
+Generated-by: LLM
+---
+ src/kosmickrisp/libkk/kk_tessellation.cl | 20 +++++++++++++-------
+ src/kosmickrisp/vulkan/kk_cmd_draw.c     | 14 ++++++--------
+ 2 files changed, 19 insertions(+), 15 deletions(-)
+
+diff --git a/src/kosmickrisp/libkk/kk_tessellation.cl b/src/kosmickrisp/libkk/kk_tessellation.cl
+index bb2d06e1695..f0bc503978e 100644
+--- a/src/kosmickrisp/libkk/kk_tessellation.cl
++++ b/src/kosmickrisp/libkk/kk_tessellation.cl
+@@ -17,7 +17,7 @@ libkk_tess_setup_indirect(
+    uint32_t in_index_size_B, uint64_t vertex_outputs /* bitfield */,
+ 
+    /* Tess control invocation counter if active, else zero */
+-   global uint32_t *tcs_statistic)
++   global uint32_t *tcs_statistic, uint32_t vs_wg_size)
+ {
+    uint count = indirect[0], instance_count = indirect[1];
+    unsigned in_patches = count / p->input_patch_size;
+@@ -80,14 +80,20 @@ libkk_tess_setup_indirect(
+    grids[0] = count;
+    grids[1] = instance_count;
+    grids[2] = 1;
++   grids[3] = vs_wg_size;
++   grids[4] = 1;
++   grids[5] = 1;
+ 
+    /* TCS grid size */
+-   grids[3] = in_patches * p->output_patch_size;
+-   grids[4] = instance_count;
+-   grids[5] = 1;
++   grids[6] = in_patches * p->output_patch_size;
++   grids[7] = instance_count;
++   grids[8] = 1;
++   grids[9] = p->output_patch_size;
++   grids[10] = 1;
++   grids[11] = 1;
+ 
+    /* Tess grid size */
+-   grids[6] = unrolled_patches;
+-   grids[7] = 1;
+-   grids[8] = 1;
++   grids[12] = unrolled_patches;
++   grids[13] = 1;
++   grids[14] = 1;
+ }
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_draw.c b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+index f1fff7a2797..55309f300ea 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_draw.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+@@ -1258,8 +1258,7 @@ kk_upload_tess_params(struct kk_cmd_buffer *cmd, struct poly_tess_params *out,
+       args.counts = addr + count_offs;
+    } else {
+       /* Allocate 3x indirect global+local grids for VS/TCS/tess */
+-      uint32_t grid_stride = sizeof(uint32_t) * 3;
+-      gfx->tess.indirect_ptr = kk_pool_alloc(cmd, grid_stride * 3, 4);
++      gfx->tess.indirect_ptr = kk_pool_alloc(cmd, sizeof(uint32_t) * 15, 4);
+ 
+       struct kk_ptr ptr = kk_pool_alloc(cmd, draw_stride_B, 4);
+       gfx->tess.out_draws_addr = ptr.gpu;
+@@ -2101,6 +2100,7 @@ kk_launch_tess(struct kk_cmd_buffer *cmd, struct kk_draw_data draw)
+          .vp = gfx->per_draw_data.vertex_params,
+          .vertex_outputs = vs->info.vs.outputs_written,
+          .tcs_statistic = 0,
++         .vs_wg_size = KK_POLY_WG_SIZE,
+       };
+ 
+       if (draw.index.el_size_B) {
+@@ -2112,12 +2112,10 @@ kk_launch_tess(struct kk_cmd_buffer *cmd, struct kk_draw_data draw)
+ 
+       libkk_tess_setup_indirect_struct(cmd, kk_grid_1d(1), true, args);
+ 
+-      uint32_t grid_stride = sizeof(uint32_t) * 3;
+-      grid_vs = kk_grid_indirect(gfx->tess.indirect_ptr.gpu + 0u * grid_stride);
+-      grid_tcs =
+-         kk_grid_indirect(gfx->tess.indirect_ptr.gpu + 1u * grid_stride);
+-      grid_tess =
+-         kk_grid_indirect(gfx->tess.indirect_ptr.gpu + 2u * grid_stride);
++      uint64_t grids = gfx->tess.indirect_ptr.gpu;
++      grid_vs = kk_grid_indirect_local(grids);
++      grid_tcs = kk_grid_indirect_local(grids + 6u * sizeof(uint32_t));
++      grid_tess = kk_grid_indirect(grids + 12u * sizeof(uint32_t));
+    } else {
+       uint32_t patches = draw.grid.size.x / input_patch_size;
+       grid_vs = grid_tcs = kk_grid_2d(draw.grid.size.x, draw.grid.size.y);
+-- 
+2.54.0 (Apple Git-157)
+

@@ -246,6 +246,15 @@ public final class VNCSession: NSObject, VNCConnectionDelegate, @unchecked Senda
         connection?.keyUp(key)
     }
 
+    /// Keep a key held across game frames on this display connection.
+    @discardableResult
+    public func sendKeyPhase(_ keysym: UInt32, pressed: Bool) -> Bool {
+        guard keysym != 0, isConnected, let connection else { return false }
+        let key = VNCKeyCode(keysym)
+        if pressed { connection.keyDown(key) } else { connection.keyUp(key) }
+        return true
+    }
+
     public func send(namedKey name: String) throws {
         let key: VNCKeyCode
         switch name.lowercased() {

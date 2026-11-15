@@ -1,0 +1,164 @@
+From d23a8373b3f7bccb23f5210e73414de7e460865c Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Fri, 2 Oct 2026 23:18:26 -0400
+Subject: [PATCH] kk: Count primitives and vertices between restart indices in
+ pipeline statistics
+
+Generated-by: LLM
+---
+ src/kosmickrisp/libkk/kk_query.cl      | 61 ++++++++++++++++++++++++++
+ src/kosmickrisp/vulkan/kk_cmd_buffer.c | 12 ++++-
+ src/kosmickrisp/vulkan/kk_cmd_buffer.h |  4 ++
+ src/kosmickrisp/vulkan/kk_cmd_draw.c   | 25 +++++++++++
+ 4 files changed, 101 insertions(+), 1 deletion(-)
+
+diff --git a/src/kosmickrisp/libkk/kk_query.cl b/src/kosmickrisp/libkk/kk_query.cl
+index 99e63e16c64..e668ede981e 100644
+--- a/src/kosmickrisp/libkk/kk_query.cl
++++ b/src/kosmickrisp/libkk/kk_query.cl
+@@ -158,6 +158,67 @@ libkk_stats_draws(constant struct libkk_stats_draw *draws, uint32_t count,
+    }
+ }
+ 
++KERNEL(1024)
++libkk_stats_restart_draws(constant uint32_t *draws, uint32_t stride_el,
++                          uint32_t count, uint64_t index_buffer,
++                          uint32_t index_buffer_size_el, uint32_t index_size_B,
++                          uint32_t restart_index, uint32_t prim,
++                          global uint64_t *ia_vertices,
++                          global uint64_t *ia_primitives,
++                          global uint64_t *vs_invocations,
++                          global uint64_t *c_invocations,
++                          global uint64_t *c_primitives)
++{
++   local uint64_t vertices[1024];
++   local uint64_t primitives[1024];
++   uint tid = cl_local_id.x;
++
++   uint64_t v = 0, p = 0;
++   for (uint32_t i = tid; i < count; i += 1024) {
++      constant uint32_t *d = draws + i * stride_el;
++      uintptr_t in_ptr = (uintptr_t)poly_index_buffer(
++         index_buffer, index_buffer_size_el, d[2], index_size_B);
++      uint in_range_el =
++         poly_index_buffer_range_el(index_buffer_size_el, d[2]);
++
++      uint32_t prims = 0, verts = 0, run = 0;
++      for (uint32_t k = 0; k < d[0]; k++) {
++         if (poly_load_index(in_ptr, in_range_el, k, index_size_B) ==
++             restart_index) {
++            prims += u_decomposed_prims_for_vertices((enum mesa_prim)prim, run);
++            run = 0;
++         } else {
++            run++;
++            verts++;
++         }
++      }
++      prims += u_decomposed_prims_for_vertices((enum mesa_prim)prim, run);
++
++      v += (uint64_t)verts * d[1];
++      p += (uint64_t)prims * d[1];
++   }
++
++   vertices[tid] = v;
++   primitives[tid] = p;
++   barrier(CLK_LOCAL_MEM_FENCE);
++
++   for (uint s = 512; s > 0; s >>= 1) {
++      if (tid < s) {
++         vertices[tid] += vertices[tid + s];
++         primitives[tid] += primitives[tid + s];
++      }
++      barrier(CLK_LOCAL_MEM_FENCE);
++   }
++
++   if (tid == 0) {
++      libkk_stats_add(ia_vertices, vertices[0]);
++      libkk_stats_add(ia_primitives, primitives[0]);
++      libkk_stats_add(vs_invocations, vertices[0]);
++      libkk_stats_add(c_invocations, primitives[0]);
++      libkk_stats_add(c_primitives, primitives[0]);
++   }
++}
++
+ KERNEL(1)
+ libkk_tess_stats(constant uint32_t *out_draw, global uint32_t *tes_count,
+                  uint32_t verts_per_prim, global uint64_t *tes_invocations,
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_buffer.c b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+index 431b1673a9e..d9be86a3f3e 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+@@ -364,8 +364,18 @@ kk_run_stats_ops(struct kk_cmd_buffer *cmd, const struct kk_stats_op *ops,
+          continue;
+       }
+ 
++      if (op->index_size_B) {
++         libkk_stats_restart_draws(
++            cmd, kk_grid_1d(1024), true, op->draws, op->stride_el, op->count,
++            op->index_buffer, op->index_buffer_size_el, op->index_size_B,
++            op->restart_index, op->prim, op->counter[0], op->counter[1],
++            op->counter[2], op->counter[3], op->counter[4]);
++         i++;
++         continue;
++      }
++
+       uint32_t end = i, total = 0;
+-      while (end < count && ops[end].draws &&
++      while (end < count && ops[end].draws && !ops[end].index_size_B &&
+              !memcmp(ops[end].counter, op->counter, sizeof(op->counter))) {
+          total += ops[end].count;
+          end++;
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_buffer.h b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+index fc71b9da7cd..5a7d48d36b7 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.h
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+@@ -252,6 +252,10 @@ struct kk_stats_op {
+    uint32_t count;
+    uint32_t prim;
+    uint32_t patch_size;
++   uint64_t index_buffer;
++   uint32_t index_buffer_size_el;
++   uint32_t index_size_B;
++   uint32_t restart_index;
+ };
+ 
+ struct kk_conditional_rendering_state {
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_draw.c b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+index bc98ff9f187..e2acad9c4a3 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_draw.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+@@ -2538,6 +2538,31 @@ kk_stats_draw(struct kk_cmd_buffer *cmd, const struct kk_draw_command *data)
+    if (!any)
+       return;
+ 
++   if (data->indexed && data->restart && !patch_size) {
++      op.index_buffer = data->index_buffer.addr;
++      op.index_buffer_size_el =
++         data->index_buffer.range / data->index_buffer_el_size_B;
++      op.index_size_B = data->index_buffer_el_size_B;
++      op.restart_index = data->restart_index;
++      op.count = data->draw_count;
++
++      if (data->indirect) {
++         op.draws = data->indirect_command.addr;
++         op.stride_el = data->indirect_command.stride / sizeof(uint32_t);
++      } else {
++         size_t size_B =
++            data->draw_count * sizeof(VkDrawIndexedIndirectCommand);
++         struct kk_ptr draws = kk_pool_alloc(cmd, size_B, 4u);
++         if (!draws.cpu)
++            return;
++         memcpy(draws.cpu, data->indexed_draws, size_B);
++         op.draws = draws.gpu;
++         op.stride_el = sizeof(VkDrawIndexedIndirectCommand) / sizeof(uint32_t);
++      }
++      kk_cmd_stats_op(cmd, &op);
++      return;
++   }
++
+    if (data->indirect) {
+       op.draws = data->indirect_command.addr;
+       op.stride_el = data->indirect_command.stride / sizeof(uint32_t);
+-- 
+2.54.0 (Apple Git-157)
+

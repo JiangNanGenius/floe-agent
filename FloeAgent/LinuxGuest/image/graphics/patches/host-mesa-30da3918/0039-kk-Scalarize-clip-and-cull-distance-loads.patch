@@ -1,0 +1,38 @@
+From 1450e9f510e4f892b2d6045780c23e11db925eb0 Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Fri, 2 Oct 2026 15:20:51 -0400
+Subject: [PATCH] kk: Scalarize clip and cull distance loads
+
+Generated-by: LLM
+---
+ src/kosmickrisp/compiler/msl_nir_lower_common.c | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/src/kosmickrisp/compiler/msl_nir_lower_common.c b/src/kosmickrisp/compiler/msl_nir_lower_common.c
+index 57cce090344..e21b1d6fd23 100644
+--- a/src/kosmickrisp/compiler/msl_nir_lower_common.c
++++ b/src/kosmickrisp/compiler/msl_nir_lower_common.c
+@@ -697,7 +697,7 @@ static bool
+ scalarize_clip_cull_distance_filter(const nir_intrinsic_instr *intrin,
+                                     UNUSED const void *_data)
+ {
+-   if (intrin->intrinsic != nir_intrinsic_store_output)
++   if (!nir_intrinsic_has_io_semantics(intrin))
+       return false;
+    nir_io_semantics semantics = nir_intrinsic_io_semantics(intrin);
+    return semantics.location == VARYING_SLOT_CLIP_DIST0 ||
+@@ -709,7 +709,10 @@ scalarize_clip_cull_distance_filter(const nir_intrinsic_instr *intrin,
+ void
+ msl_nir_lower_clip_cull_distance(nir_shader *nir, unsigned num_cull_distances)
+ {
+-   NIR_PASS(_, nir, nir_lower_io_to_scalar, nir_var_shader_out,
++   nir_variable_mode modes = nir_var_shader_out;
++   if (nir->info.stage != MESA_SHADER_VERTEX)
++      modes |= nir_var_shader_in;
++   NIR_PASS(_, nir, nir_lower_io_to_scalar, modes,
+             scalarize_clip_cull_distance_filter, NULL);
+    NIR_PASS(_, nir, nir_separate_merged_clip_cull_io);
+    if (nir->info.stage == MESA_SHADER_FRAGMENT)
+-- 
+2.54.0 (Apple Git-157)
+

@@ -1,0 +1,115 @@
+From f81e5bc96ce26b4045632ca2bee4d2b1b7647eed Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Fri, 2 Oct 2026 13:51:14 -0400
+Subject: [PATCH] zink: Create kopper surfaces from Metal layers
+
+Generated-by: LLM
+---
+ src/gallium/drivers/zink/zink_instance.py |  1 +
+ src/gallium/drivers/zink/zink_kopper.c    | 28 +++++++++++++++++++++++
+ src/gallium/drivers/zink/zink_kopper.h    |  3 ++-
+ 3 files changed, 31 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/zink/zink_instance.py b/src/gallium/drivers/zink/zink_instance.py
+index 234d0ec02cd..ae909011078 100755
+--- a/src/gallium/drivers/zink/zink_instance.py
++++ b/src/gallium/drivers/zink/zink_instance.py
+@@ -54,6 +54,7 @@ EXTENSIONS = [
+ if platform.system() == "Darwin":
+     EXTENSIONS += [
+         Extension("VK_KHR_portability_enumeration"),
++        Extension("VK_EXT_metal_surface"),
+     ]
+ 
+ # constructor: Layer(name, conditions=[])
+diff --git a/src/gallium/drivers/zink/zink_kopper.c b/src/gallium/drivers/zink/zink_kopper.c
+index 60eb9ef2cc0..a7cc967d484 100644
+--- a/src/gallium/drivers/zink/zink_kopper.c
++++ b/src/gallium/drivers/zink/zink_kopper.c
+@@ -79,6 +79,11 @@ init_dt_type(struct kopper_displaytarget *cdt)
+    case VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR:
+       cdt->type = KOPPER_WIN32;
+       break;
++#endif
++#ifdef VK_USE_PLATFORM_METAL_EXT
++   case VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT:
++      cdt->type = KOPPER_METAL;
++      break;
+ #endif
+    default:
+       UNREACHABLE("unsupported!");
+@@ -118,6 +123,13 @@ kopper_CreateSurface(struct zink_screen *screen, struct kopper_displaytarget *cd
+       error = VKSCR(CreateWin32SurfaceKHR)(screen->instance, win32, NULL, &surface);
+       break;
+    }
++#endif
++#ifdef VK_USE_PLATFORM_METAL_EXT
++   case VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT: {
++      VkMetalSurfaceCreateInfoEXT *metal = (VkMetalSurfaceCreateInfoEXT *)&cdt->info.bos;
++      error = VKSCR(CreateMetalSurfaceEXT)(screen->instance, metal, NULL, &surface);
++      break;
++   }
+ #endif
+    default:
+       UNREACHABLE("unsupported!");
+@@ -242,6 +254,13 @@ find_dt_entry(struct zink_screen *screen, const struct kopper_displaytarget *cdt
+       he = _mesa_hash_table_search(&screen->dts, win32->hwnd);
+       break;
+    }
++#endif
++#ifdef VK_USE_PLATFORM_METAL_EXT
++   case KOPPER_METAL: {
++      VkMetalSurfaceCreateInfoEXT *metal = (VkMetalSurfaceCreateInfoEXT *)&cdt->info.bos;
++      he = _mesa_hash_table_search(&screen->dts, metal->pLayer);
++      break;
++   }
+ #endif
+    default:
+       UNREACHABLE("unsupported!");
+@@ -321,6 +340,7 @@ kopper_CreateSwapchain(struct zink_screen *screen, struct kopper_displaytarget *
+    switch (cdt->type) {
+    case KOPPER_X11:
+    case KOPPER_WIN32:
++   case KOPPER_METAL:
+       /* With Xcb, minImageExtent, maxImageExtent, and currentExtent must always equal the window size.
+        * ...
+        * Due to above restrictions, it is only possible to create a new swapchain on this
+@@ -456,6 +476,7 @@ zink_kopper_displaytarget_create(struct zink_screen *screen, unsigned tex_usage,
+             break;
+          case KOPPER_WAYLAND:
+          case KOPPER_WIN32:
++         case KOPPER_METAL:
+             _mesa_hash_table_init(&screen->dts, screen, _mesa_hash_pointer, _mesa_key_pointer_equal);
+             break;
+          default:
+@@ -527,6 +548,13 @@ zink_kopper_displaytarget_create(struct zink_screen *screen, unsigned tex_usage,
+       _mesa_hash_table_insert(&screen->dts, win32->hwnd, cdt);
+       break;
+    }
++#endif
++#ifdef VK_USE_PLATFORM_METAL_EXT
++   case KOPPER_METAL: {
++      VkMetalSurfaceCreateInfoEXT *metal = (VkMetalSurfaceCreateInfoEXT *)&cdt->info.bos;
++      _mesa_hash_table_insert(&screen->dts, metal->pLayer, cdt);
++      break;
++   }
+ #endif
+    default:
+       UNREACHABLE("unsupported!");
+diff --git a/src/gallium/drivers/zink/zink_kopper.h b/src/gallium/drivers/zink/zink_kopper.h
+index d1971ecb8b5..54d45584edc 100644
+--- a/src/gallium/drivers/zink/zink_kopper.h
++++ b/src/gallium/drivers/zink/zink_kopper.h
+@@ -74,7 +74,8 @@ struct kopper_swapchain {
+ enum kopper_type {
+    KOPPER_X11,
+    KOPPER_WAYLAND,
+-   KOPPER_WIN32
++   KOPPER_WIN32,
++   KOPPER_METAL
+ };
+ 
+ struct kopper_displaytarget
+-- 
+2.54.0 (Apple Git-157)
+

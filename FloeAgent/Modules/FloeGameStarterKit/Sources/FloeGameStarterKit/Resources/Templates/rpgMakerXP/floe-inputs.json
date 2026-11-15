@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "engine": "rpgMakerXP",
+  "movement": {
+    "left": [
+      "left"
+    ],
+    "right": [
+      "right"
+    ],
+    "up": [
+      "up"
+    ],
+    "down": [
+      "down"
+    ]
+  },
+  "buttons": [
+    {
+      "id": "confirm",
+      "label": "C (also Enter/Space)",
+      "keys": [
+        "c"
+      ]
+    },
+    {
+      "id": "cancel",
+      "label": "X (also Esc)",
+      "keys": [
+        "x"
+      ]
+    },
+    {
+      "id": "actionA",
+      "label": "Shift (also Z)",
+      "keys": [
+        "shift"
+      ]
+    }
+  ]
+}

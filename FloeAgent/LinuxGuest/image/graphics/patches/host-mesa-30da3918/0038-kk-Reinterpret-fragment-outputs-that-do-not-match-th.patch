@@ -1,0 +1,89 @@
+From 517317b0bb7c5f186b62a9be252c2f0d10918d73 Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Fri, 2 Oct 2026 15:20:51 -0400
+Subject: [PATCH] kk: Reinterpret fragment outputs that do not match the
+ attachment type
+
+Generated-by: LLM
+---
+ .../compiler/msl_nir_lower_common.c           | 64 +++++--------------
+ 1 file changed, 16 insertions(+), 48 deletions(-)
+
+diff --git a/src/kosmickrisp/compiler/msl_nir_lower_common.c b/src/kosmickrisp/compiler/msl_nir_lower_common.c
+index c4f6645da9c..57cce090344 100644
+--- a/src/kosmickrisp/compiler/msl_nir_lower_common.c
++++ b/src/kosmickrisp/compiler/msl_nir_lower_common.c
+@@ -64,54 +64,22 @@ fs_force_output_type(nir_builder *b, nir_intrinsic_instr *intrin, void *data)
+    enum pipe_format format =
+       render_target_formats[io.location - FRAG_RESULT_DATA0];
+    nir_alu_type type = nir_intrinsic_src_type(intrin);
+-   if (util_format_is_float(format) || util_format_is_unorm(format)) {
+-      if (type & nir_type_uint) {
+-         b->cursor = nir_before_instr(&intrin->instr);
+-         nir_def *value =
+-            nir_u2fN(b, intrin->src[0].ssa, nir_src_bit_size(intrin->src[0]));
+-         nir_src_rewrite(&intrin->src[0], value);
+-         type ^= (nir_type_float | nir_type_uint);
+-         nir_intrinsic_set_src_type(intrin, type);
+-         return true;
+-      } else if (type & nir_type_int) {
+-         b->cursor = nir_before_instr(&intrin->instr);
+-         nir_def *value =
+-            nir_u2fN(b, intrin->src[0].ssa, nir_src_bit_size(intrin->src[0]));
+-         nir_src_rewrite(&intrin->src[0], value);
+-         type ^= (nir_type_float | nir_type_int);
+-         nir_intrinsic_set_src_type(intrin, type);
+-         return true;
+-      }
+-   } else if (util_format_is_pure_sint(format)) {
+-      if (type & nir_type_uint) {
+-         type ^= (nir_type_uint | nir_type_int);
+-         nir_intrinsic_set_src_type(intrin, type);
+-         return true;
+-      } else if (type & nir_type_float) {
+-         b->cursor = nir_before_instr(&intrin->instr);
+-         nir_def *value =
+-            nir_f2uN(b, intrin->src[0].ssa, nir_src_bit_size(intrin->src[0]));
+-         nir_src_rewrite(&intrin->src[0], value);
+-         type ^= (nir_type_float | nir_type_int);
+-         nir_intrinsic_set_src_type(intrin, type);
+-         return true;
+-      }
+-   } else if (util_format_is_pure_uint(format)) {
+-      if (type & nir_type_int) {
+-         type ^= (nir_type_int | nir_type_uint);
+-         nir_intrinsic_set_src_type(intrin, type);
+-         return true;
+-      } else if (type & nir_type_float) {
+-         b->cursor = nir_before_instr(&intrin->instr);
+-         nir_def *value =
+-            nir_f2uN(b, intrin->src[0].ssa, nir_src_bit_size(intrin->src[0]));
+-         nir_src_rewrite(&intrin->src[0], value);
+-         type ^= (nir_type_float | nir_type_uint);
+-         nir_intrinsic_set_src_type(intrin, type);
+-         return true;
+-      }
+-   }
+-   return false;
++   nir_alu_type base;
++   if (util_format_is_float(format) || util_format_is_unorm(format) ||
++       util_format_is_snorm(format))
++      base = nir_type_float;
++   else if (util_format_is_pure_sint(format))
++      base = nir_type_int;
++   else if (util_format_is_pure_uint(format))
++      base = nir_type_uint;
++   else
++      return false;
++
++   if (nir_alu_type_get_base_type(type) == base)
++      return false;
++
++   nir_intrinsic_set_src_type(intrin, base | nir_alu_type_get_type_size(type));
++   return true;
+ }
+ 
+ bool
+-- 
+2.54.0 (Apple Git-157)
+

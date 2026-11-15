@@ -1,0 +1,39 @@
+From 34ba77bd909a8199817c9109702455bc0bb77267 Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Fri, 2 Oct 2026 15:25:47 -0400
+Subject: [PATCH] zink: Do not declare that Inf and NaN are absent
+
+Generated-by: LLM
+---
+ src/gallium/drivers/zink/nir_to_spirv/nir_to_spirv.c | 8 --------
+ 1 file changed, 8 deletions(-)
+
+diff --git a/src/gallium/drivers/zink/nir_to_spirv/nir_to_spirv.c b/src/gallium/drivers/zink/nir_to_spirv/nir_to_spirv.c
+index 8394f040d99..c56f281f425 100644
+--- a/src/gallium/drivers/zink/nir_to_spirv/nir_to_spirv.c
++++ b/src/gallium/drivers/zink/nir_to_spirv/nir_to_spirv.c
+@@ -35,8 +35,6 @@
+ 
+ static const SpvFPFastMathModeMask default_fp_mode =
+    SpvFPFastMathModeNSZMask |
+-   SpvFPFastMathModeNotInfMask |
+-   SpvFPFastMathModeNotNaNMask |
+    SpvFPFastMathModeAllowRecipMask |
+    SpvFPFastMathModeAllowContractMask |
+    SpvFPFastMathModeAllowReassocMask |
+@@ -2319,12 +2317,6 @@ emit_alu(struct ntv_context *ctx, nir_alu_instr *alu)
+       if (!nir_alu_instr_is_signed_zero_preserve(alu))
+          fp_mode |= SpvFPFastMathModeNSZMask;
+ 
+-      if (!nir_alu_instr_is_inf_preserve(alu))
+-         fp_mode |= SpvFPFastMathModeNotInfMask;
+-
+-      if (!nir_alu_instr_is_nan_preserve(alu))
+-         fp_mode |= SpvFPFastMathModeNotNaNMask;
+-
+       if (!nir_alu_instr_no_contract(alu))
+          fp_mode |= SpvFPFastMathModeAllowContractMask;
+ 
+-- 
+2.54.0 (Apple Git-157)
+

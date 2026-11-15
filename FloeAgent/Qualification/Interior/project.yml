@@ -1,0 +1,50 @@
+name: FloeInteriorQualification
+options:
+  deploymentTarget:
+    iOS: '26.0'
+packages:
+  FloeInteriorKit:
+    path: ../../Modules/FloeInteriorKit
+  FloeCADKit:
+    path: ../../ThirdParty/FloeCADKit
+settings:
+  base:
+    SWIFT_VERSION: '6.0'
+    ARCHS: arm64
+    ONLY_ACTIVE_ARCH: YES
+    CODE_SIGNING_ALLOWED: NO
+    GENERATE_INFOPLIST_FILE: YES
+targets:
+  InteriorNativeHost:
+    type: application
+    platform: iOS
+    sources: [NativeHost.swift]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.floe.qualification.interior-native-host
+        TARGETED_DEVICE_FAMILY: '2'
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+  InteriorNativeChecks:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [NativeCabinetAdapter.swift, NativeCabinetChecks.swift, NativeCabinetAssemblyChecks.swift]
+    dependencies:
+      - target: InteriorNativeHost
+      - package: FloeInteriorKit
+        product: FloeInteriorCore
+      - package: FloeCADKit
+        product: FloeCAD
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.floe.qualification.interior-native-tests
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/InteriorNativeHost.app/InteriorNativeHost
+        BUNDLE_LOADER: $(TEST_HOST)
+schemes:
+  InteriorNativeChecks:
+    build:
+      targets:
+        InteriorNativeChecks: [test]
+    test:
+      targets: [InteriorNativeChecks]
+      parallelizable: false

@@ -1,0 +1,1541 @@
+--- a/src/gallium/drivers/zink/zink_blit.c
++++ b/src/gallium/drivers/zink/zink_blit.c
+@@ -323,6 +323,8 @@
+           const struct pipe_blit_info *info)
+ {
+    struct zink_context *ctx = zink_context(pctx);
++   if (info->render_condition_enable && !zink_check_conditional_render(ctx))
++      return;
+    const struct util_format_description *src_desc = util_format_description(info->src.format);
+    const struct util_format_description *dst_desc = util_format_description(info->dst.format);
+ 
+--- a/src/gallium/drivers/zink/zink_clear.c
++++ b/src/gallium/drivers/zink/zink_clear.c
+@@ -144,8 +144,8 @@
+    return add_new_clear(fb_clear);
+ }
+ 
+-void
+-zink_clear(struct pipe_context *pctx,
++static void
++zink_clear_impl(struct pipe_context *pctx,
+            unsigned buffers,
+            const struct pipe_scissor_state *scissor_state,
+            const union pipe_color_union *pcolor,
+@@ -292,6 +292,27 @@
+    }
+    assert(!ctx->in_rp);
+    ctx->rp_changed |= ctx->rp_clears_enabled != rp_clears_enabled;
++}
++
++void
++zink_clear(struct pipe_context *pctx,
++           unsigned buffers,
++           const struct pipe_scissor_state *scissor_state,
++           const union pipe_color_union *pcolor,
++           double depth, unsigned stencil)
++{
++   struct zink_context *ctx = zink_context(pctx);
++   if (!zink_check_conditional_render(ctx))
++      return;
++
++   bool active = ctx->render_condition_active;
++   /* Once the CPU accepted a clear, remember it as unconditional. Deferring
++    * it with a query pointer would incorrectly re-evaluate a later predicate
++    * and also prevent the ordinary renderpass load-clear path. */
++   if (!zink_screen(pctx->screen)->info.have_EXT_conditional_rendering)
++      ctx->render_condition_active = false;
++   zink_clear_impl(pctx, buffers, scissor_state, pcolor, depth, stencil);
++   ctx->render_condition_active = active;
+ }
+ 
+ static inline bool
+--- a/src/gallium/drivers/zink/zink_draw.cpp
++++ b/src/gallium/drivers/zink/zink_draw.cpp
+@@ -950,6 +950,8 @@
+               const struct pipe_draw_start_count_bias *draws,
+               unsigned num_draws)
+ {
++   if (!zink_check_conditional_render(zink_context(pctx)))
++      return;
+    zink_draw<HAS_MULTIDRAW, DYNAMIC_STATE, BATCH_CHANGED, false>(pctx, info, drawid_offset, indirect, draws, num_draws, NULL, 0);
+ }
+ 
+@@ -1009,6 +1011,11 @@
+                        const struct pipe_draw_start_count_bias *draws,
+                        unsigned num_draws)
+ {
++   if (!zink_check_conditional_render(zink_context(pctx))) {
++      if (info.take_vertex_state_ownership)
++         pipe_vertex_state_reference(&vstate, NULL);
++      return;
++   }
+    struct pipe_draw_info dinfo = {};
+ 
+    dinfo.mode = info.mode;
+@@ -1036,6 +1043,8 @@
+ zink_launch_grid(struct pipe_context *pctx, const struct pipe_grid_info *info)
+ {
+    struct zink_context *ctx = zink_context(pctx);
++   if (!zink_check_conditional_render(ctx))
++      return;
+    struct zink_batch_state *bs = ctx->bs;
+    struct zink_screen *screen = zink_screen(pctx->screen);
+ 
+--- a/src/gallium/drivers/zink/zink_query.c
++++ b/src/gallium/drivers/zink/zink_query.c
+@@ -1337,6 +1337,14 @@
+    ctx->render_condition.active = false;
+ }
+ 
++bool
++zink_check_conditional_render(struct zink_context *ctx)
++{
++   return !ctx->render_condition_active ||
++          zink_screen(ctx->base.screen)->info.have_EXT_conditional_rendering ||
++          !ctx->render_condition.cpu_skip;
++}
++
+ static void
+ zink_render_condition(struct pipe_context *pctx,
+                       struct pipe_query *pquery,
+@@ -1356,6 +1364,25 @@
+       zink_stop_conditional_render(ctx);
+       ctx->render_condition_active = false;
+       ctx->render_condition.query = NULL;
++      ctx->render_condition.cpu_skip = false;
++      return;
++   }
++
++   if (!zink_screen(pctx->screen)->info.have_EXT_conditional_rendering) {
++      /* GL does not permit reusing this query while its conditional region
++       * is active. Resolve the predicate at BeginConditionalRender. Reading
++       * can flush/change the batch, so do it before a draw's specialization
++       * has cached command-buffer/pipeline state, never inside that draw. */
++      bool wait = mode == PIPE_RENDER_COND_WAIT || mode == PIPE_RENDER_COND_BY_REGION_WAIT;
++      union pipe_query_result result = {0};
++      ctx->render_condition_active = false;
++      bool ready = zink_get_query_result(pctx, pquery, wait, &result);
++      ctx->render_condition.inverted = condition;
++      /* NO_WAIT may execute the whole region unconditionally if unavailable.
++       * Normalize counts before inversion (more than one sample is true). */
++      ctx->render_condition.cpu_skip = ready && (!!result.u64 == condition);
++      ctx->render_condition_active = true;
++      ctx->render_condition.query = query;
+       return;
+    }
+ 
+--- a/src/gallium/drivers/zink/zink_query.h
++++ b/src/gallium/drivers/zink/zink_query.h
+@@ -58,6 +58,9 @@
+ void
+ zink_stop_conditional_render(struct zink_context *ctx);
+ 
++bool
++zink_check_conditional_render(struct zink_context *ctx);
++
+ void
+ zink_context_destroy_query_pools(struct zink_context *ctx);
+ uint64_t
+--- a/src/gallium/drivers/zink/zink_types.h
++++ b/src/gallium/drivers/zink/zink_types.h
+@@ -1929,6 +1929,7 @@
+       struct zink_query *query;
+       bool inverted;
+       bool active; //this is the internal vk state
++      bool cpu_skip;
+    } render_condition;
+    struct {
+       uint64_t render_passes;
+--- a/src/virtio/vulkan/vn_device.c
++++ b/src/virtio/vulkan/vn_device.c
+@@ -327,9 +327,13 @@
+       }
+    }
+ 
+-   /* see vn_queue_submission_count_batch_semaphores */
+-   if (!app_exts->KHR_external_semaphore_fd && has_wsi) {
+-      assert(physical_dev->renderer_sync_fd.semaphore_importable);
++   /* WSI wait semaphores are resolved on the driver side and dropped from
++    * renderer submissions, so WSI no longer requires the renderer to support
++    * VK_KHR_external_semaphore_fd. Only enable the extension internally when
++    * the renderer actually supports it and the app did not request it.
++    */
++   if (has_wsi && !app_exts->KHR_external_semaphore_fd &&
++       physical_dev->renderer_extensions.KHR_external_semaphore_fd) {
+       extra_exts[extra_count++] = VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME;
+    }
+ 
+--- a/src/virtio/vulkan/vn_physical_device.c
++++ b/src/virtio/vulkan/vn_physical_device.c
+@@ -833,8 +833,14 @@
+    physical_dev->external_fence_handles = 0;
+ 
+    if (physical_dev->instance->renderer->info.has_external_sync) {
+-      physical_dev->external_fence_handles =
+-         VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT;
++      /* Only advertise the handle if the renderer can actually export it.
++       * Upstream b20591161a ("venus: refactor external fence and semaphore
++       * advertisment") made this gating explicit.
++       */
++      if (physical_dev->renderer_sync_fd.fence_exportable) {
++         physical_dev->external_fence_handles =
++            VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT;
++      }
+    }
+ }
+ 
+@@ -884,8 +890,17 @@
+    physical_dev->external_timeline_semaphore_handles = 0;
+ 
+    if (physical_dev->instance->renderer->info.has_external_sync) {
+-      physical_dev->external_binary_semaphore_handles =
+-         VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
++      /* Do not report SYNC_FD semaphores to common WSI unless the renderer
++       * can export them. Otherwise WSI would create an exportable semaphore
++       * and hit vn_GetSemaphoreFdKHR asserts when the renderer cannot
++       * import/export the payload. With no export handle, common WSI uses
++       * the existing wsi_memory_signal_submit_info implicit-fence path.
++       * Upstream b20591161a made this gating explicit.
++       */
++      if (physical_dev->renderer_sync_fd.semaphore_exportable) {
++         physical_dev->external_binary_semaphore_handles =
++            VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
++      }
+    }
+ }
+ 
+@@ -951,8 +966,18 @@
+    }
+ 
+ #ifdef VN_USE_WSI_PLATFORM
+-   if (can_external_mem &&
+-       physical_dev->renderer_sync_fd.semaphore_importable) {
++   /* WSI wait semaphores are resolved on the driver side and dropped from
++    * renderer submissions (see
++    * vn_queue_submission_setup_batch_wait_semaphores). The renderer therefore
++    * no longer needs SYNC_FD semaphore import for WSI.
++    *
++    * The dma-buf image path still needs explicit external memory support. If
++    * the renderer cannot provide implicit-fenced dma-buf present (for example
++    * a shm-emulated fd host), the WSI CPU-image copy path is used instead and
++    * does not need external memory. Advertise swapchain only when one of
++    * those two real paths exists.
++    */
++   if (can_external_mem || physical_dev->wsi_cpu_present) {
+       exts->KHR_incremental_present = true;
+       exts->KHR_swapchain = true;
+       exts->KHR_swapchain_mutable_format = true;
+@@ -981,16 +1006,11 @@
+    const struct vn_physical_device *physical_dev,
+    struct vk_device_extension_table *exts)
+ {
+-#if DETECT_OS_ANDROID || defined(VN_USE_WSI_PLATFORM)
+-   /* WSI support currently requires semaphore sync fd import for
+-    * VK_KHR_synchronization2 for code simplicity. This requirement can be
+-    * dropped by implementing external semaphore purely on the driver side
+-    * (aka no corresponding renderer side object).
++   /* SYNC_FD wait semaphores are no longer forwarded to the renderer, so
++    * VK_KHR_synchronization2 no longer depends on renderer SYNC_FD semaphore
++    * import. This is the same relaxation as upstream commit d11d7e2c.
+     */
+-   const bool can_sync2 = physical_dev->renderer_sync_fd.semaphore_importable;
+-#else
+-   static const bool can_sync2 = true;
+-#endif
++   const bool can_sync2 = true;
+ 
+    *exts = (struct vk_device_extension_table){
+       /* promoted to VK_VERSION_1_1 */
+@@ -1341,6 +1361,18 @@
+    vn_physical_device_init_external_memory(physical_dev);
+    vn_physical_device_init_external_fence_handles(physical_dev);
+    vn_physical_device_init_external_semaphore_handles(physical_dev);
++
++#if !DETECT_OS_ANDROID
++   /* Android uses the native-buffer WSI path. On desktop/X11, a renderer
++    * without implicit fencing cannot provide dma-buf backed present images,
++    * and a renderer without the complete dma-buf image-format set cannot
++    * create a native swapchain image. Both cases use the WSI CPU-image copy
++    * path while GPU rendering remains on the Venus device.
++    */
++   physical_dev->wsi_cpu_present =
++      !physical_dev->instance->renderer->info.has_implicit_fencing ||
++      !vn_physical_device_get_external_memory_support(physical_dev);
++#endif
+ 
+    vn_physical_device_init_supported_extensions(physical_dev);
+ 
+--- a/src/virtio/vulkan/vn_physical_device.h
++++ b/src/virtio/vulkan/vn_physical_device.h
+@@ -73,6 +73,12 @@
+    struct vk_device_extension_table renderer_extensions;
+    uint32_t *extension_spec_versions;
+ 
++   /* The renderer has no implicit dma-buf fencing, so WSI cannot rely on
++    * dma-buf backed present. Use the common WSI CPU-image copy path while
++    * keeping the Vulkan device hardware-accelerated.
++    */
++   bool wsi_cpu_present;
++
+    /* Venus feedback encounters cacheline overflush issue on Intel JSL, and
+     * has to workaround by further aligning up the feedback buffer alignment.
+     */
+--- a/src/virtio/vulkan/vn_queue.c
++++ b/src/virtio/vulkan/vn_queue.c
+@@ -51,6 +51,12 @@
+    uint32_t feedback_types;
+    uint32_t pnext_count;
+    uint32_t dev_mask_count;
++   /* total wait semaphores across all batches; nonzero only for
++    * VkSubmitInfo/VkSubmitInfo2 submissions that need temporary wait arrays
++    */
++   uint32_t wait_sem_count;
++   uint32_t imported_wait_count;
++   bool has_imported_wait;
+    bool has_zink_sync_batch;
+    const struct vn_device_memory *wsi_mem;
+    struct vn_sync_payload_external external_payload;
+@@ -69,6 +75,12 @@
+     *    - a single cmd for query feedback (qfb)
+     *    - one cmd for each signal semaphore that has feedback (sfb)
+     *    - if last batch, a single cmd for ffb
++    * wait_sems
++    *  - filtered wait semaphore handle/info arrays for batches that wait on
++    *    imported SYNC_FD semaphores
++    * wait_dev_indices / wait_vals
++    *  - filtered VkDeviceGroupSubmitInfo wait indices and
++    *    VkTimelineSemaphoreSubmitInfo wait values for the same batches
+     */
+    struct {
+       void *storage;
+@@ -85,8 +97,20 @@
+          VkCommandBufferSubmitInfo *cmd_infos;
+       };
+ 
++      union {
++         /* uint8_t rather than void so per-batch pointer arithmetic in
++          * vn_queue_submission_setup_batch_wait_semaphores is standard C.
++          */
++         uint8_t *wait_sems;
++         VkSemaphore *wait_sem_handles;
++         VkSemaphoreSubmitInfo *wait_sem_infos;
++      };
++
+       struct vn_submit_info_pnext_fix *pnexts;
+       uint32_t *dev_masks;
++      uint32_t *wait_dev_indices;
++      uint64_t *wait_vals;
++      VkSemaphore *imported_wait_sems;
+    } temp;
+ };
+ 
+@@ -162,6 +186,23 @@
+    default:
+       unreachable("unexpected batch type");
+    }
++}
++
++static inline bool
++vn_semaphore_is_imported(VkSemaphore sem_handle)
++{
++   struct vn_semaphore *sem = vn_semaphore_from_handle(sem_handle);
++   return sem->payload->type == VN_SYNC_TYPE_IMPORTED_SYNC_FD;
++}
++
++static inline size_t
++vn_get_sem_size(struct vn_queue_submission *submit)
++{
++   assert((submit->batch_type == VK_STRUCTURE_TYPE_SUBMIT_INFO) ||
++          (submit->batch_type == VK_STRUCTURE_TYPE_SUBMIT_INFO_2));
++   return submit->batch_type == VK_STRUCTURE_TYPE_SUBMIT_INFO
++             ? sizeof(VkSemaphore)
++             : sizeof(VkSemaphoreSubmitInfo);
+ }
+ 
+ static inline size_t
+@@ -321,7 +362,10 @@
+ {
+    struct vk_queue *queue_vk = vk_queue_from_handle(submit->queue_handle);
+    struct vn_device *dev = (void *)queue_vk->base.device;
+-   const VkSubmitInfo *src_batch = &submit->submit_batches[batch_index];
++   /* Read the temporary batch chain so wait-semaphore filtering already
++    * applied by vn_queue_submission_setup_batch_wait_semaphores() is kept.
++    */
++   const VkSubmitInfo *src_batch = &submit->temp.submit_batches[batch_index];
+    struct vn_submit_info_pnext_fix *pnext_fix = submit->temp.pnexts;
+    VkBaseOutStructure *dst =
+       (void *)&submit->temp.submit_batches[batch_index];
+@@ -386,16 +430,32 @@
+ static bool
+ vn_semaphore_wait_external(struct vn_device *dev, struct vn_semaphore *sem);
+ 
++/* Bind sparse submissions are forwarded to the renderer as-is. Their
++ * imported SYNC_FD wait semaphores still need the renderer-side payload reset,
++ * so the legacy path is retained when the renderer supports SYNC_FD
++ * semaphore import. When it does not, report an explicit unsupported error
++ * instead of advertising a fake success. WSI submissions do not use the bind
++ * sparse path.
++ */
+ static VkResult
+-vn_queue_submission_fix_batch_semaphores(struct vn_queue_submission *submit,
+-                                         uint32_t batch_index)
++vn_queue_submission_fix_sparse_batch_semaphores(
++   struct vn_queue_submission *submit, uint32_t batch_index)
+ {
+    struct vk_queue *queue_vk = vk_queue_from_handle(submit->queue_handle);
+-   VkDevice dev_handle = vk_device_to_handle(queue_vk->base.device);
+-   struct vn_device *dev = vn_device_from_handle(dev_handle);
+-
++   struct vn_device *dev = (void *)queue_vk->base.device;
+    const uint32_t wait_count =
+       vn_get_wait_semaphore_count(submit, batch_index);
++
++   if (!dev->physical_device->renderer_sync_fd.semaphore_importable) {
++      for (uint32_t i = 0; i < wait_count; i++) {
++         if (vn_semaphore_is_imported(
++                vn_get_wait_semaphore(submit, batch_index, i)))
++            return VK_ERROR_FEATURE_NOT_PRESENT;
++      }
++      return VK_SUCCESS;
++   }
++
++   VkDevice dev_handle = vn_device_to_handle(dev);
+    for (uint32_t i = 0; i < wait_count; i++) {
+       VkSemaphore sem_handle = vn_get_wait_semaphore(submit, batch_index, i);
+       struct vn_semaphore *sem = vn_semaphore_from_handle(sem_handle);
+@@ -406,8 +466,6 @@
+ 
+       if (!vn_semaphore_wait_external(dev, sem))
+          return VK_ERROR_DEVICE_LOST;
+-
+-      assert(dev->physical_device->renderer_sync_fd.semaphore_importable);
+ 
+       const VkImportSemaphoreResourceInfoMESA res_info = {
+          .sType = VK_STRUCTURE_TYPE_IMPORT_SEMAPHORE_RESOURCE_INFO_MESA,
+@@ -417,6 +475,179 @@
+       vn_async_vkImportSemaphoreResourceMESA(dev->primary_ring, dev_handle,
+                                              &res_info);
+    }
++
++   return VK_SUCCESS;
++}
++
++static void
++vn_queue_submission_count_batch_wait_semaphores(
++   struct vn_queue_submission *submit, uint32_t batch_index)
++{
++   const uint32_t wait_count =
++      vn_get_wait_semaphore_count(submit, batch_index);
++   submit->wait_sem_count += wait_count;
++   for (uint32_t i = 0; i < wait_count; i++) {
++      if (vn_semaphore_is_imported(
++             vn_get_wait_semaphore(submit, batch_index, i))) {
++         submit->has_imported_wait = true;
++         break;
++      }
++   }
++}
++
++/* Resolve imported SYNC_FD wait semaphores on the driver side and drop them
++ * from the renderer submission. The renderer must not see these semaphores
++ * because it cannot import a SYNC_FD payload when
++ * renderer_sync_fd.semaphore_importable is false.
++ *
++ * The CPU wait above preserves the ordering guarantee of the imported
++ * semaphore. The remaining (non-imported) wait semaphores are copied into
++ * temporary storage, and the pNext wait arrays are filtered to match. This is
++ * the 25.0.7-compatible equivalent of upstream 8fdde4e3
++ * ("venus: properly drop imported semaphores from submission") together with
++ * the admission relaxation in d11d7e2c.
++ */
++static VkResult
++vn_queue_submission_setup_batch_wait_semaphores(
++   struct vn_queue_submission *submit, uint32_t batch_index)
++{
++   const uint32_t wait_count =
++      vn_get_wait_semaphore_count(submit, batch_index);
++   void *wait_storage = submit->temp.wait_sems;
++   uint32_t *wait_dev_indices = submit->temp.wait_dev_indices;
++   uint64_t *wait_vals = submit->temp.wait_vals;
++
++   /* Reserve this batch's share even when nothing is imported so the layout
++    * remains deterministic across batches.
++    */
++   submit->temp.wait_sems += wait_count * vn_get_sem_size(submit);
++   submit->temp.wait_dev_indices += wait_count;
++   submit->temp.wait_vals += wait_count;
++
++   if (!wait_count)
++      return VK_SUCCESS;
++
++   bool has_imported = false;
++   for (uint32_t i = 0; i < wait_count; i++) {
++      if (vn_semaphore_is_imported(
++             vn_get_wait_semaphore(submit, batch_index, i))) {
++         has_imported = true;
++         break;
++      }
++   }
++   if (!has_imported)
++      return VK_SUCCESS;
++
++   uint32_t kept_count = 0;
++
++   for (uint32_t i = 0; i < wait_count; i++) {
++      VkSemaphore sem_handle = vn_get_wait_semaphore(submit, batch_index, i);
++      if (vn_semaphore_is_imported(sem_handle)) {
++         /* Defer the CPU wait until every batch has been filtered. The same
++          * imported semaphore may appear in more than one batch, and waiting
++          * early would make later batches misclassify it as a permanent
++          * device-only semaphore and forward it to the renderer.
++          */
++         bool seen = false;
++         for (uint32_t j = 0; j < submit->imported_wait_count; j++) {
++            if (submit->temp.imported_wait_sems[j] == sem_handle) {
++               seen = true;
++               break;
++            }
++         }
++         if (!seen)
++            submit->temp.imported_wait_sems[submit->imported_wait_count++] =
++               sem_handle;
++         continue;
++      }
++
++      if (submit->batch_type == VK_STRUCTURE_TYPE_SUBMIT_INFO_2) {
++         ((VkSemaphoreSubmitInfo *)wait_storage)[kept_count] =
++            submit->submit2_batches[batch_index]
++               .pWaitSemaphoreInfos[i];
++      } else {
++         ((VkSemaphore *)wait_storage)[kept_count] = sem_handle;
++      }
++      kept_count++;
++   }
++
++   if (submit->batch_type == VK_STRUCTURE_TYPE_SUBMIT_INFO_2) {
++      submit->temp.submit2_batches[batch_index].pWaitSemaphoreInfos =
++         wait_storage;
++      submit->temp.submit2_batches[batch_index].waitSemaphoreInfoCount =
++         kept_count;
++      return VK_SUCCESS;
++   }
++
++   assert(submit->batch_type == VK_STRUCTURE_TYPE_SUBMIT_INFO);
++   submit->temp.submit_batches[batch_index].pWaitSemaphores = wait_storage;
++   submit->temp.submit_batches[batch_index].waitSemaphoreCount = kept_count;
++
++   /* Rebuild the pNext chain so VkTimelineSemaphoreSubmitInfo wait values and
++    * VkDeviceGroupSubmitInfo wait indices stay aligned with the filtered wait
++    * semaphore array. Copied structs keep their original pNext tail, matching
++    * the existing forwarding behavior for unsupported structs.
++    */
++   struct vn_submit_info_pnext_fix *pnext_fix = submit->temp.pnexts;
++   VkBaseOutStructure *dst =
++      (void *)&submit->temp.submit_batches[batch_index];
++   bool pnext_built = false;
++   vk_foreach_struct_const(src, submit->submit_batches[batch_index].pNext) {
++      void *pnext = NULL;
++      switch (src->sType) {
++      case VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO: {
++         memcpy(&pnext_fix->timeline, src, sizeof(pnext_fix->timeline));
++         const VkTimelineSemaphoreSubmitInfo *timeline = (const void *)src;
++         if (timeline->waitSemaphoreValueCount &&
++             timeline->pWaitSemaphoreValues) {
++            uint32_t j = 0;
++            for (uint32_t i = 0; i < wait_count; i++) {
++               if (!vn_semaphore_is_imported(
++                      vn_get_wait_semaphore(submit, batch_index, i)))
++                  wait_vals[j++] = timeline->pWaitSemaphoreValues[i];
++            }
++            pnext_fix->timeline.waitSemaphoreValueCount = j;
++            pnext_fix->timeline.pWaitSemaphoreValues = wait_vals;
++         }
++         pnext = &pnext_fix->timeline;
++         break;
++      }
++      case VK_STRUCTURE_TYPE_DEVICE_GROUP_SUBMIT_INFO: {
++         memcpy(&pnext_fix->group, src, sizeof(pnext_fix->group));
++         const VkDeviceGroupSubmitInfo *group = (const void *)src;
++         if (group->waitSemaphoreCount &&
++             group->pWaitSemaphoreDeviceIndices) {
++            uint32_t j = 0;
++            for (uint32_t i = 0; i < wait_count; i++) {
++               if (!vn_semaphore_is_imported(
++                      vn_get_wait_semaphore(submit, batch_index, i)))
++                  wait_dev_indices[j++] =
++                     group->pWaitSemaphoreDeviceIndices[i];
++            }
++            pnext_fix->group.waitSemaphoreCount = j;
++            pnext_fix->group.pWaitSemaphoreDeviceIndices = wait_dev_indices;
++         } else if (group->waitSemaphoreCount) {
++            pnext_fix->group.waitSemaphoreCount = kept_count;
++         }
++         pnext = &pnext_fix->group;
++         break;
++      }
++      case VK_STRUCTURE_TYPE_PROTECTED_SUBMIT_INFO:
++         memcpy(&pnext_fix->protected, src, sizeof(pnext_fix->protected));
++         pnext = &pnext_fix->protected;
++         break;
++      default:
++         break;
++      }
++
++      if (pnext) {
++         dst->pNext = pnext;
++         dst = pnext;
++         pnext_built = true;
++      }
++   }
++   if (pnext_built)
++      submit->temp.pnexts++;
+ 
+    return VK_SUCCESS;
+ }
+@@ -521,9 +752,14 @@
+    }
+ 
+    for (uint32_t i = 0; i < submit->batch_count; i++) {
+-      VkResult result = vn_queue_submission_fix_batch_semaphores(submit, i);
+-      if (result != VK_SUCCESS)
+-         return result;
++      if (submit->batch_type == VK_STRUCTURE_TYPE_BIND_SPARSE_INFO) {
++         VkResult result =
++            vn_queue_submission_fix_sparse_batch_semaphores(submit, i);
++         if (result != VK_SUCCESS)
++            return result;
++      } else {
++         vn_queue_submission_count_batch_wait_semaphores(submit, i);
++      }
+ 
+       vn_queue_submission_count_batch_feedback(submit, i);
+    }
+@@ -536,7 +772,7 @@
+ {
+    struct vn_queue *queue = vn_queue_from_handle(submit->queue_handle);
+ 
+-   if (!submit->feedback_types)
++   if (!submit->feedback_types && !submit->has_imported_wait)
+       return VK_SUCCESS;
+ 
+    /* for original batches or a new batch to hold feedback fence cmd */
+@@ -545,23 +781,48 @@
+    /* for fence, timeline semaphore and query feedback cmds */
+    const size_t total_cmd_size =
+       vn_get_cmd_size(submit) * MAX2(submit->cmd_count, 1);
+-   /* for fixing command buffer counts in device group info, if it exists */
++   /* for fixing command buffer counts and wait arrays in the pNext chain */
++   const uint32_t total_pnext_count =
++      submit->pnext_count +
++      (submit->has_imported_wait ? submit->batch_count : 0);
+    const size_t total_pnext_size =
+-      submit->pnext_count * sizeof(struct vn_submit_info_pnext_fix);
++      total_pnext_count * sizeof(struct vn_submit_info_pnext_fix);
+    const size_t total_dev_mask_size =
+       submit->dev_mask_count * sizeof(uint32_t);
++   const size_t total_wait_sem_size = submit->wait_sem_count
++                                         ? submit->wait_sem_count *
++                                              vn_get_sem_size(submit)
++                                         : 0;
++   const size_t total_wait_dev_size =
++      submit->wait_sem_count * sizeof(uint32_t);
++   const size_t total_wait_val_size =
++      submit->wait_sem_count * sizeof(uint64_t);
++   const size_t total_imported_wait_size =
++      submit->wait_sem_count * sizeof(VkSemaphore);
+    submit->temp.storage = vn_cached_storage_get(
+       &queue->storage, total_batch_size + total_cmd_size + total_pnext_size +
+-                          total_dev_mask_size);
++                          total_dev_mask_size + total_wait_sem_size +
++                          total_wait_dev_size + total_wait_val_size +
++                          total_imported_wait_size);
+    if (!submit->temp.storage)
+       return VK_ERROR_OUT_OF_HOST_MEMORY;
+ 
+-   submit->temp.batches = submit->temp.storage;
+-   submit->temp.cmds = submit->temp.storage + total_batch_size;
+-   submit->temp.pnexts =
+-      submit->temp.storage + total_batch_size + total_cmd_size;
+-   submit->temp.dev_masks = submit->temp.storage + total_batch_size +
+-                            total_cmd_size + total_pnext_size;
++   uint8_t *storage = submit->temp.storage;
++   submit->temp.batches = storage;
++   storage += total_batch_size;
++   submit->temp.cmds = storage;
++   storage += total_cmd_size;
++   submit->temp.pnexts = (void *)storage;
++   storage += total_pnext_size;
++   submit->temp.dev_masks = (void *)storage;
++   storage += total_dev_mask_size;
++   submit->temp.wait_sems = storage;
++   storage += total_wait_sem_size;
++   submit->temp.wait_dev_indices = (void *)storage;
++   storage += total_wait_dev_size;
++   submit->temp.wait_vals = (void *)storage;
++   storage += total_wait_val_size;
++   submit->temp.imported_wait_sems = (void *)storage;
+ 
+    return VK_SUCCESS;
+ }
+@@ -808,7 +1069,8 @@
+       batch->commandBufferCount = new_cmd_count;
+ 
+       const VkDeviceGroupSubmitInfo *device_group = vk_find_struct_const(
+-         submit->submit_batches[batch_index].pNext, DEVICE_GROUP_SUBMIT_INFO);
++         submit->temp.submit_batches[batch_index].pNext,
++         DEVICE_GROUP_SUBMIT_INFO);
+       if (device_group)
+          vn_fix_device_group_cmd_count(submit, batch_index);
+    }
+@@ -822,6 +1084,11 @@
+ {
+    uint32_t feedback_types = 0;
+    uint32_t extra_cmd_count = 0;
++
++   VkResult wait_result = vn_queue_submission_setup_batch_wait_semaphores(
++      submit, batch_index);
++   if (wait_result != VK_SUCCESS)
++      return wait_result;
+ 
+    const uint32_t signal_count =
+       vn_get_signal_semaphore_count(submit, batch_index);
+@@ -879,16 +1146,35 @@
+ }
+ 
+ static VkResult
++vn_queue_submission_wait_imported_semaphores(
++   struct vn_queue_submission *submit)
++{
++   if (!submit->imported_wait_count)
++      return VK_SUCCESS;
++
++   struct vk_queue *queue_vk = vk_queue_from_handle(submit->queue_handle);
++   struct vn_device *dev = (void *)queue_vk->base.device;
++   for (uint32_t i = 0; i < submit->imported_wait_count; i++) {
++      struct vn_semaphore *sem = vn_semaphore_from_handle(
++         submit->temp.imported_wait_sems[i]);
++      if (!vn_semaphore_wait_external(dev, sem))
++         return VK_ERROR_DEVICE_LOST;
++   }
++   return VK_SUCCESS;
++}
++
++static VkResult
+ vn_queue_submission_setup_batches(struct vn_queue_submission *submit)
+ {
+    assert(submit->batch_type == VK_STRUCTURE_TYPE_SUBMIT_INFO_2 ||
+           submit->batch_type == VK_STRUCTURE_TYPE_SUBMIT_INFO);
+ 
+-   if (!submit->feedback_types)
++   if (!submit->feedback_types && !submit->has_imported_wait)
+       return VK_SUCCESS;
+ 
+    /* For a submission that is:
+-    * - non-empty: copy batches for adding feedbacks
++    * - non-empty: copy batches for adding feedbacks or filtering wait
++    *   semaphores
+     * - empty: initialize a batch for fence feedback
+     */
+    if (submit->batch_count) {
+@@ -914,6 +1200,10 @@
+       if (result != VK_SUCCESS)
+          return result;
+    }
++
++   VkResult wait_result = vn_queue_submission_wait_imported_semaphores(submit);
++   if (wait_result != VK_SUCCESS)
++      return wait_result;
+ 
+    submit->batches = submit->temp.batches;
+ 
+@@ -2307,7 +2597,14 @@
+ 
+    assert(sync_file);
+    assert(dev->physical_device->renderer_sync_fd.semaphore_exportable);
+-   assert(dev->physical_device->renderer_sync_fd.semaphore_importable);
++
++   /* Exporting a device-only semaphore does not need renderer-side import:
++    * vn_create_sync_file() submits and exports a renderer syncobj. Only the
++    * temporary imported-payload path below needs semaphore import support.
++    */
++   if (payload->type == VN_SYNC_TYPE_IMPORTED_SYNC_FD &&
++       !dev->physical_device->renderer_sync_fd.semaphore_importable)
++      return vn_error(dev->instance, VK_ERROR_FEATURE_NOT_PRESENT);
+ 
+    int fd = -1;
+    if (payload->type == VN_SYNC_TYPE_DEVICE_ONLY) {
+--- a/src/virtio/vulkan/vn_wsi.c
++++ b/src/virtio/vulkan/vn_wsi.c
+@@ -83,11 +83,19 @@
+       &(struct wsi_device_options){
+          .sw_device = false,
+          .extra_xwayland_image = true,
++         .cpu_present = physical_dev->wsi_cpu_present,
+       });
+    if (result != VK_SUCCESS)
+       return result;
+ 
+-   physical_dev->wsi_device.supports_modifiers = true;
++   if (physical_dev->wsi_cpu_present && VN_DEBUG(WSI)) {
++      vn_log(physical_dev->instance,
++             "renderer has no implicit dma-buf fencing; using WSI CPU copy "
++             "presentation (GPU rendering remains on the Venus device)");
++   }
++
++   physical_dev->wsi_device.supports_modifiers =
++      !physical_dev->wsi_cpu_present;
+    physical_dev->base.base.wsi_device = &physical_dev->wsi_device;
+ 
+    return VK_SUCCESS;
+--- a/src/vulkan/wsi/wsi_common.c
++++ b/src/vulkan/wsi/wsi_common.c
+@@ -85,6 +85,7 @@
+    wsi->pdevice = pdevice;
+    wsi->supports_scanout = true;
+    wsi->sw = device_options->sw_device || (WSI_DEBUG & WSI_DEBUG_SW);
++   wsi->cpu_present = device_options->cpu_present;
+    wsi->wants_linear = (WSI_DEBUG & WSI_DEBUG_LINEAR) != 0;
+    wsi->x11.extra_xwayland_image = device_options->extra_xwayland_image;
+    wsi->wayland.disable_timestamps = (WSI_DEBUG & WSI_DEBUG_NOWLTS) != 0;
+@@ -1503,7 +1504,7 @@
+          submit_info.signalSemaphoreCount = 1;
+          submit_info.pSignalSemaphores = &image->explicit_sync[WSI_ES_ACQUIRE].semaphore;
+          __vk_append_struct(&submit_info, &timeline_submit_info);
+-      } else {
++      } else if (!wsi->cpu_present) {
+ #ifdef HAVE_LIBDRM
+          result = wsi_prepare_signal_dma_buf_from_semaphore(swapchain, image);
+          if (result == VK_SUCCESS) {
+@@ -1555,9 +1556,13 @@
+ #endif
+       }
+ 
+-      if (wsi->sw)
+-	      wsi->WaitForFences(device, 1, &swapchain->fences[image_index],
+-				 true, ~0ull);
++      if (wsi_device_uses_cpu_images(wsi)) {
++         result = wsi->WaitForFences(device, 1,
++                                     &swapchain->fences[image_index],
++                                     true, ~0ull);
++         if (result != VK_SUCCESS)
++            goto fail_present;
++      }
+ 
+       const VkPresentRegionKHR *region = NULL;
+       if (regions && regions->pRegions)
+@@ -2250,7 +2255,8 @@
+ bool
+ wsi_device_supports_explicit_sync(struct wsi_device *device)
+ {
+-   return !device->sw && device->has_timeline_semaphore &&
++   return !wsi_device_uses_cpu_images(device) &&
++      device->has_timeline_semaphore &&
+       (device->timeline_semaphore_export_handle_types &
+        VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT);
+ }
+--- a/src/vulkan/wsi/wsi_common.h
++++ b/src/vulkan/wsi/wsi_common.h
+@@ -178,6 +178,13 @@
+    } win32;
+ 
+    bool sw;
++
++   /* The driver uses the common WSI CPU-image copy path (linear staging
++    * buffer + XPutImage or MIT-SHM pixmap) instead of DRI3/DRM images. This
++    * keeps GPU rendering in the driver but does not require dma-buf
++    * export/import or implicit fencing from the host renderer.
++    */
++   bool cpu_present;
+ 
+    /* Set to true if the implementation is ok with linear WSI images. */
+    bool wants_linear;
+@@ -284,6 +291,13 @@
+ struct wsi_device_options {
+    bool sw_device;
+    bool extra_xwayland_image;
++
++   /* Prefer the CPU-image copy presentation path for window-system swapchains
++    * even though the Vulkan device itself is a real hardware device. This is
++    * for drivers whose renderer cannot provide dma-buf backed WSI images or
++    * implicit fencing, such as Venus over a shm-emulated fd host.
++    */
++   bool cpu_present;
+ };
+ 
+ VkResult
+@@ -298,6 +312,12 @@
+ void
+ wsi_device_finish(struct wsi_device *wsi,
+                   const VkAllocationCallbacks *alloc);
++
++static inline bool
++wsi_device_uses_cpu_images(const struct wsi_device *wsi)
++{
++   return wsi->sw || wsi->cpu_present;
++}
+ 
+ /* Setup file descriptor to be used with imported sync_fd's in wsi fences. */
+ void
+--- a/src/vulkan/wsi/wsi_common_x11.c
++++ b/src/vulkan/wsi/wsi_common_x11.c
+@@ -22,7 +22,9 @@
+  */
+ 
+ #include <X11/Xlib-xcb.h>
++#ifdef HAVE_X11_DRM
+ #include <X11/xshmfence.h>
++#endif
+ #define XK_MISCELLANY
+ #define XK_LATIN1
+ #include <X11/keysymdef.h>
+@@ -233,7 +235,8 @@
+    xcb_query_extension_reply_t *dri3_reply, *pres_reply, *randr_reply,
+                                *amd_reply, *nv_reply, *shm_reply = NULL,
+                                *xfixes_reply, *xwl_reply;
+-   bool wants_shm = wsi_dev->sw && !(WSI_DEBUG & WSI_DEBUG_NOSHM) &&
++   bool wants_shm = wsi_dev->sw && !wsi_dev->cpu_present &&
++                    !(WSI_DEBUG & WSI_DEBUG_NOSHM) &&
+                     wsi_dev->has_import_memory_host;
+    bool has_dri3_v1_2 = false;
+    bool has_present_v1_2 = false;
+@@ -313,20 +316,19 @@
+ #endif
+ 
+    wsi_conn->has_present = pres_reply->present != 0;
+-#ifdef HAVE_X11_DRM
+    if (wsi_conn->has_present) {
+       xcb_present_query_version_cookie_t ver_cookie;
+       xcb_present_query_version_reply_t *ver_reply;
+ 
+       ver_cookie = xcb_present_query_version(conn, 1, 4);
+       ver_reply = xcb_present_query_version_reply(conn, ver_cookie, NULL);
+-      has_present_v1_2 =
++      wsi_conn->has_present = ver_reply != NULL;
++      has_present_v1_2 = ver_reply != NULL &&
+         (ver_reply->major_version > 1 || ver_reply->minor_version >= 2);
+-      has_present_v1_4 =
++      has_present_v1_4 = ver_reply != NULL &&
+         (ver_reply->major_version > 1 || ver_reply->minor_version >= 4);
+       free(ver_reply);
+    }
+-#endif
+ 
+    wsi_conn->has_xfixes = xfixes_reply->present != 0;
+    if (wsi_conn->has_xfixes) {
+@@ -468,6 +470,42 @@
+    VK_PRESENT_MODE_FIFO_RELAXED_KHR,
+ };
+ 
++/* CPU present uploads into ordinary X pixmaps and uses Present's completion
++ * and idle events. FIFO is paced by MSC; IMMEDIATE requests ASYNC. MAILBOX and
++ * FIFO_RELAXED are deliberately not exposed by this private path.
++ */
++static const VkPresentModeKHR cpu_present_modes[] = {
++   VK_PRESENT_MODE_FIFO_KHR,
++   VK_PRESENT_MODE_IMMEDIATE_KHR,
++};
++
++static uint32_t
++x11_get_supported_present_modes(const struct wsi_device *wsi_device,
++                                const VkPresentModeKHR **modes)
++{
++   if (wsi_device_uses_cpu_images(wsi_device)) {
++      *modes = cpu_present_modes;
++      return ARRAY_SIZE(cpu_present_modes);
++   }
++
++   *modes = present_modes;
++   return ARRAY_SIZE(present_modes);
++}
++
++static bool
++x11_present_mode_supported(const struct wsi_device *wsi_device,
++                           VkPresentModeKHR mode)
++{
++   const VkPresentModeKHR *modes;
++   const uint32_t count = x11_get_supported_present_modes(wsi_device, &modes);
++
++   for (uint32_t i = 0; i < count; i++) {
++      if (modes[i] == mode)
++         return true;
++   }
++   return false;
++}
++
+ static xcb_screen_t *
+ get_screen_for_root(xcb_connection_t *conn, xcb_window_t root)
+ {
+@@ -598,7 +636,9 @@
+    if (!wsi_conn)
+       return false;
+ 
+-   if (!wsi_device->sw) {
++   if (wsi_device->cpu_present && !wsi_conn->has_present)
++      return false;
++   if (!wsi_device_uses_cpu_images(wsi_device)) {
+       if (!wsi_x11_check_for_dri3(wsi_conn))
+          return false;
+    }
+@@ -653,7 +693,11 @@
+    if (!wsi_conn)
+       return VK_ERROR_OUT_OF_HOST_MEMORY;
+ 
+-   if (!wsi_device->sw) {
++   if (wsi_device->cpu_present && !wsi_conn->has_present) {
++      *pSupported = false;
++      return VK_SUCCESS;
++   }
++   if (!wsi_device_uses_cpu_images(wsi_device)) {
+       if (!wsi_x11_check_for_dri3(wsi_conn)) {
+          *pSupported = false;
+          return VK_SUCCESS;
+@@ -809,10 +853,13 @@
+                *mode = present_mode->presentMode;
+             }
+ 
+-            for (uint32_t i = 0; i < ARRAY_SIZE(present_modes); i++) {
+-               if (present_modes[i] != present_mode->presentMode) {
++            const VkPresentModeKHR *supported_modes;
++            const uint32_t supported_count =
++               x11_get_supported_present_modes(wsi_device, &supported_modes);
++            for (uint32_t i = 0; i < supported_count; i++) {
++               if (supported_modes[i] != present_mode->presentMode) {
+                   vk_outarray_append_typed(VkPresentModeKHR, &modes, mode) {
+-                     *mode = present_modes[i];
++                     *mode = supported_modes[i];
+                   }
+                }
+             }
+@@ -822,7 +869,9 @@
+                                        "without a VkSurfacePresentModeEXT set. This is an "
+                                        "application bug.\n");
+ 
+-            compat->presentModeCount = ARRAY_SIZE(present_modes);
++            const VkPresentModeKHR *supported_modes;
++            compat->presentModeCount =
++               x11_get_supported_present_modes(wsi_device, &supported_modes);
+          }
+          break;
+       }
+@@ -947,16 +996,27 @@
+                               uint32_t *pPresentModeCount,
+                               VkPresentModeKHR *pPresentModes)
+ {
++   if (wsi_device->cpu_present) {
++      struct wsi_x11_connection *wsi_conn =
++         wsi_x11_get_connection(wsi_device, x11_surface_get_connection(surface));
++      if (!wsi_conn)
++         return VK_ERROR_OUT_OF_HOST_MEMORY;
++      if (!wsi_conn->has_present)
++         return VK_ERROR_SURFACE_LOST_KHR;
++   }
++
++   const VkPresentModeKHR *modes;
++   const uint32_t count = x11_get_supported_present_modes(wsi_device, &modes);
++
+    if (pPresentModes == NULL) {
+-      *pPresentModeCount = ARRAY_SIZE(present_modes);
++      *pPresentModeCount = count;
+       return VK_SUCCESS;
+    }
+ 
+-   *pPresentModeCount = MIN2(*pPresentModeCount, ARRAY_SIZE(present_modes));
+-   typed_memcpy(pPresentModes, present_modes, *pPresentModeCount);
+-
+-   return *pPresentModeCount < ARRAY_SIZE(present_modes) ?
+-      VK_INCOMPLETE : VK_SUCCESS;
++   *pPresentModeCount = MIN2(*pPresentModeCount, count);
++   typed_memcpy(pPresentModes, modes, *pPresentModeCount);
++
++   return *pPresentModeCount < count ? VK_INCOMPLETE : VK_SUCCESS;
+ }
+ 
+ static VkResult
+@@ -1106,6 +1166,7 @@
+ 
+    xcb_present_event_t                          event_id;
+    xcb_special_event_t *                        special_event;
++   bool                                         present_selected;
+    uint64_t                                     send_sbc;
+    uint64_t                                     last_present_msc;
+    uint32_t                                     stamp;
+@@ -1371,13 +1432,62 @@
+ 
+    return VK_SUCCESS;
+ }
+-#ifdef HAVE_X11_DRM
++/* Checked requests distinguish an unusable X resource from a completed
++ * upload/present. No DRM or shared-memory fence is needed for X request order. */
++static VkResult
++x11_check_request(xcb_connection_t *conn, xcb_void_cookie_t cookie)
++{
++   xcb_generic_error_t *error = xcb_request_check(conn, cookie);
++   if (error) {
++      VkResult result = error->error_code == XCB_ALLOC
++                          ? VK_ERROR_OUT_OF_HOST_MEMORY
++                          : VK_ERROR_SURFACE_LOST_KHR;
++      free(error);
++      return result;
++   }
++   return xcb_connection_has_error(conn) ? VK_ERROR_SURFACE_LOST_KHR : VK_SUCCESS;
++}
++
++/* The GPU-to-CPU copy and fence wait happen in common WSI before this callback.
++ * Upload all rows to the image's private pixmap. Present, not PutImage, changes
++ * the window; the pixmap/image remains owned by X until its IDLE notification. */
++static VkResult
++x11_upload_cpu_image(struct x11_swapchain *chain, struct x11_image *image)
++{
++   const uint64_t stride_bytes = image->base.row_pitches[0];
++   const uint64_t max_bytes =
++      (uint64_t)xcb_get_maximum_request_length(chain->conn) * 4;
++   const uint64_t header_bytes = sizeof(xcb_put_image_request_t) + 4;
++   if (!stride_bytes || stride_bytes % 4 || stride_bytes / 4 > UINT16_MAX ||
++       chain->extent.height > INT16_MAX ||
++       max_bytes <= header_bytes || stride_bytes > max_bytes - header_bytes)
++      return VK_ERROR_OUT_OF_HOST_MEMORY;
++
++   const uint32_t stride = stride_bytes; /* Checked before narrowing. */
++   const uint64_t max_payload = MIN2(max_bytes - header_bytes,
++                                     (uint64_t)UINT32_MAX);
++   const uint32_t lines_per_request = MIN2(max_payload / stride,
++                                          UINT16_MAX);
++   for (uint32_t y = 0; y < chain->extent.height;) {
++      const uint32_t lines = MIN2(lines_per_request, chain->extent.height - y);
++      xcb_void_cookie_t cookie = xcb_put_image_checked(
++         chain->conn, XCB_IMAGE_FORMAT_Z_PIXMAP, image->pixmap, chain->gc,
++         stride / 4, lines, 0, y, 0, chain->depth, lines * stride,
++         (const uint8_t *)image->base.cpu_map + (uint64_t)y * stride);
++      VkResult result = x11_check_request(chain->conn, cookie);
++      if (result != VK_SUCCESS)
++         return result;
++      y += lines;
++   }
++   return VK_SUCCESS;
++}
++
+ /**
+- * Send image to X server via Present extension.
++ * Send an ordinary CPU-uploaded or DRI3 pixmap through the same Present queue.
+  */
+ static VkResult
+-x11_present_to_x11_dri3(struct x11_swapchain *chain, uint32_t image_index,
+-                        uint64_t target_msc, VkPresentModeKHR present_mode)
++x11_present_pixmap(struct x11_swapchain *chain, uint32_t image_index,
++                   uint64_t target_msc, VkPresentModeKHR present_mode)
+ {
+    struct x11_image *image = &chain->images[image_index];
+ 
+@@ -1406,7 +1516,15 @@
+    if (chain->has_dri3_modifiers)
+       options |= XCB_PRESENT_OPTION_SUBOPTIMAL;
+ 
+-   xshmfence_reset(image->shm_fence);
++   if (chain->base.wsi->cpu_present) {
++      VkResult result = x11_upload_cpu_image(chain, image);
++      if (result != VK_SUCCESS)
++         return result;
++   }
++#ifdef HAVE_X11_DRM
++   if (image->shm_fence)
++      xshmfence_reset(image->shm_fence);
++#endif
+ 
+    if (!chain->base.image_info.explicit_sync) {
+       ++chain->sent_image_count;
+@@ -1449,27 +1567,53 @@
+    } else
+ #endif
+    {
+-      cookie = xcb_present_pixmap(chain->conn,
+-                                  chain->window,
+-                                  image->pixmap,
+-                                  serial,
+-                                  0,                  /* valid */
+-                                  image->update_area, /* update */
+-                                  0,                  /* x_off */
+-                                  0,                  /* y_off */
+-                                  XCB_NONE,           /* target_crtc */
+-                                  XCB_NONE,
+-                                  image->sync_fence,
+-                                  options,
+-                                  target_msc,
+-                                  divisor,
+-                                  remainder, 0, NULL);
+-   }
+-   xcb_discard_reply(chain->conn, cookie.sequence);
++      if (chain->base.wsi->cpu_present) {
++         cookie = xcb_present_pixmap_checked(chain->conn,
++                                            chain->window,
++                                            image->pixmap,
++                                            serial,
++                                            0,                  /* valid */
++                                            image->update_area, /* update */
++                                            0,                  /* x_off */
++                                            0,                  /* y_off */
++                                            XCB_NONE,           /* target_crtc */
++                                            XCB_NONE,
++                                            image->sync_fence,
++                                            options,
++                                            target_msc,
++                                            divisor,
++                                            remainder, 0, NULL);
++      } else {
++         cookie = xcb_present_pixmap(chain->conn,
++                                    chain->window,
++                                    image->pixmap,
++                                    serial,
++                                    0,                  /* valid */
++                                    image->update_area, /* update */
++                                    0,                  /* x_off */
++                                    0,                  /* y_off */
++                                    XCB_NONE,           /* target_crtc */
++                                    XCB_NONE,
++                                    image->sync_fence,
++                                    options,
++                                    target_msc,
++                                    divisor,
++                                    remainder, 0, NULL);
++      }
++   }
++   if (chain->base.wsi->cpu_present) {
++      VkResult result = x11_check_request(chain->conn, cookie);
++      if (result != VK_SUCCESS) {
++         image->present_queued_count--;
++         chain->sent_image_count--;
++         return x11_swapchain_result(chain, result);
++      }
++   } else {
++      xcb_discard_reply(chain->conn, cookie.sequence);
++   }
+    xcb_flush(chain->conn);
+    return x11_swapchain_result(chain, VK_SUCCESS);
+ }
+-#endif
+ /**
+  * Send image to X server unaccelerated (software drivers).
+  */
+@@ -1692,14 +1836,11 @@
+    x11_capture_trace(chain);
+ 
+    VkResult result;
+-   if (chain->base.wsi->sw && !chain->has_mit_shm)
++   if (chain->base.wsi->sw && !chain->base.wsi->cpu_present &&
++       !chain->has_mit_shm)
+       result = x11_present_to_x11_sw(chain, image_index);
+    else
+-#ifdef HAVE_X11_DRM
+-      result = x11_present_to_x11_dri3(chain, image_index, target_msc, present_mode);
+-#else
+-      unreachable("X11 missing DRI3 support!");
+-#endif
++      result = x11_present_pixmap(chain, image_index, target_msc, present_mode);
+ 
+    if (result < 0)
+       x11_swapchain_notify_error(chain, result);
+@@ -2074,6 +2215,26 @@
+       return result;
+ 
+    image->update_region = None;
++   if (chain->base.wsi->cpu_present) {
++      /* Ordinary server pixmaps need neither DRI3 import, MIT-SHM nor a fence
++       * imported from an fd. X processes PutImage before PresentPixmap. */
++      image->sync_fence = XCB_NONE;
++      image->pixmap = xcb_generate_id(chain->conn);
++      if (image->pixmap == XCB_NONE || image->pixmap == UINT32_MAX) {
++         image->pixmap = XCB_NONE;
++         wsi_destroy_image(&chain->base, &image->base);
++         return VK_ERROR_OUT_OF_HOST_MEMORY;
++      }
++      xcb_void_cookie_t cookie = xcb_create_pixmap_checked(
++         chain->conn, chain->depth, image->pixmap, chain->window,
++         pCreateInfo->imageExtent.width, pCreateInfo->imageExtent.height);
++      result = x11_check_request(chain->conn, cookie);
++      if (result != VK_SUCCESS) {
++         image->pixmap = XCB_NONE; /* The failed create owns no server resource. */
++         wsi_destroy_image(&chain->base, &image->base);
++      }
++      return result;
++   }
+    if (chain->base.wsi->sw && !chain->has_mit_shm)
+       return VK_SUCCESS;
+ 
+@@ -2085,7 +2246,7 @@
+    image->update_region = xcb_generate_id(chain->conn);
+    xcb_xfixes_create_region(chain->conn, image->update_region, 0, NULL);
+ 
+-   if (chain->base.wsi->sw) {
++   if (wsi_device_uses_cpu_images(chain->base.wsi)) {
+       image->shmseg = xcb_generate_id(chain->conn);
+ 
+       xcb_shm_attach(chain->conn,
+@@ -2227,7 +2388,12 @@
+                  struct x11_image *image)
+ {
+    xcb_void_cookie_t cookie;
+-   if (!chain->base.wsi->sw || chain->has_mit_shm) {
++   if (chain->base.wsi->cpu_present) {
++      if (image->pixmap != XCB_NONE) {
++         cookie = xcb_free_pixmap(chain->conn, image->pixmap);
++         xcb_discard_reply(chain->conn, cookie.sequence);
++      }
++   } else if (!wsi_device_uses_cpu_images(chain->base.wsi) || chain->has_mit_shm) {
+ #ifdef HAVE_X11_DRM
+       cookie = xcb_sync_destroy_fence(chain->conn, image->sync_fence);
+       xcb_discard_reply(chain->conn, cookie.sequence);
+@@ -2353,7 +2519,7 @@
+ {
+    const struct wsi_device *wsi_device = chain->base.wsi;
+ 
+-   if (wsi_device->sw || !wsi_device->supports_modifiers)
++   if (wsi_device_uses_cpu_images(wsi_device) || !wsi_device->supports_modifiers)
+       return false;
+ 
+    struct wsi_drm_image_params drm_image_params;
+@@ -2400,6 +2566,27 @@
+    return memcmp(hash, chain->dri3_modifier_hash, sizeof(hash)) != 0;
+ }
+ #endif
++static void
++x11_finish_present_resources(struct x11_swapchain *chain)
++{
++   if (chain->gc != XCB_NONE) {
++      xcb_void_cookie_t cookie = xcb_free_gc(chain->conn, chain->gc);
++      xcb_discard_reply(chain->conn, cookie.sequence);
++      chain->gc = XCB_NONE;
++   }
++   if (chain->special_event) {
++      xcb_unregister_for_special_event(chain->conn, chain->special_event);
++      chain->special_event = NULL;
++   }
++   if (chain->present_selected) {
++      xcb_void_cookie_t cookie = xcb_present_select_input_checked(
++         chain->conn, chain->event_id, chain->window,
++         XCB_PRESENT_EVENT_MASK_NO_EVENT);
++      xcb_discard_reply(chain->conn, cookie.sequence);
++      chain->present_selected = false;
++   }
++}
++
+ static VkResult
+ x11_swapchain_destroy(struct wsi_swapchain *anv_chain,
+                       const VkAllocationCallbacks *pAllocator)
+@@ -2422,14 +2609,7 @@
+ 
+    for (uint32_t i = 0; i < chain->base.image_count; i++)
+       x11_image_finish(chain, pAllocator, &chain->images[i]);
+-#ifdef HAVE_X11_DRM
+-   xcb_void_cookie_t cookie;
+-   xcb_unregister_for_special_event(chain->conn, chain->special_event);
+-   cookie = xcb_present_select_input_checked(chain->conn, chain->event_id,
+-                                             chain->window,
+-                                             XCB_PRESENT_EVENT_MASK_NO_EVENT);
+-   xcb_discard_reply(chain->conn, cookie.sequence);
+-#endif
++   x11_finish_present_resources(chain);
+    mtx_destroy(&chain->present_progress_mutex);
+    u_cnd_monotonic_destroy(&chain->present_progress_cond);
+    mtx_destroy(&chain->thread_state_lock);
+@@ -2549,6 +2729,16 @@
+    if (!wsi_conn)
+       return VK_ERROR_OUT_OF_HOST_MEMORY;
+ 
++   if (wsi_device->cpu_present && !wsi_conn->has_present)
++      return VK_ERROR_SURFACE_LOST_KHR;
++
++   /* The CPU-image path implements only the advertised subset (FIFO and
++    * IMMEDIATE). Reject anything else explicitly instead of pretending to
++    * support MAILBOX/FIFO_RELAXED with different semantics.
++    */
++   if (!x11_present_mode_supported(wsi_device, present_mode))
++      return VK_ERROR_INITIALIZATION_FAILED;
++
+    /* Get number of images in our swapchain. This count depends on:
+     * - requested minimal image count
+     * - device characteristics
+@@ -2617,7 +2807,6 @@
+    }
+ 
+    uint32_t present_caps = 0;
+-#ifdef HAVE_X11_DRM
+    xcb_present_query_capabilities_cookie_t present_query_cookie;
+    xcb_present_query_capabilities_reply_t *present_query_reply;
+    present_query_cookie = xcb_present_query_capabilities(conn, window);
+@@ -2626,7 +2815,6 @@
+       present_caps = present_query_reply->capabilities;
+       free(present_query_reply);
+    }
+-#endif
+ 
+ #ifdef HAVE_X11_DRM
+    struct wsi_drm_image_params drm_image_params;
+@@ -2635,10 +2823,11 @@
+    struct wsi_base_image_params *image_params = NULL;
+    struct wsi_cpu_image_params cpu_image_params;
+    uint64_t *modifiers[2] = {NULL, NULL};
+-   if (wsi_device->sw) {
++   if (wsi_device_uses_cpu_images(wsi_device)) {
+       cpu_image_params = (struct wsi_cpu_image_params) {
+          .base.image_type = WSI_IMAGE_TYPE_CPU,
+-         .alloc_shm = wsi_conn->has_mit_shm ? &alloc_shm : NULL,
++         .alloc_shm = !wsi_device->cpu_present && wsi_conn->has_mit_shm
++                          ? &alloc_shm : NULL,
+       };
+       image_params = &cpu_image_params.base;
+    } else {
+@@ -2697,8 +2886,8 @@
+    chain->sent_image_count = 0;
+    chain->last_present_msc = 0;
+    chain->status = VK_SUCCESS;
+-   chain->has_dri3_modifiers = wsi_conn->has_dri3_modifiers;
+-   chain->has_mit_shm = wsi_conn->has_mit_shm;
++   chain->has_dri3_modifiers = !wsi_device->cpu_present && wsi_conn->has_dri3_modifiers;
++   chain->has_mit_shm = !wsi_device->cpu_present && wsi_conn->has_mit_shm;
+    chain->has_async_may_tear = present_caps & XCB_PRESENT_CAPABILITY_ASYNC_MAY_TEAR;
+ 
+    /* When images in the swapchain don't fit the window, X can still present them, but it won't
+@@ -2728,42 +2917,50 @@
+     * 'PresentOptionSuboptimal' complete mode.
+     */
+    chain->copy_is_suboptimal = false;
+-#ifdef HAVE_X11_DRM
+-   /* For our swapchain we need to listen to following Present extension events:
+-    * - Configure: Window dimensions changed. Images in the swapchain might need
+-    *              to be reallocated.
+-    * - Complete: An image from our swapchain was presented on the output.
+-    * - Idle: An image from our swapchain is not anymore accessed by the X
+-    *         server and can be reused.
+-    */
+-   chain->event_id = xcb_generate_id(chain->conn);
+-   uint32_t event_mask = XCB_PRESENT_EVENT_MASK_CONFIGURE_NOTIFY |
+-                         XCB_PRESENT_EVENT_MASK_COMPLETE_NOTIFY;
+-   if (!chain->base.image_info.explicit_sync)
+-      event_mask |= XCB_PRESENT_EVENT_MASK_IDLE_NOTIFY;
+-   xcb_present_select_input(chain->conn, chain->event_id, chain->window, event_mask);
+-
+-   /* Create an XCB event queue to hold present events outside of the usual
+-    * application event queue
+-    */
+-   chain->special_event =
+-      xcb_register_for_special_xge(chain->conn, &xcb_present_id,
+-                                   chain->event_id, NULL);
+-#endif
++   /* Present events are also used by ordinary CPU-uploaded pixmaps. The
++    * legacy software PutImage path can still operate without Present. */
++   if (wsi_conn->has_present) {
++      chain->event_id = xcb_generate_id(chain->conn);
++      if (chain->event_id == XCB_NONE || chain->event_id == UINT32_MAX) {
++         result = VK_ERROR_OUT_OF_HOST_MEMORY;
++         goto fail_register;
++      }
++      uint32_t event_mask = XCB_PRESENT_EVENT_MASK_CONFIGURE_NOTIFY |
++                            XCB_PRESENT_EVENT_MASK_COMPLETE_NOTIFY;
++      if (!chain->base.image_info.explicit_sync)
++         event_mask |= XCB_PRESENT_EVENT_MASK_IDLE_NOTIFY;
++      cookie = xcb_present_select_input_checked(chain->conn, chain->event_id,
++                                                 chain->window, event_mask);
++      result = x11_check_request(chain->conn, cookie);
++      if (result != VK_SUCCESS)
++         goto fail_register;
++      chain->present_selected = true;
++
++      chain->special_event = xcb_register_for_special_xge(
++         chain->conn, &xcb_present_id, chain->event_id, NULL);
++      if (!chain->special_event) {
++         result = VK_ERROR_OUT_OF_HOST_MEMORY;
++         goto fail_register;
++      }
++   }
+    /* Create the graphics context. */
+    chain->gc = xcb_generate_id(chain->conn);
+-   if (!chain->gc) {
+-      /* FINISHME: Choose a better error. */
++   if (chain->gc == XCB_NONE || chain->gc == UINT32_MAX) {
++      chain->gc = XCB_NONE;
+       result = VK_ERROR_OUT_OF_HOST_MEMORY;
+       goto fail_register;
+    }
+ 
+-   cookie = xcb_create_gc(chain->conn,
++   cookie = xcb_create_gc_checked(chain->conn,
+                           chain->gc,
+                           chain->window,
+                           XCB_GC_GRAPHICS_EXPOSURES,
+                           (uint32_t []) { 0 });
+-   xcb_discard_reply(chain->conn, cookie.sequence);
++   result = x11_check_request(chain->conn, cookie);
++   if (result != VK_SUCCESS) {
++      chain->gc = XCB_NONE; /* The failed create owns no server resource. */
++      goto fail_register;
++   }
+ 
+    uint32_t image = 0;
+    for (; image < chain->base.image_count; image++) {
+@@ -2779,6 +2976,7 @@
+     */
+    ret = wsi_queue_init(&chain->present_queue, chain->base.image_count + 1);
+    if (ret) {
++      result = VK_ERROR_OUT_OF_HOST_MEMORY;
+       goto fail_init_images;
+    }
+ 
+@@ -2786,6 +2984,7 @@
+    if (!chain->base.image_info.explicit_sync) {
+       ret = wsi_queue_init(&chain->acquire_queue, chain->base.image_count + 1);
+       if (ret) {
++         result = VK_ERROR_OUT_OF_HOST_MEMORY;
+          wsi_queue_destroy(&chain->present_queue);
+          goto fail_init_images;
+       }
+@@ -2796,13 +2995,17 @@
+ 
+    ret = thrd_create(&chain->queue_manager,
+                      x11_manage_present_queue, chain);
+-   if (ret != thrd_success)
++   if (ret != thrd_success) {
++      result = VK_ERROR_OUT_OF_HOST_MEMORY;
+       goto fail_init_fifo_queue;
++   }
+ 
+    ret = thrd_create(&chain->event_manager,
+                      x11_manage_event_queue, chain);
+-   if (ret != thrd_success)
++   if (ret != thrd_success) {
++      result = VK_ERROR_OUT_OF_HOST_MEMORY;
+       goto fail_init_event_queue;
++   }
+ 
+    /* It is safe to set it here as only one swapchain can be associated with
+     * the window, and swapchain creation does the association. At this point
+@@ -2815,6 +3018,12 @@
+    return VK_SUCCESS;
+ 
+ fail_init_event_queue:
++   /* Publish failure before the wake token: the queue thread must never use
++    * UINT32_MAX as an image index when event-thread creation fails. */
++   mtx_lock(&chain->thread_state_lock);
++   chain->status = result;
++   u_cnd_monotonic_broadcast(&chain->thread_state_cond);
++   mtx_unlock(&chain->thread_state_lock);
+    /* Push a UINT32_MAX to wake up the manager */
+    wsi_queue_push(&chain->present_queue, UINT32_MAX);
+    thrd_join(chain->queue_manager, NULL);
+@@ -2829,12 +3038,14 @@
+       x11_image_finish(chain, pAllocator, &chain->images[j]);
+ 
+ fail_register:
+-#ifdef HAVE_X11_DRM
+-   xcb_unregister_for_special_event(chain->conn, chain->special_event);
+-#endif
++   x11_finish_present_resources(chain);
+    wsi_swapchain_finish(&chain->base);
+ 
+ fail_alloc:
++   mtx_destroy(&chain->present_progress_mutex);
++   u_cnd_monotonic_destroy(&chain->present_progress_cond);
++   mtx_destroy(&chain->thread_state_lock);
++   u_cnd_monotonic_destroy(&chain->thread_state_cond);
+    vk_free(pAllocator, chain);
+ 
+    return result;

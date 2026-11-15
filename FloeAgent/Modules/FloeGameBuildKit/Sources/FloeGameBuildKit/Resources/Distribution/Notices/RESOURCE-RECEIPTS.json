@@ -1,0 +1,627 @@
+{
+  "schemaVersion": 1,
+  "records": [
+    {
+      "resource": "Distribution/Notices/floe/MPL-2.0.txt",
+      "sha256": "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04",
+      "bytes": 16726,
+      "source": "FloeAgent/Modules/FloeGameBuildKit/LICENSE",
+      "sourceSHA256": "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04"
+    },
+    {
+      "resource": "Distribution/Notices/floe/FLOE-STARTER-MIT.txt",
+      "sha256": "529e21a0ea95ef45d2f5f47a0f06f093026c9d94fa377df2626dee8a6872b641",
+      "bytes": 1080,
+      "sourceSHA256": "529e21a0ea95ef45d2f5f47a0f06f093026c9d94fa377df2626dee8a6872b641"
+    },
+    {
+      "resource": "Distribution/Notices/narrative/ink/LICENSE.inkjs.txt",
+      "sha256": "040e957a77e3e19432e265cb549d5c3b4ca6f3551e24d22b81785ffd1bc2b67b",
+      "bytes": 1121,
+      "sourceSHA256": "040e957a77e3e19432e265cb549d5c3b4ca6f3551e24d22b81785ffd1bc2b67b"
+    },
+    {
+      "resource": "Distribution/Notices/narrative/twine/sugarcube/LICENSE.sugarcube.txt",
+      "sha256": "bb227ad97f6422347e1e64ad9211d40215e92edf47940c1382973c2a27eb8b27",
+      "bytes": 1341,
+      "sourceSHA256": "bb227ad97f6422347e1e64ad9211d40215e92edf47940c1382973c2a27eb8b27"
+    },
+    {
+      "resource": "Distribution/Notices/narrative/twine/sugarcube/THIRD-PARTY-NOTICES.txt",
+      "sha256": "ccfc10de3c1ea3c1fa7c49473b1ef79d51f251febde5e763b86f5a4be9e81a1c",
+      "bytes": 13282,
+      "sourceSHA256": "ccfc10de3c1ea3c1fa7c49473b1ef79d51f251febde5e763b86f5a4be9e81a1c"
+    },
+    {
+      "resource": "Distribution/Notices/narrative/twine/sugarcube/licenses/FileSaver-MIT.txt",
+      "sha256": "2d1d7a93b46e4274355ac2904428707c4ee47ee8c6029fa394ebf405648d3f63",
+      "bytes": 1101,
+      "sourceSHA256": "2d1d7a93b46e4274355ac2904428707c4ee47ee8c6029fa394ebf405648d3f63"
+    },
+    {
+      "resource": "Distribution/Notices/narrative/twine/sugarcube/licenses/classList-Unlicense.txt",
+      "sha256": "ca2abdf695884c77ea4b4a5b64ca7b732d9d9dbade4eebc1c2e76c53e9e3bc83",
+      "bytes": 1210,
+      "sourceSHA256": "ca2abdf695884c77ea4b4a5b64ca7b732d9d9dbade4eebc1c2e76c53e9e3bc83"
+    },
+    {
+      "resource": "Distribution/Notices/narrative/twine/sugarcube/licenses/es5-shim-4.5.14-LICENSE.txt",
+      "sha256": "68f7e459f79180b490520f06eddb1715650d5f1af5583ff3f8447e795b2a6a2f",
+      "bytes": 1114,
+      "sourceSHA256": "68f7e459f79180b490520f06eddb1715650d5f1af5583ff3f8447e795b2a6a2f"
+    },
+    {
+      "resource": "Distribution/Notices/narrative/twine/sugarcube/licenses/es6-shim-0.35.4-LICENSE.txt",
+      "sha256": "ac03daa0b0495dcff2c6c6541a2b5808c32ea14ddf8804709dcfdb3f7a46543e",
+      "bytes": 1381,
+      "sourceSHA256": "ac03daa0b0495dcff2c6c6541a2b5808c32ea14ddf8804709dcfdb3f7a46543e"
+    },
+    {
+      "resource": "Distribution/Notices/narrative/twine/sugarcube/licenses/ev-emitter-1.1.0-MIT.txt",
+      "sha256": "67d7aeb3eec70dfb944c9de5bacd4b14997ff584a500544475b943779332c2c3",
+      "bytes": 1084,
+      "sourceSHA256": "67d7aeb3eec70dfb944c9de5bacd4b14997ff584a500544475b943779332c2c3"
+    },
+    {
+      "resource": "Distribution/Notices/narrative/twine/sugarcube/licenses/imagesLoaded-4.1.4-MIT.txt",
+      "sha256": "19f5e29a01e16cfd404b3bf8ca2c2f338c5abb7b215efc9ddd898a6d1e74e71d",
+      "bytes": 1087,
+      "sourceSHA256": "19f5e29a01e16cfd404b3bf8ca2c2f338c5abb7b215efc9ddd898a6d1e74e71d"
+    },
+    {
+      "resource": "Distribution/Notices/narrative/twine/sugarcube/licenses/jquery-3.7.1-LICENSE.txt",
+      "sha256": "d4db9ebe6f29f5168eac45ad713f055623ac5d0dcd5ba92da23d650ae012020d",
+      "bytes": 1097,
+      "sourceSHA256": "d4db9ebe6f29f5168eac45ad713f055623ac5d0dcd5ba92da23d650ae012020d"
+    },
+    {
+      "resource": "Distribution/Notices/narrative/twine/sugarcube/licenses/jquery-throttle-debounce-1.1-LICENSE.txt",
+      "sha256": "1c53a0aa7fd459dab0d144cdc89a13686597ddbcf106fb9dee81435d3d8631be",
+      "bytes": 1062,
+      "sourceSHA256": "1c53a0aa7fd459dab0d144cdc89a13686597ddbcf106fb9dee81435d3d8631be"
+    },
+    {
+      "resource": "Distribution/Notices/narrative/twine/sugarcube/licenses/lz-string-1.5.0-LICENSE.txt",
+      "sha256": "433fc9dfe659dbfb1e91eed8351f13651e97bfa3ac6d03394c3d63f61d4bbc80",
+      "bytes": 1064,
+      "sourceSHA256": "433fc9dfe659dbfb1e91eed8351f13651e97bfa3ac6d03394c3d63f61d4bbc80"
+    },
+    {
+      "resource": "Distribution/Notices/narrative/twine/sugarcube/licenses/normalize.css-3.0.3-LICENSE.txt",
+      "sha256": "8781bc9996713938f6baea8a10c8426f9ae06778e562fafe5353669ae6c05f07",
+      "bytes": 1074,
+      "sourceSHA256": "8781bc9996713938f6baea8a10c8426f9ae06778e562fafe5353669ae6c05f07"
+    },
+    {
+      "resource": "Distribution/Notices/narrative/twine/sugarcube/licenses/seedrandom-3.0.5-MIT.txt",
+      "sha256": "d83e5c9638599ddc8a5e685332d08630db89bfc96ab0967f890295897151757b",
+      "bytes": 1072,
+      "sourceSHA256": "d83e5c9638599ddc8a5e685332d08630db89bfc96ab0967f890295897151757b"
+    },
+    {
+      "resource": "Distribution/Notices/narrative/twine/sugarcube/sugarcube-format.js",
+      "sha256": "64ccdac806a162d250273aba3c39aee85765fedab4cf70e6176154a8c34b8820",
+      "bytes": 622805,
+      "sourceSHA256": "64ccdac806a162d250273aba3c39aee85765fedab4cf70e6176154a8c34b8820"
+    },
+    {
+      "resource": "Distribution/Notices/narrative/wasm4/LICENSE.wasm4.txt",
+      "sha256": "57dece2bb0324db24532eba37aa2f9103e2f7f96bfbfea535358bf66ba5a1f1b",
+      "bytes": 725,
+      "sourceSHA256": "57dece2bb0324db24532eba37aa2f9103e2f7f96bfbfea535358bf66ba5a1f1b"
+    },
+    {
+      "resource": "Distribution/Notices/narrative/wasm4/LIT-3.1.2-BSD-3-Clause.txt",
+      "sha256": "45d31799d0db956cc3eb5469346abbd9b7025babc5ff29fab10d7095da992ef1",
+      "bytes": 1517,
+      "sourceSHA256": "45d31799d0db956cc3eb5469346abbd9b7025babc5ff29fab10d7095da992ef1"
+    },
+    {
+      "resource": "Distribution/Notices/narrative/wasm4/PRESS-START-2P-OFL-1.1.txt",
+      "sha256": "1ce424c20a36bc74b3001ed50f34c0e2d91a6d8ba941f2dacc7587d6c36a1ae7",
+      "bytes": 4407,
+      "sourceSHA256": "1ce424c20a36bc74b3001ed50f34c0e2d91a6d8ba941f2dacc7587d6c36a1ae7"
+    },
+    {
+      "resource": "Distribution/Notices/narrative/wasm4/THIRD-PARTY-NOTICES.txt",
+      "sha256": "0dc82dd67d5a6e704ad06d9c3b9dc8e15a3f84e5739992f054740b8b40ba86b5",
+      "bytes": 6570,
+      "sourceSHA256": "0dc82dd67d5a6e704ad06d9c3b9dc8e15a3f84e5739992f054740b8b40ba86b5"
+    },
+    {
+      "resource": "Distribution/Notices/narrative/wasm4/wasm4.css",
+      "sha256": "98b8f8fccb57578e57361a03df2522eab6457363508a76f3b5cef1520e332aac",
+      "bytes": 2703,
+      "sourceSHA256": "98b8f8fccb57578e57361a03df2522eab6457363508a76f3b5cef1520e332aac"
+    },
+    {
+      "resource": "Distribution/Notices/narrative/wasm4/wasm4.js",
+      "sha256": "266557b8523c0d6af73e506e326fbc7fcdf4a45c23420afb553f9ce8f4156c8b",
+      "bytes": 74819,
+      "sourceSHA256": "266557b8523c0d6af73e506e326fbc7fcdf4a45c23420afb553f9ce8f4156c8b"
+    },
+    {
+      "resource": "Distribution/Notices/narrative/tic80/LICENSE.tic80.txt",
+      "sha256": "f78d627327e763b070de95b2da58c5f040343a5290961d7fc88c578ae4c59f33",
+      "bytes": 1070,
+      "sourceSHA256": "f78d627327e763b070de95b2da58c5f040343a5290961d7fc88c578ae4c59f33"
+    },
+    {
+      "resource": "Distribution/Notices/narrative/tic80/LICENSES/0BSD.txt",
+      "sha256": "e3f18c71e10d673590eb9856c1d79dd3b4b0d65404efb5e8584dbede7edd608b",
+      "bytes": 643,
+      "sourceSHA256": "e3f18c71e10d673590eb9856c1d79dd3b4b0d65404efb5e8584dbede7edd608b"
+    },
+    {
+      "resource": "Distribution/Notices/narrative/tic80/LICENSES/BSD-3-Clause.txt",
+      "sha256": "5a93d5831e1297ab10fe643e1a631e83be392896da14ee2951285a79012df69d",
+      "bytes": 1460,
+      "sourceSHA256": "5a93d5831e1297ab10fe643e1a631e83be392896da14ee2951285a79012df69d"
+    },
+    {
+      "resource": "Distribution/Notices/narrative/tic80/LICENSES/GPL-3.0-or-later.txt",
+      "sha256": "fb981668c18a279e285fc4d83fba1e836cc84dd4daa73c9697d3cfd2d8aca6e0",
+      "bytes": 34674,
+      "sourceSHA256": "fb981668c18a279e285fc4d83fba1e836cc84dd4daa73c9697d3cfd2d8aca6e0"
+    },
+    {
+      "resource": "Distribution/Notices/narrative/tic80/LICENSES/Gravity-MIT.txt",
+      "sha256": "640152b59af917876ef4728ddb7f8824e42b6fbab8ee6fd5ba59cfd8c1e21e74",
+      "bytes": 1070,
+      "sourceSHA256": "640152b59af917876ef4728ddb7f8824e42b6fbab8ee6fd5ba59cfd8c1e21e74"
+    },
+    {
+      "resource": "Distribution/Notices/narrative/tic80/LICENSES/LGPL-2.1-or-later-blip_buf.txt",
+      "sha256": "319daefe38ebeead3df178e5937898a52d67c0c795f54f1c0bb10ac3b9cffb63",
+      "bytes": 26940,
+      "sourceSHA256": "319daefe38ebeead3df178e5937898a52d67c0c795f54f1c0bb10ac3b9cffb63"
+    },
+    {
+      "resource": "Distribution/Notices/narrative/tic80/LICENSES/LGPL-2.1-or-later.txt",
+      "sha256": "5749785c8bdefafcb5d798270ed0a967036fe2ca63dcedade1627565dfef81d2",
+      "bytes": 26001,
+      "sourceSHA256": "5749785c8bdefafcb5d798270ed0a967036fe2ca63dcedade1627565dfef81d2"
+    },
+    {
+      "resource": "Distribution/Notices/narrative/tic80/LICENSES/LicenseRef-Public-Domain.txt",
+      "sha256": "407aad5685ffaa4f6fd27b89cde6606629bf081da5bc156841ed22dae998544a",
+      "bytes": 922,
+      "sourceSHA256": "407aad5685ffaa4f6fd27b89cde6606629bf081da5bc156841ed22dae998544a"
+    },
+    {
+      "resource": "Distribution/Notices/narrative/tic80/LICENSES/MIT.txt",
+      "sha256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5",
+      "bytes": 1078,
+      "sourceSHA256": "b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5"
+    },
+    {
+      "resource": "Distribution/Notices/narrative/tic80/LICENSES/MiniScript2-MIT.txt",
+      "sha256": "9ead32bdfceaaf8a62992d936e529bee491f1fab1dc28bf9a35383acb2843e70",
+      "bytes": 1066,
+      "sourceSHA256": "9ead32bdfceaaf8a62992d936e529bee491f1fab1dc28bf9a35383acb2843e70"
+    },
+    {
+      "resource": "Distribution/Notices/narrative/tic80/LICENSES/Unlicense.txt",
+      "sha256": "0bdebfeda07d45dada625ae1317c6f833186e798b171d0db640bcf32e92a8240",
+      "bytes": 1211,
+      "sourceSHA256": "0bdebfeda07d45dada625ae1317c6f833186e798b171d0db640bcf32e92a8240"
+    },
+    {
+      "resource": "Distribution/Notices/narrative/tic80/LICENSES/Zlib.txt",
+      "sha256": "bfb1112d49db5b1daecdfef24bd7e2f3ea0bafb33aa67aa0ab51e2bf8407c03d",
+      "bytes": 838,
+      "sourceSHA256": "bfb1112d49db5b1daecdfef24bd7e2f3ea0bafb33aa67aa0ab51e2bf8407c03d"
+    },
+    {
+      "resource": "Distribution/Notices/narrative/tic80/LICENSES/libpng-2.0.txt",
+      "sha256": "f207d0f7375b977f76ce2437962c1c12a646f15cda3df48d5472ac95eb68e8ff",
+      "bytes": 1551,
+      "sourceSHA256": "f207d0f7375b977f76ce2437962c1c12a646f15cda3df48d5472ac95eb68e8ff"
+    },
+    {
+      "resource": "Distribution/Notices/narrative/tic80/LICENSES/miniaudio-MIT-0-or-Unlicense.txt",
+      "sha256": "bd3d6cac4cc7cedde4d51c00a8e157ecdc675b6b98d201945c66fc62728e7e9d",
+      "bytes": 2679,
+      "sourceSHA256": "bd3d6cac4cc7cedde4d51c00a8e157ecdc675b6b98d201945c66fc62728e7e9d"
+    },
+    {
+      "resource": "Distribution/Notices/narrative/tic80/THIRD-PARTY-NOTICES.md",
+      "sha256": "ce637ceabf8794820a9a328189cea9cb3310e4179c490b2bb8babd7628edf567",
+      "bytes": 7384,
+      "sourceSHA256": "ce637ceabf8794820a9a328189cea9cb3310e4179c490b2bb8babd7628edf567"
+    },
+    {
+      "resource": "Distribution/Notices/narrative/tic80/source/SOURCE-OFFER.md",
+      "sha256": "066b181f1cca08ec5b85adaf064438fc281bbe58e0f8934c6d0e4f395f461d78",
+      "bytes": 3225,
+      "sourceSHA256": "066b181f1cca08ec5b85adaf064438fc281bbe58e0f8934c6d0e4f395f461d78"
+    },
+    {
+      "resource": "Distribution/Notices/narrative/tic80/source/TIC80-SUBMODULE-PINS.json",
+      "sha256": "65ba3e857571f0f1738300bb1c04e06120bdd8d769070f9c36d046ae90e4edab",
+      "bytes": 2983,
+      "sourceSHA256": "65ba3e857571f0f1738300bb1c04e06120bdd8d769070f9c36d046ae90e4edab"
+    },
+    {
+      "resource": "Distribution/Notices/narrative/tic80/source/TIC-80-b3dbd59-source.tar.gz.sha256",
+      "sha256": "bb5e75b26e902b8661599b596b99ac01f7531b3c3b37ea8b1857569b254e3267",
+      "bytes": 95,
+      "sourceSHA256": "bb5e75b26e902b8661599b596b99ac01f7531b3c3b37ea8b1857569b254e3267"
+    },
+    {
+      "resource": "Distribution/Notices/narrative/tic80/source/blip-buf-330226d-source.tar.gz.sha256",
+      "sha256": "3465e4e865ba05ce08b3f421c48c8b88aba5d01bf4b07ae6a91a29abaa4d860e",
+      "bytes": 97,
+      "sourceSHA256": "3465e4e865ba05ce08b3f421c48c8b88aba5d01bf4b07ae6a91a29abaa4d860e"
+    },
+    {
+      "resource": "Distribution/Notices/narrative/microstudio/LICENSE.microstudio.txt",
+      "sha256": "0089ad4274aa599e2809e721a580e8f652a6a0397875f82fe12a2877db12d602",
+      "bytes": 1074,
+      "sourceSHA256": "0089ad4274aa599e2809e721a580e8f652a6a0397875f82fe12a2877db12d602"
+    },
+    {
+      "resource": "Distribution/Notices/portable/love/EMSCRIPTEN-2.0.0-LICENSE.txt",
+      "sha256": "620a78084fc7ca97c0b5dea9abf891f3ffcadfdbf305276f099c9c4e12fc1d86",
+      "bytes": 5093,
+      "sourceSHA256": "620a78084fc7ca97c0b5dea9abf891f3ffcadfdbf305276f099c9c4e12fc1d86"
+    },
+    {
+      "resource": "Distribution/Notices/portable/love/ENET-MIT.txt",
+      "sha256": "678ecf38808fd8cdfe0d07ae2edde62d99f00c96b59357e3334042d28cedd4e5",
+      "bytes": 1060,
+      "sourceSHA256": "678ecf38808fd8cdfe0d07ae2edde62d99f00c96b59357e3334042d28cedd4e5"
+    },
+    {
+      "resource": "Distribution/Notices/portable/love/FREETYPE-2.8.1-FTL.txt",
+      "sha256": "4a9a548027a2c1d37788519dea833294c9c81f1ebc280e817f41f50d0c642d78",
+      "bytes": 6742,
+      "sourceSHA256": "4a9a548027a2c1d37788519dea833294c9c81f1ebc280e817f41f50d0c642d78"
+    },
+    {
+      "resource": "Distribution/Notices/portable/love/LIBMODPLUG-0.8.8.4-COPYING.txt",
+      "sha256": "49942e7b3b175f549e751feb08b5270ca6f6c5fb7a1be9f9517db275ec32c92e",
+      "bytes": 57,
+      "sourceSHA256": "49942e7b3b175f549e751feb08b5270ca6f6c5fb7a1be9f9517db275ec32c92e"
+    },
+    {
+      "resource": "Distribution/Notices/portable/love/LIBOGG-1.3.2-COPYING.txt",
+      "sha256": "d2ab5758336489da61c12cc5bb757da5339c4ae9001f9bb0562b4370249af814",
+      "bytes": 1466,
+      "sourceSHA256": "d2ab5758336489da61c12cc5bb757da5339c4ae9001f9bb0562b4370249af814"
+    },
+    {
+      "resource": "Distribution/Notices/portable/love/LIBTHEORA-1.1.1-COPYING.txt",
+      "sha256": "8417fad7da775735564e209484a2e011e0fa201e94f01fdbee6e4977e478e6fc",
+      "bytes": 1470,
+      "sourceSHA256": "8417fad7da775735564e209484a2e011e0fa201e94f01fdbee6e4977e478e6fc"
+    },
+    {
+      "resource": "Distribution/Notices/portable/love/LIBVORBIS-1.3.5-COPYING.txt",
+      "sha256": "5c0905d21494102e4d579a3c42216f8de1c2ac738443db4f189f93a01ca31a93",
+      "bytes": 1470,
+      "sourceSHA256": "5c0905d21494102e4d579a3c42216f8de1c2ac738443db4f189f93a01ca31a93"
+    },
+    {
+      "resource": "Distribution/Notices/portable/love/LOVE-11.4-COMPONENT-ADDENDUM.md",
+      "sha256": "2602226576f929b4681ec34532ba6939d222590e2a04f81776e6dacee2089161",
+      "bytes": 9330,
+      "sourceSHA256": "2602226576f929b4681ec34532ba6939d222590e2a04f81776e6dacee2089161"
+    },
+    {
+      "resource": "Distribution/Notices/portable/love/LOVE-11.4-LICENSE.txt",
+      "sha256": "4605993b18eb43800ca12ac7fe904c040f9ab39c5e5616dd02eb1ed4ed47deac",
+      "bytes": 67058,
+      "sourceSHA256": "4605993b18eb43800ca12ac7fe904c040f9ab39c5e5616dd02eb1ed4ed47deac"
+    },
+    {
+      "resource": "Distribution/Notices/portable/love/LUA-5.1.5-COPYRIGHT.txt",
+      "sha256": "ee5e3e82af1e1b543c4f216e399d7c8cfee797711913f349e385101c4ae60a79",
+      "bytes": 1528,
+      "sourceSHA256": "ee5e3e82af1e1b543c4f216e399d7c8cfee797711913f349e385101c4ae60a79"
+    },
+    {
+      "resource": "Distribution/Notices/portable/love/LUAJIT-2.1.0-COPYRIGHT.txt",
+      "sha256": "43fc251179d900f9948e51dd3cc93733d1219f2db060faaa0c8100ad054f54d8",
+      "bytes": 2935,
+      "sourceSHA256": "43fc251179d900f9948e51dd3cc93733d1219f2db060faaa0c8100ad054f54d8"
+    },
+    {
+      "resource": "Distribution/Notices/portable/love/MPG123-1.25.6-COPYING.txt",
+      "sha256": "f40e0dd86b27b52e429b693a87b3ca63ae0a98a4d142e77207aa6bdf1db7a295",
+      "bytes": 40718,
+      "sourceSHA256": "f40e0dd86b27b52e429b693a87b3ca63ae0a98a4d142e77207aa6bdf1db7a295"
+    },
+    {
+      "resource": "Distribution/Notices/portable/love/OPENAL-SOFT-1.19.1-COPYING.txt",
+      "sha256": "d808ce217e5b611854da622b57ec29fe545584c48bc5352fae72a4b6e5074a15",
+      "bytes": 23330,
+      "sourceSHA256": "d808ce217e5b611854da622b57ec29fe545584c48bc5352fae72a4b6e5074a15"
+    },
+    {
+      "resource": "Distribution/Notices/portable/love/README-PREPARED.md",
+      "sha256": "dc6f89918c14c4dd418f5b29466a0a828e5b969ec2f4db170456b143f76d223a",
+      "bytes": 1737,
+      "sourceSHA256": "dc6f89918c14c4dd418f5b29466a0a828e5b969ec2f4db170456b143f76d223a"
+    },
+    {
+      "resource": "Distribution/Notices/portable/love/SDL2-2.0.10-COPYING.txt",
+      "sha256": "a7c8d0b3167c502921192585a582eb8477ad9862330f4d8b9e4a8bb4c1a9d29e",
+      "bytes": 930,
+      "sourceSHA256": "a7c8d0b3167c502921192585a582eb8477ad9862330f4d8b9e4a8bb4c1a9d29e"
+    },
+    {
+      "resource": "Distribution/Notices/portable/love/ZLIB-1.2.11-LICENSE.txt",
+      "sha256": "5b305a8fcbfac28f3238dfe6db82016dbc72b986be3034e843648f89ffc2bfb5",
+      "bytes": 1329,
+      "sourceSHA256": "5b305a8fcbfac28f3238dfe6db82016dbc72b986be3034e843648f89ffc2bfb5"
+    },
+    {
+      "resource": "Distribution/Notices/portable/love/love.js-MIT.txt",
+      "sha256": "a5c6a1286581e6a104f81647835791b7ec4148dcf1951633d23fcb3198f7c7fb",
+      "bytes": 1082,
+      "sourceSHA256": "a5c6a1286581e6a104f81647835791b7ec4148dcf1951633d23fcb3198f7c7fb"
+    },
+    {
+      "resource": "Distribution/Notices/portable/renpy/AOM-3.5.0-LICENSE.txt",
+      "sha256": "4764a286d8b2faeaf42f4418e7d7a28d58fc8fd4d00a3d0a7f44b0a4099de7f2",
+      "bytes": 1316,
+      "sourceSHA256": "4764a286d8b2faeaf42f4418e7d7a28d58fc8fd4d00a3d0a7f44b0a4099de7f2"
+    },
+    {
+      "resource": "Distribution/Notices/portable/renpy/ASSIMP-5.4.3-LICENSE.txt",
+      "sha256": "147874443d242b4e2bae97036e26ec9d6b37f706174c1bd5ecfcc8c1294cef51",
+      "bytes": 3791,
+      "sourceSHA256": "147874443d242b4e2bae97036e26ec9d6b37f706174c1bd5ecfcc8c1294cef51"
+    },
+    {
+      "resource": "Distribution/Notices/portable/renpy/BROTLI-1.1.0-LICENSE.txt",
+      "sha256": "3d180008e36922a4e8daec11c34c7af264fed5962d07924aea928c38e8663c94",
+      "bytes": 1084,
+      "sourceSHA256": "3d180008e36922a4e8daec11c34c7af264fed5962d07924aea928c38e8663c94"
+    },
+    {
+      "resource": "Distribution/Notices/portable/renpy/BZIP2-1.0.8-LICENSE.txt",
+      "sha256": "c6dbbf828498be844a89eaa3b84adbab3199e342eb5cb2ed2f0d4ba7ec0f38a3",
+      "bytes": 1896,
+      "sourceSHA256": "c6dbbf828498be844a89eaa3b84adbab3199e342eb5cb2ed2f0d4ba7ec0f38a3"
+    },
+    {
+      "resource": "Distribution/Notices/portable/renpy/CHARDET-5.2.0-LICENSE.txt",
+      "sha256": "dc626520dcd53a22f727af3ee42c770e56c97a64fe3adb063799d8ab032fe551",
+      "bytes": 26530,
+      "sourceSHA256": "dc626520dcd53a22f727af3ee42c770e56c97a64fe3adb063799d8ab032fe551"
+    },
+    {
+      "resource": "Distribution/Notices/portable/renpy/EMSCRIPTEN-3.1.67-LICENSE.txt",
+      "sha256": "620a78084fc7ca97c0b5dea9abf891f3ffcadfdbf305276f099c9c4e12fc1d86",
+      "bytes": 5093,
+      "sourceSHA256": "620a78084fc7ca97c0b5dea9abf891f3ffcadfdbf305276f099c9c4e12fc1d86"
+    },
+    {
+      "resource": "Distribution/Notices/portable/renpy/FFMPEG-4.3.1-COPYING.LGPLv2.1.txt",
+      "sha256": "b634ab5640e258563c536e658cad87080553df6f34f62269a21d554844e58bfe",
+      "bytes": 26526,
+      "sourceSHA256": "b634ab5640e258563c536e658cad87080553df6f34f62269a21d554844e58bfe"
+    },
+    {
+      "resource": "Distribution/Notices/portable/renpy/FREETYPE-2.13.3-FTL.txt",
+      "sha256": "08c135755dd589039470f1fdbb400daaabaaa50d0b366d19cebff4d22986baa1",
+      "bytes": 6743,
+      "sourceSHA256": "08c135755dd589039470f1fdbb400daaabaaa50d0b366d19cebff4d22986baa1"
+    },
+    {
+      "resource": "Distribution/Notices/portable/renpy/FRIBIDI-1.0.7-COPYING.txt",
+      "sha256": "32434afcc8666ba060e111d715bfdb6c2d5dd8a35fa4d3ab8ad67d8f850d2f2b",
+      "bytes": 26440,
+      "sourceSHA256": "32434afcc8666ba060e111d715bfdb6c2d5dd8a35fa4d3ab8ad67d8f850d2f2b"
+    },
+    {
+      "resource": "Distribution/Notices/portable/renpy/HARFBUZZ-8.0.1-COPYING.txt",
+      "sha256": "ba8f810f2455c2f08e2d56bb49b72f37fcf68f1f4fade38977cfd7372050ad64",
+      "bytes": 1971,
+      "sourceSHA256": "ba8f810f2455c2f08e2d56bb49b72f37fcf68f1f4fade38977cfd7372050ad64"
+    },
+    {
+      "resource": "Distribution/Notices/portable/renpy/LGPL-2.0.txt",
+      "sha256": "cc535c21133c895b56b374c8a1dc1eb948d99003ed2b47372069456b62f42b24",
+      "bytes": 25270,
+      "sourceSHA256": "cc535c21133c895b56b374c8a1dc1eb948d99003ed2b47372069456b62f42b24"
+    },
+    {
+      "resource": "Distribution/Notices/portable/renpy/LGPL-2.1.txt",
+      "sha256": "20e50fe7aae3e56378ebf0417d9de904f55a0e61e4df315333e632a4d3555d95",
+      "bytes": 26419,
+      "sourceSHA256": "20e50fe7aae3e56378ebf0417d9de904f55a0e61e4df315333e632a4d3555d95"
+    },
+    {
+      "resource": "Distribution/Notices/portable/renpy/LIBAVIF-0.11.1-LICENSE.txt",
+      "sha256": "10952217a6d404de8bf8a997fbea9b88f682df1fe98cb9b9f467ade641525639",
+      "bytes": 18799,
+      "sourceSHA256": "10952217a6d404de8bf8a997fbea9b88f682df1fe98cb9b9f467ade641525639"
+    },
+    {
+      "resource": "Distribution/Notices/portable/renpy/LIBJPEG-TURBO-1.5.3-LICENSE.md",
+      "sha256": "5c08657eda60b7946a913ee22ac73603335a468a6aa95204506a1586a8d677ee",
+      "bytes": 5343,
+      "sourceSHA256": "5c08657eda60b7946a913ee22ac73603335a468a6aa95204506a1586a8d677ee"
+    },
+    {
+      "resource": "Distribution/Notices/portable/renpy/LIBPNG-1.6.43-LICENSE.txt",
+      "sha256": "7317e078e2d3b5d7ba5a6159e650945153262b44b76f6700f8e9edb261c5143e",
+      "bytes": 5345,
+      "sourceSHA256": "7317e078e2d3b5d7ba5a6159e650945153262b44b76f6700f8e9edb261c5143e"
+    },
+    {
+      "resource": "Distribution/Notices/portable/renpy/LIBWEBP-1.3.2-COPYING.txt",
+      "sha256": "5aec868f669e384a22372a4e8a1a6cd7d44c64cd451f960ca69cc170d1e13acf",
+      "bytes": 1496,
+      "sourceSHA256": "5aec868f669e384a22372a4e8a1a6cd7d44c64cd451f960ca69cc170d1e13acf"
+    },
+    {
+      "resource": "Distribution/Notices/portable/renpy/LIBYUV-LICENSE.txt",
+      "sha256": "2b2cc1180c7e6988328ad2033b04b80117419db9c4c584918bbb3cfec7e9364f",
+      "bytes": 1506,
+      "sourceSHA256": "2b2cc1180c7e6988328ad2033b04b80117419db9c4c584918bbb3cfec7e9364f"
+    },
+    {
+      "resource": "Distribution/Notices/portable/renpy/PYTHON-3.12.8-LICENSE.txt",
+      "sha256": "3b2f81fe21d181c499c59a256c8e1968455d6689d269aa85373bfb6af41da3bf",
+      "bytes": 13936,
+      "sourceSHA256": "3b2f81fe21d181c499c59a256c8e1968455d6689d269aa85373bfb6af41da3bf"
+    },
+    {
+      "resource": "Distribution/Notices/portable/renpy/README-PREPARED.md",
+      "sha256": "f8dfb4df337fe0bdccd8739f811264aee982c7aa5b2b05876022c151b7873224",
+      "bytes": 1454,
+      "sourceSHA256": "f8dfb4df337fe0bdccd8739f811264aee982c7aa5b2b05876022c151b7873224"
+    },
+    {
+      "resource": "Distribution/Notices/portable/renpy/RENPY-8.5.3-COMPONENT-ADDENDUM.md",
+      "sha256": "09992d9a02919a0fdceaa332017f70a9149aac8f028fe79be414c3871368025f",
+      "bytes": 7491,
+      "sourceSHA256": "09992d9a02919a0fdceaa332017f70a9149aac8f028fe79be414c3871368025f"
+    },
+    {
+      "resource": "Distribution/Notices/portable/renpy/RENPY-LICENSE.txt",
+      "sha256": "b5d4610dfb530c53d5ce681e913f313903948616eb7b4ff8e8ddd19337852c1e",
+      "bytes": 101413,
+      "sourceSHA256": "b5d4610dfb530c53d5ce681e913f313903948616eb7b4ff8e8ddd19337852c1e"
+    },
+    {
+      "resource": "Distribution/Notices/portable/renpy/RENPY-WEB-NOTICE.md",
+      "sha256": "5d0135947779d22a5220ad011ce70b9196c1825abb6dab2f17dfaaede640b4ed",
+      "bytes": 1653,
+      "sourceSHA256": "5d0135947779d22a5220ad011ce70b9196c1825abb6dab2f17dfaaede640b4ed"
+    },
+    {
+      "resource": "Distribution/Notices/portable/renpy/SDL2-2.0.20-COPYING.txt",
+      "sha256": "fcb07e07ac6bc8b2fcf047b50431ef4ebe5b619d7ca7c82212018309a9067426",
+      "bytes": 884,
+      "sourceSHA256": "fcb07e07ac6bc8b2fcf047b50431ef4ebe5b619d7ca7c82212018309a9067426"
+    },
+    {
+      "resource": "Distribution/Notices/portable/renpy/SDL2_IMAGE-2.6.2-LICENSE.txt",
+      "sha256": "28aabfed22b3cb0b7e23ef40385e4f66297c960082f029c96d073cc1d4e008d5",
+      "bytes": 878,
+      "sourceSHA256": "28aabfed22b3cb0b7e23ef40385e4f66297c960082f029c96d073cc1d4e008d5"
+    },
+    {
+      "resource": "Distribution/Notices/portable/renpy/XZ-5.4.2-COPYING.txt",
+      "sha256": "72d7ef9c98be319fd34ce88b45203b36d5936f9c49e82bf3198ffee5e0c7d87e",
+      "bytes": 3330,
+      "sourceSHA256": "72d7ef9c98be319fd34ce88b45203b36d5936f9c49e82bf3198ffee5e0c7d87e"
+    },
+    {
+      "resource": "Distribution/Notices/portable/renpy/ZLIB-1.3.1-LICENSE.txt",
+      "sha256": "02421fcfbfb1d656ef0b6ff4cd3c39f2946f08c3219fa42db482add7ce1f53ea",
+      "bytes": 1328,
+      "sourceSHA256": "02421fcfbfb1d656ef0b6ff4cd3c39f2946f08c3219fa42db482add7ce1f53ea"
+    },
+    {
+      "resource": "Distribution/Notices/portable/mv/FPSMETER-MIT.txt",
+      "sha256": "4e6e8310a0784e2b18a3f96e6a0f29f8522f33af5ce4e7b8d2f5ba6f5d141599",
+      "bytes": 1064,
+      "sourceSHA256": "4e6e8310a0784e2b18a3f96e6a0f29f8522f33af5ce4e7b8d2f5ba6f5d141599"
+    },
+    {
+      "resource": "Distribution/Notices/portable/mv/IPHONE-INLINE-VIDEO-MIT.txt",
+      "sha256": "3df4d390a2bed3edf787dcac30390c68d35bbcd5c52f477b1e0faf71b4dc4834",
+      "bytes": 1083,
+      "sourceSHA256": "3df4d390a2bed3edf787dcac30390c68d35bbcd5c52f477b1e0faf71b4dc4834"
+    },
+    {
+      "resource": "Distribution/Notices/portable/mv/LZ-STRING-MIT.txt",
+      "sha256": "dcfcb96e3b0fccfbbd3633f2ee6f7eae65e1980e7448d9553f93ab4060a7021b",
+      "bytes": 1086,
+      "sourceSHA256": "dcfcb96e3b0fccfbbd3633f2ee6f7eae65e1980e7448d9553f93ab4060a7021b"
+    },
+    {
+      "resource": "Distribution/Notices/portable/mv/PIXI-MIT.txt",
+      "sha256": "d3109477c60054718630f887a9417e7e808dbc81132b7d6a91d875e36f2fc52e",
+      "bytes": 1092,
+      "sourceSHA256": "d3109477c60054718630f887a9417e7e808dbc81132b7d6a91d875e36f2fc52e"
+    },
+    {
+      "resource": "Distribution/Notices/portable/mv/PIXI-PICTURE-MIT.txt",
+      "sha256": "26cecbff89fcb3c0ccd3bcd2776432448149f5ce6fe33700d3cd41029a139545",
+      "bytes": 1083,
+      "sourceSHA256": "26cecbff89fcb3c0ccd3bcd2776432448149f5ce6fe33700d3cd41029a139545"
+    },
+    {
+      "resource": "Distribution/Notices/portable/mv/PIXI-TILEMAP-MIT.txt",
+      "sha256": "26cecbff89fcb3c0ccd3bcd2776432448149f5ce6fe33700d3cd41029a139545",
+      "bytes": 1083,
+      "sourceSHA256": "26cecbff89fcb3c0ccd3bcd2776432448149f5ce6fe33700d3cd41029a139545"
+    },
+    {
+      "resource": "Distribution/Notices/portable/mv/RPG-MAKER-MV-CORESCRIPT-MIT.txt",
+      "sha256": "e3563d4b3ff63e95a154f75d207444d71c108dc1bb64f0bb8230c5ee65a13922",
+      "bytes": 1089,
+      "sourceSHA256": "e3563d4b3ff63e95a154f75d207444d71c108dc1bb64f0bb8230c5ee65a13922"
+    },
+    {
+      "resource": "Distribution/Notices/gdevelop/PIXI-7.4.2-MIT.txt",
+      "sha256": "5ce7447bc57f7349ffc48338782fbcabe613696e00712b20d66bc58e780f9473",
+      "bytes": 1092,
+      "source": "FloeAgent/Modules/FloeGameGDevelopKit/LicenseTexts/PIXI-7.4.2-MIT.txt",
+      "sourceSHA256": "5ce7447bc57f7349ffc48338782fbcabe613696e00712b20d66bc58e780f9473"
+    },
+    {
+      "resource": "Distribution/Notices/gdevelop/fontfaceobserver-2.0.13-LICENSE.txt",
+      "sha256": "4f9eb12ff4eb3ac9ef7088d9f3926dab1402669c1317f50fd72fa938874f958f",
+      "bytes": 1313,
+      "source": "FloeAgent/Modules/FloeGameGDevelopKit/LicenseTexts/fontfaceobserver-2.0.13-LICENSE.txt",
+      "sourceSHA256": "4f9eb12ff4eb3ac9ef7088d9f3926dab1402669c1317f50fd72fa938874f958f"
+    },
+    {
+      "resource": "Distribution/Notices/gdevelop/howler-2.2.3-MIT.txt",
+      "sha256": "0ad5aef7beeb552832fe01db1c46933f948dfe5da35017bd0efa0006ffd2ced9",
+      "bytes": 1088,
+      "source": "FloeAgent/Modules/FloeGameGDevelopKit/LicenseTexts/howler-2.2.3-MIT.txt",
+      "sourceSHA256": "0ad5aef7beeb552832fe01db1c46933f948dfe5da35017bd0efa0006ffd2ced9"
+    },
+    {
+      "resource": "Distribution/Notices/gdevelop/quickselect-ISC.txt",
+      "sha256": "597034cb7c11c916ad407344ea99a0b08e3c443a6b4421460f1d23c411c69707",
+      "bytes": 750,
+      "source": "FloeAgent/Modules/FloeGameGDevelopKit/LicenseTexts/quickselect-ISC.txt",
+      "sourceSHA256": "597034cb7c11c916ad407344ea99a0b08e3c443a6b4421460f1d23c411c69707"
+    },
+    {
+      "resource": "Distribution/Notices/gdevelop/rbush-2.0.1-MIT.txt",
+      "sha256": "d20ffe93c0210be0737240aecdcc3ee1b3f650d4d7a7a3c0f2e806c4db5c4779",
+      "bytes": 1062,
+      "source": "FloeAgent/Modules/FloeGameGDevelopKit/LicenseTexts/rbush-2.0.1-MIT.txt",
+      "sourceSHA256": "d20ffe93c0210be0737240aecdcc3ee1b3f650d4d7a7a3c0f2e806c4db5c4779"
+    },
+    {
+      "resource": "Distribution/Notices/gdevelop/THIRD-PARTY-NOTICES.md",
+      "sha256": "bd8d2d1763de78e6681b4656f290dd98e58eceddf313245e743801eedfcb9ca1",
+      "bytes": 4164,
+      "source": "FloeAgent/Modules/FloeGameGDevelopKit/THIRD-PARTY-NOTICES.md",
+      "sourceSHA256": "bd8d2d1763de78e6681b4656f290dd98e58eceddf313245e743801eedfcb9ca1"
+    },
+    {
+      "resource": "Distribution/Notices/gdevelop/LICENSE.GDevelop.txt",
+      "sha256": "69dec409c40c2877275efcf0f025081e4601dde0339c0376931ebd55c812ad91",
+      "bytes": 139,
+      "source": "FloeAgent/Modules/FloeGameGDevelopKit/Tests/FloeGameGDevelopKitTests/Fixtures/official-5.6.287-export/LICENSE.GDevelop.txt",
+      "sourceSHA256": "69dec409c40c2877275efcf0f025081e4601dde0339c0376931ebd55c812ad91"
+    },
+    {
+      "resource": "Distribution/Notices/godot/LICENSE.txt",
+      "sha256": "b0435e3b3e4e55238f05f4b306f30524a1b2e20147810d436eaa554fa6855c80",
+      "bytes": 1149,
+      "source": "FloeAgent/Modules/FloeGameRuntimeKit/Sources/FloeGameRuntime/Resources/Godot/LICENSE.txt",
+      "sourceSHA256": "b0435e3b3e4e55238f05f4b306f30524a1b2e20147810d436eaa554fa6855c80"
+    },
+    {
+      "resource": "Distribution/Notices/godot/COPYRIGHT.txt",
+      "sha256": "cb1980c88089573bcacd7221d777c689bb8bbd778799f24c27fca0fe5f774d6d",
+      "bytes": 100108,
+      "source": "FloeAgent/Modules/FloeGameRuntimeKit/Sources/FloeGameRuntime/Resources/Godot/COPYRIGHT.txt",
+      "sourceSHA256": "cb1980c88089573bcacd7221d777c689bb8bbd778799f24c27fca0fe5f774d6d"
+    }
+  ]
+}

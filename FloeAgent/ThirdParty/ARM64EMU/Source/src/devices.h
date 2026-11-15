@@ -7,12 +7,15 @@
 #include "types.h"
 #include "machine.h"
 #include "devices/virtio_gpu.h"
+#include "devices/virtio_media.h"
 
 /* Fixed high virtio-mmio slots. Slot 0 is virtio-net, then disks, the fixed
- * MAX_SHARES block and the consoles, in that exact existing order; these two
- * are reserved at the top so dynamic device growth can never collide with
- * them. platform_build enforces the ceiling only for the slots actually
- * enabled, so a machine with neither keeps the historical 31-slot ceiling. */
+ * MAX_SHARES block and the consoles, in that exact existing order; the fixed
+ * media/memory/GPU slots are reserved at the top so dynamic device growth can
+ * never collide with them. platform_build enforces the ceiling only for the
+ * slots actually enabled, so a machine with none keeps the historical
+ * 31-slot ceiling. Video decoder/encoder occupy 28/29, then virtio-mem 30
+ * and virtio-gpu 31. */
 #define VIRTIO_MMIO_SLOT_MEM 30
 #define VIRTIO_MMIO_SLOT_GPU 31
 

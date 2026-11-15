@@ -1,0 +1,431 @@
+From 8fc8464a81a32d8ae5ecd5c8445046b9dfed820e Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Thu, 1 Oct 2026 10:33:07 -0400
+Subject: [PATCH] kk: Fix gaps in the sampler min/max emulation
+
+Generated-by: LLM
+---
+ src/compiler/nir/nir.c                        |   4 +-
+ src/kosmickrisp/compiler/msl_private.h        |   2 +
+ src/kosmickrisp/compiler/msl_type_inference.c |  10 +
+ src/kosmickrisp/compiler/nir_to_msl.c         |   3 +-
+ src/kosmickrisp/vulkan/kk_device.c            |   3 +
+ .../vulkan/kk_nir_lower_sampler_minmax.c      | 239 +++++++++++++-----
+ 6 files changed, 191 insertions(+), 70 deletions(-)
+
+diff --git a/src/compiler/nir/nir.c b/src/compiler/nir/nir.c
+index 21d2ce35d96..f33a164f570 100644
+--- a/src/compiler/nir/nir.c
++++ b/src/compiler/nir/nir.c
+@@ -3521,6 +3521,9 @@ nir_tex_instr_result_size(const nir_tex_instr *instr)
+    case nir_texop_lod:
+       return 2;
+ 
++   case nir_texop_sampler_minmax_kk:
++      return 3;
++
+    case nir_texop_texture_samples:
+    case nir_texop_query_levels:
+    case nir_texop_samples_identical:
+@@ -3528,7 +3531,6 @@ nir_tex_instr_result_size(const nir_tex_instr *instr)
+    case nir_texop_fragment_mask_fetch_amd:
+    case nir_texop_image_min_lod_agx:
+    case nir_texop_has_custom_border_color_agx:
+-   case nir_texop_sampler_minmax_kk:
+    case nir_texop_sparse_residency_intel:
+    case nir_texop_sparse_residency_txf_intel:
+       return 1;
+diff --git a/src/kosmickrisp/compiler/msl_private.h b/src/kosmickrisp/compiler/msl_private.h
+index 75da653947a..06c4b84efb4 100644
+--- a/src/kosmickrisp/compiler/msl_private.h
++++ b/src/kosmickrisp/compiler/msl_private.h
+@@ -57,6 +57,8 @@ const char *msl_uint_type(uint8_t bit_size, uint8_t num_components);
+ const char *msl_type_for_src(struct hash_table *types, nir_src *src);
+ 
+ const char *msl_bitcast_for_src(struct hash_table *types, nir_src *src);
++const char *msl_bitcast_for_residency_src(struct hash_table *types,
++                                          nir_src *src);
+ 
+ void msl_src_as_const(struct nir_to_msl_ctx *ctx, nir_src *src);
+ 
+diff --git a/src/kosmickrisp/compiler/msl_type_inference.c b/src/kosmickrisp/compiler/msl_type_inference.c
+index f71bc2b91b3..304aa3b74bd 100644
+--- a/src/kosmickrisp/compiler/msl_type_inference.c
++++ b/src/kosmickrisp/compiler/msl_type_inference.c
+@@ -761,6 +761,16 @@ msl_bitcast_for_src(struct hash_table *types, nir_src *src)
+    }
+ }
+ 
++const char *
++msl_bitcast_for_residency_src(struct hash_table *types, nir_src *src)
++{
++   ti_type src_type = get_type(types, src);
++   if (src_type == TYPE_UINT || src_type == TYPE_BOOL)
++      return NULL;
++
++   return ti_type_to_msl_type(src_type, 32, 1);
++}
++
+ static void
+ emit_src_component(struct nir_to_msl_ctx *ctx, nir_src *src, unsigned comp)
+ {
+diff --git a/src/kosmickrisp/compiler/nir_to_msl.c b/src/kosmickrisp/compiler/nir_to_msl.c
+index fa05199dc0a..ab245615fea 100644
+--- a/src/kosmickrisp/compiler/nir_to_msl.c
++++ b/src/kosmickrisp/compiler/nir_to_msl.c
+@@ -237,7 +237,8 @@ alu_src_to_msl(struct nir_to_msl_ctx *ctx, nir_alu_instr *instr, int srcn)
+    nir_alu_src *src = &instr->src[srcn];
+    bool sparse = def_is_sparse(src->src.ssa);
+    if (sparse && alu_src_reads_residency(instr, srcn)) {
+-      const char *bitcast = msl_bitcast_for_src(ctx->types, &src->src);
++      const char *bitcast =
++         msl_bitcast_for_residency_src(ctx->types, &src->src);
+       if (bitcast)
+          P(ctx, "as_type<%s>(", bitcast);
+       P(ctx, "t%d_c", src->src.ssa->index);
+diff --git a/src/kosmickrisp/vulkan/kk_device.c b/src/kosmickrisp/vulkan/kk_device.c
+index 9950b192cb8..122daeb8fed 100644
+--- a/src/kosmickrisp/vulkan/kk_device.c
++++ b/src/kosmickrisp/vulkan/kk_device.c
+@@ -289,6 +289,9 @@ kk_CreateDevice(VkPhysicalDevice physicalDevice,
+    if (result != VK_SUCCESS)
+       goto fail_alloc;
+ 
++   if (dev->vk.enabled_extensions.EXT_sampler_filter_minmax)
++      dev->vk.enabled_features.samplerFilterMinmax = true;
++
+    dev->vk.shader_ops = &kk_device_shader_ops;
+    dev->mtl_handle = pdev->mtl_dev_handle;
+    dev->vk.command_buffer_ops = &kk_cmd_buffer_ops;
+diff --git a/src/kosmickrisp/vulkan/kk_nir_lower_sampler_minmax.c b/src/kosmickrisp/vulkan/kk_nir_lower_sampler_minmax.c
+index 723bf7a934e..b33fcfcf366 100644
+--- a/src/kosmickrisp/vulkan/kk_nir_lower_sampler_minmax.c
++++ b/src/kosmickrisp/vulkan/kk_nir_lower_sampler_minmax.c
+@@ -34,16 +34,54 @@ kk_new_tex(nir_builder *b, const nir_tex_instr *tex, nir_texop op,
+    return instr;
+ }
+ 
+-static nir_def *
++struct kk_texel {
++   nir_def *value;
++   nir_def *code;
++};
++
++static struct kk_texel
++kk_split_texel(nir_builder *b, const nir_tex_instr *tex, nir_def *def)
++{
++   if (!tex->is_sparse)
++      return (struct kk_texel){.value = def};
++
++   unsigned comps = def->num_components - 1;
++   return (struct kk_texel){
++      .value = nir_trim_vector(b, def, comps),
++      .code = nir_channel(b, def, comps),
++   };
++}
++
++static struct kk_texel
+ kk_sample_lod(nir_builder *b, const nir_tex_instr *tex, nir_def *coord,
+               nir_def *lod)
+ {
+    nir_tex_instr *s = kk_new_tex(b, tex, nir_texop_txl, 2, tex->dest_type,
+                                  tex->def.num_components);
++   s->is_sparse = tex->is_sparse;
+    s->src[0] = nir_tex_src_for_ssa(nir_tex_src_coord, coord);
+    s->src[1] = nir_tex_src_for_ssa(nir_tex_src_lod, lod);
+    nir_builder_instr_insert(b, &s->instr);
+-   return &s->def;
++   return kk_split_texel(b, tex, &s->def);
++}
++
++static struct kk_texel
++kk_texel_select(nir_builder *b, nir_def *cond, struct kk_texel x,
++                struct kk_texel y)
++{
++   return (struct kk_texel){
++      .value = nir_bcsel(b, cond, x.value, y.value),
++      .code = x.code ? nir_bcsel(b, cond, x.code, y.code) : NULL,
++   };
++}
++
++static struct kk_texel
++kk_texel_phi(nir_builder *b, struct kk_texel x, struct kk_texel y)
++{
++   return (struct kk_texel){
++      .value = nir_if_phi(b, x.value, y.value),
++      .code = x.code ? nir_if_phi(b, x.code, y.code) : NULL,
++   };
+ }
+ 
+ static nir_def *
+@@ -130,16 +168,21 @@ kk_cube_dir(nir_builder *b, nir_def *uv, const struct kk_cube_face *f)
+    return nir_vec3(b, x, y, z);
+ }
+ 
+-static nir_def *
+-kk_reduce(nir_builder *b, nir_def *is_min, nir_def *x, nir_def *y)
++static struct kk_texel
++kk_reduce(nir_builder *b, nir_def *is_min, struct kk_texel x,
++          struct kk_texel y)
+ {
+-   return nir_bcsel(b, is_min, nir_fmin(b, x, y), nir_fmax(b, x, y));
++   return (struct kk_texel){
++      .value = nir_bcsel(b, is_min, nir_fmin(b, x.value, y.value),
++                         nir_fmax(b, x.value, y.value)),
++      .code = x.code ? nir_ior(b, x.code, y.code) : NULL,
++   };
+ }
+ 
+-static nir_def *
++static struct kk_texel
+ kk_reduce_level(nir_builder *b, const nir_tex_instr *tex, nir_def *coord,
+                 nir_def *offset, nir_def *level, nir_def *is_min,
+-                nir_def *unnormalized, unsigned dims)
++                nir_def *linear, nir_def *unnormalized, unsigned dims)
+ {
+    bool cube = tex->sampler_dim == GLSL_SAMPLER_DIM_CUBE;
+    struct kk_cube_face face;
+@@ -148,14 +191,16 @@ kk_reduce_level(nir_builder *b, const nir_tex_instr *tex, nir_def *coord,
+                     nir_fadd_imm(b, nir_fmul_imm(b, size, 0.0), 1.0), size);
+    nir_def *uv = cube ? kk_cube_uv(b, coord, &face)
+                       : nir_trim_vector(b, coord, dims);
+-   nir_def *p = nir_fadd_imm(b, nir_fmul(b, uv, size), -0.5);
++   nir_def *p = nir_fmul(b, uv, size);
+    if (offset)
+       p = nir_fadd(b, p, nir_i2f32(b, nir_trim_vector(b, offset, dims)));
++   p = nir_bcsel(b, linear, nir_fadd_imm(b, p, -0.5), p);
+ 
+    nir_def *base = nir_ffloor(b, p);
+-   nir_def *frac = nir_fsub(b, p, base);
++   nir_def *frac =
++      nir_bcsel(b, linear, nir_fsub(b, p, base), nir_fmul_imm(b, p, 0.0));
+ 
+-   nir_def *result = NULL;
++   struct kk_texel result = {0};
+    for (unsigned corner = 0; corner < (1u << dims); corner++) {
+       nir_def *texel[3];
+       nir_def *used = nir_imm_true(b);
+@@ -177,14 +222,14 @@ kk_reduce_level(nir_builder *b, const nir_tex_instr *tex, nir_def *coord,
+          comps[c] = nir_channel(b, centre, c);
+       for (unsigned c = spatial; c < tex->coord_components; c++)
+          comps[c] = nir_channel(b, coord, c);
+-      nir_def *sample = kk_sample_lod(
++      struct kk_texel sample = kk_sample_lod(
+          b, tex, nir_vec(b, comps, tex->coord_components), level);
+ 
+-      if (result == NULL)
++      if (result.value == NULL)
+          result = sample;
+       else
+-         result = nir_bcsel(b, used, kk_reduce(b, is_min, result, sample),
+-                            result);
++         result = kk_texel_select(b, used, kk_reduce(b, is_min, result, sample),
++                                  result);
+    }
+ 
+    return result;
+@@ -197,8 +242,7 @@ lower_sampler_minmax(nir_builder *b, nir_tex_instr *tex, void *data)
+        tex->op != nir_texop_txl && tex->op != nir_texop_txd)
+       return false;
+ 
+-   if (tex->is_shadow || tex->is_sparse ||
+-       (tex->backend_flags & KK_TEXTURE_FLAG_MINMAX_DONE) ||
++   if (tex->is_shadow || (tex->backend_flags & KK_TEXTURE_FLAG_MINMAX_DONE) ||
+        nir_alu_type_get_base_type(tex->dest_type) != nir_type_float)
+       return false;
+ 
+@@ -221,6 +265,14 @@ lower_sampler_minmax(nir_builder *b, nir_tex_instr *tex, void *data)
+        nir_tex_instr_src_index(tex, nir_tex_src_sampler_deref) < 0)
+       return false;
+ 
++   if (tex->is_sparse) {
++      nir_foreach_use_including_if(use, &tex->def) {
++         if (nir_src_is_if(use) ||
++             nir_src_use_instr(use)->type != nir_instr_type_alu)
++            return false;
++      }
++   }
++
+    b->cursor = nir_before_instr(&tex->instr);
+ 
+    nir_def *coord = nir_get_tex_src(tex, nir_tex_src_coord);
+@@ -247,47 +299,63 @@ lower_sampler_minmax(nir_builder *b, nir_tex_instr *tex, void *data)
+       ddy = nir_f2f32(b, ddy);
+ 
+    nir_tex_instr *flags_instr =
+-      kk_new_tex(b, tex, nir_texop_sampler_minmax_kk, 0, nir_type_uint32, 1);
++      kk_new_tex(b, tex, nir_texop_sampler_minmax_kk, 0, nir_type_uint32, 3);
+    nir_builder_instr_insert(b, &flags_instr->instr);
+-   nir_def *flags = &flags_instr->def;
+-
+-   if (lod == NULL) {
+-      if (ddx) {
+-         nir_def *size =
+-            kk_level_size(b, tex, nir_imm_int(b, 0), dims);
+-         nir_def *dx = nir_fmul(b, nir_trim_vector(b, ddx, dims), size);
+-         nir_def *dy = nir_fmul(b, nir_trim_vector(b, ddy, dims), size);
+-         nir_def *rho = nir_fmax(b, nir_fdot(b, dx, dx), nir_fdot(b, dy, dy));
+-         lod = nir_fmul_imm(b, nir_flog2(b, rho), 0.5);
+-      } else {
+-         lod = kk_implicit_lod(
+-            b, tex, coord, bias ? bias : nir_imm_float(b, 0),
+-            tex->sampler_dim == GLSL_SAMPLER_DIM_CUBE ? 3 : dims);
+-      }
+-   }
+-
+-   nir_def *max_level =
+-      nir_i2f32(b, nir_iadd_imm(b, kk_num_levels(b, tex), -1));
+-   nir_def *clamped = nir_fmin(b, nir_fmax(b, lod, nir_imm_float(b, 0)),
+-                               max_level);
+-   if (min_lod)
+-      clamped = nir_fmax(b, clamped, min_lod);
++   nir_def *flags = nir_channel(b, &flags_instr->def, 0);
++   nir_def *mode = nir_iand_imm(b, flags, KK_SAMPLER_MINMAX_MODE_MASK);
+ 
+-   nir_def *unnormalized =
+-      nir_test_mask(b, flags, KK_SAMPLER_MINMAX_UNNORMALIZED);
+-   clamped = nir_bcsel(b, unnormalized, nir_imm_float(b, 0), clamped);
++   unsigned value_comps = tex->def.num_components - (tex->is_sparse ? 1 : 0);
++   struct kk_texel undef = {
++      .value = nir_undef(b, value_comps, tex->def.bit_size),
++      .code = tex->is_sparse ? nir_undef(b, 1, tex->def.bit_size) : NULL,
++   };
++   nir_def *yes = nir_imm_true(b), *no = nir_imm_false(b);
+ 
+-   nir_def *mode = nir_iand_imm(b, flags, KK_SAMPLER_MINMAX_MODE_MASK);
+-   nir_def *is_min = nir_ieq_imm(b, mode, KK_SAMPLER_MINMAX_MIN);
+-   nir_def *magnify = nir_fle_imm(b, lod, 0);
+-   nir_def *linear = nir_bcsel(
+-      b, magnify, nir_test_mask(b, flags, KK_SAMPLER_MINMAX_MAG_LINEAR),
+-      nir_test_mask(b, flags, KK_SAMPLER_MINMAX_MIN_LINEAR));
+-   nir_def *mip_linear = nir_test_mask(b, flags, KK_SAMPLER_MINMAX_MIP_LINEAR);
+-
+-   nir_push_if(b, nir_iand(b, nir_ine_imm(b, mode, 0), linear));
+-   nir_def *emulated;
++   struct kk_texel emulated;
++   nir_def *done;
++   nir_push_if(b, nir_ine_imm(b, mode, 0));
+    {
++      nir_def *sampler_min = nir_f2f32(
++         b, nir_u2u16(b, nir_channel(b, &flags_instr->def, 1)));
++      nir_def *sampler_max = nir_f2f32(
++         b, nir_u2u16(b, nir_channel(b, &flags_instr->def, 2)));
++
++      if (lod == NULL) {
++         if (ddx) {
++            nir_def *size = kk_level_size(b, tex, nir_imm_int(b, 0), dims);
++            nir_def *dx = nir_fmul(b, nir_trim_vector(b, ddx, dims), size);
++            nir_def *dy = nir_fmul(b, nir_trim_vector(b, ddy, dims), size);
++            nir_def *rho =
++               nir_fmax(b, nir_fdot(b, dx, dx), nir_fdot(b, dy, dy));
++            lod = nir_fmul_imm(b, nir_flog2(b, rho), 0.5);
++         } else {
++            lod = kk_implicit_lod(
++               b, tex, coord, bias ? bias : nir_imm_float(b, 0),
++               tex->sampler_dim == GLSL_SAMPLER_DIM_CUBE ? 3 : dims);
++         }
++      }
++      lod = nir_fmin(b, nir_fmax(b, lod, sampler_min), sampler_max);
++
++      nir_def *max_level =
++         nir_i2f32(b, nir_iadd_imm(b, kk_num_levels(b, tex), -1));
++      nir_def *clamped =
++         nir_fmin(b, nir_fmax(b, lod, nir_imm_float(b, 0)), max_level);
++      if (min_lod)
++         clamped = nir_fmax(b, clamped, min_lod);
++
++      nir_def *unnormalized =
++         nir_test_mask(b, flags, KK_SAMPLER_MINMAX_UNNORMALIZED);
++      clamped = nir_bcsel(b, unnormalized, nir_imm_float(b, 0), clamped);
++
++      nir_def *is_min = nir_ieq_imm(b, mode, KK_SAMPLER_MINMAX_MIN);
++      nir_def *magnify = nir_fle_imm(b, lod, 0);
++      nir_def *linear = nir_bcsel(
++         b, magnify, nir_test_mask(b, flags, KK_SAMPLER_MINMAX_MAG_LINEAR),
++         nir_test_mask(b, flags, KK_SAMPLER_MINMAX_MIN_LINEAR));
++      nir_def *mip_linear =
++         nir_iand(b, nir_test_mask(b, flags, KK_SAMPLER_MINMAX_MIP_LINEAR),
++                  nir_inot(b, unnormalized));
++
+       nir_def *level0 = nir_bcsel(b, mip_linear, nir_ffloor(b, clamped),
+                                   nir_ffloor(b, nir_fadd_imm(b, clamped, 0.5)));
+       level0 = nir_fmin(b, level0, max_level);
+@@ -297,25 +365,60 @@ lower_sampler_minmax(nir_builder *b, nir_tex_instr *tex, void *data)
+                   nir_iand(b, nir_flt(b, level0, clamped),
+                            nir_flt(b, level0, level1)));
+ 
+-      nir_def *r0 =
+-         kk_reduce_level(b, tex, coord, offset, level0, is_min,
+-                         unnormalized, dims);
+-      nir_push_if(b, two_levels);
+-      nir_def *r1 =
+-         kk_reduce_level(b, tex, coord, offset, level1, is_min,
+-                         unnormalized, dims);
+-      nir_def *both = kk_reduce(b, is_min, r0, r1);
++      struct kk_texel inner;
++      nir_push_if(b, nir_ior(b, linear, two_levels));
++      {
++         struct kk_texel r0 =
++            kk_reduce_level(b, tex, coord, offset, level0, is_min, linear,
++                            unnormalized, dims);
++         nir_push_if(b, two_levels);
++         struct kk_texel r1 =
++            kk_reduce_level(b, tex, coord, offset, level1, is_min, linear,
++                            unnormalized, dims);
++         struct kk_texel both = kk_reduce(b, is_min, r0, r1);
++         nir_pop_if(b, NULL);
++         inner = kk_texel_phi(b, both, r0);
++      }
+       nir_pop_if(b, NULL);
+-      emulated = nir_if_phi(b, both, r0);
++      emulated = kk_texel_phi(b, inner, undef);
++      done = nir_if_phi(b, yes, no);
+    }
+-   nir_push_else(b, NULL);
+-   nir_instr *plain = nir_instr_clone(b->shader, &tex->instr);
+-   nir_instr_as_tex(plain)->backend_flags |= KK_TEXTURE_FLAG_MINMAX_DONE;
+-   nir_builder_instr_insert(b, plain);
+    nir_pop_if(b, NULL);
++   emulated = kk_texel_phi(b, emulated, undef);
++   done = nir_if_phi(b, done, no);
++
++   nir_push_if(b, nir_inot(b, done));
++   nir_instr *plain_instr = nir_instr_clone(b->shader, &tex->instr);
++   nir_instr_as_tex(plain_instr)->backend_flags |= KK_TEXTURE_FLAG_MINMAX_DONE;
++   nir_builder_instr_insert(b, plain_instr);
++   struct kk_texel plain =
++      kk_split_texel(b, tex, &nir_instr_as_tex(plain_instr)->def);
++   nir_pop_if(b, NULL);
++
++   struct kk_texel result = kk_texel_phi(b, plain, emulated);
++   if (!tex->is_sparse) {
++      nir_def_replace(&tex->def, result.value);
++      return true;
++   }
++
++   nir_foreach_use_safe(use, &tex->def) {
++      nir_alu_instr *alu = nir_instr_as_alu(nir_src_use_instr(use));
++      nir_alu_src *src = container_of(use, nir_alu_src, src);
++      unsigned comps = nir_ssa_alu_instr_src_components(alu, src - alu->src);
++
++      b->cursor = nir_before_instr(&alu->instr);
++      nir_def *chans[NIR_MAX_VEC_COMPONENTS];
++      for (unsigned c = 0; c < comps; c++) {
++         unsigned swz = src->swizzle[c];
++         chans[c] = swz == value_comps ? result.code
++                                       : nir_channel(b, result.value, swz);
++      }
+ 
+-   nir_def *result = nir_if_phi(b, emulated, &nir_instr_as_tex(plain)->def);
+-   nir_def_replace(&tex->def, result);
++      nir_src_rewrite(&src->src, nir_vec(b, chans, comps));
++      for (unsigned c = 0; c < NIR_MAX_VEC_COMPONENTS; c++)
++         src->swizzle[c] = c < comps ? c : 0;
++   }
++   nir_instr_remove(&tex->instr);
+    return true;
+ }
+ 
+-- 
+2.54.0 (Apple Git-157)
+

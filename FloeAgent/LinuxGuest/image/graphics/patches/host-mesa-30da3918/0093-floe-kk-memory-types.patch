@@ -1,0 +1,106 @@
+--- a/kk_physical_device.c
++++ b/kk_physical_device.c
+@@ -996,7 +996,8 @@
+           VK_UUID_SIZE);
+ 
+    /* We're a UMR so we can always map every kind of memory */
+-   properties->identicalMemoryTypeRequirements = true;
++   /* Linear host-transfer images can require the host-visible memory class. */
++   properties->identicalMemoryTypeRequirements = false;
+ 
+    /* VK_EXT_shader_module_identifier */
+    STATIC_ASSERT(sizeof(vk_shaderModuleIdentifierAlgorithmUUID) ==
+@@ -1249,6 +1250,15 @@
+       .flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT,
+       .budget = kk_get_sysmem_heap_budget,
+       .used = kk_get_sysmem_heap_used,
++   };
++
++   /* Optimal images require native Metal heaps.  Keep this strict subset
++    * before the host-visible type, as required by Vulkan memory type order.
++    * Both classes still use the same shared Metal heap storage internally.
++    */
++   pdev->mem_types[pdev->mem_type_count++] = (VkMemoryType){
++      .propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
++      .heapIndex = sysmem_heap_idx,
+    };
+ 
+    pdev->mem_types[pdev->mem_type_count++] = (VkMemoryType){
+--- a/kk_device_memory.c
++++ b/kk_device_memory.c
+@@ -63,6 +63,17 @@
+ }
+ #endif /* VK_USE_PLATFORM_METAL_EXT */
+ 
++static uint32_t
++kk_host_pointer_memory_type_bits(const struct kk_physical_device *pdev)
++{
++   uint32_t bits = 0;
++   for (uint32_t i = 0; i < pdev->mem_type_count; i++) {
++      if (pdev->mem_types[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
++         bits |= BITFIELD_BIT(i);
++   }
++   return bits;
++}
++
+ VKAPI_ATTR VkResult VKAPI_CALL
+ kk_GetMemoryHostPointerPropertiesEXT(
+    VkDevice device, VkExternalMemoryHandleTypeFlagBits handleType,
+@@ -79,8 +90,9 @@
+    default:
+       return vk_error(dev, VK_ERROR_INVALID_EXTERNAL_HANDLE);
+    }
++   /* Host-pointer imports create a buffer, never a native image heap. */
+    pMemoryHostPointerProperties->memoryTypeBits =
+-      BITFIELD_MASK(pdev->mem_type_count);
++      kk_host_pointer_memory_type_bits(pdev);
+ 
+    return VK_SUCCESS;
+ }
+@@ -110,6 +122,16 @@
+ 
+    bool import_metal = metal_info && metal_info->handleType;
+    bool import_host = host_info && host_info->handleType;
++
++   if (import_host) {
++      struct kk_physical_device *pdev = kk_device_physical(dev);
++      if (pAllocateInfo->memoryTypeIndex >= pdev->mem_type_count ||
++          !(kk_host_pointer_memory_type_bits(pdev) &
++            BITFIELD_BIT(pAllocateInfo->memoryTypeIndex))) {
++         result = vk_error(dev, VK_ERROR_INVALID_EXTERNAL_HANDLE);
++         goto fail_alloc;
++      }
++   }
+ 
+    if (import_metal || import_host) {
+       mem->bo = CALLOC_STRUCT(kk_bo);
+--- a/kk_image.c
++++ b/kk_image.c
+@@ -864,10 +864,24 @@
+    struct kk_physical_device *pdev = kk_device_physical(dev);
+    uint32_t memory_types = (1 << pdev->mem_type_count) - 1;
+ 
+-   /* Remove non host visible heaps from the types for host image copy in case
+-    * of potential issues. This should be removed when we get ReBAR.
++   /* Buffer-only host-pointer imports cannot back non-linear textures.
++    * The renderer uses HOST_VISIBLE to select those imports, so advertise
++    * native-heap memory for every plane that actually requires a heap.
+     */
+-   if (image->vk.usage & VK_IMAGE_USAGE_HOST_TRANSFER_BIT_EXT) {
++   bool needs_heap = false;
++   for (uint32_t plane = 0; plane < image->plane_count; plane++)
++      needs_heap |= !image->planes[plane].layout.linear;
++
++   if (needs_heap) {
++      for (uint32_t i = 0; i < pdev->mem_type_count; i++) {
++         if (pdev->mem_types[i].propertyFlags &
++             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
++            memory_types &= ~BITFIELD_BIT(i);
++      }
++   } else if (image->vk.usage & VK_IMAGE_USAGE_HOST_TRANSFER_BIT_EXT) {
++      /* Native heaps are still SHARED; host image copy uses texture getBytes
++       * and replaceRegion, not a public vkMapMemory of optimal images.
++       */
+       for (uint32_t i = 0; i < pdev->mem_type_count; i++) {
+          if (!(pdev->mem_types[i].propertyFlags &
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))

@@ -1,0 +1,35 @@
+[
+  null,
+  {
+    "id": 1,
+    "name": "Quay Watch",
+    "members": [
+      {
+        "enemyId": 1,
+        "x": 0,
+        "y": 0,
+        "hidden": false
+      }
+    ],
+    "pages": [
+      {
+        "conditions": {
+          "turnEnding": false,
+          "turnValid": false,
+          "enemyValid": false,
+          "actorValid": false,
+          "switchValid": false
+        },
+        "list": [
+          {
+            "code": 0,
+            "indent": 0,
+            "parameters": []
+          }
+        ],
+        "span": 0
+      }
+    ],
+    "note": "Original Floe starter troop."
+  }
+]

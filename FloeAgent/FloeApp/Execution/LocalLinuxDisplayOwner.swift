@@ -768,6 +768,8 @@ final class LocalLinuxDisplayOwner {
     /// via the launcher's render-node hook once the Venus chain is proven);
     /// no desktop; no boot-time server.
     static let defaultGeometry = "1024x768"
+    /// Default X display of the bundled floe-display-start service.
+    static let guestDisplay = ":0"
     static let passwordFileVariable = "FLOE_DISPLAY_PASSWORD_FILE"
     static let geometryVariable = "FLOE_DISPLAY_GEOMETRY"
 

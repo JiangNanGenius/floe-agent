@@ -1,0 +1,193 @@
+diff --git a/meson.options b/meson.options
+--- a/meson.options
++++ b/meson.options
+@@ -915,3 +915,7 @@
+   value : false,
+   description : 'Build panfrost Rust components.'
+ )
++
++# Private component; no iOS conformance claim.
++option('floe-kk-embedded', type : 'boolean', value : false,
++       description : 'Static KosmicKrisp component set without desktop ICD/CLI packaging')
+diff --git a/src/kosmickrisp/meson.build b/src/kosmickrisp/meson.build
+--- a/src/kosmickrisp/meson.build
++++ b/src/kosmickrisp/meson.build
+@@ -9,10 +9,12 @@
+ subdir('libkk')
+ subdir('vulkan')
+ 
+-executable(
+-    'kosmicomp',
+-    files('kosmicomp.c'),
+-    dependencies : [idep_nir, idep_vtn, idep_vulkan_runtime_headers, idep_vulkan_util_headers],
+-    link_with: [libkk],
+-    link_args: ['-Wl,-undefined,dynamic_lookup'],
+-)
++if not get_option('floe-kk-embedded')
++  executable(
++      'kosmicomp',
++      files('kosmicomp.c'),
++      dependencies : [idep_nir, idep_vtn, idep_vulkan_runtime_headers, idep_vulkan_util_headers],
++      link_with: [libkk],
++      link_args: ['-Wl,-undefined,dynamic_lookup'],
++  )
++endif
+diff --git a/src/kosmickrisp/bridge/meson.build b/src/kosmickrisp/bridge/meson.build
+--- a/src/kosmickrisp/bridge/meson.build
++++ b/src/kosmickrisp/bridge/meson.build
+@@ -54,7 +54,7 @@
+ if host_machine.system() == 'darwin'
+   mtl_bridge_dependencies += dependency(
+     'appleframeworks',
+-    modules : ['Foundation']
++    modules : ['Foundation', 'Metal']
+   )
+ endif
+ 
+diff --git a/src/kosmickrisp/vulkan/meson.build b/src/kosmickrisp/vulkan/meson.build
+--- a/src/kosmickrisp/vulkan/meson.build
++++ b/src/kosmickrisp/vulkan/meson.build
+@@ -162,50 +162,55 @@
+     inc_src,
+   ],
+   dependencies : [kk_deps],
++  c_args : get_option('floe-kk-embedded') ? ['-DFLOE_KK_HEADLESS_COMPONENT=1'] : [],
+   gnu_symbol_visibility : 'hidden',
+ )
+ 
+-# Happens with macOS ld linker:
+-# "-Wl,-undefined,dynamic_lookup" required, otherwise, linker will complain about undefined symbols
+-libvulkan_kosmickrisp = shared_library(
+-  'vulkan_kosmickrisp',
+-  link_whole: [libkk],
+-  link_args: [ld_args_build_id, '-Wl,-undefined,dynamic_lookup'],
+-  gnu_symbol_visibility : 'hidden',
+-  install : true,
+-)
+-
+-icd_file_name = libname_prefix + 'vulkan_kosmickrisp.' + libname_suffix
+-
+-kosmickrisp_mesa_icd = custom_target(
+-  'kosmickrisp_mesa_icd',
+-  input : [vk_icd_gen, vk_api_xml],
+-  output : 'kosmickrisp_mesa_icd.' + vulkan_manifest_suffix,
+-  command : [
+-    prog_python, '@INPUT0@',
+-    '--api-version', '1.4', '--xml', '@INPUT1@',
+-    '--icd-lib-path', vulkan_icd_lib_path,
+-    '--icd-filename', icd_file_name,
+-    '--out', '@OUTPUT@',
+-  ],
+-  build_by_default : true,
+-  install_dir : with_vulkan_icd_dir,
+-  install_tag : 'runtime',
+-  install : true,
+-)
+-
+-kosmickrisp_icd = custom_target(
+-  'kosmickrisp_mesa_devenv_icd',
+-  input : [vk_icd_gen, vk_api_xml],
+-  output : 'kosmickrisp_mesa_devenv_icd.@0@.json'.format(host_machine.cpu()),
+-  command : [
+-    prog_python, '@INPUT0@',
+-    '--api-version', '1.4', '--xml', '@INPUT1@',
+-    '--icd-lib-path', meson.current_build_dir(),
+-    '--icd-filename', icd_file_name,
+-    '--out', '@OUTPUT@',
+-  ],
+-  build_by_default : true,
+-)
+-
+-devenv.append('VK_DRIVER_FILES', kosmickrisp_icd.full_path())
++# The embedding target consumes the static dependency set and explicit resolver.
++# Do not produce a desktop dylib with unresolved dynamic-lookup imports.
++if not get_option('floe-kk-embedded')
++  # Happens with macOS ld linker:
++  # "-Wl,-undefined,dynamic_lookup" required, otherwise, linker will complain about undefined symbols
++  libvulkan_kosmickrisp = shared_library(
++    'vulkan_kosmickrisp',
++    link_whole: [libkk],
++    link_args: [ld_args_build_id, '-Wl,-undefined,dynamic_lookup'],
++    gnu_symbol_visibility : 'hidden',
++    install : true,
++  )
++  
++  icd_file_name = libname_prefix + 'vulkan_kosmickrisp.' + libname_suffix
++  
++  kosmickrisp_mesa_icd = custom_target(
++    'kosmickrisp_mesa_icd',
++    input : [vk_icd_gen, vk_api_xml],
++    output : 'kosmickrisp_mesa_icd.' + vulkan_manifest_suffix,
++    command : [
++      prog_python, '@INPUT0@',
++      '--api-version', '1.4', '--xml', '@INPUT1@',
++      '--icd-lib-path', vulkan_icd_lib_path,
++      '--icd-filename', icd_file_name,
++      '--out', '@OUTPUT@',
++    ],
++    build_by_default : true,
++    install_dir : with_vulkan_icd_dir,
++    install_tag : 'runtime',
++    install : true,
++  )
++  
++  kosmickrisp_icd = custom_target(
++    'kosmickrisp_mesa_devenv_icd',
++    input : [vk_icd_gen, vk_api_xml],
++    output : 'kosmickrisp_mesa_devenv_icd.@0@.json'.format(host_machine.cpu()),
++    command : [
++      prog_python, '@INPUT0@',
++      '--api-version', '1.4', '--xml', '@INPUT1@',
++      '--icd-lib-path', meson.current_build_dir(),
++      '--icd-filename', icd_file_name,
++      '--out', '@OUTPUT@',
++    ],
++    build_by_default : true,
++  )
++  
++  devenv.append('VK_DRIVER_FILES', kosmickrisp_icd.full_path())
++endif
+diff --git a/src/kosmickrisp/vulkan/kk_instance.c b/src/kosmickrisp/vulkan/kk_instance.c
+--- a/src/kosmickrisp/vulkan/kk_instance.c
++++ b/src/kosmickrisp/vulkan/kk_instance.c
+@@ -61,7 +61,7 @@
+ #ifdef VK_USE_PLATFORM_METAL_EXT
+    .EXT_metal_surface = true,
+ #endif
+-#ifndef VK_USE_PLATFORM_METAL_EXT
++#if !defined(VK_USE_PLATFORM_METAL_EXT) && !defined(FLOE_KK_HEADLESS_COMPONENT)
+    .EXT_headless_surface = true,
+ #endif
+    .KHR_device_group_creation = true,
+diff --git a/src/kosmickrisp/vulkan/kk_physical_device.c b/src/kosmickrisp/vulkan/kk_physical_device.c
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c
+@@ -6,6 +6,10 @@
+  */
+ 
+ #include "kk_physical_device.h"
++
++#ifdef __APPLE__
++#include <TargetConditionals.h>
++#endif
+ 
+ #include "kk_debug.h"
+ #include "kk_entrypoints.h"
+@@ -1157,6 +1161,9 @@
+       settings->disabled_workarounds |= BITFIELD64_BIT(index);
+    }
+ 
++   /* macOS fixes are not evidence that the iOS driver/compiler bugs
++    * are resolved. Retain conservative workarounds pending iOS qualification. */
++#if !defined(__APPLE__) || TARGET_OS_OSX
+    /* Workarounds resolved on macOS 27 */
+    if (ns_is_os_version_at_least(27, 0, 0)) {
+       /* 1-6 */
+@@ -1168,6 +1175,7 @@
+       settings->disabled_workarounds |= BITFIELD64_BIT(17);
+       settings->disabled_workarounds |= BITFIELD64_BIT(18);
+    }
++#endif
+    /* M5 only workarounds */
+    if (pdev->info.gpu_apple_family >= 10) {
+       settings->disabled_workarounds &= ~BITFIELD64_BIT(2);

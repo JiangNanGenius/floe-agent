@@ -1,0 +1,52 @@
+{
+  "clspv-LICENSE": {
+    "bytes": 27827,
+    "sha256": "2050d82ea19614989deac39163c471b6e753659dfd4e4e88c6f724624db59f32",
+    "url": "https://raw.githubusercontent.com/google/clspv/7ee3a40e652b3649d175758f72d7af98b9450a68/LICENSE"
+  },
+  "clvk-LICENSE": {
+    "bytes": 11358,
+    "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "url": "https://raw.githubusercontent.com/kpet/clvk/399abf00c30b6d1d7a65d7ac06beee60b5991d7b/LICENSE"
+  },
+  "libclc-LICENSE.TXT": {
+    "bytes": 16469,
+    "sha256": "3c536c052db9afd997809e38785c9f2a9e54e2892330fa7c5b438e18a7413479",
+    "url": "https://raw.githubusercontent.com/llvm/llvm-project/71a85ef89fc1997205104b72447e0dc2c4ad83da/libclc/LICENSE.TXT"
+  },
+  "llvm-LICENSE.TXT": {
+    "bytes": 15141,
+    "sha256": "8d85c1057d742e597985c7d4e6320b015a9139385cff4cbae06ffc0ebe89afee",
+    "url": "https://raw.githubusercontent.com/llvm/llvm-project/71a85ef89fc1997205104b72447e0dc2c4ad83da/LICENSE.TXT"
+  },
+  "ocl-icd-COPYING": {
+    "bytes": 1396,
+    "sha256": "6b10d78a1971cf0a97feb5140f0821cbe53cfd06771852eef7dc3bd7f771251e",
+    "url": "https://sources.debian.org/data/main/o/ocl-icd/2.3.3-1/COPYING"
+  },
+  "opencl-headers-LICENSE": {
+    "bytes": 11358,
+    "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "url": "https://raw.githubusercontent.com/KhronosGroup/OpenCL-Headers/386ca390b2f52efeb3e1a55a500690eb8013f60e/LICENSE"
+  },
+  "spirv-headers-LICENSE": {
+    "bytes": 23503,
+    "sha256": "ea43b1de38a6f90c488800d66dec1ed671e68cda530266bc96951fb5b6307613",
+    "url": "https://raw.githubusercontent.com/KhronosGroup/SPIRV-Headers/2b7475f6d664efbad4d4315c94ecec9640831e5b/LICENSE"
+  },
+  "spirv-llvm-translator-LICENSE.TXT": {
+    "bytes": 3281,
+    "sha256": "e3bc36440fc927c62d5cc24efeefe225a14d4e34ffeb0c92e430625cce9ee444",
+    "url": "https://raw.githubusercontent.com/KhronosGroup/SPIRV-LLVM-Translator/c4a6b42303c6b45a64ede3d1c0399dce2d90f3fc/LICENSE.TXT"
+  },
+  "spirv-tools-LICENSE": {
+    "bytes": 11358,
+    "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "url": "https://raw.githubusercontent.com/KhronosGroup/SPIRV-Tools/ba9a9e32160e2500ce1e48cc563a8fedaf596e6e/LICENSE"
+  },
+  "vulkan-headers-LICENSE.md": {
+    "bytes": 458,
+    "sha256": "ac24e5ea920e4318e4d02c4086ae51f53cfb03feed06c18df1019e7ada1ec7bc",
+    "url": "https://raw.githubusercontent.com/KhronosGroup/Vulkan-Headers/952f776f6573aafbb62ea717d871cd1d6816c387/LICENSE.md"
+  }
+}

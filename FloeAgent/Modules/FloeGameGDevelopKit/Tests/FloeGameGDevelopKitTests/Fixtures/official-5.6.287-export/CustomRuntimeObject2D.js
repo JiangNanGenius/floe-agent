@@ -1,0 +1,2 @@
+var gdjs;(function(t){class i extends t.CustomRuntimeObject{constructor(e,r,n){super(e,r,n)}_createRender(){const e=this._runtimeScene;return new t.CustomRuntimeObject2DRenderer(this,this._instanceContainer,e)}_reinitializeRenderer(){this.getRenderer().reinitialize(this,this.getParent())}getRenderer(){return super.getRenderer()}getRendererObject(){return this.getRenderer().getRendererObject()}}t.CustomRuntimeObject2D=i})(gdjs||(gdjs={}));
+//# sourceMappingURL=CustomRuntimeObject2D.js.map

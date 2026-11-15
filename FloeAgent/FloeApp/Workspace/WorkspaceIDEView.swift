@@ -3,6 +3,7 @@
 import SwiftUI
 import Combine
 import FloeDocuments
+import FloeGameIDEBridge
 import FloeWorkspace
 
 /// An IDE pins one workspace for its lifetime, including terminal ownership.
@@ -21,6 +22,8 @@ struct WorkspaceIDEView: View {
     @ObservedObject var center: WorkspaceCenter
     let initialRelativePath: String?
     let onSaved: () -> Void
+    private let projectRunExtension: IDEProjectRunExtension?
+    private let gameConversationID: UUID?
     @StateObject private var state: IDEWorkbenchState
     @StateObject private var tabs: IDEWorkspaceTabStore
     @StateObject private var sourceControlCenter: SourceControlCenter
@@ -31,6 +34,12 @@ struct WorkspaceIDEView: View {
     private let root: URL?
     @Environment(\.dismiss) private var dismiss
     @Environment(\.horizontalSizeClass) private var sizeClass
+    @Environment(\.gameIDERunExtensionProvider) private var gameRunProvider
+    @State private var gameRunExtension: IDEProjectRunExtension?
+    @State private var gameRunRequest: GameIDEGameRunRequest?
+    @State private var gameLookupTask: Task<Void, Never>?
+    @State private var gameLookupGeneration: UInt64 = 0
+    @State private var gameOwnedSession: GameWorkspaceSession?
     @State private var showsCloseConfirmation = false
     @State private var nativeCloseRequest: String?
     /// A refused native open (budget full with every buffer dirty, or an
@@ -68,8 +77,14 @@ struct WorkspaceIDEView: View {
         let tab: IDEWorkspaceTab
     }
 
-    init(initialRelativePath: String? = nil, center: WorkspaceCenter, onSaved: @escaping () -> Void = {}) {
+    init(initialRelativePath: String? = nil, center: WorkspaceCenter,
+         conversationID: UUID? = nil, initialSidebarMode: IDESidebarMode? = nil,
+         projectRunExtension: IDEProjectRunExtension? = nil,
+         onSaved: @escaping () -> Void = {}) {
         self.center = center; self.initialRelativePath = initialRelativePath; self.onSaved = onSaved
+        self.projectRunExtension = projectRunExtension
+        self.gameConversationID = conversationID
+        _sidebar = State(initialValue: initialSidebarMode)
         self.workspaceID = center.currentWorkspace?.id
         self.workspaceName = center.currentWorkspace?.name ?? String(localized: "ide.workspace")
         self.root = center.currentRootURL
@@ -182,7 +197,8 @@ struct WorkspaceIDEView: View {
                         Label(IDELanguageRunText.t("运行", "Run"), systemImage: "play.fill")
                     }
                     .frame(minWidth: 44, minHeight: 44)
-                    .disabled(state.activePath == nil || root == nil || center.currentWorkspace?.id != workspaceID)
+                    .disabled(gameLookupTask != nil || root == nil || center.currentWorkspace?.id != workspaceID
+                              || (projectRunExtension == nil && gameRunProvider == nil && state.activePath == nil))
                     .accessibilityIdentifier("workspace.ide.run")
                     Button { Task { if await saveAllSurfaces() { onSaved() } } } label: {
                         Label("ide.save.all", systemImage: "square.and.arrow.down")
@@ -203,7 +219,23 @@ struct WorkspaceIDEView: View {
                 // drive the real UITextView through XCTest typing instead.
             }
         }
-        .interactiveDismissDisabled(state.saving || hasOfficeEdits || state.nativeText.hasDirty)
+        .interactiveDismissDisabled(state.saving || hasOfficeEdits || state.nativeText.hasDirty || gameLookupTask != nil)
+        .onDisappear {
+            if gameRunRequest == nil {
+                gameLookupGeneration &+= 1
+                gameLookupTask?.cancel()
+            }
+        }
+        .onChange(of: center.currentWorkspace?.id) { _, _ in
+            if !pinnedWorkspaceIsCurrent {
+                gameLookupGeneration &+= 1
+                gameLookupTask?.cancel()
+            }
+        }
+        .fullScreenCover(item: $gameRunRequest) { request in
+            GameIDEGameRunScreen(request: request, registry: center.environment.gameWorkspaces)
+                .environmentObject(center.environment)
+        }
         .sheet(item: $presentedRunController, onDismiss: {
             showsRunTerminal = false
             // A late service/run callback after the sheet closed must not
@@ -628,6 +660,49 @@ struct WorkspaceIDEView: View {
     /// the same surface renders the local session stream and the captured
     /// remote result.
     private func presentRun() {
+        guard gameLookupTask == nil, pinnedWorkspaceIsCurrent else { return }
+        guard let gameRunProvider else {
+            if let projectRunExtension { launchGameExtension(projectRunExtension) }
+            else { presentLanguageRun() }
+            return
+        }
+        gameLookupGeneration &+= 1
+        let epoch = gameLookupGeneration
+        gameLookupTask = Task { @MainActor in
+            defer { if gameLookupGeneration == epoch { gameLookupTask = nil } }
+            do {
+                let session = try await gameRunProvider.prepare(center, conversationID: gameConversationID)
+                try Task.checkCancellation()
+                guard gameLookupGeneration == epoch, pinnedWorkspaceIsCurrent else { return }
+                guard let session else { presentLanguageRun(); return }
+                gameOwnedSession = session
+                gameRunRequest = GameIDEGameRunRequest(session: session,
+                    extensionOverride: projectRunExtension, saveAllSurfaces: saveGameSurfaces)
+            } catch is CancellationError { return }
+            catch { showRoutingNotice(error.localizedDescription) }
+        }
+    }
+
+    private func saveGameSurfaces() async -> Bool {
+        guard pinnedWorkspaceIsCurrent, let root, let current = center.currentRootURL,
+              current.standardizedFileURL.resolvingSymlinksInPath()
+                == root.standardizedFileURL.resolvingSymlinksInPath() else { return false }
+        let saved = await saveAllSurfaces()
+        return saved && pinnedWorkspaceIsCurrent
+    }
+
+    private func launchGameExtension(_ value: IDEProjectRunExtension) {
+        guard gameLookupTask == nil else { return }
+        gameRunExtension = value
+        gameLookupTask = Task { @MainActor in
+            defer { gameLookupTask = nil }
+            do { try await value.run(saveGameSurfaces) }
+            catch is CancellationError { return }
+            catch { showRoutingNotice(error.localizedDescription) }
+        }
+    }
+
+    private func presentLanguageRun() {
         guard let workspaceID, root != nil, let path = state.activePath, !path.isEmpty else { return }
         let controller = runController ?? IDELanguageRunController(
             workspaceID: workspaceID, root: root, center: center, state: state
@@ -832,7 +907,20 @@ struct WorkspaceIDEView: View {
     }
 
     private func finishClose() async {
-        // Do not leave a run-owned session behind when the IDE closes.
+        gameLookupGeneration &+= 1
+        if let gameLookupTask { gameLookupTask.cancel(); await gameLookupTask.value }
+        self.gameLookupTask = nil
+        if let projectRunExtension { await projectRunExtension.stop() }
+        if let gameRunExtension { await gameRunExtension.stop() }
+        if let session = gameOwnedSession {
+            let play = center.environment.gameWorkspaces.playCoordinator(for: session)
+            let receipt = await play.stop()
+            guard receipt.stopConfirmed == true || (receipt.runID == nil && !play.isRunning) else {
+                showRoutingNotice(IDELanguageRunText.t("请先重试停止游戏，再关闭 IDE。", "Retry stopping the game before closing the IDE."))
+                return
+            }
+        }
+        // Existing language runs retain their owned stop path.
         if let runController { await runController.stop() }
         await tabs.releaseAll()
         onSaved()

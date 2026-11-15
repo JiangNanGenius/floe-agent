@@ -901,13 +901,35 @@ struct BrowserPageCapturePort: DesignPageCapturePort {
             throw FloeError.validationFailed("This task's browser has no open page to capture")
         }
         try validateScope(session, center: center, conversationID: conversationID, runID: runID)
+        // A run-identified design capture is a model page read: acquire the
+        // same holding period as the browser tools first. A nil run is the
+        // existing explicit UI/manual capture path and keeps the old behavior.
+        var acquired: BrowserSessionCenter.ModelControl?
+        if let runID {
+            acquired = try center.beginModelControl(conversationID: conversationID, runID: runID)
+        }
+        defer {
+            if let acquired, acquired.acquiredNow {
+                _ = acquired.session.releaseModelControl(
+                    controlID: acquired.lease.id,
+                    runID: acquired.lease.runID
+                )
+            }
+        }
         let command = BrowserCommand(sessionID: session.sessionID, action: .observe(cursor: nil))
-        let result = await center.execute(command, in: conversationID)
+        let result: BrowserResult
+        if let acquired {
+            result = await center.execute(
+                command, in: conversationID, control: acquired.lease)
+        } else {
+            result = await center.execute(command, in: conversationID)
+        }
         if let afterObservation { await afterObservation(result) }
         try Task.checkCancellation()
         // Observation yields to WebKit. Release/recreation or run admission
         // during that await cannot authorize the old completion.
         try validateScope(session, center: center, conversationID: conversationID, runID: runID)
+        if let acquired { try acquired.session.assertModelControlCurrent(acquired.lease) }
         guard result.status == .ok, let page = result.page else {
             throw FloeError.validationFailed("Page capture failed: \(result.status.rawValue)")
         }

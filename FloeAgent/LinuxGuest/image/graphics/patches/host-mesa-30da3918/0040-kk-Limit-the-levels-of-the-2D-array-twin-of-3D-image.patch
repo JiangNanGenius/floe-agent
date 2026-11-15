@@ -1,0 +1,28 @@
+From 3bc2b9aa6e478eb89b22ccfaac79a653d4d26c04 Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Fri, 2 Oct 2026 15:20:51 -0400
+Subject: [PATCH] kk: Limit the levels of the 2D array twin of 3D images
+
+Generated-by: LLM
+---
+ src/kosmickrisp/vulkan/kk_image.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/src/kosmickrisp/vulkan/kk_image.c b/src/kosmickrisp/vulkan/kk_image.c
+index 6baffceed0b..39bc65d00e9 100644
+--- a/src/kosmickrisp/vulkan/kk_image.c
++++ b/src/kosmickrisp/vulkan/kk_image.c
+@@ -1110,6 +1110,10 @@ kk_image_plane_bind(struct kk_device *dev, struct kk_image *image,
+       array_layout.type = MTL_TEXTURE_TYPE_2D_ARRAY;
+       array_layout.layers = array_layout.layers * array_layout.depth_px;
+       array_layout.depth_px = 1u;
++      array_layout.levels =
++         MIN2(array_layout.levels,
++              util_logbase2(MAX2(array_layout.width_px,
++                                 array_layout.height_px)) + 1u);
+       plane->mtl_handle_array = mtl_new_texture_with_descriptor(
+          mem->bo->mtl_handle, &array_layout, *offset_B);
+       if (image->vk.base.object_name)
+-- 
+2.54.0 (Apple Git-157)
+

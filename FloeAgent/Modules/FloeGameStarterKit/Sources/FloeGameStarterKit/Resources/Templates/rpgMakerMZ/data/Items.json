@@ -1,0 +1,24 @@
+[
+  null,
+  {
+    "id": 1,
+    "name": "Rope Coil",
+    "iconIndex": 2,
+    "description": "Sturdy hemp rope for the ferry.",
+    "price": 12,
+    "consumable": true,
+    "scope": 0,
+    "occasion": 0,
+    "animationId": 0,
+    "damage": {
+      "type": 0,
+      "elementId": 0,
+      "formula": "0",
+      "variance": 0,
+      "critical": false
+    },
+    "effects": [],
+    "note": "Original Floe starter item.",
+    "itypeId": 1
+  }
+]

@@ -97,7 +97,7 @@ extension PersonalContentPreviewService {
             inner = try await savedChemical(ownerID: owner, projectID: record.id,
                 root: directory.appendingPathComponent("Chemistry", isDirectory: true),
                 maximumPixelSize: maximumPixelSize, validate: validate)
-        case .canvas, .diagram, .music, .meeting, .printing, .manufacturing:
+        case .game, .canvas, .diagram, .music, .meeting, .printing, .manufacturing:
             inner = try await remainingLibraryRequest(record: record, directory: directory, ownerID: owner,
                 maximumPixelSize: maximumPixelSize, validate: validate)
         case .biology:

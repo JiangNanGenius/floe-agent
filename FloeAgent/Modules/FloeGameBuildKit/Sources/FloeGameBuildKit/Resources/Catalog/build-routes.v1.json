@@ -1,0 +1,2464 @@
+{
+  "schemaVersion": 1,
+  "catalogID": "floe-game-build-routes-20261112",
+  "engineCount": 20,
+  "engines": [
+    {
+      "engine": "unity",
+      "adapter": {
+        "kind": "ci-compile",
+        "component": "GameCIWorkflowTemplates",
+        "entryPoint": "floe-game-build-unity.yml",
+        "sourceStatus": "source-qualified"
+      },
+      "distributionProfileID": "user-toolchain",
+      "stages": [
+        {
+          "id": "prepare",
+          "name": "Verify source identity and unpack the selected transport",
+          "runner": "userCI",
+          "commands": [
+            "python3 tools/floe-source-verify.py --transport \"$FLOE_SOURCE_TRANSPORT\" --destination src"
+          ],
+          "component": "GameBuildSourceTransport.prepare"
+        },
+        {
+          "id": "build-web",
+          "name": "Unity WebGL build on the user's CI",
+          "runner": "userCI",
+          "commands": [
+            "game-ci/unity-builder targetPlatform=WebGL"
+          ],
+          "component": null
+        },
+        {
+          "id": "build-windows",
+          "name": "Unity StandaloneWindows64 build",
+          "runner": "userCI",
+          "commands": [
+            "game-ci/unity-builder targetPlatform=StandaloneWindows64"
+          ],
+          "component": null
+        },
+        {
+          "id": "build-macos",
+          "name": "Unity StandaloneOSX build",
+          "runner": "userCI",
+          "commands": [
+            "game-ci/unity-builder targetPlatform=StandaloneOSX"
+          ],
+          "component": null
+        },
+        {
+          "id": "build-ios",
+          "name": "Unity iOS Xcode project build",
+          "runner": "userCI",
+          "commands": [
+            "game-ci/unity-builder targetPlatform=iOS"
+          ],
+          "component": null
+        },
+        {
+          "id": "package",
+          "name": "Validate/package expected outputs + provenance",
+          "runner": "userCI",
+          "commands": [
+            "python3 tools/floe-artifact-verify.py"
+          ],
+          "component": null
+        }
+      ],
+      "routes": [
+        {
+          "id": "unity-web",
+          "kind": "webBundle",
+          "platform": "web",
+          "stageID": "package",
+          "artifactName": "unity-web.zip",
+          "producer": "ci",
+          "proof": "commandOnly",
+          "playable": true,
+          "deliveryNote": "Playable through WebKit after a real user-licensed Unity WebGL build; this plan does not claim an executed build.",
+          "requires": [
+            "unity-editor",
+            "unity-webgl-module"
+          ],
+          "templateID": "floe-game-build-unity",
+          "jobID": "web",
+          "component": null,
+          "entryPoint": null,
+          "validation": {
+            "kind": "webBundle",
+            "entry": "index.html"
+          },
+          "enabledByDefault": true
+        },
+        {
+          "id": "unity-windows",
+          "kind": "nativeInstaller",
+          "platform": "windows",
+          "stageID": "build-windows",
+          "artifactName": "unity-windows.zip",
+          "producer": "ci",
+          "proof": "commandOnly",
+          "playable": true,
+          "deliveryNote": "Unsigned StandaloneWindows64 build; user signs/distributes.",
+          "requires": [
+            "unity-editor",
+            "unity-windows-module"
+          ],
+          "templateID": "floe-game-build-unity",
+          "jobID": "build-windows",
+          "component": null,
+          "entryPoint": null,
+          "validation": {
+            "kind": "nativeZip",
+            "member": "*.exe"
+          },
+          "enabledByDefault": true
+        },
+        {
+          "id": "unity-macos",
+          "kind": "nativeInstaller",
+          "platform": "macOS",
+          "stageID": "build-macos",
+          "artifactName": "unity-macos.zip",
+          "producer": "ci",
+          "proof": "commandOnly",
+          "playable": true,
+          "deliveryNote": "Unsigned macOS .app in a zip; user signs for Gatekeeper.",
+          "requires": [
+            "unity-editor",
+            "unity-macos-module"
+          ],
+          "templateID": "floe-game-build-unity",
+          "jobID": "build-macos",
+          "component": null,
+          "entryPoint": null,
+          "validation": {
+            "kind": "nativeZip",
+            "member": "*.app/Contents/Info.plist"
+          },
+          "enabledByDefault": true
+        },
+        {
+          "id": "unity-ios",
+          "kind": "nativeProject",
+          "platform": "ios",
+          "stageID": "build-ios",
+          "artifactName": "unity-ios-xcodeproj.zip",
+          "producer": "ci",
+          "proof": "commandOnly",
+          "playable": false,
+          "deliveryNote": "Xcode project only. This is not an installable IPA from the template; the user's signing/export pipeline is required.",
+          "requires": [
+            "unity-editor",
+            "unity-ios-module"
+          ],
+          "templateID": "floe-game-build-unity",
+          "jobID": "build-ios",
+          "component": null,
+          "entryPoint": null,
+          "validation": {
+            "kind": "xcodeproj"
+          },
+          "enabledByDefault": true
+        },
+        {
+          "id": "unity-source",
+          "kind": "sourceArchive",
+          "platform": null,
+          "stageID": "prepare",
+          "artifactName": "unity-source.zip",
+          "producer": "sourceArchive",
+          "proof": "sourceQualified",
+          "playable": false,
+          "deliveryNote": "Byte-preserving source snapshot of the exact saved revision; never presented as playable.",
+          "requires": [],
+          "templateID": null,
+          "jobID": null,
+          "component": "GameBuildCoordinator.stagedSource",
+          "entryPoint": null,
+          "validation": {},
+          "enabledByDefault": true
+        }
+      ],
+      "prerequisites": [
+        {
+          "id": "unity-editor",
+          "version": "2022.3 LTS or the project's ProjectVersion.txt",
+          "documentation": "https://docs.unity3d.com/2022.3/Documentation/Manual/CommandLineArguments.html",
+          "note": "User-configured CI runner with a licensed Unity editor; UNITY_LICENSE/email/password are user CI secrets.",
+          "required": true
+        },
+        {
+          "id": "unity-webgl-module",
+          "version": "matching editor",
+          "documentation": "https://docs.unity3d.com/2022.3/Documentation/Manual/CommandLineArguments.html",
+          "note": "WebGL Build Support installed.",
+          "required": true
+        },
+        {
+          "id": "unity-windows-module",
+          "version": "matching editor",
+          "documentation": "https://docs.unity3d.com/2022.3/Documentation/Manual/CommandLineArguments.html",
+          "note": "Windows Build Support installed.",
+          "required": true
+        },
+        {
+          "id": "unity-macos-module",
+          "version": "matching editor",
+          "documentation": "https://docs.unity3d.com/2022.3/Documentation/Manual/CommandLineArguments.html",
+          "note": "macOS Build Support installed on a macOS runner.",
+          "required": true
+        },
+        {
+          "id": "unity-ios-module",
+          "version": "matching editor",
+          "documentation": "https://docs.unity3d.com/2022.3/Documentation/Manual/CommandLineArguments.html",
+          "note": "iOS Build Support on a macOS runner; produces an Xcode project, not an IPA.",
+          "required": true
+        }
+      ],
+      "workflowTemplateID": "floe-game-build-unity",
+      "sourceTransports": [
+        "repositorySnapshot",
+        "existingArtifact"
+      ],
+      "notes": []
+    },
+    {
+      "engine": "godot",
+      "adapter": {
+        "kind": "ci-compile",
+        "component": "GameCIWorkflowTemplates",
+        "entryPoint": "floe-game-build-godot.yml",
+        "sourceStatus": "actual-build-and-runtime"
+      },
+      "distributionProfileID": "godot-runtime",
+      "stages": [
+        {
+          "id": "prepare",
+          "name": "Verify source identity and unpack the selected transport",
+          "runner": "userCI",
+          "commands": [
+            "python3 tools/floe-source-verify.py --transport \"$FLOE_SOURCE_TRANSPORT\" --destination src"
+          ],
+          "component": "GameBuildSourceTransport.prepare"
+        },
+        {
+          "id": "export-web",
+          "name": "Godot headless Web export",
+          "runner": "userCI",
+          "commands": [
+            "godot --headless --path src --export-release \"Web\" build/web/index.html"
+          ],
+          "component": null
+        },
+        {
+          "id": "export-windows",
+          "name": "Godot headless Windows export",
+          "runner": "userCI",
+          "commands": [
+            "godot --headless --path src --export-release \"Windows Desktop\" build/windows/game.exe"
+          ],
+          "component": null
+        },
+        {
+          "id": "export-linux",
+          "name": "Godot headless Linux export",
+          "runner": "userCI",
+          "commands": [
+            "godot --headless --path src --export-release \"Linux\" build/linux/game.x86_64"
+          ],
+          "component": null
+        },
+        {
+          "id": "package",
+          "name": "Validate/package bundles + provenance",
+          "runner": "userCI",
+          "commands": [
+            "python3 tools/floe-artifact-verify.py"
+          ],
+          "component": null
+        }
+      ],
+      "routes": [
+        {
+          "id": "godot-web",
+          "kind": "webBundle",
+          "platform": "web",
+          "stageID": "package",
+          "artifactName": "godot-web.zip",
+          "producer": "ci",
+          "proof": "actualBuildAndRuntime",
+          "playable": true,
+          "deliveryNote": "Actual headless Web export and actual WebKit run are recorded; changed source must be rebuilt and reverified.",
+          "requires": [
+            "godot-editor",
+            "godot-export-templates"
+          ],
+          "templateID": "floe-game-build-godot",
+          "jobID": "export-web",
+          "component": null,
+          "entryPoint": null,
+          "validation": {
+            "kind": "webBundle",
+            "entry": "index.html"
+          },
+          "enabledByDefault": true
+        },
+        {
+          "id": "godot-windows",
+          "kind": "nativeInstaller",
+          "platform": "windows",
+          "stageID": "export-windows",
+          "artifactName": "godot-windows.zip",
+          "producer": "ci",
+          "proof": "commandOnly",
+          "playable": true,
+          "deliveryNote": "Exported exe+pck in a zip; unsigned, user signs/distributes.",
+          "requires": [
+            "godot-editor",
+            "godot-export-templates"
+          ],
+          "templateID": "floe-game-build-godot",
+          "jobID": "export-windows",
+          "component": null,
+          "entryPoint": null,
+          "validation": {
+            "kind": "nativeZip",
+            "member": "*.exe"
+          },
+          "enabledByDefault": true
+        },
+        {
+          "id": "godot-linux",
+          "kind": "nativeInstaller",
+          "platform": "linux",
+          "stageID": "export-linux",
+          "artifactName": "godot-linux.zip",
+          "producer": "ci",
+          "proof": "commandOnly",
+          "playable": true,
+          "deliveryNote": "Exported Linux binary in a zip; unsigned, user signs/distributes.",
+          "requires": [
+            "godot-editor",
+            "godot-export-templates"
+          ],
+          "templateID": "floe-game-build-godot",
+          "jobID": "export-linux",
+          "component": null,
+          "entryPoint": null,
+          "validation": {
+            "kind": "nativeZip",
+            "member": "game.x86_64"
+          },
+          "enabledByDefault": true
+        },
+        {
+          "id": "godot-source",
+          "kind": "sourceArchive",
+          "platform": null,
+          "stageID": "prepare",
+          "artifactName": "godot-source.zip",
+          "producer": "sourceArchive",
+          "proof": "sourceQualified",
+          "playable": false,
+          "deliveryNote": "Byte-preserving source snapshot of the exact saved revision; never presented as playable.",
+          "requires": [],
+          "templateID": null,
+          "jobID": null,
+          "component": "GameBuildCoordinator.stagedSource",
+          "entryPoint": null,
+          "validation": {},
+          "enabledByDefault": true
+        }
+      ],
+      "prerequisites": [
+        {
+          "id": "godot-editor",
+          "version": "4.x matching the project",
+          "documentation": "https://docs.godotengine.org/en/stable/tutorials/export/exporting_projects.html",
+          "note": "Godot editor binary on the CI runner.",
+          "required": true
+        },
+        {
+          "id": "godot-export-templates",
+          "version": "matching editor",
+          "documentation": "https://docs.godotengine.org/en/stable/tutorials/export/exporting_projects.html",
+          "note": "Official export templates and export_presets.cfg.",
+          "required": true
+        }
+      ],
+      "workflowTemplateID": "floe-game-build-godot",
+      "sourceTransports": [
+        "repositorySnapshot",
+        "existingArtifact"
+      ],
+      "notes": []
+    },
+    {
+      "engine": "cocosCreator",
+      "adapter": {
+        "kind": "ci-compile",
+        "component": "GameCIWorkflowTemplates",
+        "entryPoint": "floe-game-build-cocos.yml",
+        "sourceStatus": "command-only"
+      },
+      "distributionProfileID": "user-toolchain",
+      "stages": [
+        {
+          "id": "prepare",
+          "name": "Verify source identity and unpack the selected transport",
+          "runner": "userCI",
+          "commands": [
+            "python3 tools/floe-source-verify.py --transport \"$FLOE_SOURCE_TRANSPORT\" --destination src"
+          ],
+          "component": "GameBuildSourceTransport.prepare"
+        },
+        {
+          "id": "build-web",
+          "name": "Cocos Creator command-line Web build",
+          "runner": "userCI",
+          "commands": [
+            "CocosCreator --project . --build \"stage=build;configPath=./floe-cocos-build.json\""
+          ],
+          "component": null
+        },
+        {
+          "id": "build-android-project",
+          "name": "Cocos Creator Android native project build",
+          "runner": "userCI",
+          "commands": [
+            "CocosCreator --project . --build \"stage=build;configPath=./floe-cocos-android.json\""
+          ],
+          "component": null
+        },
+        {
+          "id": "make-android",
+          "name": "Cocos Creator Make -> Gradle APK in the same generated native-project workspace",
+          "runner": "userCI",
+          "commands": [
+            "CocosCreator --project . --build \"stage=make;configPath=./floe-cocos-android.json\"",
+            "python3 tools/floe-artifact-verify.py --kind apk"
+          ],
+          "component": null
+        },
+        {
+          "id": "package",
+          "name": "Validate/package expected outputs + provenance",
+          "runner": "userCI",
+          "commands": [
+            "python3 tools/floe-artifact-verify.py"
+          ],
+          "component": null
+        }
+      ],
+      "routes": [
+        {
+          "id": "cocos-web",
+          "kind": "webBundle",
+          "platform": "web",
+          "stageID": "build-web",
+          "artifactName": "cocos-web.zip",
+          "producer": "ci",
+          "proof": "commandOnly",
+          "playable": true,
+          "deliveryNote": "Cocos Creator 3.8.x CLI Web build on a GUI-capable macOS or Windows user runner; this template uses the documented macOS host. Web requests do not require Android SDK/NDK.",
+          "requires": [
+            "cocos-creator"
+          ],
+          "templateID": "floe-game-build-cocos",
+          "jobID": "web",
+          "component": null,
+          "entryPoint": null,
+          "validation": {
+            "kind": "webBundle",
+            "entry": "index.html"
+          },
+          "enabledByDefault": true
+        },
+        {
+          "id": "cocos-android-project",
+          "kind": "nativeProject",
+          "platform": "android",
+          "stageID": "build-android-project",
+          "artifactName": "cocos-android-project.zip",
+          "producer": "ci",
+          "proof": "commandOnly",
+          "playable": false,
+          "deliveryNote": "Cocos --build produces a native Android project, not an APK. The same-workspace template runs the documented Make/Gradle stage and only then claims an APK.",
+          "requires": [
+            "cocos-creator",
+            "android-sdk",
+            "android-ndk"
+          ],
+          "templateID": "floe-game-build-cocos",
+          "jobID": "android",
+          "component": null,
+          "entryPoint": null,
+          "validation": {
+            "kind": "nativeProject"
+          },
+          "enabledByDefault": true
+        },
+        {
+          "id": "cocos-android-apk",
+          "kind": "nativeInstaller",
+          "platform": "android",
+          "stageID": "make-android",
+          "artifactName": "cocos-android.apk",
+          "producer": "ci",
+          "proof": "commandOnly",
+          "playable": true,
+          "deliveryNote": "Only when the same-workspace Cocos stage=make/Gradle succeeds and the APK manifest/dex are verified; unsigned, user signs.",
+          "requires": [
+            "cocos-creator",
+            "android-sdk",
+            "android-ndk"
+          ],
+          "templateID": "floe-game-build-cocos",
+          "jobID": "android",
+          "component": null,
+          "entryPoint": null,
+          "validation": {
+            "kind": "apk"
+          },
+          "enabledByDefault": false
+        },
+        {
+          "id": "cocos-creator-source",
+          "kind": "sourceArchive",
+          "platform": null,
+          "stageID": "prepare",
+          "artifactName": "cocos-creator-source.zip",
+          "producer": "sourceArchive",
+          "proof": "sourceQualified",
+          "playable": false,
+          "deliveryNote": "Byte-preserving source snapshot of the exact saved revision; never presented as playable.",
+          "requires": [],
+          "templateID": null,
+          "jobID": null,
+          "component": "GameBuildCoordinator.stagedSource",
+          "entryPoint": null,
+          "validation": {},
+          "enabledByDefault": true
+        }
+      ],
+      "prerequisites": [
+        {
+          "id": "cocos-creator",
+          "version": "3.8.6 or the project's 3.8.x version",
+          "documentation": "https://docs.cocos.com/creator/3.8/manual/en/editor/publish/publish-in-command-line.html",
+          "note": "Official Cocos Creator editor on a GUI-capable macOS runner (GitHub-hosted macOS or a prepared self-hosted macOS runner) or an explicit pinned SDK artifact; no Linux/Xvfb route is claimed.",
+          "required": true
+        },
+        {
+          "id": "android-sdk",
+          "version": "API 34+",
+          "documentation": "https://docs.cocos.com/creator/3.8/manual/en/editor/publish/native-options.html",
+          "note": "Android SDK for the Android target's native project/Gradle stage; not required for a Web-only request.",
+          "required": true
+        },
+        {
+          "id": "android-ndk",
+          "version": "matching Cocos",
+          "documentation": "https://docs.cocos.com/creator/3.8/manual/en/editor/publish/native-options.html",
+          "note": "Android NDK for the Android target's native compile stage; not required for a Web-only request.",
+          "required": true
+        }
+      ],
+      "workflowTemplateID": "floe-game-build-cocos",
+      "sourceTransports": [
+        "repositorySnapshot",
+        "existingArtifact"
+      ],
+      "notes": []
+    },
+    {
+      "engine": "gdevelop",
+      "adapter": {
+        "kind": "host-exporter",
+        "component": "FloeGameGDevelopKit.GameGDevelopExportPlanner",
+        "entryPoint": "GameGDevelopExportPlan",
+        "sourceStatus": "actual-exporter-and-runtime"
+      },
+      "distributionProfileID": "gdevelop-sdk",
+      "stages": [
+        {
+          "id": "prepare",
+          "name": "Verify source identity and unpack the selected transport",
+          "runner": "userCI",
+          "commands": [
+            "python3 tools/floe-source-verify.py --transport \"$FLOE_SOURCE_TRANSPORT\" --destination src"
+          ],
+          "component": "GameBuildSourceTransport.prepare"
+        },
+        {
+          "id": "export-web",
+          "name": "Official GDevelop 5.6.287 SDK export via Floe helper",
+          "runner": "hostExporter",
+          "commands": [],
+          "component": "GameGDevelopExportPlanner.plan"
+        },
+        {
+          "id": "package",
+          "name": "Validate/package export + provenance",
+          "runner": "userCI",
+          "commands": [
+            "python3 tools/floe-artifact-verify.py"
+          ],
+          "component": null
+        }
+      ],
+      "routes": [
+        {
+          "id": "gdevelop-web",
+          "kind": "webBundle",
+          "platform": "web",
+          "stageID": "export-web",
+          "artifactName": "gdevelop-web.zip",
+          "producer": "hostExporter",
+          "proof": "actualExporterAndRuntime",
+          "playable": true,
+          "deliveryNote": "Official GDevelop 5.6.287 SDK export, byte-verified 77-file manifest and actual WebKit/Playwright input proof. The editor/manual-only route is retired.",
+          "requires": [
+            "gdevelop-sdk"
+          ],
+          "templateID": "floe-game-build-gdevelop",
+          "jobID": null,
+          "component": "FloeGameGDevelopKit.GameGDevelopExportRunner",
+          "entryPoint": null,
+          "validation": {
+            "kind": "webBundle",
+            "entry": "index.html"
+          },
+          "enabledByDefault": true
+        },
+        {
+          "id": "gdevelop-ci-web",
+          "kind": "webBundle",
+          "platform": "web",
+          "stageID": "export-web",
+          "artifactName": "gdevelop-web.zip",
+          "producer": "ci",
+          "proof": "commandOnly",
+          "playable": true,
+          "deliveryNote": "Linux CI route using the pinned official Linux SDK and Floe exporter helper; not executed in this source stage.",
+          "requires": [
+            "gdevelop-sdk",
+            "python3"
+          ],
+          "templateID": "floe-game-build-gdevelop",
+          "jobID": "linux-sdk-export",
+          "component": null,
+          "entryPoint": null,
+          "validation": {
+            "kind": "webBundle",
+            "entry": "index.html"
+          },
+          "enabledByDefault": true
+        },
+        {
+          "id": "gdevelop-source",
+          "kind": "sourceArchive",
+          "platform": null,
+          "stageID": "prepare",
+          "artifactName": "gdevelop-source.zip",
+          "producer": "sourceArchive",
+          "proof": "sourceQualified",
+          "playable": false,
+          "deliveryNote": "Byte-preserving source snapshot of the exact saved revision; never presented as playable.",
+          "requires": [],
+          "templateID": null,
+          "jobID": null,
+          "component": "GameBuildCoordinator.stagedSource",
+          "entryPoint": null,
+          "validation": {},
+          "enabledByDefault": true
+        }
+      ],
+      "prerequisites": [
+        {
+          "id": "gdevelop-sdk",
+          "version": "5.6.287 (source cfaccd2c20bba2b43fea529523042249c90b9a41)",
+          "documentation": "https://github.com/4ian/GDevelop/releases/tag/v5.6.287",
+          "note": "User-provided/downloaded official SDK; Linux sha256 d40a70... and macOS sha256 796c40... are pinned.",
+          "required": true
+        },
+        {
+          "id": "python3",
+          "version": "3.11+",
+          "documentation": "https://docs.python.org/3/",
+          "note": "Runs the reviewed Floe GDevelop exporter helper; no model-authored shell.",
+          "required": true
+        }
+      ],
+      "workflowTemplateID": "floe-game-build-gdevelop",
+      "sourceTransports": [
+        "repositorySnapshot",
+        "existingArtifact"
+      ],
+      "notes": []
+    },
+    {
+      "engine": "phaser",
+      "adapter": {
+        "kind": "host-static",
+        "component": "GameBuildCoordinator.sealWebBundle",
+        "entryPoint": "GameArchiveExchange.extract",
+        "sourceStatus": "actual-runtime"
+      },
+      "distributionProfileID": "floe-only",
+      "stages": [
+        {
+          "id": "prepare",
+          "name": "Verify source identity and unpack the selected transport",
+          "runner": "userCI",
+          "commands": [
+            "python3 tools/floe-source-verify.py --transport \"$FLOE_SOURCE_TRANSPORT\" --destination src"
+          ],
+          "component": "GameBuildSourceTransport.prepare"
+        },
+        {
+          "id": "build",
+          "name": "npm build when a lockfile/build script exists; else preserve the whole static tree",
+          "runner": "userCI",
+          "commands": [
+            "bash tools/floe-static-export.sh src dist"
+          ],
+          "component": null
+        },
+        {
+          "id": "package",
+          "name": "Validate/package web tree + provenance",
+          "runner": "userCI",
+          "commands": [
+            "python3 tools/floe-artifact-verify.py"
+          ],
+          "component": null
+        }
+      ],
+      "routes": [
+        {
+          "id": "phaser-web",
+          "kind": "webBundle",
+          "platform": "web",
+          "stageID": "package",
+          "artifactName": "phaser-web.zip",
+          "producer": "ci",
+          "proof": "actualRuntime",
+          "playable": true,
+          "deliveryNote": "Playable through the existing WebKit route. A qualified runtime baseline is recorded; changed source requires a new run.",
+          "requires": [],
+          "templateID": "floe-game-build-script-web",
+          "jobID": "build",
+          "component": null,
+          "entryPoint": null,
+          "validation": {
+            "kind": "webBundle",
+            "entry": "index.html"
+          },
+          "enabledByDefault": true
+        },
+        {
+          "id": "phaser-source",
+          "kind": "sourceArchive",
+          "platform": null,
+          "stageID": "prepare",
+          "artifactName": "phaser-source.zip",
+          "producer": "sourceArchive",
+          "proof": "sourceQualified",
+          "playable": false,
+          "deliveryNote": "Byte-preserving source snapshot of the exact saved revision; never presented as playable.",
+          "requires": [],
+          "templateID": null,
+          "jobID": null,
+          "component": "GameBuildCoordinator.stagedSource",
+          "entryPoint": null,
+          "validation": {},
+          "enabledByDefault": true
+        }
+      ],
+      "prerequisites": [
+        {
+          "id": "node-lts",
+          "version": "20.x",
+          "documentation": "https://docs.npmjs.com/cli/v10/commands/npm-ci",
+          "note": "Only used when package-lock.json or a build script exists; the static fallback needs no Node.",
+          "required": true
+        }
+      ],
+      "workflowTemplateID": "floe-game-build-script-web",
+      "sourceTransports": [
+        "repositorySnapshot",
+        "existingArtifact"
+      ],
+      "notes": []
+    },
+    {
+      "engine": "kaplay",
+      "adapter": {
+        "kind": "host-static",
+        "component": "GameBuildCoordinator.sealWebBundle",
+        "entryPoint": "GameArchiveExchange.extract",
+        "sourceStatus": "actual-runtime"
+      },
+      "distributionProfileID": "floe-only",
+      "stages": [
+        {
+          "id": "prepare",
+          "name": "Verify source identity and unpack the selected transport",
+          "runner": "userCI",
+          "commands": [
+            "python3 tools/floe-source-verify.py --transport \"$FLOE_SOURCE_TRANSPORT\" --destination src"
+          ],
+          "component": "GameBuildSourceTransport.prepare"
+        },
+        {
+          "id": "build",
+          "name": "npm build when a lockfile/build script exists; else preserve the whole static tree",
+          "runner": "userCI",
+          "commands": [
+            "bash tools/floe-static-export.sh src dist"
+          ],
+          "component": null
+        },
+        {
+          "id": "package",
+          "name": "Validate/package web tree + provenance",
+          "runner": "userCI",
+          "commands": [
+            "python3 tools/floe-artifact-verify.py"
+          ],
+          "component": null
+        }
+      ],
+      "routes": [
+        {
+          "id": "kaplay-web",
+          "kind": "webBundle",
+          "platform": "web",
+          "stageID": "package",
+          "artifactName": "kaplay-web.zip",
+          "producer": "ci",
+          "proof": "actualRuntime",
+          "playable": true,
+          "deliveryNote": "Playable through the existing WebKit route. A qualified runtime baseline is recorded; changed source requires a new run.",
+          "requires": [],
+          "templateID": "floe-game-build-script-web",
+          "jobID": "build",
+          "component": null,
+          "entryPoint": null,
+          "validation": {
+            "kind": "webBundle",
+            "entry": "index.html"
+          },
+          "enabledByDefault": true
+        },
+        {
+          "id": "kaplay-source",
+          "kind": "sourceArchive",
+          "platform": null,
+          "stageID": "prepare",
+          "artifactName": "kaplay-source.zip",
+          "producer": "sourceArchive",
+          "proof": "sourceQualified",
+          "playable": false,
+          "deliveryNote": "Byte-preserving source snapshot of the exact saved revision; never presented as playable.",
+          "requires": [],
+          "templateID": null,
+          "jobID": null,
+          "component": "GameBuildCoordinator.stagedSource",
+          "entryPoint": null,
+          "validation": {},
+          "enabledByDefault": true
+        }
+      ],
+      "prerequisites": [
+        {
+          "id": "node-lts",
+          "version": "20.x",
+          "documentation": "https://docs.npmjs.com/cli/v10/commands/npm-ci",
+          "note": "Only used when package-lock.json or a build script exists; the static fallback needs no Node.",
+          "required": true
+        }
+      ],
+      "workflowTemplateID": "floe-game-build-script-web",
+      "sourceTransports": [
+        "repositorySnapshot",
+        "existingArtifact"
+      ],
+      "notes": []
+    },
+    {
+      "engine": "babylon",
+      "adapter": {
+        "kind": "host-static",
+        "component": "GameBuildCoordinator.sealWebBundle",
+        "entryPoint": "GameArchiveExchange.extract",
+        "sourceStatus": "actual-runtime"
+      },
+      "distributionProfileID": "floe-only",
+      "stages": [
+        {
+          "id": "prepare",
+          "name": "Verify source identity and unpack the selected transport",
+          "runner": "userCI",
+          "commands": [
+            "python3 tools/floe-source-verify.py --transport \"$FLOE_SOURCE_TRANSPORT\" --destination src"
+          ],
+          "component": "GameBuildSourceTransport.prepare"
+        },
+        {
+          "id": "build",
+          "name": "npm build when a lockfile/build script exists; else preserve the whole static tree",
+          "runner": "userCI",
+          "commands": [
+            "bash tools/floe-static-export.sh src dist"
+          ],
+          "component": null
+        },
+        {
+          "id": "package",
+          "name": "Validate/package web tree + provenance",
+          "runner": "userCI",
+          "commands": [
+            "python3 tools/floe-artifact-verify.py"
+          ],
+          "component": null
+        }
+      ],
+      "routes": [
+        {
+          "id": "babylon-web",
+          "kind": "webBundle",
+          "platform": "web",
+          "stageID": "package",
+          "artifactName": "babylon-web.zip",
+          "producer": "ci",
+          "proof": "actualRuntime",
+          "playable": true,
+          "deliveryNote": "Playable through the existing WebKit route. A qualified runtime baseline is recorded; changed source requires a new run.",
+          "requires": [],
+          "templateID": "floe-game-build-script-web",
+          "jobID": "build",
+          "component": null,
+          "entryPoint": null,
+          "validation": {
+            "kind": "webBundle",
+            "entry": "index.html"
+          },
+          "enabledByDefault": true
+        },
+        {
+          "id": "babylon-source",
+          "kind": "sourceArchive",
+          "platform": null,
+          "stageID": "prepare",
+          "artifactName": "babylon-source.zip",
+          "producer": "sourceArchive",
+          "proof": "sourceQualified",
+          "playable": false,
+          "deliveryNote": "Byte-preserving source snapshot of the exact saved revision; never presented as playable.",
+          "requires": [],
+          "templateID": null,
+          "jobID": null,
+          "component": "GameBuildCoordinator.stagedSource",
+          "entryPoint": null,
+          "validation": {},
+          "enabledByDefault": true
+        }
+      ],
+      "prerequisites": [
+        {
+          "id": "node-lts",
+          "version": "20.x",
+          "documentation": "https://docs.npmjs.com/cli/v10/commands/npm-ci",
+          "note": "Only used when package-lock.json or a build script exists; the static fallback needs no Node.",
+          "required": true
+        }
+      ],
+      "workflowTemplateID": "floe-game-build-script-web",
+      "sourceTransports": [
+        "repositorySnapshot",
+        "existingArtifact"
+      ],
+      "notes": []
+    },
+    {
+      "engine": "playcanvas",
+      "adapter": {
+        "kind": "host-static",
+        "component": "GameBuildCoordinator.sealWebBundle",
+        "entryPoint": "GameArchiveExchange.extract",
+        "sourceStatus": "actual-runtime"
+      },
+      "distributionProfileID": "floe-only",
+      "stages": [
+        {
+          "id": "prepare",
+          "name": "Verify source identity and unpack the selected transport",
+          "runner": "userCI",
+          "commands": [
+            "python3 tools/floe-source-verify.py --transport \"$FLOE_SOURCE_TRANSPORT\" --destination src"
+          ],
+          "component": "GameBuildSourceTransport.prepare"
+        },
+        {
+          "id": "build",
+          "name": "npm build when a lockfile/build script exists; else preserve the whole static tree",
+          "runner": "userCI",
+          "commands": [
+            "bash tools/floe-static-export.sh src dist"
+          ],
+          "component": null
+        },
+        {
+          "id": "package",
+          "name": "Validate/package web tree + provenance",
+          "runner": "userCI",
+          "commands": [
+            "python3 tools/floe-artifact-verify.py"
+          ],
+          "component": null
+        }
+      ],
+      "routes": [
+        {
+          "id": "playcanvas-web",
+          "kind": "webBundle",
+          "platform": "web",
+          "stageID": "package",
+          "artifactName": "playcanvas-web.zip",
+          "producer": "ci",
+          "proof": "actualRuntime",
+          "playable": true,
+          "deliveryNote": "Playable through the existing WebKit route. A qualified runtime baseline is recorded; changed source requires a new run.",
+          "requires": [],
+          "templateID": "floe-game-build-script-web",
+          "jobID": "build",
+          "component": null,
+          "entryPoint": null,
+          "validation": {
+            "kind": "webBundle",
+            "entry": "index.html"
+          },
+          "enabledByDefault": true
+        },
+        {
+          "id": "playcanvas-source",
+          "kind": "sourceArchive",
+          "platform": null,
+          "stageID": "prepare",
+          "artifactName": "playcanvas-source.zip",
+          "producer": "sourceArchive",
+          "proof": "sourceQualified",
+          "playable": false,
+          "deliveryNote": "Byte-preserving source snapshot of the exact saved revision; never presented as playable.",
+          "requires": [],
+          "templateID": null,
+          "jobID": null,
+          "component": "GameBuildCoordinator.stagedSource",
+          "entryPoint": null,
+          "validation": {},
+          "enabledByDefault": true
+        }
+      ],
+      "prerequisites": [
+        {
+          "id": "node-lts",
+          "version": "20.x",
+          "documentation": "https://docs.npmjs.com/cli/v10/commands/npm-ci",
+          "note": "Only used when package-lock.json or a build script exists; the static fallback needs no Node.",
+          "required": true
+        }
+      ],
+      "workflowTemplateID": "floe-game-build-script-web",
+      "sourceTransports": [
+        "repositorySnapshot",
+        "existingArtifact"
+      ],
+      "notes": []
+    },
+    {
+      "engine": "ink",
+      "adapter": {
+        "kind": "host-static",
+        "component": "GameBuildCoordinator.sealWebBundle",
+        "entryPoint": "GameArchiveExchange.extract",
+        "sourceStatus": "actual-runtime"
+      },
+      "distributionProfileID": "narrative-ink",
+      "stages": [
+        {
+          "id": "prepare",
+          "name": "Verify source identity and unpack the selected transport",
+          "runner": "userCI",
+          "commands": [
+            "python3 tools/floe-source-verify.py --transport \"$FLOE_SOURCE_TRANSPORT\" --destination src"
+          ],
+          "component": "GameBuildSourceTransport.prepare"
+        },
+        {
+          "id": "export-web",
+          "name": "Prepared narrative host exporter",
+          "runner": "hostExporter",
+          "commands": [],
+          "component": "FloeGameNarrativeKit.GameInkAdapter"
+        },
+        {
+          "id": "build",
+          "name": "npm build when a lockfile/build script exists; else preserve the whole static tree",
+          "runner": "userCI",
+          "commands": [
+            "bash tools/floe-static-export.sh src dist"
+          ],
+          "component": null
+        },
+        {
+          "id": "package",
+          "name": "Validate/package web tree + provenance",
+          "runner": "userCI",
+          "commands": [
+            "python3 tools/floe-artifact-verify.py"
+          ],
+          "component": null
+        }
+      ],
+      "routes": [
+        {
+          "id": "ink-web",
+          "kind": "webBundle",
+          "platform": "web",
+          "stageID": "export-web",
+          "artifactName": "ink-web.zip",
+          "producer": "hostExporter",
+          "proof": "actualExporterAndRuntime",
+          "playable": true,
+          "deliveryNote": "Playable through the existing WebKit route. The narrative adapter/WebKit evidence covers the current source boundary.",
+          "requires": [],
+          "templateID": "floe-game-build-script-web",
+          "jobID": "build",
+          "component": "FloeGameNarrativeKit.GameInkAdapter",
+          "entryPoint": null,
+          "validation": {
+            "kind": "webBundle",
+            "entry": "index.html"
+          },
+          "enabledByDefault": true
+        },
+        {
+          "id": "ink-source",
+          "kind": "sourceArchive",
+          "platform": null,
+          "stageID": "prepare",
+          "artifactName": "ink-source.zip",
+          "producer": "sourceArchive",
+          "proof": "sourceQualified",
+          "playable": false,
+          "deliveryNote": "Byte-preserving source snapshot of the exact saved revision; never presented as playable.",
+          "requires": [],
+          "templateID": null,
+          "jobID": null,
+          "component": "GameBuildCoordinator.stagedSource",
+          "entryPoint": null,
+          "validation": {},
+          "enabledByDefault": true
+        }
+      ],
+      "prerequisites": [
+        {
+          "id": "node-lts",
+          "version": "20.x",
+          "documentation": "https://docs.npmjs.com/cli/v10/commands/npm-ci",
+          "note": "Only used when package-lock.json or a build script exists; the static fallback needs no Node.",
+          "required": false
+        }
+      ],
+      "workflowTemplateID": "floe-game-build-script-web",
+      "sourceTransports": [
+        "repositorySnapshot",
+        "existingArtifact"
+      ],
+      "notes": []
+    },
+    {
+      "engine": "twine",
+      "adapter": {
+        "kind": "host-static",
+        "component": "GameBuildCoordinator.sealWebBundle",
+        "entryPoint": "GameArchiveExchange.extract",
+        "sourceStatus": "actual-runtime"
+      },
+      "distributionProfileID": "narrative-twine",
+      "stages": [
+        {
+          "id": "prepare",
+          "name": "Verify source identity and unpack the selected transport",
+          "runner": "userCI",
+          "commands": [
+            "python3 tools/floe-source-verify.py --transport \"$FLOE_SOURCE_TRANSPORT\" --destination src"
+          ],
+          "component": "GameBuildSourceTransport.prepare"
+        },
+        {
+          "id": "export-web",
+          "name": "Prepared narrative host exporter",
+          "runner": "hostExporter",
+          "commands": [],
+          "component": "FloeGameNarrativeKit.GameTwineAdapter"
+        },
+        {
+          "id": "build",
+          "name": "npm build when a lockfile/build script exists; else preserve the whole static tree",
+          "runner": "userCI",
+          "commands": [
+            "bash tools/floe-static-export.sh src dist"
+          ],
+          "component": null
+        },
+        {
+          "id": "package",
+          "name": "Validate/package web tree + provenance",
+          "runner": "userCI",
+          "commands": [
+            "python3 tools/floe-artifact-verify.py"
+          ],
+          "component": null
+        }
+      ],
+      "routes": [
+        {
+          "id": "twine-web",
+          "kind": "webBundle",
+          "platform": "web",
+          "stageID": "export-web",
+          "artifactName": "twine-web.zip",
+          "producer": "hostExporter",
+          "proof": "actualExporterAndRuntime",
+          "playable": true,
+          "deliveryNote": "Playable through the existing WebKit route. The narrative adapter/WebKit evidence covers the current source boundary.",
+          "requires": [],
+          "templateID": "floe-game-build-script-web",
+          "jobID": "build",
+          "component": "FloeGameNarrativeKit.GameTwineAdapter",
+          "entryPoint": null,
+          "validation": {
+            "kind": "webBundle",
+            "entry": "index.html"
+          },
+          "enabledByDefault": true
+        },
+        {
+          "id": "twine-source",
+          "kind": "sourceArchive",
+          "platform": null,
+          "stageID": "prepare",
+          "artifactName": "twine-source.zip",
+          "producer": "sourceArchive",
+          "proof": "sourceQualified",
+          "playable": false,
+          "deliveryNote": "Byte-preserving source snapshot of the exact saved revision; never presented as playable.",
+          "requires": [],
+          "templateID": null,
+          "jobID": null,
+          "component": "GameBuildCoordinator.stagedSource",
+          "entryPoint": null,
+          "validation": {},
+          "enabledByDefault": true
+        }
+      ],
+      "prerequisites": [
+        {
+          "id": "node-lts",
+          "version": "20.x",
+          "documentation": "https://docs.npmjs.com/cli/v10/commands/npm-ci",
+          "note": "Only used when package-lock.json or a build script exists; the static fallback needs no Node.",
+          "required": false
+        }
+      ],
+      "workflowTemplateID": "floe-game-build-script-web",
+      "sourceTransports": [
+        "repositorySnapshot",
+        "existingArtifact"
+      ],
+      "notes": []
+    },
+    {
+      "engine": "wasm4",
+      "adapter": {
+        "kind": "host-exporter+ci",
+        "component": "FloeGameNarrativeKit.GameWasm4Adapter",
+        "entryPoint": "GameWasm4Adapter.buildArtifact",
+        "sourceStatus": "actual-exporter-and-runtime"
+      },
+      "distributionProfileID": "narrative-wasm4",
+      "stages": [
+        {
+          "id": "prepare",
+          "name": "Verify source identity and unpack the selected transport",
+          "runner": "userCI",
+          "commands": [
+            "python3 tools/floe-source-verify.py --transport \"$FLOE_SOURCE_TRANSPORT\" --destination src"
+          ],
+          "component": "GameBuildSourceTransport.prepare"
+        },
+        {
+          "id": "export-web",
+          "name": "WASM-4 host/CI artifact assembly",
+          "runner": "hostExporter",
+          "commands": [],
+          "component": "GameWasm4Adapter.buildArtifact"
+        },
+        {
+          "id": "bundle-native",
+          "name": "w4 bundle native executables",
+          "runner": "userCI",
+          "commands": [
+            "w4 bundle --windows wasm4-windows.exe --mac wasm4-macos --linux wasm4-linux carts/cart.wasm"
+          ],
+          "component": null
+        },
+        {
+          "id": "package",
+          "name": "Validate/package outputs + provenance",
+          "runner": "userCI",
+          "commands": [
+            "python3 tools/floe-artifact-verify.py"
+          ],
+          "component": null
+        }
+      ],
+      "routes": [
+        {
+          "id": "wasm4-web",
+          "kind": "webBundle",
+          "platform": "web",
+          "stageID": "export-web",
+          "artifactName": "wasm4-web.zip",
+          "producer": "hostExporter",
+          "proof": "actualExporterAndRuntime",
+          "playable": true,
+          "deliveryNote": "Actual WASM-4 adapter artifact and WebKit run; runtime notices are retained.",
+          "requires": [],
+          "templateID": "floe-game-build-wasm4",
+          "jobID": null,
+          "component": "FloeGameNarrativeKit.GameWasm4Adapter",
+          "entryPoint": null,
+          "validation": {
+            "kind": "webBundle",
+            "entry": "index.html"
+          },
+          "enabledByDefault": true
+        },
+        {
+          "id": "wasm4-windows",
+          "kind": "nativeInstaller",
+          "platform": "windows",
+          "stageID": "bundle-native",
+          "artifactName": "wasm4-windows.exe",
+          "producer": "ci",
+          "proof": "commandOnly",
+          "playable": true,
+          "deliveryNote": "Documented `w4 bundle --windows` executable; user CI must run it and verify the output.",
+          "requires": [
+            "wasm4-cli"
+          ],
+          "templateID": "floe-game-build-wasm4",
+          "jobID": "bundle-native",
+          "component": null,
+          "entryPoint": null,
+          "validation": {
+            "kind": "pe"
+          },
+          "enabledByDefault": true
+        },
+        {
+          "id": "wasm4-macos",
+          "kind": "nativeInstaller",
+          "platform": "macOS",
+          "stageID": "bundle-native",
+          "artifactName": "wasm4-macos",
+          "producer": "ci",
+          "proof": "commandOnly",
+          "playable": true,
+          "deliveryNote": "Documented `w4 bundle --mac` executable; unsigned, user signs.",
+          "requires": [
+            "wasm4-cli"
+          ],
+          "templateID": "floe-game-build-wasm4",
+          "jobID": "bundle-native",
+          "component": null,
+          "entryPoint": null,
+          "validation": {
+            "kind": "macho"
+          },
+          "enabledByDefault": true
+        },
+        {
+          "id": "wasm4-linux",
+          "kind": "nativeInstaller",
+          "platform": "linux",
+          "stageID": "bundle-native",
+          "artifactName": "wasm4-linux",
+          "producer": "ci",
+          "proof": "commandOnly",
+          "playable": true,
+          "deliveryNote": "Documented `w4 bundle --linux` executable; unsigned.",
+          "requires": [
+            "wasm4-cli"
+          ],
+          "templateID": "floe-game-build-wasm4",
+          "jobID": "bundle-native",
+          "component": null,
+          "entryPoint": null,
+          "validation": {
+            "kind": "elf"
+          },
+          "enabledByDefault": true
+        },
+        {
+          "id": "wasm4-source",
+          "kind": "sourceArchive",
+          "platform": null,
+          "stageID": "prepare",
+          "artifactName": "wasm4-source.zip",
+          "producer": "sourceArchive",
+          "proof": "sourceQualified",
+          "playable": false,
+          "deliveryNote": "Byte-preserving source snapshot of the exact saved revision; never presented as playable.",
+          "requires": [],
+          "templateID": null,
+          "jobID": null,
+          "component": "GameBuildCoordinator.stagedSource",
+          "entryPoint": null,
+          "validation": {},
+          "enabledByDefault": true
+        }
+      ],
+      "prerequisites": [
+        {
+          "id": "wasm4-cli",
+          "version": "0.3.x or project pin",
+          "documentation": "https://wasm4.org/docs/reference/cli/",
+          "note": "w4 CLI; `w4 bundle` is the documented native/HTML bundle route.",
+          "required": true
+        }
+      ],
+      "workflowTemplateID": "floe-game-build-wasm4",
+      "sourceTransports": [
+        "repositorySnapshot",
+        "existingArtifact"
+      ],
+      "notes": []
+    },
+    {
+      "engine": "tic80",
+      "adapter": {
+        "kind": "host-exporter",
+        "component": "FloeGameNarrativeKit.GameTIC80Adapter",
+        "entryPoint": "GameTIC80Adapter.buildArtifact",
+        "sourceStatus": "actual-exporter-and-runtime"
+      },
+      "distributionProfileID": "narrative-tic80",
+      "stages": [
+        {
+          "id": "prepare",
+          "name": "Verify source identity and unpack the selected transport",
+          "runner": "userCI",
+          "commands": [
+            "python3 tools/floe-source-verify.py --transport \"$FLOE_SOURCE_TRANSPORT\" --destination src"
+          ],
+          "component": "GameBuildSourceTransport.prepare"
+        },
+        {
+          "id": "export-web",
+          "name": "TIC-80 host artifact assembly",
+          "runner": "hostExporter",
+          "commands": [],
+          "component": "GameTIC80Adapter.buildArtifact"
+        }
+      ],
+      "routes": [
+        {
+          "id": "tic80-web",
+          "kind": "webBundle",
+          "platform": "web",
+          "stageID": "export-web",
+          "artifactName": "tic80-web.zip",
+          "producer": "hostExporter",
+          "proof": "actualExporterAndRuntime",
+          "playable": true,
+          "deliveryNote": "Actual TIC-80 adapter artifact and WebKit trace/game-frame proof; the selected source/relink bundle is paired for distribution.",
+          "requires": [],
+          "templateID": null,
+          "jobID": null,
+          "component": "FloeGameNarrativeKit.GameTIC80Adapter",
+          "entryPoint": null,
+          "validation": {
+            "kind": "webBundle",
+            "entry": "index.html"
+          },
+          "enabledByDefault": true
+        },
+        {
+          "id": "tic80-native",
+          "kind": "nativeInstaller",
+          "platform": "windows",
+          "stageID": "export-web",
+          "artifactName": "tic80-native.zip",
+          "producer": "userEditor",
+          "proof": "userPrerequisite",
+          "playable": false,
+          "deliveryNote": "A TIC-80 standalone native export requires the user's licensed/installed TIC-80 toolchain; this plan does not fabricate one.",
+          "requires": [
+            "tic80-editor"
+          ],
+          "templateID": null,
+          "jobID": null,
+          "component": null,
+          "entryPoint": null,
+          "validation": {
+            "kind": "nativeZip",
+            "member": "*.exe"
+          },
+          "enabledByDefault": false
+        },
+        {
+          "id": "tic80-source",
+          "kind": "sourceArchive",
+          "platform": null,
+          "stageID": "prepare",
+          "artifactName": "tic80-source.zip",
+          "producer": "sourceArchive",
+          "proof": "sourceQualified",
+          "playable": false,
+          "deliveryNote": "Byte-preserving source snapshot of the exact saved revision; never presented as playable.",
+          "requires": [],
+          "templateID": null,
+          "jobID": null,
+          "component": "GameBuildCoordinator.stagedSource",
+          "entryPoint": null,
+          "validation": {},
+          "enabledByDefault": true
+        }
+      ],
+      "prerequisites": [
+        {
+          "id": "tic80-editor",
+          "version": "user-installed TIC-80 toolchain",
+          "documentation": "https://github.com/nesbox/TIC-80",
+          "note": "Optional native export; the Web adapter is the actual delivered route.",
+          "required": false
+        }
+      ],
+      "workflowTemplateID": null,
+      "sourceTransports": [
+        "repositorySnapshot",
+        "existingArtifact"
+      ],
+      "notes": []
+    },
+    {
+      "engine": "microStudio",
+      "adapter": {
+        "kind": "host-exporter",
+        "component": "FloeGameNarrativeKit.GameMicroStudioAdapter",
+        "entryPoint": "GameMicroStudioAdapter.buildArtifact",
+        "sourceStatus": "actual-exporter-and-runtime"
+      },
+      "distributionProfileID": "narrative-microstudio",
+      "stages": [
+        {
+          "id": "prepare",
+          "name": "Verify source identity and unpack the selected transport",
+          "runner": "userCI",
+          "commands": [
+            "python3 tools/floe-source-verify.py --transport \"$FLOE_SOURCE_TRANSPORT\" --destination src"
+          ],
+          "component": "GameBuildSourceTransport.prepare"
+        },
+        {
+          "id": "export-web",
+          "name": "microStudio host artifact assembly",
+          "runner": "hostExporter",
+          "commands": [],
+          "component": "GameMicroStudioAdapter.buildArtifact"
+        }
+      ],
+      "routes": [
+        {
+          "id": "microstudio-web",
+          "kind": "webBundle",
+          "platform": "web",
+          "stageID": "export-web",
+          "artifactName": "microstudio-web.zip",
+          "producer": "hostExporter",
+          "proof": "actualExporterAndRuntime",
+          "playable": true,
+          "deliveryNote": "Actual microStudio adapter artifact and WebKit run; project source/assets retain their terms.",
+          "requires": [],
+          "templateID": null,
+          "jobID": null,
+          "component": "FloeGameNarrativeKit.GameMicroStudioAdapter",
+          "entryPoint": null,
+          "validation": {
+            "kind": "webBundle",
+            "entry": "index.html"
+          },
+          "enabledByDefault": true
+        },
+        {
+          "id": "microStudio-source",
+          "kind": "sourceArchive",
+          "platform": null,
+          "stageID": "prepare",
+          "artifactName": "microStudio-source.zip",
+          "producer": "sourceArchive",
+          "proof": "sourceQualified",
+          "playable": false,
+          "deliveryNote": "Byte-preserving source snapshot of the exact saved revision; never presented as playable.",
+          "requires": [],
+          "templateID": null,
+          "jobID": null,
+          "component": "GameBuildCoordinator.stagedSource",
+          "entryPoint": null,
+          "validation": {},
+          "enabledByDefault": true
+        }
+      ],
+      "prerequisites": [
+        {
+          "id": "microstudio-runtime",
+          "version": "pinned adapter resource pack",
+          "documentation": "https://microstudio.dev/",
+          "note": "Prepared runtime bytes are verified by the adapter; no editor/account gate.",
+          "required": false
+        }
+      ],
+      "workflowTemplateID": null,
+      "sourceTransports": [
+        "repositorySnapshot",
+        "existingArtifact"
+      ],
+      "notes": []
+    },
+    {
+      "engine": "love",
+      "adapter": {
+        "kind": "host-exporter+ci",
+        "component": "FloeGamePortableKit.GamePortableRegistry",
+        "entryPoint": "GamePortableRegistry.plan",
+        "sourceStatus": "actual-exporter-and-runtime"
+      },
+      "distributionProfileID": "portable-love",
+      "stages": [
+        {
+          "id": "prepare",
+          "name": "Verify source identity and unpack the selected transport",
+          "runner": "userCI",
+          "commands": [
+            "python3 tools/floe-source-verify.py --transport \"$FLOE_SOURCE_TRANSPORT\" --destination src"
+          ],
+          "component": "GameBuildSourceTransport.prepare"
+        },
+        {
+          "id": "export-web",
+          "name": "Portable host exporter (actual)",
+          "runner": "hostExporter",
+          "commands": [],
+          "component": "GamePortableRegistry.plan"
+        },
+        {
+          "id": "package-native",
+          "name": "User-toolchain native package",
+          "runner": "manualEditor",
+          "commands": [],
+          "component": "GamePortableBuildPort"
+        },
+        {
+          "id": "export-native",
+          "name": "Official engine SDK distribution build",
+          "runner": "manualEditor",
+          "commands": [],
+          "component": "RenPy SDK launcher"
+        }
+      ],
+      "routes": [
+        {
+          "id": "love-web",
+          "kind": "webBundle",
+          "platform": "web",
+          "stageID": "export-web",
+          "artifactName": "love-web.zip",
+          "producer": "hostExporter",
+          "proof": "actualExporterAndRuntime",
+          "playable": true,
+          "deliveryNote": "Actual love.js artifact and WebKit run; cross-new-player acknowledged-close save proof retained. Distribution requires the paired source/relink bundle.",
+          "requires": [],
+          "templateID": null,
+          "jobID": null,
+          "component": "FloeGamePortableKit.GamePortableLoveAdapter",
+          "entryPoint": null,
+          "validation": {
+            "kind": "webBundle",
+            "entry": "index.html"
+          },
+          "enabledByDefault": true
+        },
+        {
+          "id": "love-native",
+          "kind": "nativeInstaller",
+          "platform": "windows",
+          "stageID": "package-native",
+          "artifactName": "love-native.zip",
+          "producer": "userEditor",
+          "proof": "userPrerequisite",
+          "playable": true,
+          "deliveryNote": "Package the `.love` file with the user's official L\u00d6VE Windows runtime; Floe does not redistribute the runtime.",
+          "requires": [
+            "love-runtime"
+          ],
+          "templateID": null,
+          "jobID": "package-native",
+          "component": null,
+          "entryPoint": null,
+          "validation": {
+            "kind": "nativeZip",
+            "member": "*.exe"
+          },
+          "enabledByDefault": false
+        },
+        {
+          "id": "love-source",
+          "kind": "sourceArchive",
+          "platform": null,
+          "stageID": "prepare",
+          "artifactName": "love-source.zip",
+          "producer": "sourceArchive",
+          "proof": "sourceQualified",
+          "playable": false,
+          "deliveryNote": "Byte-preserving source snapshot of the exact saved revision; never presented as playable.",
+          "requires": [],
+          "templateID": null,
+          "jobID": null,
+          "component": "GameBuildCoordinator.stagedSource",
+          "entryPoint": null,
+          "validation": {},
+          "enabledByDefault": true
+        }
+      ],
+      "prerequisites": [
+        {
+          "id": "love-runtime",
+          "version": "11.4/11.5 user-supplied official runtime",
+          "documentation": "https://love2d.org/",
+          "note": "Optional fused native package; the Web route uses the pinned love.js runtime.",
+          "required": false
+        }
+      ],
+      "workflowTemplateID": null,
+      "sourceTransports": [
+        "repositorySnapshot",
+        "existingArtifact"
+      ],
+      "notes": []
+    },
+    {
+      "engine": "renpy",
+      "adapter": {
+        "kind": "host-exporter+ci",
+        "component": "FloeGamePortableKit.GamePortableRegistry",
+        "entryPoint": "GamePortableRegistry.plan",
+        "sourceStatus": "actual-exporter-and-runtime"
+      },
+      "distributionProfileID": "portable-renpy",
+      "stages": [
+        {
+          "id": "prepare",
+          "name": "Verify source identity and unpack the selected transport",
+          "runner": "userCI",
+          "commands": [
+            "python3 tools/floe-source-verify.py --transport \"$FLOE_SOURCE_TRANSPORT\" --destination src"
+          ],
+          "component": "GameBuildSourceTransport.prepare"
+        },
+        {
+          "id": "export-web",
+          "name": "Portable host exporter (actual)",
+          "runner": "hostExporter",
+          "commands": [],
+          "component": "GamePortableRegistry.plan"
+        },
+        {
+          "id": "package-native",
+          "name": "User-toolchain native package",
+          "runner": "manualEditor",
+          "commands": [],
+          "component": "GamePortableBuildPort"
+        },
+        {
+          "id": "export-native",
+          "name": "Official engine SDK distribution build",
+          "runner": "manualEditor",
+          "commands": [],
+          "component": "RenPy SDK launcher"
+        }
+      ],
+      "routes": [
+        {
+          "id": "renpy-web",
+          "kind": "webBundle",
+          "platform": "web",
+          "stageID": "export-web",
+          "artifactName": "renpy-web.zip",
+          "producer": "hostExporter",
+          "proof": "actualExporterAndRuntime",
+          "playable": true,
+          "deliveryNote": "Actual Ren'Py Web artifact and WebKit opening/choice proof; distribution requires the paired source/relink bundle; durable new-player engine saves are not claimed.",
+          "requires": [],
+          "templateID": null,
+          "jobID": null,
+          "component": "FloeGamePortableKit.GamePortableRenPyAdapter",
+          "entryPoint": null,
+          "validation": {
+            "kind": "webBundle",
+            "entry": "index.html"
+          },
+          "enabledByDefault": true
+        },
+        {
+          "id": "renpy-windows",
+          "kind": "nativeInstaller",
+          "platform": "windows",
+          "stageID": "export-native",
+          "artifactName": "renpy-windows.zip",
+          "producer": "userEditor",
+          "proof": "userPrerequisite",
+          "playable": true,
+          "deliveryNote": "Official Ren'Py SDK distribution build; user supplies the SDK and signing/distribution choice.",
+          "requires": [
+            "renpy-sdk"
+          ],
+          "templateID": null,
+          "jobID": "export-native",
+          "component": null,
+          "entryPoint": null,
+          "validation": {
+            "kind": "nativeZip",
+            "member": "*.exe"
+          },
+          "enabledByDefault": false
+        },
+        {
+          "id": "renpy-macos",
+          "kind": "nativeInstaller",
+          "platform": "macOS",
+          "stageID": "export-native",
+          "artifactName": "renpy-macos.zip",
+          "producer": "userEditor",
+          "proof": "userPrerequisite",
+          "playable": true,
+          "deliveryNote": "Official Ren'Py SDK macOS app zip; user signs for Gatekeeper.",
+          "requires": [
+            "renpy-sdk"
+          ],
+          "templateID": null,
+          "jobID": "export-native",
+          "component": null,
+          "entryPoint": null,
+          "validation": {
+            "kind": "nativeZip",
+            "member": "*.app/Contents/Info.plist"
+          },
+          "enabledByDefault": false
+        },
+        {
+          "id": "renpy-linux",
+          "kind": "nativeInstaller",
+          "platform": "linux",
+          "stageID": "export-native",
+          "artifactName": "renpy-linux.zip",
+          "producer": "userEditor",
+          "proof": "userPrerequisite",
+          "playable": true,
+          "deliveryNote": "Official Ren'Py SDK Linux distribution tar/zip; user distributes under Ren'Py's terms.",
+          "requires": [
+            "renpy-sdk"
+          ],
+          "templateID": null,
+          "jobID": "export-native",
+          "component": null,
+          "entryPoint": null,
+          "validation": {
+            "kind": "nativeZip",
+            "member": "*.sh"
+          },
+          "enabledByDefault": false
+        },
+        {
+          "id": "renpy-source",
+          "kind": "sourceArchive",
+          "platform": null,
+          "stageID": "prepare",
+          "artifactName": "renpy-source.zip",
+          "producer": "sourceArchive",
+          "proof": "sourceQualified",
+          "playable": false,
+          "deliveryNote": "Byte-preserving source snapshot of the exact saved revision; never presented as playable.",
+          "requires": [],
+          "templateID": null,
+          "jobID": null,
+          "component": "GameBuildCoordinator.stagedSource",
+          "entryPoint": null,
+          "validation": {},
+          "enabledByDefault": true
+        }
+      ],
+      "prerequisites": [
+        {
+          "id": "renpy-sdk",
+          "version": "8.5.3.26051504 or project version",
+          "documentation": "https://www.renpy.org/doc/html/build.html",
+          "note": "Official Ren'Py SDK for native distribution; Web export uses the pinned renpy-web runtime.",
+          "required": false
+        }
+      ],
+      "workflowTemplateID": null,
+      "sourceTransports": [
+        "repositorySnapshot",
+        "existingArtifact"
+      ],
+      "notes": []
+    },
+    {
+      "engine": "rpgMakerXP",
+      "adapter": {
+        "kind": "user-editor+host-importer",
+        "component": "FloeRPGDeploymentKit.RPGDeploymentService",
+        "entryPoint": "RPGDeploymentService.prepare",
+        "sourceStatus": "source-qualified"
+      },
+      "distributionProfileID": "rpg-user-runtime",
+      "stages": [
+        {
+          "id": "prepare",
+          "name": "Verify source identity and unpack the selected transport",
+          "runner": "userCI",
+          "commands": [
+            "python3 tools/floe-source-verify.py --transport \"$FLOE_SOURCE_TRANSPORT\" --destination src"
+          ],
+          "component": "GameBuildSourceTransport.prepare"
+        },
+        {
+          "id": "export-web",
+          "name": "Packaged user/editor Web deployment",
+          "runner": "hostExporter",
+          "commands": [],
+          "component": "RPGDeploymentService"
+        },
+        {
+          "id": "editor-export",
+          "name": "User licensed editor/runtime export and package",
+          "runner": "manualEditor",
+          "commands": [],
+          "component": "RPG toolchain"
+        }
+      ],
+      "routes": [
+        {
+          "id": "rpgmakerxp-windows",
+          "kind": "nativeInstaller",
+          "platform": "windows",
+          "stageID": "editor-export",
+          "artifactName": "rpgmakerxp-windows.zip",
+          "producer": "userEditor",
+          "proof": "userPrerequisite",
+          "playable": true,
+          "deliveryNote": "Package the user's licensed RGSS player/RTP and project files; no runtime is redistributed. The private RGSS guest has no built binary and is not claimed.",
+          "requires": [
+            "rpgmakerxp-editor",
+            "rgss-player"
+          ],
+          "templateID": null,
+          "jobID": null,
+          "component": null,
+          "entryPoint": null,
+          "validation": {
+            "kind": "nativeZip",
+            "member": "*.exe"
+          },
+          "enabledByDefault": false
+        },
+        {
+          "id": "rpgmakerxp-source",
+          "kind": "sourceArchive",
+          "platform": null,
+          "stageID": "prepare",
+          "artifactName": "rpgmakerxp-source.zip",
+          "producer": "sourceArchive",
+          "proof": "sourceQualified",
+          "playable": false,
+          "deliveryNote": "Byte-preserving source snapshot of the exact saved revision; never presented as playable.",
+          "requires": [],
+          "templateID": null,
+          "jobID": null,
+          "component": "GameBuildCoordinator.stagedSource",
+          "entryPoint": null,
+          "validation": {},
+          "enabledByDefault": true
+        }
+      ],
+      "prerequisites": [
+        {
+          "id": "rpgmakerxp-editor",
+          "version": "user-licensed editor",
+          "documentation": "https://www.rpgmakerweb.com/",
+          "note": "User editor/runtime; Floe does not supply missing scripts/RTP.",
+          "required": false
+        }
+      ],
+      "workflowTemplateID": null,
+      "sourceTransports": [
+        "repositorySnapshot",
+        "existingArtifact",
+        "manualEditorArtifact"
+      ],
+      "notes": []
+    },
+    {
+      "engine": "rpgMakerVX",
+      "adapter": {
+        "kind": "user-editor+host-importer",
+        "component": "FloeRPGDeploymentKit.RPGDeploymentService",
+        "entryPoint": "RPGDeploymentService.prepare",
+        "sourceStatus": "source-qualified"
+      },
+      "distributionProfileID": "rpg-user-runtime",
+      "stages": [
+        {
+          "id": "prepare",
+          "name": "Verify source identity and unpack the selected transport",
+          "runner": "userCI",
+          "commands": [
+            "python3 tools/floe-source-verify.py --transport \"$FLOE_SOURCE_TRANSPORT\" --destination src"
+          ],
+          "component": "GameBuildSourceTransport.prepare"
+        },
+        {
+          "id": "export-web",
+          "name": "Packaged user/editor Web deployment",
+          "runner": "hostExporter",
+          "commands": [],
+          "component": "RPGDeploymentService"
+        },
+        {
+          "id": "editor-export",
+          "name": "User licensed editor/runtime export and package",
+          "runner": "manualEditor",
+          "commands": [],
+          "component": "RPG toolchain"
+        }
+      ],
+      "routes": [
+        {
+          "id": "rpgmakervx-windows",
+          "kind": "nativeInstaller",
+          "platform": "windows",
+          "stageID": "editor-export",
+          "artifactName": "rpgmakervx-windows.zip",
+          "producer": "userEditor",
+          "proof": "userPrerequisite",
+          "playable": true,
+          "deliveryNote": "Package the user's licensed RGSS2 player/RTP and project files; no runtime is redistributed.",
+          "requires": [
+            "rpgmakervx-editor",
+            "rgss2-player"
+          ],
+          "templateID": null,
+          "jobID": null,
+          "component": null,
+          "entryPoint": null,
+          "validation": {
+            "kind": "nativeZip",
+            "member": "*.exe"
+          },
+          "enabledByDefault": false
+        },
+        {
+          "id": "rpgmakervx-source",
+          "kind": "sourceArchive",
+          "platform": null,
+          "stageID": "prepare",
+          "artifactName": "rpgmakervx-source.zip",
+          "producer": "sourceArchive",
+          "proof": "sourceQualified",
+          "playable": false,
+          "deliveryNote": "Byte-preserving source snapshot of the exact saved revision; never presented as playable.",
+          "requires": [],
+          "templateID": null,
+          "jobID": null,
+          "component": "GameBuildCoordinator.stagedSource",
+          "entryPoint": null,
+          "validation": {},
+          "enabledByDefault": true
+        }
+      ],
+      "prerequisites": [
+        {
+          "id": "rpgmakervx-editor",
+          "version": "user-licensed editor",
+          "documentation": "https://www.rpgmakerweb.com/",
+          "note": "User editor/runtime.",
+          "required": false
+        }
+      ],
+      "workflowTemplateID": null,
+      "sourceTransports": [
+        "repositorySnapshot",
+        "existingArtifact",
+        "manualEditorArtifact"
+      ],
+      "notes": []
+    },
+    {
+      "engine": "rpgMakerVXAce",
+      "adapter": {
+        "kind": "user-editor+host-importer",
+        "component": "FloeRPGDeploymentKit.RPGDeploymentService",
+        "entryPoint": "RPGDeploymentService.prepare",
+        "sourceStatus": "source-qualified"
+      },
+      "distributionProfileID": "rpg-user-runtime",
+      "stages": [
+        {
+          "id": "prepare",
+          "name": "Verify source identity and unpack the selected transport",
+          "runner": "userCI",
+          "commands": [
+            "python3 tools/floe-source-verify.py --transport \"$FLOE_SOURCE_TRANSPORT\" --destination src"
+          ],
+          "component": "GameBuildSourceTransport.prepare"
+        },
+        {
+          "id": "export-web",
+          "name": "Packaged user/editor Web deployment",
+          "runner": "hostExporter",
+          "commands": [],
+          "component": "RPGDeploymentService"
+        },
+        {
+          "id": "editor-export",
+          "name": "User licensed editor/runtime export and package",
+          "runner": "manualEditor",
+          "commands": [],
+          "component": "RPG toolchain"
+        }
+      ],
+      "routes": [
+        {
+          "id": "rpgmakervxace-windows",
+          "kind": "nativeInstaller",
+          "platform": "windows",
+          "stageID": "editor-export",
+          "artifactName": "rpgmakervxace-windows.zip",
+          "producer": "userEditor",
+          "proof": "userPrerequisite",
+          "playable": true,
+          "deliveryNote": "Package the user's licensed RGSS3 player/RTP and project files; no runtime is redistributed.",
+          "requires": [
+            "rpgmakervxace-editor",
+            "rgss3-player"
+          ],
+          "templateID": null,
+          "jobID": null,
+          "component": null,
+          "entryPoint": null,
+          "validation": {
+            "kind": "nativeZip",
+            "member": "*.exe"
+          },
+          "enabledByDefault": false
+        },
+        {
+          "id": "rpgmakervxace-source",
+          "kind": "sourceArchive",
+          "platform": null,
+          "stageID": "prepare",
+          "artifactName": "rpgmakervxace-source.zip",
+          "producer": "sourceArchive",
+          "proof": "sourceQualified",
+          "playable": false,
+          "deliveryNote": "Byte-preserving source snapshot of the exact saved revision; never presented as playable.",
+          "requires": [],
+          "templateID": null,
+          "jobID": null,
+          "component": "GameBuildCoordinator.stagedSource",
+          "entryPoint": null,
+          "validation": {},
+          "enabledByDefault": true
+        }
+      ],
+      "prerequisites": [
+        {
+          "id": "rpgmakervxace-editor",
+          "version": "user-licensed editor",
+          "documentation": "https://www.rpgmakerweb.com/",
+          "note": "User editor/runtime.",
+          "required": false
+        }
+      ],
+      "workflowTemplateID": null,
+      "sourceTransports": [
+        "repositorySnapshot",
+        "existingArtifact",
+        "manualEditorArtifact"
+      ],
+      "notes": []
+    },
+    {
+      "engine": "rpgMakerMV",
+      "adapter": {
+        "kind": "user-editor+host-importer",
+        "component": "FloeRPGDeploymentKit.RPGDeploymentService",
+        "entryPoint": "RPGDeploymentService.prepare",
+        "sourceStatus": "source-qualified"
+      },
+      "distributionProfileID": "portable-mv",
+      "stages": [
+        {
+          "id": "prepare",
+          "name": "Verify source identity and unpack the selected transport",
+          "runner": "userCI",
+          "commands": [
+            "python3 tools/floe-source-verify.py --transport \"$FLOE_SOURCE_TRANSPORT\" --destination src"
+          ],
+          "component": "GameBuildSourceTransport.prepare"
+        },
+        {
+          "id": "export-web",
+          "name": "Packaged user/editor Web deployment",
+          "runner": "hostExporter",
+          "commands": [],
+          "component": "RPGDeploymentService"
+        },
+        {
+          "id": "editor-export",
+          "name": "User licensed editor/runtime export and package",
+          "runner": "manualEditor",
+          "commands": [],
+          "component": "RPG toolchain"
+        }
+      ],
+      "routes": [
+        {
+          "id": "rpgmakermv-web",
+          "kind": "webBundle",
+          "platform": "web",
+          "stageID": "export-web",
+          "artifactName": "rpgmakermv-web.zip",
+          "producer": "hostExporter",
+          "proof": "actualExporterAndRuntime",
+          "playable": true,
+          "deliveryNote": "Actual portable-kit Web assembly/runtime with the official MIT CoreScript; user project assets/data retain their terms.",
+          "requires": [],
+          "templateID": "floe-game-build-rpg-maker",
+          "jobID": null,
+          "component": "FloeGamePortableKit.GamePortableMVAdapter",
+          "entryPoint": null,
+          "validation": {
+            "kind": "webBundle",
+            "entry": "index.html"
+          },
+          "enabledByDefault": true
+        },
+        {
+          "id": "rpgmakermv-windows",
+          "kind": "nativeInstaller",
+          "platform": "windows",
+          "stageID": "editor-export",
+          "artifactName": "rpgmakermv-windows.zip",
+          "producer": "userEditor",
+          "proof": "userPrerequisite",
+          "playable": true,
+          "deliveryNote": "RPG Maker MV Windows deployment must be produced by the user's licensed editor; no NW.js runtime is redistributed.",
+          "requires": [
+            "rpgmakermv-editor"
+          ],
+          "templateID": null,
+          "jobID": null,
+          "component": null,
+          "entryPoint": null,
+          "validation": {
+            "kind": "nativeZip",
+            "member": "*.exe"
+          },
+          "enabledByDefault": false
+        },
+        {
+          "id": "rpgmakermv-source",
+          "kind": "sourceArchive",
+          "platform": null,
+          "stageID": "prepare",
+          "artifactName": "rpgmakermv-source.zip",
+          "producer": "sourceArchive",
+          "proof": "sourceQualified",
+          "playable": false,
+          "deliveryNote": "Byte-preserving source snapshot of the exact saved revision; never presented as playable.",
+          "requires": [],
+          "templateID": null,
+          "jobID": null,
+          "component": "GameBuildCoordinator.stagedSource",
+          "entryPoint": null,
+          "validation": {},
+          "enabledByDefault": true
+        }
+      ],
+      "prerequisites": [
+        {
+          "id": "rpgmakermv-editor",
+          "version": "user-licensed editor for native deployment",
+          "documentation": "https://www.rpgmakerweb.com/",
+          "note": "Web route uses the MIT CoreScript; native deployment uses the user's editor/runtime.",
+          "required": false
+        }
+      ],
+      "workflowTemplateID": "floe-game-build-rpg-maker",
+      "sourceTransports": [
+        "repositorySnapshot",
+        "existingArtifact",
+        "manualEditorArtifact"
+      ],
+      "notes": []
+    },
+    {
+      "engine": "rpgMakerMZ",
+      "adapter": {
+        "kind": "user-editor+host-importer",
+        "component": "FloeRPGDeploymentKit.RPGDeploymentService",
+        "entryPoint": "RPGDeploymentService.prepare",
+        "sourceStatus": "source-qualified"
+      },
+      "distributionProfileID": "rpg-user-runtime",
+      "stages": [
+        {
+          "id": "prepare",
+          "name": "Verify source identity and unpack the selected transport",
+          "runner": "userCI",
+          "commands": [
+            "python3 tools/floe-source-verify.py --transport \"$FLOE_SOURCE_TRANSPORT\" --destination src"
+          ],
+          "component": "GameBuildSourceTransport.prepare"
+        },
+        {
+          "id": "export-web",
+          "name": "Packaged user/editor Web deployment",
+          "runner": "hostExporter",
+          "commands": [],
+          "component": "RPGDeploymentService"
+        },
+        {
+          "id": "editor-export",
+          "name": "User licensed editor/runtime export and package",
+          "runner": "manualEditor",
+          "commands": [],
+          "component": "RPG toolchain"
+        }
+      ],
+      "routes": [
+        {
+          "id": "rpgmakermz-web",
+          "kind": "webBundle",
+          "platform": "web",
+          "stageID": "export-web",
+          "artifactName": "rpgmakermz-web.zip",
+          "producer": "hostExporter",
+          "proof": "sourceQualified",
+          "playable": true,
+          "deliveryNote": "Only a project that already carries the user's official MZ Web deployment is packaged; otherwise the user must export from their licensed editor. No MZ runtime is redistributed.",
+          "requires": [
+            "rpgmakermz-editor"
+          ],
+          "templateID": "floe-game-build-rpg-maker",
+          "jobID": null,
+          "component": "FloeRPGDeploymentKit.RPGDeploymentService",
+          "entryPoint": null,
+          "validation": {
+            "kind": "webBundle",
+            "entry": "index.html"
+          },
+          "enabledByDefault": true
+        },
+        {
+          "id": "rpgmakermz-windows",
+          "kind": "nativeInstaller",
+          "platform": "windows",
+          "stageID": "editor-export",
+          "artifactName": "rpgmakermz-windows.zip",
+          "producer": "userEditor",
+          "proof": "userPrerequisite",
+          "playable": true,
+          "deliveryNote": "User-licensed editor deployment; no runtime is redistributed.",
+          "requires": [
+            "rpgmakermz-editor"
+          ],
+          "templateID": null,
+          "jobID": null,
+          "component": null,
+          "entryPoint": null,
+          "validation": {
+            "kind": "nativeZip",
+            "member": "*.exe"
+          },
+          "enabledByDefault": false
+        },
+        {
+          "id": "rpgmakermz-source",
+          "kind": "sourceArchive",
+          "platform": null,
+          "stageID": "prepare",
+          "artifactName": "rpgmakermz-source.zip",
+          "producer": "sourceArchive",
+          "proof": "sourceQualified",
+          "playable": false,
+          "deliveryNote": "Byte-preserving source snapshot of the exact saved revision; never presented as playable.",
+          "requires": [],
+          "templateID": null,
+          "jobID": null,
+          "component": "GameBuildCoordinator.stagedSource",
+          "entryPoint": null,
+          "validation": {},
+          "enabledByDefault": true
+        }
+      ],
+      "prerequisites": [
+        {
+          "id": "rpgmakermz-editor",
+          "version": "user-licensed editor",
+          "documentation": "https://www.rpgmakerweb.com/",
+          "note": "User editor/runtime; not supplied by Floe.",
+          "required": false
+        }
+      ],
+      "workflowTemplateID": "floe-game-build-rpg-maker",
+      "sourceTransports": [
+        "repositorySnapshot",
+        "existingArtifact",
+        "manualEditorArtifact"
+      ],
+      "notes": []
+    }
+  ],
+  "sourceTransportKinds": [
+    "repositorySnapshot",
+    "existingArtifact",
+    "manualEditorArtifact"
+  ],
+  "notes": [
+    "Route proofs describe the current private evidence boundary; they are not App Store or production acceptance.",
+    "A commandOnly route is a usable documented path, not an executed build claim.",
+    "A runtime can be playable privately while its distribution profile remains conditional."
+  ]
+}

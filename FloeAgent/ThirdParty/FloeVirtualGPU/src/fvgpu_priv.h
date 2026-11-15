@@ -5,11 +5,13 @@
 #define FVGPU_PRIV_H
 
 #include "floe_virtual_gpu.h"
+#include "fvgpu_trace.h"
 
 #include <pthread.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <sys/stat.h>
 
 #include <vulkan/vulkan.h>
 #include <virgl/virglrenderer.h>
@@ -18,6 +20,16 @@
 #include <virgl/vkr_accounting.h>
 
 #define FVGPU_MAX_CONTEXTS 64
+
+/* The renderer exports a shm fd, not its length. The requested blob bytes
+ * (not the page-rounded mmap length) must be backed: mmap defines the last
+ * partial file page as zero-filled, so only a short *requested* range can
+ * make guest access reach a whole page past EOF and raise SIGBUS. */
+static inline bool fvgpu_shm_fd_covers(int fd,uint64_t requested_length) {
+    struct stat st;
+    if(fd<0||fstat(fd,&st)!=0||st.st_size<0) return false;
+    return (uint64_t)st.st_size>=requested_length;
+}
 
 /* host-internal result codes (public names in floe_virtual_gpu.h) */
 #define FVGPU_RESP_OK FLOE_GPU_RESP_OK
@@ -76,6 +88,7 @@ struct FloeGPUSession {
     pthread_mutex_t ledger_lock;
     FloeGPUMemoryLedger ledger;
     uint64_t capacity_max_bytes; /* configured ceiling for raises */
+    uint64_t ledger_faults;      /* invariant violations; ledger must not be trusted */
 
     /* Atomic quota admission (joint fix H2). reserved_bytes is the sum of
      * in-flight admissions that have not settled into the ledger yet:
@@ -123,7 +136,12 @@ uint64_t fvgpu_ledger_live(FloeGPUSession *s);
 /* Renderer hooks use explicit session ownership; no unguarded globals. */
 bool fvgpu_ledger_reserve(FloeGPUSession *s, uint64_t size, bool aliased);
 void fvgpu_ledger_cancel(FloeGPUSession *s, uint64_t size, bool aliased);
-void fvgpu_ledger_event(FloeGPUSession *s, uint64_t size, bool aliased, bool blob, bool alloc);
+void fvgpu_ledger_event(FloeGPUSession *s, uint64_t size, bool aliased, bool blob, bool alloc, uint64_t key);
+/* Records a ledger invariant violation, traces it and (in assertion builds)
+ * aborts exactly like the original asserts. Assertion-free builds stay alive,
+ * refuse every future admission and report the fault through the budget
+ * reason and floe_gpu_ledger_faulted(). */
+void fvgpu_ledger_fault(FloeGPUSession *s, const char *what, uint64_t a, uint64_t b);
 uint64_t fvgpu_live_locked(FloeGPUSession *s);
 void fvgpu_budget_settle_locked(FloeGPUSession *s);
 bool fvgpu_host_headroom(uint64_t *available);

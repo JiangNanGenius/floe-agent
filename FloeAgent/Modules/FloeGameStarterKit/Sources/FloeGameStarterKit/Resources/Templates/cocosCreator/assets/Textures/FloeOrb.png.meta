@@ -1,0 +1,31 @@
+{
+  "ver": "1.0.26",
+  "importer": "image",
+  "imported": true,
+  "uuid": "7c1d2e3f-4a5b-4c6d-8e7f-9012a3b4c5d6",
+  "files": [
+    ".json",
+    ".png"
+  ],
+  "subMetas": {
+    "floe_orb": {
+      "ver": "1.0.26",
+      "importer": "texture",
+      "imported": true,
+      "uuid": "7c1d2e3f-4a5b-4c6d-8e7f-9012a3b4c5d6",
+      "files": [
+        ".json"
+      ],
+      "subMetas": {},
+      "userData": {
+        "wrapMode": "clamp",
+        "filterMode": "bilinear"
+      }
+    }
+  },
+  "userData": {
+    "type": "sprite",
+    "hasAlpha": true,
+    "fixAlphaTransparencyArtifacts": false
+  }
+}

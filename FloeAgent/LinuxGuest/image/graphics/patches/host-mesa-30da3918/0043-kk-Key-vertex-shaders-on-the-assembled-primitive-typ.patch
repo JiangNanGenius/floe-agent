@@ -1,0 +1,57 @@
+From a4d3df11b675f0eb1b01f6029ad6e2a73ab149b5 Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Fri, 2 Oct 2026 15:40:05 -0400
+Subject: [PATCH] kk: Key vertex shaders on the assembled primitive type
+
+Generated-by: LLM
+---
+ src/kosmickrisp/vulkan/kk_shader.c | 18 +++++++++++-------
+ 1 file changed, 11 insertions(+), 7 deletions(-)
+
+diff --git a/src/kosmickrisp/vulkan/kk_shader.c b/src/kosmickrisp/vulkan/kk_shader.c
+index 24b3069df67..eaa39c5ff9d 100644
+--- a/src/kosmickrisp/vulkan/kk_shader.c
++++ b/src/kosmickrisp/vulkan/kk_shader.c
+@@ -107,17 +107,24 @@ has_static_depth_stencil_state(const struct vk_graphics_pipeline_state *state)
+ }
+ 
+ struct kk_vs_key {
+-   bool is_points;
++   enum mesa_prim prim;
+    struct vk_vertex_input_state vi;
+ };
+ 
++static enum mesa_prim
++kk_assembled_prim(const struct vk_graphics_pipeline_state *state)
++{
++   enum mesa_prim prim =
++      u_decomposed_prim(vk_topology_to_mesa(state->ia->primitive_topology));
++   return mesa_prim_has_adjacency(prim) ? u_reduced_prim(prim) : prim;
++}
++
+ static void
+ kk_populate_vs_key(struct kk_vs_key *key,
+                    const struct vk_graphics_pipeline_state *state)
+ {
+    memset(key, 0, sizeof(*key));
+-   key->is_points =
+-      (state->ia->primitive_topology == VK_PRIMITIVE_TOPOLOGY_POINT_LIST);
++   key->prim = kk_assembled_prim(state);
+    key->vi = *state->vi;
+ }
+ 
+@@ -1958,10 +1965,7 @@ kk_create_passthrough_gs(struct kk_device *dev, nir_shader *prev,
+       else
+          key->prim = MESA_PRIM_TRIANGLES;
+    } else {
+-      key->prim = u_decomposed_prim(
+-         vk_topology_to_mesa(state->ia->primitive_topology));
+-      if (mesa_prim_has_adjacency(key->prim))
+-         key->prim = u_reduced_prim(key->prim);
++      key->prim = kk_assembled_prim(state);
+    }
+ 
+    nir_builder b = nir_builder_init_simple_shader(
+-- 
+2.54.0 (Apple Git-157)
+

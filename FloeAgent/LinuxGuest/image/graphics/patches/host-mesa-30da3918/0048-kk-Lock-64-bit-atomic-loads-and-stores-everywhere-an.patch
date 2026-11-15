@@ -1,0 +1,217 @@
+From 6ba5e523aaaf5dbd0817a6e2583c8681ffc39525 Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Fri, 2 Oct 2026 21:33:00 -0400
+Subject: [PATCH] kk: Lock 64-bit atomic loads and stores everywhere and never
+ enter after a lock timeout
+
+Generated-by: LLM
+---
+ .../vulkan/kk_nir_lower_atomic64.c            | 92 ++++++++++++++++---
+ src/kosmickrisp/vulkan/kk_queue.c             |  5 +
+ src/kosmickrisp/vulkan/kk_shader.h            |  1 +
+ 3 files changed, 84 insertions(+), 14 deletions(-)
+
+diff --git a/src/kosmickrisp/vulkan/kk_nir_lower_atomic64.c b/src/kosmickrisp/vulkan/kk_nir_lower_atomic64.c
+index c463407475c..6d95373133b 100644
+--- a/src/kosmickrisp/vulkan/kk_nir_lower_atomic64.c
++++ b/src/kosmickrisp/vulkan/kk_nir_lower_atomic64.c
+@@ -49,10 +49,13 @@ lock_key(nir_builder *b, const struct target *t)
+    case TARGET_SHARED:
+       return nir_iadd_imm(b, nir_ushr_imm(b, t->addr, 3), t->base);
+    case TARGET_IMAGE: {
++      static const uint32_t mul[] = {0x9e3779b1u, 0x85ebca77u, 0xc2b2ae3du};
+       nir_def *coord = nir_u2u32(b, t->image->src[1].ssa);
+-      nir_def *key =
+-         nir_iadd(b, nir_imul_imm(b, nir_channel(b, coord, 0), 0x9e3779b1u),
+-                  nir_imul_imm(b, nir_channel(b, coord, 1), 0x85ebca77u));
++      unsigned comps = MIN2(nir_image_intrinsic_coord_components(t->image),
++                            ARRAY_SIZE(mul));
++      nir_def *key = nir_imm_int(b, 0);
++      for (unsigned i = 0; i < comps; i++)
++         key = nir_iadd(b, key, nir_imul_imm(b, nir_channel(b, coord, i), mul[i]));
+       return nir_ixor(b, key, nir_ushr_imm(b, key, 15));
+    }
+    }
+@@ -95,7 +98,8 @@ load_value(nir_builder *b, const struct target *t)
+          nir_imm_int(b, 0), .image_dim = nir_intrinsic_image_dim(image),
+          .image_array = nir_intrinsic_image_array(image),
+          .format = nir_intrinsic_format(image),
+-         .access = nir_intrinsic_access(image), .dest_type = nir_type_uint64);
++         .access = nir_intrinsic_access(image) & ~ACCESS_ATOMIC,
++         .dest_type = nir_type_uint64);
+    }
+ 
+    return nir_load_shared(b, 1, 64, t->addr, .base = t->base, .align_mul = 8);
+@@ -115,7 +119,8 @@ store_value(nir_builder *b, const struct target *t, nir_def *value)
+          .image_dim = nir_intrinsic_image_dim(image),
+          .image_array = nir_intrinsic_image_array(image),
+          .format = nir_intrinsic_format(image),
+-         .access = nir_intrinsic_access(image), .src_type = nir_type_uint64);
++         .access = nir_intrinsic_access(image) & ~ACCESS_ATOMIC,
++         .src_type = nir_type_uint64);
+    } else
+       nir_store_shared(b, value, t->addr, .base = t->base, .align_mul = 8,
+                        .write_mask = 1);
+@@ -179,6 +184,14 @@ unlock(nir_builder *b, nir_def *lock)
+                             .atomic_op = nir_atomic_op_xchg);
+ }
+ 
++static void
++report_timeout(nir_builder *b)
++{
++   nir_global_atomic(b, 32,
++                     nir_iadd_imm(b, load_arena(b), 4u * KK_ATOMIC64_TIMEOUT),
++                     nir_imm_int(b, 1), .atomic_op = nir_atomic_op_xchg);
++}
++
+ static nir_def *
+ locked_in_turns(nir_builder *b, const struct target *t, nir_atomic_op op,
+                 nir_def *data, nir_def *swap)
+@@ -202,18 +215,29 @@ locked_in_turns(nir_builder *b, const struct target *t, nir_atomic_op op,
+       {
+          nir_variable *spins =
+             nir_local_variable_create(impl, glsl_uint_type(), "atomic64_spins");
++         nir_variable *held =
++            nir_local_variable_create(impl, glsl_bool_type(), "atomic64_held");
+          nir_store_var(b, spins, nir_imm_int(b, 0), 1);
++         nir_store_var(b, held, nir_imm_false(b), 1);
+          nir_push_loop(b);
+          {
+-            nir_break_if(b, try_lock(b, lock));
++            nir_def *acquired = try_lock(b, lock);
++            nir_store_var(b, held, acquired, 1);
++            nir_break_if(b, acquired);
+             nir_def *spun = nir_load_var(b, spins);
+             nir_break_if(b, nir_uge_imm(b, spun, KK_ATOMIC64_SPIN_LIMIT));
+             nir_store_var(b, spins, nir_iadd_imm(b, spun, 1), 1);
+          }
+          nir_pop_loop(b, NULL);
+ 
+-         nir_store_var(b, result, critical_section(b, t, op, data, swap), 1);
+-         unlock(b, lock);
++         nir_push_if(b, nir_load_var(b, held));
++         {
++            nir_store_var(b, result, critical_section(b, t, op, data, swap), 1);
++            unlock(b, lock);
++         }
++         nir_push_else(b, NULL);
++         report_timeout(b);
++         nir_pop_if(b, NULL);
+       }
+       nir_pop_if(b, NULL);
+       nir_store_var(b, turn, nir_iadd_imm(b, j, 1), 1);
+@@ -252,11 +276,18 @@ locked_by_state(nir_builder *b, const struct target *t, nir_atomic_op op,
+       nir_push_else(b, NULL);
+       {
+          nir_def *spun = nir_load_var(b, spins);
+-         nir_def *enter =
+-            nir_ior(b, try_lock(b, lock),
+-                    nir_uge_imm(b, spun, KK_ATOMIC64_SPIN_LIMIT));
++         nir_def *enter = try_lock(b, lock);
++         nir_def *timeout = nir_iand(b, nir_inot(b, enter),
++                                     nir_uge_imm(b, spun, KK_ATOMIC64_SPIN_LIMIT));
+          nir_store_var(b, spins, nir_iadd_imm(b, spun, 1), 1);
+-         nir_store_var(b, state, nir_b2i32(b, enter), 1);
++         nir_store_var(b, state,
++                       nir_bcsel(b, enter, nir_imm_int(b, 1),
++                                 nir_bcsel(b, timeout, nir_imm_int(b, 2),
++                                           nir_imm_int(b, 0))),
++                       1);
++         nir_push_if(b, timeout);
++         report_timeout(b);
++         nir_pop_if(b, NULL);
+       }
+       nir_pop_if(b, NULL);
+    }
+@@ -291,9 +322,17 @@ is_atomic64(const nir_intrinsic_instr *intrin)
+    case nir_intrinsic_load_global_constant_offset:
+       return intrin->def.bit_size == 64 &&
+              (nir_intrinsic_access(intrin) & ACCESS_ATOMIC);
++   case nir_intrinsic_load_shared:
++   case nir_intrinsic_bindless_image_load:
++      return intrin->def.bit_size == 64 &&
++             (nir_intrinsic_access(intrin) & ACCESS_ATOMIC);
+    case nir_intrinsic_store_global:
++   case nir_intrinsic_store_shared:
+       return intrin->src[0].ssa->bit_size == 64 &&
+              (nir_intrinsic_access(intrin) & ACCESS_ATOMIC);
++   case nir_intrinsic_bindless_image_store:
++      return intrin->src[3].ssa->bit_size == 64 &&
++             (nir_intrinsic_access(intrin) & ACCESS_ATOMIC);
+    default:
+       return false;
+    }
+@@ -305,8 +344,15 @@ lower_atomic(nir_builder *b, nir_intrinsic_instr *intrin, uint8_t *locked_out)
+    b->cursor = nir_before_instr(&intrin->instr);
+ 
+    if (intrin->intrinsic == nir_intrinsic_load_global ||
+-       intrin->intrinsic == nir_intrinsic_load_global_constant_offset) {
+-      fence(b, &(struct target){.kind = TARGET_GLOBAL});
++       intrin->intrinsic == nir_intrinsic_load_global_constant_offset ||
++       intrin->intrinsic == nir_intrinsic_load_shared ||
++       intrin->intrinsic == nir_intrinsic_bindless_image_load) {
++      enum target_kind kind =
++         intrin->intrinsic == nir_intrinsic_load_shared ? TARGET_SHARED
++         : intrin->intrinsic == nir_intrinsic_bindless_image_load
++            ? TARGET_IMAGE
++            : TARGET_GLOBAL;
++      fence(b, &(struct target){.kind = kind});
+       nir_intrinsic_set_access(intrin,
+                                nir_intrinsic_access(intrin) & ~ACCESS_ATOMIC);
+       return;
+@@ -320,6 +366,24 @@ lower_atomic(nir_builder *b, nir_intrinsic_instr *intrin, uint8_t *locked_out)
+       return;
+    }
+ 
++   if (intrin->intrinsic == nir_intrinsic_store_shared) {
++      struct target t = {.kind = TARGET_SHARED,
++                         .addr = intrin->src[1].ssa,
++                         .base = nir_intrinsic_base(intrin)};
++      locked(b, &t, nir_atomic_op_xchg, intrin->src[0].ssa, NULL);
++      nir_instr_remove(&intrin->instr);
++      return;
++   }
++
++   if (intrin->intrinsic == nir_intrinsic_bindless_image_store) {
++      struct target t = {.kind = TARGET_IMAGE, .image = intrin};
++      locked(b, &t, nir_atomic_op_xchg, nir_channel(b, intrin->src[3].ssa, 0),
++             NULL);
++      *locked_out |= BITFIELD_BIT(KK_ATOMIC64_IMAGE);
++      nir_instr_remove(&intrin->instr);
++      return;
++   }
++
+    const nir_atomic_op op = nir_intrinsic_atomic_op(intrin);
+ 
+    if (intrin->intrinsic == nir_intrinsic_bindless_image_atomic ||
+diff --git a/src/kosmickrisp/vulkan/kk_queue.c b/src/kosmickrisp/vulkan/kk_queue.c
+index d186a57f8d3..745a3ad293c 100644
+--- a/src/kosmickrisp/vulkan/kk_queue.c
++++ b/src/kosmickrisp/vulkan/kk_queue.c
+@@ -61,6 +61,11 @@ check_device_lost(struct kk_device *dev, struct mtl_feedback_data *data)
+       memset((uint8_t *)dev->atomic64.bo->cpu + KK_ATOMIC64_LOCK_OFFSET, 0,
+              KK_ATOMIC64_ARENA_SIZE - KK_ATOMIC64_LOCK_OFFSET);
+    }
++
++   const uint32_t *atomic64 = dev->atomic64.bo->cpu;
++   if (p_atomic_read(&atomic64[KK_ATOMIC64_TIMEOUT]))
++      vk_device_set_lost(&dev->vk,
++                         "A 64-bit atomic timed out waiting for its lock");
+ }
+ 
+ static void
+diff --git a/src/kosmickrisp/vulkan/kk_shader.h b/src/kosmickrisp/vulkan/kk_shader.h
+index c96dfeec7c9..f83e6ee2cb0 100644
+--- a/src/kosmickrisp/vulkan/kk_shader.h
++++ b/src/kosmickrisp/vulkan/kk_shader.h
+@@ -217,6 +217,7 @@ bool kk_nir_lower_compute_derivatives(nir_shader *nir);
+ bool kk_nir_lower_compute_lod_queries(nir_shader *nir);
+ #define KK_ATOMIC64_BUFFER      0
+ #define KK_ATOMIC64_IMAGE       1
++#define KK_ATOMIC64_TIMEOUT     2
+ #define KK_ATOMIC64_LOCK_COUNT  4096u
+ #define KK_ATOMIC64_LOCK_OFFSET 64u
+ #define KK_ATOMIC64_SPIN_LIMIT  (1u << 22)
+-- 
+2.54.0 (Apple Git-157)
+

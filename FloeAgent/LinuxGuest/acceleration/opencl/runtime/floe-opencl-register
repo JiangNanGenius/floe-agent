@@ -1,0 +1,44 @@
+#!/bin/sh
+# Explicit, reversible system-wide OpenCL ICD registration for the private
+# Floe CLVK package. This is an administrative opt-in; the package itself
+# installs only under /usr/lib/floe-opencl and /usr/share/floe-opencl.
+set -eu
+
+ICD=/usr/share/floe-opencl/vendors/floe-clvk.icd
+TARGET=/etc/OpenCL/vendors/floe-clvk.icd
+SELF=$(basename "$0")
+
+usage() {
+    cat <<EOF
+usage: $SELF register|unregister|status
+
+  register    install $ICD as $TARGET (requires root)
+  unregister  remove only $TARGET
+  status      show the private and registered ICD paths
+EOF
+}
+
+case "${1:-}" in
+    register)
+        [ -r "$ICD" ] || { echo "missing $ICD" >&2; exit 2; }
+        mkdir -p /etc/OpenCL/vendors
+        install -m 0644 "$ICD" "$TARGET"
+        echo "registered $TARGET"
+        ;;
+    unregister)
+        rm -f "$TARGET"
+        echo "removed $TARGET (other ICDs untouched)"
+        ;;
+    status)
+        echo "private:    $ICD"
+        echo "registered: $TARGET"
+        [ -e "$TARGET" ] && echo "state:      registered" || echo "state:      not registered"
+        ;;
+    -h|--help|"")
+        usage
+        ;;
+    *)
+        usage >&2
+        exit 2
+        ;;
+esac

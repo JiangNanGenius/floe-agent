@@ -18,10 +18,10 @@ fvgpu_retire_fence_cb(uint32_t ctx_id, uint32_t ring_idx, uint64_t fence_id)
 
 /* Explicit callback owner remains alive until renderer threads join. */
 static void fvgpu_accounting_cb(uint64_t bytes,uint32_t type,bool alias,bool alloc,uint64_t key,void *user) {
-    (void)type;(void)key;fvgpu_ledger_event(user,bytes,alias,false,alloc);
+    (void)type;fvgpu_ledger_event(user,bytes,alias,false,alloc,key);
 }
 static void fvgpu_blob_accounting_cb(uint64_t bytes,uint32_t type,bool alias,bool alloc,uint64_t key,void *user) {
-    (void)type;(void)key;fvgpu_ledger_event(user,bytes,alias,true,alloc);
+    (void)type;fvgpu_ledger_event(user,bytes,alias,true,alloc,key);
 }
 static bool fvgpu_admit(uint64_t bytes,bool alias,bool blob,void *user) {
     (void)blob;return fvgpu_ledger_reserve(user,bytes,alias);
@@ -57,9 +57,32 @@ fvgpu_fill_device_identity(FloeGPUSession *s)
             .apiVersion = VK_API_VERSION_1_1,
         },
     };
+    /* Resolve identity operations from the selected static provider, as
+     * the Venus renderer does. No process-global device dispatch is cached. */
+    PFN_vkCreateInstance vkCreateInstance = (PFN_vkCreateInstance)
+        vkGetInstanceProcAddr(VK_NULL_HANDLE, "vkCreateInstance");
+    if (!vkCreateInstance) return;
     VkInstance inst;
     if (vkCreateInstance(&ici, NULL, &inst) != VK_SUCCESS)
         return;
+    PFN_vkDestroyInstance vkDestroyInstance = (PFN_vkDestroyInstance)
+        vkGetInstanceProcAddr(inst, "vkDestroyInstance");
+    /* A valid Vulkan instance guarantees this mandatory core entry point. */
+    if (!vkDestroyInstance) return;
+#define FLOE_IDENTITY_PROC(name) PFN_##name name = (PFN_##name)vkGetInstanceProcAddr(inst, #name)
+    FLOE_IDENTITY_PROC(vkEnumeratePhysicalDevices);
+    FLOE_IDENTITY_PROC(vkGetPhysicalDeviceProperties);
+    FLOE_IDENTITY_PROC(vkEnumerateDeviceExtensionProperties);
+    FLOE_IDENTITY_PROC(vkGetPhysicalDeviceProperties2);
+    FLOE_IDENTITY_PROC(vkGetPhysicalDeviceMemoryProperties);
+    FLOE_IDENTITY_PROC(vkGetPhysicalDeviceMemoryProperties2);
+#undef FLOE_IDENTITY_PROC
+    if (!vkEnumeratePhysicalDevices || !vkGetPhysicalDeviceProperties ||
+        !vkEnumerateDeviceExtensionProperties || !vkGetPhysicalDeviceProperties2 ||
+        !vkGetPhysicalDeviceMemoryProperties || !vkGetPhysicalDeviceMemoryProperties2) {
+        vkDestroyInstance(inst, NULL);
+        return;
+    }
     uint32_t n = 0;
     if (vkEnumeratePhysicalDevices(inst, &n, NULL) || !n) {
         vkDestroyInstance(inst, NULL);
@@ -90,7 +113,10 @@ fvgpu_fill_device_identity(FloeGPUSession *s)
     VkExtensionProperties *exts = calloc(next ? next : 1, sizeof(*exts));
     if(!exts) {vkDestroyInstance(inst,NULL);return;}
     if(vkEnumerateDeviceExtensionProperties(pdev,NULL,&next,exts)!=VK_SUCCESS) next=0;
+    bool has_memory_budget = false;
     for (uint32_t i = 0; i < next; i++) {
+        if (!strcmp(exts[i].extensionName, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME))
+            has_memory_budget = true;
         if (!strcmp(exts[i].extensionName, VK_KHR_DRIVER_PROPERTIES_EXTENSION_NAME)) {
             VkPhysicalDeviceDriverProperties drv = {
                 .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES,
@@ -106,8 +132,26 @@ fvgpu_fill_device_identity(FloeGPUSession *s)
     free(exts);
     VkPhysicalDeviceMemoryProperties mp;
     vkGetPhysicalDeviceMemoryProperties(pdev, &mp);
-    if (mp.memoryHeapCount)
-        s->info.host_heap_size_bytes = mp.memoryHeaps[0].size;
+    for (uint32_t i = 0; i < mp.memoryHeapCount; i++)
+        if (mp.memoryHeaps[i].size > s->info.host_heap_size_bytes)
+            s->info.host_heap_size_bytes = mp.memoryHeaps[i].size;
+    /* VK_EXT_memory_budget reports the driver's physical heap budget. It is
+     * NOT the Floe session quota: on unified Apple memory it reflects the
+     * device-wide capacity. Keep it as an honest physical figure; admission
+     * and the enforceable ceiling are session_budget_bytes (below). */
+    if (has_memory_budget) {
+        VkPhysicalDeviceMemoryBudgetPropertiesEXT budget = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT,
+        };
+        VkPhysicalDeviceMemoryProperties2 mp2 = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2,
+            .pNext = &budget,
+        };
+        vkGetPhysicalDeviceMemoryProperties2(pdev, &mp2);
+        for (uint32_t i = 0; i < mp2.memoryProperties.memoryHeapCount; i++)
+            if (budget.heapBudget[i] > s->info.host_heap_budget_bytes)
+                s->info.host_heap_budget_bytes = budget.heapBudget[i];
+    }
     vkDestroyInstance(inst, NULL);
 }
 
@@ -151,6 +195,12 @@ create_session(const FloeGPUDeviceInfo **info,const char *app_group,char *err,si
     s->info.venus_capset_size=(uint32_t)vkr_get_capset(&venus,0);
     s->info.venus_capset_version=venus.wire_format_version;
     fvgpu_fill_device_identity(s);
+    s->info.session_budget_bytes=s->budget.target_bytes;
+    fvgpu_trace("ev=session-create heap_size=%llu heap_budget=%llu session_budget=%llu venus=%u",
+        (unsigned long long)s->info.host_heap_size_bytes,
+        (unsigned long long)s->info.host_heap_budget_bytes,
+        (unsigned long long)s->info.session_budget_bytes,
+        s->info.venus_enabled?1u:0u);
     vkr_accounting_set_callback(fvgpu_accounting_cb,s);
     vkr_accounting_set_blob_callback(fvgpu_blob_accounting_cb,s);
     vkr_accounting_set_admission(fvgpu_admit,fvgpu_cancel,s);
@@ -170,6 +220,20 @@ void floe_gpu_session_destroy(FloeGPUSession *s) {
     /* The unbind lock is a real in-flight callback barrier. Keep ledger hooks
      * installed until every resource, context and renderer worker is gone. */
     fvgpu_bind_current_session(NULL);
+    /* Snapshot without nesting the accounting mutex inside ledger_lock:
+     * renderer callbacks take accounting -> ledger, so the reverse order here
+     * would be a real deadlock. */
+    uint64_t entries=vkr_accounting_entry_count();
+    uint64_t live,blob,device,aliased,faults;
+    pthread_mutex_lock(&s->ledger_lock);
+    live=fvgpu_live_locked(s);blob=s->ledger.blob_bytes;
+    device=s->ledger.device_memory_bytes;aliased=s->ledger.aliased_guest_bytes;
+    faults=s->ledger_faults;
+    pthread_mutex_unlock(&s->ledger_lock);
+    fvgpu_trace("ev=session-destroy live=%llu blob=%llu device=%llu aliased=%llu faults=%llu entries=%llu",
+        (unsigned long long)live,(unsigned long long)blob,(unsigned long long)device,
+        (unsigned long long)aliased,(unsigned long long)faults,
+        (unsigned long long)entries);
     fvgpu_resources_destroy_all(s);fvgpu_contexts_destroy_all(s);
     vkr_renderer_fini();
     vkr_accounting_set_admission(NULL,NULL,NULL);
@@ -225,6 +289,7 @@ int floe_gpu_ctx_create(FloeGPUSession *s,uint32_t id,uint32_t init,const char *
     const char *debug=name?name:"floe-ctx";
     if(!vkr_renderer_create_context(id,4,(uint32_t)strlen(debug),debug)) return FLOE_GPU_RESP_ERR_UNSPEC;
     if(fvgpu_context_add(s,id)) {vkr_renderer_destroy_context(id);return FLOE_GPU_RESP_OUT_OF_MEMORY;}
+    fvgpu_trace("ev=ctx-create ctx=%u",id);
     return FLOE_GPU_RESP_OK;
 }
 int floe_gpu_ctx_destroy(FloeGPUSession *s,uint32_t id) {
@@ -232,6 +297,7 @@ int floe_gpu_ctx_destroy(FloeGPUSession *s,uint32_t id) {
     for(unsigned i=0;i<FVGPU_MAX_CONTEXTS;i++)
         if(s->contexts[i].used&&s->contexts[i].ctx_id==id) {slot=(int)i;break;}
     if(slot<0) return FLOE_GPU_RESP_INVALID;
+    fvgpu_trace("ev=ctx-destroy ctx=%u",id);
     vkr_renderer_destroy_context(id);
     for(unsigned i=0;i<512;i++) if(s->resources[i].used) {
         s->resources[i].context_mask&=~(1ull<<slot);

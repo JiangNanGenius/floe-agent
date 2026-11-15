@@ -1,0 +1,180 @@
+From f35f2767c192d063b58364db02551381588c6621 Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Wed, 30 Sep 2026 18:45:39 -0400
+Subject: [PATCH] kk: Support single-texel alignment for texel buffer views
+
+Generated-by: LLM
+---
+ src/kosmickrisp/vulkan/kk_buffer_view.c       | 13 +++--
+ src/kosmickrisp/vulkan/kk_buffer_view.h       |  1 +
+ src/kosmickrisp/vulkan/kk_descriptor_set.c    |  2 +
+ src/kosmickrisp/vulkan/kk_descriptor_types.h  |  4 +-
+ .../vulkan/kk_nir_lower_descriptors.c         | 49 +++++++++++++++++++
+ src/kosmickrisp/vulkan/kk_physical_device.c   |  4 +-
+ 6 files changed, 67 insertions(+), 6 deletions(-)
+
+diff --git a/src/kosmickrisp/vulkan/kk_buffer_view.c b/src/kosmickrisp/vulkan/kk_buffer_view.c
+index 3a0aa03e8ac..659f4efd457 100644
+--- a/src/kosmickrisp/vulkan/kk_buffer_view.c
++++ b/src/kosmickrisp/vulkan/kk_buffer_view.c
+@@ -76,8 +76,15 @@ kk_CreateBufferView(VkDevice _device, const VkBufferViewCreateInfo *pCreateInfo,
+        view->vk.format == VK_FORMAT_R32_SINT)
+       usage |= MTL_TEXTURE_USAGE_SHADER_ATOMIC;
+ 
++   uint32_t el_size_B = util_format_get_blocksize(p_format);
++   uint64_t aligned_offset_B =
++      view->vk.offset & ~(uint64_t)(KK_MIN_TEXEL_BUFFER_ALIGNMENT - 1);
++   uint32_t lead_B = view->vk.offset - aligned_offset_B;
++   assert(lead_B % el_size_B == 0);
++   view->offset_el = lead_B / el_size_B;
++
+    struct kk_image_layout layout = {
+-      .width_px = view->vk.elements,
++      .width_px = view->vk.elements + view->offset_el,
+       .height_px = 1u,
+       .depth_px = 1u,
+       .layers = 1u,
+@@ -95,13 +102,13 @@ kk_CreateBufferView(VkDevice _device, const VkBufferViewCreateInfo *pCreateInfo,
+             .blue = supported_format->unswizzle.blue,
+             .alpha = supported_format->unswizzle.alpha,
+          },
+-      .linear_stride_B = view->vk.range,
++      .linear_stride_B = view->vk.range + lead_B,
+    };
+    struct kk_buffer *buffer =
+       container_of(view->vk.buffer, struct kk_buffer, vk);
+    view->mtl_texel_buffer_handle = mtl_new_texture_with_descriptor_linear(
+       buffer->metal.handle, &layout,
+-      kk_buffer_mtl_offset(buffer, view->vk.offset));
++      kk_buffer_mtl_offset(buffer, aligned_offset_B));
+    if (!view->mtl_texel_buffer_handle) {
+       vk_buffer_view_destroy(&dev->vk, pAllocator, &view->vk);
+       return vk_error(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+diff --git a/src/kosmickrisp/vulkan/kk_buffer_view.h b/src/kosmickrisp/vulkan/kk_buffer_view.h
+index 8a995ea5f86..d9d96d7a08b 100644
+--- a/src/kosmickrisp/vulkan/kk_buffer_view.h
++++ b/src/kosmickrisp/vulkan/kk_buffer_view.h
+@@ -23,6 +23,7 @@ struct kk_buffer_view {
+    struct vk_buffer_view vk;
+    mtl_texture *mtl_texel_buffer_handle;
+    uint64_t texel_buffer_gpu_id;
++   uint32_t offset_el;
+ };
+ 
+ VK_DEFINE_NONDISP_HANDLE_CASTS(kk_buffer_view, vk.base, VkBufferView,
+diff --git a/src/kosmickrisp/vulkan/kk_descriptor_set.c b/src/kosmickrisp/vulkan/kk_descriptor_set.c
+index 5f56abc877d..7cdf4809fba 100644
+--- a/src/kosmickrisp/vulkan/kk_descriptor_set.c
++++ b/src/kosmickrisp/vulkan/kk_descriptor_set.c
+@@ -237,6 +237,8 @@ write_buffer_view_desc(struct kk_descriptor_set *set,
+       assert(view->texel_buffer_gpu_id);
+ 
+       desc.image_gpu_resource_id = view->texel_buffer_gpu_id;
++      desc.buffer_offset_el = view->offset_el;
++      desc.buffer_size_el = view->vk.elements;
+    }
+    write_desc(set, binding, elem, &desc, sizeof(desc));
+ }
+diff --git a/src/kosmickrisp/vulkan/kk_descriptor_types.h b/src/kosmickrisp/vulkan/kk_descriptor_types.h
+index 3c0f8b8b79a..c289c5f1f22 100644
+--- a/src/kosmickrisp/vulkan/kk_descriptor_types.h
++++ b/src/kosmickrisp/vulkan/kk_descriptor_types.h
+@@ -36,9 +36,11 @@ static_assert(sizeof(struct kk_sampled_image_descriptor) == 64,
+ 
+ struct kk_storage_image_descriptor {
+    uint64_t image_gpu_resource_id;
++   uint32_t buffer_offset_el;
++   uint32_t buffer_size_el;
+ };
+ 
+-static_assert(sizeof(struct kk_storage_image_descriptor) == 8,
++static_assert(sizeof(struct kk_storage_image_descriptor) == 16,
+               "kk_storage_image_descriptor has no holes");
+ 
+ /* This has to match nir_address_format_64bit_bounded_global */
+diff --git a/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c b/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c
+index 050206a2f01..c6ec558af3b 100644
+--- a/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c
++++ b/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c
+@@ -367,6 +367,30 @@ lower_image_intrin(nir_builder *b, nir_intrinsic_instr *intr,
+    b->cursor = nir_before_instr(&intr->instr);
+    nir_deref_instr *deref = nir_src_as_deref(intr->src[0]);
+ 
++   if (nir_intrinsic_image_dim(intr) == GLSL_SAMPLER_DIM_BUF) {
++      if (intr->intrinsic == nir_intrinsic_image_deref_size) {
++         nir_def *size = load_resource_deref_desc(
++            b, 1, 32, deref,
++            offsetof(struct kk_storage_image_descriptor, buffer_size_el), ctx);
++         nir_def_replace(&intr->def, nir_pad_vector_imm_int(
++                                        b, nir_u2uN(b, size, intr->def.bit_size),
++                                        0, intr->def.num_components));
++         return true;
++      }
++
++      if (intr->intrinsic != nir_intrinsic_image_deref_samples &&
++          intr->intrinsic != nir_intrinsic_image_deref_levels) {
++         nir_def *coord = intr->src[1].ssa;
++         nir_def *offset = load_resource_deref_desc(
++            b, 1, 32, deref,
++            offsetof(struct kk_storage_image_descriptor, buffer_offset_el),
++            ctx);
++         nir_def *x = nir_iadd(b, nir_channel(b, coord, 0),
++                               nir_u2uN(b, offset, coord->bit_size));
++         nir_src_rewrite(&intr->src[1], nir_vector_insert_imm(b, coord, x, 0));
++      }
++   }
++
+    /* Reads and queries use the texture descriptor; writes and atomics PBE. */
+    unsigned offs =
+       offsetof(struct kk_storage_image_descriptor, image_gpu_resource_id);
+@@ -481,6 +505,31 @@ lower_tex(nir_builder *b, nir_tex_instr *tex,
+       return false;
+    }
+ 
++   if (tex->sampler_dim == GLSL_SAMPLER_DIM_BUF) {
++      nir_deref_instr *deref = nir_src_as_deref(nir_src_for_ssa(texture));
++
++      if (tex->op == nir_texop_txs) {
++         nir_def *size = load_resource_deref_desc(
++            b, 1, 32, deref,
++            offsetof(struct kk_storage_image_descriptor, buffer_size_el), ctx);
++         nir_def_replace(&tex->def, nir_pad_vector_imm_int(
++                                       b, nir_u2uN(b, size, tex->def.bit_size),
++                                       0, tex->def.num_components));
++         return true;
++      }
++
++      int coord_idx = nir_tex_instr_src_index(tex, nir_tex_src_coord);
++      if (coord_idx >= 0) {
++         nir_def *coord = tex->src[coord_idx].src.ssa;
++         nir_def *offset = load_resource_deref_desc(
++            b, 1, 32, deref,
++            offsetof(struct kk_storage_image_descriptor, buffer_offset_el),
++            ctx);
++         nir_src_rewrite(&tex->src[coord_idx].src,
++                         nir_iadd(b, coord, nir_u2uN(b, offset, coord->bit_size)));
++      }
++   }
++
+    nir_def *plane_ssa = nir_steal_tex_src(tex, nir_tex_src_plane);
+    const uint32_t plane =
+       plane_ssa ? nir_src_as_uint(nir_src_for_ssa(plane_ssa)) : 0;
+diff --git a/src/kosmickrisp/vulkan/kk_physical_device.c b/src/kosmickrisp/vulkan/kk_physical_device.c
+index fcb04ad1567..87a7d8406d1 100644
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c
+@@ -776,9 +776,9 @@ kk_get_device_properties(
+       .integerDotProduct4x8BitPackedSignedAccelerated = false,
+       .integerDotProduct4x8BitPackedMixedSignednessAccelerated = false,
+       .storageTexelBufferOffsetAlignmentBytes = KK_MIN_TEXEL_BUFFER_ALIGNMENT,
+-      .storageTexelBufferOffsetSingleTexelAlignment = false,
++      .storageTexelBufferOffsetSingleTexelAlignment = true,
+       .uniformTexelBufferOffsetAlignmentBytes = KK_MIN_TEXEL_BUFFER_ALIGNMENT,
+-      .uniformTexelBufferOffsetSingleTexelAlignment = false,
++      .uniformTexelBufferOffsetSingleTexelAlignment = true,
+       .maxBufferSize = pdev->info.max_buffer_size,
+ 
+       /* VK_KHR_push_descriptor */
+-- 
+2.54.0 (Apple Git-157)
+

@@ -1,0 +1,40 @@
+{
+  "schema": "floe.linux-graphics.capability-policy.v1",
+  "purpose": "Only artifacts actually installed in a verified image may back a declared capability. A declaration without evidence is invalid; an installer must not synthesize a capability from source presence or a build plan.",
+  "capabilities": {
+    "venusVulkan": {
+      "requires": ["libvulkan_virtio.so", "virtio_icd.aarch64.json"],
+      "gates": []
+    },
+    "openGL": {
+      "requires": ["libgallium-25.0.7.so", "libGLX_floe.so.0.0.0"],
+      "gates": ["venusVulkan"]
+    },
+    "shaderCache": {
+      "requires": ["libgallium-25.0.7.so"],
+      "gates": ["openGL"]
+    },
+    "openCL": {
+      "requires": ["libfloe_clvk.so.1", "floe-clvk.icd", "clspv"],
+      "gates": ["venusVulkan"]
+    },
+    "video.hardwareDecode": {
+      "requires": ["virtio-media.ko", "floe-codec"],
+      "gates": []
+    },
+    "video.hardwareEncode": {
+      "requires": ["virtio-media.ko", "floe-codec"],
+      "gates": []
+    },
+    "video.nativeSoftware": {
+      "requires": ["floe-codec"],
+      "gates": []
+    }
+  },
+  "notes": [
+    "An older frontend package installs the megadriver as libgallium.so under /usr/lib/floe-gpu/dri with LIBGL_DRIVERS_PATH; a new declaration must use the exact installed filename and cannot reuse this policy's frontend entry unchanged.",
+    "video.nativeSoftware is native software encoding/decoding, not GPU or hardware acceleration; it must never be presented as hardware.",
+    "Blender is an application workload, not a capability. Do not add a Blender flag to image manifests.",
+    "OpenCL remains unavailable until an admitted compiler and a real ICD load are recorded."
+  ]
+}

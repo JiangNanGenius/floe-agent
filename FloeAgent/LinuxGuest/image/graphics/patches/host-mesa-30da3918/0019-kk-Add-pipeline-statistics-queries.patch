@@ -1,0 +1,1257 @@
+From 69aebff13c223db4a24b0ad22b4ed53cc68eacd8 Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Wed, 30 Sep 2026 23:17:02 -0400
+Subject: [PATCH] kk: Add pipeline statistics queries
+
+Generated-by: LLM
+---
+ src/kosmickrisp/libkk/kk_query.cl           | 137 +++++++++++
+ src/kosmickrisp/libkk/kk_query.h            |   6 +
+ src/kosmickrisp/vulkan/kk_cmd_buffer.c      |  64 ++++++
+ src/kosmickrisp/vulkan/kk_cmd_buffer.h      |  38 ++++
+ src/kosmickrisp/vulkan/kk_cmd_dispatch.c    |  26 ++-
+ src/kosmickrisp/vulkan/kk_cmd_draw.c        | 164 +++++++++++++-
+ src/kosmickrisp/vulkan/kk_cmd_meta.c        |   5 +
+ src/kosmickrisp/vulkan/kk_physical_device.c |   1 +
+ src/kosmickrisp/vulkan/kk_query_pool.c      |  30 +++
+ src/kosmickrisp/vulkan/kk_shader.c          | 239 ++++++++++++++------
+ src/kosmickrisp/vulkan/kk_shader.h          |   6 +
+ src/poly/nir/poly_nir.h                     |   4 +
+ src/poly/nir/poly_nir_lower_gs.c            |   3 +
+ 13 files changed, 649 insertions(+), 74 deletions(-)
+
+diff --git a/src/kosmickrisp/libkk/kk_query.cl b/src/kosmickrisp/libkk/kk_query.cl
+index 46f279fce5e..99e63e16c64 100644
+--- a/src/kosmickrisp/libkk/kk_query.cl
++++ b/src/kosmickrisp/libkk/kk_query.cl
+@@ -9,6 +9,7 @@
+ #include "compiler/libcl/libcl_vk.h"
+ 
+ #include "kk_query.h"
++#include "poly/geometry.h"
+ 
+ static inline global uint64_t *
+ query_report(global uint64_t *results, global uint16_t *oq_index,
+@@ -100,3 +101,139 @@ libkk_copy_queries(global uint32_t *availability, global uint64_t *results,
+       vk_write_query(dst, reports_per_query, flags, available);
+    }
+ }
++
++static void
++libkk_stats_add(global uint64_t *counter, uint64_t value)
++{
++   if (counter)
++      *counter += value;
++}
++
++KERNEL(1)
++libkk_add_u64(global uint64_t *counter, uint64_t value)
++{
++   *counter += value;
++}
++
++KERNEL(1024)
++libkk_stats_draws(constant struct libkk_stats_draw *draws, uint32_t count,
++                  global uint64_t *ia_vertices, global uint64_t *ia_primitives,
++                  global uint64_t *vs_invocations,
++                  global uint64_t *c_invocations,
++                  global uint64_t *c_primitives, global uint64_t *tcs_patches)
++{
++   local uint64_t vertices[1024];
++   local uint64_t primitives[1024];
++   uint tid = cl_local_id.x;
++
++   uint64_t v = 0, p = 0;
++   for (uint32_t i = tid; i < count; i += 1024) {
++      constant struct libkk_stats_draw *d = &draws[i];
++      uint64_t instances = d->draw[1];
++      v += (uint64_t)d->draw[0] * instances;
++      p += (uint64_t)poly_decomposed_prims_for_vertices_with_tess(
++              (enum mesa_prim)d->prim, d->draw[0], d->patch_size) *
++           instances;
++   }
++
++   vertices[tid] = v;
++   primitives[tid] = p;
++   barrier(CLK_LOCAL_MEM_FENCE);
++
++   for (uint s = 512; s > 0; s >>= 1) {
++      if (tid < s) {
++         vertices[tid] += vertices[tid + s];
++         primitives[tid] += primitives[tid + s];
++      }
++      barrier(CLK_LOCAL_MEM_FENCE);
++   }
++
++   if (tid == 0) {
++      libkk_stats_add(ia_vertices, vertices[0]);
++      libkk_stats_add(ia_primitives, primitives[0]);
++      libkk_stats_add(vs_invocations, vertices[0]);
++      libkk_stats_add(c_invocations, primitives[0]);
++      libkk_stats_add(c_primitives, primitives[0]);
++      libkk_stats_add(tcs_patches, primitives[0]);
++   }
++}
++
++KERNEL(1)
++libkk_tess_stats(constant uint32_t *out_draw, global uint32_t *tes_count,
++                 uint32_t verts_per_prim, global uint64_t *tes_invocations,
++                 global uint64_t *c_invocations, global uint64_t *c_primitives)
++{
++   if (tes_count) {
++      libkk_stats_add(tes_invocations, *tes_count);
++      *tes_count = 0;
++   }
++
++   uint64_t primitives = (uint64_t)(out_draw[0] / verts_per_prim) * out_draw[1];
++   libkk_stats_add(c_invocations, primitives);
++   libkk_stats_add(c_primitives, primitives);
++}
++
++static uint
++libkk_gs_stream_prims(global struct poly_geometry_params *p, int static_count,
++                      int count_index, uint count_words, uint prefix_sum)
++{
++   uint in_prims = p->input_primitives;
++   if (static_count >= 0)
++      return in_prims * static_count;
++   if (count_index < 0 || in_prims == 0 || !p->count_buffer)
++      return 0;
++
++   uint index = count_index;
++   if (prefix_sum)
++      index += (in_prims - 1) * count_words;
++
++   uint prims = p->count_buffer[index];
++   if (!prefix_sum)
++      p->count_buffer[index] = 0;
++   return prims;
++}
++
++KERNEL(1)
++libkk_gs_stats(global struct poly_geometry_params *p, uint32_t invocations,
++               uint32_t count_words, uint32_t prefix_sum, uint32_t raster_stream,
++               int32_t static_count0, int32_t static_count1,
++               int32_t static_count2, int32_t static_count3,
++               int32_t count_index0, int32_t count_index1,
++               int32_t count_index2, int32_t count_index3,
++               global uint64_t *gs_invocations,
++               global uint64_t *gs_primitives,
++               global uint64_t *c_invocations, global uint64_t *c_primitives)
++{
++   int static_count[4] = {static_count0, static_count1, static_count2,
++                          static_count3};
++   int count_index[4] = {count_index0, count_index1, count_index2,
++                         count_index3};
++
++   uint64_t emitted = 0, rasterized = 0;
++   for (uint i = 0; i < 4; i++) {
++      uint prims = libkk_gs_stream_prims(p, static_count[i], count_index[i],
++                                         count_words, prefix_sum);
++      emitted += prims;
++      if (i == raster_stream)
++         rasterized = prims;
++   }
++
++   libkk_stats_add(gs_invocations,
++                   (uint64_t)p->input_primitives * invocations);
++   libkk_stats_add(gs_primitives, emitted);
++   libkk_stats_add(c_invocations, rasterized);
++   libkk_stats_add(c_primitives, rasterized);
++}
++
++KERNEL(1)
++libkk_dispatch_stats(constant uint32_t *groups, uint32_t stride_el,
++                     uint32_t count, uint32_t local_size,
++                     global uint64_t *cs_invocations)
++{
++   uint64_t invocations = 0;
++   for (uint32_t i = 0; i < count; i++) {
++      constant uint32_t *g = groups + i * stride_el;
++      invocations += (uint64_t)g[0] * g[1] * g[2];
++   }
++   *cs_invocations += invocations * local_size;
++}
+diff --git a/src/kosmickrisp/libkk/kk_query.h b/src/kosmickrisp/libkk/kk_query.h
+index 56887401c5b..025e6a168ae 100644
+--- a/src/kosmickrisp/libkk/kk_query.h
++++ b/src/kosmickrisp/libkk/kk_query.h
+@@ -18,4 +18,10 @@ struct libkk_imm_write {
+ 
+ #define LIBKK_QUERY_UNAVAILABLE (uint64_t)((int64_t)-1)
+ 
++struct libkk_stats_draw {
++   DEVICE(uint32_t) draw;
++   uint32_t prim;
++   uint32_t patch_size;
++};
++
+ #endif /* KK_QUERY_H */
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_buffer.c b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+index 947f0f04fae..5e0f97d85d5 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.c
+@@ -54,6 +54,7 @@ kk_cmd_release_resources(struct kk_device *dev, struct kk_cmd_buffer *cmd)
+    }
+    util_dynarray_clear(&cmd->large_bos);
+    util_dynarray_clear(&cmd->post_render_writes);
++   util_dynarray_clear(&cmd->post_render_stats);
+    util_dynarray_clear(&cmd->ts_resolves);
+    util_dynarray_clear(&cmd->ts_stage_map);
+ }
+@@ -95,6 +96,7 @@ kk_destroy_cmd_buffer(struct vk_command_buffer *vk_cmd_buffer)
+    kk_cmd_release_resources(dev, cmd);
+    util_dynarray_fini(&cmd->large_bos);
+    util_dynarray_fini(&cmd->post_render_writes);
++   util_dynarray_fini(&cmd->post_render_stats);
+    util_dynarray_fini(&cmd->ts_resolves);
+    util_dynarray_fini(&cmd->ts_stage_map);
+ 
+@@ -129,6 +131,7 @@ kk_create_cmd_buffer(struct vk_command_pool *vk_pool,
+    cmd->ts_resolves = UTIL_DYNARRAY_INIT;
+    cmd->ts_stage_map = UTIL_DYNARRAY_INIT;
+    cmd->post_render_writes = UTIL_DYNARRAY_INIT;
++   cmd->post_render_stats = UTIL_DYNARRAY_INIT;
+ 
+    {
+       mtl_argument_table_descriptor *desc = mtl_new_argument_table_descriptor();
+@@ -348,11 +351,72 @@ end_encoder(struct kk_cmd_buffer *cmd, mtl_command_encoder *encoder)
+    util_dynarray_clear(&cmd->ts_resolves);
+ }
+ 
++static void
++kk_run_stats_ops(struct kk_cmd_buffer *cmd, const struct kk_stats_op *ops,
++                 uint32_t count)
++{
++   uint32_t i = 0;
++   while (i < count) {
++      const struct kk_stats_op *op = &ops[i];
++      if (!op->draws) {
++         libkk_add_u64(cmd, kk_grid_1d(1), true, op->counter[0], op->value);
++         i++;
++         continue;
++      }
++
++      uint32_t end = i, total = 0;
++      while (end < count && ops[end].draws &&
++             !memcmp(ops[end].counter, op->counter, sizeof(op->counter))) {
++         total += ops[end].count;
++         end++;
++      }
++
++      struct kk_ptr entries = kk_pool_alloc(
++         cmd, MAX2(total, 1u) * sizeof(struct libkk_stats_draw), 8u);
++      if (likely(entries.cpu) && total) {
++         struct libkk_stats_draw *e = entries.cpu;
++         for (uint32_t j = i; j < end; j++) {
++            for (uint32_t k = 0; k < ops[j].count; k++) {
++               *(e++) = (struct libkk_stats_draw){
++                  .draw = ops[j].draws +
++                          (uint64_t)k * ops[j].stride_el * sizeof(uint32_t),
++                  .prim = ops[j].prim,
++                  .patch_size = ops[j].patch_size,
++               };
++            }
++         }
++
++         libkk_stats_draws(cmd, kk_grid_1d(1024), true, entries.gpu, total,
++                           op->counter[0], op->counter[1], op->counter[2],
++                           op->counter[3], op->counter[4], op->counter[5]);
++      }
++      i = end;
++   }
++}
++
++void
++kk_cmd_stats_op(struct kk_cmd_buffer *cmd, const struct kk_stats_op *op)
++{
++   if (cmd->metal.render)
++      util_dynarray_append(&cmd->post_render_stats, *op);
++   else
++      kk_run_stats_ops(cmd, op, 1u);
++}
++
+ static void
+ flush_post_render_writes(struct kk_cmd_buffer *cmd)
+ {
+    assert(cmd->metal.render == NULL);
+ 
++   uint32_t stats_count = util_dynarray_num_elements(&cmd->post_render_stats,
++                                                     struct kk_stats_op);
++   if (stats_count) {
++      kk_run_stats_ops(cmd, cmd->post_render_stats.data, stats_count);
++      util_dynarray_clear(&cmd->post_render_stats);
++   }
++
++   assert(cmd->metal.render == NULL);
++
+    if (!util_dynarray_num_elements(&cmd->post_render_writes,
+                                    struct libkk_imm_write))
+       return;
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_buffer.h b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+index fc5ba87ee8b..af6155ab349 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.h
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+@@ -99,6 +99,7 @@ struct kk_per_draw_data {
+    uint32_t rasterization_stream;
+ 
+    uint64_t sink;
++   uint64_t fs_invocations;
+ };
+ 
+ struct kk_attachment {
+@@ -155,6 +156,7 @@ struct kk_graphics_state {
+    struct kk_per_draw_data per_draw_data;
+ 
+    mtl_depth_stencil_state *depth_stencil_state;
++   bool fs_stats_bound;
+    mtl_render_pass_descriptor *render_pass_descriptor;
+    bool is_depth_stencil_dynamic;
+    bool is_cull_front_and_back;
+@@ -189,6 +191,7 @@ struct kk_graphics_state {
+       /* Grid buffer for when the draw is indirect */
+       struct kk_ptr indirect_ptr;
+       uint64_t out_draws_addr;
++      uint64_t statistic;
+       struct kk_tess_info info;
+       enum mesa_prim prim;
+    } tess;
+@@ -215,6 +218,38 @@ struct kk_compute_state {
+    struct kk_descriptor_state descriptors;
+ };
+ 
++enum kk_stat {
++   KK_STAT_IA_VERTICES,
++   KK_STAT_IA_PRIMITIVES,
++   KK_STAT_VS_INVOCATIONS,
++   KK_STAT_GS_INVOCATIONS,
++   KK_STAT_GS_PRIMITIVES,
++   KK_STAT_C_INVOCATIONS,
++   KK_STAT_C_PRIMITIVES,
++   KK_STAT_FS_INVOCATIONS,
++   KK_STAT_TCS_PATCHES,
++   KK_STAT_TES_INVOCATIONS,
++   KK_STAT_CS_INVOCATIONS,
++   KK_STAT_COUNT,
++};
++
++struct kk_stats_state {
++   uint64_t addr[KK_STAT_COUNT];
++   uint64_t pending[KK_STAT_COUNT];
++   bool active;
++};
++
++
++struct kk_stats_op {
++   uint64_t draws;
++   uint64_t counter[6];
++   uint64_t value;
++   uint32_t stride_el;
++   uint32_t count;
++   uint32_t prim;
++   uint32_t patch_size;
++};
++
+ struct kk_conditional_rendering_state {
+    uint64_t address;
+    bool inverted;
+@@ -262,6 +297,7 @@ struct kk_cmd_buffer {
+    struct util_dynarray ts_stage_map;
+    /* Deferred writes due to being mid render encoder */
+    struct util_dynarray post_render_writes;
++   struct util_dynarray post_render_stats;
+ 
+    void *drawable;
+    mtl_argument_table *argument_table;
+@@ -270,6 +306,7 @@ struct kk_cmd_buffer {
+       struct kk_graphics_state gfx;
+       struct kk_compute_state cs;
+       struct kk_conditional_rendering_state cond_render;
++      struct kk_stats_state stats;
+       struct kk_shader *shaders[MESA_SHADER_STAGES];
+       /* Address of the binding 0 for when compute dispatches modify it.
+        * We are trying to be nice to ourselves. */
+@@ -442,6 +479,7 @@ void kk_dispatch_precomp(struct kk_cmd_buffer *cmd, struct kk_grid grid,
+ #define MESA_DISPATCH_PRECOMP kk_dispatch_precomp
+ 
+ void kk_cmd_write(struct kk_cmd_buffer *cmd, struct libkk_imm_write write);
++void kk_cmd_stats_op(struct kk_cmd_buffer *cmd, const struct kk_stats_op *op);
+ 
+ void kk_cmd_buffer_set_label(struct kk_cmd_buffer *cb, const char *label);
+ 
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_dispatch.c b/src/kosmickrisp/vulkan/kk_cmd_dispatch.c
+index 7c3db9d13a3..758169703b0 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_dispatch.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_dispatch.c
+@@ -58,6 +58,20 @@ kk_predicate_compute(struct kk_cmd_buffer *cmd, uint64_t indirect_addr_out,
+    }
+ }
+ 
++static void
++kk_stats_dispatch(struct kk_cmd_buffer *cmd, uint64_t groups,
++                  uint32_t stride_B, uint32_t count,
++                  struct mtl_size local_size)
++{
++   uint64_t counter = cmd->state.stats.addr[KK_STAT_CS_INVOCATIONS];
++   if (!counter)
++      return;
++
++   libkk_dispatch_stats(cmd, kk_grid_1d(1), true, groups,
++                        stride_B / sizeof(uint32_t), count,
++                        local_size.x * local_size.y * local_size.z, counter);
++}
++
+ VKAPI_ATTR void VKAPI_CALL
+ kk_CmdDispatchBase(VkCommandBuffer commandBuffer, uint32_t baseGroupX,
+                    uint32_t baseGroupY, uint32_t baseGroupZ,
+@@ -96,6 +110,7 @@ kk_CmdDispatchBase(VkCommandBuffer commandBuffer, uint32_t baseGroupX,
+       }
+ 
+       kk_predicate_compute(cmd, patched.gpu, patched.gpu);
++      kk_stats_dispatch(cmd, patched.gpu, sizeof(indirect), 1u, local_size);
+ 
+       /* Flush compute state after predication dispatch */
+       kk_flush_compute_state(cmd);
+@@ -108,6 +123,9 @@ kk_CmdDispatchBase(VkCommandBuffer commandBuffer, uint32_t baseGroupX,
+          .z = groupCountZ * local_size.z,
+       };
+ 
++      cmd->state.stats.pending[KK_STAT_CS_INVOCATIONS] +=
++         (uint64_t)grid_size.x * grid_size.y * grid_size.z;
++
+       kk_flush_compute_state(cmd);
+       mtl_dispatch_threads(encoder, grid_size, local_size);
+    }
+@@ -139,12 +157,16 @@ kk_CmdDispatchIndirect2KHR(VkCommandBuffer commandBuffer,
+       }
+ 
+       kk_predicate_compute(cmd, patched.gpu, pInfo->addressRange.address);
++      kk_stats_dispatch(cmd, patched.gpu, sizeof(VkDispatchIndirectCommand),
++                        1u, local_size);
+ 
+       /* Flush compute state after predication dispatch */
+       kk_flush_compute_state(cmd);
+       mtl_dispatch_threadgroups_with_indirect_buffer(encoder, patched.gpu,
+                                                      local_size);
+    } else {
++      kk_stats_dispatch(cmd, pInfo->addressRange.address,
++                        sizeof(VkDispatchIndirectCommand), 1u, local_size);
+       kk_flush_compute_state(cmd);
+       mtl_dispatch_threadgroups_with_indirect_buffer(
+          encoder, pInfo->addressRange.address, local_size);
+@@ -171,10 +193,12 @@ kk_cmd_dispatch_generated(struct kk_cmd_buffer *cmd,
+    kk_flush_compute_state(cmd);
+    params.template_root = desc->root.addr;
+    kk_dgc_process(cmd, &params);
+-   kk_flush_compute_state(cmd);
+ 
+    struct kk_shader *cs = cmd->state.shaders[MESA_SHADER_COMPUTE];
+    struct mtl_size local_size = cs->info.cs.local_size;
++   kk_stats_dispatch(cmd, bufs.cmds, bufs.cmd_stride_B, info->maxSequenceCount,
++                     local_size);
++   kk_flush_compute_state(cmd);
+    mtl_compute_encoder *encoder = cs_get_compute(cmd);
+ 
+    for (uint32_t i = 0; i < info->maxSequenceCount; i++) {
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_draw.c b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+index 242c90316c5..4deda14fcfe 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_draw.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+@@ -852,6 +852,31 @@ kk_gs_is_passthrough(struct kk_cmd_buffer *cmd)
+    return vs && vs->info.vs.xfb_passthrough;
+ }
+ 
++static uint64_t
++kk_stats_fs_counter(struct kk_cmd_buffer *cmd)
++{
++   struct kk_shader *vs = cmd->state.shaders[MESA_SHADER_VERTEX];
++   if (!vs || !vs->info.has_fs_stats)
++      return 0u;
++
++   return cmd->state.stats.addr[KK_STAT_FS_INVOCATIONS];
++}
++
++static bool
++kk_stats_real_gs(struct kk_cmd_buffer *cmd)
++{
++   return kk_gs_info(cmd) && !kk_gs_is_passthrough(cmd);
++}
++
++static bool
++kk_stats_gs_counts(struct kk_cmd_buffer *cmd)
++{
++   struct kk_stats_state *stats = &cmd->state.stats;
++   return kk_stats_real_gs(cmd) && (stats->addr[KK_STAT_GS_PRIMITIVES] ||
++                                    stats->addr[KK_STAT_C_INVOCATIONS] ||
++                                    stats->addr[KK_STAT_C_PRIMITIVES]);
++}
++
+ /* The GS output primitive if one is bound, otherwise the input topology */
+ static enum mesa_prim
+ kk_rast_prim(struct kk_cmd_buffer *cmd)
+@@ -1016,9 +1041,18 @@ kk_flush_pipeline(struct kk_cmd_buffer *cmd)
+       mtl_set_depth_stencil_state(enc, gfx->depth_stencil_state);
+    }
+ 
+-   if (IS_SHADER_DIRTY(VERTEX)) {
++   bool fs_stats = kk_stats_fs_counter(cmd) != 0u;
++   if (IS_SHADER_DIRTY(VERTEX) || fs_stats != gfx->fs_stats_bound) {
+       struct kk_shader *vs = cmd->state.shaders[MESA_SHADER_VERTEX];
+-      mtl_render_set_pipeline_state(enc, vs->pipeline.gfx.render);
++      mtl_render_pipeline_state *render = vs->pipeline.gfx.render;
++      if (fs_stats) {
++         mtl_render_pipeline_state *counted =
++            kk_shader_get_stats_pipeline(device, vs);
++         if (counted)
++            render = counted;
++      }
++      mtl_render_set_pipeline_state(enc, render);
++      gfx->fs_stats_bound = fs_stats;
+       if (gfx->depth_stencil_state)
+          mtl_set_depth_stencil_state(enc, gfx->depth_stencil_state);
+    }
+@@ -1221,10 +1255,19 @@ kk_upload_tess_params(struct kk_cmd_buffer *cmd, struct poly_tess_params *out,
+          ? POLY_TESS_PARTITIONING_FRACTIONAL_ODD
+          : POLY_TESS_PARTITIONING_FRACTIONAL_EVEN;
+ 
++   gfx->tess.statistic = 0u;
++   if (cmd->state.stats.addr[KK_STAT_TES_INVOCATIONS]) {
++      struct kk_ptr counter = kk_pool_alloc(cmd, sizeof(uint32_t), 4u);
++      if (counter.cpu) {
++         *(uint32_t *)counter.cpu = 0u;
++         gfx->tess.statistic = counter.gpu;
++      }
++   }
++
+    struct poly_tess_params args = {
+       .heap = kk_heap(cmd),
+       .tcs_stride_el = tcs->info.tess.tcs_output_stride / 4,
+-      .statistic = 0u,
++      .statistic = gfx->tess.statistic,
+       .input_patch_size = dyn->ts.patch_control_points,
+       .output_patch_size = tcs->info.tess.tcs_output_patch_size,
+       .tcs_patch_constants = tcs->info.tess.tcs_nr_patch_outputs,
+@@ -1321,8 +1364,16 @@ kk_upload_geometry_params(struct kk_cmd_buffer *cmd,
+    struct poly_geometry_params params;
+    poly_geometry_params_init(&params, mode, wg_size);
+ 
+-   if (gs->prefix_sum)
++   if (gs->prefix_sum) {
+       params.count_buffer_stride = gs->count_words * sizeof(uint32_t);
++   } else if (gs->count_words && kk_stats_gs_counts(cmd)) {
++      uint32_t size_B = gs->count_words * sizeof(uint32_t);
++      struct kk_ptr counts = kk_pool_alloc(cmd, size_B, 4u);
++      if (counts.cpu) {
++         memset(counts.cpu, 0, size_B);
++         params.count_buffer = counts.gpu;
++      }
++   }
+ 
+    uint64_t sink = gfx->per_draw_data.sink;
+    bool xfb_active = gfx->xfb.offsets != 0;
+@@ -1817,7 +1868,8 @@ build_per_draw_upload_mask(struct kk_cmd_buffer *cmd)
+    }
+ 
+    struct kk_shader *fragment = cmd->state.shaders[MESA_SHADER_FRAGMENT];
+-   if (fragment && fragment->info.uses_per_draw_data) {
++   if ((fragment && fragment->info.uses_per_draw_data) ||
++       kk_stats_fs_counter(cmd)) {
+       mask |= BITFIELD_BIT(MESA_SHADER_FRAGMENT);
+    }
+ 
+@@ -2082,6 +2134,7 @@ kk_upload_per_draw_data(struct kk_cmd_buffer *cmd, uint32_t upload_mask,
+ {
+    struct kk_graphics_state *gfx = &cmd->state.gfx;
+    gfx->per_draw_data.draw_id = draw_id;
++   gfx->per_draw_data.fs_invocations = kk_stats_fs_counter(cmd);
+ 
+    /* Prepare emulation data for tessellation and GS. */
+    bool tess = upload_mask & BITFIELD_BIT(MESA_SHADER_TESS_EVAL);
+@@ -2218,6 +2271,18 @@ kk_launch_tess(struct kk_cmd_buffer *cmd, struct kk_draw_data draw)
+    libkk_tessellate(cmd, grid_tess, true, info.mode, POLY_TESS_MODE_WITH_COUNTS,
+                     state);
+ 
++   struct kk_stats_state *stats = &cmd->state.stats;
++   bool clip = !kk_stats_real_gs(cmd);
++   uint64_t c_invocations = clip ? stats->addr[KK_STAT_C_INVOCATIONS] : 0u;
++   uint64_t c_primitives = clip ? stats->addr[KK_STAT_C_PRIMITIVES] : 0u;
++   if (gfx->tess.statistic || c_invocations || c_primitives) {
++      uint32_t verts_per_prim = mesa_vertices_per_prim(gfx->tess.prim);
++      libkk_tess_stats(cmd, kk_grid_1d(1), true, gfx->tess.out_draws_addr,
++                       gfx->tess.statistic, verts_per_prim,
++                       stats->addr[KK_STAT_TES_INVOCATIONS], c_invocations,
++                       c_primitives);
++   }
++
+    draw.grid = kk_grid_indirect(gfx->tess.out_draws_addr);
+ 
+    draw.index.gpu = kk_heap_indices(cmd);
+@@ -2327,12 +2392,15 @@ kk_launch_gs_prerast(struct kk_cmd_buffer *cmd,
+       enc, vs->pipeline.gfx.pre_render[pre_render_count - 2u]);
+    kk_dispatch_compute(enc, grid_vs, local_size);
+ 
+-   if (gs->prefix_sum) {
++   bool stats_counts = kk_stats_gs_counts(cmd);
++   if (gs->prefix_sum || (gs->count_words && stats_counts)) {
+       mtl_barrier_after_encoder_stages(enc, MTL_STAGE_DISPATCH,
+                                        MTL_STAGE_DISPATCH);
+       mtl_compute_set_pipeline_state(enc, vs->pipeline.gfx.gs_count);
+       kk_dispatch_compute(enc, grid_gs, local_size);
++   }
+ 
++   if (gs->prefix_sum) {
+       libkk_prefix_sum_geom(cmd, kk_grid_1d(1024u * gs->count_words), true,
+                             geometry_params);
+    }
+@@ -2350,6 +2418,23 @@ kk_launch_gs_prerast(struct kk_cmd_buffer *cmd,
+       enc, vs->pipeline.gfx.pre_render[pre_render_count - 1u]);
+    kk_dispatch_compute(enc, grid_gs, local_size);
+ 
++   struct kk_stats_state *stats = &cmd->state.stats;
++   if (!kk_gs_is_passthrough(cmd) &&
++       (stats->addr[KK_STAT_GS_INVOCATIONS] || stats_counts)) {
++      const struct vk_dynamic_graphics_state *dyn =
++         &cmd->vk.dynamic_graphics_state;
++      libkk_gs_stats(cmd, kk_grid_1d(1), true, geometry_params,
++                     gs->invocations, gs->count_words, gs->prefix_sum,
++                     dyn->rs.rasterization_stream, gs->static_count[0],
++                     gs->static_count[1], gs->static_count[2],
++                     gs->static_count[3], gs->count_index[0],
++                     gs->count_index[1], gs->count_index[2],
++                     gs->count_index[3], stats->addr[KK_STAT_GS_INVOCATIONS],
++                     stats->addr[KK_STAT_GS_PRIMITIVES],
++                     stats->addr[KK_STAT_C_INVOCATIONS],
++                     stats->addr[KK_STAT_C_PRIMITIVES]);
++   }
++
+    struct kk_draw_data rast = {
+       .primitive_type = mesa_prim_to_mtl_primitive_type(gs->mode),
+    };
+@@ -2417,6 +2502,67 @@ struct kk_draw_roots {
+    uint32_t stride_B;
+ };
+ 
++static void
++kk_stats_draw(struct kk_cmd_buffer *cmd, const struct kk_draw_command *data)
++{
++   struct kk_stats_state *stats = &cmd->state.stats;
++   bool tess = cmd->state.shaders[MESA_SHADER_TESS_EVAL];
++   bool clip = !tess && !kk_stats_real_gs(cmd);
++   uint32_t patch_size =
++      tess ? cmd->vk.dynamic_graphics_state.ts.patch_control_points : 0u;
++
++   struct kk_stats_op op = {
++      .counter =
++         {
++            stats->addr[KK_STAT_IA_VERTICES],
++            stats->addr[KK_STAT_IA_PRIMITIVES],
++            stats->addr[KK_STAT_VS_INVOCATIONS],
++            clip ? stats->addr[KK_STAT_C_INVOCATIONS] : 0u,
++            clip ? stats->addr[KK_STAT_C_PRIMITIVES] : 0u,
++            tess ? stats->addr[KK_STAT_TCS_PATCHES] : 0u,
++         },
++      .prim = data->prim,
++      .patch_size = patch_size,
++   };
++
++   bool any = false;
++   for (uint32_t i = 0; i < ARRAY_SIZE(op.counter); i++)
++      any |= op.counter[i] != 0;
++   if (!any)
++      return;
++
++   if (data->indirect) {
++      op.draws = data->indirect_command.addr;
++      op.stride_el = data->indirect_command.stride / sizeof(uint32_t);
++      op.count = data->draw_count;
++      kk_cmd_stats_op(cmd, &op);
++      return;
++   }
++
++   for (uint32_t i = 0; i < data->draw_count; i++) {
++      uint32_t count = data->indexed ? data->indexed_draws[i].indexCount
++                                     : data->draws[i].vertexCount;
++      uint32_t instances = data->indexed ? data->indexed_draws[i].instanceCount
++                                         : data->draws[i].instanceCount;
++      uint64_t vertices = (uint64_t)count * instances;
++      uint64_t prims =
++         (uint64_t)(patch_size
++                       ? count / patch_size
++                       : u_decomposed_prims_for_vertices(data->prim, count)) *
++         instances;
++
++      stats->pending[KK_STAT_IA_VERTICES] += vertices;
++      stats->pending[KK_STAT_IA_PRIMITIVES] += prims;
++      stats->pending[KK_STAT_VS_INVOCATIONS] += vertices;
++      if (clip) {
++         stats->pending[KK_STAT_C_INVOCATIONS] += prims;
++         stats->pending[KK_STAT_C_PRIMITIVES] += prims;
++      }
++      if (tess)
++         stats->pending[KK_STAT_TCS_PATCHES] += prims;
++   }
++}
++
+ static void
+ kk_draw_flushed(struct kk_cmd_buffer *cmd, struct kk_draw_command *data,
+                 const struct kk_draw_roots *roots)
+@@ -2425,6 +2571,9 @@ kk_draw_flushed(struct kk_cmd_buffer *cmd, struct kk_draw_command *data,
+    if (data->predicate_count > 0 && !kk_predicate_draws(cmd, data))
+       return;
+ 
++   if (cmd->state.stats.active && !roots)
++      kk_stats_draw(cmd, data);
++
+    bool tess = cmd->state.shaders[MESA_SHADER_TESS_EVAL];
+    bool geom = kk_gs_info(cmd);
+ 
+@@ -2862,6 +3011,9 @@ kk_cmd_draw_generated(struct kk_cmd_buffer *cmd,
+    };
+    kk_set_draw_state(cmd, &data);
+ 
++   if (cmd->state.stats.active)
++      kk_stats_draw(cmd, &data);
++
+    if (params.has_ib && data.indexed) {
+       bool emulated = cmd->state.shaders[MESA_SHADER_TESS_EVAL] ||
+                       kk_gs_info(cmd);
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_meta.c b/src/kosmickrisp/vulkan/kk_cmd_meta.c
+index 9163df5643a..9148e84e72f 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_meta.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_meta.c
+@@ -81,6 +81,7 @@ struct kk_meta_save {
+       };
+    } pipeline;
+    struct kk_conditional_rendering_state cond_render;
++   struct kk_stats_state stats;
+    struct kk_descriptor_set *desc0;
+    struct kk_push_descriptor_set *push_desc0;
+    struct kk_addr_range vb0;
+@@ -122,6 +123,9 @@ kk_meta_begin(struct kk_cmd_buffer *cmd, struct kk_meta_save *save,
+    save->cond_render = cmd->state.cond_render;
+    cmd->state.cond_render.enabled = false;
+ 
++   save->stats = cmd->state.stats;
++   memset(&cmd->state.stats, 0, sizeof(cmd->state.stats));
++
+    save->vb0 = cmd->state.gfx.vb.addr_range[0];
+ 
+    save->desc0 = desc->sets[0];
+@@ -196,6 +200,7 @@ kk_meta_end(struct kk_cmd_buffer *cmd, struct kk_meta_save *save,
+    }
+ 
+    cmd->state.cond_render = save->cond_render;
++   cmd->state.stats = save->stats;
+ 
+    memcpy(desc->root.push, save->push, sizeof(save->push));
+ }
+diff --git a/src/kosmickrisp/vulkan/kk_physical_device.c b/src/kosmickrisp/vulkan/kk_physical_device.c
+index 0d51e4274ac..84ae7e7831f 100644
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c
+@@ -244,6 +244,7 @@ kk_get_device_features(
+       .logicOp = true,
+       .multiViewport = true,
+       .occlusionQueryPrecise = true,
++      .pipelineStatisticsQuery = true,
+       .robustBufferAccess = true,
+       .samplerAnisotropy = true,
+       .sampleRateShading = true,
+diff --git a/src/kosmickrisp/vulkan/kk_query_pool.c b/src/kosmickrisp/vulkan/kk_query_pool.c
+index 63f3a1d47fc..4df2c66b478 100644
+--- a/src/kosmickrisp/vulkan/kk_query_pool.c
++++ b/src/kosmickrisp/vulkan/kk_query_pool.c
+@@ -40,6 +40,8 @@ kk_reports_per_query(struct kk_query_pool *pool)
+       return 1;
+    case VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT:
+       return 2;
++   case VK_QUERY_TYPE_PIPELINE_STATISTICS:
++      return util_bitcount(pool->vk.pipeline_statistics);
+    default:
+       UNREACHABLE("Unsupported query type");
+    }
+@@ -456,6 +458,23 @@ kk_CmdBeginQueryIndexedEXT(VkCommandBuffer commandBuffer, VkQueryPool queryPool,
+       return;
+    }
+ 
++   if (pool->vk.query_type == VK_QUERY_TYPE_PIPELINE_STATISTICS) {
++      struct kk_stats_state *stats = &cmd->state.stats;
++      uint64_t report = kk_query_report_addr(dev, pool, query);
++      uint32_t enabled = pool->vk.pipeline_statistics;
++
++      memset(stats, 0, sizeof(*stats));
++      u_foreach_bit(i, enabled) {
++         if (i < KK_STAT_COUNT) {
++            stats->addr[i] =
++               report + util_bitcount(enabled & BITFIELD_MASK(i)) *
++                           sizeof(struct kk_query_report);
++         }
++      }
++      stats->active = true;
++      return;
++   }
++
+    cmd->state.gfx.occlusion.mode = flags & VK_QUERY_CONTROL_PRECISE_BIT
+                                       ? MTL_VISIBILITY_RESULT_MODE_COUNTING
+                                       : MTL_VISIBILITY_RESULT_MODE_BOOLEAN;
+@@ -473,6 +492,17 @@ kk_CmdEndQueryIndexedEXT(VkCommandBuffer commandBuffer, VkQueryPool queryPool,
+ 
+    if (pool->vk.query_type == VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT) {
+       cmd->state.gfx.xfb.queries[index] = 0;
++   } else if (pool->vk.query_type == VK_QUERY_TYPE_PIPELINE_STATISTICS) {
++      struct kk_stats_state *stats = &cmd->state.stats;
++      for (uint32_t i = 0; i < KK_STAT_COUNT; i++) {
++         if (stats->addr[i] && stats->pending[i]) {
++            kk_cmd_stats_op(cmd, &(struct kk_stats_op){
++                                    .counter[0] = stats->addr[i],
++                                    .value = stats->pending[i],
++                                 });
++         }
++      }
++      memset(stats, 0, sizeof(*stats));
+    } else {
+       cmd->state.gfx.occlusion.mode = MTL_VISIBILITY_RESULT_MODE_DISABLED;
+       cmd->state.gfx.dirty |= KK_DIRTY_OCCLUSION;
+diff --git a/src/kosmickrisp/vulkan/kk_shader.c b/src/kosmickrisp/vulkan/kk_shader.c
+index b605881d3f4..2ee0834aaad 100644
+--- a/src/kosmickrisp/vulkan/kk_shader.c
++++ b/src/kosmickrisp/vulkan/kk_shader.c
+@@ -874,6 +874,9 @@ kk_shader_destroy(struct vk_device *vk_dev, struct kk_shader *shader,
+ 
+       /* Graphics pipeline. */
+       mtl_release(pipe->gfx.render);
++      if (pipe->gfx.render_stats)
++         mtl_release(pipe->gfx.render_stats);
++      pipe->gfx.render_stats = NULL;
+       if (pipe->gfx.ds_handle)
+          mtl_release(pipe->gfx.ds_handle);
+       pipe->gfx.render = NULL;
+@@ -901,6 +904,7 @@ kk_shader_destroy(struct vk_device *vk_dev, struct kk_shader *shader,
+    kk_msl_free(&shader->gs_main);
+    kk_msl_free(&shader->gs_count);
+    kk_msl_free(&shader->gs_pre);
++   kk_msl_free(&shader->fs_stats);
+ 
+    vk_shader_free(&dev->vk, pAllocator, &shader->vk);
+ }
+@@ -1018,6 +1022,49 @@ kk_nir_lower_vertex_id_zero_base(struct nir_shader *nir)
+    return progress;
+ }
+ 
++static void
++kk_nir_count_fs_invocations(nir_shader *nir)
++{
++   nir_function_impl *impl = nir_shader_get_entrypoint(nir);
++   nir_shader_gather_info(nir, impl);
++
++   const uint64_t late_outputs = BITFIELD64_BIT(FRAG_RESULT_DEPTH) |
++                                 BITFIELD64_BIT(FRAG_RESULT_STENCIL) |
++                                 BITFIELD64_BIT(FRAG_RESULT_SAMPLE_MASK);
++   if (!nir->info.fs.uses_discard && !nir->info.writes_memory &&
++       !(nir->info.outputs_written & late_outputs))
++      nir->info.fs.early_fragment_tests = true;
++
++   nir_builder b = nir_builder_at(nir_before_impl(impl));
++
++   nir_def *per_draw = nir_load_per_draw_ptr_kk(&b, 1, 64);
++   nir_def *counter = nir_build_load_global_constant(
++      &b, 1, 64,
++      nir_iadd_imm(&b, per_draw,
++                   offsetof(struct kk_per_draw_data, fs_invocations)),
++      .align_mul = 8, .access = ACCESS_CAN_SPECULATE);
++
++   nir_push_if(&b, nir_inot(&b, nir_load_helper_invocation(&b, 1)));
++   {
++      nir_def *count = nir_reduce(&b, nir_imm_int(&b, 1),
++                                  .reduction_op = nir_op_iadd);
++      nir_push_if(&b, nir_elect(&b, 1));
++      {
++         nir_def *old = nir_global_atomic(&b, 32, counter, count,
++                                          .atomic_op = nir_atomic_op_iadd);
++         nir_push_if(&b, nir_ult(&b, nir_iadd(&b, old, count), old));
++         nir_global_atomic(&b, 32, nir_iadd_imm(&b, counter, 4),
++                           nir_imm_int(&b, 1),
++                           .atomic_op = nir_atomic_op_iadd);
++         nir_pop_if(&b, NULL);
++      }
++      nir_pop_if(&b, NULL);
++   }
++   nir_pop_if(&b, NULL);
++
++   nir_progress(true, impl, nir_metadata_none);
++}
++
+ /* Consumes nir */
+ static void
+ kk_compile_msl(struct kk_physical_device *pdev, nir_shader *nir,
+@@ -1155,7 +1202,7 @@ kk_compile_shader(struct kk_device *dev, nir_shader *nir,
+       NIR_PASS(_, nir, poly_nir_lower_gs, &count, &rast, &pre_gs,
+                &shader->info.gs);
+ 
+-      if (shader->info.gs.prefix_sum) {
++      if (shader->info.gs.count_words) {
+          count->info.stage = MESA_SHADER_COMPUTE;
+          memset(&count->info.cs, 0, sizeof(count->info.cs));
+          count->xfb_info = NULL;
+@@ -1186,6 +1233,13 @@ kk_compile_shader(struct kk_device *dev, nir_shader *nir,
+       nir->xfb_info = NULL;
+    }
+ 
++   if (stage == MESA_SHADER_FRAGMENT) {
++      nir_shader *counted = nir_shader_clone(NULL, nir);
++      kk_nir_count_fs_invocations(counted);
++      kk_compile_msl(pdev, counted, state, &shader->fs_stats);
++      shader->info.has_fs_stats = true;
++   }
++
+    /* The geometry stage's own slot holds its rasterization VS */
+    kk_compile_msl(pdev, nir, state,
+                   stage == MESA_SHADER_GEOMETRY ? &shader->gs_main
+@@ -1483,6 +1537,11 @@ gather_graphics_pipeline_create_info(
+       mesa_shader_stage stage = s->info.stage;
+       kk_msl_copy(&vs->msl_data[stage], &s->msl_data[stage]);
+ 
++      if (s->info.has_fs_stats) {
++         kk_msl_copy(&vs->fs_stats, &s->fs_stats);
++         info->has_fs_stats = true;
++      }
++
+       info->vs.additional_stages_bits |= BITFIELD_BIT(stage);
+ 
+       if (s->info.stage == MESA_SHADER_TESS_CTRL)
+@@ -1490,7 +1549,7 @@ gather_graphics_pipeline_create_info(
+ 
+       if (s->info.stage == MESA_SHADER_GEOMETRY) {
+          kk_msl_copy(&vs->gs_main, &s->gs_main);
+-         if (s->info.gs.prefix_sum)
++         if (s->info.gs.count_words)
+             kk_msl_copy(&vs->gs_count, &s->gs_count);
+          if (s->info.gs.xfb)
+             kk_msl_copy(&vs->gs_pre, &s->gs_pre);
+@@ -1533,79 +1592,33 @@ gather_graphics_pipeline_create_info(
+       vk_primitive_topology_to_mtl_primitive_topology_class(topology);
+ }
+ 
+-static VkResult
+-kk_compile_graphics_pipeline(struct kk_device *device, struct kk_shader *vs)
++static mtl_render_pipeline_state *
++kk_new_render_pipeline(struct kk_device *device, struct kk_shader *vs,
++                       const struct msl_compile_data *fs_data)
+ {
+    struct kk_physical_device *pdev = kk_device_physical(device);
++   mtl_render_pipeline_state *render = NULL;
+ 
+-   VkResult result = VK_SUCCESS;
+-   struct kk_pipeline_handles *pipe = &vs->pipeline;
+-   mesa_shader_stage vs_stage = MESA_SHADER_VERTEX;
+-
+-   /* When tessellation or geometry shaders are present, the pair that will be
+-    * used for the Metal render pipeline will be the fragment shader and the
+-    * previous stage. This means that any shader before that needs to be a
+-    * compute pipeline to be launched before the render pipeline. */
+-   uint32_t stages_bits = vs->info.vs.additional_stages_bits;
+-   pipe->gfx.pre_render_count = util_bitcount(stages_bits) - 1u;
+-   for (uint32_t i = 0u; i < pipe->gfx.pre_render_count; ++i) {
+-      uint32_t local_thread_size = vs_stage == MESA_SHADER_TESS_CTRL
+-                                      ? vs->info.vs.tess_local_thread_size
+-                                      : KK_POLY_WG_SIZE;
+-      result = kk_compile_compute_pipeline(device, &vs->msl_data[vs_stage],
+-                                           local_thread_size,
+-                                           &pipe->gfx.pre_render[i]);
+-
+-      if (result != VK_SUCCESS)
+-         return VK_ERROR_INVALID_SHADER_NV;
+-      vs_stage = u_bit_scan(&stages_bits);
+-   }
+-
+-   /* The GS compute pass is the last pre-render pipeline, its rasterization VS
+-    * pairs with the FS. */
+-   if (vs->info.vs.additional_stages_bits &
+-       BITFIELD_BIT(MESA_SHADER_GEOMETRY)) {
+-      result = kk_compile_compute_pipeline(
+-         device, &vs->gs_main, KK_POLY_WG_SIZE,
+-         &pipe->gfx.pre_render[pipe->gfx.pre_render_count++]);
+-      if (result != VK_SUCCESS)
+-         return VK_ERROR_INVALID_SHADER_NV;
+-
+-      if (vs->info.vs.gs.prefix_sum) {
+-         result = kk_compile_compute_pipeline(device, &vs->gs_count,
+-                                              KK_POLY_WG_SIZE,
+-                                              &pipe->gfx.gs_count);
+-         if (result != VK_SUCCESS)
+-            return VK_ERROR_INVALID_SHADER_NV;
+-      }
+-
+-      if (vs->info.vs.gs.xfb) {
+-         result = kk_compile_compute_pipeline(device, &vs->gs_pre, 1u,
+-                                              &pipe->gfx.gs_pre);
+-         if (result != VK_SUCCESS)
+-            return VK_ERROR_INVALID_SHADER_NV;
+-      }
+-   }
+-
++   uint32_t raster_stages = vs->info.vs.additional_stages_bits &
++                            BITFIELD_MASK(MESA_SHADER_FRAGMENT);
++   mesa_shader_stage vs_stage =
++      raster_stages ? util_last_bit(raster_stages) - 1u : MESA_SHADER_VERTEX;
+    const struct msl_compile_data *vs_data = &vs->msl_data[vs_stage];
+    mtl_library *vertex_library = mtl_new_library(
+       device->mtl_compiler_handle, vs_data->code, pdev->info.msl_version,
+       MTL_MATH_MODE_FAST, MTL_MATH_FLOATING_POINT_FUNCTIONS_FAST);
+    if (vertex_library == NULL)
+-      return VK_ERROR_INVALID_SHADER_NV;
++      return NULL;
+ 
+    mtl_function_descriptor *vertex_function =
+       mtl_new_library_function_descriptor(vertex_library,
+                                           vs_data->entrypoint_name);
+ 
+-   const struct msl_compile_data *fs_data = &vs->msl_data[MESA_SHADER_FRAGMENT];
+    mtl_library *fragment_library = mtl_new_library(
+       device->mtl_compiler_handle, fs_data->code, pdev->info.msl_version,
+       MTL_MATH_MODE_FAST, MTL_MATH_FLOATING_POINT_FUNCTIONS_FAST);
+-   if (fragment_library == NULL) {
+-      result = VK_ERROR_INVALID_SHADER_NV;
++   if (fragment_library == NULL)
+       goto destroy_vertex;
+-   }
+    mtl_function_descriptor *fragment_function =
+       mtl_new_library_function_descriptor(fragment_library,
+                                           fs_data->entrypoint_name);
+@@ -1631,10 +1644,6 @@ kk_compile_graphics_pipeline(struct kk_device *device, struct kk_shader *vs)
+             pipeline_descriptor, i, vs->info.vs.rt_formats[i]);
+    }
+ 
+-   if (vs->info.vs.has_ds) {
+-      pipe->gfx.ds_handle = kk_compile_ds_state(device, &vs->info);
+-   }
+-
+    if (vs->info.vs.view_mask) {
+       uint32_t max_amplification = util_bitcount(vs->info.vs.view_mask);
+       mtl_render_pipeline_descriptor_set_max_vertex_amplification_count(
+@@ -1646,10 +1655,8 @@ kk_compile_graphics_pipeline(struct kk_device *device, struct kk_shader *vs)
+          pipeline_descriptor, vs->info.vs.sample_count);
+    }
+ 
+-   pipe->gfx.render =
++   render =
+       mtl_new_render_pipeline(device->mtl_compiler_handle, pipeline_descriptor);
+-   if (pipe->gfx.render == NULL)
+-      result = VK_ERROR_INVALID_SHADER_NV;
+ 
+    mtl_release(pipeline_descriptor);
+    mtl_release(fragment_function);
+@@ -1658,9 +1665,93 @@ destroy_vertex:
+    mtl_release(vertex_function);
+    mtl_release(vertex_library);
+ 
++   return render;
++}
++
++static VkResult
++kk_compile_graphics_pipeline(struct kk_device *device, struct kk_shader *vs)
++{
++   VkResult result = VK_SUCCESS;
++   struct kk_pipeline_handles *pipe = &vs->pipeline;
++   mesa_shader_stage vs_stage = MESA_SHADER_VERTEX;
++
++   /* When tessellation or geometry shaders are present, the pair that will be
++    * used for the Metal render pipeline will be the fragment shader and the
++    * previous stage. This means that any shader before that needs to be a
++    * compute pipeline to be launched before the render pipeline. */
++   uint32_t stages_bits = vs->info.vs.additional_stages_bits;
++   pipe->gfx.pre_render_count = util_bitcount(stages_bits) - 1u;
++   for (uint32_t i = 0u; i < pipe->gfx.pre_render_count; ++i) {
++      uint32_t local_thread_size = vs_stage == MESA_SHADER_TESS_CTRL
++                                      ? vs->info.vs.tess_local_thread_size
++                                      : KK_POLY_WG_SIZE;
++      result = kk_compile_compute_pipeline(device, &vs->msl_data[vs_stage],
++                                           local_thread_size,
++                                           &pipe->gfx.pre_render[i]);
++
++      if (result != VK_SUCCESS)
++         return VK_ERROR_INVALID_SHADER_NV;
++      vs_stage = u_bit_scan(&stages_bits);
++   }
++
++   /* The GS compute pass is the last pre-render pipeline, its rasterization VS
++    * pairs with the FS. */
++   if (vs->info.vs.additional_stages_bits &
++       BITFIELD_BIT(MESA_SHADER_GEOMETRY)) {
++      result = kk_compile_compute_pipeline(
++         device, &vs->gs_main, KK_POLY_WG_SIZE,
++         &pipe->gfx.pre_render[pipe->gfx.pre_render_count++]);
++      if (result != VK_SUCCESS)
++         return VK_ERROR_INVALID_SHADER_NV;
++
++      if (vs->info.vs.gs.count_words) {
++         result = kk_compile_compute_pipeline(device, &vs->gs_count,
++                                              KK_POLY_WG_SIZE,
++                                              &pipe->gfx.gs_count);
++         if (result != VK_SUCCESS)
++            return VK_ERROR_INVALID_SHADER_NV;
++      }
++
++      if (vs->info.vs.gs.xfb) {
++         result = kk_compile_compute_pipeline(device, &vs->gs_pre, 1u,
++                                              &pipe->gfx.gs_pre);
++         if (result != VK_SUCCESS)
++            return VK_ERROR_INVALID_SHADER_NV;
++      }
++   }
++
++   if (vs->info.vs.has_ds) {
++      pipe->gfx.ds_handle = kk_compile_ds_state(device, &vs->info);
++   }
++
++   pipe->gfx.render = kk_new_render_pipeline(
++      device, vs, &vs->msl_data[MESA_SHADER_FRAGMENT]);
++   if (pipe->gfx.render == NULL)
++      result = VK_ERROR_INVALID_SHADER_NV;
++
+    return result;
+ }
+ 
++mtl_render_pipeline_state *
++kk_shader_get_stats_pipeline(struct kk_device *dev, struct kk_shader *vs)
++{
++   mtl_render_pipeline_state *render = p_atomic_read(&vs->pipeline.gfx.render_stats);
++   if (render || !vs->info.has_fs_stats)
++      return render;
++
++   render = kk_new_render_pipeline(dev, vs, &vs->fs_stats);
++   if (render == NULL)
++      return NULL;
++
++   mtl_render_pipeline_state *old =
++      p_atomic_cmpxchg(&vs->pipeline.gfx.render_stats, NULL, render);
++   if (old) {
++      mtl_release(render);
++      return old;
++   }
++   return render;
++}
++
+ static bool
+ move_primitive_id(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+ {
+@@ -2008,6 +2099,12 @@ kk_compile_shaders(struct vk_device *device, uint32_t shader_count,
+          kk_compile_compute_pipeline(dev, &s->msl_data[MESA_SHADER_COMPUTE],
+                                      local_size_threads, &s->pipeline.cs);
+    } else {
++      if (empty_fs_index != UINT32_MAX) {
++         struct kk_shader *empty = shaders[empty_fs_index];
++         kk_msl_free(&empty->fs_stats);
++         memset(&empty->fs_stats, 0, sizeof(empty->fs_stats));
++         empty->info.has_fs_stats = false;
++      }
+       gather_graphics_pipeline_create_info(state, shaders, total_shaders);
+       shaders[0]->info.vs.xfb_passthrough = passthrough_index != UINT32_MAX;
+       result = kk_compile_graphics_pipeline(dev, shaders[0]);
+@@ -2073,10 +2170,12 @@ kk_shader_serialize(struct vk_device *vk_dev, const struct vk_shader *vk_shader,
+       kk_msl_serialize(&shader->gs_main, blob);
+ 
+    const struct poly_gs_info *gs = kk_shader_gs_info(&shader->info);
+-   if (gs && gs->prefix_sum)
++   if (gs && gs->count_words)
+       kk_msl_serialize(&shader->gs_count, blob);
+    if (gs && gs->xfb)
+       kk_msl_serialize(&shader->gs_pre, blob);
++   if (shader->info.has_fs_stats)
++      kk_msl_serialize(&shader->fs_stats, blob);
+ 
+    return !blob->out_of_memory;
+ }
+@@ -2142,7 +2241,7 @@ kk_deserialize_shader(struct vk_device *vk_dev, struct blob_reader *blob,
+    }
+ 
+    const struct poly_gs_info *gs = kk_shader_gs_info(&info);
+-   if (gs && gs->prefix_sum) {
++   if (gs && gs->count_words) {
+       result = kk_msl_deserialize(blob, &shader->gs_count);
+       if (result != VK_SUCCESS)
+          goto fail;
+@@ -2154,6 +2253,12 @@ kk_deserialize_shader(struct vk_device *vk_dev, struct blob_reader *blob,
+          goto fail;
+    }
+ 
++   if (info.has_fs_stats) {
++      result = kk_msl_deserialize(blob, &shader->fs_stats);
++      if (result != VK_SUCCESS)
++         goto fail;
++   }
++
+    if (info.stage == MESA_SHADER_COMPUTE) {
+       uint32_t local_size_threads = shader->info.cs.local_size.x *
+                                     shader->info.cs.local_size.y *
+diff --git a/src/kosmickrisp/vulkan/kk_shader.h b/src/kosmickrisp/vulkan/kk_shader.h
+index 435b8aa559b..abc1027680d 100644
+--- a/src/kosmickrisp/vulkan/kk_shader.h
++++ b/src/kosmickrisp/vulkan/kk_shader.h
+@@ -50,6 +50,7 @@ kk_tess_info_merge(struct kk_tess_info a, struct kk_tess_info b)
+ struct kk_shader_info {
+    mesa_shader_stage stage;
+    bool uses_per_draw_data;
++   bool has_fs_stats;
+ 
+    /* Required for fragment shader cull distance discards. */
+    uint8_t num_cull_distances;
+@@ -126,6 +127,7 @@ struct kk_pipeline_handles {
+    union {
+       struct {
+          mtl_render_pipeline_state *render;
++         mtl_render_pipeline_state *render_stats;
+          /* VS, TCS, TES and the GS compute pass at most run before the render
+           * pipeline. */
+          mtl_compute_pipeline_state *pre_render[4];
+@@ -154,6 +156,7 @@ struct kk_shader {
+    struct msl_compile_data gs_main;
+    struct msl_compile_data gs_count;
+    struct msl_compile_data gs_pre;
++   struct msl_compile_data fs_stats;
+ };
+ 
+ VK_DEFINE_NONDISP_HANDLE_CASTS(kk_shader, vk.base, VkShaderEXT,
+@@ -185,6 +188,9 @@ kk_nir_lower_descriptors(nir_shader *nir,
+ bool kk_nir_add_device_barrier_workaround(nir_shader *nir);
+ 
+ bool kk_nir_lower_poly(struct nir_shader *nir);
++
++mtl_render_pipeline_state *kk_shader_get_stats_pipeline(struct kk_device *dev,
++                                                        struct kk_shader *vs);
+ bool kk_nir_lower_null_images(nir_shader *nir);
+ 
+ bool kk_nir_lower_textures(nir_shader *nir);
+diff --git a/src/poly/nir/poly_nir.h b/src/poly/nir/poly_nir.h
+index 70715618182..e3b1fe244d5 100644
+--- a/src/poly/nir/poly_nir.h
++++ b/src/poly/nir/poly_nir.h
+@@ -46,6 +46,10 @@ struct poly_gs_info {
+ 
+    /* Static topology used if shape = POLY_GS_SHAPE_STATIC_INDEXED */
+    uint8_t topology[64];
++
++   unsigned invocations;
++   int16_t static_count[4];
++   int8_t count_index[4];
+ };
+ 
+ bool poly_nir_lower_gs(struct nir_shader *gs, struct nir_shader **gs_count,
+diff --git a/src/poly/nir/poly_nir_lower_gs.c b/src/poly/nir/poly_nir_lower_gs.c
+index 2722e2d6f14..80dac1a14f6 100644
+--- a/src/poly/nir/poly_nir_lower_gs.c
++++ b/src/poly/nir/poly_nir_lower_gs.c
+@@ -1412,7 +1412,10 @@ poly_nir_lower_gs(nir_shader *gs, nir_shader **gs_count, nir_shader **gs_copy,
+    for (unsigned i = 0; i < ARRAY_SIZE(gs_state.count_index); ++i) {
+       key.count_index[i] = gs_state.count_index[i];
+       key.static_count[i] = gs_state.static_count[i];
++      info->count_index[i] = gs_state.count_index[i];
++      info->static_count[i] = gs_state.static_count[i];
+    }
++   info->invocations = gs->info.gs.invocations;
+ 
+    if (xfb) {
+       key.buffers_written = xfb->buffers_written;
+-- 
+2.54.0 (Apple Git-157)
+

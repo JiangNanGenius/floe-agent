@@ -1,0 +1,35 @@
+--- a/src/device.hpp
++++ b/src/device.hpp
+@@ -19,6 +19,10 @@
+ #include <string>
+ #include <unordered_map>
+ #include <vector>
++
++#if defined(COMPILER_AVAILABLE) && !defined(CLSPV_ONLINE_COMPILER) && !defined(_WIN32)
++#include <unistd.h>
++#endif
+ 
+ #include "spirv-tools/libspirv.h"
+ #include "spirv/unified1/spirv.hpp"
+@@ -488,10 +492,19 @@
+     }
+ 
+     bool compiler_available() const {
+-#ifdef COMPILER_AVAILABLE
++#if !defined(COMPILER_AVAILABLE)
++        return false;
++#elif defined(CLSPV_ONLINE_COMPILER)
+         return true;
++#elif defined(_WIN32)
++        // The Windows offline compiler path uses a process this build cannot
++        // check portably; packaging/admission remains the authority.
++        return true;
+ #else
+-        return false;
++        // The offline compiler is an external process. Report the capability
++        // only when the configured executable can actually be launched.
++        std::string path = config.clspv_path;
++        return access(path.c_str(), X_OK) == 0;
+ #endif
+     }
+ 

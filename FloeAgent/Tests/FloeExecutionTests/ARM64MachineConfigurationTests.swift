@@ -85,11 +85,27 @@ final class ARM64MachineConfigurationTests: XCTestCase {
     func testOptionalRendererPolicyOnlyAppliesWhenADeviceIsRequested() {
         var config = configuration()
         config.gpuAllowsCPUFallback = true
-        XCTAssertEqual(ARM64StagedConfig(config).cConfig.gpu.reserved.0, 0)
+        XCTAssertEqual(ARM64StagedConfig(config).cConfig.v3.gpu.reserved.0, 0)
         config.gpuEnabled = true
-        XCTAssertNotEqual(ARM64StagedConfig(config).cConfig.gpu.reserved.0, 0)
+        XCTAssertNotEqual(ARM64StagedConfig(config).cConfig.v3.gpu.reserved.0, 0)
         config.gpuAllowsCPUFallback = false
-        XCTAssertEqual(ARM64StagedConfig(config).cConfig.gpu.reserved.0, 0)
+        XCTAssertEqual(ARM64StagedConfig(config).cConfig.v3.gpu.reserved.0, 0)
+    }
+
+    func testVideoConfigurationAppendsToTheExistingMachineLayout() {
+        var config = configuration()
+        let initial = ARM64StagedConfig(config).cConfig
+        XCTAssertEqual(initial.v3.v2.machine.abi_version, 4)
+        XCTAssertEqual(initial.v3.v2.machine.struct_size, UInt32(MemoryLayout.size(ofValue: initial)))
+        XCTAssertEqual(initial.video.enabled, 0)
+        config.videoEnabled = true
+        config.videoMaxSessionsPerNode = 2
+        config.videoHostOwnedLimitMiB = 32
+        let staged = ARM64StagedConfig(config).cConfig
+        XCTAssertEqual(staged.v3.v2.machine.ram_mib, initial.v3.v2.machine.ram_mib)
+        XCTAssertEqual(staged.video.enabled, 1)
+        XCTAssertEqual(staged.video.max_sessions_per_node, 2)
+        XCTAssertEqual(staged.video.max_host_owned_bytes_per_node, 32 * 1_048_576)
     }
 
     func testInvalidMachineShapeIsRefusedWithoutClamping() throws {

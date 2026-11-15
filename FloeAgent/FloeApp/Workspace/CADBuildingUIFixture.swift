@@ -8,8 +8,12 @@ enum CADBuildingUIFixture {
     static let argument="--ui-test-cad-building"
     struct Prepared { let document:FloeCADDocument;let plan:CADSketchTransferEnvelope? }
     static func prepare(reopen:Bool,reset:Bool) async throws -> Prepared {
-        let root=FileManager.default.urls(for:.cachesDirectory,in:.userDomainMask)[0]
+        var root=FileManager.default.urls(for:.cachesDirectory,in:.userDomainMask)[0]
             .appendingPathComponent("FloeCADBuildingFixture",isDirectory:true)
+        if let value = ProcessInfo.processInfo.environment["FLOE_BUILDING_FIXTURE_ID"],
+           let id = UUID(uuidString: value) {
+            root = root.appendingPathComponent(id.uuidString, isDirectory: true)
+        }
         if reset,FileManager.default.fileExists(atPath:root.path) { try FileManager.default.removeItem(at:root) }
         try FileManager.default.createDirectory(at:root,withIntermediateDirectories:true)
         let url=root.appendingPathComponent("Building.floecad")

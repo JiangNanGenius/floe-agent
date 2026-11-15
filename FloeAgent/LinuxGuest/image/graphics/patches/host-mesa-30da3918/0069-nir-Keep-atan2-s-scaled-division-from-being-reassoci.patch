@@ -1,0 +1,31 @@
+From 03aef63a2f5bcab1a436982a521640d416c34246 Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Sat, 3 Oct 2026 17:33:25 -0400
+Subject: [PATCH 69/69] nir: Keep atan2's scaled division from being
+ reassociated away
+
+Generated-by: LLM
+---
+ src/compiler/nir/nir_builtin_builder.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/src/compiler/nir/nir_builtin_builder.c b/src/compiler/nir/nir_builtin_builder.c
+index 7c9b8c73850..9d783a5c4f8 100644
+--- a/src/compiler/nir/nir_builtin_builder.c
++++ b/src/compiler/nir/nir_builtin_builder.c
+@@ -346,9 +346,12 @@ nir_atan2(nir_builder *b, nir_def *y, nir_def *x)
+    const double huge_val = bit_size >= 32 ? 1e18 : 16384;
+    nir_def *scale = nir_bcsel(b, nir_fge_imm(b, nir_fabs(b, t), huge_val),
+                               nir_imm_floatN_t(b, 0.25, bit_size), one);
++   unsigned scaled_fp_math_ctrl = b->fp_math_ctrl;
++   b->fp_math_ctrl |= nir_fp_exact;
+    nir_def *rcp_scaled_t = nir_frcp(b, nir_fmul(b, t, scale));
+    nir_def *abs_s_over_t = nir_fmul(b, nir_fabs(b, nir_fmul(b, s, scale)),
+                                     nir_fabs(b, rcp_scaled_t));
++   b->fp_math_ctrl = scaled_fp_math_ctrl;
+ 
+    /* For |x| = |y| assume tan = 1 even if infinite (i.e. pretend momentarily
+     * that ∞/∞ = 1) in order to comply with the rather artificial rules
+-- 
+2.54.0 (Apple Git-157)
+

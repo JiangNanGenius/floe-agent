@@ -1,0 +1,1105 @@
+{
+  "engine": "love",
+  "files": [
+    {
+      "bytes": 824,
+      "executable": false,
+      "path": "README-PREPARED.md",
+      "sha256": "cadef5b4afe874a6714c3ed9c32b1f1acab63ddaaea7625b130862a093330c32"
+    },
+    {
+      "bytes": 1103,
+      "executable": false,
+      "path": "cli/LICENSE",
+      "sha256": "048a347cd98ed9b362599f7f9e55e6c8cff7f5017037b3a07713cfd447f5d883"
+    },
+    {
+      "bytes": 5225,
+      "executable": false,
+      "path": "cli/index.js",
+      "sha256": "45d4169a3cff5985d26789cbe1b0d117509773e0751bd8bfda581874b05b6ad0"
+    },
+    {
+      "bytes": 3179,
+      "executable": true,
+      "path": "cli/node_modules/.bin/mustache",
+      "sha256": "6d378efee8868d485e398931247b8308044ada4d6d6fa362c8a9998b4aa662e3"
+    },
+    {
+      "bytes": 1579,
+      "executable": true,
+      "path": "cli/node_modules/.bin/uuid",
+      "sha256": "53bddd1b8233d83e4456959f747d82678772afbf163a1e6e446d06d125e8e2cb"
+    },
+    {
+      "bytes": 3176,
+      "executable": false,
+      "path": "cli/node_modules/.package-lock.json",
+      "sha256": "02d1a4313ece530f7144b4429aff7e74a27d2e540765516be32c96d8f2b21789"
+    },
+    {
+      "bytes": 11340,
+      "executable": false,
+      "path": "cli/node_modules/commander/CHANGELOG.md",
+      "sha256": "4402fac21504d9cba177c90d5bc91746c4ffc0f29ac311de56e1de5199fa9883"
+    },
+    {
+      "bytes": 1098,
+      "executable": false,
+      "path": "cli/node_modules/commander/LICENSE",
+      "sha256": "04512a63dce4d2d506ad612dc0bd7681ccf6e3655f7b6eaef7dfac8323d1ec0b"
+    },
+    {
+      "bytes": 12783,
+      "executable": false,
+      "path": "cli/node_modules/commander/Readme.md",
+      "sha256": "29672cd1edd16b578263d874e1933bd7248bbe67d991cc366f73ba66d7a349b9"
+    },
+    {
+      "bytes": 27849,
+      "executable": false,
+      "path": "cli/node_modules/commander/index.js",
+      "sha256": "259465792c3db1ae81555cb0b654e224914ea59143d9674502d6754eb5266efd"
+    },
+    {
+      "bytes": 864,
+      "executable": false,
+      "path": "cli/node_modules/commander/package.json",
+      "sha256": "3ab88e050858ad5fc1d2e7f993d959b83c7e2ddec64afe86cc4055f799e4762d"
+    },
+    {
+      "bytes": 8508,
+      "executable": false,
+      "path": "cli/node_modules/commander/typings/index.d.ts",
+      "sha256": "ce0594a0432dce2f4e9f6130d538a52d6292ca323e729b75d8e0febd9134dc65"
+    },
+    {
+      "bytes": 95,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/.npmignore",
+      "sha256": "4af7ed50ad809a47f12202ba30b590c12facf0c5d0778a1dfd03b5c156ec8953"
+    },
+    {
+      "bytes": 56017,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/CHANGELOG.md",
+      "sha256": "7a6f46e662ffc5caca4d5ed584932b5deff93f5551620d586744e42e293acfdd"
+    },
+    {
+      "bytes": 1084,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/LICENSE",
+      "sha256": "1e76029602ae9b21cc4e612db2496d92febed882ba13ba745f8b3309e85f9d39"
+    },
+    {
+      "bytes": 8740,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/README.md",
+      "sha256": "797d86a31edd3b90b2ee788a7ec9f6b2cbe97e0b843229394c03a1292568bd92"
+    },
+    {
+      "bytes": 1461,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/docs/copy-sync.md",
+      "sha256": "e20598c164772520ab4dc0f574042556970c34ee8192532d3ee4c3c2eeb67abb"
+    },
+    {
+      "bytes": 1856,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/docs/copy.md",
+      "sha256": "9d284da87739706d7e20543a16a24147614ccbec73a6fe2d421790a13dcb60f4"
+    },
+    {
+      "bytes": 393,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/docs/emptyDir-sync.md",
+      "sha256": "785aef1cdad8ea2f40f3b368138969df489fa268a8e9d83cedea25518e183564"
+    },
+    {
+      "bytes": 625,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/docs/emptyDir.md",
+      "sha256": "3dd3b746e61191325d7ca5b573eca31629b519644e7551ebade7fb10396962d3"
+    },
+    {
+      "bytes": 394,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/docs/ensureDir-sync.md",
+      "sha256": "5d022577d60bd885876f2b2f3495abb50db59287b2fddb75440f50c808e42441"
+    },
+    {
+      "bytes": 580,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/docs/ensureDir.md",
+      "sha256": "01c10bb37a2608a86d6f255c63fd60396a7969d4e9e6fae2a3fe5adc40adfd25"
+    },
+    {
+      "bytes": 480,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/docs/ensureFile-sync.md",
+      "sha256": "8751038338e05de6583a5b3b2c78f75a2b2197761e977ccf456b275031e9c216"
+    },
+    {
+      "bytes": 672,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/docs/ensureFile.md",
+      "sha256": "b80625a9eac221851dd224b5930b54472f75a08c6d4b34d1f175f2cd7fafeceb"
+    },
+    {
+      "bytes": 428,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/docs/ensureLink-sync.md",
+      "sha256": "f6ae1ccb10908f6f5d122b24ae364548fc6282f912d195b12f43d9954578ea92"
+    },
+    {
+      "bytes": 636,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/docs/ensureLink.md",
+      "sha256": "b701b1ddbb89fc2fe2f6540ee78f6d4a2647815f6f563e2db7b3f47f6996bad6"
+    },
+    {
+      "bytes": 468,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/docs/ensureSymlink-sync.md",
+      "sha256": "4c32db4ab90e6fee81e112d405b40b436e4d2c12bd76b2a0649a68269ac6f4ca"
+    },
+    {
+      "bytes": 677,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/docs/ensureSymlink.md",
+      "sha256": "974db784f616e65aecf2eca2ae52aa8c31c24ff7461a7631eace3d461debb946"
+    },
+    {
+      "bytes": 511,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/docs/move-sync.md",
+      "sha256": "6c5d543a50a9576629ef7b8054cad7ccf166510e6ee89f02dfa2df5b3c7f15d5"
+    },
+    {
+      "bytes": 832,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/docs/move.md",
+      "sha256": "14a8e98f127d31b2f4cb5dd2a94ab7335a7d8d6e191b2c18c7694458f2a91fa7"
+    },
+    {
+      "bytes": 729,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/docs/outputFile-sync.md",
+      "sha256": "8c2c37c2daf0c9bab4e8a33b80f1b8f285513127632a1f3d11a2827e84c52cc6"
+    },
+    {
+      "bytes": 1026,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/docs/outputFile.md",
+      "sha256": "8a40992a909f21885266f747a0a08fb4f9867719e1d841c85c2dcb27922c779d"
+    },
+    {
+      "bytes": 617,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/docs/outputJson-sync.md",
+      "sha256": "c44f74a1deb4d9b27ac688869c12d422e9fe3c8a7cf2d3280944e08714cc8289"
+    },
+    {
+      "bytes": 898,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/docs/outputJson.md",
+      "sha256": "35b8b77c78e100cfca0edad874408ae01f2fcc45a3c985166528454d178a0388"
+    },
+    {
+      "bytes": 174,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/docs/pathExists-sync.md",
+      "sha256": "4cc49712c0a451a27767aaf10f785dbbdd9fc027e57587948198d8d420046609"
+    },
+    {
+      "bytes": 643,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/docs/pathExists.md",
+      "sha256": "ef0cc0708f265d8e283b093e23698cf553215df17ec6da107d30a7112a796572"
+    },
+    {
+      "bytes": 797,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/docs/readJson-sync.md",
+      "sha256": "565826aa0a262cd9667be76115b04a99ea1573f0dcc37353f55094eb79d1cc2a"
+    },
+    {
+      "bytes": 1210,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/docs/readJson.md",
+      "sha256": "616b96c67b6f66b5e0b4d98242dfd14783ddfae9e3efd1e5dad7dee397e1bc8f"
+    },
+    {
+      "bytes": 299,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/docs/remove-sync.md",
+      "sha256": "f4a4419ba58926b68c7db2ae69d5d1fdc56c3494ea3e339e0efc101d75aeb47f"
+    },
+    {
+      "bytes": 603,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/docs/remove.md",
+      "sha256": "94519952eb75675c3f48cae8706e0c44f4d70de86b376577bbfcf6827c17c284"
+    },
+    {
+      "bytes": 495,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/docs/writeJson-sync.md",
+      "sha256": "59db6dd6bd862586da89a9b7d8534fd3221efa5b01ba058ae02f642fcc49ebd9"
+    },
+    {
+      "bytes": 736,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/docs/writeJson.md",
+      "sha256": "88b031d296fbd2b2ffe46e8a061dc667ad762c6db3bc8abc6ab2bf39dc3067cc"
+    },
+    {
+      "bytes": 1657,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/lib/copy/copy.js",
+      "sha256": "6c9acfd568d682cec7ac75697bf79c4ad64a6e14adda4a27520464030441ab88"
+    },
+    {
+      "bytes": 97,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/lib/copy/index.js",
+      "sha256": "94fa1467b46eebfec580edffc1e4bb34aef251243ec24f58c80d443939b1dbb8"
+    },
+    {
+      "bytes": 6117,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/lib/copy/ncp.js",
+      "sha256": "7187bb117d8546202d13b258297a5be6bf8e80999ef1586cf73e95f4b83925bf"
+    },
+    {
+      "bytes": 982,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/lib/copy-sync/copy-file-sync.js",
+      "sha256": "bd881baa92ef7fea151a3df6fda011ace2687ff2d6c4b8596548250f9f33f8f5"
+    },
+    {
+      "bytes": 2387,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/lib/copy-sync/copy-sync.js",
+      "sha256": "e0922cdd08bc50be3c609f432c7e815f55ecbd569f434a5981de60648b592b37"
+    },
+    {
+      "bytes": 56,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/lib/copy-sync/index.js",
+      "sha256": "360b7c95ad351f0e7650735a4b4dcda0d5dbed434837a8e08a6fb8d94d2e6b51"
+    },
+    {
+      "bytes": 983,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/lib/empty/index.js",
+      "sha256": "46e30a0f4b8833c6343e68959ec7cb407584e7cc4c7f251d91949a567031227d"
+    },
+    {
+      "bytes": 1021,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/lib/ensure/file.js",
+      "sha256": "363b508790d22bb64c5d2e2fcd2fec5ba7471f5eef3467e142e634184789bee9"
+    },
+    {
+      "bytes": 623,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/lib/ensure/index.js",
+      "sha256": "6c8e1d92d85d04c25c1a076b1270e26dfaa36583ba95d6d5b7874f3b1700cead"
+    },
+    {
+      "bytes": 1580,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/lib/ensure/link.js",
+      "sha256": "b3b32d4dc9e6df34155dcb9f8fbdef95ae8469114f0efeaa2e7161556e7e09e0"
+    },
+    {
+      "bytes": 3410,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/lib/ensure/symlink-paths.js",
+      "sha256": "4d722a3483bdb4d072fa997ad54f33eab96b4fb7c38231ff0f7e492ae70c9453"
+    },
+    {
+      "bytes": 698,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/lib/ensure/symlink-type.js",
+      "sha256": "9cc0b6884cf394e8bebd149fae5ce82124ec8d19552c570b9873f46ad2b9856d"
+    },
+    {
+      "bytes": 2174,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/lib/ensure/symlink.js",
+      "sha256": "73877592460c91b00587ae5977fc556986a3b2cdaf6df937201de1fcb1d8b350"
+    },
+    {
+      "bytes": 1258,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/lib/fs/index.js",
+      "sha256": "249fb19def246044fc53973e5c0d1bb0df90402cbf040c2760046057068bfab8"
+    },
+    {
+      "bytes": 523,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/lib/index.js",
+      "sha256": "82ab0bc424e76eb1d857f8c998eabb1b66c125e3193c6905baa943230d88c6ae"
+    },
+    {
+      "bytes": 509,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/lib/json/index.js",
+      "sha256": "1915e8955bb21150e2b95df4464e8cf4af4de9b7682ed5a9b2dd3cadb780ff83"
+    },
+    {
+      "bytes": 291,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/lib/json/jsonfile.js",
+      "sha256": "857ad5cc1569d6455e53ed4be618d836257a0fce5d4db3bcda49c5510ea4b26a"
+    },
+    {
+      "bytes": 375,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/lib/json/output-json-sync.js",
+      "sha256": "f8388235c1188eb35cdb7790829009207931f983933fedd7812ae2138f9124e3"
+    },
+    {
+      "bytes": 657,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/lib/json/output-json.js",
+      "sha256": "95d5328ff48a993a442dd537e362f5bc19ec60cd205683d3f401cc561d59615f"
+    },
+    {
+      "bytes": 312,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/lib/mkdirs/index.js",
+      "sha256": "bbffb8d9b32cf4fc9b81ffdbefd9f675be5d33724bce6612e9db1d50c9ca848c"
+    },
+    {
+      "bytes": 1324,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/lib/mkdirs/mkdirs-sync.js",
+      "sha256": "b31f41bf0878ad8bb556e65d085ab0a3b0f13815ec2db88957d785765902e80e"
+    },
+    {
+      "bytes": 1636,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/lib/mkdirs/mkdirs.js",
+      "sha256": "f1e959fdf83c06a9434df900f81c4372c5948a486de9c398ef5e1667dc4c67df"
+    },
+    {
+      "bytes": 517,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/lib/mkdirs/win32.js",
+      "sha256": "a58409301aa73ea6e2ed07dc1278638efec23066f20d16f295ddcd1d1805a61c"
+    },
+    {
+      "bytes": 3982,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/lib/move/index.js",
+      "sha256": "569e07054d55383f38f50555b632de9c706e7bceebe166347d729f11fd3fa9fe"
+    },
+    {
+      "bytes": 3014,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/lib/move-sync/index.js",
+      "sha256": "7b3802576cfc150524945443583c8d10f778ee5093625782248be9d1b530944b"
+    },
+    {
+      "bytes": 966,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/lib/output/index.js",
+      "sha256": "98b32626a3617fe4d952ca66d882e36b9cea195bac44696aff267fc9450c3f13"
+    },
+    {
+      "bytes": 263,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/lib/path-exists/index.js",
+      "sha256": "5ce096c95daec0259817248921b39a9e0df4d342db171138ccb62440cc7a0cbe"
+    },
+    {
+      "bytes": 165,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/lib/remove/index.js",
+      "sha256": "dff95c5640a0b4b769290126940a7683e0e6d29ec591df63b7296712f81d9c56"
+    },
+    {
+      "bytes": 6960,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/lib/remove/rimraf.js",
+      "sha256": "eaa309996bff3e24fbcf423f9017aabbcd018ca54b8d759c97786bb5f1170509"
+    },
+    {
+      "bytes": 286,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/lib/util/assign.js",
+      "sha256": "8448b9673d9723731866ebf6e88776e2086abec73d538f67a98876c6f69eac08"
+    },
+    {
+      "bytes": 263,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/lib/util/buffer.js",
+      "sha256": "77aafad91ef51ff48e4a52a31a9aaccb12290da0e5ea9d4de26c3d8840fcea86"
+    },
+    {
+      "bytes": 2200,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/lib/util/utimes.js",
+      "sha256": "42bf7cb812451b9a61a0b96ab6c511cb892ae18a99bc60cd9904b6ca1071726e"
+    },
+    {
+      "bytes": 1575,
+      "executable": false,
+      "path": "cli/node_modules/fs-extra/package.json",
+      "sha256": "ccb972f6c86abaf07f9c1bd489276bbabf9289614e88c515f983fa843d03ade9"
+    },
+    {
+      "bytes": 791,
+      "executable": false,
+      "path": "cli/node_modules/graceful-fs/LICENSE",
+      "sha256": "f65c5d9f22a317b2a10803bd1868461ce6499c2ed7217bc80c0cc772a748789c"
+    },
+    {
+      "bytes": 4741,
+      "executable": false,
+      "path": "cli/node_modules/graceful-fs/README.md",
+      "sha256": "1c8169c6bd7d7c966616574b9b7479c9890193ff6c5af98faa28672a1d429382"
+    },
+    {
+      "bytes": 496,
+      "executable": false,
+      "path": "cli/node_modules/graceful-fs/clone.js",
+      "sha256": "7258eca52e65d69845759503f9fdd66c252f40e5eafb76db5d481172e31ac9ed"
+    },
+    {
+      "bytes": 12680,
+      "executable": false,
+      "path": "cli/node_modules/graceful-fs/graceful-fs.js",
+      "sha256": "7da35669b6b6b0e4aafee31674c033f2cebb0c8f9ae010f709dcc185d3f17786"
+    },
+    {
+      "bytes": 2655,
+      "executable": false,
+      "path": "cli/node_modules/graceful-fs/legacy-streams.js",
+      "sha256": "60a6a7ecf7c3e55a3ffaae13433b6cff388b7205bba6daf393c863f77a949e36"
+    },
+    {
+      "bytes": 1031,
+      "executable": false,
+      "path": "cli/node_modules/graceful-fs/package.json",
+      "sha256": "5747d4ba6b17165c6ecac30ab3a331715f41c7ad546e1f1574dab1bdcb116181"
+    },
+    {
+      "bytes": 10141,
+      "executable": false,
+      "path": "cli/node_modules/graceful-fs/polyfills.js",
+      "sha256": "66ea1687ed5edf39d67296d26edccc8da695d9a869303a78d0e580cd770aca27"
+    },
+    {
+      "bytes": 31,
+      "executable": false,
+      "path": "cli/node_modules/jsonfile/.npmignore",
+      "sha256": "ce8fa0258e00fdbd576e1e198613ec1541841e75ded5e9c805d5accd46ad519e"
+    },
+    {
+      "bytes": 7626,
+      "executable": false,
+      "path": "cli/node_modules/jsonfile/CHANGELOG.md",
+      "sha256": "909a43cdfe8882b5a177f31af59cb600e262313a1b6c42cea8e0d11e2da200ac"
+    },
+    {
+      "bytes": 1110,
+      "executable": false,
+      "path": "cli/node_modules/jsonfile/LICENSE",
+      "sha256": "a9801fb52ba22ef808682a094da8a7a480584b7ed0dfd0d888ab543616335031"
+    },
+    {
+      "bytes": 4718,
+      "executable": false,
+      "path": "cli/node_modules/jsonfile/README.md",
+      "sha256": "35423bdc57cff63e4eabb5a900475f1df091fd6388d7befcb519edc72f18181d"
+    },
+    {
+      "bytes": 3200,
+      "executable": false,
+      "path": "cli/node_modules/jsonfile/index.js",
+      "sha256": "07dfafcfdac980f6e4cdb04437ce834f8784928881f02c7e3fd7ba4a431de0a0"
+    },
+    {
+      "bytes": 677,
+      "executable": false,
+      "path": "cli/node_modules/jsonfile/package.json",
+      "sha256": "8bd9bfe050cb18b88263e28e84f21cbe034d471aaf233a964e00a891dfd17f77"
+    },
+    {
+      "bytes": 1239,
+      "executable": false,
+      "path": "cli/node_modules/klaw-sync/CHANGELOG.md",
+      "sha256": "ecac23ffe48073314b5d607aa7b4a8990cbdd7a7f455111ddc5726eae63f4580"
+    },
+    {
+      "bytes": 1077,
+      "executable": false,
+      "path": "cli/node_modules/klaw-sync/LICENSE",
+      "sha256": "c4685c06e8044e2ef0f9aaabee8047d15e5e3f536db5678aef5d515fa2be6762"
+    },
+    {
+      "bytes": 5248,
+      "executable": false,
+      "path": "cli/node_modules/klaw-sync/README.md",
+      "sha256": "eab286c7067422228727b96db69f6e181ac857eaade56fa8ce678edf4340b4b4"
+    },
+    {
+      "bytes": 1299,
+      "executable": false,
+      "path": "cli/node_modules/klaw-sync/klaw-sync.js",
+      "sha256": "0965c8c923860d0f4444f1b5bd3ee26f8fc662037c04a8076b6abe9d863266cf"
+    },
+    {
+      "bytes": 1027,
+      "executable": false,
+      "path": "cli/node_modules/klaw-sync/package.json",
+      "sha256": "3fb81162ddd8b6363201c50e878787a5d407c1ed50594e5b63098f800fb87738"
+    },
+    {
+      "bytes": 12462,
+      "executable": false,
+      "path": "cli/node_modules/mustache/CHANGELOG.md",
+      "sha256": "7015cb9a4fde117c6db35b9e163e7c863c18979c1b37b9611d7e829f6ba36bc2"
+    },
+    {
+      "bytes": 1183,
+      "executable": false,
+      "path": "cli/node_modules/mustache/LICENSE",
+      "sha256": "e60b280838180a70cbb4b934f825c8119cdcf8912259ff4c6da20b284231c832"
+    },
+    {
+      "bytes": 16857,
+      "executable": false,
+      "path": "cli/node_modules/mustache/README.md",
+      "sha256": "ced5c05fe0b1bd8c02471c31a1b897311449e63f04e7a4ef079076714fd9272e"
+    },
+    {
+      "bytes": 3179,
+      "executable": true,
+      "path": "cli/node_modules/mustache/bin/mustache",
+      "sha256": "6d378efee8868d485e398931247b8308044ada4d6d6fa362c8a9998b4aa662e3"
+    },
+    {
+      "bytes": 19391,
+      "executable": false,
+      "path": "cli/node_modules/mustache/mustache.js",
+      "sha256": "2a4f4169e59d11cca8e24b0f44784f803c9e7724f0c0f09b73381c228093be5b"
+    },
+    {
+      "bytes": 9528,
+      "executable": false,
+      "path": "cli/node_modules/mustache/mustache.min.js",
+      "sha256": "720948512803e5eb491b29ba9b8339edb4a6cd6a2c7171f1c8de0611a910c368"
+    },
+    {
+      "bytes": 1685,
+      "executable": false,
+      "path": "cli/node_modules/mustache/package.json",
+      "sha256": "fa0c2efd9ebabc8f56040e534d643fd7713068ed6002d90af0795c162a094494"
+    },
+    {
+      "bytes": 58,
+      "executable": false,
+      "path": "cli/node_modules/mustache/wrappers/dojo/mustache.js.post",
+      "sha256": "8d2a023e8998a4cdec2f0fd7628ba1e87cc31a06b84c890c113028906b0af7a4"
+    },
+    {
+      "bytes": 192,
+      "executable": false,
+      "path": "cli/node_modules/mustache/wrappers/dojo/mustache.js.pre",
+      "sha256": "097225914162451886ba624da6111950c97e6021d1624c6ea1fe0a716f13fc50"
+    },
+    {
+      "bytes": 359,
+      "executable": false,
+      "path": "cli/node_modules/mustache/wrappers/jquery/mustache.js.post",
+      "sha256": "5bde0b517ff909790833142a5aba8187e9d8eefd1ea9f7ec1e7357545e947073"
+    },
+    {
+      "bytes": 141,
+      "executable": false,
+      "path": "cli/node_modules/mustache/wrappers/jquery/mustache.js.pre",
+      "sha256": "1ad971e84303a024e4c6d2bda12a71b8b725ad1befe793dbbf9ae00fe4ecf2ca"
+    },
+    {
+      "bytes": 128,
+      "executable": false,
+      "path": "cli/node_modules/mustache/wrappers/mootools/mustache.js.post",
+      "sha256": "a6c5f9a6e147dc4f7f66e2f7906f377181e0df41a583cac85d5fc5ef46ee5d1d"
+    },
+    {
+      "bytes": 14,
+      "executable": false,
+      "path": "cli/node_modules/mustache/wrappers/mootools/mustache.js.pre",
+      "sha256": "3a527163a435d6b1890f7aa7a7ec80be50c0f80587e7dc1c0267afaf8ddd2e60"
+    },
+    {
+      "bytes": 184,
+      "executable": false,
+      "path": "cli/node_modules/mustache/wrappers/qooxdoo/mustache.js.post",
+      "sha256": "3ff65c4e74226d068328e6dd82b272fee012f4d4d8acbf2e737adafb0259488a"
+    },
+    {
+      "bytes": 6376,
+      "executable": false,
+      "path": "cli/node_modules/mustache/wrappers/qooxdoo/mustache.js.pre",
+      "sha256": "10ec244742ae8d44807e1d1772c4acde92fd103bdda35a92a4f9b5856f430e4e"
+    },
+    {
+      "bytes": 45,
+      "executable": false,
+      "path": "cli/node_modules/mustache/wrappers/yui3/mustache.js.post",
+      "sha256": "923e706e21263d627ae8753597dfe5e10ea6d0897660d5b760a1659f978abc30"
+    },
+    {
+      "bytes": 34,
+      "executable": false,
+      "path": "cli/node_modules/mustache/wrappers/yui3/mustache.js.pre",
+      "sha256": "d9dab7c7e8b26c313895d574115d4d9ec6227b11fc9864d4fd82a9813aec67bb"
+    },
+    {
+      "bytes": 1100,
+      "executable": false,
+      "path": "cli/node_modules/universalify/LICENSE",
+      "sha256": "3fda5977c0904e226190b4e21d64340c1731e2142d6fe5f3dee0090a216b8b63"
+    },
+    {
+      "bytes": 2008,
+      "executable": false,
+      "path": "cli/node_modules/universalify/README.md",
+      "sha256": "6ed9f070bb95ec35462a438fab1952b258708c2d607947e8eda8c2f60431a039"
+    },
+    {
+      "bytes": 777,
+      "executable": false,
+      "path": "cli/node_modules/universalify/index.js",
+      "sha256": "d3411ff41b782d91b9cf61daf5a36fa9f2a0383da19be846aa4463f00226e929"
+    },
+    {
+      "bytes": 820,
+      "executable": false,
+      "path": "cli/node_modules/universalify/package.json",
+      "sha256": "337f8f6023a515e5736486d37a7e29f955fea1c69bcafdc565a2bdd08f6a869e"
+    },
+    {
+      "bytes": 169,
+      "executable": false,
+      "path": "cli/node_modules/uuid/AUTHORS",
+      "sha256": "ae1a7a5d29436e809dba05462dc70772766613964d6dcd6d9ca008b52ac8c34b"
+    },
+    {
+      "bytes": 3768,
+      "executable": false,
+      "path": "cli/node_modules/uuid/CHANGELOG.md",
+      "sha256": "83a4b8f1660bb0ed5aac1b5ec44adde3d2108d4d3520c208a9a92c09b7c46605"
+    },
+    {
+      "bytes": 1109,
+      "executable": false,
+      "path": "cli/node_modules/uuid/LICENSE.md",
+      "sha256": "3df5f9a382da026c813ce3fc95c6c07815eb3ba39f009f482df64eb6af1a3b39"
+    },
+    {
+      "bytes": 7915,
+      "executable": false,
+      "path": "cli/node_modules/uuid/README.md",
+      "sha256": "77662e63d7095338a4a150cc695d4bbe734c8b7307efed4cecd87dd8052008d4"
+    },
+    {
+      "bytes": 1579,
+      "executable": true,
+      "path": "cli/node_modules/uuid/bin/uuid",
+      "sha256": "53bddd1b8233d83e4456959f747d82678772afbf163a1e6e446d06d125e8e2cb"
+    },
+    {
+      "bytes": 120,
+      "executable": false,
+      "path": "cli/node_modules/uuid/index.js",
+      "sha256": "3a4945c68cbf7480cc0484ea21d7eb354db24322ce48e37dd35a0dc99495ad03"
+    },
+    {
+      "bytes": 775,
+      "executable": false,
+      "path": "cli/node_modules/uuid/lib/bytesToUuid.js",
+      "sha256": "69826be4f4e118c15cf2ffb5870aa551a4eaef4e24cbadbe619b90115388858e"
+    },
+    {
+      "bytes": 6824,
+      "executable": false,
+      "path": "cli/node_modules/uuid/lib/md5-browser.js",
+      "sha256": "8e478e1910943ff09d4ae2dd1667dcf065309576bb087940664b0488e0304f2f"
+    },
+    {
+      "bytes": 576,
+      "executable": false,
+      "path": "cli/node_modules/uuid/lib/md5.js",
+      "sha256": "cbea95f8c2a366ff78f38995d0869c9b1c36491a2bd0963d6b24736f21be46ff"
+    },
+    {
+      "bytes": 1312,
+      "executable": false,
+      "path": "cli/node_modules/uuid/lib/rng-browser.js",
+      "sha256": "f49ca841990f6a9d77d9e073e2db58afc01de34a322087dfb9d116027d2a743e"
+    },
+    {
+      "bytes": 246,
+      "executable": false,
+      "path": "cli/node_modules/uuid/lib/rng.js",
+      "sha256": "5bf45cf09ff3b58b813103c2755954caefe76ea232ff3a546e5af5255511ec91"
+    },
+    {
+      "bytes": 2338,
+      "executable": false,
+      "path": "cli/node_modules/uuid/lib/sha1-browser.js",
+      "sha256": "641ca0401e598ea82613fa1e41d337ab87b3e0235ac4ef6a7c6341e2ac763137"
+    },
+    {
+      "bytes": 579,
+      "executable": false,
+      "path": "cli/node_modules/uuid/lib/sha1.js",
+      "sha256": "7de88abd31451a9d3efddfcd32863f2416c5aaab4ebcd755ed8280b2308ba018"
+    },
+    {
+      "bytes": 1622,
+      "executable": false,
+      "path": "cli/node_modules/uuid/lib/v35.js",
+      "sha256": "7993b5e5a3854534aa7fab6e91f108d984aae88d73abd562d7ce2f1a58780923"
+    },
+    {
+      "bytes": 1111,
+      "executable": false,
+      "path": "cli/node_modules/uuid/package.json",
+      "sha256": "c7c4fb46db1f8305fff558e3a963ae7689ec26938660c9d311679583047ec13b"
+    },
+    {
+      "bytes": 3331,
+      "executable": false,
+      "path": "cli/node_modules/uuid/v1.js",
+      "sha256": "17788c9990b9614336c9f045efe681be38ffeacc6b49cfefbe7f6a564786c004"
+    },
+    {
+      "bytes": 106,
+      "executable": false,
+      "path": "cli/node_modules/uuid/v3.js",
+      "sha256": "af7ac2754740ae67b64d3a876b972723121b8736e0682a322098e4c144bc415c"
+    },
+    {
+      "bytes": 680,
+      "executable": false,
+      "path": "cli/node_modules/uuid/v4.js",
+      "sha256": "64a5fa41c6f79973637fe58de24d8847545bbd75ef1ebed402f2c976fcf24a2b"
+    },
+    {
+      "bytes": 109,
+      "executable": false,
+      "path": "cli/node_modules/uuid/v5.js",
+      "sha256": "978dc8cdc6f1a311d4cd61923b9ccf0016df22a1f4f7e5b9936ea168587ce7bb"
+    },
+    {
+      "bytes": 143568,
+      "executable": false,
+      "path": "cli/package-lock.json",
+      "sha256": "4271b31afb0e169d4e23649b986906bf6374eda286f3df82311cedd76eaac32d"
+    },
+    {
+      "bytes": 1165,
+      "executable": false,
+      "path": "cli/package.json",
+      "sha256": "536ca828d6b7a7be8c1dad88aa32654141b43e97a5c412ec45ebaede3207723c"
+    },
+    {
+      "bytes": 5798,
+      "executable": false,
+      "path": "cli/readme.md",
+      "sha256": "b8191261658d71849d6cb2cd8aa360638d7910069a1f4042014d9efc23ed9607"
+    },
+    {
+      "bytes": 4901,
+      "executable": false,
+      "path": "cli/src/compat/index.html",
+      "sha256": "0ea6065f22aea0d53c37b8f072a545bcd9989f4cac7abfd5e41ccf0065d04a4c"
+    },
+    {
+      "bytes": 326119,
+      "executable": false,
+      "path": "cli/src/compat/love.js",
+      "sha256": "a9fec12804500c6dcfc524c0c40ef06fc3b772afc23eaa36f4c3aff2ae3da955"
+    },
+    {
+      "bytes": 4720726,
+      "executable": false,
+      "path": "cli/src/compat/love.wasm",
+      "sha256": "ecc9e098bb8af918d20fbe3f26d23495c5184ff6b5d203d2e4b27bf17a771d6f"
+    },
+    {
+      "bytes": 7161,
+      "executable": false,
+      "path": "cli/src/compat/theme/bg.png",
+      "sha256": "e27c96716772b0ac44145ee7a93e51a7d2f9f03bbf8600d055e20c1a93594f6f"
+    },
+    {
+      "bytes": 860,
+      "executable": false,
+      "path": "cli/src/compat/theme/love.css",
+      "sha256": "b991b00f74b61804d52f8e5590337f4ef1311fa8bb4315337a1bbc7c8bd262cd"
+    },
+    {
+      "bytes": 11280,
+      "executable": false,
+      "path": "cli/src/game.js",
+      "sha256": "223c6f5ca7d2bbe47e039f4101f51bab96ccc7e5ad02d4d3281162b28b6ec2c5"
+    },
+    {
+      "bytes": 4901,
+      "executable": false,
+      "path": "cli/src/release/index.html",
+      "sha256": "0ea6065f22aea0d53c37b8f072a545bcd9989f4cac7abfd5e41ccf0065d04a4c"
+    },
+    {
+      "bytes": 386198,
+      "executable": false,
+      "path": "cli/src/release/love.js",
+      "sha256": "eb20a4d947dc99e08e906e946c5b783e3f542f60a3107167a1e92d07bfe531d4"
+    },
+    {
+      "bytes": 4746105,
+      "executable": false,
+      "path": "cli/src/release/love.wasm",
+      "sha256": "f9302c4034de06ead29f6526cc0c61dc73f7fdf7368edb3f568332af587cacf2"
+    },
+    {
+      "bytes": 3423,
+      "executable": false,
+      "path": "cli/src/release/love.worker.js",
+      "sha256": "720c1d0160a6fc61c2a7deda7462310eaacdbad5cd559aba46976dfb7dcd4627"
+    },
+    {
+      "bytes": 7161,
+      "executable": false,
+      "path": "cli/src/release/theme/bg.png",
+      "sha256": "e27c96716772b0ac44145ee7a93e51a7d2f9f03bbf8600d055e20c1a93594f6f"
+    },
+    {
+      "bytes": 860,
+      "executable": false,
+      "path": "cli/src/release/theme/love.css",
+      "sha256": "b991b00f74b61804d52f8e5590337f4ef1311fa8bb4315337a1bbc7c8bd262cd"
+    },
+    {
+      "bytes": 205,
+      "executable": false,
+      "path": "cli/toolchain.json",
+      "sha256": "e7cd50afe5d8b6728de1cfdc7528bb592532bd3447329b084ec52dbbcd9fcf41"
+    },
+    {
+      "bytes": 5093,
+      "executable": false,
+      "path": "licenses/EMSCRIPTEN-2.0.0-LICENSE.txt",
+      "sha256": "620a78084fc7ca97c0b5dea9abf891f3ffcadfdbf305276f099c9c4e12fc1d86"
+    },
+    {
+      "bytes": 1060,
+      "executable": false,
+      "path": "licenses/ENET-MIT.txt",
+      "sha256": "678ecf38808fd8cdfe0d07ae2edde62d99f00c96b59357e3334042d28cedd4e5"
+    },
+    {
+      "bytes": 16726,
+      "executable": false,
+      "path": "licenses/FLOE-MPL-2.0.txt",
+      "sha256": "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04"
+    },
+    {
+      "bytes": 369,
+      "executable": false,
+      "path": "licenses/FLOE-PERSISTENCE-NOTICE.txt",
+      "sha256": "7817fef9be26e44f85ff36bb3536e664b97e82ffdd30e68f6a2aa7ed42026eae"
+    },
+    {
+      "bytes": 2100,
+      "executable": false,
+      "path": "licenses/FLOE-love_persistence_patch.py",
+      "sha256": "e678aa5191f9ed39591c27fedd11e7e3242e638dfa2afbb519653e6cd78ef2ef"
+    },
+    {
+      "bytes": 6742,
+      "executable": false,
+      "path": "licenses/FREETYPE-2.8.1-FTL.txt",
+      "sha256": "4a9a548027a2c1d37788519dea833294c9c81f1ebc280e817f41f50d0c642d78"
+    },
+    {
+      "bytes": 57,
+      "executable": false,
+      "path": "licenses/LIBMODPLUG-0.8.8.4-COPYING.txt",
+      "sha256": "49942e7b3b175f549e751feb08b5270ca6f6c5fb7a1be9f9517db275ec32c92e"
+    },
+    {
+      "bytes": 1466,
+      "executable": false,
+      "path": "licenses/LIBOGG-1.3.2-COPYING.txt",
+      "sha256": "d2ab5758336489da61c12cc5bb757da5339c4ae9001f9bb0562b4370249af814"
+    },
+    {
+      "bytes": 1470,
+      "executable": false,
+      "path": "licenses/LIBTHEORA-1.1.1-COPYING.txt",
+      "sha256": "8417fad7da775735564e209484a2e011e0fa201e94f01fdbee6e4977e478e6fc"
+    },
+    {
+      "bytes": 1470,
+      "executable": false,
+      "path": "licenses/LIBVORBIS-1.3.5-COPYING.txt",
+      "sha256": "5c0905d21494102e4d579a3c42216f8de1c2ac738443db4f189f93a01ca31a93"
+    },
+    {
+      "bytes": 9330,
+      "executable": false,
+      "path": "licenses/LOVE-11.4-COMPONENT-ADDENDUM.md",
+      "sha256": "2602226576f929b4681ec34532ba6939d222590e2a04f81776e6dacee2089161"
+    },
+    {
+      "bytes": 67058,
+      "executable": false,
+      "path": "licenses/LOVE-11.4-LICENSE.txt",
+      "sha256": "4605993b18eb43800ca12ac7fe904c040f9ab39c5e5616dd02eb1ed4ed47deac"
+    },
+    {
+      "bytes": 1528,
+      "executable": false,
+      "path": "licenses/LUA-5.1.5-COPYRIGHT.txt",
+      "sha256": "ee5e3e82af1e1b543c4f216e399d7c8cfee797711913f349e385101c4ae60a79"
+    },
+    {
+      "bytes": 2935,
+      "executable": false,
+      "path": "licenses/LUAJIT-2.1.0-COPYRIGHT.txt",
+      "sha256": "43fc251179d900f9948e51dd3cc93733d1219f2db060faaa0c8100ad054f54d8"
+    },
+    {
+      "bytes": 40718,
+      "executable": false,
+      "path": "licenses/MPG123-1.25.6-COPYING.txt",
+      "sha256": "f40e0dd86b27b52e429b693a87b3ca63ae0a98a4d142e77207aa6bdf1db7a295"
+    },
+    {
+      "bytes": 23330,
+      "executable": false,
+      "path": "licenses/OPENAL-SOFT-1.19.1-COPYING.txt",
+      "sha256": "d808ce217e5b611854da622b57ec29fe545584c48bc5352fae72a4b6e5074a15"
+    },
+    {
+      "bytes": 1737,
+      "executable": false,
+      "path": "licenses/README-PREPARED.md",
+      "sha256": "dc6f89918c14c4dd418f5b29466a0a828e5b969ec2f4db170456b143f76d223a"
+    },
+    {
+      "bytes": 930,
+      "executable": false,
+      "path": "licenses/SDL2-2.0.10-COPYING.txt",
+      "sha256": "a7c8d0b3167c502921192585a582eb8477ad9862330f4d8b9e4a8bb4c1a9d29e"
+    },
+    {
+      "bytes": 1329,
+      "executable": false,
+      "path": "licenses/ZLIB-1.2.11-LICENSE.txt",
+      "sha256": "5b305a8fcbfac28f3238dfe6db82016dbc72b986be3034e843648f89ffc2bfb5"
+    },
+    {
+      "bytes": 1082,
+      "executable": false,
+      "path": "licenses/love.js-MIT.txt",
+      "sha256": "a5c6a1286581e6a104f81647835791b7ec4148dcf1951633d23fcb3198f7c7fb"
+    },
+    {
+      "bytes": 4901,
+      "executable": false,
+      "path": "runtime/compat/index.html",
+      "sha256": "0ea6065f22aea0d53c37b8f072a545bcd9989f4cac7abfd5e41ccf0065d04a4c"
+    },
+    {
+      "bytes": 326119,
+      "executable": false,
+      "path": "runtime/compat/love.js",
+      "sha256": "a9fec12804500c6dcfc524c0c40ef06fc3b772afc23eaa36f4c3aff2ae3da955"
+    },
+    {
+      "bytes": 4720726,
+      "executable": false,
+      "path": "runtime/compat/love.wasm",
+      "sha256": "ecc9e098bb8af918d20fbe3f26d23495c5184ff6b5d203d2e4b27bf17a771d6f"
+    },
+    {
+      "bytes": 7161,
+      "executable": false,
+      "path": "runtime/compat/theme/bg.png",
+      "sha256": "e27c96716772b0ac44145ee7a93e51a7d2f9f03bbf8600d055e20c1a93594f6f"
+    },
+    {
+      "bytes": 860,
+      "executable": false,
+      "path": "runtime/compat/theme/love.css",
+      "sha256": "b991b00f74b61804d52f8e5590337f4ef1311fa8bb4315337a1bbc7c8bd262cd"
+    },
+    {
+      "bytes": 4901,
+      "executable": false,
+      "path": "runtime/release/index.html",
+      "sha256": "0ea6065f22aea0d53c37b8f072a545bcd9989f4cac7abfd5e41ccf0065d04a4c"
+    },
+    {
+      "bytes": 386198,
+      "executable": false,
+      "path": "runtime/release/love.js",
+      "sha256": "eb20a4d947dc99e08e906e946c5b783e3f542f60a3107167a1e92d07bfe531d4"
+    },
+    {
+      "bytes": 4746105,
+      "executable": false,
+      "path": "runtime/release/love.wasm",
+      "sha256": "f9302c4034de06ead29f6526cc0c61dc73f7fdf7368edb3f568332af587cacf2"
+    },
+    {
+      "bytes": 3423,
+      "executable": false,
+      "path": "runtime/release/love.worker.js",
+      "sha256": "720c1d0160a6fc61c2a7deda7462310eaacdbad5cd559aba46976dfb7dcd4627"
+    },
+    {
+      "bytes": 7161,
+      "executable": false,
+      "path": "runtime/release/theme/bg.png",
+      "sha256": "e27c96716772b0ac44145ee7a93e51a7d2f9f03bbf8600d055e20c1a93594f6f"
+    },
+    {
+      "bytes": 860,
+      "executable": false,
+      "path": "runtime/release/theme/love.css",
+      "sha256": "b991b00f74b61804d52f8e5590337f4ef1311fa8bb4315337a1bbc7c8bd262cd"
+    },
+    {
+      "bytes": 733,
+      "executable": false,
+      "path": "runtime-patches.json",
+      "sha256": "96d0777c8194f9217d3513deebcd8f8427d202d6886d0492d6776041977918bd"
+    }
+  ],
+  "id": "lovejs-11.4.1",
+  "notes": [
+    "npm love.js@11.4.1 sha256 9eb2db1f789254faed8e5cf7eeeded46a7e56ecbc931c88be809526c448d25fb; npm gitHead 8f9a7b85da9149b6d4d0af46442ead1e71f76477.",
+    "WASM byte-identical to the public source commit; text files are CRLF-normalized copies.",
+    "L\u00d6VE 11.4.0 compatibility runtime, single-threaded; release variant retained.",
+    "mpg123 1.25.6 LGPL-2.1 is statically linked; exact source/relink in licenses/LOVE-11.4-COMPONENT-ADDENDUM.md.",
+    "OpenAL Soft and LuaJIT are named by L\u00d6VE but are not linked in this Emscripten build.",
+    "Compatibility loader includes the source-supplied MPL acknowledged-close addition; upstream bytes checked before patching.",
+    "Actual compatibility WebKit save/read across a fresh player is qualified; retained pthread runtime is not claimed iOS-ready."
+  ],
+  "pinID": "lovejs",
+  "runtimeID": "lovejs",
+  "schemaVersion": 1,
+  "version": "11.4.1"
+}

@@ -143018,6 +143018,118 @@
         }
       }
     },
+    "execution.shared.video_hardware_outputs": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hardware-accelerated outputs"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "硬件加速输出"
+          }
+        }
+      }
+    },
+    "execution.shared.video_software_outputs": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Native software outputs"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本机软件输出"
+          }
+        }
+      }
+    },
+    "execution.shared.video_allow_software": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Allow native software codecs"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "允许本机软件编解码"
+          }
+        }
+      }
+    },
+    "execution.shared.video_software_note": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Native software output is not GPU or hardware acceleration."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本机软件编解码不是 GPU 或硬件加速。"
+          }
+        }
+      }
+    },
+    "execution.shared.video_unavailable": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Video acceleration is unavailable in this session."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本次运行未启用视频加速。"
+          }
+        }
+      }
+    },
+    "execution.shared.video_failed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Could not change the video policy."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法更改视频策略。"
+          }
+        }
+      }
+    },
+    "execution.shared.video_retry": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retry"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重试"
+          }
+        }
+      }
+    },
     "execution.shared.save": {
       "localizations": {
         "en": {

@@ -1,0 +1,19 @@
+/* SPDX-License-Identifier: MPL-2.0 */
+/* FloeGameNarrativeKit microStudio shell support (MPL-2.0). */
+html, body {
+  margin: 0;
+  padding: 0;
+  background: #000;
+  overflow: hidden;
+  font-family: Verdana, sans-serif;
+}
+#canvaswrapper { text-align: center; }
+#hint {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 4px;
+  text-align: center;
+  color: #6a7a72;
+  font: 12px system-ui;
+}

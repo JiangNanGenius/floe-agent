@@ -285,6 +285,10 @@ final class EditorViewModel {
     /// The host's permanent 2D choice is separate from a 3D sketch's temporary
     /// navigation lock. Leaving a sketch cannot unlock a drafting workbench.
     private var draftingNavigationOnly = false
+    var permanentDraftingNavigationOnly: Bool { draftingNavigationOnly }
+    #if canImport(UIKit)
+    @ObservationIgnored weak var buildingDraftingOwner: CADBuildingDraftingSession?
+    #endif
     var planarNavigationOnly: Bool {
         get { draftingNavigationOnly || mode.isSketching }
         set {
@@ -14824,6 +14828,9 @@ final class EditorViewModel {
     /// The active sketch while in sketching mode.
     var activeSketch: Sketch? {
         guard case .sketching(let id, _) = mode else { return nil }
+        #if canImport(UIKit)
+        if let owner = buildingDraftingOwner, !owner.permitsEditing(id) { return nil }
+        #endif
         return session.document.sketches.first { $0.id == id }
     }
 
@@ -14939,7 +14946,22 @@ final class EditorViewModel {
     /// overlays paint these red.
     var sketchConflictAttribution = SketchSolverBridge.ConflictAttribution()
 
+    #if canImport(UIKit)
+    var hasUnfinishedBuildingDraftingInput: Bool {
+        editingDimension != nil || hasPendingRectangle || pendingArc != nil || pendingEntity != nil
+            || sketchStrokeStart != nil || sketchEntityDrag != nil || sketchGizmoDrag != nil
+            || sketchRadialDrag != nil || rectangleEdgeDrag != nil || adjustingArcBulge
+            || textPlacement != nil
+    }
+    #endif
+
     func startSketch(tool: SketchTool) {
+        #if canImport(UIKit)
+        if let owner = buildingDraftingOwner {
+            do { try owner.ensureActiveSketch() }
+            catch { errorMessage = error.localizedDescription; return }
+        }
+        #endif
         cancelSymmetryAxisPick()
         clearRectanglePlacement()
         if case .sketching(let id, _) = mode {

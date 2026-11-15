@@ -9,12 +9,14 @@
  * released with it; machine devices are built during create and destroyed
  * with it after every worker is quiet. */
 #include "embedded_internal.h"
+#include "../Source/src/devices/virtio_media_wire.h"
 #include "parallel_runtime.h"
 #include "sysreg.h"
 #include "mmu.h"
 #include "../Source/src/net/usernet.h"
 #include "net_wait.h"
 #include "virtio_gpu_backend.h"
+#include "floe_linux_video_broker.h"
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -54,6 +56,14 @@ static void free_device_config(AESession *s) {
 }
 static void dispose(AESession *s) {
     if(!s)return;
+    /* Video media devices first: their VideoToolbox callbacks hold the
+     * engine wake pipe, so destroy joins every callback before that fd is
+     * closed. The broker is independent (own host/thread/listener) but is
+     * torn down here so no native codec work outlives the machine. */
+    for(unsigned i=0;i<2;i++)if(s->machine.video[i]){
+        virtio_media_destroy(s->machine.video[i]);s->machine.video[i]=NULL;
+    }
+    if(s->machine.video_broker){flvb_destroy(s->machine.video_broker);s->machine.video_broker=NULL;}
     /* GPU teardown MUST precede the wake-pipe close. An async renderer retire
      * callback holds wake_pipe[1] and writes it from a non-coordinator thread;
      * closing the fd first would race with close/reuse by an unrelated
@@ -100,6 +110,7 @@ static int load(const char *path,unsigned char **out,u32 *length,uint64_t limit)
 }
 static uint64_t next_deadline(Machine *m) {
     if(m->gpu&&virtio_gpu_has_work(m->gpu))return 0;
+    if(virtio_media_has_work(m))return 0;
     if(fwcfg_has_work(m->fwcfg))return 0;
     for(int i=0;i<m->n_blk;i++)if(virtio_blk_has_work(m->blk[i]))return 0;
     uint64_t earliest=timer_next_event_ns(m);
@@ -195,6 +206,7 @@ static int valid_gpu(const floe_ae_gpu_config *d,AESession *s) {
 static int valid_config(const floe_ae_config *c,AESession *s) {
     if(!c||c->struct_size<sizeof(*c))return FLOE_AE_VERSION;
     if(c->abi_version>FLOE_AE_ABI_VERSION||c->abi_version<1)return FLOE_AE_VERSION;
+    if(c->abi_version==4&&c->struct_size<sizeof(floe_ae_config_v4))return FLOE_AE_VERSION;
     if(c->requested_vcpus<1||c->requested_vcpus>A64_MAX_CPUS)return FLOE_AE_UNSUPPORTED;
     if(!c->firmware_path||c->ram_mib<16||c->ram_mib>1024)return FLOE_AE_INVALID;
     if(c->initrd_path&&!c->kernel_path)return FLOE_AE_INVALID;
@@ -217,7 +229,19 @@ static int valid_config(const floe_ae_config *c,AESession *s) {
     }
     if(c->struct_size==FLOE_AE_CONFIG_V3_MEMORY_SIZE)return 0;
     if(c->struct_size<sizeof(*c3))return FLOE_AE_VERSION;
-    return valid_gpu(&c3->gpu,s);
+    error=valid_gpu(&c3->gpu,s);if(error||c->abi_version==3)return error;
+    const floe_ae_video_config *video=&((const floe_ae_config_v4 *)c)->video;
+    if(video->enabled>1||video->max_sessions_per_node>4)return FLOE_AE_INVALID;
+    if(video->reserved)return FLOE_AE_UNSUPPORTED;
+    for(unsigned i=0;i<4;i++)if(video->reserved_tail[i])return FLOE_AE_UNSUPPORTED;
+    if(video->struct_size&&video->struct_size<sizeof(*video))return FLOE_AE_VERSION;
+    if(video->enabled){
+        if(video->struct_size<sizeof(*video))return FLOE_AE_VERSION;
+        uint64_t limit=video->max_host_owned_bytes_per_node;
+        if(limit&&(limit<(UINT64_C(16)<<20)||limit>(UINT64_C(512)<<20)))return FLOE_AE_INVALID;
+        s->video_enabled=1;s->video_max_sessions=video->max_sessions_per_node;s->video_host_owned_limit=limit;
+    }
+    return 0;
 }
 int floe_ae_create(const floe_ae_config *c,floe_ae_handle *handle) {
     if(!handle)return FLOE_AE_INVALID;*handle=0;
@@ -282,6 +306,10 @@ int floe_ae_create(const floe_ae_config *c,floe_ae_handle *handle) {
      * a GPU fence is woken without a polling timer. Set before platform_build
      * creates the device. */
     s->machine.gpu_wake_fd=s->wake_pipe_ready?s->wake_pipe[1]:-1;
+    s->machine.video_wake_fd=s->wake_pipe_ready?s->wake_pipe[1]:-1;
+    s->machine.video_enabled=s->video_enabled!=0;
+    s->machine.video_max_sessions=s->video_max_sessions;
+    s->machine.video_host_owned_limit=s->video_host_owned_limit;
     if(s->gpu_requested) {
         char message[512]={0};
         s->machine.gpu_backend=floe_virtual_gpu_backend_create_in_app_group(s->gpu_app_group,message,sizeof(message));
@@ -295,6 +323,26 @@ int floe_ae_create(const floe_ae_config *c,floe_ae_handle *handle) {
             s->machine.gpu_enabled=true;
             s->machine.gpu_budget_bytes=s->gpu_budget_bytes;
         }
+    }
+    if(s->video_enabled) {
+        /* The broker binds a loopback-only port and generates a discovery
+         * token. The guest learns both through the standard V4L2 QUERYCAP
+         * bus_info; no host filesystem path or new NAT rule is added. */
+        FLVBrokerConfig broker_config;
+        memset(&broker_config,0,sizeof(broker_config));
+        broker_config.abi_version=FLVB_ABI_VERSION;
+        broker_config.max_sessions=s->video_max_sessions?s->video_max_sessions:4;
+        broker_config.max_inflight=8;
+        broker_config.max_packet_bytes=16u*1024u*1024u;
+        broker_config.max_frame_bytes=64u*1024u*1024u;
+        broker_config.max_owned_bytes=s->video_host_owned_limit;
+        broker_config.port=0;
+        uint16_t broker_port=0;uint64_t broker_token=0;
+        int broker_status=flvb_create(&broker_config,&broker_port,&broker_token,
+                                      &s->machine.video_broker);
+        if(broker_status!=FLV_OK){error=FLOE_AE_UNSUPPORTED;goto finished;}
+        s->machine.video_broker_port=broker_port;
+        s->machine.video_broker_token=broker_token;
     }
     if(machine_configure_cpus(&s->machine,c->requested_vcpus)){error=FLOE_AE_UNSUPPORTED;goto finished;}
     s->endpoint.owner=s;s->endpoint.channel=0;
@@ -354,7 +402,8 @@ int floe_ae_run_slice(floe_ae_handle h,uint64_t max_ns,uint64_t max_insn,floe_ae
     if(!saved||fesetenv(FE_DFL_ENV)){error=FLOE_AE_FAULT;goto complete;}
     const AEParallelCallbacks callbacks={pd_step,machine_tick,fwcfg_service,virtio_blk_service,fpsr_sync,
                                          virtio_gpu_has_work,virtio_gpu_service,
-                                         virtio_gpu_quiesce_requested,virtio_gpu_quiesce_drain};
+                                         virtio_gpu_quiesce_requested,virtio_gpu_quiesce_drain,
+                                         virtio_media_has_work,virtio_media_service};
     AEParallelResult result=ae_parallel_run(s,max_ns,max_insn,&callbacks);
     executed=result.instructions;reset_delta=result.resets;observed_sequence=result.observed_sequence;
     reason=result.reason;error=result.error;
@@ -688,6 +737,106 @@ int floe_ae_gpu_get_info(floe_ae_handle h,floe_ae_gpu_info *out) {
         out->pending=info.pending_target!=0;
         out->clamped=out->target_bytes!=out->requested_bytes;
         out->needs_reset=info.needs_reset;
+    }
+    unlock(s);return 0;
+}
+
+/* ---- ABI4 app-owned video service ---------------------------------------
+ *
+ * These are snapshots/mutations of the two standard virtio-media nodes and
+ * the additive typed broker. They are safe between slices only, matching the
+ * existing GPU/memory operations: a running slice or a parked waiter can see
+ * a torn queue otherwise, so both return BUSY and the Swift owner retries at
+ * the next quiescent point. They never relax a live stream's negotiated
+ * backend: the policy change requires no live session on any path.
+ */
+static uint32_t video_native_mask(Machine *m,VirtIOMediaStats *media,FLVBrokerStats *broker) {
+    uint32_t mask=media?media->native_software_mask:0;
+    if(broker)mask|=broker->native_software_mask;
+    return mask;
+}
+static void video_collect(Machine *m,VirtIOMediaStats *media,FLVBrokerStats *broker) {
+    memset(media,0,sizeof(*media));
+    memset(broker,0,sizeof(*broker));
+    virtio_media_get_stats(m,media);
+    if(m->video_broker) {
+        FLVBrokerStats local;
+        if(flvb_get_stats(m->video_broker,&local)==FLV_OK)*broker=local;
+    }
+}
+int floe_ae_video_get_info(floe_ae_handle h,floe_ae_video_info *out) {
+    if(!out||out->struct_size<sizeof(*out))return FLOE_AE_INVALID;
+    AESession *s=locked(h);if(!s)return FLOE_AE_STALE;
+    if(s->active||s->waiters){unlock(s);return FLOE_AE_BUSY;}
+    VirtIOMediaStats media;FLVBrokerStats broker;
+    video_collect(&s->machine,&media,&broker);
+    memset(out,0,sizeof(*out));out->struct_size=sizeof(*out);
+    out->nodes=media.nodes;
+    out->native_sessions=media.sessions+broker.sessions;
+    out->inflight=media.inflight+broker.inflight;
+    out->queued_outputs=media.queued_outputs+broker.queued_outputs;
+    out->owned_mmap_bytes=media.owned_mmap_bytes;
+    out->host_owned_bytes=media.host_owned_bytes+broker.host_owned_bytes;
+    out->host_peak_bytes=media.host_peak_bytes+broker.host_peak_bytes;
+    out->submitted=media.submitted+broker.submitted;
+    out->hardware_outputs=media.hardware_outputs+broker.hardware_outputs;
+    out->errors=media.errors+broker.errors;
+    unlock(s);return 0;
+}
+int floe_ae_video_get_backend_info(floe_ae_handle h,floe_ae_video_backend_info *out) {
+    if(!out||out->struct_size<sizeof(*out))return FLOE_AE_INVALID;
+    AESession *s=locked(h);if(!s)return FLOE_AE_STALE;
+    if(s->active||s->waiters){unlock(s);return FLOE_AE_BUSY;}
+    VirtIOMediaStats media;FLVBrokerStats broker;
+    video_collect(&s->machine,&media,&broker);
+    memset(out,0,sizeof(*out));out->struct_size=sizeof(*out);
+    out->nodes=media.nodes;
+    out->native_software_enabled=(media.native_software_enabled||broker.native_software_enabled)?1u:0u;
+    uint32_t mask=video_native_mask(&s->machine,&media,&broker);
+    out->native_software_formats=(uint32_t)__builtin_popcount(mask);
+    out->hardware_outputs=media.hardware_outputs+broker.hardware_outputs;
+    out->native_software_outputs=media.native_software_outputs+broker.native_software_outputs;
+    unlock(s);return 0;
+}
+int floe_ae_video_set_native_software(floe_ae_handle h,uint32_t enabled) {
+    if(enabled>1)return FLOE_AE_INVALID;
+    AESession *s=locked(h);if(!s)return FLOE_AE_STALE;
+    if(s->active||s->waiters){unlock(s);return FLOE_AE_BUSY;}
+    if(!s->machine.video_enabled){unlock(s);return FLOE_AE_UNSUPPORTED;}
+    /* Capture both current policies before any check or mutation. This is
+     * the exact state restored if a later step fails: never an inverted
+     * request bit, which would corrupt a no-op or a raced change. */
+    VirtIOMediaStats before_media;FLVBrokerStats before_broker;
+    video_collect(&s->machine,&before_media,&before_broker);
+    uint32_t previous_node=before_media.native_software_enabled?1u:0u;
+    uint32_t previous_broker=before_broker.native_software_enabled?1u:0u;
+    /* Same-policy is idempotent even with live sessions: no stream's
+     * negotiated backend changes. Both paths are already at the request. */
+    if(previous_node==enabled&&(!s->machine.video_broker||previous_broker==enabled)){
+        unlock(s);return 0;
+    }
+    /* A genuine change needs both paths quiescent. Check the broker first;
+     * V4L2 sessions cannot open while this between-slices lock is held, but
+     * a broker client can race the node update. */
+    uint32_t broker_live=0;
+    if(s->machine.video_broker){
+        if(flvb_has_live_session(s->machine.video_broker,&broker_live)!=FLV_OK){unlock(s);return FLOE_AE_FAULT;}
+        if(broker_live){unlock(s);return FLOE_AE_BUSY;}
+    }
+    int status=virtio_media_set_native_software(&s->machine,enabled!=0);
+    if(status){unlock(s);return status==VMED_EBUSY?FLOE_AE_BUSY:FLOE_AE_FAULT;}
+    if(s->machine.video_broker){
+        int broker_status=flvb_set_native_software(s->machine.video_broker,enabled);
+        if(broker_status!=FLV_OK){
+            /* A broker admission won the race after the precheck. Restore
+             * the exact captured node policy (which may already have been
+             * the requested value), then ensure the broker is unchanged. */
+            if(previous_node!=enabled)
+                (void)virtio_media_set_native_software(&s->machine,previous_node);
+            if(previous_broker!=enabled)
+                (void)flvb_set_native_software(s->machine.video_broker,previous_broker);
+            unlock(s);return broker_status==FLV_AGAIN?FLOE_AE_BUSY:FLOE_AE_FAULT;
+        }
     }
     unlock(s);return 0;
 }

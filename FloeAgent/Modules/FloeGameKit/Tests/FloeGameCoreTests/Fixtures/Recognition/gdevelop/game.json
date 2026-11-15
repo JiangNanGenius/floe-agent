@@ -1,0 +1,7 @@
+{
+  "firstLayout": "Main",
+  "gdVersion": {"major": 5, "minor": 6, "revision": 0, "build": 287},
+  "properties": {"name": "Native GDevelop fixture"},
+  "resources": {"resources": []},
+  "layouts": [{"name": "Main", "objects": [], "instances": [], "events": []}]
+}

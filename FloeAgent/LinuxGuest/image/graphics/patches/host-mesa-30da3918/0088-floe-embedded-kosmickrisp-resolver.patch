@@ -1,0 +1,71 @@
+diff --git a/src/kosmickrisp/vulkan/meson.build b/src/kosmickrisp/vulkan/meson.build
+--- a/src/kosmickrisp/vulkan/meson.build
++++ b/src/kosmickrisp/vulkan/meson.build
+@@ -121,6 +121,10 @@
+   'kk_wsi.c',
+ )
+ 
++if get_option('floe-kk-embedded')
++  kk_files += files('floe_kk_resolver.c')
++endif
++
+ kk_entrypoints = custom_target(
+   'kk_entrypoints',
+   input : [vk_entrypoints_gen, vk_api_xml],
+@@ -162,7 +166,7 @@
+     inc_src,
+   ],
+   dependencies : [kk_deps],
+-  c_args : get_option('floe-kk-embedded') ? ['-DFLOE_KK_HEADLESS_COMPONENT=1'] : [],
++  c_args : get_option('floe-kk-embedded') ? ['-DFLOE_KK_HEADLESS_COMPONENT=1', '-DFLOE_KK_ONLY_STATIC_BACKEND=1'] : [],
+   gnu_symbol_visibility : 'hidden',
+ )
+ 
+diff --git a/src/kosmickrisp/vulkan/floe_kk_resolver.c b/src/kosmickrisp/vulkan/floe_kk_resolver.c
+new file mode 100644
+--- /dev/null
++++ b/src/kosmickrisp/vulkan/floe_kk_resolver.c
+@@ -0,0 +1,25 @@
++/* SPDX-License-Identifier: Apache-2.0 */
++#include "floe_kk_resolver.h"
++
++#if !defined(FLOE_KK_ONLY_STATIC_BACKEND) || !FLOE_KK_ONLY_STATIC_BACKEND
++#error "Compile this resolver only in the separately selected KK static component"
++#endif
++
++/* The pinned Mesa implementation exports this ICD entry point and uses its
++ * instance/physical-device/device trampolines to resolve the real dispatch. */
++extern VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
++vk_icdGetInstanceProcAddr(VkInstance instance, const char *name);
++
++VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
++FloeKKGetInstanceProcAddr(VkInstance instance, const char *name)
++{
++    return name ? vk_icdGetInstanceProcAddr(instance, name) : NULL;
++}
++
++/* The existing statically built Venus renderer needs this one symbol.
++ * FVGPU identity queries must also use the paired dispatch-source delta. */
++VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
++vkGetInstanceProcAddr(VkInstance instance, const char *name)
++{
++    return FloeKKGetInstanceProcAddr(instance, name);
++}
+diff --git a/src/kosmickrisp/vulkan/floe_kk_resolver.h b/src/kosmickrisp/vulkan/floe_kk_resolver.h
+new file mode 100644
+--- /dev/null
++++ b/src/kosmickrisp/vulkan/floe_kk_resolver.h
+@@ -0,0 +1,13 @@
++/* SPDX-License-Identifier: Apache-2.0 */
++#pragma once
++#include <vulkan/vulkan.h>
++#ifdef __cplusplus
++extern "C" {
++#endif
++/* A distinct, statically selected provider. Do not link a MoltenVK archive into
++ * this variant. Guest applications retain their ordinary Venus Vulkan API. */
++VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
++FloeKKGetInstanceProcAddr(VkInstance instance, const char *name);
++#ifdef __cplusplus
++}
++#endif

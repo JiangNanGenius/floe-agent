@@ -1,0 +1,31 @@
+From 36a6a8373693a57af37390385f886046df84ce94 Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Sat, 3 Oct 2026 20:18:51 -0400
+Subject: [PATCH 75/75] zink: Lower mediump to 16 bits only in fragment shaders
+
+Generated-by: LLM
+---
+ src/gallium/drivers/zink/zink_screen.c | 7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/src/gallium/drivers/zink/zink_screen.c b/src/gallium/drivers/zink/zink_screen.c
+index 7aa0e066d60..e7e4cdd219e 100644
+--- a/src/gallium/drivers/zink/zink_screen.c
++++ b/src/gallium/drivers/zink/zink_screen.c
+@@ -629,9 +629,10 @@ zink_init_shader_caps(struct zink_screen *screen)
+       caps->fp16_derivatives = false;
+ 
+       caps->fp16 =
+-         screen->info.feats12.shaderFloat16 ||
+-         (screen->info.have_KHR_shader_float16_int8 &&
+-          screen->info.shader_float16_int8_feats.shaderFloat16);
++         i == MESA_SHADER_FRAGMENT &&
++         (screen->info.feats12.shaderFloat16 ||
++          (screen->info.have_KHR_shader_float16_int8 &&
++           screen->info.shader_float16_int8_feats.shaderFloat16));
+       caps->fp16_no_denorms = caps->fp16 && !screen->info.props12.shaderDenormPreserveFloat16
+          && screen->info.props12.shaderDenormFlushToZeroFloat16;
+       caps->glsl_16bit_load_dst = true;
+-- 
+2.54.0 (Apple Git-157)
+

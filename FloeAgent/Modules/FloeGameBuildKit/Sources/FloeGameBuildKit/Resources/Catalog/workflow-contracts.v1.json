@@ -1,0 +1,467 @@
+{
+  "schemaVersion": 1,
+  "contracts": [
+    {
+      "id": "floe-game-build-unity",
+      "requiredSecrets": [
+        "UNITY_LICENSE",
+        "UNITY_EMAIL",
+        "UNITY_PASSWORD",
+        "FLOE_SOURCE_TOKEN"
+      ],
+      "expectedArtifacts": [
+        "unity-ios-xcodeproj.zip",
+        "unity-macos.zip",
+        "unity-web.zip",
+        "unity-windows.zip"
+      ],
+      "provenanceArtifact": "floe-build-provenance",
+      "runnerPrerequisites": [
+        "ubuntu-latest",
+        "macos-latest",
+        "licensed Unity editor"
+      ],
+      "inputs": [
+        "source_transport",
+        "source_sha256",
+        "source_revision",
+        "game_root",
+        "selected_source_sha256",
+        "source_commit",
+        "source_run_id",
+        "source_artifact_name",
+        "source_repository",
+        "engine",
+        "engine_version",
+        "artifact_prefix",
+        "targets",
+        "build_android"
+      ],
+      "engineSecrets": [
+        "UNITY_LICENSE",
+        "UNITY_EMAIL",
+        "UNITY_PASSWORD"
+      ],
+      "transportSecrets": [
+        "FLOE_SOURCE_TOKEN"
+      ],
+      "documentation": [
+        "https://docs.unity3d.com/2022.3/Documentation/Manual/CommandLineArguments.html",
+        "https://game.ci/docs/github/builder"
+      ],
+      "sourceTransports": [
+        "repositorySnapshot",
+        "existingArtifact"
+      ],
+      "targets": [
+        {
+          "artifacts": [
+            "unity-web.zip"
+          ],
+          "default": true,
+          "id": "web",
+          "job": "web",
+          "label": "WebGL"
+        },
+        {
+          "artifacts": [
+            "unity-windows.zip"
+          ],
+          "default": true,
+          "id": "windows",
+          "job": "windows",
+          "label": "Windows desktop"
+        },
+        {
+          "artifacts": [
+            "unity-macos.zip"
+          ],
+          "default": true,
+          "id": "macos",
+          "job": "macos",
+          "label": "macOS desktop"
+        },
+        {
+          "artifacts": [
+            "unity-ios-xcodeproj.zip"
+          ],
+          "default": true,
+          "id": "ios",
+          "job": "ios",
+          "label": "iOS Xcode project"
+        }
+      ]
+    },
+    {
+      "id": "floe-game-build-godot",
+      "requiredSecrets": [
+        "FLOE_SOURCE_TOKEN"
+      ],
+      "expectedArtifacts": [
+        "godot-linux.zip",
+        "godot-web.zip",
+        "godot-windows.zip"
+      ],
+      "provenanceArtifact": "floe-build-provenance",
+      "runnerPrerequisites": [
+        "ubuntu-latest",
+        "barichello/godot-ci:4.2",
+        "matching export templates"
+      ],
+      "inputs": [
+        "source_transport",
+        "source_sha256",
+        "source_revision",
+        "game_root",
+        "selected_source_sha256",
+        "source_commit",
+        "source_run_id",
+        "source_artifact_name",
+        "source_repository",
+        "engine",
+        "engine_version",
+        "artifact_prefix",
+        "targets"
+      ],
+      "engineSecrets": [],
+      "transportSecrets": [
+        "FLOE_SOURCE_TOKEN"
+      ],
+      "documentation": [
+        "https://docs.godotengine.org/en/stable/tutorials/export/exporting_projects.html"
+      ],
+      "sourceTransports": [
+        "repositorySnapshot",
+        "existingArtifact"
+      ],
+      "targets": [
+        {
+          "artifacts": [
+            "godot-web.zip"
+          ],
+          "default": true,
+          "id": "web",
+          "job": "web",
+          "label": "Web"
+        },
+        {
+          "artifacts": [
+            "godot-windows.zip"
+          ],
+          "default": true,
+          "id": "windows",
+          "job": "windows",
+          "label": "Windows desktop"
+        },
+        {
+          "artifacts": [
+            "godot-linux.zip"
+          ],
+          "default": true,
+          "id": "linux",
+          "job": "linux",
+          "label": "Linux desktop"
+        }
+      ]
+    },
+    {
+      "id": "floe-game-build-cocos",
+      "requiredSecrets": [
+        "FLOE_SOURCE_TOKEN"
+      ],
+      "expectedArtifacts": [
+        "cocos-android-project.zip",
+        "cocos-android.apk",
+        "cocos-web.zip"
+      ],
+      "provenanceArtifact": "floe-build-provenance",
+      "runnerPrerequisites": [
+        "GUI-capable macOS runner (macos-latest or a prepared self-hosted-macos runner)",
+        "official Cocos Creator 3.8.x editor installed or an explicit pinned SDK artifact",
+        "Android SDK/NDK configured only for the android target"
+      ],
+      "inputs": [
+        "source_transport",
+        "source_sha256",
+        "source_revision",
+        "game_root",
+        "selected_source_sha256",
+        "source_commit",
+        "source_run_id",
+        "source_artifact_name",
+        "source_repository",
+        "engine",
+        "engine_version",
+        "artifact_prefix",
+        "targets",
+        "build_android",
+        "cocos_creator_path",
+        "cocos_runner",
+        "cocos_sdk_mode",
+        "cocos_sdk_run_id",
+        "cocos_sdk_artifact_name",
+        "cocos_sdk_sha256",
+        "cocos_sdk_repository"
+      ],
+      "engineSecrets": [],
+      "transportSecrets": [
+        "FLOE_SOURCE_TOKEN"
+      ],
+      "documentation": [
+        "https://docs.cocos.com/creator/3.8/manual/en/editor/publish/publish-in-command-line.html",
+        "https://docs.cocos.com/creator/3.8/manual/en/getting-started/install/index.html",
+        "https://docs.cocos.com/creator/3.8/manual/en/editor/publish/native-options.html"
+      ],
+      "sourceTransports": [
+        "repositorySnapshot",
+        "existingArtifact"
+      ],
+      "targets": [
+        {
+          "artifacts": [
+            "cocos-web.zip"
+          ],
+          "default": true,
+          "id": "web",
+          "job": "web",
+          "label": "Web Mobile"
+        },
+        {
+          "artifacts": [
+            "cocos-android-project.zip",
+            "cocos-android.apk"
+          ],
+          "default": true,
+          "id": "android",
+          "job": "android",
+          "label": "Android native project and APK"
+        }
+      ]
+    },
+    {
+      "id": "floe-game-build-script-web",
+      "requiredSecrets": [
+        "FLOE_SOURCE_TOKEN"
+      ],
+      "expectedArtifacts": [
+        "{{FLOE_ARTIFACT_PREFIX}}-web.zip"
+      ],
+      "provenanceArtifact": "floe-build-provenance",
+      "runnerPrerequisites": [
+        "ubuntu-latest",
+        "optional Node/npm"
+      ],
+      "inputs": [
+        "source_transport",
+        "source_sha256",
+        "source_revision",
+        "game_root",
+        "selected_source_sha256",
+        "source_commit",
+        "source_run_id",
+        "source_artifact_name",
+        "source_repository",
+        "engine",
+        "engine_version",
+        "artifact_prefix",
+        "targets"
+      ],
+      "engineSecrets": [],
+      "transportSecrets": [
+        "FLOE_SOURCE_TOKEN"
+      ],
+      "documentation": [
+        "https://docs.npmjs.com/cli/v10/commands/npm-ci"
+      ],
+      "sourceTransports": [
+        "repositorySnapshot",
+        "existingArtifact"
+      ],
+      "targets": [
+        {
+          "artifacts": [
+            "{{FLOE_ARTIFACT_PREFIX}}-web.zip"
+          ],
+          "default": true,
+          "id": "web",
+          "job": "build",
+          "label": "Static Web bundle"
+        }
+      ]
+    },
+    {
+      "id": "floe-game-build-wasm4",
+      "requiredSecrets": [
+        "FLOE_SOURCE_TOKEN"
+      ],
+      "expectedArtifacts": [
+        "wasm4-linux",
+        "wasm4-macos",
+        "wasm4-web.zip",
+        "wasm4-windows.exe"
+      ],
+      "provenanceArtifact": "floe-build-provenance",
+      "runnerPrerequisites": [
+        "ubuntu-latest",
+        "w4 CLI"
+      ],
+      "inputs": [
+        "source_transport",
+        "source_sha256",
+        "source_revision",
+        "game_root",
+        "selected_source_sha256",
+        "source_commit",
+        "source_run_id",
+        "source_artifact_name",
+        "source_repository",
+        "engine",
+        "engine_version",
+        "artifact_prefix",
+        "targets"
+      ],
+      "engineSecrets": [],
+      "transportSecrets": [
+        "FLOE_SOURCE_TOKEN"
+      ],
+      "documentation": [
+        "https://wasm4.org/docs/reference/cli/",
+        "https://wasm4.org/docs/guides/distribution/"
+      ],
+      "sourceTransports": [
+        "repositorySnapshot",
+        "existingArtifact"
+      ],
+      "targets": [
+        {
+          "artifacts": [
+            "wasm4-web.zip"
+          ],
+          "default": true,
+          "id": "web",
+          "job": "web",
+          "label": "HTML player"
+        },
+        {
+          "artifacts": [
+            "wasm4-windows.exe",
+            "wasm4-macos",
+            "wasm4-linux"
+          ],
+          "default": true,
+          "id": "native",
+          "job": "native",
+          "label": "Documented native executables"
+        }
+      ]
+    },
+    {
+      "id": "floe-game-build-gdevelop",
+      "requiredSecrets": [
+        "FLOE_SOURCE_TOKEN"
+      ],
+      "expectedArtifacts": [
+        "gdevelop-web.zip"
+      ],
+      "provenanceArtifact": "floe-build-provenance",
+      "runnerPrerequisites": [
+        "ubuntu-latest",
+        "python3",
+        "official GDevelop 5.6.287 Linux SDK",
+        "Floe exporter helper artifact"
+      ],
+      "inputs": [
+        "source_transport",
+        "source_sha256",
+        "source_revision",
+        "game_root",
+        "selected_source_sha256",
+        "source_commit",
+        "source_run_id",
+        "source_artifact_name",
+        "source_repository",
+        "engine",
+        "engine_version",
+        "artifact_prefix",
+        "targets",
+        "helper_run_id",
+        "helper_artifact_name"
+      ],
+      "engineSecrets": [],
+      "transportSecrets": [
+        "FLOE_SOURCE_TOKEN"
+      ],
+      "documentation": [
+        "https://github.com/4ian/GDevelop/releases/tag/v5.6.287"
+      ],
+      "sourceTransports": [
+        "repositorySnapshot",
+        "existingArtifact"
+      ],
+      "targets": [
+        {
+          "artifacts": [
+            "gdevelop-web.zip"
+          ],
+          "default": true,
+          "id": "web",
+          "job": "linux-sdk-export",
+          "label": "Web export"
+        }
+      ]
+    },
+    {
+      "id": "floe-game-build-rpg-maker",
+      "requiredSecrets": [
+        "FLOE_SOURCE_TOKEN"
+      ],
+      "expectedArtifacts": [
+        "rpgmaker-editor-export.zip"
+      ],
+      "provenanceArtifact": "floe-build-provenance",
+      "runnerPrerequisites": [
+        "ubuntu-latest",
+        "user-licensed editor export artifact"
+      ],
+      "inputs": [
+        "source_transport",
+        "source_sha256",
+        "source_revision",
+        "game_root",
+        "selected_source_sha256",
+        "source_commit",
+        "source_run_id",
+        "source_artifact_name",
+        "source_repository",
+        "engine",
+        "engine_version",
+        "artifact_prefix",
+        "targets",
+        "editor_run_id",
+        "editor_artifact_name"
+      ],
+      "engineSecrets": [],
+      "transportSecrets": [
+        "FLOE_SOURCE_TOKEN"
+      ],
+      "documentation": [
+        "https://www.rpgmakerweb.com/"
+      ],
+      "sourceTransports": [
+        "repositorySnapshot",
+        "existingArtifact"
+      ],
+      "targets": [
+        {
+          "artifacts": [
+            "rpgmaker-editor-export.zip"
+          ],
+          "default": true,
+          "id": "editor-export",
+          "job": "package-editor-export",
+          "label": "Verified user editor export"
+        }
+      ]
+    }
+  ]
+}

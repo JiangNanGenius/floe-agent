@@ -13,7 +13,7 @@ final class LocalTerminalStore {
     func owner(workspaceID: UUID, root: URL, conversationID: UUID? = nil) -> LocalTerminalOwner {
         let key = workspaceID.uuidString + ":" + (conversationID?.uuidString ?? "project")
         if let owner = owners[key], owner.root == root { return owner }
-        if let previous = owners[key] { Task { await previous.close() } }
+        if let previous = owners[key] { Task { await previous.closeAllOwnedSessions() } }
         let owner = LocalTerminalOwner(root: root, sessions: sessions, conversationID: conversationID)
         owners[key] = owner
         return owner
@@ -68,6 +68,7 @@ struct TerminalPollCadence: Sendable {
 final class LocalTerminalOwner: Identifiable {
     let id = UUID()
     let root: URL
+    let acceleration: LocalLinuxAccelerationOwner
     private let conversationID: UUID?
     private let sessions: ShellSessionCenter
     private(set) var sessionID: String?
@@ -93,6 +94,15 @@ final class LocalTerminalOwner: Identifiable {
 
     init(root: URL, sessions: ShellSessionCenter, conversationID: UUID? = nil) {
         self.root = root; self.sessions = sessions; self.conversationID = conversationID
+        self.acceleration = LocalLinuxAccelerationOwner(root: root, sessions: sessions, conversationID: conversationID)
+    }
+
+    /// Store eviction releases this owner's sessions, including launches
+    /// still crossing open. Ordinary terminal close remains terminal-only.
+    func closeAllOwnedSessions() async {
+        acceleration.cancelQuery()
+        await acceleration.stopBlender()
+        await close()
     }
 
     func open() async {
@@ -372,8 +382,15 @@ struct LocalTerminalView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var installModel: LinuxImageInstallModel?
     @State private var expanded = false
-    @State private var showingPorts = false
-    @State private var showingDisplay = false
+    private enum Panel: Identifiable {
+        case ports
+        case display(LocalLinuxDisplayOwner)
+        case acceleration(LocalLinuxDisplayOwner)
+        var id: String {
+            switch self { case .ports: "ports"; case .display: "display"; case .acceleration: "acceleration" }
+        }
+    }
+    @State private var panel: Panel?
 
     var body: some View {
         if embedded {
@@ -415,7 +432,7 @@ struct LocalTerminalView: View {
                 Text(owner.status).font(.caption).lineLimit(1)
                 Spacer(minLength: 8)
                 if let display, display.screenEntryAvailable {
-                    Button { showingDisplay = true } label: {
+                    Button { panel = .display(display) } label: {
                         Image(systemName: "display")
                             .frame(width: 44, height: 44)
                     }
@@ -423,8 +440,15 @@ struct LocalTerminalView: View {
                     .disabled(display.state == .stopping)
                     .accessibilityLabel(IDELanguageRunText.t("屏幕", "Screen"))
                     .accessibilityIdentifier("terminal.display")
+                    Button { panel = .acceleration(display) } label: {
+                        Image(systemName: "cpu")
+                            .frame(width: 44, height: 44)
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel(IDELanguageRunText.t("图形与加速", "Graphics and acceleration"))
+                    .accessibilityIdentifier("terminal.acceleration")
                 }
-                Button("portforward.title", systemImage: "network") { showingPorts = true }
+                Button("portforward.title", systemImage: "network") { panel = .ports }
                     .labelStyle(.iconOnly)
                     .frame(width: 44, height: 44)
                     .accessibilityIdentifier("terminal.ports")
@@ -479,11 +503,14 @@ struct LocalTerminalView: View {
                     .padding()
             }
         }
-        .sheet(isPresented: $showingPorts) { NavigationStack { LinuxPortManagementView() } }
-        .sheet(isPresented: $showingDisplay) {
-            if let display {
+        .sheet(item: $panel) { destination in
+            switch destination {
+            case .ports: NavigationStack { LinuxPortManagementView() }
+            case .display(let display):
                 LocalLinuxDisplayView(owner: display)
                     .accessibilityIdentifier("terminal.display.sheet")
+            case .acceleration(let display):
+                LocalLinuxAccelerationView(owner: owner.acceleration, display: display)
             }
         }
         .task(id: display?.environmentID) {

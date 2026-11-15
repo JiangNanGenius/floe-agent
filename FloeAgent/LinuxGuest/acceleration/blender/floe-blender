@@ -1,0 +1,44 @@
+#!/bin/sh
+# floe-blender — Linux-guest Blender workbench entry point.
+#
+# SPDX-License-Identifier: MPL-2.0
+#
+# Installed by the Floe Linux image at /usr/local/bin/floe-blender with the
+# implementation at /usr/local/lib/floe/blender/.  This launcher only starts
+# the local Python CLI; that CLI executes the Blender binary installed inside
+# the Linux guest.  There is no native macOS fallback and no X server start.
+
+set -u
+
+self_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 2
+
+module=""
+if [ -n "${FLOE_BLENDER_LIB:-}" ]; then
+    module="$FLOE_BLENDER_LIB/floe_blender.py"
+fi
+if [ -z "$module" ] || [ ! -f "$module" ]; then
+    if [ -f "$self_dir/floe_blender.py" ]; then
+        module="$self_dir/floe_blender.py"
+    elif [ -f "/usr/local/lib/floe/blender/floe_blender.py" ]; then
+        module="/usr/local/lib/floe/blender/floe_blender.py"
+    fi
+fi
+if [ -z "$module" ] || [ ! -f "$module" ]; then
+    echo "floe-blender: implementation is missing (floe_blender.py)." >&2
+    echo "floe-blender: install the acceleration/blender files or set FLOE_BLENDER_LIB." >&2
+    exit 2
+fi
+
+python=""
+for candidate in python3 /usr/bin/python3 /usr/local/bin/python3; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+        python=$(command -v "$candidate")
+        break
+    fi
+done
+if [ -z "$python" ]; then
+    echo "floe-blender: python3 is not installed in this Linux environment." >&2
+    exit 127
+fi
+
+exec "$python" -I "$module" "$@"

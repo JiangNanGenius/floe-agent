@@ -1,0 +1,40 @@
+From 576da259d60b7056c6da1ff25131cccec03b540e Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Sat, 3 Oct 2026 02:19:05 -0400
+Subject: [PATCH] zink: Only expose sparse textures when the driver has sparse
+ 3D images
+
+Generated-by: LLM
+---
+ src/gallium/drivers/zink/zink_screen.c | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/zink/zink_screen.c b/src/gallium/drivers/zink/zink_screen.c
+index 8e92a9d2e8e..7aa0e066d60 100644
+--- a/src/gallium/drivers/zink/zink_screen.c
++++ b/src/gallium/drivers/zink/zink_screen.c
+@@ -1112,7 +1112,8 @@ zink_init_screen_caps(struct zink_screen *screen)
+ 
+    /* Sparse texture */
+    caps->max_sparse_texture_size =
+-      screen->info.feats.features.sparseResidencyImage2D ?
++      screen->info.feats.features.sparseResidencyImage2D &&
++      screen->info.feats.features.sparseResidencyImage3D ?
+       caps->max_texture_2d_size : 0;
+    caps->max_sparse_3d_texture_size =
+       screen->info.feats.features.sparseResidencyImage3D ?
+@@ -1123,9 +1124,11 @@ zink_init_screen_caps(struct zink_screen *screen)
+    caps->sparse_texture_full_array_cube_mipmaps =
+       screen->info.feats.features.sparseResidencyImage2D;
+    caps->query_sparse_texture_residency =
++      caps->max_sparse_texture_size &&
+       screen->info.feats.features.sparseResidency2Samples &&
+       screen->info.feats.features.shaderResourceResidency;
+    caps->clamp_sparse_texture_lod =
++      caps->max_sparse_texture_size &&
+       screen->info.feats.features.shaderResourceMinLod &&
+       screen->info.feats.features.sparseResidency2Samples &&
+       screen->info.feats.features.shaderResourceResidency;
+-- 
+2.54.0 (Apple Git-157)
+

@@ -1,0 +1,61 @@
+{
+  "schema": "floe.floegpu.next-source-selection.v1",
+  "status": "SOURCE_SELECTED_BINARY_UNCHANGED",
+  "purpose": "Record newer reviewed upstream selections for a later native rebuild without changing the shipped xcframework bytes, PROVENANCE.json or any App consumer.",
+  "shippedBinary": {
+    "reference": "PROVENANCE.json",
+    "renderer": "utmapp/virglrenderer b6c4d36e12409fa92eeef4d40322c75292f10bb9 + 0001-floe-vkr-accounting.patch",
+    "metal": "MoltenVK 1.4.2 source commit db66022459ffb663aa2b50f6b018bc2e124f5edf",
+    "state": "unchanged; this file does not authorize replacing it"
+  },
+  "nextMoltenVKRebase": {
+    "status": "SOURCE_ONLY_NATIVE_BUILD_UNRUN",
+    "pins": {
+      "MoltenVK": "b5680e33d7dca891667adea0b4c35ffe905d1a66",
+      "SPIRV-Cross": "84173e8d2ba913b65276062d90e8c19dcbc0136d"
+    },
+    "publicSources": [
+      {"repository": "https://github.com/KhronosGroup/MoltenVK", "commit": "b5680e33d7dca891667adea0b4c35ffe905d1a66", "license": "Apache-2.0"},
+      {"repository": "https://github.com/KhronosGroup/SPIRV-Cross", "commit": "84173e8d2ba913b65276062d90e8c19dcbc0136d", "license": "Apache-2.0/MIT per file"}
+    ],
+    "series": {
+      "moltenvkPatches": 52,
+      "spirvCrossPatches": 54,
+      "moltenvkSeriesSHA256": "6004b155146c4dcb50b9b2da6499d5666d2a1a8b8a24ab5dd6b27ace8fc8aaab",
+      "spirvCrossSeriesSHA256": "86cf0e3fb39022eb539d0f247d35e0f261d973d1a80ba59231be981e3d7b434e",
+      "pairedSeriesSHA256": "88a8f603141e3fb09504b50406ea586bc1a869b4fb911c2edaec021fe4cc6c86"
+    },
+    "knownLimits": [
+      "No rebuilt xcframework, no App link and no GPU run.",
+      "Transform feedback remains disabled in the shipping contract unless a separately qualified source/build removes that boundary.",
+      "The existing 1.4.2 binary must not be relabeled as this selection."
+    ]
+  },
+  "nextHostMesaKosmickrisp": {
+    "status": "SOURCE_SELECTED_MACOS_HOST_ONLY",
+    "selection": "../../LinuxGuest/image/graphics/SOURCE-SELECTION.json",
+    "mesaCommit": "30da39187d8d3cf03c58ecd2bebb497b84501f51",
+    "hadronCommit": "f2f162e2b3af1f914040113c44eef2cceb30865a",
+    "patchSeries": "../../LinuxGuest/image/graphics/patches/host-mesa-30da3918/SERIES.json",
+    "knownLimits": [
+      "macOS static component and host-side Linux runtime only.",
+      "iOS port and generated compiler tools are unbuilt; upstream documents no iOS support.",
+      "Never link macOS archives into the iOS App or replace the shipped FloeGPU slices."
+    ]
+  },
+  "deferred": {
+    "openCL": {
+      "status": "SOURCE_ONLY_UNBUILT",
+      "clvk": "kpet/clvk 399abf00c30b6d1d7a65d7ac06beee60b5991d7b",
+      "clspvHeader": "google/clspv 7ee3a40e652b3649d175758f72d7af98b9450a68",
+      "blocker": "No admitted ARM64 Linux compiler, ICD load or kernel run."
+    }
+  },
+  "licenses": [
+    "LICENSES/Apache-2.0-MoltenVK.txt",
+    "LICENSES/SPIRV-Cross-LICENSE",
+    "LICENSES/SPIRV-Cross-LICENSES-Apache-2.0.txt",
+    "LICENSES/SPIRV-Cross-LICENSES-MIT.txt",
+    "LICENSES/MIT-virglrenderer.txt"
+  ]
+}

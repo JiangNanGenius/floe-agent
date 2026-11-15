@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "engine": "rpgMakerMV",
+  "movement": {
+    "left": [
+      "left"
+    ],
+    "right": [
+      "right"
+    ],
+    "up": [
+      "up"
+    ],
+    "down": [
+      "down"
+    ]
+  },
+  "buttons": [
+    {
+      "id": "confirm",
+      "label": "Z",
+      "keys": [
+        "z"
+      ]
+    },
+    {
+      "id": "cancel",
+      "label": "X",
+      "keys": [
+        "x"
+      ]
+    },
+    {
+      "id": "action3",
+      "label": "Shift",
+      "keys": [
+        "shift"
+      ]
+    },
+    {
+      "id": "pageUp",
+      "label": "Q",
+      "keys": [
+        "q"
+      ]
+    },
+    {
+      "id": "pageDown",
+      "label": "W",
+      "keys": [
+        "w"
+      ]
+    }
+  ]
+}

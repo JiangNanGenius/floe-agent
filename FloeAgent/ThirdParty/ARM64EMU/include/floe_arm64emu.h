@@ -19,8 +19,14 @@ extern "C" {
  * plug the managed region up to the configured target; version 2 callers
  * keep the exact version-2 RAM semantics (single mapping of the requested
  * size, no memory device). Versions 1 and 2 create layouts are never
- * reinterpreted. */
-#define FLOE_AE_ABI_VERSION 3u
+ * reinterpreted.
+ *
+ * ABI version 4 appends the opt-in app-owned video service below. The
+ * version-3 prefix keeps its exact layout and meaning; a version-4 caller
+ * must pass the full v4 size. Video nodes are independent of the virtual
+ * display and GPU, and a zero/disabled video tail is exactly a machine
+ * without video devices. */
+#define FLOE_AE_ABI_VERSION 4u
 #define FLOE_AE_MAX_VCPUS 5u /* engine ceiling; caller chooses device limit before boot */
 /* Eight workspace roots + eight environment roots + one shared cache. */
 #define FLOE_AE_MAX_SHARES 17u
@@ -156,6 +162,42 @@ typedef struct {
     floe_ae_gpu_config gpu;
 } floe_ae_config_v3;
 #define FLOE_AE_CONFIG_V3_MEMORY_SIZE offsetof(floe_ae_config_v3, gpu)
+
+/* ABI4 app-owned video service: standard Linux virtio-media/V4L2 encoder and
+ * decoder nodes. The complete compiled host code ships with the app. CPU
+ * execution stays interpreted; no host function/pointer is guest-visible.
+ * Historical v1/v2/v3 callers retain their exact layouts and no video node. */
+typedef struct {
+    uint32_t struct_size,enabled; /* enabled 0/1; a zero tail is disabled */
+    uint32_t max_sessions_per_node; /* 0=4, maximum4 */
+    uint32_t reserved;
+    uint64_t max_host_owned_bytes_per_node; /* 0=128 MiB, 16..512 MiB */
+    uint64_t reserved_tail[4];
+} floe_ae_video_config;
+typedef struct {
+    floe_ae_config_v3 v3;
+    floe_ae_video_config video;
+} floe_ae_config_v4;
+typedef struct {
+    uint32_t struct_size,nodes,native_sessions,inflight;
+    uint32_t queued_outputs,reserved;
+    uint64_t owned_mmap_bytes,host_owned_bytes,host_peak_bytes;
+    uint64_t submitted,hardware_outputs,errors;
+    uint64_t reserved_tail[4];
+} floe_ae_video_info;
+FLOE_AE_API int floe_ae_video_get_info(floe_ae_handle,floe_ae_video_info *);
+
+/* Additive backend policy and metrics; all historical create/get_info layouts
+ * above retain their exact meaning. Zero/default remains hardware-required.
+ * Software policy changes apply between file sessions and may return BUSY;
+ * they never relax an existing stream's hardware requirement. */
+typedef struct {
+    uint32_t struct_size,nodes,native_software_enabled,native_software_formats;
+    uint64_t hardware_outputs,native_software_outputs;
+    uint64_t reserved[4];
+} floe_ae_video_backend_info;
+FLOE_AE_API int floe_ae_video_get_backend_info(floe_ae_handle,floe_ae_video_backend_info *);
+FLOE_AE_API int floe_ae_video_set_native_software(floe_ae_handle,uint32_t enabled);
 
 /* Console channel indices for the channel operations below: channel 0 is the
  * PL011 UART (the legacy floe_ae_console_* target); channels 1..N are the

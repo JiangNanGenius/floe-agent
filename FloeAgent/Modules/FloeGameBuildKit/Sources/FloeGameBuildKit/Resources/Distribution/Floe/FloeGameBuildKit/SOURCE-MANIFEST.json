@@ -1,0 +1,211 @@
+{
+  "excluded": [
+    "Resources/Distribution (recursive helper copy)",
+    ".build",
+    "DerivedData"
+  ],
+  "files": {
+    "LICENSE": {
+      "bytes": 16726,
+      "sha256": "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04"
+    },
+    "Package.swift": {
+      "bytes": 1426,
+      "sha256": "03741be6368abc6b0fff3ba846fea8c5b8ea5fa5b11ebd3a7db1543027c1c302"
+    },
+    "README.md": {
+      "bytes": 8630,
+      "sha256": "8df9e3cc63843809ece42887f65665b6385354e6e56fc66024df65282a6de203"
+    },
+    "Sources/FloeGameBuildKit/GameArchiveExchange.swift": {
+      "bytes": 24848,
+      "sha256": "e12d6838fbd052761edbdf7a596015255dd56c1a0ce361ad937af10480aa2de7"
+    },
+    "Sources/FloeGameBuildKit/GameArchiveImportPreview.swift": {
+      "bytes": 11919,
+      "sha256": "170a0019098db29d8a053d7d3fe537227c9eee07d43e9e09b0b8be6ca2e9fc87"
+    },
+    "Sources/FloeGameBuildKit/GameArchiveOriginalStore.swift": {
+      "bytes": 3529,
+      "sha256": "80a64679fa7884249fd2a2ff2c2b8e14d5504a2727850c79f90dec1d72f48d6e"
+    },
+    "Sources/FloeGameBuildKit/GameArchiveProjectImporter.swift": {
+      "bytes": 14121,
+      "sha256": "3f64793c15315fc9c3c788c7912a6970e952be4fa7b15f8ffd14fa1106f0c764"
+    },
+    "Sources/FloeGameBuildKit/GameArtifactValidation.swift": {
+      "bytes": 9596,
+      "sha256": "a8dc8124c5ac470a385921811d6ab488e4e4c99e53eca7a79caa21aaf9d8903f"
+    },
+    "Sources/FloeGameBuildKit/GameBuildCIAdapter.swift": {
+      "bytes": 29173,
+      "sha256": "4e35e180b18c85a6b838aaa2f45414bf784a9e999d09a130ed29f4dee0888a08"
+    },
+    "Sources/FloeGameBuildKit/GameBuildCapabilities.swift": {
+      "bytes": 10634,
+      "sha256": "decdf0b50690724d31c5b39d36042b0268976a2092de24866b9bdf76fd8c12d2"
+    },
+    "Sources/FloeGameBuildKit/GameBuildCoordinator.swift": {
+      "bytes": 68090,
+      "sha256": "5b250fef3ad468a7344ffa5d23422923531230a5fd7b0970383326076ba1bbe0"
+    },
+    "Sources/FloeGameBuildKit/GameBuildFileSupport.swift": {
+      "bytes": 11995,
+      "sha256": "b1af65ac3a5fe944d4090b4b603df6ad4bd21bc1d8ce9fb4cd4796417cae7675"
+    },
+    "Sources/FloeGameBuildKit/GameBuildPorts.swift": {
+      "bytes": 8552,
+      "sha256": "309ae0a624f419a7e3f3ed919862fb9097521cdf68517935a6918d6b826fc077"
+    },
+    "Sources/FloeGameBuildKit/GameBuildProjectSelection.swift": {
+      "bytes": 12847,
+      "sha256": "614ee0520a75d3b738af53d9992c1a956a71a2c310f859823f17b5c780591c5b"
+    },
+    "Sources/FloeGameBuildKit/GameBuildRouteCatalog.swift": {
+      "bytes": 9717,
+      "sha256": "d685f7defa5da8dc6e114259b0fb7d8b7fa2d76597c68d6ab6be5b79b3cbc406"
+    },
+    "Sources/FloeGameBuildKit/GameBuildSourceTransport.swift": {
+      "bytes": 25750,
+      "sha256": "b33cdb8ee04b99cc55d8185aad6c7ac4a1dde61704f70c3227ff026eb359cff9"
+    },
+    "Sources/FloeGameBuildKit/GameCIWorkflowTemplates.swift": {
+      "bytes": 22954,
+      "sha256": "48b0f75d7925720fcb9f39ad580c20a469a093138d2ec4f15e81bec9722b37b8"
+    },
+    "Sources/FloeGameBuildKit/GameDistributionBundle.swift": {
+      "bytes": 25453,
+      "sha256": "f6593f37a9e03f968b17d394f18079f1191545fd6049eba4ba0f46e32c597bc6"
+    },
+    "Sources/FloeGameBuildKit/GameExternalArchivePort.swift": {
+      "bytes": 4559,
+      "sha256": "1945f8f99ad7eeb075065cb327f3d769ce97520961b0e1145fda85738bee0f02"
+    },
+    "Sources/FloeGameBuildKit/GameNativePackaging.swift": {
+      "bytes": 8990,
+      "sha256": "70e16d11b99c857351ecc89f57afc6348ff3183d02ae825ddc342f0a43e37b47"
+    },
+    "Sources/FloeGameBuildKit/GameProjectArchiveRoundtrip.swift": {
+      "bytes": 7224,
+      "sha256": "c97a6b818d9e3260d663a95a350730f8dfc99a5044dd50e4e93e998c9a4e55f9"
+    },
+    "Sources/FloeGameBuildKit/Resources/Catalog/build-routes.v1.json": {
+      "bytes": 83143,
+      "sha256": "164d4edd2c3762667e88545e740cc556301d14e99aa9cecb3720a5e8e8baf00c"
+    },
+    "Sources/FloeGameBuildKit/Resources/Catalog/distribution-profiles.v1.json": {
+      "bytes": 20037,
+      "sha256": "e34266a64dbba50eff22389fdff74dc6e36b6fd13dc858b6c8b7a2b260397aec"
+    },
+    "Sources/FloeGameBuildKit/Resources/Catalog/workflow-contracts.v1.json": {
+      "bytes": 11552,
+      "sha256": "1b9e148a0b7b7c23354282d658b2aabb9d8aef53ef5b4adcae9c6e87c324c18e"
+    },
+    "Sources/FloeGameBuildKit/Resources/TestVectors/source-transport.json": {
+      "bytes": 26887,
+      "sha256": "8132146a27c33f17dd7c7fd034d5d4fbd379c159fa3b99c23de903108597ec83"
+    },
+    "Sources/FloeGameBuildKit/Resources/Workflows/floe-game-build-cocos.yml": {
+      "bytes": 44695,
+      "sha256": "4809039e02b8f6bf47a3c79c6d6a44a5596896422482e1e737bccda4945c72f7"
+    },
+    "Sources/FloeGameBuildKit/Resources/Workflows/floe-game-build-gdevelop.yml": {
+      "bytes": 23678,
+      "sha256": "7e9d917037b186e61cbbcfea54c6162b6ef29b6de4cf628ae1e19b2d840430e3"
+    },
+    "Sources/FloeGameBuildKit/Resources/Workflows/floe-game-build-godot.yml": {
+      "bytes": 31167,
+      "sha256": "8e20cd8fb33e2f403e9d6922e733c8c7d8d107a7218ce6c08e6e4c0d4c7eb497"
+    },
+    "Sources/FloeGameBuildKit/Resources/Workflows/floe-game-build-rpg-maker.yml": {
+      "bytes": 23547,
+      "sha256": "55a16f30cab166fc594cb1d7385a6a45688c7791485261131e4d2fe68d385583"
+    },
+    "Sources/FloeGameBuildKit/Resources/Workflows/floe-game-build-script-web.yml": {
+      "bytes": 24643,
+      "sha256": "b34d8e6e3afb6fc4130dab996d7268e6a99c5729639d223fb95b487871a6123a"
+    },
+    "Sources/FloeGameBuildKit/Resources/Workflows/floe-game-build-unity.yml": {
+      "bytes": 37241,
+      "sha256": "556da80b6fe0e5fa6f44231de113d230cef1452ee2f6a5fa75cdbbfdad20633b"
+    },
+    "Sources/FloeGameBuildKit/Resources/Workflows/floe-game-build-wasm4.yml": {
+      "bytes": 26698,
+      "sha256": "065e6811291a244592e5f1f17afbb78aab87d7a1d056935d73b3472ca3a28a6b"
+    },
+    "Sources/GameBuildExport/main.swift": {
+      "bytes": 2705,
+      "sha256": "fdbd3bb65054e5d06811d3c57a83c6bc7bbe820f7e41f9d67bee1c7467e9e6c6"
+    },
+    "THIRD-PARTY-NOTICES.md": {
+      "bytes": 2554,
+      "sha256": "fae06da4df340fb6d22de1dc59795733868dbfd56dfc33db25bf806908cbc8bf"
+    },
+    "Tests/FloeGameBuildKitTests/GameArchiveExchangeTests.swift": {
+      "bytes": 11312,
+      "sha256": "a08a16ed4cc24ca4577d9c590d3b84261f02cba1ca45810189614b29e77cb3b3"
+    },
+    "Tests/FloeGameBuildKitTests/GameArchiveProjectImporterTests.swift": {
+      "bytes": 15573,
+      "sha256": "fc0c90d0b92d764c884f68ee6165c49ddc5ff15ea6686aed82e88436f5bf8813"
+    },
+    "Tests/FloeGameBuildKitTests/GameArtifactKindDecodingTests.swift": {
+      "bytes": 1024,
+      "sha256": "8ef081ec589d7493403a258e83750f28a605224b6a5b19359b15b449779f7110"
+    },
+    "Tests/FloeGameBuildKitTests/GameBuildCITests.swift": {
+      "bytes": 20561,
+      "sha256": "56340ac04e94b35699c10b063f533d41270a64306fe18f64ed124190d042a5aa"
+    },
+    "Tests/FloeGameBuildKitTests/GameBuildCancellationDrainTests.swift": {
+      "bytes": 8823,
+      "sha256": "ade942e32798d283a997a6fee3fb221b8fc76c6f85de3fbbef3fd47817faef88"
+    },
+    "Tests/FloeGameBuildKitTests/GameBuildCapabilityTests.swift": {
+      "bytes": 8691,
+      "sha256": "79ce70f022b598dbef69b04ccc44504b6eb4f8c6d870165568c54eeeec0280f3"
+    },
+    "Tests/FloeGameBuildKitTests/GameBuildCoordinatorTests.swift": {
+      "bytes": 15748,
+      "sha256": "f2f7be8bbf7951a12b6142701cc279e881f4deb0afa56d5c19dbbab3ff14fa27"
+    },
+    "Tests/FloeGameBuildKitTests/GameBuildProvenanceBindingTests.swift": {
+      "bytes": 4997,
+      "sha256": "927e670abdc28f3c3eb71a1c36be9a2b4009268db0b63a08831f2d61a9873dc2"
+    },
+    "Tests/FloeGameBuildKitTests/GameBuildSourceCoordinatorTests.swift": {
+      "bytes": 16295,
+      "sha256": "bd02dce4b3eeaddaf225f27cef0d9a94aad2ac7e01e7256a7a2063ca27b216f8"
+    },
+    "Tests/FloeGameBuildKitTests/GameCIWorkflowTemplateTests.swift": {
+      "bytes": 13653,
+      "sha256": "8cf2d913f16f1e5004128f0ff9fdf7401a2b3537fec4a7a9e59fbab0c4a25e36"
+    },
+    "Tests/FloeGameBuildKitTests/GameDistributionTests.swift": {
+      "bytes": 9237,
+      "sha256": "aff079de1c89dc081f8359091708fabc8400575904931ca0df01477164b496a3"
+    },
+    "Tests/FloeGameBuildKitTests/GameExternalArchivePortTests.swift": {
+      "bytes": 9759,
+      "sha256": "58087d3aa56401f47cb9f9e651aa15ebf805003cf2fd3ace5df8633ad3ba35bc"
+    },
+    "Tests/FloeGameBuildKitTests/GameLegacyTargetDispatchTests.swift": {
+      "bytes": 2845,
+      "sha256": "19f4265f8fb1858c8f900f96e8b4ac293115fa06e7cc870e61621fb4e1c92f08"
+    },
+    "Tests/FloeGameBuildKitTests/GameNestedBuildSelectionTests.swift": {
+      "bytes": 33997,
+      "sha256": "31ab7428d5ba57ad9167cf5b286fc029cce2b2a29fbfcc8d5f82c9fde42bf82f"
+    },
+    "Tests/FloeGameBuildKitTests/GameProjectArchiveRoundtripTests.swift": {
+      "bytes": 5169,
+      "sha256": "ed6b845fd2706edb08239dad354b379d22c79a8491ac263ea1f7f5f65b777e01"
+    },
+    "Tests/FloeGameBuildKitTests/GameTestZIPCraft.swift": {
+      "bytes": 5434,
+      "sha256": "1a45e6c8d9ef79cc11edda17a9c3faf47bd1c03dc8c77b9a41736e9fdae033a4"
+    }
+  },
+  "root": "FloeGameBuildKit",
+  "schemaVersion": 1
+}

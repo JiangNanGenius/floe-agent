@@ -92,6 +92,10 @@ public protocol LinuxGuestSessionCreating: Sendable {
     /// surface; nil when the runtime has no shared online-memory device.
     func sharedMemoryStatus() async -> LinuxSharedMemoryStatus?
     func sharedGPUStatus() async -> ARM64GPUBudget?
+    /// Live video truth; nil when the shared machine is powered off.
+    func sharedVideoStatus() async -> ARM64VideoStatus?
+    /// Apply the hardware-only/native-software policy between file sessions.
+    func setSharedVideoNativeSoftware(_ enabled: Bool) async throws
     func powerOffSharedMachine() async throws
     func restoreInitialState(image: LinuxGuestImage, imageDirectory: URL) async throws
     func rebuildPreservingData(image: LinuxGuestImage, imageDirectory: URL) async throws -> LinuxResidentRecoveryReceipt
@@ -114,6 +118,10 @@ public extension LinuxGuestSessionCreating {
     func sharedMachinePhase() async -> LinuxSharedMachinePhase? { nil }
     func sharedMemoryStatus() async -> LinuxSharedMemoryStatus? { nil }
     func sharedGPUStatus() async -> ARM64GPUBudget? { nil }
+    func sharedVideoStatus() async -> ARM64VideoStatus? { nil }
+    func setSharedVideoNativeSoftware(_ enabled: Bool) async throws {
+        throw LinuxGuestError.invalidConfiguration("This runtime does not support video acceleration")
+    }
     func powerOffSharedMachine() async throws {
         throw LinuxGuestError.invalidConfiguration("This runtime cannot verify shared-machine power off")
     }
@@ -3048,6 +3056,14 @@ public actor LinuxGuestRegistry {
         await factory.sharedGPUStatus()
     }
 
+    public func sharedVideoStatus() async -> ARM64VideoStatus? {
+        await factory.sharedVideoStatus()
+    }
+
+    public func setSharedVideoNativeSoftware(_ enabled: Bool) async throws {
+        try await factory.setSharedVideoNativeSoftware(enabled)
+    }
+
     public func stopAll(allowing observedActivities: [LinuxGuestActivityDetail]) async throws -> [String] {
         guard factory.usesResidentMachine, !restoringInitialState else {
             throw LinuxGuestError.guestBusy(environmentID: "shared")
@@ -4420,6 +4436,10 @@ public struct LinuxGuestCommandService: LinuxCommandRunning, LinuxGuestControlli
         await registry.owns(environmentID: environmentID)
     }
 
+    public func guestDescriptor(environmentID: String) async -> LinuxGuestEnvironmentDescriptor? {
+        await registry.guestDescriptor(environmentID: environmentID)
+    }
+
     public func run(
         environmentID: String,
         argv: [String],
@@ -4489,6 +4509,14 @@ public struct LinuxGuestCommandService: LinuxCommandRunning, LinuxGuestControlli
 
     public func sharedGPUStatus() async -> ARM64GPUBudget? {
         await registry.sharedGPUStatus()
+    }
+
+    public func sharedVideoStatus() async -> ARM64VideoStatus? {
+        await registry.sharedVideoStatus()
+    }
+
+    public func setSharedVideoNativeSoftware(_ enabled: Bool) async throws {
+        try await registry.setSharedVideoNativeSoftware(enabled)
     }
 
     public func stopSharedGuest(allowing observedActivities: [LinuxGuestActivityDetail]) async throws -> [String] {

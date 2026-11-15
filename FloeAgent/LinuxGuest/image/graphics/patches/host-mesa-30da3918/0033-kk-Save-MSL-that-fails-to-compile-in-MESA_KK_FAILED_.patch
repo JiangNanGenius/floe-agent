@@ -1,0 +1,50 @@
+From d0c19a780e008666f715bc7ae1ac0fa6571ba30e Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Fri, 2 Oct 2026 12:00:25 -0400
+Subject: [PATCH] kk: Save MSL that fails to compile in MESA_KK_FAILED_MSL_DIR
+
+Generated-by: LLM
+---
+ src/kosmickrisp/bridge/mtl_compiler.m | 19 +++++++++++++++++++
+ 1 file changed, 19 insertions(+)
+
+diff --git a/src/kosmickrisp/bridge/mtl_compiler.m b/src/kosmickrisp/bridge/mtl_compiler.m
+index f0f6a612ca2..a5a18e72a70 100644
+--- a/src/kosmickrisp/bridge/mtl_compiler.m
++++ b/src/kosmickrisp/bridge/mtl_compiler.m
+@@ -13,6 +13,12 @@
+ #include <Metal/MTL4RenderPipeline.h>
+ #include <Metal/MTLDevice.h>
+ 
++#include <limits.h>
++#include <stdatomic.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <unistd.h>
++
+ /* Compiler */
+ mtl_compiler *
+ mtl_new_compiler(mtl_device *device)
+@@ -58,6 +64,19 @@
+ 
+       if (lib == nil) {
+          fprintf(stderr, "Failed to create MTLLibrary: %s\n", [error.localizedDescription UTF8String]);
++
++         const char *dir = getenv("MESA_KK_FAILED_MSL_DIR");
++         if (dir) {
++            static _Atomic uint32_t count;
++            char path[PATH_MAX];
++            snprintf(path, sizeof(path), "%s/%d-%u.metal", dir, getpid(), count++);
++            FILE *f = fopen(path, "w");
++            if (f) {
++               fputs(src, f);
++               fclose(f);
++               fprintf(stderr, "MSL written to %s\n", path);
++            }
++         }
+       }
+ 
+       return lib;
+-- 
+2.54.0 (Apple Git-157)
+

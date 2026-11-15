@@ -1,0 +1,101 @@
+From ea18b234181519f1ef71e7f0b2b0ec82914ea729 Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Fri, 2 Oct 2026 16:05:12 -0400
+Subject: [PATCH] kk: Implement draws from a transform feedback byte count
+
+Generated-by: LLM
+---
+ src/kosmickrisp/libkk/kk_draws.cl           | 12 +++++++
+ src/kosmickrisp/vulkan/kk_cmd_draw.c        | 39 +++++++++++++++++++++
+ src/kosmickrisp/vulkan/kk_physical_device.c |  2 +-
+ 3 files changed, 52 insertions(+), 1 deletion(-)
+
+diff --git a/src/kosmickrisp/libkk/kk_draws.cl b/src/kosmickrisp/libkk/kk_draws.cl
+index 15ac3a5a506..4fd3114bff8 100644
+--- a/src/kosmickrisp/libkk/kk_draws.cl
++++ b/src/kosmickrisp/libkk/kk_draws.cl
+@@ -89,6 +89,18 @@ libkk_unroll_geometry(
+                         restart_index, flatshade_first, true, mode, scratch);
+ }
+ 
++KERNEL(1)
++libkk_draw_byte_count(global uint32_t *out_draw, global uint32_t *counter,
++                      uint32_t counter_offset, uint32_t stride,
++                      uint32_t instance_count, uint32_t first_instance)
++{
++   uint32_t bytes = *counter;
++   out_draw[0] = bytes > counter_offset ? (bytes - counter_offset) / stride : 0;
++   out_draw[1] = instance_count;
++   out_draw[2] = 0;
++   out_draw[3] = first_instance;
++}
++
+ /* Unrolls restart without reordering vertices for a GS input. */
+ KERNEL(1024)
+ libkk_unroll_restart(uint64_t index_buffer, global struct poly_heap *heap,
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_draw.c b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+index 3153d6a9dfc..bc98ff9f187 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_draw.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+@@ -2865,6 +2865,45 @@ kk_CmdDrawIndirect2KHR(VkCommandBuffer commandBuffer,
+    kk_draw(cmd, &data);
+ }
+ 
++VKAPI_ATTR void VKAPI_CALL
++kk_CmdDrawIndirectByteCountEXT(VkCommandBuffer commandBuffer,
++                               uint32_t instanceCount, uint32_t firstInstance,
++                               VkBuffer counterBuffer,
++                               VkDeviceSize counterBufferOffset,
++                               uint32_t counterOffset, uint32_t vertexStride)
++{
++   VK_FROM_HANDLE(kk_cmd_buffer, cmd, commandBuffer);
++   VK_FROM_HANDLE(kk_buffer, counter, counterBuffer);
++
++   struct kk_ptr draw = kk_pool_alloc(cmd, sizeof(VkDrawIndirectCommand), 4u);
++   if (unlikely(!draw.gpu))
++      return;
++
++   libkk_draw_byte_count(cmd, kk_grid_1d(1), true, draw.gpu,
++                         vk_buffer_address(&counter->vk, counterBufferOffset),
++                         counterOffset, vertexStride, instanceCount,
++                         firstInstance);
++
++   const struct vk_dynamic_graphics_state *dyn =
++      &cmd->vk.dynamic_graphics_state;
++
++   struct kk_draw_command data = {
++      .prim = vk_topology_to_mesa(dyn->ia.primitive_topology),
++      .upload_mask = build_per_draw_upload_mask(cmd),
++      .indirect = true,
++      .predicate_count = cmd->state.cond_render.enabled ? 1u : 0u,
++      .predicate_op[0] = cmd->state.cond_render.inverted
++                            ? KK_PREDICATE_EQ_ZERO
++                            : KK_PREDICATE_NEQ_ZERO,
++      .draw_count = 1,
++      .predicate_addr[0] = cmd->state.cond_render.address,
++      .indirect_command.addr = draw.gpu,
++      .indirect_command.stride = sizeof(VkDrawIndirectCommand),
++   };
++
++   kk_draw(cmd, &data);
++}
++
+ VKAPI_ATTR void VKAPI_CALL
+ kk_CmdDrawIndexedIndirect2KHR(VkCommandBuffer commandBuffer,
+                               const VkDrawIndirect2InfoKHR *pInfo)
+diff --git a/src/kosmickrisp/vulkan/kk_physical_device.c b/src/kosmickrisp/vulkan/kk_physical_device.c
+index 60f0f41e559..77ec948c40e 100644
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c
+@@ -942,7 +942,7 @@ kk_get_device_properties(
+       .transformFeedbackQueries = true,
+       .transformFeedbackStreamsLinesTriangles = false,
+       .transformFeedbackRasterizationStreamSelect = true,
+-      .transformFeedbackDraw = false,
++      .transformFeedbackDraw = true,
+ 
+       /* VK_KHR_vertex_attribute_divisor */
+       .maxVertexAttribDivisor = UINT32_MAX,
+-- 
+2.54.0 (Apple Git-157)
+

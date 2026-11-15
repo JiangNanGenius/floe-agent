@@ -224,6 +224,8 @@ struct FloeAgentApp: App {
                 #endif
             }
                 .environmentObject(environment)
+                .environment(\.gameIDERunExtensionProvider,
+                             GameIDERunExtensionProvider(environment: environment))
                 .environmentObject(router)
                 .environmentObject(environment.voiceInput)
                 .environmentObject(environment.speechService)
@@ -2096,7 +2098,13 @@ private struct InspectorColumnView: View {
     var body: some View {
         Group {
             switch route.content {
-            case .changes, .workspaceFiles:
+            case .changes:
+                if let change = route.fileChange, change.conversationID == route.conversationID {
+                    RunFileChangeDetail(change: change)
+                } else {
+                    workspaceBackedContent
+                }
+            case .workspaceFiles:
                 workspaceBackedContent
             case .browser:
                 BrowserView(center: environment.browserCenter)
@@ -2137,6 +2145,7 @@ private struct InspectorColumnView: View {
             let conversationID = route.conversationID
             switch route.content {
             case .changes, .workspaceFiles, .terminal:
+                guard route.fileChange == nil else { return }
                 workspaceMountState = .loading
                 terminalOwner = nil
                 displayOwner = nil

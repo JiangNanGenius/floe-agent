@@ -1,0 +1,112 @@
+From dd4d162790e655f6f564bdc6f505530d29062e40 Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Fri, 2 Oct 2026 21:33:00 -0400
+Subject: [PATCH] kk: Round the emulated fused multiply-add once
+
+Generated-by: LLM
+---
+ src/kosmickrisp/vulkan/kk_nir_lower_denorm.c | 64 +++++++++++++-------
+ 1 file changed, 43 insertions(+), 21 deletions(-)
+
+diff --git a/src/kosmickrisp/vulkan/kk_nir_lower_denorm.c b/src/kosmickrisp/vulkan/kk_nir_lower_denorm.c
+index d413ca721cd..e47acf472ea 100644
+--- a/src/kosmickrisp/vulkan/kk_nir_lower_denorm.c
++++ b/src/kosmickrisp/vulkan/kk_nir_lower_denorm.c
+@@ -141,25 +141,20 @@ round_pack(nir_builder *b, nir_def *sign, nir_def *sig, nir_def *lsb_exp)
+ }
+ 
+ static nir_def *
+-soft_add(nir_builder *b, nir_def *x, nir_def *y)
++soft_sum(nir_builder *b, nir_def *a_sign, nir_def *a_sig, nir_def *a_lsb,
++         nir_def *c_sign, nir_def *c_sig, nir_def *c_lsb)
+ {
+-   struct soft_float a = unpack(b, x);
+-   struct soft_float c = unpack(b, y);
++   nir_def *a_zero = nir_ieq_imm(b, a_sig, 0);
++   nir_def *c_zero = nir_ieq_imm(b, c_sig, 0);
++   nir_def *a_big =
++      nir_iand(b, nir_inot(b, a_zero),
++               nir_ior(b, c_zero, nir_ige(b, a_lsb, c_lsb)));
+ 
+-   nir_def *x_zero = nir_ieq_imm(b, a.sig, 0);
+-   nir_def *y_zero = nir_ieq_imm(b, c.sig, 0);
+-   nir_def *x_big =
+-      nir_iand(b, nir_inot(b, x_zero),
+-               nir_ior(b, y_zero, nir_ige(b, a.exp, c.exp)));
+-
+-   nir_def *big_exp = nir_bcsel(b, x_big, a.exp, c.exp);
+-   nir_def *small_exp = nir_bcsel(b, x_big, c.exp, a.exp);
+-   nir_def *big_sig = nir_bcsel(b, x_big, a.sig, c.sig);
+-   nir_def *small_sig = nir_bcsel(b, x_big, c.sig, a.sig);
+-   nir_def *big_sign = nir_bcsel(b, x_big, a.sign, c.sign);
+-
+-   nir_def *big = nir_ishl_imm(b, nir_u2u64(b, big_sig), 32);
+-   nir_def *small = nir_ishl_imm(b, nir_u2u64(b, small_sig), 32);
++   nir_def *big_exp = nir_bcsel(b, a_big, a_lsb, c_lsb);
++   nir_def *small_exp = nir_bcsel(b, a_big, c_lsb, a_lsb);
++   nir_def *big = nir_bcsel(b, a_big, a_sig, c_sig);
++   nir_def *small = nir_bcsel(b, a_big, c_sig, a_sig);
++   nir_def *big_sign = nir_bcsel(b, a_big, a_sign, c_sign);
+ 
+    nir_def *distance = nir_isub(b, big_exp, small_exp);
+    nir_def *far = nir_ige_imm(b, distance, 64);
+@@ -172,7 +167,7 @@ soft_add(nir_builder *b, nir_def *x, nir_def *y)
+    shifted = nir_bcsel(b, far, nir_b2i64(b, nir_ine_imm(b, small, 0)),
+                        shifted);
+ 
+-   nir_def *same_sign = nir_ieq(b, a.sign, c.sign);
++   nir_def *same_sign = nir_ieq(b, a_sign, c_sign);
+    nir_def *small_wins = nir_ult(b, big, shifted);
+    nir_def *diff = nir_bcsel(b, small_wins, nir_isub(b, shifted, big),
+                              nir_isub(b, big, shifted));
+@@ -182,9 +177,36 @@ soft_add(nir_builder *b, nir_def *x, nir_def *y)
+    nir_def *diff_sign = nir_bcsel(b, small_wins, small_sign, big_sign);
+    diff_sign = nir_bcsel(b, nir_ieq_imm(b, diff, 0), nir_imm_int(b, 0),
+                          diff_sign);
+-   nir_def *sign = nir_bcsel(b, same_sign, a.sign, diff_sign);
++   nir_def *sign = nir_bcsel(b, same_sign, a_sign, diff_sign);
++
++   return round_pack(b, sign, sig, big_exp);
++}
++
++static nir_def *
++soft_add(nir_builder *b, nir_def *x, nir_def *y)
++{
++   struct soft_float a = unpack(b, x);
++   struct soft_float c = unpack(b, y);
++
++   return soft_sum(b, a.sign, nir_ishl_imm(b, nir_u2u64(b, a.sig), 32),
++                   nir_iadd_imm(b, a.exp, -23 - 32), c.sign,
++                   nir_ishl_imm(b, nir_u2u64(b, c.sig), 32),
++                   nir_iadd_imm(b, c.exp, -23 - 32));
++}
++
++static nir_def *
++soft_fma(nir_builder *b, nir_def *x, nir_def *y, nir_def *z)
++{
++   struct soft_float a = unpack(b, x);
++   struct soft_float c = unpack(b, y);
++   struct soft_float e = unpack(b, z);
++
++   nir_def *prod = nir_imul(b, nir_u2u64(b, a.sig), nir_u2u64(b, c.sig));
+ 
+-   return round_pack(b, sign, sig, nir_iadd_imm(b, big_exp, -23 - 32));
++   return soft_sum(b, nir_ixor(b, a.sign, c.sign), nir_ishl_imm(b, prod, 14),
++                   nir_iadd_imm(b, nir_iadd(b, a.exp, c.exp), -46 - 14),
++                   e.sign, nir_ishl_imm(b, nir_u2u64(b, e.sig), 37),
++                   nir_iadd_imm(b, e.exp, -23 - 37));
+ }
+ 
+ static nir_def *
+@@ -278,7 +300,7 @@ emu_fma(nir_builder *b, nir_def *x, nir_def *y, nir_def *z)
+    nir_def *exact =
+       nir_iand(b, nir_inot(b, denorm), nir_inot(b, is_zero(b, native)));
+    return nir_bcsel(b, nir_ior(b, special, exact), native,
+-                    emu_add(b, emu_mul(b, x, y), z));
++                    soft_fma(b, x, y, z));
+ }
+ 
+ static nir_def *
+-- 
+2.54.0 (Apple Git-157)
+

@@ -24,6 +24,23 @@ allocations immediately and reports a pending target until resources are freed.
 Completion tokens and map lifetimes remain owned until cancellation or teardown
 has quiesced the renderer.
 
+`FloeGPUDeviceInfo` reports the device-wide physical heap size and, when the
+driver exposes `VK_EXT_memory_budget`, its physical heap budget separately from
+`session_budget_bytes`. The session value is the enforceable quota; the
+physical figures must never be presented as this session's allowance. A HOST3D
+shm export must cover the guest's requested blob bytes before it is mapped;
+the page-rounded tail may be zero-filled.
+
+A ledger invariant violation (unmatched release, counter overflow, reservation
+mismatch) is recorded and makes every later admission fail closed.
+`floe_gpu_ledger_faulted()` exposes that state so the transport can mark the
+device for reset instead of reporting an undercounted budget. Assertion builds
+still abort at the original assertion after recording the fault.
+
+Set `FLOE_GPU_TRACE=1` to emit bounded lifecycle lines to stderr (limit
+`FLOE_GPU_TRACE_LIMIT`, default 4096, clamped 16...65536). Tracing is disabled
+by default and records only object ids, byte counts and lifecycle states.
+
 Enable this device only for verified images declaring Venus support. Stock
 Mesa 25.0.7 requires `VN_PERF=no_async_mem_alloc` to receive quota failures
 synchronously. Missing drivers are not replaced with a software Vulkan device.

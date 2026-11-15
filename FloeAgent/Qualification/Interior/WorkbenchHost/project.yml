@@ -1,0 +1,47 @@
+name: InteriorWorkbenchQualification
+options:
+  deploymentTarget:
+    iOS: '26.0'
+packages:
+  FloeInteriorKit:
+    path: ../../../Modules/FloeInteriorKit
+settings:
+  base:
+    SWIFT_VERSION: '6.0'
+    ARCHS: arm64
+    ONLY_ACTIVE_ARCH: YES
+    CODE_SIGNING_ALLOWED: NO
+    GENERATE_INFOPLIST_FILE: YES
+targets:
+  InteriorWorkbenchHost:
+    type: application
+    platform: iOS
+    sources: [WorkbenchHost.swift]
+    dependencies:
+      - package: FloeInteriorKit
+        product: FloeBuildingUI
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.floe.qualification.interior-workbench
+        TARGETED_DEVICE_FAMILY: '2'
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+  InteriorWorkbenchUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [WorkbenchUITests.swift]
+    dependencies:
+      - target: InteriorWorkbenchHost
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.floe.qualification.interior-workbench-ui-tests
+        TEST_TARGET_NAME: InteriorWorkbenchHost
+
+schemes:
+  InteriorWorkbenchHost:
+    build:
+      targets:
+        InteriorWorkbenchHost: all
+    test:
+      targets: [InteriorWorkbenchUITests]
+      parallelizable: false

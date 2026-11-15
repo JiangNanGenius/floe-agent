@@ -1,0 +1,336 @@
+From f9c209315f5812948db392382427accbd0f42c61 Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Wed, 30 Sep 2026 21:00:45 -0400
+Subject: [PATCH] kk: Add sparse buffers
+
+Generated-by: LLM
+---
+ src/kosmickrisp/bridge/mtl_command_queue.h    | 12 +++++++
+ src/kosmickrisp/bridge/mtl_command_queue.m    | 24 ++++++++++++++
+ src/kosmickrisp/bridge/mtl_device.h           |  1 +
+ src/kosmickrisp/bridge/mtl_device.m           | 12 +++++++
+ src/kosmickrisp/bridge/mtl_heap.m             |  2 ++
+ .../bridge/stubs/mtl_command_queue.c          |  7 ++++
+ src/kosmickrisp/bridge/stubs/mtl_device.c     |  6 ++++
+ src/kosmickrisp/vulkan/kk_buffer.c            | 22 ++++++++++++-
+ src/kosmickrisp/vulkan/kk_debug.c             |  1 +
+ src/kosmickrisp/vulkan/kk_debug.h             |  1 +
+ src/kosmickrisp/vulkan/kk_physical_device.c   |  5 ++-
+ src/kosmickrisp/vulkan/kk_private.h           |  1 +
+ src/kosmickrisp/vulkan/kk_queue.c             | 33 +++++++++++++++++++
+ 13 files changed, 125 insertions(+), 2 deletions(-)
+
+diff --git a/src/kosmickrisp/bridge/mtl_command_queue.h b/src/kosmickrisp/bridge/mtl_command_queue.h
+index 11b2ba27520..17e2beba69e 100644
+--- a/src/kosmickrisp/bridge/mtl_command_queue.h
++++ b/src/kosmickrisp/bridge/mtl_command_queue.h
+@@ -9,6 +9,7 @@
+ 
+ #include "mtl_types.h"
+ 
++#include <stdbool.h>
+ #include <stdint.h>
+ 
+ /* MTL4CommitOptions */
+@@ -32,6 +33,17 @@ void mtl_signal_event(mtl_command_queue *queue, mtl_event *event,
+ void mtl_wait_for_event(mtl_command_queue *queue, mtl_event *event,
+                         uint64_t value);
+ 
++struct mtl_sparse_buffer_mapping {
++   uint64_t first_page;
++   uint64_t page_count;
++   uint64_t heap_page;
++   bool map;
++};
++
++void mtl_command_queue_update_buffer_mappings(
++   mtl_command_queue *queue, mtl_buffer *buffer, mtl_heap *heap,
++   const struct mtl_sparse_buffer_mapping *mappings, uint32_t count);
++
+ void mtl_command_queue_commit(mtl_command_queue *queue,
+                               mtl_command_buffer **command_buffers,
+                               uint32_t count, mtl_commit_options *options);
+diff --git a/src/kosmickrisp/bridge/mtl_command_queue.m b/src/kosmickrisp/bridge/mtl_command_queue.m
+index c8ed5bb10b4..f51ed81623f 100644
+--- a/src/kosmickrisp/bridge/mtl_command_queue.m
++++ b/src/kosmickrisp/bridge/mtl_command_queue.m
+@@ -96,6 +96,30 @@
+    }
+ }
+ 
++void
++mtl_command_queue_update_buffer_mappings(
++   mtl_command_queue *queue, mtl_buffer *buffer, mtl_heap *heap,
++   const struct mtl_sparse_buffer_mapping *mappings, uint32_t count)
++{
++   @autoreleasepool {
++      id<MTL4CommandQueue> q = (id<MTL4CommandQueue>)queue;
++      MTL4UpdateSparseBufferMappingOperation ops[count];
++      for (uint32_t i = 0; i < count; i++) {
++         ops[i] = (MTL4UpdateSparseBufferMappingOperation){
++            .mode = mappings[i].map ? MTLSparseTextureMappingModeMap
++                                    : MTLSparseTextureMappingModeUnmap,
++            .bufferRange =
++               NSMakeRange(mappings[i].first_page, mappings[i].page_count),
++            .heapOffset = mappings[i].heap_page,
++         };
++      }
++      [q updateBufferMappings:(id<MTLBuffer>)buffer
++                         heap:(id<MTLHeap>)heap
++                   operations:ops
++                        count:count];
++   }
++}
++
+ void
+ mtl_command_queue_commit(mtl_command_queue *queue,
+                          mtl_command_buffer **command_buffers, uint32_t count,
+diff --git a/src/kosmickrisp/bridge/mtl_device.h b/src/kosmickrisp/bridge/mtl_device.h
+index 26365c14d7f..129481fb28f 100644
+--- a/src/kosmickrisp/bridge/mtl_device.h
++++ b/src/kosmickrisp/bridge/mtl_device.h
+@@ -64,6 +64,7 @@ struct mtl_size mtl_sparse_tile_count(mtl_device *device,
+                                       struct mtl_size tile_size);
+ 
+ /* Resource creation */
++mtl_buffer *mtl_new_sparse_buffer(mtl_device *device, uint64_t size_B);
+ mtl_buffer *mtl_new_buffer_with_bytes_no_copy(mtl_device *device, void *ptr,
+                                               uint64_t size_B);
+ mtl_command_allocator *mtl_new_command_allocator(mtl_device *device);
+diff --git a/src/kosmickrisp/bridge/mtl_device.m b/src/kosmickrisp/bridge/mtl_device.m
+index 753cda3615e..3912aa83e74 100644
+--- a/src/kosmickrisp/bridge/mtl_device.m
++++ b/src/kosmickrisp/bridge/mtl_device.m
+@@ -331,6 +331,18 @@
+ }
+ 
+ /* Resource creation */
++mtl_buffer *
++mtl_new_sparse_buffer(mtl_device *device, uint64_t size_B)
++{
++   @autoreleasepool {
++      id<MTLDevice> dev = (id<MTLDevice>)device;
++      return [dev newBufferWithLength:size_B
++                              options:MTLResourceStorageModePrivate |
++                                      MTLResourceHazardTrackingModeUntracked
++              placementSparsePageSize:MTLSparsePageSize64];
++   }
++}
++
+ mtl_buffer *
+ mtl_new_buffer_with_bytes_no_copy(mtl_device *device, void* ptr,
+                                   uint64_t size_B)
+diff --git a/src/kosmickrisp/bridge/mtl_heap.m b/src/kosmickrisp/bridge/mtl_heap.m
+index dc1e66ca62b..eaffe5fe504 100644
+--- a/src/kosmickrisp/bridge/mtl_heap.m
++++ b/src/kosmickrisp/bridge/mtl_heap.m
+@@ -24,6 +24,8 @@
+       descriptor.resourceOptions = (MTLResourceOptions)resource_options;
+       descriptor.size = size;
+       descriptor.sparsePageSize = MTLSparsePageSize16;
++      if (size >= KK_SPARSE_PAGE_SIZE)
++         descriptor.maxCompatiblePlacementSparsePageSize = MTLSparsePageSize64;
+       return [dev newHeapWithDescriptor:descriptor];
+    }
+ }
+diff --git a/src/kosmickrisp/bridge/stubs/mtl_command_queue.c b/src/kosmickrisp/bridge/stubs/mtl_command_queue.c
+index e5687e5f7f8..748d67ee1ac 100644
+--- a/src/kosmickrisp/bridge/stubs/mtl_command_queue.c
++++ b/src/kosmickrisp/bridge/stubs/mtl_command_queue.c
+@@ -65,3 +65,10 @@ void
+ mtl_command_queue_signal_drawable(mtl_command_queue *queue, void *drawable)
+ {
+ }
++
++void
++mtl_command_queue_update_buffer_mappings(
++   mtl_command_queue *queue, mtl_buffer *buffer, mtl_heap *heap,
++   const struct mtl_sparse_buffer_mapping *mappings, uint32_t count)
++{
++}
+diff --git a/src/kosmickrisp/bridge/stubs/mtl_device.c b/src/kosmickrisp/bridge/stubs/mtl_device.c
+index 68faa46ff50..d63e02163a9 100644
+--- a/src/kosmickrisp/bridge/stubs/mtl_device.c
++++ b/src/kosmickrisp/bridge/stubs/mtl_device.c
+@@ -150,6 +150,12 @@ mtl_sparse_tile_count(mtl_device *device, struct kk_image_layout *layout,
+ }
+ 
+ /* Resource creation */
++mtl_buffer *
++mtl_new_sparse_buffer(mtl_device *device, uint64_t size_B)
++{
++   return NULL;
++}
++
+ mtl_buffer *
+ mtl_new_buffer_with_bytes_no_copy(mtl_device *device, void *ptr,
+                                   uint64_t size_B)
+diff --git a/src/kosmickrisp/vulkan/kk_buffer.c b/src/kosmickrisp/vulkan/kk_buffer.c
+index 73fd1f5bd44..1d0d7a3e0dc 100644
+--- a/src/kosmickrisp/vulkan/kk_buffer.c
++++ b/src/kosmickrisp/vulkan/kk_buffer.c
+@@ -46,6 +46,20 @@ kk_CreateBuffer(VkDevice device, const VkBufferCreateInfo *pCreateInfo,
+    if (!buffer)
+       return vk_error(dev, VK_ERROR_OUT_OF_HOST_MEMORY);
+ 
++   if (buffer->vk.create_flags & VK_BUFFER_CREATE_SPARSE_BINDING_BIT) {
++      uint64_t size_B = align64(buffer->vk.size, KK_SPARSE_PAGE_SIZE);
++      buffer->metal.handle = mtl_new_sparse_buffer(dev->mtl_handle, size_B);
++      if (buffer->metal.handle == NULL) {
++         vk_buffer_destroy(&dev->vk, pAllocator, &buffer->vk);
++         return vk_error(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY);
++      }
++
++      buffer->metal.offset = 0u;
++      buffer->vk.device_address =
++         mtl_buffer_get_gpu_address(buffer->metal.handle);
++      kk_device_add_buffer_to_residency_set(dev, buffer->metal.handle);
++   }
++
+    *pBuffer = kk_buffer_to_handle(buffer);
+ 
+    return VK_SUCCESS;
+@@ -61,6 +75,10 @@ kk_DestroyBuffer(VkDevice device, VkBuffer _buffer,
+    if (!buffer)
+       return;
+ 
++   if (buffer->metal.handle &&
++       (buffer->vk.create_flags & VK_BUFFER_CREATE_SPARSE_BINDING_BIT))
++      kk_device_remove_buffer_from_residency_set(dev, buffer->metal.handle);
++
+    if (buffer->metal.handle)
+       mtl_release(buffer->metal.handle);
+ 
+@@ -75,9 +93,11 @@ kk_GetDeviceBufferMemoryRequirements(
+    VK_FROM_HANDLE(kk_device, dev, device);
+    struct kk_physical_device *pdev = kk_device_physical(dev);
+ 
+-   const uint64_t alignment = kk_get_buffer_alignment(
++   uint64_t alignment = kk_get_buffer_alignment(
+       pdev, pInfo->pCreateInfo->size, pInfo->pCreateInfo->usage,
+       pInfo->pCreateInfo->flags);
++   if (pInfo->pCreateInfo->flags & VK_BUFFER_CREATE_SPARSE_BINDING_BIT)
++      alignment = MAX2(alignment, KK_SPARSE_PAGE_SIZE);
+ 
+    pMemoryRequirements->memoryRequirements = (VkMemoryRequirements){
+       .size = align64(pInfo->pCreateInfo->size, alignment),
+diff --git a/src/kosmickrisp/vulkan/kk_debug.c b/src/kosmickrisp/vulkan/kk_debug.c
+index 9fe6911611b..c4c4b9127a6 100644
+--- a/src/kosmickrisp/vulkan/kk_debug.c
++++ b/src/kosmickrisp/vulkan/kk_debug.c
+@@ -25,6 +25,7 @@ const struct debug_named_value experimental_flags[] = {
+    {"m5_optimize_e5b9g9r9", KK_EXPERIMENTAL_M5_OPTIMIZE_E5B9G9R9},
+    {"dgc", KK_EXPERIMENTAL_DEVICE_GENERATED_COMMANDS},
+    {"xfb", KK_EXPERIMENTAL_TRANSFORM_FEEDBACK},
++   {"sparse", KK_EXPERIMENTAL_SPARSE},
+    {NULL, 0},
+ };
+ 
+diff --git a/src/kosmickrisp/vulkan/kk_debug.h b/src/kosmickrisp/vulkan/kk_debug.h
+index edbebed8573..0ff3ebee1e3 100644
+--- a/src/kosmickrisp/vulkan/kk_debug.h
++++ b/src/kosmickrisp/vulkan/kk_debug.h
+@@ -28,6 +28,7 @@ enum kk_experimental {
+    KK_EXPERIMENTAL_M5_OPTIMIZE_E5B9G9R9 = 1ull << 2,
+    KK_EXPERIMENTAL_DEVICE_GENERATED_COMMANDS = 1ull << 3,
+    KK_EXPERIMENTAL_TRANSFORM_FEEDBACK = 1ull << 4,
++   KK_EXPERIMENTAL_SPARSE = 1ull << 5,
+ };
+ 
+ extern enum kk_experimental kk_mesa_experimental_flags;
+diff --git a/src/kosmickrisp/vulkan/kk_physical_device.c b/src/kosmickrisp/vulkan/kk_physical_device.c
+index 006c021efb2..d3102755368 100644
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c
+@@ -253,6 +253,8 @@ kk_get_device_features(
+       .shaderInt16 = true,
+       .shaderInt64 = true,
+       .shaderResourceMinLod = true,
++      .sparseBinding = KK_EXPERIMENTAL(SPARSE),
++      .sparseResidencyBuffer = KK_EXPERIMENTAL(SPARSE),
+       .shaderSampledImageArrayDynamicIndexing = true,
+       .shaderStorageBufferArrayDynamicIndexing = true,
+       .shaderStorageImageArrayDynamicIndexing = true,
+@@ -1235,7 +1237,8 @@ kk_enumerate_physical_devices(struct vk_instance *_instance)
+ 
+    pdev->queue_families[pdev->queue_family_count++] = (struct kk_queue_family){
+       .queue_flags =
+-         VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT,
++         VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT |
++         (KK_EXPERIMENTAL(SPARSE) ? VK_QUEUE_SPARSE_BINDING_BIT : 0),
+       .queue_count = 1,
+    };
+    assert(pdev->queue_family_count <= ARRAY_SIZE(pdev->queue_families));
+diff --git a/src/kosmickrisp/vulkan/kk_private.h b/src/kosmickrisp/vulkan/kk_private.h
+index 11881019b2e..9ecd35bc081 100644
+--- a/src/kosmickrisp/vulkan/kk_private.h
++++ b/src/kosmickrisp/vulkan/kk_private.h
+@@ -41,6 +41,7 @@
+ #define KK_MAX_SAMPLE_LOCATION         (0.9375f)
+ 
+ #define KK_SPARSE_ADDR_SPACE_SIZE (1ull << 39)
++#define KK_SPARSE_PAGE_SIZE       65536u
+ 
+ /* Max size of a bound cbuf */
+ #define KK_MAX_CBUF_SIZE (1u << 16)
+diff --git a/src/kosmickrisp/vulkan/kk_queue.c b/src/kosmickrisp/vulkan/kk_queue.c
+index 5509318ffa0..853ffe8b536 100644
+--- a/src/kosmickrisp/vulkan/kk_queue.c
++++ b/src/kosmickrisp/vulkan/kk_queue.c
+@@ -9,6 +9,8 @@
+ #include "kk_buffer.h"
+ #include "kk_cmd_buffer.h"
+ #include "kk_device.h"
++#include "kk_device_memory.h"
++#include "kk_bo.h"
+ #include "kk_entrypoints.h"
+ #include "kk_physical_device.h"
+ #include "kk_sync.h"
+@@ -172,6 +174,35 @@ unlock:
+    return result;
+ }
+ 
++static void
++kk_queue_bind_buffer(struct kk_queue *queue, mtl_buffer *buffer,
++                     const VkSparseMemoryBind *bind)
++{
++   VK_FROM_HANDLE(kk_device_memory, mem, bind->memory);
++
++   struct mtl_sparse_buffer_mapping mapping = {
++      .first_page = bind->resourceOffset / KK_SPARSE_PAGE_SIZE,
++      .page_count = DIV_ROUND_UP(bind->size, KK_SPARSE_PAGE_SIZE),
++      .heap_page = mem ? bind->memoryOffset / KK_SPARSE_PAGE_SIZE : 0u,
++      .map = mem != NULL,
++   };
++   mtl_command_queue_update_buffer_mappings(
++      queue->mtl_handle, buffer, mem ? mem->bo->mtl_handle : NULL, &mapping,
++      1u);
++}
++
++static void
++kk_queue_bind_sparse(struct kk_queue *queue, struct vk_queue_submit *submit)
++{
++   for (uint32_t i = 0; i < submit->buffer_bind_count; i++) {
++      const VkSparseBufferMemoryBindInfo *info = &submit->buffer_binds[i];
++      VK_FROM_HANDLE(kk_buffer, buffer, info->buffer);
++
++      for (uint32_t j = 0; j < info->bindCount; j++)
++         kk_queue_bind_buffer(queue, buffer->metal.handle, &info->pBinds[j]);
++   }
++}
++
+ static VkResult
+ kk_queue_submit(struct vk_queue *vk_queue, struct vk_queue_submit *submit)
+ {
+@@ -194,6 +225,8 @@ kk_queue_submit(struct vk_queue *vk_queue, struct vk_queue_submit *submit)
+     * Otherwise, users are playing with fire. */
+    kk_device_make_resources_resident(dev);
+ 
++   kk_queue_bind_sparse(queue, submit);
++
+    for (uint32_t i = 0; i < submit->command_buffer_count; ++i) {
+       struct kk_cmd_buffer *cmd_buffer =
+          container_of(submit->command_buffers[i], struct kk_cmd_buffer, vk);
+-- 
+2.54.0 (Apple Git-157)
+

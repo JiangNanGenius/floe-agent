@@ -1,0 +1,44 @@
+--- a/src/scripts/EmscriptenPersistence.js
++++ b/src/scripts/EmscriptenPersistence.js
+@@ -18,4 +18,41 @@
+ 			}
+ 		});	
+ 	});
++
++	// Floe: WebKit may tear down the player without firing beforeunload.
++	// Expose an explicit flush and also flush on pagehide/visibilitychange.
++	Module["flushSave"] = function (callback) {
++		var finished = false;
++		function finish(err) {
++			if (finished) { return; }
++			finished = true;
++			if (typeof callback === "function") { callback(err || null); }
++		}
++		try { FS.syncfs(false, finish); } catch (e) { finish(e); }
++	};
++
++	function floeSync() {
++		try { FS.syncfs(false, function () {}); } catch (e) {}
++	}
++	window.addEventListener("pagehide", floeSync);
++	document.addEventListener("visibilitychange", function () {
++		if (document.visibilityState === "hidden") { floeSync(); }
++	});
++
++	// Flush after a save file is closed, not only at teardown. This covers
++	// love.filesystem.write followed by an app stop before the next event.
++	var floeClose = FS.close;
++	FS.close = function (stream) {
++		var result = floeClose.apply(FS, arguments);
++		try {
++			if (stream && typeof stream.path === "string" &&
++					stream.path.indexOf("/home/web_user/love/") === 0) {
++				FS.syncfs(false, function () {});
++			}
++		} catch (e) {}
++		return result;
++	};
++
++	// Backstop for writes that do not close a stream promptly.
++	setInterval(floeSync, 2000);
+ }

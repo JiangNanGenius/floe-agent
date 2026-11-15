@@ -1,0 +1,24 @@
+[
+  null,
+  {
+    "id": 1,
+    "name": "Tide Step",
+    "iconIndex": 1,
+    "description": "A steady step over wet stone.",
+    "scope": 0,
+    "occasion": 0,
+    "mpCost": 0,
+    "tpCost": 0,
+    "hit": 100,
+    "animationId": 1,
+    "damage": {
+      "type": 0,
+      "elementId": 0,
+      "formula": "0",
+      "variance": 0,
+      "critical": false
+    },
+    "effects": [],
+    "note": "Original Floe starter skill."
+  }
+]

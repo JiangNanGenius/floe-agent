@@ -1,0 +1,2769 @@
+{
+  "schemaVersion": 1,
+  "catalogVersion": "1.0.0",
+  "generatedBy": "FloeGameStarterKit/Scripts/make_catalog.py",
+  "engines": [
+    {
+      "engine": "rpgMakerXP",
+      "displayName": "RPG Maker XP",
+      "starterVersion": "1.0.0",
+      "entry": "Game.rxproj",
+      "webEntry": null,
+      "readiness": "sourceWithEditor",
+      "sourceLicense": "MIT (original map/database/event/Ruby starter data and code)",
+      "engineLicense": "RPG Maker editor and RGSS runtime: user-supplied proprietary license",
+      "templateKind": "static",
+      "templateRoot": "Templates/rpgMakerXP",
+      "files": [
+        {
+          "path": "Data/Actors.rxdata",
+          "sha256": "92fcc4de9f40f4fc81ad67bfcbfaffefdf6c14395ad621036618d4db68e3f877",
+          "bytes": 1836
+        },
+        {
+          "path": "Data/Animations.rxdata",
+          "sha256": "64e7f5754623f03085976488fb0707a16ffda6f24f42f6ed1140b707210f72af",
+          "bytes": 203
+        },
+        {
+          "path": "Data/Armors.rxdata",
+          "sha256": "bf2a3fcce721c3626a4572ea50f94bf6c640ad709fba29870f149dbc1abb48e8",
+          "bytes": 195
+        },
+        {
+          "path": "Data/Classes.rxdata",
+          "sha256": "6c66c755e3d5339937e26b0421c810180bbad832208e2445370d8c718860b483",
+          "bytes": 2040
+        },
+        {
+          "path": "Data/CommonEvents.rxdata",
+          "sha256": "b68c5069de27f35da8370e2905fa3bcf84bf5a8ba71af579ea22cae1bada2549",
+          "bytes": 312
+        },
+        {
+          "path": "Data/Enemies.rxdata",
+          "sha256": "6a58add879d6d28b1a1e9f8e49d4e9e3899d6fb8cd3195cebd30c7135b92fa23",
+          "bytes": 245
+        },
+        {
+          "path": "Data/Items.rxdata",
+          "sha256": "2efd21711ace8b7970d3860617648157ee93fec8e7fc5088121ad8893bcf237f",
+          "bytes": 339
+        },
+        {
+          "path": "Data/Map001.rxdata",
+          "sha256": "00231df1a48e862f56f1aedfbedd2c6d2d3a43c28e2b17bee75bf8da87740746",
+          "bytes": 2960
+        },
+        {
+          "path": "Data/MapInfos.rxdata",
+          "sha256": "7bf585d05c2514ce4f3a2a38a7642a6fe3d63bdd9cd05f96d2610afc2502d5a1",
+          "bytes": 117
+        },
+        {
+          "path": "Data/Scripts.rxdata",
+          "sha256": "6a185431fbf88767030319148303adf7d07aebccdc567e68845d5b9213c6f57c",
+          "bytes": 2814
+        },
+        {
+          "path": "Data/Skills.rxdata",
+          "sha256": "6bed0425075ae2145aa477ae1b01732d017a3cf54cddfcbcdcd71867c33f5a21",
+          "bytes": 347
+        },
+        {
+          "path": "Data/States.rxdata",
+          "sha256": "7645164a8ac85d1bf20cacd935e351f82cbb82d4aac559a14e2fe5546cf906ef",
+          "bytes": 244
+        },
+        {
+          "path": "Data/System.rxdata",
+          "sha256": "7a32d18f077e6ecf3a35865ed0e19624791ad296ebb1f746342e525fd8b831e0",
+          "bytes": 1952
+        },
+        {
+          "path": "Data/Tilesets.rxdata",
+          "sha256": "656366202b1651a6588f7ad70a1e1d6067c878ac6cdc8fde08d3916e2f3bce9d",
+          "bytes": 2734
+        },
+        {
+          "path": "Data/Troops.rxdata",
+          "sha256": "36199b342dff802dc210eacd2d267ee264b1b2830c73daf6087421b5e7351a1a",
+          "bytes": 173
+        },
+        {
+          "path": "Data/Weapons.rxdata",
+          "sha256": "379fe0a40eaf7b602960043d6bffc968a8340f2d849649739e0544a05a42f5d1",
+          "bytes": 206
+        },
+        {
+          "path": "Game.ini",
+          "sha256": "f2df3e425a465a6643601e31a8484fbfa323d94d82f153c22024b1df9ae8c352",
+          "bytes": 73
+        },
+        {
+          "path": "Game.rxproj",
+          "sha256": "8234992fd1251a46f4713de1a0b9a52cd444cf3485135e1e7e171acfb3c55a3a",
+          "bytes": 11
+        },
+        {
+          "path": "Graphics/Autotiles/FloeAuto1.png",
+          "sha256": "b89100ffc4d2cefd3b14cba139a501b62e771f1d67490354ac91d639e7fa15f4",
+          "bytes": 373
+        },
+        {
+          "path": "Graphics/Autotiles/FloeAuto2.png",
+          "sha256": "b89100ffc4d2cefd3b14cba139a501b62e771f1d67490354ac91d639e7fa15f4",
+          "bytes": 373
+        },
+        {
+          "path": "Graphics/Autotiles/FloeAuto3.png",
+          "sha256": "b89100ffc4d2cefd3b14cba139a501b62e771f1d67490354ac91d639e7fa15f4",
+          "bytes": 373
+        },
+        {
+          "path": "Graphics/Autotiles/FloeAuto4.png",
+          "sha256": "b89100ffc4d2cefd3b14cba139a501b62e771f1d67490354ac91d639e7fa15f4",
+          "bytes": 373
+        },
+        {
+          "path": "Graphics/Autotiles/FloeAuto5.png",
+          "sha256": "b89100ffc4d2cefd3b14cba139a501b62e771f1d67490354ac91d639e7fa15f4",
+          "bytes": 373
+        },
+        {
+          "path": "Graphics/Autotiles/FloeAuto6.png",
+          "sha256": "b89100ffc4d2cefd3b14cba139a501b62e771f1d67490354ac91d639e7fa15f4",
+          "bytes": 373
+        },
+        {
+          "path": "Graphics/Autotiles/FloeAuto7.png",
+          "sha256": "b89100ffc4d2cefd3b14cba139a501b62e771f1d67490354ac91d639e7fa15f4",
+          "bytes": 373
+        },
+        {
+          "path": "Graphics/Characters/FloeHero.png",
+          "sha256": "51da61fea2f5ae8eae8b6ca98f7cd36eda4d3e415177aed8601016dbade061b3",
+          "bytes": 549
+        },
+        {
+          "path": "Graphics/Tilesets/FloeTiles.png",
+          "sha256": "9ef1245c82840971440d8d7bab8d9dcdf16bd1a9536cec3c7b3216dad8220b32",
+          "bytes": 1766
+        },
+        {
+          "path": "Graphics/Titles/FloeGameOver.png",
+          "sha256": "f6ca4d71f631576289c16198f3cf9071b5277ecb4d48774ddea474c81901c197",
+          "bytes": 2167
+        },
+        {
+          "path": "Graphics/Titles/FloeTitle.png",
+          "sha256": "f6ca4d71f631576289c16198f3cf9071b5277ecb4d48774ddea474c81901c197",
+          "bytes": 2167
+        },
+        {
+          "path": "Graphics/Windowskins/FloeSkin.png",
+          "sha256": "7f211821ead5f6fc6bdd26e9d6453222c94e0fadd526e3d420b03dce4a8e3a82",
+          "bytes": 546
+        },
+        {
+          "path": "README.md",
+          "sha256": "5958fb1b89571b9f0c14bd62b0fdd6bf9d7a4ce4e934c563c2ae87c13310adec",
+          "bytes": 500
+        },
+        {
+          "path": "floe-inputs.json",
+          "sha256": "ece45454c73422d4bdd15e167af317727bec13077a287a87c7c18601c5537703",
+          "bytes": 546
+        },
+        {
+          "path": "licenses/ENGINE-NOTES.md",
+          "sha256": "17d1763c0d8fb6f9d6c910874d463456fb36cffe2a8fe91f844310dd85450080",
+          "bytes": 546
+        },
+        {
+          "path": "licenses/FLOE-STARTER-MIT.txt",
+          "sha256": "ef0597ad9e20dd323562f13bd781bd24056a7a892fa355b683993049d06b225e",
+          "bytes": 1074
+        }
+      ],
+      "expectedFiles": [
+        "Data/Actors.rxdata",
+        "Data/Animations.rxdata",
+        "Data/Armors.rxdata",
+        "Data/Classes.rxdata",
+        "Data/CommonEvents.rxdata",
+        "Data/Enemies.rxdata",
+        "Data/Items.rxdata",
+        "Data/Map001.rxdata",
+        "Data/MapInfos.rxdata",
+        "Data/Scripts.rxdata",
+        "Data/Skills.rxdata",
+        "Data/States.rxdata",
+        "Data/System.rxdata",
+        "Data/Tilesets.rxdata",
+        "Data/Troops.rxdata",
+        "Data/Weapons.rxdata",
+        "Game.ini",
+        "Game.rxproj",
+        "Graphics/Autotiles/FloeAuto1.png",
+        "Graphics/Autotiles/FloeAuto2.png",
+        "Graphics/Autotiles/FloeAuto3.png",
+        "Graphics/Autotiles/FloeAuto4.png",
+        "Graphics/Autotiles/FloeAuto5.png",
+        "Graphics/Autotiles/FloeAuto6.png",
+        "Graphics/Autotiles/FloeAuto7.png",
+        "Graphics/Characters/FloeHero.png",
+        "Graphics/Tilesets/FloeTiles.png",
+        "Graphics/Titles/FloeGameOver.png",
+        "Graphics/Titles/FloeTitle.png",
+        "Graphics/Windowskins/FloeSkin.png",
+        "README.md",
+        "floe-inputs.json",
+        "licenses/ENGINE-NOTES.md",
+        "licenses/FLOE-STARTER-MIT.txt"
+      ],
+      "prerequisites": [
+        {
+          "kind": "editor",
+          "name": "RPG Maker XP",
+          "version": "1.02+",
+          "url": "https://www.rpgmakerweb.com/",
+          "notes": "Needed to open/edit/re-export the standard project.",
+          "requiredFor": [
+            "edit",
+            "build"
+          ]
+        },
+        {
+          "kind": "runtime",
+          "name": "RGSS1",
+          "version": "engine-provided",
+          "url": "https://www.rpgmakerweb.com/",
+          "notes": "Needed to play the RGSS game; no runtime/DLL is bundled.",
+          "requiredFor": [
+            "play"
+          ]
+        }
+      ],
+      "notes": [
+        "Standard Data/*.rxdata files use real Ruby Marshal 4.8.",
+        "Scripts archive contains only original Floe Ruby source, not Enterbrain default scripts.",
+        "No RTP, commercial art, DLL or font is bundled."
+      ],
+      "defaultInput": {
+        "schemaVersion": 1,
+        "engine": "rpgMakerXP",
+        "movement": {
+          "left": [
+            "left"
+          ],
+          "right": [
+            "right"
+          ],
+          "up": [
+            "up"
+          ],
+          "down": [
+            "down"
+          ]
+        },
+        "buttons": [
+          {
+            "id": "confirm",
+            "label": "C (also Enter/Space)",
+            "keys": [
+              "c"
+            ]
+          },
+          {
+            "id": "cancel",
+            "label": "X (also Esc)",
+            "keys": [
+              "x"
+            ]
+          },
+          {
+            "id": "actionA",
+            "label": "Shift (also Z)",
+            "keys": [
+              "shift"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "engine": "rpgMakerVX",
+      "displayName": "RPG Maker VX",
+      "starterVersion": "1.0.0",
+      "entry": "Game.rvproj",
+      "webEntry": null,
+      "readiness": "sourceWithEditor",
+      "sourceLicense": "MIT (original map/database/event/Ruby starter data and code)",
+      "engineLicense": "RPG Maker editor and RGSS runtime: user-supplied proprietary license",
+      "templateKind": "static",
+      "templateRoot": "Templates/rpgMakerVX",
+      "files": [
+        {
+          "path": "Data/Actors.rvdata",
+          "sha256": "92fcc4de9f40f4fc81ad67bfcbfaffefdf6c14395ad621036618d4db68e3f877",
+          "bytes": 1836
+        },
+        {
+          "path": "Data/Animations.rvdata",
+          "sha256": "64e7f5754623f03085976488fb0707a16ffda6f24f42f6ed1140b707210f72af",
+          "bytes": 203
+        },
+        {
+          "path": "Data/Armors.rvdata",
+          "sha256": "bf2a3fcce721c3626a4572ea50f94bf6c640ad709fba29870f149dbc1abb48e8",
+          "bytes": 195
+        },
+        {
+          "path": "Data/Classes.rvdata",
+          "sha256": "6c66c755e3d5339937e26b0421c810180bbad832208e2445370d8c718860b483",
+          "bytes": 2040
+        },
+        {
+          "path": "Data/CommonEvents.rvdata",
+          "sha256": "b68c5069de27f35da8370e2905fa3bcf84bf5a8ba71af579ea22cae1bada2549",
+          "bytes": 312
+        },
+        {
+          "path": "Data/Enemies.rvdata",
+          "sha256": "6a58add879d6d28b1a1e9f8e49d4e9e3899d6fb8cd3195cebd30c7135b92fa23",
+          "bytes": 245
+        },
+        {
+          "path": "Data/Items.rvdata",
+          "sha256": "2efd21711ace8b7970d3860617648157ee93fec8e7fc5088121ad8893bcf237f",
+          "bytes": 339
+        },
+        {
+          "path": "Data/Map001.rvdata",
+          "sha256": "8c23dc1c44c8f34d1a615ac0057b9b24dfb856d4d8499c4f57cf1a25f8b65eaa",
+          "bytes": 2960
+        },
+        {
+          "path": "Data/MapInfos.rvdata",
+          "sha256": "7bf585d05c2514ce4f3a2a38a7642a6fe3d63bdd9cd05f96d2610afc2502d5a1",
+          "bytes": 117
+        },
+        {
+          "path": "Data/Scripts.rvdata",
+          "sha256": "3737dd4f71fbe7534ab5fea5c902db4e8fd2c81cf517ae03812bbf7b0335d1e0",
+          "bytes": 2813
+        },
+        {
+          "path": "Data/Skills.rvdata",
+          "sha256": "6bed0425075ae2145aa477ae1b01732d017a3cf54cddfcbcdcd71867c33f5a21",
+          "bytes": 347
+        },
+        {
+          "path": "Data/States.rvdata",
+          "sha256": "7645164a8ac85d1bf20cacd935e351f82cbb82d4aac559a14e2fe5546cf906ef",
+          "bytes": 244
+        },
+        {
+          "path": "Data/System.rvdata",
+          "sha256": "7a32d18f077e6ecf3a35865ed0e19624791ad296ebb1f746342e525fd8b831e0",
+          "bytes": 1952
+        },
+        {
+          "path": "Data/Tilesets.rvdata",
+          "sha256": "af72829111687ace90aca44f17375eb490a90f7a3442d2fc5ac6803bbdb699b6",
+          "bytes": 238
+        },
+        {
+          "path": "Data/Troops.rvdata",
+          "sha256": "36199b342dff802dc210eacd2d267ee264b1b2830c73daf6087421b5e7351a1a",
+          "bytes": 173
+        },
+        {
+          "path": "Data/Weapons.rvdata",
+          "sha256": "379fe0a40eaf7b602960043d6bffc968a8340f2d849649739e0544a05a42f5d1",
+          "bytes": 206
+        },
+        {
+          "path": "Game.ini",
+          "sha256": "0b7f7e025be3f0a6f3ec3b7e1ff97fdc7e3e8caab97184a076114703dc92bf0c",
+          "bytes": 73
+        },
+        {
+          "path": "Game.rvproj",
+          "sha256": "68142af21b84e58799e71ae35e0c2a9240f3927507ad0ff8274a851ac6afb08d",
+          "bytes": 11
+        },
+        {
+          "path": "Graphics/Characters/FloeHero.png",
+          "sha256": "a5880856ea08a9a84241b8a0fa5b41ca74809de247dab910379e8b127a844bdb",
+          "bytes": 452
+        },
+        {
+          "path": "Graphics/System/FloeTiles.png",
+          "sha256": "169869e6458733b505f4932a92d848db80c352346f813750067e004c3810785a",
+          "bytes": 3343
+        },
+        {
+          "path": "Graphics/Titles/FloeGameOver.png",
+          "sha256": "1b77a965a3935d3884b969d2d442b3a5ec7c915ac5cf478f2b5f3c073983f81f",
+          "bytes": 1737
+        },
+        {
+          "path": "Graphics/Titles/FloeTitle.png",
+          "sha256": "1b77a965a3935d3884b969d2d442b3a5ec7c915ac5cf478f2b5f3c073983f81f",
+          "bytes": 1737
+        },
+        {
+          "path": "Graphics/Windowskins/FloeSkin.png",
+          "sha256": "7f211821ead5f6fc6bdd26e9d6453222c94e0fadd526e3d420b03dce4a8e3a82",
+          "bytes": 546
+        },
+        {
+          "path": "README.md",
+          "sha256": "8f17750dc912e626230e00f0b5cb6547c0c7da202750b2b3c002b4283bc3fdbb",
+          "bytes": 500
+        },
+        {
+          "path": "floe-inputs.json",
+          "sha256": "367e31a93f5e9827b2207b9dcce8000f3081512977423009f7769c5382a21d17",
+          "bytes": 724
+        },
+        {
+          "path": "licenses/ENGINE-NOTES.md",
+          "sha256": "840bf5810b1d24be44ba591aaaec8946f4257d3dd7cc33349a86cbeea9148ef3",
+          "bytes": 546
+        },
+        {
+          "path": "licenses/FLOE-STARTER-MIT.txt",
+          "sha256": "ef0597ad9e20dd323562f13bd781bd24056a7a892fa355b683993049d06b225e",
+          "bytes": 1074
+        }
+      ],
+      "expectedFiles": [
+        "Data/Actors.rvdata",
+        "Data/Animations.rvdata",
+        "Data/Armors.rvdata",
+        "Data/Classes.rvdata",
+        "Data/CommonEvents.rvdata",
+        "Data/Enemies.rvdata",
+        "Data/Items.rvdata",
+        "Data/Map001.rvdata",
+        "Data/MapInfos.rvdata",
+        "Data/Scripts.rvdata",
+        "Data/Skills.rvdata",
+        "Data/States.rvdata",
+        "Data/System.rvdata",
+        "Data/Tilesets.rvdata",
+        "Data/Troops.rvdata",
+        "Data/Weapons.rvdata",
+        "Game.ini",
+        "Game.rvproj",
+        "Graphics/Characters/FloeHero.png",
+        "Graphics/System/FloeTiles.png",
+        "Graphics/Titles/FloeGameOver.png",
+        "Graphics/Titles/FloeTitle.png",
+        "Graphics/Windowskins/FloeSkin.png",
+        "README.md",
+        "floe-inputs.json",
+        "licenses/ENGINE-NOTES.md",
+        "licenses/FLOE-STARTER-MIT.txt"
+      ],
+      "prerequisites": [
+        {
+          "kind": "editor",
+          "name": "RPG Maker VX",
+          "version": "1.02+",
+          "url": "https://www.rpgmakerweb.com/",
+          "notes": "Needed to open/edit/re-export the standard project.",
+          "requiredFor": [
+            "edit",
+            "build"
+          ]
+        },
+        {
+          "kind": "runtime",
+          "name": "RGSS2",
+          "version": "engine-provided",
+          "url": "https://www.rpgmakerweb.com/",
+          "notes": "Needed to play the RGSS game; no runtime/DLL is bundled.",
+          "requiredFor": [
+            "play"
+          ]
+        }
+      ],
+      "notes": [
+        "Standard Data/*.rvdata files use real Ruby Marshal 4.8.",
+        "Scripts archive contains only original Floe Ruby source, not Enterbrain default scripts.",
+        "No RTP, commercial art, DLL or font is bundled."
+      ],
+      "defaultInput": {
+        "schemaVersion": 1,
+        "engine": "rpgMakerVX",
+        "movement": {
+          "left": [
+            "left"
+          ],
+          "right": [
+            "right"
+          ],
+          "up": [
+            "up"
+          ],
+          "down": [
+            "down"
+          ]
+        },
+        "buttons": [
+          {
+            "id": "confirm",
+            "label": "Z (also Enter/Space)",
+            "keys": [
+              "z"
+            ]
+          },
+          {
+            "id": "cancel",
+            "label": "X (also Esc)",
+            "keys": [
+              "x"
+            ]
+          },
+          {
+            "id": "actionA",
+            "label": "Shift",
+            "keys": [
+              "shift"
+            ]
+          },
+          {
+            "id": "pageLeft",
+            "label": "Q",
+            "keys": [
+              "q"
+            ]
+          },
+          {
+            "id": "pageRight",
+            "label": "W",
+            "keys": [
+              "w"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "engine": "rpgMakerVXAce",
+      "displayName": "RPG Maker VX Ace",
+      "starterVersion": "1.0.0",
+      "entry": "Game.rvproj2",
+      "webEntry": null,
+      "readiness": "sourceWithEditor",
+      "sourceLicense": "MIT (original map/database/event/Ruby starter data and code)",
+      "engineLicense": "RPG Maker editor and RGSS runtime: user-supplied proprietary license",
+      "templateKind": "static",
+      "templateRoot": "Templates/rpgMakerVXAce",
+      "files": [
+        {
+          "path": "Data/Actors.rvdata2",
+          "sha256": "92fcc4de9f40f4fc81ad67bfcbfaffefdf6c14395ad621036618d4db68e3f877",
+          "bytes": 1836
+        },
+        {
+          "path": "Data/Animations.rvdata2",
+          "sha256": "64e7f5754623f03085976488fb0707a16ffda6f24f42f6ed1140b707210f72af",
+          "bytes": 203
+        },
+        {
+          "path": "Data/Armors.rvdata2",
+          "sha256": "bf2a3fcce721c3626a4572ea50f94bf6c640ad709fba29870f149dbc1abb48e8",
+          "bytes": 195
+        },
+        {
+          "path": "Data/Classes.rvdata2",
+          "sha256": "6c66c755e3d5339937e26b0421c810180bbad832208e2445370d8c718860b483",
+          "bytes": 2040
+        },
+        {
+          "path": "Data/CommonEvents.rvdata2",
+          "sha256": "b68c5069de27f35da8370e2905fa3bcf84bf5a8ba71af579ea22cae1bada2549",
+          "bytes": 312
+        },
+        {
+          "path": "Data/Enemies.rvdata2",
+          "sha256": "6a58add879d6d28b1a1e9f8e49d4e9e3899d6fb8cd3195cebd30c7135b92fa23",
+          "bytes": 245
+        },
+        {
+          "path": "Data/Items.rvdata2",
+          "sha256": "2efd21711ace8b7970d3860617648157ee93fec8e7fc5088121ad8893bcf237f",
+          "bytes": 339
+        },
+        {
+          "path": "Data/Map001.rvdata2",
+          "sha256": "8c23dc1c44c8f34d1a615ac0057b9b24dfb856d4d8499c4f57cf1a25f8b65eaa",
+          "bytes": 2960
+        },
+        {
+          "path": "Data/MapInfos.rvdata2",
+          "sha256": "7bf585d05c2514ce4f3a2a38a7642a6fe3d63bdd9cd05f96d2610afc2502d5a1",
+          "bytes": 117
+        },
+        {
+          "path": "Data/Scripts.rvdata2",
+          "sha256": "99e70ec098746ba01b35c06e33b685f96b397d1a6b8877911016f657c96884d1",
+          "bytes": 2814
+        },
+        {
+          "path": "Data/Skills.rvdata2",
+          "sha256": "6bed0425075ae2145aa477ae1b01732d017a3cf54cddfcbcdcd71867c33f5a21",
+          "bytes": 347
+        },
+        {
+          "path": "Data/States.rvdata2",
+          "sha256": "7645164a8ac85d1bf20cacd935e351f82cbb82d4aac559a14e2fe5546cf906ef",
+          "bytes": 244
+        },
+        {
+          "path": "Data/System.rvdata2",
+          "sha256": "7a32d18f077e6ecf3a35865ed0e19624791ad296ebb1f746342e525fd8b831e0",
+          "bytes": 1952
+        },
+        {
+          "path": "Data/Tilesets.rvdata2",
+          "sha256": "af72829111687ace90aca44f17375eb490a90f7a3442d2fc5ac6803bbdb699b6",
+          "bytes": 238
+        },
+        {
+          "path": "Data/Troops.rvdata2",
+          "sha256": "36199b342dff802dc210eacd2d267ee264b1b2830c73daf6087421b5e7351a1a",
+          "bytes": 173
+        },
+        {
+          "path": "Data/Weapons.rvdata2",
+          "sha256": "379fe0a40eaf7b602960043d6bffc968a8340f2d849649739e0544a05a42f5d1",
+          "bytes": 206
+        },
+        {
+          "path": "Game.ini",
+          "sha256": "0b290c4f326bd9f98caae43d8559e7b771f3554b440c66ddace788617d81d112",
+          "bytes": 73
+        },
+        {
+          "path": "Game.rvproj2",
+          "sha256": "88cf3a5384d39b63f1c2a5ae848f2d5db75051f285f96a98522baa731acff718",
+          "bytes": 14
+        },
+        {
+          "path": "Graphics/Characters/FloeHero.png",
+          "sha256": "a5880856ea08a9a84241b8a0fa5b41ca74809de247dab910379e8b127a844bdb",
+          "bytes": 452
+        },
+        {
+          "path": "Graphics/System/FloeTiles.png",
+          "sha256": "169869e6458733b505f4932a92d848db80c352346f813750067e004c3810785a",
+          "bytes": 3343
+        },
+        {
+          "path": "Graphics/Titles/FloeGameOver.png",
+          "sha256": "1b77a965a3935d3884b969d2d442b3a5ec7c915ac5cf478f2b5f3c073983f81f",
+          "bytes": 1737
+        },
+        {
+          "path": "Graphics/Titles/FloeTitle.png",
+          "sha256": "1b77a965a3935d3884b969d2d442b3a5ec7c915ac5cf478f2b5f3c073983f81f",
+          "bytes": 1737
+        },
+        {
+          "path": "Graphics/Windowskins/FloeSkin.png",
+          "sha256": "7f211821ead5f6fc6bdd26e9d6453222c94e0fadd526e3d420b03dce4a8e3a82",
+          "bytes": 546
+        },
+        {
+          "path": "README.md",
+          "sha256": "bc9eebd317ad6ab912e8b5c7cd14580d67805fcd2bdb6456abfba34c5185248b",
+          "bytes": 504
+        },
+        {
+          "path": "floe-inputs.json",
+          "sha256": "c6ee63d24f366f461551d19fd1bb54de36668854fc90553bb2af295e6edb4937",
+          "bytes": 727
+        },
+        {
+          "path": "licenses/ENGINE-NOTES.md",
+          "sha256": "62bbcf726253eaa54e13ec73243d93aaa2759fb631c07869af3f8a613517d827",
+          "bytes": 552
+        },
+        {
+          "path": "licenses/FLOE-STARTER-MIT.txt",
+          "sha256": "ef0597ad9e20dd323562f13bd781bd24056a7a892fa355b683993049d06b225e",
+          "bytes": 1074
+        }
+      ],
+      "expectedFiles": [
+        "Data/Actors.rvdata2",
+        "Data/Animations.rvdata2",
+        "Data/Armors.rvdata2",
+        "Data/Classes.rvdata2",
+        "Data/CommonEvents.rvdata2",
+        "Data/Enemies.rvdata2",
+        "Data/Items.rvdata2",
+        "Data/Map001.rvdata2",
+        "Data/MapInfos.rvdata2",
+        "Data/Scripts.rvdata2",
+        "Data/Skills.rvdata2",
+        "Data/States.rvdata2",
+        "Data/System.rvdata2",
+        "Data/Tilesets.rvdata2",
+        "Data/Troops.rvdata2",
+        "Data/Weapons.rvdata2",
+        "Game.ini",
+        "Game.rvproj2",
+        "Graphics/Characters/FloeHero.png",
+        "Graphics/System/FloeTiles.png",
+        "Graphics/Titles/FloeGameOver.png",
+        "Graphics/Titles/FloeTitle.png",
+        "Graphics/Windowskins/FloeSkin.png",
+        "README.md",
+        "floe-inputs.json",
+        "licenses/ENGINE-NOTES.md",
+        "licenses/FLOE-STARTER-MIT.txt"
+      ],
+      "prerequisites": [
+        {
+          "kind": "editor",
+          "name": "RPG Maker VX Ace",
+          "version": "1.00+",
+          "url": "https://www.rpgmakerweb.com/",
+          "notes": "Needed to open/edit/re-export the standard project.",
+          "requiredFor": [
+            "edit",
+            "build"
+          ]
+        },
+        {
+          "kind": "runtime",
+          "name": "RGSS3",
+          "version": "engine-provided",
+          "url": "https://www.rpgmakerweb.com/",
+          "notes": "Needed to play the RGSS game; no runtime/DLL is bundled.",
+          "requiredFor": [
+            "play"
+          ]
+        }
+      ],
+      "notes": [
+        "Standard Data/*.rvdata2 files use real Ruby Marshal 4.8.",
+        "Scripts archive contains only original Floe Ruby source, not Enterbrain default scripts.",
+        "No RTP, commercial art, DLL or font is bundled."
+      ],
+      "defaultInput": {
+        "schemaVersion": 1,
+        "engine": "rpgMakerVXAce",
+        "movement": {
+          "left": [
+            "left"
+          ],
+          "right": [
+            "right"
+          ],
+          "up": [
+            "up"
+          ],
+          "down": [
+            "down"
+          ]
+        },
+        "buttons": [
+          {
+            "id": "confirm",
+            "label": "Z (also Enter/Space)",
+            "keys": [
+              "z"
+            ]
+          },
+          {
+            "id": "cancel",
+            "label": "X (also Esc)",
+            "keys": [
+              "x"
+            ]
+          },
+          {
+            "id": "actionA",
+            "label": "Shift",
+            "keys": [
+              "shift"
+            ]
+          },
+          {
+            "id": "pageLeft",
+            "label": "Q",
+            "keys": [
+              "q"
+            ]
+          },
+          {
+            "id": "pageRight",
+            "label": "W",
+            "keys": [
+              "w"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "engine": "rpgMakerMV",
+      "displayName": "RPG Maker MV",
+      "starterVersion": "1.0.0",
+      "entry": "index.html",
+      "webEntry": "index.html",
+      "readiness": "sourceWithBuildTool",
+      "sourceLicense": "MIT (Floe starter) + MIT RPG Maker MV CoreScript 1.3b",
+      "engineLicense": "MIT CoreScript; user supplies the prepared MIT runtime pack",
+      "templateKind": "delegated",
+      "provider": "FloeGamePortableKit.GamePortableTemplateCatalog.install(.mv)",
+      "expectedFiles": [
+        "LICENSE-FLOE-STARTER-MIT.txt",
+        "data/System.json",
+        "floe-inputs.json",
+        "index.html",
+        "js/floe_bridge.js",
+        "js/main.js",
+        "js/plugins.js"
+      ],
+      "files": [],
+      "prerequisites": [
+        {
+          "kind": "resourcePack",
+          "name": "RPG Maker MV CoreScript",
+          "version": "1.3b",
+          "url": "https://github.com/rpgtkoolmv/corescript",
+          "notes": "Prepared MIT CoreScript pack is required for the assembled Web player; no commercial RTP is included.",
+          "requiredFor": [
+            "build",
+            "play"
+          ]
+        }
+      ],
+      "notes": [
+        "Original MV starter project data and Floe bridge are MIT.",
+        "The prepared CoreScript pack is on-demand; the template itself contains no RTP."
+      ],
+      "defaultInput": {
+        "schemaVersion": 1,
+        "engine": "rpgMakerMV",
+        "movement": {
+          "left": [
+            "left"
+          ],
+          "right": [
+            "right"
+          ],
+          "up": [
+            "up"
+          ],
+          "down": [
+            "down"
+          ]
+        },
+        "buttons": [
+          {
+            "id": "confirm",
+            "label": "Z",
+            "keys": [
+              "z"
+            ]
+          },
+          {
+            "id": "cancel",
+            "label": "X",
+            "keys": [
+              "x"
+            ]
+          },
+          {
+            "id": "action3",
+            "label": "Shift",
+            "keys": [
+              "shift"
+            ]
+          },
+          {
+            "id": "pageUp",
+            "label": "Q",
+            "keys": [
+              "q"
+            ]
+          },
+          {
+            "id": "pageDown",
+            "label": "W",
+            "keys": [
+              "w"
+            ]
+          }
+        ]
+      },
+      "sourcePins": [
+        "FloeAgent/Modules/FloeGamePortableKit",
+        "CoreScript 182e31449707ba7e406db0485c44c2a9d11e2dcd"
+      ]
+    },
+    {
+      "engine": "rpgMakerMZ",
+      "displayName": "RPG Maker MZ",
+      "starterVersion": "1.0.0",
+      "entry": "Game.rmmzproject",
+      "webEntry": null,
+      "readiness": "sourceWithEditor",
+      "sourceLicense": "MIT (original JSON project data, plugin and synthetic art)",
+      "engineLicense": "RPG Maker MZ editor/runtime and rmmz_* core scripts: user-supplied proprietary license",
+      "templateKind": "static",
+      "templateRoot": "Templates/rpgMakerMZ",
+      "files": [
+        {
+          "path": "Game.rmmzproject",
+          "sha256": "60c2a5dbd255acc97e14eeba38c7286c332bc8f3328886cfb6805920d83a854c",
+          "bytes": 12
+        },
+        {
+          "path": "README.md",
+          "sha256": "80d29db68c36dbeb91fd354f45a8cf6762044d354a97ea93a7c4886bcda34256",
+          "bytes": 517
+        },
+        {
+          "path": "data/Actors.json",
+          "sha256": "10139fc8cdc505e76b17e50d9d07888c4bd180f252391e8f8b0c064eb9fe984c",
+          "bytes": 9415
+        },
+        {
+          "path": "data/Animations.json",
+          "sha256": "257c8dc29b3f156960b29041aa74f9b00054627b1eabb6df0f702ab664916f75",
+          "bytes": 232
+        },
+        {
+          "path": "data/Armors.json",
+          "sha256": "e78e594fb63fea20c3190acbbc56305992a3b1c19f841435df71cd296ad3dbcc",
+          "bytes": 330
+        },
+        {
+          "path": "data/Classes.json",
+          "sha256": "8981af70c73bc4c47b1fa39773412cb8c765941aa40f2eb385431344eab82e87",
+          "bytes": 9201
+        },
+        {
+          "path": "data/CommonEvents.json",
+          "sha256": "c139de046f7ddb557d744ff37de76e931ee7ecda71b4dcbc501953e615296ffe",
+          "bytes": 476
+        },
+        {
+          "path": "data/Enemies.json",
+          "sha256": "625a376815894fe42a3cf2e01fa5aabe5a42de9f2033cee6642d29f7de39e82b",
+          "bytes": 335
+        },
+        {
+          "path": "data/Items.json",
+          "sha256": "f79de686a41710d0568fba8df65397da7941fd27a6084dd808e59a0344684192",
+          "bytes": 438
+        },
+        {
+          "path": "data/Map001.json",
+          "sha256": "b9c9af1bfbb3919a6b47a06f5c1159b7f262103c7925a88c18135009ca1f0534",
+          "bytes": 9524
+        },
+        {
+          "path": "data/MapInfos.json",
+          "sha256": "a070d7aa9b3f07a644fbdc2b62589b5306e71dddb6e1de2af49012f93b0f1a1a",
+          "bytes": 154
+        },
+        {
+          "path": "data/Skills.json",
+          "sha256": "f9cc4d5ac4a31eebd737f9bf634a072bbecb5144f72ca543c7feb5cad14128e7",
+          "bytes": 428
+        },
+        {
+          "path": "data/States.json",
+          "sha256": "e9956ffec34f706a96d4720e939087cf6573beadd1adb08870a7d7b3febb36ec",
+          "bytes": 424
+        },
+        {
+          "path": "data/System.json",
+          "sha256": "308f3fea8d70d59559ed11e5fbe88883d777ff44201165fefc3b63299fc87ca0",
+          "bytes": 3976
+        },
+        {
+          "path": "data/Tilesets.json",
+          "sha256": "a191f7df8a6cf3ff42bcbebdedf2aed1e734c217b2d83bdd3184ca7ba669e0e5",
+          "bytes": 278
+        },
+        {
+          "path": "data/Troops.json",
+          "sha256": "0ab51da848ab643bd112ebc13af22ac416d92ae515c4a986115c831b1f570eaa",
+          "bytes": 595
+        },
+        {
+          "path": "data/Weapons.json",
+          "sha256": "89141b84326fc9adec6d0cdbb46ca4c47b8f8d1692026d1b4cb18f8a28594609",
+          "bytes": 345
+        },
+        {
+          "path": "floe-inputs.json",
+          "sha256": "6ea915373ef18dce100f0c4b17f748a15afb0dd23cf05b80877d1900a2ecb593",
+          "bytes": 719
+        },
+        {
+          "path": "fonts/gamefont.css",
+          "sha256": "c5aa6ff092adcf9ff1203b859d6d9ca511f2a386d26857fdd41deef53cbd945c",
+          "bytes": 139
+        },
+        {
+          "path": "img/characters/FloeHero.png",
+          "sha256": "5f04140f9db98a5503cc8f785b0a4a05bef0228cac6480cc78dd1fa8bebe9c2c",
+          "bytes": 823
+        },
+        {
+          "path": "img/system/IconSet.png",
+          "sha256": "3da6b2ed3170bcc0818929166cc8086c3d1238ba0890172a177fbe58da914e9c",
+          "bytes": 2048
+        },
+        {
+          "path": "img/system/Window.png",
+          "sha256": "7f211821ead5f6fc6bdd26e9d6453222c94e0fadd526e3d420b03dce4a8e3a82",
+          "bytes": 546
+        },
+        {
+          "path": "img/tilesets/FloeTiles.png",
+          "sha256": "a3b12c0900692d15fd3689f50f1cf0c20ffcd44484f3e6b2cfe49226271a72ff",
+          "bytes": 7068
+        },
+        {
+          "path": "js/plugins/FloeStarter.js",
+          "sha256": "489f29007eaf0edc01c2e1127308c5ab9fb099ff31643874474d0c5d2b228492",
+          "bytes": 2025
+        },
+        {
+          "path": "js/plugins.js",
+          "sha256": "3d2dccb35d75abef9f47af906cded47b8f27d5ebbdaf2d91be89d0db24922482",
+          "bytes": 296
+        },
+        {
+          "path": "licenses/ENGINE-NOTES.md",
+          "sha256": "dc53c75130c71dfcde662dd9a94b5076ef91fd3ce123e5ea01408cc31d289376",
+          "bytes": 416
+        },
+        {
+          "path": "licenses/FLOE-STARTER-MIT.txt",
+          "sha256": "ef0597ad9e20dd323562f13bd781bd24056a7a892fa355b683993049d06b225e",
+          "bytes": 1074
+        }
+      ],
+      "expectedFiles": [
+        "Game.rmmzproject",
+        "README.md",
+        "data/Actors.json",
+        "data/Animations.json",
+        "data/Armors.json",
+        "data/Classes.json",
+        "data/CommonEvents.json",
+        "data/Enemies.json",
+        "data/Items.json",
+        "data/Map001.json",
+        "data/MapInfos.json",
+        "data/Skills.json",
+        "data/States.json",
+        "data/System.json",
+        "data/Tilesets.json",
+        "data/Troops.json",
+        "data/Weapons.json",
+        "floe-inputs.json",
+        "fonts/gamefont.css",
+        "img/characters/FloeHero.png",
+        "img/system/IconSet.png",
+        "img/system/Window.png",
+        "img/tilesets/FloeTiles.png",
+        "js/plugins.js",
+        "js/plugins/FloeStarter.js",
+        "licenses/ENGINE-NOTES.md",
+        "licenses/FLOE-STARTER-MIT.txt"
+      ],
+      "prerequisites": [
+        {
+          "kind": "editor",
+          "name": "RPG Maker MZ",
+          "version": "1.0.0+",
+          "url": "https://www.rpgmakerweb.com/",
+          "notes": "Needed to open/edit and to supply the licensed MZ core runtime.",
+          "requiredFor": [
+            "edit",
+            "build",
+            "play"
+          ]
+        }
+      ],
+      "notes": [
+        "Standard data/*.json and project paths are used.",
+        "No rmmz_*.js, RTP, fonts or sample commercial art is bundled.",
+        "The original Floe plugin uses only documented MZ APIs."
+      ],
+      "defaultInput": {
+        "schemaVersion": 1,
+        "engine": "rpgMakerMZ",
+        "movement": {
+          "left": [
+            "left"
+          ],
+          "right": [
+            "right"
+          ],
+          "up": [
+            "up"
+          ],
+          "down": [
+            "down"
+          ]
+        },
+        "buttons": [
+          {
+            "id": "confirm",
+            "label": "Z (also Enter/Space)",
+            "keys": [
+              "z"
+            ]
+          },
+          {
+            "id": "cancel",
+            "label": "X (also Esc)",
+            "keys": [
+              "x"
+            ]
+          },
+          {
+            "id": "actionA",
+            "label": "Shift",
+            "keys": [
+              "shift"
+            ]
+          },
+          {
+            "id": "save",
+            "label": "F5",
+            "keys": [
+              "f5"
+            ]
+          },
+          {
+            "id": "load",
+            "label": "F9",
+            "keys": [
+              "f9"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "engine": "phaser",
+      "displayName": "Phaser",
+      "starterVersion": "1.0.0",
+      "entry": "index.html",
+      "webEntry": "index.html",
+      "readiness": "runtimePackRequired",
+      "sourceLicense": "MIT (original Floe starter files)",
+      "engineLicense": "MIT (pinned engine runtime pack)",
+      "templateKind": "runtimePack",
+      "provider": "FloeGameKit.GamePhaserTemplate.create(at:resources:title:)",
+      "runtimePack": {
+        "id": "phaser-3.90.0",
+        "engineVersion": "3.90.0",
+        "license": "MIT",
+        "upstream": "https://github.com/phaserjs/phaser",
+        "sourceCommit": "a9965625f49cf366584f454556b039e06e8adad6",
+        "files": [
+          {
+            "path": "phaser.js",
+            "sha256": "2e1bc84f885ab5c62b11ebb72492bb334159ac5678b664c7cb2942fc979e44e3",
+            "bytes": 1086308
+          },
+          {
+            "path": "LICENSE.phaser.md",
+            "sha256": "c3123cd25de4eccf1fd5a5a0a6fc872299116d1dbbb48b00f2554a4c35220a65",
+            "bytes": 1100
+          },
+          {
+            "path": "THIRD-PARTY-NOTICES.txt",
+            "sha256": "fd57bb945a3993569b6eae1833d25e9eb1e2a988cca541ba8dc770b0b7b7792b",
+            "bytes": 14546
+          }
+        ]
+      },
+      "expectedFiles": [
+        "floe-inputs.json",
+        "game-config.json",
+        "game.js",
+        "index.html",
+        "licenses/FLOE-STARTER-MIT.txt",
+        "licenses/PHASER-MIT.txt",
+        "licenses/THIRD-PARTY-NOTICES.txt",
+        "package.json",
+        "vendor/phaser.js"
+      ],
+      "files": [],
+      "prerequisites": [
+        {
+          "kind": "resourcePack",
+          "name": "Phaser",
+          "version": "3.90.0",
+          "url": "https://github.com/phaserjs/phaser",
+          "notes": "The existing prepared Phaser 3.90.0 Arcade pack is required; it is MIT and pinned.",
+          "requiredFor": [
+            "build",
+            "play"
+          ]
+        }
+      ],
+      "notes": [
+        "The starter is the existing original Phaser template, not a new mock.",
+        "The engine pack is verified by SHA-256 before files are written."
+      ],
+      "defaultInput": {
+        "schemaVersion": 1,
+        "engine": "phaser",
+        "movement": {
+          "left": [
+            "left"
+          ],
+          "right": [
+            "right"
+          ],
+          "up": [
+            "up"
+          ],
+          "down": [
+            "down"
+          ]
+        },
+        "buttons": []
+      },
+      "sourcePins": [
+        "FloeGameKit/Sources/FloeGameCore/GamePhaserTemplate.swift",
+        "phaser 3.90.0 a9965625f49cf366584f454556b039e06e8adad6"
+      ]
+    },
+    {
+      "engine": "kaplay",
+      "displayName": "KAPLAY",
+      "starterVersion": "1.0.0",
+      "entry": "index.html",
+      "webEntry": "index.html",
+      "readiness": "runtimePackRequired",
+      "sourceLicense": "MIT (original Floe starter files)",
+      "engineLicense": "MIT (pinned engine runtime pack)",
+      "templateKind": "runtimePack",
+      "provider": "FloeGameStarterKit.RuntimePackTemplate",
+      "runtimePack": {
+        "id": "kaplay-3001.0.0",
+        "engineVersion": "3001.0.0",
+        "license": "MIT",
+        "upstream": "https://github.com/kaplayjs/kaplay",
+        "sourceCommit": "f41e7d0bd9ab3d6de8ef29bc7ce20fbfb619223c",
+        "files": [
+          {
+            "path": "runtime/engine.js",
+            "sha256": "d772c29d33ce675981976de8385fa632d286de282c09290848a213bc2f5e50a6",
+            "bytes": 191767
+          },
+          {
+            "path": "licenses/ENGINE.txt",
+            "sha256": "4d8513caec72ba8f202fa550f10de67bef19fc9ab8739403bd6d76d7788247d9",
+            "bytes": 1072
+          }
+        ]
+      },
+      "expectedFiles": [
+        "common.js",
+        "engine-provenance.json",
+        "floe-inputs.json",
+        "game.js",
+        "game.json",
+        "index.html",
+        "licenses/ENGINE.txt",
+        "licenses/FLOE-STARTER-MIT.txt",
+        "package.json",
+        "runtime/engine.js"
+      ],
+      "files": [],
+      "prerequisites": [
+        {
+          "kind": "resourcePack",
+          "name": "KAPLAY",
+          "version": "3001.0.0",
+          "url": "https://github.com/kaplayjs/kaplay",
+          "notes": "The pinned engine runtime pack is required and SHA-256 verified before writing.",
+          "requiredFor": [
+            "build",
+            "play"
+          ]
+        },
+        {
+          "kind": "runtime",
+          "name": "prepared Web engine pack",
+          "version": "kaplay-3001.0.0",
+          "url": "https://github.com/kaplayjs/kaplay",
+          "notes": "Use the existing GameEnginePackStore prepared pack; KAPLAY is pinned to 3001.0.0, never 3001.0.19.",
+          "requiredFor": [
+            "build",
+            "play"
+          ]
+        }
+      ],
+      "notes": [
+        "Uses the reviewed MIT/Apache engine bytes from the exact pinned pack.",
+        "game.js/common.js/index.html are the original Floe starter files copied with hashes."
+      ],
+      "defaultInput": {
+        "schemaVersion": 1,
+        "engine": "kaplay",
+        "movement": {
+          "left": [
+            "left"
+          ],
+          "right": [
+            "right"
+          ],
+          "up": [
+            "up"
+          ],
+          "down": [
+            "down"
+          ]
+        },
+        "buttons": []
+      },
+      "sourcePins": [
+        "FloeGameRuntimeKit/Sources/FloeGameRuntime/Resources/Templates",
+        "kaplay-3001.0.0"
+      ]
+    },
+    {
+      "engine": "godot",
+      "displayName": "Godot",
+      "starterVersion": "1.0.0",
+      "entry": "project.godot",
+      "webEntry": "index.html",
+      "readiness": "sourceWithBuildTool",
+      "sourceLicense": "MIT (original GDScript starter and project files)",
+      "engineLicense": "Godot Engine 4.7.2: MIT; user supplies the editor/export toolchain",
+      "templateKind": "static",
+      "templateRoot": "Templates/godot",
+      "files": [
+        {
+          "path": "GODOT-LICENSE.txt",
+          "sha256": "b0435e3b3e4e55238f05f4b306f30524a1b2e20147810d436eaa554fa6855c80",
+          "bytes": 1149
+        },
+        {
+          "path": "GODOT-THIRD-PARTY.txt",
+          "sha256": "cb1980c88089573bcacd7221d777c689bb8bbd778799f24c27fca0fe5f774d6d",
+          "bytes": 100108
+        },
+        {
+          "path": "LICENSE-FLOE-STARTER-MIT.txt",
+          "sha256": "ef0597ad9e20dd323562f13bd781bd24056a7a892fa355b683993049d06b225e",
+          "bytes": 1074
+        },
+        {
+          "path": "bridge.js",
+          "sha256": "4266a4bfa433cd5da4037f0b24dac69ef94c49fec1cca5bab5cb195f866ac34b",
+          "bytes": 1281
+        },
+        {
+          "path": "export_presets.cfg",
+          "sha256": "5ba7e2f94ba0c8877f50b668470316e2874823bda9f0091f40f07c3009d163e1",
+          "bytes": 506
+        },
+        {
+          "path": "game.json",
+          "sha256": "61e6044d730c853c97f317bf990fba25b8a5f924bcbf3ee335fc03910a28f532",
+          "bytes": 98
+        },
+        {
+          "path": "main.gd",
+          "sha256": "2cbe11cb36428eb47d103f7c0620fdb4823038df559d869ce1271c2128cc337a",
+          "bytes": 3900
+        },
+        {
+          "path": "main.tscn",
+          "sha256": "ed94543090ffe02e1848881d1920e508d9ab80970410b0fa2aad2e1900e70620",
+          "bytes": 442
+        },
+        {
+          "path": "project.godot",
+          "sha256": "fccca6952cb65db45dfc8549fe59fc01fea557fe7821709640ec53416251efb4",
+          "bytes": 583
+        }
+      ],
+      "expectedFiles": [
+        "GODOT-LICENSE.txt",
+        "GODOT-THIRD-PARTY.txt",
+        "LICENSE-FLOE-STARTER-MIT.txt",
+        "bridge.js",
+        "export_presets.cfg",
+        "game.json",
+        "main.gd",
+        "main.tscn",
+        "project.godot"
+      ],
+      "prerequisites": [
+        {
+          "kind": "editor",
+          "name": "Godot Engine",
+          "version": "4.7.2.stable",
+          "url": "https://godotengine.org/",
+          "notes": "Needed to open, edit and export the Web build.",
+          "requiredFor": [
+            "edit",
+            "build"
+          ]
+        }
+      ],
+      "notes": [
+        "Original GDScript game and bridge; no native Godot executable is bundled.",
+        "Web export is performed by the user's pinned Godot toolchain."
+      ],
+      "defaultInput": {
+        "schemaVersion": 1,
+        "engine": "godot",
+        "movement": {
+          "left": [
+            "left"
+          ],
+          "right": [
+            "right"
+          ],
+          "up": [
+            "up"
+          ],
+          "down": [
+            "down"
+          ]
+        },
+        "buttons": []
+      }
+    },
+    {
+      "engine": "babylon",
+      "displayName": "Babylon.js",
+      "starterVersion": "1.0.0",
+      "entry": "index.html",
+      "webEntry": "index.html",
+      "readiness": "runtimePackRequired",
+      "sourceLicense": "MIT (original Floe starter files)",
+      "engineLicense": "Apache-2.0 (pinned engine runtime pack)",
+      "templateKind": "runtimePack",
+      "provider": "FloeGameStarterKit.RuntimePackTemplate",
+      "runtimePack": {
+        "id": "babylon-9.35.0",
+        "engineVersion": "9.35.0",
+        "license": "Apache-2.0",
+        "upstream": "https://github.com/BabylonJS/Babylon.js",
+        "sourceCommit": "00bc37c78dc519e229a709beebd5ed2099e8aba8",
+        "files": [
+          {
+            "path": "runtime/engine.js",
+            "sha256": "e7489b1ba1044cb296b6cad3a5732309cc18fdc6873fd009dc585de34e4388e2",
+            "bytes": 8876104
+          },
+          {
+            "path": "licenses/ENGINE.txt",
+            "sha256": "9362ea9ea17cb221a20cbbd63f404710834cc273d2a9a7b60314fd68ab702cd6",
+            "bytes": 9226
+          },
+          {
+            "path": "licenses/NOTICE.md",
+            "sha256": "225463efd81558f120a6e0cdd7f4c1007ed486006d1228c4849fee0c49715823",
+            "bytes": 46
+          }
+        ]
+      },
+      "expectedFiles": [
+        "common.js",
+        "engine-provenance.json",
+        "floe-inputs.json",
+        "game.js",
+        "game.json",
+        "index.html",
+        "licenses/ENGINE.txt",
+        "licenses/FLOE-STARTER-MIT.txt",
+        "package.json",
+        "runtime/engine.js"
+      ],
+      "files": [],
+      "prerequisites": [
+        {
+          "kind": "resourcePack",
+          "name": "Babylon.js",
+          "version": "9.35.0",
+          "url": "https://github.com/BabylonJS/Babylon.js",
+          "notes": "The pinned engine runtime pack is required and SHA-256 verified before writing.",
+          "requiredFor": [
+            "build",
+            "play"
+          ]
+        },
+        {
+          "kind": "runtime",
+          "name": "prepared Web engine pack",
+          "version": "babylon-9.35.0",
+          "url": "https://github.com/BabylonJS/Babylon.js",
+          "notes": "Use the existing GameEnginePackStore prepared pack; KAPLAY is pinned to 3001.0.0, never 3001.0.19.",
+          "requiredFor": [
+            "build",
+            "play"
+          ]
+        }
+      ],
+      "notes": [
+        "Uses the reviewed MIT/Apache engine bytes from the exact pinned pack.",
+        "game.js/common.js/index.html are the original Floe starter files copied with hashes."
+      ],
+      "defaultInput": {
+        "schemaVersion": 1,
+        "engine": "babylon",
+        "movement": {
+          "left": [
+            "left"
+          ],
+          "right": [
+            "right"
+          ],
+          "up": [
+            "up"
+          ],
+          "down": [
+            "down"
+          ]
+        },
+        "buttons": []
+      },
+      "sourcePins": [
+        "FloeGameRuntimeKit/Sources/FloeGameRuntime/Resources/Templates",
+        "babylon-9.35.0"
+      ]
+    },
+    {
+      "engine": "playcanvas",
+      "displayName": "PlayCanvas",
+      "starterVersion": "1.0.0",
+      "entry": "index.html",
+      "webEntry": "index.html",
+      "readiness": "runtimePackRequired",
+      "sourceLicense": "MIT (original Floe starter files)",
+      "engineLicense": "MIT (pinned engine runtime pack)",
+      "templateKind": "runtimePack",
+      "provider": "FloeGameStarterKit.RuntimePackTemplate",
+      "runtimePack": {
+        "id": "playcanvas-2.24.0",
+        "engineVersion": "2.24.0",
+        "license": "MIT",
+        "upstream": "https://github.com/playcanvas/engine",
+        "sourceCommit": "0d07e104eef005a7d678c87a290206dcbcfecc84",
+        "files": [
+          {
+            "path": "runtime/engine.js",
+            "sha256": "6151c8a059ea40779a39ee3f1ccbbc3a9efb9c63e5b276a7bede915a1a3bbd7b",
+            "bytes": 4689849
+          },
+          {
+            "path": "licenses/ENGINE.txt",
+            "sha256": "42fa51ddd556be151a29f381fb97ee975825dcc454e805ea3ea9c079cca04d34",
+            "bytes": 1064
+          }
+        ]
+      },
+      "expectedFiles": [
+        "common.js",
+        "engine-provenance.json",
+        "floe-inputs.json",
+        "game.js",
+        "game.json",
+        "index.html",
+        "licenses/ENGINE.txt",
+        "licenses/FLOE-STARTER-MIT.txt",
+        "package.json",
+        "runtime/engine.js"
+      ],
+      "files": [],
+      "prerequisites": [
+        {
+          "kind": "resourcePack",
+          "name": "PlayCanvas",
+          "version": "2.24.0",
+          "url": "https://github.com/playcanvas/engine",
+          "notes": "The pinned engine runtime pack is required and SHA-256 verified before writing.",
+          "requiredFor": [
+            "build",
+            "play"
+          ]
+        },
+        {
+          "kind": "runtime",
+          "name": "prepared Web engine pack",
+          "version": "playcanvas-2.24.0",
+          "url": "https://github.com/playcanvas/engine",
+          "notes": "Use the existing GameEnginePackStore prepared pack; KAPLAY is pinned to 3001.0.0, never 3001.0.19.",
+          "requiredFor": [
+            "build",
+            "play"
+          ]
+        }
+      ],
+      "notes": [
+        "Uses the reviewed MIT/Apache engine bytes from the exact pinned pack.",
+        "game.js/common.js/index.html are the original Floe starter files copied with hashes."
+      ],
+      "defaultInput": {
+        "schemaVersion": 1,
+        "engine": "playcanvas",
+        "movement": {
+          "left": [
+            "left"
+          ],
+          "right": [
+            "right"
+          ],
+          "up": [
+            "up"
+          ],
+          "down": [
+            "down"
+          ]
+        },
+        "buttons": []
+      },
+      "sourcePins": [
+        "FloeGameRuntimeKit/Sources/FloeGameRuntime/Resources/Templates",
+        "playcanvas-2.24.0"
+      ]
+    },
+    {
+      "engine": "love",
+      "displayName": "LÖVE",
+      "starterVersion": "1.0.0",
+      "entry": "main.lua",
+      "webEntry": "index.html",
+      "readiness": "sourceWithBuildTool",
+      "sourceLicense": "MIT (original Floe Lua starter)",
+      "engineLicense": "LÖVE 11.4 zlib; love.js 11.4.1 MIT plus component notices",
+      "templateKind": "delegated",
+      "provider": "FloeGamePortableKit.GamePortableTemplateCatalog.install(.love)",
+      "expectedFiles": [
+        "LICENSE-FLOE-STARTER-MIT.txt",
+        "conf.lua",
+        "floe-inputs.json",
+        "main.lua"
+      ],
+      "files": [],
+      "prerequisites": [
+        {
+          "kind": "buildTool",
+          "name": "love.js",
+          "version": "11.4.1",
+          "url": "https://github.com/Davidobot/love.js",
+          "notes": "The pinned compatible runtime and its complete source/relink notices are required for Web packaging.",
+          "requiredFor": [
+            "build",
+            "play"
+          ]
+        }
+      ],
+      "notes": [
+        "Original LÖVE 11.4 source; the template is not a Web artifact by itself.",
+        "Save/flush and component notices are supplied by the existing portable kit."
+      ],
+      "defaultInput": {
+        "schemaVersion": 1,
+        "engine": "love",
+        "movement": {
+          "left": [
+            "left"
+          ],
+          "right": [
+            "right"
+          ],
+          "up": [
+            "up"
+          ],
+          "down": [
+            "down"
+          ]
+        },
+        "buttons": [
+          {
+            "id": "confirm",
+            "label": "Z (also Space)",
+            "keys": [
+              "z"
+            ]
+          },
+          {
+            "id": "cancel",
+            "label": "X",
+            "keys": [
+              "x"
+            ]
+          },
+          {
+            "id": "action1",
+            "label": "S",
+            "keys": [
+              "s"
+            ]
+          },
+          {
+            "id": "action2",
+            "label": "L",
+            "keys": [
+              "l"
+            ]
+          },
+          {
+            "id": "action3",
+            "label": "Esc",
+            "keys": [
+              "escape"
+            ]
+          }
+        ]
+      },
+      "sourcePins": [
+        "FloeAgent/Modules/FloeGamePortableKit",
+        "love.js 11.4.1 8f9a7b85da9149b6d4d0af46442ead1e71f76477"
+      ]
+    },
+    {
+      "engine": "renpy",
+      "displayName": "Ren'Py",
+      "starterVersion": "1.0.0",
+      "entry": "game/script.rpy",
+      "webEntry": "index.html",
+      "readiness": "sourceWithBuildTool",
+      "sourceLicense": "MIT (original Floe Ren'Py starter script)",
+      "engineLicense": "Ren'Py 8.5.3 MIT plus LGPL component addendum; user supplies the SDK/Web build",
+      "templateKind": "delegated",
+      "provider": "FloeGamePortableKit.GamePortableTemplateCatalog.install(.renpy)",
+      "expectedFiles": [
+        "LICENSE-FLOE-STARTER-MIT.txt",
+        "floe-inputs.json",
+        "game/options.rpy",
+        "game/screens.rpy",
+        "game/script.rpy"
+      ],
+      "files": [],
+      "prerequisites": [
+        {
+          "kind": "buildTool",
+          "name": "Ren'Py SDK",
+          "version": "8.5.3.26051504",
+          "url": "https://www.renpy.org/",
+          "notes": "Official launcher web_build and the retained LGPL source/relink records are required.",
+          "requiredFor": [
+            "build",
+            "play"
+          ]
+        }
+      ],
+      "notes": [
+        "The current portable-final Ren'Py template already contains Save/F5, Load/F9 and Continue.",
+        "F5/F9 are explicit original project bindings, not a universal Ren'Py default."
+      ],
+      "defaultInput": {
+        "schemaVersion": 1,
+        "engine": "renpy",
+        "movement": {
+          "left": [
+            "left"
+          ],
+          "right": [
+            "right"
+          ],
+          "up": [
+            "up"
+          ],
+          "down": [
+            "down"
+          ]
+        },
+        "buttons": [
+          {
+            "id": "confirm",
+            "label": "Enter (also Space)",
+            "keys": [
+              "enter"
+            ]
+          },
+          {
+            "id": "cancel",
+            "label": "Esc",
+            "keys": [
+              "escape"
+            ]
+          },
+          {
+            "id": "action1",
+            "label": "Ctrl",
+            "keys": [
+              "control"
+            ]
+          },
+          {
+            "id": "action2",
+            "label": "Tab",
+            "keys": [
+              "tab"
+            ]
+          },
+          {
+            "id": "action3",
+            "label": "PageUp",
+            "keys": [
+              "pageUp"
+            ]
+          },
+          {
+            "id": "action4",
+            "label": "PageDown",
+            "keys": [
+              "pageDown"
+            ]
+          },
+          {
+            "id": "quicksave",
+            "label": "F5",
+            "keys": [
+              "f5"
+            ]
+          },
+          {
+            "id": "quickload",
+            "label": "F9",
+            "keys": [
+              "f9"
+            ]
+          }
+        ]
+      },
+      "sourcePins": [
+        "FloeAgent/Modules/FloeGamePortableKit",
+        "Ren'Py 8.5.3.26051504",
+        "Ren'Py screens.rpy corrected focus: 89a523a5fe5ec1dfcc1de54aefcfb78b44ee25170db8d6f92a34796de109fb8b"
+      ]
+    },
+    {
+      "engine": "tic80",
+      "displayName": "TIC-80",
+      "starterVersion": "1.0.0",
+      "entry": "cart.tic",
+      "webEntry": "index.html",
+      "readiness": "sourceWithBuildTool",
+      "sourceLicense": "MIT (original Floe cartridge code)",
+      "engineLicense": "TIC-80 1.4.1 MIT plus retained third-party/SOURCE-OFFER notices; user supplies the player pack",
+      "templateKind": "delegated",
+      "provider": "FloeGameNarrativeKit.GameTIC80Adapter.createProject",
+      "expectedFiles": [
+        "cart.tic",
+        "floe-inputs.json",
+        "licenses/FLOE-STARTER-MIT.txt",
+        "licenses/LICENSE.tic80.txt",
+        "project.json"
+      ],
+      "files": [],
+      "prerequisites": [
+        {
+          "kind": "resourcePack",
+          "name": "TIC-80 Web player",
+          "version": "1.4.1",
+          "url": "https://github.com/nesbox/TIC-80",
+          "notes": "The pinned player pack and its retained source-offer/notices are required for artifact build.",
+          "requiredFor": [
+            "build",
+            "play"
+          ]
+        }
+      ],
+      "notes": [
+        "Real .tic chunk container with CODE/LANG chunks; unknown chunks are preserved on import.",
+        "The starter cartridge is original; no commercial cartridge or sample art is bundled."
+      ],
+      "defaultInput": {
+        "schemaVersion": 1,
+        "engine": "tic80",
+        "movement": {
+          "left": [
+            "left"
+          ],
+          "right": [
+            "right"
+          ],
+          "up": [
+            "up"
+          ],
+          "down": [
+            "down"
+          ]
+        },
+        "buttons": [
+          {
+            "id": "confirm",
+            "label": "Z",
+            "keys": [
+              "z"
+            ]
+          },
+          {
+            "id": "cancel",
+            "label": "X",
+            "keys": [
+              "x"
+            ]
+          },
+          {
+            "id": "action3",
+            "label": "A",
+            "keys": [
+              "a"
+            ]
+          },
+          {
+            "id": "action4",
+            "label": "S",
+            "keys": [
+              "s"
+            ]
+          }
+        ]
+      },
+      "sourcePins": [
+        "FloeAgent/Modules/FloeGameNarrativeKit",
+        "TIC-80 1.4.1"
+      ]
+    },
+    {
+      "engine": "ink",
+      "displayName": "ink / inkjs",
+      "starterVersion": "1.0.0",
+      "entry": "story.ink",
+      "webEntry": "index.html",
+      "readiness": "sourceWithBuildTool",
+      "sourceLicense": "MIT (original Floe story)",
+      "engineLicense": "inkjs 2.4.0 MIT; user supplies the pinned compiler/runtime pack",
+      "templateKind": "delegated",
+      "provider": "FloeGameNarrativeKit.GameInkAdapter.createProject",
+      "expectedFiles": [
+        "floe-inputs.json",
+        "licenses/FLOE-STARTER-MIT.txt",
+        "licenses/INKJS-MIT.txt",
+        "project.json",
+        "story.ink"
+      ],
+      "files": [],
+      "prerequisites": [
+        {
+          "kind": "resourcePack",
+          "name": "inkjs",
+          "version": "2.4.0",
+          "url": "https://www.npmjs.com/package/inkjs",
+          "notes": "The pinned inkjs compiler/player pack is required to build the Web artifact.",
+          "requiredFor": [
+            "build",
+            "play"
+          ]
+        }
+      ],
+      "notes": [
+        "Plain standard ink source; imported INCLUDE graphs are bounded and canonicalized.",
+        "The starter story is original and contains no commercial content."
+      ],
+      "defaultInput": {
+        "schemaVersion": 1,
+        "engine": "ink",
+        "movement": {
+          "left": [],
+          "right": [],
+          "up": [
+            "up"
+          ],
+          "down": [
+            "down"
+          ]
+        },
+        "buttons": [
+          {
+            "id": "confirm",
+            "label": "Enter",
+            "keys": [
+              "enter"
+            ]
+          }
+        ]
+      },
+      "sourcePins": [
+        "FloeAgent/Modules/FloeGameNarrativeKit",
+        "inkjs 2.4.0"
+      ]
+    },
+    {
+      "engine": "twine",
+      "displayName": "Twine / SugarCube",
+      "starterVersion": "1.0.0",
+      "entry": "story.twine.json",
+      "webEntry": "index.html",
+      "readiness": "sourceWithBuildTool",
+      "sourceLicense": "MIT (original Floe story)",
+      "engineLicense": "SugarCube 2.37.3 BSD-2-Clause plus bundled MIT/Unlicense notices; user supplies the pinned pack",
+      "templateKind": "delegated",
+      "provider": "FloeGameNarrativeKit.GameTwineAdapter.createProject",
+      "expectedFiles": [
+        "floe-inputs.json",
+        "licenses/FLOE-STARTER-MIT.txt",
+        "licenses/LICENSE.sugarcube.txt",
+        "project.json",
+        "story.twine.json"
+      ],
+      "files": [],
+      "prerequisites": [
+        {
+          "kind": "resourcePack",
+          "name": "SugarCube",
+          "version": "2.37.3",
+          "url": "https://github.com/tmedwards/sugarcube-2/releases/tag/v2.37.3",
+          "notes": "The pinned SugarCube format and its complete bundled notices are required for the Web artifact.",
+          "requiredFor": [
+            "build",
+            "play"
+          ]
+        }
+      ],
+      "notes": [
+        "Real Twine 2 story model with a standard tw-storydata export.",
+        "Original Floe passages; no third-party story content."
+      ],
+      "defaultInput": {
+        "schemaVersion": 1,
+        "engine": "twine",
+        "movement": {
+          "left": [],
+          "right": [],
+          "up": [
+            "up"
+          ],
+          "down": [
+            "down"
+          ]
+        },
+        "buttons": [
+          {
+            "id": "confirm",
+            "label": "Enter",
+            "keys": [
+              "enter"
+            ]
+          }
+        ]
+      },
+      "sourcePins": [
+        "FloeAgent/Modules/FloeGameNarrativeKit",
+        "SugarCube 2.37.3"
+      ]
+    },
+    {
+      "engine": "gdevelop",
+      "displayName": "GDevelop",
+      "starterVersion": "1.0.0",
+      "entry": "game.json",
+      "webEntry": "index.html",
+      "readiness": "sourceWithBuildTool",
+      "sourceLicense": "MIT (original Floe project JSON and procedural art)",
+      "engineLicense": "GDevelop 5.6.287 MIT runtime/export; user supplies the pinned GDevelop toolchain",
+      "templateKind": "delegated",
+      "provider": "FloeGameGDevelopKit.GameGDevelopTemplate.makeProject",
+      "expectedFiles": [
+        "assets/floe_orb.png",
+        "floe-inputs.json",
+        "game.json",
+        "licenses/FLOE-STARTER-MIT.txt",
+        "licenses/GDEVELOP-THIRD-PARTY-NOTICES.txt"
+      ],
+      "files": [],
+      "prerequisites": [
+        {
+          "kind": "buildTool",
+          "name": "GDevelop",
+          "version": "5.6.287",
+          "url": "https://gdevelop.io/",
+          "notes": "The official GDevelop exporter/runtime is required to produce the Web artifact.",
+          "requiredFor": [
+            "build",
+            "play"
+          ]
+        }
+      ],
+      "notes": [
+        "The project JSON shape was produced by official GDevelop Core 2.0.0-gd-v5.6.269.",
+        "The starter orb is a procedurally generated original PNG."
+      ],
+      "defaultInput": {
+        "schemaVersion": 1,
+        "engine": "gdevelop",
+        "movement": {
+          "left": [
+            "left"
+          ],
+          "right": [
+            "right"
+          ],
+          "up": [
+            "up"
+          ],
+          "down": [
+            "down"
+          ]
+        },
+        "buttons": [
+          {
+            "id": "reset",
+            "label": "Z",
+            "keys": [
+              "z"
+            ]
+          }
+        ]
+      },
+      "sourcePins": [
+        "FloeAgent/Modules/FloeGameGDevelopKit",
+        "GDevelop 5.6.287"
+      ]
+    },
+    {
+      "engine": "cocosCreator",
+      "displayName": "Cocos Creator",
+      "starterVersion": "1.0.0",
+      "entry": "assets/Scenes/Main.scene",
+      "webEntry": "build/web-mobile/index.html",
+      "readiness": "sourceWithEditor",
+      "sourceLicense": "MIT (original TypeScript, scene, metadata and synthetic orb)",
+      "engineLicense": "Cocos Creator 3.8.6: user-supplied editor and Web Mobile build support",
+      "templateKind": "static",
+      "templateRoot": "Templates/cocosCreator",
+      "files": [
+        {
+          "path": "README.md",
+          "sha256": "94bc122629193fc722d93b9f0d938ae68d80dffaa89241565f3193973f659f28",
+          "bytes": 783
+        },
+        {
+          "path": "assets/Scenes/Main.scene",
+          "sha256": "0a4940773febca587a368c5e9a8afe1934302113802a588dd76bc8be95311e44",
+          "bytes": 2948
+        },
+        {
+          "path": "assets/Scenes/Main.scene.meta",
+          "sha256": "d637206caf14fcc3cadcdc8fba157dbc7547f23f6b37a62efd52f8825c152901",
+          "bytes": 181
+        },
+        {
+          "path": "assets/Scenes.meta",
+          "sha256": "b1b9879a1ce75130db78100e84f05daad3df24b57e10cdf2d0b9c995fa4660eb",
+          "bytes": 224
+        },
+        {
+          "path": "assets/Textures/FloeOrb.png",
+          "sha256": "b5fc2e895a256287e111977e572a7549c10fdc05f64dd1f43446bda8dee6b788",
+          "bytes": 222
+        },
+        {
+          "path": "assets/Textures/FloeOrb.png.meta",
+          "sha256": "367d713adb92e76eab5e7b01f6ed3ff9843aad7f2d0e1bc2e19bdf6b01c932cf",
+          "bytes": 594
+        },
+        {
+          "path": "assets/Textures.meta",
+          "sha256": "0fb898bd0cb375d3e28ddf2b7c6214c16fc60b36e1e4766c0017bb24fc8be823",
+          "bytes": 224
+        },
+        {
+          "path": "assets/scripts/FloeStarter.ts",
+          "sha256": "4c047c393aba1255f1a2971d2c16a90b4a972427106e9d5f4b052ac4b629219f",
+          "bytes": 9549
+        },
+        {
+          "path": "assets/scripts/FloeStarter.ts.meta",
+          "sha256": "55f02fc817854bd6cea2ccd4ff71f4aebfcccc826e2ae8d2a35df1015d90914b",
+          "bytes": 260
+        },
+        {
+          "path": "assets/scripts.meta",
+          "sha256": "8344b8722b4d45b4bf2541ff686d951c1ec647af69e2b752d28e4e20a3d99e67",
+          "bytes": 224
+        },
+        {
+          "path": "floe-cocos-android.json",
+          "sha256": "3faa58dc32994a88fe7651eccb5b2ae1e698939becf508664438d30e0f29f894",
+          "bytes": 343
+        },
+        {
+          "path": "floe-cocos-build.json",
+          "sha256": "22d7d984ec4b236e9bc6a64893c0a6be1833855abc33c49d040338b5eb7d4c7c",
+          "bytes": 262
+        },
+        {
+          "path": "floe-inputs.json",
+          "sha256": "e6afac15f4ca8205f50ea2507f8d5cbad6bb7d214359287b1478252a6b60c697",
+          "bytes": 808
+        },
+        {
+          "path": "licenses/ENGINE-NOTES.md",
+          "sha256": "ad5368cfdf2c900a1317644e1d0f382f9dd8f921319573fb0a10df339a4f44dd",
+          "bytes": 350
+        },
+        {
+          "path": "licenses/FLOE-STARTER-MIT.txt",
+          "sha256": "ef0597ad9e20dd323562f13bd781bd24056a7a892fa355b683993049d06b225e",
+          "bytes": 1074
+        },
+        {
+          "path": "package.json",
+          "sha256": "956571feb2a9e771716bbf196f54da84dc380fd63436a62f01a3534642a6f51d",
+          "bytes": 169
+        },
+        {
+          "path": "settings/v2/packages/builder.json",
+          "sha256": "6b29da7b64490185c460bb9139440fcb82c3abde4c74a73a6a1d71877042f432",
+          "bytes": 186
+        },
+        {
+          "path": "settings/v2/packages/project.json",
+          "sha256": "21e1d548a563ee45d58dd2c73061eaaf86fd85757543b74e855139f1b037386c",
+          "bytes": 187
+        },
+        {
+          "path": "tsconfig.json",
+          "sha256": "7ed4324e0a6c9cbdc96acba05ebbde9b9dfa5f720e4f2dc1eeba4abff309e57e",
+          "bytes": 178
+        }
+      ],
+      "expectedFiles": [
+        "README.md",
+        "assets/Scenes.meta",
+        "assets/Scenes/Main.scene",
+        "assets/Scenes/Main.scene.meta",
+        "assets/Textures.meta",
+        "assets/Textures/FloeOrb.png",
+        "assets/Textures/FloeOrb.png.meta",
+        "assets/scripts.meta",
+        "assets/scripts/FloeStarter.ts",
+        "assets/scripts/FloeStarter.ts.meta",
+        "floe-cocos-android.json",
+        "floe-cocos-build.json",
+        "floe-inputs.json",
+        "licenses/ENGINE-NOTES.md",
+        "licenses/FLOE-STARTER-MIT.txt",
+        "package.json",
+        "settings/v2/packages/builder.json",
+        "settings/v2/packages/project.json",
+        "tsconfig.json"
+      ],
+      "prerequisites": [
+        {
+          "kind": "editor",
+          "name": "Cocos Creator",
+          "version": "3.8.6",
+          "url": "https://www.cocos.com/creator",
+          "notes": "Pinned supported editor; needed to open and build the project.",
+          "requiredFor": [
+            "edit",
+            "build"
+          ]
+        }
+      ],
+      "notes": [
+        "Package.json, assets/, settings/v2/packages/ and serialized .scene follow the 3.8 layout.",
+        "One custom TypeScript component builds a Canvas/Camera scene at runtime.",
+        "No Cocos engine binaries or third-party art are bundled; no editor/build was run here."
+      ],
+      "defaultInput": {
+        "schemaVersion": 1,
+        "engine": "cocosCreator",
+        "movement": {
+          "left": [
+            "left"
+          ],
+          "right": [
+            "right"
+          ],
+          "up": [
+            "up"
+          ],
+          "down": [
+            "down"
+          ]
+        },
+        "buttons": [
+          {
+            "id": "confirm",
+            "label": "Z (also Enter/Space)",
+            "keys": [
+              "z"
+            ]
+          },
+          {
+            "id": "cancel",
+            "label": "X (also Esc)",
+            "keys": [
+              "x"
+            ]
+          },
+          {
+            "id": "pageLeft",
+            "label": "Q",
+            "keys": [
+              "q"
+            ]
+          },
+          {
+            "id": "pageRight",
+            "label": "W",
+            "keys": [
+              "w"
+            ]
+          },
+          {
+            "id": "save",
+            "label": "F5",
+            "keys": [
+              "f5"
+            ]
+          },
+          {
+            "id": "load",
+            "label": "F9",
+            "keys": [
+              "f9"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "engine": "microStudio",
+      "displayName": "microStudio",
+      "starterVersion": "1.0.0",
+      "entry": "src/main.ms",
+      "webEntry": "index.html",
+      "readiness": "sourceWithBuildTool",
+      "sourceLicense": "MIT (original microScript source)",
+      "engineLicense": "microStudio 1.0.0 MIT runtime; user supplies the pinned prepared pack",
+      "templateKind": "delegated",
+      "provider": "FloeGameNarrativeKit.GameMicroStudioAdapter.createProject",
+      "expectedFiles": [
+        "floe-inputs.json",
+        "licenses/FLOE-STARTER-MIT.txt",
+        "licenses/LICENSE.microstudio.txt",
+        "project.json",
+        "src/main.ms"
+      ],
+      "files": [],
+      "prerequisites": [
+        {
+          "kind": "resourcePack",
+          "name": "microStudio runtime",
+          "version": "1.0.0",
+          "url": "https://github.com/pmgl/microstudio",
+          "notes": "Pinned official exporter/runtime scripts are required for the Web artifact.",
+          "requiredFor": [
+            "build",
+            "play"
+          ]
+        }
+      ],
+      "notes": [
+        "Original microScript 2.0 source; imported assets are preserved byte-exact.",
+        "No microStudio engine binary is bundled in the source project."
+      ],
+      "defaultInput": {
+        "schemaVersion": 1,
+        "engine": "microStudio",
+        "movement": {
+          "left": [
+            "left"
+          ],
+          "right": [
+            "right"
+          ],
+          "up": [
+            "up"
+          ],
+          "down": [
+            "down"
+          ]
+        },
+        "buttons": []
+      },
+      "sourcePins": [
+        "FloeAgent/Modules/FloeGameNarrativeKit",
+        "microStudio 80594cff51312b32db874a33d928876b23ab7718"
+      ]
+    },
+    {
+      "engine": "wasm4",
+      "displayName": "WASM-4",
+      "starterVersion": "1.0.0",
+      "entry": "cart.wasm",
+      "webEntry": "index.html",
+      "readiness": "sourceWithBuildTool",
+      "sourceLicense": "MIT (procedurally encoded original cartridge)",
+      "engineLicense": "WASM-4 2.7.1 ISC runtime plus Lit/OFL notices; user supplies the pinned pack",
+      "templateKind": "delegated",
+      "provider": "FloeGameNarrativeKit.GameWasm4Adapter.createProject",
+      "expectedFiles": [
+        "cart.wasm",
+        "floe-inputs.json",
+        "licenses/FLOE-STARTER-MIT.txt",
+        "licenses/LICENSE.wasm4.txt",
+        "project.json"
+      ],
+      "files": [],
+      "prerequisites": [
+        {
+          "kind": "resourcePack",
+          "name": "WASM-4 Web runtime",
+          "version": "2.7.1",
+          "url": "https://github.com/aduros/wasm4",
+          "notes": "The pinned web runtime and its notice bundle are required for artifact build.",
+          "requiredFor": [
+            "build",
+            "play"
+          ]
+        }
+      ],
+      "notes": [
+        "A real .wasm cartridge is emitted with the documented WASM-4 ABI.",
+        "The cartridge is original and under the 64 KiB upstream limit."
+      ],
+      "defaultInput": {
+        "schemaVersion": 1,
+        "engine": "wasm4",
+        "movement": {
+          "left": [
+            "left"
+          ],
+          "right": [
+            "right"
+          ],
+          "up": [
+            "up"
+          ],
+          "down": [
+            "down"
+          ]
+        },
+        "buttons": [
+          {
+            "id": "confirm",
+            "label": "X",
+            "keys": [
+              "x"
+            ]
+          },
+          {
+            "id": "cancel",
+            "label": "Z",
+            "keys": [
+              "z"
+            ]
+          }
+        ]
+      },
+      "sourcePins": [
+        "FloeAgent/Modules/FloeGameNarrativeKit",
+        "WASM-4 2.7.1"
+      ]
+    },
+    {
+      "engine": "unity",
+      "displayName": "Unity",
+      "starterVersion": "1.0.0",
+      "entry": "Assets/Scenes/Main.unity",
+      "webEntry": "Build/WebGL/index.html",
+      "readiness": "sourceWithEditor",
+      "sourceLicense": "MIT (original C#, scene and project metadata)",
+      "engineLicense": "Unity 2022.3 LTS and WebGL Build Support: user-supplied Unity license/editor",
+      "templateKind": "static",
+      "templateRoot": "Templates/unity",
+      "files": [
+        {
+          "path": "Assets/Editor/FloeWebBuild.cs",
+          "sha256": "18628be5bc0c865fa5335392788a262504a2abf052151f290fdbaaee7f3bf15b",
+          "bytes": 1275
+        },
+        {
+          "path": "Assets/Editor/FloeWebBuild.cs.meta",
+          "sha256": "a6a578f89c3203774ed5c4dee86b4ba79cf1917985558805d212424a455f82f5",
+          "bytes": 243
+        },
+        {
+          "path": "Assets/Editor.meta",
+          "sha256": "f99f9d70697a937a2627002c4c06e1824449d4056b2d1b7adb6b67605e36d7ad",
+          "bytes": 172
+        },
+        {
+          "path": "Assets/Scenes/Main.unity",
+          "sha256": "59bad3a62d21a5b9ee57a61faaba0ea704ae5a1fe40a24ddaf8d11f7332881b4",
+          "bytes": 3424
+        },
+        {
+          "path": "Assets/Scenes/Main.unity.meta",
+          "sha256": "5e284be3607fd0e39e41da83f3af6ac39b3cf373266024ae2314f7a3912c706a",
+          "bytes": 155
+        },
+        {
+          "path": "Assets/Scenes.meta",
+          "sha256": "c86ebcbce2bfa43a8c74fdb3f4c838084e8c3974d79fb99503c8eb745de50ef4",
+          "bytes": 172
+        },
+        {
+          "path": "Assets/Scripts/FloeStarter.cs",
+          "sha256": "409b56db3754ecedf0520c262677debce35ff975e1fdfb6d3af6dccbf7667739",
+          "bytes": 9107
+        },
+        {
+          "path": "Assets/Scripts/FloeStarter.cs.meta",
+          "sha256": "d03006ec081230402dc5281a1e6b3d7a620d3e7141ee92070f54dc364f3bf8a2",
+          "bytes": 243
+        },
+        {
+          "path": "Assets/Scripts.meta",
+          "sha256": "115a2ad8192e48e532264a321b722d81dbf7c04f93bfd900a46067c55ff9a626",
+          "bytes": 172
+        },
+        {
+          "path": "Packages/manifest.json",
+          "sha256": "cf7f2847f0967916deb50352ef88a56ade6d46d1aa567731c34ed0a3f5d162db",
+          "bytes": 412
+        },
+        {
+          "path": "ProjectSettings/EditorBuildSettings.asset",
+          "sha256": "48d497ec68815ba64a2b83be461372a47194557dd2d2d849c0c733ff66468337",
+          "bytes": 250
+        },
+        {
+          "path": "ProjectSettings/ProjectSettings.asset",
+          "sha256": "06a023fd7e18d8eb3a6bc7a1f8296d043f33e2a26a8ac55ea9fe390d45d56251",
+          "bytes": 17474
+        },
+        {
+          "path": "ProjectSettings/ProjectVersion.txt",
+          "sha256": "0e4e9bf829421b3c28f5a7cb7053770f9a88f5eb2bfcc58d56955e1f4ed5fd5d",
+          "bytes": 83
+        },
+        {
+          "path": "README.md",
+          "sha256": "6cfcbb09954c0b08677318c767cf1de38badb4748d5b4a5dedb27722cd9a99d5",
+          "bytes": 744
+        },
+        {
+          "path": "floe-inputs.json",
+          "sha256": "66173e375bf14b310e41d0e479df8692b45f96660b343815d5e400ba7d8be719",
+          "bytes": 801
+        },
+        {
+          "path": "licenses/ENGINE-NOTES.md",
+          "sha256": "a690f7b2541fa5d936d14bc294eaf239e26c4f16691bd3db2c82521c573f33cc",
+          "bytes": 343
+        },
+        {
+          "path": "licenses/FLOE-STARTER-MIT.txt",
+          "sha256": "ef0597ad9e20dd323562f13bd781bd24056a7a892fa355b683993049d06b225e",
+          "bytes": 1074
+        }
+      ],
+      "expectedFiles": [
+        "Assets/Editor.meta",
+        "Assets/Editor/FloeWebBuild.cs",
+        "Assets/Editor/FloeWebBuild.cs.meta",
+        "Assets/Scenes.meta",
+        "Assets/Scenes/Main.unity",
+        "Assets/Scenes/Main.unity.meta",
+        "Assets/Scripts.meta",
+        "Assets/Scripts/FloeStarter.cs",
+        "Assets/Scripts/FloeStarter.cs.meta",
+        "Packages/manifest.json",
+        "ProjectSettings/EditorBuildSettings.asset",
+        "ProjectSettings/ProjectSettings.asset",
+        "ProjectSettings/ProjectVersion.txt",
+        "README.md",
+        "floe-inputs.json",
+        "licenses/ENGINE-NOTES.md",
+        "licenses/FLOE-STARTER-MIT.txt"
+      ],
+      "prerequisites": [
+        {
+          "kind": "editor",
+          "name": "Unity",
+          "version": "2022.3.0f1",
+          "url": "https://unity.com/",
+          "notes": "Exact pinned LTS editor; needed to open, play and build.",
+          "requiredFor": [
+            "edit",
+            "build"
+          ]
+        },
+        {
+          "kind": "buildTool",
+          "name": "WebGL Build Support",
+          "version": "2022.3.0f1",
+          "url": "https://unity.com/",
+          "notes": "Editor module required for the WebGL build bootstrap.",
+          "requiredFor": [
+            "build"
+          ]
+        }
+      ],
+      "notes": [
+        "Original C# game bootstraps after scene load and draws with IMGUI.",
+        "ProjectVersion.txt, Packages/manifest.json, scene and editor build bootstrap are versioned.",
+        "No Unity engine binaries, packages, third-party assets or WebGL output are bundled.",
+        "No Unity or WebGL build was executed by this fixture generator."
+      ],
+      "defaultInput": {
+        "schemaVersion": 1,
+        "engine": "unity",
+        "movement": {
+          "left": [
+            "left"
+          ],
+          "right": [
+            "right"
+          ],
+          "up": [
+            "up"
+          ],
+          "down": [
+            "down"
+          ]
+        },
+        "buttons": [
+          {
+            "id": "confirm",
+            "label": "Z (also Enter/Space)",
+            "keys": [
+              "z"
+            ]
+          },
+          {
+            "id": "cancel",
+            "label": "X (also Esc)",
+            "keys": [
+              "x"
+            ]
+          },
+          {
+            "id": "pageLeft",
+            "label": "Q",
+            "keys": [
+              "q"
+            ]
+          },
+          {
+            "id": "pageRight",
+            "label": "W",
+            "keys": [
+              "w"
+            ]
+          },
+          {
+            "id": "save",
+            "label": "F5",
+            "keys": [
+              "f5"
+            ]
+          },
+          {
+            "id": "load",
+            "label": "F9",
+            "keys": [
+              "f9"
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "provenance": {
+    "schemaVersion": 1,
+    "runtimeTemplateSource": "FloeAgent/Modules/FloeGameRuntimeKit/Sources/FloeGameRuntime/Resources",
+    "runtimeTemplateHashes": {
+      "kaplay.js": "db5b52900fc3bfc20054e9a1da5953bb1ca539b98ea520e5a4d74accdfb855bc",
+      "babylon.js": "d29edc8a47f9086afc6f2efaaa4fa759c667e0bcf90e75278fe179df0960e9e9",
+      "playcanvas.js": "2c478ea6d8c9388bcffcdc570f0b35bfe5cabb33c2c8c24cd5d888e529fc72d4",
+      "common.js": "59fffacef6193419e9c6ee0e7602ca73a93f8a7685bae1d56b79b4c7326c79fc",
+      "index.html": "f74ddee4f2c71fc42e307a07e4379406d8d86569e979d68011fbbff822aa6c8c",
+      "LICENSE-FLOE-STARTER-MIT.txt": "ef0597ad9e20dd323562f13bd781bd24056a7a892fa355b683993049d06b225e"
+    },
+    "godotTemplateHashes": {
+      "project.godot": "fccca6952cb65db45dfc8549fe59fc01fea557fe7821709640ec53416251efb4",
+      "main.tscn": "ed94543090ffe02e1848881d1920e508d9ab80970410b0fa2aad2e1900e70620",
+      "main.gd": "2cbe11cb36428eb47d103f7c0620fdb4823038df559d869ce1271c2128cc337a",
+      "bridge.js": "4266a4bfa433cd5da4037f0b24dac69ef94c49fec1cca5bab5cb195f866ac34b",
+      "GODOT-LICENSE.txt": "b0435e3b3e4e55238f05f4b306f30524a1b2e20147810d436eaa554fa6855c80",
+      "GODOT-THIRD-PARTY.txt": "cb1980c88089573bcacd7221d777c689bb8bbd778799f24c27fca0fe5f774d6d",
+      "LICENSE-FLOE-STARTER-MIT.txt": "ef0597ad9e20dd323562f13bd781bd24056a7a892fa355b683993049d06b225e"
+    },
+    "staticTemplates": {
+      "rpgMakerXP": {
+        "root": "Templates/rpgMakerXP",
+        "files": 34,
+        "bytes": 29273,
+        "treeSHA256": "5f059e25978d84889b631a4d73a59690d0695ddcfa7e6c0eb7481dc663c01635"
+      },
+      "rpgMakerVX": {
+        "root": "Templates/rpgMakerVX",
+        "files": 27,
+        "bytes": 24963,
+        "treeSHA256": "e25151d6fd65210f6ed9ef783bf94d18238d624ad070a4c1ae06fb0c8d9d5d83"
+      },
+      "rpgMakerVXAce": {
+        "root": "Templates/rpgMakerVXAce",
+        "files": 27,
+        "bytes": 24980,
+        "treeSHA256": "9d357786f29c8a40d720342be762f4d8abb1b55c2e6d4a3d272b02ce9c6a06fb"
+      },
+      "rpgMakerMZ": {
+        "root": "Templates/rpgMakerMZ",
+        "files": 27,
+        "bytes": 51834,
+        "treeSHA256": "05432253a211f347fb16f1e5f372f83d75da8d2c240e3d935ff8fb117af12fc5"
+      },
+      "godot": {
+        "root": "Templates/godot",
+        "files": 9,
+        "bytes": 109141,
+        "treeSHA256": "28530bff195ea0e7e510941ea017dce554ddaa4a11d99791479d9cf3966b6662"
+      },
+      "cocosCreator": {
+        "root": "Templates/cocosCreator",
+        "files": 19,
+        "bytes": 18766,
+        "treeSHA256": "52e3d3171edfb192b42c77b65075ea417d96c81c2492f2fa8be6f03776dc1fad"
+      },
+      "unity": {
+        "root": "Templates/unity",
+        "files": 17,
+        "bytes": 36144,
+        "treeSHA256": "e193977d3d0bda759921b4e831db9bf7daa5461034d43e2eb39cd85b02895444"
+      }
+    }
+  }
+}

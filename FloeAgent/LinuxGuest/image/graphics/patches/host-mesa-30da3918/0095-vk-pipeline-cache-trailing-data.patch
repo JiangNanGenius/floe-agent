@@ -1,0 +1,28 @@
+--- a/src/vulkan/runtime/vk_pipeline_cache.c
++++ b/src/vulkan/runtime/vk_pipeline_cache.c
+@@ -275,13 +275,24 @@
+    struct vk_pipeline_cache_object *object =
+       ops->deserialize(cache, key_data, key_size, &reader);
+ 
+    if (object == NULL)
+       return NULL;
+ 
+-   assert(reader.current == reader.end && !reader.overrun);
++   /* Application-provided VkPipelineCache data is untrusted input.  A
++    * deserializer that returns an object without consuming exactly the entry
++    * payload (or after an overrun) used to abort the process in assertion
++    * builds.  Treat it as a cache miss instead; the remaining asserts below
++    * only check invariants of the object the driver just returned. */
++   if (unlikely(reader.current != reader.end || reader.overrun)) {
++      vk_pipeline_cache_log(cache,
++                            "Pipeline cache object has trailing or truncated data");
++      vk_pipeline_cache_object_unref(cache->base.device, object);
++      return NULL;
++   }
++
+    assert(object->ops == ops);
+    assert(object->ref_cnt == 1);
+    assert(object->key_size == key_size);
+    assert(memcmp(object->key_data, key_data, key_size) == 0);
+ 
+    return object;

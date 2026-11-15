@@ -1,0 +1,37 @@
+From 49399d7ff321335b324a2b792a433df9b1370a5b Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Fri, 2 Oct 2026 15:31:22 -0400
+Subject: [PATCH] kk: Keep the vertex order when unrolling draws without flat
+ varyings
+
+Generated-by: LLM
+---
+ src/kosmickrisp/vulkan/kk_cmd_draw.c | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_draw.c b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+index bbb498d8dec..3153d6a9dfc 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_draw.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+@@ -1769,6 +1769,9 @@ kk_unroll_geometry(struct kk_cmd_buffer *cmd, struct kk_draw_command *data)
+    if (unlikely(!out_draws.gpu))
+       return false;
+ 
++   struct kk_shader *fs = cmd->state.shaders[MESA_SHADER_FRAGMENT];
++   bool flat_varyings = fs && fs->info.fs.uses_flat_varyings;
++
+    struct libkk_unroll_geometry_args info = {
+       .index_buffer = data->index_buffer.addr,
+       .heap = kk_heap(cmd),
+@@ -1782,7 +1785,7 @@ kk_unroll_geometry(struct kk_cmd_buffer *cmd, struct kk_draw_command *data)
+                        : 0u,
+       .in_el_size_B = data->index_buffer_el_size_B,
+       .out_el_size_B = 4u,
+-      .flatshade_first = data->flatshade_first,
++      .flatshade_first = data->flatshade_first || !flat_varyings,
+       .mode = data->prim,
+    };
+ 
+-- 
+2.54.0 (Apple Git-157)
+

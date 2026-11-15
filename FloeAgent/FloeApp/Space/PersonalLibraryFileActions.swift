@@ -125,6 +125,7 @@ nonisolated struct PersonalLibraryTrashRestoreResult: Sendable {
             members: [value.record], environment: environment, library: library) { eventID in
             // The assistant's awaited tool releases its own lease when its
             // invocation really drains. Visible editors remain protected.
+            try await prepareGameForFileAction(value.record, directory: value.url, environment: environment)
             guard uses[selection.id]?.isEmpty != false else { throw PersonalFileActionError.closeFirst }
             try await validateSource()
             try await prepareForDeletion(value.record, directory: value.url, environment: environment)
@@ -156,6 +157,10 @@ nonisolated struct PersonalLibraryTrashRestoreResult: Sendable {
         defer { changed(UUID()) }
         return try await withFileAssistantLifecycle(action: .trash, entryID: UUID(), relativePath: selection.relativePath,
             members: members.filter { $0.deletedAt == nil }, environment: environment, library: library) { eventID in
+            for record in members where record.deletedAt == nil && record.kind == .game {
+                try await prepareGameForFileAction(record,
+                    directory: root.appendingPathComponent(record.relativePath), environment: environment)
+            }
             guard !uses.values.flatMap({ $0.values }).contains(where: { $0.path == folder.url.path || $0.path.hasPrefix(folder.url.path + "/") }) else {
                 throw PersonalFileActionError.closeFirst
             }
@@ -304,6 +309,10 @@ nonisolated struct PersonalLibraryTrashRestoreResult: Sendable {
         defer { for id in ids { changed(id) }; changed(plan.entry.id) }
         return try await withFileAssistantLifecycle(action: .purge, entryID: plan.entry.id,
             relativePath: plan.entry.relativePath, members: plan.members, environment: environment, library: library) { _ in
+            for record in plan.members where record.kind == .game {
+                try await prepareGameForFileAction(record,
+                    directory: root.appendingPathComponent(record.relativePath), environment: environment)
+            }
             guard ids.allSatisfy({ uses[$0]?.isEmpty != false }),
                   !locations.contains(where: { location in
                       uses.values.flatMap({ $0.values }).contains { $0.path == location.path || $0.path.hasPrefix(location.path + "/") }
@@ -330,12 +339,22 @@ nonisolated struct PersonalLibraryTrashRestoreResult: Sendable {
                 }
             }
             try await validateSource(); try Task.checkCancellation()
+            let receipt: PersonalPermanentDeleteReceipt
             if plan.members.contains(where: { $0.kind == .biology }) {
                 guard let environment else { throw PersonalContentError.storageUnavailable }
                 let lifecycle = try await environment.biologyComposition.libraryLifecycle()
-                return try await lifecycle.permanentlyDeleteUnderHeldBarrier(plan, library: library)
+                receipt = try await lifecycle.permanentlyDeleteUnderHeldBarrier(plan, library: library)
+            } else {
+                receipt = try await library.permanentlyDelete(plan)
             }
-            return try await library.permanentlyDelete(plan)
+            // Workspace bookkeeping follows the actual committed purge. A
+            // failed or cancelled delete must never lose its workspace row.
+            if let environment {
+                for record in plan.members where record.kind == .game {
+                    await environment.gameWorkspaces.forgetOwnedWorkspace(projectID: record.id)
+                }
+            }
+            return receipt
         }
     }
 
@@ -418,7 +437,15 @@ nonisolated struct PersonalLibraryTrashRestoreResult: Sendable {
         case .biology: break // The same held barrier wraps native stop/trash and the atomic Library commit above.
         case .canvas: try await CanvasHostSessions.shared.requireIdleForDeletion(canvasID: record.id, directory: directory)
         case .diagram, .latex: break // The editor/AI usage lease owns all writes.
+        case .game:
+            try await prepareGameForFileAction(record, directory: directory, environment: environment)
         }
+    }
+    private static func prepareGameForFileAction(_ record: PersonalContentRecord, directory: URL,
+                                                environment: AppEnvironment?) async throws {
+        guard record.kind == .game else { return }
+        guard let environment else { throw PersonalContentError.storageUnavailable }
+        try await environment.gameWorkspaces.prepareForLibraryAction(record: record, directory: directory)
     }
     static func requireAvailable(_ id: UUID) throws {
         guard !active.contains(id) else { throw PersonalFileActionError.busy }

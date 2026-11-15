@@ -1,0 +1,145 @@
+--- a/src/kosmickrisp/vulkan/kk_shader.c
++++ b/src/kosmickrisp/vulkan/kk_shader.c
+@@ -2658,12 +2658,43 @@
+    return info->stage == MESA_SHADER_GEOMETRY ||
+           (info->stage == MESA_SHADER_VERTEX &&
+            (info->vs.additional_stages_bits &
+             BITFIELD_BIT(MESA_SHADER_GEOMETRY)));
+ }
+ 
++/* Stages whose MSL is appended to a serialized vertex shader.  The linked
++ * graphics pipeline always carries a fragment stage; a vertex cache entry with
++ * no fragment bit cannot come from this compiler and would make
++ * kk_compile_graphics_pipeline() underflow its pre-render count. */
++#define KK_SERIALIZED_VS_STAGES                                                \
++   (BITFIELD_BIT(MESA_SHADER_TESS_CTRL) | BITFIELD_BIT(MESA_SHADER_TESS_EVAL) | \
++    BITFIELD_BIT(MESA_SHADER_GEOMETRY) | BITFIELD_BIT(MESA_SHADER_FRAGMENT))
++
++static VkResult
++kk_validate_deserialized_shader_info(const struct kk_shader_info *info)
++{
++   if (info->stage < 0 || info->stage >= MESA_SHADER_STAGES)
++      return VK_ERROR_INCOMPATIBLE_SHADER_BINARY_EXT;
++
++   /* Only variants 1..KK_FS_VARIANT_COUNT-1 own an fs_variants[] slot; the
++    * base fragment variant lives in msl_data[MESA_SHADER_FRAGMENT]. */
++   const uint8_t valid_variants =
++      (uint8_t)(BITFIELD_MASK(KK_FS_VARIANT_COUNT) & ~1u);
++   if (info->fs_variant_mask & (uint8_t)~valid_variants)
++      return VK_ERROR_INCOMPATIBLE_SHADER_BINARY_EXT;
++
++   if (info->stage == MESA_SHADER_VERTEX) {
++      const uint32_t stages = info->vs.additional_stages_bits;
++      if ((stages & ~KK_SERIALIZED_VS_STAGES) ||
++          !(stages & BITFIELD_BIT(MESA_SHADER_FRAGMENT)))
++         return VK_ERROR_INCOMPATIBLE_SHADER_BINARY_EXT;
++   }
++
++   return VK_SUCCESS;
++}
++
+ static void
+ kk_msl_serialize(const struct msl_compile_data *data, struct blob *blob)
+ {
+    uint32_t entrypoint_length = strlen(data->entrypoint_name) + 1;
+    uint32_t code_length = strlen(data->code) + 1;
+    blob_write_uint32(blob, entrypoint_length);
+@@ -2701,24 +2732,42 @@
+ 
+ static VkResult
+ kk_msl_deserialize(struct blob_reader *blob, struct msl_compile_data *data)
+ {
+    const uint32_t entrypoint_length = blob_read_uint32(blob);
+    const uint32_t code_length = blob_read_uint32(blob);
++
++   /* A truncated cache payload leaves the two lengths unwritten.  Do not use
++    * them before confirming the reads succeeded. */
++   if (blob->overrun)
++      return VK_ERROR_INCOMPATIBLE_SHADER_BINARY_EXT;
++
++   /* Both NUL-terminated strings must fit in the remaining cache payload.
++    * This also rejects the unbounded allocation that a corrupt length would
++    * otherwise request before the overrun check. */
++   const uint64_t remaining = (uint64_t)(blob->end - blob->current);
++   if (entrypoint_length == 0 || code_length == 0 ||
++       (uint64_t)entrypoint_length > remaining ||
++       (uint64_t)code_length > remaining - entrypoint_length)
++      return VK_ERROR_INCOMPATIBLE_SHADER_BINARY_EXT;
++
+    data->entrypoint_name = ralloc_array(NULL, char, entrypoint_length);
+    if (data->entrypoint_name == NULL)
+       return VK_ERROR_OUT_OF_HOST_MEMORY;
+ 
+    data->code = ralloc_array(NULL, char, code_length);
+    if (data->code == NULL)
+       return VK_ERROR_OUT_OF_HOST_MEMORY;
+ 
+    blob_copy_bytes(blob, (void *)data->entrypoint_name, entrypoint_length);
+    blob_copy_bytes(blob, (void *)data->code, code_length);
+ 
+-   if (blob->overrun)
++   /* The compiler consumes these as C strings. */
++   if (blob->overrun ||
++       data->entrypoint_name[entrypoint_length - 1] != '\0' ||
++       data->code[code_length - 1] != '\0')
+       return VK_ERROR_INCOMPATIBLE_SHADER_BINARY_EXT;
+ 
+    return VK_SUCCESS;
+ }
+ 
+ static VkResult
+@@ -2731,23 +2780,27 @@
+ 
+    struct kk_shader_info info;
+    blob_copy_bytes(blob, &info, sizeof(info));
+    if (blob->overrun)
+       return vk_error(dev, VK_ERROR_INCOMPATIBLE_SHADER_BINARY_EXT);
+ 
++   VkResult result = kk_validate_deserialized_shader_info(&info);
++   if (result != VK_SUCCESS)
++      return vk_error(dev, result);
++
+    struct kk_shader *shader = vk_shader_zalloc(
+       &dev->vk, &kk_shader_ops, info.stage, pAllocator, sizeof(*shader));
+    if (shader == NULL)
+       return vk_error(dev, VK_ERROR_OUT_OF_HOST_MEMORY);
+ 
+-   VkResult result = kk_msl_deserialize(blob, &shader->msl_data[info.stage]);
++   /* Assign before decoding any payload so the failure path frees exactly the
++    * stage/variant slots that were populated. */
++   shader->info = info;
++   result = kk_msl_deserialize(blob, &shader->msl_data[shader->info.stage]);
+    if (result != VK_SUCCESS)
+       goto fail;
+-
+-   shader->info = info;
+-   kk_device_lock_atomic64(dev, shader->info.atomic64_locked);
+ 
+    if (shader->info.stage == MESA_SHADER_VERTEX) {
+       u_foreach_bit(stage, shader->info.vs.additional_stages_bits) {
+          result = kk_msl_deserialize(blob, &shader->msl_data[stage]);
+          if (result != VK_SUCCESS)
+             goto fail;
+@@ -2775,12 +2828,22 @@
+ 
+    u_foreach_bit(v, info.fs_variant_mask) {
+       result = kk_msl_deserialize(blob, &shader->fs_variants[v - 1]);
+       if (result != VK_SUCCESS)
+          goto fail;
+    }
++
++   /* The entry payload is consumed exactly by this driver.  Refuse trailing
++    * bytes instead of tripping the runtime cache reader's consistency assert
++    * on untrusted VkPipelineCache data. */
++   if (blob->current != blob->end) {
++      result = VK_ERROR_INCOMPATIBLE_SHADER_BINARY_EXT;
++      goto fail;
++   }
++
++   kk_device_lock_atomic64(dev, shader->info.atomic64_locked);
+ 
+    if (info.stage == MESA_SHADER_COMPUTE) {
+       uint32_t local_size_threads = shader->info.cs.local_size.x *
+                                     shader->info.cs.local_size.y *
+                                     shader->info.cs.local_size.z;
+       result = kk_compile_compute_pipeline(

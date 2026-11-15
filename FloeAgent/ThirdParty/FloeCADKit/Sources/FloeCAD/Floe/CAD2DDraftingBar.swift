@@ -29,9 +29,11 @@ struct CAD2DDraftingBar: View {
                     Label(text("平面", "Plan"), systemImage: "square.grid.3x3")
                         .padding(.horizontal, 10).frame(minHeight: 44)
                 }
-                Button { showSketches = true } label: {
-                    Label(text("草图", "Sketches"), systemImage: "square.3.layers.3d")
-                        .padding(.horizontal, 10).frame(minHeight: 44)
+                if model.buildingDraftingOwner == nil {
+                    Button { showSketches = true } label: {
+                        Label(text("草图", "Sketches"), systemImage: "square.3.layers.3d")
+                            .padding(.horizontal, 10).frame(minHeight: 44)
+                    }
                 }
             }
             Divider().frame(height: 28)
@@ -69,7 +71,7 @@ struct CAD2DDraftingBar: View {
             draw(text("圆弧", "Arc"), .arc)
             draw(text("椭圆", "Ellipse"), .ellipse)
             draw(text("多边形", "Polygon"), .polygon)
-            Button(text("拟合曲线", "Fit spline")) { ensureSketch(); showCurve = true }
+            Button(text("拟合曲线", "Fit spline")) { if ensureSketch() { showCurve = true } }
             draw(text("文字", "Text"), .text)
         } label: { menuLabel(text("绘制", "Draw"), icon: "pencil.tip") }.disabled(document.isReadOnly)
     }
@@ -77,9 +79,9 @@ struct CAD2DDraftingBar: View {
         Menu {
             Button(text("修剪", "Trim")) { edit(.trim) }
             Button(text("延伸", "Extend")) { edit(.extend) }
-            Button(text("偏移", "Offset")) { ensureSketch(); model.startSketch(tool: .offset) }
-            Button(text("移动/旋转", "Move/Rotate")) { ensureSketch(); model.deselectSketchTool(); model.sketchCopyOnDrag = false; model.sketchTransformActive = true }
-            Button(text("复制", "Copy")) { ensureSketch(); model.deselectSketchTool(); model.sketchTransformActive = true; model.sketchCopyOnDrag = true }
+            Button(text("偏移", "Offset")) { if ensureSketch() { model.startSketch(tool: .offset) } }
+            Button(text("移动/旋转", "Move/Rotate")) { guard ensureSketch() else { return }; model.deselectSketchTool(); model.sketchCopyOnDrag = false; model.sketchTransformActive = true }
+            Button(text("复制", "Copy")) { guard ensureSketch() else { return }; model.deselectSketchTool(); model.sketchTransformActive = true; model.sketchCopyOnDrag = true }
         } label: { menuLabel(text("修改", "Modify"), icon: "scissors") }.disabled(document.isReadOnly)
     }
     private var snapMenu: some View {
@@ -94,9 +96,15 @@ struct CAD2DDraftingBar: View {
         HStack(spacing: 5) { Label(title, systemImage: icon); Image(systemName: "chevron.down").font(.caption2) }
             .padding(.horizontal, 10).frame(minHeight: 44)
     }
-    private func ensureSketch() { if model.activeSketch == nil { document.activate2DWorkspace() } }
+    @discardableResult private func ensureSketch() -> Bool {
+        if let owner = model.buildingDraftingOwner {
+            do { try owner.ensureActiveSketch() }
+            catch { model.errorMessage = error.localizedDescription; return false }
+        } else if model.activeSketch == nil { document.activate2DWorkspace() }
+        return model.activeSketch != nil
+    }
     private func draw(_ title: String, _ tool: SketchTool) -> some View {
-        Button { ensureSketch(); model.startSketch(tool: tool) } label: {
+        Button { if ensureSketch() { model.startSketch(tool: tool) } } label: {
             HStack {
                 Text(title)
                 if case .sketching(_, let current) = model.mode, current == tool {
@@ -106,7 +114,8 @@ struct CAD2DDraftingBar: View {
         }.disabled(document.isReadOnly)
     }
     private func edit(_ kind: SketchCurveEditKind) {
-        ensureSketch(); model.sketchCurveEditKind = kind; model.startSketch(tool: .trim)
+        guard ensureSketch() else { return }
+        model.sketchCurveEditKind = kind; model.startSketch(tool: .trim)
     }
     private var sketchSheet: some View {
         NavigationStack {

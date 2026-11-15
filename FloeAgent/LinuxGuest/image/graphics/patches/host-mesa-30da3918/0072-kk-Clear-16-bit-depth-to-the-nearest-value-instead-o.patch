@@ -1,0 +1,39 @@
+From fd65a3c1c677b28b5d0d6ae8160e89ce5fac3e35 Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Sat, 3 Oct 2026 19:57:01 -0400
+Subject: [PATCH] kk: Clear 16-bit depth to the nearest value instead of the
+ one below
+
+Generated-by: LLM
+---
+ src/kosmickrisp/vulkan/kk_cmd_draw.c | 13 ++++++++++---
+ 1 file changed, 10 insertions(+), 3 deletions(-)
+
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_draw.c b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+index f3ff600b752..9d84c187748 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_draw.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+@@ -400,10 +400,17 @@ kk_CmdBeginRendering(VkCommandBuffer commandBuffer,
+        * which will trigger a Metal validation error. Ensure we only use this
+        * value if the attachment is actually cleared. */
+       if (pRenderingInfo->pDepthAttachment->loadOp ==
+-          VK_ATTACHMENT_LOAD_OP_CLEAR)
++          VK_ATTACHMENT_LOAD_OP_CLEAR) {
++         double depth =
++            pRenderingInfo->pDepthAttachment->clearValue.depthStencil.depth;
++         if (vk_format_to_pipe_format(iview->vk.format) ==
++             PIPE_FORMAT_Z16_UNORM) {
++            depth = rint(CLAMP(depth, 0.0, 1.0) * 65535.0);
++            depth = MIN2((depth + 0.25) / 65535.0, 1.0);
++         }
+          mtl_render_pass_attachment_descriptor_set_clear_depth(
+-            attachment_descriptor,
+-            pRenderingInfo->pDepthAttachment->clearValue.depthStencil.depth);
++            attachment_descriptor, depth);
++      }
+ 
+       if (renderpass_resolve)
+          mtl_render_pass_attachment_descriptor_set_depth_resolve_filter(
+-- 
+2.54.0 (Apple Git-157)
+

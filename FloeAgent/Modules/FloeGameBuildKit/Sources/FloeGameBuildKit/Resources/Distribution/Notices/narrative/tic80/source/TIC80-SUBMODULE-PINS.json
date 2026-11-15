@@ -1,0 +1,118 @@
+{
+  "tag": "v1.4.1",
+  "commit": "b3dbd597eecfe6742f64001c2fe5ba6c1afe55d9",
+  "submodules": [
+    {
+      "path": "vendor/argparse",
+      "commit": "0d5f5d0745df14a3f373f7eed85bf524714f4524"
+    },
+    {
+      "path": "vendor/blip-buf",
+      "commit": "330226d9b55ecbeea644e17b5e0f096a165ca07e"
+    },
+    {
+      "path": "vendor/clay",
+      "commit": "e6cc36941ab2af5d81107617039d6f527a1c660b"
+    },
+    {
+      "path": "vendor/dirent",
+      "commit": "c885633e126a3a949ec0497273ec13e2c03e862c"
+    },
+    {
+      "path": "vendor/dlfcn",
+      "commit": "048bff80f2bd00bb651bcc3357cb6f76e3d76fd5"
+    },
+    {
+      "path": "vendor/giflib",
+      "commit": "1aa11b06d0025eda77b56aec8254130654d4397b"
+    },
+    {
+      "path": "vendor/gravity",
+      "commit": "07ebb9730761ee89a2b19873f5f6bf205574535c"
+    },
+    {
+      "path": "vendor/janet",
+      "commit": "e1963cdfe0148f83601907727e00bd672d798115"
+    },
+    {
+      "path": "vendor/jsmn",
+      "commit": "25647e692c7906b96ffd2b05ca54c097948e879c"
+    },
+    {
+      "path": "vendor/libpng",
+      "commit": "ed217e3e601d8e462f7fd1e04bed43ac42212429"
+    },
+    {
+      "path": "vendor/lpeg",
+      "commit": "80ec9f932aa01d445e86c699523265359055e1bd"
+    },
+    {
+      "path": "vendor/lua",
+      "commit": "75ea9ccbea7c4886f30da147fb67b693b2624c26"
+    },
+    {
+      "path": "vendor/miniscript2",
+      "commit": "a5a546a9960430aab31eb713f65bfe4a46b37c05"
+    },
+    {
+      "path": "vendor/moonscript",
+      "commit": "17179283012b392bff972ad66231d73bfeec6e90"
+    },
+    {
+      "path": "vendor/mruby",
+      "commit": "831da26b9021de0369d17b71b5667e2941a1a32d"
+    },
+    {
+      "path": "vendor/naett",
+      "commit": "5f695cfa9fcbf30668a4d3ac4b4abf1cd89a1302"
+    },
+    {
+      "path": "vendor/pforth",
+      "commit": "3e637b5ac6ad665f851f31e33ad4c44caf4e25ab"
+    },
+    {
+      "path": "vendor/pocketpy",
+      "commit": "979addecf9cb180c59c16ac605ba75441ece5af6"
+    },
+    {
+      "path": "vendor/quickjs",
+      "commit": "6d46d07d04041b40f4f49eaa7fdebe44c314c699"
+    },
+    {
+      "path": "vendor/sdl-gpu",
+      "commit": "592a512994c6a90dde9f94820e76e95e599012da"
+    },
+    {
+      "path": "vendor/sdl2",
+      "commit": "5d249570393f7a37e037abf22cd6012a4cc56a71"
+    },
+    {
+      "path": "vendor/sokol",
+      "commit": "2e75443dbd4940b5aa8d76a8e479f8e4b270b9a3"
+    },
+    {
+      "path": "vendor/squirrel",
+      "commit": "c02bf2dfd599a0b99b814d486512a3ee934667f1"
+    },
+    {
+      "path": "vendor/wasm3",
+      "commit": "139076a98b8321b67f850a844f558b5e91b5ac83"
+    },
+    {
+      "path": "vendor/wren",
+      "commit": "4a18fc489f9ea3d253b20dd40f4cdad0d6bb40eb"
+    },
+    {
+      "path": "vendor/yuescript",
+      "commit": "4e3770ec50faf0b38c9bb4639191e4079df17155"
+    },
+    {
+      "path": "vendor/zip",
+      "commit": "296ff2421b6bdb82575dd943fb8b5d7d5d443903"
+    },
+    {
+      "path": "vendor/zlib",
+      "commit": "51b7f2abdade71cd9bb0e7a373ef2610ec6f9daf"
+    }
+  ]
+}

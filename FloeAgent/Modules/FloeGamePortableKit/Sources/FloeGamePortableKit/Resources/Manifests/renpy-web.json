@@ -1,0 +1,201 @@
+{
+  "artifactSHA256": "954db897e65f51ea63cb2fb7b203d02be0447f4e22069514020bbe6c6691fdfc",
+  "buildKind": "renpyWebBuild",
+  "engine": "renpy",
+  "id": "renpy-web",
+  "license": "MIT; LGPL-2.1 FFmpeg/FriBidi/chardet/SDL_gfx/pygame",
+  "licenseFiles": [
+    "licenses/RENPY-LICENSE.txt",
+    "licenses/RENPY-WEB-NOTICE.md",
+    "licenses/RENPY-8.5.3-COMPONENT-ADDENDUM.md",
+    "licenses/FFMPEG-4.3.1-COPYING.LGPLv2.1.txt",
+    "licenses/FRIBIDI-1.0.7-COPYING.txt",
+    "licenses/CHARDET-5.2.0-LICENSE.txt",
+    "licenses/LGPL-2.0.txt",
+    "licenses/LGPL-2.1.txt",
+    "licenses/PYTHON-3.12.8-LICENSE.txt",
+    "licenses/SDL2-2.0.20-COPYING.txt",
+    "licenses/SDL2_IMAGE-2.6.2-LICENSE.txt",
+    "licenses/FREETYPE-2.13.3-FTL.txt",
+    "licenses/HARFBUZZ-8.0.1-COPYING.txt",
+    "licenses/BROTLI-1.1.0-LICENSE.txt",
+    "licenses/LIBPNG-1.6.43-LICENSE.txt",
+    "licenses/LIBJPEG-TURBO-1.5.3-LICENSE.md",
+    "licenses/LIBWEBP-1.3.2-COPYING.txt",
+    "licenses/LIBAVIF-0.11.1-LICENSE.txt",
+    "licenses/AOM-3.5.0-LICENSE.txt",
+    "licenses/LIBYUV-LICENSE.txt",
+    "licenses/ASSIMP-5.4.3-LICENSE.txt",
+    "licenses/XZ-5.4.2-COPYING.txt",
+    "licenses/BZIP2-1.0.8-LICENSE.txt",
+    "licenses/ZLIB-1.3.1-LICENSE.txt",
+    "licenses/EMSCRIPTEN-3.1.67-LICENSE.txt",
+    "licenses/README-PREPARED.md"
+  ],
+  "notes": [
+    "Official Ren'Py 8.5.3 Web (Beta) plus SDK 8.5.3.26051504 launcher web_build.",
+    "Source pins: renpy 39895c1e017f0b36ffea2447d97eccd69d76ee1c; renpy-build 7bfab40c1174f622f644b24669afd5fb167fbb79.",
+    "Web glue (renpy-pre.js, manifest.json, service-worker.js) is byte-identical to the build tag.",
+    "LGPL components actually linked: FFmpeg 4.3.1, FriBidi 1.0.7, chardet 5.2.0, SDL_gfxPrimitives and pygame LGPL portions; source/relink in licenses/RENPY-8.5.3-COMPONENT-ADDENDUM.md.",
+    "Single-threaded WebAssembly runtime; networking and Python threading are unavailable.",
+    "Saves use engine-internal IDBFS at /home/web_user/.renpy; host persistence is required for durability."
+  ],
+  "prepareScript": "prepare_renpy_web.py",
+  "revision": "8.5.3.26051504+39895c1e017f0b36ffea2447d97eccd69d76ee1c",
+  "schemaVersion": 1,
+  "sourceLock": {
+    "artifactKind": "official-web-zip",
+    "artifactSHA256": "954db897e65f51ea63cb2fb7b203d02be0447f4e22069514020bbe6c6691fdfc",
+    "artifactURL": "https://www.renpy.org/dl/8.5.3/renpy-8.5.3-web.zip",
+    "distribution": {
+      "conditions": [
+        "publish exact source packages or a valid LGPL written offer",
+        "keep notices and addendum with the runtime",
+        "do not claim durable saves without a real new-player test",
+        "official Web route is Beta"
+      ],
+      "eligibility": "eligible-with-conditions",
+      "profile": "floe-provided-runtime-with-source-relink"
+    },
+    "lgplComponents": [
+      {
+        "license": "LGPL-2.1-or-later",
+        "linking": "statically-linked-in-wasm",
+        "method": "LGPL-2.1 6(a); rebuild Web runtime with renpy-build",
+        "name": "FFmpeg",
+        "relinkDocument": {
+          "bytes": 2906,
+          "path": "renpy/RELINK.md",
+          "sha256": "a64b93bc41a8a791b922f6d9a165e84e149acbf03b65a7d6a50a8aafd2adda0f"
+        },
+        "sourcePackage": {
+          "bytes": 14089207,
+          "path": "renpy/ffmpeg-4.3.1.tar.gz",
+          "sha256": "45035f15d6f192772de2309c846e1d60472694f479679354a39c699719e53772"
+        },
+        "version": "4.3.1"
+      },
+      {
+        "license": "LGPL-2.1-or-later",
+        "linking": "statically-linked-in-wasm",
+        "method": "LGPL-2.1 6(a); rebuild Web runtime with renpy-build",
+        "name": "FriBidi",
+        "relinkDocument": {
+          "bytes": 2906,
+          "path": "renpy/RELINK.md",
+          "sha256": "a64b93bc41a8a791b922f6d9a165e84e149acbf03b65a7d6a50a8aafd2adda0f"
+        },
+        "sourcePackage": {
+          "bytes": 2074943,
+          "path": "renpy/fribidi-1.0.7.tar.bz2",
+          "sha256": "5ab5f21e9f2fc57b4b40f8ea8f14dba78a5cc46d9cf94bc5e00a58e6886a935d"
+        },
+        "version": "1.0.7"
+      },
+      {
+        "license": "LGPL-2.1",
+        "linking": "pure-python-in-renpy.data",
+        "method": "replace module and rebuild renpy.data",
+        "name": "chardet",
+        "relinkDocument": {
+          "bytes": 2906,
+          "path": "renpy/RELINK.md",
+          "sha256": "a64b93bc41a8a791b922f6d9a165e84e149acbf03b65a7d6a50a8aafd2adda0f"
+        },
+        "sourcePackage": {
+          "bytes": 2069618,
+          "path": "renpy/chardet-5.2.0.tar.gz",
+          "sha256": "1b3b6ff479a8c414bc3fa2c0852995695c4a026dcd6d0633b2dd092ca39c1cf7"
+        },
+        "version": "5.2.0"
+      },
+      {
+        "license": "LGPL-2.1",
+        "linking": "statically-compiled-in-librenpy",
+        "method": "replace src/pygame file and rebuild librenpy/Web runtime",
+        "name": "SDL_gfxPrimitives",
+        "relinkDocument": {
+          "bytes": 2906,
+          "path": "renpy/RELINK.md",
+          "sha256": "a64b93bc41a8a791b922f6d9a165e84e149acbf03b65a7d6a50a8aafd2adda0f"
+        },
+        "sourcePackage": {
+          "bytes": 60348,
+          "path": "renpy/renpy-lgpl-src.tar.gz",
+          "sha256": "5f9c584a2779492c12b6e0037aacbc204376ea43c4f9687ce24f4131c77b8822"
+        },
+        "version": "renpy 8.5.3 source"
+      },
+      {
+        "license": "LGPL-2.0-or-later",
+        "linking": "statically-compiled-in-librenpy",
+        "method": "replace alphablit.c/surface.h and rebuild librenpy/Web runtime",
+        "name": "pygame LGPL portions",
+        "relinkDocument": {
+          "bytes": 2906,
+          "path": "renpy/RELINK.md",
+          "sha256": "a64b93bc41a8a791b922f6d9a165e84e149acbf03b65a7d6a50a8aafd2adda0f"
+        },
+        "sourcePackage": {
+          "bytes": 60348,
+          "path": "renpy/renpy-lgpl-src.tar.gz",
+          "sha256": "5f9c584a2779492c12b6e0037aacbc204376ea43c4f9687ce24f4131c77b8822"
+        },
+        "version": "renpy 8.5.3 source"
+      }
+    ],
+    "notLinked": [
+      {
+        "name": "libusb",
+        "noticeRetained": "licenses/RENPY-LICENSE.txt",
+        "reason": "link_web has no -lusb; Web runtime has no USB access"
+      }
+    ],
+    "persistence": {
+      "actualCrossPlayer": "not re-run by this task; engine-internal save + host persistence required",
+      "flush": {
+        "beforeunload": false,
+        "engineSave": true,
+        "perWrite": false
+      },
+      "idbfs": true,
+      "mount": "/home/web_user/.renpy",
+      "populate": "FS.syncfs(true) at init",
+      "savePath": "engine-internal"
+    },
+    "renpy": {
+      "commit": "39895c1e017f0b36ffea2447d97eccd69d76ee1c",
+      "sourcePackage": {
+        "bytes": 68211384,
+        "path": "renpy/renpy-39895c1.tar.gz",
+        "sha256": "706daeeeb8dfe5e441d2697fbbb8bfc530dc2999ebda2bc81d15a5a2b3393448"
+      },
+      "tag": "8.5.3.26051504"
+    },
+    "renpyBuild": {
+      "commit": "7bfab40c1174f622f644b24669afd5fb167fbb79",
+      "sourcePackage": {
+        "bytes": 210470838,
+        "path": "renpy/renpy-build-7bfab40.tar.gz",
+        "sha256": "15f15bc524f6b8b173ba8671d1992140051c7d9455ac81a24338a433a5127446"
+      },
+      "tag": "renpy-8.5.3.26051504"
+    },
+    "sdk": {
+      "sha256": "0579782517f203ba3535dcc2dab54e34bfc318f2f2a7510a5130b6f809f901f6",
+      "sourcePackage": {
+        "bytes": 166255505,
+        "path": "renpy/renpy-8.5.3-sdkarm.tar.bz2",
+        "sha256": "0579782517f203ba3535dcc2dab54e34bfc318f2f2a7510a5130b6f809f901f6"
+      },
+      "url": "https://www.renpy.org/dl/8.5.3/renpy-8.5.3-sdkarm.tar.bz2",
+      "version": "8.5.3.26051504"
+    },
+    "toolchain": {
+      "emscripten": "3.1.67",
+      "python": "3.12.8"
+    }
+  },
+  "upstreamURL": "https://www.renpy.org/dl/8.5.3/renpy-8.5.3-web.zip",
+  "version": "8.5.3"
+}

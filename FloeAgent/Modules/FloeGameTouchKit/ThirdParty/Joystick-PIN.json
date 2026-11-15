@@ -1,0 +1,42 @@
+{
+  "repository": "https://github.com/bradhowes/Joystick",
+  "commit": "c240bb6e5a84fb00f01862d2a6dca28a43504679",
+  "license": "MIT",
+  "scope": "gesture/control implementation only; custom native circle images; no upstream asset catalog or docc plugin",
+  "files": [
+    {
+      "path": "JoyStickView.swift",
+      "upstreamBlob": "32d5075e566b5bc13746131e382ae3a4fb57debc"
+    },
+    {
+      "path": "JoyStickViewMonitor.swift",
+      "upstreamBlob": "fa5f6c369b3d36af93e1917e0f96c3c14db0f46f"
+    },
+    {
+      "path": "Bundle+Additions.swift",
+      "upstreamBlob": "3cb9edf7c746bedfb2a347f3e52baa10c7b1a1f0"
+    },
+    {
+      "path": "CoreGraphics+Additions.swift",
+      "upstreamBlob": "7cf57a5d05de033f3f03eb128479e6fe8e91010d"
+    },
+    {
+      "path": "Polar.swift",
+      "upstreamBlob": "4bf7320fa25312522132ed9f23acd12d76bcc039"
+    }
+  ],
+  "patches": [
+    {
+      "files": [
+        "JoyStickView.swift",
+        "JoyStickViewMonitor.swift",
+        "Bundle+Additions.swift",
+        "CoreGraphics+Additions.swift",
+        "Polar.swift"
+      ],
+      "change": "Wrap source with canImport(UIKit); no implementation changes. iOS uses the original UIKit component; host tests compile its portable consumers."
+    }
+  ],
+  "licenseFile": "JoyStickView/LICENSE.txt",
+  "licenseSHA256": "6dbdb425149dcc23dd5a4732893e56e9c5e78072232a621583a1b6a7c2c1c435"
+}

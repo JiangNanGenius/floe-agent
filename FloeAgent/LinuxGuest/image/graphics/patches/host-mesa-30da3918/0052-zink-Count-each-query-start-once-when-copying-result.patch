@@ -1,0 +1,27 @@
+From 3ebfbb8059519b3efa98f3cb32dd0da0dbf9a3bf Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Fri, 2 Oct 2026 23:02:04 -0400
+Subject: [PATCH] zink: Count each query start once when copying results from
+ several pools
+
+Generated-by: LLM
+---
+ src/gallium/drivers/zink/zink_query.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/zink/zink_query.c b/src/gallium/drivers/zink/zink_query.c
+index e02eb56c8a4..7bc8f9de146 100644
+--- a/src/gallium/drivers/zink/zink_query.c
++++ b/src/gallium/drivers/zink/zink_query.c
+@@ -877,7 +877,7 @@ update_qbo(struct zink_context *ctx, struct zink_query *q)
+                                     * - Chapter 18. Queries
+                                     */
+                                     VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
+-         if (!is_timestamp)
++         if (!is_timestamp && i == 0)
+             q->curr_qbo->num_results += num_merged_copies;
+          start_offset += num_merged_copies;
+       }
+-- 
+2.54.0 (Apple Git-157)
+

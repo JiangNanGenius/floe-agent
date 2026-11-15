@@ -1,0 +1,663 @@
+From 0853f376e0de50067957942fe9b6de163c3fbc37 Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Wed, 30 Sep 2026 22:01:36 -0400
+Subject: [PATCH] kk: Emulate sampler min/max reduction before Apple family 10
+
+Generated-by: LLM
+---
+ src/compiler/nir/nir.c                        |   2 +
+ src/compiler/nir/nir.h                        |   2 +
+ src/compiler/nir/nir_print.c                  |   3 +
+ src/compiler/nir/nir_validate.c               |   1 +
+ src/compiler/spirv/spirv_to_nir.c             |   3 +
+ src/kosmickrisp/vulkan/kk_descriptor_set.c    |   1 +
+ src/kosmickrisp/vulkan/kk_descriptor_types.h  |   2 +-
+ .../vulkan/kk_nir_lower_descriptors.c         |  12 +
+ .../vulkan/kk_nir_lower_sampler_minmax.c      | 327 ++++++++++++++++++
+ src/kosmickrisp/vulkan/kk_physical_device.c   |   2 +-
+ src/kosmickrisp/vulkan/kk_physical_device.h   |   6 +
+ src/kosmickrisp/vulkan/kk_sampler.c           |  27 +-
+ src/kosmickrisp/vulkan/kk_sampler.h           |   1 +
+ src/kosmickrisp/vulkan/kk_shader.c            |  16 +-
+ src/kosmickrisp/vulkan/kk_shader.h            |  10 +
+ src/kosmickrisp/vulkan/meson.build            |   1 +
+ 16 files changed, 410 insertions(+), 6 deletions(-)
+ create mode 100644 src/kosmickrisp/vulkan/kk_nir_lower_sampler_minmax.c
+
+diff --git a/src/compiler/nir/nir.c b/src/compiler/nir/nir.c
+index 4d8b14cbc4c..21d2ce35d96 100644
+--- a/src/compiler/nir/nir.c
++++ b/src/compiler/nir/nir.c
+@@ -3528,6 +3528,7 @@ nir_tex_instr_result_size(const nir_tex_instr *instr)
+    case nir_texop_fragment_mask_fetch_amd:
+    case nir_texop_image_min_lod_agx:
+    case nir_texop_has_custom_border_color_agx:
++   case nir_texop_sampler_minmax_kk:
+    case nir_texop_sparse_residency_intel:
+    case nir_texop_sparse_residency_txf_intel:
+       return 1;
+@@ -3580,6 +3581,7 @@ nir_tex_instr_is_query(const nir_tex_instr *instr)
+    case nir_texop_image_min_lod_agx:
+    case nir_texop_custom_border_color_agx:
+    case nir_texop_has_custom_border_color_agx:
++   case nir_texop_sampler_minmax_kk:
+    case nir_texop_hdr_dim_nv:
+    case nir_texop_tex_type_nv:
+    case nir_texop_sample_pos_nv:
+diff --git a/src/compiler/nir/nir.h b/src/compiler/nir/nir.h
+index 6a7a5f84907..be80cdb0853 100644
+--- a/src/compiler/nir/nir.h
++++ b/src/compiler/nir/nir.h
+@@ -2685,6 +2685,8 @@ typedef enum nir_texop {
+    nir_texop_has_custom_border_color_agx,
+    /** Returns the sampler's custom border colour (if has_custom_border_agx) */
+    nir_texop_custom_border_color_agx,
++   /** Returns the sampler's emulated min/max reduction flags */
++   nir_texop_sampler_minmax_kk,
+    /** Maps to TXQ.DIMENSION */
+    nir_texop_hdr_dim_nv,
+    /** Maps to TXQ.TEXTURE_TYPE */
+diff --git a/src/compiler/nir/nir_print.c b/src/compiler/nir/nir_print.c
+index 202407312d2..cabe502abdb 100644
+--- a/src/compiler/nir/nir_print.c
++++ b/src/compiler/nir/nir_print.c
+@@ -2011,6 +2011,9 @@ print_tex_instr(nir_tex_instr *instr, print_state *state)
+    case nir_texop_custom_border_color_agx:
+       fprintf(fp, "custom_border_color_agx ");
+       break;
++   case nir_texop_sampler_minmax_kk:
++      fprintf(fp, "sampler_minmax_kk ");
++      break;
+    case nir_texop_hdr_dim_nv:
+       fprintf(fp, "hdr_dim_nv ");
+       break;
+diff --git a/src/compiler/nir/nir_validate.c b/src/compiler/nir/nir_validate.c
+index f470a073928..e7982704e41 100644
+--- a/src/compiler/nir/nir_validate.c
++++ b/src/compiler/nir/nir_validate.c
+@@ -1050,6 +1050,7 @@ validate_tex_src_texture_deref(nir_tex_instr *instr, validate_state *state,
+    case nir_texop_descriptor_amd:
+    case nir_texop_sampler_descriptor_amd:
+    case nir_texop_custom_border_color_agx:
++   case nir_texop_sampler_minmax_kk:
+       break;
+    case nir_texop_lod:
+    case nir_texop_lod_bias:
+diff --git a/src/compiler/spirv/spirv_to_nir.c b/src/compiler/spirv/spirv_to_nir.c
+index 04442865e54..d06a16f76f0 100644
+--- a/src/compiler/spirv/spirv_to_nir.c
++++ b/src/compiler/spirv/spirv_to_nir.c
+@@ -3934,6 +3934,9 @@ vtn_handle_texture(struct vtn_builder *b, SpvOp opcode,
+    case nir_texop_has_custom_border_color_agx:
+       vtn_fail("unexpected nir_texop_*_agx");
+       break;
++   case nir_texop_sampler_minmax_kk:
++      vtn_fail("unexpected nir_texop_*_kk");
++      break;
+    case nir_texop_hdr_dim_nv:
+    case nir_texop_tex_type_nv:
+    case nir_texop_sample_pos_nv:
+diff --git a/src/kosmickrisp/vulkan/kk_descriptor_set.c b/src/kosmickrisp/vulkan/kk_descriptor_set.c
+index 7cdf4809fba..a655f1364ab 100644
+--- a/src/kosmickrisp/vulkan/kk_descriptor_set.c
++++ b/src/kosmickrisp/vulkan/kk_descriptor_set.c
+@@ -103,6 +103,7 @@ get_sampled_image_view_desc(VkDescriptorType descriptor_type,
+          desc[plane].sampler_lod_bias_fp16 = sampler->lod_bias_fp16;
+          desc[plane].sampler_lod_min_fp16 = sampler->lod_min_fp16;
+          desc[plane].sampler_lod_max_fp16 = sampler->lod_max_fp16;
++         desc[plane].sampler_minmax_flags = sampler->minmax_flags;
+          desc[plane].clamp_0_sampler_index_or_negative = -1;
+       }
+ 
+diff --git a/src/kosmickrisp/vulkan/kk_descriptor_types.h b/src/kosmickrisp/vulkan/kk_descriptor_types.h
+index c289c5f1f22..1f2a099bdc2 100644
+--- a/src/kosmickrisp/vulkan/kk_descriptor_types.h
++++ b/src/kosmickrisp/vulkan/kk_descriptor_types.h
+@@ -26,7 +26,7 @@ struct kk_sampled_image_descriptor {
+    uint16_t image_min_lod_fp16;
+    uint16_t image_min_lod_uint16;
+ 
+-   uint16_t pad_to_64_bits;
++   uint16_t sampler_minmax_flags;
+    uint32_t border[4];
+    uint64_t pad_to_power_2[3];
+ };
+diff --git a/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c b/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c
+index 4bb28924c33..3a9cfd1fcf5 100644
+--- a/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c
++++ b/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c
+@@ -582,6 +582,18 @@ lower_tex(nir_builder *b, nir_tex_instr *tex,
+       return true;
+    }
+ 
++   if (tex->op == nir_texop_sampler_minmax_kk) {
++      unsigned offs =
++         offsetof(struct kk_sampled_image_descriptor, sampler_minmax_flags);
++
++      nir_def *flags = load_resource_deref_desc(
++         b, 1, 16, nir_src_as_deref(nir_src_for_ssa(sampler)),
++         plane_offset_B + offs, ctx);
++
++      nir_def_replace(&tex->def, nir_u2u32(b, flags));
++      return true;
++   }
++
+    if (tex->op == nir_texop_custom_border_color_agx) {
+       unsigned offs = offsetof(struct kk_sampled_image_descriptor, border);
+ 
+diff --git a/src/kosmickrisp/vulkan/kk_nir_lower_sampler_minmax.c b/src/kosmickrisp/vulkan/kk_nir_lower_sampler_minmax.c
+new file mode 100644
+index 00000000000..723bf7a934e
+--- /dev/null
++++ b/src/kosmickrisp/vulkan/kk_nir_lower_sampler_minmax.c
+@@ -0,0 +1,327 @@
++/*
++ * Copyright 2026 David Andrews
++ * SPDX-License-Identifier: MIT
++ */
++
++#include "kk_shader.h"
++
++#include "nir_builder.h"
++
++static nir_tex_instr *
++kk_new_tex(nir_builder *b, const nir_tex_instr *tex, nir_texop op,
++           unsigned num_srcs, nir_alu_type dest_type, unsigned comps)
++{
++   nir_tex_instr *instr = nir_tex_instr_create(b->shader, num_srcs + 2);
++   instr->op = op;
++   instr->sampler_dim = tex->sampler_dim;
++   instr->is_array = tex->is_array;
++   instr->coord_components = tex->coord_components;
++   instr->dest_type = dest_type;
++   instr->texture_index = tex->texture_index;
++   instr->sampler_index = tex->sampler_index;
++   instr->backend_flags = tex->backend_flags | KK_TEXTURE_FLAG_MINMAX_DONE;
++
++   unsigned s = num_srcs;
++   int tex_deref = nir_tex_instr_src_index(tex, nir_tex_src_texture_deref);
++   int smp_deref = nir_tex_instr_src_index(tex, nir_tex_src_sampler_deref);
++   instr->src[s++] = nir_tex_src_for_ssa(nir_tex_src_texture_deref,
++                                         tex->src[tex_deref].src.ssa);
++   instr->src[s++] = nir_tex_src_for_ssa(nir_tex_src_sampler_deref,
++                                         tex->src[smp_deref].src.ssa);
++   nir_def_init(&instr->instr, &instr->def,
++                comps ? comps : nir_tex_instr_dest_size(instr),
++                nir_alu_type_get_type_size(dest_type) ? : 32);
++   return instr;
++}
++
++static nir_def *
++kk_sample_lod(nir_builder *b, const nir_tex_instr *tex, nir_def *coord,
++              nir_def *lod)
++{
++   nir_tex_instr *s = kk_new_tex(b, tex, nir_texop_txl, 2, tex->dest_type,
++                                 tex->def.num_components);
++   s->src[0] = nir_tex_src_for_ssa(nir_tex_src_coord, coord);
++   s->src[1] = nir_tex_src_for_ssa(nir_tex_src_lod, lod);
++   nir_builder_instr_insert(b, &s->instr);
++   return &s->def;
++}
++
++static nir_def *
++kk_level_size(nir_builder *b, const nir_tex_instr *tex, nir_def *level,
++              unsigned dims)
++{
++   nir_tex_instr *s = kk_new_tex(b, tex, nir_texop_txs, 1, nir_type_int32, 0);
++   s->src[0] = nir_tex_src_for_ssa(nir_tex_src_lod, level);
++   nir_builder_instr_insert(b, &s->instr);
++   return nir_i2f32(b, nir_trim_vector(b, &s->def, dims));
++}
++
++static nir_def *
++kk_num_levels(nir_builder *b, const nir_tex_instr *tex)
++{
++   nir_tex_instr *s =
++      kk_new_tex(b, tex, nir_texop_query_levels, 0, nir_type_int32, 1);
++   nir_builder_instr_insert(b, &s->instr);
++   return &s->def;
++}
++
++static nir_def *
++kk_implicit_lod(nir_builder *b, const nir_tex_instr *tex, nir_def *coord,
++                nir_def *bias, unsigned dims)
++{
++   nir_tex_instr *s = kk_new_tex(b, tex, nir_texop_lod, 2, nir_type_float32, 2);
++   s->coord_components = dims;
++   s->src[0] =
++      nir_tex_src_for_ssa(nir_tex_src_coord, nir_trim_vector(b, coord, dims));
++   s->src[1] = nir_tex_src_for_ssa(nir_tex_src_bias, bias);
++   nir_builder_instr_insert(b, &s->instr);
++   return nir_channel(b, &s->def, 0);
++}
++
++struct kk_cube_face {
++   nir_def *x_major, *y_major;
++   nir_def *x, *y, *z, *ma;
++};
++
++static nir_def *
++kk_cube_uv(nir_builder *b, nir_def *dir, struct kk_cube_face *f)
++{
++   f->x = nir_channel(b, dir, 0);
++   f->y = nir_channel(b, dir, 1);
++   f->z = nir_channel(b, dir, 2);
++   nir_def *ax = nir_fabs(b, f->x), *ay = nir_fabs(b, f->y),
++           *az = nir_fabs(b, f->z);
++   f->x_major = nir_iand(b, nir_fge(b, ax, ay), nir_fge(b, ax, az));
++   f->y_major = nir_iand(b, nir_inot(b, f->x_major), nir_fge(b, ay, az));
++   f->ma = nir_bcsel(b, f->x_major, ax, nir_bcsel(b, f->y_major, ay, az));
++
++   nir_def *sc = nir_bcsel(
++      b, f->x_major, nir_fneg(b, nir_fmul(b, f->z, nir_fsign(b, f->x))),
++      nir_bcsel(b, f->y_major, f->x, nir_fmul(b, f->x, nir_fsign(b, f->z))));
++   nir_def *tc = nir_bcsel(b, f->y_major, nir_fmul(b, f->z, nir_fsign(b, f->y)),
++                           nir_fneg(b, f->y));
++   nir_def *st = nir_fdiv(b, nir_vec2(b, sc, tc), f->ma);
++   return nir_fmul_imm(b, nir_fadd_imm(b, st, 1.0), 0.5);
++}
++
++static nir_def *
++kk_cube_dir(nir_builder *b, nir_def *uv, const struct kk_cube_face *f)
++{
++   nir_def *st = nir_fadd_imm(b, nir_fmul_imm(b, uv, 2.0), -1.0);
++   nir_def *over = nir_fmax(b, nir_fadd_imm(b, nir_fabs(b, st), -1.0),
++                            nir_imm_float(b, 0));
++   nir_def *major = nir_fsub(b, nir_imm_float(b, 1.0),
++                             nir_fadd(b, nir_channel(b, over, 0),
++                                      nir_channel(b, over, 1)));
++   st = nir_fmin(b, nir_fmax(b, st, nir_imm_float(b, -1.0)),
++                 nir_imm_float(b, 1.0));
++   nir_def *sc = nir_channel(b, st, 0);
++   nir_def *tc = nir_channel(b, st, 1);
++
++   nir_def *x = nir_bcsel(b, f->x_major, nir_fmul(b, major, nir_fsign(b, f->x)),
++                          nir_bcsel(b, f->y_major, sc,
++                                    nir_fmul(b, sc, nir_fsign(b, f->z))));
++   nir_def *y = nir_bcsel(b, f->y_major, nir_fmul(b, major, nir_fsign(b, f->y)),
++                          nir_fneg(b, tc));
++   nir_def *z = nir_bcsel(
++      b, f->x_major, nir_fneg(b, nir_fmul(b, sc, nir_fsign(b, f->x))),
++      nir_bcsel(b, f->y_major, nir_fmul(b, tc, nir_fsign(b, f->y)),
++                nir_fmul(b, major, nir_fsign(b, f->z))));
++   return nir_vec3(b, x, y, z);
++}
++
++static nir_def *
++kk_reduce(nir_builder *b, nir_def *is_min, nir_def *x, nir_def *y)
++{
++   return nir_bcsel(b, is_min, nir_fmin(b, x, y), nir_fmax(b, x, y));
++}
++
++static nir_def *
++kk_reduce_level(nir_builder *b, const nir_tex_instr *tex, nir_def *coord,
++                nir_def *offset, nir_def *level, nir_def *is_min,
++                nir_def *unnormalized, unsigned dims)
++{
++   bool cube = tex->sampler_dim == GLSL_SAMPLER_DIM_CUBE;
++   struct kk_cube_face face;
++   nir_def *size = kk_level_size(b, tex, nir_f2i32(b, level), dims);
++   size = nir_bcsel(b, unnormalized,
++                    nir_fadd_imm(b, nir_fmul_imm(b, size, 0.0), 1.0), size);
++   nir_def *uv = cube ? kk_cube_uv(b, coord, &face)
++                      : nir_trim_vector(b, coord, dims);
++   nir_def *p = nir_fadd_imm(b, nir_fmul(b, uv, size), -0.5);
++   if (offset)
++      p = nir_fadd(b, p, nir_i2f32(b, nir_trim_vector(b, offset, dims)));
++
++   nir_def *base = nir_ffloor(b, p);
++   nir_def *frac = nir_fsub(b, p, base);
++
++   nir_def *result = NULL;
++   for (unsigned corner = 0; corner < (1u << dims); corner++) {
++      nir_def *texel[3];
++      nir_def *used = nir_imm_true(b);
++      for (unsigned c = 0; c < dims; c++) {
++         bool high = corner & BITFIELD_BIT(c);
++         texel[c] = nir_fadd_imm(b, nir_channel(b, base, c), high ? 1.5 : 0.5);
++         if (high)
++            used = nir_iand(b, used, nir_fgt_imm(b, nir_channel(b, frac, c), 0));
++      }
++
++      nir_def *centre = nir_fdiv(b, nir_vec(b, texel, dims), size);
++      unsigned spatial = dims;
++      if (cube) {
++         centre = kk_cube_dir(b, centre, &face);
++         spatial = 3;
++      }
++      nir_def *comps[4];
++      for (unsigned c = 0; c < spatial; c++)
++         comps[c] = nir_channel(b, centre, c);
++      for (unsigned c = spatial; c < tex->coord_components; c++)
++         comps[c] = nir_channel(b, coord, c);
++      nir_def *sample = kk_sample_lod(
++         b, tex, nir_vec(b, comps, tex->coord_components), level);
++
++      if (result == NULL)
++         result = sample;
++      else
++         result = nir_bcsel(b, used, kk_reduce(b, is_min, result, sample),
++                            result);
++   }
++
++   return result;
++}
++
++static bool
++lower_sampler_minmax(nir_builder *b, nir_tex_instr *tex, void *data)
++{
++   if (tex->op != nir_texop_tex && tex->op != nir_texop_txb &&
++       tex->op != nir_texop_txl && tex->op != nir_texop_txd)
++      return false;
++
++   if (tex->is_shadow || tex->is_sparse ||
++       (tex->backend_flags & KK_TEXTURE_FLAG_MINMAX_DONE) ||
++       nir_alu_type_get_base_type(tex->dest_type) != nir_type_float)
++      return false;
++
++   unsigned dims;
++   switch (tex->sampler_dim) {
++   case GLSL_SAMPLER_DIM_2D:
++      dims = 2;
++      break;
++   case GLSL_SAMPLER_DIM_3D:
++      dims = 3;
++      break;
++   case GLSL_SAMPLER_DIM_CUBE:
++      dims = 2;
++      break;
++   default:
++      return false;
++   }
++
++   if (nir_tex_instr_src_index(tex, nir_tex_src_texture_deref) < 0 ||
++       nir_tex_instr_src_index(tex, nir_tex_src_sampler_deref) < 0)
++      return false;
++
++   b->cursor = nir_before_instr(&tex->instr);
++
++   nir_def *coord = nir_get_tex_src(tex, nir_tex_src_coord);
++   nir_def *offset = nir_get_tex_src(tex, nir_tex_src_offset);
++   nir_def *bias = nir_get_tex_src(tex, nir_tex_src_bias);
++   nir_def *lod = nir_get_tex_src(tex, nir_tex_src_lod);
++   nir_def *min_lod = nir_get_tex_src(tex, nir_tex_src_min_lod);
++   nir_def *ddx = nir_get_tex_src(tex, nir_tex_src_ddx);
++   nir_def *ddy = nir_get_tex_src(tex, nir_tex_src_ddy);
++
++   if (coord->bit_size != 32)
++      coord = nir_f2f32(b, coord);
++   if (offset)
++      offset = nir_i2i32(b, offset);
++   if (bias)
++      bias = nir_f2f32(b, bias);
++   if (lod)
++      lod = nir_f2f32(b, lod);
++   if (min_lod)
++      min_lod = nir_f2f32(b, min_lod);
++   if (ddx)
++      ddx = nir_f2f32(b, ddx);
++   if (ddy)
++      ddy = nir_f2f32(b, ddy);
++
++   nir_tex_instr *flags_instr =
++      kk_new_tex(b, tex, nir_texop_sampler_minmax_kk, 0, nir_type_uint32, 1);
++   nir_builder_instr_insert(b, &flags_instr->instr);
++   nir_def *flags = &flags_instr->def;
++
++   if (lod == NULL) {
++      if (ddx) {
++         nir_def *size =
++            kk_level_size(b, tex, nir_imm_int(b, 0), dims);
++         nir_def *dx = nir_fmul(b, nir_trim_vector(b, ddx, dims), size);
++         nir_def *dy = nir_fmul(b, nir_trim_vector(b, ddy, dims), size);
++         nir_def *rho = nir_fmax(b, nir_fdot(b, dx, dx), nir_fdot(b, dy, dy));
++         lod = nir_fmul_imm(b, nir_flog2(b, rho), 0.5);
++      } else {
++         lod = kk_implicit_lod(
++            b, tex, coord, bias ? bias : nir_imm_float(b, 0),
++            tex->sampler_dim == GLSL_SAMPLER_DIM_CUBE ? 3 : dims);
++      }
++   }
++
++   nir_def *max_level =
++      nir_i2f32(b, nir_iadd_imm(b, kk_num_levels(b, tex), -1));
++   nir_def *clamped = nir_fmin(b, nir_fmax(b, lod, nir_imm_float(b, 0)),
++                               max_level);
++   if (min_lod)
++      clamped = nir_fmax(b, clamped, min_lod);
++
++   nir_def *unnormalized =
++      nir_test_mask(b, flags, KK_SAMPLER_MINMAX_UNNORMALIZED);
++   clamped = nir_bcsel(b, unnormalized, nir_imm_float(b, 0), clamped);
++
++   nir_def *mode = nir_iand_imm(b, flags, KK_SAMPLER_MINMAX_MODE_MASK);
++   nir_def *is_min = nir_ieq_imm(b, mode, KK_SAMPLER_MINMAX_MIN);
++   nir_def *magnify = nir_fle_imm(b, lod, 0);
++   nir_def *linear = nir_bcsel(
++      b, magnify, nir_test_mask(b, flags, KK_SAMPLER_MINMAX_MAG_LINEAR),
++      nir_test_mask(b, flags, KK_SAMPLER_MINMAX_MIN_LINEAR));
++   nir_def *mip_linear = nir_test_mask(b, flags, KK_SAMPLER_MINMAX_MIP_LINEAR);
++
++   nir_push_if(b, nir_iand(b, nir_ine_imm(b, mode, 0), linear));
++   nir_def *emulated;
++   {
++      nir_def *level0 = nir_bcsel(b, mip_linear, nir_ffloor(b, clamped),
++                                  nir_ffloor(b, nir_fadd_imm(b, clamped, 0.5)));
++      level0 = nir_fmin(b, level0, max_level);
++      nir_def *level1 = nir_fmin(b, nir_fadd_imm(b, level0, 1), max_level);
++      nir_def *two_levels =
++         nir_iand(b, mip_linear,
++                  nir_iand(b, nir_flt(b, level0, clamped),
++                           nir_flt(b, level0, level1)));
++
++      nir_def *r0 =
++         kk_reduce_level(b, tex, coord, offset, level0, is_min,
++                         unnormalized, dims);
++      nir_push_if(b, two_levels);
++      nir_def *r1 =
++         kk_reduce_level(b, tex, coord, offset, level1, is_min,
++                         unnormalized, dims);
++      nir_def *both = kk_reduce(b, is_min, r0, r1);
++      nir_pop_if(b, NULL);
++      emulated = nir_if_phi(b, both, r0);
++   }
++   nir_push_else(b, NULL);
++   nir_instr *plain = nir_instr_clone(b->shader, &tex->instr);
++   nir_instr_as_tex(plain)->backend_flags |= KK_TEXTURE_FLAG_MINMAX_DONE;
++   nir_builder_instr_insert(b, plain);
++   nir_pop_if(b, NULL);
++
++   nir_def *result = nir_if_phi(b, emulated, &nir_instr_as_tex(plain)->def);
++   nir_def_replace(&tex->def, result);
++   return true;
++}
++
++bool
++kk_nir_lower_sampler_minmax(nir_shader *nir)
++{
++   return nir_shader_tex_pass(nir, lower_sampler_minmax,
++                              nir_metadata_none, NULL);
++}
+diff --git a/src/kosmickrisp/vulkan/kk_physical_device.c b/src/kosmickrisp/vulkan/kk_physical_device.c
+index b7cde386e08..0d51e4274ac 100644
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c
+@@ -88,7 +88,7 @@ kk_get_device_extensions(const struct kk_instance *instance,
+       .EXT_buffer_device_address = true,
+       .EXT_descriptor_indexing = true,
+       .EXT_host_query_reset = true,
+-      .EXT_sampler_filter_minmax = pdev->info.gpu_apple_family >= 10,
++      .EXT_sampler_filter_minmax = true,
+       .EXT_scalar_block_layout = true,
+       .EXT_separate_stencil_usage = true,
+       .EXT_shader_viewport_index_layer = true,
+diff --git a/src/kosmickrisp/vulkan/kk_physical_device.h b/src/kosmickrisp/vulkan/kk_physical_device.h
+index 283dc9fbdf2..940d3b1ebb4 100644
+--- a/src/kosmickrisp/vulkan/kk_physical_device.h
++++ b/src/kosmickrisp/vulkan/kk_physical_device.h
+@@ -104,4 +104,10 @@ void kk_physical_device_destroy(struct vk_physical_device *vk_device);
+ #define KK_USE_WSI_PLATFORM
+ #endif
+ 
++static inline bool
++kk_has_native_sampler_minmax(const struct kk_physical_device *pdev)
++{
++   return pdev->info.gpu_apple_family >= 10;
++}
++
+ #endif // KK_PHYSICAL_DEVICE_H
+diff --git a/src/kosmickrisp/vulkan/kk_sampler.c b/src/kosmickrisp/vulkan/kk_sampler.c
+index 65dcadf41b4..4d347b38fce 100644
+--- a/src/kosmickrisp/vulkan/kk_sampler.c
++++ b/src/kosmickrisp/vulkan/kk_sampler.c
+@@ -9,6 +9,7 @@
+ 
+ #include "kk_entrypoints.h"
+ #include "kk_physical_device.h"
++#include "kk_shader.h"
+ 
+ #include "kosmickrisp/bridge/mtl_bridge.h"
+ #include "kosmickrisp/bridge/vk_to_mtl_map.h"
+@@ -126,7 +127,7 @@ create_sampler_descriptor(const struct kk_device *dev,
+    mtl_sampler_descriptor_set_compare_function(descriptor,
+                                                packed->compare_func);
+ 
+-   if (pdev->vk.supported_extensions.EXT_sampler_filter_minmax)
++   if (kk_has_native_sampler_minmax(pdev))
+       mtl_sampler_descriptor_set_reduction_mode(descriptor,
+                                                 packed->reduction_mode);
+ 
+@@ -237,6 +238,30 @@ kk_CreateSampler(VkDevice device, const VkSamplerCreateInfo *pCreateInfo,
+    sampler->lod_min_fp16 = _mesa_float_to_half(pCreateInfo->minLod);
+    sampler->lod_max_fp16 = _mesa_float_to_half(pCreateInfo->maxLod);
+ 
++   const VkSamplerReductionModeCreateInfo *reduction_info =
++      vk_find_struct_const(pCreateInfo->pNext,
++                           SAMPLER_REDUCTION_MODE_CREATE_INFO);
++   if (reduction_info && !kk_has_native_sampler_minmax(kk_device_physical(dev)) &&
++       reduction_info->reductionMode !=
++          VK_SAMPLER_REDUCTION_MODE_WEIGHTED_AVERAGE) {
++      sampler->minmax_flags =
++         (reduction_info->reductionMode == VK_SAMPLER_REDUCTION_MODE_MIN
++             ? KK_SAMPLER_MINMAX_MIN
++             : KK_SAMPLER_MINMAX_MAX) |
++         (pCreateInfo->minFilter == VK_FILTER_LINEAR
++             ? KK_SAMPLER_MINMAX_MIN_LINEAR
++             : 0) |
++         (pCreateInfo->magFilter == VK_FILTER_LINEAR
++             ? KK_SAMPLER_MINMAX_MAG_LINEAR
++             : 0) |
++         (pCreateInfo->mipmapMode == VK_SAMPLER_MIPMAP_MODE_LINEAR
++             ? KK_SAMPLER_MINMAX_MIP_LINEAR
++             : 0) |
++         (pCreateInfo->unnormalizedCoordinates
++             ? KK_SAMPLER_MINMAX_UNNORMALIZED
++             : 0);
++   }
++
+    *pSampler = kk_sampler_to_handle(sampler);
+ 
+    return VK_SUCCESS;
+diff --git a/src/kosmickrisp/vulkan/kk_sampler.h b/src/kosmickrisp/vulkan/kk_sampler.h
+index 15f3de9e582..e6a436b1ea3 100644
+--- a/src/kosmickrisp/vulkan/kk_sampler.h
++++ b/src/kosmickrisp/vulkan/kk_sampler.h
+@@ -28,6 +28,7 @@ struct kk_sampler {
+    uint16_t lod_bias_fp16;
+    uint16_t lod_min_fp16;
+    uint16_t lod_max_fp16;
++   uint16_t minmax_flags;
+ 
+    struct {
+       struct kk_rc_sampler *hw;
+diff --git a/src/kosmickrisp/vulkan/kk_shader.c b/src/kosmickrisp/vulkan/kk_shader.c
+index 946a4411ac5..b605881d3f4 100644
+--- a/src/kosmickrisp/vulkan/kk_shader.c
++++ b/src/kosmickrisp/vulkan/kk_shader.c
+@@ -172,12 +172,16 @@ enum kk_feature_key {
+    KK_FEAT_CUSTOM_BORDER = BITFIELD_BIT(0),
+    KK_FEAT_NULL_DESCRIPTOR = BITFIELD_BIT(1),
+    KK_FEAT_IMAGE_VIEW_MIN_LOD = BITFIELD_BIT(2),
++   KK_FEAT_SAMPLER_MINMAX = BITFIELD_BIT(3),
+ };
+ 
+ static enum kk_feature_key
+-kk_make_feature_key(const struct vk_features *feats)
++kk_make_feature_key(const struct kk_physical_device *pdev,
++                    const struct vk_features *feats)
+ {
+    enum kk_feature_key key = 0;
++   if (feats->samplerFilterMinmax && !kk_has_native_sampler_minmax(pdev))
++      key |= KK_FEAT_SAMPLER_MINMAX;
+    if (feats->customBorderColors)
+       key |= KK_FEAT_CUSTOM_BORDER;
+    if (feats->nullDescriptor)
+@@ -211,7 +215,10 @@ kk_hash_graphics_state(struct vk_physical_device *device,
+                           sizeof(state->mv->view_mask));
+    }
+ 
+-   enum kk_feature_key feature_key = kk_make_feature_key(enabled_features);
++   struct kk_physical_device *pdev =
++      container_of(device, struct kk_physical_device, vk);
++   enum kk_feature_key feature_key =
++      kk_make_feature_key(pdev, enabled_features);
+    _mesa_blake3_update(&blake3_ctx, &feature_key, sizeof(feature_key));
+ 
+    _mesa_blake3_final(&blake3_ctx, blake3_out);
+@@ -795,6 +802,9 @@ kk_lower_nir(struct kk_device *dev, nir_shader *nir, bool emulated_stage,
+    if (features & KK_FEAT_IMAGE_VIEW_MIN_LOD)
+       NIR_PASS(_, nir, kk_nir_lower_image_view_min_lod);
+ 
++   if (features & KK_FEAT_SAMPLER_MINMAX)
++      NIR_PASS(_, nir, kk_nir_lower_sampler_minmax);
++
+    /* Descriptor lowering needs to happen after lowering blend since we will
+     * generate a nir_intrinsic_load_blend_const_color_rgba which gets lowered by
+     * the lower descriptor pass
+@@ -1851,7 +1861,7 @@ kk_compile_shaders(struct vk_device *device, uint32_t shader_count,
+    struct kk_device *dev = container_of(device, struct kk_device, vk);
+    struct kk_physical_device *pdev = kk_device_physical(dev);
+ 
+-   enum kk_feature_key features = kk_make_feature_key(enabled_features);
++   enum kk_feature_key features = kk_make_feature_key(pdev, enabled_features);
+ 
+    /* Vulkan doesn't enforce a fragment shader to build pipelines. We may need
+     * to create one. */
+diff --git a/src/kosmickrisp/vulkan/kk_shader.h b/src/kosmickrisp/vulkan/kk_shader.h
+index e793a4522d5..435b8aa559b 100644
+--- a/src/kosmickrisp/vulkan/kk_shader.h
++++ b/src/kosmickrisp/vulkan/kk_shader.h
+@@ -194,8 +194,18 @@ bool kk_nir_lower_fs_multiview(nir_shader *nir, uint32_t view_mask);
+ 
+ /* Indicates that the sampler should be overridden to clamp to 0 instead of 1 */
+ #define KK_TEXTURE_FLAG_CLAMP_TO_0 (1 << 0)
++#define KK_TEXTURE_FLAG_MINMAX_DONE (1 << 1)
++
++#define KK_SAMPLER_MINMAX_MODE_MASK  0x3
++#define KK_SAMPLER_MINMAX_MIN        0x1
++#define KK_SAMPLER_MINMAX_MAX        0x2
++#define KK_SAMPLER_MINMAX_MIN_LINEAR 0x4
++#define KK_SAMPLER_MINMAX_MAG_LINEAR 0x8
++#define KK_SAMPLER_MINMAX_MIP_LINEAR 0x10
++#define KK_SAMPLER_MINMAX_UNNORMALIZED 0x20
+ 
+ bool kk_nir_lower_custom_border(nir_shader *nir);
++bool kk_nir_lower_sampler_minmax(nir_shader *nir);
+ bool kk_nir_lower_image_view_min_lod(nir_shader *nir);
+ 
+ VkResult kk_compile_nir_shader(struct kk_device *dev, nir_shader *nir,
+diff --git a/src/kosmickrisp/vulkan/meson.build b/src/kosmickrisp/vulkan/meson.build
+index 7d6689bd854..88ec58e8236 100644
+--- a/src/kosmickrisp/vulkan/meson.build
++++ b/src/kosmickrisp/vulkan/meson.build
+@@ -91,6 +91,7 @@ kk_files = files(
+   'kk_instance.h',
+   'kk_instance.c',
+   'kk_nir_lower_custom_border.c',
++  'kk_nir_lower_sampler_minmax.c',
+   'kk_nir_lower_descriptors.c',
+   'kk_nir_lower_image_view_min_lod.c',
+   'kk_nir_lower_multiview.c',
+-- 
+2.54.0 (Apple Git-157)
+

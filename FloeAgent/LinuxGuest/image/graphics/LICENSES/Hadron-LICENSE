@@ -1,0 +1,16 @@
+Copyright (c) 2026, David Andrews
+All rights reserved.
+
+Redistribution and use of Hadron in source and binary forms is governed
+by a variety of licenses.
+
+Refer to the contents of LICENSE.hadron for the license for the top
+level contents of the Hadron project.
+
+The patches in patches/ modify other projects and are licensed under
+those projects' licenses, contained in a file named LICENSE or COPYING.LIB
+in each directory.
+
+Hadron uses a variety of other software, fetched by scripts/fetch.sh into
+src/, each of which is governed by its own license.  Those licenses are
+contained in a file named LICENSE, COPYING or NOTICE in each directory.

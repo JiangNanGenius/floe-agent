@@ -1,0 +1,77 @@
+From 1e83ae29188114b0b870755376305cf3b4107190 Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Sun, 4 Oct 2026 03:36:56 -0400
+Subject: [PATCH] util: Make the emulated barrier return to one serial thread
+ after the others have left
+
+Generated-by: LLM
+---
+ src/util/u_thread.c | 16 ++++++++++++++--
+ src/util/u_thread.h |  1 +
+ 2 files changed, 15 insertions(+), 2 deletions(-)
+
+diff --git a/src/util/u_thread.c b/src/util/u_thread.c
+index d1cf0858c61..2397b1f9f4d 100644
+--- a/src/util/u_thread.c
++++ b/src/util/u_thread.c
+@@ -219,6 +219,7 @@ void util_barrier_init(util_barrier *barrier, unsigned count)
+ {
+    barrier->count = count;
+    barrier->waiters = 0;
++   barrier->leaving = 0;
+    barrier->sequence = 0;
+    (void) mtx_init(&barrier->mutex, mtx_plain);
+    cnd_init(&barrier->condvar);
+@@ -235,24 +236,35 @@ bool util_barrier_wait(util_barrier *barrier)
+ {
+    mtx_lock(&barrier->mutex);
+ 
++   while (barrier->leaving)
++      cnd_wait(&barrier->condvar, &barrier->mutex);
++
+    assert(barrier->waiters < barrier->count);
+    barrier->waiters++;
+ 
+-   if (barrier->waiters < barrier->count) {
++   const bool serial = barrier->waiters == barrier->count;
++   if (!serial) {
+       uint64_t sequence = barrier->sequence;
+ 
+       do {
+          cnd_wait(&barrier->condvar, &barrier->mutex);
+       } while (sequence == barrier->sequence);
++
++      if (--barrier->leaving == 0)
++         cnd_broadcast(&barrier->condvar);
+    } else {
+       barrier->waiters = 0;
++      barrier->leaving = barrier->count - 1;
+       barrier->sequence++;
+       cnd_broadcast(&barrier->condvar);
++
++      while (barrier->leaving)
++         cnd_wait(&barrier->condvar, &barrier->mutex);
+    }
+ 
+    mtx_unlock(&barrier->mutex);
+ 
+-   return true;
++   return serial;
+ }
+ 
+ #endif
+diff --git a/src/util/u_thread.h b/src/util/u_thread.h
+index 57ebdc51ba1..061db6b7886 100644
+--- a/src/util/u_thread.h
++++ b/src/util/u_thread.h
+@@ -125,6 +125,7 @@ typedef pthread_barrier_t util_barrier;
+ typedef struct {
+    unsigned count;
+    unsigned waiters;
++   unsigned leaving;
+    uint64_t sequence;
+    mtx_t mutex;
+    cnd_t condvar;
+-- 
+2.54.0 (Apple Git-157)
+

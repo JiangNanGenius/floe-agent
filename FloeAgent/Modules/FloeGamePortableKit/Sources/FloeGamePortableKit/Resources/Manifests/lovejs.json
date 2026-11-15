@@ -1,0 +1,208 @@
+{
+  "artifactSHA256": "9eb2db1f789254faed8e5cf7eeeded46a7e56ecbc931c88be809526c448d25fb",
+  "buildKind": "loveJSPackage",
+  "engine": "love",
+  "id": "lovejs",
+  "license": "MIT; L\u00d6VE 11.4 zlib; LGPL-2.1 mpg123",
+  "licenseFiles": [
+    "licenses/love.js-MIT.txt",
+    "licenses/LOVE-11.4-LICENSE.txt",
+    "licenses/LOVE-11.4-COMPONENT-ADDENDUM.md",
+    "licenses/EMSCRIPTEN-2.0.0-LICENSE.txt",
+    "licenses/MPG123-1.25.6-COPYING.txt",
+    "licenses/FREETYPE-2.8.1-FTL.txt",
+    "licenses/SDL2-2.0.10-COPYING.txt",
+    "licenses/LIBOGG-1.3.2-COPYING.txt",
+    "licenses/LIBVORBIS-1.3.5-COPYING.txt",
+    "licenses/LIBTHEORA-1.1.1-COPYING.txt",
+    "licenses/LIBMODPLUG-0.8.8.4-COPYING.txt",
+    "licenses/LUA-5.1.5-COPYRIGHT.txt",
+    "licenses/ZLIB-1.2.11-LICENSE.txt",
+    "licenses/ENET-MIT.txt",
+    "licenses/OPENAL-SOFT-1.19.1-COPYING.txt",
+    "licenses/LUAJIT-2.1.0-COPYRIGHT.txt",
+    "licenses/README-PREPARED.md",
+    "licenses/FLOE-MPL-2.0.txt",
+    "licenses/FLOE-love_persistence_patch.py",
+    "licenses/FLOE-PERSISTENCE-NOTICE.txt"
+  ],
+  "notes": [
+    "npm tarball love.js@11.4.1; npm gitHead 8f9a7b85da9149b6d4d0af46442ead1e71f76477 (2022-08-25).",
+    "Shipped WASM is byte-identical to the public source commit; text files are CRLF-normalized copies.",
+    "Compatibility runtime reports LOVE 11.4.0, single-threaded; release variant retained.",
+    "mpg123 1.25.6 (LGPL-2.1) is statically linked; complete source, delta and relink path are in licenses/LOVE-11.4-COMPONENT-ADDENDUM.md.",
+    "OpenAL Soft and LuaJIT are named by LOVE but are not linked in this Emscripten build; see the addendum.",
+    "The supported compatibility loader includes a source-supplied MPL acknowledged-close addition, with unchanged upstream WASM. Readable patch source and original MIT/NCSA terms are retained."
+  ],
+  "prepareScript": "prepare_lovejs.py",
+  "revision": "8f9a7b85da9149b6d4d0af46442ead1e71f76477",
+  "schemaVersion": 1,
+  "sourceLock": {
+    "artifactKind": "npm-tarball",
+    "artifactSHA256": "9eb2db1f789254faed8e5cf7eeeded46a7e56ecbc931c88be809526c448d25fb",
+    "artifactURL": "https://registry.npmjs.org/love.js/-/love.js-11.4.1.tgz",
+    "build": {
+      "compatFlags": [
+        "-DLOVE_JIT=0",
+        "-DCMAKE_BUILD_TYPE=Release",
+        "-DLOVEJS_COMPAT=1",
+        "-DSEXPORT_ALL=1",
+        "-DSMAIN_MODULE=1",
+        "-DSERROR_ON_UNDEFINED_SYMBOLS=0"
+      ],
+      "emsdk": "2.0.0",
+      "love": {
+        "branch": "emscripten",
+        "commit": "a79ab87d82f1105e8badd39ff22cfad02882ddc1",
+        "repo": "https://github.com/Davidobot/love",
+        "sourceTarball": {
+          "bytes": 3629686,
+          "path": "love/davidobot-love-a79ab87.tar.gz",
+          "sha256": "332228dcadb9a373c1c35d40e67db1907d9111da0933208eaaeecc183ac8467e"
+        }
+      },
+      "megasource": {
+        "branch": "emscripten",
+        "commit": "b1faef45bd5ec10b9b5a78ffea57401188790283",
+        "repo": "https://github.com/Davidobot/megasource",
+        "sourceTarball": {
+          "bytes": 18556784,
+          "path": "love/davidobot-megasource-b1faef45.tar.gz",
+          "sha256": "67edb387bbd4e12b0225a0a1857245a40c802fb304e04bd7341a8d4bb9795467"
+        }
+      },
+      "recipe": "build_lovejs.sh",
+      "recipeSHA256": "4a8882ee4ce8c8da1430e47eb01e654ef1b531dae269d14552499b73c66698d2",
+      "reproducibility": "binary equals committed upstream artifact; clean rebuild not performed"
+    },
+    "distribution": {
+      "conditions": [
+        "Accompany distributed runtime with the exact corresponding source and relink recipe (LGPL-2.1 section 6(a)).",
+        "Retain all original component notices plus the separate MPL loader addition/source.",
+        "Keep signed native App code separate from user-replaceable game runtime data; no additional reverse-engineering restrictions are added."
+      ],
+      "eligibility": "eligible-with-conditions",
+      "profile": "floe-provided-runtime-with-source-relink"
+    },
+    "lgplComponents": [
+      {
+        "license": "LGPL-2.1",
+        "linking": "statically-linked-in-wasm",
+        "method": "LGPL-2.1 6(a) source + object/source relink; rebuild with emsdk 2.0.0",
+        "name": "mpg123",
+        "relinkDocument": {
+          "bytes": 3042,
+          "path": "love/RELINK.md",
+          "sha256": "570749fdc5c6ba19a077e7c48dccea52ace82d1e960f28e002b82d19fba8abf5"
+        },
+        "sourcePackage": {
+          "bytes": 953389,
+          "path": "love/mpg123-1.25.6-megasource.tar.gz",
+          "sha256": "69ab144133efa88014f3994e09d6e56265e7c5a4e1d131a61e96e68e39f6777f"
+        },
+        "upstreamReference": {
+          "bytes": 919169,
+          "path": "love/mpg123-1.25.6.tar.bz2",
+          "sha256": "0f0458c9b87799bc2c9bf9455279cc4d305e245db43b51a39ef27afe025c5a8e"
+        },
+        "vendorDelta": {
+          "bytes": 487454,
+          "path": "love/MPG123-MEGASOURCE-DELTA.diff",
+          "sha256": "2c2fb1465ce82ef4caabd93e8b3f2fa03d389ee28900cd8e36513dc16a7b35dc"
+        },
+        "version": "1.25.6"
+      }
+    ],
+    "normalization": "wasm byte-identical; text CRLF->LF",
+    "notLinked": [
+      {
+        "name": "OpenAL Soft",
+        "noticeRetained": "licenses/OPENAL-SOFT-1.19.1-COPYING.txt",
+        "reason": "Emscripten 2.0.0 library_openal.js supplies al*/alc*; megasource excludes native OpenAL under EMSCRIPTEN",
+        "version": "1.19.1"
+      },
+      {
+        "name": "LuaJIT",
+        "noticeRetained": "licenses/LUAJIT-2.1.0-COPYRIGHT.txt",
+        "reason": "LOVE_JIT=0; Lua 5.1.5 is linked",
+        "version": "2.1.0-0bee44c"
+      }
+    ],
+    "persistence": {
+      "actualCrossPlayer": "PASS in Root native-close-1 actual WebKit follow-up with Root patched loader; initial unpatched failure retained; this task did not repeat the test",
+      "flush": {
+        "beforeunload": true,
+        "exported": false,
+        "pagehide": false,
+        "perWrite": false,
+        "visibilitychange": false
+      },
+      "idbfs": true,
+      "mount": "/home/web_user/love",
+      "optionalOverlay": "Scripts/Distribution/patches/love/floe-persist.js",
+      "patchedSourceSHA256": "aa76c4655dbf3848158e0a4738c37fc5eb5733519a70b3606bb571cdce9c96be",
+      "populate": "FS.syncfs(true) at startup",
+      "qualifiedCandidate": {
+        "actualResult": "qualification evidence (not bundled with the App)",
+        "actualResultSHA256": "c6066331a672c6fa9b578964861c2aaed651799142f4dd50f6c124b4a97754f7",
+        "crossPlayerBuiltInSavePersistenceVerified": true,
+        "gameDataSHA256": "51fcbc69ff66f42628c0bdc2782a9623a8b6c7a24c09afb9a92f1cf03ab35e3a",
+        "loaderSHA256": "a9fec12804500c6dcfc524c0c40ef06fc3b772afc23eaa36f4c3aff2ae3da955",
+        "noticeBundleStatus": "candidate licenses/ still contains LOVE-11.5-LICENSE.txt; replace with this package's LOVE-11.4 + component bundle before distribution",
+        "observed": {
+          "freshX": 480,
+          "initialX": 480,
+          "loadedX": 641.04,
+          "savedAck": true,
+          "savedX": 641.04
+        },
+        "receipt": "qualification evidence (not bundled with the App)",
+        "receiptSHA256": "e6d98d33e58f05b86cedc15fe7b396dd0039cf5f75bf3a7313fc30320bcbc35a",
+        "root": "qualification evidence (not bundled with the App)",
+        "wasmSHA256": "ecc9e098bb8af918d20fbe3f26d23495c5184ff6b5d203d2e4b27bf17a771d6f"
+      },
+      "rootPatch": {
+        "guards": [
+          "12db012a5cf4e0661f9eaf154c4c10c3cba7a7db31e6a36856028bbaf5f942f0",
+          "eb20a4d947dc99e08e906e946c5b783e3f542f60a3107167a1e92d07bfe531d4"
+        ],
+        "license": "MPL-2.0 addition; upstream MIT/NCSA retained",
+        "mechanism": "Module.floePrepareToStop: pause main loop and queue an FS.syncfs(false)",
+        "modifiedLoaderSHA256": "a9fec12804500c6dcfc524c0c40ef06fc3b772afc23eaa36f4c3aff2ae3da955",
+        "record": "Scripts/Distribution/patches/love/LOVE-PERSISTENCE.md",
+        "recordSHA256": "32f50673919173a951a7b86439cd4f8313c9c1c133b37a137cd1759abb55454b",
+        "tool": "Scripts/Distribution/patches/love/EmscriptenPersistence.js.patch",
+        "toolSHA256": "e678aa5191f9ed39591c27fedd11e7e3242e638dfa2afbb519653e6cd78ef2ef",
+        "userContentChanged": false,
+        "wasmChanged": false
+      },
+      "savePath": "/home/web_user/love/<identity>",
+      "sourcePatch": "Scripts/Distribution/patches/love/EmscriptenPersistence.js.patch",
+      "unpatchedRuntime": {
+        "loaderSHA256": "12db012a5cf4e0661f9eaf154c4c10c3cba7a7db31e6a36856028bbaf5f942f0",
+        "status": "not durable across a new player; beforeunload-only gap confirmed by Root initial actual lifecycle test"
+      }
+    },
+    "sourceCommit": "8f9a7b85da9149b6d4d0af46442ead1e71f76477",
+    "sourceTarball": {
+      "bytes": 4612895,
+      "path": "love/lovejs-8f9a7b85.tar.gz",
+      "sha256": "b4d3733c2fd00bd49ecc90b10146c51fbe19010c8c58da974975856e091355d9"
+    },
+    "localPatches": [
+      {
+        "id": "floe-acknowledged-close1",
+        "upstreamLoaderSHA256": "12db012a5cf4e0661f9eaf154c4c10c3cba7a7db31e6a36856028bbaf5f942f0",
+        "modifiedLoaderSHA256": "a9fec12804500c6dcfc524c0c40ef06fc3b772afc23eaa36f4c3aff2ae3da955",
+        "source": "Scripts/patch_love_persistence.py",
+        "sourceSHA256": "e678aa5191f9ed39591c27fedd11e7e3242e638dfa2afbb519653e6cd78ef2ef",
+        "license": "MPL-2.0",
+        "qualifiedVariant": "compat",
+        "upstreamTermsRetained": "MIT/NCSA",
+        "wasmChanged": false
+      }
+    ]
+  },
+  "upstreamURL": "https://github.com/Davidobot/love.js",
+  "version": "11.4.1"
+}

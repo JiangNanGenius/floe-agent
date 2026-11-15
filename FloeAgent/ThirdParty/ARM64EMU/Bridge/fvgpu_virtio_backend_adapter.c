@@ -95,6 +95,11 @@ fvgpu_ad_get_usage(void *opaque, uint64_t *blob_bytes_out,
 {
     FVGpuBackendAdapter *a = opaque;
     FloeGPUMemoryLedger l = floe_gpu_get_ledger(a->session);
+    /* A ledger invariant fault means physical accounting is no longer
+     * trustworthy. Refuse to pretend the report is exact: fail the device so
+     * the guest observes NEEDS_RESET instead of an undercounted budget. */
+    if (floe_gpu_ledger_faulted(a->session) && a->transport)
+        floe_gpu_backend_set_failed(a->transport);
     if (blob_bytes_out)
         *blob_bytes_out = l.blob_bytes;
     if (internal_bytes_out)
@@ -104,6 +109,7 @@ fvgpu_ad_get_usage(void *opaque, uint64_t *blob_bytes_out,
 
 static int fvgpu_ad_get_budget(void *opaque,uint64_t *requested,uint64_t *actual,uint64_t *target) {
     FVGpuBackendAdapter *a=opaque;FloeGPUBudgetResult r=floe_gpu_get_budget(a->session);
+    if(floe_gpu_ledger_faulted(a->session)&&a->transport) floe_gpu_backend_set_failed(a->transport);
     if(requested) *requested=r.requested_bytes;
     if(actual) *actual=r.actual_limit_bytes;
     if(target) *target=r.pending_target_bytes;

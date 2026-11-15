@@ -7,7 +7,14 @@ enum CADWorkbenchDestination { case building, mesh }
 private struct CADBuildingWorkspaceActiveKey: EnvironmentKey {
     static let defaultValue = false
 }
+private struct CADHostOwnsProjectSaveKey: EnvironmentKey {
+    static let defaultValue = false
+}
 extension EnvironmentValues {
+    var cadHostOwnsProjectSave: Bool {
+        get { self[CADHostOwnsProjectSaveKey.self] }
+        set { self[CADHostOwnsProjectSaveKey.self] = newValue }
+    }
     var cadBuildingWorkspaceActive: Bool {
         get { self[CADBuildingWorkspaceActiveKey.self] }
         set { self[CADBuildingWorkspaceActiveKey.self] = newValue }
@@ -18,18 +25,21 @@ extension EnvironmentValues {
 /// NavigationStack. The system Back returns to the retained primary viewport.
 struct CADBuildingEditorPage: View {
     let document: FloeCADDocument
+    @Environment(\.scenePhase) private var scenePhase
     @State private var saving = false
     @State private var saveProblem: String?
 
     var body: some View {
-        FloeBuildingWorkbenchView(document: document)
+        // This page owns the one visible project save while it is pushed; the
+        // nested editor must not offer or auto-run a second partial save.
+        FloeBuildingWorkbenchView(document: document, hostOwnsProjectSave: true)
             .environment(\.cadBuildingWorkspaceActive, true)
             .navigationTitle(FloeCADStrings.text("cad.building.defaultName", "Building"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button {
-                        guard !saving, !document.isClosed else { return }
+                        guard !saving, !document.isClosed, document.hasUnsavedChanges else { return }
                         saving = true
                         Task { @MainActor in
                             let outcome = await document.save()
@@ -47,6 +57,17 @@ struct CADBuildingEditorPage: View {
                     Text(saveProblem).font(.callout).textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading).padding(12).background(.bar)
                 }
+            }
+            .onChange(of: scenePhase) { _, phase in
+                // The nested editor skips its own flush under this owner.
+                guard phase != .active, !saving, !document.isClosed, document.hasUnsavedChanges else { return }
+                Task { _ = await document.save() }
+            }
+            .onDisappear {
+                // Leaving the pushed page is also this owner's commit point;
+                // the nested editor no longer flushes on its own.
+                guard !saving, !document.isClosed, document.hasUnsavedChanges else { return }
+                Task { _ = await document.save() }
             }
     }
 }

@@ -1,0 +1,487 @@
+From 69ac947afaf750e18d8dc77a51a18ac1d29bdb82 Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Thu, 1 Oct 2026 15:18:12 -0400
+Subject: [PATCH] kk: Implement VK_EXT_shader_image_atomic_int64
+
+Generated-by: LLM
+---
+ src/kosmickrisp/compiler/nir_to_msl.c         |  33 ++++-
+ src/kosmickrisp/vulkan/kk_descriptor_set.c    |   6 +
+ src/kosmickrisp/vulkan/kk_format.c            |   9 ++
+ src/kosmickrisp/vulkan/kk_image.c             |   9 +-
+ src/kosmickrisp/vulkan/kk_image_layout.c      |   7 +-
+ src/kosmickrisp/vulkan/kk_image_view.c        |   3 +-
+ .../vulkan/kk_nir_lower_atomic64.c            | 115 ++++++++++++++++--
+ .../vulkan/kk_nir_lower_descriptors.c         |   9 ++
+ src/kosmickrisp/vulkan/kk_physical_device.c   |   5 +
+ src/kosmickrisp/vulkan/kk_queue.c             |   2 +
+ src/kosmickrisp/vulkan/kk_shader.h            |   1 +
+ 11 files changed, 184 insertions(+), 15 deletions(-)
+
+diff --git a/src/kosmickrisp/compiler/nir_to_msl.c b/src/kosmickrisp/compiler/nir_to_msl.c
+index 8f06c458c8a..ae07d0a896e 100644
+--- a/src/kosmickrisp/compiler/nir_to_msl.c
++++ b/src/kosmickrisp/compiler/nir_to_msl.c
+@@ -715,6 +715,9 @@ tex_type_name(nir_alu_type ty)
+       return "ushort";
+    case nir_type_uint32:
+       return "uint";
++   case nir_type_int64:
++   case nir_type_uint64:
++      return "ulong";
+    case nir_type_float16:
+       return "half";
+    case nir_type_float32:
+@@ -736,7 +739,9 @@ instrinsic_needs_dest_type(nir_intrinsic_instr *instr)
+        op == nir_intrinsic_bindless_image_atomic_swap ||
+        op == nir_intrinsic_bindless_image_sparse_load)
+       return false;
+-   if (op == nir_intrinsic_global_atomic && instr->def.bit_size == 64)
++   if ((op == nir_intrinsic_global_atomic ||
++        op == nir_intrinsic_bindless_image_atomic) &&
++       instr->def.bit_size == 64)
+       return false;
+    return info->has_dest;
+ }
+@@ -1658,6 +1663,9 @@ intrinsic_to_msl(struct nir_to_msl_ctx *ctx, nir_intrinsic_instr *instr)
+       break;
+    }
+    case nir_intrinsic_bindless_image_load:
++      if (instr->def.bit_size == 64) {
++         P(ctx, "as_type<%s>(", msl_type_for_def(ctx->types, &instr->def));
++      }
+       src_to_msl(ctx, &instr->src[0]);
+       P(ctx, ".read(");
+       image_coord_swizzle(ctx, instr);
+@@ -1671,13 +1679,21 @@ intrinsic_to_msl(struct nir_to_msl_ctx *ctx, nir_intrinsic_instr *instr)
+       for (uint32_t i = 0u; i < instr->def.num_components; ++i) {
+          P(ctx, "%c", "xyzw"[i]);
+       }
++      if (instr->def.bit_size == 64)
++         P(ctx, ")");
+       P(ctx, ";\n");
+       break;
+    case nir_intrinsic_bindless_image_store:
+       P_INDENT(ctx);
+       src_to_msl(ctx, &instr->src[0]);
+       P(ctx, ".write(");
+-      src_to_msl(ctx, &instr->src[3]);
++      if (instr->src[3].ssa->bit_size == 64) {
++         P(ctx, "ulong4(");
++         src_to_msl(ctx, &instr->src[3]);
++         P(ctx, ")");
++      } else {
++         src_to_msl(ctx, &instr->src[3]);
++      }
+       P(ctx, ", ");
+       image_coord_swizzle(ctx, instr);
+       if (nir_intrinsic_image_dim(instr) != GLSL_SAMPLER_DIM_BUF) {
+@@ -1687,6 +1703,19 @@ intrinsic_to_msl(struct nir_to_msl_ctx *ctx, nir_intrinsic_instr *instr)
+       P(ctx, ");\n");
+       break;
+    case nir_intrinsic_bindless_image_atomic:
++      if (instr->def.bit_size == 64) {
++         const bool is_max =
++            nir_intrinsic_atomic_op(instr) == nir_atomic_op_umax;
++         assert(is_max || nir_intrinsic_atomic_op(instr) == nir_atomic_op_umin);
++         P_INDENT(ctx);
++         src_to_msl(ctx, &instr->src[0]);
++         P(ctx, ".%s(", is_max ? "atomic_max" : "atomic_min");
++         image_coord_swizzle(ctx, instr);
++         P(ctx, ", ulong4(");
++         src_to_msl(ctx, &instr->src[3]);
++         P(ctx, "));\n");
++         break;
++      }
+       src_to_msl(ctx, &instr->src[0]);
+       P(ctx, ".%s(", atomic_op_to_msl(nir_intrinsic_atomic_op(instr)));
+       image_coord_swizzle(ctx, instr);
+diff --git a/src/kosmickrisp/vulkan/kk_descriptor_set.c b/src/kosmickrisp/vulkan/kk_descriptor_set.c
+index f1c809a2b37..aa93fe7c31b 100644
+--- a/src/kosmickrisp/vulkan/kk_descriptor_set.c
++++ b/src/kosmickrisp/vulkan/kk_descriptor_set.c
+@@ -13,6 +13,7 @@
+ #include "kk_descriptor_set_layout.h"
+ #include "kk_device.h"
+ #include "kk_entrypoints.h"
++#include "kk_image.h"
+ #include "kk_image_view.h"
+ #include "kk_physical_device.h"
+ #include "kk_sampler.h"
+@@ -168,6 +169,11 @@ get_storage_image_view_desc(
+ 
+       assert(view->planes[plane].storage_gpu_resource_id);
+       desc.image_gpu_resource_id = view->planes[plane].storage_gpu_resource_id;
++
++      const struct kk_image *image =
++         container_of(view->vk.image, struct kk_image, vk);
++      desc.buffer_size_el = !!(image->planes[plane].layout.usage &
++                               MTL_TEXTURE_USAGE_SHADER_ATOMIC);
+    }
+ 
+    assert(sizeof(desc) <= dst_size);
+diff --git a/src/kosmickrisp/vulkan/kk_format.c b/src/kosmickrisp/vulkan/kk_format.c
+index a13f5415fb2..63335301c0b 100644
+--- a/src/kosmickrisp/vulkan/kk_format.c
++++ b/src/kosmickrisp/vulkan/kk_format.c
+@@ -51,6 +51,11 @@
+    .bit_widths = width, .filter = 0u, .write = 1u, .color = 1u, .blend = 0u,   \
+    .msaa = 0u, .resolve = 0u, .sparse = 1u, .atomic = 1u
+ 
++// Write, Sparse, Atomic
++#define MTL_FMT_WSA(width)                                                     \
++   .bit_widths = width, .filter = 0u, .write = 1u, .color = 0u, .blend = 0u,   \
++   .msaa = 0u, .resolve = 0u, .sparse = 1u, .atomic = 1u
++
+ // Write, Color, Sparse
+ #define MTL_FMT_WCS(width)                                                     \
+    .bit_widths = width, .filter = 0u, .write = 1u, .color = 1u, .blend = 0u,   \
+@@ -204,6 +209,10 @@ static const struct kk_va_format kk_vf_formats[] = {
+    MTL_FMT_NATIVE(B8G8R8A8_SRGB, MTL_FMT_ALL_NO_ATOMIC(32), MTL_FMT_TB_NONE),
+ 
+    // 64-bit formats
++   MTL_FMT(R64_UINT, R32G32_UINT, MTL_SWIZZLE_IDENTITY, MTL_FMT_WSA(64),
++           MTL_FMT_TB_NONE, false),
++   MTL_FMT(R64_SINT, R32G32_UINT, MTL_SWIZZLE_IDENTITY, MTL_FMT_WSA(64),
++           MTL_FMT_TB_NONE, false),
+    MTL_FMT_NATIVE(R32G32_UINT, MTL_FMT_WCMS(64), MTL_FMT_TB_WR),
+    MTL_FMT_NATIVE(R32G32_SINT, MTL_FMT_WCMS(64), MTL_FMT_TB_WR),
+    MTL_FMT_NATIVE(R32G32_FLOAT, MTL_FMT_ALL_NO_ATOMIC(64), MTL_FMT_TB_WR),
+diff --git a/src/kosmickrisp/vulkan/kk_image.c b/src/kosmickrisp/vulkan/kk_image.c
+index 76e35369816..50ec9f888a3 100644
+--- a/src/kosmickrisp/vulkan/kk_image.c
++++ b/src/kosmickrisp/vulkan/kk_image.c
+@@ -45,9 +45,14 @@ kk_get_image_plane_format_features(struct kk_physical_device *pdev,
+    if (va_format == NULL)
+       return 0;
+ 
++   const bool is_int64 =
++      p_format == PIPE_FORMAT_R64_UINT || p_format == PIPE_FORMAT_R64_SINT;
++
+    // Textures can at least be sampled
+-   features |= VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT;
+-   features |= VK_FORMAT_FEATURE_2_BLIT_SRC_BIT;
++   if (!is_int64) {
++      features |= VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT;
++      features |= VK_FORMAT_FEATURE_2_BLIT_SRC_BIT;
++   }
+ 
+    if (va_format->filter) {
+       features |= VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+diff --git a/src/kosmickrisp/vulkan/kk_image_layout.c b/src/kosmickrisp/vulkan/kk_image_layout.c
+index f91bfa8f6cc..d7011578be0 100644
+--- a/src/kosmickrisp/vulkan/kk_image_layout.c
++++ b/src/kosmickrisp/vulkan/kk_image_layout.c
+@@ -226,8 +226,13 @@ kk_image_layout_init(const struct kk_device *dev, const struct vk_image *image,
+    layout->linear = image->tiling != VK_IMAGE_TILING_OPTIMAL;
+    layout->optimized_layout = kk_image_layout_can_optimize(
+       pdev, image->usage, image->tiling, image->create_flags, format);
++   const bool int64_views =
++      supported_format->mtl_pixel_format == MTL_PIXEL_FORMAT_R32G32_UINT &&
++      (image->usage & VK_IMAGE_USAGE_STORAGE_BIT) && image->samples == 1u &&
++      (image->create_flags & VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT);
+    layout->usage = vk_image_usage_flags_to_mtl_texture_usage(
+-      image->usage, image->create_flags, supported_format->atomic);
++      image->usage, image->create_flags,
++      supported_format->atomic || int64_views);
+    layout->create_flags = image->create_flags;
+    layout->format.pipe = format;
+    layout->format.mtl = supported_format->mtl_pixel_format;
+diff --git a/src/kosmickrisp/vulkan/kk_image_view.c b/src/kosmickrisp/vulkan/kk_image_view.c
+index 90eb6f6304c..92d344629c4 100644
+--- a/src/kosmickrisp/vulkan/kk_image_view.c
++++ b/src/kosmickrisp/vulkan/kk_image_view.c
+@@ -205,7 +205,8 @@ kk_image_view_init(struct kk_device *dev, struct kk_image_view *view,
+          bool requires_type_change =
+             view_layout.view_type != VK_IMAGE_VIEW_TYPE_3D &&
+             view_layout.view_type != VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+-         bool requires_format_change = view->vk.format != image->vk.format;
++         bool requires_format_change =
++            view_layout.format.mtl != plane->layout.format.mtl;
+          VkImageViewType original_type = view_layout.view_type;
+ 
+          /* Required so sampling from input attachments actually return (d, 0,
+diff --git a/src/kosmickrisp/vulkan/kk_nir_lower_atomic64.c b/src/kosmickrisp/vulkan/kk_nir_lower_atomic64.c
+index 1a630c727a4..c463407475c 100644
+--- a/src/kosmickrisp/vulkan/kk_nir_lower_atomic64.c
++++ b/src/kosmickrisp/vulkan/kk_nir_lower_atomic64.c
+@@ -11,12 +11,14 @@
+ enum target_kind {
+    TARGET_GLOBAL,
+    TARGET_SHARED,
++   TARGET_IMAGE,
+ };
+ 
+ struct target {
+    enum target_kind kind;
+    nir_def *addr;
+    unsigned base;
++   nir_intrinsic_instr *image;
+ };
+ 
+ static nir_def *
+@@ -38,12 +40,29 @@ load_locked_flag(nir_builder *b, unsigned class)
+                                 .align_mul = 4, .access = ACCESS_ATOMIC);
+ }
+ 
++static nir_def *
++lock_key(nir_builder *b, const struct target *t)
++{
++   switch (t->kind) {
++   case TARGET_GLOBAL:
++      return nir_u2u32(b, nir_ushr_imm(b, t->addr, 3));
++   case TARGET_SHARED:
++      return nir_iadd_imm(b, nir_ushr_imm(b, t->addr, 3), t->base);
++   case TARGET_IMAGE: {
++      nir_def *coord = nir_u2u32(b, t->image->src[1].ssa);
++      nir_def *key =
++         nir_iadd(b, nir_imul_imm(b, nir_channel(b, coord, 0), 0x9e3779b1u),
++                  nir_imul_imm(b, nir_channel(b, coord, 1), 0x85ebca77u));
++      return nir_ixor(b, key, nir_ushr_imm(b, key, 15));
++   }
++   }
++   UNREACHABLE("bad target");
++}
++
+ static nir_def *
+ lock_address(nir_builder *b, const struct target *t)
+ {
+-   nir_def *key = t->kind == TARGET_GLOBAL
+-                     ? nir_u2u32(b, nir_ushr_imm(b, t->addr, 3))
+-                     : nir_iadd_imm(b, nir_ushr_imm(b, t->addr, 3), t->base);
++   nir_def *key = lock_key(b, t);
+    nir_def *slot = nir_iand_imm(b, key, KK_ATOMIC64_LOCK_COUNT - 1u);
+    nir_def *offset =
+       nir_iadd_imm(b, nir_ishl_imm(b, slot, 2), KK_ATOMIC64_LOCK_OFFSET);
+@@ -53,10 +72,14 @@ lock_address(nir_builder *b, const struct target *t)
+ static void
+ fence(nir_builder *b, const struct target *t)
+ {
++   static const nir_variable_mode modes[] = {
++      [TARGET_GLOBAL] = nir_var_mem_ssbo,
++      [TARGET_SHARED] = nir_var_mem_shared,
++      [TARGET_IMAGE] = nir_var_image,
++   };
+    nir_barrier(b, .execution_scope = SCOPE_NONE, .memory_scope = SCOPE_DEVICE,
+                .memory_semantics = NIR_MEMORY_ACQ_REL,
+-               .memory_modes = t->kind == TARGET_GLOBAL ? nir_var_mem_ssbo
+-                                                        : nir_var_mem_shared);
++               .memory_modes = modes[t->kind]);
+ }
+ 
+ static nir_def *
+@@ -65,16 +88,35 @@ load_value(nir_builder *b, const struct target *t)
+    if (t->kind == TARGET_GLOBAL)
+       return nir_build_load_global(b, 1, 64, t->addr, .align_mul = 8);
+ 
++   if (t->kind == TARGET_IMAGE) {
++      const nir_intrinsic_instr *image = t->image;
++      return nir_bindless_image_load(
++         b, 1, 64, image->src[0].ssa, image->src[1].ssa, nir_imm_int(b, 0),
++         nir_imm_int(b, 0), .image_dim = nir_intrinsic_image_dim(image),
++         .image_array = nir_intrinsic_image_array(image),
++         .format = nir_intrinsic_format(image),
++         .access = nir_intrinsic_access(image), .dest_type = nir_type_uint64);
++   }
++
+    return nir_load_shared(b, 1, 64, t->addr, .base = t->base, .align_mul = 8);
+ }
+ 
+ static void
+ store_value(nir_builder *b, const struct target *t, nir_def *value)
+ {
+-   if (t->kind == TARGET_GLOBAL)
++   if (t->kind == TARGET_GLOBAL) {
+       nir_build_store_global(b, value, t->addr, .align_mul = 8,
+                              .write_mask = 1);
+-   else
++   } else if (t->kind == TARGET_IMAGE) {
++      const nir_intrinsic_instr *image = t->image;
++      nir_bindless_image_store(
++         b, image->src[0].ssa, image->src[1].ssa, nir_imm_int(b, 0),
++         nir_pad_vec4(b, value), nir_imm_int(b, 0),
++         .image_dim = nir_intrinsic_image_dim(image),
++         .image_array = nir_intrinsic_image_array(image),
++         .format = nir_intrinsic_format(image),
++         .access = nir_intrinsic_access(image), .src_type = nir_type_uint64);
++   } else
+       nir_store_shared(b, value, t->addr, .base = t->base, .align_mul = 8,
+                        .write_mask = 1);
+ }
+@@ -115,6 +157,7 @@ critical_section(nir_builder *b, const struct target *t, nir_atomic_op op,
+ {
+    fence(b, t);
+    nir_def *old = load_value(b, t);
++   fence(b, t);
+    store_value(b, t, apply(b, op, old, data, swap));
+    fence(b, t);
+    return old;
+@@ -157,8 +200,16 @@ locked_in_turns(nir_builder *b, const struct target *t, nir_atomic_op op,
+       nir_break_if(b, nir_uge_imm(b, j, 32));
+       nir_push_if(b, nir_ieq(b, j, lane));
+       {
++         nir_variable *spins =
++            nir_local_variable_create(impl, glsl_uint_type(), "atomic64_spins");
++         nir_store_var(b, spins, nir_imm_int(b, 0), 1);
+          nir_push_loop(b);
+-         nir_break_if(b, try_lock(b, lock));
++         {
++            nir_break_if(b, try_lock(b, lock));
++            nir_def *spun = nir_load_var(b, spins);
++            nir_break_if(b, nir_uge_imm(b, spun, KK_ATOMIC64_SPIN_LIMIT));
++            nir_store_var(b, spins, nir_iadd_imm(b, spun, 1), 1);
++         }
+          nir_pop_loop(b, NULL);
+ 
+          nir_store_var(b, result, critical_section(b, t, op, data, swap), 1);
+@@ -181,9 +232,12 @@ locked_by_state(nir_builder *b, const struct target *t, nir_atomic_op op,
+       nir_local_variable_create(impl, glsl_uint64_t_type(), "atomic64_old");
+    nir_variable *state =
+       nir_local_variable_create(impl, glsl_uint_type(), "atomic64_state");
++   nir_variable *spins =
++      nir_local_variable_create(impl, glsl_uint_type(), "atomic64_spins");
+ 
+    nir_def *lock = lock_address(b, t);
+    nir_store_var(b, state, nir_imm_int(b, 0), 1);
++   nir_store_var(b, spins, nir_imm_int(b, 0), 1);
+    nir_store_var(b, result, nir_imm_int64(b, 0), 1);
+ 
+    nir_push_loop(b);
+@@ -197,7 +251,12 @@ locked_by_state(nir_builder *b, const struct target *t, nir_atomic_op op,
+       }
+       nir_push_else(b, NULL);
+       {
+-         nir_store_var(b, state, nir_b2i32(b, try_lock(b, lock)), 1);
++         nir_def *spun = nir_load_var(b, spins);
++         nir_def *enter =
++            nir_ior(b, try_lock(b, lock),
++                    nir_uge_imm(b, spun, KK_ATOMIC64_SPIN_LIMIT));
++         nir_store_var(b, spins, nir_iadd_imm(b, spun, 1), 1);
++         nir_store_var(b, state, nir_b2i32(b, enter), 1);
+       }
+       nir_pop_if(b, NULL);
+    }
+@@ -225,6 +284,8 @@ is_atomic64(const nir_intrinsic_instr *intrin)
+    case nir_intrinsic_global_atomic_swap:
+    case nir_intrinsic_shared_atomic:
+    case nir_intrinsic_shared_atomic_swap:
++   case nir_intrinsic_bindless_image_atomic:
++   case nir_intrinsic_bindless_image_atomic_swap:
+       return intrin->def.bit_size == 64;
+    case nir_intrinsic_load_global:
+    case nir_intrinsic_load_global_constant_offset:
+@@ -260,6 +321,42 @@ lower_atomic(nir_builder *b, nir_intrinsic_instr *intrin, uint8_t *locked_out)
+    }
+ 
+    const nir_atomic_op op = nir_intrinsic_atomic_op(intrin);
++
++   if (intrin->intrinsic == nir_intrinsic_bindless_image_atomic ||
++       intrin->intrinsic == nir_intrinsic_bindless_image_atomic_swap) {
++      const bool is_swap =
++         intrin->intrinsic == nir_intrinsic_bindless_image_atomic_swap;
++      struct target t = {.kind = TARGET_IMAGE, .image = intrin};
++      nir_def *data = intrin->src[3].ssa;
++      nir_def *swap = is_swap ? intrin->src[4].ssa : NULL;
++      nir_def *atomic_texture = nir_ine_imm(b, intrin->src[2].ssa, 0);
++      nir_src_rewrite(&intrin->src[2], nir_imm_int(b, 0));
++
++      nir_instr *next = nir_instr_next(&intrin->instr);
++      if (next && next->type == nir_instr_type_intrinsic &&
++          nir_instr_as_intrinsic(next)->intrinsic ==
++             nir_intrinsic_bindless_image_fence_kk)
++         nir_instr_remove(next);
++
++      const bool native = !is_swap && nir_def_is_unused(&intrin->def) &&
++                          (op == nir_atomic_op_umax || op == nir_atomic_op_umin);
++      if (native) {
++         nir_def *unlocked =
++            nir_ieq_imm(b, load_locked_flag(b, KK_ATOMIC64_IMAGE), 0);
++         nir_push_if(b, nir_iand(b, unlocked, atomic_texture));
++         nir_instr_remove(&intrin->instr);
++         nir_builder_instr_insert(b, &intrin->instr);
++         nir_push_else(b, NULL);
++         locked(b, &t, op, data, swap);
++         nir_pop_if(b, NULL);
++         return;
++      }
++
++      *locked_out |= BITFIELD_BIT(KK_ATOMIC64_IMAGE);
++      nir_def_replace(&intrin->def, locked(b, &t, op, data, swap));
++      return;
++   }
++
+    const bool is_swap = intrin->intrinsic == nir_intrinsic_global_atomic_swap ||
+                         intrin->intrinsic == nir_intrinsic_shared_atomic_swap;
+    const bool is_global = intrin->intrinsic == nir_intrinsic_global_atomic ||
+diff --git a/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c b/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c
+index 4f3b4f34b59..3de30bb01c9 100644
+--- a/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c
++++ b/src/kosmickrisp/vulkan/kk_nir_lower_descriptors.c
+@@ -421,7 +421,16 @@ lower_image_intrin(nir_builder *b, nir_intrinsic_instr *intr,
+       .access = nir_intrinsic_access(intr) | var->data.access,
+       .flags = msl_convert_access_flag(var->data.access));
+ 
++   nir_def *atomic64 = NULL;
++   if (nir_intrinsic_has_atomic_op(intr) && intr->def.bit_size == 64) {
++      atomic64 = load_resource_deref_desc(
++         b, 1, 32, deref,
++         offsetof(struct kk_storage_image_descriptor, buffer_size_el), ctx);
++   }
++
+    nir_rewrite_image_intrinsic(intr, handle, nir_image_intrinsic_type_bindless);
++   if (atomic64)
++      nir_src_rewrite(&intr->src[2], atomic64);
+ 
+    return true;
+ }
+diff --git a/src/kosmickrisp/vulkan/kk_physical_device.c b/src/kosmickrisp/vulkan/kk_physical_device.c
+index 43558c78d46..60f0f41e559 100644
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c
+@@ -201,6 +201,7 @@ kk_get_device_extensions(const struct kk_instance *instance,
+       .EXT_robustness2 = true,
+       .EXT_sample_locations = true,
+       .EXT_shader_atomic_float = true,
++      .EXT_shader_image_atomic_int64 = true,
+       .EXT_shader_replicated_composites = true,
+       .EXT_shader_subgroup_ballot = true,
+       .EXT_shader_subgroup_vote = true,
+@@ -527,6 +528,10 @@ kk_get_device_features(
+       /* VK_EXT_provoking_vertex */
+       .provokingVertexLast = true,
+ 
++      /* VK_EXT_shader_image_atomic_int64 */
++      .shaderImageInt64Atomics = true,
++      .sparseImageInt64Atomics = false,
++
+       /* VK_EXT_shader_replicated_composites */
+       .shaderReplicatedComposites = true,
+ 
+diff --git a/src/kosmickrisp/vulkan/kk_queue.c b/src/kosmickrisp/vulkan/kk_queue.c
+index 96063da7253..6755d964e8e 100644
+--- a/src/kosmickrisp/vulkan/kk_queue.c
++++ b/src/kosmickrisp/vulkan/kk_queue.c
+@@ -50,6 +50,8 @@ check_device_lost(struct kk_device *dev, struct mtl_feedback_data *data)
+       vk_device_set_lost(
+          &dev->vk, "Command queue error: %s, with message \"%s\"",
+          mtl_command_queue_error_to_string(data->error), data->error_message);
++      memset((uint8_t *)dev->atomic64.bo->cpu + KK_ATOMIC64_LOCK_OFFSET, 0,
++             KK_ATOMIC64_ARENA_SIZE - KK_ATOMIC64_LOCK_OFFSET);
+    }
+ }
+ 
+diff --git a/src/kosmickrisp/vulkan/kk_shader.h b/src/kosmickrisp/vulkan/kk_shader.h
+index 5a187fd92d3..c96dfeec7c9 100644
+--- a/src/kosmickrisp/vulkan/kk_shader.h
++++ b/src/kosmickrisp/vulkan/kk_shader.h
+@@ -219,6 +219,7 @@ bool kk_nir_lower_compute_lod_queries(nir_shader *nir);
+ #define KK_ATOMIC64_IMAGE       1
+ #define KK_ATOMIC64_LOCK_COUNT  4096u
+ #define KK_ATOMIC64_LOCK_OFFSET 64u
++#define KK_ATOMIC64_SPIN_LIMIT  (1u << 22)
+ #define KK_ATOMIC64_ARENA_SIZE  \
+    (KK_ATOMIC64_LOCK_OFFSET + 4u * KK_ATOMIC64_LOCK_COUNT)
+ 
+-- 
+2.54.0 (Apple Git-157)
+

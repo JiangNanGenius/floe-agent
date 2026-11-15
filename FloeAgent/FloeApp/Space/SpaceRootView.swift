@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #if canImport(UIKit)
 import SwiftUI
+import FloeCore
 import FloeNotes
 import UniformTypeIdentifiers
 
@@ -27,6 +28,9 @@ struct SpaceRootView: View {
     @State private var librarySearchPresented = false
     @FocusState private var searchFocused: Bool
     @State private var opening: PersonalContentRecord?
+    @State private var openingGame: PersonalContentRecord?
+    @State private var pendingCreatedGame: PersonalContentRecord?
+    @State private var creatingGame = false
     @State private var pendingLibraryOpen: LibraryOpenRequest?
     @State private var presentedLibraryOpen: LibraryOpenRequest?
     @State private var creationRequest: PersonalContentCreationRequest?
@@ -241,6 +245,22 @@ struct SpaceRootView: View {
         .fullScreenCover(item: $opening, onDismiss: finishPresentedWork) { record in
             PersonalContentEditor(record: record)
         }
+        .fullScreenCover(item: $openingGame, onDismiss: { Task { await refresh() } }) { record in
+            GameProjectSpaceScreen(record: record)
+        }
+        .sheet(isPresented: $creatingGame, onDismiss: {
+            Task { await refresh() }
+            if let record = pendingCreatedGame {
+                pendingCreatedGame = nil
+                openingGame = record
+            }
+        }) {
+            GameProjectNewGameSheet(onCancel: { creatingGame = false },
+                onCreated: { record in
+                    pendingCreatedGame = record
+                    creatingGame = false
+                })
+        }
         .sheet(item: $creationRequest, onDismiss: presentCreatedWorkAfterNaming) { request in
             PersonalContentNamingSheet(request: request) { record in
                 guard creationRequest?.id == request.id else { return }
@@ -324,6 +344,12 @@ struct SpaceRootView: View {
     private func presentWork(_ record: PersonalContentRecord) {
         searchFocused = false
         librarySearchPresented = false
+        // A game is a first-class project screen with AI/quick edit/IDE/play.
+        // Its editor never becomes a generic file record or a hidden chat copy.
+        if record.kind == .game, opening == nil {
+            openingGame = record
+            return
+        }
         if opening == nil, section == .overview || section == .files {
             pendingLibraryOpen = LibraryOpenRequest(record: record, query: query, section: section, folders: folders)
         } else { opening = record }
@@ -758,6 +784,9 @@ struct SpaceRootView: View {
                 Button(PersonalContentKind.biology.title, systemImage: PersonalContentKind.biology.systemImage) {
                     requestCreation(.work(.biology))
                 }.accessibilityIdentifier("space.create.biology")
+                Button(IDELanguageRunText.t("游戏", "Game"), systemImage: "gamecontroller") {
+                    creatingGame = true
+                }.accessibilityIdentifier("space.new.game")
                 Button(IDELanguageRunText.t("手记", "Notes"), systemImage: "book.pages") {
                     newTitle = IDELanguageRunText.t("未命名手记", "Untitled note"); newNote = true
                 }

@@ -1,0 +1,81 @@
+From 3051f206773b2beab7f9d501bbd095e9bd432703 Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Thu, 1 Oct 2026 10:33:07 -0400
+Subject: [PATCH] kk: Unroll DGC strips with restart for geometry shaders
+
+Generated-by: LLM
+---
+ src/kosmickrisp/libkk/kk_dgc.cl      |  7 ++++---
+ src/kosmickrisp/vulkan/kk_cmd_draw.c | 15 +++++++++------
+ 2 files changed, 13 insertions(+), 9 deletions(-)
+
+diff --git a/src/kosmickrisp/libkk/kk_dgc.cl b/src/kosmickrisp/libkk/kk_dgc.cl
+index f0bf0afe535..fbec1ec088d 100644
+--- a/src/kosmickrisp/libkk/kk_dgc.cl
++++ b/src/kosmickrisp/libkk/kk_dgc.cl
+@@ -112,7 +112,8 @@ KERNEL(1024)
+ libkk_dgc_unroll(global struct poly_heap *heap, constant uint32_t *in_draws,
+                  global uint32_t *out_draws, constant uint32_t *ib_info,
+                  uint32_t in_draw_stride_el, uint32_t restart,
+-                 uint32_t flatshade_first, uint32_t mode)
++                 uint32_t flatshade_first, uint32_t emulate_flatshade_last,
++                 uint32_t mode)
+ {
+    uint gid = cl_group_id.x;
+    constant uint32_t *info = ib_info + gid * 4;
+@@ -126,6 +127,6 @@ libkk_dgc_unroll(global struct poly_heap *heap, constant uint32_t *in_draws,
+    POLY_DECL_UNROLL_RESTART_SCRATCH(scratch, 1024);
+    poly_unroll_geometry(out_draws + gid * 5, heap,
+                         in_draws + gid * in_draw_stride_el, index_buffer,
+-                        info[2], el_B, 4u, restart_index, flatshade_first, true,
+-                        mode, scratch);
++                        info[2], el_B, 4u, restart_index, flatshade_first,
++                        emulate_flatshade_last, mode, scratch);
+ }
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_draw.c b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+index 4deda14fcfe..e7b0e00b811 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_draw.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+@@ -2340,7 +2340,8 @@ kk_launch_gs_prerast(struct kk_cmd_buffer *cmd,
+    enum mesa_prim mode = kk_gs_in_prim(cmd);
+ 
+    if (restart) {
+-      draw = kk_draw_without_restart(cmd, data, draw);
++      if (!data->unrolled)
++         draw = kk_draw_without_restart(cmd, data, draw);
+       mode = u_decomposed_prim(mode);
+    }
+ 
+@@ -3015,14 +3016,16 @@ kk_cmd_draw_generated(struct kk_cmd_buffer *cmd,
+       kk_stats_draw(cmd, &data);
+ 
+    if (params.has_ib && data.indexed) {
+-      bool emulated = cmd->state.shaders[MESA_SHADER_TESS_EVAL] ||
+-                      kk_gs_info(cmd);
++      bool tess = cmd->state.shaders[MESA_SHADER_TESS_EVAL];
++      bool emulated = tess || kk_gs_info(cmd);
++      bool gs_restart = emulated && !tess && data.restart;
++      bool copy = emulated && !gs_restart;
+ 
+       libkk_dgc_unroll(cmd, kk_grid_1d(1024 * info->maxSequenceCount), true,
+                        kk_heap(cmd), bufs.cmds, bufs.unrolled, bufs.ib_info,
+                        bufs.cmd_stride_B / 4, data.restart,
+-                       emulated ? 1 : data.flatshade_first,
+-                       emulated ? MESA_PRIM_POINTS : data.prim);
++                       copy ? 1 : data.flatshade_first, !gs_restart,
++                       copy ? MESA_PRIM_POINTS : data.prim);
+ 
+       if (!emulated)
+          data.prim = u_decomposed_prim(data.prim);
+@@ -3030,7 +3033,7 @@ kk_cmd_draw_generated(struct kk_cmd_buffer *cmd,
+       data.index_buffer.range = dev->heap->size_B - sizeof(struct poly_heap);
+       data.index_buffer_el_size_B = 4u;
+       data.restart_index = UINT32_MAX;
+-      data.restart = false;
++      data.restart = gs_restart;
+       if (!emulated)
+          data.flatshade_first = true;
+       data.unrolled = true;
+-- 
+2.54.0 (Apple Git-157)
+

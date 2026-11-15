@@ -50,22 +50,34 @@ public struct LinuxGuestLifecycleConfig: Sendable, Equatable, Codable {
     public var memoryMB: Int?
     /// Optional for backward-compatible saved preferences; nil means 1 GiB.
     public var gpuMemoryMB: Int?
+    /// Optional video backend preference: true allows proven native software
+    /// formats when hardware is not proven; nil keeps the resident auto policy.
+    public var videoNativeSoftware: Bool?
     public var resolvedGPUMemoryMB: Int { gpuMemoryMB ?? 1024 }
+    public var resolvedVideoNativeSoftware: Bool { videoNativeSoftware ?? true }
 
-    public init(vcpus: Int? = nil, memoryMB: Int? = nil, gpuMemoryMB: Int? = nil) {
+    public init(vcpus: Int? = nil, memoryMB: Int? = nil, gpuMemoryMB: Int? = nil,
+                videoNativeSoftware: Bool? = nil) {
         self.vcpus = vcpus
         self.memoryMB = memoryMB
         self.gpuMemoryMB = gpuMemoryMB
+        self.videoNativeSoftware = videoNativeSoftware
     }
 
     public static func == (lhs: Self, rhs: Self) -> Bool {
+        // Video native-software policy is a live preference, not a machine
+        // shape: it changes a running machine through the engine policy API
+        // and never requires a restart. Do not make a project open fail just
+        // because the saved preference differs from the current shape.
         lhs.vcpus == rhs.vcpus && lhs.memoryMB == rhs.memoryMB
             && lhs.resolvedGPUMemoryMB == rhs.resolvedGPUMemoryMB
     }
 
-    func updating(vcpus: Int? = nil, memoryMB: Int? = nil, gpuMemoryMB: Int? = nil) -> Self {
+    func updating(vcpus: Int? = nil, memoryMB: Int? = nil, gpuMemoryMB: Int? = nil,
+                  videoNativeSoftware: Bool? = nil) -> Self {
         .init(vcpus: vcpus ?? self.vcpus, memoryMB: memoryMB ?? self.memoryMB,
-              gpuMemoryMB: gpuMemoryMB ?? self.gpuMemoryMB)
+              gpuMemoryMB: gpuMemoryMB ?? self.gpuMemoryMB,
+              videoNativeSoftware: videoNativeSoftware ?? self.videoNativeSoftware)
     }
 
     /// Stored with the environment, outside the App bundle and writable guest

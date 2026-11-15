@@ -1,0 +1,25 @@
+{
+ "schemaVersion": 1,
+ "kernelRelease": "6.12.107+deb13-arm64",
+ "kernelPackage": "linux 6.12.107-1 (Debian trixie arm64)",
+ "linuxSource": {
+  "file": "linux-source-6.12_6.12.107-1_all.deb",
+  "url": "https://deb.debian.org/debian-security/pool/updates/main/l/linux/linux-source-6.12_6.12.107-1_all.deb",
+  "sha256": "775b9ef84d7fa7927ccebfec33fbbe9aeb2482ebf9a92c771aafd33fb6e2ee27"
+ },
+ "linuxHeaders": {
+  "file": "linux-headers-6.12.107+deb13-arm64_6.12.107-1_arm64.deb",
+  "url": "https://deb.debian.org/debian-security/pool/updates/main/l/linux/linux-headers-6.12.107+deb13-arm64_6.12.107-1_arm64.deb",
+  "sha256": "20cc55bde5ceae6411b7554d5fffc937f2df022bf47b6df9cad32b51cb1219f3"
+ },
+ "linuxImageReference": {
+  "file": "linux-image-6.12.107+deb13-arm64_6.12.107-1_arm64.deb",
+  "url": "https://deb.debian.org/debian-security/pool/updates/main/l/linux-signed-arm64/linux-image-6.12.107+deb13-arm64_6.12.107-1_arm64.deb",
+  "packageSHA256": "20c92f3f97dd466e0400a6fcb792bde85af842fbb5e8b471370065e3de9d9fc9",
+  "reuse": "Pinned Debian image package, verified by packageSHA256; the installer takes an explicit --image-deb path and does not embed a machine-local download root."
+ },
+ "configSHA256": "44342a19e3a31c01fa4119e92325c50226741454a2e20db8453c1dd27e050f9d",
+ "moduleSymversSHA256": "4e1420af601b02700a9624ddf10ffc81aebb4934dc811b600d1b2368a5ae3a2a",
+ "expectedVermagic": "6.12.107+deb13-arm64 SMP mod_unload modversions aarch64",
+ "vermagicSource": "strings videodev.ko / virtio_mmio.ko from linux-image deb (no compiler component in vermagic)"
+}

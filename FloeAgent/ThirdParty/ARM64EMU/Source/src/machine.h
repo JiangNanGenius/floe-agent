@@ -13,6 +13,7 @@
 #include <stdatomic.h>
 struct MachineParallelOps;
 struct MachineParallelPollView;
+struct FLVBroker;
 
 /* Default platform constants (QEMU 'virt', GICv2). */
 #define FLASH_BASE   0x00000000ULL
@@ -172,6 +173,20 @@ typedef struct Machine {
     uint32_t gpu_scanout_width, gpu_scanout_height;   /* 0 = 1280x800 */
     int      gpu_wake_fd;             /* -1 = none; async fence completions wake it */
     struct VirtIOMem *vmem;   /* online memory device (owned, NULL until platform_build) */
+    /* ABI4 opt-in standard video devices. They are independent of graphics;
+     * no guest display or GPU renderer is required for codec acceleration. */
+    struct VirtIOMedia *video[2]; /* decoder, encoder; owned */
+    bool video_enabled;
+    uint32_t video_max_sessions;
+    uint64_t video_host_owned_limit;
+    int video_wake_fd;
+    /* The additive typed broker is owned by the Bridge session, not by the
+     * media device. The port/token are published through the standard V4L2
+     * QUERYCAP bus_info so the guest can discover the endpoint without a
+     * host filesystem share or a new NAT rule. */
+    struct FLVBroker *video_broker;
+    uint16_t video_broker_port;
+    uint64_t video_broker_token;
 
     /* Host console endpoints (console.h): where each console device's bytes
      * actually go. NULL means the process terminal, which is what a plain

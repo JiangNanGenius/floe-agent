@@ -1,0 +1,51 @@
+diff --git a/src/poly/nir/poly_nir_lower_gs.c b/src/poly/nir/poly_nir_lower_gs.c
+--- a/src/poly/nir/poly_nir_lower_gs.c
++++ b/src/poly/nir/poly_nir_lower_gs.c
+@@ -1390,11 +1390,27 @@
+       return false;
+    }
+ 
+-   _poly_write_strip(
+-      ctx->topology, nir_src_as_uint(intr->src[0]),
+-      nir_src_as_uint(intr->src[1]), nir_src_as_uint(intr->src[2]),
+-      nir_intrinsic_stream_id(intr), stream_multiplier(b->shader),
+-      nir_verts_in_output_prim(b->shader));
++   /* Static topology is an optimization, not a limit on legal GS output.
++    * Bound the scratch write before _poly_write_strip forms its pointer. */
++   if (info->shape == POLY_GS_SHAPE_DYNAMIC_INDEXED)
++      return false;
++
++   const uint32_t index_offset = nir_src_as_uint(intr->src[0]);
++   const uint32_t vertex_offset = nir_src_as_uint(intr->src[1]);
++   const uint32_t verts = nir_src_as_uint(intr->src[2]);
++   const uint32_t n = nir_verts_in_output_prim(b->shader);
++   if (verts < n)
++      return false;
++
++   const uint64_t end = (uint64_t)index_offset + verts + (n > 1);
++   if (end > ARRAY_SIZE(ctx->topology)) {
++      info->shape = POLY_GS_SHAPE_DYNAMIC_INDEXED;
++      return false;
++   }
++
++   _poly_write_strip(ctx->topology, index_offset, vertex_offset, verts,
++                     nir_intrinsic_stream_id(intr), stream_multiplier(b->shader),
++                     n);
+    return false;
+ }
+ 
+@@ -1463,6 +1479,14 @@
+ {
+    struct topology_ctx ctx = {.info = info};
+    bool has_restart = info->mode != MESA_PRIM_POINTS;
++
++   /* Later pattern matching reads max_indices entries too. Large topologies
++    * must use the existing GPU dynamic-index path before any scratch access. */
++   if (info->max_indices > ARRAY_SIZE(ctx.topology)) {
++      info->shape = POLY_GS_SHAPE_DYNAMIC_INDEXED;
++      return;
++   }
++
+    nir_shader_intrinsics_pass(gs, evaluate_topology, nir_metadata_all, &ctx);
+    if (info->shape == POLY_GS_SHAPE_DYNAMIC_INDEXED)
+       return;

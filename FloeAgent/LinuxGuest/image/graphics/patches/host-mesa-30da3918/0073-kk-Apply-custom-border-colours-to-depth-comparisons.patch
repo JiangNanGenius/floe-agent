@@ -1,0 +1,161 @@
+From 2f99143b54d70576b59373c0f2db5ec6fd4bf514 Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Sat, 3 Oct 2026 20:08:12 -0400
+Subject: [PATCH] kk: Apply custom border colours to depth comparisons
+
+Generated-by: LLM
+---
+ .../vulkan/kk_nir_lower_custom_border.c       | 90 +++++++++++++------
+ src/kosmickrisp/vulkan/kk_sampler.c           |  6 +-
+ src/kosmickrisp/vulkan/kk_shader.h            |  2 +
+ 3 files changed, 70 insertions(+), 28 deletions(-)
+
+diff --git a/src/kosmickrisp/vulkan/kk_nir_lower_custom_border.c b/src/kosmickrisp/vulkan/kk_nir_lower_custom_border.c
+index c9c8c7d6cf4..04348b9ff87 100644
+--- a/src/kosmickrisp/vulkan/kk_nir_lower_custom_border.c
++++ b/src/kosmickrisp/vulkan/kk_nir_lower_custom_border.c
+@@ -32,6 +32,27 @@ has_custom_border(nir_builder *b, nir_tex_instr *tex)
+                                   1, nir_type_bool1, false, false);
+ }
+ 
++static nir_def *
++compare_depth(nir_builder *b, nir_def *op, nir_def *ref, nir_def *depth)
++{
++   nir_def *lt = nir_flt(b, ref, depth);
++   nir_def *eq = nir_feq(b, ref, depth);
++   nir_def *gt = nir_flt(b, depth, ref);
++   nir_def *res = nir_imm_false(b);
++   res = nir_bcsel(b, nir_ieq_imm(b, op, VK_COMPARE_OP_LESS), lt, res);
++   res = nir_bcsel(b, nir_ieq_imm(b, op, VK_COMPARE_OP_EQUAL), eq, res);
++   res = nir_bcsel(b, nir_ieq_imm(b, op, VK_COMPARE_OP_LESS_OR_EQUAL),
++                   nir_ior(b, lt, eq), res);
++   res = nir_bcsel(b, nir_ieq_imm(b, op, VK_COMPARE_OP_GREATER), gt, res);
++   res = nir_bcsel(b, nir_ieq_imm(b, op, VK_COMPARE_OP_NOT_EQUAL),
++                   nir_inot(b, eq), res);
++   res = nir_bcsel(b, nir_ieq_imm(b, op, VK_COMPARE_OP_GREATER_OR_EQUAL),
++                   nir_ior(b, gt, eq), res);
++   res = nir_bcsel(b, nir_ieq_imm(b, op, VK_COMPARE_OP_ALWAYS),
++                   nir_imm_true(b), res);
++   return res;
++}
++
+ static bool
+ uses_are_alu(nir_def *def)
+ {
+@@ -72,10 +93,6 @@ lower(nir_builder *b, nir_tex_instr *tex, UNUSED void *_data)
+    if (!nir_tex_instr_need_sampler(tex) || nir_tex_instr_is_query(tex))
+       return false;
+ 
+-   /* XXX: this is a really weird edge case, is this even well-defined? */
+-   if (tex->is_shadow)
+-      return false;
+-
+    if (tex->is_sparse && !uses_are_alu(&tex->def))
+       return false;
+ 
+@@ -106,30 +123,49 @@ lower(nir_builder *b, nir_tex_instr *tex, UNUSED void *_data)
+       /* Grab the border colour */
+       nir_def *border = query_custom_border(b, tex_0);
+ 
+-      if (tex->op == nir_texop_tg4) {
+-         border = nir_replicate(b, nir_channel(b, border, tex->component), 4);
+-      }
+-
+-      /* Combine together with the border */
+-      if (nir_alu_type_get_base_type(tex->dest_type) == nir_type_float &&
+-          tex->op != nir_texop_tg4) {
+-
+-         /* For floats, lerp together:
+-          *
+-          * For border texels:  (1 * border) + (0 * border      ) = border
+-          * For regular texels: (x * border) + (x * (1 - border)) = x.
+-          *
+-          * Linear filtering is linear (duh), so lerping is compatible.
+-          */
+-         replaced = nir_flrp(b, clamp_to_0, clamp_to_1, border);
+-         b->shader->info.flrp_lowered = false;
++      if (tex->is_shadow) {
++         nir_def *flags = nir_channel(
++            b,
++            nir_build_texture_query(b, tex, nir_texop_sampler_minmax_kk, 3,
++                                    nir_type_uint32, false, false),
++            0);
++         nir_def *op = nir_iand_imm(
++            b, nir_ushr_imm(b, flags, KK_SAMPLER_COMPARE_OP_SHIFT),
++            KK_SAMPLER_COMPARE_OP_MASK);
++         int ref_idx = nir_tex_instr_src_index(tex, nir_tex_src_comparator);
++         nir_def *ref = nir_f2f32(b, tex->src[ref_idx].src.ssa);
++         nir_def *depth = nir_fsat(b, nir_f2f32(b, nir_channel(b, border, 0)));
++         nir_def *at_border = compare_depth(b, op, ref, depth);
++         nir_def *at_one = compare_depth(b, op, ref, nir_imm_float(b, 1.0));
++         replaced = nir_bcsel(b, nir_ieq(b, at_border, at_one), clamp_to_1,
++                              clamp_to_0);
+       } else {
+-         /* For integers, just select componentwise since there is no linear
+-          * filtering. Gathers also use this path since they are unfiltered in
+-          * each component.
+-          */
+-         replaced = nir_bcsel(b, nir_ieq(b, clamp_to_0, clamp_to_1), clamp_to_0,
+-                              border);
++         if (tex->op == nir_texop_tg4) {
++            border =
++               nir_replicate(b, nir_channel(b, border, tex->component), 4);
++         }
++
++         /* Combine together with the border */
++         if (nir_alu_type_get_base_type(tex->dest_type) == nir_type_float &&
++             tex->op != nir_texop_tg4) {
++
++            /* For floats, lerp together:
++             *
++             * For border texels:  (1 * border) + (0 * border      ) = border
++             * For regular texels: (x * border) + (x * (1 - border)) = x.
++             *
++             * Linear filtering is linear (duh), so lerping is compatible.
++             */
++            replaced = nir_flrp(b, clamp_to_0, clamp_to_1, border);
++            b->shader->info.flrp_lowered = false;
++         } else {
++            /* For integers, just select componentwise since there is no
++             * linear filtering. Gathers also use this path since they are
++             * unfiltered in each component.
++             */
++            replaced = nir_bcsel(b, nir_ieq(b, clamp_to_0, clamp_to_1),
++                                 clamp_to_0, border);
++         }
+       }
+    }
+    nir_pop_if(b, NULL);
+diff --git a/src/kosmickrisp/vulkan/kk_sampler.c b/src/kosmickrisp/vulkan/kk_sampler.c
+index 32ab79b93d1..c37a439bb9f 100644
+--- a/src/kosmickrisp/vulkan/kk_sampler.c
++++ b/src/kosmickrisp/vulkan/kk_sampler.c
+@@ -249,7 +249,11 @@ kk_CreateSampler(VkDevice device, const VkSamplerCreateInfo *pCreateInfo,
+           ? KK_SAMPLER_MINMAX_MIP_LINEAR
+           : 0) |
+       (pCreateInfo->unnormalizedCoordinates ? KK_SAMPLER_MINMAX_UNNORMALIZED
+-                                            : 0);
++                                            : 0) |
++      (pCreateInfo->compareEnable
++          ? (pCreateInfo->compareOp & KK_SAMPLER_COMPARE_OP_MASK)
++               << KK_SAMPLER_COMPARE_OP_SHIFT
++          : 0);
+ 
+    const VkSamplerReductionModeCreateInfo *reduction_info =
+       vk_find_struct_const(pCreateInfo->pNext,
+diff --git a/src/kosmickrisp/vulkan/kk_shader.h b/src/kosmickrisp/vulkan/kk_shader.h
+index d2a19b8b233..7d839aaf400 100644
+--- a/src/kosmickrisp/vulkan/kk_shader.h
++++ b/src/kosmickrisp/vulkan/kk_shader.h
+@@ -210,6 +210,8 @@ bool kk_nir_lower_fs_multiview(nir_shader *nir, uint32_t view_mask);
+ #define KK_SAMPLER_MINMAX_MAG_LINEAR 0x8
+ #define KK_SAMPLER_MINMAX_MIP_LINEAR 0x10
+ #define KK_SAMPLER_MINMAX_UNNORMALIZED 0x20
++#define KK_SAMPLER_COMPARE_OP_SHIFT 6
++#define KK_SAMPLER_COMPARE_OP_MASK  0x7
+ 
+ bool kk_nir_lower_custom_border(nir_shader *nir);
+ bool kk_nir_lower_compute_derivatives(nir_shader *nir);
+-- 
+2.54.0 (Apple Git-157)
+

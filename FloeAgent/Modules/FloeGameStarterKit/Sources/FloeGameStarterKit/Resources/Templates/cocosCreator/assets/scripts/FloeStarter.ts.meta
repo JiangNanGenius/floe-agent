@@ -1,0 +1,12 @@
+{
+  "ver": "4.0.23",
+  "importer": "typescript",
+  "imported": true,
+  "uuid": "0f10e5a1-7a2b-4c3d-8e4f-5a6b7c8d9e0f",
+  "files": [],
+  "subMetas": {},
+  "userData": {
+    "moduleId": "project:///assets/scripts/FloeStarter.js",
+    "simulateGlobals": []
+  }
+}

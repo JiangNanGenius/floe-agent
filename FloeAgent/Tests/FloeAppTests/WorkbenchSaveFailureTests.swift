@@ -129,6 +129,38 @@ struct WorkbenchSaveFailureTests {
 
     // MARK: - Close / retry
 
+    @Test func imageEditingEntranceUsesPreparedCanvasAndPreservesLegacyLayers() async throws {
+        let environment = try makeEnvironment()
+        defer { cleanUp(environment) }
+        let source = try Data(contentsOf: environment.source)
+        let center = makeCenter(environment)
+
+        #expect(await center.startImageProject(sourceURL: environment.source, owner: .standalone,
+                                               preparedForEditing: true))
+        let fresh = try #require(center.project)
+        #expect(fresh.prepared?.layers.first?.id == fresh.imageLayers.first?.id)
+        #expect(await center.usePreparedWorkspace())
+        #expect(center.mediaV2Context?.session.project.id == fresh.id)
+        #expect(await center.closeProject())
+
+        let priorID = try await openImageProject(center, environment)
+        #expect(center.project?.prepared == nil)
+        #expect(setOpacity(center, 0.42))
+        #expect(await center.saveNow())
+        let prior = try #require(center.project)
+        let layer = try #require(prior.imageLayers.first)
+        #expect(await center.closeProject())
+        #expect(await center.openProjectForEditing(id: priorID))
+
+        let reopened = try #require(center.mediaV2Context?.session.project)
+        #expect(reopened.id == prior.id && reopened.ownerKind == prior.ownerKind)
+        #expect(reopened.assets.map(\.id) == prior.assets.map(\.id))
+        #expect(reopened.prepared?.layers.first?.id == layer.id)
+        #expect(reopened.prepared?.layers.first?.opacity == layer.opacity)
+        #expect(try Data(contentsOf: environment.source) == source)
+        #expect(await center.closeProject())
+    }
+
     @Test func failedCloseKeepsEditsAndRetryPersistsThem() async throws {
         let environment = try makeEnvironment()
         defer { cleanUp(environment) }

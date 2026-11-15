@@ -114,6 +114,10 @@ public final class FloeCADDocument {
     let session: DocumentSession
 
     private var cachedViewModel: EditorViewModel?
+    #if canImport(UIKit)
+    var currentBuildingDraftingOwner: CADBuildingDraftingSession? { cachedViewModel?.buildingDraftingOwner }
+    public var hasUnfinishedBuildingDraftingInput: Bool { cachedViewModel?.hasUnfinishedBuildingDraftingInput ?? false }
+    #endif
     private var closed = false
     private init(url: URL,
                  project: Project,

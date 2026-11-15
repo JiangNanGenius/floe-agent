@@ -1,0 +1,76 @@
+From cc15bdb1dbe80c4c635b0cf34079e3c45f55c901 Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Sun, 4 Oct 2026 09:39:43 -0400
+Subject: [PATCH] zink: Fix races between a batch's submission and waits on its
+ usage
+
+Generated-by: LLM
+---
+ src/gallium/drivers/zink/zink_batch.c | 18 ++++++++++++------
+ src/gallium/drivers/zink/zink_batch.h |  4 ++--
+ 2 files changed, 14 insertions(+), 8 deletions(-)
+
+diff --git a/src/gallium/drivers/zink/zink_batch.c b/src/gallium/drivers/zink/zink_batch.c
+index c615d47e3e4..061c01ac64b 100644
+--- a/src/gallium/drivers/zink/zink_batch.c
++++ b/src/gallium/drivers/zink/zink_batch.c
+@@ -654,7 +654,9 @@ submit_queue(void *data, void *gdata, int thread_index)
+       bs->fence.batch_id = (uint32_t)p_atomic_inc_return(&screen->curr_batch);
+    bs->usage.usage = bs->fence.batch_id;
+    assert(bs->usage.usage);
+-   bs->usage.unflushed = false;
++   mtx_lock(&bs->usage.mtx);
++   p_atomic_set(&bs->usage.unflushed, false);
++   mtx_unlock(&bs->usage.mtx);
+ 
+    uint64_t batch_id = bs->fence.batch_id;
+    /* first submit is just for acquire waits since they have a separate array */
+@@ -1209,14 +1211,18 @@ zink_batch_usage_unflushed_wait(struct zink_context *ctx, struct zink_batch_usag
+       } else { //multi-context
+          mtx_lock(&u->mtx);
+          if (trywait) {
+-            struct timespec ts = {0, 10000};
+-            cnd_timedwait(&u->flush, &u->mtx, &ts);
+-         } else
+-            cnd_wait(&u->flush, &u->mtx);
++            if (u->unflushed) {
++               struct timespec ts = {0, 10000};
++               cnd_timedwait(&u->flush, &u->mtx, &ts);
++            }
++         } else {
++            while (u->unflushed && !zink_batch_submit_count_diff(u->submit_count, submit_count))
++               cnd_wait(&u->flush, &u->mtx);
++         }
+          mtx_unlock(&u->mtx);
+       }
+    }
+-   return !u->unflushed;
++   return !p_atomic_read(&u->unflushed);
+ }
+ 
+ static void
+diff --git a/src/gallium/drivers/zink/zink_batch.h b/src/gallium/drivers/zink/zink_batch.h
+index d582d29470e..63f3a3baf52 100644
+--- a/src/gallium/drivers/zink/zink_batch.h
++++ b/src/gallium/drivers/zink/zink_batch.h
+@@ -86,7 +86,7 @@ debug_describe_zink_batch_state(char *buf, const struct zink_batch_state *ptr);
+ static ALWAYS_INLINE bool
+ zink_batch_usage_is_unflushed(const struct zink_batch_usage *u)
+ {
+-   return u && u->unflushed;
++   return u && p_atomic_read(&u->unflushed);
+ }
+ 
+ static ALWAYS_INLINE void
+@@ -110,7 +110,7 @@ zink_batch_usage_matches(const struct zink_batch_usage *u, const struct zink_bat
+ static ALWAYS_INLINE bool
+ zink_batch_usage_exists(const struct zink_batch_usage *u)
+ {
+-   return u && (u->usage || u->unflushed);
++   return u && (p_atomic_read(&u->unflushed) || u->usage);
+ }
+ 
+ static ALWAYS_INLINE unsigned
+-- 
+2.54.0 (Apple Git-157)
+

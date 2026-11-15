@@ -679,6 +679,36 @@ final class WorkspaceCenter: ObservableObject {
         actionError = nil
     }
 
+    /// Opens an App-owned private workspace without a security-scoped bookmark.
+    /// The game project's `Game/Files` (or a game-created private task root) is
+    /// already inside the App container; treating it as an external project
+    /// would fail `startAccessingSecurityScopedResource` and misclassify the
+    /// owner. This sets the same file service/pin used by every existing IDE.
+    func openAppOwnedWorkspace(id: UUID) async throws {
+        guard let record = try await store.workspace(id: id),
+              record.kind == .privateTask,
+              let relative = record.internalRelativePath, !relative.isEmpty else {
+            throw FloeError.notFound("App-owned workspace \(id.uuidString)")
+        }
+        if currentWorkspace?.id == id, currentRootURL != nil, fileService != nil { return }
+        closeCurrentWorkspace()
+        let support = try FileManager.default.url(for: .applicationSupportDirectory,
+            in: .userDomainMask, appropriateFor: nil, create: true)
+        let root = support.appendingPathComponent("FloeAgent", isDirectory: true)
+            .appendingPathComponent(relative, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        currentRootURL = root
+        currentRootUsesSecurityScope = false
+        let mounts = try activateMounts(for: record, rootURL: root)
+        await activateNetworkMounts(for: record, rootURL: root)
+        fileService = WorkspaceFileService(guard: WorkspacePathGuard(rootURL: root, mounts: mounts))
+        currentWorkspace = record
+        if publishesSharedState { Self.sharedRootOverride = root }
+        await reloadRecentFiles()
+        await loadInstructions()
+        actionError = nil
+    }
+
     // MARK: - Inspector state
 
     /// Persists inspector expansion / selection for the current workspace.

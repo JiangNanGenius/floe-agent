@@ -20,6 +20,7 @@
 import Foundation
 import FloeCore
 import FloeTools
+import FloeLinuxGPU
 
 /// One COLD start whose resident disk resolves to a known older trusted
 /// catalog image while this build's catalog default is newer. Both ids are
@@ -692,11 +693,29 @@ public struct LinuxGuestImageDeviceCapabilities: Sendable, Equatable, Codable {
     public var onlineMemory: Bool?
     public var vulkanGPU: Bool?
     public var localDisplay: Bool?
+    /// Optional verified graphics declaration. Missing in older manifests; a
+    /// present but internally invalid declaration must reject the image
+    /// instead of advertising a feature without artifact evidence.
+    public var graphics: LinuxGraphicsCapabilities?
+    /// The verified image carries both the virtio-media guest module and the
+    /// installed `floe-codec` client. Absent in older manifests means the
+    /// machine is created with no video device and reports an honest
+    /// unavailable status.
+    public var videoAcceleration: Bool?
 
-    public init(onlineMemory: Bool? = nil, vulkanGPU: Bool? = nil, localDisplay: Bool? = nil) {
+    public init(onlineMemory: Bool? = nil, vulkanGPU: Bool? = nil, localDisplay: Bool? = nil,
+                graphics: LinuxGraphicsCapabilities? = nil, videoAcceleration: Bool? = nil) {
         self.onlineMemory = onlineMemory
         self.vulkanGPU = vulkanGPU
         self.localDisplay = localDisplay
+        self.graphics = graphics
+        self.videoAcceleration = videoAcceleration
+    }
+
+    /// Validated declaration; nil when absent or invalid.
+    public var verifiedGraphics: LinuxGraphicsCapabilities? {
+        guard let graphics, graphics.isValid else { return nil }
+        return graphics
     }
 }
 
@@ -875,6 +894,13 @@ public struct LinuxGuestImage: Sendable, Equatable, Codable {
             var isDirectory: ObjCBool = false
             guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory), !isDirectory.boolValue else {
                 return .artifactMissing(role: declared.role.rawValue)
+            }
+        }
+        if let graphics = deviceCapabilities?.graphics {
+            let issues = graphics.issues()
+            if !issues.isEmpty {
+                return .structural(detail:
+                    "graphics capabilities are invalid: " + issues.map(\.description).joined(separator: "; "))
             }
         }
         if let runnerFailure = runnerUpgradeContractFailure() {
@@ -1086,6 +1112,10 @@ public protocol LinuxGuestControlling: Sendable {
     /// surface; nil when the runtime has no shared online-memory device.
     func sharedMemoryStatus() async -> LinuxSharedMemoryStatus?
     func sharedGPUStatus() async -> ARM64GPUBudget?
+    /// Live video truth; nil when the shared machine is powered off.
+    func sharedVideoStatus() async -> ARM64VideoStatus?
+    /// Apply the hardware-only/native-software policy between file sessions.
+    func setSharedVideoNativeSoftware(_ enabled: Bool) async throws
     func stopSharedGuest(allowing observedActivities: [LinuxGuestActivityDetail]) async throws -> [String]
     func restoreInitialState(imageID: String,
         prepareForReset: @escaping @Sendable () async throws -> Void) async throws -> LinuxGuestInitialResetReceipt
@@ -1245,6 +1275,10 @@ public extension LinuxGuestControlling {
     func sharedMachinePhase() async -> LinuxSharedMachinePhase? { nil }
     func sharedMemoryStatus() async -> LinuxSharedMemoryStatus? { nil }
     func sharedGPUStatus() async -> ARM64GPUBudget? { nil }
+    func sharedVideoStatus() async -> ARM64VideoStatus? { nil }
+    func setSharedVideoNativeSoftware(_ enabled: Bool) async throws {
+        throw LinuxGuestError.invalidConfiguration("This runtime does not support video acceleration")
+    }
     func stopSharedGuest(allowing observedActivities: [LinuxGuestActivityDetail]) async throws -> [String] {
         throw LinuxGuestError.invalidConfiguration("This backend cannot verify shared-machine power off")
     }

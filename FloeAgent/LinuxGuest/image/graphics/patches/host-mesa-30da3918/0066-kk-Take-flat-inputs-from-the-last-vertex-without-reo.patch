@@ -1,0 +1,482 @@
+From ad51e342e1cfd6080505357d1858e87cc03fafe1 Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Sat, 3 Oct 2026 11:07:05 -0400
+Subject: [PATCH] kk: Take flat inputs from the last vertex without reordering
+ the draw
+
+Generated-by: LLM
+---
+ src/kosmickrisp/libkk/kk_draws.cl      |  83 ++++++++++++
+ src/kosmickrisp/vulkan/kk_cmd_buffer.h |   1 +
+ src/kosmickrisp/vulkan/kk_cmd_draw.c   |  66 +++++++++-
+ src/kosmickrisp/vulkan/kk_shader.c     | 175 ++++++++++++++++++++++++-
+ src/kosmickrisp/vulkan/kk_shader.h     |   1 +
+ 5 files changed, 318 insertions(+), 8 deletions(-)
+
+diff --git a/src/kosmickrisp/libkk/kk_draws.cl b/src/kosmickrisp/libkk/kk_draws.cl
+index 4fd3114bff8..f8ed2dd8131 100644
+--- a/src/kosmickrisp/libkk/kk_draws.cl
++++ b/src/kosmickrisp/libkk/kk_draws.cl
+@@ -89,6 +89,89 @@ libkk_unroll_geometry(
+                         restart_index, flatshade_first, true, mode, scratch);
+ }
+ 
++KERNEL(1024)
++libkk_unroll_provoking(uint64_t index_buffer, global struct poly_heap *heap,
++                       constant uint32_t *in_draw, global uint32_t *out_draw,
++                       uint32_t in_draw_stride_el, uint32_t restart_index,
++                       uint32_t index_buffer_size_el, uint32_t in_el_size_B,
++                       uint32_t mode)
++{
++   uint gid = cl_group_id.x;
++   uint tid = cl_local_id.x;
++   in_draw += gid * in_draw_stride_el;
++   out_draw += gid * 5;
++
++   POLY_DECL_UNROLL_RESTART_SCRATCH(scratch, 1024);
++
++   uint count = in_draw[0];
++   uint per_prim = mesa_vertices_per_prim(mode);
++   uint bias_idx = in_el_size_B > 0 ? 3 : 2;
++   uint bias = in_draw[bias_idx];
++
++   local uint out_offs_B;
++   if (tid == 0) {
++      uint max_verts =
++         u_decomposed_prims_for_vertices((enum mesa_prim)mode, count) *
++         per_prim;
++      out_offs_B = poly_heap_alloc_offs(heap, max(max_verts, 1u) * 8);
++      out_draw[1] = in_draw[1];
++      out_draw[2] = out_offs_B / 8;
++      out_draw[3] = in_draw[bias_idx + 1];
++      out_draw[4] = bias;
++   }
++   barrier(CLK_LOCAL_MEM_FENCE);
++
++   global uint2 *out = (global uint2 *)(heap->base + out_offs_B);
++   uintptr_t in_ptr = (uintptr_t)(poly_index_buffer(
++      index_buffer, index_buffer_size_el, in_draw[2], in_el_size_B));
++   uint in_range_el =
++      poly_index_buffer_range_el(index_buffer_size_el, in_draw[2]);
++
++   uint out_prims = 0;
++   uint needle = 0;
++   while (needle < count) {
++      uint next_restart = needle;
++      for (;;) {
++         uint idx = next_restart + tid;
++         bool restart =
++            idx >= count || poly_load_index(in_ptr, in_range_el, idx,
++                                            in_el_size_B) == restart_index;
++
++         uint next_offs = poly_work_group_first_true(restart, scratch);
++
++         next_restart += next_offs;
++         if (next_offs < cl_local_size.x)
++            break;
++      }
++
++      uint subcount = next_restart - needle;
++      uint subprims =
++         u_decomposed_prims_for_vertices((enum mesa_prim)mode, subcount);
++      for (uint i = tid; i < subprims; i += cl_local_size.x) {
++         uint last = poly_vertex_id_for_topology((enum mesa_prim)mode, false,
++                                                 i, per_prim - 1, subprims);
++         uint provoking =
++            poly_load_index(in_ptr, in_range_el, needle + last, in_el_size_B) +
++            bias;
++
++         for (uint vtx = 0; vtx < per_prim; ++vtx) {
++            uint id = poly_vertex_id_for_topology((enum mesa_prim)mode, true, i,
++                                                  vtx, subprims);
++            uint own = poly_load_index(in_ptr, in_range_el, needle + id,
++                                       in_el_size_B) +
++                       bias;
++            out[(out_prims + i) * per_prim + vtx] = (uint2)(own, provoking);
++         }
++      }
++
++      out_prims += subprims;
++      needle = next_restart + 1;
++   }
++
++   if (tid == 0)
++      out_draw[0] = out_prims * per_prim;
++}
++
+ KERNEL(1)
+ libkk_draw_byte_count(global uint32_t *out_draw, global uint32_t *counter,
+                       uint32_t counter_offset, uint32_t stride,
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_buffer.h b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+index 5a7d48d36b7..e9f261fc45d 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_buffer.h
++++ b/src/kosmickrisp/vulkan/kk_cmd_buffer.h
+@@ -104,6 +104,7 @@ struct kk_per_draw_data {
+ 
+    uint64_t sink;
+    uint64_t fs_invocations;
++   uint64_t provoking_ids;
+ };
+ 
+ struct kk_attachment {
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_draw.c b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+index bf3ab9c07f2..f3ff600b752 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_draw.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+@@ -1169,7 +1169,8 @@ struct kk_draw_command {
+    bool restart;
+    bool flatshade_first;
+    bool unrolled;
+-   uint8_t pad_[2];
++   bool provoking_ids;
++   uint8_t pad_;
+    uint32_t predicate_count;
+    enum kk_predicate_op predicate_op[2];
+    uint32_t draw_count;
+@@ -1198,6 +1199,7 @@ struct kk_draw_data {
+    } index;
+    uint32_t vertex_offset;
+    enum mtl_primitive_type primitive_type;
++   bool provoking_ids;
+ };
+ 
+ static uint64_t
+@@ -2077,6 +2079,52 @@ requires_unroll_flatshade(struct kk_cmd_buffer *cmd,
+    return !data->flatshade_first && fs && fs->info.fs.uses_flat_varyings;
+ }
+ 
++static bool
++kk_draw_uses_provoking_ids(struct kk_cmd_buffer *cmd,
++                           struct kk_draw_command *data)
++{
++   struct kk_shader *vs = cmd->state.shaders[MESA_SHADER_VERTEX];
++   return vs && vs->info.vs.provoking_ids &&
++          !mesa_prim_has_adjacency(data->prim) &&
++          requires_unroll_flatshade(cmd, data);
++}
++
++static bool
++kk_unroll_provoking(struct kk_cmd_buffer *cmd, struct kk_draw_command *data)
++{
++   if (unlikely(!kk_convert_to_indirect_draw(cmd, data)))
++      return false;
++
++   const uint32_t out_stride_B = 5u * sizeof(uint32_t);
++   struct kk_ptr out_draws =
++      kk_pool_alloc(cmd, data->draw_count * out_stride_B, 4u);
++   if (unlikely(!out_draws.gpu))
++      return false;
++
++   libkk_unroll_provoking(
++      cmd, kk_grid_1d(1024 * data->draw_count), true, data->index_buffer.addr,
++      kk_heap(cmd), data->indirect_command.addr, out_draws.gpu,
++      data->indirect_command.stride / sizeof(uint32_t),
++      !data->restart ? UINT32_MAX : data->restart_index,
++      data->indexed ? data->index_buffer.range / data->index_buffer_el_size_B
++                    : 0u,
++      data->indexed ? data->index_buffer_el_size_B : 0u, data->prim);
++
++   data->prim = u_decomposed_prim(data->prim);
++   data->index_buffer = (struct kk_addr_range){0};
++   data->restart_index = UINT32_MAX;
++   data->index_buffer_el_size_B = 0u;
++   data->indirect = true;
++   data->indexed = false;
++   data->restart = false;
++   data->flatshade_first = true;
++   data->unrolled = true;
++   data->provoking_ids = true;
++   data->indirect_command.addr = out_draws.gpu;
++   data->indirect_command.stride = out_stride_B;
++   return true;
++}
++
+ static bool
+ requires_unroll(struct kk_cmd_buffer *cmd, struct kk_draw_command *data)
+ {
+@@ -2107,6 +2155,9 @@ requires_unroll(struct kk_cmd_buffer *cmd, struct kk_draw_command *data)
+ static uint64_t
+ upload_base_vertex(struct kk_cmd_buffer *cmd, const struct kk_draw_data *data)
+ {
++   if (data->provoking_ids)
++      return data->grid.addr + 4u * sizeof(uint32_t);
++
+    if (kk_grid_is_indirect(data->grid)) {
+       uint64_t first_vertex_offset =
+          data->index.el_size_B
+@@ -2147,6 +2198,9 @@ kk_upload_per_draw_data(struct kk_cmd_buffer *cmd, uint32_t upload_mask,
+    struct kk_graphics_state *gfx = &cmd->state.gfx;
+    gfx->per_draw_data.draw_id = draw_id;
+    gfx->per_draw_data.fs_invocations = kk_stats_fs_counter(cmd);
++   gfx->per_draw_data.provoking_ids = draw->provoking_ids ? kk_heap(cmd) : 0u;
++   if (draw->provoking_ids)
++      gfx->per_draw_data.base_vertex_addr = upload_base_vertex(cmd, draw);
+ 
+    /* Prepare emulation data for tessellation and GS. */
+    bool tess = upload_mask & BITFIELD_BIT(MESA_SHADER_TESS_EVAL);
+@@ -2482,6 +2536,7 @@ build_draw_data(struct kk_cmd_buffer *cmd, struct kk_draw_command *data,
+       .index.el_size_B = data->index_buffer_el_size_B,
+       .primitive_type =
+          emulated ? 0u : mesa_prim_to_mtl_primitive_type(data->prim),
++      .provoking_ids = data->provoking_ids,
+    };
+ 
+    if (data->indirect) {
+@@ -2616,8 +2671,13 @@ kk_draw_flushed(struct kk_cmd_buffer *cmd, struct kk_draw_command *data,
+    bool geom = kk_gs_info(cmd);
+ 
+    /* Unroll geometry. Skip draw if we fail. */
+-   if (requires_unroll(cmd, data) && !kk_unroll_geometry(cmd, data))
+-      return;
++   if (requires_unroll(cmd, data)) {
++      bool unrolled = kk_draw_uses_provoking_ids(cmd, data)
++                         ? kk_unroll_provoking(cmd, data)
++                         : kk_unroll_geometry(cmd, data);
++      if (!unrolled)
++         return;
++   }
+ 
+    if ((!geom || kk_gs_is_passthrough(cmd)) &&
+        mesa_prim_has_adjacency(data->prim) && !kk_unroll_adjacency(cmd, data))
+diff --git a/src/kosmickrisp/vulkan/kk_shader.c b/src/kosmickrisp/vulkan/kk_shader.c
+index dd4d143502e..65284e94c07 100644
+--- a/src/kosmickrisp/vulkan/kk_shader.c
++++ b/src/kosmickrisp/vulkan/kk_shader.c
+@@ -22,6 +22,7 @@
+ #include "kosmickrisp/compiler/nir_to_msl.h"
+ 
+ #include "nir_builder.h"
++#include "nir_control_flow.h"
+ #include "nir_lower_blend.h"
+ 
+ #include "poly/nir/poly_nir.h"
+@@ -1154,6 +1155,155 @@ modify_nir_info(nir_shader *nir)
+    }
+ }
+ 
++static bool
++gather_flat_input(nir_builder *b, nir_intrinsic_instr *intr, void *data)
++{
++   if (intr->intrinsic != nir_intrinsic_load_input)
++      return false;
++
++   uint8_t *flat = data;
++   nir_io_semantics sem = nir_intrinsic_io_semantics(intr);
++   unsigned component = nir_intrinsic_component(intr);
++   unsigned mask = BITFIELD_RANGE(component, intr->def.num_components) & 0xf;
++   if (nir_src_is_const(intr->src[0])) {
++      flat[sem.location + nir_src_as_uint(intr->src[0])] |= mask;
++   } else {
++      for (unsigned i = 0; i < sem.num_slots; i++)
++         flat[sem.location + i] |= mask;
++   }
++   return false;
++}
++
++static bool
++kk_gather_flat_inputs(nir_shader *fs, uint8_t *flat)
++{
++   memset(flat, 0, NUM_TOTAL_VARYING_SLOTS);
++   nir_shader_intrinsics_pass(fs, gather_flat_input, nir_metadata_all, flat);
++   for (unsigned i = 0; i < NUM_TOTAL_VARYING_SLOTS; i++) {
++      if (flat[i])
++         return true;
++   }
++   return false;
++}
++
++static void
++kk_provoking_rewrite_block(nir_builder *b, nir_block *block, nir_def *vertex_id,
++                           nir_def *first_vertex, const uint8_t *flat,
++                           bool is_clone, nir_def *skip_vertex_id,
++                           nir_def *skip_first_vertex)
++{
++   nir_foreach_instr_safe(instr, block) {
++      if (instr->type != nir_instr_type_intrinsic)
++         continue;
++
++      nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
++      if (&intr->def == skip_vertex_id || &intr->def == skip_first_vertex)
++         continue;
++
++      switch (intr->intrinsic) {
++      case nir_intrinsic_load_vertex_id:
++         nir_def_replace(&intr->def, vertex_id);
++         continue;
++      case nir_intrinsic_load_first_vertex:
++         nir_def_replace(&intr->def, first_vertex);
++         continue;
++      default:
++         break;
++      }
++
++      if (!is_clone)
++         continue;
++
++      if (intr->intrinsic == nir_intrinsic_store_output) {
++         nir_io_semantics sem = nir_intrinsic_io_semantics(intr);
++         unsigned keep = 0;
++         if (nir_src_is_const(intr->src[1])) {
++            unsigned slot = sem.location + nir_src_as_uint(intr->src[1]);
++            keep = (flat[slot] >> nir_intrinsic_component(intr)) &
++                   nir_intrinsic_write_mask(intr);
++         }
++         if (keep)
++            nir_intrinsic_set_write_mask(intr, keep);
++         else
++            nir_instr_remove(instr);
++         continue;
++      }
++
++      if (intr->intrinsic == nir_intrinsic_store_clip_distance_kk ||
++          nir_intrinsic_writes_external_memory(intr)) {
++         if (nir_intrinsic_infos[intr->intrinsic].has_dest) {
++            b->cursor = nir_before_instr(instr);
++            nir_def_replace(&intr->def, nir_undef(b, intr->def.num_components,
++                                                  intr->def.bit_size));
++         } else {
++            nir_instr_remove(instr);
++         }
++      }
++   }
++}
++
++static bool
++kk_nir_lower_vs_provoking_ids(nir_shader *nir, const uint8_t *flat)
++{
++   nir_function_impl *impl = nir_shader_get_entrypoint(nir);
++
++   nir_cf_list body, clone;
++   nir_cf_extract(&body, nir_before_impl(impl), nir_after_impl(impl));
++   nir_cf_list_clone(&clone, &body, &impl->cf_node, NULL);
++
++   nir_builder b = nir_builder_at(nir_before_impl(impl));
++   nir_def *per_draw = nir_load_per_draw_ptr_kk(&b, 1, 64);
++   nir_def *heap = nir_build_load_global_constant(
++      &b, 1, 64,
++      nir_iadd_imm(&b, per_draw,
++                   offsetof(struct kk_per_draw_data, provoking_ids)),
++      .align_mul = 8, .access = ACCESS_CAN_SPECULATE);
++   nir_def *has_ids = nir_ine_imm(&b, heap, 0);
++   nir_def *vertex_id = nir_load_vertex_id(&b);
++   nir_def *first_vertex = nir_load_first_vertex(&b);
++
++   nir_push_if(&b, has_ids);
++   nir_def *base = nir_build_load_global_constant(&b, 1, 64, heap,
++                                                  .align_mul = 8);
++   nir_def *pair = nir_build_load_global_constant(
++      &b, 2, 32, nir_iadd(&b, base, nir_u2u64(&b, nir_imul_imm(&b, vertex_id, 8))),
++      .align_mul = 8);
++   nir_def *base_vertex_addr = nir_build_load_global_constant(
++      &b, 1, 64,
++      nir_iadd_imm(&b, per_draw,
++                   offsetof(struct kk_per_draw_data, base_vertex_addr)),
++      .align_mul = 8);
++   nir_def *draw_first_vertex = nir_build_load_global_constant(
++      &b, 1, 32, base_vertex_addr, .align_mul = 4);
++   nir_def *pair_own = nir_channel(&b, pair, 0);
++   nir_def *pair_provoking = nir_channel(&b, pair, 1);
++   nir_pop_if(&b, NULL);
++
++   nir_def *own = nir_if_phi(&b, pair_own, vertex_id);
++   nir_def *provoking = nir_if_phi(&b, pair_provoking, vertex_id);
++   nir_def *first = nir_if_phi(&b, draw_first_vertex, first_vertex);
++
++   b.cursor = nir_cf_reinsert(&body, b.cursor);
++
++   nir_if *nif = nir_push_if(&b, has_ids);
++   b.cursor = nir_cf_reinsert(&clone, b.cursor);
++   nir_pop_if(&b, nif);
++
++   nir_foreach_block_safe(block, impl) {
++      bool in_clone = false;
++      for (nir_cf_node *node = block->cf_node.parent; node;
++           node = node->parent) {
++         if (node == &nif->cf_node)
++            in_clone = true;
++      }
++      kk_provoking_rewrite_block(&b, block, in_clone ? provoking : own,
++                                 first, flat, in_clone, vertex_id,
++                                 first_vertex);
++   }
++
++   return nir_progress(true, impl, nir_metadata_none);
++}
++
+ static bool
+ lower_vertex_id_zero_base(struct nir_builder *b, nir_intrinsic_instr *intrin,
+                           void *data)
+@@ -1296,6 +1446,7 @@ kk_compile_shader(struct kk_device *dev, nir_shader *nir,
+                   struct kk_shader *prev_stage,
+                   const struct vk_pipeline_robustness_state *robustness,
+                   const struct vk_graphics_pipeline_state *state,
++                  const uint8_t *flat_inputs,
+                   const VkAllocationCallbacks *pAllocator,
+                   struct kk_shader **shader_out)
+ {
+@@ -1338,11 +1489,17 @@ kk_compile_shader(struct kk_device *dev, nir_shader *nir,
+          memset(&nir->info.cs, 0, sizeof(nir->info.cs));
+          nir->xfb_info = NULL;
+          NIR_PASS(_, nir, poly_nir_lower_sw_vs);
+-      } else
++      } else {
+          /* Metal's instance_id contains base_instance. When the emulation path
+           * is taken, since we launch compute, they correctly get translated.
+           * For the non-emulated path we need to subtract base_instance... */
+          NIR_PASS(_, nir, msl_nir_lower_instance_id);
++         if (flat_inputs) {
++            NIR_PASS(_, nir, kk_nir_lower_vs_provoking_ids, flat_inputs);
++            shader->info.uses_per_draw_data = true;
++            shader->info.vs.provoking_ids = true;
++         }
++      }
+    } else if (stage == MESA_SHADER_TESS_CTRL) {
+       NIR_PASS(_, nir, poly_nir_lower_tcs, false);
+ 
+@@ -1455,7 +1612,7 @@ kk_compile_nir_shader(struct kk_device *dev, nir_shader *nir,
+    struct kk_shader *shader = NULL;
+    nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
+    VkResult result =
+-      kk_compile_shader(dev, nir, NULL, &rs_none, NULL, alloc, &shader);
++      kk_compile_shader(dev, nir, NULL, &rs_none, NULL, NULL, alloc, &shader);
+    if (result != VK_SUCCESS)
+       return result;
+ 
+@@ -2244,11 +2401,19 @@ kk_compile_shaders(struct vk_device *device, uint32_t shader_count,
+                                   nir_shaders[total_shaders - 2u]);
+    }
+ 
++   uint8_t flat_inputs[NUM_TOTAL_VARYING_SLOTS];
++   bool vs_needs_flat =
++      state && total_shaders == 2u &&
++      nir_shaders[0]->info.stage == MESA_SHADER_VERTEX &&
++      nir_shaders[1]->info.stage == MESA_SHADER_FRAGMENT &&
++      kk_gather_flat_inputs(nir_shaders[1], flat_inputs);
++
+    for (uint32_t i = 0; i < total_shaders; i++) {
+       struct kk_shader *prev_stage = i > 0 ? shaders[i - 1] : NULL;
+-      result =
+-         kk_compile_shader(dev, nir_shaders[i], prev_stage, vertex_robustness,
+-                           state, pAllocator, &shaders[i]);
++      result = kk_compile_shader(
++         dev, nir_shaders[i], prev_stage, vertex_robustness, state,
++         i == 0 && vs_needs_flat ? flat_inputs : NULL, pAllocator,
++         &shaders[i]);
+ 
+       if (result != VK_SUCCESS) {
+          /* Clean up all the shaders before this point */
+diff --git a/src/kosmickrisp/vulkan/kk_shader.h b/src/kosmickrisp/vulkan/kk_shader.h
+index f83e6ee2cb0..3dbf67d667c 100644
+--- a/src/kosmickrisp/vulkan/kk_shader.h
++++ b/src/kosmickrisp/vulkan/kk_shader.h
+@@ -69,6 +69,7 @@ struct kk_shader_info {
+          uint32_t attribs_read;
+          uint32_t sample_count;
+          uint64_t outputs_written;
++         bool provoking_ids;
+ 
+          /* Data needed for serialization. */
+          enum mtl_primitive_topology_class topology;
+-- 
+2.54.0 (Apple Git-157)
+

@@ -1,0 +1,47 @@
+From 79d116c1199f1e86297379361574ba6b180b3c38 Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Wed, 30 Sep 2026 19:37:17 -0400
+Subject: [PATCH] kk: Copy DGC index buffers without decomposition for tess and
+ GS
+
+Generated-by: LLM
+---
+ src/kosmickrisp/vulkan/kk_cmd_draw.c | 14 ++++++++++----
+ 1 file changed, 10 insertions(+), 4 deletions(-)
+
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_draw.c b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+index 6219776c6fd..d6713d4cc40 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_draw.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+@@ -2781,18 +2781,24 @@ kk_cmd_draw_generated(struct kk_cmd_buffer *cmd,
+    kk_set_draw_state(cmd, &data);
+ 
+    if (params.has_ib && data.indexed) {
++      bool emulated = cmd->state.shaders[MESA_SHADER_TESS_EVAL] ||
++                      cmd->state.shaders[MESA_SHADER_GEOMETRY];
++
+       libkk_dgc_unroll(cmd, kk_grid_1d(1024 * info->maxSequenceCount), true,
+                        kk_heap(cmd), bufs.cmds, bufs.unrolled, bufs.ib_info,
+-                       bufs.cmd_stride_B / 4, data.restart, data.flatshade_first,
+-                       data.prim);
++                       bufs.cmd_stride_B / 4, data.restart,
++                       emulated ? 1 : data.flatshade_first,
++                       emulated ? MESA_PRIM_POINTS : data.prim);
+ 
+-      data.prim = u_decomposed_prim(data.prim);
++      if (!emulated)
++         data.prim = u_decomposed_prim(data.prim);
+       data.index_buffer.addr = dev->heap->gpu + sizeof(struct poly_heap);
+       data.index_buffer.range = dev->heap->size_B - sizeof(struct poly_heap);
+       data.index_buffer_el_size_B = 4u;
+       data.restart_index = UINT32_MAX;
+       data.restart = false;
+-      data.flatshade_first = true;
++      if (!emulated)
++         data.flatshade_first = true;
+       data.unrolled = true;
+       data.indirect_command.addr = bufs.unrolled;
+       data.indirect_command.stride = sizeof(VkDrawIndexedIndirectCommand);
+-- 
+2.54.0 (Apple Git-157)
+

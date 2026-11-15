@@ -1,0 +1,14 @@
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -203,6 +203,11 @@
+ CLLibrary(OpenCL SHARED)
+ CLLibrary(OpenCL-static STATIC)
+ 
++# Floe private packaging: keep the ICD library's SONAME distinct from the
++# system OpenCL ICD loader (libOpenCL.so.1) so ocl-icd can dlopen this ICD
++# without resolving to the already-loaded loader.
++set_target_properties(OpenCL PROPERTIES OUTPUT_NAME floe_clvk)
++
+ if(NOT APPLE)
+   set_target_properties(OpenCL PROPERTIES
+     VERSION ${PROJECT_VERSION}

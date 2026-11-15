@@ -36,3 +36,13 @@ static-library headers into a shared `include` directory. C sources include
 Vulkan and virgl headers explicitly. Preserve the current artifact while rebuilding to
 a fresh output directory. A local rebuild has its own hashes and requires
 consumer linking/runtime qualification before replacing these bytes.
+
+## Next source selection (not shipped)
+
+`NEXT-SOURCE-SELECTION.json` records the newer reviewed MoltenVK/SPIRV-Cross
+rebase and the macOS-only Mesa KosmicKrisp build inputs. Neither changes the
+shipped xcframework or `PROVENANCE.json`. The current binary remains the
+verified virglrenderer + MoltenVK 1.4.2 stack; the newer selections require a
+separate native build, link and GPU qualification before they can replace it.
+The Mesa KosmicKrisp static component is a macOS host artifact and must never
+be linked into iOS.

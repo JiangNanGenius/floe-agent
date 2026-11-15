@@ -1,0 +1,590 @@
+From a94ee8642d82fe9c85bdeb91ff6d627c98cf453a Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Sat, 3 Oct 2026 20:18:50 -0400
+Subject: [PATCH 74/75] poly,kk: Run geometry shaders with side effects once
+ and keep their vertices in memory
+
+Generated-by: LLM
+---
+ src/kosmickrisp/libkk/kk_geometry.cl |   8 +-
+ src/kosmickrisp/vulkan/kk_cmd_draw.c |  30 ++-
+ src/kosmickrisp/vulkan/kk_shader.c   |  11 +-
+ src/poly/geometry.h                  |   6 +-
+ src/poly/nir/poly_nir.h              |   3 +
+ src/poly/nir/poly_nir_lower_gs.c     | 300 ++++++++++++++++++++++++++-
+ 6 files changed, 337 insertions(+), 21 deletions(-)
+
+diff --git a/src/kosmickrisp/libkk/kk_geometry.cl b/src/kosmickrisp/libkk/kk_geometry.cl
+index 862024817fa..39ee3d64723 100644
+--- a/src/kosmickrisp/libkk/kk_geometry.cl
++++ b/src/kosmickrisp/libkk/kk_geometry.cl
+@@ -50,11 +50,17 @@ libkk_gs_setup_indirect(uint64_t index_buffer, constant uint *draw,
+                         global struct poly_heap *heap, uint64_t vs_outputs,
+                         uint32_t index_size_B, uint32_t index_buffer_range_el,
+                         uint32_t prim, uint32_t max_indices,
+-                        enum poly_gs_shape shape, uint32_t prefix_sum)
++                        enum poly_gs_shape shape, uint32_t prefix_sum,
++                        uint32_t vertex_buffer_stride)
+ {
+    poly_gs_setup_indirect(index_buffer, draw, vp, p, heap, vs_outputs,
+                           index_size_B, index_buffer_range_el, prim,
+                           prefix_sum, max_indices, shape);
++
++   if (vertex_buffer_stride) {
++      p->vertex_buffer = (global uchar *)poly_heap_alloc(
++         heap, p->input_primitives * vertex_buffer_stride);
++   }
+ }
+ 
+ KERNEL(1024)
+diff --git a/src/kosmickrisp/vulkan/kk_cmd_draw.c b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+index 9d84c187748..fed09df7b85 100644
+--- a/src/kosmickrisp/vulkan/kk_cmd_draw.c
++++ b/src/kosmickrisp/vulkan/kk_cmd_draw.c
+@@ -1442,6 +1442,14 @@ kk_upload_geometry_params(struct kk_cmd_buffer *cmd,
+          gfx->gs.index.addr = params.output_index_buffer;
+          gfx->gs.index.range = size_B;
+       }
++
++      if (gs->materialize) {
++         params.vertex_buffer =
++            kk_pool_alloc(cmd,
++                          MAX2(params.input_primitives *
++                                  gs->vertex_buffer_stride, 4u),
++                          4).gpu;
++      }
+    }
+ 
+    if (shape == POLY_GS_SHAPE_STATIC_INDEXED) {
+@@ -2431,6 +2439,8 @@ kk_launch_gs_prerast(struct kk_cmd_buffer *cmd,
+          .max_indices = gs->max_indices,
+          .shape = shape,
+          .prefix_sum = gs->prefix_sum,
++         .vertex_buffer_stride =
++            gs->materialize ? gs->vertex_buffer_stride : 0,
+       };
+ 
+       if (draw.index.el_size_B) {
+@@ -2467,7 +2477,13 @@ kk_launch_gs_prerast(struct kk_cmd_buffer *cmd,
+    kk_dispatch_compute(enc, grid_vs, local_size);
+ 
+    bool stats_counts = kk_stats_gs_counts(cmd);
+-   if (gs->prefix_sum || (gs->count_words && stats_counts)) {
++   if (gs->materialize) {
++      mtl_barrier_after_encoder_stages(enc, MTL_STAGE_DISPATCH,
++                                       MTL_STAGE_DISPATCH);
++      mtl_compute_set_pipeline_state(
++         enc, vs->pipeline.gfx.pre_render[pre_render_count - 1u]);
++      kk_dispatch_compute(enc, grid_gs, local_size);
++   } else if (gs->prefix_sum || (gs->count_words && stats_counts)) {
+       mtl_barrier_after_encoder_stages(enc, MTL_STAGE_DISPATCH,
+                                        MTL_STAGE_DISPATCH);
+       mtl_compute_set_pipeline_state(enc, vs->pipeline.gfx.gs_count);
+@@ -2486,11 +2502,13 @@ kk_launch_gs_prerast(struct kk_cmd_buffer *cmd,
+       kk_dispatch_compute(enc, kk_grid_1d(1u), (struct mtl_size){1, 1, 1});
+    }
+ 
+-   mtl_barrier_after_encoder_stages(enc, MTL_STAGE_DISPATCH,
+-                                    MTL_STAGE_DISPATCH);
+-   mtl_compute_set_pipeline_state(
+-      enc, vs->pipeline.gfx.pre_render[pre_render_count - 1u]);
+-   kk_dispatch_compute(enc, grid_gs, local_size);
++   if (!gs->materialize) {
++      mtl_barrier_after_encoder_stages(enc, MTL_STAGE_DISPATCH,
++                                       MTL_STAGE_DISPATCH);
++      mtl_compute_set_pipeline_state(
++         enc, vs->pipeline.gfx.pre_render[pre_render_count - 1u]);
++      kk_dispatch_compute(enc, grid_gs, local_size);
++   }
+ 
+    struct kk_stats_state *stats = &cmd->state.stats;
+    if (!kk_gs_is_passthrough(cmd) &&
+diff --git a/src/kosmickrisp/vulkan/kk_shader.c b/src/kosmickrisp/vulkan/kk_shader.c
+index e1e7f2a1cd0..8c41ca0b486 100644
+--- a/src/kosmickrisp/vulkan/kk_shader.c
++++ b/src/kosmickrisp/vulkan/kk_shader.c
+@@ -1532,10 +1532,11 @@ kk_compile_shader(struct kk_device *dev, nir_shader *nir,
+       }
+    } else if (stage == MESA_SHADER_GEOMETRY) {
+       nir_shader *count = NULL, *rast = NULL, *pre_gs = NULL;
++      shader->info.gs.materialize = true;
+       NIR_PASS(_, nir, poly_nir_lower_gs, &count, &rast, &pre_gs,
+                &shader->info.gs);
+ 
+-      if (shader->info.gs.count_words) {
++      if (count) {
+          count->info.stage = MESA_SHADER_COMPUTE;
+          memset(&count->info.cs, 0, sizeof(count->info.cs));
+          count->xfb_info = NULL;
+@@ -1887,7 +1888,7 @@ gather_graphics_pipeline_create_info(
+ 
+       if (s->info.stage == MESA_SHADER_GEOMETRY) {
+          kk_msl_copy(&vs->gs_main, &s->gs_main);
+-         if (s->info.gs.count_words)
++         if (s->info.gs.count_words && !s->info.gs.materialize)
+             kk_msl_copy(&vs->gs_count, &s->gs_count);
+          if (s->info.gs.xfb)
+             kk_msl_copy(&vs->gs_pre, &s->gs_pre);
+@@ -2038,7 +2039,7 @@ kk_compile_graphics_pipeline(struct kk_device *device, struct kk_shader *vs)
+       if (result != VK_SUCCESS)
+          return VK_ERROR_INVALID_SHADER_NV;
+ 
+-      if (vs->info.vs.gs.count_words) {
++      if (vs->info.vs.gs.count_words && !vs->info.vs.gs.materialize) {
+          result = kk_compile_compute_pipeline(device, &vs->gs_count, 0u,
+                                               &pipe->gfx.gs_count);
+          if (result != VK_SUCCESS)
+@@ -2508,7 +2509,7 @@ kk_shader_serialize(struct vk_device *vk_dev, const struct vk_shader *vk_shader,
+       kk_msl_serialize(&shader->gs_main, blob);
+ 
+    const struct poly_gs_info *gs = kk_shader_gs_info(&shader->info);
+-   if (gs && gs->count_words)
++   if (gs && gs->count_words && !gs->materialize)
+       kk_msl_serialize(&shader->gs_count, blob);
+    if (gs && gs->xfb)
+       kk_msl_serialize(&shader->gs_pre, blob);
+@@ -2580,7 +2581,7 @@ kk_deserialize_shader(struct vk_device *vk_dev, struct blob_reader *blob,
+    }
+ 
+    const struct poly_gs_info *gs = kk_shader_gs_info(&info);
+-   if (gs && gs->count_words) {
++   if (gs && gs->count_words && !gs->materialize) {
+       result = kk_msl_deserialize(blob, &shader->gs_count);
+       if (result != VK_SUCCESS)
+          goto fail;
+diff --git a/src/poly/geometry.h b/src/poly/geometry.h
+index 42ae4a45760..b0f7469a41c 100644
+--- a/src/poly/geometry.h
++++ b/src/poly/geometry.h
+@@ -264,6 +264,8 @@ struct poly_geometry_params {
+    /* Output index buffer, allocated by pre-GS. */
+    DEVICE(uint) output_index_buffer;
+ 
++   DEVICE(uchar) vertex_buffer;
++
+    /* Address of transform feedback buffer in general, supplied by the CPU. */
+    DEVICE(uchar) xfb_base_original[POLY_MAX_SO_BUFFERS];
+ 
+@@ -315,8 +317,8 @@ struct poly_geometry_params {
+     */
+    uint32_t input_topology;
+ } PACKED;
+-static_assert(sizeof(struct poly_geometry_params) == 79 * 4,
+-              "struct poly_geometry_params must be 79 words");
++static_assert(sizeof(struct poly_geometry_params) == 81 * 4,
++              "struct poly_geometry_params must be 81 words");
+ 
+ static inline void
+ poly_geometry_params_init(struct poly_geometry_params *p,
+diff --git a/src/poly/nir/poly_nir.h b/src/poly/nir/poly_nir.h
+index e3b1fe244d5..89e0a97dacb 100644
+--- a/src/poly/nir/poly_nir.h
++++ b/src/poly/nir/poly_nir.h
+@@ -50,6 +50,9 @@ struct poly_gs_info {
+    unsigned invocations;
+    int16_t static_count[4];
+    int8_t count_index[4];
++
++   bool materialize;
++   unsigned vertex_buffer_stride;
+ };
+ 
+ bool poly_nir_lower_gs(struct nir_shader *gs, struct nir_shader **gs_count,
+diff --git a/src/poly/nir/poly_nir_lower_gs.c b/src/poly/nir/poly_nir_lower_gs.c
+index 507de7c047d..d0c34f26e92 100644
+--- a/src/poly/nir/poly_nir_lower_gs.c
++++ b/src/poly/nir/poly_nir_lower_gs.c
+@@ -14,6 +14,7 @@
+ #include "util/list.h"
+ #include "util/macros.h"
+ #include "util/ralloc.h"
++#include "util/u_dynarray.h"
+ #include "util/u_math.h"
+ #include "nir.h"
+ #include "nir_builder_opcodes.h"
+@@ -159,6 +160,8 @@ lower_gs_intrinsics(nir_shader *shader)
+    return nir_progress(true, impl, nir_metadata_none);
+ }
+ 
++struct gs_vertex_layout;
++
+ struct lower_gs_state {
+    int static_count[POLY_MAX_VERTEX_STREAMS];
+ 
+@@ -170,6 +173,7 @@ struct lower_gs_state {
+    int count_index[POLY_MAX_VERTEX_STREAMS];
+ 
+    struct poly_gs_info *info;
++   const struct gs_vertex_layout *layout;
+ };
+ 
+ /* Helpers for loading from the vertex state buffer */
+@@ -278,6 +282,95 @@ lower_store_to_var(nir_builder *b, nir_intrinsic_instr *intr,
+    nir_store_var(b, output->output_var, value, BITFIELD_BIT(component));
+ }
+ 
++struct gs_vertex_layout {
++   unsigned offset[NUM_TOTAL_VARYING_SLOTS];
++   unsigned stride_words;
++   unsigned strip_offset;
++   unsigned vertices;
++   unsigned streams;
++};
++
++static unsigned
++output_words(const struct lower_output_to_var_slot *output)
++{
++   unsigned bit_size = nir_alu_type_get_type_size(output->type);
++   return output->nr_components * (bit_size == 64 ? 2 : 1);
++}
++
++static void
++gs_vertex_layout_init(struct gs_vertex_layout *layout, nir_shader *gs,
++                      struct lower_output_to_var_slot *outputs)
++{
++   memset(outputs, 0, sizeof(*outputs) * NUM_TOTAL_VARYING_SLOTS);
++   nir_shader_intrinsics_pass(gs, collect_output_types, nir_metadata_all,
++                              outputs);
++
++   unsigned words = 0;
++   u_foreach_bit64(slot, gs->info.outputs_written) {
++      layout->offset[slot] = words;
++      words += output_words(&outputs[slot]);
++   }
++
++   layout->strip_offset = words;
++   layout->stride_words = words + 3;
++   layout->vertices = MAX2(gs->info.gs.vertices_out, 1);
++   layout->streams = MAX2(util_last_bit(gs->info.gs.active_stream_mask), 1);
++}
++
++static nir_def *
++gs_vertex_address(nir_builder *b, const struct gs_vertex_layout *layout,
++                  nir_def *unrolled, nir_def *stream, nir_def *vertex)
++{
++   nir_def *index = nir_iadd(b, nir_imul_imm(b, unrolled, layout->streams),
++                             stream);
++   index = nir_iadd(b, nir_imul_imm(b, index, layout->vertices), vertex);
++
++   nir_def *offset =
++      nir_u2u64(b, nir_imul_imm(b, index, layout->stride_words * 4));
++   return nir_iadd(b, load_geometry_param(b, vertex_buffer), offset);
++}
++
++static void
++store_gs_output(nir_builder *b, const struct lower_output_to_var_slot *output,
++                nir_def *addr)
++{
++   nir_def *value = nir_load_var(b, output->output_var);
++   unsigned bit_size = value->bit_size;
++
++   for (unsigned c = 0; c < output->nr_components; ++c) {
++      nir_def *chan = nir_channel(b, value, c);
++      if (bit_size == 64) {
++         nir_store_global(b, nir_unpack_64_2x32(b, chan),
++                          nir_iadd_imm(b, addr, c * 8));
++      } else {
++         if (bit_size != 32)
++            chan = nir_u2u32(b, chan);
++         nir_store_global(b, chan, nir_iadd_imm(b, addr, c * 4));
++      }
++   }
++}
++
++static nir_def *
++load_gs_output(nir_builder *b, const struct lower_output_to_var_slot *output,
++               nir_def *addr)
++{
++   unsigned bit_size = nir_alu_type_get_type_size(output->type);
++   nir_def *chans[4];
++
++   for (unsigned c = 0; c < output->nr_components; ++c) {
++      if (bit_size == 64) {
++         chans[c] = nir_pack_64_2x32(
++            b, nir_load_global(b, 2, 32, nir_iadd_imm(b, addr, c * 8)));
++      } else {
++         chans[c] = nir_load_global(b, 1, 32, nir_iadd_imm(b, addr, c * 4));
++         if (bit_size != 32)
++            chans[c] = nir_u2uN(b, chans[c], bit_size);
++      }
++   }
++
++   return nir_vec(b, chans, output->nr_components);
++}
++
+ /*
+  * Geometry shader invocations are compute-like:
+  *
+@@ -769,8 +862,47 @@ create_gs_rast_shader(const nir_shader *gs, const struct lower_gs_state *state)
+          ralloc_asprintf(shader, "%s-selected", slot_name));
+    }
+ 
+-   nir_shader_intrinsics_pass(shader, lower_to_gs_rast,
+-                              nir_metadata_control_flow, &rs);
++   if (state->info->materialize) {
++      const struct gs_vertex_layout *layout = state->layout;
++
++      nir_cf_list body;
++      nir_cf_extract(&body, b->cursor, nir_after_impl(b->impl));
++      nir_cf_delete(&body);
++      b->cursor = nir_after_impl(b->impl);
++
++      nir_def *unrolled = nir_iadd(
++         b, nir_imul(b, rs.instance_id, load_geometry_param(b, grid[0])),
++         rs.primitive_id);
++      nir_def *in_range =
++         nir_iand(b, nir_ult_imm(b, rs.output_id, layout->vertices),
++                  nir_ult_imm(b, rs.stream, layout->streams));
++
++      nir_push_if(b, in_range);
++      {
++         nir_def *addr = gs_vertex_address(b, layout, unrolled, rs.stream,
++                                           rs.output_id);
++
++         u_foreach_bit64(slot, shader->info.outputs_written) {
++            struct lower_output_to_var_slot *output = &rs.outputs[slot];
++            nir_def *value = load_gs_output(
++               b, output, nir_iadd_imm(b, addr, layout->offset[slot] * 4));
++            nir_store_var(b, output->selected_var, value,
++                          nir_component_mask(output->nr_components));
++         }
++
++         nir_def *strip = nir_load_global(
++            b, 3, 32, nir_iadd_imm(b, addr, layout->strip_offset * 4));
++         nir_store_var(b, rs.output_strip_length, nir_channel(b, strip, 0),
++                       0x1);
++         nir_store_var(b, rs.output_strip_base, nir_channel(b, strip, 1),
++                       0x1);
++         nir_store_var(b, rs.id_in_strip, nir_channel(b, strip, 2), 0x1);
++      }
++      nir_pop_if(b, NULL);
++   } else {
++      nir_shader_intrinsics_pass(shader, lower_to_gs_rast,
++                                 nir_metadata_control_flow, &rs);
++   }
+ 
+    b->cursor = nir_after_impl(b->impl);
+    if (gs->xfb_info) {
+@@ -909,6 +1041,127 @@ create_gs_rast_shader(const nir_shader *gs, const struct lower_gs_state *state)
+    return shader;
+ }
+ 
++static void
++materialize_vertex(nir_builder *b, nir_intrinsic_instr *intr,
++                   const struct gs_vertex_layout *layout,
++                   const struct lower_output_to_var_slot *outputs)
++{
++   b->cursor = nir_before_instr(&intr->instr);
++   nir_def *vertex = intr->src[0].ssa;
++
++   nir_push_if(b, nir_ult_imm(b, vertex, layout->vertices));
++   {
++      nir_def *addr = gs_vertex_address(
++         b, layout, calc_unrolled_id(b),
++         nir_imm_int(b, nir_intrinsic_stream_id(intr)), vertex);
++
++      u_foreach_bit64(slot, b->shader->info.outputs_written) {
++         if (outputs[slot].output_var) {
++            store_gs_output(b, &outputs[slot],
++                            nir_iadd_imm(b, addr, layout->offset[slot] * 4));
++         }
++      }
++   }
++   nir_pop_if(b, NULL);
++}
++
++static void
++materialize_strip(nir_builder *b, nir_intrinsic_instr *intr,
++                  const struct gs_vertex_layout *layout)
++{
++   b->cursor = nir_before_instr(&intr->instr);
++   nir_def *first = intr->src[1].ssa;
++   nir_def *length = intr->src[2].ssa;
++   nir_def *base = intr->src[3].ssa;
++   nir_def *stream = nir_imm_int(b, nir_intrinsic_stream_id(intr));
++   nir_def *unrolled = calc_unrolled_id(b);
++
++   nir_variable *i_var =
++      nir_local_variable_create(b->impl, glsl_uint_type(), NULL);
++   nir_store_var(b, i_var, nir_imm_int(b, 0), 0x1);
++
++   nir_loop *loop = nir_push_loop(b);
++   {
++      nir_def *i = nir_load_var(b, i_var);
++      nir_break_if(b, nir_uge(b, i, length));
++
++      nir_def *vertex = nir_iadd(b, first, i);
++      nir_push_if(b, nir_ult_imm(b, vertex, layout->vertices));
++      {
++         nir_def *addr =
++            gs_vertex_address(b, layout, unrolled, stream, vertex);
++         nir_store_global(b, nir_vec3(b, length, base, i),
++                          nir_iadd_imm(b, addr, layout->strip_offset * 4));
++      }
++      nir_pop_if(b, NULL);
++
++      nir_store_var(b, i_var, nir_iadd_imm(b, i, 1), 0x1);
++   }
++   nir_pop_loop(b, loop);
++}
++
++static bool
++lower_gs_materialize(nir_shader *gs, struct lower_gs_state *state,
++                     const struct gs_vertex_layout *layout,
++                     struct lower_output_to_var_slot *outputs)
++{
++   nir_function_impl *impl = nir_shader_get_entrypoint(gs);
++   struct util_dynarray intrs;
++   util_dynarray_init(&intrs, NULL);
++
++   nir_foreach_block(block, impl) {
++      nir_foreach_instr(instr, block) {
++         if (instr->type != nir_instr_type_intrinsic)
++            continue;
++
++         nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
++         if (intr->intrinsic == nir_intrinsic_store_output ||
++             intr->intrinsic == nir_intrinsic_select_vertex_poly ||
++             intr->intrinsic == nir_intrinsic_emit_primitive_poly ||
++             intr->intrinsic == nir_intrinsic_set_vertex_and_primitive_count)
++            util_dynarray_append_typed(&intrs, nir_intrinsic_instr *, intr);
++      }
++   }
++
++   nir_builder b = nir_builder_create(impl);
++   bool points = gs->info.gs.output_primitive == MESA_PRIM_POINTS;
++
++   util_dynarray_foreach(&intrs, nir_intrinsic_instr *, it) {
++      nir_intrinsic_instr *intr = *it;
++
++      switch (intr->intrinsic) {
++      case nir_intrinsic_store_output:
++         lower_store_to_var(&b, intr, outputs);
++         break;
++
++      case nir_intrinsic_select_vertex_poly:
++         materialize_vertex(&b, intr, layout, outputs);
++         break;
++
++      case nir_intrinsic_emit_primitive_poly:
++         if (!points)
++            materialize_strip(&b, intr, layout);
++         break;
++
++      case nir_intrinsic_set_vertex_and_primitive_count:
++         if (state->count_index[nir_intrinsic_stream_id(intr)] >= 0) {
++            b.cursor = nir_before_instr(&intr->instr);
++            nir_push_if(&b, nir_ine_imm(&b, load_geometry_param(&b, count_buffer),
++                                        0));
++            write_xfb_counts(&b, intr, state);
++            nir_pop_if(&b, NULL);
++         }
++         break;
++
++      default:
++         UNREACHABLE("collected above");
++      }
++   }
++
++   util_dynarray_fini(&intrs);
++   return nir_progress(true, impl, nir_metadata_none);
++}
++
+ static bool
+ lower_gs_instr(nir_builder *b, nir_intrinsic_instr *intr, void *state_)
+ {
+@@ -1252,6 +1505,8 @@ bool
+ poly_nir_lower_gs(nir_shader *gs, nir_shader **gs_count, nir_shader **gs_copy,
+                   nir_shader **pre_gs, struct poly_gs_info *info)
+ {
++   bool materialize = info->materialize;
++
+    /* Lower I/O as assumed by the rest of GS lowering */
+    if (gs->xfb_info != NULL) {
+       /* Fold constant offset srcs for IO. */
+@@ -1356,8 +1611,32 @@ poly_nir_lower_gs(nir_shader *gs, nir_shader **gs_count, nir_shader **gs_copy,
+    /* Ensure that outputs_written is still accurate after DCE. */
+    nir_shader_gather_info(gs, nir_shader_get_entrypoint(gs));
+ 
++   struct gs_vertex_layout layout = {0};
++   struct lower_output_to_var_slot outputs[NUM_TOTAL_VARYING_SLOTS];
++   info->materialize = materialize && gs->info.writes_memory;
++   if (info->materialize) {
++      gs_vertex_layout_init(&layout, gs, outputs);
++      info->vertex_buffer_stride =
++         layout.streams * layout.vertices * layout.stride_words * 4;
++      gs_state.layout = &layout;
++   }
++
+    *gs_copy = create_gs_rast_shader(gs, &gs_state);
+ 
++   if (info->materialize) {
++      u_foreach_bit64(slot, gs->info.outputs_written) {
++         struct lower_output_to_var_slot *output = &outputs[slot];
++         if (!output->nr_components)
++            continue;
++
++         enum glsl_base_type type =
++            nir_get_glsl_base_type_for_nir_type(output->type);
++         output->output_var = nir_variable_create(
++            gs, nir_var_shader_temp,
++            glsl_vector_type(type, output->nr_components), NULL);
++      }
++   }
++
+    NIR_PASS(_, gs, nir_shader_intrinsics_pass, lower_id,
+             nir_metadata_control_flow, NULL);
+ 
+@@ -1368,13 +1647,13 @@ poly_nir_lower_gs(nir_shader *gs, nir_shader **gs_count, nir_shader **gs_copy,
+    NIR_PASS(_, gs, nir_remove_dead_variables, nir_var_function_temp, NULL);
+ 
+    /* If there is any unknown count, we need a geometry count shader */
+-   if (info->count_words > 0)
++   if (info->count_words > 0 && !info->materialize)
+       *gs_count = create_geometry_count_shader(gs, &gs_state);
+    else
+       *gs_count = NULL;
+ 
+    /* Strip stores and atomics */
+-   do {
++   while (!info->materialize) {
+       progress = false;
+       NIR_PASS(progress, gs, nir_shader_intrinsics_pass,
+                strip_side_effect_from_main, nir_metadata_control_flow,
+@@ -1382,7 +1661,12 @@ poly_nir_lower_gs(nir_shader *gs, nir_shader **gs_count, nir_shader **gs_copy,
+ 
+       NIR_PASS(progress, gs, nir_opt_dce);
+       NIR_PASS(progress, gs, nir_opt_dead_cf);
+-   } while (progress);
++      if (!progress)
++         break;
++   }
++
++   if (info->materialize)
++      NIR_PASS(_, gs, lower_gs_materialize, &gs_state, &layout, outputs);
+ 
+    NIR_PASS(_, gs, nir_shader_intrinsics_pass, lower_gs_instr,
+             nir_metadata_none, &gs_state);
+@@ -1406,7 +1690,7 @@ poly_nir_lower_gs(nir_shader *gs, nir_shader **gs_count, nir_shader **gs_copy,
+    } while (progress);
+ 
+    /* Strip remaining atomics, but not stores - since those are from us */
+-   do {
++   while (!info->materialize) {
+       progress = false;
+       NIR_PASS(progress, gs, nir_shader_intrinsics_pass,
+                strip_side_effect_from_main, nir_metadata_control_flow,
+@@ -1414,7 +1698,9 @@ poly_nir_lower_gs(nir_shader *gs, nir_shader **gs_count, nir_shader **gs_copy,
+ 
+       NIR_PASS(progress, gs, nir_opt_dce);
+       NIR_PASS(progress, gs, nir_opt_dead_cf);
+-   } while (progress);
++      if (!progress)
++         break;
++   }
+ 
+    /* All those variables we created should've gone away by now */
+    NIR_PASS(_, gs, nir_remove_dead_variables, nir_var_function_temp, NULL);
+-- 
+2.54.0 (Apple Git-157)
+

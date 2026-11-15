@@ -1,0 +1,517 @@
+{
+ "schemaVersion": 1,
+ "name": "virtio-media host device ABI (guest-side contract for the primary VideoToolbox-backed device)",
+ "date": "2026-11-11",
+ "authority": {
+  "protocolSource": "chromeos/virtio-media @ ed3a56fd39a74bd8117a3cc9c5b8ec8803df19cd, driver/protocol.h (vendored byte-identical at ../driver/protocol.h)",
+  "guestKernel": "Debian 6.12.107+deb13-arm64 (linux 6.12.107-1), interpreted ARM64 guest",
+  "uapiHeaders": "linux-source-6.12_6.12.107-1 (include/uapi), sizes/offsets probed for ARM64 LP64",
+  "driverLicense": "Dual BSD-3-Clause OR GPL-2.0+ (Google LLC 2024-2025)"
+ },
+ "endianness": "All virtio-media protocol structures are little-endian on the wire. V4L2 ioctl payloads are the plain 64-bit (LP64) layout of the corresponding struct v4l2_* as defined by the 6.12 UAPI headers; guest is aarch64 LP64, host must marshal to/from this exact layout (the primary's emulator marshals between this layout and its internal representation).",
+ "device": {
+  "virtioDeviceId": 48,
+  "virtqueues": [
+   {
+    "index": 0,
+    "name": "commandq",
+    "driverToDevice": "all commands; device MUST return used descriptor chains promptly and never hold them indefinitely"
+   },
+   {
+    "index": 1,
+    "name": "eventq",
+    "deviceToDriver": "all events; driver re-queues returned descriptor chains promptly (16 pre-queued event buffers of VIRTIO_MEDIA_EVENT_MAX_SIZE=608 bytes each)"
+   }
+  ],
+  "featureBits": {
+   "VIRTIO_F_VERSION_1": "required for modern virtio-mmio",
+   "VIRTIO_F_ACCESS_ORDER": "optional, driver does not rely on it",
+   "sharedMemoryRegions": "device MUST expose SHM region id VIRTIO_MEDIA_SHM_MMAP(0) for MMAP buffers; if absent, V4L2_MEMORY_MMAP is unusable and only USERPTR works"
+  },
+  "configSpace": {
+   "sizeBytes": 40,
+   "layout": [
+    {
+     "offset": 0,
+     "size": 4,
+     "field": "device_caps",
+     "meaning": "copied verbatim to v4l2_capability.capabilities AND device_caps by the guest driver; VFL_DIR is derived from it (M2M caps => VFL_DIR_M2M)"
+    },
+    {
+     "offset": 4,
+     "size": 4,
+     "field": "device_type",
+     "meaning": "enum vfl_devnode_type; use 0 (VFL_TYPE_VIDEO) so the node registers as /dev/videoX"
+    },
+    {
+     "offset": 8,
+     "size": 32,
+     "field": "card",
+     "meaning": "UTF-8 card name; the guest driver hardcodes driver name 'virtio-media' (vd->name), card comes from QUERYCAP via ioctl not from config"
+    }
+   ],
+   "decoderNodeRecommended": {
+    "device_caps": "V4L2_CAP_VIDEO_M2M | V4L2_CAP_STREAMING",
+    "device_type": 0,
+    "card": "Floe VideoToolbox Decoder"
+   },
+   "encoderNodeRecommended": {
+    "device_caps": "V4L2_CAP_VIDEO_M2M | V4L2_CAP_STREAMING",
+    "device_type": 0,
+    "card": "Floe VideoToolbox Encoder"
+   }
+  }
+ },
+ "sharedMemory": {
+  "region0": {
+   "id": 0,
+   "purpose": "backing store for V4L2_MEMORY_MMAP buffers",
+   "semantics": [
+    "Guest driver issues VIRTIO_MEDIA_CMD_MMAP with offset=<v4l2_buffer.m.offset from VIDIOC_QUERYBUF/VIDIOC_QBUF>; device answers driver_addr (u64 offset into region 0) and len.",
+    "Guest maps [region0.base + driver_addr, +len) into the process address space. vm_pgoff presented to userspace becomes (driver_addr + region0.base)>>PAGE_SHIFT; userspace mmap()s /dev/videoX with that pgoff.",
+    "Mapping size must be <= PAGE_ALIGN(len); VM_SHARED and VM_READ|VM_WRITE are required (driver rejects otherwise).",
+    "MUNMAP (driver vma close) sends VIRTIO_MEDIA_CMD_MUNMAP with driver_addr; device must refcount: repeated MMAP of the same buffer offset must return the same driver_addr, and storage must persist until munmap (and until the device finishes all in-flight reads/writes of the buffer).",
+    "Region size is fixed at device creation (device decision); all buffer offsets must stay within it. Zero-copy: compressed bitstream MMAP buffers for OUTPUT queues and raw frame MMAP buffers for CAPTURE queues both live here."
+   ]
+  }
+ },
+ "commands": {
+  "note": "All command/response structs below are the exact vendored layout; sizes/offsets verified by scripts/abi_probe.c on ARM64 LP64 (output: scripts/abi_probe_out.jsonl).",
+  "VIRTIO_MEDIA_CMD_OPEN": {
+   "value": 1,
+   "cmd": {
+    "struct": "virtio_media_cmd_open",
+    "size": 8,
+    "fields": {
+     "hdr.cmd": "0:4 = 1"
+    }
+   },
+   "resp": {
+    "struct": "virtio_media_resp_open",
+    "size": 16,
+    "fields": {
+     "hdr.status": "0:4 (0 or -errno)",
+     "session_id": "4:4"
+    }
+   },
+   "semantics": "One per opened /dev/videoX file. session_id is scoped to this virtio device. Device may limit concurrent sessions; return -EMFILE/-ENOSPC style errors to refuse."
+  },
+  "VIRTIO_MEDIA_CMD_CLOSE": {
+   "value": 2,
+   "cmd": {
+    "struct": "virtio_media_cmd_close",
+    "size": 16,
+    "fields": {
+     "hdr.cmd": "0:4 = 2",
+     "session_id": "4:4"
+    }
+   },
+   "resp": "none (fire-and-forget); device releases all session state: queued buffers, mappings, subscribed events",
+   "semantics": "Sent on last file close. After this the session_id must not be reused by either side."
+  },
+  "VIRTIO_MEDIA_CMD_IOCTL": {
+   "value": 3,
+   "cmd": {
+    "struct": "virtio_media_cmd_ioctl",
+    "size": 16,
+    "fields": {
+     "hdr.cmd": "0:4 = 3",
+     "session_id": "4:4",
+     "code": "8:4 = _IOC_NR(VIDIOC_*) (e.g. VIDIOC_G_FMT -> 4, VIDIOC_QBUF -> 15)"
+    }
+   },
+   "resp": {
+    "struct": "virtio_media_resp_ioctl",
+    "size": 8,
+    "fields": {
+     "hdr.status": "0:4"
+    }
+   },
+   "payloadRule": "code = _IOC_NR only. Payload size = the full 64-bit UAPI struct size (NOT _IOC_SIZE, which is capped at 16383 and equal for our structs anyway). Direction from _IOC_DIR: _IOR => payload in device-writable section after resp; _IOW => payload after cmd in device-readable section; _IOWR => payload in BOTH sections (device reads cmd copy, writes resp copy)."
+  },
+  "VIRTIO_MEDIA_CMD_MMAP": {
+   "value": 4,
+   "cmd": {
+    "struct": "virtio_media_cmd_mmap",
+    "size": 20,
+    "fields": {
+     "hdr.cmd": "0:4 = 4",
+     "session_id": "4:4",
+     "flags": "8:4 (BIT0=RW)",
+     "offset": "12:4 = buffer m.offset"
+    }
+   },
+   "resp": {
+    "struct": "virtio_media_resp_mmap",
+    "size": 24,
+    "fields": {
+     "hdr.status": "0:4",
+     "driver_addr": "8:8",
+     "len": "16:8"
+    }
+   },
+   "semantics": "See sharedMemory.region0."
+  },
+  "VIRTIO_MEDIA_CMD_MUNMAP": {
+   "value": 5,
+   "cmd": {
+    "struct": "virtio_media_cmd_munmap",
+    "size": 16,
+    "fields": {
+     "hdr.cmd": "0:4 = 5",
+     "driver_addr": "8:8 (u64, naturally aligned after 8-byte header)"
+    }
+   },
+   "resp": {
+    "struct": "virtio_media_resp_munmap",
+    "size": 8
+   },
+   "semantics": "driver_addr must equal a value previously returned by CMD_MMAP; device drops its refcount on that mapping."
+  }
+ },
+ "events": {
+  "VIRTIO_MEDIA_EVT_ERROR": {
+   "value": 0,
+   "struct": "virtio_media_event_error",
+   "size": 16,
+   "semantics": "Unrecoverable session error; guest driver considers the session corrupted and closes it. errno = Linux error code."
+  },
+  "VIRTIO_MEDIA_EVT_DQBUF": {
+   "value": 1,
+   "struct": "virtio_media_event_dqbuf",
+   "size": 608,
+   "fields": {
+    "hdr": "0:8",
+    "buffer": "8:88 (struct v4l2_buffer)",
+    "planes": "96:512 reserved (single-planar v4l2_buffer carries no plane array; zeros)"
+   },
+   "semantics": "Device->driver notification that a single-planar v4l2_buffer completed. Sent for both OUTPUT (compressed-in) and CAPTURE (raw-out) queues."
+  },
+  "VIRTIO_MEDIA_EVT_EVENT": {
+   "value": 2,
+   "struct": "virtio_media_event_event",
+   "size": 144,
+   "fields": {
+    "hdr": "0:8",
+    "event": "8:136 (struct v4l2_event)"
+   },
+   "semantics": "V4L2 event delivery for subscribed events (e.g. V4L2_EVENT_EOS, V4L2_EVENT_SOURCE_CHANGE, decoder resolution-change)."
+  },
+  "eventMaxSize": 608,
+  "ordering": "Events for a session are delivered in order on eventq. DQBUF for a given buffer is delivered exactly once. After VIRTIO_MEDIA_EVT_ERROR no further events carry that session_id."
+ },
+ "bufferIoctlWireLayout": {
+  "note": "Applies to VIDIOC_QBUF(15), VIDIOC_DQBUF(17), VIDIOC_QUERYBUF(16), VIDIOC_PREPARE_BUF(93). These use the dedicated scatterlist_builder_add_buffer path, NOT the plain payload rule.",
+  "QBUF_QUERYBUF_DQBUF": {
+   "deviceReadable": [
+    "struct virtio_media_cmd_ioctl (16)",
+    "struct v4l2_buffer (88) \u2014 single-planar; .length is the mapped byte length",
+    "no plane array follows: the compiled host device rejects multi-planar M2M buffer types",
+    "if memory==V4L2_MEMORY_USERPTR: virtio_media_sg_entry[.] describing user payload pages"
+   ],
+   "deviceWritable": [
+    "struct virtio_media_resp_ioctl (8)",
+    "struct v4l2_buffer (88) updated copy",
+    "no plane array: single-planar v4l2_buffer only"
+   ],
+   "semantics": "For MMAP memory the payload bytes themselves are NOT in the descriptor chain \u2014 the device reads/writes them through SHM region 0 at v4l2_buffer.m.offset. MMAP QBUF exchanges only the single-planar v4l2_buffer metadata. USERPTR is not implemented by the host device."
+  },
+  "PREPARE_BUF": "same layout as QBUF",
+  "CREATE_BUFS": {
+   "nr": 92,
+   "payload": "struct v4l2_create_buffers (256), _IOWR; single-planar only"
+  }
+ },
+ "requiredIoctlSet": {
+  "comment": "Finite set the primary must implement for stock FFmpeg/v4l2-ctl stateful M2M. All are pure pass-through semantics: the device plays the role of an in-kernel V4L2 driver. Full v4l2_ioctl_ops table is forwarded by the guest driver; unsupported ioctls should return -ENOTTY/-EINVAL just like a real driver.",
+  "identity": [
+   {
+    "ioctl": "VIDIOC_QUERYCAP",
+    "nr": 0,
+    "dir": "IOR",
+    "payload": 104,
+    "must": "driver='virtio-media', card=config card, capabilities|device_caps from config, device_caps=V4L2_CAP_VIDEO_M2M|V4L2_CAP_STREAMING"
+   }
+  ],
+  "formatEnumeration": [
+   {
+    "ioctl": "VIDIOC_ENUM_FMT",
+    "nr": 2,
+    "dir": "IOWR",
+    "payload": 64
+   },
+   {
+    "ioctl": "VIDIOC_ENUM_FRAMESIZES",
+    "nr": 74,
+    "dir": "IOWR",
+    "payload": 44
+   },
+   {
+    "ioctl": "VIDIOC_ENUM_FRAMEINTERVALS",
+    "nr": 75,
+    "dir": "IOWR",
+    "payload": 52
+   }
+  ],
+  "formatNegotiation": [
+   {
+    "ioctl": "VIDIOC_G_FMT",
+    "nr": 4,
+    "dir": "IOWR",
+    "payload": 208
+   },
+   {
+    "ioctl": "VIDIOC_S_FMT",
+    "nr": 5,
+    "dir": "IOWR",
+    "payload": 208
+   },
+   {
+    "ioctl": "VIDIOC_TRY_FMT",
+    "nr": 64,
+    "dir": "IOWR",
+    "payload": 208
+   }
+  ],
+  "buffers": [
+   {
+    "ioctl": "VIDIOC_REQBUFS",
+    "nr": 8,
+    "dir": "IOWR",
+    "payload": 20
+   },
+   {
+    "ioctl": "VIDIOC_QUERYBUF",
+    "nr": 16,
+    "dir": "IOWR",
+    "payload": 88,
+    "note": "must return buffer m.offset values that are stable per (session,queue,index) and valid for VIRTIO_MEDIA_CMD_MMAP"
+   },
+   {
+    "ioctl": "VIDIOC_CREATE_BUFS",
+    "nr": 92,
+    "dir": "IOWR",
+    "payload": 256
+   },
+   {
+    "ioctl": "VIDIOC_PREPARE_BUF",
+    "nr": 93,
+    "dir": "IOWR",
+    "payload": 88
+   }
+  ],
+  "streaming": [
+   {
+    "ioctl": "VIDIOC_QBUF",
+    "nr": 15,
+    "dir": "IOWR",
+    "payload": 88,
+    "layout": "bufferIoctlWireLayout"
+   },
+   {
+    "ioctl": "VIDIOC_DQBUF",
+    "nr": 17,
+    "dir": "IOWR",
+    "payload": 88,
+    "layout": "bufferIoctlWireLayout",
+    "note": "device returns the completed buffer synchronously in the response if one is already done; otherwise the ioctl may complete a pending buffer via VIRTIO_MEDIA_EVT_DQBUF per guest driver logic (check driver: vidioc_dqbuf waits for event)"
+   },
+   {
+    "ioctl": "VIDIOC_STREAMON",
+    "nr": 18,
+    "dir": "IOW",
+    "payload": 4
+   },
+   {
+    "ioctl": "VIDIOC_STREAMOFF",
+    "nr": 19,
+    "dir": "IOW",
+    "payload": 4,
+    "note": "must return all queued buffers to userspace (V4L2_BUF_FLAG_DONE) and cancel device-side work"
+   }
+  ],
+  "codecControls": [
+   {
+    "ioctl": "VIDIOC_G_CTRL",
+    "nr": 11,
+    "dir": "IOWR",
+    "payload": 12
+   },
+   {
+    "ioctl": "VIDIOC_S_CTRL",
+    "nr": 12,
+    "dir": "IOWR",
+    "payload": 12
+   },
+   {
+    "ioctl": "VIDIOC_QUERYCTRL",
+    "nr": 36,
+    "dir": "IOWR",
+    "payload": 68
+   },
+   {
+    "ioctl": "VIDIOC_QUERYMENU",
+    "nr": 37,
+    "dir": "IOWR",
+    "payload": 24
+   },
+   {
+    "ioctl": "VIDIOC_G_EXT_CTRLS",
+    "nr": 71,
+    "dir": "IOWR",
+    "payload": 32,
+    "note": "dedicated wire path with v4l2_ext_control pointer fixups (see driver scatterlist_builder ext_ctrls functions)"
+   },
+   {
+    "ioctl": "VIDIOC_S_EXT_CTRLS",
+    "nr": 72,
+    "dir": "IOWR"
+   },
+   {
+    "ioctl": "VIDIOC_TRY_EXT_CTRLS",
+    "nr": 73,
+    "dir": "IOWR"
+   }
+  ],
+  "drainAndFlush": [
+   {
+    "ioctl": "VIDIOC_DECODER_CMD",
+    "nr": 96,
+    "dir": "IOWR",
+    "payload": 72,
+    "must": "V4L2_DEC_CMD_STOP drains (send after queuing all packets; device completes after emitting all decoded frames then V4L2_EVENT_EOS), V4L2_DEC_CMD_START resumes"
+   },
+   {
+    "ioctl": "VIDIOC_TRY_DECODER_CMD",
+    "nr": 97,
+    "dir": "IOWR",
+    "payload": 72
+   },
+   {
+    "ioctl": "VIDIOC_ENCODER_CMD",
+    "nr": 77,
+    "dir": "IOWR",
+    "payload": 40,
+    "must": "V4L2_ENC_CMD_STOP flushes encoder (drain bitstream), V4L2_ENC_CMD_START"
+   }
+  ],
+  "selectionAndParameters": [
+   {
+    "ioctl": "VIDIOC_G_PARM",
+    "nr": 21,
+    "dir": "IOWR",
+    "payload": 204
+   },
+   {
+    "ioctl": "VIDIOC_S_PARM",
+    "nr": 22,
+    "dir": "IOWR",
+    "payload": 204
+   },
+   {
+    "ioctl": "VIDIOC_G_SELECTION",
+    "nr": 94,
+    "dir": "IOWR",
+    "payload": 64,
+    "note": "crop/compose rectangles for codecs"
+   },
+   {
+    "ioctl": "VIDIOC_S_SELECTION",
+    "nr": 95,
+    "dir": "IOWR",
+    "payload": 64
+   }
+  ],
+  "events": [
+   {
+    "ioctl": "VIDIOC_SUBSCRIBE_EVENT",
+    "nr": 90,
+    "dir": "IOW",
+    "payload": 32,
+    "must": "support at least V4L2_EVENT_EOS, V4L2_EVENT_SOURCE_CHANGE; decoder resolution change uses SOURCE_CHANGE"
+   },
+   {
+    "ioctl": "VIDIOC_UNSUBSCRIBE_EVENT",
+    "nr": 91,
+    "dir": "IOW",
+    "payload": 32
+   },
+   {
+    "ioctl": "VIDIOC_DQEVENT",
+    "nr": 89,
+    "dir": "IOR",
+    "payload": 136,
+    "note": "guest driver serves queued events; device side emits VIRTIO_MEDIA_EVT_EVENT"
+   }
+  ],
+  "inputOutputMetadata": [
+   {
+    "ioctl": "VIDIOC_ENUMINPUT",
+    "nr": 31,
+    "dir": "IOWR",
+    "payload": 80
+   },
+   {
+    "ioctl": "VIDIOC_ENUMOUTPUT",
+    "nr": 38,
+    "dir": "IOWR",
+    "payload": 80
+   },
+   {
+    "ioctl": "VIDIOC_G_INPUT",
+    "nr": 6,
+    "dir": "IOR",
+    "payload": 4
+   },
+   {
+    "ioctl": "VIDIOC_S_INPUT",
+    "nr": 7,
+    "dir": "IOW",
+    "payload": 4
+   },
+   {
+    "ioctl": "VIDIOC_G_OUTPUT",
+    "nr": 46,
+    "dir": "IOR",
+    "payload": 4
+   },
+   {
+    "ioctl": "VIDIOC_S_OUTPUT",
+    "nr": 47,
+    "dir": "IOW",
+    "payload": 4
+   }
+  ]
+ },
+ "uapiSizes6_12_arm64": {
+  "source": "scripts/abi_probe_out.jsonl (clang, ARM64 LP64, 6.12.107 UAPI)",
+  "highlights": {
+   "struct v4l2_capability": 104,
+   "struct v4l2_format": 208,
+   "struct v4l2_fmtdesc": 64,
+   "struct v4l2_requestbuffers": 20,
+   "struct v4l2_buffer": 88,
+   "struct v4l2_plane": 64,
+   "struct v4l2_event": 136,
+   "struct v4l2_create_buffers": 256,
+   "struct v4l2_decoder_cmd": 72,
+   "struct v4l2_encoder_cmd": 40,
+   "struct v4l2_streamparm": 204,
+   "struct v4l2_selection": 64,
+   "struct v4l2_queryctrl": 68,
+   "struct v4l2_ext_controls": 32,
+   "VIDEO_MAX_PLANES": 8,
+   "m2mBufTypes": "single-planar M2M: stock userspace uses V4L2_BUF_TYPE_VIDEO_CAPTURE(1) and VIDEO_OUTPUT(2). The compiled host device rejects _MPLANE(9/10) and is exposed as V4L2_CAP_VIDEO_M2M."
+  }
+ },
+ "errorAndEventSequencing": {
+  "ioctlErrors": "resp.hdr.status carries the full negative Linux errno (e.g. -EINVAL=-22, -EAGAIN=-11). The guest driver propagates it to userspace.",
+  "sessionCorruption": "On fatal device-side session failure send VIRTIO_MEDIA_EVT_ERROR once, then stop using the session id; the guest driver closes it.",
+  "dqbufFlow": "1) userspace QBUF -> driver forwards metadata, device copies/validates and holds the buffer as queued; 2) device completes buffer -> VIRTIO_MEDIA_EVT_DQBUF; 3) driver completes userspace DQBUF (or already-blocked DQBUF ioctl). Ordering per queue per session is FIFO unless the buffer pipeline reorders (decoder reordering must be hidden inside the device; returned buffers still carry correct sequence/timestamps).",
+  "eosFlow": "Decoder drain: device receives DEC_CMD_STOP, finishes all output, sends remaining DQBUF events, then V4L2_EVENT_EOS (type V4L2_EVENT_EOS). Encoder flush likewise.",
+  "streamoff": "STREAMOFF must synchronously complete/cancel all queued buffers for that queue and report them DONE via the normal DQBUF path before the ioctl response (or in a bounded window right after), matching V4L2 semantics that STREAMOFF returns all owned buffers."
+ },
+ "provenance": {
+  "distinction": "Everything above marked with a struct name/number is ACTUAL upstream vendored driver behavior (verified against vendored source). The 'recommended' config values and 'must' implementation notes are PROPOSALS for the primary's VideoToolbox device, clearly separated here."
+ }
+}

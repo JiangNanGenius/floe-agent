@@ -1,0 +1,26 @@
+From 7a7f481cf315460db9e6aa8b7e4618658692ddf8 Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Sat, 3 Oct 2026 00:14:21 -0400
+Subject: [PATCH] kk: Report the 124 fragment input components Metal allows
+
+Generated-by: LLM
+---
+ src/kosmickrisp/vulkan/kk_physical_device.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/kosmickrisp/vulkan/kk_physical_device.c b/src/kosmickrisp/vulkan/kk_physical_device.c
+index 77ec948c40e..56d68f41095 100644
+--- a/src/kosmickrisp/vulkan/kk_physical_device.c
++++ b/src/kosmickrisp/vulkan/kk_physical_device.c
+@@ -635,7 +635,7 @@ kk_get_device_properties(
+       .maxGeometryOutputComponents = 128,
+       .maxGeometryOutputVertices = 1024,
+       .maxGeometryTotalOutputComponents = 1024,
+-      .maxFragmentInputComponents = 128,
++      .maxFragmentInputComponents = 124,
+       .maxFragmentOutputAttachments = KK_MAX_RTS,
+       .maxFragmentDualSrcAttachments = 1,
+       .maxFragmentCombinedOutputResources = KK_MAX_DESCRIPTORS,
+-- 
+2.54.0 (Apple Git-157)
+

@@ -1,0 +1,26 @@
+From a4195544fd6d7d4aacb20021dbe9f1cfd90a83ff Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Sat, 3 Oct 2026 02:47:33 -0400
+Subject: [PATCH] kk: Remove dead code after leaving SSA so no untyped value
+ reaches the Metal emitter
+
+Generated-by: LLM
+---
+ src/kosmickrisp/compiler/nir_to_msl.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/src/kosmickrisp/compiler/nir_to_msl.c b/src/kosmickrisp/compiler/nir_to_msl.c
+index 096f01ed999..a1b436a0333 100644
+--- a/src/kosmickrisp/compiler/nir_to_msl.c
++++ b/src/kosmickrisp/compiler/nir_to_msl.c
+@@ -2457,6 +2457,7 @@ msl_optimize_nir(struct nir_shader *nir)
+    NIR_PASS(_, nir, nir_convert_from_ssa, true, false);
+    NIR_PASS(_, nir, nir_trivialize_registers);
+    NIR_PASS(_, nir, nir_opt_copy_prop);
++   NIR_PASS(_, nir, nir_opt_dce);
+ 
+    return progress;
+ }
+-- 
+2.54.0 (Apple Git-157)
+

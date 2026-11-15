@@ -1,0 +1,87 @@
+From b7253a1f4fd1a5ed14a37c31db4ea0152d41eff6 Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Sat, 3 Oct 2026 19:14:44 -0400
+Subject: [PATCH] kk: Leave the thread limit of emulation passes dispatched
+ with indirect thread counts at Metal's default
+
+Generated-by: LLM
+---
+ src/kosmickrisp/bridge/mtl_compiler.m |  3 ++-
+ src/kosmickrisp/vulkan/kk_shader.c    | 14 +++-----------
+ src/kosmickrisp/vulkan/kk_shader.h    |  2 --
+ 3 files changed, 5 insertions(+), 14 deletions(-)
+
+diff --git a/src/kosmickrisp/bridge/mtl_compiler.m b/src/kosmickrisp/bridge/mtl_compiler.m
+index a5a18e72a70..9e1f90d7391 100644
+--- a/src/kosmickrisp/bridge/mtl_compiler.m
++++ b/src/kosmickrisp/bridge/mtl_compiler.m
+@@ -108,7 +108,8 @@
+ 
+       MTL4ComputePipelineDescriptor *desc = [[MTL4ComputePipelineDescriptor new] autorelease];
+       desc.computeFunctionDescriptor = (MTL4FunctionDescriptor *)function;
+-      desc.maxTotalThreadsPerThreadgroup = max_total_threads_per_threadgroup;
++      if (max_total_threads_per_threadgroup)
++         desc.maxTotalThreadsPerThreadgroup = max_total_threads_per_threadgroup;
+ 
+       NSError *error;
+       id<MTLComputePipelineState> pipeline = [comp newComputePipelineStateWithDescriptor:desc compilerTaskOptions:nil
+diff --git a/src/kosmickrisp/vulkan/kk_shader.c b/src/kosmickrisp/vulkan/kk_shader.c
+index 65284e94c07..e1e7f2a1cd0 100644
+--- a/src/kosmickrisp/vulkan/kk_shader.c
++++ b/src/kosmickrisp/vulkan/kk_shader.c
+@@ -1885,9 +1885,6 @@ gather_graphics_pipeline_create_info(
+ 
+       info->vs.additional_stages_bits |= BITFIELD_BIT(stage);
+ 
+-      if (s->info.stage == MESA_SHADER_TESS_CTRL)
+-         info->vs.tess_local_thread_size = s->info.tess.tcs_output_patch_size;
+-
+       if (s->info.stage == MESA_SHADER_GEOMETRY) {
+          kk_msl_copy(&vs->gs_main, &s->gs_main);
+          if (s->info.gs.count_words)
+@@ -2023,11 +2020,7 @@ kk_compile_graphics_pipeline(struct kk_device *device, struct kk_shader *vs)
+    uint32_t stages_bits = vs->info.vs.additional_stages_bits;
+    pipe->gfx.pre_render_count = util_bitcount(stages_bits) - 1u;
+    for (uint32_t i = 0u; i < pipe->gfx.pre_render_count; ++i) {
+-      uint32_t local_thread_size = vs_stage == MESA_SHADER_TESS_CTRL
+-                                      ? vs->info.vs.tess_local_thread_size
+-                                      : KK_POLY_WG_SIZE;
+-      result = kk_compile_compute_pipeline(device, &vs->msl_data[vs_stage],
+-                                           local_thread_size,
++      result = kk_compile_compute_pipeline(device, &vs->msl_data[vs_stage], 0u,
+                                            &pipe->gfx.pre_render[i]);
+ 
+       if (result != VK_SUCCESS)
+@@ -2040,14 +2033,13 @@ kk_compile_graphics_pipeline(struct kk_device *device, struct kk_shader *vs)
+    if (vs->info.vs.additional_stages_bits &
+        BITFIELD_BIT(MESA_SHADER_GEOMETRY)) {
+       result = kk_compile_compute_pipeline(
+-         device, &vs->gs_main, KK_POLY_WG_SIZE,
++         device, &vs->gs_main, 0u,
+          &pipe->gfx.pre_render[pipe->gfx.pre_render_count++]);
+       if (result != VK_SUCCESS)
+          return VK_ERROR_INVALID_SHADER_NV;
+ 
+       if (vs->info.vs.gs.count_words) {
+-         result = kk_compile_compute_pipeline(device, &vs->gs_count,
+-                                              KK_POLY_WG_SIZE,
++         result = kk_compile_compute_pipeline(device, &vs->gs_count, 0u,
+                                               &pipe->gfx.gs_count);
+          if (result != VK_SUCCESS)
+             return VK_ERROR_INVALID_SHADER_NV;
+diff --git a/src/kosmickrisp/vulkan/kk_shader.h b/src/kosmickrisp/vulkan/kk_shader.h
+index 3dbf67d667c..d2a19b8b233 100644
+--- a/src/kosmickrisp/vulkan/kk_shader.h
++++ b/src/kosmickrisp/vulkan/kk_shader.h
+@@ -63,8 +63,6 @@ struct kk_shader_info {
+           * serialization. */
+          uint32_t additional_stages_bits;
+ 
+-         uint32_t tess_local_thread_size;
+-
+          /* Data needed to start render pass and bind pipeline. */
+          uint32_t attribs_read;
+          uint32_t sample_count;
+-- 
+2.54.0 (Apple Git-157)
+

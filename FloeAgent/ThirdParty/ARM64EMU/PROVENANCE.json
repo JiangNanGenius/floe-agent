@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "upstreamRepository": "https://github.com/sylirre/arm64emu-system",
   "upstreamCommit": "55c8128cb02d8ba3809f6579f7c6d316537e0546",
-  "checkpoint": "A6 + immutable CRC tables + A9 five-file slot optimization + resident live I/O and project roots + ABI3 optional virtio-mem and Venus GPU",
+  "checkpoint": "A6 + immutable CRC tables + A9 five-file slot optimization + resident live I/O and project roots + ABI3 optional virtio-mem and Venus GPU + ABI4 standard virtio-media video (decoder slot 28, encoder slot 29) and typed native-codec broker",
   "checkpointArchiveSHA256": "3bbcbaac69b092757f6fad1a853659904c183ae0948a79e446cfe30ae73b603c",
   "license": {
     "Source": "Apache-2.0",
@@ -43,6 +43,7 @@
     "Source/src/devices/virtio_gpu.c",
     "Source/src/memory_regions.c",
     "Source/src/devices/virtio_mem.c",
+    "Source/src/devices/virtio_media.c",
     "Bridge/fvgpu_virtio_backend_adapter.c"
   ],
   "capabilities": {
@@ -64,9 +65,20 @@
     "projectConsoleGenerationReset": true,
     "onlineMemory": true,
     "venusVulkanGPU": true,
-    "liveGPUBudget": true
+    "liveGPUBudget": true,
+    "standardV4L2Video": true,
+    "videoDecoderEncoderNodes": 2,
+    "typedNativeCodecBroker": true,
+    "videoIndependentOfGPU": true,
+    "abiVersions": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "gpuAllowsCPUFallback": true
   },
-  "integrationStatus": "ABI3 native engine integrated; existing images retain CPU/fixed-RAM behavior. App and updated-image acceptance recorded separately.",
+  "integrationStatus": "ABI4 video source is integrated on the current lifetime/graphics engine; ABI1-3 layouts and the ABI3 GPU CPU-fallback contract are preserved. Actual host compile/link, guest module load, codec/pixel behavior and App acceptance remain separate.",
   "files": [
     {
       "path": "Bridge/MPL-2.0.txt",
@@ -86,7 +98,11 @@
     },
     {
       "path": "Bridge/embedded_internal.h",
-      "sha256": "f8b4b91b33c903b7eb85d999a2913a6a88e435495a2d10b0b718a734ed1dbba4"
+      "sha256": "3c345900a2baf31e5388350139aaabeb182fcc0b489b7662ebbd978c9525c67f"
+    },
+    {
+      "path": "Bridge/fvgpu_virtio_backend_adapter.c",
+      "sha256": "26006ed90ea0862c7776d6562aa81e26cc3f15979f8fc61d43ffe753f0076f43"
     },
     {
       "path": "Bridge/host_hooks.h",
@@ -102,19 +118,19 @@
     },
     {
       "path": "Bridge/ownership.c",
-      "sha256": "413e70b15486edbea9da71c4bcb221f291244dfa12057723dd04e0e833ea1c72"
+      "sha256": "22cf9cd6d459569c3a2607d33b0240aa9006df1533b8a01a7a3287f4ca3ee314"
     },
     {
       "path": "Bridge/parallel_runtime.c",
-      "sha256": "70f029760d97f4c4b04c865f60ad9b4693b238f4f5a55595e3e2e3ca8af38be1"
+      "sha256": "ebb267f5ac0f8f85ab53b50bf2f8f83e10884e6992612ec18b222b86ef8b8309"
     },
     {
       "path": "Bridge/parallel_runtime.h",
-      "sha256": "008a36c3e4b8932314211cfa7d96ca80b3ce8925e1eee0d73b0dc9bd00e7f4cc"
+      "sha256": "a555673855f9fd1e09a298bd603980e9d4e6ce97beab22bd2fc3863144489f57"
     },
     {
       "path": "Bridge/runtime.c",
-      "sha256": "52f428bd298755375736c0bfcb8b413888c98eec6dd1f6a767a534305a684bf3"
+      "sha256": "02da8a298976084d7622bea87e0a1fd9f2a3232a5625600d8c11e92944555ffd"
     },
     {
       "path": "Bridge/virtio_gpu_backend.h",
@@ -123,6 +139,10 @@
     {
       "path": "PrivacyInfo.xcprivacy",
       "sha256": "604b8badc38d2603eb9ea79aeb9058d416f4be8c7d569a0eb158b6b211c30151"
+    },
+    {
+      "path": "README.md",
+      "sha256": "41c0d1157acce0191f9531e5305f7ee3312e056c8b16c18585a612de82948e46"
     },
     {
       "path": "Source/LICENSE",
@@ -158,7 +178,7 @@
     },
     {
       "path": "Source/src/devices.h",
-      "sha256": "4ffdd1ba7f63815d032eedf02b1ceca4dcd5ae6e00c49fbbc883f2bb53008a06"
+      "sha256": "aa4b967dfc09e687c5df5549e07183a35249ed0c6b9467a8b9944bdea94dd57d"
     },
     {
       "path": "Source/src/devices/fwcfg.c",
@@ -206,11 +226,11 @@
     },
     {
       "path": "Source/src/devices/virtio_gpu.c",
-      "sha256": "33098772bb84d7b902b5f72867277307ac7077ef0c5ea4cf6dcbde4d73a7abd4"
+      "sha256": "095421fb105e55cc902d47e011f081fe8950669f4ea28ad393397a8ac7d6151a"
     },
     {
       "path": "Source/src/devices/virtio_gpu.h",
-      "sha256": "302fbeae6733867249d99ed7065abde9c371172e352107e47c664a2926403c9e"
+      "sha256": "70dc82f44e53dd6d4b51fe9581ab20cd19d1d1ff70799ceb05f71eafc6bd1d90"
     },
     {
       "path": "Source/src/devices/virtio_gpu_protocol.h",
@@ -219,6 +239,18 @@
     {
       "path": "Source/src/devices/virtio_gpu_shm.h",
       "sha256": "8691931696ab287d93f40a62cae6f771e7a385cfdc420a5923abd5f01b68a35d"
+    },
+    {
+      "path": "Source/src/devices/virtio_media.c",
+      "sha256": "5124b763eecb4091e1b1680f063648dca66f5c174f7635cb900481f2b204cf62"
+    },
+    {
+      "path": "Source/src/devices/virtio_media.h",
+      "sha256": "13ad05381b514f4515d793bb9f4a9a3f9eb614cb6004398d3f93625a3ed3e188"
+    },
+    {
+      "path": "Source/src/devices/virtio_media_wire.h",
+      "sha256": "cc2bbe50a51df857778988895783b59986607df0bbb754c5497173e22b4eceb9"
     },
     {
       "path": "Source/src/devices/virtio_mem.c",
@@ -278,7 +310,7 @@
     },
     {
       "path": "Source/src/machine.h",
-      "sha256": "f43bab186cdc32885f431b18c0615ec29e1e983424ab67b3f0069c179bd5252f"
+      "sha256": "6a69d5d8e84091c66fc3f9c5dff902e62c70ca0fa58da46a36d346fef8aa1c07"
     },
     {
       "path": "Source/src/memory.c",
@@ -338,7 +370,7 @@
     },
     {
       "path": "Source/src/platform.c",
-      "sha256": "7b776ed92387b920bb14154d539afa37fc92c5fbffb98f116e23ff0799764146"
+      "sha256": "ebef3b40c14dad66f2b1811f7a63aed729d6e2eae3860ed64dfdc831304d1a4f"
     },
     {
       "path": "Source/src/sysreg.c",
@@ -489,20 +521,20 @@
       "sha256": "ac8c2f8e1347796f24311e4280f35bebc65da5561f1176b100899d9be0df3e18"
     },
     {
+      "path": "Sources/33_gpu_backend_adapter.c",
+      "sha256": "39d2a5cd250f36fd3f6d97038f4f2e4bfe874ca7270fa605c73d6c2b1c23a9dd"
+    },
+    {
+      "path": "Sources/34_virtio_media.c",
+      "sha256": "ade0105a82210a52919ff6490b03d04e59ad7c83530d498ed5a4de97ae98de55"
+    },
+    {
       "path": "Tools/generate_crc32_tables.py",
       "sha256": "6253ac38922b9e120ea6567ab180dcfde3ab59c95419edd253e71a4b6565938a"
     },
     {
       "path": "include/floe_arm64emu.h",
-      "sha256": "2bfb84fd20a627a20de4424a87e19050e98d03096b34c0da098d7aefaf532501"
-    },
-    {
-      "path": "Bridge/fvgpu_virtio_backend_adapter.c",
-      "sha256": "c7f6d7f68eb2f1e73e69cc828474561775340381ebeeee306c7e7bf8eca76e9e"
-    },
-    {
-      "path": "Sources/33_gpu_backend_adapter.c",
-      "sha256": "39d2a5cd250f36fd3f6d97038f4f2e4bfe874ca7270fa605c73d6c2b1c23a9dd"
+      "sha256": "f37cf8e3c551d362f94e250fbdfb537718489a71e99d32ad8567ff1b6370df99"
     }
   ],
   "patches": [
@@ -720,13 +752,13 @@
   ],
   "capabilityMeaning": "Implemented C ABI surface; not a claim of real Linux or App runtime acceptance.",
   "componentQualification": {
-    "translationUnits": 33,
-    "abiVersion": 3,
-    "abiExports": 18,
+    "translationUnits": 35,
+    "abiVersion": 4,
+    "abiExports": 31,
     "targets": [
       "arm64 iOS26 device",
       "arm64 iOS26 simulator",
-      "arm64 macOS13"
+      "arm64 macOS15"
     ],
     "nativeUnits": [
       "9P wire portability",
@@ -735,7 +767,8 @@
       "usernet DNS refusal with valid IP checksum"
     ],
     "realLinuxIO": false,
-    "productionAppBackendSwitched": false
+    "productionAppBackendSwitched": false,
+    "note": "Source contract only. The historical 33-unit/ABI3 native component qualification remains separate; no ABI4 host link, guest module execution or App acceptance is claimed."
   },
   "localIntegrationNotes": [
     "Fixed slot shares and hvc0 supervisor + hvc1..hvc8 project data channels.",
@@ -755,13 +788,19 @@
     "Bridge/fvgpu_virtio_backend_adapter.c": "Apache-2.0"
   },
   "sourceIntegration": {
-    "translationUnits": 34,
+    "translationUnits": 35,
     "adapterOwner": "FloeARM64Engine",
     "adapterPath": "Bridge/fvgpu_virtio_backend_adapter.c",
     "wrapperPath": "Sources/33_gpu_backend_adapter.c",
-    "adapterSHA256": "c7f6d7f68eb2f1e73e69cc828474561775340381ebeeee306c7e7bf8eca76e9e",
+    "adapterSHA256": "26006ed90ea0862c7776d6562aa81e26cc3f15979f8fc61d43ffe753f0076f43",
     "sessionAPIOwner": "FloeVirtualGPU",
     "adapterLicense": "Apache-2.0",
-    "existingComponentQualification": "The 33-unit qualification below predates adapter ownership migration and remains historical evidence."
+    "existingComponentQualification": "The 33-unit/ABI3 component qualification remains historical evidence; ABI4 source, host link and guest module execution are separate future gates.",
+    "abiVersion": 4,
+    "headerExports": 31,
+    "videoDevicePath": "Source/src/devices/virtio_media.c",
+    "videoWirePath": "Source/src/devices/virtio_media_wire.h",
+    "videoWrapperPath": "Sources/34_virtio_media.c",
+    "videoHostPackage": "Modules/FloeLinuxVideo (FloeLinuxVideoNative/Host/Broker)"
   }
 }

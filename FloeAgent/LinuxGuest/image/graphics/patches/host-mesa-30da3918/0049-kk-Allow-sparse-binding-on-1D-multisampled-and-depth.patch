@@ -1,0 +1,102 @@
+From edb289bc4c87ee9d298727d2e7c06995804927ca Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Fri, 2 Oct 2026 21:33:00 -0400
+Subject: [PATCH] kk: Allow sparse binding on 1D, multisampled and
+ depth/stencil images
+
+Generated-by: LLM
+---
+ src/kosmickrisp/vulkan/kk_image.c | 47 ++++++++++++++++++++++---------
+ 1 file changed, 33 insertions(+), 14 deletions(-)
+
+diff --git a/src/kosmickrisp/vulkan/kk_image.c b/src/kosmickrisp/vulkan/kk_image.c
+index 39bc65d00e9..47f5c624219 100644
+--- a/src/kosmickrisp/vulkan/kk_image.c
++++ b/src/kosmickrisp/vulkan/kk_image.c
+@@ -221,22 +221,30 @@ kk_image_max_dimension(const struct kk_physical_device *pdev,
+ static bool
+ kk_sparse_tile_px(struct kk_physical_device *pdev, VkFormat format,
+                   VkImageType type, VkSampleCountFlagBits samples,
+-                  VkImageTiling tiling, struct mtl_size *tile_px)
++                  VkImageTiling tiling, bool residency,
++                  struct mtl_size *tile_px)
+ {
+-   if (!KK_EXPERIMENTAL(SPARSE) || type != VK_IMAGE_TYPE_2D ||
+-       samples != VK_SAMPLE_COUNT_1_BIT || tiling != VK_IMAGE_TILING_OPTIMAL ||
+-       vk_format_is_depth_or_stencil(format) ||
+-       vk_format_get_plane_count(format) > 1)
++   if (!KK_EXPERIMENTAL(SPARSE) || tiling != VK_IMAGE_TILING_OPTIMAL ||
++       vk_format_get_plane_count(format) > 1 ||
++       !(pdev->info.supported_sample_counts & samples))
+       return false;
+ 
++   if (type == VK_IMAGE_TYPE_3D ||
++       (residency &&
++        (type != VK_IMAGE_TYPE_2D || samples != VK_SAMPLE_COUNT_1_BIT ||
++         vk_format_is_depth_or_stencil(format))))
++      return false;
++
++   enum mtl_texture_type mtl_type =
++      samples > 1 ? MTL_TEXTURE_TYPE_2D_MULTISAMPLE : MTL_TEXTURE_TYPE_2D;
++
+    const struct kk_va_format *va_format =
+       kk_get_va_format(vk_format_to_pipe_format(format));
+    if (va_format == NULL)
+       return false;
+ 
+-   *tile_px = mtl_sparse_page_tile_size(pdev->mtl_dev_handle,
+-                                        MTL_TEXTURE_TYPE_2D,
+-                                        va_format->mtl_pixel_format, 1u);
++   *tile_px = mtl_sparse_page_tile_size(pdev->mtl_dev_handle, mtl_type,
++                                        va_format->mtl_pixel_format, samples);
+    return tile_px->x > 0 && tile_px->y > 0;
+ }
+ 
+@@ -333,9 +341,11 @@ kk_GetPhysicalDeviceImageFormatProperties2(
+    struct mtl_size sparse_tile_px;
+    if ((pImageFormatInfo->flags & (VK_IMAGE_CREATE_SPARSE_BINDING_BIT |
+                                    VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT)) &&
+-       !kk_sparse_tile_px(pdev, pImageFormatInfo->format,
+-                          pImageFormatInfo->type, VK_SAMPLE_COUNT_1_BIT,
+-                          pImageFormatInfo->tiling, &sparse_tile_px))
++       !kk_sparse_tile_px(
++          pdev, pImageFormatInfo->format, pImageFormatInfo->type,
++          VK_SAMPLE_COUNT_1_BIT, pImageFormatInfo->tiling,
++          pImageFormatInfo->flags & VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT,
++          &sparse_tile_px))
+       return VK_ERROR_FORMAT_NOT_SUPPORTED;
+ 
+    /* From the Vulkan 1.3.279 spec:
+@@ -507,9 +517,17 @@ kk_GetPhysicalDeviceImageFormatProperties2(
+        (pImageFormatInfo->usage & VK_IMAGE_USAGE_HOST_TRANSFER_BIT_EXT))
+       return VK_ERROR_FORMAT_NOT_SUPPORTED;
+ 
+-   if (pImageFormatInfo->flags & (VK_IMAGE_CREATE_SPARSE_BINDING_BIT |
+-                                  VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT))
++   if (pImageFormatInfo->flags & VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT) {
+       sampleCounts &= VK_SAMPLE_COUNT_1_BIT;
++   } else if (pImageFormatInfo->flags & VK_IMAGE_CREATE_SPARSE_BINDING_BIT) {
++      u_foreach_bit(s, sampleCounts) {
++         struct mtl_size tile;
++         if (!kk_sparse_tile_px(pdev, pImageFormatInfo->format,
++                                pImageFormatInfo->type, 1u << s,
++                                pImageFormatInfo->tiling, false, &tile))
++            sampleCounts &= ~(1u << s);
++      }
++   }
+ 
+    pImageFormatProperties->imageFormatProperties = (VkImageFormatProperties){
+       .maxExtent = maxExtent,
+@@ -577,7 +595,8 @@ kk_GetPhysicalDeviceSparseImageFormatProperties2(
+ 
+    struct mtl_size tile_px;
+    if (!kk_sparse_tile_px(pdev, pFormatInfo->format, pFormatInfo->type,
+-                          pFormatInfo->samples, pFormatInfo->tiling, &tile_px))
++                          pFormatInfo->samples, pFormatInfo->tiling, true,
++                          &tile_px))
+       return;
+ 
+    vk_outarray_append_typed(VkSparseImageFormatProperties2, &out, props)
+-- 
+2.54.0 (Apple Git-157)
+

@@ -1,0 +1,101 @@
+From 9153347a0cfae72605b2265505bc77cad61d3f96 Mon Sep 17 00:00:00 2001
+From: Broyojo <dha@xoba.com>
+Date: Sat, 3 Oct 2026 02:27:05 -0400
+Subject: [PATCH] kk: Keep the residency code of sparse samples out of custom
+ border mixing
+
+Generated-by: LLM
+---
+ .../vulkan/kk_nir_lower_custom_border.c       | 49 ++++++++++++++++++-
+ 1 file changed, 48 insertions(+), 1 deletion(-)
+
+diff --git a/src/kosmickrisp/vulkan/kk_nir_lower_custom_border.c b/src/kosmickrisp/vulkan/kk_nir_lower_custom_border.c
+index 232fc1d2ecb..c9c8c7d6cf4 100644
+--- a/src/kosmickrisp/vulkan/kk_nir_lower_custom_border.c
++++ b/src/kosmickrisp/vulkan/kk_nir_lower_custom_border.c
+@@ -32,6 +32,40 @@ has_custom_border(nir_builder *b, nir_tex_instr *tex)
+                                   1, nir_type_bool1, false, false);
+ }
+ 
++static bool
++uses_are_alu(nir_def *def)
++{
++   nir_foreach_use_including_if(use, def) {
++      if (nir_src_is_if(use) ||
++          nir_src_use_instr(use)->type != nir_instr_type_alu)
++         return false;
++   }
++   return true;
++}
++
++static void
++rewrite_sparse_uses(nir_builder *b, nir_def *def, nir_def *value,
++                    nir_def *code)
++{
++   nir_foreach_use_safe(use, def) {
++      nir_alu_instr *alu = nir_instr_as_alu(nir_src_use_instr(use));
++      nir_alu_src *src = container_of(use, nir_alu_src, src);
++      unsigned comps = nir_ssa_alu_instr_src_components(alu, src - alu->src);
++
++      b->cursor = nir_before_instr(&alu->instr);
++      nir_def *chans[NIR_MAX_VEC_COMPONENTS];
++      for (unsigned c = 0; c < comps; c++) {
++         unsigned swz = src->swizzle[c];
++         chans[c] = swz == value->num_components ? code
++                                                 : nir_channel(b, value, swz);
++      }
++
++      nir_src_rewrite(&src->src, nir_vec(b, chans, comps));
++      for (unsigned c = 0; c < NIR_MAX_VEC_COMPONENTS; c++)
++         src->swizzle[c] = c < comps ? c : 0;
++   }
++}
++
+ static bool
+ lower(nir_builder *b, nir_tex_instr *tex, UNUSED void *_data)
+ {
+@@ -42,12 +76,18 @@ lower(nir_builder *b, nir_tex_instr *tex, UNUSED void *_data)
+    if (tex->is_shadow)
+       return false;
+ 
++   if (tex->is_sparse && !uses_are_alu(&tex->def))
++      return false;
++
+    b->cursor = nir_after_instr(&tex->instr);
+    nir_def *has_custom = has_custom_border(b, tex);
+ 
+    nir_instr *orig = nir_instr_clone(b->shader, &tex->instr);
+    nir_builder_instr_insert(b, orig);
+    nir_def *clamp_to_1 = &nir_instr_as_tex(orig)->def;
++   nir_def *code = tex->is_sparse ? nir_channel(b, clamp_to_1, 4) : NULL;
++   if (tex->is_sparse)
++      clamp_to_1 = nir_trim_vector(b, clamp_to_1, 4);
+ 
+    nir_push_if(b, has_custom);
+    nir_def *replaced = NULL;
+@@ -58,6 +98,8 @@ lower(nir_builder *b, nir_tex_instr *tex, UNUSED void *_data)
+ 
+       nir_tex_instr *tex_0 = nir_instr_as_tex(clone_instr);
+       nir_def *clamp_to_0 = &tex_0->def;
++      if (tex->is_sparse)
++         clamp_to_0 = nir_trim_vector(b, clamp_to_0, 4);
+ 
+       tex_0->backend_flags |= KK_TEXTURE_FLAG_CLAMP_TO_0;
+ 
+@@ -94,7 +136,12 @@ lower(nir_builder *b, nir_tex_instr *tex, UNUSED void *_data)
+ 
+    /* Put it together with a phi */
+    nir_def *phi = nir_if_phi(b, replaced, clamp_to_1);
+-   nir_def_replace(&tex->def, phi);
++   if (tex->is_sparse) {
++      rewrite_sparse_uses(b, &tex->def, phi, code);
++      nir_instr_remove(&tex->instr);
++   } else {
++      nir_def_replace(&tex->def, phi);
++   }
+    return true;
+ }
+ 
+-- 
+2.54.0 (Apple Git-157)
+

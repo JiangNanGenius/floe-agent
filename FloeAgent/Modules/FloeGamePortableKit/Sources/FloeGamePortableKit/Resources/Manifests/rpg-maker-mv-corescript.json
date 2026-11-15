@@ -1,0 +1,42 @@
+{
+  "artifactSHA256": null,
+  "buildKind": "mvTemplateAssembly",
+  "distribution": {
+    "conditions": [
+      "keep MIT notices",
+      "no RTP or editor assets"
+    ],
+    "eligibility": "eligible",
+    "profile": "floe-provided-permissive-runtime",
+    "sourceCommit": "182e31449707ba7e406db0485c44c2a9d11e2dcd",
+    "sourceURL": "https://github.com/rpgtkoolmv/corescript"
+  },
+  "engine": "rpgMakerMV",
+  "id": "rpg-maker-mv-corescript",
+  "license": "MIT",
+  "licenseFiles": [
+    "licenses/RPG-MAKER-MV-CORESCRIPT-MIT.txt",
+    "licenses/PIXI-MIT.txt",
+    "licenses/PIXI-TILEMAP-MIT.txt",
+    "licenses/PIXI-PICTURE-MIT.txt",
+    "licenses/FPSMETER-MIT.txt",
+    "licenses/LZ-STRING-MIT.txt",
+    "licenses/IPHONE-INLINE-VIDEO-MIT.txt"
+  ],
+  "notes": [
+    "Official KADOKAWA CORPORATION./YOJI OJIMA RPG Maker MV CoreScript community v1.3b.",
+    "The dist files are concatenated from the pinned module order with exact SHA-256 checks; no RTP, editor asset or MZ runtime is included.",
+    "Vendored web libraries retain their own MIT notices.",
+    "MIT-only path; no LGPL component and no change to the prepared runtime.",
+    "MIT-only path; no LGPL component and no change to the prepared runtime.",
+    "MIT-only path; no LGPL component and no change to the prepared runtime.",
+    "MIT-only path; no LGPL component and no change to the prepared runtime.",
+    "MIT-only path; no LGPL component and no change to the prepared runtime.",
+    "MIT-only path; no LGPL component and no change to the prepared runtime."
+  ],
+  "prepareScript": "prepare_corescript.py",
+  "revision": "182e31449707ba7e406db0485c44c2a9d11e2dcd",
+  "schemaVersion": 1,
+  "upstreamURL": "https://github.com/rpgtkoolmv/corescript",
+  "version": "1.3b"
+}

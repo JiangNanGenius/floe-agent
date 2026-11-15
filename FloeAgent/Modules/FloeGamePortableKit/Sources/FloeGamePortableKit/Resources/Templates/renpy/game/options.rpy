@@ -1,0 +1,9 @@
+define config.name = _("Floe Lantern")
+define config.version = "1.0"
+define build.name = "floe-lantern"
+define config.save_directory = "floe-lantern-1"
+define config.has_sound = True
+define config.has_music = False
+define config.has_voice = False
+define config.main_menu_music = None
+define config.developer = False
