@@ -7,6 +7,7 @@ import com.floe.android.feature.conversation.ApprovalModeUi
 import com.floe.android.feature.conversation.ApprovalTargetUi
 import com.floe.android.feature.conversation.AttachmentChipUi
 import com.floe.android.feature.conversation.AttachmentKindUi
+import com.floe.android.feature.conversation.BackgroundJobUi
 import com.floe.android.feature.conversation.CapabilityChipUi
 import com.floe.android.feature.conversation.RunOutputCardUi
 import com.floe.android.feature.conversation.ChecklistDetailUi
@@ -18,6 +19,7 @@ import com.floe.android.feature.conversation.ChildRunUi
 import com.floe.android.feature.conversation.ConversationListItemUi
 import com.floe.android.feature.conversation.ConversationSessionToken
 import com.floe.android.contracts.EventCursor
+import com.floe.android.feature.conversation.FloeRunStateLocalizer
 import com.floe.android.feature.conversation.GoalUi
 import com.floe.android.feature.conversation.GoalCriterionRowUi
 import com.floe.android.feature.conversation.GoalDetailUi
@@ -63,6 +65,13 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.longOrNull
+
+/**
+ * Stable prefix of the ONE trusted dependency-lifecycle system message written
+ * by `RuntimeFacadeJobResume.dependencyResumeNote`. It is never displayed; it
+ * is the closed discriminator between that notice and any other system row.
+ */
+private const val BACKGROUND_LIFECYCLE_PREFIX = "[Floe background work]"
 
 /**
  * Incremental, host-owned [ThreadUiState] projection builder. One builder
@@ -121,6 +130,15 @@ class ThreadProjectionBuilder internal constructor(
     private var hasLoaded: Boolean = false
     private val userMessages = LinkedHashMap<String, MessageUi>()
     private val assistantMessages = LinkedHashMap<String, MessageUi>()
+    /** Trusted system-role lifecycle rows (never rendered as human speech). */
+    private val systemMessages = LinkedHashMap<String, MessageUi>()
+    /** THIS task's durable finite jobs (bounded, newest first). */
+    private val backgroundJobs = LinkedHashMap<String, BackgroundJobUi>()
+    private var backgroundJobsLoaded = false
+    private var backgroundJobsLoading = false
+    private var backgroundJobsErrorCode: String? = null
+    private var backgroundJobsTruncated = false
+    private var backgroundJobsActionErrorCode: String? = null
     private val runEvents = LinkedHashMap<String, MutableList<RunEventUi>>()
     private val runEventBytes = mutableMapOf<String, MutableMap<Int, Int>>()
     private val runRows = LinkedHashMap<String, RunRowUi>()
@@ -804,6 +822,7 @@ class ThreadProjectionBuilder internal constructor(
             when (message.role) {
                 MessageRoleUi.USER -> userMessages[message.id] = message
                 MessageRoleUi.ASSISTANT -> assistantMessages[message.id] = message
+                MessageRoleUi.SYSTEM -> systemMessages[message.id] = message
                 else -> Unit
             }
         }
@@ -818,6 +837,7 @@ class ThreadProjectionBuilder internal constructor(
     internal fun applyMessageWindow(page: ConversationWire.MessagePage) {
         userMessages.clear()
         assistantMessages.clear()
+        systemMessages.clear()
         applyMessagePage(page, earlier = false)
         earlierCursor = page.earlierCursor
         hasEarlierMessages = page.hasEarlier
@@ -1759,12 +1779,54 @@ class ThreadProjectionBuilder internal constructor(
     fun cachedRunOutputCard(runID: String, outputID: String): RunOutputCardUi? =
         runOutputsByRun[runID]?.firstOrNull { it.outputId == outputID }
 
+    /** Replace the bounded THIS-task job projection from one real host reply. */
+    internal fun applyBackgroundJobs(
+        jobs: List<BackgroundJobUi>,
+        truncated: Boolean,
+        errorCode: String?,
+    ) {
+        backgroundJobsListingReceived()
+        backgroundJobs.clear()
+        for (job in jobs) backgroundJobs[job.jobId] = job
+        backgroundJobsTruncated = truncated
+        backgroundJobsErrorCode = errorCode
+        backgroundJobsLoaded = errorCode == null
+        backgroundJobsLoading = false
+        backgroundJobsActionErrorCode = null
+    }
+
+    /** Mark a bounded host read in flight (the previous rows stay visible). */
+    internal fun backgroundJobsListingStarted() {
+        backgroundJobsLoading = true
+        backgroundJobsErrorCode = null
+    }
+
+    /** A read settled without a page: keep the last known rows, show the code. */
+    internal fun backgroundJobsListingReceived() {
+        backgroundJobsLoading = false
+    }
+
+    internal fun applyBackgroundJobsFailure(code: String) {
+        backgroundJobsLoading = false
+        backgroundJobsErrorCode = code
+        backgroundJobsLoaded = false
+    }
+
+    internal fun applyBackgroundJobActionFailure(code: String) {
+        backgroundJobsActionErrorCode = code
+    }
+
+    internal fun clearBackgroundJobActionError() {
+        backgroundJobsActionErrorCode = null
+    }
+
     /** Build the complete immutable snapshot. */
     fun build(): ThreadUiState {
         val voice = voiceAvailability()
         snapshotCounter += 1
         val rows = ArrayList<TimelineRowUi>()
-        val messages = (userMessages.values + assistantMessages.values)
+        val messages = (userMessages.values + assistantMessages.values
+            + systemMessages.values)
             .sortedWith(compareBy<MessageUi> { it.createdAtEpochMillis ?: Long.MIN_VALUE }
                 .thenBy { if (it.createdAtEpochMillis != null) it.id else "" })
         val projectedEventRuns = mutableSetOf<String>()
@@ -1813,6 +1875,16 @@ class ThreadProjectionBuilder internal constructor(
                         ),
                     )
                 }
+                MessageRoleUi.SYSTEM -> {
+                    // Only the trusted dependency-lifecycle notice (written by
+                    // RuntimeFacadeJobResume with this stable prefix) becomes a
+                    // background-work row. Other system rows keep their
+                    // previous non-timeline behavior instead of being
+                    // mislabeled as background work.
+                    if (message.text.startsWith(BACKGROUND_LIFECYCLE_PREFIX)) {
+                        rows.add(TimelineRowUi.SystemNotice(message))
+                    }
+                }
                 else -> Unit
             }
         }
@@ -1846,10 +1918,18 @@ class ThreadProjectionBuilder internal constructor(
                 reasoningContinuationHere.truncated)
         val continuationReason = selected?.let { runReasons[it] }
             ?.takeIf { it.state == selectedState }?.reason
-        val waitingForJobs = selectedState == "checkpointed" &&
-            (continuationReason == "awaiting.finite.job" ||
-                continuationReason?.startsWith("awaiting.finite.job:") == true)
-        val retryable = selectedState != null && selectedState in RETRYABLE_STATES && !waitingForJobs
+        val waitingForJobs = FloeRunStateLocalizer.isAwaitingBackgroundJobs(
+            selectedState, continuationReason)
+        val jobList = backgroundJobs.values.toList()
+        val dependenciesSettled = waitingForJobs &&
+            !backgroundJobsTruncated &&
+            FloeRunStateLocalizer.requiredDependenciesSettled(
+                jobList, selected, backgroundJobsLoaded)
+        // Continue stays hidden while a required edge is still pending; once
+        // every edge is durably terminal an explicit Continue may reopen the
+        // same run even if the automatic continuation was fenced.
+        val retryable = selectedState != null && selectedState in RETRYABLE_STATES &&
+            (!waitingForJobs || dependenciesSettled)
         return ThreadUiState(
             session = session,
             taskTitle = taskTitle,
@@ -1866,6 +1946,13 @@ class ThreadProjectionBuilder internal constructor(
             isRunning = running,
             isDraining = false,
             selectedRunWaitingForJobs = waitingForJobs,
+            selectedRunDependenciesSettled = dependenciesSettled,
+            backgroundJobs = jobList,
+            backgroundJobsLoaded = backgroundJobsLoaded,
+            backgroundJobsLoading = backgroundJobsLoading,
+            backgroundJobsErrorCode = backgroundJobsErrorCode,
+            backgroundJobsTruncated = backgroundJobsTruncated,
+            backgroundJobsActionErrorCode = backgroundJobsActionErrorCode,
             rows = rows,
             pendingApprovals = approvals,
             pendingInputs = pendingInputs.values.toList(),

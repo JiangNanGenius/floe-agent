@@ -62,6 +62,13 @@ public protocol AgentEventSink: Sendable {
     /// Called after the steer is durably part of the runtime's message list,
     /// immediately before the next provider request is constructed.
     func agentRuntime(_ runtime: FloeAgentRuntime, didConsumeSteer input: RuntimeSteerInput) async
+    /// Called after a trusted native lifecycle notice is durably part of the
+    /// runtime's `system` context at the step boundary. The receiver persists
+    /// the same-id `system` row; a failure keeps the existing recovery path.
+    func agentRuntime(
+        _ runtime: FloeAgentRuntime,
+        didConsumeLifecycleNotice notice: RuntimeLifecycleNotice
+    ) async
     /// Called after the context engine compacts the conversation, so the UI
     /// can reflect the token reduction.
     func agentRuntime(_ runtime: FloeAgentRuntime, didCompact record: ContextCompactionRecord) async
@@ -130,6 +137,10 @@ public extension AgentEventSink {
     func agentRuntime(_ runtime: FloeAgentRuntime, didChangeProviderAttempt snapshot: ProviderAttemptSnapshot) async {}
     func agentRuntime(_ runtime: FloeAgentRuntime, didCompleteAssistantStep text: String) async {}
     func agentRuntime(_ runtime: FloeAgentRuntime, didConsumeSteer input: RuntimeSteerInput) async {}
+    func agentRuntime(
+        _ runtime: FloeAgentRuntime,
+        didConsumeLifecycleNotice notice: RuntimeLifecycleNotice
+    ) async {}
     func agentRuntime(_ runtime: FloeAgentRuntime, didCompact record: ContextCompactionRecord) async {}
     func agentRuntime(
         _ runtime: FloeAgentRuntime,
@@ -175,6 +186,30 @@ public enum RuntimeSteerAcceptance: Sendable, Hashable {
     case accepted
     case alreadyAccepted
     case rejected(reason: String)
+}
+
+/// Trusted native lifecycle context (for example "the required background
+/// job this run submitted reached its durable terminal") delivered into a
+/// LIVE run at the same safe model/tool step boundary as user guidance.
+///
+/// It is deliberately NOT a `RuntimeSteerInput`: a lifecycle receipt never
+/// impersonates a human turn. The runtime appends it as a `system` message
+/// under the caller-supplied deterministic id, so a duplicate terminal
+/// callback cannot insert a second copy, and only closed host-verified
+/// metadata is allowed to cross this seam — never job output, command text,
+/// paths, provider text or any other untrusted payload. A run that is not
+/// live (idle/completing/parked/terminal) rejects the notice truthfully;
+/// another run's id is always rejected.
+public struct RuntimeLifecycleNotice: Sendable, Hashable, Identifiable {
+    public var id: UUID
+    public var content: String
+    public var createdAt: Date
+
+    public init(id: UUID, content: String, createdAt: Date = Date()) {
+        self.id = id
+        self.content = content
+        self.createdAt = createdAt
+    }
 }
 
 /// Abstraction over tool execution so tests can inject fakes without
@@ -749,6 +784,16 @@ public actor FloeAgentRuntime {
     /// request/result pair have reached a complete step boundary.
     private var pendingSteers: [RuntimeSteerInput] = []
     private var acceptedSteerIDs: Set<UUID> = []
+    /// Trusted native lifecycle context waiting for the SAME step boundary.
+    /// Kept separate from user guidance: it becomes a `system` message, never
+    /// a fabricated human turn, and it keeps the run alive exactly like
+    /// pending guidance so a finished required job is really consumed.
+    private var pendingLifecycleNotices: [RuntimeLifecycleNotice] = []
+    private var acceptedLifecycleNoticeIDs: Set<UUID> = []
+    /// Set once `finishOrSteer` took the terminal branch. A notice arriving
+    /// inside that short window is refused (nothing is lost silently: the
+    /// durable job row stays readable and the parked task keeps its data).
+    private var isFinalizingCompletion = false
     private var forceCompactionOnNextTurn: Bool
     /// Last committed compaction transaction. Persisting this in checkpoints
     /// makes resume auditable and prevents a recovered run from treating an
@@ -909,6 +954,14 @@ public actor FloeAgentRuntime {
             return
         }
         state = newState
+        // The run is demonstrably continuing (repair/verification/stream/tool
+        // turn): lifecycle context may land again at the next step boundary.
+        switch newState {
+        case .completed, .failed, .checkpointed, .cancelling:
+            break
+        default:
+            isFinalizingCompletion = false
+        }
         await sink?.agentRuntime(self, didTransitionTo: newState)
         await publishLivenessForState(newState)
     }
@@ -1733,6 +1786,49 @@ public actor FloeAgentRuntime {
         acceptedSteerIDs.remove(id)
         return true
     }
+
+    /// Registers ONE trusted native lifecycle notice for this exact live run.
+    /// It becomes a `system` message at the next complete model/tool step
+    /// boundary and keeps the run alive (it is real new evidence), but it is
+    /// never a user turn and never starts a run. `expectedRunID` fences the
+    /// request to this exact run; a duplicate id is `alreadyAccepted`.
+    public func deliverLifecycleNotice(
+        _ notice: RuntimeLifecycleNotice,
+        expectedRunID: UUID
+    ) -> RuntimeSteerAcceptance {
+        guard expectedRunID == runID else {
+            return .rejected(reason: "The active run changed before lifecycle context was delivered")
+        }
+        let trimmed = notice.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return .rejected(reason: "Lifecycle context must not be empty")
+        }
+        guard trimmed.utf8.count <= Self.maximumLifecycleNoticeBytes else {
+            return .rejected(reason: "Lifecycle context exceeded the bounded size")
+        }
+        if acceptedLifecycleNoticeIDs.contains(notice.id) { return .alreadyAccepted }
+        guard !isFinalizingCompletion else {
+            return .rejected(reason: "The run already reached its final completion boundary")
+        }
+        switch state {
+        case .preparing, .streamingModel, .executingTool, .waitingApproval,
+             .compacting, .paused, .verifying:
+            var normalized = notice
+            normalized.content = trimmed
+            pendingLifecycleNotices.append(normalized)
+            acceptedLifecycleNoticeIDs.insert(notice.id)
+            // A settled required job is new evidence; it advances the same
+            // progress epoch as explicit guidance so unchanged-retry loop
+            // evidence cannot suppress the continuation.
+            loopGuard.advanceProgressEpoch()
+            return .accepted
+        case .idle, .cancelling, .checkpointed, .completed, .failed:
+            return .rejected(reason: "The target run is no longer accepting lifecycle context")
+        }
+    }
+
+    /// Bounded size for one trusted lifecycle notice (closed metadata only).
+    public static let maximumLifecycleNoticeBytes = 2_000
 
     // MARK: - Frozen catalog identity & temporary read-only policy
 
@@ -3281,8 +3377,21 @@ public actor FloeAgentRuntime {
     }
 
     /// Consumes every accepted steer in FIFO order immediately before a
-    /// provider request. Each remains a distinct user message.
+    /// provider request. Each remains a distinct user message. Trusted
+    /// lifecycle notices are consumed at the same boundary, in arrival order,
+    /// as `system` messages — never as a human turn.
     private func consumeSteersAtStepBoundary() async {
+        let notices = pendingLifecycleNotices
+        pendingLifecycleNotices.removeAll(keepingCapacity: true)
+        for notice in notices {
+            messages.append(ConversationMessage(
+                id: notice.id,
+                role: "system",
+                content: notice.content,
+                createdAt: notice.createdAt
+            ))
+            await sink?.agentRuntime(self, didConsumeLifecycleNotice: notice)
+        }
         guard !pendingSteers.isEmpty else { return }
         let inputs = pendingSteers
         pendingSteers.removeAll(keepingCapacity: true)
@@ -3302,7 +3411,12 @@ public actor FloeAgentRuntime {
     /// the same run alive. With no guidance it publishes the ordinary
     /// completion and transitions terminally.
     private func finishOrSteer(stopReason: AgentEvent.StopReason) async {
-        guard !pendingSteers.isEmpty else {
+        guard !pendingSteers.isEmpty || !pendingLifecycleNotices.isEmpty else {
+            // No guidance is waiting: every path below may publish a REAL
+            // terminal (or replace this turn with a bounded repair). Mark the
+            // completion boundary so a lifecycle notice arriving inside it is
+            // refused instead of being silently dropped after the run closed.
+            isFinalizingCompletion = true
             if stopReason == .endTurn,
                streamText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                !didVerifyFinalAnswer,

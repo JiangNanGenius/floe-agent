@@ -73,6 +73,22 @@ class RecordingHost : ConversationUiCallbacks {
         record("retryRun", session, runId); return true
     }
 
+    var backgroundJobsAccepted = true
+    var backgroundJobCancelAccepted = true
+
+    override fun refreshBackgroundJobs(session: ConversationSessionToken): Boolean {
+        record("refreshBackgroundJobs", session); return backgroundJobsAccepted
+    }
+
+    override fun cancelBackgroundJob(
+        session: ConversationSessionToken,
+        jobId: String,
+        runId: String,
+    ): Boolean {
+        record("cancelBackgroundJob", session, jobId, runId)
+        return backgroundJobCancelAccepted
+    }
+
     override fun promotePendingInput(session: ConversationSessionToken, inputId: String, expectedRunId: String): Boolean {
         record("promotePendingInput", session, inputId, expectedRunId); return true
     }
@@ -416,6 +432,10 @@ fun threadState(
     boundWorkspaceId: String? = if (projects.size == 1) projects[0].id else null,
     approvalMode: ApprovalModeUi = ApprovalModeUi.ASK,
     capabilityChips: List<CapabilityChipUi> = emptyList(),
+    waitingForJobs: Boolean = false,
+    dependenciesSettled: Boolean = false,
+    backgroundJobs: List<BackgroundJobUi> = emptyList(),
+    backgroundJobsLoaded: Boolean = false,
 ) = ThreadUiState(
     session = session,
     taskTitle = "Task",
@@ -431,7 +451,10 @@ fun threadState(
     liveStateName = liveStateName,
     isRunning = isRunning,
     isDraining = false,
-    selectedRunWaitingForJobs = false,
+    selectedRunWaitingForJobs = waitingForJobs,
+    selectedRunDependenciesSettled = dependenciesSettled,
+    backgroundJobs = backgroundJobs,
+    backgroundJobsLoaded = backgroundJobsLoaded,
     rows = rows,
     pendingApprovals = pendingApprovals,
     pendingInputs = pendingInputs,

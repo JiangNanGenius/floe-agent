@@ -394,6 +394,9 @@ public actor ConversationRunService {
         forwarder.onSteerConsumed = { [weak self] input in
             await self?.handleConsumedSteer(input)
         }
+        forwarder.onLifecycleNoticeConsumed = { [weak self] notice in
+            await self?.handleConsumedLifecycleNotice(notice)
+        }
         forwarder.onCompaction = { [weak self] record in
             await self?.handleCompaction(record)
         }
@@ -678,6 +681,19 @@ public actor ConversationRunService {
         await runtime.withdrawSteer(id: id)
     }
 
+    /// Delivers ONE trusted native lifecycle notice (for example a required
+    /// background job's settled durable outcome) into THIS live run. It is
+    /// appended as a `system` message at the next complete step boundary —
+    /// never as a human turn — and the same-id durable row is written when the
+    /// runtime actually consumed it. A non-live run refuses truthfully and
+    /// writes nothing; the parked task keeps its own data.
+    public func deliverLifecycleNotice(
+        _ notice: RuntimeLifecycleNotice,
+        expectedRunID: UUID
+    ) async -> RuntimeSteerAcceptance {
+        await runtime.deliverLifecycleNotice(notice, expectedRunID: expectedRunID)
+    }
+
     // MARK: - Sink handling
 
     private func handleLiveness(_ snapshot: AgentLivenessSnapshot) async {
@@ -801,6 +817,29 @@ public actor ConversationRunService {
         /// server-owned rows. Callers must leave all existing rows untouched
         /// and surface a recoverable failure.
         case invalidInternal
+    }
+
+    /// Boundary for ONE trusted native lifecycle notice the runtime already
+    /// copied into its model context. The durable row is a `system` message
+    /// under the same deterministic id, so a duplicated callback cannot
+    /// create a second row and no user turn is ever fabricated.
+    func handleConsumedLifecycleNotice(_ notice: RuntimeLifecycleNotice) async {
+        let message = PersistedMessage(
+            id: notice.id,
+            conversationID: conversationID,
+            role: "system",
+            content: notice.content,
+            createdAt: notice.createdAt,
+            parts: [MessagePart(messageID: notice.id, partIndex: 0,
+                                kind: .text, text: notice.content)],
+            runID: runID
+        )
+        guard await appendMessageReliably(
+            message,
+            boundary: "lifecycleNotice",
+            completionCritical: false
+        ) else { return }
+        logger.info("lifecycleNoticeConsumed run=\(runID.uuidString) notice=\(notice.id.uuidString)")
     }
 
     /// Boundary for one steer the runtime already copied into model context.
@@ -2355,6 +2394,7 @@ private final class SinkForwarder: AgentEventSink, @unchecked Sendable {
     var onProviderAttempt: (@Sendable (ProviderAttemptSnapshot) async -> Void)?
     var onAssistantStep: (@Sendable (String) async -> Void)?
     var onSteerConsumed: (@Sendable (RuntimeSteerInput) async -> Void)?
+    var onLifecycleNoticeConsumed: (@Sendable (RuntimeLifecycleNotice) async -> Void)?
     var onCompaction: (@Sendable (ContextCompactionRecord) async -> Void)?
     var onApprovalReview: (@Sendable (ApprovalReviewSnapshot) async -> Void)?
     var onApprovalDecisionRecorded: (@Sendable (ApprovalDecisionReceipt) async -> Void)?
@@ -2400,6 +2440,13 @@ private final class SinkForwarder: AgentEventSink, @unchecked Sendable {
 
     func agentRuntime(_ runtime: FloeAgentRuntime, didConsumeSteer input: RuntimeSteerInput) async {
         await onSteerConsumed?(input)
+    }
+
+    func agentRuntime(
+        _ runtime: FloeAgentRuntime,
+        didConsumeLifecycleNotice notice: RuntimeLifecycleNotice
+    ) async {
+        await onLifecycleNoticeConsumed?(notice)
     }
 
     func agentRuntime(_ runtime: FloeAgentRuntime, didCompact record: ContextCompactionRecord) async {

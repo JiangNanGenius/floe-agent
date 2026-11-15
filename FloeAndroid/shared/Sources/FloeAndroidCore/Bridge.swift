@@ -53,7 +53,8 @@ public enum AndroidBridge {
                 || requestVersion == BridgeV25.version
                 || requestVersion == BridgeV27.version
                 || requestVersion == BridgeV28.version
-                || requestVersion == BridgeV29.version else {
+                || requestVersion == BridgeV29.version
+                || requestVersion == BridgeV30.version else {
             return response(["ok": false, "error": "unsupportedVersion"])
         }
         if requestVersion == BridgeV2.version {
@@ -436,6 +437,23 @@ public enum AndroidBridge {
         }
         if requestVersion == BridgeV29.version {
             return response(ExternalEditHostMailbox.shared.handle(request), stampVersion: BridgeV29.version)
+        }
+        if requestVersion == BridgeV30.version {
+            // Additive trusted-host channel for THIS task's finite background
+            // jobs: one bounded durable read (`jobs.list`) and one exact-owner
+            // cooperative cancel (`jobs.cancel`). No submit, no dependency
+            // resolution, no payload/output/path material. V1-V29 branches
+            // above remain byte-identical.
+            let object = TaskJobsHostBridge.handle(requestData: data,
+                                                   fallbackRequestID: requestID)
+            let encoded = (try? JSONSerialization.data(withJSONObject: object,
+                                                       options: [.sortedKeys]))
+                ?? Data(#"{"ok":false,"error":"encoding"}"#.utf8)
+            guard encoded.count <= BridgeV30.maximumResponseBytes else {
+                return response(["ok": false, "error": "responseTooLarge"],
+                                stampVersion: BridgeV30.version)
+            }
+            return response(object, stampVersion: BridgeV30.version)
         }
         if requestVersion == BridgeV28.version {
             // Additive trusted-host channel for CONVERSATION-OWNED agent media

@@ -78,13 +78,44 @@ object FloeRunStateLocalizer {
         }
     }
 
-    /** ⇄ isTerminal: `checkpointed` is a durable PARKED state and must count
+    /** ⇄ isTerminal: `checkpointed` is a durable PARKED state and counts
      * terminal for persisted reads (the composer then leaves steering-only
-     * mode against a parked run). */
-    fun isTerminal(stateName: String): Boolean = stateName in setOf(
-        "completed", "failed", "recoveryFailed", "interrupted", "cancelled",
-        "noProgress", "budgetLimited", "truncated", "checkpointed",
-    )
+     * mode against a parked run). A checkpointed run that is WAITING on
+     * required background work is the one exception: it still has a live
+     * lifecycle continuation and an explicit Stop must stay reachable. */
+    fun isTerminal(stateName: String, awaitingBackgroundJobs: Boolean = false): Boolean =
+        stateName in setOf(
+            "completed", "failed", "recoveryFailed", "interrupted", "cancelled",
+            "noProgress", "budgetLimited", "truncated", "checkpointed",
+        ) && !(stateName == "checkpointed" && awaitingBackgroundJobs)
+
+    /** ⇄ the durable `awaiting.finite.job[:ids]` park reason. */
+    fun isAwaitingBackgroundJobs(stateName: String?, reason: String?): Boolean =
+        stateName == "checkpointed" &&
+            (reason == "awaiting.finite.job" ||
+                reason?.startsWith("awaiting.finite.job:") == true)
+
+    /**
+     * Required edges of ONE run are settled when a REAL job read proves no
+     * pending edge remains. A nonterminal job whose edge already resolved is a
+     * proven-ready managed service and counts as settled; any other
+     * nonterminal job keeps the explicit Continue closed. A run with no
+     * visible job rows (legacy/missing edge) may be continued explicitly —
+     * the domain resolves that unknown outcome truthfully.
+     */
+    fun requiredDependenciesSettled(
+        jobs: List<BackgroundJobUi>,
+        runId: String?,
+        loaded: Boolean,
+    ): Boolean {
+        if (runId == null || !loaded) return false
+        val runJobs = jobs.filter { it.runId == runId }
+        if (runJobs.any { it.dependencyState == "pending" }) return false
+        if (runJobs.any { !it.terminal && it.dependencyState != "resolved" }) {
+            return false
+        }
+        return true
+    }
 
     /** ⇄ attentionSymbol: nil = none (spinner/checkmark decided by the badge). */
     fun attentionSymbolKey(stateName: String): String? = when (stateName) {

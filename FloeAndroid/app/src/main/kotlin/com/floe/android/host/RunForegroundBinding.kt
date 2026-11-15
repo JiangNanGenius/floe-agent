@@ -275,6 +275,22 @@ class RunForegroundBinding(
         reconcileAgentRuns()
     }
 
+    /** A distinct reservation for this trusted resume request, with the real run's Stop route. */
+    suspend fun reserveAgentRunResume(operationID: String, conversationID: String, runID: String): Boolean =
+        agentLaunchProvisional(operationID, com.floe.android.runlifecycle.RunStopHandler {
+            cancelAgentRun(conversationID, runID)
+            Unit
+        })
+
+    /**
+     * An old admission must not close a lease adopted by a later real run.
+     * Its unique provisional reservation is released by the host request;
+     * authoritative leases retire only after real native work is quiescent.
+     */
+    fun agentRunResumeAbandoned(runID: String) {
+        agentRunSettled(runID)
+    }
+
     /**
      * Event-driven ledger check entry for UI-side boundaries (terminal
      * echo, App resume). Same rules as [nativeOwnedWorkChanged].

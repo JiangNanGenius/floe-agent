@@ -870,6 +870,50 @@ sealed interface TimelineRowUi {
     data class Approval(val card: ApprovalCardUi) : TimelineRowUi {
         override val id get() = "approval.${card.key}"
     }
+
+    /**
+     * One trusted system-role lifecycle notice (for example "background work
+     * updated; the task continued"). It is NOT a user message: the durable
+     * row says `system`, and the body is never rendered as human speech.
+     */
+    data class SystemNotice(val message: MessageUi) : TimelineRowUi {
+        override val id get() = "system.${message.id}"
+    }
+}
+
+/* --------------------------- background job surface ------------------------- */
+
+/**
+ * One THIS-task finite background job, projected from the durable native row
+ * (`floe.taskjobs/30`). Only closed identity/state/progress fields exist: the
+ * host never sends payloads, commands, output text, workspace paths or private
+ * paths here, and this module never infers a terminal state from a
+ * cancellation request.
+ */
+data class BackgroundJobUi(
+    val jobId: String,
+    val runId: String,
+    /** Closed target class: shell / web / officeEdit / service / other. */
+    val targetKind: String,
+    /** Durable BackgroundJobState raw value. */
+    val stateName: String,
+    val terminal: Boolean,
+    /** A Stop was requested; the processor has not acknowledged yet. */
+    val cancellationRequested: Boolean,
+    val resultAvailable: Boolean,
+    val outputBytes: Long? = null,
+    /** Durable progress stage/units (null = the processor reported none). */
+    val progressStage: String? = null,
+    val completedUnits: Int? = null,
+    val totalUnits: Int? = null,
+    /** `job` or `service` when this job is a required dependency. */
+    val dependencyKind: String? = null,
+    val dependencyState: String? = null,
+) {
+    /** Per-job Stop is offered only while the durable row is nonterminal. */
+    val canCancel: Boolean get() = !terminal
+    /** True while this exact edge still keeps its parent run parked. */
+    val isPendingDependency: Boolean get() = dependencyState == "pending"
 }
 
 /* ------------------------------ thread snapshot ----------------------------- */
@@ -1032,6 +1076,23 @@ data class ThreadUiState(
      * repeated snapshot never re-scrolls the reader.
      */
     val liveTextRevision: Long = 0L,
+    /** THIS task's finite background jobs (newest first, bounded). */
+    val backgroundJobs: List<BackgroundJobUi> = emptyList(),
+    /** True only after a REAL host reply replaced the projection. */
+    val backgroundJobsLoaded: Boolean = false,
+    val backgroundJobsLoading: Boolean = false,
+    /** Typed host failure code (never raw text); null = no failure. */
+    val backgroundJobsErrorCode: String? = null,
+    val backgroundJobsTruncated: Boolean = false,
+    /** Typed per-job cancel failure code (cleared by the next refresh). */
+    val backgroundJobsActionErrorCode: String? = null,
+    /**
+     * True when the selected parked run's required edges are all durably
+     * terminal (the automatic continuation may have been fenced by storage
+     * continuity or refused by admission). Only then may an explicit
+     * Continue reopen the same run.
+     */
+    val selectedRunDependenciesSettled: Boolean = false,
 )
 
 /** ⇄ ImportantFileShortcut (host-projected working set; this module never

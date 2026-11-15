@@ -449,6 +449,28 @@ enum RunSnapshotWireBuilder {
         let watermark = recentWatermark?.last?.sequence ?? 0
         fields["durableWatermark"] = .integer(Int64(watermark))
 
+        // A parked run's cause is durable even when its live owner retired
+        // (relaunch, process death). Without this fallback a cold checkpointed
+        // page carries no reason, so the notification Stop could not tell a
+        // dependency wait from any other parked state. Read ONLY the run's own
+        // bounded status tail; never a live in-memory shadow.
+        if fields["checkpointReason"] == nil, record.state == "checkpointed" {
+            if let events = try? await stores.runs.recentEvents(
+                runID: record.id, limit: 12) {
+                for event in events.reversed() where event.kind == .status {
+                    guard let data = event.payloadJSON.data(using: .utf8),
+                          let object = try? JSONSerialization.jsonObject(with: data)
+                            as? [String: Any],
+                          (object["state"] as? String) == "checkpointed",
+                          let reason = object["reason"] as? String,
+                          !reason.isEmpty else { continue }
+                    fields["checkpointReason"] = .string(
+                        bounded(reason, maxBytes: 512))
+                    break
+                }
+            }
+        }
+
         // Usage (original records, bounded to last 16 + run totals).
         var usageFields: [SettingsDomainV1.JSONValue] = []
         var totals = (input: 0, output: 0)

@@ -63,6 +63,7 @@
 //   ORIGINAL adapter seam stays injectable for later rounds).
 
 import Foundation
+import GRDB
 import FloeCore
 import FloeTools
 import FloePersistence
@@ -316,6 +317,10 @@ public final class RuntimeFacadeJobBindings: @unchecked Sendable {
             // resolves nothing new.
             C01ManagedServiceDomain.shared.installReadyReporter { jobID, note in
                 await service.resolveServiceReady(id: jobID, note: note)
+                // First REAL readiness may wake the exact parent run that is
+                // parked on this service edge. The durable edge was committed
+                // above; the domain re-proves it before resuming.
+                await JobDependencyContinuation.shared.serviceReady(jobID: jobID)
             }
         }
         stateLock.lock()
@@ -429,17 +434,26 @@ public final class RuntimeFacadeJobBindings: @unchecked Sendable {
                 continue
             }
             if job.state.isTerminal {
+                let resolution = BackgroundJobService.dependencyResolution(for: job)
                 _ = try? await dependencies.resolve(
-                    jobID: dependency.jobID,
-                    state: BackgroundJobService.dependencyState(for: job.state),
-                    note: job.lastError ?? "job \(job.state.rawValue)")
+                    jobID: dependency.jobID, state: resolution.state,
+                    note: resolution.note)
                 continue
             }
             // A typed C01 service edge is resolved by
             // `BackgroundJobService.resolveServiceReady` on the FIRST proven
             // readiness; until then it is held outstanding exactly like a
             // finite job. It is never resolved by a guessed readiness or a
-            // timer.
+            // timer. The terminal boundary also honours a readiness proof that
+            // landed before this read (the live C01 snapshot), so the parent
+            // never parks after the service already answered.
+            if dependency.kind == "service",
+               C01ManagedServiceDomain.shared.snapshot(jobID: job.id)?.state == .ready {
+                _ = try? await dependencies.resolve(
+                    jobID: job.id, state: .resolved,
+                    note: "Service is verifiably ready and keeps running in the background.")
+                continue
+            }
             labels.append(RunDependencyLabel(
                 identifier: job.id.uuidString,
                 kind: dependency.kind,
@@ -480,6 +494,195 @@ public final class RuntimeFacadeJobBindings: @unchecked Sendable {
             throw FloeError.invalidConfiguration("background jobs are not composed in this build")
         }
         return try await service.ownedJob(id: id, runID: runID)
+    }
+
+    /// THIS task's durable jobs (bounded read; payload/output bytes never
+    /// cross the App host channel). Empty before composition or on a store
+    /// read failure — never a fabricated row.
+    public func taskJobs(conversationID: UUID, runID: UUID? = nil,
+                         limit: Int = 50) async -> [BackgroundJob] {
+        guard let service = withState({ serviceStorage }) else { return [] }
+        return (try? await service.jobs(conversationID: conversationID,
+                                        runID: runID, limit: limit)) ?? []
+    }
+
+    /// The durable dependency edge for one job (nil when no edge exists or
+    /// the store is unreadable). Read-only; never resolves.
+    public func dependencyRecord(jobID: UUID) async -> RunDependencyRecord? {
+        guard let database = withState({ planStorage?.database }) else { return nil }
+        return try? await SQLiteRunDependencyStore(database: database).record(jobID: jobID)
+    }
+
+    /// Exact-owner per-job cancellation for the App host:
+    /// `ownedJob(id:runID:)` proves the durable run owns the job, and the
+    /// conversation identity must match too. The returned row is the ORIGINAL
+    /// cooperative state (still nonterminal while the processor settles).
+    public func cancelOwnedJob(id: UUID, runID: UUID,
+                               conversationID: UUID) async throws -> BackgroundJob {
+        guard let service = withState({ serviceStorage }) else {
+            throw FloeError.invalidConfiguration("background jobs are not composed in this build")
+        }
+        let owned = try await service.ownedJob(id: id, runID: runID)
+        guard owned.conversationID == conversationID else {
+            throw FloeError.validationFailed(
+                "No background job is available to this task with that ID")
+        }
+        return try await service.cancel(id: id)
+    }
+
+    /// Cooperative cancellation of the EXACT pending dependency jobs of one
+    /// run after the user's explicit Stop. Each identity is re-proved against
+    /// the durable row (same run, same conversation, still nonterminal) before
+    /// the request; nothing else owned by the run is touched. Requests only:
+    /// the original processors keep the jobs nonterminal until cleanup.
+    public func requestCancellationForRunJobs(runID: UUID,
+                                              conversationID: UUID,
+                                              jobIDs: [UUID]) async -> [UUID] {
+        guard let service = withState({ serviceStorage }), !jobIDs.isEmpty else {
+            return []
+        }
+        var requested: [UUID] = []
+        for jobID in jobIDs {
+            guard let job = try? await service.job(id: jobID),
+                  job.runID == runID,
+                  job.conversationID == conversationID,
+                  !job.state.isTerminal else { continue }
+            _ = try? await service.cancel(id: jobID)
+            requested.append(jobID)
+        }
+        return requested
+    }
+
+    /// Bounded relaunch reconciliation for parked dependency edges. Runs
+    /// AFTER the original launch recovery marked dead in-process processors
+    /// interrupted: every pending edge whose job is terminal/gone is resolved
+    /// honestly, a proven C01 readiness resolves a service edge, and only
+    /// runs whose every edge is a GENUINE `.resolved` success (completed
+    /// finite job / running ready service) are returned as automatic
+    /// continuation candidates. Interrupted, cancelled, failed or missing
+    /// outcomes from a previous process are deliberately excluded — they are
+    /// reopened only by an explicit user Continue.
+    public func launchDependencyCandidates() async -> [JobDependencyLaunchCandidate] {
+        guard let service = withState({ serviceStorage }),
+              let database = withState({ planStorage?.database }) else { return [] }
+        let dependencies = SQLiteRunDependencyStore(database: database)
+        guard let pending = try? await dependencies.allPending(), !pending.isEmpty else {
+            return []
+        }
+        var byRun: [UUID: [RunDependencyRecord]] = [:]
+        for edge in pending { byRun[edge.runID, default: []].append(edge) }
+        var candidates: [JobDependencyLaunchCandidate] = []
+        for runID in byRun.keys.sorted(by: { $0.uuidString < $1.uuidString }) {
+            let edges = byRun[runID] ?? []
+            guard !edges.isEmpty else { continue }
+            for edge in edges {
+                guard let job = try? await service.job(id: edge.jobID) else {
+                    _ = try? await dependencies.resolve(
+                        jobID: edge.jobID, state: .interrupted,
+                        note: "The owning job record is gone; its outcome is unknown.")
+                    continue
+                }
+                if job.state.isTerminal {
+                    let resolution = BackgroundJobService.dependencyResolution(for: job)
+                    _ = try? await dependencies.resolve(
+                        jobID: edge.jobID, state: resolution.state,
+                        note: resolution.note)
+                } else if edge.kind == "service",
+                          C01ManagedServiceDomain.shared.snapshot(jobID: edge.jobID)?.state == .ready {
+                    _ = try? await dependencies.resolve(
+                        jobID: edge.jobID, state: .resolved,
+                        note: "Service readiness was proven before this launch.")
+                }
+            }
+            guard let remaining = try? await dependencies.pending(runID: runID),
+                  remaining.isEmpty else { continue }
+            var summaries: [JobDependencyJobSummary] = []
+            for edge in edges {
+                guard let record = try? await dependencies.record(jobID: edge.jobID)
+                else { continue }
+                let jobState = (try? await service.job(id: edge.jobID))?.state
+                summaries.append(JobDependencyJobSummary(
+                    jobID: edge.jobID, dependencyKind: record.kind,
+                    dependencyState: record.state,
+                    jobState: jobState ?? .interrupted))
+            }
+            // COLD-RECOVERY POLICY (generic, never an ID allowlist): an
+            // automatic continuation after a relaunch is limited to GENUINE
+            // SUCCESSES (completed jobs / proven service readiness). An
+            // interrupted, cancelled or failed outcome from a previous process
+            // — and any missing edge resolved as interrupted — never
+            // auto-starts a chat model. Those runs stay parked and are
+            // reopened only by an explicit user Continue.
+            guard !summaries.isEmpty,
+                  summaries.allSatisfy({ $0.dependencyState == .resolved })
+            else { continue }
+            candidates.append(JobDependencyLaunchCandidate(
+                runID: runID, conversationID: edges[0].conversationID,
+                jobs: summaries))
+        }
+        // A genuine success whose edge committed but whose terminal callback
+        // died before the continuation ran: the edge is already `resolved`
+        // and no pending row remains. These are the ONLY pre-resolved edges
+        // eligible for automatic continuation, and they are re-proven against
+        // the live job rows below (completed finite job / still-running
+        // service with proven readiness). Nothing uncertain resumes here.
+        let resolvedRows: [(jobID: UUID, runID: UUID, conversationID: UUID, kind: String)] =
+            (try? await database.reader { db in
+            try Row.fetchAll(db, sql: """
+                SELECT job_id, run_id, conversation_id, kind
+                FROM run_dependencies
+                WHERE state = 'resolved'
+                  AND run_id IN (
+                      SELECT run_id FROM run_dependencies
+                      GROUP BY run_id
+                      HAVING SUM(CASE WHEN state != 'resolved' THEN 1 ELSE 0 END) = 0
+                  )
+                ORDER BY resolved_at DESC
+                LIMIT 256
+                """).compactMap { row in
+                    guard let jobID = (row["job_id"] as String?).flatMap(UUID.init(uuidString:)),
+                          let runID = (row["run_id"] as String?).flatMap(UUID.init(uuidString:)),
+                          let conversationID = (row["conversation_id"] as String?)
+                            .flatMap(UUID.init(uuidString:)) else { return nil }
+                    return (jobID: jobID, runID: runID, conversationID: conversationID,
+                            kind: (row["kind"] as String?) ?? "job")
+                }
+        }) ?? []
+        var resolvedByRun: [UUID: [(jobID: UUID, conversationID: UUID, kind: String)]] = [:]
+        for row in resolvedRows {
+            resolvedByRun[row.runID, default: []].append(
+                (jobID: row.jobID, conversationID: row.conversationID, kind: row.kind))
+        }
+        var resolvedRunCount = 0
+        for runID in resolvedByRun.keys.sorted(by: { $0.uuidString < $1.uuidString }) {
+            if resolvedRunCount >= 64 { break }
+            resolvedRunCount += 1
+            let runEdges = resolvedByRun[runID] ?? []
+            guard !runEdges.isEmpty, runEdges.count <= 32 else { continue }
+            var summaries: [JobDependencyJobSummary] = []
+            var safe = true
+            for edge in runEdges {
+                guard let job = try? await service.job(id: edge.jobID) else {
+                    safe = false
+                    break
+                }
+                if edge.kind == "service" {
+                    // Readiness resolves a service edge while the service keeps
+                    // running. A stopped/failed service never auto-wakes.
+                    guard job.state == .running else { safe = false; break }
+                } else {
+                    guard job.state == .completed else { safe = false; break }
+                }
+                summaries.append(JobDependencyJobSummary(
+                    jobID: edge.jobID, dependencyKind: edge.kind,
+                    dependencyState: .resolved, jobState: job.state))
+            }
+            guard safe, !summaries.isEmpty else { continue }
+            candidates.append(JobDependencyLaunchCandidate(
+                runID: runID, conversationID: runEdges[0].conversationID,
+                jobs: summaries))
+        }
+        return candidates
     }
 
     // MARK: - Diagnostics (typed counts only; never payloads/commands/output)

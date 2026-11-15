@@ -130,6 +130,57 @@ final class RunGateBox: @unchecked Sendable {
     }
 }
 
+// MARK: - Trusted host foreground admission double (TEST ONLY)
+
+/// Deterministic stand-in for the trusted Kotlin host's REAL
+/// `RunForegroundBinding` admission. It records the exact reservation
+/// identities and can refuse/unbind or run a controlled side effect AT the
+/// admission boundary — the only point where a real UI Stop can interleave
+/// with an in-flight automatic resume (the run domain has not committed its
+/// CAS yet). Production always binds `MailboxRunForegroundAdmission`; this
+/// type never appears in the run domain's production composition.
+final class RunForegroundAdmissionStub: RunForegroundAdmissionPort, @unchecked Sendable {
+    private let lock = NSLock()
+    private var decision: RunForegroundAdmissionOutcome
+    private var onAdmit: (@Sendable () async -> Void)?
+    private var _admissions: [(epoch: UInt64, runID: UUID, conversationID: UUID)] = []
+    private var _releases: [(epoch: UInt64, runID: UUID)] = []
+
+    init(decision: RunForegroundAdmissionOutcome = .admitted) {
+        self.decision = decision
+    }
+
+    func setDecision(_ value: RunForegroundAdmissionOutcome) {
+        withScopedLock(lock) { decision = value }
+    }
+
+    func setOnAdmit(_ body: (@Sendable () async -> Void)?) {
+        withScopedLock(lock) { onAdmit = body }
+    }
+
+    var admissions: [(epoch: UInt64, runID: UUID, conversationID: UUID)] {
+        withScopedLock(lock) { _admissions }
+    }
+
+    var releases: [(epoch: UInt64, runID: UUID)] {
+        withScopedLock(lock) { _releases }
+    }
+
+    func admit(epoch: UInt64, runID: UUID, conversationID: UUID) async
+        -> RunForegroundAdmissionOutcome {
+        let sideEffect = withScopedLock(lock) { () -> (@Sendable () async -> Void)? in
+            _admissions.append((epoch, runID, conversationID))
+            return onAdmit
+        }
+        await sideEffect?()
+        return withScopedLock(lock) { decision }
+    }
+
+    func release(epoch: UInt64, runID: UUID) async {
+        withScopedLock(lock) { _releases.append((epoch, runID)) }
+    }
+}
+
 // MARK: - Test tool doubles (registered into an ISOLATED registry)
 
 /// Non-side-effecting echo tool: proves stream→toolRequest→toolResult
@@ -687,9 +738,10 @@ final class RunDomainFixture: @unchecked Sendable {
                     environmentProof: (any RunEnvironmentOwnershipProving)? = nil,
                     feed: (any RunIntelligencePostCommitFeeding)? = nil,
                     contextEpoch: UInt64? = nil,
-                    mediaTaskContext: (@Sendable (UUID) async -> [String])? = nil)
+                    mediaTaskContext: (@Sendable (UUID) async -> [String])? = nil,
+                    foreground: (any RunForegroundAdmissionPort)? = nil)
         -> RunDomainComponents {
-        RunDomainComponents(
+        var built = RunDomainComponents(
             context: RunIngressContext(
                 epoch: contextEpoch ?? epoch,
                 catastrophicCorpusBytes: corpus ?? fixtureCorpus,
@@ -722,6 +774,13 @@ final class RunDomainFixture: @unchecked Sendable {
             adapterFactoryOverride: { [adapter] _ in adapter },
             registry: registry,
             mediaTaskContext: mediaTaskContext)
+        // G03-R4 foreground handshake: production binds the real mailbox
+        // client. The fixture defaults to an ADMITTED stub so the existing
+        // continuation tests keep exercising the resume mechanics; the
+        // focused regression overrides it to prove refusal/unbound and the
+        // Stop-during-admission interleaving.
+        built.runForegroundAdmission = foreground ?? RunForegroundAdmissionStub()
+        return built
     }
 
     /// ONE owned factory/register for every domain the fixture creates

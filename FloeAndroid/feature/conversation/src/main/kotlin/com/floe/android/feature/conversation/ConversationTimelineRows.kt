@@ -148,6 +148,8 @@ fun ConversationTimelineRow(
         is TimelineRowUi.AssistantMessage ->
             AssistantRow(row, holder, modifier, searchHighlightQuery, onAttachmentDesign)
         is TimelineRowUi.Event -> EventRow(row.event, holder, modifier)
+        is TimelineRowUi.SystemNotice ->
+            SystemNoticeRow(row.message, holder, modifier)
         is TimelineRowUi.StepGroup -> StepGroupRow(row, holder, modifier)
         is TimelineRowUi.RunOutputGroup -> RunOutputGroupRow(row, holder, modifier)
         is TimelineRowUi.Terminal -> TerminalRow(row.event, modifier)

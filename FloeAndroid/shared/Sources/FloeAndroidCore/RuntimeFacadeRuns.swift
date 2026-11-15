@@ -266,6 +266,30 @@ public struct RunDomainComponents: Sendable {
     public var mediaTaskContext: (@Sendable (UUID) async -> [String])?
     /// The generation's original execution target domain, shared with settings and shell routing.
     public var executionTargets: C02ExecutionTargetProduction.Components?
+    /// G03-R4 (additive, default nil): the durable required-dependency edges
+    /// for a run. The parked-dependency continuation reads ONLY these rows —
+    /// the checkpoint's own state is a replay boundary (often `preparing`),
+    /// never the dependency truth. Unbound keeps every pre-existing behavior
+    /// byte-identical and makes an automatic resume refuse as unverified.
+    public var runDependencyEdges: (any RunDependencyEdgeReading)?
+    /// G03-R4 (additive, default nil): CAS commit for the explicit Stop of a
+    /// PARKED run. It transitions `runs.state` checkpointed→cancelled only if
+    /// the row still belongs to the conversation and still holds the expected
+    /// state, so a Stop can never overwrite a resume that committed first.
+    public var commitParkedRunStop: (@Sendable (UUID, UUID, String) async -> Bool)?
+    /// G03-R4 (additive, default nil): cooperative cancellation of the exact
+    /// pending dependency jobs of THIS run after its explicit Stop. The third
+    /// argument is the durable pending-edge job set (never "every job of the
+    /// run"). Requests only: the original service keeps each job nonterminal
+    /// until its processor acknowledges. nil leaves jobs untouched.
+    public var cancelParkedRunJobs: (@Sendable (UUID, UUID, [UUID]) async -> [UUID])?
+    /// G03-R4 (additive, default nil): REAL App-host foreground admission for
+    /// the AUTOMATIC resume of a parked run. An automatic resume dispatches
+    /// provider/tool work with no UI action, so it must first obtain the
+    /// ORIGINAL RunForegroundController lease through the trusted host lane.
+    /// Unbound refuses honestly (`.foregroundUnavailable`): the run stays
+    /// parked with its data and an explicit Continue may retry.
+    public var runForegroundAdmission: (any RunForegroundAdmissionPort)?
 
     public init(context: RunIngressContext,
                 durable: RunPersistenceBundle,
@@ -292,7 +316,11 @@ public struct RunDomainComponents: Sendable {
                 scheduleCompletion: (any G073ScheduleCompletionRecording)? = nil,
                 artifactRootURL: URL? = nil,
                 mediaTaskContext: (@Sendable (UUID) async -> [String])? = nil,
-                executionTargets: C02ExecutionTargetProduction.Components? = nil) {
+                executionTargets: C02ExecutionTargetProduction.Components? = nil,
+                runDependencyEdges: (any RunDependencyEdgeReading)? = nil,
+                commitParkedRunStop: (@Sendable (UUID, UUID, String) async -> Bool)? = nil,
+                cancelParkedRunJobs: (@Sendable (UUID, UUID, [UUID]) async -> [UUID])? = nil,
+                runForegroundAdmission: (any RunForegroundAdmissionPort)? = nil) {
         self.context = context
         self.durable = durable
         self.checkpoints = checkpoints
@@ -317,6 +345,10 @@ public struct RunDomainComponents: Sendable {
         self.artifactRootURL = artifactRootURL
         self.mediaTaskContext = mediaTaskContext
         self.executionTargets = executionTargets
+        self.runDependencyEdges = runDependencyEdges
+        self.commitParkedRunStop = commitParkedRunStop
+        self.cancelParkedRunJobs = cancelParkedRunJobs
+        self.runForegroundAdmission = runForegroundAdmission
     }
 }
 
@@ -523,6 +555,13 @@ public actor FacadeRunDomain {
     static let terminalRunStates: Set<String> = [
         "completed", "failed", "checkpointed", "idle",
     ]
+    /// Canonical durable cause of a user-stopped PARKED run. It is the same
+    /// key the runtime uses for an ordinary stop and the App localizer maps it
+    /// to "Stopped". A stopped run stays `checkpointed` (Android has no
+    /// `cancelled` run state); this reason is the durable fence that keeps
+    /// late dependency callbacks from resuming it automatically.
+    public nonisolated static let parkedUserStopReason =
+        "runtime.agent_runtime.the_task_was_stopped_by_you"
 
     // Short-lived ordinary wire admission, not a service-lifetime lock.
     // A second start is allowed once the first start returns, even while
@@ -711,6 +750,13 @@ public actor FacadeRunDomain {
     /// root shutdown wait the exact LEASE tokens in `feedLeases`, never a
     /// timer, and a caller cancel never detaches them.
     internal var feedMaintenanceTasks: [UUID: [UUID: Task<Void, Never>]] = [:]
+    /// G03-R4 parked-dependency continuations. A trusted dependency callback
+    /// and the user's explicit Stop are mutually exclusive per run: both the
+    /// resume admission and the stop CAS check these sets around every
+    /// suspension, so a late/duplicate callback can never revive a stopped
+    /// run and a Stop can never clobber a resume that already committed.
+    internal var resumingDependencyRuns: Set<UUID> = []
+    internal var stoppingDependencyRuns: Set<UUID> = []
 
     public init(components: RunDomainComponents) {
         self.epoch = components.context.epoch
@@ -731,7 +777,7 @@ public actor FacadeRunDomain {
 
     // MARK: Guard/fence helpers
 
-    private func requireNoGuard(conversationID: UUID) throws {
+    func requireNoGuard(conversationID: UUID) throws {
         if retirementFenced {
             throw RunDomainError(.sessionFenced, .generationRetired)
         }
@@ -914,11 +960,11 @@ public actor FacadeRunDomain {
         }.count
     }
 
-    private func issueFence(_ conversationID: UUID) -> LaunchEpochFence.Token {
+    func issueFence(_ conversationID: UUID) -> LaunchEpochFence.Token {
         launchFence.issue(scope: conversationID)
     }
 
-    private func fenceIsValid(_ token: LaunchEpochFence.Token) -> Bool {
+    func fenceIsValid(_ token: LaunchEpochFence.Token) -> Bool {
         launchFence.isValid(token)
     }
 
@@ -2094,6 +2140,63 @@ public actor FacadeRunDomain {
         } catch {
             return RunDomainReply(.rejected(RunDomainError(.staleRevision, .revisionAbsent)))
         }
+        // G03-R4: a PARKED awaiting-dependency run has no live service owner,
+        // yet the user's explicit Stop must really stop it. The CAS commits
+        // checkpointed→cancelled only when no resume won the race; the same
+        // call fences every pending edge, requests cooperative cancellation of
+        // exactly this run's jobs and leaves a truthful stopped checkpoint.
+        // A resume that committed first falls through to the ORIGINAL live
+        // cancel path below (the user's Stop still wins).
+        // An admission that is STILL in flight (a `.admitting` owner) is also
+        // routed here: the parked Stop marks that exact admission
+        // synchronously so it can never dispatch a provider/tool turn after
+        // the user's Stop. A committed/handed-off resume falls through to the
+        // ORIGINAL live cancel branch below.
+        if record.state == "checkpointed",
+           owners[query.runID] == nil || owners[query.runID]?.phase == .admitting,
+           await isAwaitingDependency(runID: query.runID) {
+            switch await stopAwaitingDependency(
+                runID: query.runID, conversationID: query.conversationID) {
+            case .stopped(let jobs):
+                return RunDomainReply(.mutationAccepted(detail: [
+                    "cancel": "stoppedAwaitingDependency",
+                    "resourceID": RunWireRevision.runResourceID(query.runID),
+                    "pendingJobs": String(jobs.count),
+                ]))
+            case .alreadyStarted(let state):
+                if state == "cancelled" {
+                    return RunDomainReply(.mutationAccepted(detail: [
+                        "cancel": "alreadyRequested"]))
+                }
+                // A resume committed first: continue to the live-owner branch.
+                break
+            case .busy:
+                // A concurrent parked Stop is already in flight.
+                return RunDomainReply(.mutationAccepted(detail: [
+                    "cancel": "alreadyRequested"]))
+            case .refused(let code, _):
+                let mapped: RunDomainError
+                switch code {
+                case RunDomainError.Code.sessionFenced.rawValue:
+                    mapped = RunDomainError(.sessionFenced, .deletingGuarded)
+                case RunDomainError.Code.persistenceUnavailable.rawValue:
+                    mapped = RunDomainError(.persistenceUnavailable,
+                                            .storeWriteFailed)
+                default:
+                    mapped = RunDomainError(.invalidState, .runNotRetryable)
+                }
+                return RunDomainReply(.rejected(mapped))
+            }
+        }
+        // A parked run already stopped by the user keeps its checkpointed row
+        // with the canonical stop cause: a second Stop is a truthful no-op,
+        // never a generic runNotRetryable error.
+        if record.state == "checkpointed", owners[query.runID] == nil,
+           await durableCheckpointReason(runID: query.runID)
+                == Self.parkedUserStopReason {
+            return RunDomainReply(.mutationAccepted(detail: [
+                "cancel": "alreadyRequested"]))
+        }
         // Native maintenance work has a real durable header and the same
         // conversation-owned operation lease as other native workspace work.
         // The authoritative owner/state/revision checks above still apply.
@@ -2291,13 +2394,29 @@ public actor FacadeRunDomain {
             return refuseLaunch(runID: record.id,
                                 error: RunDomainError(.invalidState, .runNotRetryable))
         }
-        // A parked awaiting-dependency run is NOT finished; refuse Continue
-        // exactly like the native guard (its resumption belongs to the job
-        // callback path, out of G02 facade scope).
-        if await isAwaitingDependency(record: record) {
-            return refuseLaunch(runID: record.id,
-                                error: RunDomainError(.invalidState,
-                                                      .runAwaitingDependency))
+        // A parked awaiting-dependency run is NOT finished while a required
+        // edge is still pending: refuse Continue exactly like the native
+        // guard, because its resumption belongs to the exact job callback.
+        // Once every required edge is durably terminal the run is recoverable
+        // by an EXPLICIT user Continue (the automatic callback may have been
+        // fenced by storage continuity or refused by admission); the original
+        // checkpoint resume then continues the same run without a new turn.
+        if await isAwaitingDependency(runID: record.id) {
+            var allSettled = false
+            if let reason = await durableCheckpointReason(runID: record.id) {
+                let (shape, observations) = await dependencyObservations(
+                    runID: record.id, reason: reason)
+                if case .resume = RunDependencyResumeGate.decide(
+                    shape: shape, observations: observations,
+                    allowMissing: true, allowUncertain: true) {
+                    allSettled = true
+                }
+            }
+            if !allSettled {
+                return refuseLaunch(runID: record.id,
+                                    error: RunDomainError(.invalidState,
+                                                          .runAwaitingDependency))
+            }
         }
         do {
             try requireNoGuard(conversationID: record.conversationID)
@@ -4149,11 +4268,11 @@ public actor FacadeRunDomain {
         return record
     }
 
+    /// Durable park truth (see RuntimeFacadeJobResume.swift): the run's latest
+    /// `checkpointed` status reason, never the recovery checkpoint state.
     func isAwaitingDependency(record: RunRecord) async -> Bool {
         guard record.state == "checkpointed" else { return false }
-        guard let checkpoint = try? await components.checkpoints.load(runID: record.id),
-              case .checkpointed(let reference) = checkpoint.state else { return false }
-        return (reference.reason ?? "").hasPrefix(FloeAgentRuntime.dependencyWaitReasonPrefix)
+        return await isAwaitingDependency(runID: record.id)
     }
 
     /// Conversation history for one run read from the RUN'S OWN bundle
@@ -4509,13 +4628,15 @@ extension FacadeRunDomain {
     }
 
     func ownedLaunchTasks(preparedRunID runID: UUID, service: ConversationRunService,
-                          goal: String, resumeFrom checkpoint: AgentCheckpoint?) {
+                          goal: String, resumeFrom checkpoint: AgentCheckpoint?,
+                          resumption: RuntimeSteerInput? = nil) {
         let conversationID = (owners[runID]?.conversationID) ?? service.conversationID
         guard let bundle = owners[runID]?.bundle else { return }
         let task = Task { [weak self, service] in
             do {
                 if let checkpoint {
-                    try await service.resumePrepared(from: checkpoint)
+                    try await service.resumePrepared(from: checkpoint,
+                                                     resumption: resumption)
                 } else {
                     // Bounded durable-history fallback: the ORIGINAL run is
                     // continued WITHOUT a second user turn.

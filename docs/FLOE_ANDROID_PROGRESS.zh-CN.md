@@ -1,5 +1,15 @@
 # Floe Android 分目标实施记录
 
+## 1.0.14／123候选：作业接续与控制清理，进入ARM64构建（2026-11-15）
+
+已接通当前任务的后台作业面板、逐项取消、等待期间停止、完成后的原运行接续，以及模型仍在运行时的原生状态通知。前台服务保护通过已有宿主通道真实申请，保持同一任务、运行与环境代次；停止、重复回调、其他运行占用及不确定的冷恢复均有围栏。系统状态通知不伪造用户消息，取消请求不伪造进程结束。
+
+本批实际Swift6生产对象编译与48项宿主测试通过；对话模块实际编译及13项JVM测试、作业协议7项JVM测试通过；7个Android生产宿主文件已编译为221个类。首次编译、断言与测试主机遗漏辅助文件的失败均保留，修正后完成相应用例。资源文案后续只做中英文一致的小改动，已检查XML。
+
+候选版本与组件源码下载标识统一为1.0.14／123，尚未创建发布标签或安装包。接下来只构建一份实际使用的Full候选，核对原生绑定和签名后用三星验收。公开安装包仍为1.0.13；原自然长任务整体未通过，不继续原失败运行，也不把组件测试计作自然任务成功。iOS发行状态保持独立。
+
+English: The 1.0.14/code123 candidate wires task-owned job inspection/cancellation, protected continuation of the original run, and typed native lifecycle notices. Actual Swift6 objects and48 host cases passed; the conversation module compiled with13 passing JVM cases, the App codec passed7 boundary cases, and seven production host files compiled. Android ARM64 production, APK and Samsung acceptance remain the next steps; no new release is claimed.
+
 ## 下一候选源码检查点：工具定义供给与浮球收尾（2026-11-15）
 
 已接通按实际模型窗口装入完整工具定义，移除固定23项／23KB预裁剪，分别保存期望激活与最近实际供给，保持已有定义的顺序；精确发现可返回完整参数定义，兼容名称仅作无歧义回映射。未知调用名的诊断只留摘要，不记录参数或凭据。

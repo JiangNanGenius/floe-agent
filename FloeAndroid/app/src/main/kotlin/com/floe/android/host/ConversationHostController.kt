@@ -20,6 +20,7 @@ import com.floe.android.feature.conversation.ComposerDraftSeedUi
 import com.floe.android.feature.conversation.ConversationHistoryHolder
 import com.floe.android.feature.conversation.ConversationListItemUi
 import com.floe.android.feature.conversation.ConversationSessionToken
+import com.floe.android.feature.conversation.FloeRunStateLocalizer
 import com.floe.android.feature.conversation.ConversationUiCallbacks
 import com.floe.android.contracts.EventCursor
 import com.floe.android.feature.conversation.GoalCreateRequest
@@ -56,6 +57,7 @@ import com.floe.android.FloeApplication
 import com.floe.android.feature.conversation.ChecklistDetailUi
 import com.floe.android.feature.conversation.ChecklistPresentationRules
 import com.floe.android.feature.conversation.asCurrentChecklistUi
+import com.floe.android.host.jobs.BackgroundJobsHostController
 import com.floe.android.host.notification.RunTerminalNoticeKind
 import com.floe.android.host.notification.RunTerminalNoticePolicy
 import com.floe.android.host.notification.TaskResultNotifications
@@ -79,6 +81,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -96,6 +99,17 @@ private const val MAXIMUM_CONTENT_CHUNKS = 128
 
 /** Bounded wait for the App-owned Notes platform (store/recovery) to open. */
 private const val NOTES_PLATFORM_WAIT_MILLIS = 15_000L
+
+/**
+ * Bounded READ-ONLY observation of a run parked on `awaiting.finite.job`.
+ * While the user looks at the waiting thread, the automatic continuation may
+ * resume it (or be fenced by storage continuity). The loop re-reads the
+ * canonical run snapshot + this task's durable job rows, re-arms the live
+ * event stream when the run really resumes, and stops as soon as the wait ends
+ * or the holder is gone. It never resumes, cancels or terminalizes anything.
+ */
+private const val WAITING_RUN_OBSERVATION_INTERVAL_MILLIS = 2_500L
+private const val WAITING_RUN_OBSERVATION_MAX_MILLIS = 30 * 60_000L
 
 /**
  * A `user.ask` or phone handover question is registered inside tool execution, AFTER the durable
@@ -431,6 +445,10 @@ class ConversationHostController internal constructor(
 
     /** Bounded question-discovery windows keyed by conversation/run/call. */
     private val questionDiscoveryJobs = ConcurrentHashMap<String, Job>()
+    /** THIS task's finite background jobs (read/cancel only). */
+    private val backgroundJobsHost = BackgroundJobsHostController(host)
+    /** Bounded parked-wait observers keyed by conversationID:runID. */
+    private val waitingRunObservations = ConcurrentHashMap<String, Job>()
 
     /** At most ONE explicit terminal→model handoff per conversation: a second
      * consent is refused instead of racing the same captured session, and the
@@ -1403,6 +1421,16 @@ class ConversationHostController internal constructor(
                         val selectedHere = entry.builder.selectedRunId == runID
                         if (selectedHere) entry.builder.applySnapshotLiveText(page)
                         entry.holder.applyHostSnapshot(entry.builder.build())
+                        // The page's own `checkpointReason` is omitted by a
+                        // retired owner; the projection keeps the durable
+                        // status-event reason. Use the PROJECTED waiting flag
+                        // so a cold checkpointed run is observed too.
+                        if (entry.builder.selectedRunId == runID &&
+                            entry.holder.snapshot.value?.selectedRunWaitingForJobs == true
+                        ) {
+                            startWaitingRunObservation(
+                                entry, runID, ownerConversation, sessionEpoch)
+                        }
                         if (selectedHere) {
                             resumeSnapshotContinuations(entry, entry.holder.session, page)
                         }
@@ -1465,6 +1493,100 @@ class ConversationHostController internal constructor(
             }
             onApplied?.invoke(applied)
         }
+    }
+
+    /**
+     * Bounded READ-ONLY observation of a parked waiting run (see the interval
+     * constants above). The automatic continuation remains the only resume
+     * trigger; this loop only makes a REAL resume visible and refreshes the
+     * durable job projection while the wait lasts.
+     */
+    private fun startWaitingRunObservation(
+        entry: ConversationFlowHolderEntry,
+        runID: String,
+        conversationID: String,
+        sessionEpoch: Long,
+    ) {
+        val key = "$conversationID:$runID"
+        if (waitingRunObservations.containsKey(key)) return
+        val job = host.scope.launch(
+            host.ioDispatcher,
+            start = kotlinx.coroutines.CoroutineStart.LAZY,
+        ) {
+            val deadline = System.currentTimeMillis() +
+                WAITING_RUN_OBSERVATION_MAX_MILLIS
+            try {
+                // Learn the real dependency state before the first sleep.
+                backgroundJobsHost.refresh(entry, quiet = true)
+                while (System.currentTimeMillis() < deadline) {
+                    delay(WAITING_RUN_OBSERVATION_INTERVAL_MILLIS)
+                    if (!ownCurrentEntry(entry, conversationID, sessionEpoch)) {
+                        return@launch
+                    }
+                    withContext(kotlinx.coroutines.Dispatchers.Main.immediate) {
+                        if (ownCurrentEntry(entry, conversationID, sessionEpoch)) {
+                            refreshRunSnapshot(entry, runID)
+                        }
+                    }
+                    backgroundJobsHost.refresh(entry, quiet = true)
+                    delay(80)
+                    val snapshot = entry.holder.snapshot.value ?: return@launch
+                    if (snapshot.isRunning) {
+                        // The automatic continuation really resumed this run:
+                        // bind it as a NEW stream incarnation exactly like an
+                        // explicit retry (bump the generation, drop the closed
+                        // tail, start after the durable watermark). This is a
+                        // READ re-arm only — the run itself is already owned.
+                        withContext(kotlinx.coroutines.Dispatchers.Main.immediate) {
+                            if (!ownCurrentEntry(entry, conversationID, sessionEpoch)) {
+                                return@withContext
+                            }
+                            val generation = rearmRunStreamAfterRetry(entry, runID)
+                            eventPumps.remove(runID)?.close()
+                            refreshRunSnapshot(
+                                entry, runID, streamGeneration = generation,
+                            ) {
+                                val ownerConversation =
+                                    entry.holder.session.conversationId
+                                val ownerEpoch = entry.holder.session.sessionEpoch
+                                if (ownCurrentEntry(entry, ownerConversation, ownerEpoch) &&
+                                    currentRunStreamGeneration(
+                                        ownerConversation, runID) == generation
+                                ) {
+                                    val after = runDurableWatermarks[
+                                        streamKey(ownerConversation, runID)
+                                    ] ?: 0L
+                                    openRunEventStream(
+                                        entry.holder.session, entry, runID,
+                                        streamGeneration = generation,
+                                        afterSequence = after,
+                                    )
+                                }
+                            }
+                        }
+                        return@launch
+                    }
+                    if (!snapshot.selectedRunWaitingForJobs) {
+                        // The wait ended without a live resume (completed,
+                        // stopped or a terminal reconciliation): read the
+                        // durable close boundary once so the final answer /
+                        // stop cause reaches the timeline.
+                        withContext(kotlinx.coroutines.Dispatchers.Main.immediate) {
+                            if (ownCurrentEntry(entry, conversationID, sessionEpoch)) {
+                                refreshRunSnapshot(entry, runID,
+                                    reconcileTerminal = true)
+                            }
+                        }
+                        return@launch
+                    }
+                }
+            } finally {
+                waitingRunObservations.remove(key,
+                    kotlinx.coroutines.currentCoroutineContext()[Job])
+            }
+        }
+        waitingRunObservations[key] = job
+        job.start()
     }
 
     /**
@@ -3995,6 +4117,28 @@ class ConversationHostController internal constructor(
         return true
     }
 
+    override fun refreshBackgroundJobs(session: ConversationSessionToken): Boolean {
+        if (!conversationAdmitted()) return false
+        val entry = holders[session.conversationId] ?: return false
+        if (entry.builder.isTemporary ||
+            !ownCurrentEntry(entry, session.conversationId, session.sessionEpoch)
+        ) return false
+        return backgroundJobsHost.refresh(entry)
+    }
+
+    override fun cancelBackgroundJob(
+        session: ConversationSessionToken,
+        jobId: String,
+        runId: String,
+    ): Boolean {
+        if (!conversationAdmitted()) return false
+        val entry = holders[session.conversationId] ?: return false
+        if (entry.builder.isTemporary ||
+            !ownCurrentEntry(entry, session.conversationId, session.sessionEpoch)
+        ) return false
+        return backgroundJobsHost.cancel(entry, jobId, runId)
+    }
+
     /** Notification ownership is independent of the currently visible holder. */
     internal fun cancelRunFromNotification(conversationID: String, runID: String): Boolean {
         val ownerEpoch = host.nativeRootEpoch() ?: return false
@@ -4009,10 +4153,15 @@ class ConversationHostController internal constructor(
                 val page = ConversationWire.decodeSnapshotPage(outcome.value) ?: return@trackOperation
                 val durableRunID = com.floe.android.host.notification.NotificationRunIdentity
                     .resolve(runID, page.runID) ?: return@trackOperation
-                if (page.isTerminal) {
+                val awaitingJobs = FloeRunStateLocalizer.isAwaitingBackgroundJobs(
+                    page.durableState, page.checkpointReason)
+                if (page.isTerminal && !awaitingJobs) {
                     host.runForeground?.agentRunSettled(durableRunID)
                     return@trackOperation
                 }
+                // A checkpointed run waiting on required finite jobs is NOT
+                // finished: the same run.cancel now commits the parked stop
+                // (fences the edges and cancels exactly its pending jobs).
                 host.trackOperation(HostCommandRequest(
                     command = "run.cancel", scope = HostScope.TaskExecution(conversationID, durableRunID),
                     stateful = true, correlationID = client().correlationID("notify-cancel"),

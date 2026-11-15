@@ -151,6 +151,7 @@ fun FloeConversationDestination(
                 modifier = Modifier.weight(1f),
                 onAttachmentDesign = if (state.isTemporary) null else onAttachmentDesign,
             )
+            BackgroundJobsWaitingBar(holder)
             ThreadCompactionStatus(holder)
             ThreadErrorBanner(holder)
             ThreadContinuationBar(holder)
@@ -171,6 +172,7 @@ fun FloeConversationDestination(
 
     // Sheet hosts (same surfaces the iOS view presents over the thread):
     GoalBuilderSheet(holder)
+    BackgroundJobsSheet(holder)
     PendingInputEditorSheet(holder)
     TemporaryChatAboutSheet(holder)
     ChildRunDetailSheet(holder)
@@ -247,7 +249,10 @@ private fun ThreadTopBar(
             }
             // Stop / Continue toolbar controls (⇄ stateToolbar).
             state?.let { s ->
-                if (s.isRunning) {
+                // A checkpointed run waiting on required finite jobs is NOT
+                // finished: it keeps a real Stop (run.cancel commits the
+                // parked stop CAS and cancels exactly its pending jobs).
+                if (s.isRunning || s.selectedRunWaitingForJobs) {
                     val stopCd = stringResource(R.string.action_stop)
                     Box(
                         modifier = Modifier
@@ -302,6 +307,11 @@ private fun ThreadTopBar(
                             title = stringResource(if (holder.mediaRefreshInFlight) R.string.menu_refreshing_media else R.string.menu_refresh_media),
                             selected = false,
                             onClick = { menuExpanded = false; holder.refreshMediaJobs() },
+                        )
+                        CupertinoMenuEntry(
+                            title = stringResource(R.string.menu_background_jobs),
+                            selected = false,
+                            onClick = { menuExpanded = false; holder.openBackgroundJobs() },
                         )
                         CupertinoMenuEntry(
                             title = stringResource(R.string.menu_set_goal),

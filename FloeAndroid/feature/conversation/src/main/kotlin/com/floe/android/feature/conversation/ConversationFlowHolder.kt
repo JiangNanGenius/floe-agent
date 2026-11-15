@@ -618,6 +618,16 @@ class ConversationFlowHolder(
     var mediaRefreshInFlight: Boolean by mutableStateOf(false)
         private set
 
+    /** ⇄ showingBackgroundJobs sheet. */
+    var backgroundJobsVisible: Boolean by mutableStateOf(false)
+        private set
+    /** Per-job Cancel latches (the durable row stays authoritative). */
+    var cancellingBackgroundJobIds: Set<String> by mutableStateOf(emptySet())
+        private set
+    /** True when the host refused to dispatch the bounded job read. */
+    var backgroundJobsUnavailable: Boolean by mutableStateOf(false)
+        private set
+
     /** The send whose launch is admitted but NOT yet atomically prepared.
      * Main's async-launch addendum: `startRun == true` is the host's
      * OWNED-PREPARATION ADMISSION, not a durable start; the matching commit
@@ -1320,8 +1330,12 @@ class ConversationFlowHolder(
         val state = snapshot.value ?: return rejected(ConversationRejectedReason.NO_SESSION)
         val targetRunId = runId ?: state.selectedRunId
             ?: return rejected(ConversationRejectedReason.RUN_NOT_CONTINUABLE)
-        if (targetRunId == state.selectedRunId && state.selectedRunWaitingForJobs)
-            return rejected(ConversationRejectedReason.RUN_NOT_CONTINUABLE)
+        // A still-pending required dependency owns the continuation. Once
+        // every edge is durably terminal, an explicit Continue may reopen the
+        // same run (the automatic callback is tried first).
+        if (targetRunId == state.selectedRunId && state.selectedRunWaitingForJobs &&
+            !state.selectedRunDependenciesSettled
+        ) return rejected(ConversationRejectedReason.RUN_NOT_CONTINUABLE)
         // A durable wait may belong to another run. Selection is reactive;
         // never send Continue to the old snapshot while it catches up.
         val started = host.retryRun(session, targetRunId)
@@ -1905,6 +1919,65 @@ class ConversationFlowHolder(
         if (retired) return
         mediaRefreshInFlight = false
         if (message != null) actionError = message
+    }
+
+    /* ------------------------------ background jobs ------------------------------ */
+
+    /** Open the task-owned finite background-job sheet and start ONE bounded
+     * durable read. Reachable while the selected run waits for its jobs. */
+    fun openBackgroundJobs(): ConversationFlowResult {
+        if (retired) return rejected(ConversationRejectedReason.NO_SESSION)
+        if (snapshot.value?.isTemporary == true) {
+            return rejected(ConversationRejectedReason.RUN_NOT_CONTINUABLE)
+        }
+        backgroundJobsVisible = true
+        return refreshBackgroundJobs()
+    }
+
+    fun dismissBackgroundJobs() { backgroundJobsVisible = false }
+
+    fun refreshBackgroundJobs(): ConversationFlowResult {
+        if (retired) return rejected(ConversationRejectedReason.NO_SESSION)
+        val state = snapshot.value ?: return rejected(ConversationRejectedReason.NO_SESSION)
+        if (state.isTemporary) return rejected(ConversationRejectedReason.RUN_NOT_CONTINUABLE)
+        if (state.backgroundJobsLoading) {
+            return rejected(ConversationRejectedReason.OPERATION_IN_FLIGHT)
+        }
+        return if (host.refreshBackgroundJobs(session)) {
+            backgroundJobsUnavailable = false
+            ConversationFlowResult.Accepted
+        } else {
+            backgroundJobsUnavailable = true
+            rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
+        }
+    }
+
+    /** Exact-identity cooperative Cancel. The host re-proves ownership; this
+     * latch only prevents a duplicate tap from dispatching twice. */
+    fun cancelBackgroundJob(job: BackgroundJobUi): ConversationFlowResult {
+        if (retired) return rejected(ConversationRejectedReason.NO_SESSION)
+        val state = snapshot.value ?: return rejected(ConversationRejectedReason.NO_SESSION)
+        if (state.isTemporary) return rejected(ConversationRejectedReason.RUN_NOT_CONTINUABLE)
+        if (!job.canCancel) return rejected(ConversationRejectedReason.RUN_NOT_CONTINUABLE)
+        if (job.cancellationRequested) {
+            return rejected(ConversationRejectedReason.OPERATION_IN_FLIGHT)
+        }
+        if (job.jobId in cancellingBackgroundJobIds) {
+            return rejected(ConversationRejectedReason.OPERATION_IN_FLIGHT)
+        }
+        cancellingBackgroundJobIds = cancellingBackgroundJobIds + job.jobId
+        val started = host.cancelBackgroundJob(session, job.jobId, job.runId)
+        if (!started) {
+            cancellingBackgroundJobIds = cancellingBackgroundJobIds - job.jobId
+            return rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
+        }
+        return ConversationFlowResult.Accepted
+    }
+
+    /** Host echo after the cancel exchange settled (accepted OR refused). The
+     * job's durable state comes only from the refreshed projection. */
+    fun applyBackgroundJobActionSettled(jobId: String) {
+        cancellingBackgroundJobIds = cancellingBackgroundJobIds - jobId
     }
 
     fun openPermissions() { host.openTaskPermissions(session) }

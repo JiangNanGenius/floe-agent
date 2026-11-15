@@ -566,6 +566,19 @@ public actor BackgroundJobService {
         try await store.job(id: id)
     }
 
+    /// THIS task's durable jobs (newest first). `runID` narrows to one run and
+    /// is still filtered by the conversation, so a caller can never observe
+    /// another task's rows through a supplied run id. This is a trusted-host
+    /// read projection only; it submits, resumes and terminalizes nothing.
+    public func jobs(conversationID: UUID, runID: UUID? = nil,
+                     limit: Int = 50) async throws -> [BackgroundJob] {
+        if let runID {
+            return try await store.jobs(runID: runID, limit: limit)
+                .filter { $0.conversationID == conversationID }
+        }
+        return try await store.jobs(conversationID: conversationID, limit: limit)
+    }
+
     /// Resolve ownership from the durable run, not a caller-supplied task ID.
     public func ownedJob(id: UUID, runID: UUID) async throws -> BackgroundJob {
         guard let owner = try await store.conversationID(runID: runID),
@@ -628,10 +641,11 @@ public actor BackgroundJobService {
                 ) {
                     count += 1
                     if let resolveDependency {
+                        let resolution = Self.dependencyResolution(for: reconciled)
                         await resolveDependency(
                             reconciled.id,
-                            Self.dependencyState(for: reconciled.state),
-                            "Reconciled after relaunch: \(resolved.rawValue)"
+                            resolution.state,
+                            "Reconciled after relaunch: \(resolved.rawValue). \(resolution.note)"
                         )
                     }
                     continue
@@ -695,12 +709,18 @@ public actor BackgroundJobService {
         cancellations[job.id] = nil
         preparedOperations[job.id] = nil
         progressRecorders[job.id] = nil
-        if let resolveDependency {
-            let state = Self.dependencyState(for: job.state)
-            let note = job.lastError ?? "job \(job.state.rawValue)"
-            Task { await resolveDependency(job.id, state, note) }
+        let resolveDependency = resolveDependency
+        let onTerminal = onTerminal
+        Task {
+            // A terminal consumer may immediately resume the waiting run.
+            // Commit its dependency first; independent Tasks let the callback
+            // observe a still-pending edge and lose that continuation.
+            if let resolveDependency {
+                let resolution = Self.dependencyResolution(for: job)
+                await resolveDependency(job.id, resolution.state, resolution.note)
+            }
+            await onTerminal(job)
         }
-        Task { await onTerminal(job) }
     }
 
     private func jobDidFinish(id: UUID) {
@@ -708,12 +728,22 @@ public actor BackgroundJobService {
         cancellations[id] = nil
         preparedOperations[id] = nil
         progressRecorders[id] = nil
-        if let resolveDependency {
-            Task { [store] in
-                guard let job = try? await store.job(id: id) else { return }
-                let state = Self.dependencyState(for: job.state)
-                await resolveDependency(id, state, job.lastError ?? "job \(job.state.rawValue)")
+        let resolveDependency = resolveDependency
+        let onTerminal = onTerminal
+        Task { [store] in
+            guard let job = try? await store.job(id: id),
+                  job.state.isTerminal else { return }
+            // This fallback runs when the processor's own terminal write lost
+            // a race (a concurrent queued cancel usually owns the terminal).
+            // A real terminal is required here: a FAILED write must never
+            // release processor ownership or notify a consumer about a job
+            // that may still be running. Both consumers are idempotent, so a
+            // concurrent cancel cannot double-resume a run.
+            if let resolveDependency {
+                let resolution = Self.dependencyResolution(for: job)
+                await resolveDependency(job.id, resolution.state, resolution.note)
             }
+            await onTerminal(job)
         }
     }
 
@@ -731,6 +761,24 @@ public actor BackgroundJobService {
         guard job.targetTool == "exec.localService"
             || (job.targetTool == "exec.shell" && typedService) else { return }
         await resolveDependency(id, .resolved, note)
+    }
+
+    /// The durable dependency outcome for one job. A managed service that
+    /// EXITS before readiness (or after it was ready) is not a readiness
+    /// success: when no `.resolved` edge was committed earlier, the required
+    /// dependency failed. The first resolution wins, so a service that WAS
+    /// proven ready keeps its `.resolved` edge.
+    public static func dependencyResolution(
+        for job: BackgroundJob
+    ) -> (state: RunDependencyState, note: String) {
+        let isManagedService = job.targetTool == "exec.localService"
+            || C01ManagedServiceDeclaration.isServicePayload(job.payloadJSON)
+        if isManagedService, job.state == .completed {
+            return (.failed,
+                    "The managed service ended before its readiness was proven; the required dependency was not satisfied.")
+        }
+        return (dependencyState(for: job.state),
+                job.lastError ?? "job \(job.state.rawValue)")
     }
 
     /// Maps a job's terminal/nonterminal state to the durable dependency

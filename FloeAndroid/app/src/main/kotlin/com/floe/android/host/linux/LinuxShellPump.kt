@@ -5,6 +5,7 @@ import android.content.Context
 import android.os.IBinder
 import com.floe.android.runtimeipc.RuntimeExecutionTrace
 import com.floe.android.runtimeipc.RuntimeExecutionTrace.Stage
+import com.floe.android.host.RunForegroundBinding
 import com.floe.android.host.services.C01ManagedServiceOwner
 import com.floe.android.bridge.LinuxShellNative
 import com.floe.android.runlifecycle.ForegroundLease
@@ -36,6 +37,14 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
     internal class AdmissionRefused(val code: String = "runtime_not_started") : IllegalStateException("Runtime refused admission")
     private val context = context.applicationContext
     private val foreground = RunForegroundController.forApplication(context)
+    /**
+     * Application-owned binding that holds the REAL agent-run foreground
+     * leases. Wired by FloeApplication once the host exists; null means no
+     * real protection can be claimed, so an automatic parent resume is
+     * refused instead of dispatching unprotected provider/tool work.
+     */
+    @Volatile
+    internal var runForeground: (() -> RunForegroundBinding?)? = null
     private val epoch = AtomicLong()
     private val starts = Mutex()
     private val admissionClosed = AtomicBoolean()
@@ -408,6 +417,15 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
             }
             if (operation == "host.jobOwnership") {
                 complete(claim, 0, jobOwnership(claim, payload, acceptedEpoch)); return
+            }
+            if (operation == "host.runOwnership") {
+                // Trusted-host foreground admission for an AUTOMATIC
+                // (UI-less) parent-run resume. It reuses the ORIGINAL
+                // RunForegroundBinding/RunForegroundController AGENT_RUN
+                // lease and the exact run identity; it starts no run, no
+                // provider call and no tool, and it never acquires from
+                // counts. Handled BEFORE the guest/runtime IPC gates.
+                complete(claim, 0, runOwnership(claim, payload, acceptedEpoch)); return
             }
             if (operation == "host.environmentControl") {
                 // C01 truthful environment lifecycle. The owner reports the
@@ -2419,6 +2437,69 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
         internal fun reportedStartFailureCode(generic: String, runtime: RuntimeStartFailure): String =
             if (runtime.code in ROOTFS_START_FAILURE_CODES)
                 runtime.code else generic
+    }
+
+    /**
+     * `host.runOwnership` {epoch, runID, conversationID, action} ->
+     * {accepted, epoch, state}.
+     *
+     * `acquire` asks the ORIGINAL [RunForegroundBinding.agentRunStarted] for
+     * the real AGENT_RUN lease of this EXACT run (the same authoritative
+     * admission a user-launched run gets, including its notification Stop
+     * route back to `run.cancel`). `release` closes exactly the lease of an
+     * admission that was abandoned BEFORE its runtime handoff.
+     *
+     * The run UUID is forwarded in the caller's canonical form (identity is
+     * never rewritten at this boundary); only its shape is validated.
+     */
+    private suspend fun runOwnership(claim: Long, query: JSONObject, acceptedEpoch: Long): JSONObject {
+        require(query.getLong("epoch") == acceptedEpoch)
+        val runID = query.getString("runID")
+        require(UUID.fromString(runID).toString().equals(runID, ignoreCase = true))
+        val binding = runForeground?.invoke()
+            ?: return JSONObject().put("accepted", false)
+                .put("epoch", acceptedEpoch).put("state", "unbound")
+        return when (query.getString("action")) {
+            "release" -> {
+                // Never cancels work: it only drops the foreground lease of a
+                // resume that never handed a service off.
+                binding.agentRunResumeAbandoned(runID)
+                JSONObject().put("accepted", true)
+                    .put("epoch", acceptedEpoch).put("state", "released")
+            }
+            "acquire" -> {
+                val conversationID = query.getString("conversationID")
+                require(UUID.fromString(conversationID).toString().equals(conversationID, ignoreCase = true))
+                fun stillCurrent(): Boolean = epoch.get() == acceptedEpoch &&
+                    !admissionClosed.get() && LinuxShellNative.isLive(claim) == 1 &&
+                    LinuxShellNative.shouldStop(claim) == 0
+                val operationID = UUID.randomUUID().toString()
+                var handedOff = false
+                try {
+                    if (!stillCurrent()) {
+                        JSONObject().put("accepted", false).put("epoch", acceptedEpoch).put("state", "fenced")
+                    } else if (!binding.reserveAgentRunResume(operationID, conversationID, runID)) {
+                        JSONObject().put("accepted", false).put("epoch", acceptedEpoch).put("state", "refused")
+                    } else if (!stillCurrent()) {
+                        JSONObject().put("accepted", false).put("epoch", acceptedEpoch).put("state", "fenced")
+                    } else {
+                        val admitted = binding.agentLaunchAdmitted(operationID, conversationID, runID)
+                        handedOff = admitted && stillCurrent()
+                        JSONObject().put("accepted", handedOff).put("epoch", acceptedEpoch)
+                            .put("state", if (handedOff) "admitted" else "fenced")
+                    }
+                } finally {
+                    // A cancelled/timed-out request can finish acquiring after
+                    // Core stopped waiting. Retire THIS reservation only; a
+                    // later admission for the same run remains protected.
+                    if (!handedOff) {
+                        binding.agentLaunchDefinitelyNotAdmitted(operationID)
+                        binding.agentRunResumeAbandoned(runID)
+                    }
+                }
+            }
+            else -> error("Invalid run ownership action")
+        }
     }
 
     private suspend fun jobOwnership(claim: Long, query: JSONObject, acceptedEpoch: Long): JSONObject {

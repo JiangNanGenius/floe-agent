@@ -349,7 +349,21 @@ public final class G02InstalledComposition: @unchecked Sendable {
             let owner = G03JobLifecycle(epoch: epoch)
             guard RuntimeFacadeJobBindings.shared.compose(database: database, shell: shell,
                 transport: MailboxLinuxShellTransport(), settlementGate: LinuxShellJobSettlement.gate,
-                outputRootURL: spool, onTerminal: { await owner.terminal($0) }, processorOwnership: owner,
+                outputRootURL: spool,
+                onTerminal: { job in
+                    // G03-R4 ORDER: the dependency edge is already committed
+                    // by the ORIGINAL service before this callback. The
+                    // continuation runs FIRST so the finished job's REAL
+                    // foreground lease (and its owned token) still protects
+                    // the transition: an automatic parent resume acquires its
+                    // own Main admission before this job's lease is retired,
+                    // and a live parent receives its lifecycle receipt before
+                    // the last protection disappears. Only afterwards does
+                    // the ORIGINAL settlement release the job ownership.
+                    await JobDependencyContinuation.shared.jobTerminal(job)
+                    await owner.terminal(job)
+                },
+                processorOwnership: owner,
                 serviceHost: C01ManagedServiceDomain.shared),
                 let jobs = RuntimeFacadeJobBindings.shared.register() else { return nil }
             owner.bind(jobs)
@@ -699,8 +713,40 @@ public final class G02InstalledComposition: @unchecked Sendable {
             mediaTaskContext: { taskID in
                 await BridgeV5.service.r2MediaTaskContext(taskID: taskID)
             },
-            executionTargets: executionTargets)
+            executionTargets: executionTargets,
+            // G03-R4: durable dependency edges, the parked-run Stop CAS and
+            // exact-run cooperative job cancellation. Every one is a port over
+            // the SAME G02 database/job service composed above.
+            runDependencyEdges: G02RunDependencyEdgeReader(database: database),
+            commitParkedRunStop: { runID, conversationID, expectedState in
+                await G02ParkedRunStopCommitter(database: database).commit(
+                    runID: runID, conversationID: conversationID,
+                    expectedState: expectedState)
+            },
+            cancelParkedRunJobs: { runID, conversationID, jobIDs in
+                await RuntimeFacadeJobBindings.shared.requestCancellationForRunJobs(
+                    runID: runID, conversationID: conversationID, jobIDs: jobIDs)
+            },
+            // G03-R4: the AUTOMATIC parent resume must hold REAL App-host
+            // foreground protection before its provider/tool work. The
+            // acquisition goes through the EXISTING LinuxShellMailbox host
+            // lane to the ORIGINAL RunForegroundController; an unbound or
+            // refused host leaves the run parked and retryable.
+            runForegroundAdmission: MailboxRunForegroundAdmission())
         RunDomainFacade.install(components: runComponents, registry: gen.registry)
+        if let (domain, _) = RunDomainFacade.current(epoch: epoch) {
+            // The automatic continuation is bound to THIS generation: an old
+            // epoch callback can never resume a newer generation's run.
+            await JobDependencyContinuation.shared.install(
+                epoch: epoch, port: domain,
+                jobLookup: { jobID in
+                    guard let service = RuntimeFacadeJobBindings.shared.service,
+                          let job = try? await service.job(id: jobID) else {
+                        return nil
+                    }
+                    return job
+                })
+        }
         G073TaskScheduleFacade.install(epoch: epoch, service: scheduleService)
         // Cold-start ordering is enforced by the service: settle occurrences
         // whose durable run reached a terminal, THEN interrupt leftovers.
@@ -1054,6 +1100,23 @@ public final class G02InstalledComposition: @unchecked Sendable {
             }
         }
         guard skillsCredentialLease.bind(installed) else { return nil }
+        // G03-R4 cold recovery, AFTER every composition step succeeded: the
+        // original launch reconcile already marked dead processors
+        // interrupted. Only genuine successes (completed jobs / proven
+        // service readiness) are eligible; an old interrupted/uncertain
+        // outcome never auto-resumes and is reopened only by the user.
+        let candidates = await RuntimeFacadeJobBindings.shared
+            .launchDependencyCandidates()
+        // The automatic path needs a REAL foreground admission, and the
+        // trusted host pump is bound by the App AFTER this composition step.
+        // Dispatch the reconcile DETACHED and bounded: composition never
+        // blocks on the host binding (no circular synchronous boot wait), and
+        // a host that never binds leaves the success-only candidates parked
+        // for an explicit Continue instead of starting a model unprotected.
+        Task.detached {
+            await JobDependencyContinuation.shared.reconcileWhenHostReady(
+                epoch: epoch, candidates: candidates)
+        }
         return installed
     }
 }

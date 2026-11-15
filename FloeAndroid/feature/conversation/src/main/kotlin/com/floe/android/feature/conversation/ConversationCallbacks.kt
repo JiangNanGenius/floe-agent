@@ -386,6 +386,26 @@ interface ConversationUiCallbacks {
      * user message. */
     fun retryRun(session: ConversationSessionToken, runId: String): Boolean
 
+    /**
+     * THIS task's durable finite background jobs (read-only, bounded). The
+     * host resolves the exact task/run/epoch and never exposes payloads,
+     * commands, output text or private paths. A default refusal keeps every
+     * fixture honest: no jobs surface without a real host lane.
+     */
+    fun refreshBackgroundJobs(session: ConversationSessionToken): Boolean = false
+
+    /**
+     * Cooperative per-job Cancel for THIS task's exact job identity. The host
+     * re-proves durable run ownership before the ORIGINAL service requests
+     * cancellation; a running job stays nonterminal until its processor
+     * acknowledges. True means the request was dispatched, never "settled".
+     */
+    fun cancelBackgroundJob(
+        session: ConversationSessionToken,
+        jobId: String,
+        runId: String,
+    ): Boolean = false
+
     /** Read-only queue/message reconciliation. Never resumes a business run.
      * The token fences late success against a newer projection failure. */
     fun refreshQueuedInputProjection(

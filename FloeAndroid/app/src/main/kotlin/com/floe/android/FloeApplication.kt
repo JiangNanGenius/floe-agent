@@ -719,6 +719,13 @@ class FloeApplication : Application() {
                     isCurrentOwner = request.ownerFence,
                 )?.savePathToProvider(request.logicalPath)
             }
+            // G03-R4: the Core run domain's AUTOMATIC parent resume asks the
+            // trusted mailbox for a REAL foreground lease before any resumed
+            // provider/tool turn. The lease is the SAME ORIGINAL binding the
+            // UI uses (agentRunStarted), including its notification-Stop
+            // route. Capture the host instance: the runtimeHost property is
+            // assigned only after this block returns.
+            linuxShell.runForeground = { host.runForeground }
         }
         // G05-R3 Alpha14 (user requirement): GitHub full-channel App
         // self-update. Application-owned, data-only creation here; checks,

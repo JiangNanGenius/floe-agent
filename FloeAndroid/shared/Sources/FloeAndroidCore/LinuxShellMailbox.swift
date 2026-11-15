@@ -257,6 +257,16 @@ public final class LinuxShellMailbox: @unchecked Sendable {
         return true
     }
 
+    /// The generation this mailbox is CURRENTLY bound to (0 == unbound).
+    /// Read-only: it lets a trusted caller decide whether a host operation
+    /// can be answered at all (a cold-start reconcile waits for the real
+    /// pump binding instead of inventing an admission from counts).
+    public var liveEpoch: UInt64 {
+        condition.lock()
+        defer { condition.unlock() }
+        return closed ? 0 : epoch
+    }
+
     /// Retire the mailbox for a closing generation (host lifecycle). All
     /// waiters are released `hostFenced`; no work is replayed and running
     /// leases must be reconciled by the new generation's census.
