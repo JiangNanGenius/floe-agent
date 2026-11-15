@@ -3,7 +3,7 @@
 
 本文是 iOS／iPadOS 下一版版本选择的唯一维护入口；各渠道实际交付状态见[当前状态](CURRENT_STATUS.md)与[逐版交付记录](releases/README.md)。Android 版本独立管理。
 
-**最近已核验的内部测试为 1.8.35（356）。** Apple 返回 `VALID`，构建未过期，唯一测试组 Floe QA 为 `IN_BETA_TESTING`。签名包主程序 UUID 与本地构建一致。GitHub stable/latest 与 Feather 最近一次核验为 346。[356 交付记录](releases/builds/FLOE_1.8.35_BUILD356_DELIVERY.md)
+**最近已核验的内部测试为 1.8.36（357）。** Apple 返回 `VALID`，构建未过期，唯一测试组 Floe QA 为 `IN_BETA_TESTING`。签名包主程序 UUID 与本地构建一致。GitHub stable/latest 与 Feather 最近一次核验为 346。[357 交付记录](releases/builds/FLOE_1.8.36_BUILD357_DELIVERY.md)
 
 ## 依据与判定
 
@@ -12,6 +12,8 @@
 标签、源提交、候选目录、版本说明、构建／归档成功和签名流程启动，都不能单独证明上传、审核通过或可安装。不得从最高标签自动推算下一版，也不得把未交付尝试称为上一已交付版本。
 
 ## 本轮版本记录
+
+1.8.36（357）已交付内部 Floe QA，固定源码 `0e3d646e6a8e87c1b4144fafdf8395e219414f41`。本版包含性能、打印状态和包体优化。Mac Bridge 传输修复在其后进入主线。
 
 1.8.35（356）已交付内部 Floe QA。该版包含 355 的全部改进和化学工程的原生三维预览。Apple 已确认内部可安装，353 的公开和正式版均关联原提交。
 
