@@ -342,22 +342,14 @@ final class DesignConversationPageUITests: XCTestCase {
         web.buttons["Open worksheet"].tap()
         XCTAssertEqual(note.value as? String, noteText)
         XCTAssertEqual(try pageRecord(PageSize.self, prefix: "Current page ", in: web).page, original.page)
-        let closeOnly = app.buttons.matching(identifier: "browser.live.back").firstMatch
-        XCTAssertTrue(["仅收起", "Close for now"].contains(closeOnly.label))
-        closeOnly.tap()
+        let returnAndClose = app.buttons.matching(identifier: "browser.live.back").firstMatch
+        XCTAssertTrue(["交还并关闭", "Return control and close"].contains(returnAndClose.label))
+        returnAndClose.tap()
         XCTAssertTrue(closeInspector.waitForExistence(timeout: 8))
         XCTAssertTrue(app.staticTexts[heading].isHittable)
         XCTAssertEqual(app.staticTexts[heading].frame.midY, sourceY, accuracy: 12)
         XCTAssertFalse(liveImage(app).exists)
-        XCTAssertTrue(liveButton(app, "browser.live.takeover", labels: ["去操作", "Open browser"]).exists)
         XCTAssertEqual(composer.value as? String ?? "", draft)
-        XCTAssertTrue(app.buttons["browser.live.return"].isHittable)
-        takeOver.tap()
-        XCTAssertTrue(note.waitForExistence(timeout: 8))
-        XCTAssertEqual(note.value as? String, noteText)
-        let handback = app.buttons.matching(identifier: "browser.handoff.return").firstMatch
-        XCTAssertTrue(handback.isHittable)
-        handback.tap()
         XCTAssertTrue(app.textFields["browser.address"].firstMatch.waitForNonExistence(timeout: 10))
         XCTAssertTrue(app.buttons["browser.live.return"].firstMatch.waitForNonExistence(timeout: 8))
         // This offline fixture has no running task. Recovery belongs to the original task.

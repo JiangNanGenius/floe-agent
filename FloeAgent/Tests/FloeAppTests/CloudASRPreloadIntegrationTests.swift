@@ -7,6 +7,26 @@ import FloeSecurity
 @testable import FloeApp
 
 final class CloudASRPreloadIntegrationTests: XCTestCase {
+    func testDeepSeekContinuousSpeechEmitsCompletedSegmentsBeforeStop() async throws {
+        let file = RecordingBatchASR()
+        let transcriber = try CloudSpeechTranscriber(
+            profile: .deepSeek(), language: .english,
+            adapters: CloudSpeechAdapters(file: { _ in file }, live: { _ in nil }),
+            credentialProvider: { "synthetic-key" }, localFallback: { nil })
+        let collected = Task {
+            var values: [String] = []
+            for await text in transcriber.transcripts { values.append(text) }
+            return values
+        }
+        for _ in 0..<9 { transcriber.feed(try cloudVoiceBuffer(seconds: 1, voiced: true), at: nil) }
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline, file.count == 0 { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertGreaterThanOrEqual(file.count, 1, "a long utterance must produce a segment before capture stops")
+        await transcriber.finishAudio()
+        let values = await collected.value
+        XCTAssertEqual(values.last, "segment 1 segment 2")
+        XCTAssertEqual(file.count, 2)
+    }
     func testLiveHypothesisRevisionsReplaceOnlyTheCurrentPartial() {
         let box = CloudLiveEventBox()
         let turn = UUID()
@@ -98,6 +118,14 @@ final class CloudASRPreloadIntegrationTests: XCTestCase {
     /// captured PCM byte before the final is committed once. No account or
     /// network is used.
     func testRealVolcengineReceiveDisconnectReconnectsWithFullReplay() async throws {
+        try await exerciseVolcengineReconnect(stopImmediately: false)
+    }
+
+    func testVolcengineReconnectsAndReplaysAfterCaptureStops() async throws {
+        try await exerciseVolcengineReconnect(stopImmediately: true)
+    }
+
+    private func exerciseVolcengineReconnect(stopImmediately: Bool) async throws {
         let first = ScriptedVolcConnection()
         first.inbox.fail(URLError(.networkConnectionLost))
         let second = ScriptedVolcConnection()
@@ -145,13 +173,15 @@ final class CloudASRPreloadIntegrationTests: XCTestCase {
             expectedBytes += Int(buffer.frameLength) * 2
             transcriber.feed(buffer, at: nil)
         }
-        let deadline = Date().addingTimeInterval(5)
-        while Date() < deadline, second.audioBytes != expectedBytes {
-            try await Task.sleep(for: .milliseconds(10))
+        if !stopImmediately {
+            let deadline = Date().addingTimeInterval(5)
+            while Date() < deadline, second.audioBytes != expectedBytes {
+                try await Task.sleep(for: .milliseconds(10))
+            }
         }
+        await transcriber.finishAudio()
         XCTAssertEqual(second.audioBytes, expectedBytes,
                        "the replayed request must receive the complete captured PCM")
-        await transcriber.finishAudio()
         let values = await collected.value
 
         XCTAssertEqual(transport.connectCount, 2,
@@ -161,6 +191,16 @@ final class CloudASRPreloadIntegrationTests: XCTestCase {
                        "the committed final is emitted once")
         XCTAssertNil(transcriber.failure)
         XCTAssertGreaterThanOrEqual(first.cancelCount, 1, "the failed socket is released")
+    }
+}
+
+private final class RecordingBatchASR: ASRTranscribing, @unchecked Sendable {
+    private let lock = NSLock()
+    private var calls = 0
+    var count: Int { lock.withLock { calls } }
+    func transcribe(_ request: ASRTranscriptionRequest, credential: String) async throws -> ASRTranscriptionResult {
+        let number = lock.withLock { calls += 1; return calls }
+        return ASRTranscriptionResult(text: "segment \(number)", segments: [])
     }
 }
 

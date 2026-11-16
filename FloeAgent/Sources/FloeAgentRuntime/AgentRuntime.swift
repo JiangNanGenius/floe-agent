@@ -993,6 +993,7 @@ public actor FloeAgentRuntime {
     private var providerPayloadBytes = 0
     private var modelRequestStartedAt: Date?
     private var firstModelActivityAt: Date?
+    private var lastToolSettlementAt: Date?
     /// Tool executions so far in this run (bounded by
     /// `Configuration.maxToolSteps`).
     private var toolStepCount = 0
@@ -3753,6 +3754,10 @@ public actor FloeAgentRuntime {
         )
         lastDispatchedToolSchemas = exposure
         dispatchRequest.onToolSchemasPrepared = { names in exposure.recordPrepared(names) }
+        if let settledAt = lastToolSettlementAt {
+            logger.info("postToolProviderDispatch run=\(runID.uuidString) preparationMs=\(max(0, Int(Date().timeIntervalSince(settledAt) * 1000)))")
+            lastToolSettlementAt = nil
+        }
         let stream = adapter.stream(request: dispatchRequest, credentials: credentials)
         streamTask = Task { [weak self] in
             guard let self else { return }
@@ -6392,6 +6397,7 @@ public actor FloeAgentRuntime {
         logger.info(
             "toolEvidenceGraduated run=\(runID.uuidString) batch=\(orderedResults.count) graduated=\(graduatedCount) compacted=\(compactedCount) historyPairs=\(replayableToolHistory.count) droppedOldest=\(historyCountBeforeTrim - replayableToolHistory.count) evidenceBytes=\(retainedEvidenceBytes)"
         )
+        let settlementStartedAt = Date()
         do {
             try await writeCheckpoint()
         } catch {
@@ -6406,6 +6412,8 @@ public actor FloeAgentRuntime {
         for item in orderedResults {
             await emit(.toolResult(item.result))
         }
+        lastToolSettlementAt = Date()
+        logger.info("postToolSettlement run=\(runID.uuidString) calls=\(orderedResults.count) persistenceMs=\(max(0, Int(Date().timeIntervalSince(settlementStartedAt) * 1000)))")
 
         if let needsUserResult {
             waitingForUserAction = true

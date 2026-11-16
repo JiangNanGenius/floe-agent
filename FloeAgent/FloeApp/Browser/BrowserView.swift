@@ -211,9 +211,10 @@ private struct BrowserLivePreviewControls: View {
                     Button {
                         presentation?.open(.interacting, session, page, lease)
                     } label: {
-                        Text(session.isUserControlling ? IDELanguageRunText.t("去操作", "Open browser") : IDELanguageRunText.t("我来操作", "Take over"))
-                            .font(.caption.weight(.semibold)).frame(minHeight: 44)
+                        Image(systemName: "hand.tap")
+                            .frame(minWidth: 44, minHeight: 44)
                     }
+                    .accessibilityLabel(session.isUserControlling ? IDELanguageRunText.t("去操作", "Open browser") : IDELanguageRunText.t("我来操作", "Take over"))
                     .accessibilityIdentifier("browser.live.takeover")
                 }
                 .padding(.horizontal, 10)
@@ -253,7 +254,7 @@ private struct BrowserLivePreviewSheet: View {
                     BrowserView(center: center, previewInteractionID: panel.id, expectedSession: session, onClose: close)
                 case .watching:
                     VStack(spacing: 16) {
-                        if scenePhase == .active, session.isModelActive, let tab = session.activeTab {
+                        if scenePhase == .active, session.isModelActive, let tab = session.fixedViewportTab ?? session.activeTab {
                             BrowserZoomablePreview(tab: tab, presentationID: panel.id, priority: 2)
                                 .frame(maxHeight: .infinity)
                         }
@@ -266,8 +267,18 @@ private struct BrowserLivePreviewSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     if panel.mode == .interacting, session.isUserControlling {
-                        Button(IDELanguageRunText.t("仅收起", "Close for now"), action: close)
-                            .disabled(center.returningControl || session.returningToModel)
+                        Button {
+                            let handoffID = center.handoff(for: session.conversationID)?.id
+                            Task {
+                                if await center.returnControlIfCurrent(for: session, handoffID: handoffID, presentationID: panel.id) {
+                                    close()
+                                }
+                            }
+                        } label: {
+                            Image(systemName: "hand.tap")
+                        }
+                            .accessibilityLabel(IDELanguageRunText.t("交还并关闭", "Return control and close"))
+                            .disabled(session.takeoverPending || center.returningControl || session.returningToModel)
                             .accessibilityIdentifier("browser.live.back")
                     } else {
                         Button(IDELanguageRunText.t("返回", "Back"), action: close)
@@ -276,7 +287,8 @@ private struct BrowserLivePreviewSheet: View {
                 }
             }
         }
-        .interactiveDismissDisabled(center.visibleSession === session && (center.returningControl || session.returningToModel))
+        .interactiveDismissDisabled((panel.mode == .interacting && session.isUserControlling)
+            || (center.visibleSession === session && (center.returningControl || session.returningToModel)))
         .onChange(of: center.conversationID) { _, owner in
             if panel.mode == .interacting, owner != session.conversationID { close() }
         }
@@ -556,36 +568,7 @@ private struct BrowserSurface: View {
         return hasRun ? IDELanguageRunText.t("交还给 AI", "Return to AI") : IDELanguageRunText.t("完成", "Done")
     }
 
-    private func content(wide: Bool) -> some View {
-        VStack(spacing: 0) {
-            VStack(spacing: 0) {
-                if session.usesFixedViewport {
-                    HStack {
-                        Label(IDELanguageRunText.t("只读浏览", "Read-only browser"), systemImage: "eye")
-                        Spacer()
-                        Button { activeSheet = .settings } label: { Image(systemName: "gearshape") }
-                            .accessibilityLabel(IDELanguageRunText.t("浏览器设置", "Browser settings"))
-                        Button { expanded.toggle() } label: {
-                            Image(systemName: expanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
-                        }
-                        .accessibilityLabel(IDELanguageRunText.t("切换全屏", "Toggle full screen"))
-                    }
-                    .padding(.horizontal, 12).frame(minHeight: 44)
-                } else {
-                    BrowserAddressBar(
-                    center: center,
-                    session: session,
-                    compact: !wide,
-                    fullscreen: expanded,
-                    showTabs: { activeSheet = .tabs },
-                    showSettings: { activeSheet = .settings },
-                    showPorts: { activeSheet = .ports }
-                ) { expanded.toggle() }
-                    if wide { BrowserTabStrip(session: session) }
-                }
-            }
-            .background(.bar)
-            BrowserProgressBar(session: session)
+    @ViewBuilder private var humanHandoffBadge: some View {
             if center.taskHandoffsEnabled && session.isUserControlling {
                 let receipt = center.handoff(for: session.conversationID)
                 let reminding = reminderID != nil && reminderID == receipt?.id && idlePeriod?.handoff == reminderID
@@ -600,9 +583,9 @@ private struct BrowserSurface: View {
                     IDELanguageRunText.t("网页由你操作", "You control this page")
                 }
                 HStack(spacing: 8) {
+                    Image(systemName: "hand.raised").foregroundStyle(.secondary)
                     Text(center.handoffError ?? status)
                         .font(.caption).lineLimit(2)
-                    Spacer()
                     if let unresponsiveNavigation {
                         BrowserCloseUnresponsiveTabButton {
                             guard center.visibleSession === session, center.previewInteractionID == interactionID else { return }
@@ -636,9 +619,43 @@ private struct BrowserSurface: View {
                         .accessibilityIdentifier("browser.handoff.return")
                     }
                 }.padding(.horizontal, 12)
+                    .background(.thinMaterial, in: Capsule())
                     .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("browser.taskHandoff")
             }
+    }
+
+    private func content(wide: Bool) -> some View {
+        VStack(spacing: 0) {
+            VStack(spacing: 0) {
+                if session.usesFixedViewport {
+                    HStack {
+                        Label(IDELanguageRunText.t("AI 正在浏览", "AI browsing"), systemImage: "sparkles")
+                        Spacer()
+                        Button { activeSheet = .settings } label: { Image(systemName: "gearshape") }
+                            .accessibilityLabel(IDELanguageRunText.t("浏览器设置", "Browser settings"))
+                        Button { expanded.toggle() } label: {
+                            Image(systemName: expanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                        }
+                        .accessibilityLabel(IDELanguageRunText.t("切换全屏", "Toggle full screen"))
+                    }
+                    .padding(.horizontal, 12).frame(minHeight: 44)
+                    BrowserConcurrentTabStrip(session: session)
+                } else {
+                    BrowserAddressBar(
+                    center: center,
+                    session: session,
+                    compact: !wide,
+                    fullscreen: expanded,
+                    showTabs: { activeSheet = .tabs },
+                    showSettings: { activeSheet = .settings },
+                    showPorts: { activeSheet = .ports }
+                ) { expanded.toggle() }
+                    if wide { BrowserTabStrip(session: session) }
+                }
+            }
+            .background(.bar)
+            BrowserProgressBar(session: session)
             if center.taskHandoffsEnabled && center.handoffNotified {
                 Label(IDELanguageRunText.t("已通知原任务", "Original task notified"), systemImage: "checkmark.circle")
                     .font(.caption).foregroundStyle(.secondary)
@@ -647,13 +664,13 @@ private struct BrowserSurface: View {
             if center.taskHandoffsEnabled {
                 BrowserReturnedHandoffStatus(center: center, owner: session.conversationID)
             }
-            if center.taskHandoffsEnabled && !session.isUserControlling && session.modelControl != nil {
-                BrowserModelStatusBar(center: center, session: session, presentationID: spectator)
-            }
             Divider()
             Group {
                 if session.usesFixedViewport {
-                    if scenePhase == .active, session.isModelActive, let tab = session.activeTab {
+                    if let tab = session.humanBrowsingTab {
+                        BrowserHumanTabSurface(session: session, tab: tab, presentationID: spectator,
+                                               active: scenePhase == .active)
+                    } else if scenePhase == .active, session.isModelActive, let tab = session.fixedViewportTab {
                         BrowserZoomablePreview(tab: tab, presentationID: spectator, priority: expanded ? 2 : 1)
                     } else {
                         Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -664,6 +681,15 @@ private struct BrowserSurface: View {
                         .allowsHitTesting(!session.takeoverPending && !center.returningControl && !session.returningToModel)
                 }
             }
+                .overlay(alignment: .topLeading) {
+                    humanHandoffBadge.padding(8)
+                }
+                .overlay(alignment: .topTrailing) {
+                    if center.taskHandoffsEnabled && !session.isUserControlling && session.modelControl != nil && session.humanBrowsingTabID == nil {
+                        BrowserModelStatusBar(center: center, session: session, presentationID: spectator)
+                            .padding(8)
+                    }
+                }
                 .overlay(alignment: .top) {
                     if case .failed(let message) = session.surfaceState {
                         VStack(spacing: 12) {
@@ -679,6 +705,76 @@ private struct BrowserSurface: View {
                 }
                 .overlay(alignment: .bottom) { BrowserDownloadBanner(service: session.downloads) }
                 .clipped()
+        }
+    }
+}
+
+/// Presentation-only tab selection keeps the model's default target stable.
+private struct BrowserConcurrentTabStrip: View {
+    @ObservedObject var session: BrowserTaskSession
+    var body: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 4) {
+                ForEach(session.tabs) { tab in
+                    let isModelTab = tab.id == session.fixedViewportTab?.id
+                    let selected = isModelTab ? session.humanBrowsingTabID == nil : session.humanBrowsingTabID == tab.id
+                    Button {
+                        session.browseWhileModelRuns(isModelTab ? nil : tab.id)
+                    } label: {
+                        Label(tab.webView.title.flatMap { $0.isEmpty ? nil : $0 } ??
+                            tab.webView.url?.host ?? IDELanguageRunText.t("新标签页", "New tab"),
+                            systemImage: isModelTab ? "sparkles" : "safari")
+                            .lineLimit(1).padding(.horizontal, 10).frame(minHeight: 44)
+                            .background(selected ? Color.accentColor.opacity(0.15) : .clear, in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+                Button { _ = session.createHumanBrowsingTab() } label: {
+                    Image(systemName: "plus").frame(width: 44, height: 44)
+                }
+                .accessibilityLabel(IDELanguageRunText.t("新建标签页", "New tab"))
+            }.padding(.horizontal, 8)
+        }.scrollIndicators(.hidden)
+    }
+}
+
+private struct BrowserHumanTabSurface: View {
+    @ObservedObject var session: BrowserTaskSession
+    let tab: BrowserTaskSession.Tab
+    let presentationID: UUID
+    let active: Bool
+    @State private var address = ""
+    @FocusState private var editingAddress: Bool
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Button { tab.webView.goBack() } label: { Image(systemName: "chevron.backward") }
+                    .disabled(!tab.webView.canGoBack)
+                Button { tab.webView.goForward() } label: { Image(systemName: "chevron.forward") }
+                    .disabled(!tab.webView.canGoForward)
+                TextField(IDELanguageRunText.t("输入网址", "Enter address"), text: $address)
+                    .textInputAutocapitalization(.never).keyboardType(.URL)
+                    .focused($editingAddress)
+                    .onSubmit {
+                        let candidate = address.contains("://") ? address : "https://\(address)"
+                        if let url = try? BrowserURLPolicy.validate(candidate, conversationID: session.conversationID, allowLocalNetwork: true) {
+                            tab.webView.load(URLRequest(url: url))
+                            editingAddress = false
+                        }
+                    }
+                Button { tab.webView.reload() } label: { Image(systemName: "arrow.clockwise") }
+                Button {
+                    session.closeHumanBrowsingTab(tab.id)
+                } label: { Image(systemName: "xmark") }
+                .accessibilityLabel(IDELanguageRunText.t("关闭标签页", "Close tab"))
+            }.padding(.horizontal, 12).frame(minHeight: 44)
+            BrowserWebContainer(tab: tab, presentationID: presentationID, priority: 3,
+                                active: active, onUserInteraction: {})
+        }
+        .onChange(of: tab.id, initial: true) { _, _ in address = tab.webView.url?.absoluteString ?? "" }
+        .onChange(of: session.tabStateRevision) { _, _ in
+            if !editingAddress, let url = tab.webView.url { address = url.absoluteString }
         }
     }
 }
@@ -772,19 +868,19 @@ private struct BrowserModelStatusBar: View {
             Text(activityText)
                 .font(.caption)
                 .lineLimit(2)
-            Spacer(minLength: 8)
             Button {
+                session.focusModelPageForTakeover()
                 session.activeTab?.viewport.preferPresentation(presentationID)
                 center.takeControl()
             } label: {
-                Text(IDELanguageRunText.t("我来操作", "I'll take over"))
-                    .font(.caption.weight(.semibold))
-                    .frame(minHeight: 44)
+                Image(systemName: "hand.tap")
+                    .frame(minWidth: 44, minHeight: 44)
             }
+            .accessibilityLabel(IDELanguageRunText.t("我来操作", "I'll take over"))
             .accessibilityIdentifier("browser.takeControlInline")
         }
         .padding(.horizontal, 12)
-        .background(.thinMaterial)
+        .background(.thinMaterial, in: Capsule())
         .accessibilityIdentifier("browser.modelStatus")
     }
 

@@ -464,9 +464,10 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
     ) -> Bool {
         guard taskHandoffsEnabled, previewInteractionID == nil, !session.isReleased,
               store.session(for: session.conversationID) === session, page != nil, session.previewPageIdentity == page,
-              session.isUserControlling || session.activeWebView?.isLoading == false,
+              session.isUserControlling || (session.fixedViewportTab?.webView ?? session.activeWebView)?.isLoading == false,
               session.modelControl == displayedLease, session.isUserControlling || session.isModelActive else { return false }
         bind(to: session.conversationID)
+        session.focusModelPageForTakeover()
         takeControl()
         guard session.isUserControlling else { return false }
         previewInteractionID = presentationID

@@ -2359,6 +2359,27 @@ struct BrowserTaskSessionTests {
         #expect(existing.viewport.fixedSize == nil && existing.webView.isUserInteractionEnabled)
     }
 
+    @Test("Browsing another tab preserves the model target and prevents overlapping access")
+    func humanTabSelectionDoesNotRetargetModel() async throws {
+        let center = makeCenter()
+        let (session, modelTab, _) = try isolatedSession(owner: UUID(), center: center)
+        defer { session.release(); try? FileManager.default.removeItem(at: session.artifactDirectory) }
+        let other = try #require(session.createTab())
+        session.activate(modelTab)
+        let lease = try acquirePreviewLease(session)
+        session.browseWhileModelRuns(other)
+        #expect(session.activeTabID == modelTab && session.humanBrowsingTabID == other)
+        #expect(session.fixedViewportTab?.id == modelTab)
+        #expect(session.humanBrowsingTab?.viewport.fixedSize == nil)
+        let blocked = await session.execute(BrowserCommand(sessionID: session.sessionID, tabID: other,
+            action: .observe(cursor: nil)), control: lease)
+        #expect(blocked.status == .needsUser)
+        let newTab = try #require(session.createHumanBrowsingTab())
+        #expect(session.activeTabID == modelTab && session.humanBrowsingTabID == newTab)
+        #expect(session.releaseModelControl(controlID: lease.id, runID: lease.runID) == .released)
+        #expect(session.activeTabID == newTab && session.humanBrowsingTabID == nil)
+    }
+
     private func startLoopbackListener(_ listener: NWListener, on queue: DispatchQueue) async throws -> NWEndpoint.Port {
         let (startup, state) = AsyncStream<Bool>.makeStream()
         listener.stateUpdateHandler = {

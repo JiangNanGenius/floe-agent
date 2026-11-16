@@ -636,6 +636,9 @@ final class BrowserTaskSession: NSObject, ObservableObject {
     /// an uncertain result is never replayed.
     @Published private(set) var takeoverPending = false
     @Published private(set) var usesFixedViewport = false
+    /// A different tab the user is browsing while the model keeps its own
+    /// active tab. Never use this as the default target for model commands.
+    @Published private(set) var humanBrowsingTabID: UUID?
     @Published private(set) var lastModelActivity: BrowserModelActivity?
     @Published private(set) var livePreviewFrame: BrowserLivePreviewFrame?
     private var livePreviewSource: BrowserLivePreviewSource?
@@ -739,10 +742,17 @@ final class BrowserTaskSession: NSObject, ObservableObject {
     }
 
     var activeWebView: WKWebView? { activeTab?.webView }
+    var fixedViewportTab: Tab? { tabs.first { $0.viewport.fixedSize != nil } }
+    var humanBrowsingTab: Tab? { tabs.first { $0.id == humanBrowsingTabID } }
 
     var previewPageIdentity: BrowserPreviewPageIdentity? {
-        activeTab.map { BrowserPreviewPageIdentity(tabID: $0.id, documentID: $0.documentID,
+        (isModelActive ? fixedViewportTab ?? activeTab : activeTab).map { BrowserPreviewPageIdentity(tabID: $0.id, documentID: $0.documentID,
             generation: $0.documentGeneration, routeGeneration: $0.routeGeneration, url: $0.webView.url) }
+    }
+
+    func focusModelPageForTakeover() {
+        guard isModelActive, let modelTab = fixedViewportTab else { return }
+        if activeTabID != modelTab.id { activate(modelTab.id) }
     }
 
     @discardableResult
@@ -750,7 +760,8 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         makeTab()
     }
 
-    private func makeTab(for popup: (configuration: WKWebViewConfiguration, opener: Tab)? = nil) -> UUID? {
+    private func makeTab(for popup: (configuration: WKWebViewConfiguration, opener: Tab)? = nil,
+                         selectForModel: Bool = true) -> UUID? {
         guard !isReleased, !takeoverPending, !returningToModel else { return nil }
         guard tabs.count < maximumTabs else {
             tabLimitNotice = IDELanguageRunText.t(
@@ -788,13 +799,39 @@ final class BrowserTaskSession: NSObject, ObservableObject {
             events: [],
             visualFallbackEvidence: nil
         ))
-        resetLivePreview()
-        activeTabID = id
-        if modelControl != nil, let tab = activeTab { lockViewport(tab) }
+        if selectForModel {
+            resetLivePreview()
+            activeTabID = id
+            if modelControl != nil, let tab = activeTab { lockViewport(tab) }
+        } else {
+            humanBrowsingTabID = id
+        }
         installObservers(for: id, webView: webView)
         appendEvent(tabID: id, method: "Target.targetCreated")
         syncChromeState()
         return id
+    }
+
+    /// Presentation-only selection; it never changes the model's target.
+    func browseWhileModelRuns(_ id: UUID?) {
+        guard modelControl != nil, !isUserControlling, !takeoverPending else { return }
+        guard let id else { humanBrowsingTabID = nil; return }
+        guard let tab = tabs.first(where: { $0.id == id }),
+              tab.viewport.fixedSize == nil else { return }
+        humanBrowsingTabID = id
+    }
+
+    @discardableResult func createHumanBrowsingTab() -> UUID? {
+        guard modelControl != nil, !isUserControlling else { return nil }
+        return makeTab(selectForModel: false)
+    }
+
+    func closeHumanBrowsingTab(_ id: UUID) {
+        guard humanBrowsingTabID == id, modelControl != nil,
+              let modelTab = fixedViewportTab, modelTab.id != id else { return }
+        if activeTabID == id { activate(modelTab.id) }
+        humanBrowsingTabID = nil
+        close(id)
     }
 
     private func newTabConfiguration() -> WKWebViewConfiguration {
@@ -853,6 +890,9 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         tabs[index].webView.removeFromSuperview()
         page.isUserInteractionEnabled = false
         tabs.remove(at: index)
+        if humanBrowsingTabID == id {
+            humanBrowsingTabID = tabs.first(where: { $0.id == openerID && $0.viewport.fixedSize == nil })?.id
+        }
         pendingNativePreviews.removeValue(forKey: id)?.finish(nil)
         if let receipt {
             settleNavigation(receipt, as: .replaced)
@@ -1229,6 +1269,11 @@ final class BrowserTaskSession: NSObject, ObservableObject {
 
     private func lockViewport(_ tab: Tab, destination: URL? = nil) {
         guard modelControl != nil else { return }
+        // Dispatch is serialized: once a new model target is selected, old
+        // tabs no longer need a fixed viewport and remain available to users.
+        for other in tabs where other.id != tab.id && other.viewport.fixedSize != nil {
+            other.viewport.release(other.webView)
+        }
         // Existing pages keep the dimensions chosen at acquisition. A new origin may have an explicit wide layout.
         if tab.viewport.fixedSize == nil || destination != nil {
             tab.viewport.lock(tab.webView, wide: usesWideLayout(destination ?? tab.webView.url))
@@ -1240,6 +1285,19 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         guard usesFixedViewport, modelControl == nil, activeExecutionCount == 0, navigationReceipt?.awaitingStop != true else { return }
         for tab in tabs { tab.viewport.release(tab.webView) }
         usesFixedViewport = false
+        if let id = humanBrowsingTabID {
+            humanBrowsingTabID = nil
+            activate(id)
+        }
+    }
+
+    private func targetsHumanBrowsingTab(_ command: BrowserCommand) -> Bool {
+        guard let humanBrowsingTabID else { return false }
+        switch command.action {
+        case .activateTab(let id), .closeTab(let id): return id == humanBrowsingTabID
+        case .protocolInfo, .create, .listTabs: return false
+        default: return (command.tabID ?? activeTabID) == humanBrowsingTabID
+        }
     }
 
     private func fenceDispatchQueue() {
@@ -1376,6 +1434,9 @@ final class BrowserTaskSession: NSObject, ObservableObject {
             return failure(command, status: .stale, code: "session", "Browser session is no longer active")
         }
         if command.action != .protocolInfo {
+            if targetsHumanBrowsingTab(command) {
+                return failure(command, status: .needsUser, code: "tab-in-use", "The user is using this tab; choose another tab or wait")
+            }
             if isUserControlling || takeoverPending {
                 return failure(command, status: .needsUser, code: "takeover", "The user currently controls the browser")
             }
@@ -1424,6 +1485,9 @@ final class BrowserTaskSession: NSObject, ObservableObject {
             return failure(command, status: .stale, code: "released", "This task's browser session was released")
         }
         if command.action != .protocolInfo {
+            if targetsHumanBrowsingTab(command) {
+                return failure(command, status: .needsUser, code: "tab-in-use", "The user is using this tab; choose another tab or wait")
+            }
             if isUserControlling || takeoverPending {
                 return failure(command, status: .needsUser, code: "takeover", "The user currently controls the browser")
             }
@@ -1471,7 +1535,7 @@ final class BrowserTaskSession: NSObject, ObservableObject {
             )
         }
         if result.status == .ok, let control, command.action != .protocolInfo,
-           let page = result.page, let tab = activeTab, tab.documentID == page.documentID {
+           let page = result.page, let tab = tabs.first(where: { $0.documentID == page.documentID }) {
             recordModelActivity(for: command.action)
             recordLivePreview(for: command, page: page, tab: tab, lease: control)
         }
@@ -1484,6 +1548,9 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         _ command: BrowserCommand,
         control: BrowserControlLease?
     ) -> BrowserResult? {
+        if targetsHumanBrowsingTab(command) {
+            return failure(command, status: .needsUser, code: "tab-in-use", "The user is using this tab; choose another tab or wait")
+        }
         if isReleased {
             return failure(command, status: .stale, code: "released", "This task's browser session was released")
         }
@@ -3324,7 +3391,8 @@ extension BrowserTaskSession: WKNavigationDelegate, WKUIDelegate {
         // A target=_blank / window.open request opens a real task tab. The
         // six-tab limit is honest: at capacity the popup is refused and the
         // user/model sees the limit notice instead of a fake success.
-        guard let id = makeTab(for: (configuration, opener)),
+        let isHumanPopup = modelControl != nil && humanBrowsingTabID == opener.id
+        guard let id = makeTab(for: (configuration, opener), selectForModel: !isHumanPopup),
               let created = tabs.first(where: { $0.id == id })?.webView else {
             if let activeTabID {
                 appendEvent(tabID: activeTabID, method: "Target.targetLimitReached", detail: "maximumTabs")

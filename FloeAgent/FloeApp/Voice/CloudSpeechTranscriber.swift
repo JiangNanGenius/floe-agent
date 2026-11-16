@@ -498,6 +498,10 @@ final class CloudSpeechTranscriber: SpeechTranscribing, @unchecked Sendable {
     static let minimumVoicedSeconds: Double = 0.08
     static let prerollSeconds: Double = 0.25
     static let maximumUtteranceBytes = 8 * 1024 * 1024
+    /// DeepSeek accepts complete files only. Bound a continuous utterance so
+    /// long speech yields successive verified file results instead of waiting
+    /// for the user to pause for minutes; these are not live ASR hypotheses.
+    static let deepSeekBatchSegmentSeconds: Double = 8
     static let maximumQueueBytes = 16 * 1024 * 1024
     static let finalTimeoutSeconds: Double = 20
 
@@ -511,7 +515,11 @@ final class CloudSpeechTranscriber: SpeechTranscribing, @unchecked Sendable {
     var recognitionProgressMode: VoiceRecognitionProgressMode {
         mode == .batch ? .batchFile : .streaming
     }
-    var finalDrainTimeout: Duration { .seconds(Self.finalTimeoutSeconds) }
+    // A stopped capture may still need one bounded reconnect and a final
+    // response. This is a ceiling, not an added delay on successful requests.
+    var finalDrainTimeout: Duration {
+        .seconds(mode == .live ? 45 : (profile.provider == .deepSeek ? 60 : Self.finalTimeoutSeconds))
+    }
 
     var failure: VoiceInputFailure? { box.failure }
 
@@ -612,10 +620,6 @@ final class CloudSpeechTranscriber: SpeechTranscribing, @unchecked Sendable {
 
     // MARK: - Producer
 
-    private var isStopRequested: Bool {
-        lifecycleLock.withLock { finishRequested }
-    }
-
     private func run() async {
         var committed: [String] = []
         var utterance: CloudUtteranceState?
@@ -696,7 +700,7 @@ final class CloudSpeechTranscriber: SpeechTranscribing, @unchecked Sendable {
             guard seconds > 0 else { return true }
             let steps = max(1, Int((seconds / 0.1).rounded(.up)))
             for _ in 0..<steps {
-                if Task.isCancelled || box.isCancelled || isStopRequested {
+                if Task.isCancelled || box.isCancelled {
                     return false
                 }
                 do { try await Task.sleep(for: .milliseconds(100)) }
@@ -719,8 +723,7 @@ final class CloudSpeechTranscriber: SpeechTranscribing, @unchecked Sendable {
                     return nil
                 }
                 if !initial {
-                    guard !isStopRequested,
-                          recovery.retries < max(0, recoveryPolicy.maximumReconnects) else {
+                    guard recovery.retries < max(0, recoveryPolicy.maximumReconnects) else {
                         return nil
                     }
                     guard await waitBeforeReconnect(
@@ -805,7 +808,7 @@ final class CloudSpeechTranscriber: SpeechTranscribing, @unchecked Sendable {
                 from: error, snapshot: snapshot)
             await dropLive(failure)
             guard !Task.isCancelled, !box.isCancelled,
-                  CloudLiveRetry.isTransient(failure), !isStopRequested,
+                  CloudLiveRetry.isTransient(failure),
                   recovery.retries < max(0, recoveryPolicy.maximumReconnects),
                   let start = await recoverLive(frames: state.frames) else {
                 return false
@@ -870,8 +873,7 @@ final class CloudSpeechTranscriber: SpeechTranscribing, @unchecked Sendable {
                     }
                     let isInitial = recovery.lastFailure == nil
                         && recovery.retries == 0
-                    guard isInitial || (!isStopRequested
-                        && recovery.retries < max(0, recoveryPolicy.maximumReconnects)) else {
+                    guard isInitial || recovery.retries < max(0, recoveryPolicy.maximumReconnects) else {
                         return changed
                     }
                     guard let start = await recoverLive(frames: state.frames) else {
@@ -937,16 +939,6 @@ final class CloudSpeechTranscriber: SpeechTranscribing, @unchecked Sendable {
                         utterance = nil
                         return ""
                     }
-                    if isStopRequested {
-                        // Ordinary stop never starts another request. The
-                        // remaining tail still goes through local fallback
-                        // when one exists; the settled final is never lost.
-                        if let text = await recoverLocally(state) {
-                            recordFinal(text)
-                        }
-                        utterance = nil
-                        return ""
-                    }
                     continue
                 }
                 if live == nil {
@@ -956,10 +948,6 @@ final class CloudSpeechTranscriber: SpeechTranscribing, @unchecked Sendable {
                         .map(CloudLiveRetry.isTransient) ?? true
                     let hasBudget = recovery.retries
                         < max(0, recoveryPolicy.maximumReconnects)
-                    if isStopRequested, !isInitial {
-                        throw pendingFailure ?? recovery.lastFailure
-                            ?? ASRTranscriptionError.transport(.notReachable)
-                    }
                     guard retryable, isInitial || hasBudget else {
                         throw pendingFailure ?? recovery.lastFailure
                             ?? ASRTranscriptionError.transport(.notReachable)
@@ -992,7 +980,6 @@ final class CloudSpeechTranscriber: SpeechTranscribing, @unchecked Sendable {
                     await dropLive(failure)
                     guard !Task.isCancelled, !box.isCancelled,
                           CloudLiveRetry.isTransient(failure),
-                          !isStopRequested,
                           recovery.retries < max(0, recoveryPolicy.maximumReconnects),
                           let start = await recoverLive(frames: state.frames) else {
                         throw recovery.lastFailure ?? failure
@@ -1088,6 +1075,11 @@ final class CloudSpeechTranscriber: SpeechTranscribing, @unchecked Sendable {
                 if await syncLive(state) { continue }
             }
             guard let current = utterance else { continue }
+            if mode == .batch, profile.provider == .deepSeek,
+               current.duration >= Self.deepSeekBatchSegmentSeconds {
+                await endUtterance(current)
+                continue
+            }
             if current.bytes > Self.maximumUtteranceBytes {
                 // Bounded speculation: commit what was actually captured
                 // rather than growing without limit or dropping audio.
