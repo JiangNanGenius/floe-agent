@@ -89,6 +89,49 @@ public struct BrowserTabApprovalProof: Sendable, Codable, Hashable {
     public let tabIDs: [UUID]
 }
 
+/// A private, one-use snapshot of the exact reviewed page action. Text is
+/// represented only by a digest and byte count and never by its contents.
+public struct BrowserInteractionApprovalProof: Sendable, Codable, Hashable {
+    public let owner: BrowserOwnerID
+    public let sessionID: UUID
+    public let operation: String
+    public let requestedTabID: UUID?
+    public let tabID: UUID
+    public let documentID: String
+    public let navigationRevision: UInt64
+    public let documentToken: String
+    public let pageRevision: Int
+    public let url: String
+    public let title: String?
+    public let ref: String?
+    public let role: String?
+    public let label: String?
+    /// Exact page-derived values kept only in the ephemeral proof; UI uses
+    /// the sanitized role/label above. Used for same-turn target revalidation.
+    public let targetRole: String?
+    public let targetLabel: String?
+    public let textDigest: String?
+    public let textBytes: Int?
+    public let submit: Bool?
+    public let deltaX: Double?
+    public let deltaY: Double?
+
+    public init(owner: BrowserOwnerID, sessionID: UUID, operation: String, requestedTabID: UUID?,
+                tabID: UUID, documentID: String, navigationRevision: UInt64, documentToken: String,
+                pageRevision: Int, url: String, title: String?, ref: String?, role: String?,
+                label: String?, targetRole: String? = nil, targetLabel: String? = nil,
+                textDigest: String?, textBytes: Int?, submit: Bool?,
+                deltaX: Double?, deltaY: Double?) {
+        self.owner = owner; self.sessionID = sessionID; self.operation = operation
+        self.requestedTabID = requestedTabID; self.tabID = tabID; self.documentID = documentID
+        self.navigationRevision = navigationRevision; self.documentToken = documentToken
+        self.pageRevision = pageRevision; self.url = url; self.title = title; self.ref = ref
+        self.role = role; self.label = label; self.targetRole = targetRole; self.targetLabel = targetLabel
+        self.textDigest = textDigest; self.textBytes = textBytes
+        self.submit = submit; self.deltaX = deltaX; self.deltaY = deltaY
+    }
+}
+
 public struct BrowserCommand: Sendable, Codable, Hashable {
     public var version: Int
     public var requestID: UUID
@@ -103,6 +146,7 @@ public struct BrowserCommand: Sendable, Codable, Hashable {
     public var visualFallbackReason: String?
     /// Set only by the trusted human-approval bridge, never by model arguments.
     public var tabApprovalProof: BrowserTabApprovalProof?
+    public var interactionApprovalProof: BrowserInteractionApprovalProof?
     public var action: BrowserAction
 
     public init(
@@ -115,6 +159,7 @@ public struct BrowserCommand: Sendable, Codable, Hashable {
         visualEvidenceSHA256: String? = nil,
         visualFallbackReason: String? = nil,
         tabApprovalProof: BrowserTabApprovalProof? = nil,
+        interactionApprovalProof: BrowserInteractionApprovalProof? = nil,
         action: BrowserAction
     ) {
         self.version = version
@@ -126,6 +171,7 @@ public struct BrowserCommand: Sendable, Codable, Hashable {
         self.visualEvidenceSHA256 = visualEvidenceSHA256
         self.visualFallbackReason = visualFallbackReason
         self.tabApprovalProof = tabApprovalProof
+        self.interactionApprovalProof = interactionApprovalProof
         self.action = action
     }
 }

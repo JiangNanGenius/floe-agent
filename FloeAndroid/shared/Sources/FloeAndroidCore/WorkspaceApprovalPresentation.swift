@@ -62,6 +62,7 @@ struct WorkspaceApprovalReceiptStore {
         var shellTarget: C02ResolvedExecutionTarget? = nil
         var deviceTargetDigest: String? = nil
         var browserTabProof: BrowserTabApprovalProof? = nil
+        var browserInteractionProof: BrowserInteractionApprovalProof? = nil
     }
     struct Claim {
         let binding: Binding

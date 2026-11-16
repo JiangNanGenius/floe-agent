@@ -513,6 +513,14 @@
     <string name="approval_source_exists">The source must exist.</string>
     <string name="approval_schedule_create">Create a scheduled task</string>
     <string name="approval_browser_tab_create">Create a browser tab</string>
+    <string name="approval_browser_click">Click a page element</string>
+    <string name="approval_browser_type">Enter text on the page</string>
+    <string name="approval_browser_scroll">Scroll the page</string>
+    <string name="approval_browser_target">Target element</string>
+    <string name="approval_browser_text_bytes">Text length: %1$d bytes</string>
+    <string name="approval_browser_submit_yes">Submit after entering text</string>
+    <string name="approval_browser_submit_no">Do not submit</string>
+    <string name="approval_browser_scroll_distance">Scroll X: %1$s, Y: %2$s</string>
     <string name="approval_browser_tab_activate">Switch to a browser tab</string>
     <string name="approval_browser_tab_close">Close a browser tab</string>
     <string name="approval_browser_tab_title">Page title</string>

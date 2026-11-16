@@ -345,6 +345,54 @@ data class BrowserTabApprovalUi(
     override fun toString(): String = "BrowserTabApprovalUi(redacted)"
 }
 
+/** Private, generation-bound browser interaction. Typed text is never carried. */
+data class BrowserInteractionApprovalUi(
+    val operation: String,
+    val tabId: String,
+    val documentId: String,
+    val url: String,
+    val title: String?,
+    val ref: String?,
+    val role: String?,
+    val label: String?,
+    val textBytes: Long?,
+    val submit: Boolean?,
+    val deltaX: Double?,
+    val deltaY: Double?,
+) {
+    private fun safe(value: String?, limit: Int): Boolean {
+        if (value == null) return true
+        if (value.isBlank() || value.toByteArray(Charsets.UTF_8).size > limit) return false
+        var offset = 0
+        while (offset < value.length) {
+            val cp = Character.codePointAt(value, offset)
+            when (Character.getType(cp)) {
+                Character.CONTROL.toInt(), Character.FORMAT.toInt(),
+                Character.LINE_SEPARATOR.toInt(), Character.PARAGRAPH_SEPARATOR.toInt(),
+                Character.SURROGATE.toInt(), Character.UNASSIGNED.toInt() -> return false
+            }
+            offset += Character.charCount(cp)
+        }
+        return true
+    }
+
+    fun isWellFormed(): Boolean {
+        if (!runCatching { java.util.UUID.fromString(tabId).toString() == tabId }.getOrDefault(false) ||
+            !safe(documentId, 128) || !safe(url, 2_048) || !safe(title, 512) ||
+            !safe(ref, 128) || !safe(role, 128) || !safe(label, 512)) return false
+        val target = ref != null && (role != null || label != null)
+        return when (operation) {
+            "click" -> target && textBytes == null && submit == null && deltaX == null && deltaY == null
+            "type" -> target && textBytes != null && textBytes >= 0 && submit != null && deltaX == null && deltaY == null
+            "scroll" -> ref == null && role == null && label == null && textBytes == null && submit == null &&
+                deltaX != null && deltaX.isFinite() && deltaY != null && deltaY.isFinite()
+            else -> false
+        }
+    }
+
+    override fun toString(): String = "BrowserInteractionApprovalUi(redacted)"
+}
+
 data class ApprovalCardUi(
     val approvalId: String,           // ⇄ toolCall.id (provider call id)
     val runId: String,
@@ -375,6 +423,7 @@ data class ApprovalCardUi(
     val localShellAction: LocalShellApprovalUi? = null,
     val scheduleCreateAction: ScheduleCreateApprovalUi? = null,
     val browserTabAction: BrowserTabApprovalUi? = null,
+    val browserInteractionAction: BrowserInteractionApprovalUi? = null,
     val deviceAction: DeviceActionApprovalUi? = null,
     /** The generation and descriptor are verified independently of whether
      * enough action detail exists to allow the request. */

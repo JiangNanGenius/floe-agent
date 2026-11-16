@@ -339,6 +339,45 @@ class ConversationApprovalDispatchTest {
         assertFalse(holder.privateApprovalValid(card, "current", "token"))
     }
 
+    @Test fun browserInteractionsRequireCurrentExactPrivateLease() {
+        val tab = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        for (operation in listOf("click", "type", "scroll")) {
+            val host = RecordingHost().apply { privatePresentationAccepted = true }
+            val card = approvalCard().copy(toolName = "browser.$operation", scopeVerified = false)
+            val holder = holderWithApproval(host, card)
+            val details = BrowserInteractionApprovalUi(
+                operation, tab, "document-1", "https://example.com/", "Example",
+                if (operation == "scroll") null else "node-1",
+                if (operation == "scroll") null else "button",
+                if (operation == "scroll") null else "Continue",
+                if (operation == "type") 8L else null,
+                if (operation == "type") false else null,
+                if (operation == "scroll") 0.0 else null,
+                if (operation == "scroll") 100.0 else null,
+            )
+            holder.showPrivateApproval(card, "old")
+            holder.showPrivateApproval(card, "current")
+            assertFalse(holder.acceptPrivateBrowserInteractionApproval(holder.session, card, "old", details, "old-token"))
+            assertFalse(holder.acceptPrivateBrowserInteractionApproval(holder.session, card, "current",
+                details.copy(documentId = ""), "token"))
+            assertTrue(holder.acceptPrivateBrowserInteractionApproval(holder.session, card, "current", details, "token"))
+            val displayed = holder.visibleApprovalCard(card, "current")
+            assertEquals(details, displayed.browserInteractionAction)
+            assertFalse(holder.privateApprovalValid(card, "current", "wrong"))
+            assertEquals(ConversationFlowResult.Stale, holder.resolveApproval(
+                displayed.copy(browserInteractionAction = details.copy(url = "https://other.example/")),
+                allow = true, presentationLease = "current"))
+            assertEquals(0, host.count("resolveApproval"))
+            assertEquals(ConversationFlowResult.Accepted,
+                holder.resolveApproval(displayed, allow = true, presentationLease = "current"))
+            val request = host.lastArgs("resolveApproval")!![0] as ApprovalDecisionRequest
+            assertEquals("token", request.presentationToken)
+            assertEquals(card, request.expectedCard)
+            holder.hidePrivateApproval("current")
+            assertFalse(holder.privateApprovalValid(card, "current", "token"))
+        }
+    }
+
     @Test fun browserTargetApprovalBindsVisibleTabAndPrivateLease() {
         val tab = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
         val otherTab = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"

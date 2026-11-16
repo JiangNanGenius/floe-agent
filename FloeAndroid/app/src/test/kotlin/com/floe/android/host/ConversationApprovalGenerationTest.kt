@@ -277,6 +277,55 @@ class ConversationApprovalGenerationTest {
         )) assertNull(decode(bad))
     }
 
+    @Test fun privateBrowserInteractionRequiresExactIdentityAndCompleteTypedTarget() {
+        val risks = """["controlsGUI"]"""
+        val token = "55555555-5555-4555-8555-555555555555"
+        val tab = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        for (operation in listOf("click", "type", "scroll")) {
+            val builder = builder()
+            builder.applySnapshot(page(tool = "browser.$operation", detailStatus = "unavailable", risks = risks))
+            val card = builder.build().pendingApprovals.single()
+            val target = if (operation == "scroll") """"ref":null,"role":null,"label":null"""
+                else """"ref":"node-1","role":"button","label":"Continue""""
+            val typing = if (operation == "type") """"textBytes":8,"submit":false"""
+                else """"textBytes":null,"submit":null"""
+            val scroll = if (operation == "scroll") """"deltaX":0,"deltaY":120.5"""
+                else """"deltaX":null,"deltaY":null"""
+            val details = """{"kind":"browserInteraction","operation":"$operation","tabID":"$tab","documentID":"doc-1","url":"https://example.com/","title":"Example",$target,$typing,$scroll}"""
+            val raw = """{"schema":"floe.approval-presentation/1","conversationID":"$conversation","runID":"$run","callID":"c1","generation":"$generation","presentationToken":"$token","presentation":{"status":"available","generation":"$generation","tool":"browser.$operation","effect":"mutating","isSideEffecting":true,"riskLabels":$risks,"requestedScope":"local","grantScope":"singleUse","workspaceVerified":false,"descriptorIdentity":"$descriptor","detailStatus":"available","actionDetails":$details}}"""
+            fun decode(s: String) = privateBrowserInteractionApprovalPage(Json.parseToJsonElement(s), card)
+            val accepted = requireNotNull(decode(raw))
+            assertEquals(operation, accepted.first.operation)
+            assertEquals(token, accepted.second)
+            assertFalse(accepted.first.toString().contains("example.com"))
+            for (bad in listOf(
+                raw.replace("\"documentID\":\"doc-1\"", "\"documentID\":null"),
+                raw.replace("\"tabID\":\"$tab\"", "\"tabID\":\"invalid\""),
+                raw.replace("\"url\":\"https://example.com/\"", "\"url\":\"\""),
+                raw.replace("\"title\":\"Example\"", "\"title\":\"bad\\u202etitle\""),
+                raw.replace("\"kind\":\"browserInteraction\"", "\"kind\":\"browserInteraction\",\"extra\":true"),
+                raw.replace("\"callID\":\"c1\"", "\"callID\":\"c2\""),
+                raw.replace("\"grantScope\":\"singleUse\"", "\"grantScope\":\"task\""),
+                raw.replace("\"operation\":\"$operation\"", "\"operation\":\"other\""),
+                raw.replace("\"workspaceVerified\":false", "\"workspaceVerified\":true"),
+            )) assertNull("accepted malformed $operation", decode(bad))
+            if (operation != "scroll") {
+                assertNull(decode(raw.replace("\"ref\":\"node-1\"", "\"ref\":null")))
+                assertNull(decode(raw.replace("\"role\":\"button\"", "\"role\":null")
+                    .replace("\"label\":\"Continue\"", "\"label\":null")))
+            }
+            if (operation == "type") {
+                assertNull(decode(raw.replace("\"textBytes\":8", "\"textBytes\":-1")))
+                assertNull(decode(raw.replace("\"textBytes\":8", "\"textBytes\":\"8\"")))
+                assertNull(decode(raw.replace("\"submit\":false", "\"submit\":null")))
+            }
+            if (operation == "scroll") {
+                assertNull(decode(raw.replace("\"deltaY\":120.5", "\"deltaY\":null")))
+                assertNull(decode(raw.replace("\"deltaY\":120.5", "\"deltaY\":1e999")))
+            }
+        }
+    }
+
     @Test fun privateBrowserTabTargetRequiresAnExactSafeSingleUsePresentation() {
         val builder = builder()
         val risks = """["controlsGUI"]"""

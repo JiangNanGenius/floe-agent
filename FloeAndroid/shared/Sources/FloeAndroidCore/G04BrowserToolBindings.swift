@@ -100,13 +100,15 @@ struct G04BrowserToolRouting: Sendable {
     /// ORIGINAL envelope out, with BrowserToolError mapped onto the same
     /// FloeError shapes the original tool path produced.
     func invoke(name: String, arguments: BrowserToolArguments,
-                context: ToolContext, tabApprovalProof: BrowserTabApprovalProof? = nil) async throws -> ToolExecutionOutput {
+                context: ToolContext, tabApprovalProof: BrowserTabApprovalProof? = nil,
+                interactionApprovalProof: BrowserInteractionApprovalProof? = nil) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
         let caller = try await makeCaller(context)
         do {
             return try await surface.invoke(
                 name: name, caller: caller, arguments: arguments,
-                cancellation: context.cancellation, approvalTabProof: tabApprovalProof)
+                cancellation: context.cancellation, approvalTabProof: tabApprovalProof,
+                approvalInteractionProof: interactionApprovalProof)
         } catch let error as BrowserToolError {
             switch error {
             case .validation(let message):
@@ -601,7 +603,7 @@ struct G04BrowserClickTool: AgentTool {
         return try await routing.invoke(
             name: Self.name,
             arguments: .click(tabID: args.tabID, ref: args.ref, documentID: args.documentID),
-            context: context)
+            context: context, interactionApprovalProof: try browserInteractionProof(context, operation: "click"))
     }
 }
 
@@ -675,7 +677,7 @@ struct G04BrowserTypeTool: AgentTool {
             name: Self.name,
             arguments: .type(tabID: args.tabID, ref: args.ref, documentID: args.documentID,
                              text: args.text, submit: args.submit),
-            context: context)
+            context: context, interactionApprovalProof: try browserInteractionProof(context, operation: "type"))
     }
 }
 
@@ -698,8 +700,23 @@ struct G04BrowserScrollTool: AgentTool {
         return try await routing.invoke(
             name: Self.name,
             arguments: .scroll(tabID: args.tabID, deltaX: args.deltaX, deltaY: args.deltaY),
-            context: context)
+            context: context, interactionApprovalProof: try browserInteractionProof(context, operation: "scroll"))
     }
+}
+
+private func browserInteractionProof(_ context: ToolContext, operation: String) throws -> BrowserInteractionApprovalProof? {
+    if case .human = context.approvalProvenance {
+        guard let call = context.toolCallID, let grant = context.approvalGrantID,
+              let proof = G04BrowserInteractionApprovalGate.shared.take(run: context.runID, call: call, grant: grant),
+              proof.owner.taskID == context.conversationID, proof.operation == operation else {
+            throw FloeError.validationFailed("This browser action needs a current reviewed approval.")
+        }
+        return proof
+    }
+    if case .unspecified = context.approvalProvenance, context.runtimeAuthority != nil {
+        throw FloeError.validationFailed("The browser approval source could not be verified.")
+    }
+    return nil
 }
 
 struct G04PreviewStartTool: AgentTool {

@@ -1306,7 +1306,8 @@ internal class PhoneAutomationControls(
     companion object {
         private const val CHANNEL = "phone_automation"
         private const val NOTIFICATION = 9480
-        private const val COLLAPSE_DELAY_MS = 4_000L
+        // Leave enough time to read and choose Pause or Take over on a phone.
+        private const val COLLAPSE_DELAY_MS = 8_000L
         private const val FINISHED_BUBBLE_DELAY_MS = 2_000L
     }
 }

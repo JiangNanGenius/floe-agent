@@ -564,7 +564,7 @@ class ConversationFlowHolder(
     /** Approvals dispatched with no projection change yet (duplicate-press
      * latch; cleared when the card leaves the projection). */
     private val approvalDispatched = mutableSetOf<String>()
-    private data class PrivateApproval(val card: ApprovalCardUi, val details: WorkspaceFileApprovalUi? = null, val token: String? = null, val shell: LocalShellApprovalUi? = null, val device: DeviceActionApprovalUi? = null, val schedule: ScheduleCreateApprovalUi? = null, val browserTab: BrowserTabApprovalUi? = null) {
+    private data class PrivateApproval(val card: ApprovalCardUi, val details: WorkspaceFileApprovalUi? = null, val token: String? = null, val shell: LocalShellApprovalUi? = null, val device: DeviceActionApprovalUi? = null, val schedule: ScheduleCreateApprovalUi? = null, val browserTab: BrowserTabApprovalUi? = null, val browserInteraction: BrowserInteractionApprovalUi? = null) {
         override fun toString() = "PrivateApproval(redacted)"
     }
     private val privateApprovals = mutableStateOf<Map<String, PrivateApproval>>(emptyMap())
@@ -1459,10 +1459,10 @@ class ConversationFlowHolder(
         if (card.toolName == "device.act" &&
             (deviceApprovalStopFor(card) != null || host.deviceApprovalRevoked(card))) return
         if (retired || card.key in approvalDispatched || !card.identityVerified || card.scopeVerified ||
-            card.toolName !in setOf("workspace.createFile", "workspace.writeFile", "workspace.applyPatch", "workspace.appendFile", "workspace.replaceText", "workspace.createDirectory", "workspace.moveFile", "workspace.copyFile", "workspace.deleteFile", "exec.shell", "device.act", "task.schedule", "browser.tab") ||
+            card.toolName !in setOf("workspace.createFile", "workspace.writeFile", "workspace.applyPatch", "workspace.appendFile", "workspace.replaceText", "workspace.createDirectory", "workspace.moveFile", "workspace.copyFile", "workspace.deleteFile", "exec.shell", "device.act", "task.schedule", "browser.tab", "browser.click", "browser.type", "browser.scroll") ||
             state.selectedRunId != card.runId || (selectedRunId.value != null && selectedRunId.value != card.runId) ||
             state.pendingApprovals.none { it == card }) return
-        if (card.toolName == "device.act" || card.toolName == "browser.tab") {
+        if (card.toolName == "device.act" || card.toolName in setOf("browser.tab", "browser.click", "browser.type", "browser.scroll")) {
             privateApprovals.value = privateApprovals.value.filterValues { it.card != card }
         }
         privateApprovals.value = privateApprovals.value + (lease to PrivateApproval(card))
@@ -1597,6 +1597,19 @@ class ConversationFlowHolder(
         return true
     }
 
+    @Synchronized fun acceptPrivateBrowserInteractionApproval(echo: ConversationSessionToken, card: ApprovalCardUi,
+        lease: String, details: BrowserInteractionApprovalUi, token: String): Boolean {
+        val current = privateApprovals.value[lease] ?: return false
+        if (!isPrivateApprovalLeaseCurrent(echo, card, lease) ||
+            card.toolName !in setOf("browser.click", "browser.type", "browser.scroll") ||
+            card.toolName != "browser.${details.operation}" || !details.isWellFormed() ||
+            current.details != null || current.shell != null || current.device != null ||
+            current.schedule != null || current.browserTab != null || current.browserInteraction != null) return false
+        privateApprovals.value = privateApprovals.value +
+            (lease to PrivateApproval(card, token = token, browserInteraction = details))
+        return true
+    }
+
     @Synchronized fun acceptPrivateDeviceApproval(echo: ConversationSessionToken, card: ApprovalCardUi,
         lease: String, details: DeviceActionApprovalUi, token: String): Boolean {
         val current = privateApprovals.value[lease] ?: return false
@@ -1608,6 +1621,9 @@ class ConversationFlowHolder(
 
     @Synchronized fun visibleApprovalCard(card: ApprovalCardUi, lease: String): ApprovalCardUi {
         val privateEntry = privateApprovals.value[lease]?.takeIf { it.card == card } ?: return card
+        val interaction = privateEntry.browserInteraction
+        if (interaction != null && card.toolName == "browser.${interaction.operation}")
+            return card.copy(browserInteractionAction = interaction, scopeVerified = true)
         val browserTab = privateEntry.browserTab
         if (browserTab != null && card.toolName == "browser.tab") return card.copy(browserTabAction = browserTab, scopeVerified = true)
         val schedule = privateEntry.schedule
@@ -1631,7 +1647,9 @@ class ConversationFlowHolder(
                 (item.shell != null && card.toolName == "exec.shell" && sameWorkspace(state.boundWorkspaceId, item.shell.workspaceId)) ||
                 (item.device != null && card.toolName == "device.act") ||
                 (item.schedule != null && card.toolName == "task.schedule") ||
-                (item.browserTab?.isReviewable() == true && card.toolName == "browser.tab")) &&
+                (item.browserTab?.isReviewable() == true && card.toolName == "browser.tab") ||
+                (item.browserInteraction?.isWellFormed() == true &&
+                    card.toolName == "browser.${item.browserInteraction.operation}")) &&
             state.selectedRunId == card.runId && (selectedRunId.value == null || selectedRunId.value == card.runId) &&
             state.pendingApprovals.any { it == card }
     }
@@ -1674,7 +1692,7 @@ class ConversationFlowHolder(
             return rejected(ConversationRejectedReason.INPUT_INSUFFICIENT)
         }
         val privateVisible = privateEntry != null && privateEntry.card == live &&
-            (privateEntry.details != null || privateEntry.shell != null || privateEntry.device != null || privateEntry.schedule != null || privateEntry.browserTab != null) &&
+            (privateEntry.details != null || privateEntry.shell != null || privateEntry.device != null || privateEntry.schedule != null || privateEntry.browserTab != null || privateEntry.browserInteraction != null) &&
             visibleApprovalCard(live, presentationLease ?: "") == approval
         if ((live != approval && !privateVisible) || state.selectedRunId != live.runId ||
             (selectedRunId.value != null && selectedRunId.value != live.runId)) return ConversationFlowResult.Stale

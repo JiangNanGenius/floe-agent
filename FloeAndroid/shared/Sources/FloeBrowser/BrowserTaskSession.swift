@@ -284,6 +284,105 @@ public actor BrowserTaskSession {
         }
     }
 
+    /// Inspect the live target without returning its current value. This is a
+    /// presentation proof, not a grant; it must be checked again on dispatch.
+    public func approvalInteractionProof(action: BrowserAction, tabID requested: UUID?) async throws -> BrowserInteractionApprovalProof {
+        guard !isReleased, !isUserControlling,
+              !BrowserLifecycleHealth.shared.epochIsSaturated(owner.rootEpoch),
+              let id = requested ?? activeTabID, let tab = tabs.first(where: { $0.id == id }),
+              targetIsReviewable(tab), let token = tab.probeDocumentToken, !token.isEmpty,
+              let url = tab.surface.url, !url.isEmpty, url.utf8.count <= 2_048,
+              tab.documentID.utf8.count <= 128 else {
+            throw BrowserInteractionError.stale("Observe the current page before reviewing this action")
+        }
+        var operation = ""; var ref: String?; var role: String?; var label: String?
+        var targetRole: String?; var targetLabel: String?
+        var digest: String?; var bytes: Int?; var submit: Bool?; var dx: Double?; var dy: Double?
+        switch action {
+        case .click(.element(let target, let document)):
+            guard document == tab.documentID, !target.isEmpty, target.utf8.count <= 128 else { throw BrowserInteractionError.stale("The browser target changed") }
+            operation = "click"; ref = target
+        case .type(.element(let target, let document), let text, let shouldSubmit):
+            guard document == tab.documentID, !target.isEmpty, target.utf8.count <= 128,
+                  text.utf8.count <= 16 * 1024 else { throw BrowserInteractionError.stale("The browser target changed") }
+            operation = "type"; ref = target; digest = FloeDigest.sha256Hex(Data(text.utf8))
+            bytes = text.utf8.count; submit = shouldSubmit
+        case .scroll(let x, let y):
+            guard x.isFinite, y.isFinite, abs(x) <= 20_000, abs(y) <= 20_000 else { throw BrowserInteractionError.stale("The scroll request is invalid") }
+            operation = "scroll"; dx = x; dy = y
+        default: throw BrowserInteractionError.stale("This browser action cannot be reviewed")
+        }
+        let revision: Int
+        if let ref {
+            struct ReviewTarget: Decodable {
+                let status: String; let documentToken: String?; let documentURL: String?
+                let revision: Int?; let role: String?; let label: String?
+                let sensitive: Bool?; let editable: Bool?
+            }
+            let raw = try await evaluate(tabID: id, expression: BrowserProbeScript.reviewTargetExpression(documentID: tab.documentID, ref: ref), cancellation: nil, timeout: 1_200)
+            try ensureObservationCurrent(tabID: id, documentID: tab.documentID, revision: tab.navigationRevision)
+            guard let item = try? JSONDecoder().decode(ReviewTarget.self, from: Data(raw.utf8)),
+                  item.status == "ok", item.documentToken == token, item.documentURL == url,
+                  let pageRevision = item.revision, pageRevision >= 0, item.sensitive == false,
+                  let rawRole = item.role, let rawLabel = item.label,
+                  (operation != "type" || item.editable == true) else {
+                throw BrowserInteractionError.stale("The browser target cannot be reviewed")
+            }
+            role = Self.approvalDisplayText(item.role, maximumBytes: 128)
+            label = Self.approvalDisplayText(item.label, maximumBytes: 512)
+            targetRole = rawRole; targetLabel = rawLabel
+            guard role != nil || label != nil else { throw BrowserInteractionError.stale("The browser target has no identifiable label") }
+            revision = pageRevision
+        } else {
+            let raw = try await evaluate(tabID: id, expression: BrowserProbeScript.identityExpression, cancellation: nil, timeout: 1_200)
+            try ensureObservationCurrent(tabID: id, documentID: tab.documentID, revision: tab.navigationRevision)
+            guard let item = try? JSONDecoder().decode(ProbeIdentity.self, from: Data(raw.utf8)),
+                  item.probeAvailable, item.documentToken == token, item.documentURL == url,
+                  let pageRevision = item.revision, pageRevision >= 0 else { throw BrowserInteractionError.stale("The browser page cannot be reviewed") }
+            revision = pageRevision
+        }
+        guard !isUserControlling, requested != nil || activeTabID == id else { throw BrowserInteractionError.stale("The active browser tab changed") }
+        return BrowserInteractionApprovalProof(owner: owner, sessionID: sessionID, operation: operation,
+            requestedTabID: requested, tabID: id, documentID: tab.documentID,
+            navigationRevision: tab.navigationRevision, documentToken: token, pageRevision: revision,
+            url: url, title: Self.approvalDisplayText(tab.surface.title, maximumBytes: 512),
+            ref: ref, role: role, label: label, targetRole: targetRole, targetLabel: targetLabel,
+            textDigest: digest, textBytes: bytes, submit: submit, deltaX: dx, deltaY: dy)
+    }
+
+    private static func approvalDisplayText(_ text: String?, maximumBytes: Int) -> String? {
+        guard let text else { return nil }
+        let safe = String(text.unicodeScalars.filter { scalar in
+            switch scalar.properties.generalCategory {
+            case .control, .format, .lineSeparator, .paragraphSeparator, .surrogate, .unassigned: false
+            default: true
+            }
+        }).trimmingCharacters(in: .whitespacesAndNewlines)
+        var result = ""
+        for c in safe { if result.utf8.count + String(c).utf8.count > maximumBytes { break }; result.append(c) }
+        return result.isEmpty ? nil : result
+    }
+
+    private func matchesInteractionApproval(_ proof: BrowserInteractionApprovalProof, command: BrowserCommand) -> Bool {
+        guard !isReleased, !isUserControlling, proof.owner == owner, proof.sessionID == sessionID,
+              command.tabID == proof.requestedTabID, (command.tabID ?? activeTabID) == proof.tabID,
+              let tab = tabs.first(where: { $0.id == proof.tabID }), targetIsReviewable(tab),
+              tab.documentID == proof.documentID, tab.navigationRevision == proof.navigationRevision,
+              tab.probeDocumentToken == proof.documentToken, tab.surface.url == proof.url else { return false }
+        switch command.action {
+        case .click(.element(let ref, let document)):
+            return proof.operation == "click" && proof.ref == ref && proof.documentID == document &&
+                proof.targetRole != nil && proof.targetLabel != nil
+        case .type(.element(let ref, let document), let text, let submit):
+            return proof.operation == "type" && proof.ref == ref && proof.documentID == document &&
+                proof.targetRole != nil && proof.targetLabel != nil &&
+                proof.textDigest == FloeDigest.sha256Hex(Data(text.utf8)) && proof.textBytes == text.utf8.count && proof.submit == submit
+        case .scroll(let x, let y):
+            return proof.operation == "scroll" && proof.deltaX == x && proof.deltaY == y
+        default: return false
+        }
+    }
+
     private func matchesCreateApproval(_ proof: BrowserTabApprovalProof) -> Bool {
         guard !isReleased, !isUserControlling,
               !BrowserLifecycleHealth.shared.epochIsSaturated(owner.rootEpoch),
@@ -657,6 +756,9 @@ public actor BrowserTaskSession {
                 return failure(command, status: .stale, code: "approval-changed", "The reviewed browser tab state changed")
             }
         }
+        if let proof = command.interactionApprovalProof, !matchesInteractionApproval(proof, command: command) {
+            return failure(command, status: .stale, code: "approval-changed", "The reviewed browser action changed")
+        }
         if isUserControlling {
             switch command.action {
             case .protocolInfo, .observe, .listTabs, .events:
@@ -957,6 +1059,11 @@ public actor BrowserTaskSession {
                     text: nil,
                     submit: false,
                     visualFallbackReason: command.visualFallbackReason,
+                    expectedVisualRevision: command.interactionApprovalProof?.pageRevision,
+                    expectedVisualToken: command.interactionApprovalProof?.documentToken,
+                    expectedVisualURL: command.interactionApprovalProof?.url,
+                    expectedReviewRole: command.interactionApprovalProof?.targetRole,
+                    expectedReviewLabel: command.interactionApprovalProof?.targetLabel,
                     cancellation: cancellation
                 )
             case .type(let target, let text, let submit):
@@ -970,8 +1077,21 @@ public actor BrowserTaskSession {
                     text: text,
                     submit: submit,
                     visualFallbackReason: nil,
+                    expectedVisualRevision: command.interactionApprovalProof?.pageRevision,
+                    expectedVisualToken: command.interactionApprovalProof?.documentToken,
+                    expectedVisualURL: command.interactionApprovalProof?.url,
+                    expectedReviewRole: command.interactionApprovalProof?.targetRole,
+                    expectedReviewLabel: command.interactionApprovalProof?.targetLabel,
                     cancellation: cancellation
                 )
+                // A post-input DOM snapshot can echo the complete text,
+                // fragments or a submitted URL. Do not place that content in
+                // live or durable tool results. The user may explicitly
+                // observe the page in a separate operation.
+                try cancellation?.throwIfCancelled()
+                try Task.checkCancellation()
+                return BrowserResult(requestID: command.requestID, status: .ok,
+                    message: "Input was applied. Observe the page to continue.")
             case .scroll(let x, let y):
                 guard let index = tabs.firstIndex(where: { $0.id == tabID }),
                       !tabs[index].navigationPending, !tabs[index].navigationUncertain,
@@ -983,7 +1103,7 @@ public actor BrowserTaskSession {
                 let documentID = tabs[index].documentID
                 let navigationRevision = tabs[index].navigationRevision
                 tabs[index].visualFallbackEvidence = nil
-                let raw = try await evaluate(tabID: tabID, expression: BrowserProbeScript.scrollExpression(deltaX: x, deltaY: y, expectedDocumentToken: token, expectedDocumentURL: url), cancellation: cancellation)
+                let raw = try await evaluate(tabID: tabID, expression: BrowserProbeScript.scrollExpression(deltaX: x, deltaY: y, expectedDocumentToken: command.interactionApprovalProof?.documentToken ?? token, expectedDocumentURL: command.interactionApprovalProof?.url ?? url, expectedRevision: command.interactionApprovalProof?.pageRevision), cancellation: cancellation)
                 try ensureObservationCurrent(tabID: tabID, documentID: documentID, revision: navigationRevision)
                 struct ScrollReply: Decodable { let status: String }
                 guard let reply = try? JSONDecoder().decode(ScrollReply.self, from: Data(raw.utf8)), reply.status == "ok" else {
@@ -1320,6 +1440,8 @@ public actor BrowserTaskSession {
         expectedVisualScrollY: Double? = nil,
         expectedVisualWidth: Double? = nil,
         expectedVisualHeight: Double? = nil,
+        expectedReviewRole: String? = nil,
+        expectedReviewLabel: String? = nil,
         cancellation: CancellationToken?
     ) async throws {
         guard let tab = tabs.first(where: { $0.id == tabID }) else {
@@ -1345,7 +1467,9 @@ public actor BrowserTaskSession {
             expectedScrollX: expectedVisualScrollX,
             expectedScrollY: expectedVisualScrollY,
             expectedViewportWidth: expectedVisualWidth,
-            expectedViewportHeight: expectedVisualHeight
+            expectedViewportHeight: expectedVisualHeight,
+            expectedReviewRole: expectedReviewRole,
+            expectedReviewLabel: expectedReviewLabel
         )
         let value = try await evaluate(tabID: tabID, expression: expression, cancellation: cancellation)
         try ensureObservationCurrent(tabID: tabID, documentID: tab.documentID, revision: tab.navigationRevision)

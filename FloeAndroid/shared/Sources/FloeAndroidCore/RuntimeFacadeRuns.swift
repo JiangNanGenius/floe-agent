@@ -1084,6 +1084,7 @@ public actor FacadeRunDomain {
         workspaceApprovalReceipts.retire(runID: ownership.runID)
         G073ScheduleApprovalGate.shared.retire(run: ownership.runID)
         G04BrowserTabApprovalGate.shared.retire(run: ownership.runID)
+        G04BrowserInteractionApprovalGate.shared.retire(run: ownership.runID)
         bumpStopOwnershipStamp()
         owners[ownership.runID] = nil
         conversationRuns[ownership.conversationID]?.remove(ownership.runID)
@@ -4185,6 +4186,27 @@ public actor FacadeRunDomain {
         return (details, checked)
     }
 
+    private func browserInteractionApprovalDetails(waiting: AgentState.WaitingApproval, taskID: UUID,
+        runID: UUID, service: ConversationRunService) async -> ([String: SettingsDomainV1.JSONValue], BrowserInteractionApprovalProof)? {
+        guard let (action, tabID) = G04BrowserInteractionApprovalPresentation.arguments(waiting),
+              let owner = owners[runID], owner.conversationID == taskID, owner.epoch == epoch,
+              !owner.cancelRequested, fenceIsValid(owner.launchToken),
+              let routing = G04BrowserHostRegistry.shared.currentRouting, routing.epoch == epoch, routing.isLive(),
+              let browserOwner = try? await routing.ladder.ownerVerified(taskID: taskID),
+              let session = await routing.center.existingSession(for: browserOwner),
+              let checked = try? await session.approvalInteractionProof(action: action, tabID: tabID),
+              checked.owner == browserOwner, checked.sessionID == (await session.sessionID),
+              let details = G04BrowserInteractionApprovalPresentation.details(checked),
+              let currentOwner = try? await routing.ladder.ownerVerified(taskID: taskID), currentOwner == browserOwner,
+              await routing.center.existingSession(for: browserOwner) === session,
+              await service.snapshot().pendingApproval == waiting,
+              ownsLiveService(service, runID: runID, conversationID: taskID),
+              let latest = owners[runID], latest.conversationID == taskID, latest.epoch == epoch,
+              !latest.cancelRequested, latest.launchToken == owner.launchToken, fenceIsValid(latest.launchToken),
+              G02NativeRootEpoch.readback() == epoch, routing.isLive() else { return nil }
+        return (details, checked)
+    }
+
     /// Ephemeral, App-host-only human approval details. No event, diagnostic,
     /// model tool or durable row receives the returned page or file paths.
     public func approvalPresentation(envelope: RunCommandEnvelope) async -> RunDomainReply {
@@ -4235,7 +4257,8 @@ public actor FacadeRunDomain {
               waiting.toolCall.id == callID, waiting.generation == generation,
               (WorkspaceApprovalPresentation.toolNames.contains(waiting.toolCall.toolName) ||
                waiting.toolCall.toolName == "exec.shell" || waiting.toolCall.toolName == "device.act" ||
-               waiting.toolCall.toolName == "task.schedule" || waiting.toolCall.toolName == "browser.tab"),
+               waiting.toolCall.toolName == "task.schedule" || waiting.toolCall.toolName == "browser.tab" ||
+               G04BrowserInteractionApprovalPresentation.names.contains(waiting.toolCall.toolName)),
               let descriptor = tools.registry.descriptor(named: waiting.toolCall.toolName),
               descriptor.authorizationIdentity == descriptorID else {
             return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalGenerationMismatch)))
@@ -4246,8 +4269,17 @@ public actor FacadeRunDomain {
         let deviceAction = waiting.toolCall.toolName == "device.act"
         let scheduleAction = waiting.toolCall.toolName == "task.schedule"
         let browserTabAction = waiting.toolCall.toolName == "browser.tab"
+        let browserInteractionAction = G04BrowserInteractionApprovalPresentation.names.contains(waiting.toolCall.toolName)
         var browserTabProof: BrowserTabApprovalProof?
-        if browserTabAction {
+        var browserInteractionProof: BrowserInteractionApprovalProof?
+        if browserInteractionAction {
+            guard deviceTargetDigest == nil,
+                  let (projected, checked) = await browserInteractionApprovalDetails(waiting: waiting,
+                    taskID: owner.taskID, runID: owner.runID, service: service) else {
+                return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalGenerationMismatch)))
+            }
+            details = projected; browserInteractionProof = checked; shellTarget = nil
+        } else if browserTabAction {
             guard deviceTargetDigest == nil,
                   let (projected, checked) = await browserTabApprovalDetails(waiting: waiting,
                     taskID: owner.taskID, runID: owner.runID, service: service, prepareSession: true) else {
@@ -4295,7 +4327,7 @@ public actor FacadeRunDomain {
             shellTarget = nil
         }
         guard ownsLiveService(service, runID: owner.runID, conversationID: owner.taskID),
-              (deviceAction || scheduleAction || browserTabAction || owners[owner.runID]?.workspaceApprovalProof == proof),
+              (deviceAction || scheduleAction || browserTabAction || browserInteractionAction || owners[owner.runID]?.workspaceApprovalProof == proof),
               G02NativeRootEpoch.readback() == epoch,
               tools.registry.descriptor(named: waiting.toolCall.toolName)?.authorizationIdentity == descriptorID,
               let digest = WorkspaceApprovalPresentation.bindingDigest(waiting: waiting, details: details) else {
@@ -4315,8 +4347,9 @@ public actor FacadeRunDomain {
         }
         let binding = WorkspaceApprovalReceiptStore.Binding(
             epoch: epoch, taskID: owner.taskID, runID: owner.runID, callID: callID,
-            generation: generation, descriptorIdentity: descriptorID, workspaceProof: (deviceAction || scheduleAction || browserTabAction) ? nil : proof, digest: digest,
-            shellTarget: shellTarget, deviceTargetDigest: deviceTargetDigest, browserTabProof: browserTabProof)
+            generation: generation, descriptorIdentity: descriptorID, workspaceProof: (deviceAction || scheduleAction || browserTabAction || browserInteractionAction) ? nil : proof, digest: digest,
+            shellTarget: shellTarget, deviceTargetDigest: deviceTargetDigest, browserTabProof: browserTabProof,
+            browserInteractionProof: browserInteractionProof)
         guard let token = workspaceApprovalReceipts.issue(binding, now: ProcessInfo.processInfo.systemUptime) else {
             return RunDomainReply(.rejected(RunDomainError(.capabilityNotUsable, .internal)))
         }
@@ -4328,7 +4361,7 @@ public actor FacadeRunDomain {
             "generation": .string(generation.uuidString.lowercased()),
             "presentationToken": .string(token),
             "presentation": RunSnapshotWireBuilder.approvalPresentation(waiting, descriptor: descriptor,
-                    workspaceDetails: details, workspaceVerified: (deviceAction || scheduleAction || browserTabAction) ? false : nil),
+                    workspaceDetails: details, workspaceVerified: (deviceAction || scheduleAction || browserTabAction || browserInteractionAction) ? false : nil),
         ])
         var finalPage = page
         if deviceAction, let deviceTargetDigest, case .object(var fields) = page {
@@ -4408,10 +4441,12 @@ public actor FacadeRunDomain {
         }()
         let scheduleAction = waiting.toolCall.toolName == "task.schedule"
         let browserTabAction = waiting.toolCall.toolName == "browser.tab"
-        let needsPresentation = fileTools.contains(waiting.toolCall.toolName) || localShell || deviceActionNeedsPresentation || scheduleAction || browserTabAction
+        let browserInteractionAction = G04BrowserInteractionApprovalPresentation.names.contains(waiting.toolCall.toolName)
+        let needsPresentation = fileTools.contains(waiting.toolCall.toolName) || localShell || deviceActionNeedsPresentation || scheduleAction || browserTabAction || browserInteractionAction
         var workspaceClaim: WorkspaceApprovalReceiptStore.Claim?
         var expectedScheduleDigest: String?
         var expectedBrowserTabProof: BrowserTabApprovalProof?
+        var expectedBrowserInteractionProof: BrowserInteractionApprovalProof?
         if case .allow = query.branch, needsPresentation {
             guard let token = query.presentationToken,
                   let tokenUUID = UUID(uuidString: token), tokenUUID.uuidString.lowercased() == token,
@@ -4450,7 +4485,14 @@ public actor FacadeRunDomain {
             let proof = owner.workspaceApprovalProof
             let details: [String: SettingsDomainV1.JSONValue]
             let shellTarget: C02ResolvedExecutionTarget?
-            if browserTabAction {
+            if browserInteractionAction {
+                guard query.canonicalTargetDigest == nil,
+                      let (projected, checked) = await browserInteractionApprovalDetails(waiting: waiting,
+                        taskID: query.conversationID, runID: query.runID, service: service) else {
+                    return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalGenerationMismatch)))
+                }
+                details = projected; shellTarget = nil; expectedBrowserInteractionProof = checked
+            } else if browserTabAction {
                 guard query.canonicalTargetDigest == nil,
                       let (projected, checked) = await browserTabApprovalDetails(waiting: waiting,
                         taskID: query.conversationID, runID: query.runID, service: service, prepareSession: false) else {
@@ -4500,7 +4542,7 @@ public actor FacadeRunDomain {
                 shellTarget = nil
             }
             guard ownsLiveService(service, runID: query.runID, conversationID: query.conversationID),
-                  (deviceActionNeedsPresentation || scheduleAction || browserTabAction || owners[query.runID]?.workspaceApprovalProof == proof),
+                  (deviceActionNeedsPresentation || scheduleAction || browserTabAction || browserInteractionAction || owners[query.runID]?.workspaceApprovalProof == proof),
                   G02NativeRootEpoch.readback() == owner.epoch,
                   let digest = WorkspaceApprovalPresentation.bindingDigest(waiting: waiting, details: details),
                   let claim = workspaceClaim else {
@@ -4510,8 +4552,9 @@ public actor FacadeRunDomain {
                 epoch: owner.epoch, taskID: query.conversationID, runID: query.runID,
                 callID: waiting.toolCall.id, generation: waiting.generation,
                 descriptorIdentity: query.expectedDescriptorIdentity,
-                workspaceProof: (deviceActionNeedsPresentation || scheduleAction || browserTabAction) ? nil : proof, digest: digest,
-                shellTarget: shellTarget, deviceTargetDigest: query.canonicalTargetDigest, browserTabProof: expectedBrowserTabProof)
+                workspaceProof: (deviceActionNeedsPresentation || scheduleAction || browserTabAction || browserInteractionAction) ? nil : proof, digest: digest,
+                shellTarget: shellTarget, deviceTargetDigest: query.canonicalTargetDigest, browserTabProof: expectedBrowserTabProof,
+                browserInteractionProof: expectedBrowserInteractionProof)
             guard claim.expiresAt > ProcessInfo.processInfo.systemUptime, claim.binding == binding else {
                 return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalGenerationMismatch)))
             }
@@ -4533,6 +4576,12 @@ public actor FacadeRunDomain {
                 return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalGenerationMismatch)))
             }
         }
+        if let expectedBrowserInteractionProof {
+            guard G04BrowserInteractionApprovalGate.shared.stage(run: query.runID, call: waiting.toolCall.id,
+                grant: waiting.generation, proof: expectedBrowserInteractionProof) else {
+                return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalGenerationMismatch)))
+            }
+        }
         let accepted = await service.resolveApproval(decision, matching: waiting)
         guard accepted else {
             if expectedScheduleDigest != nil {
@@ -4540,6 +4589,9 @@ public actor FacadeRunDomain {
             }
             if expectedBrowserTabProof != nil {
                 G04BrowserTabApprovalGate.shared.discard(run: query.runID, call: waiting.toolCall.id, grant: waiting.generation)
+            }
+            if expectedBrowserInteractionProof != nil {
+                G04BrowserInteractionApprovalGate.shared.discard(run: query.runID, call: waiting.toolCall.id, grant: waiting.generation)
             }
             let still = await service.snapshot().pendingApproval?.toolCall.id
             if still != waiting.toolCall.id {

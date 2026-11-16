@@ -9,6 +9,7 @@ import com.floe.android.feature.conversation.WorkspaceFileApprovalUi
 import com.floe.android.feature.conversation.LocalShellApprovalUi
 import com.floe.android.feature.conversation.ScheduleCreateApprovalUi
 import com.floe.android.feature.conversation.BrowserTabApprovalUi
+import com.floe.android.feature.conversation.BrowserInteractionApprovalUi
 import com.floe.android.feature.conversation.DeviceActionApprovalRequestUi
 import com.floe.android.feature.conversation.AttachmentChipUi
 import com.floe.android.feature.conversation.AttachmentKindUi
@@ -225,6 +226,41 @@ internal fun privateBrowserTabApprovalPage(value: JsonElement?, card: ApprovalCa
         integer("tabIndex"), integer("tabCount"))
     if (!action.isWellFormed()) return null
     return action to (token ?: return null)
+}
+
+/** Strict private interaction page; the submitted text itself is never transported here. */
+internal fun privateBrowserInteractionApprovalPage(
+    value: JsonElement?, card: ApprovalCardUi,
+): Pair<BrowserInteractionApprovalUi, String>? {
+    if (card.toolName !in setOf("browser.click", "browser.type", "browser.scroll")) return null
+    val (details, token) = privateApprovalPage(
+        value, card, requiredRisk = "controlsGUI", workspaceVerified = false,
+    ) ?: return null
+    if (details.keys != setOf("kind", "operation", "tabID", "documentID", "url", "title",
+            "ref", "role", "label", "textBytes", "submit", "deltaX", "deltaY")) return null
+    fun str(key: String) = (details[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
+    fun nullableString(key: String) = details[key] is kotlinx.serialization.json.JsonNull || str(key) != null
+    fun number(key: String): Double? = (details[key] as? JsonPrimitive)
+        ?.takeIf { !it.isString }?.content?.toDoubleOrNull()?.takeIf { it.isFinite() }
+    fun nullableNumber(key: String) = details[key] is kotlinx.serialization.json.JsonNull || number(key) != null
+    fun integer(key: String) = (details[key] as? JsonPrimitive)?.takeIf { !it.isString }?.longOrNull
+    fun bool(key: String) = (details[key] as? JsonPrimitive)?.takeIf { !it.isString }?.booleanOrNull
+    if (str("kind") != "browserInteraction" ||
+        str("operation") != card.toolName.removePrefix("browser.") ||
+        listOf("title", "ref", "role", "label").any { !nullableString(it) } ||
+        (details["textBytes"] !is kotlinx.serialization.json.JsonNull && integer("textBytes") == null) ||
+        (details["submit"] !is kotlinx.serialization.json.JsonNull && bool("submit") == null) ||
+        !nullableNumber("deltaX") || !nullableNumber("deltaY")) return null
+    val action = BrowserInteractionApprovalUi(
+        operation = str("operation") ?: return null,
+        tabId = str("tabID") ?: return null,
+        documentId = str("documentID") ?: return null,
+        url = str("url") ?: return null,
+        title = str("title"), ref = str("ref"), role = str("role"), label = str("label"),
+        textBytes = integer("textBytes"), submit = bool("submit"),
+        deltaX = number("deltaX"), deltaY = number("deltaY"),
+    )
+    return if (action.isWellFormed()) action to (token ?: return null) else null
 }
 
 /** Accept only a complete, generation-bound, local human-review page. */

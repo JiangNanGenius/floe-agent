@@ -115,13 +115,18 @@ public enum ToolArgumentSanitizer {
         return canonical == DeviceToolNames.act || canonical == "phone.act"
     }
 
+    static func isBrowserTypeTool(_ toolName: String?) -> Bool {
+        guard let toolName else { return false }
+        return toolName.lowercased().replacingOccurrences(of: "_", with: ".") == "browser.type"
+    }
+
     /// Conservative device.act rule: any root-level `text`/`sensitiveText`
     /// key (case-insensitive) is a credential regardless of the declared
     /// action, and any NON-OBJECT parsed device.act payload fails closed as
     /// sensitive so it is omitted whole. Malformed bytes are handled by the
     /// callers before structural scrubbing is possible.
     static func phoneTextInputRequested(_ object: Any, toolName: String?) -> Bool {
-        guard isPhoneActTool(toolName) else { return false }
+        guard isPhoneActTool(toolName) || isBrowserTypeTool(toolName) else { return false }
         guard let dictionary = object as? [String: Any] else { return true }
         return dictionary.keys.contains {
             let lowered = $0.lowercased()
@@ -143,7 +148,7 @@ public enum ToolArgumentSanitizer {
             }
             return Data(redactedText(String(decoding: data, as: UTF8.self)).utf8)
         }
-        if isPhoneActTool(toolName), object as? [String: Any] == nil {
+        if (isPhoneActTool(toolName) || isBrowserTypeTool(toolName)), object as? [String: Any] == nil {
             // A non-object device.act document (array or fragment) cannot be
             // scrubbed field-wise: omit the whole payload instead of
             // persisting it unchanged.
@@ -186,7 +191,7 @@ public enum ToolArgumentSanitizer {
         toolName: String? = nil
     ) -> Bool {
         guard let object = try? JSONSerialization.jsonObject(with: data) else {
-            if isPhoneActTool(toolName) {
+            if isPhoneActTool(toolName) || isBrowserTypeTool(toolName) {
                 // Malformed or partial device.act bytes are omitted whole:
                 // escaped key names and field order must never evade the
                 // detection by substring scanning.

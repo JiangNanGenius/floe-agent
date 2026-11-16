@@ -138,17 +138,29 @@ public enum BrowserProbeScript {
           nextCursor: end < nodes.length ? end : null
         };
       };
-      const perform = (operation, target, expectedDocumentID, text, submit, visualFallbackReason, expectedRevision, expectedToken, expectedURL, expectedScrollX, expectedScrollY, expectedWidth, expectedHeight) => {
+      const perform = (operation, target, expectedDocumentID, text, submit, visualFallbackReason, expectedRevision, expectedToken, expectedURL, expectedScrollX, expectedScrollY, expectedWidth, expectedHeight, expectedRole, expectedLabel) => {
         // Check the observed document inside the same JS turn and BEFORE
         // resolving refs, touching inputs, or dispatching any pointer event.
         if (!expectedToken || expectedToken !== documentToken || !expectedURL || expectedURL !== String(window.location.href)) return {status:'stale'};
-        if (target.kind === 'point' && (expectedRevision !== revision || expectedScrollX !== Number(window.scrollX || 0) || expectedScrollY !== Number(window.scrollY || 0) || expectedWidth !== Number(window.innerWidth) || expectedHeight !== Number(window.innerHeight))) return {status:'stale'};
+        if (expectedRevision != null && expectedRevision !== revision) return {status:'stale'};
+        if (target.kind === 'point' && (expectedScrollX !== Number(window.scrollX || 0) || expectedScrollY !== Number(window.scrollY || 0) || expectedWidth !== Number(window.innerWidth) || expectedHeight !== Number(window.innerHeight))) return {status:'stale'};
         setDocument(expectedDocumentID);
         if (target.kind === 'element' && target.documentID !== documentID) return {status:'stale'};
         const el = target.kind === 'element'
           ? findByRef(target.ref)
           : document.elementFromPoint(Number(target.x), Number(target.y));
         if (!el || !el.isConnected) return {status:'stale'};
+        if (target.kind === 'element' && expectedRole != null) {
+          // The document observer cannot see changes in shadow roots or
+          // iframe documents. Never use such a target for manual approval.
+          if (el.getRootNode() !== document) return {status:'stale'};
+          const tag = String(el.tagName || '').toLowerCase();
+          const editable = tag === 'input' || tag === 'textarea' || !!el.isContentEditable;
+          const role = String(el.getAttribute('role') || tag).slice(0,128);
+          const label = String(el.getAttribute('aria-label') || el.title ||
+            (editable ? el.getAttribute('placeholder') : el.innerText) || '').trim().slice(0,300);
+          if (role !== expectedRole || label !== expectedLabel) return {status:'stale'};
+        }
         if (operation === 'click') {
           if (target.kind === 'point' && visualFallbackReason === 'noStructuredTarget') {
             let structured = null;
@@ -186,7 +198,11 @@ public enum BrowserProbeScript {
         }
         const tag = (el.tagName || '').toLowerCase();
         const inputType = (el.type || '').toLowerCase();
-        if (inputType === 'password' || (el.autocomplete || '').toLowerCase() === 'current-password') return {status:'needsUser'};
+        const autocomplete = String(el.autocomplete || '').toLowerCase();
+        if (inputType === 'password' || autocomplete === 'current-password') return {status:'needsUser'};
+        // The reviewed-action path carries a page revision; retain its
+        // narrower sensitive-input ceiling without changing auto execution.
+        if (expectedRevision != null && (autocomplete.includes('password') || autocomplete === 'one-time-code' || inputType === 'hidden')) return {status:'needsUser'};
         if (!(tag === 'input' || tag === 'textarea' || el.isContentEditable)) return {status:'blocked'};
         el.focus();
         if (el.isContentEditable) {
@@ -236,13 +252,30 @@ public enum BrowserProbeScript {
       addEventListener('hashchange', () => push('Page.navigatedWithinDocument'));
       addEventListener('popstate', () => push('Page.navigatedWithinDocument'));
       const identity = () => ({probeAvailable:documentToken.length > 0, documentToken, documentURL:String(window.location.href), revision, scrollX:Number(window.scrollX || 0), scrollY:Number(window.scrollY || 0), viewportWidth:Number(window.innerWidth), viewportHeight:Number(window.innerHeight)});
-      const scroll = (x, y, expectedToken, expectedURL) => {
+      const reviewTarget = (id, ref) => {
+        setDocument(id);
+        const el = findByRef(ref);
+        if (!el || !visible(el) || el.getRootNode() !== document) return {status:'stale'};
+        const tag = String(el.tagName || '').toLowerCase();
+        const inputType = String(el.type || '').toLowerCase();
+        const autocomplete = String(el.autocomplete || '').toLowerCase();
+        const sensitive = inputType === 'password' || autocomplete.includes('password') ||
+          autocomplete === 'one-time-code' || inputType === 'hidden';
+        const editable = tag === 'input' || tag === 'textarea' || !!el.isContentEditable;
+        const label = el.getAttribute('aria-label') || el.title ||
+          (editable ? el.getAttribute('placeholder') : el.innerText) || '';
+        return {status:'ok', documentToken, documentURL:String(window.location.href), revision,
+          role:String(el.getAttribute('role') || tag).slice(0,128),
+          label:String(label).trim().slice(0,300), sensitive, editable};
+      };
+      const scroll = (x, y, expectedToken, expectedURL, expectedRevision) => {
         if (!expectedToken || expectedToken !== documentToken || !expectedURL || expectedURL !== String(window.location.href)) return {status:'stale'};
+        if (expectedRevision != null && expectedRevision !== revision) return {status:'stale'};
         if (!Number.isFinite(x) || !Number.isFinite(y)) return {status:'blocked'};
         window.scrollBy(x, y);
         return {status:'ok'};
       };
-      globalThis.__floeProtocol = {snapshot, perform, status, drainEvents, identity, scroll};
+      globalThis.__floeProtocol = {snapshot, perform, status, drainEvents, identity, scroll, reviewTarget};
       push('Runtime.executionContextCreated');
     })();
     """#
@@ -322,12 +355,22 @@ public enum BrowserProbeScript {
 
     /// Viewport scroll. Only finite bounded doubles are embedded; nothing
     /// page-derived reaches this builder.
-    public static func scrollExpression(deltaX: Double, deltaY: Double, expectedDocumentToken: String, expectedDocumentURL: String) -> String {
+    public static func scrollExpression(deltaX: Double, deltaY: Double, expectedDocumentToken: String, expectedDocumentURL: String, expectedRevision: Int? = nil) -> String {
         guard deltaX.isFinite, deltaY.isFinite else { return "'{\"status\":\"blocked\"}'" }
         return """
         (() => { const p = globalThis.__floeProtocol;
           if (!p || typeof p.scroll !== 'function') return JSON.stringify({status:'stale'});
-          return JSON.stringify(p.scroll(\(deltaX), \(deltaY), \(jsStringLiteral(expectedDocumentToken)), \(jsStringLiteral(expectedDocumentURL))));
+          return JSON.stringify(p.scroll(\(deltaX), \(deltaY), \(jsStringLiteral(expectedDocumentToken)), \(jsStringLiteral(expectedDocumentURL)), \(expectedRevision.map { String($0) } ?? "null")));
+        })()
+        """
+    }
+
+    /// Private approval inspection: never returns a page field's current value.
+    public static func reviewTargetExpression(documentID: String, ref: String) -> String {
+        """
+        (() => { const p = globalThis.__floeProtocol;
+          if (!p || typeof p.reviewTarget !== 'function') return JSON.stringify({status:'stale'});
+          return JSON.stringify(p.reviewTarget(\(jsStringLiteral(documentID)), \(jsStringLiteral(ref))));
         })()
         """
     }
@@ -348,7 +391,9 @@ public enum BrowserProbeScript {
         expectedScrollX: Double? = nil,
         expectedScrollY: Double? = nil,
         expectedViewportWidth: Double? = nil,
-        expectedViewportHeight: Double? = nil
+        expectedViewportHeight: Double? = nil,
+        expectedReviewRole: String? = nil,
+        expectedReviewLabel: String? = nil
     ) -> String {
         let targetLiteral: String
         switch target {
@@ -371,7 +416,7 @@ public enum BrowserProbeScript {
         return """
         (() => { const p = globalThis.__floeProtocol;
           if (!p) return JSON.stringify({status:'stale'});
-          return JSON.stringify(p.perform(\(jsStringLiteral(operation)), \(targetLiteral), \(jsStringLiteral(documentID)), \(jsStringLiteral(text)), \(submit ? "true" : "false"), \(jsStringLiteral(visualFallbackReason ?? "")), \(revisionLiteral), \(jsStringLiteral(expectedDocumentToken)), \(jsStringLiteral(expectedDocumentURL)), \(scrollXLiteral), \(scrollYLiteral), \(widthLiteral), \(heightLiteral)));
+          return JSON.stringify(p.perform(\(jsStringLiteral(operation)), \(targetLiteral), \(jsStringLiteral(documentID)), \(jsStringLiteral(text)), \(submit ? "true" : "false"), \(jsStringLiteral(visualFallbackReason ?? "")), \(revisionLiteral), \(jsStringLiteral(expectedDocumentToken)), \(jsStringLiteral(expectedDocumentURL)), \(scrollXLiteral), \(scrollYLiteral), \(widthLiteral), \(heightLiteral), \(expectedReviewRole.map(jsStringLiteral) ?? "null"), \(expectedReviewLabel.map(jsStringLiteral) ?? "null")));
         })()
         """
     }

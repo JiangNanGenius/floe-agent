@@ -145,9 +145,12 @@ fun ConversationApprovalRow(
     val shellAction = presentedCard.localShellAction
     val scheduleAction = presentedCard.scheduleCreateAction
     val browserTabAction = presentedCard.browserTabAction
+    val browserInteraction = presentedCard.browserInteractionAction
     val unidentifiedBrowserTarget = browserTabAction != null && browserTabAction.operation != "create" &&
         browserTabAction.isWellFormed() && !browserTabAction.isReviewable()
-    val detailsVisible = if (browserTabAction != null) {
+    val detailsVisible = if (browserInteraction != null) {
+        presentedCard.toolName == "browser.${browserInteraction.operation}" && browserInteraction.isWellFormed()
+    } else if (browserTabAction != null) {
         presentedCard.toolName == "browser.tab" && browserTabAction.isReviewable()
     } else if (scheduleAction != null) {
         presentedCard.toolName == "task.schedule"
@@ -184,7 +187,7 @@ fun ConversationApprovalRow(
     // without a human tap on these two controls.
     val backendResolve: (ApprovalCardUi, Boolean) -> Unit =
         { c, allow ->
-            if (c.workspaceAction != null || c.localShellAction != null || c.scheduleCreateAction != null || c.browserTabAction != null) holder.resolveApproval(c, allow, presentationLease = lease)
+            if (c.workspaceAction != null || c.localShellAction != null || c.scheduleCreateAction != null || c.browserTabAction != null || c.browserInteractionAction != null) holder.resolveApproval(c, allow, presentationLease = lease)
             else if (onResolve != null) onResolve(c, allow) else holder.resolveApproval(c, allow)
         }
     // The current native decision contract is call-bound. Never promise
@@ -255,7 +258,12 @@ fun ConversationApprovalRow(
                 FloeText(presentedCard.toolName, style = Floe.typography.evidence, color = colors.label)
             }
             if (presentedCard.scopeVerified) {
-                FloeText(if (browserTabAction != null) stringResource(when (browserTabAction.operation) {
+                FloeText(if (browserInteraction != null) stringResource(when (browserInteraction.operation) {
+                    "click" -> R.string.approval_browser_click
+                    "type" -> R.string.approval_browser_type
+                    else -> R.string.approval_browser_scroll
+                })
+                else if (browserTabAction != null) stringResource(when (browserTabAction.operation) {
                     "activate" -> R.string.approval_browser_tab_activate
                     "close" -> R.string.approval_browser_tab_close
                     else -> R.string.approval_browser_tab_create
@@ -279,6 +287,38 @@ fun ConversationApprovalRow(
                     "launch" -> stringResource(R.string.approval_device_launch)
                     else -> ""
                 }, style = Floe.typography.bodyEmphasized, color = colors.label)
+                if (browserInteraction != null) {
+                    browserInteraction.title?.let { title ->
+                        FloeText(stringResource(R.string.approval_browser_tab_title),
+                            style = Floe.typography.metadata, color = colors.secondaryLabel)
+                        SelectionContainer { FloeText(title, style = Floe.typography.evidence, color = colors.label) }
+                    }
+                    FloeText(stringResource(R.string.approval_browser_tab_url),
+                        style = Floe.typography.metadata, color = colors.secondaryLabel)
+                    SelectionContainer { FloeText(browserInteraction.url, modifier = Modifier.fillMaxWidth(),
+                        style = Floe.typography.evidence, color = colors.label) }
+                    if (browserInteraction.ref != null) {
+                        FloeText(stringResource(R.string.approval_browser_target),
+                            style = Floe.typography.metadata, color = colors.secondaryLabel)
+                        SelectionContainer {
+                            FloeText(listOfNotNull(browserInteraction.label, browserInteraction.role, browserInteraction.ref)
+                                .joinToString(" · "), modifier = Modifier.fillMaxWidth(),
+                                style = Floe.typography.evidence, color = colors.label)
+                        }
+                    }
+                    browserInteraction.textBytes?.let { count ->
+                        FloeText(stringResource(R.string.approval_browser_text_bytes, count),
+                            style = Floe.typography.body, color = colors.label)
+                        FloeText(stringResource(if (browserInteraction.submit == true)
+                            R.string.approval_browser_submit_yes else R.string.approval_browser_submit_no),
+                            style = Floe.typography.body, color = colors.label)
+                    }
+                    if (browserInteraction.deltaX != null && browserInteraction.deltaY != null) {
+                        FloeText(stringResource(R.string.approval_browser_scroll_distance,
+                            browserInteraction.deltaX.toString(), browserInteraction.deltaY.toString()),
+                            style = Floe.typography.body, color = colors.label)
+                    }
+                }
                 if (browserTabAction != null && browserTabAction.operation != "create") {
                     if (browserTabAction.tabIndex != null && browserTabAction.tabCount != null) {
                         FloeText(stringResource(R.string.approval_browser_tab_position,

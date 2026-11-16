@@ -511,6 +511,14 @@
     <string name="approval_source_exists">源文件或文件夹必须存在。</string>
     <string name="approval_schedule_create">创建定时任务</string>
     <string name="approval_browser_tab_create">创建浏览器标签页</string>
+    <string name="approval_browser_click">点击页面元素</string>
+    <string name="approval_browser_type">在页面输入文字</string>
+    <string name="approval_browser_scroll">滚动页面</string>
+    <string name="approval_browser_target">目标元素</string>
+    <string name="approval_browser_text_bytes">文字长度：%1$d 字节</string>
+    <string name="approval_browser_submit_yes">输入后提交</string>
+    <string name="approval_browser_submit_no">输入后不提交</string>
+    <string name="approval_browser_scroll_distance">滚动距离 X：%1$s，Y：%2$s</string>
     <string name="approval_browser_tab_activate">切换到浏览器标签页</string>
     <string name="approval_browser_tab_close">关闭浏览器标签页</string>
     <string name="approval_browser_tab_title">页面标题</string>

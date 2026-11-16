@@ -307,6 +307,15 @@ final class PhoneTextInputRuntimeRedactionTests: XCTestCase {
         let legacy = try AgentCheckpoint.decoded(from: legacyJSON)
         XCTAssertNil(legacy.sensitiveToolCallIDs)
     }
+    func testBrowserTypeTextIsNeverPersistedEvenWhenMalformed() {
+        let secret = "example-sensitive-input"
+        let raw = Data("{\"ref\":\"n1\",\"documentID\":\"d1\",\"text\":\"\(secret)\"}".utf8)
+        let clean = ToolArgumentSanitizer.redactedArgumentsJSON(raw, toolName: "browser.type")
+        XCTAssertFalse(String(decoding: clean, as: UTF8.self).contains(secret))
+        XCTAssertTrue(ToolArgumentSanitizer.containsSensitiveValues(raw, toolName: "browser.type"))
+        let broken = Data("{\"text\":\"\(secret)".utf8)
+        XCTAssertFalse(String(decoding: ToolArgumentSanitizer.redactedArgumentsJSON(broken, toolName: "browser.type"), as: UTF8.self).contains(secret))
+    }
 }
 
 // MARK: - Facade-projection regressions (real service/facade/stores fixture)
