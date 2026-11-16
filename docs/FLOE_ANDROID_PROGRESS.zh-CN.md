@@ -1,5 +1,15 @@
 # Floe Android 分目标实施记录
 
+## 1.0.19／128 已公开：停止任务后收起设备控制（2026-11-16）
+
+[Android 1.0.19 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v1.0.19)固定源码 `875803254f2929a8410ec81a25d65a6eee94f77b`。聊天停止立即按运行环境代次和任务归属撤销对应设备控制、收起浮球；原有任务取消继续执行，其他任务的控制不受该通知影响。Full 发布构建和定向编译通过；独立 JVM 场景检查覆盖同任务、旧代次和其他任务。主包 SHA-256 为 `a73f555057b5848cae6c35827a04db1908c42654c0c4aec277b6b74147c7c565`。
+
+三星覆盖安装后，主程序和通过系统安装器升级的 Linux 运行组件均为 128，安装字节与发布主包及其内嵌组件一致，UID 保持。实际模型任务出现悬浮球，停止后画面无球、设备页显示已停止；录像显示浮球在部分空闲时段也会自行收起，因此不能证明消失精确发生在停止点击瞬间。测试时回到 Floe 触发的 `device_window_changed` 留作证据，不作为计算完成。临时权限和设置已恢复。
+
+公开七附件的匿名下载字节和摘要逐一匹配；从 1.0.18 的增量补丁在本机真实重建匹配目标，公开更新列表可发现本版，iOS Latest 保持不变。本版覆盖安装使用 ADB，未重复设备内 1.0.18→1.0.19 在线增量或失败回退验证。授权卡点击后仍可能等待；恢复补丁因原生协议无法可靠关联新旧授权范围而未进入本版，另行处理。
+
+English: Android 1.0.19/code128 is published from the source above. Samsung installed the exact app and matching runtime with UIDs retained; the bubble was observed during a task and absent after Stop, though the recording does not establish the exact disappearance instant. All public asset bytes match; the delta was reconstructed locally, while this version's device OTA and the approval-card issue remain unverified or unresolved.
+
 ## 1.0.18／127 已公开：授权应用发现与增量升级（2026-11-16）
 
 [Android 1.0.18 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v1.0.18)固定源码 `03b777b3dd791367b83125e1329e829fe0852b3e`；Full APK 为 167247443 字节，SHA-256 `46d4d990022fd8441ab264bc06e6a305b5f63f401724c47010a937c7de3a6703`。本版含更新等待修复和已授权可启动应用的发现与分页；Full 构建成功，未变原生库复用 1.0.17 生产证据。公开七附件包括主包、Office／CAD 组件、对应源码、校验文件及从 1.0.17 的补丁和清单；匿名读取的字节逐项匹配，iOS Latest 未改变。
