@@ -2,6 +2,17 @@
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
   <channel>
     <item>
+      <title>1.1.5</title>
+      <pubDate>Mon, 16 Nov 2026 07:24:41 +0000</pubDate>
+      <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-bridge-v1.1.5</link>
+      <sparkle:version>8</sparkle:version>
+      <sparkle:shortVersionString>1.1.5</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <description>&lt;p&gt;改进文件同步、传输与取消处理。&lt;/p&gt;&lt;p&gt;Improved file synchronization, transfer and cancellation.&lt;/p&gt;</description>
+      <enclosure url="https://github.com/JiangNanGenius/floe-agent/releases/download/floe-bridge-v1.1.5/Floe-Bridge-1.1.5.dmg" length="4685089" type="application/octet-stream" sparkle:edSignature="RPQzF9lq8Kc33qIGSc9HuJAQSZsmfYX1uTKeXDYSDRymgU3GFd2Yp55jn0fienrb3CQZkH/47ModOdS7KELhBA==" />
+    </item>
+    <item>
       <title>1.1.4</title>
       <pubDate>Fri, 13 Nov 2026 06:47:59 +0000</pubDate>
       <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-bridge-v1.1.4</link>
