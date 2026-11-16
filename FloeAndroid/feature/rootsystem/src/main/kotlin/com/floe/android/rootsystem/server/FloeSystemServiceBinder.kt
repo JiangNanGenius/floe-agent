@@ -788,8 +788,16 @@ internal class FloeSystemServiceBinder(
     override fun uiStatus(request: Bundle?): Bundle {
         if (!callerAllowed()) return BinderProtocol.failure("caller")
         return try {
+            val syncingGuard = request?.containsKey(BinderProtocol.KEY_UI_GUARD_SYNC) == true
+            if (syncingGuard) {
+                val snapshot = BinderProtocol.parseUiGuardSync(request!!)
+                    ?: return BinderProtocol.failure("ui_guard_invalid")
+                operations.syncUiSensitiveGuard(snapshot, request.getString(BinderProtocol.KEY_UI_GUARD_SESSION))
+            }
             val status = operations.uiStatus()
             BinderProtocol.ok().apply {
+                putString(BinderProtocol.KEY_UI_GUARD_SESSION, operations.uiGuardSession())
+                if (syncingGuard) putBoolean(BinderProtocol.KEY_UI_GUARD_ACK, true)
                 putBoolean(BinderProtocol.KEY_UI_READY, status.ready)
                 putBoolean(BinderProtocol.KEY_UI_LIVE, status.live)
                 status.mode?.let { putString(BinderProtocol.KEY_UI_MODE, it) }
@@ -808,6 +816,8 @@ internal class FloeSystemServiceBinder(
                 putLong(BinderProtocol.KEY_UI_TTL, status.observationTtlMillis)
                 putInt(BinderProtocol.KEY_UI_MAX_NODE_LIMIT, status.maxNodes)
             }
+        } catch (e: UiOperations.UiException) {
+            BinderProtocol.failure(e.code)
         } catch (e: SystemOperations.OpException) {
             BinderProtocol.failure(e.code)
         } catch (_: Throwable) {

@@ -2,6 +2,12 @@
 package com.floe.android.rootsystem.ipc
 
 import android.os.Bundle
+import com.floe.android.contracts.SensitiveUiGuardPolicy
+import com.floe.android.contracts.SensitiveUiGuardTicket
+import com.floe.android.contracts.SensitiveUiGuardSnapshot
+import com.floe.android.contracts.SensitiveUiLabelKey
+import com.floe.android.contracts.SensitiveUiLabelIdentity
+import com.floe.android.contracts.SensitiveUiLabelBaseline
 import com.floe.android.rootsystem.FileEntry
 import com.floe.android.rootsystem.GrantRequest
 import com.floe.android.rootsystem.InterfaceInfo
@@ -22,6 +28,94 @@ import com.floe.android.rootsystem.SystemOperation
  * compromised client cannot force an unbounded server allocation.
  */
 object BinderProtocol {
+    const val KEY_UI_GUARD_SYNC = "uiGuardSyncV1"
+    const val KEY_UI_GUARD_ACK = "uiGuardSyncAckV1"
+    const val KEY_UI_GUARD_SESSION = "uiGuardSessionV1"
+    private const val KEY_UI_GUARD_EPOCH = "uiGuardEpochV1"
+    private const val KEY_UI_GUARD_REVISION = "uiGuardRevisionV1"
+    private const val KEY_UI_LABEL_KEY = "uiLabelKeyV1"
+    private const val KEY_UI_LABEL_BASELINES = "uiLabelBaselinesV1"
+
+    private fun labelIdentityBundle(value: SensitiveUiLabelIdentity): Bundle = Bundle().apply {
+        putString("package", value.packageName); putInt("window", value.windowId)
+        putInt("display", value.displayId); putIntArray("path", value.path.toIntArray())
+        putString("class", value.className); putString("view", value.viewId)
+    }
+
+    private fun parseLabelIdentity(b: Bundle): SensitiveUiLabelIdentity? {
+        return SensitiveUiLabelIdentity(
+            packageName = b.getString("package") ?: return null,
+            windowId = b.getInt("window", -1), displayId = b.getInt("display", -1),
+            path = b.getIntArray("path")?.toList() ?: return null,
+            className = b.getString("class") ?: return null, viewId = b.getString("view"),
+        ).takeIf { it.isWellFormed() }
+    }
+
+    fun uiGuardSync(snapshot: SensitiveUiGuardSnapshot, session: String): Bundle {
+        require(SensitiveUiGuardPolicy.valid(snapshot) && session.isNotBlank() && session.length <= 128)
+        return Bundle().apply {
+            putString(KEY_UI_GUARD_SESSION, session)
+            putString(KEY_UI_GUARD_EPOCH, snapshot.epoch)
+            putLong(KEY_UI_GUARD_REVISION, snapshot.revision)
+            snapshot.labelKey?.let { putByteArray(KEY_UI_LABEL_KEY, it.copyBytes()) }
+            putParcelableArray(KEY_UI_LABEL_BASELINES, snapshot.labelBaselines.map { baseline ->
+                Bundle().apply {
+                    putBundle("identity", labelIdentityBundle(baseline.identity))
+                    baseline.safeParent?.let { putBundle("parent", labelIdentityBundle(it)) }
+                    putString("digest", baseline.digest)
+                }
+            }.toTypedArray())
+            putParcelableArray(KEY_UI_GUARD_SYNC, snapshot.tickets.map { t ->
+                Bundle().apply {
+                    putString("task", t.taskId); putString("run", t.runId)
+                    putLong("epoch", t.epoch); putString("grant", t.grantId)
+                    putString("observation", t.observationId); putString("ref", t.nodeRef)
+                    putString("package", t.packageName); putInt("window", t.windowId)
+                    putInt("display", t.displayId); putIntArray("path", t.path.toIntArray())
+                    putString("class", t.className); putString("view", t.viewId)
+                }
+            }.toTypedArray())
+        }
+    }
+
+    fun parseUiGuardSync(bundle: Bundle): SensitiveUiGuardSnapshot? {
+        val entries = bundleArray(bundle, KEY_UI_GUARD_SYNC) ?: return null
+        if (entries.size > SensitiveUiGuardPolicy.MAX_TICKETS) return null
+        val tickets = entries.map { b ->
+            SensitiveUiGuardTicket(
+                taskId = b.getString("task") ?: return null,
+                runId = b.getString("run") ?: return null,
+                epoch = b.getLong("epoch", -1), grantId = b.getString("grant") ?: return null,
+                observationId = b.getString("observation") ?: return null,
+                nodeRef = b.getString("ref") ?: return null,
+                packageName = b.getString("package") ?: return null,
+                windowId = b.getInt("window", -1), displayId = b.getInt("display", -1),
+                path = b.getIntArray("path")?.toList() ?: return null,
+                className = b.getString("class") ?: return null, viewId = b.getString("view"),
+            )
+        }
+        val rawKey = bundle.getByteArray(KEY_UI_LABEL_KEY)
+        val key = rawKey?.let(SensitiveUiLabelKey::fromBytes)
+        rawKey?.fill(0)
+        if (bundle.containsKey(KEY_UI_LABEL_KEY) && key == null) return null
+        val rawLabels = bundleArray(bundle, KEY_UI_LABEL_BASELINES) ?: emptyArray()
+        if (rawLabels.size > SensitiveUiGuardPolicy.MAX_LABEL_BASELINES) return null
+        val labels = rawLabels.map { b ->
+            val identity = b.getBundle("identity")?.let(::parseLabelIdentity) ?: return null
+            val parentBundle = b.getBundle("parent")
+            val parent = parentBundle?.let(::parseLabelIdentity)
+            if (parentBundle != null && parent == null) return null
+            SensitiveUiLabelBaseline(identity, parent, b.getString("digest") ?: return null)
+        }
+        val snapshot = SensitiveUiGuardSnapshot(
+            epoch = bundle.getString(KEY_UI_GUARD_EPOCH) ?: return null,
+            revision = bundle.getLong(KEY_UI_GUARD_REVISION, 0),
+            tickets = tickets,
+            labelKey = key,
+            labelBaselines = labels,
+        )
+        return snapshot.takeIf(SensitiveUiGuardPolicy::valid)
+    }
 
     /**
      * Wire evolution marker.
@@ -724,6 +818,7 @@ object BinderProtocol {
         node.text?.let { putString(KEY_UI_TEXT, it.take(MAX_UI_TEXT)) }
         node.contentDescription?.let { putString(KEY_UI_DESCRIPTION, it.take(MAX_UI_TEXT)) }
         node.hintText?.let { putString(KEY_UI_HINT, it.take(MAX_UI_TEXT)) }
+        node.safeLabelHmac?.let { putString("uiSafeLabelHmacV1", it) }
         putInt(KEY_UI_LEFT, node.bounds.left)
         putInt(KEY_UI_TOP, node.bounds.top)
         putInt(KEY_UI_RIGHT, node.bounds.right)
@@ -798,6 +893,9 @@ object BinderProtocol {
             range = range,
             path = (item.getIntArray(KEY_UI_PATH) ?: IntArray(0))
                 .take(MAX_UI_PATH).toList(),
+            safeLabelHmac = item.getString("uiSafeLabelHmacV1")?.takeIf { value ->
+                value.length == 64 && value.all { it in '0'..'9' || it in 'a'..'f' }
+            },
         )
     }
 

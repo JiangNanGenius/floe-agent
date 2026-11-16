@@ -77,6 +77,8 @@ import com.floe.android.phonecontrol.PhoneControlObservation
 import com.floe.android.phonecontrol.PhoneControlObserveRequest
 import com.floe.android.phonecontrol.PhoneControlOwner
 import com.floe.android.phonecontrol.PhoneControlPrincipal
+import com.floe.android.phonecontrol.PhoneControlSensitiveGuard
+import com.floe.android.DeviceAccessSensitiveGuardUi
 import com.floe.android.phonecontrol.PhoneControlResult
 import com.floe.android.phonecontrol.PhoneControlScreenshotGuidance
 import com.floe.android.phonecontrol.PhoneControlScreenshotRequest
@@ -260,6 +262,7 @@ internal class DeviceAccessHost(
 
     private val preferences = context.getSharedPreferences(
         "floe_device_access_v1", Context.MODE_PRIVATE)
+    private val sensitiveGuardMutex = PhoneControlSensitiveGuard.operationMutex
     private val mutablePresentation = MutableStateFlow(DeviceAccessPresentationState())
     val presentation: StateFlow<DeviceAccessPresentationState> = mutablePresentation.asStateFlow()
 
@@ -408,7 +411,8 @@ internal class DeviceAccessHost(
             displayName = request.displayName,
         )
         val openLabel = context.getString(R.string.device_automation_action_open)
-        automationControls.operationStarted(owner, openLabel)
+        val operationID = "handoff:${UUID.randomUUID()}"
+        automationControls.operationStarted(owner, openLabel, operationID)
         val result = try {
             // Bounded like the other phone operations. A timeout is an
             // UNOBSERVABLE launch, never a retryable refusal: the record is
@@ -417,13 +421,15 @@ internal class DeviceAccessHost(
                 client.launchDocumentView(principal, phoneRequest) { stillCurrent() }
             }
         } catch (cancelled: CancellationException) {
+            automationControls.operationFinished(
+                owner, openLabel, PhoneAutomationOperationState.CANCELLED, operationID = operationID)
             throw cancelled
         } catch (_: Throwable) {
             null
         }
         if (result == null) {
             automationControls.operationFinished(
-                owner, openLabel, PhoneAutomationOperationState.UNKNOWN, null)
+                owner, openLabel, PhoneAutomationOperationState.UNKNOWN, null, operationID)
             return ArtifactHandoffBackgroundLaunchResult.Unknown
         }
         val mapped = artifactHandoffDeviceLaunchResult(result)
@@ -433,7 +439,7 @@ internal class DeviceAccessHost(
                 if (mapped is ArtifactHandoffBackgroundLaunchResult.Refused)
                     PhoneAutomationOperationState.FAILED
                 else PhoneAutomationOperationState.UNKNOWN,
-                null)
+                null, operationID)
             return mapped
         }
         // The OS accepting startActivity is not a visible viewer. Read the
@@ -474,7 +480,7 @@ internal class DeviceAccessHost(
                 true -> context.getString(R.string.device_automation_viewer_visible)
                 false -> context.getString(R.string.device_automation_viewer_not_visible)
                 null -> context.getString(R.string.device_automation_viewer_unverified)
-            })
+            }, operationID)
         return ArtifactHandoffBackgroundLaunchResult.Accepted(viewerVisible)
     }
 
@@ -764,6 +770,7 @@ internal class DeviceAccessHost(
         },
         onSaveUnlockCredential = ::saveUnlockCredential,
         onForgetUnlockCredential = ::forgetUnlockCredential,
+        onReleaseSensitiveGuard = ::releaseSensitiveGuard,
         onFloatingControlsChange = ::setFloatingControls,
         onStopActiveTask = { stopActiveTask(takeOver = false) },
         onTakeOverActiveTask = { stopActiveTask(takeOver = true) },
@@ -1602,7 +1609,11 @@ internal class DeviceAccessHost(
             }
             return
         }
-        val status = backend.refreshReadiness()
+        // A new helper cannot be ready until the latest durable snapshot,
+        // including a legitimately empty first-install state, is ACKed.
+        val status = sensitiveGuardMutex.withLock {
+            if (backend.syncSensitiveGuard()) backend.refreshReadiness() else null
+        }
         adbUiStatus = status
         adbUiReady = status?.ready == true
         if (!adbUiReady && armedBackend == PhoneControlBackend.ADB_UI_AUTOMATION) {
@@ -1876,6 +1887,9 @@ internal class DeviceAccessHost(
         if (busy != DeviceAccessBusyUi.NONE) return
         error = null
         scope.launch(io) {
+            // Re-read only the existing guard file before syncing a helper.
+            // A failed check remains unavailable; it never creates a blank guard.
+            sensitiveGuardMutex.withLock { PhoneControlSensitiveGuard.retryReadOnly(context) }
             refreshRootCatalog()
             refreshControllerStatus()
             refreshPackages()
@@ -2538,7 +2552,12 @@ internal class DeviceAccessHost(
         mutableSystemSettingsUi.value = mutableSystemSettingsUi.value.copy(
             enabled = systemSettingsCeilingEnabled(),
         )
+        val sensitiveState = PhoneControlSensitiveGuard.state(context)
         mutablePresentation.value = DeviceAccessPresentationState(
+            sensitiveGuardsAvailable = sensitiveState != null,
+            sensitiveGuards = sensitiveState?.tickets?.map {
+                DeviceAccessSensitiveGuardUi(guardId(it), it.packageName, it.windowId, it.displayId)
+            }.orEmpty(),
             accessibility = accessibilityUi(),
             adb = adbUi(),
             structuredUi = when {
@@ -2635,6 +2654,38 @@ internal class DeviceAccessHost(
     }
 
     // ------------------------------------------------------------- user actions
+
+    private fun guardId(ticket: com.floe.android.contracts.SensitiveUiGuardTicket): String =
+        java.security.MessageDigest.getInstance("SHA-256")
+            .digest(ticket.toString().toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+
+    /** Invoked only by the explicit confirmation in Device settings. */
+    private fun releaseSensitiveGuard(id: String) {
+        scope.launch(io) {
+            sensitiveGuardMutex.withLock {
+                val ticket = PhoneControlSensitiveGuard.snapshot(context)?.firstOrNull { guardId(it) == id }
+                val pending = ticket?.let { PhoneControlSensitiveGuard.beginRemoval(context, it) }
+                if (pending == null) {
+                    error = DeviceAccessUiError(context.getString(R.string.device_access_error_unavailable), "sensitive_guard")
+                } else {
+                    val active = rootController
+                    val acknowledged = if (!adbUiReady) true else
+                        active != null && active.syncUiSensitiveGuard(pending) is RootResult.Ok &&
+                            rootController === active && PhoneControlSensitiveGuard.pendingMatches(context, pending)
+                    if (!PhoneControlSensitiveGuard.finishRemoval(context, acknowledged)) {
+                        // Failed ACK restores the guarded snapshot at a newer
+                        // revision; a failed disk write remains fail-closed.
+                        PhoneControlSensitiveGuard.state(context)?.let { restored ->
+                            if (adbUiReady) rootController?.syncUiSensitiveGuard(restored)
+                        }
+                        error = DeviceAccessUiError(context.getString(R.string.device_access_error_unavailable), "sensitive_guard")
+                    }
+                }
+                publish()
+            }
+        }
+    }
 
     private fun openAccessibilitySettings() {
         val intent = try {
@@ -2948,15 +2999,18 @@ internal class DeviceAccessHost(
             automationControls.backgroundWorkStarted(ownerOf(call))
             return
         }
-        automationControls.operationStarted(ownerOf(call), automationActionLabel(call))
+        automationControls.operationStarted(ownerOf(call), automationActionLabel(call), automationOperationID(call))
     }
 
     private fun onPlatformToolFinished(call: PlatformToolCall, outcome: PlatformToolOutcome) {
         if (call.tool !in DeviceAccessToolCatalog.DEVICE_INTERACTION_NAMES) return
         val (state, note) = automationOutcome(outcome)
         automationControls.operationFinished(
-            ownerOf(call), automationActionLabel(call), state, note)
+            ownerOf(call), automationActionLabel(call), state, note, automationOperationID(call))
     }
+
+    private fun automationOperationID(call: PlatformToolCall): String =
+        "platform:${call.epoch}:${call.claim}"
 
     private fun automationActionLabel(call: PlatformToolCall): String = when (call.tool) {
         DeviceAccessToolCatalog.DEVICE_OBSERVE ->
@@ -4151,9 +4205,9 @@ internal class DeviceAccessHost(
     private suspend fun executeTool(call: PlatformToolCall): PlatformToolOutcome {
         val revision = phoneControlRevision.current(ownerOf(call))
         val outcome = when (call.tool) {
-            DeviceAccessToolCatalog.DEVICE_OBSERVE -> deviceObserve(call)
-            DeviceAccessToolCatalog.DEVICE_ACT -> deviceAct(call)
-            DeviceAccessToolCatalog.DEVICE_SCREENSHOT -> deviceScreenshot(call)
+            DeviceAccessToolCatalog.DEVICE_OBSERVE -> sensitiveGuardMutex.withLock { deviceObserve(call) }
+            DeviceAccessToolCatalog.DEVICE_ACT -> sensitiveGuardMutex.withLock { deviceAct(call) }
+            DeviceAccessToolCatalog.DEVICE_SCREENSHOT -> sensitiveGuardMutex.withLock { deviceScreenshot(call) }
             DeviceAccessToolCatalog.SYSTEM_ACCESS_STATUS -> systemStatus(call)
             DeviceAccessToolCatalog.SYSTEM_FILES_LIST -> systemFilesList(call)
             DeviceAccessToolCatalog.SYSTEM_FILES_READ -> systemFilesRead(call)
@@ -4350,12 +4404,6 @@ internal class DeviceAccessHost(
             // question/notification lifecycle; the live waiting state is
             // visible while Floe is backgrounded. Cancel/deny/Stop settles the
             // same parked request and never fabricates presence.
-            automationControls.operationFinished(
-                owner,
-                automationActionLabel(call),
-                PhoneAutomationOperationState.WAITING,
-                null,
-            )
             return@withLock PlatformToolOutcome.Failure("device_presence_required")
         }
         armingOwner = owner
@@ -4872,7 +4920,23 @@ internal class DeviceAccessHost(
                         detailOutcome(result.value)
                     }
                 }
-                is PhoneControlResult.Denied -> deniedOutcome(result.reason)
+                is PhoneControlResult.Denied -> {
+                    val recovery = result.observation
+                    val owner = ownerOf(call)
+                    if (source == PhoneControlStructuredSource.ACCESSIBILITY &&
+                        result.reason == PhoneControlDenial.OBSERVATION_EXPIRED && recovery != null
+                    ) {
+                        if (isOwnerStopped(owner) || phonePause.isPaused(owner) || armedOwner != owner) {
+                            PlatformToolOutcome.Failure("device_stopped_by_user")
+                        } else {
+                            phonePrecondition(call, requireApproval = false) ?: PlatformToolOutcome.Failure(
+                                denialCode(result.reason),
+                                "The old page was not returned. Restart paging with the fresh observation.",
+                                recoveryObservation = observationDigest(recovery),
+                            )
+                        }
+                    } else deniedOutcome(result.reason)
+                }
                 is PhoneControlResult.Unavailable -> unavailableOutcome(result.reason)
                 is PhoneControlResult.Failed -> failedOutcome(result)
             }
@@ -4937,6 +5001,43 @@ internal class DeviceAccessHost(
         }
         bindPhoneCall(call)
         try {
+            if (sensitiveInput) {
+                val prepared = when (source) {
+                    PhoneControlStructuredSource.ACCESSIBILITY -> phoneClient?.prepareSensitiveGuard(principal, observationId, action.nodeRef)
+                    PhoneControlStructuredSource.ADB_UI_AUTOMATION -> adbUiBackend?.prepareSensitiveGuard(principal, observationId, action.nodeRef)
+                    PhoneControlStructuredSource.NONE -> null
+                }
+                if (prepared !is PhoneControlResult.Ok) {
+                    publish()
+                    return when (prepared) {
+                        is PhoneControlResult.Denied -> deniedOutcome(prepared.reason)
+                        is PhoneControlResult.Unavailable -> unavailableOutcome(prepared.reason)
+                        is PhoneControlResult.Failed -> if (prepared.reason == PhoneControlFailure.SENSITIVE_GUARD_LIMIT) {
+                            val message = context.getString(R.string.device_sensitive_guard_limit)
+                            error = DeviceAccessUiError(message, "sensitive_guard")
+                            publish()
+                            PlatformToolOutcome.Failure("device_sensitive_guard_limit", message)
+                        } else failedOutcome(prepared)
+                        else -> PlatformToolOutcome.Failure("device_sensitive_guard_unavailable")
+                    }
+                }
+                // Any live helper must receive the exact durable revision before input.
+                val snapshot = PhoneControlSensitiveGuard.state(context)
+                    ?: return PlatformToolOutcome.Failure("device_sensitive_guard_unavailable")
+                if (adbUiReady) {
+                    val active = rootController
+                    val ack = active?.syncUiSensitiveGuard(snapshot) is RootResult.Ok
+                    if (!ack || rootController !== active || PhoneControlSensitiveGuard.state(context) != snapshot) {
+                        publish()
+                        return PlatformToolOutcome.Failure("device_sensitive_guard_unavailable")
+                    }
+                }
+                if (PhoneControlSensitiveGuard.state(context) != snapshot) {
+                    return PlatformToolOutcome.Failure("device_sensitive_guard_unavailable")
+                }
+                phonePrecondition(call, requireApproval = true)?.let { return it }
+                publish()
+            }
             val actionHostGeneration = host.commandClient.generation()
             val result = withTimeout(20_000) {
                 when (source) {

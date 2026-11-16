@@ -3,6 +3,8 @@ package com.floe.android.rootsystem.ipc
 
 import android.os.Bundle
 import android.os.IBinder
+import com.floe.android.contracts.SensitiveUiGuardPolicy
+import com.floe.android.contracts.SensitiveUiGuardSnapshot
 import com.floe.android.rootsystem.AccessActionResult
 import com.floe.android.rootsystem.DeleteReceipt
 import com.floe.android.rootsystem.FileEntry
@@ -26,6 +28,8 @@ import com.floe.android.rootsystem.SystemOperation
 internal class FloeBinderClient(private val binder: IBinder) {
 
     private val service: IFloeSystemService? = IFloeSystemService.Stub.asInterface(binder)
+    @Volatile private var uiGuardSnapshot: SensitiveUiGuardSnapshot? = null
+    private var uiGuardSession: String? = null
 
     fun isAlive(): Boolean = binder.pingBinder()
 
@@ -694,11 +698,47 @@ internal class FloeBinderClient(private val binder: IBinder) {
 
     // ------------------------------------------------------------ typed UI
 
+    /** The caller must persist the complete non-secret snapshot before calling. */
+    @Synchronized
+    fun syncUiSensitiveGuard(snapshot: SensitiveUiGuardSnapshot): RootResult<Unit> {
+        SensitiveUiGuardPolicy.syncDenial(uiGuardSnapshot, snapshot)?.let {
+            return RootResult.Failed(it)
+        }
+        uiGuardSnapshot = null
+        return try {
+            val session = uiGuardSession ?: run {
+                val status = service?.uiStatus(Bundle())
+                if (!BinderProtocol.isOk(status)) return failed(status)
+                val id = status?.getString(BinderProtocol.KEY_UI_GUARD_SESSION)
+                    ?.takeIf { it.isNotBlank() && it.length <= 128 }
+                    ?: return RootResult.Unavailable("ui_sensitive_guard_unavailable")
+                uiGuardSession = id
+                id
+            }
+            val reply = service?.uiStatus(BinderProtocol.uiGuardSync(snapshot, session))
+            if (!BinderProtocol.isOk(reply)) failed(reply)
+            else if (reply?.getBoolean(BinderProtocol.KEY_UI_GUARD_ACK, false) != true ||
+                reply?.getString(BinderProtocol.KEY_UI_GUARD_SESSION) != session
+            ) {
+                RootResult.Unavailable("ui_sensitive_guard_unavailable")
+            } else {
+                uiGuardSnapshot = snapshot.copy(tickets = snapshot.tickets.toList())
+                RootResult.Ok(Unit)
+            }
+        } catch (_: Throwable) {
+            RootResult.Unavailable("service_died")
+        }
+    }
+
     fun uiStatus(): RootResult<com.floe.android.rootsystem.UiBackendStatus> = try {
         val reply = service?.uiStatus(Bundle())
         if (BinderProtocol.isOk(reply)) {
             val status = BinderProtocol.uiBackendStatus(reply)
-            if (status == null) RootResult.Failed("ui_status") else RootResult.Ok(status)
+            if (status == null) RootResult.Failed("ui_status") else RootResult.Ok(
+                if (uiGuardSnapshot == null) status.copy(
+                    ready = false, reason = "ui_sensitive_guard_unavailable",
+                ) else status,
+            )
         } else {
             failed(reply)
         }
@@ -706,10 +746,12 @@ internal class FloeBinderClient(private val binder: IBinder) {
         RootResult.Unavailable("service_died")
     }
 
+    @Synchronized
     fun uiObserve(
         claim: OperationClaim,
         request: com.floe.android.rootsystem.UiObserveRequest,
     ): RootResult<com.floe.android.rootsystem.UiObservation> {
+        if (uiGuardSnapshot == null) return RootResult.Unavailable("ui_sensitive_guard_unavailable")
         val bundle = request(claim, SystemOperation.UI_OBSERVE, null).apply {
             putInt(BinderProtocol.KEY_UI_MAX_NODES, request.maxNodes)
             putInt(BinderProtocol.KEY_UI_MAX_DEPTH, request.maxDepth)
@@ -731,10 +773,17 @@ internal class FloeBinderClient(private val binder: IBinder) {
         }
     }
 
+    @Synchronized
     fun uiAct(
         claim: OperationClaim,
         request: com.floe.android.rootsystem.UiActRequest,
     ): RootResult<com.floe.android.rootsystem.UiActResult> {
+        val tickets = uiGuardSnapshot?.tickets ?: return RootResult.Unavailable("ui_sensitive_guard_unavailable")
+        if (request.sensitiveTextIntent && tickets.none {
+                it.taskId == claim.taskId && it.runId == claim.runId && it.epoch == claim.epoch &&
+                    it.grantId == claim.grantId && it.observationId == request.observationId &&
+                    it.nodeRef == request.nodeRef
+            }) return RootResult.Unavailable("ui_sensitive_guard_unavailable")
         val bundle = request(claim, SystemOperation.UI_ACT, null).apply {
             putString(BinderProtocol.KEY_UI_OBSERVATION_ID, request.observationId)
             if (request.nodeRef != null) {
@@ -768,10 +817,13 @@ internal class FloeBinderClient(private val binder: IBinder) {
         }
     }
 
+    @Synchronized
     fun uiScreenshotBegin(
         claim: OperationClaim,
         request: com.floe.android.rootsystem.UiScreenshotRequest,
     ): RootResult<com.floe.android.rootsystem.UiScreenshotInfo> {
+        val tickets = uiGuardSnapshot?.tickets ?: return RootResult.Unavailable("ui_sensitive_guard_unavailable")
+        if (tickets.isNotEmpty()) return RootResult.Denied("ui_sensitive_guard_active")
         val bundle = request(claim, SystemOperation.UI_SCREENSHOT, null).apply {
             putString(BinderProtocol.KEY_UI_MODE, "begin")
             request.observationId?.let {
@@ -794,12 +846,15 @@ internal class FloeBinderClient(private val binder: IBinder) {
         }
     }
 
+    @Synchronized
     fun uiScreenshotRead(
         claim: OperationClaim,
         screenshotId: String,
         offset: Int,
         maxBytes: Int,
     ): RootResult<com.floe.android.rootsystem.UiScreenshotChunk> {
+        val tickets = uiGuardSnapshot?.tickets ?: return RootResult.Unavailable("ui_sensitive_guard_unavailable")
+        if (tickets.isNotEmpty()) return RootResult.Denied("ui_sensitive_guard_active")
         val bundle = request(claim, SystemOperation.UI_SCREENSHOT, null).apply {
             putString(BinderProtocol.KEY_UI_MODE, "read")
             putString(BinderProtocol.KEY_UI_SCREENSHOT_ID, screenshotId)
@@ -884,7 +939,8 @@ internal class FloeBinderClient(private val binder: IBinder) {
             "ui_observation_invalid", "ui_dispatch_rejected", "rotation_changed",
             "locked", "ui_screenshot_scope" -> RootResult.Denied(code)
             "service_died", "unavailable", "ui_automation_unavailable", "ui_not_ready",
-            "ui_closed" -> RootResult.Unavailable(code)
+            "ui_closed", "ui_sensitive_guard_unavailable" -> RootResult.Unavailable(code)
+            "ui_sensitive_guard_active" -> RootResult.Denied(code)
             else -> RootResult.Failed(code)
         }
     }

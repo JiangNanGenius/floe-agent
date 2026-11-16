@@ -1173,7 +1173,8 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
             return PlatformToolHostStatus.cancelled
         }
         if status == 1 {
-            let failure = Self.failure(from: value, allowRecovery: ticket.toolName == "device.act")
+            let failure = Self.failure(from: value, allowRecovery: Self.allowsObservationRecovery(
+                toolName: ticket.toolName, payload: ticket.payload))
             guard value.count <= PlatformToolHostLimits.maximumFailureReplyBytes || failure.recovery != nil else {
                 condition.unlock()
                 return PlatformToolHostStatus.oversized
@@ -1513,6 +1514,18 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
         let code: String
         let detail: String?
         let recovery: Recovery?
+    }
+
+    private struct ObservationPageArguments: Decodable {
+        let observationId: String
+    }
+
+    private static func allowsObservationRecovery(toolName: String, payload: Data) -> Bool {
+        if toolName == "device.act" { return true }
+        guard toolName == "device.observe",
+              let arguments = try? JSONDecoder().decode(ObservationPageArguments.self, from: payload),
+              !arguments.observationId.isEmpty, arguments.observationId.count <= 64 else { return false }
+        return true
     }
 
     private static func failure(from data: Data, allowRecovery: Bool) -> (code: String, detail: String?, recovery: String?) {

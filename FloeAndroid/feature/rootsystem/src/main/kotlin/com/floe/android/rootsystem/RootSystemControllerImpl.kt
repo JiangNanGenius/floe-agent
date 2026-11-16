@@ -1143,6 +1143,28 @@ internal class RootSystemControllerImpl(
         activeClient()?.capabilities().orEmpty()
     }
 
+    /** Complete host-persisted guard snapshot; repeat after each Binder reconnect. */
+    suspend fun syncUiSensitiveGuard(
+        snapshot: com.floe.android.contracts.SensitiveUiGuardSnapshot,
+    ): RootResult<Unit> = withContext(Dispatchers.IO) {
+        val client = activeClient() ?: return@withContext RootResult.Unavailable("service_not_alive")
+        val generation = binderGeneration.get()
+        if (binderClient !== client) return@withContext RootResult.Unavailable("fenced")
+        val result = client.syncUiSensitiveGuard(snapshot)
+        val alive = runCatching { client.isAlive() }.getOrDefault(false)
+        if (!UiGuardConnectionFence.isCurrent(
+                expectedClient = client,
+                expectedGeneration = generation,
+                currentClient = binderClient,
+                currentGeneration = binderGeneration.get(),
+                alive = alive,
+            )
+        ) {
+            return@withContext RootResult.Unavailable("fenced")
+        }
+        result
+    }
+
     // ---------------------------------------------------------------- ui tier
 
     /**

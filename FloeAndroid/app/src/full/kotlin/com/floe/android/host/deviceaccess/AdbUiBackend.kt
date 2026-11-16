@@ -18,6 +18,10 @@ import com.floe.android.phonecontrol.PhoneControlObservationText
 import com.floe.android.phonecontrol.PhoneControlObserveRequest
 import com.floe.android.phonecontrol.PhoneControlOwner
 import com.floe.android.phonecontrol.PhoneControlPrincipal
+import com.floe.android.phonecontrol.PhoneControlSensitiveGuard
+import com.floe.android.contracts.SensitiveUiGuardTicket
+import com.floe.android.contracts.SensitiveUiLabelIdentity
+import com.floe.android.contracts.SensitiveUiLabelBaseline
 import com.floe.android.phonecontrol.PhoneControlRangeInfo
 import com.floe.android.phonecontrol.PhoneControlResult
 import com.floe.android.phonecontrol.PhoneControlScreenshot
@@ -132,10 +136,20 @@ internal class AdbUiBackend(
         val registeredAtElapsed: Long,
     )
 
+    private data class GuardNode(
+        val path: List<Int>, val className: String, val viewId: String?, val editable: Boolean,
+        val packageName: String?, val parentRef: String?, val clickable: Boolean,
+        val visible: Boolean, val password: Boolean, val redacted: Boolean,
+        val actions: Set<String>, val safeLabelHmac: String?,
+    )
+
     private data class Retained(
         val observation: PhoneControlObservation,
         val serverObservationId: String,
         val refAliases: Map<String, String>,
+        val guardNodes: Map<String, GuardNode>,
+        val guardEpoch: String?,
+        val guardRevision: Long?,
         val owner: PhoneControlOwner,
         val epoch: Long,
         val grantId: String,
@@ -276,10 +290,75 @@ internal class AdbUiBackend(
         }
     }
 
+    suspend fun syncSensitiveGuard(): Boolean {
+        val state = PhoneControlSensitiveGuard.state(context) ?: return false
+        val active = controller() ?: return false
+        val acknowledged = active.syncUiSensitiveGuard(state) is RootResult.Ok
+        return acknowledged && controller() === active && PhoneControlSensitiveGuard.state(context) == state
+    }
+
+    /** Retained server references, never model-supplied paths, identify the field. */
+    suspend fun prepareSensitiveGuard(
+        principal: PhoneControlPrincipal, observationId: String, nodeRef: String,
+    ): PhoneControlResult<SensitiveUiGuardTicket> {
+        val current = sessionFor(principal)
+            ?: return PhoneControlResult.Denied(PhoneControlDenial.AUTHORIZATION_DENIED)
+        if (!ownerIsLive(principal.owner, principal.epoch) || keyguardLocked())
+            return PhoneControlResult.Denied(PhoneControlDenial.AUTHORIZATION_DENIED)
+        val stored = synchronized(gate) {
+            if (latestByOwner[principal.owner] != observationId) null else retained[observationId]?.takeIf {
+                it.owner == principal.owner && it.epoch == principal.epoch && it.grantId == current.spec.grantId
+            }
+        } ?: return PhoneControlResult.Denied(PhoneControlDenial.STALE_OBSERVATION)
+        if (SystemClock.elapsedRealtime() > stored.expiresAtElapsed)
+            return PhoneControlResult.Denied(PhoneControlDenial.OBSERVATION_EXPIRED)
+        val serverRef = stored.refAliases[nodeRef] ?: return PhoneControlResult.Denied(PhoneControlDenial.NODE_UNAVAILABLE)
+        val node = stored.guardNodes[serverRef]?.takeIf { it.editable }
+            ?: return PhoneControlResult.Denied(PhoneControlDenial.NODE_NOT_EDITABLE)
+        val pkg = stored.observation.packageName ?: return PhoneControlResult.Denied(PhoneControlDenial.NODE_UNAVAILABLE)
+        val ticket = SensitiveUiGuardTicket(
+            principal.owner.taskID.toString(), principal.owner.runID.toString(), principal.epoch,
+            current.spec.grantId, stored.serverObservationId, serverRef, pkg,
+            stored.observation.windowId, stored.observation.displayId, node.path, node.className, node.viewId,
+        )
+        val state = PhoneControlSensitiveGuard.state(context)
+            ?: return PhoneControlResult.Failed(PhoneControlFailure.INTERNAL_ERROR, "Sensitive protection is unavailable.")
+        fun identity(n: GuardNode) = SensitiveUiLabelIdentity(pkg, stored.observation.windowId,
+            stored.observation.displayId, n.path, n.className, n.viewId)
+        fun safe(n: GuardNode) = n.visible && !n.editable && !n.password && !n.redacted &&
+            "setText" !in n.actions && n.packageName == pkg
+        val baseline = if (state.tickets.isEmpty() && state.epoch == stored.guardEpoch &&
+            state.revision == stored.guardRevision) {
+            stored.guardNodes.values.asSequence().filter { safe(it) && it.safeLabelHmac != null }
+                .mapNotNull { n ->
+                    val parent = if (n.clickable) null else {
+                        val p = n.parentRef?.let { stored.guardNodes[it] } ?: return@mapNotNull null
+                        if (!safe(p) || !p.clickable || n.path.dropLast(1) != p.path || n.path.isEmpty())
+                            return@mapNotNull null
+                        identity(p)
+                    }
+                    SensitiveUiLabelBaseline(identity(n), parent, n.safeLabelHmac!!).takeIf { it.isWellFormed() }
+                }.distinctBy { it.identity }.take(com.floe.android.contracts.SensitiveUiGuardPolicy.MAX_LABEL_BASELINES).toList()
+        } else emptyList()
+        when (PhoneControlSensitiveGuard.armExternal(context, ticket, baseline)) {
+            PhoneControlSensitiveGuard.ArmResult.STORED -> Unit
+            PhoneControlSensitiveGuard.ArmResult.LIMIT ->
+                return PhoneControlResult.Failed(PhoneControlFailure.SENSITIVE_GUARD_LIMIT)
+            PhoneControlSensitiveGuard.ArmResult.UNAVAILABLE ->
+                return PhoneControlResult.Failed(PhoneControlFailure.INTERNAL_ERROR, "Sensitive protection is unavailable.")
+        }
+        if (!syncSensitiveGuard())
+            return PhoneControlResult.Failed(PhoneControlFailure.INTERNAL_ERROR, "Sensitive protection is unavailable.")
+        return PhoneControlResult.Ok(ticket)
+    }
+
     suspend fun observe(
         principal: PhoneControlPrincipal,
         request: PhoneControlObserveRequest = PhoneControlObserveRequest(),
     ): PhoneControlResult<PhoneControlObservation> {
+        if (!syncSensitiveGuard()) return PhoneControlResult.Unavailable(PhoneControlUnavailable.STRUCTURED_UI_NOT_READY)
+        val captureGuard = PhoneControlSensitiveGuard.state(context)
+            ?: return PhoneControlResult.Unavailable(PhoneControlUnavailable.STRUCTURED_UI_NOT_READY)
         val current = sessionFor(principal)
             ?: return PhoneControlResult.Denied(PhoneControlDenial.AUTHORIZATION_DENIED)
         val ready = refreshReadiness()
@@ -305,7 +384,9 @@ internal class AdbUiBackend(
             ),
         )) {
             is RootResult.Ok -> {
-                val observation = retain(result.value, principal, current, normalized)
+                if (PhoneControlSensitiveGuard.state(context) != captureGuard)
+                    return PhoneControlResult.Denied(PhoneControlDenial.STALE_OBSERVATION)
+                val observation = retain(result.value, principal, current, normalized, captureGuard)
                 clearReadback(principal.owner)
                 PhoneControlResult.Ok(observation)
             }
@@ -324,6 +405,7 @@ internal class AdbUiBackend(
         observationId: String,
         offset: Int,
     ): PhoneControlResult<PhoneControlDetailPage> {
+        if (!syncSensitiveGuard()) return PhoneControlResult.Unavailable(PhoneControlUnavailable.STRUCTURED_UI_NOT_READY)
         if (offset < 0 || offset > PhoneControlLimits.MAX_NODES) {
             return PhoneControlResult.Denied(PhoneControlDenial.INVALID_ARGUMENT)
         }
@@ -343,6 +425,9 @@ internal class AdbUiBackend(
             synchronized(gate) { retained.remove(observationId) }
             return PhoneControlResult.Denied(PhoneControlDenial.OBSERVATION_EXPIRED)
         }
+        val guards = PhoneControlSensitiveGuard.snapshot(context)
+        if (guards == null || guards.any { it.observationId == stored.serverObservationId })
+            return PhoneControlResult.Denied(PhoneControlDenial.STALE_OBSERVATION)
         return PhoneControlResult.Ok(
             PhoneControlObservationText.detail(stored.observation, offset),
         )
@@ -353,6 +438,7 @@ internal class AdbUiBackend(
         observationId: String,
         action: PhoneControlAction,
     ): PhoneControlResult<PhoneControlActionResult> {
+        if (!syncSensitiveGuard()) return PhoneControlResult.Unavailable(PhoneControlUnavailable.STRUCTURED_UI_NOT_READY)
         if (action is PhoneControlAction.Launch) {
             return launchApplication(principal, action.packageName)
         }
@@ -394,6 +480,21 @@ internal class AdbUiBackend(
             stored.refAliases[requestedNodeRef]
                 ?: return PhoneControlResult.Denied(PhoneControlDenial.STALE_OBSERVATION)
         }
+        if (action is PhoneControlAction.SetText && action.sensitive) {
+            val field = nodeRef?.let { stored.guardNodes[it] }
+            val state = PhoneControlSensitiveGuard.state(context)
+            val guarded = field != null && state?.tickets?.any {
+                it.taskId == principal.owner.taskID.toString() && it.runId == principal.owner.runID.toString() &&
+                    it.epoch == principal.epoch && it.grantId == current.spec.grantId &&
+                    it.observationId == serverId && it.nodeRef == nodeRef &&
+                    it.packageName == stored.observation.packageName && it.windowId == stored.observation.windowId &&
+                    it.displayId == stored.observation.displayId && it.path == field.path &&
+                    it.className == field.className && it.viewId == field.viewId
+            } == true
+            if (!guarded) return PhoneControlResult.Failed(PhoneControlFailure.INTERNAL_ERROR, "Sensitive protection is unavailable.")
+        }
+        val captureGuard = PhoneControlSensitiveGuard.state(context)
+            ?: return PhoneControlResult.Unavailable(PhoneControlUnavailable.STRUCTURED_UI_NOT_READY)
         val operationClaim = claim(current, principal, "act")
         val request = AdbUiActMapping.request(serverId, nodeRef, action)
         return when (val result = controller()?.uiAct(operationClaim, request)) {
@@ -406,9 +507,9 @@ internal class AdbUiBackend(
                         UiDispatchOutcome.UNKNOWN -> PhoneControlDispatch.UNKNOWN
                         UiDispatchOutcome.NOT_DISPATCHED -> PhoneControlDispatch.NOT_DISPATCHED
                     }
-                    val fresh = result.value.observation?.let {
-                        retain(it, principal, current)
-                    }
+                    val fresh = result.value.observation
+                        ?.takeIf { PhoneControlSensitiveGuard.state(context) == captureGuard }
+                        ?.let { retain(it, principal, current, sourceGuard = captureGuard) }
                     lastMutationDispatch = dispatch
                     lastMutationOwner = principal.owner
                     PhoneControlResult.Ok(
@@ -451,6 +552,7 @@ internal class AdbUiBackend(
         principal: PhoneControlPrincipal,
         packageName: String,
     ): PhoneControlResult<PhoneControlActionResult> {
+        if (!syncSensitiveGuard()) return PhoneControlResult.Unavailable(PhoneControlUnavailable.STRUCTURED_UI_NOT_READY)
         val current = sessionFor(principal)
             ?: return PhoneControlResult.Denied(PhoneControlDenial.AUTHORIZATION_DENIED)
         if (packageName !in current.spec.targets) {
@@ -511,6 +613,7 @@ internal class AdbUiBackend(
         observationId: String?,
         request: PhoneControlScreenshotRequest = PhoneControlScreenshotRequest(),
     ): PhoneControlResult<PhoneControlScreenshot> {
+        if (!syncSensitiveGuard()) return PhoneControlResult.Unavailable(PhoneControlUnavailable.STRUCTURED_UI_NOT_READY)
         if (observationId != null) {
             return PhoneControlResult.Unavailable(
                 PhoneControlUnavailable.WINDOW_SCREENSHOT_UNSUPPORTED,
@@ -753,6 +856,7 @@ internal class AdbUiBackend(
         principal: PhoneControlPrincipal,
         current: Session,
         request: PhoneControlObserveRequest = PhoneControlObserveRequest(),
+        sourceGuard: com.floe.android.contracts.SensitiveUiGuardSnapshot? = null,
     ): PhoneControlObservation {
         val page = PhoneControlStructuredPage(
             observationId = observation.observationId,
@@ -824,6 +928,12 @@ internal class AdbUiBackend(
                 observation = mapped.observation,
                 serverObservationId = observation.observationId,
                 refAliases = mapped.refAliases,
+                guardNodes = observation.nodes.associate { n -> n.ref to GuardNode(
+                    n.path, n.className, n.viewId, n.editable, n.packageName, n.parentRef,
+                    n.clickable, n.visible, n.password, n.redacted, n.actions, n.safeLabelHmac,
+                ) },
+                guardEpoch = sourceGuard?.epoch,
+                guardRevision = sourceGuard?.revision,
                 owner = principal.owner,
                 epoch = principal.epoch,
                 grantId = current.spec.grantId,

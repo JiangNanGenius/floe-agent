@@ -124,8 +124,11 @@ internal class PhoneAutomationControls(
     private var operationOwner: PhoneControlOwner? = null
     /** A start that arrived before [show] bound the same owner. RAM-only and
      * replaced by the next start/finish; never a history buffer. */
-    private var pendingOperation: Pair<PhoneControlOwner, String>? = null
+    private data class PendingOperation(val owner: PhoneControlOwner, val label: String, val id: String)
+    private var pendingOperation: PendingOperation? = null
+    private var activeOperationID: String? = null
     private var clearAfterOperation = false
+    private var retireFinishedRunnable: Runnable? = null
 
     fun show(owner: PhoneControlOwner, title: String, overlay: Boolean, paused: Boolean = false,
              waitingForUser: Boolean = false) {
@@ -137,12 +140,15 @@ internal class PhoneAutomationControls(
             if (this.owner != owner && operationOwner != owner) {
                 this.operation = null
                 this.operationOwner = null
+                activeOperationID = null
             }
             if (this.paused != paused) {
                 this.operation = null
                 this.operationOwner = null
+                activeOperationID = null
             }
             if (this.owner != owner || this.paused != paused) {
+                cancelRetireFinished()
                 clearAfterOperation = false
                 removeOverlay()
                 token = UUID.randomUUID().toString()
@@ -156,10 +162,11 @@ internal class PhoneAutomationControls(
             // device call, while the owner may not have been rendered yet.
             // Adopt that bounded start once it belongs to this exact owner.
             if (!paused) {
-                pendingOperation?.takeIf { it.first == owner }?.let { (_, label) ->
+                pendingOperation?.takeIf { it.owner == owner }?.let { pending ->
                     operation = PhoneAutomationStatusText.operation(
-                        label, PhoneAutomationOperationState.RUNNING)
+                        pending.label, PhoneAutomationOperationState.RUNNING)
                     operationOwner = owner
+                    activeOperationID = pending.id
                     pendingOperation = null
                 }
             } else {
@@ -167,23 +174,31 @@ internal class PhoneAutomationControls(
             }
             PhoneAutomationRelay.controls = this
             render()
+            if (paused || waitingForUser) {
+                cancelRetireFinished()
+            } else if (retireFinishedRunnable == null && operationOwner == owner) {
+                scheduleRetireFinished(owner)
+            }
         }
     }
 
     /** A real claimed device operation started. UI-only; no authority. */
-    fun operationStarted(owner: PhoneControlOwner, label: String) {
+    fun operationStarted(owner: PhoneControlOwner, label: String, operationID: String) {
         main.post {
             if (!ownerStillLive(owner)) return@post
             if (paused) return@post
             if (this.owner == null) {
-                pendingOperation = owner to PhoneAutomationStatusText.bounded(label, 32)
+                cancelRetireFinished()
+                pendingOperation = PendingOperation(owner, PhoneAutomationStatusText.bounded(label, 32), operationID)
                 return@post
             }
             if (this.owner != owner) return@post
+            cancelRetireFinished()
             clearAfterOperation = false
             operation = PhoneAutomationStatusText.operation(
                 label, PhoneAutomationOperationState.RUNNING)
             operationOwner = owner
+            activeOperationID = operationID
             render()
         }
     }
@@ -207,20 +222,25 @@ internal class PhoneAutomationControls(
         label: String,
         state: PhoneAutomationOperationState,
         note: String? = null,
+        operationID: String,
     ) {
         main.post {
             if (!ownerStillLive(owner)) return@post
             if (this.owner == null) {
-                if (pendingOperation?.first == owner) pendingOperation = null
+                val pending = pendingOperation ?: return@post
+                if (pending.owner != owner || pending.id != operationID) return@post
+                pendingOperation = null
                 operation = PhoneAutomationStatusText.operation(
                     label,
                     if (paused) PhoneAutomationOperationState.CANCELLED else state,
                     note,
                 )
                 operationOwner = owner
+                scheduleRetireFinished(owner)
                 return@post
             }
-            if (this.owner != owner) return@post
+            if (this.owner != owner || activeOperationID != operationID) return@post
+            activeOperationID = null
             operation = PhoneAutomationStatusText.operation(
                 label,
                 if (paused) PhoneAutomationOperationState.CANCELLED else state,
@@ -231,8 +251,33 @@ internal class PhoneAutomationControls(
                 clear(expectedOwner = owner)
             } else {
                 render()
+                scheduleRetireFinished(owner)
             }
         }
+    }
+
+    /** Keep a settled result briefly between consecutive actions, but do not
+     * leave a stale bubble over other apps while the agent is thinking. */
+    private fun scheduleRetireFinished(expectedOwner: PhoneControlOwner) {
+        cancelRetireFinished()
+        val settled = operation ?: return
+        if (settled.state !in setOf(PhoneAutomationOperationState.DONE,
+                PhoneAutomationOperationState.FAILED, PhoneAutomationOperationState.UNKNOWN,
+                PhoneAutomationOperationState.WAITING)) return
+        val runnable = Runnable {
+            retireFinishedRunnable = null
+            if (operationOwner != expectedOwner || operation !== settled || paused || waitingForUser) return@Runnable
+            operation = null
+            operationOwner = null
+            if (owner == expectedOwner) render()
+        }
+        retireFinishedRunnable = runnable
+        main.postDelayed(runnable, FINISHED_BUBBLE_DELAY_MS)
+    }
+
+    private fun cancelRetireFinished() {
+        retireFinishedRunnable?.let { main.removeCallbacks(it) }
+        retireFinishedRunnable = null
     }
 
     internal fun receive(receivedToken: String?, action: String?) {
@@ -792,7 +837,7 @@ internal class PhoneAutomationControls(
 
     fun clear(expectedOwner: PhoneControlOwner? = null) {
         val clear = clear@{
-            val presentationOwner = owner ?: pendingOperation?.first ?: operationOwner
+            val presentationOwner = owner ?: pendingOperation?.owner ?: operationOwner
             if (expectedOwner != null && presentationOwner != expectedOwner) return@clear
             owner = null
             token = UUID.randomUUID().toString()
@@ -803,7 +848,9 @@ internal class PhoneAutomationControls(
             operation = null
             operationOwner = null
             pendingOperation = null
+            activeOperationID = null
             clearAfterOperation = false
+            cancelRetireFinished()
             removeOverlay()
             notifications.cancel(NOTIFICATION)
             if (PhoneAutomationRelay.controls === this) PhoneAutomationRelay.controls = null
@@ -983,6 +1030,7 @@ internal class PhoneAutomationControls(
         private const val CHANNEL = "phone_automation"
         private const val NOTIFICATION = 9480
         private const val COLLAPSE_DELAY_MS = 4_000L
+        private const val FINISHED_BUBBLE_DELAY_MS = 2_000L
     }
 }
 

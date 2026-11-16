@@ -710,6 +710,8 @@ data class UiNode(
     val range: UiRangeInfo?,
     /** Service-only stable child-index path; not a model-facing capability. */
     val path: List<Int> = emptyList(),
+    /** Pre-input HMAC of complete button text/description; absent while guarded. */
+    val safeLabelHmac: String? = null,
 )
 
 /**
@@ -1175,6 +1177,15 @@ class RootSystemController internal constructor(
      * understands it; an empty set means no live service.
      */
     suspend fun serviceCapabilities(): Set<String> = impl.serviceCapabilities()
+
+    /**
+     * Synchronize the complete host-persisted, non-secret ticket snapshot to
+     * the authenticated shell service, before observing or dispatching UI.
+     * Repeat on reconnect; an empty snapshot is valid only after safe host recovery.
+     */
+    suspend fun syncUiSensitiveGuard(
+        snapshot: com.floe.android.contracts.SensitiveUiGuardSnapshot,
+    ): RootResult<Unit> = impl.syncUiSensitiveGuard(snapshot)
 
     /**
      * Actual live readiness of the authenticated ADB structured-UI backend.

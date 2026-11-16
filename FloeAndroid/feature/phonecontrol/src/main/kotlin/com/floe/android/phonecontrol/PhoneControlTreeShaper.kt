@@ -35,6 +35,9 @@ internal data class PhoneControlRawNode(
     val semanticFlagsUnavailable: Boolean = false,
     /** Child count from the live node; -1 means a read failure, null means unavailable adapter metadata. */
     val observedChildCount: Int? = null,
+    val privacyRedacted: Boolean = false,
+    /** Pre-guard HMAC of complete raw labels; never contains label text. */
+    val safeLabelHmac: String? = null,
 )
 
 /** Identity of an observed safe descendant label, relative to its actionable parent. */
@@ -74,6 +77,7 @@ internal data class PhoneControlNodeRecord(
     val semanticChildrenIncomplete: Boolean = false,
     val semanticOwnIncomplete: Boolean = false,
     val semanticChildrenTextIncomplete: Boolean = false,
+    val safeLabelHmac: String? = null,
 )
 
 internal data class PhoneControlShaped(
@@ -129,7 +133,7 @@ internal object PhoneControlTreeShaper {
             if (nodes.size >= req.maxNodes) break
             if (!req.includeInvisible && !rawNode.visible) continue
 
-            val redacted = redactAllText || rawNode.password ||
+            val redacted = redactAllText || rawNode.password || rawNode.privacyRedacted ||
                 PhoneControlText.isSensitiveViewId(rawNode.viewId)
             if (redacted) anySensitive = true
             val sensitiveField = rawNode.password || redacted
@@ -210,6 +214,11 @@ internal object PhoneControlTreeShaper {
                 actions = rawNode.actionSet(),
                 insideScrollable = rawNode.insideScrollable,
                 semanticFlagsUnavailable = rawNode.semanticFlagsUnavailable,
+                safeLabelHmac = rawNode.safeLabelHmac?.takeIf {
+                    !textBound.truncated && !descriptionBound.truncated &&
+                        rawNode.text == textBound.text && rawNode.contentDescription == descriptionBound.text &&
+                        (rawNode.text != null || rawNode.contentDescription != null)
+                },
                 semanticOwnIncomplete = !redacted && (textBound.truncated || descriptionBound.truncated),
                 needsChildIdentity = !redacted && rawNode.semanticEligible &&
                     !rawNode.editable && !rawNode.password &&

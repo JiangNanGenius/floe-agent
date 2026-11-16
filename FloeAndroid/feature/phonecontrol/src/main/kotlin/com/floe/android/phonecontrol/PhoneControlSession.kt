@@ -242,17 +242,17 @@ internal class PhoneControlSession(
 
     /**
      * One bounded page of the RETAINED observation named by [observationId].
-     * This is a read of data that was already authorized and captured: it never
-     * performs a new screen read, never replaces the session's latest record,
-     * never bumps a generation and never extends the observation TTL. The exact
-     * owner, fence/page generation, TTL and current package scope are
-     * revalidated before a page is returned.
+     * A valid page reads only retained data and never extends its TTL. An
+     * expired page can instead return a failure with one verified same-page
+     * fresh observation; its old offset and refs must not be reused.
      */
     fun detail(
         principal: PhoneControlPrincipal,
         grant: PhoneControlGrant,
         observationId: String,
         offset: Int,
+        operationToken: String,
+        refreshAuthority: () -> PhoneControlGrant?,
         complete: (PhoneControlResult<PhoneControlDetailPage>) -> Unit,
     ) {
         if (closed) {
@@ -278,6 +278,11 @@ internal class PhoneControlSession(
             complete(PhoneControlResult.Denied(PhoneControlDenial.FOREIGN_RUN))
             return
         }
+        val guards = PhoneControlSensitiveGuard.snapshot(service)
+        if (guards == null || guards.any { it.observationId == observationId }) {
+            complete(PhoneControlResult.Denied(PhoneControlDenial.STALE_OBSERVATION))
+            return
+        }
         verdictDenial(
             fence.validate(
                 PhoneControlFence.Ticket(
@@ -288,10 +293,6 @@ internal class PhoneControlSession(
             ),
         )?.let {
             complete(it)
-            return
-        }
-        if (SystemClock.elapsedRealtime() > record.observation.expiresAtElapsedRealtimeMillis) {
-            complete(PhoneControlResult.Denied(PhoneControlDenial.OBSERVATION_EXPIRED))
             return
         }
         // The live grant may have narrowed its package scope since capture.
@@ -307,6 +308,20 @@ internal class PhoneControlSession(
         }
         if (offset < 0 || offset > PhoneControlLimits.MAX_NODES) {
             complete(PhoneControlResult.Denied(PhoneControlDenial.INVALID_ARGUMENT))
+            return
+        }
+        if (SystemClock.elapsedRealtime() > record.observation.expiresAtElapsedRealtimeMillis) {
+            val refusal = PhoneControlResult.Denied(PhoneControlDenial.OBSERVATION_EXPIRED)
+            if (!record.hasSensitiveField && !record.protectedWindow &&
+                !record.observation.sensitiveWindow && !record.observation.navigationOnly && guards.isEmpty()
+            ) {
+                refreshExpiredBeforeDispatch(
+                    principal, grant, record, observationId, operationToken, refreshAuthority, refusal,
+                    "The old page was not returned. Restart paging using the fresh observation.", complete,
+                )
+            } else {
+                complete(refusal)
+            }
             return
         }
         complete(
@@ -557,6 +572,52 @@ internal class PhoneControlSession(
     // Actions
     // ---------------------------------------------------------------------
 
+    fun prepareSensitiveGuard(
+        principal: PhoneControlPrincipal,
+        grant: PhoneControlGrant,
+        observationId: String,
+        nodeRef: String,
+    ): PhoneControlResult<com.floe.android.contracts.SensitiveUiGuardTicket> {
+        if (closed) return PhoneControlResult.Denied(PhoneControlDenial.SERVICE_DISCONNECTED)
+        if (inFlightId != null) return PhoneControlResult.Denied(PhoneControlDenial.OPERATION_IN_FLIGHT)
+        PhoneControlPolicy.grantDenial(principal, grant)?.let { return PhoneControlResult.Denied(it) }
+        lockedDenial()?.let { return it }
+        val current = latest
+        validateBeforeDispatch(current, principal, observationId,
+            PhoneControlAction.SetText(nodeRef, "", sensitive = true), grant)?.let { return it }
+        val record = current ?: return PhoneControlResult.Denied(PhoneControlDenial.STALE_OBSERVATION)
+        val target = record.records[nodeRef] ?: return PhoneControlResult.Denied(PhoneControlDenial.NODE_UNAVAILABLE)
+        val root = service.rootInActiveWindow ?: return PhoneControlResult.Failed(PhoneControlFailure.OBSERVATION_FAILED)
+        try {
+            foregroundDenial(root, record)?.let { return it }
+            val node = resolveNode(root, target.path) ?: return PhoneControlResult.Denied(PhoneControlDenial.NODE_UNAVAILABLE)
+            try {
+                val effective = PhoneControlPolicy.effectivePackages(principal, grant)
+                validateResolved(node, target, record, effective, NodeRequirement.SET_TEXT, true)?.let {
+                    return PhoneControlResult.Denied(it)
+                }
+            } finally {
+                if (node !== root) { @Suppress("DEPRECATION") runCatching { node.recycle() } }
+            }
+        } finally { @Suppress("DEPRECATION") runCatching { root.recycle() } }
+        val pkg = record.observation.packageName ?: return PhoneControlResult.Denied(PhoneControlDenial.NODE_UNAVAILABLE)
+        val ticket = com.floe.android.contracts.SensitiveUiGuardTicket(
+            taskId = principal.owner.taskID.toString(), runId = principal.owner.runID.toString(),
+            epoch = principal.epoch, grantId = principal.grantID?.toString() ?: "accessibility",
+            observationId = observationId, nodeRef = nodeRef, packageName = pkg,
+            windowId = record.observation.windowId, displayId = record.observation.displayId,
+            path = target.path, className = target.className, viewId = target.viewId,
+        )
+        when (PhoneControlSensitiveGuard.arm(service, ticket, record.records.values)) {
+            PhoneControlSensitiveGuard.ArmResult.STORED -> Unit
+            PhoneControlSensitiveGuard.ArmResult.LIMIT ->
+                return PhoneControlResult.Failed(PhoneControlFailure.SENSITIVE_GUARD_LIMIT)
+            PhoneControlSensitiveGuard.ArmResult.UNAVAILABLE ->
+                return PhoneControlResult.Failed(PhoneControlFailure.INTERNAL_ERROR, "Sensitive protection could not be stored.")
+        }
+        return PhoneControlResult.Ok(ticket)
+    }
+
     fun perform(
         principal: PhoneControlPrincipal,
         grant: PhoneControlGrant,
@@ -614,7 +675,8 @@ internal class PhoneControlSession(
                 )
             ) {
                 refreshExpiredBeforeDispatch(
-                    principal, grant, record, observationId, operationToken, refreshAuthority, early, complete,
+                    principal, grant, record, observationId, operationToken, refreshAuthority, early,
+                    "Action was not dispatched; use the fresh observation.", complete,
                 )
             } else {
                 complete(early)
@@ -624,6 +686,22 @@ internal class PhoneControlSession(
         val activeRecord = record ?: run {
             complete(PhoneControlResult.Denied(PhoneControlDenial.STALE_OBSERVATION))
             return
+        }
+        if (action is PhoneControlAction.SetText && action.sensitive) {
+            val guards = PhoneControlSensitiveGuard.snapshot(service)
+            val target = activeRecord.records[action.nodeRef]
+            val guarded = target != null && guards?.any { it.taskId == principal.owner.taskID.toString() &&
+                it.runId == principal.owner.runID.toString() && it.epoch == principal.epoch &&
+                it.grantId == (principal.grantID?.toString() ?: "accessibility") &&
+                it.observationId == observationId && it.nodeRef == action.nodeRef &&
+                it.packageName == activeRecord.observation.packageName &&
+                it.windowId == activeRecord.observation.windowId &&
+                it.displayId == activeRecord.observation.displayId && it.path == target.path &&
+                it.className == target.className && it.viewId == target.viewId } == true
+            if (!guarded) {
+                complete(PhoneControlResult.Failed(PhoneControlFailure.INTERNAL_ERROR, "Sensitive protection is unavailable."))
+                return
+            }
         }
         val effective = PhoneControlPolicy.effectivePackages(principal, grant)
         val opId = UUID.randomUUID().toString()
@@ -644,7 +722,7 @@ internal class PhoneControlSession(
     }
 
     /** One read-only recovery; the failed action is never retried. */
-    private fun refreshExpiredBeforeDispatch(
+    private fun <T> refreshExpiredBeforeDispatch(
         principal: PhoneControlPrincipal,
         grant: PhoneControlGrant,
         old: ObservationRecord,
@@ -652,7 +730,8 @@ internal class PhoneControlSession(
         operationToken: String,
         refreshAuthority: () -> PhoneControlGrant?,
         refusal: PhoneControlResult.Denied,
-        complete: (PhoneControlResult<PhoneControlActionResult>) -> Unit,
+        recoveredDetail: String,
+        complete: (PhoneControlResult<T>) -> Unit,
     ) {
         val oldObservation = old.observation
         val ticket = PhoneControlFence.Ticket(
@@ -680,10 +759,14 @@ internal class PhoneControlSession(
         }
         observe(principal, grant, old.request, operationToken) { captured ->
             val next = (captured as? PhoneControlResult.Ok)?.value
+            val nextRecord = latest
             val matching = next != null && PhoneControlRecoveryPolicy.samePage(oldObservation, next) &&
+                nextRecord?.observation?.observationId == next.observationId &&
+                !nextRecord.hasSensitiveField && !nextRecord.protectedWindow &&
+                PhoneControlSensitiveGuard.snapshot(service)?.isEmpty() == true &&
                 stillAuthorized() && sameForeground()
             if (matching) {
-                complete(refusal.copy(detail = "Action was not dispatched; use the fresh observation.", observation = next))
+                complete(refusal.copy(detail = recoveredDetail, observation = next))
             } else {
                 if (next != null && latest?.observation?.observationId == next.observationId) latest = null
                 complete(refusal.copy(detail = "Same-page recovery failed; call device.observe."))
@@ -1504,6 +1587,11 @@ internal class PhoneControlSession(
         }
         if (!grant.allowScreenshot) {
             complete(PhoneControlResult.Denied(PhoneControlDenial.AUTHORIZATION_DENIED))
+            return
+        }
+        val guards = PhoneControlSensitiveGuard.snapshot(service)
+        if (guards == null || guards.isNotEmpty()) {
+            complete(PhoneControlResult.Denied(PhoneControlDenial.PROTECTED_WINDOW))
             return
         }
         val support = PhoneControlPolicy.screenshotSupport(android.os.Build.VERSION.SDK_INT)

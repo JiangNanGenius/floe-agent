@@ -87,8 +87,28 @@ class PhoneControlClient internal constructor(
             is PhoneControlResult.Unavailable -> return answer
             is PhoneControlResult.Failed -> return answer
         }
+        return dispatch { session, token, finish ->
+            session.detail(principal, grant, observationId, offset, token,
+                refreshAuthority = { (authorization(principal) as? PhoneControlResult.Ok)?.value },
+                complete = finish,
+            )
+        }
+    }
+
+    /** Prepares and durably arms metadata before a sensitive field write. */
+    suspend fun prepareSensitiveGuard(
+        principal: PhoneControlPrincipal,
+        observationId: String,
+        nodeRef: String,
+    ): PhoneControlResult<com.floe.android.contracts.SensitiveUiGuardTicket> {
+        val grant = when (val answer = authorization(principal)) {
+            is PhoneControlResult.Ok -> answer.value
+            is PhoneControlResult.Denied -> return answer
+            is PhoneControlResult.Unavailable -> return answer
+            is PhoneControlResult.Failed -> return answer
+        }
         return dispatch { session, _, finish ->
-            session.detail(principal, grant, observationId, offset, finish)
+            finish(session.prepareSensitiveGuard(principal, grant, observationId, nodeRef))
         }
     }
 

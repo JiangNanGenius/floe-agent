@@ -3,6 +3,9 @@ package com.floe.android.rootsystem.server
 
 import android.content.Context
 import android.os.SystemClock
+import com.floe.android.contracts.SensitiveUiGuardPolicy
+import com.floe.android.contracts.SensitiveUiGuardTicket
+import com.floe.android.contracts.SensitiveUiGuardSnapshot
 import com.floe.android.rootsystem.OperationClaim
 import com.floe.android.rootsystem.SystemOperation
 import com.floe.android.rootsystem.UiAction
@@ -73,6 +76,44 @@ internal class UiOperations(
     private val latestByOwner = HashMap<String, String>()
     private val screenshots = LinkedHashMap<String, StoredScreenshot>()
     private val generation = AtomicLong(0L)
+    // A new shell service cannot infer the host's persistent tickets. It must
+    // receive an authenticated complete snapshot before any observation.
+    val guardSession: String = UUID.randomUUID().toString()
+    private var guardSnapshot: SensitiveUiGuardSnapshot? = null
+    private val guardSynchronized: Boolean get() = guardSnapshot != null
+    private val guardTickets: List<SensitiveUiGuardTicket> get() = guardSnapshot?.tickets.orEmpty()
+    private var guardBaseline: Map<UiSensitiveBaseline.Key, UiSensitiveBaseline.Entry> = emptyMap()
+
+    fun syncSensitiveGuard(snapshot: SensitiveUiGuardSnapshot, session: String?) {
+        synchronized(operationGate) {
+            if (!SensitiveUiGuardPolicy.validSession(guardSession, session)) {
+                throw UiException("ui_guard_session")
+            }
+            SensitiveUiGuardPolicy.syncDenial(guardSnapshot, snapshot)?.let { throw UiException(it) }
+            val tickets = snapshot.tickets
+            synchronized(gate) {
+                guardSnapshot = snapshot.copy(tickets = tickets.toList())
+                guardBaseline = if (tickets.isEmpty()) emptyMap()
+                    else UiSensitiveBaseline.fromSnapshot(snapshot.labelBaselines)
+                // Never let an already captured screen outlive a newly armed guard.
+                for (stored in screenshots.values) stored.bytes.fill(0)
+                screenshots.clear()
+            }
+        }
+    }
+
+    private fun SensitiveUiGuardTicket.matches(
+        stored: StoredObservation,
+        page: AndroidUiAutomationBridge.Page,
+        node: AndroidUiAutomationBridge.Node,
+    ): Boolean = taskId == stored.taskId && runId == stored.runId && epoch == stored.epoch &&
+        grantId == stored.grantId && observationId == page.observationId && nodeRef == node.ref &&
+        packageName == page.packageName && windowId == page.windowId && displayId == page.displayId &&
+        path == node.path && className == node.className && viewId == node.viewId
+
+    private fun requireGuardSynchronized() {
+        if (!guardSynchronized) throw UiException("ui_sensitive_guard_unavailable")
+    }
 
     fun supported(): Boolean = bridge.supported()
 
@@ -95,6 +136,12 @@ internal class UiOperations(
                 effectiveUid = identity.serverUid,
                 protocolVersion = BinderProtocol.VERSION,
                 reason = "ui_automation_unavailable",
+            )
+        }
+        if (!synchronized(operationGate) { guardSynchronized }) {
+            return UiBackendStatus(
+                ready = false, live = true, mode = identity.mode, effectiveUid = identity.serverUid,
+                protocolVersion = BinderProtocol.VERSION, reason = "ui_sensitive_guard_unavailable",
             )
         }
         return try {
@@ -142,13 +189,15 @@ internal class UiOperations(
         targets: Set<String>,
         request: UiObserveRequest,
         cancelled: () -> Boolean,
-    ): UiObservation {
+    ): UiObservation = synchronized(operationGate) {
+        requireGuardSynchronized()
         if (targets.isEmpty()) throw UiException("ui_target_required")
         sweep()
         val pageGeneration = generation.incrementAndGet()
         val page = try {
             synchronized(operationGate) {
-                bridge.observe(targets, request, cancelled, pageGeneration)
+                bridge.observe(targets, request, cancelled, pageGeneration,
+                    if (guardTickets.isEmpty()) null else guardBaseline, guardSnapshot?.labelKey)
             }
         } catch (e: AndroidUiAutomationBridge.UiBridgeException) {
             throw UiException(e.code)
@@ -168,7 +217,7 @@ internal class UiOperations(
             latestByOwner[ownerKey(claim)] = id
             trimObservationsLocked()
         }
-        return page.toObservation()
+        page.toObservation()
     }
 
     fun act(
@@ -246,6 +295,23 @@ internal class UiOperations(
         }
         val execution = try {
             synchronized(operationGate) {
+                requireGuardSynchronized()
+                val node = page.nodes.firstOrNull { it.ref == request.nodeRef }
+                val stored = synchronized(gate) {
+                    if (latestByOwner[ownerKey(claim)] != page.observationId) null
+                    else observations[page.observationId]
+                }
+                if (stored == null) throw UiException("stale_observation")
+                val guardProtectedTarget = node != null && guardTickets.any {
+                    it.packageName == page.packageName && it.windowId == page.windowId &&
+                        it.displayId == page.displayId && it.path == node.path &&
+                        it.className == node.className && it.viewId == node.viewId
+                }
+                if (request.sensitiveTextIntent) {
+                    if (node == null || request.action != UiAction.SET_TEXT ||
+                        guardTickets.none { it.matches(stored, page, node) }
+                    ) throw UiException("ui_sensitive_guard_unavailable")
+                }
                 bridge.act(
                     page = page,
                     nodeRef = request.nodeRef,
@@ -258,6 +324,8 @@ internal class UiOperations(
                     targetPackage = request.targetPackage,
                     targets = targets,
                     cancelled = cancelled,
+                    guardActive = guardTickets.isNotEmpty(),
+                    guardProtectedTarget = guardProtectedTarget,
                 )
             }
         } catch (e: AndroidUiAutomationBridge.UiBridgeException) {
@@ -310,7 +378,7 @@ internal class UiOperations(
         targets: Set<String>,
         request: UiScreenshotRequest,
         cancelled: () -> Boolean,
-    ): UiScreenshotInfo {
+    ): UiScreenshotInfo = synchronized(operationGate) {
         if (targets.isEmpty()) throw UiException("ui_target_required")
         if (request.observationId != null) {
             throw UiException("window_screenshot_unsupported")
@@ -319,6 +387,10 @@ internal class UiOperations(
         val pageGeneration = generation.incrementAndGet()
         val capture = try {
             synchronized(operationGate) {
+                requireGuardSynchronized()
+                if (!SensitiveUiGuardPolicy.canCapture(guardSynchronized, guardTickets)) {
+                    throw UiException("ui_sensitive_guard_active")
+                }
                 bridge.screenshot(targets, request, cancelled, pageGeneration)
             }
         } catch (e: AndroidUiAutomationBridge.UiBridgeException) {
@@ -347,7 +419,7 @@ internal class UiOperations(
             trimScreenshotsLocked(keepBytes = stored.bytes.size + 64 * 1024)
             screenshots[id] = stored
         }
-        return UiScreenshotInfo(
+        UiScreenshotInfo(
             screenshotId = id,
             mimeType = stored.mimeType,
             width = stored.width,
@@ -531,6 +603,7 @@ internal class UiOperations(
                     actions = node.actions,
                     range = node.range,
                     path = node.path,
+                    safeLabelHmac = node.safeLabelHmac,
                 )
             },
             scannedNodeCount = scannedNodeCount,

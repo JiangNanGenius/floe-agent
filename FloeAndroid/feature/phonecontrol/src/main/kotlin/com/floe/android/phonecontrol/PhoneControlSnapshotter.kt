@@ -110,6 +110,8 @@ internal class PhoneControlSnapshotter(private val service: AccessibilityService
         isCancelled: () -> Boolean = { false },
     ): PhoneControlCapture? {
         if (isCancelled()) return null
+        val guardState = PhoneControlSensitiveGuard.state(service) ?: return null
+        val guardTickets = guardState.tickets
         val req = request.normalized()
         // A quiet event stream does not prove the framework cache is fresh.
         // Samsung's calculator returned the preceding formula after accepted
@@ -149,7 +151,10 @@ internal class PhoneControlSnapshotter(private val service: AccessibilityService
                 )
             }
             val className = root.className?.toString()
-            val rawWindowTitle = runCatching { window?.title?.toString() }.getOrNull()
+            // Any protected credential may be echoed into another app. Do
+            // not bootstrap trusted labels from a different foreground app.
+            val guarded = guardTickets.isNotEmpty()
+            val rawWindowTitle = if (guarded) null else runCatching { window?.title?.toString() }.getOrNull()
             // Package-only metadata for the other visible windows, read inside
             // this explicit authorized observation (never in an accessibility
             // callback). A later package-less window event can be attributed
@@ -172,7 +177,11 @@ internal class PhoneControlSnapshotter(private val service: AccessibilityService
             val raw = ArrayList<PhoneControlRawNode>(
                 minOf(req.maxNodes * 2, PhoneControlLimits.MAX_SCAN_NODES),
             )
+            // A guard from another window requires output masking, but it is
+            // not evidence that this window contains a password field.
             val stats = ReadStats()
+            val safeGuardAncestors = HashMap<List<Int>, Boolean>()
+            val safeGuardParents = HashMap<List<Int>, com.floe.android.contracts.SensitiveUiLabelIdentity>()
             // Level order spends one global node budget across the real tree:
             // a deep form is read completely when it fits, while a genuinely
             // wide screen still yields its shallow toolbar/FAB controls first.
@@ -193,6 +202,13 @@ internal class PhoneControlSnapshotter(private val service: AccessibilityService
                     path = path,
                     depth = depth,
                     redactAllText = preProtected,
+                    guarded = guarded,
+                    guardPackage = packageName,
+                    guardWindow = windowId,
+                    guardDisplay = displayId,
+                    safeGuardAncestors = safeGuardAncestors,
+                    safeGuardParents = safeGuardParents,
+                    labelKey = guardState.labelKey,
                     refreshFromSource = !cacheCleared,
                     insideScrollable = insideScrollable,
                     stats = stats,
@@ -202,7 +218,8 @@ internal class PhoneControlSnapshotter(private val service: AccessibilityService
             // An obsolete or cancelled source is an unavailable capture, never
             // a partial tree presented as the verified effect of the previous
             // action. A time/node bound remains an honest bounded observation.
-            if (walk.obsolete || walk.cancelled || stats.obsoleteNode) return null
+            if (walk.obsolete || walk.cancelled || stats.obsoleteNode ||
+                PhoneControlSensitiveGuard.state(service) != guardState) return null
 
             val protectedWindow = PhoneControlPolicy.isProtectedWindow(
                 packageName = packageName,
@@ -256,7 +273,7 @@ internal class PhoneControlSnapshotter(private val service: AccessibilityService
                 ).text,
                 displayId = displayId,
                 rootClassName = PhoneControlText.bound(PhoneControlText.clean(className), 200).text,
-                sensitiveWindow = redactAllText || stats.hasSensitiveField,
+                sensitiveWindow = redactAllText || guarded || stats.hasSensitiveField,
                 screenshotSupport = PhoneControlPolicy.screenshotSupport(Build.VERSION.SDK_INT),
                 nodes = shaped.nodes,
                 truncated = shaped.truncated,
@@ -324,6 +341,13 @@ internal class PhoneControlSnapshotter(private val service: AccessibilityService
         path: List<Int>,
         depth: Int,
         redactAllText: Boolean,
+        guarded: Boolean,
+        guardPackage: String?,
+        guardWindow: Int,
+        guardDisplay: Int,
+        safeGuardAncestors: MutableMap<List<Int>, Boolean>,
+        safeGuardParents: MutableMap<List<Int>, com.floe.android.contracts.SensitiveUiLabelIdentity>,
+        labelKey: com.floe.android.contracts.SensitiveUiLabelKey?,
         refreshFromSource: Boolean,
         insideScrollable: Boolean,
         stats: ReadStats,
@@ -384,17 +408,57 @@ internal class PhoneControlSnapshotter(private val service: AccessibilityService
         }.getOrNull()
         val advertisedActions = runCatching { node.actionList }.getOrNull()
         val actions = readActions(advertisedActions)
+        val className = node.className?.toString().orEmpty()
+        val clickable = runCatching { node.isClickable }.getOrDefault(false) ||
+            PhoneControlNodeAction.CLICK in actions
+        val ancestrySafe = !guarded || path.indices.all { safeGuardAncestors[path.take(it)] == true }
+        val safeFlags = !redact && editableFlag == false && passwordFlag == false &&
+            advertisedActions != null && PhoneControlNodeAction.SET_TEXT !in actions
+        val safeCandidate = guarded && ancestrySafe && safeFlags
+        if (guarded) safeGuardAncestors[path] = safeCandidate
+        val expected = if (safeCandidate) PhoneControlSensitiveGuard.baseline(
+            PhoneControlSensitiveGuard.Key(guardPackage, guardWindow, guardDisplay, path, className, viewId),
+        ) else null
+        val parentMatches = if (expected?.safeParent != null) {
+            safeGuardParents[path.dropLast(1)] == expected.safeParent
+        } else clickable
+        if (safeFlags && ancestrySafe && clickable && guardPackage != null) {
+            val identity = com.floe.android.contracts.SensitiveUiLabelIdentity(
+                guardPackage, guardWindow, guardDisplay, path, className, viewId,
+            )
+            if (identity.isWellFormed()) safeGuardParents[path] = identity
+        }
+        // Fingerprint only real, complete, pre-guard fields; never compute a
+        // new trusted baseline after a sensitive write has been armed.
+        val ordinaryText = if (!guarded && !redact) node.text?.toString() else null
+        val ordinaryDescription = if (!guarded && !redact) node.contentDescription?.toString() else null
+        val directSafeParent = path.isNotEmpty() && safeGuardParents.containsKey(path.dropLast(1))
+        val safeLabelHmac = if (!guarded && safeFlags && (clickable || directSafeParent) && labelKey != null &&
+            (ordinaryText != null || ordinaryDescription != null)
+        ) com.floe.android.contracts.SensitiveUiLabelFingerprint.hmac(labelKey, ordinaryText, ordinaryDescription) else null
+        // A guarded input or unknown field never has any text getter called.
+        // Read a previously known button or button-child label once, then expose it only if
+        // its bounded identity is unchanged. Do not read hints in this mode.
+        val safeLabel = PhoneControlGuardedLabel.read(
+            guarded = guarded, platformSensitive = redact, editable = editableFlag, password = passwordFlag,
+            actionsKnown = advertisedActions != null, setText = PhoneControlNodeAction.SET_TEXT in actions,
+            clickable = parentMatches, safeAncestry = ancestrySafe,
+            key = labelKey, expectedDigest = expected?.digest,
+            text = { runCatching { node.text?.toString() }.getOrNull() },
+            description = { runCatching { node.contentDescription?.toString() }.getOrNull() },
+        )
+        val guardRedacted = guarded && safeLabel == null
         out += PhoneControlRawNode(
             path = path,
             parentPath = if (path.isEmpty()) null else path.dropLast(1),
             depth = depth,
-            className = node.className?.toString().orEmpty(),
+            className = className,
             packageName = node.packageName?.toString(),
             viewId = viewId,
-            text = if (redact) null else rawText(node.text?.toString()),
-            contentDescription = if (redact) null else
-                rawText(node.contentDescription?.toString()),
-            hintText = if (redact) null else
+            text = if (redact || guardRedacted) null else if (guarded) rawText(safeLabel?.text) else rawText(ordinaryText),
+            contentDescription = if (redact || guardRedacted) null else if (guarded) rawText(safeLabel?.description) else
+                rawText(ordinaryDescription),
+            hintText = if (redact || guarded) null else
                 runCatching { rawText(node.hintText?.toString()) }.getOrNull(),
             bounds = PhoneControlBounds(bounds.left, bounds.top, bounds.right, bounds.bottom),
             visible = runCatching { node.isVisibleToUser }.getOrDefault(false),
@@ -411,11 +475,13 @@ internal class PhoneControlSnapshotter(private val service: AccessibilityService
             focusable = runCatching { node.isFocusable }.getOrDefault(false),
             focused = runCatching { node.isFocused }.getOrDefault(false),
             range = range,
-            semanticEligible = editableFlag == false && passwordFlag == false && !redact &&
+            semanticEligible = editableFlag == false && passwordFlag == false && !redact && !guardRedacted &&
                 advertisedActions != null && PhoneControlNodeAction.SET_TEXT !in actions,
             semanticFlagsUnavailable = editableFlag == null || passwordFlag == null ||
                 advertisedActions == null,
             observedChildCount = observedChildCount ?: -1,
+            privacyRedacted = guardRedacted,
+            safeLabelHmac = safeLabelHmac,
         )
         return PhoneControlCaptureWalk.Visit(
             childCount = childCount,
