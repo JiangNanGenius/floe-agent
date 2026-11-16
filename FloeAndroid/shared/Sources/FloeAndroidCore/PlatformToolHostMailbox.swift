@@ -1586,7 +1586,7 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
             return .internalError("The device returned an invalid tool result")
         case .remoteFailedWithRecovery(let rawCode, _, let observation):
             let code = PlatformDeviceWireCode.canonical(rawCode)
-            return .validationFailed("Device tool failed (\(code)); the action was not dispatched. Fresh observation:\n\(observation)")
+            return .validationFailed("Device tool failed (\(code)); the original request did not complete. Use the fresh observation below, discard previous node references, and restart pagination from offset 0 when paging. Do not repeat an action without choosing it again from the fresh observation.\nFresh observation:\n\(observation)")
         case .remoteFailed(let rawCode, let detail):
             let code = PlatformDeviceWireCode.canonical(rawCode)
             switch code {
@@ -1597,6 +1597,11 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
             case "device_stale_observation", "device_observation_expired":
                 return .validationFailed(
                     "The observation is stale or expired. Call device.observe before choosing another action.")
+            case "device_sensitive_guard_limit":
+                let chinese = Locale.current.identifier.lowercased().hasPrefix("zh")
+                return .validationFailed(chinese
+                    ? "保护记录已满，未输入内容。请在设置 › 设备 › 敏感输入保护中检查旧记录；清空相应敏感内容并离开屏幕后，再手动解除保护。"
+                    : "Protection records are full. Nothing was entered. Review old records in Settings › Device › Sensitive input protection. Clear the sensitive content and leave its screen before releasing protection.")
             case "device_run_unavailable":
                 let chinese = Locale.current.identifier.lowercased().hasPrefix("zh")
                 if detail?.hasPrefix("snapshot_") == true {
