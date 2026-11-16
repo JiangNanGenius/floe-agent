@@ -996,7 +996,7 @@ internal class DeviceAccessHost(
             snapshotFlow {
                 host.conversations.historyHolder.state.value?.runningConversationIds.orEmpty()
                     .mapNotNull { candidateFor(it) }
-                    .map { it.owner to it.phase }
+                    .map { Triple(it.owner, it.phase, it.waitingForDeviceApproval) }
             }
                 .distinctUntilChanged()
                 .collect { if (!closed) publish() }
