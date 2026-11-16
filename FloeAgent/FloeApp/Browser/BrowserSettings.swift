@@ -87,6 +87,7 @@ final class BrowserSettingsService: ObservableObject {
     private enum Key {
         static let linkOpen = "browser.settings.linkOpen"
         static let userAgent = "browser.settings.userAgent"
+        static let wideLayoutOrigins = "browser.settings.wideLayoutOrigins"
         static let advancedEnabled = "browser.settings.advancedBrowserFeatures"
         static let advancedConsent = "browser.settings.advancedConsent"
         static let authorizedProviders = "browser.settings.authorizedProviders"
@@ -94,6 +95,7 @@ final class BrowserSettingsService: ObservableObject {
 
     @Published private(set) var linkOpenBehavior: BrowserLinkOpenBehavior
     @Published private(set) var userAgent: BrowserUserAgentSetting
+    @Published private(set) var wideLayoutOrigins: Set<String>
     @Published private(set) var advancedBrowserFeaturesEnabled: Bool
     @Published private(set) var advancedConsent: BrowserAdvancedConsent?
     /// Bumped on every advanced-feature ON/OFF transition. An in-flight
@@ -113,6 +115,7 @@ final class BrowserSettingsService: ObservableObject {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        wideLayoutOrigins = Set(defaults.stringArray(forKey: Key.wideLayoutOrigins) ?? [])
         self.linkOpenBehavior = BrowserLinkOpenBehavior(
             rawValue: defaults.string(forKey: Key.linkOpen) ?? ""
         ) ?? .inApp
@@ -153,6 +156,22 @@ final class BrowserSettingsService: ObservableObject {
             "浏览器会话数据（包括 Cookie、登录状态和本地存储）可能随任务请求发送给该模型提供商。官方与第三方提供商承担相同的信任风险；没有任何提供商可被视为零风险。授权会按提供商保留，不会按网站或每次调用重复询问。",
             "Browser session data (including cookies, login state and local storage) may be sent to this model provider as part of task requests. Official and third-party providers carry the same trust risk; no provider is risk-free. Authorization is retained per provider and is not requested per site or per call."
         )
+    }
+
+    static func layoutOrigin(_ url: URL?) -> String? {
+        guard let url, ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return nil }
+        return BrowserWebDataBridge.scriptOrigin(of: url)
+    }
+
+    func usesWideLayout(for url: URL?) -> Bool {
+        Self.layoutOrigin(url).map(wideLayoutOrigins.contains) ?? false
+    }
+
+    func setWideLayout(_ enabled: Bool, for url: URL?) {
+        guard let origin = Self.layoutOrigin(url), wideLayoutOrigins.contains(origin) != enabled else { return }
+        if enabled { wideLayoutOrigins.insert(origin) } else { wideLayoutOrigins.remove(origin) }
+        defaults.set(wideLayoutOrigins.sorted(), forKey: Key.wideLayoutOrigins)
+        bump()
     }
 
     func setLinkOpenBehavior(_ behavior: BrowserLinkOpenBehavior) {

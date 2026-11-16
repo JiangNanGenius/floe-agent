@@ -7,6 +7,21 @@ import FloePersistence
 import FloeModels
 import FloeNotes
 
+struct EditorAssistantCloseButton: View {
+    var accessibilityID = "studio.assistant.close"
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Label("notes.notes_assistant_panel.close_assistant", systemImage: "xmark")
+                .labelStyle(.iconOnly)
+                .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+                .contentShape(Rectangle())
+        }
+        .accessibilityIdentifier(accessibilityID)
+    }
+}
+
 /// One persisted work conversation; presentation never chooses a read/edit mode.
 struct StudioAssistantView: View {
     let document: StudioAssistantDocument
@@ -41,8 +56,8 @@ struct StudioAssistantView: View {
                         .navigationTitle(title + " · " + document.title)
                         .navigationBarTitleDisplayMode(.inline)
                         .toolbar {
-                            ToolbarItem(placement: .confirmationAction) {
-                                Button(IDELanguageRunText.t("完成", "Done")) {
+                            ToolbarItem(placement: .topBarTrailing) {
+                                EditorAssistantCloseButton {
                                     if let onClose { onClose() } else { dismiss() }
                                 }
                             }

@@ -45,9 +45,8 @@ import FloeModels
             if let conversationID {
                 NavigationStack {
                     ThreadDetailView(conversationID: conversationID, center: environment.conversationCenter, embedded: true)
-                        .toolbar { ToolbarItem(placement: .cancellationAction) {
-                            Button(FloeCADStrings.text("cad.ui.common.done", "Done")) { showing = false }
-                                .accessibilityIdentifier("cad.selection.assistant.done")
+                        .toolbar { ToolbarItem(placement: .topBarTrailing) {
+                            EditorAssistantCloseButton(accessibilityID: "cad.selection.assistant.done") { showing = false }
                         } }
                 }
             }

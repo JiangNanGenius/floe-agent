@@ -26,6 +26,7 @@ final class PredevelopmentWorkspaceEntryUITests: XCTestCase {
 
     func testSpaceOffersGameProjectCreation() {
         let app = application()
+        app.launchArguments += ["-floe.settings.language", "zh-Hans"]
         app.launch()
         openNewFileMenu(app)
         app.buttons["space.new.game"].tap()
@@ -41,10 +42,18 @@ final class PredevelopmentWorkspaceEntryUITests: XCTestCase {
         XCTAssertTrue(app.buttons["game.setup.import"].exists)
         ask.tap()
         XCTAssertTrue(app.buttons["studio.assistant.sessions"].waitForExistence(timeout: 15))
+        let close = app.buttons["studio.assistant.close"]
+        XCTAssertTrue(close.waitForExistence(timeout: 10))
+        XCTAssertEqual(close.label, "关闭助手")
+        close.tap()
+        XCTAssertTrue(close.waitForNonExistence(timeout: 10))
+        XCTAssertTrue(ask.isHittable)
+        XCTAssertTrue(app.buttons["game.setup.import"].isHittable)
     }
 
     func testNewBuildingDrawsConnectedWallsAndChangesOneFinish() {
         let app = application()
+        app.launchArguments += ["-floe.settings.language", "zh-Hans"]
         app.launch()
         openNewFileMenu(app)
         app.buttons["space.create.building"].tap()
@@ -119,6 +128,67 @@ final class PredevelopmentWorkspaceEntryUITests: XCTestCase {
         XCTAssertTrue(saveCopy.waitForExistence(timeout: 8))
         saveCopy.tap()
         XCTAssertTrue(app.buttons["分享或存储到文件"].waitForExistence(timeout: 25))
+        let done = app.navigationBars["另存为"].buttons["完成"]
+        XCTAssertTrue(done.waitForExistence(timeout: 8))
+        done.tap()
+
+        let closeButtons = app.buttons.matching(identifier: "building.close")
+        let close = closeButtons.firstMatch
+        let available = NSPredicate(format: "exists == true AND enabled == true AND hittable == true")
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: available, object: close)],
+                                      timeout: 15), .completed)
+        XCTAssertEqual(closeButtons.count, 1)
+        XCTAssertEqual(close.label, "退出工程")
+        XCTAssertGreaterThanOrEqual(close.frame.height, 44)
+        XCTAssertLessThan(close.frame.midX, app.frame.midX)
+        close.tap()
+        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: close)
+        let space = XCTNSPredicateExpectation(predicate: available, object: app.buttons["space.new"])
+        XCTAssertEqual(XCTWaiter.wait(for: [gone, space], timeout: 25), .completed)
+        XCTAssertTrue(app.segmentedControls["space.sections"].buttons["文件"].isSelected)
+    }
+
+    func testSpaceBuildingFixedExitReturnsToFiles() {
+        let app = application()
+        app.launchArguments += ["-floe.settings.language", "zh-Hans"]
+        app.launch()
+        openNewFileMenu(app)
+        app.buttons["space.create.building"].tap()
+        let name = app.textFields["space.creation.title"]
+        XCTAssertTrue(name.waitForExistence(timeout: 10))
+        name.tap()
+        name.typeKey("a", modifierFlags: .command)
+        name.typeText("QA-Exit-" + String(UUID().uuidString.prefix(8)))
+        app.buttons["space.creation.create"].tap()
+
+        let exits = app.buttons.matching(identifier: "building.close")
+        let exit = exits.firstMatch
+        let available = NSPredicate(format: "exists == true AND enabled == true AND hittable == true")
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: available, object: exit)],
+                                      timeout: 30), .completed)
+        XCTAssertEqual(exits.count, 1)
+        XCTAssertEqual(exit.label, "退出工程")
+        XCTAssertGreaterThanOrEqual(exit.frame.height, 44)
+        XCTAssertLessThan(exit.frame.midX, app.frame.midX)
+        let projectSave = app.buttons["building.design.save"]
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: available, object: projectSave)],
+                                      timeout: 15), .completed)
+        XCTAssertLessThanOrEqual(exit.frame.maxY, projectSave.frame.minY)
+        exit.tap()
+
+        let save = app.buttons["building.reopen.save"]
+        let exitResponse = NSPredicate { _, _ in !exit.exists || (save.exists && save.isHittable) }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: exitResponse, object: app)],
+                                      timeout: 20), .completed)
+        if save.exists {
+            XCTAssertEqual(save.label, "保存并关闭")
+            XCTAssertTrue(save.isEnabled)
+            save.tap()
+        }
+        XCTAssertTrue(exit.waitForNonExistence(timeout: 20))
+        let space = XCTNSPredicateExpectation(predicate: available, object: app.buttons["space.new"])
+        XCTAssertEqual(XCTWaiter.wait(for: [space], timeout: 15), .completed)
+        XCTAssertTrue(app.segmentedControls["space.sections"].buttons["文件"].isSelected)
     }
 
     func testSavedCADDrawingOpensAnIndependentBuildingProject() {

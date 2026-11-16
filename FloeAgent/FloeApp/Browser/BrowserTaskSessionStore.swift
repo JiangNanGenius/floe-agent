@@ -10,6 +10,7 @@
 #if canImport(SwiftUI) && canImport(WebKit) && canImport(UIKit)
 import Combine
 import Foundation
+import UIKit
 import WebKit
 import FloeCore
 import FloeTools
@@ -29,6 +30,7 @@ struct BrowserTaskSessionConfiguration {
     let websiteDataStoreProvider: @MainActor () -> WKWebsiteDataStore
     let userAgentProvider: @MainActor () -> String?
     let linkOpenBehaviorProvider: @MainActor () -> BrowserLinkOpenBehavior
+    let usesWideLayout: @MainActor (URL?) -> Bool
 
     init(
         protocolVersion: String,
@@ -38,7 +40,8 @@ struct BrowserTaskSessionConfiguration {
         maximumEventsPerTab: Int,
         websiteDataStoreProvider: @escaping @MainActor () -> WKWebsiteDataStore = { .default() },
         userAgentProvider: @escaping @MainActor () -> String? = { nil },
-        linkOpenBehaviorProvider: @escaping @MainActor () -> BrowserLinkOpenBehavior = { .inApp }
+        linkOpenBehaviorProvider: @escaping @MainActor () -> BrowserLinkOpenBehavior = { .inApp },
+        usesWideLayout: @escaping @MainActor (URL?) -> Bool = { _ in false }
     ) {
         self.protocolVersion = protocolVersion
         self.contentWorld = contentWorld
@@ -48,6 +51,7 @@ struct BrowserTaskSessionConfiguration {
         self.websiteDataStoreProvider = websiteDataStoreProvider
         self.userAgentProvider = userAgentProvider
         self.linkOpenBehaviorProvider = linkOpenBehaviorProvider
+        self.usesWideLayout = usesWideLayout
     }
 }
 
@@ -107,11 +111,316 @@ struct BrowserModelActivity: Equatable {
         case observing, navigating, clicking, typing, scrolling, waiting, exporting, downloading
     }
     var kind: Kind
-    /// Public label of the exact target this executed action addressed (for
-    /// example a button's visible text). Absent whenever the action cannot
-    /// prove a same-document target; the UI then stays generic.
-    var detail: String?
     var at: Date
+}
+
+/// Pixels of a confirmed, bounded page region. Kept only while a local viewer is visible.
+struct BrowserLivePreviewFrame {
+    let image: UIImage
+    let clickedLabel: String?
+    let normalizedTarget: CGRect?
+}
+
+/// The tab owns its one WebKit page across model control, spectator layout changes and human input.
+@MainActor
+final class BrowserExecutionViewport {
+    /// WebKit can share the opener's preferences with its new window.
+    @MainActor private final class Scheduling {
+        let preferences: WKPreferences
+        private var idlePolicy: WKPreferences.InactiveSchedulingPolicy
+        private var lockedViewports = 0
+
+        init(_ preferences: WKPreferences) {
+            self.preferences = preferences
+            idlePolicy = preferences.inactiveSchedulingPolicy
+        }
+
+        func acquire() {
+            if lockedViewports == 0 {
+                idlePolicy = preferences.inactiveSchedulingPolicy
+                preferences.inactiveSchedulingPolicy = .none
+            }
+            lockedViewports += 1
+        }
+
+        func release() {
+            lockedViewports -= 1
+            if lockedViewports == 0 { preferences.inactiveSchedulingPolicy = idlePolicy }
+        }
+    }
+
+    private let scheduling: Scheduling
+    private weak var page: WKWebView?
+    private var host: UIView?
+    private var adaptiveSize: CGSize?
+    private(set) var fixedSize: CGSize?
+    private let presentations = NSHashTable<BrowserPageMount>.weakObjects()
+    private weak var owner: BrowserPageMount?
+    private var nextOrder: UInt64 = 0
+    private var preferred: UUID?
+    private var originalAccessibilityHidden = false
+
+    init(preferences: WKPreferences, opener: BrowserExecutionViewport? = nil) {
+        if let opener, opener.scheduling.preferences === preferences { scheduling = opener.scheduling }
+        else { scheduling = Scheduling(preferences) }
+    }
+
+    static var defaultSize: CGSize {
+        UIDevice.current.userInterfaceIdiom == .phone
+            ? CGSize(width: 390, height: 720) : CGSize(width: 1024, height: 768)
+    }
+
+    func lock(_ webView: WKWebView, wide: Bool) {
+        page = webView
+        if fixedSize == nil {
+            let size = webView.bounds.size
+            adaptiveSize = size.width >= 280 && size.height >= 240 ? size : Self.defaultSize
+        }
+        guard let adaptiveSize else { return }
+        let size = wide ? CGSize(width: max(1280, adaptiveSize.width), height: adaptiveSize.height) : adaptiveSize
+        if host == nil {
+            let holder = UIView(frame: CGRect(origin: .zero, size: size))
+            holder.isUserInteractionEnabled = false
+            holder.accessibilityElementsHidden = true
+            originalAccessibilityHidden = webView.accessibilityElementsHidden
+            webView.endEditing(true)
+            webView.removeFromSuperview()
+            webView.translatesAutoresizingMaskIntoConstraints = true
+            webView.autoresizingMask = []
+            holder.addSubview(webView)
+            host = holder
+            scheduling.acquire()
+        }
+        fixedSize = size
+        webView.isUserInteractionEnabled = false
+        webView.accessibilityElementsHidden = true
+        host?.frame.size = size
+        webView.frame = CGRect(origin: .zero, size: size)
+        webView.layoutIfNeeded()
+        refreshPresentations()
+    }
+
+    func release(_ webView: WKWebView) {
+        guard let host else { return }
+        if webView.superview === host { webView.removeFromSuperview() }
+        host.removeFromSuperview()
+        if let adaptiveSize { webView.frame = CGRect(origin: .zero, size: adaptiveSize) }
+        webView.isUserInteractionEnabled = true
+        webView.accessibilityElementsHidden = originalAccessibilityHidden
+        scheduling.release()
+        self.host = nil
+        adaptiveSize = nil
+        fixedSize = nil
+        refreshPresentations()
+    }
+
+    func preferPresentation(_ id: UUID) {
+        preferred = id
+        refreshPresentations()
+    }
+
+    fileprivate func add(_ mount: BrowserPageMount, page: WKWebView) {
+        self.page = page
+        if !presentations.contains(mount) {
+            nextOrder += 1
+            mount.order = nextOrder
+            presentations.add(mount)
+        }
+        refreshPresentations()
+    }
+
+    fileprivate func remove(_ mount: BrowserPageMount) {
+        presentations.remove(mount)
+        mount.show(nil, waiting: false)
+        if owner === mount { owner = nil }
+        refreshPresentations()
+    }
+
+    fileprivate func refreshPresentations() {
+        let mounted = presentations.allObjects
+        let eligible = mounted.filter { $0.isVisible && $0.readOnly == (host != nil) }
+        let chosen = eligible.max { lhs, rhs in
+            if (lhs.presentationID == preferred) != (rhs.presentationID == preferred) { return rhs.presentationID == preferred }
+            if lhs.priority != rhs.priority { return lhs.priority < rhs.priority }
+            if (lhs === owner) != (rhs === owner) { return rhs === owner }
+            return lhs.order < rhs.order
+        }
+        for mount in mounted where mount !== chosen {
+            mount.show(nil, waiting: mount.isVisible && mount.readOnly == (host != nil))
+        }
+        owner = chosen
+        if let chosen { chosen.show(host ?? page, waiting: false) }
+    }
+}
+
+/// One identity per actual UIKit presentation. Window changes and teardown immediately reassign the single page.
+@MainActor
+final class BrowserPageMount: UIView {
+    private(set) var presentationID = UUID()
+    private(set) var readOnly = false
+    private(set) var priority = 0
+    private var active = false
+    fileprivate var order: UInt64 = 0
+    private weak var viewport: BrowserExecutionViewport?
+    private weak var content: UIView?
+    private var sceneID: String?
+    var ownsPage: Bool { content?.superview === self }
+    fileprivate var isVisible: Bool {
+        active && window != nil && sceneID == window?.windowScene?.session.persistentIdentifier
+    }
+    private lazy var claim: UIButton = {
+        let button = UIButton(type: .system)
+        button.setTitle(IDELanguageRunText.t("在此窗口显示网页", "Show page in this window"), for: .normal)
+        button.accessibilityIdentifier = "browser.showInWindow"
+        button.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            viewport?.preferPresentation(presentationID)
+        }, for: .touchUpInside)
+        button.sizeToFit()
+        return button
+    }()
+
+    func configure(tab: BrowserTaskSession.Tab?, id: UUID, readOnly: Bool, priority: Int, active: Bool) {
+        if viewport !== tab?.viewport { detach() }
+        presentationID = id
+        self.readOnly = readOnly
+        self.priority = priority
+        self.active = active
+        if let tab {
+            viewport = tab.viewport
+            viewport?.add(self, page: tab.webView)
+        }
+    }
+
+    func detach() {
+        let previous = viewport
+        viewport = nil
+        previous?.remove(self)
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        sceneID = window?.windowScene?.session.persistentIdentifier
+        viewport?.refreshPresentations()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        if claim.superview === self { claim.center = CGPoint(x: bounds.midX, y: bounds.midY) }
+    }
+
+    fileprivate func show(_ view: UIView?, waiting: Bool) {
+        if content !== view, content?.superview === self { content?.removeFromSuperview() }
+        content = view
+        if let view, view.superview !== self {
+            view.removeFromSuperview()
+            view.translatesAutoresizingMaskIntoConstraints = true
+            if !readOnly {
+                view.frame = bounds
+                view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            }
+            addSubview(view)
+        }
+        if waiting, claim.superview !== self {
+            addSubview(claim)
+            setNeedsLayout()
+        } else if !waiting, claim.superview === self {
+            claim.removeFromSuperview()
+        }
+        if readOnly {
+            isAccessibilityElement = view != nil
+            accessibilityIdentifier = view != nil ? "browser.live.page" : nil
+            accessibilityTraits = .image
+            accessibilityLabel = IDELanguageRunText.t("网页只读预览", "Read-only page preview")
+        }
+    }
+}
+
+/// Both coordinate spaces are sampled. On iOS the keyboard may only change visualViewport.
+struct BrowserPageGeometry: Codable, Equatable {
+    let page: String
+    let epoch, revision: Int
+    let layoutWidth, layoutHeight, width, height: Double
+    let left, top, scale, pageLeft, pageTop, scrollX, scrollY: Double
+
+    func supportsPointMapping(in size: CGSize) -> Bool {
+        width > 0 && height > 0 && size.width > 0 && size.height > 0 &&
+            abs(left) <= 0.5 && abs(top) <= 0.5 &&
+            abs(size.height - size.width * height / width) <= 2
+    }
+}
+
+private struct BrowserLivePreviewSource: Equatable {
+    let actionID: UUID
+    let lease: BrowserControlLease
+    let tabID: UUID
+    let documentID: String
+    let documentGeneration: Int
+    let revision: Int
+    let clickedRef: String?
+    let page: BrowserPreviewPageIdentity
+}
+
+struct BrowserPreviewPageIdentity: Equatable {
+    let tabID: UUID
+    let documentID: String
+    let generation: Int
+    let routeGeneration: Int
+    let url: URL?
+}
+
+private struct BrowserLivePreviewRegion: Decodable, Equatable {
+    let viewportWidth, viewportHeight, scrollX, scrollY: CGFloat
+    let target: BrowserBounds?
+    let label: String?
+}
+
+typealias BrowserPreviewSnapshot = @MainActor (
+    WKWebView, WKSnapshotConfiguration, @escaping @MainActor (UIImage?) -> Void
+) -> Void
+
+@MainActor
+private final class BrowserPreviewImageRequest {
+    private var waiter: CheckedContinuation<Void, Never>?
+    private var timeoutTask: Task<Void, Never>?
+    private var image: UIImage?
+
+    func wait(timeout: Duration, start: () -> Void) async -> UIImage? {
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                waiter = continuation
+                guard !Task.isCancelled else { finish(nil); return }
+                timeoutTask = Task { @MainActor [weak self] in
+                    do { try await Task.sleep(for: timeout) } catch { return }
+                    self?.finish(nil)
+                }
+                start()
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in self?.finish(nil) }
+        }
+        return image
+    }
+
+    func finish(_ result: UIImage?) {
+        guard let waiter else { return }
+        self.waiter = nil
+        image = result
+        timeoutTask?.cancel()
+        timeoutTask = nil
+        waiter.resume()
+    }
+}
+
+@MainActor
+private final class BrowserPreviewInvalidationHandler: NSObject, WKScriptMessageHandler {
+    weak var session: BrowserTaskSession?
+
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.frameInfo.isMainFrame, let webView = message.webView,
+              let action = message.body as? String, let id = UUID(uuidString: action) else { return }
+        session?.invalidateLivePreview(actionID: id, from: webView)
+    }
 }
 
 /// A callback may never arrive after a WebKit process/navigation failure.
@@ -184,6 +493,60 @@ final class BrowserProbeRequest {
     }
 }
 
+/// Identity of one native navigation. Redirects keep the same WKNavigation.
+@MainActor
+private final class BrowserNavigationReceipt {
+    enum State {
+        case waiting, committed(document: String, generation: Int, url: URL?), replaced, failed(String), timedOut, cancelled
+    }
+
+    let id = UUID()
+    let page: WKWebView
+    let navigation: WKNavigation
+    var started = false
+    private(set) var awaitingStop = false
+    private var stopIssued = false
+    private(set) var state = State.waiting
+    private let signal = AsyncStream<Void>.makeStream()
+
+    init(page: WKWebView, navigation: WKNavigation) { self.page = page; self.navigation = navigation }
+
+    func settle(_ next: State) {
+        switch state {
+        case .waiting, .committed: state = next
+        case .cancelled, .timedOut, .replaced, .failed: break
+        }
+        awaitingStop = false
+        signal.continuation.finish()
+    }
+
+    func requestStop(_ reason: State) {
+        guard case .waiting = state else { return }
+        awaitingStop = true
+        state = reason
+        signal.continuation.finish()
+        stopIfStarted()
+    }
+
+    func stopIfStarted() {
+        // stopLoading addresses the view, not a WKNavigation. Wait for this
+        // exact navigation's didStart and never stop a replacement navigation.
+        guard awaitingStop, started, !stopIssued else { return }
+        stopIssued = true
+        page.stopLoading()
+    }
+
+    func wait(until deadline: ContinuousClock.Instant) async {
+        let timeout = Task { @MainActor in
+            do { try await Task.sleep(until: deadline, clock: .continuous) } catch { return }
+            requestStop(.timedOut)
+        }
+        defer { timeout.cancel() }
+        for await _ in signal.stream {}
+        if Task.isCancelled { requestStop(.cancelled) }
+    }
+}
+
 /// A single task's independent browser. All WebKit/UI work is MainActor.
 ///
 /// `generation` is the owner lifecycle generation this session was created
@@ -211,16 +574,23 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         var viewportHeight: Double
         var revision: Int
         var visualTextRegions: [VisualTextRegion]
+        let geometry: BrowserPageGeometry
+        let routeGeneration: Int
+        let documentGeneration: Int
+        let nativeViewport: ImpeccableViewportObserver
     }
     struct Tab: Identifiable {
         let id: UUID
+        let openerID: UUID?
         let webView: WKWebView
+        let viewport: BrowserExecutionViewport
         var documentID: String
         /// Monotonic per-tab Impeccable document generation: bumped whenever
         /// the document is replaced (commit, handoff invalidation). A capture
         /// record binds the generation it measured; answers require it to be
         /// unchanged (contract `documentGeneration`).
         var documentGeneration: Int
+        var routeGeneration = 0
         var revision: Int
         var nextEventSequence: Int
         var events: [BrowserProtocolEvent]
@@ -246,6 +616,11 @@ final class BrowserTaskSession: NSObject, ObservableObject {
     /// WebKit getters and needs one observable signal.
     @Published private(set) var tabStateRevision = 0
     @Published private(set) var tabLimitNotice: String?
+    @Published private(set) var humanActivitySequence: UInt64 = 0
+    var returningToModel = false {
+        didSet { if oldValue && !returningToModel { finishClosedWindows() } }
+    }
+    private var deferredWindowClosures: [UUID] = []
     var isEditingAddress = false
     private(set) var isReleased = false
     private(set) var activeExecutionCount = 0
@@ -260,15 +635,28 @@ final class BrowserTaskSession: NSObject, ObservableObject {
     /// input stays disabled until it settles or the user retries explicitly;
     /// an uncertain result is never replayed.
     @Published private(set) var takeoverPending = false
+    @Published private(set) var usesFixedViewport = false
     @Published private(set) var lastModelActivity: BrowserModelActivity?
+    @Published private(set) var livePreviewFrame: BrowserLivePreviewFrame?
+    private var livePreviewSource: BrowserLivePreviewSource?
+    private var livePreviewObservers = Set<UUID>()
+    private var previewWorker: Task<Void, Never>?
+    private var previewGeneration = 0
+    private var previewAttemptedGeneration: Int?
+    private let previewSnapshot: BrowserPreviewSnapshot
+    private let previewSnapshotTimeout: Duration
+    // A timed-out native callback can still arrive. Keep its per-tab slot until that callback or process termination.
+    private var pendingNativePreviews: [UUID: BrowserPreviewImageRequest] = [:]
+    // This private world answers only whether a shadow tree exists. It is never used by a browser tool.
+    private lazy var previewPrivacyWorld: WKContentWorld? = {
+        guard #available(iOS 27.0, *) else { return nil }
+        let configuration = WKContentWorld.Configuration()
+        configuration.allowAccessingClosedShadowRoots = true
+        return WKContentWorld(configuration: configuration)
+    }()
     private var controlEpochCounter = 0
     private var dispatchBusy = false
     private var dispatchWaiters: [DispatchWaiter] = []
-    /// Public node labels from the most recent observation, keyed by the
-    /// document they belong to. Used only for the local status strip; cleared
-    /// on document replacement, evidence invalidation and any control change.
-    private var documentNodeLabels: [String: [String: String]] = [:]
-
     private struct DispatchWaiter {
         let id: UUID
         let epoch: Int
@@ -301,7 +689,11 @@ final class BrowserTaskSession: NSObject, ObservableObject {
     private let websiteDataStoreProvider: @MainActor () -> WKWebsiteDataStore
     private let userAgentProvider: @MainActor () -> String?
     private let linkOpenBehaviorProvider: @MainActor () -> BrowserLinkOpenBehavior
+    private let usesWideLayout: @MainActor (URL?) -> Bool
+    private let openSystemURL: @MainActor (URL) -> Void
     private var tabObservations: [UUID: [NSKeyValueObservation]] = [:]
+    // Native command dispatch is serialized per session.
+    private var navigationReceipt: BrowserNavigationReceipt?
 
     var tabLimit: Int { maximumTabs }
     var websiteDataStore: WKWebsiteDataStore {
@@ -312,7 +704,14 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         conversationID: UUID,
         generation: Int,
         configuration: BrowserTaskSessionConfiguration,
-        host: BrowserTaskSessionHost
+        host: BrowserTaskSessionHost,
+        previewSnapshotTimeout: Duration = .seconds(2),
+        previewSnapshot: @escaping BrowserPreviewSnapshot = { webView, configuration, finish in
+            webView.takeSnapshot(with: configuration) { image, _ in finish(image) }
+        },
+        openSystemURL: @escaping @MainActor (URL) -> Void = {
+            UIApplication.shared.open($0, options: [:], completionHandler: nil)
+        }
     ) {
         self.conversationID = conversationID
         self.generation = generation
@@ -325,6 +724,10 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         self.websiteDataStoreProvider = configuration.websiteDataStoreProvider
         self.userAgentProvider = configuration.userAgentProvider
         self.linkOpenBehaviorProvider = configuration.linkOpenBehaviorProvider
+        self.usesWideLayout = configuration.usesWideLayout
+        self.openSystemURL = openSystemURL
+        self.previewSnapshot = previewSnapshot
+        self.previewSnapshotTimeout = previewSnapshotTimeout
         super.init()
     }
 
@@ -337,9 +740,18 @@ final class BrowserTaskSession: NSObject, ObservableObject {
 
     var activeWebView: WKWebView? { activeTab?.webView }
 
+    var previewPageIdentity: BrowserPreviewPageIdentity? {
+        activeTab.map { BrowserPreviewPageIdentity(tabID: $0.id, documentID: $0.documentID,
+            generation: $0.documentGeneration, routeGeneration: $0.routeGeneration, url: $0.webView.url) }
+    }
+
     @discardableResult
     func createTab() -> UUID? {
-        guard !isReleased, !takeoverPending else { return nil }
+        makeTab()
+    }
+
+    private func makeTab(for popup: (configuration: WKWebViewConfiguration, opener: Tab)? = nil) -> UUID? {
+        guard !isReleased, !takeoverPending, !returningToModel else { return nil }
         guard tabs.count < maximumTabs else {
             tabLimitNotice = IDELanguageRunText.t(
                 "此浏览器最多支持 6 个标签页。关闭一个标签页后再打开新的标签页。",
@@ -348,26 +760,15 @@ final class BrowserTaskSession: NSObject, ObservableObject {
             return nil
         }
         tabLimitNotice = nil
-        return makeTab()
-    }
-
-    private func makeTab() -> UUID? {
-        guard !isReleased, tabs.count < maximumTabs else { return nil }
         lastActivityAt = Date()
-        let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = websiteDataStoreProvider()
-        configuration.preferences.isElementFullscreenEnabled = true
-        configuration.userContentController.addUserScript(WKUserScript(
-            source: Self.protocolProbeSource,
-            injectionTime: .atDocumentStart,
-            forMainFrameOnly: true,
-            in: contentWorld
-        ))
+        // The supplied window configuration preserves WebKit's opener relationship,
+        // data store and already-installed user scripts and message handler.
+        let configuration = popup?.configuration ?? newTabConfiguration()
         // Give off-screen/task-owned tabs a real viewport before SwiftUI
         // presents them. A zero-sized WKWebView makes every DOM node appear
         // invisible and breaks semantic observation during background work.
         let webView = WKWebView(
-            frame: CGRect(x: 0, y: 0, width: 1_024, height: 768),
+            frame: CGRect(origin: .zero, size: BrowserExecutionViewport.defaultSize),
             configuration: configuration
         )
         webView.customUserAgent = userAgentProvider()
@@ -377,7 +778,9 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         let id = UUID()
         tabs.append(Tab(
             id: id,
+            openerID: popup?.opener.id,
             webView: webView,
+            viewport: BrowserExecutionViewport(preferences: configuration.preferences, opener: popup?.opener.viewport),
             documentID: UUID().uuidString,
             documentGeneration: 0,
             revision: 0,
@@ -385,19 +788,39 @@ final class BrowserTaskSession: NSObject, ObservableObject {
             events: [],
             visualFallbackEvidence: nil
         ))
+        resetLivePreview()
         activeTabID = id
+        if modelControl != nil, let tab = activeTab { lockViewport(tab) }
         installObservers(for: id, webView: webView)
         appendEvent(tabID: id, method: "Target.targetCreated")
         syncChromeState()
         return id
     }
 
+    private func newTabConfiguration() -> WKWebViewConfiguration {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = websiteDataStoreProvider()
+        configuration.preferences.isElementFullscreenEnabled = true
+        let invalidation = BrowserPreviewInvalidationHandler()
+        invalidation.session = self
+        configuration.userContentController.add(invalidation, contentWorld: contentWorld, name: "floePreviewChanged")
+        configuration.userContentController.addUserScript(WKUserScript(
+            source: Self.protocolProbeSource,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true,
+            in: contentWorld
+        ))
+        return configuration
+    }
+
     func activate(_ id: UUID) {
-        guard !isReleased, !takeoverPending, tabs.contains(where: { $0.id == id }) else { return }
+        guard !isReleased, !takeoverPending, !returningToModel, tabs.contains(where: { $0.id == id }) else { return }
         // A user tab switch is presentation only. Any in-flight tool command
         // captured its own tabID/webView before awaiting, so switching here
         // never retargets a pending AI action.
+        if id != activeTabID { resetLivePreview() }
         activeTabID = id
+        if modelControl != nil, let tab = activeTab { lockViewport(tab) }
         isEditingAddress = false
         refreshVisibleAddress()
         syncChromeState()
@@ -405,28 +828,62 @@ final class BrowserTaskSession: NSObject, ObservableObject {
     }
 
     func close(_ id: UUID) {
-        guard !isReleased, !takeoverPending,
+        close(id, returningTo: nil)
+    }
+
+    private func close(_ id: UUID, returningTo openerID: UUID?, discarding stopped: BrowserNavigationReceipt? = nil) {
+        guard !isReleased, (!takeoverPending || stopped != nil), !returningToModel,
               let index = tabs.firstIndex(where: { $0.id == id }) else { return }
+        let page = tabs[index].webView
+        let receipt = navigationReceipt.flatMap { $0.page === page ? $0 : nil }
+        if let stopped, receipt !== stopped || unresponsiveNavigationID != stopped.id { return }
         impeccableCaptures.fence(tabID: id, reason: .tabClosed)
         stagedExports.fenceTab(id, reason: .tabClosed)
-        tabObservations.removeValue(forKey: id)?.forEach { $0.invalidate() }
-        tabs[index].webView.stopLoading()
-        if tabs.count == 1 {
+        page.stopLoading()
+        if tabs.count == 1, openerID == nil, receipt == nil {
             // Closing the last tab leaves an honest blank tab; the task's
             // browser session and its ownership remain intact.
             blank(tabID: id)
             return
         }
+        tabObservations.removeValue(forKey: id)?.forEach { $0.invalidate() }
+        tabs[index].viewport.release(tabs[index].webView)
+        tabs[index].webView.navigationDelegate = nil
+        tabs[index].webView.uiDelegate = nil
+        tabs[index].webView.removeFromSuperview()
+        page.isUserInteractionEnabled = false
         tabs.remove(at: index)
+        pendingNativePreviews.removeValue(forKey: id)?.finish(nil)
+        if let receipt {
+            settleNavigation(receipt, as: .replaced)
+            if stopped != nil { finishTakeoverIfIdle() }
+        }
+        if tabs.isEmpty {
+            // WebKit already closed the last script-opened window. Its page cannot be reused.
+            activeTabID = nil
+            _ = createTab()
+            return
+        }
         if activeTabID == id {
-            activeTabID = tabs[min(index, tabs.count - 1)].id
-            refreshVisibleAddress()
+            let next = tabs.first(where: { $0.id == openerID }) ?? tabs[min(index, tabs.count - 1)]
+            activate(next.id)
+            return
         }
         syncChromeState()
     }
 
+    private func finishClosedWindows() {
+        guard !isReleased, !takeoverPending, !returningToModel, !deferredWindowClosures.isEmpty else { return }
+        let closed = deferredWindowClosures
+        deferredWindowClosures.removeAll()
+        for id in closed {
+            if let opener = tabs.first(where: { $0.id == id })?.openerID { close(id, returningTo: opener) }
+        }
+    }
+
     private func blank(tabID: UUID) {
         guard let index = tabs.firstIndex(where: { $0.id == tabID }) else { return }
+        if tabID == activeTabID { resetLivePreview() }
         tabs[index].webView.stopLoading()
         tabs[index].documentID = UUID().uuidString
         tabs[index].documentGeneration += 1
@@ -443,7 +900,7 @@ final class BrowserTaskSession: NSObject, ObservableObject {
     }
 
     func navigateFromAddressBar() {
-        guard !isReleased, !takeoverPending else { return }
+        guard !isReleased, !takeoverPending, !returningToModel else { return }
         if let currentURL = activeWebView?.url,
            Self.isLocalPreview(currentURL),
            addressText == Self.visibleAddress(for: activeWebView) {
@@ -516,7 +973,15 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         observations.append(webView.observe(\.canGoBack, options: [.initial, .new]) { _, _ in schedule() })
         observations.append(webView.observe(\.canGoForward, options: [.initial, .new]) { _, _ in schedule() })
         observations.append(webView.observe(\.title, options: [.initial, .new]) { _, _ in schedule() })
-        observations.append(webView.observe(\.url, options: [.initial, .new]) { _, _ in schedule() })
+        observations.append(webView.observe(\.url, options: [.old, .new]) { [weak self] _, change in
+            guard change.oldValue != change.newValue else { return }
+            Task { @MainActor [weak self] in
+                guard let self, let index = tabs.firstIndex(where: { $0.id == id }) else { return }
+                tabs[index].routeGeneration &+= 1
+                if activeTabID == id { resetLivePreview() }
+                syncChromeState()
+            }
+        })
         tabObservations[id] = observations
     }
 
@@ -574,6 +1039,7 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         if isUserControlling || takeoverPending {
             return "The user controls this browser; wait until the user returns control"
         }
+        if navigationReceipt?.awaitingStop == true { return "The browser is waiting for its previous navigation to stop." }
         if isEditingAddress { return "The user is using the address bar; wait until they return control" }
         return nil
     }
@@ -596,6 +1062,7 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         controlEpochCounter += 1
         let lease = BrowserControlLease(id: UUID(), runID: runID, epoch: controlEpochCounter)
         modelControl = lease
+        if let tab = activeTab { lockViewport(tab) }
         if case .needsUser = surfaceState { surfaceState = .ready }
         return .acquired(lease)
     }
@@ -607,15 +1074,18 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         guard let holder = modelControl else { return .alreadyReleased }
         guard holder.runID == runID else { return .heldByAnotherRun }
         guard holder.id == controlID else { return .alreadyReleased }
+        navigationReceipt?.requestStop(.cancelled)
         controlEpochCounter += 1
         modelControl = nil
         lastModelActivity = nil
+        resetLivePreview()
         // In-flight page work of this holding period is fenced with it; an
         // uncommitted capture/export is never published after release.
         impeccableCaptures.fenceAll(reason: .ownerHandoff)
         stagedExports.fenceAll(reason: .ownerHandoff)
         downloads.cancelAll()
         fenceDispatchQueue()
+        releaseViewportsIfIdle()
         return .released
     }
 
@@ -626,13 +1096,16 @@ final class BrowserTaskSession: NSObject, ObservableObject {
     @discardableResult
     func endModelControl(runID: UUID) -> Bool {
         guard let holder = modelControl, holder.runID == runID else { return false }
+        navigationReceipt?.requestStop(.cancelled)
         controlEpochCounter += 1
         modelControl = nil
         lastModelActivity = nil
+        resetLivePreview()
         impeccableCaptures.fenceAll(reason: .ownerHandoff)
         stagedExports.fenceAll(reason: .ownerHandoff)
         downloads.cancelAll()
         fenceDispatchQueue()
+        releaseViewportsIfIdle()
         return true
     }
 
@@ -658,9 +1131,19 @@ final class BrowserTaskSession: NSObject, ObservableObject {
     /// First real human input: register the takeover before the input is
     /// allowed to change the page. Idle browsing that no model owns stays
     /// local and creates no handoff receipt.
-    func registerUserInput(reason: String = "You started using this browser") {
-        guard !isReleased, !isUserControlling else { return }
+    @discardableResult
+    func registerUserInput(reason: String = "You started using this browser") -> Bool {
+        guard !isReleased, !returningToModel else { return false }
         host?.browserSessionUserStartedInput(self, reason: reason)
+        if !takeoverPending { humanActivitySequence &+= 1 }
+        return !takeoverPending && modelControl == nil
+    }
+
+    @discardableResult
+    func reloadFromUser() -> Bool {
+        guard registerUserInput(reason: "You reloaded the page"), let webView = activeWebView else { return false }
+        webView.reload()
+        return true
     }
 
     /// Transfers the page to the user. The model holder is revoked
@@ -668,13 +1151,15 @@ final class BrowserTaskSession: NSObject, ObservableObject {
     /// held back only while an action already sent to WebKit settles.
     func beginUserTakeover(reason: String?) {
         guard !isReleased else { return }
+        resetLivePreview()
         controlEpochCounter += 1
         modelControl = nil
         lastModelActivity = nil
-        documentNodeLabels.removeAll()
         fenceDispatchQueue()
         isUserControlling = true
-        takeoverPending = activeExecutionCount > 0
+        navigationReceipt?.requestStop(.cancelled)
+        takeoverPending = activeExecutionCount > 0 || navigationReceipt?.awaitingStop == true
+        releaseViewportsIfIdle()
         activeWebView?.isUserInteractionEnabled = !takeoverPending
         // The user can move any tab at any moment now; every capture bound to
         // this session fences at the instant of takeover.
@@ -688,26 +1173,17 @@ final class BrowserTaskSession: NSObject, ObservableObject {
     /// visual evidence stay invalid; the next model acquisition is a new
     /// epoch. No new model run is started from here.
     func endUserControl() {
-        guard !isReleased else { return }
+        guard !isReleased, isUserControlling, !takeoverPending else { return }
+        resetLivePreview()
         isUserControlling = false
         takeoverPending = false
         isEditingAddress = false
         controlEpochCounter += 1
         modelControl = nil
         lastModelActivity = nil
-        documentNodeLabels.removeAll()
         activeWebView?.isUserInteractionEnabled = true
         activeWebView?.endEditing(true)
         if case .needsUser = surfaceState { surfaceState = .ready }
-    }
-
-    /// Explicit "retry takeover" after WebKit never returned a receipt. The
-    /// page is kept, the uncertain action is not replayed, and human input is
-    /// enabled immediately.
-    func forceUserTakeover() {
-        guard isUserControlling else { return }
-        takeoverPending = false
-        activeWebView?.isUserInteractionEnabled = true
     }
 
     func setUserControlling(_ value: Bool) {
@@ -715,10 +1191,55 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         else { endUserControl() }
     }
 
-    private func finishTakeoverIfIdle() {
+    /// A manual retry and the WebKit completion share the same drain check.
+    func finishTakeoverIfIdle() {
+        releaseViewportsIfIdle()
         guard isUserControlling, takeoverPending, activeExecutionCount == 0 else { return }
+        if navigationReceipt?.awaitingStop == true {
+            objectWillChange.send()
+            return
+        }
         takeoverPending = false
+        finishClosedWindows()
         activeWebView?.isUserInteractionEnabled = true
+    }
+
+    var unresponsiveNavigationID: UUID? {
+        guard isUserControlling, takeoverPending, !returningToModel, activeExecutionCount == 0,
+              let receipt = navigationReceipt, receipt.awaitingStop else { return nil }
+        return receipt.id
+    }
+
+    func closeUnresponsiveNavigation(_ confirmedID: UUID) {
+        guard unresponsiveNavigationID == confirmedID, let receipt = navigationReceipt,
+              let tab = tabs.first(where: { $0.webView === receipt.page }) else { return }
+        close(tab.id, returningTo: tab.openerID, discarding: receipt)
+    }
+
+    private func settleNavigation(_ receipt: BrowserNavigationReceipt, as state: BrowserNavigationReceipt.State) {
+        let wasStopping = receipt.awaitingStop
+        receipt.settle(state)
+        if wasStopping, navigationReceipt === receipt {
+            navigationReceipt = nil
+            // The delegate may still be updating the tab by index. Process deferred
+            // popup closures only after this callback has finished using that index.
+            Task { @MainActor [weak self] in self?.finishTakeoverIfIdle() }
+        }
+    }
+
+    private func lockViewport(_ tab: Tab, destination: URL? = nil) {
+        guard modelControl != nil else { return }
+        // Existing pages keep the dimensions chosen at acquisition. A new origin may have an explicit wide layout.
+        if tab.viewport.fixedSize == nil || destination != nil {
+            tab.viewport.lock(tab.webView, wide: usesWideLayout(destination ?? tab.webView.url))
+        }
+        if !usesFixedViewport { usesFixedViewport = true }
+    }
+
+    private func releaseViewportsIfIdle() {
+        guard usesFixedViewport, modelControl == nil, activeExecutionCount == 0, navigationReceipt?.awaitingStop != true else { return }
+        for tab in tabs { tab.viewport.release(tab.webView) }
+        usesFixedViewport = false
     }
 
     private func fenceDispatchQueue() {
@@ -773,7 +1294,7 @@ final class BrowserTaskSession: NSObject, ObservableObject {
     /// run takes the page. Only this task's evidence is affected.
     func invalidateDocumentsForHandoff() {
         guard !isReleased else { return }
-        documentNodeLabels.removeAll()
+        resetLivePreview()
         for index in tabs.indices {
             tabs[index].documentID = UUID().uuidString
             tabs[index].documentGeneration += 1
@@ -787,11 +1308,19 @@ final class BrowserTaskSession: NSObject, ObservableObject {
     /// delegate/probe callbacks; no other task session is touched.
     func release() {
         guard !isReleased else { return }
+        resetLivePreview()
+        livePreviewObservers.removeAll()
+        pendingNativePreviews.values.forEach { $0.finish(nil) }
+        pendingNativePreviews.removeAll()
+        deferredWindowClosures.removeAll()
         isReleased = true
+        navigationReceipt?.settle(.replaced)
+        navigationReceipt = nil
+        for tab in tabs { tab.viewport.release(tab.webView) }
+        usesFixedViewport = false
         controlEpochCounter += 1
         modelControl = nil
         lastModelActivity = nil
-        documentNodeLabels.removeAll()
         fenceDispatchQueue()
         impeccableCaptures.fenceAll(reason: .released)
         stagedExports.fenceAll(reason: .released)
@@ -884,6 +1413,10 @@ final class BrowserTaskSession: NSObject, ObservableObject {
             )
         }
         defer { leaveDispatch() }
+        if command.action != .protocolInfo, navigationReceipt?.awaitingStop == true {
+            return failure(command, status: isUserControlling ? .needsUser : .blocked, code: "navigation-stopping",
+                           "The previous navigation is still stopping. No new action was dispatched.")
+        }
 
         // Recheck after waiting behind another action. A takeover, release or
         // newer holder while this call was queued must never reach the page.
@@ -913,6 +1446,9 @@ final class BrowserTaskSession: NSObject, ObservableObject {
             }
         }
 
+        if command.action != .protocolInfo, (command.tabID ?? activeTabID) == activeTabID {
+            resetLivePreview()
+        }
         let result = await executeAuthorized(command, control: control)
         if command.action != .protocolInfo, !isModelControlCurrent(control) {
             // A result that already says needsUser carries no page payload;
@@ -934,8 +1470,10 @@ final class BrowserTaskSession: NSObject, ObservableObject {
                     : "Browser control was released or handed to the user; this result was withheld"
             )
         }
-        if result.status == .ok, modelControl != nil {
+        if result.status == .ok, let control, command.action != .protocolInfo,
+           let page = result.page, let tab = activeTab, tab.documentID == page.documentID {
             recordModelActivity(for: command.action)
+            recordLivePreview(for: command, page: page, tab: tab, lease: control)
         }
         return result
     }
@@ -963,15 +1501,137 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         return nil
     }
 
+    func setLivePreviewObservation(_ observer: UUID, visible: Bool) {
+        let wasEmpty = livePreviewObservers.isEmpty
+        if visible {
+            guard !isReleased, livePreviewObservers.insert(observer).inserted else { return }
+        } else {
+            guard livePreviewObservers.remove(observer) != nil else { return }
+        }
+        guard livePreviewObservers.isEmpty != wasEmpty else { return }
+        previewGeneration &+= 1
+        if livePreviewObservers.isEmpty {
+            previewWorker?.cancel()
+            if livePreviewFrame != nil { livePreviewFrame = nil }
+        } else {
+            scheduleLivePreview()
+        }
+    }
+
+    #if DEBUG
+    /// The native test host waits on the actual bounded work, including a denial before any pixels exist.
+    func waitForCurrentPreviewUpdate() async {
+        while let worker = previewWorker { await worker.value }
+    }
+    #endif
+
+    private func resetLivePreview(clearActivity: Bool = true) {
+        livePreviewSource = nil
+        previewGeneration &+= 1
+        previewWorker?.cancel()
+        if livePreviewFrame != nil { livePreviewFrame = nil }
+        if clearActivity, lastModelActivity != nil { lastModelActivity = nil }
+    }
+
+    fileprivate func invalidateLivePreview(actionID: UUID, from webView: WKWebView) {
+        guard livePreviewSource?.actionID == actionID, activeWebView === webView else { return }
+        resetLivePreview(clearActivity: false)
+    }
+
+    private func recordLivePreview(for command: BrowserCommand, page: PageSnapshot, tab: Tab, lease: BrowserControlLease) {
+        guard !page.isLoading, !tab.webView.isLoading, let identity = previewPageIdentity,
+              identity.tabID == tab.id, identity.url?.absoluteString == page.url else { return }
+        var clickedRef: String?
+        switch command.action {
+        case .click(.element(let ref, let id)) where id == page.documentID:
+            clickedRef = ref
+        case .observe, .wait, .navigate, .reload, .back, .forward, .scroll, .screenshot, .activateTab:
+            break
+        default:
+            return
+        }
+        livePreviewSource = BrowserLivePreviewSource(
+            actionID: command.requestID, lease: lease, tabID: tab.id, documentID: tab.documentID,
+            documentGeneration: tab.documentGeneration, revision: page.revision, clickedRef: clickedRef, page: identity)
+        previewGeneration &+= 1
+        scheduleLivePreview()
+    }
+
+    private func scheduleLivePreview() {
+        guard previewWorker == nil, !livePreviewObservers.isEmpty, let source = livePreviewSource,
+              previewAttemptedGeneration != previewGeneration else { return }
+        let generation = previewGeneration
+        previewAttemptedGeneration = generation
+        previewWorker = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await captureLivePreview(source, generation: generation)
+            previewWorker = nil
+            scheduleLivePreview()
+        }
+    }
+
+    private func currentPreviewTab(_ source: BrowserLivePreviewSource, generation: Int) -> Tab? {
+        guard !Task.isCancelled, generation == previewGeneration, !livePreviewObservers.isEmpty,
+              livePreviewSource == source, previewPageIdentity == source.page, isModelControlCurrent(source.lease),
+              let tab = activeTab, tab.id == source.tabID, tab.documentID == source.documentID,
+              tab.documentGeneration == source.documentGeneration, !tab.webView.isLoading else { return nil }
+        return tab
+    }
+
+    private func livePreviewRegion(_ source: BrowserLivePreviewSource, generation: Int, in webView: WKWebView) async throws -> BrowserLivePreviewRegion? {
+        guard let previewPrivacyWorld else { return nil }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        let inspectable = try await probeValue("""
+            if (!document.documentElement) return false;
+            const walker = document.createTreeWalker(document.documentElement, NodeFilter.SHOW_ELEMENT);
+            let count = 0;
+            for (let el = document.documentElement; el; el = walker.nextNode()) {
+              if (++count > 6000 || el.shadowRoot) return false;
+            }
+            return true;
+            """, arguments: [:], in: webView, world: previewPrivacyWorld, deadline: deadline)
+        guard inspectable as? Bool == true, currentPreviewTab(source, generation: generation) != nil else { return nil }
+        let value = try await probeValue(
+            "return globalThis.__floeProtocol?.previewRegion(documentID, revision, actionID, clickedRef) ?? null;",
+            arguments: ["documentID": source.documentID, "revision": source.revision,
+                        "actionID": source.actionID.uuidString, "clickedRef": source.clickedRef ?? ""],
+            in: webView, deadline: deadline)
+        guard let value = value as? [String: Any] else { return nil }
+        return try JSONDecoder().decode(BrowserLivePreviewRegion.self, from: JSONSerialization.data(withJSONObject: value))
+    }
+
+    private func captureLivePreview(_ source: BrowserLivePreviewSource, generation: Int) async {
+        guard let tab = currentPreviewTab(source, generation: generation),
+              let region = try? await livePreviewRegion(source, generation: generation, in: tab.webView),
+              currentPreviewTab(source, generation: generation) != nil,
+              region.viewportWidth > 0, region.viewportHeight > 0 else { return }
+        let bounds = tab.webView.bounds
+        let scale = bounds.width / region.viewportWidth
+        guard !bounds.isEmpty, abs(bounds.height - region.viewportHeight * scale) < 3 else { return }
+        let config = WKSnapshotConfiguration()
+        config.rect = bounds
+        let outputScale = min(1, 720 / (max(bounds.width, bounds.height) * max(1, tab.webView.traitCollection.displayScale)))
+        config.snapshotWidth = NSNumber(value: Double(bounds.width * outputScale))
+        guard pendingNativePreviews[tab.id] == nil else { return }
+        let image = await nativeSnapshot(of: tab, configuration: config, timeout: previewSnapshotTimeout)
+        guard let image,
+              currentPreviewTab(source, generation: generation) != nil, tab.webView.bounds == bounds,
+              let after = try? await livePreviewRegion(source, generation: generation, in: tab.webView), after == region,
+              currentPreviewTab(source, generation: generation) != nil else { return }
+        let target = region.target.map {
+            CGRect(x: $0.x / region.viewportWidth, y: $0.y / region.viewportHeight,
+                   width: $0.width / region.viewportWidth, height: $0.height / region.viewportHeight)
+        }
+        livePreviewFrame = BrowserLivePreviewFrame(image: image, clickedLabel: region.label, normalizedTarget: target)
+    }
+
     private func recordModelActivity(for action: BrowserAction) {
         let kind: BrowserModelActivity.Kind
-        var detail: String?
         switch action {
         case .navigate, .create, .activateTab, .closeTab, .back, .forward, .reload:
             kind = .navigating
-        case .click(let target):
+        case .click:
             kind = .clicking
-            detail = publicLabel(for: target)
         case .type:
             kind = .typing
         case .scroll:
@@ -981,52 +1641,7 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         case .screenshot, .observe, .listTabs, .events, .listLinks, .readTable, .readText, .protocolInfo, .takeover:
             kind = .observing
         }
-        lastModelActivity = BrowserModelActivity(kind: kind, detail: detail, at: Date())
-    }
-
-    /// A same-document, publicly safe label for the executed target. It never
-    /// contains form values, credentials, URLs or text from a different page.
-    private func publicLabel(for target: BrowserTarget) -> String? {
-        switch target {
-        case .element(let ref, let documentID):
-            guard tabs.contains(where: { $0.documentID == documentID }),
-                  let label = documentNodeLabels[documentID]?[ref] else { return nil }
-            return label
-        case .visualText(let reference):
-            guard let tab = activeTab,
-                  let evidence = tab.visualFallbackEvidence,
-                  evidence.documentID == tab.documentID,
-                  let region = evidence.visualTextRegions.first(where: { $0.reference == reference }) else {
-                return nil
-            }
-            return Self.boundedPublicLabel(region.text)
-        case .point:
-            return nil
-        }
-    }
-
-    private static func boundedPublicLabel(_ raw: String) -> String? {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        return String(trimmed.prefix(80))
-    }
-
-    private func recordNodeLabels(tabID: UUID, documentID: String, nodes: [BrowserNode]) {
-        guard tabs.contains(where: { $0.id == tabID && $0.documentID == documentID }) else { return }
-        var labels: [String: String] = [:]
-        for node in nodes {
-            let candidate = node.name.isEmpty ? node.text : node.name
-            if let label = Self.boundedPublicLabel(candidate) { labels[node.ref] = label }
-        }
-        guard !labels.isEmpty else { return }
-        documentNodeLabels[documentID] = labels
-        // Bounded: a task only needs the current/previous observation.
-        if documentNodeLabels.count > 4 {
-            for key in Array(documentNodeLabels.keys) where key != documentID {
-                documentNodeLabels.removeValue(forKey: key)
-                if documentNodeLabels.count <= 2 { break }
-            }
-        }
+        lastModelActivity = BrowserModelActivity(kind: kind, at: Date())
     }
 
     private func executeAuthorized(_ command: BrowserCommand, control: BrowserControlLease?) async -> BrowserResult {
@@ -1062,6 +1677,7 @@ final class BrowserTaskSession: NSObject, ObservableObject {
             return failure(command, status: .stale, code: "tab", "Browser tab is no longer available")
         }
         let tab = tabs[index]
+        if control != nil { lockViewport(tab) }
         if let expected = command.expectedDocumentID, expected != tab.documentID {
             return failure(command, status: .stale, code: "document", "The page changed; observe it again")
         }
@@ -1071,9 +1687,10 @@ final class BrowserTaskSession: NSObject, ObservableObject {
             case .navigate(let value):
                 let url = try BrowserURLPolicy.validate(value, conversationID: conversationID, allowLocalNetwork: true)
                 if let denied = pageAccessFailure(command, control: control) { return denied }
+                if control != nil { lockViewport(tab, destination: url) }
                 impeccableCaptures.fence(tabID: tabID, reason: .navigation)
                 stagedExports.fenceTab(tabID, reason: .navigation)
-                tab.webView.load(URLRequest(url: url))
+                return await navigateAndObserve(command, tab: tab, url: url, control: control)
             case .back:
                 if let denied = pageAccessFailure(command, control: control) { return denied }
                 impeccableCaptures.fence(tabID: tabID, reason: .navigation)
@@ -1092,30 +1709,7 @@ final class BrowserTaskSession: NSObject, ObservableObject {
             case .observe(let cursor):
                 return await observeResult(command, tabID: tabID, cursor: cursor)
             case .screenshot:
-                let artifact = try await saveSnapshot(of: tab.webView)
-                if let denied = pageAccessFailure(command, control: control) {
-                    discardArtifact(artifact)
-                    return denied
-                }
-                let visualTextRegions = try recognizeVisualText(in: artifact)
-                var result = await observeResult(command, tabID: tabID, cursor: nil)
-                result.page?.screenshotArtifact = artifact
-                result.page?.visualTextRegions = visualTextRegions
-                if let page = result.page,
-                   let currentIndex = tabs.firstIndex(where: { $0.id == tabID }) {
-                    tabs[currentIndex].visualFallbackEvidence = VisualFallbackEvidence(
-                        documentID: tabs[currentIndex].documentID,
-                        sha256: artifact.sha256.lowercased(),
-                        capturedAt: Date(),
-                        pixelWidth: artifact.pixelWidth,
-                        pixelHeight: artifact.pixelHeight,
-                        viewportWidth: page.viewportWidth,
-                        viewportHeight: page.viewportHeight,
-                        revision: page.revision,
-                        visualTextRegions: visualTextRegions
-                    )
-                }
-                return result
+                return try await captureVisualEvidence(command, in: tab, control: control).result
             case .click(let requestedTarget):
                 let target: BrowserTarget
                 if case .visualText(let reference) = requestedTarget {
@@ -1138,51 +1732,42 @@ final class BrowserTaskSession: NSObject, ObservableObject {
                             "Visual click coordinates are outside the referenced screenshot"
                         )
                     }
+                    guard evidence.geometry.supportsPointMapping(in: tab.webView.bounds.size),
+                          !evidence.nativeViewport.recheckNow() else {
+                        throw BrowserInteractionError.stale("The visible page changed. Capture a new screenshot before clicking.")
+                    }
                     let cssTarget = BrowserTarget.point(
-                        x: x / Double(evidence.pixelWidth) * evidence.viewportWidth,
-                        y: y / Double(evidence.pixelHeight) * evidence.viewportHeight
+                        x: x / Double(evidence.pixelWidth) * evidence.geometry.width,
+                        y: y / Double(evidence.pixelHeight) * evidence.geometry.height
                     )
                     if let denied = pageAccessFailure(command, control: control) { return denied }
                     try await perform(
-                        target: cssTarget,
-                        in: tab,
-                        operation: "click",
-                        text: nil,
-                        submit: false,
-                        visualFallbackReason: command.visualFallbackReason
+                        target: cssTarget, in: tab, operation: "click", text: nil, submit: false,
+                        visualFallbackReason: command.visualFallbackReason, geometry: evidence.geometry
                     )
-                    // Synthetic WebKit pointer dispatch is not proof that the
-                    // intended visual target accepted the action. Capture the
-                    // viewport again and require an observable state change.
-                    try? await Task.sleep(for: .milliseconds(250))
-                    let postArtifact = try await saveSnapshot(of: tab.webView)
-                    if let denied = pageAccessFailure(command, control: control) {
-                        discardArtifact(postArtifact)
-                        return denied
+                    // The page may already have acted. Re-observe the outcome without issuing another input.
+                    do {
+                        try await Task.sleep(for: .milliseconds(250))
+                    } catch { return unconfirmedClick(command, control: control) }
+                    guard let postTab = tabs.first(where: { $0.id == tab.id }) else {
+                        return unconfirmedClick(command, control: control)
                     }
-                    let postVisualTextRegions = try recognizeVisualText(in: postArtifact)
-                    var result = await observeResult(command, tabID: tabID, cursor: nil)
-                    result.page?.screenshotArtifact = postArtifact
-                    result.page?.visualTextRegions = postVisualTextRegions
-                    let changed = result.page.map {
-                        $0.documentID != evidence.documentID
-                            || $0.revision > evidence.revision
-                            || postArtifact.sha256.lowercased() != evidence.sha256
-                    } ?? false
-                    if let page = result.page,
-                       let currentIndex = tabs.firstIndex(where: { $0.id == tabID }) {
-                        tabs[currentIndex].visualFallbackEvidence = VisualFallbackEvidence(
-                            documentID: page.documentID,
-                            sha256: postArtifact.sha256.lowercased(),
-                            capturedAt: Date(),
-                            pixelWidth: postArtifact.pixelWidth,
-                            pixelHeight: postArtifact.pixelHeight,
-                            viewportWidth: page.viewportWidth,
-                            viewportHeight: page.viewportHeight,
-                            revision: page.revision,
-                            visualTextRegions: postVisualTextRegions
-                        )
+                    let captured: (result: BrowserResult, evidence: VisualFallbackEvidence)
+                    do {
+                        captured = try await captureVisualEvidence(command, in: postTab, control: control)
+                    } catch { return unconfirmedClick(command, control: control) }
+                    var result = captured.result
+                    let current = captured.evidence
+                    let navigated = current.documentGeneration != evidence.documentGeneration
+                    if !navigated && (current.geometry.epoch != evidence.geometry.epoch ||
+                                      current.routeGeneration != evidence.routeGeneration || evidence.nativeViewport.recheckNow()) {
+                        result.status = .failed
+                        let message = "The click was dispatched. The viewport changed, so its effect is unconfirmed. Inspect the new screenshot before any further action."
+                        result.error = BrowserFailure(code: "dispatched-unconfirmed", message: message)
+                        result.message = message
+                        return result
                     }
+                    let changed = navigated || current.geometry.revision > evidence.geometry.revision || current.sha256 != evidence.sha256
                     if changed {
                         result.message = "Visual click produced an observable page change; the returned screenshot is post-click evidence."
                     } else {
@@ -1200,7 +1785,8 @@ final class BrowserTaskSession: NSObject, ObservableObject {
                     operation: "click",
                     text: nil,
                     submit: false,
-                    visualFallbackReason: command.visualFallbackReason
+                    visualFallbackReason: command.visualFallbackReason,
+                    actionID: command.requestID
                 )
             case .type(let target, let text, let submit):
                 guard text.utf8.count <= 16 * 1024 else {
@@ -1246,11 +1832,15 @@ final class BrowserTaskSession: NSObject, ObservableObject {
                 break
             }
             return await observeResult(command, tabID: tabID, cursor: nil)
+        } catch BrowserProbeError.timedOut {
+            return failure(command, status: .timeout, code: "timeout", "WebKit did not return a current viewport in time.")
         } catch BrowserInteractionError.needsUser(let message) {
             host?.browserSessionRequestedUserControl(self, reason: message)
             return failure(command, status: .needsUser, code: "takeover", message)
         } catch BrowserInteractionError.stale(let message) {
             return failure(command, status: .stale, code: "document", message)
+        } catch BrowserInteractionError.uncertain(let message) {
+            return failure(command, status: .failed, code: "dispatched-unconfirmed", message)
         } catch let error as BrowserPolicyError {
             return failure(command, status: .blocked, code: "policy", error.localizedDescription)
         } catch {
@@ -1379,12 +1969,14 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         operation: String,
         text: String?,
         submit: Bool,
-        visualFallbackReason: String?
+        visualFallbackReason: String?,
+        actionID: UUID? = nil,
+        geometry: BrowserPageGeometry? = nil
     ) async throws {
         let script = """
         const protocol = globalThis.__floeProtocol;
         if (!protocol) return {status:'stale'};
-        return protocol.perform(operation, target, documentID, text, submit, visualFallbackReason);
+        return protocol.perform(operation, target, documentID, text, submit, visualFallbackReason, actionID, expectedGeometry);
         """
         let targetObject: [String: Any]
         switch target {
@@ -1397,19 +1989,24 @@ final class BrowserTaskSession: NSObject, ObservableObject {
                 "Visual text references must be resolved from fresh screenshot evidence"
             )
         }
-        let value = try await tab.webView.callAsyncJavaScript(
-            script,
-            arguments: [
+        var arguments: [String: Any] = [
                 "operation": operation,
                 "target": targetObject,
                 "documentID": tab.documentID,
                 "text": text ?? "",
                 "submit": submit,
-                "visualFallbackReason": visualFallbackReason ?? ""
-            ],
-            in: nil,
-            contentWorld: contentWorld
-        )
+                "visualFallbackReason": visualFallbackReason ?? "",
+                "actionID": actionID?.uuidString ?? "", "expectedGeometry": NSNull()
+        ]
+        if let geometry {
+            arguments["expectedGeometry"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(geometry))
+        }
+        let value: Any?
+        do {
+            value = try await tab.webView.callAsyncJavaScript(script, arguments: arguments, in: nil, contentWorld: contentWorld)
+        } catch {
+            throw BrowserInteractionError.uncertain("WebKit did not confirm whether the input ran. Observe the page before another action; do not repeat the input automatically.")
+        }
         let status = (value as? [String: Any])?["status"] as? String
         if status == "needsUser" { throw BrowserInteractionError.needsUser("Sensitive input requires user takeover") }
         if status == "stale" { throw BrowserInteractionError.stale("The target is stale; observe the page again") }
@@ -1451,20 +2048,150 @@ final class BrowserTaskSession: NSObject, ObservableObject {
                 "Coordinate fallback requires a fresh screenshot from the current page"
             )
         }
+        guard evidence.documentGeneration == tab.documentGeneration, evidence.routeGeneration == tab.routeGeneration,
+              !evidence.nativeViewport.recheckNow() else {
+            throw BrowserInteractionError.stale("The page or its viewport changed. Capture a new screenshot before clicking.")
+        }
         return evidence
     }
 
-    private func observeResult(_ command: BrowserCommand, tabID: UUID?, cursor: Int?) async -> BrowserResult {
+    private func pageGeometry(_ tab: Tab, deadline: ContinuousClock.Instant) async throws -> BrowserPageGeometry {
+        let value = try await probeValue("return globalThis.__floeProtocol?.geometry() ?? null;",
+                                         arguments: [:], in: tab.webView, deadline: deadline)
+        guard let object = value as? [String: Any] else {
+            throw BrowserInteractionError.stale("The visible page is not ready for a screenshot.")
+        }
+        return try JSONDecoder().decode(BrowserPageGeometry.self, from: JSONSerialization.data(withJSONObject: object))
+    }
+
+    private func captureVisualEvidence(_ command: BrowserCommand, in tab: Tab, control: BrowserControlLease?) async throws
+        -> (result: BrowserResult, evidence: VisualFallbackEvidence) {
+        let deadline = readerDeadline(command)
+        let native = ImpeccableViewportObserver(scrollView: tab.webView.scrollView) { _ in }
+        let before = try await pageGeometry(tab, deadline: deadline)
+        try assertModelControlCurrent(control)
+        let artifact = try await saveSnapshot(of: tab, deadline: deadline, control: control)
+        var committed = false
+        defer { if !committed { discardArtifact(artifact) } }
+        try assertModelControlCurrent(control)
+        let regions = try recognizeVisualText(in: artifact)
+        var result = await observeResult(command, tabID: tab.id, cursor: nil)
+        let after = try await pageGeometry(tab, deadline: deadline)
+        try assertModelControlCurrent(control)
+        guard before == after, !native.recheckNow(), let page = result.page, result.status == .ok,
+              let index = tabs.firstIndex(where: { $0.id == tab.id }), tabs[index].webView === tab.webView,
+              tabs[index].documentGeneration == tab.documentGeneration, tabs[index].routeGeneration == tab.routeGeneration,
+              page.documentID == tab.documentID, page.revision == before.revision else {
+            throw BrowserInteractionError.stale("The page moved or changed during the screenshot. Capture it again.")
+        }
+        let evidence = VisualFallbackEvidence(
+            documentID: page.documentID, sha256: artifact.sha256.lowercased(), capturedAt: Date(),
+            pixelWidth: artifact.pixelWidth, pixelHeight: artifact.pixelHeight,
+            viewportWidth: page.viewportWidth, viewportHeight: page.viewportHeight, revision: page.revision,
+            visualTextRegions: regions, geometry: after, routeGeneration: tab.routeGeneration,
+            documentGeneration: tab.documentGeneration, nativeViewport: native)
+        tabs[index].visualFallbackEvidence = evidence
+        result.page?.screenshotArtifact = artifact
+        result.page?.visualTextRegions = regions
+        committed = true
+        return (result, evidence)
+    }
+
+    private func unconfirmedClick(_ command: BrowserCommand, control: BrowserControlLease?) -> BrowserResult {
+        if let denied = pageAccessFailure(command, control: control) { return denied }
+        return failure(command, status: .failed, code: "dispatched-unconfirmed",
+                       "The click was dispatched, but its result could not be verified. Re-observe before deciding what to do; do not repeat the click automatically.")
+    }
+
+    private func navigateAndObserve(_ command: BrowserCommand, tab: Tab, url: URL,
+                                    control: BrowserControlLease?) async -> BrowserResult {
+        let deadline = ContinuousClock.now.advanced(by: .milliseconds(min(30_000, max(250, command.timeoutMilliseconds))))
+        let epoch = controlEpochCounter
+        guard !Task.isCancelled else { return failure(command, status: .failed, code: "cancelled", "Navigation was cancelled.") }
+        if var destination = URLComponents(url: url, resolvingAgainstBaseURL: true), destination.fragment != nil,
+           let currentURL = tab.webView.url, var current = URLComponents(url: currentURL, resolvingAgainstBaseURL: true) {
+            destination.fragment = nil
+            current.fragment = nil
+            if current.url == destination.url {
+                // A fragment jump can bypass every public WKNavigationDelegate completion.
+                // Never start an unidentifiable native load or claim a new document.
+                return failure(command, status: .blocked, code: "same-document",
+                               "Use a link on the current page to go to this fragment.")
+            }
+        }
+        guard let navigation = tab.webView.load(URLRequest(url: url)) else {
+            return failure(command, status: .failed, code: "navigation", "WebKit did not start the navigation.")
+        }
+        let receipt = BrowserNavigationReceipt(page: tab.webView, navigation: navigation)
+        navigationReceipt = receipt
+        defer { if navigationReceipt === receipt, !receipt.awaitingStop { navigationReceipt = nil } }
+        await receipt.wait(until: deadline)
+        var retriedRouteObservation = false
+        while true {
+            if let denied = pageAccessFailure(command, control: control) { return denied }
+            guard !Task.isCancelled else { return failure(command, status: .failed, code: "cancelled", "Navigation was cancelled after dispatch.") }
+            guard epoch == controlEpochCounter else { return failure(command, status: .stale, code: "control", "Browser control changed.") }
+            switch receipt.state {
+            case .committed(let document, let generation, let finalURL):
+                guard let current = tabs.first(where: { $0.id == tab.id }), current.webView === tab.webView,
+                      current.documentID == document, current.documentGeneration == generation, current.webView.url == finalURL else {
+                    return failure(command, status: .stale, code: "document", "The navigation was replaced before observation.")
+                }
+                let result = await observeResult(command, tabID: tab.id, cursor: nil, until: deadline)
+                if let denied = pageAccessFailure(command, control: control) { return denied }
+                guard !Task.isCancelled else { return failure(command, status: .failed, code: "cancelled", "Navigation observation was cancelled.") }
+                guard case .committed = receipt.state, epoch == controlEpochCounter,
+                      let after = tabs.first(where: { $0.id == tab.id }), after.documentID == document,
+                      after.documentGeneration == generation, after.webView.url == finalURL else {
+                    return failure(command, status: .stale, code: "document", "The navigation was replaced during observation.")
+                }
+                // URL KVO may report this commit on the next actor turn. Only repeat the read
+                // after one matching route notification for this same native navigation and document.
+                if result.status == .stale, result.error?.code == "document", !retriedRouteObservation,
+                   after.routeGeneration == current.routeGeneration &+ 1, ContinuousClock.now < deadline {
+                    retriedRouteObservation = true
+                    continue
+                }
+                return result
+            case .failed(let detail):
+                return failure(command, status: .failed, code: "navigation", detail)
+            case .replaced:
+                return failure(command, status: .stale, code: "document", "The requested navigation was replaced.")
+            case .cancelled:
+                return failure(command, status: .failed, code: "cancelled", "The navigation was stopped after dispatch.")
+            case .waiting, .timedOut:
+                return failure(command, status: .timeout, code: "timeout", "The navigation was dispatched but WebKit did not confirm a document in time.")
+            }
+        }
+    }
+
+    private func observeResult(_ command: BrowserCommand, tabID: UUID?, cursor: Int?,
+                               until limit: ContinuousClock.Instant? = nil) async -> BrowserResult {
         guard let tabID, let tab = tabs.first(where: { $0.id == tabID }) else {
             return failure(command, status: .stale, code: "tab", "Browser tab is no longer available")
         }
-        let deadline = ContinuousClock.now.advanced(by: .milliseconds(min(30_000, max(250, command.timeoutMilliseconds))))
+        let deadline = limit ?? ContinuousClock.now.advanced(by: .milliseconds(min(30_000, max(250, command.timeoutMilliseconds))))
         let trace = command.requestID.uuidString
+        let epoch = controlEpochCounter
+        let owner = modelControl
+        func accessFailure() -> BrowserResult? {
+            if let denied = pageAccessFailure(command, control: owner) { return denied }
+            guard controlEpochCounter == epoch else {
+                return failure(command, status: .stale, code: "control", "Browser control changed during observation.")
+            }
+            guard let current = tabs.first(where: { $0.id == tabID }), current.webView === tab.webView,
+                  current.documentGeneration == tab.documentGeneration, current.routeGeneration == tab.routeGeneration else {
+                return failure(command, status: .stale, code: "document", "The page changed during observation.")
+            }
+            return nil
+        }
         do {
             try Task.checkCancellation()
+            if let denied = accessFailure() { return denied }
             FloeLogger(category: .tools).info("Browser observe request=\(trace) phase=drainEvents.begin")
             await collectProbeEvents(tabID: tabID, deadline: deadline)
             try Task.checkCancellation()
+            if let denied = accessFailure() { return denied }
             FloeLogger(category: .tools).info("Browser observe request=\(trace) phase=drainEvents.end")
             FloeLogger(category: .tools).info("Browser observe request=\(trace) phase=snapshot.begin")
             let start = max(0, cursor ?? 0)
@@ -1477,14 +2204,13 @@ final class BrowserTaskSession: NSObject, ObservableObject {
                 deadline: deadline
             )
             try Task.checkCancellation()
-            guard !isReleased else { throw BrowserProbeError.released }
+            if let denied = accessFailure() { return denied }
             FloeLogger(category: .tools).info("Browser observe request=\(trace) phase=snapshot.end")
-            if let index = tabs.firstIndex(where: { $0.id == tabID }) {
-                tabs[index].revision = max(tabs[index].revision, probe.revision)
+            guard let index = tabs.firstIndex(where: { $0.id == tabID }),
+                  tabs[index].documentGeneration == tab.documentGeneration, tabs[index].routeGeneration == tab.routeGeneration else {
+                return failure(command, status: .stale, code: "document", "The page changed during observation.")
             }
-            if tabs.contains(where: { $0.id == tabID }) {
-                recordNodeLabels(tabID: tabID, documentID: tab.documentID, nodes: probe.nodes)
-            }
+            tabs[index].revision = max(tabs[index].revision, probe.revision)
             let snapshot = PageSnapshot(
                 documentID: tab.documentID,
                 revision: max(tab.revision, probe.revision),
@@ -1519,6 +2245,7 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         _ script: String,
         arguments: [String: Any],
         in webView: WKWebView,
+        world: WKContentWorld? = nil,
         deadline: ContinuousClock.Instant
     ) async throws -> Any? {
         guard !isReleased else { throw BrowserProbeError.released }
@@ -1528,7 +2255,7 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         defer { pendingProbes.removeValue(forKey: id) }
         let data = try await request.run(deadline: deadline) { completion in
             webView.callAsyncJavaScript(
-                script, arguments: arguments, in: nil, in: self.contentWorld,
+                script, arguments: arguments, in: nil, in: world ?? self.contentWorld,
                 completionHandler: completion
             )
         }
@@ -1861,6 +2588,8 @@ final class BrowserTaskSession: NSObject, ObservableObject {
 
     private func collectProbeEvents(tabID: UUID, deadline: ContinuousClock.Instant? = nil) async {
         guard let tab = tabs.first(where: { $0.id == tabID }) else { return }
+        let epoch = controlEpochCounter
+        guard !isUserControlling, !takeoverPending, !isReleased, !Task.isCancelled else { return }
         do {
             let value = try await probeValue(
                 "return globalThis.__floeProtocol ? globalThis.__floeProtocol.drainEvents(documentID) : [];",
@@ -1868,7 +2597,10 @@ final class BrowserTaskSession: NSObject, ObservableObject {
                 in: tab.webView,
                 deadline: deadline ?? ContinuousClock.now.advanced(by: .seconds(15))
             )
-            guard JSONSerialization.isValidJSONObject(value as Any) else { return }
+            guard !isReleased, !isUserControlling, !takeoverPending, !Task.isCancelled, epoch == controlEpochCounter,
+                  let current = tabs.first(where: { $0.id == tabID }), current.webView === tab.webView,
+                  current.documentID == tab.documentID, current.documentGeneration == tab.documentGeneration,
+                  current.routeGeneration == tab.routeGeneration, JSONSerialization.isValidJSONObject(value as Any) else { return }
             let data = try JSONSerialization.data(withJSONObject: value as Any)
             let events = try JSONDecoder().decode([ProbeEvent].self, from: data)
             for event in events {
@@ -1924,9 +2656,20 @@ final class BrowserTaskSession: NSObject, ObservableObject {
       if (globalThis.__floeProtocol) return;
       let documentID = '';
       let revision = 0;
+      let pageIdentity = globalThis.crypto?.randomUUID?.() || (performance.timeOrigin + '-' + Math.random());
+      let viewportEpoch = 0;
+      const geometry = () => {
+        const v = window.visualViewport;
+        if (!v) return null;
+        return {page:pageIdentity, epoch:viewportEpoch, revision, layoutWidth:innerWidth, layoutHeight:innerHeight,
+          width:v.width, height:v.height, left:v.offsetLeft, top:v.offsetTop, scale:v.scale,
+          pageLeft:v.pageLeft, pageTop:v.pageTop, scrollX, scrollY};
+      };
+      const viewportChanged = () => { ++viewportEpoch; invalidatePreview(); };
       let nextRef = 1;
       let lastMutation = performance.now();
       const references = new WeakMap();
+      const observedMeaning = new WeakMap();
       const nodesByRef = new Map();
       const events = [];
       const selector = 'a,button,input,textarea,select,[role],[contenteditable="true"],[onclick],summary,label,h1,h2,h3,p';
@@ -1960,8 +2703,13 @@ final class BrowserTaskSession: NSObject, ObservableObject {
           return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
         } catch (_) { return false; }
       };
+      const elementMeaning = el => JSON.stringify([el.tagName, el.type || '', el.getAttribute('role'),
+        el.getAttribute('aria-label'), el.getAttribute('name'), el.title || '',
+        ['A','BUTTON'].includes(el.tagName) ? el.textContent.trim().slice(0,200) : '']);
       const ensureRef = el => {
         let ref = references.get(el);
+        const meaning = elementMeaning(el);
+        if (ref && observedMeaning.get(el) !== meaning) { nodesByRef.delete(ref); ref = null; }
         if (!ref) {
           if (nodesByRef.size >= 2048) {
             for (const [key, node] of nodesByRef) if (!node?.isConnected) nodesByRef.delete(key);
@@ -1969,13 +2717,14 @@ final class BrowserTaskSession: NSObject, ObservableObject {
           }
           ref = `n${nextRef++}`;
           references.set(el, ref);
+          observedMeaning.set(el, meaning);
           nodesByRef.set(ref, el);
         }
         return ref;
       };
       const findByRef = ref => {
         const found = nodesByRef.get(ref);
-        return found?.isConnected ? found : null;
+        return found?.isConnected && observedMeaning.get(found) === elementMeaning(found) ? found : null;
       };
       const allNodes = () => {
         const seen = new Set();
@@ -2020,13 +2769,70 @@ final class BrowserTaskSession: NSObject, ObservableObject {
           nextCursor: end < nodes.length ? end : null
         };
       };
-      const perform = (operation, target, expectedDocumentID, text, submit, visualFallbackReason) => {
-        setDocument(expectedDocumentID);
+      let lastDispatch = null;
+      let watchedPreview = '';
+      const invalidatePreview = () => {
+        if (!watchedPreview) return;
+        const action = watchedPreview;
+        watchedPreview = '';
+        window.webkit?.messageHandlers?.floePreviewChanged?.postMessage(action);
+      };
+      // Article text stays in the user's local WebKit image. Form values never leave the page.
+      // Only a short known control label may also appear in the separate status string.
+      const publicControl = /^(?:[0-9]{1,3}(?:\\.[0-9])?°|[0-9]{1,3}%|[+−–-]|next|previous|back|forward|go control|zoom in|zoom out|play|pause|stop|reset|rotate|expand|collapse|preview|下一页|上一页|前进|后退|放大|缩小|播放|暂停|停止|重置|旋转|展开|收起|预览)$/i;
+      const opaque = 'iframe,frame,object,embed,canvas,video,portal,fencedframe,[shadowrootmode],template[shadowrootmode]';
+      const personal = 'input[type="password"],input[type="email"],input[type="tel"],input[type="file"],[autocomplete*="password" i],[autocomplete*="one-time-code" i],[autocomplete*="cc-" i],[autocomplete*="address" i],[autocomplete*="email" i],[autocomplete*="name" i],[id*="captcha" i],[class*="captcha" i],[aria-label*="captcha" i],[name*="otp" i],[id*="otp" i],[contenteditable]:not([contenteditable="false"]),[role="textbox"]:not(input):not(textarea)';
+      const hasSensitiveSurface = () => {
+        if (!document.body || document.designMode === 'on' ||
+            document.querySelector(opaque + ',' + personal) ||
+            /(?:login|sign.?in|auth|checkout|wallet|account|payment|password|verification|captcha|profile)/i.test(location.pathname)) return true;
+        const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
+        let count = 0;
+        for (let el = document.body; el; el = walk.nextNode()) {
+          if (++count > 6000 || el.shadowRoot || el.localName.includes('-') || el.hasAttribute('is')) return true;
+          if (el instanceof HTMLInputElement) {
+            const type = el.type;
+            if (['button','submit','reset','hidden'].includes(type)) continue;
+            if (['radio','checkbox'].includes(type) ? el.checked : el.value.length > 0) return true;
+          }
+          if ((el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement) && el.value.length > 0) return true;
+        }
+        return false;
+      };
+      const previewRegion = (id, expectedRevision, action, clickedRef) => {
+        if (!action || documentID !== id || revision !== expectedRevision ||
+            document.readyState !== 'complete' || hasSensitiveSurface()) return null;
+        const vv = window.visualViewport;
+        if (!vv || Math.abs(vv.width - innerWidth) > 1 || Math.abs(vv.offsetTop) > 1 || Math.abs(vv.offsetLeft) > 1) return null;
+        let target = null, label = null;
+        const el = clickedRef ? findByRef(clickedRef) : null;
+        if (el && lastDispatch?.action === action && lastDispatch.el === el && el.ownerDocument === document &&
+            !el.children.length && ['BUTTON','A'].includes(el.tagName)) {
+          const b = el.getBoundingClientRect();
+          if (b.width > 0 && b.height > 0 && b.left >= 0 && b.top >= 0 && b.right <= vv.width && b.bottom <= vv.height &&
+              document.elementFromPoint(b.x+b.width/2,b.y+b.height/2) === el &&
+              lastDispatch.box.every((v,i) => Math.abs(v-[b.x,b.y,b.width,b.height,scrollX,scrollY][i]) <= 0.5)) {
+            const text = el.textContent.trim();
+            if (text && text.length <= 48 && publicControl.test(text)) {
+              label = text; target = {x:b.x,y:b.y,width:b.width,height:b.height};
+            }
+          }
+        }
+        watchedPreview = action;
+        return {viewportWidth:innerWidth,viewportHeight:innerHeight,scrollX,scrollY,target,label};
+      };
+      const perform = (operation, target, expectedDocumentID, text, submit, visualFallbackReason, actionID, expectedGeometry) => {
+        if (documentID !== expectedDocumentID) return {status:'stale'};
+        if (target.kind === 'point') {
+          const current = geometry();
+          if (!current || !expectedGeometry || Object.keys(current).some(k => current[k] !== expectedGeometry[k]))
+            return {status:'stale'};
+        }
         if (target.kind === 'element' && target.documentID !== documentID) return {status:'stale'};
         const el = target.kind === 'element'
           ? findByRef(target.ref)
           : document.elementFromPoint(Number(target.x), Number(target.y));
-        if (!el || !el.isConnected) return {status:'stale'};
+        if (!el || !el.isConnected || !visible(el) || el.disabled) return {status:'stale'};
         if (operation === 'click') {
           if (target.kind === 'point' && visualFallbackReason === 'noStructuredTarget') {
             let structured = null;
@@ -2049,6 +2855,13 @@ final class BrowserTaskSession: NSObject, ObservableObject {
           const rect = el.getBoundingClientRect();
           const x = target.kind === 'point' ? Number(target.x) : rect.x + rect.width / 2;
           const y = target.kind === 'point' ? Number(target.y) : rect.y + rect.height / 2;
+          if (target.kind === 'element') {
+            const root = el.getRootNode();
+            const hit = root.elementFromPoint ? root.elementFromPoint(x,y) : el.ownerDocument.elementFromPoint(x,y);
+            if (hit !== el && !el.contains(hit)) return {status:'stale'};
+          }
+          lastDispatch = actionID && target.kind === 'element' && document.elementFromPoint(x, y) === el
+            ? {action:actionID, el, box:[rect.x,rect.y,rect.width,rect.height,scrollX,scrollY]} : null;
           for (const type of ['pointerover','pointerenter','pointerdown','pointerup']) {
             try { el.dispatchEvent(new PointerEvent(type, {bubbles:true, cancelable:true, clientX:x, clientY:y, pointerType:'mouse', isPrimary:true})); } catch (_) {}
           }
@@ -2065,7 +2878,7 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         const tag = (el.tagName || '').toLowerCase();
         const inputType = (el.type || '').toLowerCase();
         if (inputType === 'password' || (el.autocomplete || '').toLowerCase() === 'current-password') return {status:'needsUser'};
-        if (!(tag === 'input' || tag === 'textarea' || el.isContentEditable)) return {status:'blocked'};
+        if (el.readOnly || !(tag === 'input' || tag === 'textarea' || el.isContentEditable)) return {status:'blocked'};
         el.focus();
         if (el.isContentEditable) {
           el.textContent = text;
@@ -2201,6 +3014,7 @@ final class BrowserTaskSession: NSObject, ObservableObject {
 
       new MutationObserver(records => {
         if (!records.length) return;
+        invalidatePreview();
         revision += 1;
         lastMutation = performance.now();
         push('DOM.documentUpdated');
@@ -2209,7 +3023,14 @@ final class BrowserTaskSession: NSObject, ObservableObject {
       addEventListener('load', () => push('Page.loadEventFired'), {once:true});
       addEventListener('hashchange', () => push('Page.navigatedWithinDocument'));
       addEventListener('popstate', () => push('Page.navigatedWithinDocument'));
-      globalThis.__floeProtocol = {snapshot, perform, status, drainEvents, links, table, textRange};
+      for (const name of ['scroll','resize']) {
+        addEventListener(name, viewportChanged, {capture:true, passive:true});
+        window.visualViewport?.addEventListener(name, viewportChanged, {passive:true});
+      }
+      for (const name of ['pagehide','hashchange','popstate','beforeinput','input','change','focusin']) {
+        addEventListener(name, invalidatePreview, {capture:true, passive:true});
+      }
+      globalThis.__floeProtocol = {snapshot, perform, status, drainEvents, links, table, textRange, previewRegion, geometry};
       push('Runtime.executionContextCreated');
     })();
     """#
@@ -2223,8 +3044,37 @@ final class BrowserTaskSession: NSObject, ObservableObject {
             at: artifactDirectory.appendingPathComponent(name))
     }
 
-    private func saveSnapshot(of webView: WKWebView) async throws -> BrowserArtifactReference {
-        let image = try await webView.takeSnapshot(configuration: nil)
+    private func nativeSnapshot(of tab: Tab, configuration: WKSnapshotConfiguration, timeout: Duration) async -> UIImage? {
+        guard pendingNativePreviews[tab.id] == nil, timeout > .zero else { return nil }
+        let request = BrowserPreviewImageRequest()
+        let generation = previewGeneration
+        return await request.wait(timeout: timeout) { [self] in
+            pendingNativePreviews[tab.id] = request
+            previewSnapshot(tab.webView, configuration) { [weak self, weak request, tabID = tab.id] image in
+                guard let self, let request, pendingNativePreviews[tabID] === request else { return }
+                pendingNativePreviews.removeValue(forKey: tabID)
+                request.finish(image)
+                if previewGeneration != generation, activeTabID == tabID {
+                    previewAttemptedGeneration = nil
+                    scheduleLivePreview()
+                }
+            }
+        }
+    }
+
+    private func saveSnapshot(of tab: Tab, deadline: ContinuousClock.Instant, control: BrowserControlLease?) async throws -> BrowserArtifactReference {
+        let limit = min(deadline, ContinuousClock.now.advanced(by: previewSnapshotTimeout))
+        while pendingNativePreviews[tab.id] != nil {
+            try assertModelControlCurrent(control)
+            guard ContinuousClock.now < limit else { throw BrowserProbeError.timedOut }
+            try await Task.sleep(for: .milliseconds(30))
+        }
+        try assertModelControlCurrent(control)
+        guard let image = await nativeSnapshot(of: tab, configuration: WKSnapshotConfiguration(), timeout: ContinuousClock.now.duration(to: limit)) else {
+            try assertModelControlCurrent(control)
+            throw BrowserProbeError.timedOut
+        }
+        try assertModelControlCurrent(control)
         guard let data = image.jpegData(compressionQuality: 0.78) else {
             throw BrowserPolicyError.blocked("The viewport could not be encoded")
         }
@@ -2283,28 +3133,64 @@ final class BrowserTaskSession: NSObject, ObservableObject {
 }
 
 extension BrowserTaskSession: WKNavigationDelegate, WKUIDelegate {
+    /// Consume callbacks from the old page during handoff. Only a link from the
+    /// current human-controlled tab may leave the app, in this same actor turn.
+    private func shouldConsumeLink(_ url: URL, from webView: WKWebView, canOpenExternally: Bool) -> Bool {
+        if takeoverPending || returningToModel { return true }
+        guard canOpenExternally, isUserControlling, linkOpenBehaviorProvider() == .systemBrowser else { return false }
+        if activeWebView === webView { openSystemURL(url) }
+        return true
+    }
+
     func webView(
         _ webView: WKWebView,
-        decidePolicyFor navigationAction: WKNavigationAction
-    ) async -> WKNavigationActionPolicy {
-        guard !isReleased, let url = navigationAction.request.url else {
+        decidePolicyFor navigationAction: WKNavigationAction,
+        preferences: WKWebpagePreferences
+    ) async -> (WKNavigationActionPolicy, WKWebpagePreferences) {
+        let url = navigationAction.request.url
+        let policy = navigationPolicy(for: url, type: navigationAction.navigationType, from: webView,
+                                      canOpenExternally: Self.canOpenExternally(navigationAction.request))
+        if policy == .allow, navigationAction.targetFrame?.isMainFrame == true, let url {
+            if usesWideLayout(url) { preferences.preferredContentMode = .desktop }
+            if let tab = tabs.first(where: { $0.webView === webView }) { lockViewport(tab, destination: url) }
+        }
+        return (policy, preferences)
+    }
+
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        guard let index = tabs.firstIndex(where: { $0.webView === webView }) else { return }
+        if let receipt = navigationReceipt, receipt.page === webView {
+            settleNavigation(receipt, as: .failed("WebKit ended the page process."))
+        }
+        let id = tabs[index].id
+        tabs[index].documentID = UUID().uuidString
+        tabs[index].documentGeneration += 1
+        tabs[index].visualFallbackEvidence = nil
+        pendingNativePreviews.removeValue(forKey: id)?.finish(nil)
+        if activeTabID == id { resetLivePreview() }
+        impeccableCaptures.fence(tabID: id, reason: .navigation)
+        stagedExports.fenceTab(id, reason: .navigation)
+    }
+
+    func navigationPolicy(for destination: URL?, type: WKNavigationType, from webView: WKWebView,
+                          canOpenExternally: Bool = true) -> WKNavigationActionPolicy {
+        guard !isReleased, let url = destination else {
             return .cancel
         }
         // WebKit uses its own blank document while `loadHTMLString` commits.
         // It is not a tool-addressable URL and must remain available for
         // local fixtures/previews; all external navigations still pass the
         // normal http/https/private-network policy below.
-        if url.absoluteString == "about:blank" { return .allow }
+        if url.absoluteString == "about:blank" {
+            return type == .linkActivated && (takeoverPending || returningToModel) ? .cancel : .allow
+        }
         // The owner is this session's trusted task, never the visible task.
         guard (try? BrowserURLPolicy.validate(url.absoluteString, conversationID: conversationID, allowLocalNetwork: true)) != nil else {
             return .cancel
         }
         // "Open in system browser" applies only while a human controls the
         // page, so an AI-driven click never gets rerouted into Safari.
-        if isUserControlling,
-           navigationAction.navigationType == .linkActivated,
-           linkOpenBehaviorProvider() == .systemBrowser {
-            await UIApplication.shared.open(url)
+        if type == .linkActivated, shouldConsumeLink(url, from: webView, canOpenExternally: canOpenExternally) {
             return .cancel
         }
         return .allow
@@ -2312,15 +3198,28 @@ extension BrowserTaskSession: WKNavigationDelegate, WKUIDelegate {
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         guard !isReleased, let tabID = tabs.first(where: { $0.webView === webView })?.id else { return }
+        if let receipt = navigationReceipt, receipt.page === webView {
+            if receipt.navigation === navigation {
+                receipt.started = true
+                receipt.stopIfStarted()
+            } else if receipt.started { settleNavigation(receipt, as: .replaced) }
+        }
+        if tabID == activeTabID { resetLivePreview() }
         appendEvent(tabID: tabID, method: "Page.frameStartedLoading")
         surfaceState = .loading
     }
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         guard !isReleased, let index = tabs.firstIndex(where: { $0.webView === webView }) else { return }
+        if tabs[index].id == activeTabID { resetLivePreview() }
         tabs[index].documentID = UUID().uuidString
         tabs[index].documentGeneration += 1
-        documentNodeLabels.removeAll()
+        if let receipt = navigationReceipt, receipt.page === webView {
+            if receipt.navigation === navigation {
+                receipt.started = true
+                settleNavigation(receipt, as: .committed(document: tabs[index].documentID, generation: tabs[index].documentGeneration, url: webView.url))
+            } else if receipt.started { settleNavigation(receipt, as: .replaced) }
+        }
         // Fence at the moment of the document change, before anything else
         // can answer against the replaced page.
         impeccableCaptures.fence(tabID: tabs[index].id, reason: .navigation)
@@ -2336,6 +3235,15 @@ extension BrowserTaskSession: WKNavigationDelegate, WKUIDelegate {
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard !isReleased, let index = tabs.firstIndex(where: { $0.webView === webView }) else { return }
+        // Some same-document navigations finish without replacing the native document.
+        if let receipt = navigationReceipt, receipt.page === webView, receipt.navigation === navigation {
+            receipt.started = true
+            if receipt.awaitingStop {
+                settleNavigation(receipt, as: .replaced)
+            } else if case .waiting = receipt.state {
+                settleNavigation(receipt, as: .committed(document: tabs[index].documentID, generation: tabs[index].documentGeneration, url: webView.url))
+            }
+        }
         appendEvent(tabID: tabs[index].id, method: "Page.loadEventFired")
         if tabs[index].id == activeTabID {
             refreshVisibleAddress()
@@ -2353,9 +3261,11 @@ extension BrowserTaskSession: WKNavigationDelegate, WKUIDelegate {
         withError error: any Error
     ) {
         guard !isReleased, let tabID = tabs.first(where: { $0.webView === webView })?.id else { return }
+        let stopped = recordNavigationFailure(navigation, in: webView, error: error)
         let nsError = error as NSError
         appendEvent(tabID: tabID, method: "Network.loadingFailed", detail: "\(nsError.domain):\(nsError.code)")
-        surfaceState = .failed("\(nsError.localizedDescription) (\(nsError.code))")
+        if stopped { surfaceState = isUserControlling ? .needsUser("User takeover is active") : .ready }
+        else { surfaceState = .failed("\(nsError.localizedDescription) (\(nsError.code))") }
     }
 
     func webView(
@@ -2364,9 +3274,21 @@ extension BrowserTaskSession: WKNavigationDelegate, WKUIDelegate {
         withError error: any Error
     ) {
         guard !isReleased, let tabID = tabs.first(where: { $0.webView === webView })?.id else { return }
+        let stopped = recordNavigationFailure(navigation, in: webView, error: error)
         let nsError = error as NSError
         appendEvent(tabID: tabID, method: "Network.loadingFailed", detail: "\(nsError.domain):\(nsError.code)")
-        surfaceState = .failed("\(nsError.localizedDescription) (\(nsError.code))")
+        if stopped { surfaceState = isUserControlling ? .needsUser("User takeover is active") : .ready }
+        else { surfaceState = .failed("\(nsError.localizedDescription) (\(nsError.code))") }
+    }
+
+    private func recordNavigationFailure(_ navigation: WKNavigation?, in page: WKWebView, error: any Error) -> Bool {
+        guard let receipt = navigationReceipt, receipt.page === page, receipt.navigation === navigation else { return false }
+        if case .replaced = receipt.state { return false }
+        let failure = error as NSError
+        let stopped = receipt.awaitingStop
+        if failure.domain == NSURLErrorDomain && failure.code == NSURLErrorCancelled { settleNavigation(receipt, as: .replaced) }
+        else { settleNavigation(receipt, as: .failed(failure.localizedDescription)) }
+        return stopped
     }
 
     func webView(
@@ -2375,29 +3297,52 @@ extension BrowserTaskSession: WKNavigationDelegate, WKUIDelegate {
         for navigationAction: WKNavigationAction,
         windowFeatures: WKWindowFeatures
     ) -> WKWebView? {
-        guard !isReleased else { return nil }
-        if isUserControlling,
-           linkOpenBehaviorProvider() == .systemBrowser,
-           let url = navigationAction.request.url,
-           (try? BrowserURLPolicy.validate(url.absoluteString, conversationID: conversationID, allowLocalNetwork: true)) != nil {
-            Task { @MainActor in await UIApplication.shared.open(url) }
-            return nil
+        openRequestedWindow(for: navigationAction.request, from: webView, configuration: configuration)
+    }
+
+    private static let browserNavigationHeaders: Set<String> = [
+        "accept", "accept-encoding", "accept-language", "user-agent", "referer", "upgrade-insecure-requests",
+        "priority", "dnt", "sec-gpc", "sec-fetch-dest", "sec-fetch-mode", "sec-fetch-site", "sec-fetch-user"
+    ]
+
+    private static func canOpenExternally(_ request: URLRequest) -> Bool {
+        guard (request.httpMethod ?? "GET").uppercased() == "GET",
+              request.httpBody == nil, request.httpBodyStream == nil else { return false }
+        // Safari accepts only a URL. Standard browser metadata can be supplied by
+        // that browser; an authorization, range or other request-specific header cannot.
+        return request.allHTTPHeaderFields?.keys.allSatisfy { browserNavigationHeaders.contains($0.lowercased()) } ?? true
+    }
+
+    func openRequestedWindow(for request: URLRequest?, from webView: WKWebView,
+                             configuration: WKWebViewConfiguration) -> WKWebView? {
+        guard !isReleased, !takeoverPending, !returningToModel,
+              let opener = tabs.first(where: { $0.webView === webView }) else { return nil }
+        if let request, let url = request.url, url.absoluteString != "about:blank" {
+            guard (try? BrowserURLPolicy.validate(url.absoluteString, conversationID: conversationID, allowLocalNetwork: true)) != nil,
+                  !shouldConsumeLink(url, from: webView, canOpenExternally: Self.canOpenExternally(request)) else { return nil }
         }
         // A target=_blank / window.open request opens a real task tab. The
         // six-tab limit is honest: at capacity the popup is refused and the
         // user/model sees the limit notice instead of a fake success.
-        guard let id = createTab(),
+        guard let id = makeTab(for: (configuration, opener)),
               let created = tabs.first(where: { $0.id == id })?.webView else {
             if let activeTabID {
                 appendEvent(tabID: activeTabID, method: "Target.targetLimitReached", detail: "maximumTabs")
             }
             return nil
         }
-        if let url = navigationAction.request.url,
-           (try? BrowserURLPolicy.validate(url.absoluteString, conversationID: conversationID, allowLocalNetwork: true)) != nil {
-            created.load(URLRequest(url: url))
-        }
+        // WebKit sends the original request (including any POST body) after this delegate returns.
         return created
+    }
+
+    func webViewDidClose(_ webView: WKWebView) {
+        guard !isReleased, let tab = tabs.first(where: { $0.webView === webView }), let opener = tab.openerID else { return }
+        if takeoverPending || returningToModel {
+            // The DOM window is already closed. Retire this tab after handoff without replaying the script.
+            if !deferredWindowClosures.contains(tab.id) { deferredWindowClosures.append(tab.id) }
+            return
+        }
+        close(tab.id, returningTo: opener)
     }
 }
 
@@ -2496,5 +3441,6 @@ private struct TextProbeResponse: Decodable {
 private enum BrowserInteractionError: Error {
     case needsUser(String)
     case stale(String)
+    case uncertain(String)
 }
 #endif

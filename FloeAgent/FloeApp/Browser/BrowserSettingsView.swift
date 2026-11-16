@@ -13,6 +13,7 @@ struct BrowserSettingsView: View {
     @ObservedObject private var settings: BrowserSettingsService
     @ObservedObject private var trust: BrowserProviderTrustCoordinator
     private let configuredProviders: [BrowserProviderIdentity]
+    private let currentLayoutOrigin: String?
 
     @State private var customUserAgent: String
     @State private var activeAlert: PresentedAlert?
@@ -39,7 +40,7 @@ struct BrowserSettingsView: View {
         let trust = trust ?? BrowserProviderTrustCoordinator.shared
         self.settings = settings
         self.trust = trust
-        _ = browserCenter
+        self.currentLayoutOrigin = BrowserSettingsService.layoutOrigin(browserCenter?.activeWebView?.url)
         self.configuredProviders = providers
         _customUserAgent = State(initialValue: settings.userAgent.customValue)
     }
@@ -105,6 +106,25 @@ struct BrowserSettingsView: View {
                     "网站版本只改变请求中的 User-Agent，不会改变登录状态或页面权限。",
                     "Site version changes only the request User-Agent; it does not change login state or page permissions."
                 ))
+            }
+
+            if currentLayoutOrigin != nil || !settings.wideLayoutOrigins.isEmpty {
+                Section {
+                    ForEach(settings.wideLayoutOrigins.union(currentLayoutOrigin.map { [$0] } ?? []).sorted(), id: \.self) { origin in
+                        Toggle(origin, isOn: Binding(
+                            get: { settings.wideLayoutOrigins.contains(origin) },
+                            set: { settings.setWideLayout($0, for: URL(string: origin)) }
+                        ))
+                        .accessibilityIdentifier("browser.settings.wideLayout." + origin)
+                    }
+                } header: {
+                    Text(IDELanguageRunText.t("旧网站宽版布局", "Wide layout for older sites"))
+                } footer: {
+                    Text(IDELanguageRunText.t(
+                        "下次打开此网站时使用桌面版。AI 下次操作此网站时会使用较宽的固定页面。",
+                        "Use the desktop version on the next navigation and a wider fixed page the next time AI works on this site."
+                    ))
+                }
             }
 
             Section {

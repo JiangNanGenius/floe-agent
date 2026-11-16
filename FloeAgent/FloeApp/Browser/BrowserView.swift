@@ -6,22 +6,419 @@ import WebKit
 
 struct BrowserView: View {
     @ObservedObject var center: BrowserSessionCenter
+    var previewInteractionID: UUID? = nil
+    var expectedSession: BrowserTaskSession? = nil
+    var onClose: (() -> Void)? = nil
     @State private var expanded = false
 
     var body: some View {
         Group {
             if expanded { Color.clear }
             else {
-                BrowserSurfaceRoot(center: center, expanded: $expanded)
+                surface
             }
         }
         .fullScreenCover(isPresented: $expanded) {
-            BrowserSurfaceRoot(center: center, expanded: $expanded)
+            surface
         }
         .task(id: center.conversationID) { await center.recoverHandoff() }
         .navigationTitle("browser.title")
         .navigationBarTitleDisplayMode(.inline)
     }
+
+    @ViewBuilder private var surface: some View {
+        if center.previewInteractionID == previewInteractionID,
+           expectedSession == nil || center.visibleSession === expectedSession {
+            BrowserSurfaceRoot(center: center, expanded: $expanded, interactionID: previewInteractionID, onClose: closeAction)
+        }
+    }
+
+    private var closeAction: (() -> Void)? {
+        if let onClose {
+            return { expanded = false; onClose() }
+        }
+        return expanded ? { expanded = false } : nil
+    }
+}
+
+extension EnvironmentValues {
+    @Entry var showsComposerBrowserPreview = true
+    @Entry fileprivate var browserPreviewPresentation: BrowserPreviewPresentation? = nil
+}
+
+private final class BrowserPreviewPanel: Identifiable, Sendable {
+    enum Mode: Sendable { case watching, interacting }
+    let id = UUID()
+    let mode: Mode
+    let session: BrowserTaskSession
+    private let center: BrowserSessionCenter
+
+    init(mode: Mode, session: BrowserTaskSession, center: BrowserSessionCenter) {
+        self.mode = mode
+        self.session = session
+        self.center = center
+    }
+
+    deinit {
+        // A removed window can discard its presentation state without a binding change.
+        // Covering the sheet or backgrounding the scene keeps this same token alive.
+        if mode == .interacting {
+            Task { @MainActor [center = self.center, id = self.id] in center.closePreviewInteraction(id) }
+        }
+    }
+}
+
+private struct BrowserPreviewPresentation: Sendable {
+    let panelID: UUID?
+    let open: @MainActor @Sendable (BrowserPreviewPanel.Mode, BrowserTaskSession, BrowserPreviewPageIdentity?, BrowserControlLease?) -> Void
+}
+
+extension View {
+    func browserPreviewPresenter(center: BrowserSessionCenter, owner: UUID?) -> some View {
+        modifier(BrowserPreviewPresenter(center: center, owner: owner))
+    }
+}
+
+/// The original task surface keeps the sheet when keyboard or window geometry moves its buttons.
+private struct BrowserPreviewPresenter: ViewModifier {
+    let center: BrowserSessionCenter
+    let owner: UUID?
+    @State private var panel: BrowserPreviewPanel?
+
+    func body(content: Content) -> some View {
+        content
+            .environment(\.browserPreviewPresentation, BrowserPreviewPresentation(panelID: panel?.id, open: open))
+            .sheet(item: $panel) { shown in
+                BrowserLivePreviewSheet(center: center, session: shown.session, panel: shown) {
+                    if panel?.id == shown.id { panel = nil }
+                }
+            }
+            .onChange(of: owner) { _, next in
+                if let panel, panel.session.conversationID != next { self.panel = nil }
+            }
+            .onChange(of: panel?.id) { old, _ in
+                if let old { center.closePreviewInteraction(old) }
+            }
+    }
+
+    private func open(_ mode: BrowserPreviewPanel.Mode, session: BrowserTaskSession, page: BrowserPreviewPageIdentity?, lease: BrowserControlLease?) {
+        guard panel == nil, owner == session.conversationID, !session.isReleased,
+              center.session(for: session.conversationID) === session else { return }
+        let request = BrowserPreviewPanel(mode: mode, session: session, center: center)
+        switch mode {
+        case .watching:
+            guard session.isModelActive else { return }
+        case .interacting:
+            guard center.openPreviewInteraction(session: session, page: page, displayedLease: lease, presentationID: request.id) else { return }
+        }
+        panel = request
+    }
+}
+
+/// Resolving a spectator never creates a session, binds the browser, or changes a file route.
+struct TaskBrowserLivePreview: View {
+    @ObservedObject var center: BrowserSessionCenter
+    let conversationID: UUID
+    let inlineImage: Bool
+
+    var body: some View {
+        if center.taskHandoffsEnabled {
+            if let session = center.session(for: conversationID) {
+                BrowserLivePreviewControls(center: center, session: session, inlineImage: inlineImage)
+                    .id(session.sessionID)
+            }
+            BrowserReturnedHandoffStatus(center: center, owner: conversationID)
+        }
+    }
+}
+
+private struct BrowserReturnedHandoffStatus: View {
+    @ObservedObject var center: BrowserSessionCenter
+    let owner: UUID
+
+    private var receipt: BrowserSessionCenter.Handoff? {
+        guard let event = center.handoff(for: owner), event.conversationID == owner,
+              center.session(for: owner)?.isUserControlling != true,
+              center.session(for: owner)?.modelControl == nil else { return nil }
+        if event.closedAfterRestart == true { return event }
+        guard event.returning, center.conversationID == owner, center.handoff?.id == event.id,
+              center.handoffNeedsContinue, !center.returningControl else { return nil }
+        return event
+    }
+
+    var body: some View {
+        if let event = receipt {
+            Text(event.closedAfterRestart == true
+                ? IDELanguageRunText.t("上次打开的网页已关闭。请返回原任务查看。", "The previous browser page closed. Check the original task.")
+                : IDELanguageRunText.t("网页已交还，原任务未运行。请返回原任务查看。", "The browser was returned. The original task is not running. Check the original task."))
+                .font(.caption).fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12).padding(.vertical, 4)
+                .accessibilityIdentifier("browser.handoff.taskStatus")
+        }
+    }
+}
+
+private struct BrowserLivePreviewControls: View {
+    @ObservedObject var center: BrowserSessionCenter
+    @ObservedObject var session: BrowserTaskSession
+    let inlineImage: Bool
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.browserPreviewPresentation) private var presentation
+    @State private var observer = UUID()
+    @State private var onScreen = false
+    @State private var collapsed = false
+
+    private var shouldSample: Bool {
+        scenePhase == .active && session.isModelActive && onScreen && inlineImage && !collapsed && presentation?.panelID == nil
+    }
+
+    private var isActive: Bool { session.lastModelActivity != nil || session.isUserControlling }
+
+    var body: some View {
+        let page = session.previewPageIdentity
+        let lease = session.modelControl
+        VStack(spacing: 0) {
+            if isActive {
+                Divider()
+                HStack(spacing: 8) {
+                    Image(systemName: session.isUserControlling ? "hand.raised" : "safari")
+                        .foregroundStyle(.secondary).accessibilityHidden(true)
+                    Text(session.livePreviewStatus(in: center)).font(.caption).lineLimit(2)
+                    Spacer(minLength: 0)
+                    if session.isModelActive {
+                        Button { presentation?.open(.watching, session, page, lease) } label: {
+                            Image(systemName: "arrow.up.left.and.arrow.down.right").frame(minWidth: 44, minHeight: 44)
+                        }
+                        .accessibilityLabel(IDELanguageRunText.t("放大观看", "Enlarge preview"))
+                        .accessibilityIdentifier("browser.live.watch")
+                        if inlineImage {
+                            Button { collapsed.toggle() } label: {
+                                Image(systemName: collapsed ? "chevron.down" : "chevron.up").frame(minWidth: 44, minHeight: 44)
+                            }
+                            .accessibilityLabel(collapsed ? IDELanguageRunText.t("展开预览", "Show preview") : IDELanguageRunText.t("收起预览", "Collapse preview"))
+                            .accessibilityIdentifier("browser.live.collapse")
+                        }
+                    }
+                    if session.isUserControlling, let receipt = center.handoff(for: session.conversationID),
+                       receipt.humanPresent, center.visibleSession === session {
+                        Button(IDELanguageRunText.t("交还给 AI", "Return to AI")) {
+                            Task { _ = await center.returnControlIfCurrent(for: session, handoffID: receipt.id) }
+                        }
+                        .font(.caption.weight(.semibold)).frame(minHeight: 44)
+                        .disabled(session.takeoverPending || center.returningControl)
+                        .accessibilityIdentifier("browser.live.return")
+                    }
+                    Button {
+                        presentation?.open(.interacting, session, page, lease)
+                    } label: {
+                        Text(session.isUserControlling ? IDELanguageRunText.t("去操作", "Open browser") : IDELanguageRunText.t("我来操作", "Take over"))
+                            .font(.caption.weight(.semibold)).frame(minHeight: 44)
+                    }
+                    .accessibilityIdentifier("browser.live.takeover")
+                }
+                .padding(.horizontal, 10)
+                .disabled(center.visibleSession === session && (center.returningControl || session.returningToModel))
+                .accessibilityElement(children: .contain)
+                if shouldSample, let frame = session.livePreviewFrame {
+                    BrowserLivePreviewImage(frame: frame)
+                        .frame(maxHeight: 132)
+                        .padding(.bottom, 6)
+                }
+            }
+        }
+        .background(.bar)
+        .onAppear { onScreen = true }
+        .onDisappear {
+            onScreen = false
+            session.setLivePreviewObservation(observer, visible: false)
+        }
+        .onChange(of: shouldSample, initial: true) { _, visible in
+            session.setLivePreviewObservation(observer, visible: visible)
+        }
+    }
+}
+
+private struct BrowserLivePreviewSheet: View {
+    @ObservedObject var center: BrowserSessionCenter
+    @ObservedObject var session: BrowserTaskSession
+    let panel: BrowserPreviewPanel
+    let close: () -> Void
+    @Environment(\.scenePhase) private var scenePhase
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                switch panel.mode {
+                case .interacting:
+                    BrowserView(center: center, previewInteractionID: panel.id, expectedSession: session, onClose: close)
+                case .watching:
+                    VStack(spacing: 16) {
+                        if scenePhase == .active, session.isModelActive, let tab = session.activeTab {
+                            BrowserZoomablePreview(tab: tab, presentationID: panel.id, priority: 2)
+                                .frame(maxHeight: .infinity)
+                        }
+                        Text(session.livePreviewStatus(in: center)).font(.callout)
+                    }
+                    .padding()
+                    .navigationTitle(IDELanguageRunText.t("浏览器预览", "Browser preview"))
+                }
+            }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    if panel.mode == .interacting, session.isUserControlling {
+                        Button(IDELanguageRunText.t("仅收起", "Close for now"), action: close)
+                            .disabled(center.returningControl || session.returningToModel)
+                            .accessibilityIdentifier("browser.live.back")
+                    } else {
+                        Button(IDELanguageRunText.t("返回", "Back"), action: close)
+                            .accessibilityIdentifier("browser.live.back")
+                    }
+                }
+            }
+        }
+        .interactiveDismissDisabled(center.visibleSession === session && (center.returningControl || session.returningToModel))
+        .onChange(of: center.conversationID) { _, owner in
+            if panel.mode == .interacting, owner != session.conversationID { close() }
+        }
+        .onChange(of: center.session(for: session.conversationID)?.sessionID) { _, live in
+            if live != session.sessionID { close() }
+        }
+    }
+}
+
+private extension BrowserTaskSession {
+    func livePreviewStatus(in center: BrowserSessionCenter) -> String {
+        if takeoverPending {
+            return IDELanguageRunText.t("正在接管浏览器", "Taking over the browser")
+        }
+        if isUserControlling {
+            if center.pendingPanelRequest(for: conversationID)?.show == true {
+                return IDELanguageRunText.t("浏览器需要你操作", "The browser needs your input")
+            }
+            return IDELanguageRunText.t("浏览器由你操作", "You control the browser")
+        }
+        guard let kind = lastModelActivity?.kind else {
+            return IDELanguageRunText.t("当前没有浏览器操作", "No current browser action")
+        }
+        if kind == .clicking, let label = livePreviewFrame?.clickedLabel {
+            return IDELanguageRunText.t("AI 点击了「\(label)」", "AI clicked “\(label)”")
+        }
+        return BrowserModelStatusBar.description(for: kind)
+    }
+}
+
+private struct BrowserLivePreviewImage: View {
+    let frame: BrowserLivePreviewFrame
+
+    var body: some View {
+        Image(uiImage: frame.image)
+            .resizable()
+            .overlay {
+                if let target = frame.normalizedTarget {
+                    GeometryReader { area in
+                        RoundedRectangle(cornerRadius: 3)
+                            .strokeBorder(Color.accentColor, lineWidth: 2)
+                            .frame(width: area.size.width * target.width, height: area.size.height * target.height)
+                            .position(x: area.size.width * target.midX, y: area.size.height * target.midY)
+                    }
+                }
+            }
+            .aspectRatio(frame.image.size, contentMode: .fit)
+            .allowsHitTesting(false)
+            .accessibilityLabel(IDELanguageRunText.t("网页只读预览", "Read-only page preview"))
+            .accessibilityIdentifier("browser.live.image")
+    }
+}
+
+/// A spectator zooms a UIKit canvas. Its fixed-size child still holds the original WebKit page.
+private struct BrowserZoomablePreview: UIViewRepresentable {
+    let tab: BrowserTaskSession.Tab
+    let presentationID: UUID
+    let priority: Int
+
+    final class Viewer: UIScrollView, UIScrollViewDelegate {
+        let canvas = UIView()
+        let page = BrowserPageMount()
+        var fixedSize = CGSize.zero
+        private var lastSize = CGSize.zero
+        private var lastPageSize = CGSize.zero
+        private var pinchStart: CGFloat = 1
+
+        init() {
+            super.init(frame: .zero)
+            addSubview(canvas)
+            canvas.addSubview(page)
+            delegate = self
+            minimumZoomScale = 1
+            maximumZoomScale = 4
+            contentInsetAdjustmentBehavior = .never
+            accessibilityIdentifier = "browser.live.zoom"
+            // Only this outer recognizer handles two-finger input. The original web page
+            // keeps its own unscaled layout and never receives a spectator gesture.
+            pinchGestureRecognizer?.isEnabled = false
+            let pinch = UIPinchGestureRecognizer(target: self, action: #selector(magnify(_:)))
+            addGestureRecognizer(pinch)
+        }
+
+        required init?(coder: NSCoder) { return nil }
+
+        @objc private func magnify(_ pinch: UIPinchGestureRecognizer) {
+            if pinch.state == .began { pinchStart = zoomScale }
+            guard pinch.state == .began || pinch.state == .changed || pinch.state == .ended else { return }
+            let scale = min(maximumZoomScale, max(minimumZoomScale, pinchStart * pinch.scale))
+            guard scale != zoomScale else { return }
+            let anchor = pinch.location(in: canvas)
+            let location = pinch.location(in: self)
+            let relative = CGPoint(x: location.x - bounds.minX, y: location.y - bounds.minY)
+            setZoomScale(scale, animated: false)
+            let scaled = canvas.convert(anchor, to: self)
+            let inset = adjustedContentInset
+            let x = max(-inset.left, min(scaled.x - relative.x, contentSize.width - bounds.width + inset.right))
+            let y = max(-inset.top, min(scaled.y - relative.y, contentSize.height - bounds.height + inset.bottom))
+            setContentOffset(CGPoint(x: x, y: y), animated: false)
+        }
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            guard bounds.width > 0, bounds.height > 0, fixedSize.width > 0, fixedSize.height > 0 else { return }
+            if lastSize != bounds.size || lastPageSize != fixedSize {
+                let zoom = zoomScale
+                lastSize = bounds.size
+                lastPageSize = fixedSize
+                setZoomScale(1, animated: false)
+                let fit = min(bounds.width / fixedSize.width, bounds.height / fixedSize.height)
+                let fitted = CGSize(width: fixedSize.width * fit, height: fixedSize.height * fit)
+                canvas.frame = CGRect(origin: .zero, size: fitted)
+                page.bounds = CGRect(origin: .zero, size: fixedSize)
+                page.center = CGPoint(x: fitted.width / 2, y: fitted.height / 2)
+                page.transform = CGAffineTransform(scaleX: fit, y: fit)
+                contentSize = fitted
+                setZoomScale(zoom, animated: false)
+            }
+            centerCanvas()
+        }
+
+        func viewForZooming(in scrollView: UIScrollView) -> UIView? { canvas }
+        func scrollViewDidZoom(_ scrollView: UIScrollView) { centerCanvas() }
+        func scrollViewDidEndZooming(_ scrollView: UIScrollView, with view: UIView?, atScale scale: CGFloat) { centerCanvas() }
+
+        private func centerCanvas() {
+            let x = max(0, (bounds.width - canvas.frame.width) / 2)
+            let y = max(0, (bounds.height - canvas.frame.height) / 2)
+            let inset = UIEdgeInsets(top: y, left: x, bottom: y, right: x)
+            if contentInset != inset { contentInset = inset }
+            accessibilityValue = "\(Int((zoomScale * 100).rounded()))%"
+        }
+    }
+
+    func makeUIView(context: Context) -> Viewer { Viewer() }
+    func updateUIView(_ view: Viewer, context: Context) {
+        view.fixedSize = tab.viewport.fixedSize ?? .zero
+        view.page.configure(tab: tab, id: presentationID, readOnly: true, priority: priority, active: true)
+        view.setNeedsLayout()
+    }
+
+    static func dismantleUIView(_ view: Viewer, coordinator: ()) { view.page.detach() }
 }
 
 /// Projects the currently bound task's session. Binding is a presentation
@@ -30,10 +427,12 @@ struct BrowserView: View {
 private struct BrowserSurfaceRoot: View {
     @ObservedObject var center: BrowserSessionCenter
     @Binding var expanded: Bool
+    let interactionID: UUID?
+    let onClose: (() -> Void)?
 
     var body: some View {
         if let session = center.visibleSession {
-            BrowserSurface(center: center, session: session, expanded: $expanded)
+            BrowserSurface(center: center, session: session, expanded: $expanded, interactionID: interactionID, onClose: onClose)
                 .id(session.conversationID)
         } else {
             ContentUnavailableView {
@@ -49,20 +448,60 @@ private struct BrowserSurface: View {
     @ObservedObject var center: BrowserSessionCenter
     @ObservedObject var session: BrowserTaskSession
     @Binding var expanded: Bool
+    let interactionID: UUID?
+    let onClose: (() -> Void)?
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var activeSheet: BrowserSheet?
+    @State private var spectator = UUID()
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var onScreen = false
+    @State private var keyboardShown = false
+    @State private var protectedDataAvailable = true
+    @State private var reminderID: UUID?
 
     private enum BrowserSheet: String, Identifiable {
         case tabs, settings, ports
         var id: Self { self }
     }
 
+    private struct IdlePeriod: Equatable {
+        let handoff: UUID
+        let tab: UUID
+        let activity: UInt64
+        let page: BrowserPreviewPageIdentity?
+    }
+
+    private var idlePeriod: IdlePeriod? {
+        guard onScreen, scenePhase == .active, protectedDataAvailable, !keyboardShown, activeSheet == nil,
+              session.isUserControlling, !session.takeoverPending, session.activeExecutionCount == 0,
+              !session.isEditingAddress, !session.isLoading, session.tabLimitNotice == nil, !center.returningControl,
+              center.visibleSession === session, center.previewInteractionID == interactionID,
+              let receipt = center.handoff(for: session.conversationID), receipt.humanPresent, !receipt.returning,
+              receipt.sessionID == session.sessionID, let tab = session.activeTabID else { return nil }
+        return IdlePeriod(handoff: receipt.id, tab: tab, activity: session.humanActivitySequence, page: session.previewPageIdentity)
+    }
+
     var body: some View {
         GeometryReader { geometry in
             content(wide: geometry.size.width >= 620 && !dynamicTypeSize.isAccessibilitySize)
         }
+        .disabled(center.returningControl || session.returningToModel)
         .background(.background)
+        .onAppear {
+            onScreen = true
+            protectedDataAvailable = UIApplication.shared.isProtectedDataAvailable
+        }
+        .onDisappear { onScreen = false; reminderID = nil }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in keyboardShown = true }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidHideNotification)) { _ in keyboardShown = false }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.protectedDataWillBecomeUnavailableNotification)) { _ in
+            protectedDataAvailable = false
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.protectedDataDidBecomeAvailableNotification)) { _ in
+            protectedDataAvailable = true
+        }
+        .task(id: idlePeriod) { await remindIfIdle(idlePeriod) }
         .sheet(item: $activeSheet) { sheet in
             switch sheet {
             case .tabs:
@@ -86,10 +525,54 @@ private struct BrowserSurface: View {
         }
     }
 
+    private func remindIfIdle(_ period: IdlePeriod?) async {
+        reminderID = nil
+        guard let period, !BrowserHandoffReminder.hasShown(session: session, handoff: period.handoff),
+              let web = session.activeWebView else { return }
+        // SwiftUI cancels this sleep on input, background, keyboard, tab, sheet or handoff changes.
+        do { try await Task.sleep(for: BrowserHandoffReminder.delay) } catch { return }
+        guard !Task.isCancelled, idlePeriod == period,
+              BrowserHandoffReminder.isVisible(web, in: spectator),
+              await BrowserHandoffReminder.pageIsQuiet(web),
+              !Task.isCancelled, idlePeriod == period, session.activeWebView === web,
+              BrowserHandoffReminder.isVisible(web, in: spectator),
+              BrowserHandoffReminder.claim(session: session, handoff: period.handoff) else { return }
+        reminderID = period.handoff
+    }
+
+    private func handback(_ handoff: UUID?) {
+        let presentation = interactionID
+        Task { @MainActor in
+            guard await center.returnControlIfCurrent(for: session, handoffID: handoff, presentationID: presentation),
+                  center.visibleSession === session, center.previewInteractionID == presentation else { return }
+            onClose?()
+        }
+    }
+
+    private func handbackLabel(hasRun: Bool) -> String {
+        if onClose != nil {
+            return hasRun ? IDELanguageRunText.t("交还并返回", "Return to AI and close") : IDELanguageRunText.t("完成并返回", "Done and close")
+        }
+        return hasRun ? IDELanguageRunText.t("交还给 AI", "Return to AI") : IDELanguageRunText.t("完成", "Done")
+    }
+
     private func content(wide: Bool) -> some View {
         VStack(spacing: 0) {
             VStack(spacing: 0) {
-                BrowserAddressBar(
+                if session.usesFixedViewport {
+                    HStack {
+                        Label(IDELanguageRunText.t("只读浏览", "Read-only browser"), systemImage: "eye")
+                        Spacer()
+                        Button { activeSheet = .settings } label: { Image(systemName: "gearshape") }
+                            .accessibilityLabel(IDELanguageRunText.t("浏览器设置", "Browser settings"))
+                        Button { expanded.toggle() } label: {
+                            Image(systemName: expanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                        }
+                        .accessibilityLabel(IDELanguageRunText.t("切换全屏", "Toggle full screen"))
+                    }
+                    .padding(.horizontal, 12).frame(minHeight: 44)
+                } else {
+                    BrowserAddressBar(
                     center: center,
                     session: session,
                     compact: !wide,
@@ -98,48 +581,62 @@ private struct BrowserSurface: View {
                     showSettings: { activeSheet = .settings },
                     showPorts: { activeSheet = .ports }
                 ) { expanded.toggle() }
-                if wide { BrowserTabStrip(session: session) }
+                    if wide { BrowserTabStrip(session: session) }
+                }
             }
             .background(.bar)
             BrowserProgressBar(session: session)
             if center.taskHandoffsEnabled && session.isUserControlling {
-                HStack {
-                    Text(center.handoffError ?? (session.takeoverPending
-                        ? IDELanguageRunText.t("正在接管，等待上一个操作结束", "Taking over; waiting for the previous action to settle")
-                        : (center.handoffNeedsContinue
-                            ? IDELanguageRunText.t("通知已保存，原任务未运行", "Notification saved; the original task is not running")
-                            : IDELanguageRunText.t("浏览器由你操作，模型可继续其他工作", "You control the browser; the agent can continue other work"))))
+                let receipt = center.handoff(for: session.conversationID)
+                let reminding = reminderID != nil && reminderID == receipt?.id && idlePeriod?.handoff == reminderID
+                let unresponsiveNavigation = session.unresponsiveNavigationID
+                let status = if unresponsiveNavigation != nil {
+                    IDELanguageRunText.t("网页尚未响应", "The page hasn’t responded")
+                } else if session.takeoverPending {
+                    IDELanguageRunText.t("正在等待上一个网页操作结束", "Waiting for the previous browser action to finish")
+                } else if reminding {
+                    IDELanguageRunText.t("还在使用这个网页吗？", "Still using this page?")
+                } else {
+                    IDELanguageRunText.t("网页由你操作", "You control this page")
+                }
+                HStack(spacing: 8) {
+                    Text(center.handoffError ?? status)
                         .font(.caption).lineLimit(2)
                     Spacer()
-                    if session.takeoverPending {
-                        Button { session.forceUserTakeover() } label: {
+                    if let unresponsiveNavigation {
+                        BrowserCloseUnresponsiveTabButton {
+                            guard center.visibleSession === session, center.previewInteractionID == interactionID else { return }
+                            session.closeUnresponsiveNavigation(unresponsiveNavigation)
+                        }
+                        .id(unresponsiveNavigation)
+                    } else if session.takeoverPending {
+                        Button { session.finishTakeoverIfIdle() } label: {
                             Text(IDELanguageRunText.t("重试接管", "Retry takeover"))
                                 .frame(minHeight: 44)
                         }
                         .accessibilityIdentifier("browser.retryTakeover")
                     } else {
-                        Button {
-                            // An explicit handback also releases the address
-                            // bar/keyboard focus, so the model does not stay
-                            // blocked by a field the user left focused.
-                            UIApplication.shared.sendAction(
-                                #selector(UIResponder.resignFirstResponder),
-                                to: nil, from: nil, for: nil)
-                            Task { await center.returnToAgent(continueTask: center.handoffNeedsContinue) }
-                        } label: {
+                        if reminding {
+                            Button(IDELanguageRunText.t("继续由我操作", "Keep control")) { reminderID = nil }
+                                .font(.caption).frame(minHeight: 44)
+                                .accessibilityIdentifier("browser.handoff.keep")
+                        } else if let onClose, interactionID == nil {
+                            Button(IDELanguageRunText.t("仅收起", "Close for now"), action: onClose)
+                                .font(.caption).frame(minHeight: 44)
+                                .accessibilityIdentifier("browser.handoff.close")
+                        }
+                        Button { handback(receipt?.id) } label: {
                             if center.returningControl {
                                 HStack { ProgressView(); Text(IDELanguageRunText.t("正在交还", "Returning control")) }
                             }
-                            else { Text(center.handoff == nil
-                                ? IDELanguageRunText.t("完成", "Done")
-                                : (center.handoffNeedsContinue
-                                    ? IDELanguageRunText.t("继续任务", "Continue task")
-                                    : IDELanguageRunText.t("完成并交还模型", "Return to agent"))) }
+                            else { Text(handbackLabel(hasRun: receipt?.runID != nil)) }
                         }
                         .disabled(center.returningControl)
                         .frame(minHeight: 44)
+                        .accessibilityIdentifier("browser.handoff.return")
                     }
                 }.padding(.horizontal, 12)
+                    .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("browser.taskHandoff")
             }
             if center.taskHandoffsEnabled && center.handoffNotified {
@@ -147,21 +644,33 @@ private struct BrowserSurface: View {
                     .font(.caption).foregroundStyle(.secondary)
                     .accessibilityIdentifier("browser.taskHandoffNotified")
             }
+            if center.taskHandoffsEnabled {
+                BrowserReturnedHandoffStatus(center: center, owner: session.conversationID)
+            }
             if center.taskHandoffsEnabled && !session.isUserControlling && session.modelControl != nil {
-                BrowserModelStatusBar(center: center, session: session)
+                BrowserModelStatusBar(center: center, session: session, presentationID: spectator)
             }
             Divider()
-            BrowserWebContainer(
-                webView: session.activeWebView,
-                onUserInteraction: { session.registerUserInput() }
-            )
-            .allowsHitTesting(!session.takeoverPending)
+            Group {
+                if session.usesFixedViewport {
+                    if scenePhase == .active, session.isModelActive, let tab = session.activeTab {
+                        BrowserZoomablePreview(tab: tab, presentationID: spectator, priority: expanded ? 2 : 1)
+                    } else {
+                        Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                } else {
+                    BrowserWebContainer(tab: session.activeTab, presentationID: spectator, priority: interactionID != nil ? 3 : (expanded ? 2 : 0),
+                                        active: scenePhase == .active, onUserInteraction: { session.registerUserInput() })
+                        .allowsHitTesting(!session.takeoverPending && !center.returningControl && !session.returningToModel)
+                }
+            }
                 .overlay(alignment: .top) {
                     if case .failed(let message) = session.surfaceState {
                         VStack(spacing: 12) {
                             Text(message).font(.callout).multilineTextAlignment(.center)
-                            Button(IDELanguageRunText.t("重试", "Retry")) { session.activeWebView?.reload() }
+                            Button(IDELanguageRunText.t("重试", "Retry")) { session.reloadFromUser() }
                                 .buttonStyle(.bordered)
+                                .disabled(session.takeoverPending)
                         }
                         .padding().frame(maxWidth: 480)
                         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
@@ -174,6 +683,78 @@ private struct BrowserSurface: View {
     }
 }
 
+private struct BrowserCloseUnresponsiveTabButton: View {
+    let close: () -> Void
+    @State private var confirming = false
+
+    var body: some View {
+        Button(role: .destructive) { confirming = true } label: {
+            Text(IDELanguageRunText.t("关闭无响应标签页", "Close unresponsive tab"))
+                .frame(minHeight: 44)
+        }
+        .accessibilityIdentifier("browser.closeUnresponsiveTab")
+        .confirmationDialog(IDELanguageRunText.t("关闭无响应标签页？", "Close the unresponsive tab?"),
+                            isPresented: $confirming, titleVisibility: .visible) {
+            Button(IDELanguageRunText.t("关闭标签页", "Close tab"), role: .destructive, action: close)
+                .accessibilityIdentifier("browser.confirmCloseUnresponsiveTab")
+            Button(IDELanguageRunText.t("取消", "Cancel"), role: .cancel) {}
+        } message: {
+            Text(IDELanguageRunText.t("这个标签页中未保存的内容可能会丢失。", "Unsaved changes in this tab may be lost."))
+        }
+    }
+}
+
+/// An in-app reminder, once per real handoff. It never returns control on a timer.
+@MainActor
+enum BrowserHandoffReminder {
+    static let delay: Duration = .seconds(120)
+    private static let prompted = NSMapTable<BrowserTaskSession, NSUUID>.weakToStrongObjects()
+
+    static func hasShown(session: BrowserTaskSession, handoff: UUID) -> Bool {
+        prompted.object(forKey: session) == handoff as NSUUID
+    }
+
+    static func claim(session: BrowserTaskSession, handoff: UUID) -> Bool {
+        guard !hasShown(session: session, handoff: handoff) else { return false }
+        prompted.setObject(handoff as NSUUID, forKey: session)
+        return true
+    }
+
+    static func isVisible(_ web: WKWebView, in presentation: UUID) -> Bool {
+        guard let mount = web.superview as? BrowserPageMount, mount.ownsPage, mount.presentationID == presentation,
+              let window = web.window, window.isKeyWindow, window.windowScene?.activationState == .foregroundActive,
+              UIApplication.shared.isProtectedDataAvailable, !UIAccessibility.isVoiceOverRunning,
+              !UIAccessibility.isSwitchControlRunning, !web.isWritingToolsActive,
+              !web.scrollView.isDragging, !web.scrollView.isDecelerating, !web.scrollView.isZooming
+        else { return false }
+        let keyboard = window.keyboardLayoutGuide.layoutFrame
+        if !keyboard.isEmpty, keyboard.minY < window.safeAreaLayoutGuide.layoutFrame.maxY - 1 { return false }
+        var top = window.rootViewController
+        while let presented = top?.presentedViewController { top = presented }
+        guard let top, !top.isBeingDismissed, !top.isBeingPresented,
+              let surface = top.viewIfLoaded, web.isDescendant(of: surface),
+              let hit = window.hitTest(web.convert(CGPoint(x: web.bounds.midX, y: web.bounds.midY), to: window), with: nil)
+        else { return false }
+        return hit === web || hit.isDescendant(of: web)
+    }
+
+    static func pageIsQuiet(_ web: WKWebView) async -> Bool {
+        // This isolated, local probe returns one Boolean. It reads no field values or page text.
+        let script = """
+            if (document.readyState !== 'complete' || document.visibilityState !== 'visible') return false;
+            const focused = document.activeElement;
+            if (focused && focused !== document.body && focused !== document.documentElement) return false;
+            const potentiallyBusy = 'iframe,frame,object,embed,dialog[open],[aria-modal="true"],[role="dialog"],' +
+              'input[type="password"],input[autocomplete*="password" i],input[autocomplete*="one-time-code" i],' +
+              'input[autocomplete*="webauthn" i]';
+            return !Array.from(document.querySelectorAll(potentiallyBusy)).some(el => el.getClientRects().length > 0);
+            """
+        let result = try? await web.callAsyncJavaScript(script, arguments: [:], in: nil,
+            contentWorld: WKContentWorld.world(name: "FloeBrowserHandoffReminder"))
+        return result as? Bool == true
+    }
+}
+
 /// Live, publicly safe status of the model's current page work plus the
 /// visible "I'll take over" affordance. It shows only what the executed
 /// action kind proves; without target evidence it never fabricates a click
@@ -181,6 +762,7 @@ private struct BrowserSurface: View {
 private struct BrowserModelStatusBar: View {
     @ObservedObject var center: BrowserSessionCenter
     @ObservedObject var session: BrowserTaskSession
+    let presentationID: UUID
 
     var body: some View {
         HStack(spacing: 8) {
@@ -192,6 +774,7 @@ private struct BrowserModelStatusBar: View {
                 .lineLimit(2)
             Spacer(minLength: 8)
             Button {
+                session.activeTab?.viewport.preferPresentation(presentationID)
                 center.takeControl()
             } label: {
                 Text(IDELanguageRunText.t("我来操作", "I'll take over"))
@@ -207,15 +790,19 @@ private struct BrowserModelStatusBar: View {
 
     private var activityText: String {
         let kind = session.lastModelActivity?.kind ?? .observing
+        if kind == .clicking, let detail = session.livePreviewFrame?.clickedLabel {
+            return IDELanguageRunText.t("AI 点击了「\(detail)」", "AI clicked “\(detail)”")
+        }
+        return Self.description(for: kind)
+    }
+
+    static func description(for kind: BrowserModelActivity.Kind) -> String {
         switch kind {
         case .observing:
             return IDELanguageRunText.t("AI 正在查看网页", "AI is viewing the page")
         case .navigating:
             return IDELanguageRunText.t("AI 正在打开网页", "AI is opening a page")
         case .clicking:
-            if let detail = session.lastModelActivity?.detail, !detail.isEmpty {
-                return IDELanguageRunText.t("AI 点击了「\(detail)」", "AI clicked “\(detail)”")
-            }
             return IDELanguageRunText.t("AI 正在操作网页", "AI is using the page")
         case .typing:
             return IDELanguageRunText.t("AI 正在填写表单", "AI is filling in a form")
@@ -492,9 +1079,12 @@ private struct BrowserAddressBar: View {
                 .accessibilityValue(session.addressText)
             button(session.isLoading ? "xmark" : "arrow.clockwise",
                    session.isLoading ? IDELanguageRunText.t("停止载入", "Stop loading") : IDELanguageRunText.t("刷新", "Reload")) {
-                session.registerUserInput(reason: "You reloaded the page")
-                if session.isLoading { session.activeWebView?.stopLoading() }
-                else { session.activeWebView?.reload() }
+                if session.isLoading {
+                    guard session.registerUserInput(reason: "You stopped loading the page") else { return }
+                    session.activeWebView?.stopLoading()
+                } else {
+                    session.reloadFromUser()
+                }
             }
             .accessibilityIdentifier("browser.reload")
         }
@@ -531,13 +1121,13 @@ private struct BrowserAddressBar: View {
     private var historyButtons: some View {
         Group {
             button("chevron.backward", IDELanguageRunText.t("后退", "Back")) {
-                session.registerUserInput(reason: "You navigated back")
+                guard session.registerUserInput(reason: "You navigated back") else { return }
                 session.activeWebView?.goBack()
             }
                 .disabled(!session.canGoBack)
                 .accessibilityIdentifier("browser.back")
             button("chevron.forward", IDELanguageRunText.t("前进", "Forward")) {
-                session.registerUserInput(reason: "You navigated forward")
+                guard session.registerUserInput(reason: "You navigated forward") else { return }
                 session.activeWebView?.goForward()
             }
                 .disabled(!session.canGoForward)
@@ -556,18 +1146,17 @@ private struct BrowserAddressBar: View {
         Menu {
             Section {
                 Button(IDELanguageRunText.t("后退", "Back"), systemImage: "chevron.backward") {
-                    session.registerUserInput(reason: "You navigated back")
+                    guard session.registerUserInput(reason: "You navigated back") else { return }
                     session.activeWebView?.goBack()
                 }
                     .disabled(!session.canGoBack)
                 Button(IDELanguageRunText.t("前进", "Forward"), systemImage: "chevron.forward") {
-                    session.registerUserInput(reason: "You navigated forward")
+                    guard session.registerUserInput(reason: "You navigated forward") else { return }
                     session.activeWebView?.goForward()
                 }
                     .disabled(!session.canGoForward)
                 Button(IDELanguageRunText.t("刷新", "Reload"), systemImage: "arrow.clockwise") {
-                    session.registerUserInput(reason: "You reloaded the page")
-                    session.activeWebView?.reload()
+                    session.reloadFromUser()
                 }
                 Button(IDELanguageRunText.t("复制地址", "Copy address"), systemImage: "doc.on.doc") {
                     UIPasteboard.general.string = session.technicalAddress
@@ -653,14 +1242,18 @@ private struct BrowserDownloadBanner: View {
 }
 
 private struct BrowserWebContainer: UIViewRepresentable {
-    let webView: WKWebView?
+    let tab: BrowserTaskSession.Tab?
+    let presentationID: UUID
+    let priority: Int
+    let active: Bool
     let onUserInteraction: () -> Void
 
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
-        let onUserInteraction: () -> Void
+        var onUserInteraction: () -> Void
         init(onUserInteraction: @escaping () -> Void) { self.onUserInteraction = onUserInteraction }
 
         @objc func began(_ recognizer: UIGestureRecognizer) {
+            guard let mount = recognizer.view as? BrowserPageMount, mount.ownsPage else { return }
             switch recognizer.state {
             case .began, .recognized, .ended: onUserInteraction()
             default: break
@@ -675,8 +1268,8 @@ private struct BrowserWebContainer: UIViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(onUserInteraction: onUserInteraction) }
 
-    func makeUIView(context: Context) -> UIView {
-        let container = UIView()
+    func makeUIView(context: Context) -> BrowserPageMount {
+        let container = BrowserPageMount()
         container.backgroundColor = .systemBackground
         container.clipsToBounds = true
         // The first real human gesture registers user control before it can
@@ -701,28 +1294,14 @@ private struct BrowserWebContainer: UIViewRepresentable {
         return container
     }
 
-    func updateUIView(_ container: UIView, context: Context) {
-        container.subviews.forEach { if $0 !== webView { $0.removeFromSuperview() } }
-        guard let webView else { return }
-        if webView.superview !== container {
-            webView.removeFromSuperview()
-            webView.translatesAutoresizingMaskIntoConstraints = false
-            container.addSubview(webView)
-            NSLayoutConstraint.activate([
-                webView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-                webView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-                webView.topAnchor.constraint(equalTo: container.topAnchor),
-                webView.bottomAnchor.constraint(equalTo: container.bottomAnchor)
-            ])
-        }
+    func updateUIView(_ container: BrowserPageMount, context: Context) {
+        context.coordinator.onUserInteraction = onUserInteraction
+        container.configure(tab: tab, id: presentationID, readOnly: false, priority: priority, active: active)
     }
 
-    static func dismantleUIView(_ container: UIView, coordinator: ()) {
-        // Only detach a web view that is still owned by this representable.
-        // A newer browser column may already have reparented the shared tab.
-        container.subviews.compactMap { $0 as? WKWebView }.forEach {
-            if $0.superview === container { $0.removeFromSuperview() }
-        }
+    static func dismantleUIView(_ container: BrowserPageMount, coordinator: Coordinator) {
+        coordinator.onUserInteraction = {}
+        container.detach()
     }
 }
 #endif

@@ -117,10 +117,10 @@ import FloeHeavyEditorSupport
         let (record, directory) = try await sessionFixture()
         defer { try? FileManager.default.removeItem(at: directory) }
         let session = try await GISProjectSession.open(id: record.id, directory: directory)
-        try session.beginPresentation()
+        let owner = try session.beginPresentation()
         do {
             let use = try session.retainModelUse()
-            do { try await session.refresh(); Issue.record("Refresh interrupted a live model use") }
+            do { try await session.refresh(owner); Issue.record("Refresh interrupted a live model use") }
             catch PersonalFileActionError.busy { }
             catch { session.releaseModelUse(use); throw error }
             #expect(!session.isClosed)
@@ -129,40 +129,40 @@ import FloeHeavyEditorSupport
             let external = try HeavyEditorProjectStore(directory: GISProjectOriginal.root(in: directory), documentID: record.id, kind: .gis)
             var next = before.state.object; next["title"] = .string("Externally committed map")
             let committed = try await external.commit(content: .object(next), title: "Externally committed map", expectedRevision: before.document.revision)
-            try await session.refresh()
+            try await session.refresh(owner)
             #expect(session.controller.document == committed)
             #expect(try session.originalSHA256() == GISProjectOriginal.read(id: record.id, directory: directory).sha256)
             _ = try await session.controller.execute("layer.create", arguments: .object(["name": .string("After refresh")]), expectedRevision: committed.revision)
             #expect(session.controller.document.revision == committed.revision + 1)
-            let closed = await session.flushForClose()
+            let closed = await session.flushForClose(owner)
             #expect(closed && session.isClosed)
-        } catch { await session.presentationEnded(); throw error }
-        await session.presentationEnded()
+        } catch { await session.presentationEnded(owner); throw error }
+        await session.presentationEnded(owner)
     }
     @Test func unchangedCloseKeepsRevisionAndACameraOnlyChangeStillPersists() async throws {
         let (record, directory) = try await sessionFixture()
         defer { try? FileManager.default.removeItem(at: directory) }
         // An untouched close must not append a bare document.save revision.
         let first = try await GISProjectSession.open(id: record.id, directory: directory)
-        try first.beginPresentation()
+        let firstOwner = try first.beginPresentation()
         #expect(try GISProjectOriginal.read(id: record.id, directory: directory).document.revision == 0)
-        #expect(await first.flushForClose())
+        #expect(await first.flushForClose(firstOwner))
         #expect(try GISProjectOriginal.read(id: record.id, directory: directory).document.revision == 0)
 
         // A real content edit already committed once; closing again is a no-op.
         let second = try await GISProjectSession.open(id: record.id, directory: directory)
-        try second.beginPresentation()
+        let secondOwner = try second.beginPresentation()
         _ = try await second.controller.execute("layer.create", arguments: .object(["name": .string("No extra save")]), expectedRevision: 0)
         #expect(second.controller.document.revision == 1)
-        #expect(await second.flushForClose())
+        #expect(await second.flushForClose(secondOwner))
         #expect(try GISProjectOriginal.read(id: record.id, directory: directory).document.revision == 1)
 
         // A real camera move is still a view change worth committing.
         let third = try await GISProjectSession.open(id: record.id, directory: directory)
-        try third.beginPresentation()
+        let thirdOwner = try third.beginPresentation()
         _ = try await third.controller.webView.evaluateJavaScript("window.FloeEditor.liveView={center:[-7.3334,20],zoom:3}; 'ok'")
         try await third.controller.refreshPresentation()
-        #expect(await third.flushForClose())
+        #expect(await third.flushForClose(thirdOwner))
         let saved = try GISProjectOriginal.read(id: record.id, directory: directory)
         #expect(saved.document.revision == 2)
         let view = saved.state["view"]
@@ -178,22 +178,68 @@ import FloeHeavyEditorSupport
         let (record, directory) = try await sessionFixture()
         defer { try? FileManager.default.removeItem(at: directory) }
         let session = try await GISProjectSession.open(id: record.id, directory: directory)
-        try session.beginPresentation()
+        let owner = try session.beginPresentation()
         do {
-            do { try session.beginPresentation(); Issue.record("One WK controller was accepted by two presentations") }
+            do { _ = try session.beginPresentation(); Issue.record("One WK controller was accepted by two presentations") }
             catch PersonalFileActionError.busy { }
             #expect(!session.isClosed)
             let revision = session.controller.document.revision
             _ = try await session.controller.execute("layer.create", arguments: .object(["name": .string("First window remains active")]), expectedRevision: revision)
-            let closed = await session.flushForClose()
+            let closed = await session.flushForClose(owner)
             #expect(closed && session.isClosed)
             let reopened = try await GISProjectSession.open(id: record.id, directory: directory)
-            try reopened.beginPresentation()
+            let reopenedOwner = try reopened.beginPresentation()
             #expect(reopened !== session && !reopened.isClosed)
-            let closedAgain = await reopened.flushForClose()
+            let closedAgain = await reopened.flushForClose(reopenedOwner)
             #expect(closedAgain)
-        } catch { await session.presentationEnded(); throw error }
-        await session.presentationEnded()
+        } catch { await session.presentationEnded(owner); throw error }
+        await session.presentationEnded(owner)
+    }
+
+    @Test func lateDismissalCannotCloseTheReopenedMapWhenTheAssistantFinishes() async throws {
+        let (record, directory) = try await sessionFixture()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let first = try await GISProjectSession.open(id: record.id, directory: directory)
+        let oldOwner = try first.beginPresentation()
+        let modelUse = try first.retainModelUse()
+        var latestOwner = oldOwner
+        do {
+            try #require(await first.endPresentationKeepingModelWork(oldOwner))
+            let reopened = try await GISProjectSession.open(id: record.id, directory: directory)
+            #expect(first === reopened)
+            let newOwner = try reopened.beginPresentation()
+            latestOwner = newOwner
+            #expect(newOwner != oldOwner)
+            await first.presentationEnded(oldOwner)
+            #expect(await first.endPresentationKeepingModelWork(oldOwner) == false)
+            do {
+                try await first.refresh(oldOwner)
+                Issue.record("A stale presentation refreshed the new map")
+            } catch is CancellationError { }
+
+            let original = try GISProjectOriginal.read(id: record.id, directory: directory)
+            _ = try await first.controller.execute("layer.create", arguments: .object(["name": .string("Assistant edit")]),
+                expectedRevision: original.document.revision)
+            first.releaseModelUse(modelUse)
+            #expect(!reopened.isClosed)
+            #expect(await first.flushForClose(oldOwner) == false)
+            do {
+                _ = try reopened.beginPresentation()
+                Issue.record("The old dismissal released the new presentation")
+            } catch PersonalFileActionError.busy { }
+            try await reopened.requireOriginal()
+            _ = try await reopened.controller.execute("layer.create", arguments: .object(["name": .string("Reopened editor")]),
+                expectedRevision: original.document.revision + 1)
+            try #require(await reopened.flushForClose(newOwner))
+            let saved = try GISProjectOriginal.read(id: record.id, directory: directory)
+            #expect(saved.document.revision == original.document.revision + 2)
+            let names = saved.state["layers"].array.compactMap { $0["name"].string }
+            #expect(names.count == 2 && Set(names) == ["Assistant edit", "Reopened editor"])
+        } catch {
+            first.releaseModelUse(modelUse)
+            await first.presentationEnded(latestOwner)
+            throw error
+        }
     }
 }
 #endif

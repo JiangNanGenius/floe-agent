@@ -97,7 +97,6 @@ struct BuildingProjectWorkspaceView: View {
                         }
                 }
             }
-            .accessibilityIdentifier("cad.building.project.surface")
     }
 
     /// One native assistant path for both the toolbar and "ask AI on open".

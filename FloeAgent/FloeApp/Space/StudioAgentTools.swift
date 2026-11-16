@@ -49,21 +49,33 @@ enum StudioToolOutput {
 /// No path, document metadata, prompt or imported package can grant access.
 @MainActor final class StudioCoordinator {
     weak var environment: AppEnvironment?
-    let access: Result<StudioDocumentAccess, Error>
+    private var openedAuthority: StudioDocumentAccess?
+    private let openAuthority: @MainActor () throws -> StudioDocumentAccess
+    var access: Result<StudioDocumentAccess, Error> {
+        if let openedAuthority { return .success(openedAuthority) }
+        // Propagate this attempt's error. A later request can reopen the same
+        // durable authority after its storage becomes available.
+        return Result {
+            let authority = try openAuthority()
+            openedAuthority = authority
+            return authority
+        }
+    }
     private let libraryOverride: PersonalContentLibrary?
     let buildingProjects = BuildingStudioRegistry()
     private var preparations: [UUID: Task<UUID, Error>] = [:]
     private var mutating: Set<UUID> = []
     static let names: Set<String> = ["studio.create", "studio.list", "studio.library", "studio.read", "studio.edit", "studio.run", "studio.media", "studio.media.provider", "studio.chemistry", "studio.machining"]
 
-    init(environment: AppEnvironment, authority: StudioDocumentAccess? = nil, library: PersonalContentLibrary? = nil) {
+    init(environment: AppEnvironment, authority: StudioDocumentAccess? = nil, library: PersonalContentLibrary? = nil,
+         openAuthority: @escaping @MainActor () throws -> StudioDocumentAccess = {
+             try StudioDocumentAccess(root: PersonalContentLibrary.applicationRoot()
+                 .deletingLastPathComponent().appendingPathComponent("StudioAuthority"))
+         }) {
         self.environment = environment
         self.libraryOverride = library
-        access = Result {
-            if let authority { return authority }
-            return try StudioDocumentAccess(root: PersonalContentLibrary.applicationRoot()
-                .deletingLastPathComponent().appendingPathComponent("StudioAuthority"))
-        }
+        self.openedAuthority = authority
+        self.openAuthority = openAuthority
     }
     func assistant(for record: PersonalContentRecord) async throws -> UUID {
         try await assistant(for: StudioAssistantDocument.personal(record))

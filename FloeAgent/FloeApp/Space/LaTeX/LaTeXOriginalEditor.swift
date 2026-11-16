@@ -54,7 +54,11 @@ private struct LaTeXOriginalAssistant:View {
                 else if let error {Text(error).foregroundStyle(.secondary).padding()}
                 else {ProgressView()}
             }.navigationTitle(IDELanguageRunText.t("论文助手","Writing assistant"))
-                .toolbar {ToolbarItem(placement:.confirmationAction) {Button(IDELanguageRunText.t("完成","Done")) {dismiss()}}}
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        EditorAssistantCloseButton { dismiss() }
+                    }
+                }
         }.task(id:original.id) {
             do {conversationID=try await environment.latexComposition.assistantForNativeOriginal(original)}catch {self.error=error.localizedDescription}
         }

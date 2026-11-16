@@ -9,7 +9,7 @@ import FloeTools
 
 /// Evidence stays with the run that produced it, even after the workspace changes.
 struct RunFileChange: Identifiable, Hashable, Sendable {
-    enum ID: Hashable, Sendable { case path(String), output(String) }
+    enum ID: Hashable, Sendable { case path(String, workspaceID: UUID?), output(String) }
     enum Action: Hashable, Sendable {
         case added, edited, moved, deleted, saved, delivered
         var title: String {
@@ -65,6 +65,10 @@ struct RunFileChangeList {
         }
         let requestedPath = publicationPaths.removeValue(forKey: callID)
         guard fields["status"] == "ok", fields["outcomeUnknown"] != "true" else { return }
+        // Legacy receipts have no workspace binding. Keep their run-local
+        // group independent of every explicitly identified workspace.
+        let workspaceID = fields["workspaceID"].flatMap(UUID.init(uuidString:))
+        func pathKey(_ path: String) -> RunFileChange.ID { .path(path, workspaceID: workspaceID) }
         let summary = fields["summary"] ?? ""
         if ["workspace.deleteFile", "workspace.copyFile", "workspace.moveFile"].contains(tool) {
             guard let fields = Self.pathFields(in: summary[...]) else {
@@ -73,21 +77,21 @@ struct RunFileChangeList {
                    let marker = summary.range(of: " recursive=", options: .backwards),
                    ["true", "false"].contains(String(summary[marker.upperBound...])),
                    let path = Self.relativePath(String(summary.dropFirst("deleted=".count)[..<marker.lowerBound])),
-                   files[.path(path)] != nil {
-                    record(path, key: .path(path), action: .deleted)
+                   files[pathKey(path)] != nil {
+                    record(path, key: pathKey(path), action: .deleted)
                 }
                 return
             }
             guard fields["kind"] == "file", let target = fields["path"], let path = Self.relativePath(target) else { return }
             if tool == "workspace.moveFile", let rawOrigin = fields["from"],
                let origin = Self.relativePath(rawOrigin), origin != path,
-               let previous = files.removeValue(forKey: .path(origin)) {
-                order.removeAll { $0 == .path(origin) }
-                var moved = RunFileChange(runID: runID, conversationID: conversationID, id: .path(path), path: path,
+               let previous = files.removeValue(forKey: pathKey(origin)) {
+                order.removeAll { $0 == pathKey(origin) }
+                var moved = RunFileChange(runID: runID, conversationID: conversationID, id: pathKey(path), path: path,
                                           action: previous.action == .added ? .added : .moved, evidence: previous.evidence)
-                if let prior = files[.path(path)] { moved.evidence = prior.evidence + moved.evidence }
-                else { order.append(.path(path)) }
-                files[.path(path)] = moved
+                if let prior = files[pathKey(path)] { moved.evidence = prior.evidence + moved.evidence }
+                else { order.append(pathKey(path)) }
+                files[pathKey(path)] = moved
             } else {
                 let action: RunFileChange.Action
                 switch tool {
@@ -95,7 +99,7 @@ struct RunFileChangeList {
                 case "workspace.copyFile": action = fields["change"] == "saved" ? .saved : .added
                 default: action = .moved
                 }
-                record(path, key: .path(path), action: action)
+                record(path, key: pathKey(path), action: action)
             }
             return
         }
@@ -142,7 +146,7 @@ struct RunFileChangeList {
             if metadata.contains(" change=created saved=true") { action = .added }
             else if metadata.contains(" change=saved saved=true") { action = .saved }
             else { action = .edited }
-            record(path, key: .path(path), action: action, evidence: ref.map { .write($0, tool: tool) })
+            record(path, key: pathKey(path), action: action, evidence: ref.map { .write($0, tool: tool) })
         }
         guard let outputs = Self.decode([RunOutputFile].self, fields["outputFilesJSON"]) else { return }
         let context = RunOutputReceiptContext(runID: runID, conversationID: conversationID, callID: callID, toolName: tool)
@@ -150,7 +154,7 @@ struct RunFileChangeList {
             // Publishing an existing workspace file alone is not a workspace write.
             // It can supply a verified preview for a file this run already changed.
             if tool == "workspace.publishOutput", let path = requestedPath {
-                if files[.path(path)] != nil { record(path, key: .path(path), action: .delivered, evidence: .output(output, context)) }
+                if files[pathKey(path)] != nil { record(path, key: pathKey(path), action: .delivered, evidence: .output(output, context)) }
             } else if tool != "workspace.publishOutput" {
                 record(output.displayName, key: .output(output.outputID), action: .delivered, evidence: .output(output, context))
             }

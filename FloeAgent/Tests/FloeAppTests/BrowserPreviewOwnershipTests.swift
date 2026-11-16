@@ -24,6 +24,52 @@ import FloeTools
 @MainActor
 struct BrowserPreviewOwnershipTests {
 
+    @Test("A reading reminder belongs to one human handoff and never treats a focused, login or modal page as idle")
+    func readingHandoffReminderRequiresAQuietVisiblePage() async throws {
+        let center = makeCenter()
+        let session = try center.taskSession(for: UUID())
+        let second = try center.taskSession(for: UUID())
+        defer { center.discard(conversationID: session.conversationID); center.discard(conversationID: second.conversationID) }
+        let tab = try #require(session.activeTab)
+        let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .first(where: { $0.activationState == .foregroundActive }))
+        let originalWindow = scene.windows.first(where: { $0.isKeyWindow })
+        let window = UIWindow(windowScene: scene)
+        let host = UIViewController()
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true; originalWindow?.makeKey() }
+        let mount = BrowserPageMount(frame: host.view.bounds)
+        let presentation = UUID()
+        host.view.addSubview(mount)
+        mount.configure(tab: tab, id: presentation, readOnly: false, priority: 1, active: true)
+        defer { mount.detach() }
+        window.layoutIfNeeded()
+        let web = tab.webView
+        web.loadHTMLString("<!doctype html><title>Reading</title><p>Chapter one</p><input id='editor'>", baseURL: nil)
+        let loaded = await session.execute(BrowserCommand(sessionID: session.sessionID, tabID: tab.id, action: .wait(.load)))
+        try #require(loaded.status == .ok)
+        #expect(BrowserHandoffReminder.isVisible(web, in: presentation))
+        #expect(!BrowserHandoffReminder.isVisible(web, in: UUID()))
+        #expect(await BrowserHandoffReminder.pageIsQuiet(web))
+        _ = try await web.evaluateJavaScript("document.querySelector('input').focus()")
+        #expect(!(await BrowserHandoffReminder.pageIsQuiet(web)))
+        _ = try await web.evaluateJavaScript("document.querySelector('input').blur(); document.querySelector('input').type = 'password'; true")
+        #expect(!(await BrowserHandoffReminder.pageIsQuiet(web)))
+        _ = try await web.evaluateJavaScript("document.querySelector('input').remove(); document.body.insertAdjacentHTML('beforeend','<dialog open>Permission</dialog>'); true")
+        #expect(!(await BrowserHandoffReminder.pageIsQuiet(web)))
+        _ = try await web.evaluateJavaScript("document.querySelector('dialog').remove()")
+        #expect(await BrowserHandoffReminder.pageIsQuiet(web))
+        let receipt = UUID()
+        #expect(BrowserHandoffReminder.delay == .seconds(120))
+        #expect(BrowserHandoffReminder.claim(session: session, handoff: receipt))
+        #expect(!BrowserHandoffReminder.claim(session: session, handoff: receipt))
+        #expect(BrowserHandoffReminder.claim(session: second, handoff: receipt))
+        #expect(BrowserHandoffReminder.claim(session: session, handoff: UUID()))
+        window.isHidden = true
+        #expect(!BrowserHandoffReminder.isVisible(web, in: presentation))
+    }
+
     @Test("Ordinary task browsing reaches local web servers while staged export keeps its ownership gate")
     func localNetworkNavigationIsNotExportAuthority() throws {
         let owner = UUID(), other = UUID(), service = UUID()

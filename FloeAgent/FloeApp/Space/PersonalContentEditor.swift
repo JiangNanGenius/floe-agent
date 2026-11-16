@@ -39,6 +39,7 @@ struct PersonalContentEditor: View {
     @StateObject private var assistantLeave = DocumentAssistantLeaveCoordinator()
     @StateObject private var sourceAssistantLeave = DocumentAssistantLeaveCoordinator()
     @State private var closing = false
+    @State private var loading = false
     @State private var presentationGeneration = UUID()
     @State private var editorOwnsTextInput = false
     @State private var officeReopenInFlight = false
@@ -62,7 +63,7 @@ struct PersonalContentEditor: View {
         case biology(BiologyProjectSession)
         case latex(LaTeXProjectSession)
         case electronics(ElectronicsProjectSession)
-        case geography(GISProjectSession)
+        case geography(GISProjectSession, UUID)
         case text(PersonalTextDocument)
         case office(PersonalOfficeDocument)
         case media(URL)
@@ -101,7 +102,7 @@ struct PersonalContentEditor: View {
             } else if let content, case .canvas(let store) = content {
                 // The original canvas owns its split navigation and close path.
                 CreativeCanvasSurface(record: record, store: store)
-            } else if let content, case .geography(let session) = content {
+            } else if let content, case .geography(let session, _) = content {
                 GISProjectEditorSurface(session: session, onClose: { Task { await finish() } },
                     onAssistant: { showingAssistant = true })
             } else if let content, case .manufacturing(let model) = content {
@@ -151,7 +152,7 @@ struct PersonalContentEditor: View {
                 recordingLeave.cancel()
                 biologyNotesReturn.cancel()
                 if case .biology(let session) = content { Task { await session.close() } }
-                if case .geography(let session) = content { Task { await session.presentationEnded() } }
+                if case .geography(let session, let owner) = content { Task { await session.presentationEnded(owner) } }
                 if case .office(let document) = content { Task { await document.unmount() } }
                 fileUsage?.release(); fileUsage = nil
             }
@@ -401,6 +402,13 @@ struct PersonalContentEditor: View {
     }
 
     @MainActor private func load() async {
+        // SwiftUI can restart the presentation task when an editor is covered
+        // or reconstructed. Keep its existing owner instead of opening the
+        // same original a second time, and serialize explicit retries.
+        guard isPresented, content == nil, !loading else { return }
+        loading = true
+        defer { loading = false }
+        let generation = presentationGeneration
         error = nil
         do {
             let library = try await PersonalContentService.shared.library()
@@ -470,8 +478,13 @@ struct PersonalContentEditor: View {
             case .latex:
                 content = .latex(try await LaTeXProjectSession.open(id:record.id,composition:environment.latexComposition))
             case .geography:
-                let session = try await GISProjectSession.open(id: record.id, directory: value.url)
-                try session.beginPresentation(); content = .geography(session)
+                let session = try await GISProjectSession.open(id: value.record.id, directory: value.url)
+                let owner = try session.beginPresentation()
+                guard !Task.isCancelled, isPresented, presentationGeneration == generation, record.id == value.record.id else {
+                    await session.presentationEnded(owner)
+                    throw CancellationError()
+                }
+                content = .geography(session, owner)
             case .electronics:
                 content = .electronics(try await ElectronicsProjectSession.open(id: record.id, directory: value.url))
             case .meeting:
@@ -519,7 +532,7 @@ struct PersonalContentEditor: View {
         case .chemistry(let session): Task { await session.refreshFromHost() }
         case .biology(let session): Task { try? await session.refreshFromHost() }
         case .latex(let session): Task { await session.refresh() }
-        case .geography(let session): Task { try? await session.refresh() }
+        case .geography(let session, let owner): Task { try? await session.refresh(owner) }
         default: break // These process-owned sessions are already observed.
         }
     }
@@ -561,14 +574,14 @@ struct PersonalContentEditor: View {
             await session.close()
         case .latex(let session): guard await session.flushForClose() else {return}
         case .electronics(let session): guard await session.flushForClose() else { return }
-        case .geography(let session):
+        case .geography(let session, let owner):
             if let continued = assistantLeave.continuedSnapshot,
                continued.documentID == record.id,
                environment.conversationCenter.documentAssistantWorkIsOutstanding(continued),
-               await session.endPresentationKeepingModelWork() {
+               await session.endPresentationKeepingModelWork(owner) {
                 // The same service still owns its lease and pending commit.
                 // This ends only presentation, and makes no save-success claim.
-            } else { guard await session.flushForClose() else { return } }
+            } else { guard await session.flushForClose(owner) else { return } }
         case .cad(let document):
             do { try await CADSimulationSessions.close(document:document) }
             catch { self.error = error.localizedDescription; return }

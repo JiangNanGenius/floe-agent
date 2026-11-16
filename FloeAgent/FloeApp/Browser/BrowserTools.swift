@@ -553,7 +553,7 @@ private struct BrowserPanelTool: AgentTool {
         let tabID: UUID?
     }
     static let name = "browser.panel"
-    static let toolDescription = "Browser navigation and previews run without opening the user's panel. Only when human interaction is necessary (login, verification, file selection or an explicit user interaction request), call requestUser with a concise reason explaining what the user must do. It opens this task's browser panel, hands browser control to the user. The task may continue other work; browser mutations are unavailable until the user returns control. The return event is delivered to this task; observe the page again before acting. Do not use it for ordinary navigation or progress display. hide closes only the browser panel after the user has returned control; it never changes the main navigation sidebar."
+    static let toolDescription = "Use requestUser with a concise reason when login, verification, file selection or another human action is required. This hands this task's browser to the user and shows a request they can open. Continue other authorized work while waiting. When control returns to this task, observe the page again. hide withdraws this task's request after control returns. The user chooses when to open or close the interactive browser."
     static let parametersJSON = #"{"type":"object","properties":{"action":{"type":"string","enum":["requestUser","hide"]},"reason":{"type":"string","maxLength":500},"tabID":{"type":"string","format":"uuid"}},"required":["action"],"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.controlsGUI]
     static let isSideEffecting = true
@@ -588,10 +588,10 @@ private struct BrowserPanelTool: AgentTool {
                 runID: handoffRunID,
                 in: owner
             )
-            return ToolExecutionOutput(summary: "The user controls this task's browser; continue other authorized work. A return notification will arrive in this task. Requested interaction: " + reason, fullOutputSHA256: FloeDigest.sha256Hex(Data(reason.utf8)), requiresUserAction: false)
+            return ToolExecutionOutput(digesting: "Human interaction was requested for this task's browser. Browser actions are blocked. You may continue other authorized work while waiting for the user.")
         }
         try center.requestPanelDismissal(conversationID: owner)
-        return ToolExecutionOutput(digesting: "Browser panel closed; sidebar preference retained")
+        return ToolExecutionOutput(digesting: "This task's browser assistance request was cleared.")
     }
 }
 

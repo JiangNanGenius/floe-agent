@@ -79,9 +79,9 @@ typealias BiologyNotesInsertion = @MainActor @Sendable (BiologyNotesPayload) asy
         assistantContext = context
     }
     @ObservationIgnored private var lease: PersonalLibraryUsageLease?
-    @ObservationIgnored private var fence = BiologyPresentationFence()
+    @ObservationIgnored private let fence = BiologyPresentationFence()
     @ObservationIgnored private var active = false
-    @ObservationIgnored private var closing = false
+    @ObservationIgnored private var closeTask: Task<Void, Never>?
     private struct NativeTask {
         let cancel: @MainActor @Sendable () -> Void
         let join: @MainActor @Sendable () async -> Void
@@ -95,24 +95,32 @@ typealias BiologyNotesInsertion = @MainActor @Sendable (BiologyNotesPayload) asy
         workbenchModel = BiologyWorkbenchModel(service: host.service, projectID: record.id)
     }
     static func open(id: UUID, directory: URL, host: BiologyHostServices) async throws -> BiologyProjectSession {
-        let location = try await host.access.location(id)
-        guard location.url.standardizedFileURL == directory.standardizedFileURL else { throw BiologyHostError.changed }
-        let project = try await host.store.load(id)
-        guard project.id == location.record.id else { throw BiologyHostError.changed }
-        let session: BiologyProjectSession
-        if let existing = sessions[id] {
-            guard existing.host === host, !existing.active, !existing.closing else { throw PersonalFileActionError.closeFirst }
-            session = existing
-        } else {
-            session = BiologyProjectSession(record: location.record, directory: directory, project: project, host: host)
+        while true {
+            try Task.checkCancellation()
+            if let existing = sessions[id] {
+                guard existing.host === host, let closeTask = existing.closeTask else { throw BiologyHostError.alreadyOpen }
+                await closeTask.value
+                continue // Re-resolve the original and its revision after the previous presentation has left.
+            }
+            let location = try await host.access.location(id)
+            guard location.url.standardizedFileURL == directory.standardizedFileURL else { throw BiologyHostError.changed }
+            let project = try await host.store.load(id)
+            try Task.checkCancellation()
+            guard project.id == location.record.id else { throw BiologyHostError.changed }
+            // Another caller may have mounted or started closing during these reads.
+            guard sessions[id] == nil else { continue }
+            let session = BiologyProjectSession(record: location.record, directory: location.url, project: project, host: host)
+            session.lease = try PersonalLibraryFileActions.acquireUse(id: id, directory: location.url)
+            session.active = true
             sessions[id] = session
+            await session.workbenchModel.refresh()
+            guard !Task.isCancelled, session.active, sessions[id] === session else {
+                await session.close()
+                throw CancellationError()
+            }
+            session.observe()
+            return session
         }
-        session.record = location.record; session.directory = location.url; session.project = project
-        session.lease = try PersonalLibraryFileActions.acquireUse(id: id, directory: location.url)
-        session.fence = BiologyPresentationFence(); session.active = true
-        await session.workbenchModel.refresh()
-        session.observe()
-        return session
     }
     private func observe() {
         observer?.cancel()
@@ -162,8 +170,8 @@ typealias BiologyNotesInsertion = @MainActor @Sendable (BiologyNotesPayload) asy
         catch { diagnostic = error.localizedDescription; return false }
     }
     func close() async {
-        guard active, !closing else { return }
-        closing = true; defer { closing = false }
+        if let closeTask { await closeTask.value; return }
+        guard active else { return }
         let pending = Array(nativeTasks.values); nativeTasks.removeAll()
         for task in pending { task.cancel() }
         active = false; fence.close(); observer?.cancel(); observer = nil
@@ -171,10 +179,16 @@ typealias BiologyNotesInsertion = @MainActor @Sendable (BiologyNotesPayload) asy
         // accepted scientific workers and the shared persistent file assistant
         // retain the App's service/task ownership; leaving the editor never
         // cancels them by itself.
-        for task in pending { await task.join() }
-        await host.abandonUnusedNativeOwners(projectID: projectID)
-        await host.closeConsoleOwner(projectID: projectID)
-        lease?.release(); lease = nil
+        let retirement = Task { @MainActor in
+            for task in pending { await task.join() }
+            await host.abandonUnusedNativeOwners(projectID: projectID)
+            await host.closeConsoleOwner(projectID: projectID)
+            lease?.release(); lease = nil
+            if Self.sessions[projectID] === self { Self.sessions[projectID] = nil }
+        }
+        closeTask = retirement
+        await retirement.value
+        closeTask = nil
     }
     func makeTools(_ id: UUID) async throws -> BiologyToolSession {
         let token = fence; try await requireCurrent(token)

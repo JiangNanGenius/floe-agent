@@ -41,6 +41,8 @@ public struct ConversationHistoryAssembler: Sendable {
                 $0.id != excludingMessageID
                     && $0.role != "goalContinuation"
                     && !Self.isLegacyWorkspaceContextNotice($0)
+                    // A live run receives this transient ownership fact through its exact outbox.
+                    && !($0.role == "system" && $0.parts.contains { $0.metadata[BrowserControlNotice.historyMarker] == "1" })
             }
         let originals = Dictionary(uniqueKeysWithValues: persisted.map { ($0.id, $0) })
         let textHistory = persisted.map { message in

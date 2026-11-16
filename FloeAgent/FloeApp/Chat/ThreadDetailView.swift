@@ -90,6 +90,7 @@ struct ThreadDetailView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.showsComposerBrowserPreview) private var showsComposerBrowserPreview
     @Environment(\.helpSceneID) private var helpSceneID
     @Environment(\.helpSettingsOpenAction) private var helpSettingsOpenAction
     @State private var imagePlaygroundHostID = UUID().uuidString
@@ -1632,6 +1633,13 @@ struct ThreadDetailView: View {
             .accessibilityIdentifier("thread.conversation_missing")
         } else {
             VStack(spacing: 0) {
+                if showsComposerBrowserPreview, !embedded, !documentAssistant, !viewModel.isTemporary,
+                   structuredExport == nil, answerForNotes == nil, scheduleDetail == nil, presentedChild == nil,
+                   !showingTaskEnvironment, editingPendingInput == nil, !showingGoalBuilder, !showingPermissionsSheet,
+                   selectedAttachment == nil, selectedImportantFile == nil {
+                    TaskBrowserLivePreview(center: environment.browserCenter,
+                                           conversationID: viewModel.conversationID, inlineImage: false)
+                }
                 if !viewModel.pendingInputs.isEmpty {
                     PendingInputQueueView(
                         inputs: viewModel.pendingInputs,
@@ -1944,14 +1952,14 @@ private struct PendingInputQueueView: View {
                         Text(displayText(for: input))
                             .font(.subheadline)
                             .lineLimit(2)
-                        Text(input.executionMode == "browserHandoff" && input.status == .queued
-                            ? IDELanguageRunText.t("通知已保存至原任务，可在浏览器中继续任务", "Saved to the original task; continue from the browser")
+                        Text(isBrowserNotice(input) && input.status == .queued
+                            ? IDELanguageRunText.t("通知已保存至原任务", "Notice saved to the original task")
                             : statusTitle(input.status))
                             .font(FloeTheme.Typography.metadata)
                             .foregroundStyle(input.status == .queued ? .secondary : FloeTheme.pending)
                     }
                     Spacer(minLength: 4)
-                    if input.executionMode == "browserHandoff" {
+                    if isBrowserNotice(input) {
                         Image(systemName: "safari").foregroundStyle(.secondary)
                     } else if input.status == .queued || input.status == .steerPending {
                         let queuedIndex = queuedInputs.firstIndex(where: { $0.id == input.id })
@@ -2022,9 +2030,21 @@ private struct PendingInputQueueView: View {
         if let summary = InternalNoticeProjection.userFacingSummary(for: input) {
             return summary
         }
-        return input.executionMode == "browserHandoff"
-            ? IDELanguageRunText.t("浏览器控制权已交还", "Browser control returned")
-            : input.content
+        guard isBrowserNotice(input) else { return input.content }
+        if input.executionMode == "browserHandoff" || input.content == BrowserControlNotice.returned.message {
+            return IDELanguageRunText.t("网页已交还", "Browser control returned")
+        }
+        if input.content == BrowserControlNotice.humanTookControl.message {
+            return IDELanguageRunText.t("你已接管网页", "You took control of the page")
+        }
+        if input.content == BrowserControlNotice.sessionEnded.message {
+            return IDELanguageRunText.t("上次打开的网页已关闭", "The previous browser page closed")
+        }
+        return IDELanguageRunText.t("浏览器状态已更新", "Browser status updated")
+    }
+
+    private func isBrowserNotice(_ input: PendingUserInput) -> Bool {
+        input.executionMode == "browserHandoff" || input.executionMode == BrowserControlNotice.executionMode
     }
 
     private func statusTitle(_ status: PendingUserInputStatus) -> String {

@@ -10,6 +10,8 @@
 
 #if canImport(SwiftUI) && canImport(WebKit) && canImport(UIKit) && DEBUG
 import Foundation
+import Network
+import os
 import Testing
 import WebKit
 import SwiftUI
@@ -19,6 +21,7 @@ import FloeModels
 import FloeTools
 import FloeEnvironments
 import FloeExecution
+import FloeAgentRuntime
 @testable import FloeApp
 
 @Suite("FloeApp.BrowserTaskIsolation", .serialized)
@@ -167,7 +170,16 @@ struct BrowserTaskSessionTests {
     /// can inject `WKWebsiteDataStore.nonPersistent()`.
     private func isolatedSession(
         owner: UUID,
-        center: BrowserSessionCenter
+        center: BrowserSessionCenter,
+        linkOpenBehavior: BrowserLinkOpenBehavior = .inApp,
+        usesWideLayout: @escaping @MainActor (URL?) -> Bool = { _ in false },
+        previewSnapshotTimeout: Duration = .seconds(2),
+        previewSnapshot: @escaping BrowserPreviewSnapshot = { webView, configuration, finish in
+            webView.takeSnapshot(with: configuration) { image, _ in finish(image) }
+        },
+        openSystemURL: @escaping @MainActor (URL) -> Void = { _ in
+            Issue.record("This isolated browser unexpectedly opened an external link")
+        }
     ) throws -> (session: BrowserTaskSession, tab: UUID, store: WKWebsiteDataStore) {
         let store = WKWebsiteDataStore.nonPersistent()
         let root = FileManager.default.temporaryDirectory
@@ -184,9 +196,14 @@ struct BrowserTaskSessionTests {
                 artifactDirectory: root,
                 maximumTabs: 6,
                 maximumEventsPerTab: 64,
-                websiteDataStoreProvider: { store }
+                websiteDataStoreProvider: { store },
+                linkOpenBehaviorProvider: { linkOpenBehavior },
+                usesWideLayout: usesWideLayout
             ),
-            host: center
+            host: center,
+            previewSnapshotTimeout: previewSnapshotTimeout,
+            previewSnapshot: previewSnapshot,
+            openSystemURL: openSystemURL
         )
         _ = session.createTab()
         let tab = try #require(session.activeTabID)
@@ -560,6 +577,206 @@ struct BrowserTaskSessionTests {
 
     // MARK: - Handoff and takeover
 
+    @Test("A cold receipt records the old page's end and cannot claim or unlock the replacement WebKit page")
+    func coldHandoffNeverClaimsTheReplacementPage() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("handoffs.json"), owner = UUID(), run = UUID()
+        var previous: BrowserSessionCenter? = BrowserSessionCenter(durableHandoffs: false, handoffStoreURL: url)
+        previous?.bind(to: owner)
+        previous?.takeControl(runID: run)
+        let original = try #require(previous?.handoff)
+        #expect(original.humanPresent && !original.returning)
+        previous = nil
+        let center = BrowserSessionCenter(durableHandoffs: false, handoffStoreURL: url)
+        center.bind(to: owner)
+        defer { center.discard(conversationID: owner) }
+        let newSession = try #require(center.visibleSession)
+        let lease = try center.beginModelControl(conversationID: owner, runID: run).lease
+        let newPage = try #require(newSession.activeWebView)
+        var closures: [UUID] = []
+        center.deliverTakeover = { _ in Issue.record("Replayed an arrival in a destroyed session"); return true }
+        center.deliverHandoff = { old, resume in
+            #expect(old.closedAfterRestart == true && !old.humanPresent && !resume)
+            closures.append(old.id)
+            return false
+        }
+        await center.recoverHandoff(conversationID: owner, runID: UUID())
+        #expect(closures.isEmpty)
+        await center.recoverHandoff(conversationID: owner, runID: run)
+        let persisted = try JSONDecoder().decode([BrowserSessionCenter.Handoff].self, from: Data(contentsOf: url))
+        #expect(persisted.first?.closedAfterRestart == true && closures == [original.id])
+        #expect(newSession.sessionID != original.sessionID && newSession.activeWebView === newPage)
+        #expect(newSession.isModelControlCurrent(lease) && !newSession.isUserControlling && !newPage.isUserInteractionEnabled)
+    }
+
+    @Test("A delayed handback freezes its original tab and restores interaction after success or failure", arguments: [false, true])
+    func handbackKeepsItsOriginalTabWhileDeliveryIsPending(fails: Bool) async throws {
+        let center = makeCenter(), owner = UUID()
+        center.bind(to: owner)
+        defer { center.discard(conversationID: owner) }
+        let session = try #require(center.visibleSession)
+        let original = try #require(session.activeTabID), other = try #require(session.createTab())
+        session.activate(original)
+        let page = try #require(session.activeWebView)
+        center.takeControl(runID: UUID())
+        let receipt = try #require(center.handoff)
+        let (entered, signal) = AsyncStream<Void>.makeStream()
+        let (unblock, release) = AsyncStream<Void>.makeStream()
+        defer { release.finish(); signal.finish() }
+        center.deliverHandoff = { _, _ in
+            signal.yield(())
+            for await _ in unblock { break }
+            if fails { throw FloeError.validationFailed("Fixture delivery failed") }
+            return false
+        }
+        let returning = Task { await center.returnControlIfCurrent(for: session, handoffID: receipt.id) }
+        for await _ in entered { break }
+        #expect(session.returningToModel && !page.isUserInteractionEnabled)
+        session.activate(other)
+        session.close(original)
+        session.close(other)
+        #expect(session.createTab() == nil && !session.registerUserInput())
+        #expect(session.tabs.map(\.id) == [original, other] && session.activeWebView === page)
+        release.yield(())
+        #expect(await returning.value == !fails)
+        #expect(session.activeTabID == original && session.activeWebView === page && page.isUserInteractionEnabled)
+        #expect(session.isUserControlling == fails && !session.returningToModel)
+    }
+
+    @Test("Returning a browser preserves the parked checkpoint and a later terminal run, even for a legacy Continue request")
+    func returningABrowserNeverResumesOrRewritesTheOriginalCheckpoint() async throws {
+        let environment = AppEnvironment.preview(), center = environment.browserCenter
+        let conversations = ConversationCenter(environment: environment)
+        defer { withExtendedLifetime(conversations) {} }
+        try await environment.database.migrate()
+        let owner = UUID(), id = UUID()
+        try await environment.conversationStore.saveConversation(.init(id: owner, title: "Return checkpoint", createdAt: Date(), updatedAt: Date()))
+        try await environment.runStore.saveRun(.init(id: id, conversationID: owner, state: "checkpointed", goal: "Fixture",
+            startedAt: Date(), conversationMode: "chat"))
+        let checkpoint = AgentCheckpoint(runID: id, conversationID: owner, state: .checkpointed(.init(reason: "Waiting for the browser")),
+            messages: [.init(role: "user", content: "Fixture")], conversationMode: .chat)
+        try await environment.checkpointStore.save(checkpoint)
+        let saved = try #require(try await environment.checkpointStore.load(runID: id))
+        let parked = try #require(try await environment.runStore.run(id: id))
+        center.bind(to: owner)
+        defer { center.discard(conversationID: owner) }
+        let session = try #require(center.visibleSession)
+        center.takeControl(runID: id)
+        let receipt = try #require(center.handoff)
+        #expect(await center.returnControlIfCurrent(for: session, handoffID: receipt.id))
+        await center.returnToAgent(continueTask: true)
+        await center.recoverHandoff(conversationID: owner, runID: id)
+        #expect(center.handoffNeedsContinue && !center.handoffNotified && center.handoffError == nil)
+        #expect(try await environment.runStore.runs(conversationID: owner) == [parked])
+        #expect(try await environment.checkpointStore.load(runID: id) == saved)
+        try await environment.runStore.updateRunState(id: id, state: "completed", endedAt: Date())
+        let completed = try #require(try await environment.runStore.run(id: id))
+        await center.returnToAgent(continueTask: true)
+        #expect(try await environment.runStore.runs(conversationID: owner) == [completed])
+        #expect(try await environment.checkpointStore.load(runID: id) == saved)
+        #expect(try await environment.runStore.errors(runID: id).isEmpty)
+        let messages = try await environment.conversationStore.messages(conversationID: owner)
+        #expect(messages.map(\.content) == [BrowserControlNotice.humanTookControl.message, BrowserControlNotice.returned.message])
+        #expect(messages.allSatisfy { $0.role == "system" && $0.runID == id })
+        #expect(try await environment.runningInputStore.pending(conversationID: owner).isEmpty)
+    }
+
+    @Test("A finished run keeps private-free browser receipts without queuing or launching another turn")
+    func endedRunKeepsOnlyItsOwnBrowserNotices() async throws {
+        let environment = AppEnvironment.preview()
+        let conversations = ConversationCenter(environment: environment)
+        defer { withExtendedLifetime(conversations) {} }
+        try await environment.database.migrate()
+        let center = environment.browserCenter
+        let owner = UUID(), runID = UUID(), newerRun = UUID()
+        try await environment.conversationStore.saveConversation(.init(id: owner, title: "Browser notices", createdAt: Date(), updatedAt: Date()))
+        for id in [runID, newerRun] {
+            try await environment.runStore.saveRun(.init(id: id, conversationID: owner, state: "completed",
+                goal: "Fixture", startedAt: Date(), endedAt: Date()))
+        }
+        center.bind(to: owner)
+        defer { center.discard(conversationID: owner) }
+        let session = try #require(center.visibleSession)
+        try center.requestUserInteraction(reason: "private-canary-797", tabID: nil, runID: runID, in: owner)
+        let requested = try #require(center.handoff)
+        await center.recoverHandoff(conversationID: owner, runID: runID)
+        #expect(try await environment.conversationStore.messages(conversationID: owner).isEmpty)
+        center.recordOwnerRun(conversationID: owner, runID: newerRun)
+        #expect(session.registerUserInput())
+        #expect(await center.returnControlIfCurrent(for: session, handoffID: requested.id))
+        await center.recoverHandoff(conversationID: owner, runID: newerRun)
+        await center.recoverHandoff(conversationID: owner, runID: runID)
+        let notices = try await environment.conversationStore.messages(conversationID: owner)
+        #expect(notices.map(\.content) == [BrowserControlNotice.humanTookControl.message, BrowserControlNotice.returned.message])
+        #expect(notices.allSatisfy { $0.role == "system" && $0.runID == runID && !$0.content.contains("private-canary") })
+        #expect(Set(notices.map(\.id)).count == 2)
+        #expect(try await environment.runningInputStore.pending(conversationID: owner).isEmpty)
+        let runs = try await environment.runStore.runs(conversationID: owner)
+        #expect(Set(runs.map(\.id)) == [runID, newerRun] && runs.allSatisfy { $0.state == "completed" })
+    }
+
+    @Test("Only a real human arrival notifies the original run and a handback cannot close a different task")
+    func humanArrivalAndHandbackAreDistinctOwnerBoundEvents() async throws {
+        let center = makeCenter()
+        let owner = UUID(), other = UUID(), run = UUID()
+        center.bind(to: owner)
+        defer { center.discard(conversationID: other); center.discard(conversationID: owner) }
+        let session = try #require(center.visibleSession)
+        var events: [UUID] = []
+        center.deliverTakeover = { receipt in
+            #expect(receipt.runID == run && receipt.conversationID == owner && receipt.sessionID == session.sessionID)
+            events.append(try #require(receipt.takeoverEventID))
+            return true
+        }
+        center.deliverHandoff = { receipt, continueTask in
+            #expect(receipt.runID == run && !continueTask)
+            events.append(receipt.id)
+            return false
+        }
+
+        try center.requestUserInteraction(reason: "Synthetic private interaction", tabID: nil, runID: run, in: owner)
+        let request = try #require(center.handoff)
+        #expect(!request.humanPresent && session.isUserControlling)
+        await center.recoverHandoff(conversationID: owner, runID: run)
+        #expect(events.isEmpty)
+        #expect(throws: (any Error).self) {
+            try center.requestUserInteraction(reason: "Another run", tabID: nil, runID: UUID(), in: owner)
+        }
+        center.takeControl()
+        let arrival = try #require(center.handoff?.takeoverEventID)
+        #expect(arrival != request.id)
+        let initialActivity = session.humanActivitySequence
+        #expect(session.registerUserInput())
+        #expect(session.registerUserInput())
+        #expect(session.humanActivitySequence == initialActivity + 2)
+        center.takeControl()
+        await center.recoverHandoff(conversationID: owner, runID: run)
+        #expect(events == [arrival])
+        center.bind(to: other)
+        #expect(!(await center.returnControlIfCurrent(for: session, handoffID: request.id)))
+        #expect(session.isUserControlling)
+        center.bind(to: owner)
+        #expect(!(await center.returnControlIfCurrent(for: session, handoffID: UUID())))
+        #expect(!(await center.returnControlIfCurrent(for: session, handoffID: request.id, presentationID: UUID())))
+        #expect(await center.returnControlIfCurrent(for: session, handoffID: request.id))
+        #expect(events == [arrival, request.id] && !session.isUserControlling)
+        #expect(!(await center.returnControlIfCurrent(for: session, handoffID: request.id)))
+        let next = try center.beginModelControl(conversationID: owner, runID: run).lease
+        let document = try #require(session.activeTab?.documentID)
+        await center.recoverHandoff(conversationID: owner, runID: run)
+        await center.recoverHandoff()
+        #expect(session.modelControl == next && session.isModelControlCurrent(next))
+        #expect(session.activeTab?.documentID == document && session.usesFixedViewport)
+        #expect(session.activeWebView?.isUserInteractionEnabled == false)
+        _ = center.releaseModelControl(conversationID: owner, runID: run, controlID: next.id)
+        #expect(session.registerUserInput())
+        center.bind(to: other)
+        center.bind(to: owner)
+        await center.recoverHandoff(conversationID: owner, runID: run)
+        #expect(session.isUserControlling && center.handoff == nil)
+    }
+
     @Test("Takeover of one task neither blocks nor mutates another, and cannot hide its panel")
     func takeoverIsIsolated() async throws {
         let center = makeCenter()
@@ -584,7 +801,7 @@ struct BrowserTaskSessionTests {
             "{\"action\":\"requestUser\",\"reason\":\"Sign in to task A\"}",
             as: contextA
         )
-        #expect(panel.contains("The user controls this task's browser"), Comment(rawValue: panel))
+        #expect(panel.contains("Human interaction was requested for this task's browser"), Comment(rawValue: panel))
         #expect(center.presentationRequest?.conversationID == ownerA)
         #expect(center.presentationRequest?.show == true)
         #expect(sessionA.isUserControlling)
@@ -1038,6 +1255,431 @@ struct BrowserTaskSessionTests {
 
     // MARK: - Run-scoped browser control
 
+    private func awaitPreview(_ predicate: @MainActor () -> Bool) async throws {
+        let end = ContinuousClock.now.advanced(by: .seconds(5))
+        while !predicate(), ContinuousClock.now < end { try await Task.sleep(for: .milliseconds(20)) }
+        try #require(predicate(), "The expected WebKit preview transition did not occur")
+    }
+
+    private let previewArticle = """
+        <!doctype html><meta name="viewport" content="width=device-width, initial-scale=1">
+        <body style="margin:0;background:#164899">
+        <article><h1>Spatial measurements</h1><p>An ordinary article explains this diagram in freely written prose.</p>
+        <button style="margin:16px;padding:8px;background:white">30°</button></article></body>
+        """
+
+    private func acquirePreviewLease(_ session: BrowserTaskSession) throws -> BrowserControlLease {
+        if case .acquired(let lease) = try session.acquireModelControl(runID: UUID()) { return lease }
+        throw FloeError.validationFailed("The fixture's browser did not grant the test run control")
+    }
+
+    @Test("Wide legacy layout persists for exactly the opted-in HTTP origin")
+    func wideLayoutIsOffByDefaultAndRestoresOnlyTheSelectedOrigin() throws {
+        let key = "floe-wide-layout-tests-" + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: key))
+        defer { defaults.removePersistentDomain(forName: key) }
+        let settings = BrowserSettingsService(defaults: defaults)
+        let site = try #require(URL(string: "https://LEGACY.example:443/test?fixture=one"))
+        let same = try #require(URL(string: "https://legacy.example/another"))
+        let otherPort = try #require(URL(string: "https://legacy.example:8443/"))
+        #expect(!settings.usesWideLayout(for: site))
+        settings.setWideLayout(true, for: site)
+        let restored = BrowserSettingsService(defaults: defaults)
+        #expect(restored.usesWideLayout(for: same) && !restored.usesWideLayout(for: otherPort))
+        #expect(restored.wideLayoutOrigins == ["https://legacy.example"])
+        #expect(restored.userAgent == settings.userAgent)
+        restored.setWideLayout(false, for: same)
+        #expect(!BrowserSettingsService(defaults: defaults).usesWideLayout(for: site))
+    }
+
+    @Test("One real page retains its layout, form and history until release or explicit takeover", arguments: [false, true])
+    func fixedViewportRetainsPageWhenTheDisplayResizes(wide: Bool) async throws {
+        let center = makeCenter()
+        let (session, tab, _) = try isolatedSession(owner: UUID(), center: center, usesWideLayout: { _ in wide })
+        defer { session.release(); try? FileManager.default.removeItem(at: session.artifactDirectory) }
+        let web = try #require(session.activeWebView)
+        let presenter = UIView(frame: CGRect(x: 0, y: 0, width: 480, height: 640))
+        web.frame = presenter.bounds
+        web.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        presenter.addSubview(web)
+        try await loadIsolated("""
+            <meta name="viewport" content="width=device-width,initial-scale=1">
+            <input id="draft"><div style="height:2000px">Reading</div>
+            """, tab: tab, session: session)
+        _ = try await web.evaluateJavaScript("draft.value='Fixture draft'; history.pushState({},'', '#kept'); scrollTo(0,90); true")
+        let policy = web.configuration.preferences.inactiveSchedulingPolicy
+        let history = try await web.evaluateJavaScript("history.length") as? NSNumber
+        let model = try acquirePreviewLease(session)
+        let host = try #require(web.superview)
+        let size = web.bounds.size
+        #expect(session.usesFixedViewport && !web.isUserInteractionEnabled)
+        #expect(web.configuration.preferences.inactiveSchedulingPolicy == .none)
+        #expect(host !== presenter && size.width == (wide ? 1280 : 480))
+        let first = await session.execute(BrowserCommand(sessionID: session.sessionID, tabID: tab,
+                                                        action: .observe(cursor: nil)), control: model)
+        let firstPage = try #require(first.page)
+        presenter.frame.size = CGSize(width: 850, height: 260)
+        presenter.layoutIfNeeded()
+        let second = await session.execute(BrowserCommand(sessionID: session.sessionID, tabID: tab,
+                                                         action: .observe(cursor: nil)), control: model)
+        let secondPage = try #require(second.page)
+        #expect(web.bounds.size == size && web.superview === host)
+        #expect(firstPage.viewportWidth == secondPage.viewportWidth && firstPage.viewportHeight == secondPage.viewportHeight)
+        #expect(firstPage.documentID == secondPage.documentID)
+        if wide {
+            session.beginUserTakeover(reason: "Fixture takeover")
+        } else {
+            #expect(session.releaseModelControl(controlID: model.id, runID: model.runID) == .released)
+        }
+        #expect(!session.usesFixedViewport && session.activeWebView === web && web.isUserInteractionEnabled)
+        #expect(web.configuration.preferences.inactiveSchedulingPolicy == policy)
+        presenter.addSubview(web)
+        web.frame = presenter.bounds
+        let draft = try await web.evaluateJavaScript("draft.value") as? String
+        let finalHistory = try await web.evaluateJavaScript("history.length") as? NSNumber
+        #expect(draft == "Fixture draft" && finalHistory == history && web.url?.fragment == "kept")
+    }
+
+    @Test("Distinct presentations transfer the original WebKit page and stale owners cannot detach it")
+    func fixedViewportTransfersThePageBetweenPresentations() async throws {
+        let center = makeCenter()
+        let (session, id, _) = try isolatedSession(owner: UUID(), center: center)
+        defer { session.release(); try? FileManager.default.removeItem(at: session.artifactDirectory) }
+        try await loadIsolated(previewArticle, tab: id, session: session)
+        let tab = try #require(session.activeTab)
+        let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let left = UIWindow(windowScene: scene)
+        let right = UIWindow(windowScene: scene)
+        func mount(in window: UIWindow, readOnly: Bool, priority: Int) -> BrowserPageMount {
+            let mount = BrowserPageMount(frame: CGRect(x: 0, y: 0, width: 500, height: 550))
+            window.addSubview(mount)
+            mount.configure(tab: tab, id: UUID(), readOnly: readOnly, priority: priority, active: true)
+            return mount
+        }
+        let original = mount(in: left, readOnly: false, priority: 0)
+        let waiting = mount(in: right, readOnly: false, priority: 0)
+        #expect(original.ownsPage && !waiting.ownsPage && tab.webView.superview === original)
+        let lease = try acquirePreviewLease(session)
+        let fixedBounds = tab.webView.bounds
+        let host = try #require(tab.webView.superview)
+        let spectator = mount(in: left, readOnly: true, priority: 1)
+        let larger = mount(in: right, readOnly: true, priority: 2)
+        #expect(host.superview === larger && !spectator.ownsPage && !original.ownsPage)
+        #expect(!tab.webView.isUserInteractionEnabled && tab.webView.accessibilityElementsHidden)
+        larger.transform = CGAffineTransform(scaleX: 1.7, y: 1.7)
+        #expect(tab.webView.bounds == fixedBounds && !host.isUserInteractionEnabled)
+        larger.removeFromSuperview()
+        #expect(host.superview === spectator)
+        larger.detach()
+        #expect(host.superview === spectator && tab.webView.superview === host)
+        tab.viewport.preferPresentation(waiting.presentationID)
+        #expect(session.releaseModelControl(controlID: lease.id, runID: lease.runID) == .released)
+        #expect(waiting.ownsPage && tab.webView.superview === waiting && tab.webView.isUserInteractionEnabled)
+        #expect(!tab.webView.accessibilityElementsHidden && !spectator.ownsPage)
+        original.detach()
+        spectator.detach()
+        #expect(tab.webView.superview === waiting)
+    }
+
+    @Test("A hung native tool screenshot drains on takeover and its late callback cannot issue a second frame")
+    func toolSnapshotDeadlineDrainsTakeoverAndFencesLateFrame() async throws {
+        let center = makeCenter()
+        var calls = 0
+        var first: (@MainActor (UIImage?) -> Void)?
+        let (session, tab, _) = try isolatedSession(owner: UUID(), center: center, previewSnapshotTimeout: .milliseconds(400),
+            previewSnapshot: { _, _, completion in calls += 1; first = completion })
+        defer { session.release(); try? FileManager.default.removeItem(at: session.artifactDirectory) }
+        try await loadIsolated(previewArticle, tab: tab, session: session)
+        let lease = try acquirePreviewLease(session)
+        let command = BrowserCommand(sessionID: session.sessionID, tabID: tab, action: .screenshot)
+        let pending = Task { @MainActor in await session.execute(command, control: lease) }
+        try await awaitPreview { first != nil }
+        session.beginUserTakeover(reason: "Fixture explicit takeover")
+        #expect(session.takeoverPending && session.usesFixedViewport)
+        let denied = await pending.value
+        #expect(denied.status == .needsUser && denied.page == nil)
+        #expect(!session.takeoverPending && !session.usesFixedViewport)
+        session.endUserControl()
+        let next = try acquirePreviewLease(session)
+        let noOverlap = await session.execute(command, control: next)
+        #expect(noOverlap.status == .timeout && calls == 1)
+        first?(UIImage())
+        #expect(session.modelControl == next && session.livePreviewFrame == nil)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: session.artifactDirectory.path).isEmpty)
+    }
+
+    @Test("Scrolling during the native capture discards both the stale receipt and the image file")
+    func modelSnapshotRejectsScrollDuringCapture() async throws {
+        let center = makeCenter()
+        var captured = false
+        let (session, tab, _) = try isolatedSession(owner: UUID(), center: center, previewSnapshot: { web, configuration, finish in
+            Task { @MainActor in
+                _ = try? await web.evaluateJavaScript("window.scrollTo(0,150); true")
+                web.takeSnapshot(with: configuration) { image, _ in captured = image != nil; finish(image) }
+            }
+        })
+        defer { session.release(); try? FileManager.default.removeItem(at: session.artifactDirectory) }
+        try await loadIsolated("<meta name='viewport' content='width=device-width,initial-scale=1'><body style='height:3000px'>Scroll fixture</body>", tab: tab, session: session)
+        let lease = try acquirePreviewLease(session)
+        let result = await session.execute(BrowserCommand(sessionID: session.sessionID, tabID: tab, action: .screenshot), control: lease)
+        #expect(captured && result.status == .stale && result.page == nil)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: session.artifactDirectory.path).isEmpty)
+    }
+
+    @Test("Old screenshots cannot dispatch after scrolling, and an input already sent is never replayed")
+    func viewportDriftRejectsOldPixelsAndNeverReplaysDispatchedClick() async throws {
+        let center = makeCenter()
+        let (session, tab, _) = try isolatedSession(owner: UUID(), center: center)
+        defer { session.release(); try? FileManager.default.removeItem(at: session.artifactDirectory) }
+        try await loadIsolated("""
+            <meta name="viewport" content="width=device-width,initial-scale=1">
+            <body style="margin:0"><canvas id="pad" style="position:fixed;inset:0;width:100%;height:100%" width="400" height="400"></canvas>
+            <div style="height:3000px"></div><script>
+            window.presses=0; pad.onclick=()=>{ window.presses++; scrollTo(0,window.scrollY+100); };
+            </script></body>
+            """, tab: tab, session: session)
+        let model = try acquirePreviewLease(session)
+        let web = try #require(session.activeWebView)
+        func screenshot() async throws -> (BrowserArtifactReference, String) {
+            let result = await session.execute(BrowserCommand(sessionID: session.sessionID, tabID: tab, action: .screenshot), control: model)
+            let page = try #require(result.page)
+            return (try #require(page.screenshotArtifact), page.documentID)
+        }
+        func click(_ image: BrowserArtifactReference, _ document: String) async -> BrowserResult {
+            await session.execute(BrowserCommand(sessionID: session.sessionID, tabID: tab, expectedDocumentID: document,
+                visualEvidenceSHA256: image.sha256, visualFallbackReason: "noStructuredTarget",
+                action: .click(.point(x: Double(image.pixelWidth) / 2, y: Double(image.pixelHeight) / 2))), control: model)
+        }
+        let first = try await screenshot()
+        let original = try #require(session.activeTab?.visualFallbackEvidence?.geometry)
+        _ = try await web.evaluateJavaScript("scrollTo(0,150); true")
+        let stale = await click(first.0, first.1)
+        #expect(stale.status == .stale)
+        let before = try await web.evaluateJavaScript("window.presses") as? NSNumber
+        #expect(before?.intValue == 0)
+
+        // scrollTo changes the DOM offset before WebKit delivers its scroll event and UIKit viewport update.
+        // Start the next independent capture only after both coordinate spaces stop changing.
+        let deadline = ContinuousClock.now.advanced(by: .seconds(4))
+        var lastDOM: BrowserPageGeometry?
+        var lastNative: ImpeccableNativeViewSample?
+        var stableSince = ContinuousClock.now
+        var settled = false
+        while ContinuousClock.now < deadline {
+            let data = try await BrowserProbeRequest().run(deadline: deadline) { completion in
+                web.callAsyncJavaScript("return globalThis.__floeProtocol.geometry();",
+                    arguments: [:], in: nil, in: session.contentWorld, completionHandler: completion)
+            }
+            let dom = try JSONDecoder().decode(BrowserPageGeometry.self, from: data)
+            let native = ImpeccableNativeViewSample.current(of: web.scrollView)
+            if dom != lastDOM || native != lastNative { stableSince = .now }
+            lastDOM = dom
+            lastNative = native
+            if dom.page == original.page, dom.epoch > original.epoch, abs(dom.scrollY - 150) < 1,
+               abs(dom.pageTop - dom.top - dom.scrollY) < 1, stableSince.duration(to: .now) >= .milliseconds(120) {
+                settled = true
+                break
+            }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        try #require(settled, Comment(rawValue: "Scroll did not settle before capture: DOM \(String(describing: lastDOM)), native \(String(describing: lastNative))"))
+        let fresh = try await screenshot()
+        let once = await click(fresh.0, fresh.1)
+        #expect(once.error?.code == "dispatched-unconfirmed")
+        let after = try await web.evaluateJavaScript("window.presses") as? NSNumber
+        #expect(after?.intValue == 1)
+    }
+
+    @Test("A semantic ref can move without changing its control but cannot act on a repurposed button")
+    func semanticRefSurvivesLayoutAndRefusesRepurposedControl() async throws {
+        let center = makeCenter()
+        let (session, tab, _) = try isolatedSession(owner: UUID(), center: center)
+        defer { session.release(); try? FileManager.default.removeItem(at: session.artifactDirectory) }
+        try await loadIsolated("""
+            <meta name="viewport" content="width=device-width,initial-scale=1">
+            <button id="control" onclick="window.presses++">Original control</button><script>window.presses=0;</script>
+            """, tab: tab, session: session)
+        let model = try acquirePreviewLease(session)
+        let web = try #require(session.activeWebView)
+        let response = await session.execute(BrowserCommand(sessionID: session.sessionID, tabID: tab, action: .observe(cursor:nil)), control: model)
+        let page = try #require(response.page)
+        let button = try #require(page.nodes.first { $0.role == "button" })
+        let command = BrowserCommand(sessionID: session.sessionID, tabID: tab, expectedDocumentID: page.documentID,
+                                     action: .click(.element(ref: button.ref, documentID: page.documentID)))
+        _ = try await web.evaluateJavaScript("control.style.marginLeft='100px';true")
+        let moved = await session.execute(command, control: model)
+        #expect(moved.status == .ok)
+        _ = try await web.evaluateJavaScript("control.textContent='Different control';true")
+        let changed = await session.execute(command, control: model)
+        #expect(changed.status == .stale)
+        let count = try await web.evaluateJavaScript("window.presses") as? NSNumber
+        #expect(count?.intValue == 1)
+    }
+
+    @Test("The active task's real viewport and clicked control appear only in memory while watched")
+    func livePreviewShowsArticlePixelsAndConfirmedClickOnlyWhileObserved() async throws {
+        let center = makeCenter()
+        var captures = 0
+        let (session, tab, _) = try isolatedSession(owner: UUID(), center: center, previewSnapshot: { view, configuration, finish in
+            captures += 1
+            view.takeSnapshot(with: configuration) { image, _ in finish(image) }
+        })
+        defer { session.release(); try? FileManager.default.removeItem(at: session.artifactDirectory) }
+        try await loadIsolated(previewArticle, tab: tab, session: session)
+        let lease = try acquirePreviewLease(session)
+        let observed = await session.execute(BrowserCommand(sessionID: session.sessionID, tabID: tab, action: .observe(cursor: nil)), control: lease)
+        let page = try #require(observed.page)
+        let button = try #require(page.nodes.first(where: { $0.role == "button" }))
+        let clicked = await session.execute(BrowserCommand(sessionID: session.sessionID, tabID: tab,
+            action: .click(.element(ref: button.ref, documentID: page.documentID))), control: lease)
+        #expect(clicked.status == .ok)
+        #expect(session.livePreviewFrame == nil)
+        let watcher = UUID()
+        session.setLivePreviewObservation(watcher, visible: true)
+        guard #available(iOS 27.0, *) else {
+            await session.waitForCurrentPreviewUpdate()
+            #expect(captures == 0 && session.livePreviewFrame == nil && session.lastModelActivity?.kind == .clicking)
+            #expect(try FileManager.default.contentsOfDirectory(atPath: session.artifactDirectory.path).isEmpty)
+            session.beginUserTakeover(reason: "Fixture user input")
+            #expect(session.livePreviewFrame == nil && session.isUserControlling)
+            return
+        }
+        try await awaitPreview { session.livePreviewFrame?.clickedLabel == "30°" }
+        #expect(captures == 1)
+        let frame = try #require(session.livePreviewFrame)
+        let pixels = try #require(frame.image.cgImage)
+        let marked = try #require(frame.normalizedTarget)
+        #expect(pixels.width > 120 && pixels.width <= 720 && pixels.height > 100)
+        #expect(marked.width > 0 && marked.width < 0.45 && marked.height < 0.45)
+        let sample = try #require(pixels.cropping(to: CGRect(x: pixels.width / 2, y: pixels.height / 2, width: 1, height: 1)))
+        var rgba = [UInt8](repeating: 0, count: 4)
+        rgba.withUnsafeMutableBytes { bytes in
+            let context = CGContext(data: bytes.baseAddress, width: 1, height: 1, bitsPerComponent: 8,
+                bytesPerRow: 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+            context?.draw(sample, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+        }
+        #expect(Int(rgba[2]) > Int(rgba[0]) + 60 && rgba[3] == 255)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: session.artifactDirectory.path).isEmpty)
+        session.setLivePreviewObservation(watcher, visible: false)
+        #expect(session.livePreviewFrame == nil && session.modelControl == lease)
+        session.setLivePreviewObservation(watcher, visible: true)
+        try await awaitPreview { session.livePreviewFrame != nil }
+        let webView = try #require(session.activeWebView)
+        _ = try await webView.evaluateJavaScript("document.body.appendChild(Object.assign(document.createElement('input'), {type:'password'})) !== null")
+        try await awaitPreview { session.livePreviewFrame == nil }
+        session.beginUserTakeover(reason: "Fixture user input")
+        #expect(session.livePreviewFrame == nil && !session.isModelActive)
+        #expect(session.activeWebView === webView)
+    }
+
+    @Test("Private forms, opaque content and private action labels never reach a passive screenshot", arguments: [
+        "<input type='password'>", "<input autocomplete='one-time-code'>", "<textarea>private fixture</textarea>",
+        "<input value='private fixture'>", "<iframe srcdoc='<input>'></iframe>",
+        "<div id='opaque' style='width:120px;height:40px'>Harmless light DOM <b>fallback</b></div><script>opaque.attachShadow({mode:'closed'}).innerHTML='<input type=password>'</script>",
+        "<private-widget>Public fallback</private-widget><script>document.querySelector('private-widget').attachShadow({mode:'closed'}).innerHTML='<input type=password>'</script>"
+    ])
+    func livePreviewWithholdsPrivateSurfacesAndLabels(_ markup: String) async throws {
+        let center = makeCenter()
+        var captures = 0
+        let (session, tab, _) = try isolatedSession(owner: UUID(), center: center, previewSnapshot: { _, _, finish in
+            captures += 1
+            finish(nil)
+        })
+        defer { session.release(); try? FileManager.default.removeItem(at: session.artifactDirectory) }
+        try await loadIsolated("<meta name='viewport' content='width=device-width,initial-scale=1'><body><button>Private Client Case</button>" + markup + "</body>", tab: tab, session: session)
+        let lease = try acquirePreviewLease(session)
+        session.setLivePreviewObservation(UUID(), visible: true)
+        let observed = await session.execute(BrowserCommand(sessionID: session.sessionID, tabID: tab, action: .observe(cursor: nil)), control: lease)
+        let page = try #require(observed.page)
+        let button = try #require(page.nodes.first(where: { $0.role == "button" }))
+        let click = BrowserCommand(sessionID: session.sessionID, tabID: tab,
+                                   action: .click(.element(ref: button.ref, documentID: page.documentID)))
+        let clicked = await session.execute(click, control: lease)
+        #expect(clicked.status == .ok)
+        await session.waitForCurrentPreviewUpdate()
+        let webView = try #require(session.activeWebView)
+        if markup.contains("attachShadow") {
+            let exposed = try await webView.callAsyncJavaScript(
+                "return Array.from(document.querySelectorAll('*')).some(el => !!el.shadowRoot);",
+                arguments: [:], in: nil, contentWorld: session.contentWorld)
+            #expect(exposed as? Bool == false)
+        }
+        #expect(captures == 0 && session.livePreviewFrame == nil && session.lastModelActivity?.kind == .clicking)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: session.artifactDirectory.path).isEmpty)
+    }
+
+    @Test("A hanging snapshot never overlaps on its page or blocks another task tab; late pixels are withheld")
+    func livePreviewTimeoutFencesDelayedImageAndRecoversOnAnotherTab() async throws {
+        let center = makeCenter()
+        var waiting: (@MainActor (UIImage?) -> Void)?
+        var dispatched: [ObjectIdentifier] = []
+        let (session, first, _) = try isolatedSession(owner: UUID(), center: center,
+            previewSnapshotTimeout: .milliseconds(90), previewSnapshot: { view, config, finish in
+                dispatched.append(ObjectIdentifier(view))
+                if dispatched.count == 1 { waiting = finish } else { finish(UIImage(systemName: "rectangle")) }
+            })
+        defer { session.release(); try? FileManager.default.removeItem(at: session.artifactDirectory) }
+        try await loadIsolated(previewArticle, tab: first, session: session)
+        let second = try #require(session.createTab())
+        try await loadIsolated(previewArticle, tab: second, session: session)
+        session.activate(first)
+        let lease = try acquirePreviewLease(session)
+        session.setLivePreviewObservation(UUID(), visible: true)
+        _ = await session.execute(BrowserCommand(sessionID: session.sessionID, tabID: first, action: .observe(cursor: nil)), control: lease)
+        guard #available(iOS 27.0, *) else {
+            await session.waitForCurrentPreviewUpdate()
+            #expect(dispatched.isEmpty && waiting == nil && session.livePreviewFrame == nil)
+            session.activate(second)
+            let secondResult = await session.execute(BrowserCommand(sessionID: session.sessionID, tabID: second,
+                action: .observe(cursor: nil)), control: lease)
+            await session.waitForCurrentPreviewUpdate()
+            #expect(secondResult.status == .ok && session.lastModelActivity?.kind == .observing)
+            #expect(dispatched.isEmpty && waiting == nil && session.livePreviewFrame == nil)
+            return
+        }
+        try await awaitPreview { waiting != nil }
+        try await Task.sleep(for: .milliseconds(140))
+        _ = await session.execute(BrowserCommand(sessionID: session.sessionID, tabID: first, action: .observe(cursor: nil)), control: lease)
+        #expect(session.livePreviewFrame == nil)
+        session.activate(second)
+        _ = await session.execute(BrowserCommand(sessionID: session.sessionID, tabID: second, action: .observe(cursor: nil)), control: lease)
+        try await awaitPreview { session.livePreviewFrame != nil }
+        let fresh = try #require(session.livePreviewFrame?.image)
+        waiting?(UIImage())
+        #expect(dispatched.count == 2 && Set(dispatched).count == 2)
+        #expect(session.livePreviewFrame?.image === fresh)
+    }
+
+    @Test("Takeover requires the displayed task, document and route, and stale sheet dismissals leave the new presentation open")
+    func livePreviewInteractionPinsDocumentRouteAndPresentation() async throws {
+        let center = makeCenter()
+        let owner = UUID()
+        center.bind(to: owner)
+        defer { center.discard(conversationID: owner) }
+        let session = try #require(center.visibleSession)
+        let tab = try #require(session.activeTabID)
+        try await loadIsolated(previewArticle, tab: tab, session: session)
+        let lease = try acquirePreviewLease(session)
+        let old = try #require(session.previewPageIdentity)
+        let webView = try #require(session.activeWebView)
+        _ = try await webView.evaluateJavaScript("history.pushState({}, '', '#detail'); true")
+        try await awaitPreview { session.previewPageIdentity != old }
+        #expect(!center.openPreviewInteraction(session: session, page: old, displayedLease: lease, presentationID: UUID()))
+        #expect(session.modelControl == lease)
+        let first = UUID()
+        #expect(center.openPreviewInteraction(session: session, page: session.previewPageIdentity, displayedLease: lease, presentationID: first))
+        center.closePreviewInteraction(first)
+        #expect(session.isUserControlling && session.activeWebView === webView)
+        let second = UUID()
+        #expect(center.openPreviewInteraction(session: session, page: session.previewPageIdentity, displayedLease: nil, presentationID: second))
+        center.closePreviewInteraction(first)
+        #expect(center.previewInteractionID == second)
+        center.closePreviewInteraction(second)
+        await center.returnToAgent()
+        try center.requestPanelDismissal(conversationID: owner)
+        #expect(center.presentationRequest?.show != false && center.visibleSession === session)
+    }
+
     private func controlID(in summary: String) throws -> String {
         let value = try object(summary)
         let control = try #require(value["control"] as? [String: Any], "missing control marker")
@@ -1076,12 +1718,20 @@ struct BrowserTaskSessionTests {
         // The preview strip's label comes from this action's own document.
         let documentID = try #require(page["documentID"] as? String)
         let ref = try #require(try button(in: page)["ref"] as? String)
+        let watcher = UUID()
+        session.setLivePreviewObservation(watcher, visible: true)
+        defer { session.setLivePreviewObservation(watcher, visible: false) }
         _ = try await run(
             registry, "browser.click",
             "{\"tabID\":\"\(tab)\",\"ref\":\"\(ref)\",\"documentID\":\"\(documentID)\"}",
             as: ctx)
         #expect(session.lastModelActivity?.kind == .clicking)
-        #expect(session.lastModelActivity?.detail == "Go control")
+        if #available(iOS 27.0, *) {
+            try await awaitPreview { session.livePreviewFrame?.clickedLabel == "Go control" }
+        } else {
+            await session.waitForCurrentPreviewUpdate()
+            #expect(session.livePreviewFrame == nil && session.modelControl == held)
+        }
 
         // Another run is refused and cannot take this page.
         let otherRegistry = makeRegistry(center)
@@ -1325,10 +1975,19 @@ struct BrowserTaskSessionTests {
             try await Task.sleep(for: .milliseconds(20))
         }
         #expect(session.activeExecutionCount > 0)
-        center.takeControl()
+        // The failure overlay and toolbar share this real reload path. It asks
+        // for control first and leaves the current page alone while WebKit drains.
+        #expect(!session.reloadFromUser())
         #expect(session.isUserControlling)
         #expect(session.takeoverPending)
         #expect(!webView.isUserInteractionEnabled)
+        #expect(center.handoff(for: owner)?.runID == runID)
+        session.finishTakeoverIfIdle()
+        await center.returnToAgent()
+        #expect(session.takeoverPending)
+        #expect(session.isUserControlling)
+        #expect(!session.registerUserInput())
+        #expect(session.activeTabID == tab && session.activeWebView === webView)
 
         let output = try await waiting.value
         #expect(output.contains("\"status\":\"needsUser\""), Comment(rawValue: output))
@@ -1340,6 +1999,521 @@ struct BrowserTaskSessionTests {
         #expect(!session.takeoverPending)
         #expect(webView.isUserInteractionEnabled)
         #expect(session.isUserControlling)
+        #expect(session.registerUserInput())
+    }
+
+    @Test("During handback, delayed links and popup callbacks cannot navigate or leave the app", arguments: BrowserLinkOpenBehavior.allCases)
+    func lateLinksDuringHandbackCannotNavigateOrOpenAnotherWindow(behavior: BrowserLinkOpenBehavior) throws {
+        let center = makeCenter()
+        var opened: [URL] = []
+        let (session, tab, _) = try isolatedSession(owner: UUID(), center: center, linkOpenBehavior: behavior,
+            openSystemURL: { opened.append($0) })
+        defer {
+            session.release()
+            try? FileManager.default.removeItem(at: session.artifactDirectory)
+        }
+        let page = try #require(session.activeWebView)
+        let destination = try #require(URL(string: "https://example.test/deferred"))
+        let blank = try #require(URL(string: "about:blank"))
+        session.beginUserTakeover(reason: nil)
+        session.returningToModel = true
+        #expect(session.navigationPolicy(for: destination, type: .linkActivated, from: page) == .cancel)
+        #expect(session.navigationPolicy(for: blank, type: .linkActivated, from: page) == .cancel)
+        #expect(session.openRequestedWindow(for: URLRequest(url: destination), from: page, configuration: page.configuration) == nil)
+        #expect(session.openRequestedWindow(for: nil, from: page, configuration: page.configuration) == nil)
+        #expect(session.navigationPolicy(for: destination, type: .other, from: page) == .allow)
+        #expect(opened.isEmpty && session.tabs.count == 1 && session.activeTabID == tab && session.activeWebView === page)
+    }
+
+    @Test("Deferred links and new windows open externally only for the settled user's current tab")
+    func deferredSystemLinksRequireSettledControlOfTheActiveTab() async throws {
+        let center = makeCenter()
+        var opened: [URL] = []
+        let (session, tab, _) = try isolatedSession(
+            owner: UUID(), center: center, linkOpenBehavior: .systemBrowser,
+            openSystemURL: { opened.append($0) })
+        defer {
+            session.release()
+            try? FileManager.default.removeItem(at: session.artifactDirectory)
+        }
+        let webView = try #require(session.activeWebView)
+        _ = try #require(session.createTab())
+        let background = try #require(session.activeWebView)
+        session.activate(tab)
+        try await loadIsolated("<html><body><input id='draft' value='keep this draft'></body></html>",
+                               tab: tab, session: session)
+        let originalURL = webView.url
+        let link = try #require(URL(string: "https://example.test/link"))
+        let popup = try #require(URL(string: "https://example.test/popup"))
+        guard case .acquired(let lease) = try session.acquireModelControl(runID: UUID()) else {
+            Issue.record("The offline fixture did not acquire model control")
+            return
+        }
+        #expect(session.navigationPolicy(for: link, type: .linkActivated, from: webView) == .allow)
+        #expect(opened.isEmpty)
+
+        let command = BrowserCommand(sessionID: session.sessionID, tabID: tab, timeoutMilliseconds: 5_000,
+                                     action: .wait(.text("never-appears")))
+        let waiting = Task { await session.execute(command, control: lease) }
+        defer { waiting.cancel() }
+        for _ in 0..<100 where session.activeExecutionCount == 0 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        try #require(session.activeExecutionCount > 0)
+        session.beginUserTakeover(reason: "Read the draft")
+        try #require(session.takeoverPending)
+
+        #expect(session.navigationPolicy(for: link, type: .linkActivated, from: webView) == .cancel)
+        #expect(session.openRequestedWindow(for: URLRequest(url: popup), from: webView, configuration: webView.configuration) == nil)
+        #expect(opened.isEmpty)
+        #expect(session.tabs.count == 2 && session.activeTabID == tab && session.activeWebView === webView)
+        let completion = await waiting.value
+        #expect(completion.status == .needsUser)
+        try #require(!session.takeoverPending && session.isUserControlling)
+        #expect(session.navigationPolicy(for: link, type: .linkActivated, from: background) == .cancel)
+        #expect(session.openRequestedWindow(for: URLRequest(url: popup), from: background, configuration: background.configuration) == nil)
+        #expect(opened.isEmpty)
+        #expect(session.navigationPolicy(for: link, type: .linkActivated, from: webView) == .cancel)
+        #expect(session.openRequestedWindow(for: URLRequest(url: popup), from: webView, configuration: webView.configuration) == nil)
+        #expect(opened == [link, popup])
+        #expect(webView.url == originalURL && session.activeTabID == tab && session.tabs.count == 2)
+        let draft = try await webView.evaluateJavaScript("document.getElementById('draft').value") as? String
+        #expect(draft == "keep this draft")
+    }
+
+    @Test("The first loopback navigation reports its own committed document and the preview stays readable")
+    func firstLoopbackNavigationObservesItsOwnCommit() async throws {
+        let center = makeCenter()
+        let (session, tabID, _) = try isolatedSession(owner: UUID(), center: center)
+        defer { session.release(); try? FileManager.default.removeItem(at: session.artifactDirectory) }
+        try await loadIsolated("<button>Previous document</button>", tab: tabID, session: session)
+        try Data("<!doctype html><button>Current preview document</button>".utf8)
+            .write(to: session.artifactDirectory.appendingPathComponent("index.html"))
+        let (server, site) = try await LocalPreviewServer.start(root: session.artifactDirectory, entry: "index.html")
+        defer { server.stop() }
+        let lease = try acquirePreviewLease(session)
+        let previousID = try #require(session.activeTab?.documentID)
+        let result = await session.execute(BrowserCommand(sessionID: session.sessionID, tabID: tabID,
+            action: .navigate(url: site.url.absoluteString)), control: lease)
+        try #require(result.status == .ok, Comment(rawValue: result.error?.message ?? "Navigation did not succeed"))
+        let page = try #require(result.page)
+        #expect(page.url == site.url.absoluteString && page.documentID != previousID && page.documentID == session.activeTab?.documentID)
+        #expect(!page.nodes.contains(where: { $0.text == "Previous document" }))
+        let loaded = await session.execute(BrowserCommand(sessionID: session.sessionID, tabID: tabID,
+            action: .wait(.text("Current preview document"))), control: lease)
+        #expect(loaded.status == .ok && loaded.page?.nodes.contains(where: { $0.text == "Current preview document" }) == true)
+    }
+
+    @Test("A dispatched navigation never reports another page or returns page data after takeover", arguments: [false, true])
+    func supersededOrTakenOverNavigationReturnsNoPage(takeover: Bool) async throws {
+        let center = makeCenter()
+        let (session, tabID, _) = try isolatedSession(owner: UUID(), center: center)
+        defer { session.release(); try? FileManager.default.removeItem(at: session.artifactDirectory) }
+        let parameters = NWParameters.tcp
+        parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
+        let listener = try NWListener(using: parameters), queue = DispatchQueue(label: "org.floeagent.test.pending-navigation")
+        let requests = OSAllocatedUnfairLock(initialState: [NWConnection]())
+        listener.newConnectionHandler = { connection in
+            connection.start(queue: queue)
+            connection.receive(minimumIncompleteLength: 4, maximumLength: 8192) { bytes, _, _, _ in
+                if bytes?.starts(with: Data("GET ".utf8)) == true { requests.withLock { $0.append(connection) } }
+                else { connection.cancel() }
+            }
+        }
+        defer { listener.cancel(); requests.withLock { $0 }.forEach { $0.cancel() } }
+        let port = try await startLoopbackListener(listener, on: queue)
+        let lease = try acquirePreviewLease(session)
+        let web = try #require(session.activeWebView)
+        let navigating = Task {
+            await session.execute(BrowserCommand(sessionID: session.sessionID, tabID: tabID, timeoutMilliseconds: 5_000,
+                action: .navigate(url: "http://127.0.0.1:\(port.rawValue)/pending")), control: lease)
+        }
+        defer { navigating.cancel() }
+        try await awaitPreview { requests.withLock { !$0.isEmpty } }
+        if takeover {
+            session.beginUserTakeover(reason: nil)
+            #expect(session.takeoverPending && !web.isUserInteractionEnabled)
+            let connection = try #require(requests.withLock { $0.first })
+            let body = "<!doctype html><button>Original request</button>"
+            let response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n" + body
+            connection.send(content: Data(response.utf8), contentContext: .finalMessage, isComplete: true,
+                            completion: .contentProcessed { _ in connection.cancel() })
+        } else {
+            web.loadHTMLString("<button>Replacement page</button>", baseURL: nil)
+        }
+        let result = await navigating.value
+        #expect(result.status == (takeover ? .needsUser : .stale) && result.page == nil)
+        #expect(requests.withLock { $0.count } == 1)
+        if takeover {
+            try await awaitPreview { !session.takeoverPending }
+            #expect(session.isUserControlling && web.isUserInteractionEnabled)
+        }
+    }
+
+    @Test("A withheld response cannot replace a human draft after navigation stops",
+          arguments: ["timeout", "cancel", "cancelAndTakeover", "release", "end", "missingDelegate"])
+    func cancelledOrTimedOutNavigationCannotReplaceHumanDraft(interruption: String) async throws {
+        let center = makeCenter()
+        let (session, tab, _) = try isolatedSession(owner: UUID(), center: center)
+        defer { session.release(); try? FileManager.default.removeItem(at: session.artifactDirectory) }
+        let original = try #require(session.activeWebView)
+        try await loadIsolated("<title>Draft</title><input id='draft' value='original'>", tab: tab, session: session)
+        try await awaitPreview { original.title == "Draft" && !original.isLoading }
+        let parameters = NWParameters.tcp
+        parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
+        let listener = try NWListener(using: parameters)
+        let connections = OSAllocatedUnfairLock(initialState: [NWConnection]())
+        let queue = DispatchQueue(label: "org.floeagent.test.late-response")
+        listener.newConnectionHandler = { connection in
+            connection.start(queue: queue)
+            connection.receive(minimumIncompleteLength: 4, maximumLength: 8192) { bytes, _, _, _ in
+                if bytes?.starts(with: Data("GET ".utf8)) == true { connections.withLock { $0.append(connection) } }
+                else { connection.cancel() }
+            }
+        }
+        defer { listener.cancel(); connections.withLock { $0 }.forEach { $0.cancel() } }
+        let port = try await startLoopbackListener(listener, on: queue)
+        let lease = try acquirePreviewLease(session)
+        if interruption == "missingDelegate" { original.navigationDelegate = nil }
+        let timesOut = interruption == "timeout" || interruption == "missingDelegate"
+        let task = Task {
+            await session.execute(BrowserCommand(sessionID: session.sessionID, tabID: tab,
+                timeoutMilliseconds: timesOut ? 1_500 : 10_000,
+                action: .navigate(url: "http://127.0.0.1:\(port.rawValue)/withheld")), control: lease)
+        }
+        defer { task.cancel() }
+        try await awaitPreview { connections.withLock { !$0.isEmpty } }
+        switch interruption {
+        case "cancelAndTakeover":
+            session.beginUserTakeover(reason: nil)
+            #expect(session.takeoverPending && !original.isUserInteractionEnabled)
+            task.cancel()
+        case "cancel": task.cancel()
+        case "release": #expect(session.releaseModelControl(controlID: lease.id, runID: lease.runID) == .released)
+        case "end": #expect(session.endModelControl(runID: lease.runID))
+        default: break
+        }
+        let result = await task.value
+        #expect(result.page == nil)
+        if timesOut { #expect(result.status == .timeout) }
+        else if interruption == "cancelAndTakeover" { #expect(result.status == .needsUser) }
+        else if interruption == "cancel" { #expect(result.status == .failed && result.error?.code == "cancelled") }
+        else { #expect(result.status == .stale) }
+        if !session.isUserControlling { session.beginUserTakeover(reason: nil) }
+        let target: WKWebView
+        if interruption == "missingDelegate" {
+            let receipt = try #require(session.unresponsiveNavigationID)
+            session.finishTakeoverIfIdle()
+            session.closeUnresponsiveNavigation(UUID())
+            #expect(session.takeoverPending && session.activeWebView === original && !original.isUserInteractionEnabled)
+            session.closeUnresponsiveNavigation(receipt)
+            target = try #require(session.activeWebView)
+            try #require(target !== original && original.superview == nil && original.navigationDelegate == nil)
+            session.closeUnresponsiveNavigation(receipt)
+            #expect(session.activeWebView === target)
+            target.loadHTMLString("<title>New draft</title><input id='draft' value='original'>", baseURL: nil)
+            try await awaitPreview { target.title == "New draft" && !target.isLoading }
+        } else {
+            target = original
+        }
+        try await awaitPreview { !session.takeoverPending && target.isUserInteractionEnabled }
+        let humanDocument = try #require(session.activeTab?.documentID)
+        let edited = try await target.evaluateJavaScript("document.querySelector('#draft').value = 'edited after takeover'") as? String
+        try #require(edited == "edited after takeover")
+        let connection = try #require(connections.withLock { $0.first })
+        let body = "<!doctype html><title>Late replacement</title>"
+        let response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n" + body
+        await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+            connection.send(content: Data(response.utf8), contentContext: .finalMessage, isComplete: true,
+                            completion: .contentProcessed { _ in connection.cancel(); done.resume() })
+        }
+        try await awaitPreview { !target.isLoading }
+        let draft = try await target.evaluateJavaScript("document.querySelector('#draft')?.value") as? String
+        #expect(draft == "edited after takeover" && session.activeTab?.documentID == humanDocument)
+        #expect(session.activeWebView === target && session.unresponsiveNavigationID == nil && connections.withLock { $0.count } == 1)
+    }
+
+    @Test("A real WebKit popup retains its opener and task, loads once, and inherits the isolated browser probe")
+    func webKitPopupKeepsItsOpenerAndLoadsTheChildOnce() async throws {
+        let center = makeCenter()
+        let (session, parentID, store) = try isolatedSession(owner: UUID(), center: center)
+        let root = session.artifactDirectory
+        defer {
+            session.release()
+            try? FileManager.default.removeItem(at: root)
+        }
+        let parentHTML = """
+            <!doctype html><title>Popup source</title><input id="draft" value="Source draft">
+            <script>window.childLoads = 0;</script>
+            """
+        let childHTML = """
+            <!doctype html><title>Popup child</title><button>Child action</button>
+            <script>window.opener.childLoads++;</script>
+            """
+        try Data(parentHTML.utf8).write(to: root.appendingPathComponent("index.html"))
+        try Data(childHTML.utf8).write(to: root.appendingPathComponent("child.html"))
+        let (server, site) = try await LocalPreviewServer.start(root: root, entry: "index.html")
+        defer { server.stop() }
+        let parent = try #require(session.activeWebView)
+        parent.load(URLRequest(url: site.url))
+        try await awaitPreview { parent.title == "Popup source" && !parent.isLoading }
+        let idlePolicy = parent.configuration.preferences.inactiveSchedulingPolicy
+        let lease = try acquirePreviewLease(session)
+
+        // This runs in the page and enters WebKit's real WKUIDelegate callback.
+        let opened = try await parent.evaluateJavaScript("window.fixturePopup = window.open('child.html', 'floePopup'); !!window.fixturePopup") as? Bool
+        try #require(opened == true)
+        try await awaitPreview {
+            session.tabs.count == 2 && session.activeWebView?.title == "Popup child" && session.activeWebView?.isLoading == false
+        }
+        let childTab = try #require(session.activeTab)
+        let child = childTab.webView
+        #expect(childTab.id != parentID && child !== parent)
+        #expect(child.configuration.websiteDataStore === store)
+        #expect(child.navigationDelegate === session && child.uiDelegate === session)
+        let openerDraft = try await child.evaluateJavaScript("window.opener.document.getElementById('draft').value") as? String
+        #expect(openerDraft == "Source draft")
+        let loads = try await parent.evaluateJavaScript("window.childLoads") as? NSNumber
+        #expect(loads?.intValue == 1)
+        let siteProbe = try await child.evaluateJavaScript("typeof globalThis.__floeProtocol") as? String
+        #expect(siteProbe == "undefined")
+        let inheritedHandler = try await child.callAsyncJavaScript(
+            "return typeof globalThis.webkit?.messageHandlers?.floePreviewChanged?.postMessage",
+            arguments: [:], in: nil, contentWorld: session.contentWorld) as? String
+        #expect(inheritedHandler == "function")
+        let observed = await session.execute(BrowserCommand(sessionID: session.sessionID, tabID: childTab.id,
+            action: .observe(cursor: nil)), control: lease)
+        #expect(observed.status == .ok && observed.page?.nodes.contains(where: {
+            $0.role == "button" && $0.text == "Child action"
+        }) == true)
+
+        session.close(parentID)
+        #expect(session.openRequestedWindow(for: URLRequest(url: site.url), from: parent, configuration: parent.configuration) == nil)
+        #expect(session.openRequestedWindow(for: URLRequest(url: root), from: child, configuration: child.configuration) == nil)
+        #expect(session.tabs.count == 1)
+        #expect(session.activeWebView === child && child.configuration.preferences.inactiveSchedulingPolicy == .none)
+        #expect(session.releaseModelControl(controlID: lease.id, runID: lease.runID) == .released)
+        #expect(child.configuration.preferences.inactiveSchedulingPolicy == idlePolicy)
+        _ = try await parent.evaluateJavaScript("window.fixturePopup.eval('window.close()'); true")
+        try await awaitPreview { session.tabs.count == 1 && session.activeWebView !== child }
+        #expect(session.activeTab?.openerID == nil && session.activeWebView != nil)
+    }
+
+    @Test("Closing a real popup returns to its original tab, including when close arrives during handback")
+    func popupCloseReturnsToItsOpenerAfterHandback() async throws {
+        let center = makeCenter()
+        let (session, parentID, _) = try isolatedSession(owner: UUID(), center: center)
+        defer { session.release(); try? FileManager.default.removeItem(at: session.artifactDirectory) }
+        let parent = try #require(session.activeWebView)
+        try await loadIsolated("<input id='draft' value='Retained draft'>", tab: parentID, session: session)
+        let otherID = try #require(session.createTab())
+        session.activate(parentID)
+        let opened = try await parent.evaluateJavaScript("window.fixturePopup = window.open('about:blank', 'floeLogin'); !!window.fixturePopup") as? Bool
+        try #require(opened == true)
+        try await awaitPreview { session.tabs.count == 3 }
+        let child = try #require(session.activeWebView)
+        session.beginUserTakeover(reason: nil)
+        session.returningToModel = true
+        _ = try await parent.evaluateJavaScript("window.fixturePopup.close(); true")
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        var closed = false
+        while !closed && ContinuousClock.now < deadline {
+            closed = try await parent.evaluateJavaScript("window.fixturePopup.closed") as? Bool == true
+            if !closed { try await Task.sleep(for: .milliseconds(20)) }
+        }
+        try #require(closed, "WebKit did not close the real child window")
+        session.webViewDidClose(child) // A duplicate confirmed callback inside the fence is harmless.
+        #expect(session.activeWebView === child && session.tabs.count == 3)
+        session.returningToModel = false
+        #expect(session.activeWebView === parent && session.tabs.map(\.id) == [parentID, otherID])
+        session.webViewDidClose(child)
+        session.webViewDidClose(parent)
+        #expect(session.activeWebView === parent && session.tabs.count == 2)
+        let draft = try await parent.evaluateJavaScript("document.getElementById('draft').value") as? String
+        #expect(draft == "Retained draft" && session.isUserControlling)
+    }
+
+    @Test("When a popup loses its opener, the existing tab becomes read-only under the same model lease")
+    func orphanedPopupRestoresFixedViewportOnTheExistingTab() async throws {
+        let center = makeCenter()
+        let (session, existingID, _) = try isolatedSession(owner: UUID(), center: center)
+        defer { session.release(); try? FileManager.default.removeItem(at: session.artifactDirectory) }
+        let existing = try #require(session.activeTab)
+        try await loadIsolated("<button>Existing page</button>", tab: existingID, session: session)
+        let sourceID = try #require(session.createTab())
+        let source = try #require(session.activeWebView)
+        try await loadIsolated("<title>Popup source</title>", tab: sourceID, session: session)
+        let lease = try acquirePreviewLease(session)
+        try #require(existing.viewport.fixedSize == nil && existing.webView.isUserInteractionEnabled)
+
+        let opened = try await source.evaluateJavaScript("window.fixturePopup = window.open('about:blank', 'floeOrphan'); !!window.fixturePopup") as? Bool
+        try #require(opened == true)
+        try await awaitPreview { session.tabs.count == 3 && session.activeTab?.openerID == sourceID }
+        session.close(sourceID)
+        _ = try await source.evaluateJavaScript("window.fixturePopup.close(); true")
+        try await awaitPreview { session.activeTabID == existingID && session.tabs.count == 1 }
+        #expect(session.activeWebView === existing.webView && session.isModelControlCurrent(lease))
+        #expect(existing.viewport.fixedSize == existing.webView.bounds.size && !existing.webView.isUserInteractionEnabled)
+        #expect(existing.webView.accessibilityElementsHidden)
+        #expect(session.releaseModelControl(controlID: lease.id, runID: lease.runID) == .released)
+        #expect(existing.viewport.fixedSize == nil && existing.webView.isUserInteractionEnabled)
+    }
+
+    private func startLoopbackListener(_ listener: NWListener, on queue: DispatchQueue) async throws -> NWEndpoint.Port {
+        let (startup, state) = AsyncStream<Bool>.makeStream()
+        listener.stateUpdateHandler = {
+            switch $0 {
+            case .ready: state.yield(true); state.finish()
+            case .failed, .cancelled: state.finish()
+            default: break
+            }
+        }
+        listener.start(queue: queue)
+        queue.asyncAfter(deadline: .now() + 5) { state.finish() }
+        var readiness = startup.makeAsyncIterator()
+        let started = await readiness.next()
+        try #require(started == true, "The loopback listener did not reach its ready state")
+        let port = try #require(listener.port)
+        try #require(port.rawValue > 0, "The ready listener did not receive an assigned port")
+        return port
+    }
+
+    @Test("System browsing opens an ordinary GET externally and keeps the real popup form method and body in WebKit")
+    func systemBrowserPreferencePreservesPopupFormPost() async throws {
+        let parameters = NWParameters.tcp
+        parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
+        let listener = try NWListener(using: parameters)
+        let queue = DispatchQueue(label: "org.floeagent.test.popup-form")
+        let exchanges = OSAllocatedUnfairLock(initialState: [String]())
+        listener.newConnectionHandler = { connection in
+            connection.start(queue: queue)
+            Self.echoPopupForm(connection, received: Data()) { entry in
+                exchanges.withLock { $0.append(entry) }
+            }
+        }
+        defer { listener.cancel() }
+        let port = try await startLoopbackListener(listener, on: queue)
+        let endpoint = try #require(URL(string: "http://127.0.0.1:\(port.rawValue)/form"))
+        let parentURL = endpoint.deletingLastPathComponent().appendingPathComponent("parent")
+
+        let center = makeCenter()
+        var external: [URL] = []
+        let (session, parentID, _) = try isolatedSession(owner: UUID(), center: center, linkOpenBehavior: .systemBrowser,
+                                                         openSystemURL: { external.append($0) })
+        defer { session.release(); try? FileManager.default.removeItem(at: session.artifactDirectory) }
+        let parent = try #require(session.activeWebView)
+        let windowScenes: [UIWindowScene] = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let foregroundScene: UIWindowScene? = windowScenes.first { candidate in
+            candidate.activationState == .foregroundActive || candidate.activationState == .foregroundInactive
+        }
+        let scene = try #require(foregroundScene)
+        let window = UIWindow(windowScene: scene)
+        let controller = UIViewController()
+        window.rootViewController = controller
+        window.isHidden = false
+        let mount = BrowserPageMount(frame: controller.view.bounds)
+        mount.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        controller.view.addSubview(mount)
+        let presentation = UUID()
+        let windows = PopupFormWindowObserver(session: session, mount: mount, presentation: presentation)
+        defer { mount.detach(); window.isHidden = true; withExtendedLifetime(windows) {} }
+        mount.configure(tab: session.activeTab, id: presentation, readOnly: false, priority: 0, active: true)
+        window.layoutIfNeeded()
+        try #require(parent.window === window && mount.ownsPage && !mount.bounds.isEmpty)
+        parent.uiDelegate = windows
+        @MainActor func waitFor(_ phase: String, _ condition: @MainActor () -> Bool) async throws {
+            let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+            while !condition(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
+            let tabs = session.tabs.map { tab in
+                let lifecycle = tab.events.filter { $0.method.hasPrefix("Page.") || $0.method == "Network.loadingFailed" }
+                    .map { $0.method + ($0.detail.map { ": " + $0 } ?? "") }
+                return "\(tab.webView.url?.path ?? "-") mounted=\(tab.webView.window === window) loading=\(tab.webView.isLoading) events=\(lifecycle)"
+            }
+            let wire = exchanges.withLock { $0 }
+            try #require(condition(), Comment(rawValue: "\(phase): windows=\(windows.entries) external=\(external.map(\.path)) wire=\(wire) tabs=\(tabs) surface=\(session.surfaceState)"))
+        }
+        parent.load(URLRequest(url: parentURL))
+        try await waitFor("loading the HTTP parent form") { parent.url == parentURL && parent.title == "Popup form" && !parent.isLoading }
+        session.beginUserTakeover(reason: nil)
+        _ = try await parent.evaluateJavaScript("window.open('/ordinary', 'floeGet'); true")
+        try await waitFor("opening the GET externally") { external.count == 1 }
+        #expect(external == [endpoint.deletingLastPathComponent().appendingPathComponent("ordinary")])
+        _ = try await parent.evaluateJavaScript("document.getElementById('submit-form').click(); true")
+        try await waitFor("creating the POST child") { session.tabs.count == 2 && session.activeTab?.openerID == parentID }
+        try await waitFor("receiving the POST body") { exchanges.withLock { $0.contains("received POST /form fixture=retain+this") } }
+        let child = try #require(session.activeWebView)
+        try #require(child.window === window && mount.ownsPage)
+        try await waitFor("sending the complete HTTP response") { exchanges.withLock { $0.contains("sent POST /form") } }
+        try await waitFor("loading the POST response in the child") {
+            child.url == endpoint && !child.isLoading && session.activeTab?.events.contains(where: { $0.method == "Page.loadEventFired" }) == true
+        }
+        let echoed = try await child.evaluateJavaScript("document.readyState === 'complete' && document.getElementById('receipt')?.textContent") as? String
+        #expect(echoed == "POST\nfixture=retain+this" && external.count == 1)
+    }
+
+    /// Observe the real callback and return the production delegate's exact decision.
+    @MainActor private final class PopupFormWindowObserver: NSObject, WKUIDelegate {
+        let session: BrowserTaskSession
+        let mount: BrowserPageMount
+        let presentation: UUID
+        var entries: [String] = []
+        init(session: BrowserTaskSession, mount: BrowserPageMount, presentation: UUID) {
+            self.session = session
+            self.mount = mount
+            self.presentation = presentation
+        }
+        func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
+                     for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+            let result = session.webView(webView, createWebViewWith: configuration, for: navigationAction, windowFeatures: windowFeatures)
+            let request = navigationAction.request
+            entries.append("\(request.httpMethod ?? "-") \(request.url?.path ?? "-") type=\(navigationAction.navigationType.rawValue) child=\(result != nil)")
+            if let result, let tab = session.activeTab, tab.webView === result {
+                mount.configure(tab: tab, id: presentation, readOnly: false, priority: 0, active: true)
+            }
+            return result
+        }
+    }
+
+    /// Serve the opener and the form response on the same HTTP origin.
+    private nonisolated static func echoPopupForm(_ connection: NWConnection, received: Data,
+                                                   record: @escaping @Sendable (String) -> Void) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 8192) { chunk, _, complete, error in
+            var data = received
+            if let chunk { data.append(chunk) }
+            guard data.count < 32_768, error == nil else { connection.cancel(); return }
+            if let end = data.range(of: Data("\r\n\r\n".utf8)),
+               let headers = String(data: data[..<end.lowerBound], encoding: .utf8) {
+                let lines = headers.components(separatedBy: "\r\n")
+                let length = lines.first(where: { $0.lowercased().hasPrefix("content-length:") })
+                    .flatMap { Int($0.dropFirst("content-length:".count).trimmingCharacters(in: .whitespaces)) } ?? 0
+                let body = data[end.upperBound...]
+                let firstLine = lines.first?.split(separator: " ") ?? []
+                if length >= 0, body.count >= length, firstLine.count >= 2 {
+                    let method = firstLine[0], path = firstLine[1]
+                    let payload = String(decoding: body.prefix(length), as: UTF8.self)
+                    record("received \(method) \(path) \(payload)")
+                    let parent = method == "GET" && path == "/parent"
+                    let receipt = (String(method) + "\n" + payload)
+                        .replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;")
+                        .replacingOccurrences(of: ">", with: "&gt;")
+                    let text = parent ? """
+                        <!doctype html><title>Popup form</title>
+                        <form action="/form" method="post" target="floePost">
+                        <input name="fixture" value="retain this"><button id="submit-form" type="submit">Submit</button></form>
+                        """ : "<!doctype html><title>Form response</title><pre id='receipt'>\(receipt)</pre>"
+                    let response = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: \(text.utf8.count)\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n" + text
+                    connection.send(content: Data(response.utf8), contentContext: .finalMessage, isComplete: true,
+                        completion: .contentProcessed { error in
+                            if let error { record("send failed \(method) \(path): \(error)") }
+                            else { record("sent \(method) \(path)") }
+                            connection.cancel()
+                        })
+                    return
+                }
+            }
+            if complete { connection.cancel() }
+            else { echoPopupForm(connection, received: data, record: record) }
+        }
     }
 
     @Test("An in-flight click taken over is withheld, never replayed, and the page settles once")
@@ -1377,6 +2551,10 @@ struct BrowserTaskSessionTests {
         center.takeControl()
         #expect(session.isUserControlling)
         #expect(session.takeoverPending)
+        session.finishTakeoverIfIdle()
+        #expect(session.takeoverPending)
+        #expect(!session.reloadFromUser())
+        #expect(session.activeWebView?.isUserInteractionEnabled == false)
 
         let output = try await clicking.value
         #expect(output.contains("\"status\":\"needsUser\""), Comment(rawValue: output))
@@ -1491,7 +2669,7 @@ struct BrowserTaskSessionTests {
             "{\"action\":\"requestUser\",\"reason\":\"Enter the code shown on the page\"}",
             as: child
         )
-        #expect(panel.contains("The user controls this task's browser"), Comment(rawValue: panel))
+        #expect(panel.contains("Human interaction was requested for this task's browser"), Comment(rawValue: panel))
         let receipt = try #require(center.handoff(for: owner))
         #expect(receipt.runID == parentRun)
 

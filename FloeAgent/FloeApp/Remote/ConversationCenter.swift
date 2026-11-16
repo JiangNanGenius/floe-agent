@@ -472,6 +472,7 @@ extension ConversationCenter {
     /// requires the dedicated execution mode (which only the trusted ingress
     /// writes). The caller decides retention/retirement separately.
     nonisolated static func isInternalNoticeDelivery(_ input: PendingUserInput) -> Bool {
+        if input.executionMode == BrowserControlNotice.executionMode { return true }
         if [ConversationRunService.taskCoordinationExecutionMode, ConversationRunService.taskWaitCompletionExecutionMode].contains(input.executionMode) { return true }
         if input.executionMode == DesignConfirmationNoticeProjection.deliveryExecutionMode,
            DesignConfirmationNoticeProjection.parse(input.content) != nil {
@@ -1555,64 +1556,115 @@ final class ConversationCenter: ObservableObject {
     init(environment: AppEnvironment) {
         self.environment = environment
         self.launchRecoveryCutoff = Date()
-        environment.browserCenter.deliverHandoff = { [weak self] event, shouldContinue in
+        environment.browserCenter.deliverTakeover = { [weak self] event in
+            guard let self, let id = event.takeoverEventID else { throw CancellationError() }
+            return try await self.deliverBrowserControlNotice(.humanTookControl, id: id, event: event)
+        }
+        environment.browserCenter.deliverHandoff = { [weak self] event, _ in
             guard let self else { throw FloeError.invalidConfiguration("Task service unavailable") }
-            return try await self.deliverBrowserHandoff(event, shouldContinue: shouldContinue)
+            let notice: BrowserControlNotice = event.closedAfterRestart == true ? .sessionEnded : .returned
+            let delivered = try await self.deliverBrowserControlNotice(notice, id: event.id, event: event)
+            return !delivered
         }
     }
 
-    /// Browser notifications remain attached to their original task and never
-    /// fall through the automatic queued-follow-up launcher.
-    private func deliverBrowserHandoff(_ event: BrowserSessionCenter.Handoff, shouldContinue: Bool) async throws -> Bool {
-        let store = environment.runningInputStore
-        var input = try await store.input(id: event.id)
-        if input == nil {
-            input = try await store.enqueue(PendingUserInput(
-                id: event.id, conversationID: event.conversationID, targetRunID: event.runID,
-                content: "Browser control was returned by the user. Session: \(event.sessionID). Tab: \(event.tabID?.uuidString ?? "none"). Page (without query or credentials): \(event.pageAddress ?? "unknown"). Re-observe the current page before acting; previous element references are invalid. This notification conveys no new permissions.",
-                mode: .steer, executionMode: "browserHandoff"))
-        }
-        guard let input else { throw FloeError.invalidConfiguration("Browser notification missing") }
-        if input.status == .consumed { return false }
-        if input.status == .steerPending {
-            if let id = event.runID, runServices[id] != nil { return false }
-            try await store.restoreQueued(id: input.id)
-        }
+    /// Only the receipt's original run can consume either phase. A disconnected or finished run
+    /// keeps its local notice. Reconstructing a view or recovering an outbox never starts a run.
+    private func deliverBrowserControlNotice(_ notice: BrowserControlNotice, id: UUID,
+        event: BrowserSessionCenter.Handoff) async throws -> Bool {
+        let owner = event.conversationID
         guard let runID = event.runID,
-              let record = try await environment.runStore.run(id: runID),
-              record.conversationID == event.conversationID else {
-            publishSession(event.conversationID)
-            return true
+              let record = try await runStore(for: owner).run(id: runID), record.conversationID == owner else { return false }
+        func checkOwner() throws {
+            guard !Task.isCancelled, !deletingConversationIDs.contains(owner),
+                  environment.browserCenter.handoff(for: owner)?.id == event.id else { throw CancellationError() }
         }
-        let waitingForBrowser: Bool
-        if record.state == "checkpointed",
-           let checkpoint = try await environment.checkpointStore.load(runID: runID),
-           case .checkpointed(let reference) = checkpoint.state {
-            let reason = (reference.reason ?? "").lowercased()
-            waitingForBrowser = reason.contains("browser") || reason.contains(FloeL10n.l("browser.title"))
-        } else { waitingForBrowser = false }
-        if (runServices[runID] == nil || waitingForBrowser), shouldContinue || waitingForBrowser {
-            _ = try await retry(runID: runID, startOrigin: .explicitUserAction)
+        try checkOwner()
+        let store = runningInputStore(for: owner)
+        let conversation = conversationStore(for: owner)
+        if notice == .sessionEnded, let arrived = event.takeoverEventID, let obsolete = try await store.input(id: arrived),
+           obsolete.executionMode == BrowserControlNotice.executionMode, obsolete.conversationID == owner,
+           obsolete.targetRunID == runID, obsolete.status.isPending {
+            if obsolete.status != .queued { try await store.restoreQueued(id: arrived) }
+            if try await store.input(id: arrived)?.status == .queued { try await store.cancel(id: arrived) }
         }
-        guard let service = runServices[runID] else {
-            publishSession(event.conversationID)
-            return true
+        var row = try await store.input(id: id)
+        if let existing = row {
+            guard existing.conversationID == owner,
+                  existing.executionMode == BrowserControlNotice.executionMode
+                    || (notice == .returned && existing.executionMode == "browserHandoff"),
+                  existing.targetRunID == runID
+                    || (existing.executionMode == "browserHandoff" && existing.targetRunID == nil) else {
+                throw FloeError.validationFailed("Browser notice belongs to a different run")
+            }
+            if existing.status == .consumed { return existing.consumedRunID == runID }
+            if existing.status == .cancelled { return false }
         }
-        guard try await store.beginSteerPromotion(id: input.id, expectedRunID: runID) != nil else {
-            throw FloeError.validationFailed("Browser notification delivery is already in progress")
+        let existingMessages = try await conversation.messages(conversationID: owner)
+        try checkOwner()
+        if let mirror = existingMessages.first(where: { $0.id == id }) {
+            guard mirror.role == "system", mirror.runID == runID, mirror.content == notice.message,
+                  mirror.parts.contains(where: { $0.metadata[BrowserControlNotice.historyMarker] == "1" }) else {
+                throw FloeError.validationFailed("Browser notice identity is already in use")
+            }
+        } else {
+            try await conversation.appendMessage(PersistedMessage(id: id, conversationID: owner,
+                role: "system", content: notice.message, createdAt: row?.createdAt ?? Date(),
+                parts: [.init(messageID: id, partIndex: 0, kind: .text, text: notice.message,
+                    metadata: [BrowserControlNotice.historyMarker: "1"])], runID: runID))
         }
-        let acceptance = await service.steer(RuntimeSteerInput(id: input.id, content: input.content,
-            images: [], attachments: [], createdAt: input.createdAt), expectedRunID: runID)
+        try checkOwner()
+        if var legacy = row, legacy.executionMode == "browserHandoff" {
+            // A pre-upgrade undelivered return may contain a URL. Keep its ID and replace only
+            // this exact unconsumed receipt before it can reach any provider.
+            legacy.executionMode = BrowserControlNotice.executionMode
+            legacy.content = notice.message
+            legacy.targetRunID = runID
+            legacy.mode = .steer
+            legacy.status = .queued
+            try await store.upsert(legacy)
+            row = legacy
+        }
+        let ended = ["completed", "failed", "cancelled"].contains(record.state)
+        if ended {
+            if let row {
+                if row.status == .promoting || row.status == .steerPending { try await store.restoreQueued(id: row.id) }
+                if try await store.input(id: row.id)?.status == .queued { try await store.cancel(id: row.id) }
+            }
+            return false
+        }
+        try checkOwner()
+        guard let service = runServices[runID], service.conversationID == owner,
+              !(await service.snapshot()).isTerminal else { return false }
+
+        if row == nil {
+            row = try await store.enqueue(.init(id: id, conversationID: owner, targetRunID: runID,
+                content: notice.message, mode: .steer, executionMode: BrowserControlNotice.executionMode))
+        }
+        guard var current = row, current.content == notice.message else {
+            throw FloeError.validationFailed("Browser notice content did not match its receipt")
+        }
+        if current.status == .queued {
+            guard let promoted = try await store.beginSteerPromotion(id: id, expectedRunID: runID) else {
+                throw FloeError.validationFailed("Browser notification delivery is already in progress")
+            }
+            current = promoted
+        }
+        guard current.status == .promoting || current.status == .steerPending else { return false }
+        try checkOwner()
+        guard runServices[runID] === service else { return false }
+        let acceptance = await service.steer(.init(id: id, content: notice.message, createdAt: current.createdAt,
+            origin: .browserControl(notice)), expectedRunID: runID)
         switch acceptance {
         case .accepted, .alreadyAccepted:
-            try await store.markSteerAccepted(id: input.id, runID: runID)
+            try await store.markSteerAccepted(id: id, runID: runID)
         case .rejected(let reason):
-            try await store.restoreQueued(id: input.id)
-            if (await service.snapshot()).isTerminal { return true }
+            try await store.restoreQueued(id: id)
+            if (await service.snapshot()).isTerminal { return false }
             throw FloeError.validationFailed(reason)
         }
-        publishSession(event.conversationID)
-        return false
+        publishSession(owner)
+        return true
     }
 
     // MARK: - Loading
@@ -4980,6 +5032,9 @@ final class ConversationCenter: ObservableObject {
         let userInputProjection = modelInputProjection(for: runID, conversationID: conversationID)
         try Task.checkCancellation()
         preparationStage("begin:service_and_approval")
+        let receiptWorkspace: (id: UUID, root: URL)? = if let taskRootLease, let canonicalWorkspace {
+            (canonicalWorkspace.id, taskRootLease.url)
+        } else { nil }
         let service = ConversationRunService(
             configuration: configuration,
             adapter: providerAdapter(for: provider, ownerRunID: runID),
@@ -5017,6 +5072,7 @@ final class ConversationCenter: ObservableObject {
             runStore: runStore,
             runningInputStore: runningInputStore,
             runID: runID,
+            receiptWorkspace: receiptWorkspace,
             conversationHistory: conversationHistory,
             currentUserImages: currentUserImages,
             runContext: ConversationRunService.RunContext(
@@ -7057,6 +7113,9 @@ final class ConversationCenter: ObservableObject {
     /// confirms acceptance; rejection restores it to queued.
     func promoteToSteer(inputID: UUID, expectedRunID: UUID) async throws {
         let store = await runningInputStore(containingInput: inputID)
+        if try await store.input(id: inputID)?.executionMode == BrowserControlNotice.executionMode {
+            throw FloeError.validationFailed("A browser control notice can only be delivered by its original handoff")
+        }
         guard let input = try await store.beginSteerPromotion(
             id: inputID,
             expectedRunID: expectedRunID

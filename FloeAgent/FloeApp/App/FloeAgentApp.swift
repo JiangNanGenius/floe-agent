@@ -418,6 +418,7 @@ struct RootView: View {
     /// session identities below. Never persisted across hardware.
     @StateObject private var foldableSupport = FoldableDisplayState()
     @State private var iPadWindowWidth: CGFloat = 0
+    @State private var inspectorAvailableHeight: CGFloat = 0
     /// Linux session/service deep link destination, optionally focused on the
     /// environment the notification came from.
     private struct ExecutionEnvironmentRequest: Identifiable {
@@ -517,6 +518,8 @@ struct RootView: View {
                 iPhoneRoot
             }
         }
+        .browserPreviewPresenter(center: environment.browserCenter,
+                                 owner: ordinaryBrowserPreviewVisible ? router.selectedConversationID : nil)
         // Foldable detection is scene/window-bound. The probe observes the
         // real iOS 27.1 hinge context (initial state arrives on attach) and
         // system division regions; the outermost shell then follows the
@@ -775,15 +778,6 @@ struct RootView: View {
         .onChange(of: environment.conversationCenter.temporarySession?.incarnation) { _, _ in
             reconcileTemporaryInspectorRoute()
         }
-        .onChange(of: environment.browserCenter.presentationRequest) { _, request in
-            guard let request, request.conversationID == router.selectedConversationID else { return }
-            if request.show {
-                _ = environment.browserCenter.consumePendingPanelRequest(for: request.conversationID)
-                router.showInspector(.browser)
-            }
-            else if router.inspectorRoute?.content == .browser,
-                    router.inspectorRoute?.conversationID == request.conversationID { router.hideInspector() }
-        }
         .onChange(of: router.workbenchSelection) { _, selection in
             environment.previewCenter.select(router.selectedConversationID)
             if let voice = environment.continuousVoicePresentation.request,
@@ -796,10 +790,6 @@ struct RootView: View {
                     environment.continuousVoicePresentation.dismiss(voice.id)
                 }
             }
-            guard case .conversation(let id) = selection,
-                  let request = environment.browserCenter.consumePendingPanelRequest(for: id),
-                  request.show else { return }
-            router.showInspector(.browser)
         }
         .onChange(of: router.selection) { _, destination in
             guard destination != .home,
@@ -1414,6 +1404,8 @@ struct RootView: View {
                         : { router.hideInspector() }
                 ) {
                     contentColumn
+                        .environment(\.showsComposerBrowserPreview, ordinaryBrowserPreviewVisible &&
+                            !isPhoneSidebarOpen && presentableInspectorRoute == nil)
                 } sidebar: {
                     sidebarColumn
                 }
@@ -1459,6 +1451,8 @@ struct RootView: View {
         } detail: {
             HStack(spacing: 0) {
                 contentColumn.frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .environment(\.showsComposerBrowserPreview, ordinaryBrowserPreviewVisible &&
+                        !showsBrowserInFilePane && presentableInspectorRoute?.content != .browser)
                 if let inspectorRoute = presentableInspectorRoute {
                     Divider()
                     VStack(spacing: 0) {
@@ -1468,8 +1462,16 @@ struct RootView: View {
                         NavigationStack {
                             InspectorColumnView(route: inspectorRoute, embedded: true).id(inspectorRoute.id)
                         }
+                        if showsBrowserInFilePane {
+                            TaskBrowserLivePreview(center: environment.browserCenter,
+                                                  conversationID: inspectorRoute.conversationID,
+                                                  inlineImage: inspectorAvailableHeight >= 550)
+                        }
                     }
                     .frame(minWidth: 360, idealWidth: 430, maxWidth: 520)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                        inspectorAvailableHeight = height
+                    }
                     .transition(.move(edge: .trailing).combined(with: .opacity))
                     .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("ipad.inspector.column")
@@ -1490,6 +1492,20 @@ struct RootView: View {
             iPadWindowWidth = width
             keepInspectorColumnsReadable()
         }
+    }
+
+    private var ordinaryBrowserPreviewVisible: Bool {
+        !destinationPresentationBlocked && presentedDestination == nil && !showsConversationSearch &&
+            latexOpenRequest == nil && environment.heavyRuntimeConflictCenter.pending == nil
+    }
+
+    private var showsBrowserInFilePane: Bool {
+        // The small-height pane reserves its file toolbar and at least one 44pt file row.
+        // The surrounding task surface keeps presenting an open browser across this layout change.
+        guard ordinaryBrowserPreviewVisible, iPadWindowWidth >= 900, inspectorAvailableHeight >= 330,
+              let route = presentableInspectorRoute,
+              route.conversationID == router.selectedConversationID else { return false }
+        return route.content == .workspaceFiles || route.content == .changes
     }
 
     private func keepInspectorColumnsReadable() {
@@ -2109,7 +2125,9 @@ private struct InspectorColumnView: View {
             case .workspaceFiles:
                 workspaceBackedContent
             case .browser:
-                BrowserView(center: environment.browserCenter)
+                BrowserView(center: environment.browserCenter, onClose: {
+                    if router.inspectorRoute == route { router.hideInspector() }
+                })
             case .terminal:
                 VStack(spacing: 0) {
                     Picker(IDELanguageRunText.t("终端", "Terminal"), selection: $showsRemoteTerminal) {

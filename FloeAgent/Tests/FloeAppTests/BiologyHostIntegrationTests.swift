@@ -405,6 +405,106 @@ import FloeExecution
     }
 
     #if DEBUG
+    /// Holds only presentation-owned console cleanup. The assistant run, its
+    /// database binding, the native project and the file leases stay real.
+    private final class PausedConsoleClose: BiologyNativeRuntime {
+        let entered = AsyncStream<Void>.makeStream()
+        let resumeClose = AsyncStream<Void>.makeStream()
+        private var firstClose = true
+        func closeConsoleOwner(projectID: UUID) async {
+            guard firstClose else { return }
+            firstClose = false
+            entered.continuation.finish()
+            for await _ in resumeClose.stream { }
+        }
+        func consoleOwner(projectID: UUID) async throws -> BiologyExecutionOwner { throw BiologyHostError.missingRuntime }
+        func authorizeTool(projectID: UUID, toolName: String, arguments: Data, requestID: String) async throws -> BiologyNativeAuthorization { throw BiologyHostError.missingRuntime }
+        func authorizeScientificLaunch(projectID: UUID, assetID: UUID, assetRevision: UInt64) async throws -> BiologyNativeAuthorization { throw BiologyHostError.missingRuntime }
+        func authorizeAnalysis(projectID: UUID, arguments: Data, requestID: String, source: BiologyNativeUIIntent.Source) async throws -> BiologyNativeAuthorization { throw BiologyHostError.missingRuntime }
+    }
+
+    @Test func reopeningDuringAssistantWorkRetiresOnlyTheOldPresentation() async throws {
+        let app = try await appQualificationEnvironment()
+        let appHost = try await app.biologyComposition.host()
+        let gate = PausedConsoleClose()
+        let host = try BiologyHostServices(environment: app, root: appHost.root, jobs: appHost.jobs,
+            registry: ToolRunnerRegistry(), hooks: appHost.hooks, nativeRuntime: gate)
+        let record = try await PersonalContentService.shared.create(kind: .biology, title: "QA-Biology-Reopen-" + UUID().uuidString.prefix(8))
+        let library = try await PersonalContentService.shared.library()
+        let directory = try await library.resolve(record.id).url
+        let taskID = try await app.studioCoordinator.assistant(for: record)
+        let runID = UUID()
+        try await app.runStore.saveRun(.init(id: runID, conversationID: taskID, state: "executing",
+            goal: "Save project notes", startedAt: Date()))
+        var presentations: [BiologyProjectSession] = []
+        func open() async throws -> BiologyProjectSession {
+            try await BiologyProjectSession.open(id: record.id, directory: directory, host: host)
+        }
+        func cleanup() async throws {
+            gate.resumeClose.continuation.finish()
+            for session in presentations { await session.close() }
+            try await app.runStore.updateRunState(id: runID, state: "completed", endedAt: Date())
+            try await PersonalLibraryFileActions.delete(try await library.resolve(record.id).record, environment: app)
+        }
+        do {
+            let first = Task { @MainActor in try await open() }
+            let second = Task { @MainActor in try await open() }
+            var conflicts = 0
+            for result in await [first.result, second.result] {
+                do { presentations.append(try result.get()) }
+                catch BiologyHostError.alreadyOpen { conflicts += 1 }
+            }
+            #expect(conflicts == 1 && presentations.count == 1)
+            let old = try #require(presentations.first)
+            do {
+                _ = try await PersonalLibraryFileActions.withBiologyLifecycle(projectID: record.id) { _, _, _ in true }
+                Issue.record("An open original allowed exclusive file organization")
+            } catch PersonalFileActionError.closeFirst { }
+
+            let retiring = Task { @MainActor in await old.close() }
+            for await _ in gate.entered.stream { }
+            let started = AsyncStream<Void>.makeStream()
+            let cancelled = Task { @MainActor in
+                started.continuation.yield(())
+                return try await open()
+            }
+            let replacement = Task { @MainActor in
+                started.continuation.yield(())
+                return try await open()
+            }
+            var entrants = started.stream.makeAsyncIterator()
+            _ = await entrants.next()
+            _ = await entrants.next()
+            cancelled.cancel()
+            // The shared assistant can still own a normal file read/write lease
+            // and commit a new revision while the old presentation is draining.
+            let leases = try await host.access.acquire([record.id])
+            defer { for lease in leases { lease.release() } }
+            try await host.service.saveNotes(record.id, text: "Background project notes", expectedRevision: old.project.revision)
+            gate.resumeClose.continuation.finish()
+            await retiring.value
+            do {
+                presentations.append(try await cancelled.value)
+                Issue.record("A cancelled opener acquired the replacement presentation")
+            } catch is CancellationError { }
+            let current = try await replacement.value
+            presentations.append(current)
+            #expect(old !== current)
+            await old.close()
+            try await current.refreshFromHost()
+            #expect(current.project.notes == "Background project notes")
+            #expect(current.workbenchModel.project?.revision == current.project.revision)
+            #expect(try await host.store.load(record.id) == current.project)
+            #expect(try await app.studioCoordinator.assistant(for: record) == taskID)
+            let run = try #require(try await app.runStore.run(id: runID))
+            #expect(run.conversationID == taskID && run.endedAt == nil && run.state == "executing")
+        } catch {
+            try? await cleanup()
+            throw error
+        }
+        try await cleanup()
+    }
+
     @Test func actualAppNativeApprovalTokenAndPersonalTrashRestoreUseTheSameOriginal() async throws {
         let app = try await appQualificationEnvironment()
         let host = try await app.biologyComposition.host()

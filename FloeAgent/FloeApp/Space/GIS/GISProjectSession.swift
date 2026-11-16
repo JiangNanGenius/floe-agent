@@ -17,7 +17,7 @@ import FloeHeavyEditorSupport
     private var sourceSHA256: String
     private(set) var isClosed = false
     private(set) var isRefreshing = false
-    private var hasPresentation = false
+    private var presentationID: UUID?
     private var modelUses = Set<UUID>()
     private var exported: [String: (url: URL, receipt: HeavyEditorExportReceipt)] = [:]
     private(set) var listingError: String?
@@ -159,17 +159,20 @@ import FloeHeavyEditorSupport
         }
     }
     func releaseModelUse(_ token: UUID) { modelUses.remove(token); closeIfUnused() }
-    func beginPresentation() throws {
+    func beginPresentation() throws -> UUID {
         guard !isClosed else { throw PersonalContentError.changedDocument }
-        guard !hasPresentation, !isRefreshing else { throw PersonalFileActionError.busy }
-        hasPresentation = true
+        guard presentationID == nil, !isRefreshing else { throw PersonalFileActionError.busy }
+        let id = UUID()
+        presentationID = id
+        return id
     }
     private func closeIfUnused() {
-        guard !isClosed, !isRefreshing, !hasPresentation, modelUses.isEmpty, !controller.isWorking else { return }
+        guard !isClosed, !isRefreshing, presentationID == nil, modelUses.isEmpty, !controller.isWorking else { return }
         isClosed = true; controller.cancel()
         if Self.sessions[id] === self { Self.sessions[id] = nil }
     }
-    func refresh() async throws {
+    func refresh(_ owner: UUID) async throws {
+        guard presentationID == owner else { throw CancellationError() }
         guard !isClosed else { throw PersonalContentError.changedDocument }
         guard !isRefreshing, !controller.isWorking, modelUses.isEmpty else { throw PersonalFileActionError.busy }
         isRefreshing = true
@@ -179,6 +182,7 @@ import FloeHeavyEditorSupport
             let projectID = id, root = directory
             let saved = try await personalPreviewOffMain { try GISProjectOriginal.read(id: projectID, directory: root) }
             _ = try await location(); try saved.validate()
+            guard presentationID == owner else { throw CancellationError() }
             // reload() assigns its new document before invoking our normal
             // presentation authorization. Bind only this verified same-ID,
             // same-location snapshot first; all other operations stay fenced.
@@ -188,11 +192,12 @@ import FloeHeavyEditorSupport
             try await requireOriginal(); try saved.validate()
             listingError = nil
         } catch {
+            guard presentationID == owner else { throw CancellationError() }
             // A racing commit or failed reload may have changed the controller.
             // Never leave that controller paired with another revision's pin.
             // Its immutable disk original remains untouched; next open creates
             // a fresh session, and this surface can still close without saving.
-            isClosed = true; hasPresentation = false; controller.cancel()
+            isClosed = true; presentationID = nil; controller.cancel()
             if Self.sessions[id] === self { Self.sessions[id] = nil }
             await controller.endPresentation()
             listingError = IDELanguageRunText.t("地图已改变，请关闭后重新打开。", "The map changed. Close and reopen it.")
@@ -211,38 +216,49 @@ import FloeHeavyEditorSupport
         let base = savedCenter.count == 2 ? savedCenter : [0, 20]
         return abs(center[0] - base[0]) < 1e-9 && abs(center[1] - base[1]) < 1e-9 && abs(zoom - savedZoom) < 1e-9
     }
-    func flushForClose() async -> Bool {
-        if isClosed { await controller.endPresentation(); return true }
-        guard !isRefreshing, !controller.isWorking, modelUses.isEmpty else { return false }
+    func flushForClose(_ owner: UUID) async -> Bool {
+        if isClosed { return true }
+        guard presentationID == owner, !isRefreshing, !controller.isWorking, modelUses.isEmpty else { return false }
         do {
             // Closing an untouched map must not append a bare revision. Ask
             // the live page for its current camera first; a moved view still
             // commits exactly as before, and the CAS/source pin remain.
             try await controller.refreshPresentation()
+            guard presentationID == owner, !controller.isWorking, modelUses.isEmpty else { return false }
             if controller.document.revision != sourceRevision || !presentationViewMatchesSaved() {
                 try await controller.save()
             }
             try await requireOriginal()
-            guard !controller.isWorking, modelUses.isEmpty else { return false }
-            await controller.endPresentation()
-            hasPresentation = false; closeIfUnused()
+            guard presentationID == owner, !controller.isWorking, modelUses.isEmpty else { return false }
+            await presentationEnded(owner)
             return true
-        } catch { listingError = error.localizedDescription; return false }
+        } catch {
+            if presentationID == owner { listingError = error.localizedDescription }
+            return false
+        }
     }
     /// Dismissal does not stop a service-owned model edit. Its use lease still
     /// prevents moving/deleting this original until the actual invocation ends.
-    func presentationEnded() async { hasPresentation = false; await controller.endPresentation(); closeIfUnused() }
+    func presentationEnded(_ owner: UUID) async {
+        guard presentationID == owner else { return }
+        presentationID = nil
+        await controller.endPresentation()
+        closeIfUnused()
+    }
     /// Explicit Continue from the native leave decision only. Every model edit
     /// commits through the existing controller/host hook; this is not a flush
     /// receipt and does not release or transfer that model's original lease.
-    func endPresentationKeepingModelWork() async -> Bool {
-        guard !isClosed, !isRefreshing, !modelUses.isEmpty else { return false }
+    func endPresentationKeepingModelWork(_ owner: UUID) async -> Bool {
+        guard presentationID == owner, !isClosed, !isRefreshing, !modelUses.isEmpty else { return false }
         do {
             try await requireOriginal()
-            guard !isClosed, !isRefreshing, !modelUses.isEmpty else { return false }
-            await presentationEnded()
+            guard presentationID == owner, !isClosed, !isRefreshing, !modelUses.isEmpty else { return false }
+            await presentationEnded(owner)
             return true
-        } catch { listingError = error.localizedDescription; return false }
+        } catch {
+            if presentationID == owner { listingError = error.localizedDescription }
+            return false
+        }
     }
     static func prepareForFileAction(id: UUID, directory: URL) async throws {
         guard opening[id] == nil else { throw PersonalFileActionError.busy }

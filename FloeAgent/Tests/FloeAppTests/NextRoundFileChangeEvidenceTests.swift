@@ -151,11 +151,14 @@ import FloeTools
         XCTAssertThrowsError(try VerifiedChatInlineArtifact.load(artifact, runID: fixture.run, tool: "workspace.createFile", root: root))
     }
 
-    private func event(_ run: UUID, _ tool: String, _ output: ToolExecutionOutput, status: String = "ok") throws -> RunEventRecord {
-        let fields = [
+    private func event(_ run: UUID, _ tool: String, _ output: ToolExecutionOutput, status: String = "ok",
+                       workspaceID: UUID? = nil, outcomeUnknown: Bool = false) throws -> RunEventRecord {
+        var fields = [
             "tool": tool, "id": UUID().uuidString, "status": status, "summary": output.summary,
             "artifactRefsJSON": String(decoding: try JSONEncoder().encode(output.artifacts), as: UTF8.self)
         ]
+        fields["workspaceID"] = workspaceID?.uuidString
+        if outcomeUnknown { fields["outcomeUnknown"] = "true" }
         return .init(runID: run, sequence: 1, kind: .toolResult,
                      payloadJSON: String(decoding: try JSONEncoder().encode(fields), as: UTF8.self))
     }
@@ -203,6 +206,40 @@ import FloeTools
         changes.consume(try event(run, "workspace.copyFile", receipt(#"copied=a -> b network=true paths={"change":"saved","from":"mount/a","kind":"file","path":"mount/b"}"#)), artifactRoot: nil)
         XCTAssertEqual(changes.changes.map(\.path), ["mount/b"])
         XCTAssertEqual(changes.changes.first?.action, .saved)
+    }
+
+    func testSamePathInTwoWorkspacesAndLegacyReceiptsKeepsEachHistory() async throws {
+        let first = try Fixture(), second = try Fixture()
+        defer { first.close(); second.close() }
+        let ownerA = UUID(), ownerB = UUID()
+        let path = "draft.txt"
+        var a = first.context
+        a.workspaceRootURL = first.root
+        var b = a
+        b.workspaceRootURL = second.root
+        let create = WorkspaceCreateFileTool(environment: .init(rootProvider: { nil }))
+        let localA = try await create.execute(.init(path: path, content: "first"), context: a)
+        let localB = try await create.execute(.init(path: path, content: "second"), context: b)
+        let root = try FloeArtifactStore.root()
+        var changes = RunFileChangeList(runID: first.run, conversationID: UUID())
+        changes.consume(try event(first.run, WorkspaceCreateFileTool.name, localA, workspaceID: ownerA), artifactRoot: root)
+        changes.consume(try event(first.run, WorkspaceCreateFileTool.name, localB, workspaceID: ownerB), artifactRoot: root)
+        changes.consume(try event(first.run, WorkspaceCreateFileTool.name, localA), artifactRoot: root)
+        let ids = changes.changes.map(\.id)
+        XCTAssertEqual(ids, [.path(path, workspaceID: ownerA), .path(path, workspaceID: ownerB), .path(path, workspaceID: nil)])
+        let aEvidence = try XCTUnwrap(changes.changes.first { $0.id == .path(path, workspaceID: ownerA) })
+        let bEvidence = try XCTUnwrap(changes.changes.first { $0.id == .path(path, workspaceID: ownerB) })
+        XCTAssertNotEqual(aEvidence.evidence, bEvidence.evidence)
+
+        let delete = WorkspaceDeleteFileTool(environment: .init(rootProvider: { nil }))
+        let deleted = try await delete.execute(.init(path: path), context: b)
+        changes.consume(try event(first.run, WorkspaceDeleteFileTool.name, deleted, workspaceID: ownerA, outcomeUnknown: true), artifactRoot: root)
+        changes.consume(try event(first.run, WorkspaceDeleteFileTool.name, deleted, status: "failed", workspaceID: ownerA), artifactRoot: root)
+        XCTAssertEqual(changes.changes.map(\.id), ids)
+        changes.consume(try event(first.run, WorkspaceDeleteFileTool.name, deleted, workspaceID: ownerB), artifactRoot: root)
+        XCTAssertEqual(changes.changes.map(\.id), [.path(path, workspaceID: ownerA), .path(path, workspaceID: nil)])
+        XCTAssertEqual(try String(contentsOf: first.root.appendingPathComponent(path), encoding: .utf8), "first")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: second.root.appendingPathComponent(path).path))
     }
 }
 #endif

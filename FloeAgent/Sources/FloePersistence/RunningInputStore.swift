@@ -90,7 +90,7 @@ public actor SQLiteRunningInputStore: RunningInputStore {
         try await database.writer { db in
             try db.execute(sql: """
                 UPDATE pending_user_inputs SET content = ?, updated_at = ?
-                WHERE id = ? AND status = 'queued'
+                WHERE id = ? AND status = 'queued' AND execution_mode != 'browserControlNotice'
                 """, arguments: [trimmed, PersistenceCodec.encode(Date()), id.uuidString])
             guard db.changesCount == 1 else {
                 throw FloeError.validationFailed("Only queued input can be edited")
@@ -134,7 +134,7 @@ public actor SQLiteRunningInputStore: RunningInputStore {
         try await database.writer { db in
             guard let row = try Row.fetchOne(db, sql: """
                 SELECT * FROM pending_user_inputs
-                WHERE conversation_id = ? AND status = 'queued' AND execution_mode != 'browserHandoff'
+                WHERE conversation_id = ? AND status = 'queued' AND execution_mode NOT IN ('browserHandoff','browserControlNotice')
                 ORDER BY position, created_at, id LIMIT 1
                 """, arguments: [conversationID.uuidString]) else { return nil }
             let value = try Self.decode(row)
@@ -155,7 +155,8 @@ public actor SQLiteRunningInputStore: RunningInputStore {
                 UPDATE pending_user_inputs
                 SET status = 'promoting', mode = 'steer', target_run_id = ?, updated_at = ?
                 WHERE id = ? AND status = 'queued'
-                """, arguments: [expectedRunID.uuidString, PersistenceCodec.encode(Date()), id.uuidString])
+                    AND (execution_mode != 'browserControlNotice' OR target_run_id = ?)
+                """, arguments: [expectedRunID.uuidString, PersistenceCodec.encode(Date()), id.uuidString, expectedRunID.uuidString])
             guard db.changesCount == 1,
                   let row = try Row.fetchOne(db, sql: "SELECT * FROM pending_user_inputs WHERE id = ?", arguments: [id.uuidString])
             else { return nil }
@@ -169,7 +170,8 @@ public actor SQLiteRunningInputStore: RunningInputStore {
                 UPDATE pending_user_inputs
                 SET status = 'steerPending', target_run_id = ?, updated_at = ?
                 WHERE id = ? AND status = 'promoting'
-                """, arguments: [runID.uuidString, PersistenceCodec.encode(Date()), id.uuidString])
+                    AND (execution_mode != 'browserControlNotice' OR target_run_id = ?)
+                """, arguments: [runID.uuidString, PersistenceCodec.encode(Date()), id.uuidString, runID.uuidString])
         }
     }
 
@@ -180,7 +182,8 @@ public actor SQLiteRunningInputStore: RunningInputStore {
                 UPDATE pending_user_inputs
                 SET status = 'consumed', consumed_run_id = ?, consumed_at = ?, updated_at = ?
                 WHERE id = ? AND status IN ('promoting', 'steerPending')
-                """, arguments: [runID.uuidString, now, now, id.uuidString])
+                    AND (execution_mode != 'browserControlNotice' OR target_run_id = ?)
+                """, arguments: [runID.uuidString, now, now, id.uuidString, runID.uuidString])
         }
     }
 
@@ -188,8 +191,8 @@ public actor SQLiteRunningInputStore: RunningInputStore {
         try await database.writer { db in
             try db.execute(sql: """
                 UPDATE pending_user_inputs
-                SET status = 'queued', mode = 'queue',
-                    target_run_id = CASE WHEN execution_mode = 'goal' THEN target_run_id ELSE NULL END,
+                SET status = 'queued', mode = CASE WHEN execution_mode IN ('browserHandoff','browserControlNotice') THEN 'steer' ELSE 'queue' END,
+                    target_run_id = CASE WHEN execution_mode IN ('browserHandoff','browserControlNotice','goal') THEN target_run_id ELSE NULL END,
                     updated_at = ?
                 WHERE id = ? AND status IN ('promoting', 'steerPending')
                 """, arguments: [PersistenceCodec.encode(Date()), id.uuidString])
@@ -201,8 +204,8 @@ public actor SQLiteRunningInputStore: RunningInputStore {
             try db.execute(sql: """
                 UPDATE pending_user_inputs
                 SET status = 'queued',
-                    mode = CASE WHEN execution_mode = 'browserHandoff' THEN 'steer' ELSE 'queue' END,
-                    target_run_id = CASE WHEN execution_mode IN ('browserHandoff','goal') THEN target_run_id ELSE NULL END,
+                    mode = CASE WHEN execution_mode IN ('browserHandoff','browserControlNotice') THEN 'steer' ELSE 'queue' END,
+                    target_run_id = CASE WHEN execution_mode IN ('browserHandoff','browserControlNotice','goal') THEN target_run_id ELSE NULL END,
                     updated_at = ?
                 WHERE status IN ('promoting', 'steerPending') AND consumed_run_id IS NULL
                 """, arguments: [PersistenceCodec.encode(Date())])

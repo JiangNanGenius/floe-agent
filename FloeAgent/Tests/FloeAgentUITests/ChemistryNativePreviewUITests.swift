@@ -4,6 +4,25 @@ import XCTest
 final class ChemistryNativePreviewUITests: XCTestCase {
     private let structureView = "chemistry.structureView"
 
+    func testClosingAssistantKeepsTheSpaceEditorOpenUntilDone() {
+        let app = launchApp()
+        createProject(newTitle("Assistant"), in: app)
+        let done = app.buttons["space.editor.done"]
+        tap(app.buttons["space.editor.assistant"])
+        let close = app.buttons["studio.assistant.close"]
+        XCTAssertTrue(close.waitForExistence(timeout: 10))
+        XCTAssertEqual(close.label, "Close Assistant")
+        XCTAssertEqual(done.label, "Done")
+        XCTAssertTrue(done.isHittable)
+        XCTAssertLessThan(done.frame.midX, close.frame.midX)
+
+        tap(close)
+        XCTAssertTrue(close.waitForNonExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["New drawing"].firstMatch.isHittable)
+        tap(done)
+        XCTAssertTrue(app.segmentedControls["space.sections"].waitForExistence(timeout: 15))
+    }
+
     func testSpaceDrawingRegeneratesAndRestoresNativePreview() {
         let app = launchApp()
         let title = newTitle("ChemSpace")

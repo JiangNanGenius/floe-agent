@@ -17,6 +17,45 @@ struct FileAssistantLifecycleTests {
 
     // MARK: - StudioDocumentAccess binding truth
 
+    @Test("An unavailable authority reports the error and reopens the original grants")
+    func unavailableStudioAuthorityRetriesAndPreservesGrants() async throws {
+        let files = FileManager.default
+        let root = files.temporaryDirectory.appendingPathComponent("studio-authority-retry-\(UUID())")
+        defer { try? files.removeItem(at: root) }
+        let offline = root.appendingPathComponent("offline", isDirectory: true)
+        let authorityRoot = root.appendingPathComponent("StudioAuthority")
+        let project = UUID(), assistant = UUID(), stranger = UUID()
+        do {
+            let original = try StudioDocumentAccess(root: offline)
+            try await original.bindAssistant(conversationID: assistant, projectID: project)
+        }
+        let blocker = Data("Temporarily unavailable".utf8)
+        try blocker.write(to: authorityRoot)
+        let environment = AppEnvironment.preview()
+        var attempts = 0
+        let coordinator = StudioCoordinator(environment: environment, openAuthority: {
+            attempts += 1
+            return try StudioDocumentAccess(root: authorityRoot)
+        })
+        await #expect(throws: CocoaError.self) { _ = try await coordinator.assistantBindingsForOwnership() }
+        await #expect(throws: CocoaError.self) { _ = try await coordinator.assistantProjectForOwnership(assistant) }
+        #expect(attempts == 2)
+        #expect(try Data(contentsOf: authorityRoot) == blocker)
+
+        try files.removeItem(at: authorityRoot)
+        try files.moveItem(at: offline, to: authorityRoot)
+        async let bindings = coordinator.assistantBindingsForOwnership()
+        async let owner = coordinator.assistantProjectForOwnership(assistant)
+        let (restored, foundProject) = try await (bindings, owner)
+        #expect(restored == [StudioAssistantBinding(projectID: project, conversationID: assistant)])
+        #expect(foundProject == project)
+        let authority = try coordinator.access.get()
+        #expect(try coordinator.access.get() === authority)
+        #expect(try await authority.canAccess(conversationID: assistant, projectID: project, editing: true))
+        #expect(try await authority.canAccess(conversationID: stranger, projectID: project, editing: false) == false)
+        #expect(attempts == 3)
+    }
+
     @Test("Bindings round-trip: bulk query, rebind uniqueness, removal")
     func documentAccessBindingsRoundTrip() async throws {
         let root = FileManager.default.temporaryDirectory

@@ -26,7 +26,10 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
         let sessionID: UUID
         var tabID: UUID?
         var returning: Bool
-        var pageAddress: String? = nil
+        // Older receipts only have the return ID. An assistance request creates no arrival event.
+        var takeoverEventID: UUID?
+        var closedAfterRestart: Bool?
+        var humanPresent: Bool { takeoverEventID != nil && closedAfterRestart != true }
     }
     struct PanelRequest: Equatable {
         let id = UUID()
@@ -46,6 +49,8 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
     /// The conversation whose browser the UI currently projects. Binding is a
     /// presentation choice only; it never moves execution between sessions.
     @Published private(set) var conversationID: UUID?
+    /// An explicitly presented takeover owns the interactive web view until its panel closes.
+    @Published private(set) var previewInteractionID: UUID?
     @Published private(set) var presentationRequest: PanelRequest?
     /// Route state for the panel request of each task. `presentationRequest`
     /// is the latest emitted request (the app's onChange route); this map
@@ -62,6 +67,7 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
     /// user takeover is attributed only to the run named by the runtime-issued
     /// ToolContext or by the browser's actual control holder.
     var deliverHandoff: ((Handoff, Bool) async throws -> Bool)?
+    var deliverTakeover: ((Handoff) async throws -> Bool)?
     /// Set by AppEnvironment so an explicit owner release also stops that
     /// owner's local preview server. The coordinator is owned by the
     /// environment (not this center), and preview records are task-owned;
@@ -83,6 +89,8 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
     private var handoffs: [UUID: Handoff] = [:]
     private var deliveringHandoffs = Set<UUID>()
     private var deliveredHandoffIDs = Set<UUID>()
+    private var takeoverDeliveries: [UUID: Task<Bool, Error>] = [:]
+    private var deliveredTakeovers = Set<UUID>()
     private var knownRunIDs: [UUID: UUID] = [:]
     private var handoffNeedsContinueByConversation: [UUID: Bool] = [:]
 
@@ -107,18 +115,17 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
     private let maximumOwnerFences = 512
     private static var didRunArtifactSweep = false
 
-    private var handoffURL: URL {
-        artifactDirectory.deletingLastPathComponent().appendingPathComponent("BrowserHandoffs.json")
-    }
+    private let handoffURL: URL
     private var protocolVersion: String { sessionConfiguration.protocolVersion }
 
     init(
         durableHandoffs: Bool = true,
         taskHandoffsEnabled: Bool = true,
-        settings: BrowserSettingsService? = nil
+        settings: BrowserSettingsService? = nil,
+        handoffStoreURL: URL? = nil
     ) {
         let settings = settings ?? BrowserSettingsService.shared
-        self.durableHandoffs = durableHandoffs
+        self.durableHandoffs = durableHandoffs || handoffStoreURL != nil
         self.taskHandoffsEnabled = taskHandoffsEnabled
         self.settings = settings
         self.lastAdvancedBrowserFeaturesEnabled = settings.advancedBrowserFeaturesEnabled
@@ -132,6 +139,7 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
             .appendingPathComponent("FloeAgent", isDirectory: true)
             .appendingPathComponent("BrowserArtifacts", isDirectory: true)
         artifactDirectory = artifacts
+        handoffURL = handoffStoreURL ?? artifacts.deletingLastPathComponent().appendingPathComponent("BrowserHandoffs.json")
         sessionConfiguration = BrowserTaskSessionConfiguration(
             protocolVersion: "FloeBrowser/1.0",
             contentWorld: WKContentWorld.world(name: "org.floeagent.browser.agent"),
@@ -140,7 +148,8 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
             maximumEventsPerTab: 256,
             websiteDataStoreProvider: { @MainActor in settings.websiteDataStore },
             userAgentProvider: { @MainActor in settings.userAgent.effectiveValue },
-            linkOpenBehaviorProvider: { @MainActor in settings.linkOpenBehavior }
+            linkOpenBehaviorProvider: { @MainActor in settings.linkOpenBehavior },
+            usesWideLayout: { @MainActor url in settings.usesWideLayout(for: url) }
         )
         super.init()
         settingsCancellable = settings.$revision
@@ -160,9 +169,19 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
             Self.didRunArtifactSweep = true
             cleanupArtifacts()
         }
-        if taskHandoffsEnabled, durableHandoffs, let data = try? Data(contentsOf: handoffURL),
+        if taskHandoffsEnabled, self.durableHandoffs, let data = try? Data(contentsOf: handoffURL),
            let saved = try? JSONDecoder().decode([Handoff].self, from: data) {
-            handoffs = Dictionary(saved.map { ($0.conversationID, $0) }, uniquingKeysWith: { _, latest in latest })
+            for var receipt in saved {
+                // WebKit sessions are process-local. A receipt alone cannot restore human control of a page.
+                if !receipt.returning {
+                    receipt.returning = true
+                    receipt.closedAfterRestart = true
+                }
+                handoffs[receipt.conversationID] = receipt
+            }
+            if saved.contains(where: { !$0.returning }) {
+                do { try persistHandoffs() } catch { handoffError = error.localizedDescription }
+            }
         }
     }
 
@@ -283,6 +302,7 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
             host: self
         )
         try store.insert(session)
+        objectWillChange.send()
         _ = session.createTab()
         session.surfaceState = .ready
         return session
@@ -324,6 +344,7 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
         case .needsUser(let message): throw BrowserControlError.needsUser(message)
         }
         try store.insert(session)
+        objectWillChange.send()
         _ = session.createTab()
         session.surfaceState = .ready
         return ModelControl(session: session, lease: lease, acquiredNow: true)
@@ -432,8 +453,29 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
         beginUserControl(
             for: session,
             runID: runID,
-            reason: "Browser control is yours; the task can continue other work."
+            reason: "Browser control is yours; the task can continue other work.",
+            humanPresent: true
         )
+    }
+
+    /// Passive viewers use session(for:) only. Binding/handing over happens on this explicit user action.
+    func openPreviewInteraction(
+        session: BrowserTaskSession, page: BrowserPreviewPageIdentity?, displayedLease: BrowserControlLease?, presentationID: UUID
+    ) -> Bool {
+        guard taskHandoffsEnabled, previewInteractionID == nil, !session.isReleased,
+              store.session(for: session.conversationID) === session, page != nil, session.previewPageIdentity == page,
+              session.isUserControlling || session.activeWebView?.isLoading == false,
+              session.modelControl == displayedLease, session.isUserControlling || session.isModelActive else { return false }
+        bind(to: session.conversationID)
+        takeControl()
+        guard session.isUserControlling else { return false }
+        previewInteractionID = presentationID
+        _ = consumePendingPanelRequest(for: session.conversationID)
+        return true
+    }
+
+    func closePreviewInteraction(_ presentationID: UUID) {
+        if previewInteractionID == presentationID { previewInteractionID = nil }
     }
 
     /// Visible-session form retained for the UI and existing callers.
@@ -462,12 +504,17 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
                 "This task's browser is not open; navigate before requesting user interaction"
             )
         }
+        guard !session.returningToModel else { throw FloeError.validationFailed("Browser handback is still in progress") }
         // A yield request can only hand over the calling run's own control. It
         // can never take the page from a different run that currently owns it.
         if let runID, let holder = session.modelControl, holder.runID != runID {
             throw FloeError.validationFailed(
                 "This browser is being used by another run; continue with other authorized work"
             )
+        }
+        if session.isUserControlling, let runID, let current = handoffs[conversationID],
+           current.sessionID == session.sessionID, !deliveredHandoffIDs.contains(current.id), current.runID != runID {
+            throw FloeError.validationFailed("Another run is waiting for this user interaction")
         }
         if let tabID {
             guard session.tabs.contains(where: { $0.id == tabID }) else {
@@ -488,10 +535,7 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
         pendingPanelRequests[conversationID]
     }
 
-    /// Reads and clears one owner's pending panel request. The app calls this
-    /// when the user explicitly selects the owning conversation, so a
-    /// background task's request is presented exactly once and never steals
-    /// the panel of another selected task.
+    /// Acknowledges this owner's request when the user actually opens its interactive page.
     func consumePendingPanelRequest(for conversationID: UUID) -> PanelRequest? {
         pendingPanelRequests.removeValue(forKey: conversationID)
     }
@@ -502,8 +546,7 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
         try requestPanelDismissal(conversationID: conversationID)
     }
 
-    /// Closes only the calling task's panel. A different task's visible panel
-    /// is never dismissed by this call.
+    /// Withdraws a model request only. Presentation and web-page ownership stay with the user.
     func requestPanelDismissal(conversationID: UUID) throws {
         guard let session = store.session(for: conversationID) else {
             throw FloeError.validationFailed("This task's browser is not open")
@@ -511,11 +554,8 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
         guard !session.isUserControlling else {
             throw FloeError.validationFailed("Wait for the user to return browser control before closing their panel")
         }
-        guard self.conversationID == conversationID else {
-            throw FloeError.validationFailed("This task's browser panel is not visible; no panel was closed")
-        }
         pendingPanelRequests.removeValue(forKey: conversationID)
-        presentationRequest = PanelRequest(conversationID: conversationID, show: false)
+        if presentationRequest?.conversationID == conversationID { presentationRequest = nil }
     }
 
     // MARK: - Execution
@@ -660,6 +700,9 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
     /// refused by its ToolContext cancellation before any session is created.
     func recordOwnerRun(conversationID: UUID, runID: UUID) {
         knownRunIDs[conversationID] = runID
+        if let event = handoffs[conversationID], event.runID == runID, let id = event.takeoverEventID {
+            deliveredTakeovers.remove(id)
+        }
         liftReleaseFence(for: conversationID)
     }
 
@@ -678,7 +721,8 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
     private func beginUserControl(
         for session: BrowserTaskSession,
         runID: UUID?,
-        reason: String?
+        reason: String?,
+        humanPresent: Bool = false
     ) {
         guard taskHandoffsEnabled else { return }
         let owner = session.conversationID
@@ -687,60 +731,94 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
         // reactivated) is fenced here: its late delegate callbacks can never
         // hand control or rewrite the durable receipt for a newer session.
         guard store.session(for: owner) === session, !session.isReleased else { return }
-        let receiptRun = runID ?? session.currentModelRunID
+        guard !session.returningToModel else { return }
         let existing = handoffs[owner]
+        let wasHumanControlled = session.isUserControlling
         let existingWasDelivered = existing.map { deliveredHandoffIDs.contains($0.id) } ?? false
+        let current = wasHumanControlled && existing?.sessionID == session.sessionID && !existingWasDelivered ? existing : nil
+        let receiptRun = current?.runID ?? runID ?? session.currentModelRunID
+        if !wasHumanControlled { session.beginUserTakeover(reason: reason) }
+        if wasHumanControlled, let current,
+           (!humanPresent || current.humanPresent), current.tabID == session.activeTabID { return }
         // A failed delivery leaves the receipt marked returning but undelivered;
         // taking control again must keep that exact receipt for a later retry.
         if let receiptRun {
             if existing == nil
                 || existing?.sessionID != session.sessionID
-                || (existing?.returning == true && existingWasDelivered) {
-                if let existing { deliveredHandoffIDs.remove(existing.id) }
+                || (existing?.returning == true && existingWasDelivered)
+                || existing?.runID != receiptRun {
+                if let existing {
+                    deliveredHandoffIDs.remove(existing.id)
+                    if let id = existing.takeoverEventID { deliveredTakeovers.remove(id) }
+                }
                 let event = Handoff(
                     id: UUID(),
                     conversationID: owner,
                     runID: receiptRun,
                     sessionID: session.sessionID,
                     tabID: session.activeTabID,
-                    returning: false
+                    returning: false, takeoverEventID: humanPresent ? UUID() : nil
                 )
                 handoffs[owner] = event
-                do { try persistHandoffs() } catch {
-                    if conversationID == owner { handoffError = error.localizedDescription }
-                }
-            } else if var updated = handoffs[owner], updated.tabID != session.activeTabID {
-                // Keep the same durable receipt while the user takes control of
-                // another tab in this task's own browser.
+            } else if var updated = handoffs[owner] {
                 updated.tabID = session.activeTabID
+                if humanPresent, updated.takeoverEventID == nil { updated.takeoverEventID = UUID() }
                 handoffs[owner] = updated
-                try? persistHandoffs()
             }
         }
-        session.beginUserTakeover(reason: reason)
         handoffNeedsContinueByConversation[owner] = false
-        guard conversationID == owner else { return }
-        guard receiptRun != nil else {
-            // No run ever held this idle browser: nothing to notify. Never
-            // resurface an older, already-delivered receipt as this takeover.
-            handoff = nil
+        if conversationID == owner {
+            handoff = receiptRun == nil ? nil : handoffs[owner]
             handoffNeedsContinue = false
             handoffNotified = false
             handoffError = nil
-            return
         }
-        handoff = handoffs[owner]
-        handoffNeedsContinue = false
-        handoffNotified = false
-        handoffError = nil
+        guard receiptRun != nil, let event = handoffs[owner] else { return }
+        do {
+            try persistHandoffs()
+        } catch {
+            if conversationID == owner { handoffError = error.localizedDescription }
+        }
+        if event.humanPresent { _ = startTakeoverDelivery(event) }
     }
 
-    func returnToAgent(continueTask: Bool = false) async {
-        guard taskHandoffsEnabled, !returningControl else { return }
+    /// All entry points, including handback and recovery, join the same phase delivery.
+    private func startTakeoverDelivery(_ event: Handoff) -> Task<Bool, Error>? {
+        guard let id = event.takeoverEventID, event.humanPresent, currentHumanOwner(for: event) != nil,
+              !deliveredTakeovers.contains(id), let deliverTakeover else { return nil }
+        if let existing = takeoverDeliveries[id] { return existing }
+        let task = Task { @MainActor [weak self] in
+            guard let self else { throw CancellationError() }
+            defer { takeoverDeliveries.removeValue(forKey: id) }
+            guard handoffs[event.conversationID]?.id == event.id else { throw CancellationError() }
+            do {
+                let settled = try await deliverTakeover(event)
+                if handoffs[event.conversationID]?.id == event.id, settled { deliveredTakeovers.insert(id) }
+                return settled
+            } catch {
+                if conversationID == event.conversationID, handoff?.id == event.id { handoffError = error.localizedDescription }
+                throw error
+            }
+        }
+        takeoverDeliveries[id] = task
+        return task
+    }
+
+    func returnControlIfCurrent(for session: BrowserTaskSession, handoffID: UUID?, presentationID: UUID? = nil) async -> Bool {
+        guard visibleSession === session, !session.isReleased, session.isUserControlling, !session.takeoverPending,
+              handoff?.id == handoffID, previewInteractionID == presentationID else { return false }
+        await returnToAgent()
+        return visibleSession === session && !session.isReleased && !session.isUserControlling
+            && handoff?.id == handoffID && previewInteractionID == presentationID
+    }
+
+    // Older callers may request continuation. Resuming a stopped run belongs to the original task.
+    func returnToAgent(continueTask _: Bool = false) async {
+        guard taskHandoffsEnabled, !returningControl, visibleSession?.takeoverPending != true else { return }
         // A user who took over an idle browser (no model holder, no receipt)
         // simply returns that browser to idle. Nothing is delivered and no
         // task is started or continued on their behalf.
-        guard let event = handoff, let deliverHandoff else {
+        guard let event = handoff else {
             if let session = visibleSession, session.isUserControlling {
                 session.endUserControl()
                 pendingPanelRequests.removeValue(forKey: session.conversationID)
@@ -749,52 +827,45 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
             }
             return
         }
+        guard let deliverHandoff else { return }
         guard deliveringHandoffs.insert(event.id).inserted else { return }
         returningControl = true
         handoffError = nil
         defer { returningControl = false; deliveringHandoffs.remove(event.id) }
         do {
-            let firstReturn = !event.returning
             var updated = event
             updated.returning = true
-            // Only the exact session that produced this receipt may donate its
-            // page address or have its document references invalidated.
-            let ownerSession = store.session(for: event.conversationID).flatMap {
-                $0.sessionID == event.sessionID ? $0 : nil
+            let ownerSession = currentHumanOwner(for: event)
+            let page = ownerSession?.activeWebView
+            ownerSession?.returningToModel = true
+            defer {
+                ownerSession?.returningToModel = false
+                if ownerSession?.isUserControlling == true { page?.isUserInteractionEnabled = true }
             }
-            // Handback captures the page, then stops human input while the
-            // notification is delivered. A failed delivery restores the
-            // user's control (and input) unchanged.
-            ownerSession?.activeWebView?.isUserInteractionEnabled = false
-            // Never persist credentials, fragments or query parameters from the page.
-            if firstReturn,
-               let ownerSession,
-               var address = ownerSession.activeWebView?.url.flatMap({
-                   URLComponents(url: $0, resolvingAgainstBaseURL: false)
-               }) {
-                address.user = nil; address.password = nil; address.query = nil; address.fragment = nil
-                updated.pageAddress = address.url?.absoluteString
-            }
+            page?.isUserInteractionEnabled = false
             handoffs[event.conversationID] = updated
             try persistHandoffs()
+            if let prior = startTakeoverDelivery(updated) { _ = try await prior.value }
+            guard handoffs[event.conversationID]?.id == event.id else { return }
             // Invalidate every pre-takeover element/document reference of the
             // exact task that returned control.
             ownerSession?.invalidateDocumentsForHandoff()
-            let needsContinue = try await deliverHandoff(updated, continueTask)
-            deliveredHandoffIDs.insert(event.id)
+            let needsContinue = try await deliverHandoff(updated, false)
+            guard handoffs[event.conversationID]?.id == event.id else { return }
+            if deliveredHandoffIDs.insert(event.id).inserted {
+                pendingPanelRequests.removeValue(forKey: event.conversationID)
+                ownerSession?.endUserControl()
+            }
             // Keep the durable outbox until a later takeover replaces it. On app
             // recovery the input store decides whether this ID was consumed.
             handoffs[event.conversationID] = updated
             handoffNeedsContinueByConversation[event.conversationID] = needsContinue
-            pendingPanelRequests.removeValue(forKey: event.conversationID)
-            ownerSession?.endUserControl()
             try persistHandoffs()
             guard conversationID == event.conversationID else { return }
             handoff = updated
             handoffNotified = !needsContinue
             handoffNeedsContinue = needsContinue
         } catch {
-            ownerSessionFor(event)?.activeWebView?.isUserInteractionEnabled = true
             if conversationID == event.conversationID { handoffError = error.localizedDescription }
         }
     }
@@ -805,23 +876,42 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
         }
     }
 
+    /// Retrying a notification must never relinquish a later holding period of this same page.
+    private func currentHumanOwner(for event: Handoff) -> BrowserTaskSession? {
+        guard handoffs[event.conversationID]?.id == event.id, !deliveredHandoffIDs.contains(event.id),
+              let session = ownerSessionFor(event), session.isUserControlling else { return nil }
+        return session
+    }
+
     /// Called from the original runtime's state stream, including after cold
     /// recovery. Targets the exact recorded task/run and never rebinds or
     /// restarts another task.
     func recoverHandoff(conversationID: UUID, runID: UUID) async {
-        guard taskHandoffsEnabled, let event = handoffs[conversationID], event.returning, event.runID == runID,
-              let deliverHandoff, deliveringHandoffs.insert(event.id).inserted else { return }
+        guard taskHandoffsEnabled, let event = handoffs[conversationID], event.runID == runID else { return }
+        if let prior = startTakeoverDelivery(event) {
+            do { _ = try await prior.value } catch { return }
+        }
+        guard event.returning, handoffs[conversationID]?.id == event.id, let deliverHandoff,
+              deliveringHandoffs.insert(event.id).inserted else { return }
+        let ownerSession = currentHumanOwner(for: event)
+        let page = ownerSession?.activeWebView
+        ownerSession?.returningToModel = true
+        page?.isUserInteractionEnabled = false
+        defer {
+            ownerSession?.returningToModel = false
+            if ownerSession?.isUserControlling == true { page?.isUserInteractionEnabled = true }
+        }
         defer { deliveringHandoffs.remove(event.id) }
         do {
             let needsContinue = try await deliverHandoff(event, false)
-            deliveredHandoffIDs.insert(event.id)
-            handoffNeedsContinueByConversation[conversationID] = needsContinue
-            pendingPanelRequests.removeValue(forKey: conversationID)
-            if let ownerSession = store.session(for: conversationID),
-               ownerSession.sessionID == event.sessionID {
-                ownerSession.endUserControl()
+            guard handoffs[conversationID]?.id == event.id else { return }
+            if deliveredHandoffIDs.insert(event.id).inserted {
+                pendingPanelRequests.removeValue(forKey: conversationID)
+                ownerSession?.endUserControl()
             }
+            handoffNeedsContinueByConversation[conversationID] = needsContinue
             guard self.conversationID == conversationID else { return }
+            if visibleSession?.isUserControlling == true, handoff?.id != event.id { return }
             handoff = event
             handoffNeedsContinue = needsContinue
             handoffNotified = !needsContinue
@@ -857,7 +947,13 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
             presentationRequest = nil
         }
         pendingPanelRequests.removeValue(forKey: conversationID)
-        if let event = handoffs[conversationID] { deliveredHandoffIDs.remove(event.id) }
+        if let event = handoffs[conversationID] {
+            deliveredHandoffIDs.remove(event.id)
+            if let id = event.takeoverEventID {
+                takeoverDeliveries[id]?.cancel()
+                deliveredTakeovers.remove(id)
+            }
+        }
         handoffs.removeValue(forKey: conversationID)
         try? persistHandoffs()
         handoffNeedsContinueByConversation.removeValue(forKey: conversationID)
@@ -866,7 +962,11 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
     }
 
     private func refreshHandoffProjection(for conversationID: UUID) {
-        let event = handoffs[conversationID]
+        let event = handoffs[conversationID].flatMap { receipt -> Handoff? in
+            if let current = store.session(for: conversationID), current.isUserControlling,
+               current.sessionID != receipt.sessionID || deliveredHandoffIDs.contains(receipt.id) { return nil }
+            return receipt
+        }
         handoff = event
         let needsContinue = handoffNeedsContinueByConversation[conversationID]
             ?? (event?.returning == true)
@@ -916,7 +1016,7 @@ extension BrowserSessionCenter: BrowserTaskSessionHost {
     func browserSessionUserStartedInput(_ session: BrowserTaskSession, reason: String) {
         // First real human input: the current model holder's logical run is
         // the only run to notify. Browsing that no run holds stays local.
-        beginUserControl(for: session, runID: session.currentModelRunID, reason: reason)
+        beginUserControl(for: session, runID: session.currentModelRunID, reason: reason, humanPresent: true)
     }
 }
 

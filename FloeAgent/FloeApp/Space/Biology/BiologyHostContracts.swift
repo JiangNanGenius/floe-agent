@@ -23,11 +23,12 @@ typealias BiologyNativeApprovalResolver = @MainActor @Sendable
     (ProposedAction, ToolContext, ToolCatalog.Descriptor, BiologyNativeUIIntent) async throws -> ApprovalGrant
 
 enum BiologyHostError: Error, LocalizedError {
-    case unavailable, changed, readOnly, missingRuntime, workerNotStopped, unsupportedCopy
+    case unavailable, changed, readOnly, missingRuntime, workerNotStopped, unsupportedCopy, alreadyOpen
     var errorDescription: String? {
         switch self {
         case .unavailable: IDELanguageRunText.t("请打开原生物项目及其助手后重试。", "Open the original biology project and its assistant, then try again.")
         case .changed: IDELanguageRunText.t("项目或授权已改变，请刷新后重试。", "The project or its authorization changed. Refresh and try again.")
+        case .alreadyOpen: IDELanguageRunText.t("此生物工程已在另一个编辑器中打开。", "This biology project is already open in another editor.")
         case .readOnly: IDELanguageRunText.t("当前任务只能查看这个项目。", "This task can only read this project.")
         case .missingRuntime: IDELanguageRunText.t("请先选择并授权这个任务的计算环境。", "Select and authorize this task's compute environment first.")
         case .workerNotStopped: IDELanguageRunText.t("计算尚未确认停止，原件会保留。请在任务中处理运行状态后重试。", "The calculation has not confirmed that it stopped. The original is kept. Resolve its task status before trying again.")

@@ -196,10 +196,32 @@ public extension AgentEventSink {
     ) async {}
 }
 
+/// Native ownership facts carry no page content or user-authored instructions.
+public enum BrowserControlNotice: Sendable, Hashable {
+    case humanTookControl
+    case returned
+    case sessionEnded
+
+    public static let executionMode = "browserControlNotice"
+    public static let historyMarker = "floe.browserControlNotice"
+
+    public var message: String {
+        switch self {
+        case .humanTookControl:
+            return "The user has taken control of this task’s browser. Browser actions are blocked until control is returned. Continue other authorized work."
+        case .returned:
+            return "Browser control has been returned to this task. Observe the current page again before acting. Previous page references are invalid. Your permissions are unchanged."
+        case .sessionEnded:
+            return "The previous browser session ended before the user returned control. That page and its references are no longer available. Check the task’s current browser before acting."
+        }
+    }
+}
+
 /// Input accepted for delivery at a safe model/tool step boundary.
 public enum RuntimeSteerOrigin: Sendable, Hashable {
     case user
     case taskCoordination(senderRunID: UUID)
+    case browserControl(BrowserControlNotice)
     /// Trusted native continuation for an exact checkpoint-owned wait.
     case waitCompletion(waitID: UUID)
 }
@@ -2382,6 +2404,10 @@ public actor FloeAgentRuntime {
         }
         let trimmed = input.content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return .rejected(reason: "Guidance must not be empty") }
+        if case .browserControl(let notice) = input.origin,
+           trimmed != notice.message || !input.images.isEmpty || !input.attachments.isEmpty {
+            return .rejected(reason: "Invalid native browser control notice")
+        }
         if acceptedSteerIDs.contains(input.id) { return .alreadyAccepted }
         switch state {
         case .preparing, .streamingModel, .executingTool, .waitingApproval, .waitingUserQuestion, .compacting, .paused:
@@ -4223,9 +4249,11 @@ public actor FloeAgentRuntime {
             } else {
                 content = input.content
             }
+            let role: String
+            if case .browserControl = input.origin { role = "system" } else { role = "user" }
             messages.append(ConversationMessage(
                 id: input.id,
-                role: "user",
+                role: role,
                 content: content,
                 createdAt: input.createdAt,
                 images: input.images

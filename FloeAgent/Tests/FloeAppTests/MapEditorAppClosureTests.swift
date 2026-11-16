@@ -23,6 +23,7 @@ import FloeHeavyEditorSupport
         let record: PersonalContentRecord
         let directory: URL
         let session: GISProjectSession
+        let presentationID: UUID
         let window: UIWindow
     }
 
@@ -32,11 +33,11 @@ import FloeHeavyEditorSupport
         let record = try await service.create(kind: .geography, title: "QA-Map-App-" + UUID().uuidString)
         let directory = try await service.library().resolve(record.id).url
         var mountedWindow: UIWindow?
-        var openedSession: GISProjectSession?
+        var openedPresentation: (session: GISProjectSession, id: UUID)?
         do {
             let session = try await GISProjectSession.open(id: record.id, directory: directory)
-            openedSession = session
-            try session.beginPresentation()
+            let owner = try session.beginPresentation()
+            openedPresentation = (session, owner)
             let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
                 .filter { $0.activationState == .foregroundActive }
             XCTAssertEqual(scenes.count, 1, "Use the one canonical App test-host scene")
@@ -51,12 +52,12 @@ import FloeHeavyEditorSupport
             try await wait("Mounted real WK canvas") {
                 try await self.read(session, "Boolean(window.FloeEditor?.nativeChrome && document.querySelector('.canvas-frame .ol-viewport canvas') && document.querySelector('.ol-viewport').getBoundingClientRect().width > 100)") == .bool(true)
             }
-            return Work(app: app, record: record, directory: directory, session: session, window: window)
+            return Work(app: app, record: record, directory: directory, session: session, presentationID: owner, window: window)
         } catch {
             // Only this exact newly-created work is eligible for cleanup.
             mountedWindow?.isHidden = true
             mountedWindow?.rootViewController = nil
-            await openedSession?.presentationEnded()
+            if let openedPresentation { await openedPresentation.session.presentationEnded(openedPresentation.id) }
             try? await GISProjectSession.prepareForFileAction(id: record.id, directory: directory)
             try? await PersonalLibraryFileActions.deleteFromFiles(.work(record), usingTrash: false, environment: app)
             throw error
@@ -66,7 +67,7 @@ import FloeHeavyEditorSupport
     private func cleanup(_ work: Work) async throws {
         work.window.isHidden = true
         work.window.rootViewController = nil
-        await work.session.presentationEnded()
+        await work.session.presentationEnded(work.presentationID)
         try await GISProjectSession.prepareForFileAction(id: work.record.id, directory: work.directory)
         let current = try await PersonalContentService.shared.library().resolve(work.record.id).record
         try await PersonalLibraryFileActions.deleteFromFiles(.work(current), usingTrash: false, environment: work.app)
@@ -240,7 +241,7 @@ import FloeHeavyEditorSupport
             _ = try await command(session, "history.redo")
             XCTAssertEqual(try features(session, layerID: layerID), edited)
             try await session.controller.save()
-            let closed = await session.flushForClose()
+            let closed = await session.flushForClose(work.presentationID)
             XCTAssertTrue(closed, "No leaked command/model lease may prevent close")
             let durable = try GISProjectOriginal.read(id: session.id, directory: session.directory)
             let savedEvidence = XCTAttachment(string: try durable.state.text())
@@ -248,10 +249,11 @@ import FloeHeavyEditorSupport
             savedEvidence.lifetime = .keepAlways; add(savedEvidence)
             work.window.isHidden = true; work.window.rootViewController = nil
             let reopened = try await GISProjectSession.open(id: session.id, directory: session.directory)
+            let reopenedOwner = try reopened.beginPresentation()
             XCTAssertFalse(reopened === session, "A closed session must not stand in for disk reopen")
             XCTAssertEqual(reopened.controller.document, durable.document)
             XCTAssertEqual(try features(reopened, layerID: layerID), edited)
-            await reopened.presentationEnded()
+            await reopened.presentationEnded(reopenedOwner)
         }
     }
 

@@ -60,8 +60,33 @@ public struct BuildingWorkbenchView<ModelContent:View, FurnitureContent:View, De
         BuildingSection.allCases.filter{integrated || ![.model,.furniture,.deliverables].contains($0)}
     }
     public var body:some View {
+        VStack(spacing: 0) {
+            if session.projectActions?.close != nil {
+                HStack {
+                    Button {
+                        session.requestClose()
+                    } label: {
+                        Label(buildingText("退出工程", "Close project"), systemImage: "xmark")
+                            .labelStyle(.titleAndIcon)
+                            .padding(.horizontal, 8)
+                            .frame(minWidth: 44, minHeight: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .keyboardShortcut("w", modifiers: .command)
+                    .disabled(session.operationBusy)
+                    .accessibilityIdentifier("building.close")
+                    Spacer()
+                }
+                .padding(.horizontal, 8)
+                .background(.bar)
+            }
+            projectNavigation
+        }
+    }
+
+    private var projectNavigation: some View {
         @Bindable var model=session
-        NavigationSplitView {
+        return NavigationSplitView {
             List(sections,selection:$model.section){item in
                 NavigationLink(value:item){Label(item.title(locale:buildingLocale),systemImage:item.icon)}
                     .tag(item).accessibilityIdentifier("building.section."+item.rawValue)
@@ -114,10 +139,6 @@ public struct BuildingWorkbenchView<ModelContent:View, FurnitureContent:View, De
                         Button{if integrated{session.saveProject()}else{session.saveDesign()}}label:{
                             Label(integrated ? buildingText("保存工程","Save project"):(session.activeDirty ? buildingText("保存修改","Save changes"):buildingText("保存方案","Save design")),systemImage:"square.and.arrow.down")
                         }.keyboardShortcut("s",modifiers:.command).disabled(session.operationBusy).accessibilityIdentifier("building.design.save")
-                    }
-                    if session.projectActions?.close != nil {
-                        Button{session.requestClose()}label:{Label(buildingText("关闭工程","Close project"),systemImage:"xmark")}
-                            .disabled(session.operationBusy).accessibilityIdentifier("building.close")
                     }
                     Menu{
                         Button(buildingText("项目资料","Project files")){importingPhotometry=false;importing=true}

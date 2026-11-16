@@ -612,7 +612,11 @@ struct ToolboxAssistantView: View {
             }
             .navigationTitle(IDELanguageRunText.t("工具箱助手", "Toolbox assistant"))
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button(IDELanguageRunText.t("完成", "Done")) { dismiss() } } }
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    EditorAssistantCloseButton { dismiss() }
+                }
+            }
         }
         .task(id: connection.id) { await openAssistant() }
     }

@@ -55,6 +55,7 @@ final class DesignPagePresentationState: ObservableObject {
     @Published var compactSection = 0
     @Published var showsDetails = false
     @Published var showsCandidateDiff = false
+    @Published var showsProfessionalEditor = false
     /// In-page fullscreen: the SAME view tree re-laid-out full-bleed, no
     /// separate presentation — so the preview/session/draft/selection are
     /// literally the same objects (retention is structural, not restated).
@@ -230,6 +231,10 @@ struct DesignConversationPageView: View {
                     // One view tree either way — the clipped pane keeps its
                     // draft/scroll/selection while hidden.
                     if proxy.size.width < 900, !presentation.isFullscreen {
+                        VStack(spacing: 0) {
+                            if showsBrowserPreview {
+                                TaskBrowserLivePreview(center: environment.browserCenter, conversationID: conversationID, inlineImage: false)
+                            }
                         Picker(selection: $presentation.compactSection) {
                             Text("design.page.section.preview").tag(0)
                             Text("design.page.section.chat").tag(1)
@@ -242,10 +247,12 @@ struct DesignConversationPageView: View {
                         .padding(.vertical, 6)
                         .background(.bar)
                         .accessibilityIdentifier("design.page.sectionPicker")
+                        }
                     }
                 }
                 .overlay(alignment: .trailing) { detailsOverlay }
         }
+        .browserPreviewPresenter(center: environment.browserCenter, owner: showsBrowserPreview ? conversationID : nil)
         .task {
             await model.reload()
             model.reloadWorkModeBinding()
@@ -293,6 +300,10 @@ struct DesignConversationPageView: View {
         }
     }
 
+    private var showsBrowserPreview: Bool {
+        !presentation.isFullscreen && !presentation.showsDetails && !presentation.showsCandidateDiff && !presentation.showsProfessionalEditor
+    }
+
     @ViewBuilder
     private func splitLayout(proxy: GeometryProxy) -> some View {
         let wide = proxy.size.width >= 900
@@ -313,6 +324,11 @@ struct DesignConversationPageView: View {
                         guard deletedTarget == target else { return }
                         dismiss()
                     })
+                    .safeAreaInset(edge: .bottom, spacing: 0) {
+                        if wide && showsBrowserPreview {
+                            TaskBrowserLivePreview(center: environment.browserCenter, conversationID: conversationID, inlineImage: true)
+                        }
+                    }
                     .frame(width: previewWidth)
                     .clipped()
                     .allowsHitTesting(previewWidth > 0)
@@ -466,6 +482,9 @@ private struct DesignPreviewWorkbench: View {
         }
         .background(FloeTheme.readingSurface)
         .accessibilityIdentifier("design.page.previewStage")
+        .onChange(of: editorHandoff?.id, initial: true) { _, id in
+            presentation.showsProfessionalEditor = id != nil
+        }
         .onAppear {
             // Keep the web-view cache bounded to live lenses only.
             var ids = Set(model.currentArtifact.map { [$0.currentRevisionID] } ?? [])

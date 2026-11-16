@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 #if canImport(UIKit) && DEBUG
 import Foundation
+import Combine
+import notify
+import WebKit
 import FloeCore
 import FloeDocuments
 import FloeModels
@@ -38,6 +41,10 @@ enum DesignWorkflowFixture {
     static let creativeConversationID = UUID(uuidString: "D3516001-7A21-4F03-9C5A-71D8E0B4F102")!
     static let restructureConversationID = UUID(uuidString: "D3516001-7A21-4F03-9C5A-71D8E0B4F103")!
     static let officeConversationID = UUID(uuidString: "D3516001-7A21-4F03-9C5A-71D8E0B4F104")!
+    private static let browserConversationID = UUID(uuidString: "D3516001-7A21-4F03-9C5A-71D8E0B4F105")!
+    private static let browserConversationTitle = "浏览器旁观验收"
+    private static var previewRequestToken: Int32?
+    private static var previewBootstrap: AnyCancellable?
 
     static func seedIfRequested(environment: AppEnvironment) async {
         let arguments = ProcessInfo.processInfo.arguments
@@ -46,7 +53,174 @@ enum DesignWorkflowFixture {
         await seedCreativeFixture(environment: environment)
         await seedRestructureFixture(environment: environment)
         await seedOfficeFixture(environment: environment)
+        if arguments.contains("--ui-test-live-browser-preview") {
+            let paragraphs = (1...40).map { "<p>滚动区 \(String(format: "%02d", $0))</p>" }.joined()
+            let article = """
+                <!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+                <title>旁观验收讲义</title><style>p{min-height:64px;margin:12px}</style>
+                <h1>旁观验收讲义</h1>\(paragraphs)
+                """
+            await seedModifyFixture(environment: environment, conversationID: browserConversationID,
+                                    title: browserConversationTitle, initialHTML: article)
+            // WebKit callbacks must never hold the app's database/bootstrap progress screen.
+            // The current value is delivered immediately if this host was already ready.
+            previewBootstrap = environment.$persistenceReady.first(where: { $0 }).sink { [weak environment] _ in
+                Task { @MainActor [weak environment] in
+                    guard let environment else { return }
+                    await seedBrowserPreview(environment: environment)
+                }
+            }
+        }
     }
+
+    private static func seedBrowserPreview(environment: AppEnvironment) async {
+        let owner = browserConversationID
+        if let workspace = try? await SQLiteWorkspaceStore(database: environment.database)
+            .ensureWorkspace(conversationID: owner, title: browserConversationTitle),
+           let root = try? await environment.workspaceCenter.acquireTaskRoot(workspace, conversationID: owner) {
+            defer { root.release() }
+            let article = (1...50).map { "## Reading position \($0)\n\nA paragraph in the selected local document." }.joined(separator: "\n\n")
+            let file = root.url.appendingPathComponent("Browser-preview-reading.md")
+            try? Data(article.utf8).write(to: file, options: .withoutOverwriting)
+        }
+        // Load a real navigation so WebKit keeps the guide as the first history entry.
+        // The task's loopback server serves only this synthetic page.
+        let previewRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FloeUITestBrowser-" + owner.uuidString, isDirectory: true)
+        let entry = "guide.html"
+        do {
+            try FileManager.default.createDirectory(at: previewRoot, withIntermediateDirectories: true)
+            try Data(browserPreviewHTML.utf8).write(to: previewRoot.appendingPathComponent(entry), options: .atomic)
+            _ = try await environment.previewCenter.start(root: previewRoot, relativeRoot: nil, entry: entry, owner: owner)
+        } catch {
+            FloeLogger(category: .app).error("Browser preview fixture could not start its local page: \((error as NSError).code)")
+            return
+        }
+        guard let session = environment.browserCenter.session(for: owner), let webView = session.activeWebView,
+              let tabID = session.activeTabID, let url = environment.previewCenter.url(for: owner) else { return }
+        let loaded = await session.execute(BrowserCommand(sessionID: session.sessionID, tabID: tabID,
+            timeoutMilliseconds: 10_000, action: .wait(.load)))
+        guard loaded.status == .ok, webView.backForwardList.currentItem?.url == url else {
+            FloeLogger(category: .app).error("Browser preview fixture did not load the guide as a history entry: \(loaded.status.rawValue)")
+            return
+        }
+        guard let control = try? environment.browserCenter.beginModelControl(conversationID: owner, runID: UUID()) else { return }
+        let observed = await session.execute(BrowserCommand(
+            sessionID: session.sessionID, tabID: tabID, action: .observe(cursor: nil)), control: control.lease)
+        guard let page = observed.page, let button = page.nodes.first(where: { $0.role == "button" }) else { return }
+        let clicked = await session.execute(BrowserCommand(
+            sessionID: session.sessionID, tabID: tabID,
+            action: .click(.element(ref: button.ref, documentID: page.documentID))), control: control.lease)
+        guard clicked.status == .ok else {
+            FloeLogger(category: .app).error("Browser preview fixture could not click: \(clicked.status.rawValue)")
+            return
+        }
+        #if targetEnvironment(simulator)
+        let arguments = ProcessInfo.processInfo.arguments
+        let release = arguments.contains("--ui-test-live-browser-release")
+        if (release || arguments.contains("--ui-test-live-browser-request")),
+           let seededPage = session.previewPageIdentity {
+            if let token = previewRequestToken { notify_cancel(token) }
+            var token: Int32 = 0
+            let center = environment.browserCenter
+            let lease = control.lease
+            let signal = release ? "org.floeagent.uitest.browser-preview.release" : "org.floeagent.uitest.browser-preview.request"
+            if notify_register_dispatch(signal, &token, .main, { [weak center, weak session, weak webView] _ in
+                Task { @MainActor in
+                    guard let center, let session, let webView, center.session(for: owner) === session,
+                          session.modelControl == lease, session.previewPageIdentity == seededPage,
+                          session.activeWebView === webView else { return }
+                    let frozen = try? await webView.callAsyncJavaScript("return window.freezeHeldPage?.() === true",
+                        arguments: [:], in: nil, contentWorld: .page)
+                    guard frozen as? Bool == true, center.session(for: owner) === session,
+                          session.modelControl == lease, session.previewPageIdentity == seededPage else { return }
+                    if release {
+                        _ = center.releaseModelControl(conversationID: owner, runID: lease.runID, controlID: lease.id)
+                    } else {
+                        try? center.requestUserInteraction(reason: "Select an angle", tabID: tabID, runID: lease.runID, in: owner)
+                    }
+                }
+            }) == NOTIFY_STATUS_OK { previewRequestToken = token }
+        }
+        #endif
+    }
+
+    // The offline webpage records its own CSS viewport and delivered events. Its result stays
+    // in this document; replacing or reloading it loses the record and the entered worksheet.
+    private static let browserPreviewHTML = """
+        <!doctype html><html lang="en"><meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Angles in geometry</title>
+        <style>body{background:#e0f4ff;font:16px system-ui}button,input{padding:8px}
+        #held,#current{font:13px monospace;overflow-wrap:anywhere}#reading p{min-height:64px}</style>
+        <h1>Angles in geometry</h1><section id="guide">
+        <p>Rotate the diagram to compare two angles measured from the horizontal.</p>
+        <button id="angle">30°</button> <button id="open">Open worksheet</button></section>
+        <section id="worksheet" hidden></section><p id="held"></p><p id="current"></p>
+        <article id="reading"></article>
+        <script>
+        (() => {
+          const get = id => document.getElementById(id);
+          const page = crypto.getRandomValues(new Uint32Array(2)).join('-');
+          let start, startScroll, frozen = false, viewportChanges = 0, scrollChanges = 0, inputEvents = 0;
+          function viewport() {
+            const root = document.documentElement, visual = window.visualViewport;
+            return [innerWidth, innerHeight, root.clientWidth, root.clientHeight,
+                    visual.width, visual.height, visual.scale * 1000].map(Math.round);
+          }
+          const scroll = () => [Math.round(scrollX), Math.round(scrollY)];
+          function measure() {
+            if (!start) return;
+            if (frozen) {
+              get('current').textContent = 'Current page ' + JSON.stringify({page, viewport:viewport()});
+            } else {
+              if (viewport().some((value, i) => value !== start[i])) viewportChanges++;
+              if (scroll().some((value, i) => value !== startScroll[i])) scrollChanges++;
+            }
+          }
+          addEventListener('resize', measure);
+          visualViewport.addEventListener('resize', measure);
+          addEventListener('scroll', measure);
+          new ResizeObserver(measure).observe(document.documentElement);
+          for (const event of ['pointerdown','touchstart','click','input','wheel']) {
+            document.addEventListener(event, () => { if (start && !frozen) inputEvents++; }, true);
+          }
+          get('angle').onclick = () => {
+            if (!start) { start = viewport(); startScroll = scroll(); }
+          };
+          window.freezeHeldPage = () => {
+            if (!start || frozen) return false;
+            measure();
+            const result = {page,start,end:viewport(),startScroll,endScroll:scroll(),viewportChanges,scrollChanges,inputEvents};
+            frozen = true;
+            get('held').textContent = 'Held page ' + JSON.stringify(result);
+            measure();
+            return true;
+          };
+          for (let i = 1; i <= 24; i++) {
+            const p = document.createElement('p');
+            p.textContent = 'Angle exercise ' + i;
+            get('reading').append(p);
+          }
+          function showWorksheet(show) {
+            get('guide').hidden = show;
+            const section = get('worksheet');
+            section.hidden = !show;
+            if (!show || section.childElementCount) return;
+            section.innerHTML = '<form><label>Angle note <input id="note" autocorrect="off" autocapitalize="none"></label>' +
+              '<button type="submit">Save note</button></form><p id="saved"></p><button id="previous">Previous page</button>';
+            section.querySelector('form').onsubmit = event => {
+              event.preventDefault();
+              get('saved').textContent = 'Saved note: ' + get('note').value;
+              get('note').blur();
+            };
+            get('previous').onclick = () => history.back();
+          }
+          get('open').onclick = () => { history.pushState({worksheet:true}, '', '#worksheet'); showWorksheet(true); };
+          addEventListener('popstate', event => showWorksheet(event.state?.worksheet === true));
+        })();
+        </script></html>
+        """
 
 
     /// Bookkeeping for tests: the project workspace each fixture
@@ -93,8 +267,8 @@ enum DesignWorkflowFixture {
 
     // MARK: - 1. Bound modify task: frozen original + pending candidate
 
-    static func seedModifyFixture(environment: AppEnvironment) async {
-        let conversationID = modifyConversationID
+    static func seedModifyFixture(environment: AppEnvironment, conversationID: UUID = modifyConversationID,
+                                  title: String = "设计验收-网页修改", initialHTML: String? = nil) async {
         let store = SQLiteConversationStore(database: environment.database)
         // Self-healing idempotency: skip only a COMPLETE seed (conversation,
         // durable launch binding AND durable owner envelope). An aborted
@@ -119,21 +293,21 @@ enum DesignWorkflowFixture {
                 || !hasPending else { return }
         do {
             try await saveConversation(
-                store, id: conversationID, title: "设计验收-网页修改",
+                store, id: conversationID, title: title,
                 userText: "把首屏标题改得更有冲击力，但保留正文。",
                 assistantText: "已读取原文件并暂存了一个候选：仅标题变化，正文保持不变。")
             _ = try await SQLiteWorkspaceStore(database: environment.database)
-                .ensureWorkspace(conversationID: conversationID, title: "设计验收-网页修改")
+                .ensureWorkspace(conversationID: conversationID, title: title)
             let record = try await makeProjectWorkspace(
                 environment: environment, conversationID: conversationID,
-                title: "设计验收-网页修改")
+                title: title)
             let lease = try await environment.workspaceCenter.acquireTaskRoot(record, conversationID: conversationID)
             defer { lease.release() }
             // Minimal web form + scroll content: gives the GUI acceptance an
             // HONEST state-retention proof (form values, scroll position and
             // web content survive fullscreen/split transitions of the SAME
             // live session). No private data — synthetic fixture text only.
-            let originalV1 = """
+            let originalV1 = initialHTML ?? """
             <!doctype html><html><head><meta charset="utf-8"><title>验收页</title></head>
             <body><h1>原始标题</h1><p>用于设计工作流 GUI 验收的原始页面。</p>
             <form action="#" method="get"><label>姓名 <input type="text" name="name"></label>
