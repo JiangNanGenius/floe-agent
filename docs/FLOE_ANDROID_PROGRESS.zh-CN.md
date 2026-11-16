@@ -1,5 +1,15 @@
 # Floe Android 分目标实施记录
 
+## 1.0.17／126 已公开：设备控制与完整包升级（2026-11-16）
+
+[Android 1.0.17 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v1.0.17)固定源码 `d15f230b896e432c435dc340970f07cbdd4b4677`；Full APK 为 167223647 字节，SHA-256 `53a58fd061ae12f5e983979b2f3b6a382820cfc1ed04e913e3918f18421795ce`。实际 Android ARM64 原生及 Full 构建完成，签名和 ZIP 16 KiB 对齐通过；主包、Office／CAD 按需组件、对应源码与校验文件共五附件，匿名下载字节逐项匹配，iOS Latest 未改变。
+
+三星从 1.0.16 的应用内更新入口发现本版，通过已选镜像下载完整包并校验，按系统提示确认后，主应用和 Linux 运行环境均安装为 1.0.17／126。系统 UID 保持，两个安装包读回摘要分别与公开主包及其内嵌运行环境一致；应用可打开，原有任务列表和模型配置可见。这次验证的是完整包升级，不代表增量升级或全部数据类型均已复核。此前一次系统安装确认被取消，保留为实测记录，重试后完成。
+
+本版完成悬浮球结束自动收起及旧回调隔离、部分同页观察过期恢复和敏感输入保护。三星实际显示气泡并点击接管后气泡消失，设备页显示没有任务正在控制；模型在计算器测试中先尝试未授权的另一款计算器，被拒绝后停止，不能作为完整跨应用操作通过。临时测试任务、权限和电源设置已恢复。分页过期恢复、敏感输入跨后端流程、浏览器修复和增量升级仍需实际设备场景验证；原生任务已结束但最后一次变更快照仍有工具／Agent 计数，资源完全释放尚未证明。
+
+English: Android 1.0.17/code126 is published from the exact source and APK above. Samsung completed an in-app full-package update from 1.0.16, including its matching runtime; installed bytes and UIDs were checked. A device-control takeover removed the bubble; the calculator flow was stopped after the model selected an unauthorized package. Delta updates and the remaining device flows are not claimed as verified.
+
 ## 1.0.16／125 已公开：任务收尾与设备控制（2026-11-16）
 
 [Android 1.0.16 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v1.0.16)固定源码 `4e4a321941dd1e7a1485b4b475e98ed2d90a7165`；Full APK 为 166998015 字节，SHA-256 为 `ec58a7f3767bc9d1107a3f961354474df0226eb530a4e5aedc985515e81da773`。本批修复后台作业收尾、结果读取、设备控制所有者与提问通知等路径，保留原失败证据；真实 ARM64 原生生产、Full 构建、签名、16 KiB 和原生库剥离等价检查已完成。公开主包、Office／CAD 按需组件、对应源码及校验文件共五附件，匿名下载字节和摘要一致；iOS Latest 未改变。
