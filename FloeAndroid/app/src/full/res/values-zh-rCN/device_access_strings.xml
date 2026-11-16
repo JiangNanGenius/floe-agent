@@ -297,4 +297,6 @@
     <string name="device_automation_viewer_visible">已看到查看器窗口</string>
     <string name="device_automation_viewer_not_visible">未看到查看器窗口</string>
     <string name="device_automation_viewer_unverified">查看器结果未确认</string>
+    <string name="device_access_state_inconsistent">系统与连接状态不一致</string>
+    <string name="device_access_accessibility_inconsistent_hint">请刷新，或在 Android 设置中关闭后重新启用服务。</string>
 </resources>

@@ -1,5 +1,13 @@
 # Floe Android 分目标实施记录
 
+## 1.0.20 后源码检查点：定时审批与设备服务状态（2026-11-16，未发版）
+
+接入明确时间的定时任务创建审批，展示任务、触发、时区和执行绑定；人工授权与运行、调用和授权代次绑定，执行前重新核对。其他定时操作和无法完整确认的参数仍不能通过该审批，既有自动授权路径保持。Android ARM64 原生核心及运行库已实际编译链接，相关 Kotlin 编译与定向检查通过；Swift 行为测试仍受既有邮件测试图编译问题阻断，尚未用三星验证定时结果。
+
+设备设置返回与刷新时重读服务状态；工具发现和结构后端统一核对系统启用、真实连接与客户端。服务断连代次使旧屏幕授权及截图票据失效，截图先私有暂存，再在授权有效时原子发布；ADB 断线立即更新控件状态，旧 grant 不清除新的 claim。授权设置并发写入、暂存清理和相关状态机的 Kotlin 定向检查通过；跨文件系统的截图原子发布会失败，ADB 重连和设备页面状态尚未实测。悬浮球触摸诊断轮未采到事件，仍无法确认点球消失的现场原因。
+
+English: This unreleased checkpoint adds approval for explicitly timed schedule creation and refreshes device-service state with revocable screenshot ownership. Android ARM64 products linked and focused Kotlin checks passed. Swift behavioral tests, Samsung scheduling/device flows and the overlay-touch cause remain unverified.
+
 ## 1.0.20 后源码检查点：设备工具可用性发布（2026-11-16，未发版）
 
 修复设备工具可用性状态的并发发布：读取、比较和发布统一串行，停止或环境代次变更后旧发布不能重新开放工具。Full Kotlin 编译及并发定向测试通过。三星诊断任务曾返回 `device.observe` 不在工具目录，系统同时显示无障碍服务已绑定；现有证据不足以证明该竞态就是当次报错原因，修复尚未实机验证。诊断日志未采到悬浮球触摸事件；测试已停止并恢复公开版、临时权限及诊断开关。

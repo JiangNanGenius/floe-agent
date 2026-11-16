@@ -119,7 +119,10 @@ fun ConversationApprovalRow(
     val decisionInFlight = dispatchState != null && dispatchState != ApprovalDispatchState.RETRY_READY
     val fileAction = presentedCard.workspaceAction
     val shellAction = presentedCard.localShellAction
-    val detailsVisible = if (shellAction != null) {
+    val scheduleAction = presentedCard.scheduleCreateAction
+    val detailsVisible = if (scheduleAction != null) {
+        presentedCard.toolName == "task.schedule"
+    } else if (shellAction != null) {
         presentedCard.toolName == "exec.shell"
     } else if (fileAction != null) {
         presentedCard.workspaceVerified && presentedCard.workspaceId == fileAction.workspaceId &&
@@ -151,7 +154,7 @@ fun ConversationApprovalRow(
     // without a human tap on these two controls.
     val backendResolve: (ApprovalCardUi, Boolean) -> Unit =
         { c, allow ->
-            if (c.workspaceAction != null || c.localShellAction != null) holder.resolveApproval(c, allow, presentationLease = lease)
+            if (c.workspaceAction != null || c.localShellAction != null || c.scheduleCreateAction != null) holder.resolveApproval(c, allow, presentationLease = lease)
             else if (onResolve != null) onResolve(c, allow) else holder.resolveApproval(c, allow)
         }
     // The current native decision contract is call-bound. Never promise
@@ -222,7 +225,8 @@ fun ConversationApprovalRow(
                 FloeText(presentedCard.toolName, style = Floe.typography.evidence, color = colors.label)
             }
             if (presentedCard.scopeVerified) {
-                FloeText(if (shellAction != null) stringResource(R.string.approval_shell_action)
+                FloeText(if (scheduleAction != null) stringResource(R.string.approval_schedule_create)
+                else if (shellAction != null) stringResource(R.string.approval_shell_action)
                 else if (fileAction != null) when (fileAction.operation) {
                     "createFile" -> stringResource(R.string.approval_workspace_create)
                     "writeFile" -> stringResource(R.string.approval_workspace_write)
@@ -240,6 +244,9 @@ fun ConversationApprovalRow(
                     "launch" -> stringResource(R.string.approval_device_launch)
                     else -> ""
                 }, style = Floe.typography.bodyEmphasized, color = colors.label)
+                if (scheduleAction != null) {
+                    ScheduleApprovalDetails(scheduleAction)
+                }
                 if (fileAction != null) {
                     FloeText(stringResource(R.string.approval_workspace_id),
                         style = Floe.typography.metadata, color = colors.secondaryLabel)
@@ -344,7 +351,8 @@ fun ConversationApprovalRow(
                             style = Floe.typography.evidence, color = colors.label)
                     }
                 }
-                FloeText(stringResource(if (shellAction != null) R.string.approval_shell_scope_note
+                FloeText(stringResource(if (scheduleAction != null) R.string.approval_schedule_note
+                    else if (shellAction != null) R.string.approval_shell_scope_note
                     else if (fileAction == null) R.string.approval_requested_scope_note
                     else R.string.approval_workspace_scope_note),
                     style = Floe.typography.metadata, color = colors.secondaryLabel)
@@ -551,6 +559,70 @@ fun ConversationApprovalRow(
                 color = colors.destructive,
             )
         }
+    }
+}
+
+@Composable
+private fun ScheduleApprovalDetails(details: ScheduleCreateApprovalUi) {
+    val cadence = stringResource(when (details.cadence) {
+        "once" -> R.string.approval_schedule_once
+        "daily" -> R.string.approval_schedule_daily
+        "weekly" -> R.string.approval_schedule_weekly
+        "interval" -> R.string.approval_schedule_interval
+        "afterSuccess" -> R.string.approval_schedule_after_success
+        "charging" -> R.string.approval_schedule_charging
+        else -> R.string.approval_schedule_network
+    })
+    val approval = stringResource(when (details.approvalMode) {
+        "ask" -> R.string.approval_schedule_policy_ask
+        "automatic" -> R.string.approval_schedule_policy_automatic
+        else -> R.string.approval_schedule_policy_full
+    })
+    val recovery = stringResource(if (details.recoveryPolicy == "safePoint") R.string.approval_schedule_recovery_safe else R.string.approval_schedule_recovery_retry)
+    val notifications = stringResource(when (details.notificationPolicy) {
+        "off" -> R.string.approval_schedule_notify_off
+        "terminal" -> R.string.approval_schedule_notify_terminal
+        "critical" -> R.string.approval_schedule_notify_critical
+        else -> R.string.approval_schedule_notify_stages
+    })
+    ScheduleField(stringResource(R.string.approval_schedule_title), details.title)
+    ScheduleField(stringResource(R.string.approval_schedule_prompt), details.prompt)
+    ScheduleField(stringResource(R.string.approval_schedule_repeat), cadence)
+    ScheduleField(stringResource(R.string.approval_schedule_anchor), details.scheduledAt)
+    ScheduleField(stringResource(R.string.approval_schedule_timezone), details.timezone)
+    val localTime = remember(details.scheduledAt, details.timezone) {
+        runCatching { java.time.Instant.parse(details.scheduledAt).atZone(java.time.ZoneId.of(details.timezone)).toOffsetDateTime().toString() }.getOrNull()
+    }
+    if (localTime != null) ScheduleField(stringResource(R.string.approval_schedule_local_time), localTime)
+    details.weekday?.let { day ->
+        val dayName = stringResource(when (day) {
+            1 -> R.string.approval_schedule_sunday
+            2 -> R.string.approval_schedule_monday
+            3 -> R.string.approval_schedule_tuesday
+            4 -> R.string.approval_schedule_wednesday
+            5 -> R.string.approval_schedule_thursday
+            6 -> R.string.approval_schedule_friday
+            else -> R.string.approval_schedule_saturday
+        })
+        ScheduleField(stringResource(R.string.approval_schedule_weekday), dayName)
+    }
+    details.intervalSeconds?.let {
+        ScheduleField(stringResource(R.string.approval_schedule_interval_label), stringResource(R.string.approval_schedule_seconds, it.toString()))
+    }
+    details.upstreamRunId?.let { ScheduleField(stringResource(R.string.approval_schedule_upstream), it) }
+    ScheduleField(stringResource(R.string.approval_schedule_model), details.modelId)
+    ScheduleField(stringResource(R.string.approval_schedule_workspace), details.workspaceId ?: stringResource(R.string.approval_schedule_new_workspace))
+    ScheduleField(stringResource(R.string.approval_schedule_environment), details.environmentId ?: stringResource(R.string.approval_schedule_default_environment))
+    ScheduleField(stringResource(R.string.approval_schedule_approval), approval)
+    ScheduleField(stringResource(R.string.approval_schedule_recovery), recovery)
+    ScheduleField(stringResource(R.string.approval_schedule_notifications), notifications)
+}
+
+@Composable
+private fun ScheduleField(label: String, value: String) {
+    FloeText(label, style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
+    SelectionContainer {
+        FloeText(value, modifier = Modifier.fillMaxWidth(), style = Floe.typography.evidence, color = Floe.colors.label)
     }
 }
 

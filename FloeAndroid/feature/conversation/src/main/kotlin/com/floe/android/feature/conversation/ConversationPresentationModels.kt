@@ -281,6 +281,26 @@ data class LocalShellApprovalUi(
     override fun toString(): String = "LocalShellApprovalUi(details=redacted)"
 }
 
+/** Full, ephemeral human review of a single scheduled-task creation. */
+data class ScheduleCreateApprovalUi(
+    val title: String,
+    val prompt: String,
+    val cadence: String,
+    val scheduledAt: String,
+    val timezone: String,
+    val weekday: Int?,
+    val intervalSeconds: Long?,
+    val upstreamRunId: String?,
+    val workspaceId: String?,
+    val modelId: String,
+    val environmentId: String?,
+    val approvalMode: String,
+    val recoveryPolicy: String,
+    val notificationPolicy: String,
+) {
+    override fun toString(): String = "ScheduleCreateApprovalUi(details=redacted)"
+}
+
 data class ApprovalCardUi(
     val approvalId: String,           // ⇄ toolCall.id (provider call id)
     val runId: String,
@@ -309,6 +329,7 @@ data class ApprovalCardUi(
     val actionPackage: String? = null,
     val workspaceAction: WorkspaceFileApprovalUi? = null,
     val localShellAction: LocalShellApprovalUi? = null,
+    val scheduleCreateAction: ScheduleCreateApprovalUi? = null,
     val deviceAction: DeviceActionApprovalUi? = null,
     /** The generation and descriptor are verified independently of whether
      * enough action detail exists to allow the request. */

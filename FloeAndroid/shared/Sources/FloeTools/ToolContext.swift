@@ -4,6 +4,13 @@ import Foundation
 import FloeCore
 import FloeModels
 
+/// Source of an execution grant, supplied by the runtime, never by tool JSON.
+public enum ToolApprovalProvenance: Sendable {
+    case unspecified
+    case automatic
+    case human
+}
+
 /// Explicitly authorized Canvas staged CAD document for one run.
 ///
 /// Seeded ONLY by the launch path that verified the durable Drawing
@@ -44,6 +51,7 @@ public struct ToolContext: Sendable {
     /// Approval grant under which this execution proceeds. `nil` only for
     /// non-side-effecting tools.
     public var approvalGrantID: UUID?
+    public var approvalProvenance: ToolApprovalProvenance
     /// Canonical scope from the approved `ToolCall`. Tools must authorize
     /// against this value instead of re-inferring authority from JSON.
     public var scope: ToolScope
@@ -119,6 +127,7 @@ public struct ToolContext: Sendable {
         toolCallID: String? = nil,
         toolIdempotencyKey: String = "",
         approvalGrantID: UUID? = nil,
+        approvalProvenance: ToolApprovalProvenance = .unspecified,
         scope: ToolScope = .local,
         activeSkillIDs: Set<String> = [],
         allowedToolNames: Set<String>? = nil,
@@ -146,6 +155,7 @@ public struct ToolContext: Sendable {
         self.toolCallID = toolCallID
         self.toolIdempotencyKey = toolIdempotencyKey
         self.approvalGrantID = approvalGrantID
+        self.approvalProvenance = approvalProvenance
         self.scope = scope
         self.activeSkillIDs = activeSkillIDs
         self.allowedToolNames = allowedToolNames

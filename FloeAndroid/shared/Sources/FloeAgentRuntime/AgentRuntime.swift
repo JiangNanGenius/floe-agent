@@ -693,6 +693,10 @@ public actor FloeAgentRuntime {
     /// batch on the provider's completion event.
     private var pendingToolBatch: [ToolCall] = []
     private var grants: [ApprovalGrant] = []
+    // Runtime-only provenance distinguishes deterministic policy allow from
+    // a human decision even when the policy itself is named "human".
+    private var scheduleGrantProvenance: [UUID: ToolApprovalProvenance] = [:]
+    private var policyResolvedScheduleApprovals: Set<UUID> = []
     private var executedIdempotencyKeys: Set<String> = []
     private var totalInputTokens = 0
     private var totalOutputTokens = 0
@@ -1758,7 +1762,14 @@ public actor FloeAgentRuntime {
               current.toolCall.id == callID else { return }
         switch decision {
         case .allow, .deny, .stopped:
-            await resolveApproval(decision, matching: waiting)
+            if waiting.toolCall.toolName == "task.schedule" {
+                policyResolvedScheduleApprovals.insert(waiting.generation)
+                if !(await resolveApproval(decision, matching: waiting)) {
+                    policyResolvedScheduleApprovals.remove(waiting.generation)
+                }
+            } else {
+                await resolveApproval(decision, matching: waiting)
+            }
         case .escalateToHuman:
             break
         }
@@ -3943,11 +3954,13 @@ public actor FloeAgentRuntime {
         let isAutomaticApprovalPolicy = ["automatic", "approval-model"].contains(approvalPolicyName)
         switch decision {
         case .allow(let scope, let expiresAt):
-            return .approved(grant: ApprovalGrant(
+            let grant = ApprovalGrant(
                 scope: Self.bind(scope, to: authorizationIdentity),
                 expiresAt: expiresAt,
                 policyName: policy.policyName
-            ))
+            )
+            if call.toolName == "task.schedule" { scheduleGrantProvenance[grant.id] = .automatic }
+            return .approved(grant: grant)
         case .deny(let reason):
             return .denied(reason: reason, decision: "deny:\(reason)")
         case .escalateToHuman(let reason):
@@ -3989,7 +4002,8 @@ public actor FloeAgentRuntime {
             // Arm the gate before publishing so a decision racing the
             // publish is attributed to this exact escalation.
             approvalGate = .publishing(callID: call.id)
-            await transition(to: .waitingApproval(AgentState.WaitingApproval(toolCall: call, reason: reason)))
+            let humanApproval = AgentState.WaitingApproval(toolCall: call, reason: reason)
+            await transition(to: .waitingApproval(humanApproval))
             // Consume a decision that raced the publish above, or an
             // interruption installed by `cancel()` while the publish was in
             // flight, before parking on the continuation. The checks, the
@@ -4015,15 +4029,20 @@ public actor FloeAgentRuntime {
             bufferedApprovalDecision = nil
             approvalGate = .idle
             guard case .waitingApproval = state else {
+                policyResolvedScheduleApprovals.remove(humanApproval.generation)
                 return .denied(reason: "Cancelled while waiting for approval", decision: "deny:cancelled")
             }
+            let policyResolved = policyResolvedScheduleApprovals.remove(humanApproval.generation) != nil
             switch humanDecision {
             case .allow(let scope, let expiresAt):
-                return .approved(grant: ApprovalGrant(
+                let grant = ApprovalGrant(
+                    id: call.toolName == "task.schedule" && !policyResolved ? humanApproval.generation : UUID(),
                     scope: Self.bind(scope, to: authorizationIdentity),
                     expiresAt: expiresAt,
                     policyName: "human"
-                ))
+                )
+                if call.toolName == "task.schedule" { scheduleGrantProvenance[grant.id] = policyResolved ? .automatic : .human }
+                return .approved(grant: grant)
             case .deny(let denyReason):
                 return .denied(reason: denyReason, decision: "deny:human:\(denyReason)")
             case .escalateToHuman, .stopped:
@@ -4330,6 +4349,7 @@ public actor FloeAgentRuntime {
             toolCallID: call.id,
             toolIdempotencyKey: call.idempotencyKey,
             approvalGrantID: grant.id,
+            approvalProvenance: scheduleGrantProvenance[grant.id] ?? (grant.policyName == "human" ? .human : .automatic),
             scope: call.scope,
             activeSkillIDs: effectiveSkillIDs,
             allowedToolNames: configuration.allowedToolNames,
@@ -5631,6 +5651,7 @@ public actor FloeAgentRuntime {
                 toolCallID: call.id,
                 toolIdempotencyKey: call.idempotencyKey,
                 approvalGrantID: grant.id,
+                approvalProvenance: scheduleGrantProvenance[grant.id] ?? (grant.policyName == "human" ? .human : .automatic),
                 scope: call.scope,
                 activeSkillIDs: configuration.activeSkillIDs,
                 allowedToolNames: configuration.allowedToolNames,

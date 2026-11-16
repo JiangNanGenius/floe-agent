@@ -293,6 +293,30 @@ class ConversationApprovalDispatchTest {
         assertEquals(false, holder.privateApprovalValid(card, "new-lease", "new-token"))
     }
 
+    @Test fun scheduleApprovalRequiresCurrentVisibleLeaseAndClearsOnLeave() {
+        val card = approvalCard().copy(toolName = "task.schedule", scopeVerified = false)
+        val host = RecordingHost().apply { privatePresentationAccepted = true }
+        val holder = holderWithApproval(host, card)
+        val details = ScheduleCreateApprovalUi("Title", "private instruction", "once", "2026-11-16T10:00:00.000Z",
+            "Asia/Shanghai", null, null, null, null, "11111111-1111-4111-8111-111111111111", null,
+            "ask", "safePoint", "stages")
+        holder.showPrivateApproval(card, "old")
+        holder.hidePrivateApproval("old")
+        assertFalse(holder.acceptPrivateScheduleApproval(holder.session, card, "old", details, "old-token"))
+        holder.showPrivateApproval(card, "current")
+        assertTrue(holder.acceptPrivateScheduleApproval(holder.session, card, "current", details, "token"))
+        val displayed = holder.visibleApprovalCard(card, "current")
+        assertEquals(details, displayed.scheduleCreateAction)
+        assertFalse(displayed.toString().contains(details.prompt))
+        assertTrue(holder.privateApprovalValid(card, "current", "token"))
+        assertEquals(ConversationFlowResult.Accepted, holder.resolveApproval(displayed, allow = true, presentationLease = "current"))
+        val request = host.lastArgs("resolveApproval")!![0] as ApprovalDecisionRequest
+        assertEquals("token", request.presentationToken)
+        assertEquals(card, request.expectedCard)
+        holder.hidePrivateApproval("current")
+        assertFalse(holder.privateApprovalValid(card, "current", "token"))
+    }
+
     @Test fun deviceApprovalIsBoundToOneVisibleLeaseAndDigest() {
         val card = approvalCard().copy(toolName = "device.act", scopeVerified = false)
         val host = RecordingHost().apply { privatePresentationAccepted = true }

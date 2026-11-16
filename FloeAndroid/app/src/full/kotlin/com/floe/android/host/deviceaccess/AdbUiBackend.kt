@@ -43,6 +43,7 @@ import com.floe.android.rootsystem.UiObservation
 import com.floe.android.rootsystem.UiObserveRequest
 import com.floe.android.rootsystem.UiScreenshotInfo
 import com.floe.android.rootsystem.UiScreenshotRequest
+
 import java.io.ByteArrayOutputStream
 import java.io.Closeable
 import java.util.UUID
@@ -51,6 +52,15 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+
+internal fun drainAdbScreenshotClaims(
+    claims: MutableSet<OperationClaim>, owner: PhoneControlOwner, grantId: String?,
+): List<OperationClaim> = synchronized(claims) {
+    claims.filter {
+        it.taskId == owner.taskID.toString() && it.runId == owner.runID.toString() &&
+            (grantId == null || it.grantId == grantId)
+    }.also { claims.removeAll(it.toSet()) }
+}
 
 /**
  * Pure, non-authorizing mapping from the existing phone-control action model
@@ -762,33 +772,37 @@ internal class AdbUiBackend(
         }
     }
 
-    suspend fun stop(owner: PhoneControlOwner) {
-        val pending = synchronized(activeScreenshotClaims) {
-            activeScreenshotClaims.toList()
+    suspend fun stop(owner: PhoneControlOwner, expectedGrantId: String? = null) {
+        // Freeze and detach this owner's old state before the first suspension.
+        // An arm or claim created while cancellation is in flight belongs to
+        // the new session and must not be removed by this stop.
+        val active = synchronized(gate) {
+            val current = session?.takeIf {
+                it.spec.owner == owner && (expectedGrantId == null || it.spec.grantId == expectedGrantId)
+            }
+            if (current != null) {
+                session = null
+                retained.clear()
+                latestByOwner.clear()
+                lastMutationDispatch = null
+                lastMutationOwner = null
+            }
+            current
         }
+        if (expectedGrantId != null && active == null) return
+        val grantId = active?.spec?.grantId ?: expectedGrantId
+        val pending = drainAdbScreenshotClaims(activeScreenshotClaims, owner, grantId)
+        val key = ownerKey(owner)
+        val lastClaim = lastClaims[key]?.takeIf { grantId == null || it.grantId == grantId }
+            ?.takeIf { lastClaims.remove(key, it) }
         val activeController = controller()
         for (claim in pending) {
-            if (claim.taskId == owner.taskID.toString() && claim.runId == owner.runID.toString()) {
-                runCatching { activeController?.cancelOperation(claim) }
-            }
-        }
-        lastClaims.remove(ownerKey(owner))?.let { claim ->
             runCatching { activeController?.cancelOperation(claim) }
         }
-        activeScreenshotClaims.clear()
-        val active = synchronized(gate) {
-            session?.takeIf { it.spec.owner == owner }
+        lastClaim?.let { claim ->
+            runCatching { activeController?.cancelOperation(claim) }
         }
         if (active != null) {
-            synchronized(gate) {
-                if (session?.spec?.grantId == active.spec.grantId) {
-                    session = null
-                    retained.clear()
-                    latestByOwner.clear()
-                    lastMutationDispatch = null
-                    lastMutationOwner = null
-                }
-            }
             runCatching { revokeSession(active.spec.grantId) }
         }
     }

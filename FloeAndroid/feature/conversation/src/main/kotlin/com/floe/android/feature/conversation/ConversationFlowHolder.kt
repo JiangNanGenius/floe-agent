@@ -564,7 +564,7 @@ class ConversationFlowHolder(
     /** Approvals dispatched with no projection change yet (duplicate-press
      * latch; cleared when the card leaves the projection). */
     private val approvalDispatched = mutableSetOf<String>()
-    private data class PrivateApproval(val card: ApprovalCardUi, val details: WorkspaceFileApprovalUi? = null, val token: String? = null, val shell: LocalShellApprovalUi? = null, val device: DeviceActionApprovalUi? = null) {
+    private data class PrivateApproval(val card: ApprovalCardUi, val details: WorkspaceFileApprovalUi? = null, val token: String? = null, val shell: LocalShellApprovalUi? = null, val device: DeviceActionApprovalUi? = null, val schedule: ScheduleCreateApprovalUi? = null) {
         override fun toString() = "PrivateApproval(redacted)"
     }
     private val privateApprovals = mutableStateOf<Map<String, PrivateApproval>>(emptyMap())
@@ -1433,7 +1433,7 @@ class ConversationFlowHolder(
     @Synchronized fun showPrivateApproval(card: ApprovalCardUi, lease: String) {
         val state = snapshot.value ?: return
         if (retired || card.key in approvalDispatched || !card.identityVerified || card.scopeVerified ||
-            card.toolName !in setOf("workspace.createFile", "workspace.writeFile", "workspace.applyPatch", "workspace.appendFile", "workspace.replaceText", "workspace.createDirectory", "workspace.moveFile", "workspace.copyFile", "workspace.deleteFile", "exec.shell", "device.act") ||
+            card.toolName !in setOf("workspace.createFile", "workspace.writeFile", "workspace.applyPatch", "workspace.appendFile", "workspace.replaceText", "workspace.createDirectory", "workspace.moveFile", "workspace.copyFile", "workspace.deleteFile", "exec.shell", "device.act", "task.schedule") ||
             state.selectedRunId != card.runId || (selectedRunId.value != null && selectedRunId.value != card.runId) ||
             state.pendingApprovals.none { it == card }) return
         if (card.toolName == "device.act") {
@@ -1477,6 +1477,15 @@ class ConversationFlowHolder(
             state.pendingApprovals.any { it == card }
     }
 
+    @Synchronized fun acceptPrivateScheduleApproval(echo: ConversationSessionToken, card: ApprovalCardUi,
+        lease: String, details: ScheduleCreateApprovalUi, token: String): Boolean {
+        val current = privateApprovals.value[lease] ?: return false
+        if (!isPrivateApprovalLeaseCurrent(echo, card, lease) || card.toolName != "task.schedule" ||
+            current.details != null || current.shell != null || current.device != null || current.schedule != null) return false
+        privateApprovals.value = privateApprovals.value + (lease to PrivateApproval(card, token = token, schedule = details))
+        return true
+    }
+
     @Synchronized fun acceptPrivateDeviceApproval(echo: ConversationSessionToken, card: ApprovalCardUi,
         lease: String, details: DeviceActionApprovalUi, token: String): Boolean {
         val current = privateApprovals.value[lease] ?: return false
@@ -1488,6 +1497,8 @@ class ConversationFlowHolder(
 
     @Synchronized fun visibleApprovalCard(card: ApprovalCardUi, lease: String): ApprovalCardUi {
         val privateEntry = privateApprovals.value[lease]?.takeIf { it.card == card } ?: return card
+        val schedule = privateEntry.schedule
+        if (schedule != null && card.toolName == "task.schedule") return card.copy(scheduleCreateAction = schedule, scopeVerified = true)
         val device = privateEntry.device
         if (device != null && card.toolName == "device.act") return card.copy(deviceAction = device, scopeVerified = true)
         val shell = privateEntry.shell
@@ -1505,7 +1516,8 @@ class ConversationFlowHolder(
         return !retired && token != null && item.token == token && item.card == card &&
             ((item.details != null && sameWorkspace(state.boundWorkspaceId, item.details.workspaceId)) ||
                 (item.shell != null && card.toolName == "exec.shell" && sameWorkspace(state.boundWorkspaceId, item.shell.workspaceId)) ||
-                (item.device != null && card.toolName == "device.act")) &&
+                (item.device != null && card.toolName == "device.act") ||
+                (item.schedule != null && card.toolName == "task.schedule")) &&
             state.selectedRunId == card.runId && (selectedRunId.value == null || selectedRunId.value == card.runId) &&
             state.pendingApprovals.any { it == card }
     }
@@ -1539,7 +1551,7 @@ class ConversationFlowHolder(
         val privateEntry = presentationLease?.let { privateApprovals.value[it] }
         val privateToken = privateEntry?.token
         val privateVisible = privateEntry != null && privateEntry.card == live &&
-            (privateEntry.details != null || privateEntry.shell != null || privateEntry.device != null) &&
+            (privateEntry.details != null || privateEntry.shell != null || privateEntry.device != null || privateEntry.schedule != null) &&
             visibleApprovalCard(live, presentationLease ?: "") == approval
         if ((live != approval && !privateVisible) || state.selectedRunId != live.runId ||
             (selectedRunId.value != null && selectedRunId.value != live.runId)) return ConversationFlowResult.Stale

@@ -755,10 +755,7 @@ public final class G02InstalledComposition: @unchecked Sendable {
         // The agent-facing tool shares the SAME service; it cannot grant any
         // permission (the binding resolver only freezes the run's actual
         // three-field DraftTaskPolicy, workspace and model).
-        registerG073TaskScheduleTools(
-            service: scheduleService,
-            registry: runComponents.registry,
-            bindingResolver: { context in
+        let scheduleBindingResolver: G073TaskScheduleBindingResolver = { context in
                 var frozenWorkspace: UUID?
                 var policy = DraftTaskPolicy()
                 if let conversationID = context.conversationID {
@@ -799,7 +796,10 @@ public final class G02InstalledComposition: @unchecked Sendable {
                 return G073TaskScheduleToolBinding(
                     workspaceID: frozenWorkspace, modelID: modelID,
                     environmentID: environmentID, policy: policy)
-            })
+            }
+        G073TaskScheduleFacade.installApprovalResolver(epoch: epoch, resolver: scheduleBindingResolver)
+        registerG073TaskScheduleTools(service: scheduleService, registry: runComponents.registry,
+                                      bindingResolver: scheduleBindingResolver)
 
         // C06: register the seven ordinary mail tools over the SAME accepted
         // generation/registry. Discovery stays hidden until a real account

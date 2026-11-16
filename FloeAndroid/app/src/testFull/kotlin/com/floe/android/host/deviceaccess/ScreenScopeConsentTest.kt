@@ -321,6 +321,21 @@ class ScreenScopeConsentTest {
     // ------------------------------------------------- completion ticket
 
     @Test
+    fun revokedTicketCannotPublishPreparedCapture() {
+        val consent = ScreenScopeConsent()
+        consent.thisTask(a)
+        val old = requireNotNull(consent.ticket(a, epoch, ownerRunLive = true))
+        consent.clear()
+        consent.thisTask(a)
+        var published = false
+        val result = consent.commitIfTicketValid(old, a, epoch, ownerRunLive = true,
+            displayCapture = false, wholeScreenConsent = false,
+            wholeScreenUnchanged = true) { published = true; true }
+        assertNull(result)
+        assertFalse(published)
+    }
+
+    @Test
     fun pendingCaptureIsRejectedAfterScopeRevocation() {
         val consent = ScreenScopeConsent()
         consent.thisTask(a)
@@ -417,4 +432,35 @@ class ScreenScopeConsentTest {
                 displayCapture = false, wholeScreenConsent = true,
             ))
     }
+    @Test
+    fun collapsedServiceDetachAndReattachCannotKeepOldConsentOrCaptureTicket() {
+        var teardown = 5L
+        val consent = ScreenScopeConsent { teardown }
+        for (mode in listOf(DeviceAccessScreenScopeUi.CURRENT_TASK, DeviceAccessScreenScopeUi.UNTIL_STOPPED)) {
+            consent.select(mode, candidateOwner = a, sessionOwner = a, epoch = epoch)
+            val old = requireNotNull(consent.ticket(a, epoch, ownerRunLive = true))
+            assertTrue(consent.allows(a, epoch, ownerRunLive = true))
+            // A detach and an immediate reattach may collapse into one flow
+            // value. The synchronous teardown fence changes regardless.
+            teardown++
+            assertNull(consent.binding)
+            assertFalse(consent.allows(a, epoch, ownerRunLive = true))
+            assertNull(consent.ticket(a, epoch, ownerRunLive = true))
+            assertFalse(consent.ticketStillValid(old, a, epoch, ownerRunLive = true,
+                displayCapture = false, wholeScreenConsent = true))
+            assertEquals(DeviceAccessScreenScopeUi.OFF,
+                consent.presented(activeOwner = a, liveCandidateOwner = a, epoch = epoch))
+            // An explicit new choice after the teardown is retained by a
+            // delayed collector reconciliation and uses a new ticket.
+            consent.select(mode, candidateOwner = a, sessionOwner = a, epoch = epoch)
+            consent.reconcileServiceTeardown()
+            assertTrue(consent.allows(a, epoch, ownerRunLive = true))
+            assertFalse(consent.ticketStillValid(old, a, epoch, ownerRunLive = true,
+                displayCapture = false, wholeScreenConsent = true))
+            val fresh = requireNotNull(consent.ticket(a, epoch, ownerRunLive = true))
+            assertTrue(consent.ticketStillValid(fresh, a, epoch, ownerRunLive = true,
+                displayCapture = false, wholeScreenConsent = true))
+        }
+    }
+
 }

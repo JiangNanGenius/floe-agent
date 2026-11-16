@@ -7,6 +7,7 @@ import com.floe.android.feature.conversation.ApprovalModeUi
 import com.floe.android.feature.conversation.ApprovalTargetUi
 import com.floe.android.feature.conversation.WorkspaceFileApprovalUi
 import com.floe.android.feature.conversation.LocalShellApprovalUi
+import com.floe.android.feature.conversation.ScheduleCreateApprovalUi
 import com.floe.android.feature.conversation.DeviceActionApprovalRequestUi
 import com.floe.android.feature.conversation.AttachmentChipUi
 import com.floe.android.feature.conversation.AttachmentKindUi
@@ -195,6 +196,49 @@ private fun privateApprovalPage(value: JsonElement?, card: ApprovalCardUi,
 internal fun privateWorkspaceApprovalPage(value: JsonElement?, card: ApprovalCardUi): Pair<WorkspaceFileApprovalUi, String>? {
     val (details, token) = privateApprovalPage(value, card) ?: return null
     return (workspaceApprovalDetails(card.toolName, details) ?: return null) to (token ?: return null)
+}
+
+/** Accept only a complete, generation-bound, local human-review page. */
+internal fun privateScheduleCreateApprovalPage(value: JsonElement?, card: ApprovalCardUi): Pair<ScheduleCreateApprovalUi, String>? {
+    if (card.toolName != "task.schedule") return null
+    val (details, token) = privateApprovalPage(value, card, requiredRisk = "changesAgentBehavior", workspaceVerified = false) ?: return null
+    if (details.keys != setOf("kind", "action", "title", "prompt", "cadence", "scheduledAt", "timezone", "weekday", "intervalSeconds", "upstreamRunID", "workspaceID", "modelID", "environmentID", "approvalMode", "recoveryPolicy", "notificationPolicy")) return null
+    fun str(key: String) = (details[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
+    fun optionalString(key: String): String? = if (details[key] is kotlinx.serialization.json.JsonNull) null else str(key)
+    fun nullableValid(key: String) = details[key] is kotlinx.serialization.json.JsonNull || str(key) != null
+    fun number(key: String): Long? = (details[key] as? JsonPrimitive)?.takeUnless { it.isString }?.longOrNull
+    fun uuid(value: String?): Boolean = value != null && runCatching { java.util.UUID.fromString(value).toString() == value }.getOrDefault(false)
+    fun readable(value: String, limit: Int, newline: Boolean): Boolean {
+        if (value.isEmpty() || value.toByteArray(Charsets.UTF_8).size > limit) return false
+        val bad = setOf(Character.CONTROL.toInt(), Character.FORMAT.toInt(), Character.LINE_SEPARATOR.toInt(),
+            Character.PARAGRAPH_SEPARATOR.toInt(), Character.SURROGATE.toInt(), Character.UNASSIGNED.toInt())
+        return value.codePoints().noneMatch { cp -> !(newline && cp == 10) && Character.getType(cp) in bad }
+    }
+    if (str("kind") != "scheduleCreate" || str("action") != "create") return null
+    val title = str("title")?.takeIf { readable(it, 160, false) && it.isNotBlank() } ?: return null
+    val prompt = str("prompt")?.takeIf { readable(it, 16384, true) && it.isNotBlank() } ?: return null
+    val cadence = str("cadence")?.takeIf { it in setOf("once", "daily", "weekly", "interval", "afterSuccess", "charging", "networkConnected") } ?: return null
+    val time = str("scheduledAt")?.takeIf { it.matches(Regex("[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z")) && runCatching { java.time.Instant.parse(it) }.isSuccess } ?: return null
+    val timezone = str("timezone")?.takeIf { readable(it, 64, false) && runCatching { java.time.ZoneId.of(it) }.isSuccess } ?: return null
+    val weekday = if (details["weekday"] is kotlinx.serialization.json.JsonNull) null else number("weekday")?.takeIf { it in 1L..7L }?.toInt() ?: return null
+    val interval = if (details["intervalSeconds"] is kotlinx.serialization.json.JsonNull) null else number("intervalSeconds")?.takeIf { it in 60L..31536000L } ?: return null
+    if ((cadence == "weekly") != (weekday != null) || (cadence == "interval") != (interval != null)) return null
+    if (weekday != null) {
+        val zonedWeekday = runCatching { java.time.Instant.parse(time).atZone(java.time.ZoneId.of(timezone)).dayOfWeek.value % 7 + 1 }.getOrNull()
+        if (weekday != zonedWeekday) return null
+    }
+    if (!nullableValid("upstreamRunID") || !nullableValid("workspaceID") || !nullableValid("environmentID")) return null
+    val upstream = optionalString("upstreamRunID")
+    val workspace = optionalString("workspaceID")
+    val environment = optionalString("environmentID")
+    if ((cadence == "afterSuccess") != (upstream != null) || (upstream != null && !uuid(upstream)) ||
+        (workspace != null && !uuid(workspace)) || (environment != null && (!readable(environment, 128, false) || workspace == null))) return null
+    val model = str("modelID")?.takeIf(::uuid) ?: return null
+    val approval = str("approvalMode")?.takeIf { it in setOf("ask", "automatic", "fullAccess") } ?: return null
+    val recovery = str("recoveryPolicy")?.takeIf { it in setOf("safePoint", "alwaysRetry") } ?: return null
+    val notifications = str("notificationPolicy")?.takeIf { it in setOf("off", "terminal", "critical", "stages") } ?: return null
+    return ScheduleCreateApprovalUi(title, prompt, cadence, time, timezone, weekday, interval, upstream, workspace, model, environment,
+        approval, recovery, notifications) to (token ?: return null)
 }
 
 /** Decode an action request only. This is not a target proof or an Allow. */

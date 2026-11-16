@@ -166,6 +166,22 @@ import kotlinx.coroutines.withTimeoutOrNull
  *    cancel through the existing conversation authority. It does not become a
  *    host-wide latch. Saved automation consent never clears a user stop.
  */
+/** Discovery and settings use the same live service/client prerequisites. */
+internal fun phoneAccessibilityBackendReady(enabled: Boolean, status: PhoneControlStatus, clientOpen: Boolean): Boolean =
+    enabled && clientOpen && status.connected && status.enabled && status.blocker !in setOf(
+        PhoneControlBlocker.LOCKED, PhoneControlBlocker.SERVICE_REVOKED, PhoneControlBlocker.SERVICE_DISCONNECTED)
+
+/** System setting and actual in-process attachment are independently observed. */
+internal fun deviceAccessibilityUi(enabled: Boolean, status: PhoneControlStatus): DeviceAccessAccessibilityUi {
+    if (enabled != status.connected) return DeviceAccessAccessibilityUi.Inconsistent
+    if (!enabled) return DeviceAccessAccessibilityUi.NotGranted
+    return when (status.blocker) {
+        PhoneControlBlocker.SERVICE_REVOKED -> DeviceAccessAccessibilityUi.Revoked
+        PhoneControlBlocker.SERVICE_DISCONNECTED -> DeviceAccessAccessibilityUi.Restricted
+        else -> DeviceAccessAccessibilityUi.Granted
+    }
+}
+
 internal class DeviceAccessHost(
     private val context: Context,
     private val host: RuntimeHost,
@@ -625,6 +641,7 @@ internal class DeviceAccessHost(
         if (!closed) publish()
     }
     private var unlockConfigured = false
+    private val phoneStatusRefreshLock = Any()
     @Volatile
     private var phoneStatus: PhoneControlStatus = PhoneControlModule.statusSnapshot()
     @Volatile
@@ -736,13 +753,14 @@ internal class DeviceAccessHost(
      * "Until stopped" is the distinct broader session mode. See
      * [ScreenScopeConsent].
      */
-    private val screenShare = ScreenScopeConsent()
+    private val screenShare = ScreenScopeConsent(PhoneControlModule::serviceTeardownGeneration)
 
     /**
      * RAM revision of the separate whole-screen consent. It does not replace
      * that persistent user ceiling; it lets a pending display capture prove
      * the exact consent it started under was not revoked and re-granted.
      */
+    private val wholeScreenConsentLock = Any()
     @Volatile
     private var wholeScreenConsentRevision = 0L
 
@@ -816,13 +834,13 @@ internal class DeviceAccessHost(
         onAdvancedTargetLookup = ::lookupAdvancedSystemTarget,
         onArmPhoneControl = ::armVisibleTask,
         onAutomaticControlChange = { enabled ->
-            settings = settings.copy(automaticPhoneControl = enabled)
+            updateSettings { current -> current.copy(automaticPhoneControl = enabled) }
             persist()
             if (!enabled) stopActiveTask(takeOver = true)
             publish()
         },
         onAutoUnlockChange = { enabled ->
-            settings = settings.copy(autoUnlock = enabled && unlockConfigured)
+            updateSettings { current -> current.copy(autoUnlock = enabled && unlockConfigured) }
             persist(); publish()
         },
         onSaveUnlockCredential = ::saveUnlockCredential,
@@ -878,7 +896,8 @@ internal class DeviceAccessHost(
         // RAM-only and never restored across process death.
         pairingNotification.close()
         cancelPairingNotification()
-        settings = loadSettings()
+        synchronized(wholeScreenConsentLock) { settings = loadSettings() }
+        scope.launch(io) { PlatformArtifactWriter.cleanupExpiredStages(context.cacheDir) }
         // The artifact-handoff Full extension reads the SAME target ceiling.
         // Setting this is not a grant; it only lets that lane refuse targets
         // outside the user's existing device-app selection.
@@ -904,23 +923,10 @@ internal class DeviceAccessHost(
         ensureAdbUiBackend()
         registerPackageChangeMonitor()
         statusJobs += scope.launch {
-            PhoneControlModule.status.collect { status ->
-                val tornDownBefore = phoneServiceTornDown(phoneStatus)
-                val previousRelock = phoneStatus.relockReceipt
-                phoneStatus = status
-                if (status.relockReceipt != previousRelock &&
-                    status.relockReceipt?.result == PhoneRelockResult.USER_REQUIRED) {
-                    error = DeviceAccessUiError(context.getString(R.string.phone_automation_relock_failed),
-                        "device_relock_unconfirmed")
-                }
-                // Actual Accessibility/driver teardown revokes the RAM-only
-                // screen consent. A user Stop/Takeover is cleared by its own
-                // action; the transient blockers emitted while explicitly
-                // arming the next task must not discard its fresh choice.
-                if (!tornDownBefore && phoneServiceTornDown(status)) {
-                    screenShare.clear()
-                }
-                publish()
+            PhoneControlModule.status.collect {
+                // The event is an invalidation, not an ordered snapshot: a
+                // simultaneous explicit refresh must never reinstall its old value.
+                refreshPhoneStatusNow()
             }
         }
         // The module-level flows survive a controller rebuild; a per-controller
@@ -931,6 +937,12 @@ internal class DeviceAccessHost(
             }.collectLatest { (adb, root) ->
                 adbStatus = adb
                 rootStatus = root
+                // Immediately retire stale ADB controls on disconnect; the
+                // background readiness and system probes may take time.
+                if (adb !is AdbStatus.ServiceAlive || adb.effectiveUid != 2000) {
+                    adbUiReady = false
+                    publish()
+                }
                 onRootStateChanged()
                 // These are ordinary volatile fields, not Compose state.
                 // Observe the actual service flows, including peer changes
@@ -1030,8 +1042,25 @@ internal class DeviceAccessHost(
         publish()
     }
 
+    private fun refreshPhoneStatusNow() = synchronized(phoneStatusRefreshLock) {
+        if (closed) return@synchronized
+        val latest = runCatching { PhoneControlModule.statusSnapshot() }.getOrNull() ?: return@synchronized
+        val previousRelock = phoneStatus.relockReceipt
+        phoneStatus = latest
+        if (latest.relockReceipt != previousRelock && latest.relockReceipt?.result == PhoneRelockResult.USER_REQUIRED) {
+            error = DeviceAccessUiError(context.getString(R.string.phone_automation_relock_failed), "device_relock_unconfirmed")
+        }
+        // Even if StateFlow collapsed detach+attach, the generation is
+        // monotonic and existing grants were already fenced at use time.
+        screenShare.reconcileServiceTeardown()
+        publish()
+    }
+
     fun onActivityResumed(activity: Activity) {
         if (closed) return
+        // Refresh the real in-process accessibility session immediately; do
+        // not wait for unrelated ADB/root/package work to finish first.
+        refreshPhoneStatusNow()
         // The permission broker belongs to the main/platform lane. Read its
         // CURRENT state on the main thread; never touch it from the IO worker.
         val discoveryBlocked = pairingSessionOpen && localNetworkBlocked()
@@ -1228,21 +1257,28 @@ internal class DeviceAccessHost(
         )
     }
 
-    private fun persist() {
+    private fun updateSettings(transform: (AccessSettings) -> AccessSettings) {
+        updateSettingsAtomically(wholeScreenConsentLock, { settings }, { settings = it }, transform)
+    }
+
+    private fun persist() = synchronized(wholeScreenConsentLock) {
+        // Serialize the snapshot and its persistence with every settings
+        // transformation, so an older copy cannot restore revoked consent.
+        val snapshot = settings
         preferences.edit()
-            .putStringSet(KEY_PACKAGES, HashSet(settings.allowedPackages))
-            .putStringSet(KEY_ROOTS, HashSet(settings.fileRootIds))
-            .putStringSet(KEY_APP_DATA_ROOTS, HashSet(settings.appDataPaths))
-            .putBoolean(KEY_FILE_WRITES, settings.fileWritesAllowed)
-            .putBoolean(KEY_WHOLE_SCREEN, settings.wholeScreenConsent)
-            .putBoolean(KEY_MANAGEMENT, settings.packageManagementAllowed)
-            .putBoolean(KEY_ADVANCED_SYSTEM, settings.advancedSystemManagementAllowed)
-            .putStringSet(KEY_ADVANCED_TOOLS, HashSet(settings.advancedSystemAllowedTools))
-            .putStringSet(KEY_ADVANCED_TARGETS, HashSet(settings.advancedSystemTargets))
-            .putBoolean(KEY_ADB_ENABLED, settings.adbEnabled)
-            .putBoolean("automatic_phone_control", settings.automaticPhoneControl)
-            .putBoolean("automatic_unlock", settings.autoUnlock)
-            .putBoolean("floating_controls", settings.floatingControls)
+            .putStringSet(KEY_PACKAGES, HashSet(snapshot.allowedPackages))
+            .putStringSet(KEY_ROOTS, HashSet(snapshot.fileRootIds))
+            .putStringSet(KEY_APP_DATA_ROOTS, HashSet(snapshot.appDataPaths))
+            .putBoolean(KEY_FILE_WRITES, snapshot.fileWritesAllowed)
+            .putBoolean(KEY_WHOLE_SCREEN, snapshot.wholeScreenConsent)
+            .putBoolean(KEY_MANAGEMENT, snapshot.packageManagementAllowed)
+            .putBoolean(KEY_ADVANCED_SYSTEM, snapshot.advancedSystemManagementAllowed)
+            .putStringSet(KEY_ADVANCED_TOOLS, HashSet(snapshot.advancedSystemAllowedTools))
+            .putStringSet(KEY_ADVANCED_TARGETS, HashSet(snapshot.advancedSystemTargets))
+            .putBoolean(KEY_ADB_ENABLED, snapshot.adbEnabled)
+            .putBoolean("automatic_phone_control", snapshot.automaticPhoneControl)
+            .putBoolean("automatic_unlock", snapshot.autoUnlock)
+            .putBoolean("floating_controls", snapshot.floatingControls)
             .apply()
     }
 
@@ -1253,7 +1289,7 @@ internal class DeviceAccessHost(
             try {
                 unlockCredentials.write("device-lock", bytes)
                 unlockConfigured = true
-                settings = settings.copy(autoUnlock = true)
+                updateSettings { current -> current.copy(autoUnlock = true) }
                 persist()
                 error = null
             } catch (_: Exception) {
@@ -1263,7 +1299,7 @@ internal class DeviceAccessHost(
     }
 
     private fun forgetUnlockCredential() {
-        settings = settings.copy(autoUnlock = false)
+        updateSettings { current -> current.copy(autoUnlock = false) }
         persist()
         scope.launch(io) {
             try { unlockCredentials.delete("device-lock"); unlockConfigured = false }
@@ -1279,7 +1315,7 @@ internal class DeviceAccessHost(
             runCatching { context.startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
                 android.net.Uri.parse("package:${context.packageName}")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
         }
-        settings = settings.copy(floatingControls = enabled)
+        updateSettings { current -> current.copy(floatingControls = enabled) }
         persist()
         publish()
     }
@@ -1292,7 +1328,7 @@ internal class DeviceAccessHost(
             .toSet()
         val changed = next != settings.allowedPackages
         if (changed) targetScopeRevision.incrementAndGet()
-        settings = settings.copy(allowedPackages = next)
+        updateSettings { current -> current.copy(allowedPackages = next) }
         if (changed) targetScopeRevision.incrementAndGet()
         if (changed && armedBackend == PhoneControlBackend.ADB_UI_AUTOMATION) {
             // The UI target ceiling changed: the old ADB session grant is no
@@ -1325,11 +1361,11 @@ internal class DeviceAccessHost(
             appDataUsable = appDataUsable(),
         )
         if (next != settings.fileRootIds) fenceActiveRootGrants()
-        settings = settings.copy(
+        updateSettings { current -> current.copy(
             fileRootIds = next,
             appDataPaths = nextAppData,
-            fileWritesAllowed = settings.fileWritesAllowed && writableSelected,
-        )
+            fileWritesAllowed = current.fileWritesAllowed && writableSelected,
+        ) }
         persist()
         refreshRootCatalog()
         if (ceilingChanged) requestRootConfigRebuild()
@@ -1366,10 +1402,10 @@ internal class DeviceAccessHost(
             publish()
             return
         }
-        settings = settings.copy(
-            fileRootIds = settings.fileRootIds + root.id,
-            appDataPaths = settings.appDataPaths + root.path,
-        )
+        updateSettings { current -> current.copy(
+            fileRootIds = current.fileRootIds + root.id,
+            appDataPaths = current.appDataPaths + root.path,
+        ) }
         error = null
         persist()
         refreshRootCatalog()
@@ -1380,9 +1416,9 @@ internal class DeviceAccessHost(
     private fun setFileWrites(enabled: Boolean) {
         if (busy != DeviceAccessBusyUi.NONE) return
         if (!enabled) fenceActiveRootGrants()
-        settings = settings.copy(
+        updateSettings { current -> current.copy(
             fileWritesAllowed = enabled && hasWritableSelection(),
-        )
+        ) }
         persist()
         publish()
     }
@@ -1409,9 +1445,11 @@ internal class DeviceAccessHost(
 
     private fun setWholeScreenConsent(enabled: Boolean) {
         if (busy != DeviceAccessBusyUi.NONE) return
-        if (settings.wholeScreenConsent == enabled) return
-        settings = settings.copy(wholeScreenConsent = enabled)
-        wholeScreenConsentRevision += 1
+        synchronized(wholeScreenConsentLock) {
+            if (settings.wholeScreenConsent == enabled) return
+            updateSettings { current -> current.copy(wholeScreenConsent = enabled) }
+            wholeScreenConsentRevision += 1
+        }
         persist()
         publish()
     }
@@ -1419,7 +1457,7 @@ internal class DeviceAccessHost(
     private fun setPackageManagement(enabled: Boolean) {
         if (busy != DeviceAccessBusyUi.NONE) return
         if (!enabled) fenceActiveRootGrants()
-        settings = settings.copy(packageManagementAllowed = enabled)
+        updateSettings { current -> current.copy(packageManagementAllowed = enabled) }
         persist()
         publish()
     }
@@ -1432,7 +1470,7 @@ internal class DeviceAccessHost(
     private fun setAdvancedSystem(enabled: Boolean) {
         if (busy != DeviceAccessBusyUi.NONE) return
         if (!enabled) fenceActiveRootGrants()
-        settings = settings.copy(advancedSystemManagementAllowed = enabled)
+        updateSettings { current -> current.copy(advancedSystemManagementAllowed = enabled) }
         persist()
         publish()
     }
@@ -1441,7 +1479,7 @@ internal class DeviceAccessHost(
         if (busy != DeviceAccessBusyUi.NONE) return
         val allowed = tools.intersect(DeviceAccessToolCatalog.SHIPPED_ADVANCED_TOOLS)
         if (allowed != settings.advancedSystemAllowedTools) fenceActiveRootGrants()
-        settings = settings.copy(advancedSystemAllowedTools = allowed)
+        updateSettings { current -> current.copy(advancedSystemAllowedTools = allowed) }
         persist()
         publish()
     }
@@ -1453,7 +1491,7 @@ internal class DeviceAccessHost(
             .take(MAX_TARGET_PACKAGES)
             .toSet()
         if (clean != settings.advancedSystemTargets) fenceActiveRootGrants()
-        settings = settings.copy(advancedSystemTargets = clean)
+        updateSettings { current -> current.copy(advancedSystemTargets = clean) }
         persist()
         publish()
     }
@@ -1688,31 +1726,43 @@ internal class DeviceAccessHost(
         val backend = adbUiBackend ?: return
         val live = (adbStatus as? AdbStatus.ServiceAlive)?.takeIf { it.effectiveUid == 2000 }
         if (live == null) {
-            backend.onServiceLost()
+            val consentRevision = screenShare.revision
+            val owner = armedOwner
+            val epoch = host.nativeRootEpoch()
+            val grant = if (owner != null && epoch != null) backend.scopeSessionIdentity(owner, epoch) else null
             adbUiStatus = null
             adbUiReady = false
-            uiSessionGrants.clear()
             if (armedBackend == PhoneControlBackend.ADB_UI_AUTOMATION) {
-                val owner = armedOwner
-                if (owner != null) runCatching { backend.stop(owner) }
-                armedBackend = null
-                if (armedOwner == owner) armedOwner = null
-                screenShare.clear()
+                screenShare.clearIfRevision(consentRevision)
             }
+            // Remove the disconnected owner's controls before any remote
+            // cancellation can suspend; presentation rechecks the live backend.
+            publish()
+            // A reconnect can create a new grant while stop is suspended. The
+            // backend removes only this frozen grant and its own claims.
+            if (owner != null && grant != null) runCatching { backend.stop(owner, grant) }
             return
         }
+        val expectedOwner = armedOwner
+        val expectedEpoch = host.nativeRootEpoch()
+        val expectedGrant = if (expectedOwner != null && expectedEpoch != null) {
+            backend.scopeSessionIdentity(expectedOwner, expectedEpoch)
+        } else null
         // A new helper cannot be ready until the latest durable snapshot,
         // including a legitimately empty first-install state, is ACKed.
         val status = sensitiveGuardMutex.withLock {
             if (backend.syncSensitiveGuard()) backend.refreshReadiness() else null
         }
+        // The readiness request can outlive a disconnect/reconnect. Never let
+        // its old result revoke a replacement session.
+        if (adbStatus !== live || adbUiBackend !== backend) return
         adbUiStatus = status
         adbUiReady = status?.ready == true
-        if (!adbUiReady && armedBackend == PhoneControlBackend.ADB_UI_AUTOMATION) {
-            val owner = armedOwner
-            if (owner != null) runCatching { backend.stop(owner) }
-            armedBackend = null
-            if (armedOwner == owner) armedOwner = null
+        if (!adbUiReady && expectedOwner != null && expectedGrant != null &&
+            armedBackend == PhoneControlBackend.ADB_UI_AUTOMATION && armedOwner == expectedOwner
+        ) {
+            publish()
+            runCatching { backend.stop(expectedOwner, expectedGrant) }
         }
     }
 
@@ -1841,11 +1891,11 @@ internal class DeviceAccessHost(
         }.toSet()
         val stale = derived + settings.fileRootIds.filter { FileRootCatalog.isAppDataId(it) }
         if (stale.isEmpty() && settings.appDataPaths.isEmpty()) return
-        settings = settings.copy(
-            fileRootIds = settings.fileRootIds - stale,
+        updateSettings { current -> current.copy(
+            fileRootIds = current.fileRootIds - stale,
             appDataPaths = emptySet(),
-            fileWritesAllowed = settings.fileWritesAllowed && hasWritableSelectionAfter(stale),
-        )
+            fileWritesAllowed = current.fileWritesAllowed && hasWritableSelectionAfter(stale),
+        ) }
         persist()
         refreshRootCatalog()
         if (rebuild && rootController != null) requestRootConfigRebuild()
@@ -1977,6 +2027,7 @@ internal class DeviceAccessHost(
 
     private fun refreshFromUser() {
         if (busy != DeviceAccessBusyUi.NONE) return
+        refreshPhoneStatusNow()
         error = null
         scope.launch(io) {
             // Re-read only the existing guard file before syncing a helper.
@@ -2647,19 +2698,20 @@ internal class DeviceAccessHost(
             enabled = systemSettingsCeilingEnabled(),
         )
         val sensitiveState = PhoneControlSensitiveGuard.state(context)
+        val accessibilityEnabled = runCatching { activation.isEnabled() }.getOrDefault(false)
+        val accessibilityReady = phoneAccessibilityBackendReady(accessibilityEnabled, phoneStatus, phoneClient?.isClosed == false)
         mutablePresentation.value = DeviceAccessPresentationState(
             sensitiveGuardsAvailable = sensitiveState != null,
             sensitiveGuards = sensitiveState?.tickets?.map {
                 DeviceAccessSensitiveGuardUi(guardId(it), it.packageName, it.windowId, it.displayId)
             }.orEmpty(),
-            accessibility = accessibilityUi(),
+            accessibility = accessibilityUi(accessibilityEnabled),
             adb = adbUi(),
             structuredUi = when {
                 armedBackend == PhoneControlBackend.ADB_UI_AUTOMATION &&
                     armedOwner != null && adbUiReady ->
                     com.floe.android.DeviceAccessStructuredUiUi.ADB_UI_AUTOMATION
-                phoneServiceArmable() && phoneClient?.isClosed == false ->
-                    com.floe.android.DeviceAccessStructuredUiUi.ACCESSIBILITY
+                accessibilityReady -> com.floe.android.DeviceAccessStructuredUiUi.ACCESSIBILITY
                 adbUiReady -> com.floe.android.DeviceAccessStructuredUiUi.ADB_UI_AUTOMATION
                 else -> com.floe.android.DeviceAccessStructuredUiUi.NONE
             },
@@ -2696,19 +2748,9 @@ internal class DeviceAccessHost(
     private fun pairingSupported(): Boolean =
         rootController?.pairingSupported ?: (Build.VERSION.SDK_INT >= 30)
 
-    private fun accessibilityUi(): DeviceAccessAccessibilityUi {
+    private fun accessibilityUi(enabled: Boolean): DeviceAccessAccessibilityUi {
         if (closed) return DeviceAccessAccessibilityUi.Revoked
-        val enabled = runCatching { activation.isEnabled() }.getOrDefault(false)
-        if (!enabled) return DeviceAccessAccessibilityUi.NotGranted
-        return when (phoneStatus.blocker) {
-            PhoneControlBlocker.SERVICE_REVOKED -> DeviceAccessAccessibilityUi.Revoked
-            PhoneControlBlocker.SERVICE_DISCONNECTED -> DeviceAccessAccessibilityUi.Restricted
-            else -> if (phoneStatus.connected) {
-                DeviceAccessAccessibilityUi.Granted
-            } else {
-                DeviceAccessAccessibilityUi.Restricted
-            }
-        }
+        return deviceAccessibilityUi(enabled, phoneStatus)
     }
 
     private fun adbUi(): DeviceAccessAdbUi {
@@ -3226,7 +3268,8 @@ internal class DeviceAccessHost(
         // still exists. A retained pause must not keep an overlay/notification
         // resident after Accessibility revocation or ADB disconnection.
         val backendAvailable = if (armedBackend == PhoneControlBackend.ADB_UI_AUTOMATION) {
-            adbUiReady && (host.nativeRootEpoch() ?: 0L) > 0L
+            adbUiReady && (adbStatus as? AdbStatus.ServiceAlive)?.effectiveUid == 2000 &&
+                (host.nativeRootEpoch() ?: 0L) > 0L
         } else {
             !phoneServiceTornDown(phoneStatus)
         }
@@ -3450,7 +3493,7 @@ internal class DeviceAccessHost(
 
     private fun enableAdb() {
         if (busy != DeviceAccessBusyUi.NONE) return
-        settings = settings.copy(adbEnabled = true)
+        updateSettings { current -> current.copy(adbEnabled = true) }
         persist()
         error = null
         scope.launch(io) {
@@ -4183,9 +4226,12 @@ internal class DeviceAccessHost(
 
     private fun availableToolNames(): Set<String> {
         val state = mutablePresentation.value
+        val accessibilityReady = state.structuredUi == com.floe.android.DeviceAccessStructuredUiUi.ACCESSIBILITY &&
+            state.accessibility == DeviceAccessAccessibilityUi.Granted &&
+            phoneAccessibilityBackendReady(true, phoneStatus, phoneClient?.isClosed == false)
         return DeviceAccessToolCatalog.availableNames(
             DeviceAccessToolCatalog.Availability(
-                accessibilityConnected = phoneServiceArmable(),
+                accessibilityConnected = accessibilityReady,
                 adbStructuredUiReady = adbUiReady,
                 targetPackagesSelected = state.targets.selectedPackages.isNotEmpty(),
                 // Potential capability only: mirrors
@@ -4197,7 +4243,7 @@ internal class DeviceAccessHost(
                 screenCaptureSupported = Build.VERSION.SDK_INT >= 30 ||
                     (Build.VERSION.SDK_INT >= 28 && adbUiReady &&
                         (armedBackend == PhoneControlBackend.ADB_UI_AUTOMATION ||
-                            !phoneServiceArmable())),
+                            !accessibilityReady)),
                 systemServiceAlive = systemServiceAlive(),
                 fileRootsSelected = effectiveSelectedRoots().isNotEmpty(),
                 fileWritesAllowed = state.targets.fileWritesAllowed,
@@ -5411,8 +5457,34 @@ internal class DeviceAccessHost(
                     val screenshot = result.value
                     try {
                         val root = com.floe.android.swiftbridge.PlatformToolsNative.artifactRootPath()
-                        val written = PlatformArtifactWriter.write(
-                            root, screenshot.bytes, screenshot.mimeType)
+                        val prepared = PlatformArtifactWriter.prepare(context.cacheDir, root, screenshot.bytes, screenshot.mimeType)
+                        if (prepared is PlatformArtifactWriter.Preparation.Failed) {
+                            return PlatformToolOutcome.Failure("artifact_store_failed", prepared.code)
+                        }
+                        val stage = (prepared as PlatformArtifactWriter.Preparation.Ready).stage
+                        val written = try {
+                            // Lock order: service teardown -> whole-screen
+                            // choice -> screen-scope ticket. Only the final
+                            // publication is inside these short fences.
+                            PhoneControlModule.withServiceTeardownFence(ticket.serviceTeardownGeneration) {
+                                synchronized(wholeScreenConsentLock) {
+                                    screenShare.commitIfTicketValid(ticket, owner, liveEpoch,
+                                        ownerRunLive = isOwnerRunLive(owner), displayCapture = displayCapture,
+                                        wholeScreenConsent = settings.wholeScreenConsent,
+                                        wholeScreenUnchanged = wholeScreenConsentRevision == wholeScreenRevision) {
+                                        if (host.nativeRootEpoch() != liveEpoch || isOwnerStopped(owner) ||
+                                            phonePause.isPaused(owner) || captureRevision != phoneControlRevision.current(owner) ||
+                                            armedOwner != owner || !PlatformToolsNativeLive.isLive(call.claim) ||
+                                            PlatformToolsNativeLive.shouldStop(call.claim) ||
+                                            com.floe.android.swiftbridge.PlatformToolsNative.artifactRootPath() != root) {
+                                            PlatformArtifactWriter.Result.Failed("artifact_fenced")
+                                        } else stage.commit()
+                                    }
+                                }
+                            } ?: PlatformArtifactWriter.Result.Failed("artifact_fenced")
+                        } finally {
+                            stage.close()
+                        }
                         when (written) {
                             is PlatformArtifactWriter.Result.Ok -> PlatformToolOutcome.Success(
                                 summary = "Captured ${screenshot.width}x${screenshot.height} " +

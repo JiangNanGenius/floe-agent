@@ -665,4 +665,6 @@ data class PhoneControlStatus(
     val screenshotSupport: PhoneControlScreenshotSupport,
     val automationFinishing: Boolean = false,
     val relockReceipt: PhoneRelockReceipt? = null,
+    /** Monotonic, process-local service teardown/replacement fence. */
+    val serviceTeardownGeneration: Long = 0,
 )

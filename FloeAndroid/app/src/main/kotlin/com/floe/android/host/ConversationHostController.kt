@@ -4884,6 +4884,11 @@ class ConversationHostController internal constructor(
                     "expectedDescriptorIdentity" to JsonPrimitive(descriptor),
                 )),
             ),
+            beforeSubmit = if (card.toolName == "task.schedule") ({
+                admitted() && ownCurrentEntry(entry, session.conversationId, session.sessionEpoch) &&
+                    entry.holder.isPrivateApprovalLeaseCurrent(session, card, lease) &&
+                    entry.builder.approvalBinding(card.runId, card.approvalId) == card
+            }) else null,
         ) { outcome ->
             if (outcome is HostOperationOutcome.Completed &&
                 ownCurrentEntry(entry, session.conversationId, session.sessionEpoch) &&
@@ -4891,6 +4896,9 @@ class ConversationHostController internal constructor(
                 if (card.toolName == "exec.shell") {
                     val result = privateLocalShellApprovalPage(outcome.value, card) ?: return@trackOperation
                     entry.holder.acceptPrivateShellApproval(session, card, lease, result.first, result.second)
+                } else if (card.toolName == "task.schedule") {
+                    val result = privateScheduleCreateApprovalPage(outcome.value, card) ?: return@trackOperation
+                    entry.holder.acceptPrivateScheduleApproval(session, card, lease, result.first, result.second)
                 } else {
                     val result = privateWorkspaceApprovalPage(outcome.value, card) ?: return@trackOperation
                     entry.holder.acceptPrivateApproval(session, card, lease, result.first, result.second)
@@ -5008,6 +5016,10 @@ class ConversationHostController internal constructor(
                         val lease = request.presentationLease
                         floating != null && lease != null && floating.target?.digest == request.canonicalTargetDigest &&
                             devicePresentationCurrent(entry, floating, lease)
+                    }) else if (decision == "allow" && card.toolName == "task.schedule") ({
+                        admitted() && ownCurrentEntry(entry, session.conversationId, session.sessionEpoch) &&
+                            entry.builder.approvalBinding(request.runId, request.approvalId) == card &&
+                            entry.holder.privateApprovalValid(card, request.presentationLease, request.presentationToken)
                     }) else null,
                 ) { outcome ->
                     when (outcome) {

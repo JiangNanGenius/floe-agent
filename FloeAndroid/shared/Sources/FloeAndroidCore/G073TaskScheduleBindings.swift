@@ -40,6 +40,8 @@ public enum G073TaskScheduleFacade {
     private static let lock = NSLock()
     nonisolated(unsafe) private static var live:
         (epoch: UInt64, service: G073TaskScheduleService)?
+    nonisolated(unsafe) private static var approvalResolver:
+        (epoch: UInt64, resolver: G073TaskScheduleBindingResolver)?
 
     @discardableResult
     public static func install(epoch: UInt64,
@@ -60,11 +62,24 @@ public enum G073TaskScheduleFacade {
     public static func uninstall(epoch: UInt64) {
         lock.lock()
         if live?.epoch == epoch { live = nil }
+        if approvalResolver?.epoch == epoch { approvalResolver = nil }
         lock.unlock()
     }
 
+    static func installApprovalResolver(epoch: UInt64, resolver: @escaping G073TaskScheduleBindingResolver) {
+        lock.lock(); defer { lock.unlock() }
+        guard live?.epoch == epoch else { return }
+        approvalResolver = (epoch, resolver)
+    }
+
+    static func currentApprovalResolver(epoch: UInt64) -> G073TaskScheduleBindingResolver? {
+        lock.lock(); defer { lock.unlock() }
+        guard approvalResolver?.epoch == epoch else { return nil }
+        return approvalResolver?.resolver
+    }
+
     internal static func clearForTesting() {
-        lock.lock(); live = nil; lock.unlock()
+        lock.lock(); live = nil; approvalResolver = nil; lock.unlock()
     }
 }
 
@@ -1106,6 +1121,26 @@ public struct G073TaskScheduleTool: AgentTool {
     public func execute(_ args: Arguments, context: ToolContext) async throws
         -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
+        var reviewedBinding: G073TaskScheduleToolBinding?
+        var reviewedTimezone: String?
+        if case .human = context.approvalProvenance {
+            guard let callID = context.toolCallID, let grantID = context.approvalGrantID,
+                  let expected = G073ScheduleApprovalGate.shared.take(run: context.runID, call: callID, grant: grantID) else {
+                throw FloeError.validationFailed("This schedule needs a current reviewed approval.")
+            }
+            guard G02NativeRootEpoch.readback() == service.epoch,
+                  let resolver = bindingResolver, let binding = await resolver(context),
+                  G02NativeRootEpoch.readback() == service.epoch,
+                  let details = G073ScheduleApproval.details(args: args, binding: binding),
+                  G073ScheduleApproval.digest(details) == expected,
+                  case .string(let zone)? = details["timezone"] else {
+                throw FloeError.validationFailed("The reviewed schedule or execution target changed; request approval again.")
+            }
+            reviewedBinding = binding
+            reviewedTimezone = zone
+        } else if case .unspecified = context.approvalProvenance, context.runtimeAuthority != nil {
+            throw FloeError.validationFailed("The schedule approval source could not be verified.")
+        }
         switch args.action {
         case "list":
             let schedules = await service.list(limit: 50)
@@ -1169,7 +1204,8 @@ public struct G073TaskScheduleTool: AgentTool {
                 + " run=\(outcome.runID?.uuidString ?? "none")"
                 + " note=the task starts when the background dispatcher admits it")
         case "create", "update":
-            return try await createOrUpdate(args, context: context)
+            return try await createOrUpdate(args, context: context,
+                reviewedBinding: reviewedBinding, reviewedTimezone: reviewedTimezone)
         default:
             throw FloeError.validationFailed("Unsupported task.schedule action '\(args.action)'")
         }
@@ -1180,7 +1216,9 @@ public struct G073TaskScheduleTool: AgentTool {
         return await service.detail(id: id)
     }
 
-    private func createOrUpdate(_ args: Arguments, context: ToolContext) async throws
+    private func createOrUpdate(_ args: Arguments, context: ToolContext,
+                                reviewedBinding: G073TaskScheduleToolBinding? = nil,
+                                reviewedTimezone: String? = nil) async throws
         -> ToolExecutionOutput {
         if args.action == "update" {
             guard let current = await detail(args) else {
@@ -1211,28 +1249,33 @@ public struct G073TaskScheduleTool: AgentTool {
         guard !prompt.isEmpty else {
             throw FloeError.validationFailed("prompt is required for create")
         }
-        guard let resolver = bindingResolver,
-              let binding = await resolver(context) else {
+        let binding: G073TaskScheduleToolBinding?
+        if let reviewedBinding { binding = reviewedBinding }
+        else if let resolver = bindingResolver { binding = await resolver(context) }
+        else { binding = nil }
+        guard let binding else {
             throw FloeError.validationFailed(
                 "Scheduled tasks require the app's trusted binding resolver; no schedule was created.")
         }
         let cadence = args.cadence.flatMap(TaskScheduleCadence.init(rawValue:)) ?? .once
         let anchor = try parseDate(args.scheduledAt) ?? Date().addingTimeInterval(300)
+        var calendar = Calendar.current
+        if let reviewedTimezone, let zone = TimeZone(identifier: reviewedTimezone) { calendar.timeZone = zone }
         var draft = G073ScheduleDraft(
             title: args.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
             prompt: prompt,
             cadence: cadence,
             scheduledAt: anchor,
             weekday: cadence == .weekly
-                ? Calendar.current.component(.weekday, from: anchor) : nil,
+                ? calendar.component(.weekday, from: anchor) : nil,
             intervalSeconds: args.intervalSeconds ?? args.intervalHours.map { $0 * 3_600 },
-            anchorTimezone: TimeZone.current.identifier,
+            anchorTimezone: reviewedTimezone ?? TimeZone.current.identifier,
             upstreamRunID: args.upstreamRunID.flatMap(UUID.init(uuidString:)),
             workspaceID: binding.workspaceID,
             modelID: binding.modelID,
             environmentID: binding.environmentID,
             policy: binding.policy)
-        applyOverrides(args, to: &draft)
+        applyOverrides(args, to: &draft, calendar: reviewedTimezone == nil ? nil : calendar)
         let result = await service.create(draft)
         guard result.accepted, let detail = result.detail else {
             throw FloeError.validationFailed(result.reason ?? "The schedule could not be created")
@@ -1240,7 +1283,7 @@ public struct G073TaskScheduleTool: AgentTool {
         return output(describeMutation("create", detail))
     }
 
-    private func applyOverrides(_ args: Arguments, to draft: inout G073ScheduleDraft) {
+    private func applyOverrides(_ args: Arguments, to draft: inout G073ScheduleDraft, calendar: Calendar? = nil) {
         if let title = args.title?.trimmingCharacters(in: .whitespacesAndNewlines),
            !title.isEmpty {
             draft.title = title
@@ -1255,7 +1298,7 @@ public struct G073TaskScheduleTool: AgentTool {
         if let anchor = try? parseDate(args.scheduledAt) {
             draft.scheduledAt = anchor
             if draft.cadence == .weekly {
-                draft.weekday = Calendar.current.component(.weekday, from: anchor)
+                draft.weekday = (calendar ?? Calendar.current).component(.weekday, from: anchor)
             }
         }
         if let seconds = args.intervalSeconds {

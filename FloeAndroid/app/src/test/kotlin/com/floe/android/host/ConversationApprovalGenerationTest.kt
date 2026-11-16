@@ -209,6 +209,46 @@ class ConversationApprovalGenerationTest {
         )) assertNull(decode(bad))
     }
 
+    @Test fun privateScheduleCreateRequiresCompleteTypedSameGenerationDetails() {
+        val builder = builder()
+        val risks = """["persistsPersonalData","changesAgentBehavior"]"""
+        builder.applySnapshot(page(tool = "task.schedule", detailStatus = "unavailable", risks = risks))
+        val card = builder.build().pendingApprovals.single()
+        val token = "55555555-5555-4555-8555-555555555555"
+        val raw = """{"schema":"floe.approval-presentation/1","conversationID":"$conversation","runID":"$run","callID":"c1","generation":"$generation","presentationToken":"$token","presentation":{"status":"available","generation":"$generation","tool":"task.schedule","effect":"mutating","isSideEffecting":true,"riskLabels":$risks,"requestedScope":"local","grantScope":"singleUse","workspaceVerified":false,"descriptorIdentity":"$descriptor","detailStatus":"available","actionDetails":{"kind":"scheduleCreate","action":"create","title":"每日整理","prompt":"机密测试内容","cadence":"once","scheduledAt":"2026-11-16T10:00:00.000Z","timezone":"Asia/Shanghai","weekday":null,"intervalSeconds":null,"upstreamRunID":null,"workspaceID":null,"modelID":"$conversation","environmentID":null,"approvalMode":"ask","recoveryPolicy":"safePoint","notificationPolicy":"stages"}}}"""
+        fun decode(s: String) = privateScheduleCreateApprovalPage(Json.parseToJsonElement(s), card)
+        val accepted = requireNotNull(decode(raw))
+        assertEquals("机密测试内容", accepted.first.prompt)
+        assertFalse(accepted.first.toString().contains("机密测试内容"))
+        assertEquals(token, accepted.second)
+        assertFalse(card.scopeVerified)
+        val weekly = raw.replace("\"cadence\":\"once\"", "\"cadence\":\"weekly\"")
+            .replace("\"weekday\":null", "\"weekday\":2")
+        assertEquals(2, requireNotNull(decode(weekly)).first.weekday)
+        val interval = raw.replace("\"cadence\":\"once\"", "\"cadence\":\"interval\"")
+            .replace("\"intervalSeconds\":null", "\"intervalSeconds\":3600")
+        assertEquals(3600L, requireNotNull(decode(interval)).first.intervalSeconds)
+        val afterSuccess = raw.replace("\"cadence\":\"once\"", "\"cadence\":\"afterSuccess\"")
+            .replace("\"upstreamRunID\":null", "\"upstreamRunID\":\"$run\"")
+        assertEquals(run, requireNotNull(decode(afterSuccess)).first.upstreamRunId)
+        for (bad in listOf(
+            raw.replace("\"action\":\"create\"", "\"action\":\"delete\""),
+            raw.replace("\"intervalSeconds\":null", "\"intervalSeconds\":3600"),
+            raw.replace("\"cadence\":\"once\"", "\"cadence\":\"weekly\""),
+            weekly.replace("\"weekday\":2", "\"weekday\":3"),
+            raw.replace("\"cadence\":\"once\"", "\"cadence\":\"afterSuccess\""),
+            raw.replace("\"timezone\":\"Asia/Shanghai\"", "\"timezone\":\"invalid-time-zone\""),
+            raw.replace(".000Z", "Z"),
+            raw.replace("机密测试内容", "x".repeat(16385)),
+            raw.replace("机密测试内容", "hello\\u202esecret"),
+            raw.replace("\"modelID\":\"$conversation\"", "\"modelID\":null"),
+            raw.replace("\"workspaceID\":null", "\"workspaceID\":false"),
+            raw.replace("\"environmentID\":null", "\"environmentID\":\"env\""),
+            raw.replace("\"kind\":\"scheduleCreate\"", "\"extra\":true,\"kind\":\"scheduleCreate\""),
+            raw.replace(descriptor, "b".repeat(64)),
+        )) assertNull(decode(bad))
+    }
+
     @Test fun privateDeviceRequestNeverExposesInputAndNeedsVerifiedTarget() {
         val builder = builder()
         builder.applySnapshot(page(tool = "device.act", detailStatus = "unavailable", risks = """["controlsGUI"]"""))

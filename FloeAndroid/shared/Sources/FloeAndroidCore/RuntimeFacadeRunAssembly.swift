@@ -804,6 +804,13 @@ extension FacadeRunDomain {
             environmentID: resolvedExecutionTarget?.target.kind == .localLinux
                 ? resolvedExecutionTarget?.target.environmentID : environmentID,
             localLinuxShellTarget: resolvedExecutionTarget?.target.kind == .localLinux)
+        if var owner = owners[runID], owner.conversationID == conversationID,
+           owner.epoch == epoch, !owner.cancelRequested, G02NativeRootEpoch.readback() == epoch,
+           fenceIsValid(owner.launchToken) {
+            owner.scheduleApprovalEnvironmentID = configuration.environmentID
+            owner.scheduleApprovalContextCaptured = true
+            register(owner)
+        }
         if !temporary, !isNotes {
             configuration.userQuestionRecovery = UserQuestionHostAPI.shared.current(epoch: epoch)
             // Original persisted conversation/workspace ownership selects this

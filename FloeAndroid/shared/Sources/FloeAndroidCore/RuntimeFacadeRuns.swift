@@ -447,6 +447,8 @@ public struct RunOwnership: Sendable, Equatable {
     var workspaceApprovalCandidate: WorkspaceApprovalLaunchCandidate?
     // Exact target+run pin resolved for this service, never a model label.
     var shellApprovalTarget: C02ResolvedExecutionTarget?
+    var scheduleApprovalEnvironmentID: String?
+    var scheduleApprovalContextCaptured: Bool
 
     public init(conversationID: UUID, runID: UUID, epoch: UInt64,
                 identity: RunExecutionIdentity,
@@ -473,6 +475,8 @@ public struct RunOwnership: Sendable, Equatable {
         self.workspaceApprovalProof = nil
         self.workspaceApprovalCandidate = nil
         self.shellApprovalTarget = nil
+        self.scheduleApprovalEnvironmentID = nil
+        self.scheduleApprovalContextCaptured = false
         self.bundle = bundle
     }
 
@@ -501,6 +505,8 @@ public struct RunOwnership: Sendable, Equatable {
             && lhs.workspaceApprovalProof == rhs.workspaceApprovalProof
             && lhs.workspaceApprovalCandidate == rhs.workspaceApprovalCandidate
             && lhs.shellApprovalTarget == rhs.shellApprovalTarget
+            && lhs.scheduleApprovalEnvironmentID == rhs.scheduleApprovalEnvironmentID
+            && lhs.scheduleApprovalContextCaptured == rhs.scheduleApprovalContextCaptured
     }
 }
 
@@ -1029,6 +1035,7 @@ public actor FacadeRunDomain {
 
     func unregister(_ ownership: RunOwnership) {
         workspaceApprovalReceipts.retire(runID: ownership.runID)
+        G073ScheduleApprovalGate.shared.retire(run: ownership.runID)
         owners[ownership.runID] = nil
         conversationRuns[ownership.conversationID]?.remove(ownership.runID)
         liveServices[ownership.runID] = nil
@@ -3751,6 +3758,32 @@ public actor FacadeRunDomain {
         return (details, frozen)
     }
 
+    private func scheduleApprovalDetails(waiting: AgentState.WaitingApproval, taskID: UUID,
+        runID: UUID, service: ConversationRunService) async -> [String: SettingsDomainV1.JSONValue]? {
+        // Fail closed until the actual runtime grant is bound to this exact
+        // approval generation and verified by the schedule executor.
+        guard G073ScheduleApproval.grantBound else { return nil }
+        guard waiting.toolCall.toolName == "task.schedule", case .local = waiting.toolCall.scope,
+              let owner = owners[runID], owner.conversationID == taskID,
+              owner.epoch == epoch, owner.scheduleApprovalContextCaptured, !owner.cancelRequested,
+              fenceIsValid(owner.launchToken), G02NativeRootEpoch.readback() == epoch,
+              let resolver = G073TaskScheduleFacade.currentApprovalResolver(epoch: epoch),
+              let args = G073ScheduleApproval.arguments(waiting.toolCall.argumentsJSON) else { return nil }
+        let context = ToolContext(runID: runID, toolCallID: waiting.toolCall.id,
+            scope: waiting.toolCall.scope, cancellation: CancellationToken(),
+            environmentID: owner.scheduleApprovalEnvironmentID, conversationID: taskID)
+        guard let binding = await resolver(context),
+              let details = G073ScheduleApproval.details(args: args, binding: binding),
+              await service.snapshot().pendingApproval == waiting,
+              ownsLiveService(service, runID: runID, conversationID: taskID),
+              let latest = owners[runID], latest.conversationID == taskID, latest.epoch == epoch,
+              !latest.cancelRequested, latest.scheduleApprovalContextCaptured,
+              latest.scheduleApprovalEnvironmentID == owner.scheduleApprovalEnvironmentID,
+              latest.launchToken == owner.launchToken, fenceIsValid(latest.launchToken),
+              G02NativeRootEpoch.readback() == epoch else { return nil }
+        return details
+    }
+
     /// Ephemeral, App-host-only human approval details. No event, diagnostic,
     /// model tool or durable row receives the returned page or file paths.
     public func approvalPresentation(envelope: RunCommandEnvelope) async -> RunDomainReply {
@@ -3800,7 +3833,8 @@ public actor FacadeRunDomain {
         guard let waiting = await service.snapshot().pendingApproval,
               waiting.toolCall.id == callID, waiting.generation == generation,
               (WorkspaceApprovalPresentation.toolNames.contains(waiting.toolCall.toolName) ||
-               waiting.toolCall.toolName == "exec.shell" || waiting.toolCall.toolName == "device.act"),
+               waiting.toolCall.toolName == "exec.shell" || waiting.toolCall.toolName == "device.act" ||
+               waiting.toolCall.toolName == "task.schedule"),
               let descriptor = tools.registry.descriptor(named: waiting.toolCall.toolName),
               descriptor.authorizationIdentity == descriptorID else {
             return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalGenerationMismatch)))
@@ -3809,7 +3843,16 @@ public actor FacadeRunDomain {
         let shellTarget: C02ResolvedExecutionTarget?
         let proof = ownership.workspaceApprovalProof
         let deviceAction = waiting.toolCall.toolName == "device.act"
-        if deviceAction {
+        let scheduleAction = waiting.toolCall.toolName == "task.schedule"
+        if scheduleAction {
+            guard deviceTargetDigest == nil,
+                  let projected = await scheduleApprovalDetails(waiting: waiting, taskID: owner.taskID,
+                    runID: owner.runID, service: service) else {
+                return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalGenerationMismatch)))
+            }
+            details = projected
+            shellTarget = nil
+        } else if deviceAction {
             guard var projected = DeviceActionApprovalPresentation.details(waiting: waiting) else {
                 return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalGenerationMismatch)))
             }
@@ -3840,7 +3883,7 @@ public actor FacadeRunDomain {
             shellTarget = nil
         }
         guard ownsLiveService(service, runID: owner.runID, conversationID: owner.taskID),
-              (deviceAction || owners[owner.runID]?.workspaceApprovalProof == proof),
+              (deviceAction || scheduleAction || owners[owner.runID]?.workspaceApprovalProof == proof),
               G02NativeRootEpoch.readback() == epoch,
               tools.registry.descriptor(named: waiting.toolCall.toolName)?.authorizationIdentity == descriptorID,
               let digest = WorkspaceApprovalPresentation.bindingDigest(waiting: waiting, details: details) else {
@@ -3860,7 +3903,7 @@ public actor FacadeRunDomain {
         }
         let binding = WorkspaceApprovalReceiptStore.Binding(
             epoch: epoch, taskID: owner.taskID, runID: owner.runID, callID: callID,
-            generation: generation, descriptorIdentity: descriptorID, workspaceProof: deviceAction ? nil : proof, digest: digest,
+            generation: generation, descriptorIdentity: descriptorID, workspaceProof: (deviceAction || scheduleAction) ? nil : proof, digest: digest,
             shellTarget: shellTarget, deviceTargetDigest: deviceTargetDigest)
         guard let token = workspaceApprovalReceipts.issue(binding, now: ProcessInfo.processInfo.systemUptime) else {
             return RunDomainReply(.rejected(RunDomainError(.capabilityNotUsable, .internal)))
@@ -3873,7 +3916,7 @@ public actor FacadeRunDomain {
             "generation": .string(generation.uuidString.lowercased()),
             "presentationToken": .string(token),
             "presentation": RunSnapshotWireBuilder.approvalPresentation(waiting, descriptor: descriptor,
-                    workspaceDetails: details, workspaceVerified: deviceAction ? false : nil),
+                    workspaceDetails: details, workspaceVerified: (deviceAction || scheduleAction) ? false : nil),
         ])
         var finalPage = page
         if deviceAction, let deviceTargetDigest, case .object(var fields) = page {
@@ -3951,8 +3994,10 @@ public actor FacadeRunDomain {
                   let action = raw["action"] as? String else { return waiting.toolCall.toolName == "device.act" }
             return !["back", "home", "launch"].contains(action)
         }()
-        let needsPresentation = fileTools.contains(waiting.toolCall.toolName) || localShell || deviceActionNeedsPresentation
+        let scheduleAction = waiting.toolCall.toolName == "task.schedule"
+        let needsPresentation = fileTools.contains(waiting.toolCall.toolName) || localShell || deviceActionNeedsPresentation || scheduleAction
         var workspaceClaim: WorkspaceApprovalReceiptStore.Claim?
+        var expectedScheduleDigest: String?
         if case .allow = query.branch, needsPresentation {
             guard let token = query.presentationToken,
                   let tokenUUID = UUID(uuidString: token), tokenUUID.uuidString.lowercased() == token,
@@ -3991,7 +4036,17 @@ public actor FacadeRunDomain {
             let proof = owner.workspaceApprovalProof
             let details: [String: SettingsDomainV1.JSONValue]
             let shellTarget: C02ResolvedExecutionTarget?
-            if deviceActionNeedsPresentation {
+            if scheduleAction {
+                guard query.canonicalTargetDigest == nil,
+                      let projected = await scheduleApprovalDetails(waiting: waiting, taskID: query.conversationID,
+                        runID: query.runID, service: service),
+                      let digest = G073ScheduleApproval.digest(projected) else {
+                    return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalGenerationMismatch)))
+                }
+                details = projected
+                shellTarget = nil
+                expectedScheduleDigest = digest
+            } else if deviceActionNeedsPresentation {
                 guard let targetDigest = query.canonicalTargetDigest, targetDigest.utf8.count == 64,
                       targetDigest.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }),
                       var projected = DeviceActionApprovalPresentation.details(waiting: waiting) else {
@@ -4022,7 +4077,7 @@ public actor FacadeRunDomain {
                 shellTarget = nil
             }
             guard ownsLiveService(service, runID: query.runID, conversationID: query.conversationID),
-                  (deviceActionNeedsPresentation || owners[query.runID]?.workspaceApprovalProof == proof),
+                  (deviceActionNeedsPresentation || scheduleAction || owners[query.runID]?.workspaceApprovalProof == proof),
                   G02NativeRootEpoch.readback() == owner.epoch,
                   let digest = WorkspaceApprovalPresentation.bindingDigest(waiting: waiting, details: details),
                   let claim = workspaceClaim else {
@@ -4032,7 +4087,7 @@ public actor FacadeRunDomain {
                 epoch: owner.epoch, taskID: query.conversationID, runID: query.runID,
                 callID: waiting.toolCall.id, generation: waiting.generation,
                 descriptorIdentity: query.expectedDescriptorIdentity,
-                workspaceProof: deviceActionNeedsPresentation ? nil : proof, digest: digest,
+                workspaceProof: (deviceActionNeedsPresentation || scheduleAction) ? nil : proof, digest: digest,
                 shellTarget: shellTarget, deviceTargetDigest: query.canonicalTargetDigest)
             guard claim.expiresAt > ProcessInfo.processInfo.systemUptime, claim.binding == binding else {
                 return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalGenerationMismatch)))
@@ -4042,8 +4097,18 @@ public actor FacadeRunDomain {
                 query.expectedDescriptorIdentity else {
             return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalGenerationMismatch)))
         }
+        if let expectedScheduleDigest {
+            guard G073ScheduleApprovalGate.shared.stage(run: query.runID, call: waiting.toolCall.id,
+                                                         grant: waiting.generation,
+                                                         digest: expectedScheduleDigest) else {
+                return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalGenerationMismatch)))
+            }
+        }
         let accepted = await service.resolveApproval(decision, matching: waiting)
         guard accepted else {
+            if expectedScheduleDigest != nil {
+                G073ScheduleApprovalGate.shared.discard(run: query.runID, call: waiting.toolCall.id, grant: waiting.generation)
+            }
             let still = await service.snapshot().pendingApproval?.toolCall.id
             if still != waiting.toolCall.id {
                 return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalNotPending)))
