@@ -214,7 +214,7 @@ public struct LocalShellTool: AgentTool {
             if stderrTruncated { text += " stderrTruncated" }
             text += "\n--- output (merged PTY) ---\n\(cleanOut)"
             if !cleanErr.isEmpty { text += "\n--- stderr (backend metadata) ---\n\(cleanErr)" }
-            return Self.output(text, exitStatus: code)
+            return Self.output(text, exitStatus: code, captureTruncated: truncated || stderrTruncated)
         case .timedOut(let partialStdout, let partialStderr, let durationMs):
             var text = "exit=124 durationMs=\(durationMs) cwd=\(cwd) status=timedOut effectiveTimeoutSeconds=\(effectiveTimeout)"
             text += isBackground
@@ -224,7 +224,9 @@ public struct LocalShellTool: AgentTool {
             if !cleanOut.isEmpty { text += "\n--- output (merged PTY) ---\n\(cleanOut)" }
             let cleanErr = SecretRedactor.redact(ShellOutputSanitizer.sanitize(partialStderr))
             if !cleanErr.isEmpty { text += "\n--- stderr (backend metadata) ---\n\(cleanErr)" }
-            return Self.output(text, exitStatus: 124)
+            // A timed-out command only returns its partial output; the
+            // outcome does not carry a separate capture-limit flag.
+            return Self.output(text, exitStatus: 124, captureTruncated: true)
         case .cancelled:
             return Self.output("exit=130 status=cancelled cwd=\(cwd)", exitStatus: 130)
         case .notStarted(let reason):
@@ -237,7 +239,10 @@ public struct LocalShellTool: AgentTool {
         }
     }
 
-    private static func output(_ text: String, exitStatus: Int32) -> ToolExecutionOutput {
-        ToolExecutionOutput(digesting: text, exitStatus: exitStatus)
+    private static func output(_ text: String, exitStatus: Int32,
+                               captureTruncated: Bool = false) -> ToolExecutionOutput {
+        var output = ToolExecutionOutput(digesting: text, exitStatus: exitStatus)
+        output.capturedOutputTruncated = output.capturedOutputTruncated || captureTruncated
+        return output
     }
 }

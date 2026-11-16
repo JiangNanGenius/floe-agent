@@ -64,6 +64,11 @@ internal class PhoneControlSession(
     private var suppressUserTouchUntil = 0L
     private val ownInputEcho = PhoneOwnInputEcho()
     private val ownedViewTransition = PhoneOwnedViewTransition()
+    private val preArmOwnedSemantic = PhonePreArmOwnedSemantic()
+    // Set when a deferred pre-arm event resolves to real input. The next
+    // explicit arm turns it into the same presence question the host gate
+    // would have asked, instead of letting arm silently clear USER_TOUCH.
+    private var deferredHumanPresenceRequired = false
     private var principalEpoch: Long = 0L
     private var principalGeneration: Long = 0L
     // Session construction is NOT human presence. A service reconnect or a
@@ -321,6 +326,16 @@ internal class PhoneControlSession(
             return PhoneControlResult.Denied(PhoneControlDenial.OPERATION_IN_FLIGHT)
         }
         lockedDenial()?.let { return it }
+        // An explicit arm normally clears a USER_TOUCH fence. A deferred
+        // pre-arm event that resolved to real input never reached the host's
+        // presence gate (its stamp was withheld while ownership was unknown),
+        // so do not let this arm erase that human signal: return the same
+        // presence question first. The retry (after a human answer) consumes
+        // the flag and the ordinary arm clears USER_TOUCH below.
+        if (deferredHumanPresenceRequired) {
+            deferredHumanPresenceRequired = false
+            return PhoneControlResult.Denied(PhoneControlDenial.PRESENCE_REQUIRED)
+        }
         when (val claim = fence.arm(principal.owner)) {
             is PhoneControlFence.Claim.Blocked ->
                 return PhoneControlResult.Denied(PhoneControlPolicy.denialForBlocker(claim.blocker))
@@ -1538,6 +1553,7 @@ internal class PhoneControlSession(
         if (closed) return
         clearOwnedViewTransition("global_blocker")
         clearOwnedExternalLaunchSignal("global_blocker")
+        clearPreArmOwnedSemantic("global_blocker")
         fence.block(blocker)
         latest = null
         abortInFlight(blocker, "phone control was fenced: ${blocker.name}")
@@ -1548,6 +1564,7 @@ internal class PhoneControlSession(
         if (closed) return
         if (fence.release(owner)) {
             clearOwnedViewTransition("owner_released")
+            clearPreArmOwnedSemantic("owner_released")
             // The task's automatic UI ownership ends here even when the host
             // closed the client before finish(); the wake-lease drop is
             // exact-owner guarded and idempotent after any earlier finish path.
@@ -1562,6 +1579,7 @@ internal class PhoneControlSession(
         if (closed) return
         clearOwnedViewTransition("screen_off")
         clearOwnedExternalLaunchSignal("screen_off")
+        clearPreArmOwnedSemantic("screen_off")
         // End owned wake resources before anything else touches the screen-off
         // path: never fight a manual power key, and a pending unlock attempt
         // conservatively settles as user takeover instead of re-waking.
@@ -1664,6 +1682,7 @@ internal class PhoneControlSession(
         val now = SystemClock.elapsedRealtime()
         clearOwnedViewTransition("own_app_user_touch")
         clearOwnedExternalLaunchSignal("own_app_user_touch")
+        clearPreArmOwnedSemantic("own_app_user_touch")
         lastInteraction = PhoneInteractionStamp(
             elapsedRealtimeMillis = now,
             wallMillis = System.currentTimeMillis(),
@@ -1689,8 +1708,10 @@ internal class PhoneControlSession(
      * A semantic event from the EXACT package this session just launched,
      * inside the bounded [PhoneOwnedViewTransition] window, is the target
      * app's own transition/loading semantics: it never marks human presence,
-     * never releases wake/relock and never fences the run. Every other
-     * external semantic event keeps the conservative takeover path.
+     * never releases wake/relock and never fences the run. Before the first
+     * arm, the trusted host launch record is held until the exact principal
+     * proves the same task/run/native epoch. Every other external semantic
+     * event keeps the conservative takeover path.
      */
     fun onExternalSemanticInteraction(
         packageName: String?,
@@ -1707,13 +1728,14 @@ internal class PhoneControlSession(
             runCatching { android.util.Log.i("FloePhoneUnlock", "LATE_OWN_INPUT_ECHO_IGNORED") }
             return
         }
+        val nowUptime = SystemClock.uptimeMillis()
         val state = fence.state()
         if (ownedViewTransition.absorbs(
                 packageName = packageName,
                 eventUptimeMillis = eventUptimeMillis,
                 fenceOwner = state.owner,
                 fenceBlocked = state.blocker != null,
-                nowUptimeMillis = SystemClock.uptimeMillis(),
+                nowUptimeMillis = nowUptime,
                 currentEpoch = principalEpoch,
                 currentGeneration = principalGeneration,
             )
@@ -1728,14 +1750,38 @@ internal class PhoneControlSession(
         // The foreground artifact handoff starts the viewer directly from
         // Floe's Activity (outside this service session), so its target
         // loading traffic is correlated through the trusted process-local
-        // host record. Only an armed session with the same task/run and
-        // known epoch may attribute it. Foreground VIEW itself remains
-        // available without a phone-control session.
+        // host record. Before the first arm there is no fence owner/principal
+        // to compare yet; the record's exact identity is captured only after
+        // matchActive() proves this host launch is still current for this
+        // package and bounded event stamp, then the first principal-bearing
+        // call must present the same task/run/native epoch or the event takes
+        // the ordinary human path. This is the first-handoff (owner-not-armed)
+        // case; it never suppresses a raw touch or a foreign/stale event.
+        if (state.blocker == null && state.owner == null &&
+            preArmOwnedSemantic.capture(
+                targetPackage = packageName,
+                eventUptimeMillis = eventUptimeMillis,
+                nowUptimeMillis = nowUptime,
+                nowElapsedRealtimeMillis = now,
+                nowWallMillis = System.currentTimeMillis(),
+            )
+        ) {
+            runCatching {
+                android.util.Log.i(
+                    "FloePhoneControl",
+                    "pre_arm_owned_external_view_semantic_deferred",
+                )
+            }
+            return
+        }
+        // Only an armed session with the same task/run and known epoch may
+        // attribute the target loading traffic to its own launch. Foreground
+        // VIEW itself remains available without a phone-control session.
         if (state.blocker == null && state.owner != null && principalEpoch > 0L &&
             OwnedExternalViewLaunch.matchActive(
                 targetPackage = packageName,
                 eventUptimeMillis = eventUptimeMillis,
-                nowUptimeMillis = SystemClock.uptimeMillis(),
+                nowUptimeMillis = nowUptime,
                 nowElapsedRealtimeMillis = now,
                 expectedNativeEpoch = principalEpoch,
                 expectedTaskID = state.owner?.taskID?.toString(),
@@ -1793,6 +1839,7 @@ internal class PhoneControlSession(
         }
         clearOwnedViewTransition(clearReason)
         clearOwnedExternalLaunchSignal(clearReason)
+        clearPreArmOwnedSemantic(clearReason)
         val lag = eventUptimeMillis
             ?.let { (SystemClock.uptimeMillis() - it).coerceIn(0, 60_000) } ?: 0
         lastInteraction = PhoneInteractionStamp(
@@ -1822,6 +1869,7 @@ internal class PhoneControlSession(
         if (closed) return
         clearOwnedViewTransition("service_interrupted")
         clearOwnedExternalLaunchSignal("service_interrupted")
+        clearPreArmOwnedSemantic("service_interrupted")
         abortInFlight(null, "the accessibility service interrupted feedback")
         PhoneControlRuntime.publish()
     }
@@ -1831,6 +1879,7 @@ internal class PhoneControlSession(
         closed = true
         clearOwnedViewTransition("session_shutdown")
         clearOwnedExternalLaunchSignal("session_shutdown")
+        clearPreArmOwnedSemantic("session_shutdown")
         unlocker.close()
         fence.block(blocker)
         latest = null
@@ -2280,10 +2329,89 @@ internal class PhoneControlSession(
      * restarted runtime, even for the same task/run identity.
      */
     private fun notePrincipal(principal: PhoneControlPrincipal) {
+        // A deferred pre-arm semantic event can only be classified when the
+        // exact task/run/native epoch arrives. Resolve it before any operation
+        // proceeds, including when the epoch/generation is unchanged.
+        resolvePreArmOwnedSemantic(principal)
         if (principal.epoch == principalEpoch && principal.generation == principalGeneration) return
         principalEpoch = principal.epoch
         principalGeneration = principal.generation
         clearOwnedViewTransition("principal_changed")
+    }
+
+    private fun resolvePreArmOwnedSemantic(principal: PhoneControlPrincipal) {
+        when (val resolution = preArmOwnedSemantic.resolve(
+            taskID = principal.owner.taskID.toString(),
+            runID = principal.owner.runID.toString(),
+            nativeEpoch = principal.epoch,
+        )) {
+            is PhonePreArmOwnedSemantic.Resolution.Human -> {
+                if (preArmOwnedSemantic.isRecent(resolution.candidate, SystemClock.elapsedRealtime())) {
+                    promotePreArmHuman(resolution.candidate)
+                } else {
+                    OwnedExternalViewLaunch.clearIfCurrent(resolution.candidate.launch)
+                }
+            }
+            is PhonePreArmOwnedSemantic.Resolution.Owned -> {
+                // Closed token only: the task/run/target never reach a log.
+                runCatching {
+                    android.util.Log.i(
+                        "FloePhoneControl",
+                        "pre_arm_owned_external_view_semantic_ignored",
+                    )
+                }
+            }
+            PhonePreArmOwnedSemantic.Resolution.None -> Unit
+        }
+    }
+
+    /**
+     * The deferred event did not match the exact principal that just reached
+     * the session. Preserve the ordinary human path with the ORIGINAL event
+     * stamp: the host's next presence gate sees it, and this operation is
+     * fenced exactly like a real external semantic takeover. `arm` turns the
+     * block into the host's presence question instead of erasing it.
+     */
+    private fun promotePreArmHuman(candidate: PhonePreArmOwnedSemantic.Candidate) {
+        clearOwnedViewTransition("deferred_external_semantic")
+        OwnedExternalViewLaunch.clearIfCurrent(candidate.launch)
+        val previous = lastInteraction
+        if (previous == null ||
+            previous.elapsedRealtimeMillis <= candidate.observedAtElapsedRealtimeMillis
+        ) {
+            lastInteraction = PhoneInteractionStamp(
+                elapsedRealtimeMillis = candidate.observedAtElapsedRealtimeMillis,
+                wallMillis = candidate.eventWallMillis,
+                source = PhoneUserInteractionSource.PLATFORM_SEMANTIC,
+                semanticPackage = candidate.packageName,
+            )
+        }
+        runCatching {
+            android.util.Log.i("FloePhoneUnlock", "PRE_ARM_OWNED_SEMANTIC_HUMAN")
+        }
+        unlocker.userInteraction()
+        deferredHumanPresenceRequired = true
+        fence.block(PhoneControlBlocker.USER_TOUCH)
+        latest = null
+        abortInFlight(
+            PhoneControlBlocker.USER_TOUCH,
+            "an external semantic input was not owned by this run",
+        )
+        PhoneControlRuntime.publish()
+    }
+
+    private fun clearPreArmOwnedSemantic(reason: String) {
+        // Any real input/lifecycle event supersedes the deferred decision; the
+        // normal presence path (or explicit stop/takeover) is authoritative.
+        deferredHumanPresenceRequired = false
+        if (preArmOwnedSemantic.clear() == null) return
+        // Closed reason token only: no package/task/run/event data is logged.
+        runCatching {
+            android.util.Log.i(
+                "FloePhoneControl",
+                "pre_arm_owned_semantic_cleared reason=$reason",
+            )
+        }
     }
 
     /** Arms attribution for ONE Agent-owned external launch/VIEW. */

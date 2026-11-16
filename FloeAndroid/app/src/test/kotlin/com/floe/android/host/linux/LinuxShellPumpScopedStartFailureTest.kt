@@ -2,6 +2,8 @@
 package com.floe.android.host.linux
 
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -13,6 +15,12 @@ class LinuxShellPumpScopedStartFailureTest {
     @Test fun failedStartCanRetireWhileTheSiblingEngineIsActive() {
         assertTrue(LinuxShellPump.isReleasedFailedStartReceipt(
             receipt().dropLast(1) + ",\"active\":true}", id))
+    }
+
+    @Test fun releasedFailureIsDrainedButNeverProvesNothingRan() {
+        assertEquals("quiescent", LinuxShellPump.releasedFailedStartSettlement(receipt(), id))
+        assertNull(LinuxShellPump.releasedFailedStartSettlement(receipt(released = "false"), id))
+        assertNull(LinuxShellPump.releasedFailedStartSettlement(receipt(request = "other"), id))
     }
 
     @Test fun pendingOrRetainedOwnershipDoesNotRetire() {

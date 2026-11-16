@@ -6,10 +6,12 @@ import android.content.Intent
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import com.floe.android.runtimeipc.RuntimeAdmissionRefusal
 import com.floe.android.runtimeipc.RuntimeControlBinder
 import com.floe.android.runtimeipc.RuntimeExecutionTrace
 import com.floe.android.runtimeipc.RuntimeExecutionTrace.Stage
 import com.floe.android.runtimeipc.RuntimeForegroundPermit
+import com.floe.android.runtimeipc.RuntimeOperationRefused
 import com.floe.android.runtimeipc.RuntimePackages
 import com.floe.android.runtimeipc.RuntimePeerVerifier
 import com.floe.android.runtimeipc.RuntimeWire
@@ -103,16 +105,16 @@ class LinuxRuntimeService : Service() {
             // stop request until the helper actually settles.
             val admitsWork = request.operation == "install.start" || request.operation == "shell.start" ||
                 request.operation == RuntimeWire.PREFLIGHT
-            if (admitsWork) {
-                check(RuntimeForegroundPermit.isActive(this, permit)) { "Foreground operation is not active" }
+            if (admitsWork && !RuntimeForegroundPermit.isActive(this, permit)) {
+                // This invocation has not entered the kernel. The wire code
+                // alone cannot rule out an earlier invocation of the same ID.
+                throw RuntimeOperationRefused(RuntimeAdmissionRefusal.FOREGROUND_INACTIVE)
             }
             val response = kernel.exchange(request, workspaceGrant) { RuntimeForegroundPermit.isActive(this, permit) }
             if (admitsWork) try { retainPermit(checkNotNull(permit), request.id) }
             catch (_: Exception) {
                 // Admission exists but its exact foreground ownership could
-                // not be recorded: the ORIGINAL fail-closed global stop is
-                // retained (a lost active permit is never treated as a
-                // settled participant).
+                // not be recorded: request the fail-closed global stop.
                 RuntimeExecutionTrace.mark(Stage.STOP_GLOBAL_PERMIT_LOSS)
                 kernel.requestStop()
             }

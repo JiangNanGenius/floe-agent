@@ -17,6 +17,41 @@ import FloeCore
 import FloeAgentRuntime
 import FloeModels
 
+/// Narrow App-owned wake signal for the durable question lifecycle.
+///
+/// The coordinator already emits `.presented` / `.settled` on the EXACT
+/// durable registration and settlement boundaries, but the Android install
+/// used to create it without an event handler. The Kotlin host therefore had
+/// no event from which to re-read `question.pending` when no visible holder
+/// owned the conversation (background/scheduled runs, a released surface, or
+/// a discovery window that expired while a device approval was open).
+///
+/// This does not add a second question store, notification, answer path or
+/// permission: it only advances the EXISTING main-owned change sequence that
+/// the Kotlin host already waits on (`floe_run_foreground_wait_change`). The
+/// host reacts by re-reading the authoritative `question.pending` command.
+/// Temporary questions never wake it because they have no durable task to
+/// reopen and are never notified.
+enum UserQuestionLifecycleSignal {
+    static func didChange(_ event: UserQuestionEvent) {
+        switch event {
+        case .presented(let snapshot), .settled(let snapshot):
+            guard !snapshot.isEphemeral else { return }
+        case .answerAvailable:
+            // `.settled` already advanced the sequence for the settlement
+            // that made this optional delivery available.
+            return
+        }
+        RunForegroundChange.notifyOwnedWorkChanged()
+    }
+
+    /// Root retirement can leave a posted notification for which no live
+    /// coordinator remains. Wake the host so it re-reads and withdraws it.
+    static func didRetire() {
+        RunForegroundChange.notifyOwnedWorkChanged()
+    }
+}
+
 extension G02InstalledComposition {
 
     /// Called once from `registerAllDomainHandlers`; appends the exact keys to

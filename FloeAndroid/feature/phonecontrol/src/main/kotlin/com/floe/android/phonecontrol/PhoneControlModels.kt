@@ -574,6 +574,14 @@ enum class PhoneControlDenial {
     PROTECTED_WINDOW,
     INVALID_ARGUMENT,
     OPERATION_IN_FLIGHT,
+
+    /**
+     * A deferred pre-arm external semantic event resolved to real input. The
+     * host maps this by name to `device_presence_required`, the same durable
+     * human-presence question used when a recent touch blocks an initial arm.
+     * It is not an authorization and never fabricates an approval.
+     */
+    PRESENCE_REQUIRED,
 }
 
 enum class PhoneControlUnavailable {

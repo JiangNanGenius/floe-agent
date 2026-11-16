@@ -37,14 +37,13 @@ class RuntimeControlBinder(
         // A native completion/lease-release operation is intentionally absent.
         val response = try {
             RuntimeWire.reply(request, handle(request, foregroundPermit, workspaceGrant))
-        } catch (failure: RuntimeOperationRefused) {
-            RuntimeWire.failure(request, failure.refusal.code)
-        } catch (_: IllegalStateException) {
-            RuntimeWire.failure(request, "runtime_not_ready")
-        } catch (_: IllegalArgumentException) {
-            RuntimeWire.failure(request, "invalid_request")
-        } catch (_: org.json.JSONException) {
-            RuntimeWire.failure(request, "invalid_request")
+        } catch (failure: Exception) {
+            // Typed pre-admission refusals keep their own closed code. Every
+            // other IllegalStateException is reported as UNCERTAIN, never as
+            // the historical runtime_not_ready: the binder alone cannot prove
+            // that a request it failed to answer was not already admitted.
+            val code = RuntimeControlRefusal.codeOf(failure) ?: throw failure
+            RuntimeWire.failure(request, code)
         }
         reply.writeNoException()
         reply.writeString(response)

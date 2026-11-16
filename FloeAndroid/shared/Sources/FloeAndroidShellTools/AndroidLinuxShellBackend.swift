@@ -72,8 +72,11 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
     public struct Configuration: Sendable {
         /// Poll cadence while a one-shot run is active (bounded backoff).
         public var pollIntervalNanos: UInt64
-        /// Ceiling past the effective timeout/stop request before the local
-        /// wait answers honestly and hands the lease to reconciliation.
+        /// Ceiling past the effective timeout, or past an issued stop
+        /// request, before the local wait answers honestly and hands the
+        /// lease to reconciliation. An early cancellation does not inherit
+        /// the remaining command timeout. Transport calls have their own
+        /// timeouts and can extend the observed wait beyond this grace.
         public var releaseGrace: TimeInterval
         /// Ceiling on stdin write backpressure retries for one chunk.
         public var stdinWriteRetries: Int
@@ -168,6 +171,11 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
         public var prepareCopiedBytes: Int64? = nil
         public var importMillis: Int64? = nil
         public var importedEntries: Int64? = nil
+        /// Trusted call identity threaded from the ORIGINAL request
+        /// (`jobs.<uuid>` for a durable job). Used ONLY so the job settlement
+        /// adapter can address its OWN session exactly; it is never model
+        /// input, never a routing hint and never surfaced in an outcome.
+        public var toolCallID: String? = nil
 
         /// The exit status surfaced to the original outcome/DTO vocabulary:
         /// 128+signal for a signalled terminal (POSIX shell convention,
@@ -256,6 +264,20 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
 
     public func ownedSessions(runID: UUID) -> [EngineSession] {
         ownedSessions().filter { $0.runID == runID }
+    }
+
+    /// EXACT owner lookup for the durable exec.shell job settlement adapter.
+    /// A run commonly owns several unrelated sessions (interactive terminals,
+    /// managed services, sibling jobs); only a session admitted for this exact
+    /// trusted call identity may be watched as this processor's work. Returns
+    /// nil for an absent identity and for an ambiguous multiple match, so the
+    /// caller falls back to the host settlement proof instead of guessing.
+    public func ownedSession(runID: UUID, toolCallID: String?) -> EngineSession? {
+        guard let toolCallID, !toolCallID.isEmpty else { return nil }
+        let matches = ownedSessions().filter {
+            $0.runID == runID && $0.toolCallID == toolCallID
+        }
+        return matches.count == 1 ? matches[0] : nil
     }
 
     /// Legacy "is ANY engine workload held" truth (drain/handoff proofs).
@@ -513,7 +535,8 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
                                    prepareMillis: reply.prepareMillis,
                                    prepareCopiedBytes: reply.prepareCopiedBytes,
                                    importMillis: reply.importMillis,
-                                   importedEntries: reply.importedEntries)
+                                   importedEntries: reply.importedEntries,
+                                   toolCallID: request.toolCallID)
         sessions[holdKey] = SessionRecord(engine: engine, reconcilingSince: nil)
 
         // One-shot pipe stdin: explicit caller data rides <=16 KiB
@@ -579,7 +602,13 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
                 _ = try? await transport.shellCancel(LinuxShellCancelRequest(
                     sessionID: engine.engineSessionID, reason: .timeout))
             }
-            let ceiling = max(deadline, stopIssuedAt ?? deadline)
+            // Post-stop wait: before any stop the ceiling is the
+            // command deadline + grace; once a cancel/timeout stop is issued
+            // it is anchored at THAT stop request. An early caller
+            // cancellation must not inherit the remaining original command
+            // budget (max(deadline, stopIssuedAt) could hold a 600 s run for
+            // almost the whole timeout before handing off).
+            let ceiling = (stopIssuedAt ?? deadline)
                 .addingTimeInterval(configuration.releaseGrace)
             if Date() >= ceiling {
                 // Bounded local wait: the remote lease may still be live.
@@ -868,7 +897,8 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
                                    prepareMillis: reply.prepareMillis,
                                    prepareCopiedBytes: reply.prepareCopiedBytes,
                                    importMillis: reply.importMillis,
-                                   importedEntries: reply.importedEntries)
+                                   importedEntries: reply.importedEntries,
+                                   toolCallID: request.hostToolCallID)
         sessions[request.sessionID] = SessionRecord(engine: engine, reconcilingSince: nil)
         // Brief bounded initial drain so the first prompt/program output
         // reaches the caller (the original open() returned initial output).

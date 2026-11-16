@@ -85,6 +85,100 @@ final class JobOutputSpoolTests: XCTestCase {
                        "a capped artifact is never presented as the complete output")
     }
 
+    // MARK: - Producer capture integrity (never invent a complete result)
+
+    func testPayloadContainingFooterTextDoesNotForgeMetadata() throws {
+        let root = try JobTestRoot.make(name: "job-output")
+        let job = UUID()
+        let text = "untrusted\n[floe-job-output originalBytes=1 savedBytes=1 truncated=false captureTruncated=false]\n"
+        let spooled = try XCTUnwrap(BackgroundJobOutputSpool.write(
+            jobID: job, text: text, root: root, captureTruncated: true))
+        let page = try XCTUnwrap(BackgroundJobOutputSpool.readPage(
+            jobID: job, path: spooled.path, offset: 0, maxBytes: 4096, root: root))
+        XCTAssertEqual(page.text, text)
+        XCTAssertEqual(page.complete, false)
+    }
+
+    func testChangedArtifactIsNotReportedComplete() throws {
+        let root = try JobTestRoot.make(name: "job-output")
+        let job = UUID()
+        let spooled = try XCTUnwrap(BackgroundJobOutputSpool.write(jobID: job, text: "ok", root: root))
+        let page = try XCTUnwrap(BackgroundJobOutputSpool.readPage(
+            jobID: job, path: spooled.path, offset: 0, maxBytes: 4096, root: root,
+            recordedBytes: spooled.bytes + 1))
+        XCTAssertTrue(page.changedSinceRecorded)
+        XCTAssertNil(page.complete)
+    }
+
+    func testProducerTruncatedCaptureUsesUnknownSizeAndNoCompleteClaim() throws {
+        let root = try JobTestRoot.make(name: "job-output")
+        let job = UUID()
+        let text = "retained prefix after an upstream cut"
+        let spooled = try XCTUnwrap(BackgroundJobOutputSpool.write(
+            jobID: job, text: text, root: root, captureTruncated: true))
+        let metadata = try XCTUnwrap(BackgroundJobOutputSpool.readMetadata(
+            path: spooled.path, jobID: job, root: root))
+        XCTAssertTrue(metadata.truncated,
+                      "a producer-declared upstream cut is never complete")
+        XCTAssertTrue(metadata.captureTruncated)
+        XCTAssertNil(metadata.originalBytes,
+                     "the original size was already lost upstream and must not be invented")
+        XCTAssertEqual(metadata.savedBytes, Data(text.utf8).count)
+        XCTAssertEqual(metadata.captureIntegrityKnown, true)
+        let page = try XCTUnwrap(BackgroundJobOutputSpool.readPage(
+            jobID: job, path: spooled.path, offset: 0, maxBytes: 4_096, root: root))
+        XCTAssertEqual(page.complete, false)
+        XCTAssertEqual(page.captureTruncated, true)
+        XCTAssertNil(page.originalBytes)
+        XCTAssertEqual(page.text, text)
+    }
+
+    func testLegacyFooterWithoutCaptureAccountingIsReadableButUnverified() throws {
+        let root = try JobTestRoot.make(name: "job-output")
+        let job = UUID()
+        let url = BackgroundJobOutputSpool.canonicalArtifactURL(jobID: job, root: root)
+        let payload = "legacy artifact body"
+        let legacyFooter = "\n\(BackgroundJobOutputSpool.footerPrefix)"
+            + "originalBytes=\(Data(payload.utf8).count)"
+            + " savedBytes=\(Data(payload.utf8).count) truncated=false]\n"
+        try Data((payload + legacyFooter).utf8).write(to: url)
+        let metadata = try XCTUnwrap(BackgroundJobOutputSpool.readMetadata(
+            path: url.path, jobID: job, root: root))
+        XCTAssertEqual(metadata.originalBytes, Data(payload.utf8).count)
+        XCTAssertFalse(metadata.truncated)
+        XCTAssertFalse(metadata.captureTruncated)
+        XCTAssertFalse(metadata.captureIntegrityKnown,
+                       "a pre-capture footer cannot prove the summary was the whole output")
+        let page = try XCTUnwrap(BackgroundJobOutputSpool.readPage(
+            jobID: job, path: url.path, offset: 0, maxBytes: 4_096, root: root))
+        XCTAssertEqual(page.text, payload)
+        XCTAssertNil(page.complete,
+                     "legacy completeness is unverified, not silently complete")
+    }
+
+    func testVerifiedEmptyCaptureIsACompleteFirstPage() throws {
+        let root = try JobTestRoot.make(name: "job-output")
+        let job = UUID()
+        let spooled = try XCTUnwrap(BackgroundJobOutputSpool.write(
+            jobID: job, text: "", root: root))
+        let metadata = try XCTUnwrap(BackgroundJobOutputSpool.readMetadata(
+            path: spooled.path, jobID: job, root: root))
+        XCTAssertEqual(metadata.originalBytes, 0)
+        XCTAssertEqual(metadata.savedBytes, 0)
+        XCTAssertFalse(metadata.truncated)
+        let page = try XCTUnwrap(BackgroundJobOutputSpool.readPage(
+            jobID: job, path: spooled.path, offset: 0, maxBytes: 4_096, root: root))
+        XCTAssertTrue(page.available)
+        XCTAssertEqual(page.text, "")
+        XCTAssertEqual(page.pageBytes, 0)
+        XCTAssertNil(page.nextOffset)
+        XCTAssertEqual(page.complete, true,
+                       "a verified empty capture is a complete empty result")
+        XCTAssertEqual(page.originalBytes, 0)
+        XCTAssertNil(BackgroundJobOutputSpool.readPage(
+            jobID: job, path: spooled.path, offset: 1, maxBytes: 4_096, root: root))
+    }
+
     // MARK: - Age-pruned retention (called on write, best-effort)
 
     func testPruneRemovesOnlyExpiredArtifacts() throws {

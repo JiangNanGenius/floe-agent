@@ -22,9 +22,11 @@
 //   `cancelled` or real-exit outcome the backend produced AFTER
 //   `leaseReleased`), its output passes through BYTE-IDENTICAL;
 // * only when the local wait ended with the engine STILL OWNED — a session
-//   visible in `AndroidLinuxShellBackend.ownedSessions(runID:)` (active or
-//   reconciliation, per Main's fixed ledger semantics), or the uncertain-
-//   start window with no visible session — does the processor EXTEND:
+//   visible in `AndroidLinuxShellBackend.ownedSession(runID:toolCallID:)`
+//   (that exact job call only — never another session in the same run;
+//   active or reconciliation, per Main's fixed ledger semantics), or the
+//   uncertain-start window with no visible session — does the processor
+//   EXTEND:
 //   1. poll the engine lease directly through the typed transport
 //      (`shell.poll`, read-only cursor snapshots; the merged-output bytes
 //      after the handoff are NOT recoverable and are never pretended: the
@@ -38,11 +40,12 @@
 //      Main settlement gate — the host pump that retains the exact request
 //      receipt, never replays, requests the real startup-window stop and
 //      defers FAILURE completion until UID recovery/quiescence proves idle
-//      or `session.leaseReleased`. The gate answers `.released`, `.quiescent`
-//      or `.unconfirmed`; `.unconfirmed` KEEPS the job nonterminal (the
-//      processor does not return). There is NO default gate and NO stub-true
-//      answer in this module: composition refuses to register jobs without
-//      an injected gate.
+//      or `session.leaseReleased`. The gate answers `.released`, `.quiescent`,
+//      `.notStarted` (the exact start was positively refused before
+//      admission) or `.unconfirmed`; `.unconfirmed` KEEPS the job nonterminal
+//      (the processor does not return). There is NO default gate and NO
+//      stub-true answer in this module: composition refuses to register jobs
+//      without an injected gate.
 //   3. if neither the engine poll nor the gate proves settlement within the
 //      bounded reconciliation ceiling, the processor throws
 //      `NativeJobSafetyFailure` (UnsafeResourceStateError): the ORIGINAL
@@ -118,6 +121,10 @@ public enum JobShellSettlement: Sendable, Equatable {
     /// Whole-UID quiescence is proven: no live workload remains. The command
     /// TERMINAL itself may be unobserved — this never claims a success.
     case quiescent(note: String)
+    /// The trusted host positively proved this exact start was refused BEFORE
+    /// any command was admitted. Nothing ran and no lease/receipt remains.
+    /// This is a refusal, never a success or a clean cancellation.
+    case notStarted(reason: String?)
     /// Cleanup/release NOT proven right now; the adapter keeps waiting.
     case unconfirmed(reason: String)
 }
@@ -140,17 +147,22 @@ public struct ExecShellJobRunnerConfiguration: Sendable {
     /// releaseGrace (30s) + reconcileObservation (30min) with one full
     /// engine deadline of margin.
     public var reconcileCeiling: TimeInterval
+    /// Shorter wait after cancellation when there is no exact visible session.
+    /// Expiry reports an unsafe/unknown state; it never releases a lease.
+    public var unownedCancellationCeiling: TimeInterval
 
     public init(
         pollIntervalNanos: UInt64 = 500_000_000,
         queryIntervalNanos: UInt64 = 1_000_000_000,
         maxQueryIntervalNanos: UInt64 = 5_000_000_000,
-        reconcileCeiling: TimeInterval = 3_600
+        reconcileCeiling: TimeInterval = 3_600,
+        unownedCancellationCeiling: TimeInterval = 60
     ) {
         self.pollIntervalNanos = pollIntervalNanos
         self.queryIntervalNanos = queryIntervalNanos
         self.maxQueryIntervalNanos = maxQueryIntervalNanos
         self.reconcileCeiling = reconcileCeiling
+        self.unownedCancellationCeiling = unownedCancellationCeiling
     }
 }
 
@@ -266,28 +278,13 @@ public struct ExecShellJobRunner: Sendable {
             // `notStarted` never reached the engine at all. Byte pass-through.
             return output
         }
-        let owned = await backend.ownedSessions(runID: context.runID)
-        if owned.isEmpty {
-            switch intent {
-            case .timedOut, .userCancelled:
-                // A timedOut/cancelled answer with NOTHING owned means the
-                // terminal was engine-ranked on a proven release (either by
-                // the waiter itself or by the backend's reconciliation task
-                // before this probe). The delivered output already carries
-                // the engine truth — pass it through byte-identical.
-                return output
-            case .unclassified:
-                // Engine failure answer with nothing visible owned: exactly
-                // the uncertain-START window (a CLAIMED `shell.start` receipt
-                // whose preparation/process may still exist) or a local
-                // refusal. The REQUIRED gate is the only channel that knows
-                // which: `.quiescent` proves nothing ran / no unresolved
-                // receipt; `.released` carries the terminal fields;
-                // `.unconfirmed` KEEPS the job nonterminal. A possibly-live
-                // claimed start NEVER passes through unexamined.
-                break
-            }
-        }
+        let owned = await backend.ownedSession(runID: context.runID,
+                                               toolCallID: context.toolCallID)
+        // A missing exact Swift session is not release proof for ANY intent.
+        // Cancellation can interrupt shell.start while the host still owns a
+        // claimed admission; nil also covers an absent call ID or ambiguous
+        // matching sessions. Ask the trusted host gate for THIS call instead
+        // of acknowledging a stop or timeout from the local output alone.
         // Extended wait: the job processor has NOT returned until settlement
         // is proven. Report real (non-percentaged) progress into the durable
         // record via the ORIGINAL taskProgress channel.
@@ -296,13 +293,26 @@ public struct ExecShellJobRunner: Sendable {
             phase: "engineLeaseReconcile",
             note: "local wait ended while the runtime engine workload is still owned; waiting for the lease release or quiescence proof before settling the job"))
         let started = Date()
-        var watch = owned.first.map { ($0.engineSessionID, $0.cursor) }
+        // ONLY this exact job call's session may be watched. Another session
+        // in the same run (an interactive terminal, a managed service or a
+        // sibling job) is NOT this processor's work: polling it could delay
+        // the settlement for the whole ceiling and even report ITS terminal
+        // as this job's outcome.
+        var watch = owned.map { ($0.engineSessionID, $0.cursor) }
         var stopIssuedForSession: String? = nil
         var lastKnownSessionID: String? = watch?.0
         var queryInterval = configuration.queryIntervalNanos
+        var unownedCancellationBegan: Date?
         while Date().timeIntervalSince(started) < configuration.reconcileCeiling {
             let effectiveIntent: JobShellWaitIntent =
                 context.cancellation.isCancelled ? .userCancelled : intent
+            if watch == nil && effectiveIntent == .userCancelled {
+                if unownedCancellationBegan == nil { unownedCancellationBegan = Date() }
+                if let began = unownedCancellationBegan,
+                   Date().timeIntervalSince(began) >= max(0, configuration.unownedCancellationCeiling) {
+                    break
+                }
+            }
             if var watchEntry = watch {
                 // A job cancellation arriving during the wait must route the
                 // REAL stop for the exact live session, once.
@@ -353,6 +363,9 @@ public struct ExecShellJobRunner: Sendable {
                         case .quiescent(let note):
                             return settleQuiescent(original: output, intent: effectiveIntent,
                                                    note: note, context: context)
+                        case .notStarted(let reason):
+                            return settleNotStarted(original: output, reason: reason,
+                                                    context: context)
                         case .unconfirmed:
                             break
                         }
@@ -380,6 +393,9 @@ public struct ExecShellJobRunner: Sendable {
                 case .quiescent(let note):
                     return settleQuiescent(original: output, intent: effectiveIntent,
                                            note: note, context: context)
+                case .notStarted(let reason):
+                    return settleNotStarted(original: output, reason: reason,
+                                            context: context)
                 case .unconfirmed:
                     break
                 }
@@ -406,7 +422,7 @@ public struct ExecShellJobRunner: Sendable {
             toolCallID: context.toolCallID,
             lastKnownSessionID: lastKnownSessionID,
             intent: intent,
-            cancellationRequested: context.cancellation.isCancelled)
+            cancellationRequested: context.cancellation.isCancelled || intent == .userCancelled)
     }
 
     /// Engine-truth mapping with the SAME ranking the delivered backend uses:
@@ -437,7 +453,7 @@ public struct ExecShellJobRunner: Sendable {
             + " waitErrno=\(waitErrno.map { "\($0)" } ?? "nil")\n"
             + "note: merged PTY output beyond what the local wait collected is not recoverable; "
             + "inspect existing outputs read-only before resubmitting."
-        let base = original.summary
+        let base = original.capturedOutput ?? original.summary
         let terminal: (text: String, exit: Int32)
         if let waitErrno, waitErrno != 0 {
             terminal = ("status=engineWaitError waitErrno=\(waitErrno)", 125)
@@ -486,10 +502,39 @@ public struct ExecShellJobRunner: Sendable {
         }
         if !cancelled && workspaceStatus != "synced" {
             section += "settled: file changes were not confirmed saved; real process exit is recorded above.\n"
-            return ToolExecutionOutput(digesting: base + section, exitStatus: 125)
+            var output = ToolExecutionOutput(digesting: base + section, exitStatus: 125)
+            output.capturedOutputTruncated = true
+            return output
         }
         section += "settled: \(terminal.text)\n"
-        return ToolExecutionOutput(digesting: base + section, exitStatus: terminal.exit)
+        var output = ToolExecutionOutput(digesting: base + section, exitStatus: terminal.exit)
+        // Output generated after the local wait may not have been collected.
+        output.capturedOutputTruncated = true
+        return output
+    }
+
+    /// The trusted host positively proved this exact start was refused before
+    /// any command was admitted. The original refusal output is preserved
+    /// (exit 125 stays 125); the reconciled section states what was proven.
+    /// A requested cancellation cannot turn "nothing ran" into a clean stop.
+    private func settleNotStarted(
+        original: ToolExecutionOutput,
+        reason: String?,
+        context: ToolContext
+    ) -> ToolExecutionOutput {
+        var section = "\n--- engine admission (reconciled) ---\nnotStarted=true"
+        if let reason { section += " reason=\(reason)" }
+        section += "\nthe engine positively refused the start before any command was "
+            + "admitted; nothing ran and no lease or receipt remains.\n"
+        if context.cancellation.isCancelled {
+            section += "cancellation acknowledged: there was no running command to stop.\n"
+        }
+        let text = (original.capturedOutput ?? original.summary) + section
+        var output = ToolExecutionOutput(digesting: text, exitStatus: 125)
+        // Nothing executed, so the retained refusal text is the complete
+        // producer output; keep the producer's own integrity declaration.
+        output.capturedOutputTruncated = output.capturedOutputTruncated || original.capturedOutputTruncated
+        return output
     }
 
     /// Quiescence proven by the host census without a command terminal:
@@ -511,10 +556,12 @@ public struct ExecShellJobRunner: Sendable {
         case .unclassified:
             acknowledge = "engine census proves no live workload remains"
         }
-        let text = original.summary
+        let text = (original.capturedOutput ?? original.summary)
             + "\n--- engine settlement (reconciled) ---\nquiescent=true \(acknowledge)"
             + "\ncommand terminal unobserved: outcome is NOT claimed successful; inspect existing outputs read-only.\n"
             + "note: \(String(note.prefix(512)))\n"
-        return ToolExecutionOutput(digesting: text, exitStatus: original.exitStatus ?? 125)
+        var output = ToolExecutionOutput(digesting: text, exitStatus: original.exitStatus ?? 125)
+        output.capturedOutputTruncated = true
+        return output
     }
 }
