@@ -1,8 +1,10 @@
 # Floe Android 分目标实施记录
 
-## 1.0.21／130 候选准备（2026-11-16，未发版）
+## 1.0.21／130 预发布（2026-11-16）
 
-本候选包含以下 1.0.20 后的源码检查点；版本号及 Office 对应源码索引已更新。候选尚未构建、安装或发布，具体功能和限制以实际检查结果为准。
+[Android 1.0.21](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v1.0.21) 固定源码 `1f15f30bc42f87830b5becb91239041e056ff288`，Full APK SHA-256 `ef105f8eb6dcf54bc4376a1ae23c5ccb66b095321dfebfdb3d03bf8e36213216`。三星覆盖安装后，主包及内嵌运行组件的设备端字节均与候选一致，UID 保持，应用启动到首页；没有以此代替其他功能验收。从 1.0.20 基底重建增量结果与完整包匹配；本版设备内在线更新及失败回退尚未实测。七个公开附件已匿名下载并逐字节校验，公开更新列表可发现本版，iOS Latest 保持 `v1.8.25`。具体功能和已知限制见以下源码检查点与 Release 说明。
+
+English: Android 1.0.21 is published as a prerelease from the source and APK above. Samsung installed and launched the exact app and runtime bytes; the 1.0.20 delta was reconstructed locally, not tested through on-device OTA. All seven public assets matched and the iOS Latest release was unchanged.
 
 ## 1.0.20 后源码检查点：浏览器新标签审批与提问回执（2026-11-16，未发版）
 
