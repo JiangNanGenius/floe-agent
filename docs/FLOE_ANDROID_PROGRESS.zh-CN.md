@@ -6,6 +6,8 @@
 
 English: Android 1.0.21 is published as a prerelease from the source and APK above. Samsung installed and launched the exact app and runtime bytes; the 1.0.20 delta was reconstructed locally, not tested through on-device OTA. All seven public assets matched and the iOS Latest release was unchanged.
 
+三星使用公开 1.0.21 及 Ark Plan `ark-code-latest`，在设备操作等待授权时以 ADB 注入触摸展开悬浮球，选择“接管”后球和面板立即消失，设备设置随后显示“已接管”。旧授权卡仍显示，后续需修复；真实手指、操作正在执行时停止及接管后迟到回调尚未验证。测试后无障碍、悬浮权限、设备自动化和目标应用选择已恢复。
+
 ## 1.0.20 后源码检查点：浏览器新标签审批与提问回执（2026-11-16，未发版）
 
 浏览器新建标签的人工审批绑定真实任务、浏览器会话和一次性授权，执行前重新核验；首次使用会先准备任务自己的空白会话。已有问题的回答回执按请求、问题及版本更新界面，避免旧回读重新展示已答问题。Android ARM64 两个原生产物实际编译链接成功；Full Kotlin 编译及所选提问、审批测试通过。Swift 行为测试、浏览器实际审批和三星旧提问消失仍未验证；网页点击、输入、滚动及切换或关闭标签页的人工审批仍待实现。跨任务终态与通知竞态未在本批宣称修复。
