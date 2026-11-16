@@ -508,6 +508,7 @@
     <string name="approval_copy_move_directories">文件夹可递归处理，也可能创建不存在的上级文件夹。</string>
     <string name="approval_source_exists">源文件或文件夹必须存在。</string>
     <string name="approval_schedule_create">创建定时任务</string>
+    <string name="approval_browser_tab_create">创建浏览器标签页</string>
     <string name="approval_schedule_title">标题</string>
     <string name="approval_schedule_prompt">完整任务指令</string>
     <string name="approval_schedule_repeat">触发方式</string>

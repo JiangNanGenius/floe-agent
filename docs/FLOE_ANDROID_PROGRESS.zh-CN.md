@@ -1,5 +1,13 @@
 # Floe Android 分目标实施记录
 
+## 1.0.20 后源码检查点：浏览器新标签审批与提问回执（2026-11-16，未发版）
+
+浏览器新建标签的人工审批绑定真实任务、浏览器会话和一次性授权，执行前重新核验；首次使用会先准备任务自己的空白会话。已有问题的回答回执按请求、问题及版本更新界面，避免旧回读重新展示已答问题。Android ARM64 两个原生产物实际编译链接成功；Full Kotlin 编译及所选提问、审批测试通过。Swift 行为测试、浏览器实际审批和三星旧提问消失仍未验证；网页点击、输入、滚动及切换或关闭标签页的人工审批仍待实现。跨任务终态与通知竞态未在本批宣称修复。
+
+公开 1.0.20 上尝试主动停止收球验证时，设备观察返回 `device_arm_required`，测试即停止。事后发现测试准备时设备自动化开关没有开启，此次不能判定为应用故障，也未进入浮球停止环节；已恢复临时设置并保留现场。
+
+English: Source adds one-shot approval for creating a browser tab and updates answered questions from matching receipts. Android ARM64 products linked and focused Kotlin checks passed. Browser device behavior, stale-question recovery and explicit Stop remain unverified; the attempted public-build Stop test was invalid because device automation had not been enabled.
+
 ## 三星设备浮窗复测（2026-11-16，私有候选）
 
 在源码 `36b98b4f11056787420761f4afee4eea95565343` 的私有诊断包上，使用 Ark Plan `ark-code-latest` 执行计算器任务，期间使用截图观察而未调用会压制无障碍服务的界面树读取。ADB 注入触摸展开悬浮球、允许一次点击后，计算器实际显示 1；任务完成后球不再显示。测试没有验证真实手指，也没有单独验证手动停止动作的瞬间。回到聊天时发现已完成任务仍显示旧的屏幕接管提问，正在修复。旧的浮球故障可能受测试工具干扰，不能归因为应用本身。

@@ -120,7 +120,11 @@ fun ConversationApprovalRow(
     val fileAction = presentedCard.workspaceAction
     val shellAction = presentedCard.localShellAction
     val scheduleAction = presentedCard.scheduleCreateAction
-    val detailsVisible = if (scheduleAction != null) {
+    val browserTabAction = presentedCard.browserTabAction
+    val detailsVisible = if (browserTabAction != null) {
+        presentedCard.toolName == "browser.tab" && browserTabAction.operation == "create" &&
+            browserTabAction.url == null && browserTabAction.title == null
+    } else if (scheduleAction != null) {
         presentedCard.toolName == "task.schedule"
     } else if (shellAction != null) {
         presentedCard.toolName == "exec.shell"
@@ -154,7 +158,7 @@ fun ConversationApprovalRow(
     // without a human tap on these two controls.
     val backendResolve: (ApprovalCardUi, Boolean) -> Unit =
         { c, allow ->
-            if (c.workspaceAction != null || c.localShellAction != null || c.scheduleCreateAction != null) holder.resolveApproval(c, allow, presentationLease = lease)
+            if (c.workspaceAction != null || c.localShellAction != null || c.scheduleCreateAction != null || c.browserTabAction != null) holder.resolveApproval(c, allow, presentationLease = lease)
             else if (onResolve != null) onResolve(c, allow) else holder.resolveApproval(c, allow)
         }
     // The current native decision contract is call-bound. Never promise
@@ -225,7 +229,8 @@ fun ConversationApprovalRow(
                 FloeText(presentedCard.toolName, style = Floe.typography.evidence, color = colors.label)
             }
             if (presentedCard.scopeVerified) {
-                FloeText(if (scheduleAction != null) stringResource(R.string.approval_schedule_create)
+                FloeText(if (browserTabAction != null) stringResource(R.string.approval_browser_tab_create)
+                else if (scheduleAction != null) stringResource(R.string.approval_schedule_create)
                 else if (shellAction != null) stringResource(R.string.approval_shell_action)
                 else if (fileAction != null) when (fileAction.operation) {
                     "createFile" -> stringResource(R.string.approval_workspace_create)

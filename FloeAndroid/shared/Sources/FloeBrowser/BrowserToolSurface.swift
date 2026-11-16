@@ -165,13 +165,20 @@ public actor BrowserToolSurface {
         name: String,
         caller: BrowserToolCaller,
         arguments: BrowserToolArguments,
-        cancellation: CancellationToken? = nil
+        cancellation: CancellationToken? = nil,
+        approvalTabProof tabApprovalProof: BrowserTabApprovalProof? = nil
     ) async throws -> ToolExecutionOutput {
         try cancellation?.throwIfCancelled()
         guard Self.frozenToolNames.contains(name) else {
             throw BrowserToolError.validation("Unknown browser tool '\(name)'")
         }
         let owner = try Self.resolveOwner(for: caller)
+        if tabApprovalProof != nil {
+            guard name == "browser.tab", case .tab(let action, let tabID) = arguments,
+                  action == "create", tabID == nil else {
+                throw BrowserToolError.validation("The browser approval does not match this operation")
+            }
+        }
         switch (name, arguments) {
         case ("browser.panel", .panel(let action, let reason, let tabID)):
             return try await panel(owner: owner, caller: caller, action: action, reason: reason, tabID: tabID, cancellation: cancellation)
@@ -185,7 +192,8 @@ public actor BrowserToolSurface {
             case "close": guard let tabID else { throw BrowserToolError.validation("Create must omit tabID; activate/close require tabID"); }; command = .closeTab(tabID)
             default: throw BrowserToolError.validation("Unknown tab action")
             }
-            return try await run(owner: owner, action: command, cancellation: cancellation)
+            return try await run(owner: owner, action: command, cancellation: cancellation,
+                                 tabApprovalProof: tabApprovalProof)
         case ("browser.events", .events(let tabID, let afterSequence, let limit)):
             if let sequence = afterSequence, sequence < 0 {
                 throw BrowserToolError.validation("afterSequence must be non-negative")
@@ -434,7 +442,8 @@ public actor BrowserToolSurface {
         visualEvidenceSHA256: String? = nil,
         visualFallbackReason: String? = nil,
         timeoutMilliseconds: Int = 15_000,
-        cancellation: CancellationToken? = nil
+        cancellation: CancellationToken? = nil,
+        tabApprovalProof: BrowserTabApprovalProof? = nil
     ) async throws -> ToolExecutionOutput {
         try cancellation?.throwIfCancelled()
         // Cancellation is runtime evidence that the owning run is finished.
@@ -443,7 +452,15 @@ public actor BrowserToolSurface {
         // superseded) run can never recreate a browser for its owner.
         let sessionID: UUID
         do {
-            sessionID = try await center.taskSession(for: owner).sessionID
+            if let proof = tabApprovalProof {
+                guard proof.owner == owner, let existing = await center.existingSession(for: owner),
+                      await existing.sessionID == proof.sessionID else {
+                    throw BrowserToolError.validation("The reviewed browser session is no longer available")
+                }
+                sessionID = proof.sessionID
+            } else {
+                sessionID = try await center.taskSession(for: owner).sessionID
+            }
         } catch {
             throw BrowserToolError.validation(error.localizedDescription)
         }
@@ -454,6 +471,7 @@ public actor BrowserToolSurface {
             timeoutMilliseconds: timeoutMilliseconds,
             visualEvidenceSHA256: visualEvidenceSHA256,
             visualFallbackReason: visualFallbackReason,
+            tabApprovalProof: tabApprovalProof,
             action: action
         )
         // The owner is applied explicitly; visibility is irrelevant.

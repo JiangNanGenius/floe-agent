@@ -317,6 +317,28 @@ class ConversationApprovalDispatchTest {
         assertFalse(holder.privateApprovalValid(card, "current", "token"))
     }
 
+    @Test fun browserTabCreateApprovalRequiresCurrentVisibleLease() {
+        val card = approvalCard().copy(toolName = "browser.tab", scopeVerified = false)
+        val host = RecordingHost().apply { privatePresentationAccepted = true }
+        val holder = holderWithApproval(host, card)
+        val details = BrowserTabApprovalUi("create", null, null)
+        holder.showPrivateApproval(card, "old")
+        holder.showPrivateApproval(card, "current")
+        assertFalse(holder.acceptPrivateBrowserTabApproval(holder.session, card, "old", details, "old-token"))
+        assertFalse(holder.acceptPrivateBrowserTabApproval(holder.session, card, "current", BrowserTabApprovalUi("close", null, null), "token"))
+        assertFalse(holder.acceptPrivateBrowserTabApproval(holder.session, card, "current", BrowserTabApprovalUi("create", "https://example.com", null), "token"))
+        assertTrue(holder.acceptPrivateBrowserTabApproval(holder.session, card, "current", details, "token"))
+        val displayed = holder.visibleApprovalCard(card, "current")
+        assertEquals(details, displayed.browserTabAction)
+        assertFalse(holder.privateApprovalValid(card, "old", "old-token"))
+        assertEquals(ConversationFlowResult.Accepted, holder.resolveApproval(displayed, allow = true, presentationLease = "current"))
+        val request = host.lastArgs("resolveApproval")!![0] as ApprovalDecisionRequest
+        assertEquals("token", request.presentationToken)
+        assertEquals(card, request.expectedCard)
+        holder.hidePrivateApproval("current")
+        assertFalse(holder.privateApprovalValid(card, "current", "token"))
+    }
+
     @Test fun deviceApprovalIsBoundToOneVisibleLeaseAndDigest() {
         val card = approvalCard().copy(toolName = "device.act", scopeVerified = false)
         val host = RecordingHost().apply { privatePresentationAccepted = true }

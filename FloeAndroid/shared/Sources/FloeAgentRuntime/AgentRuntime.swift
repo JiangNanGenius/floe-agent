@@ -1762,7 +1762,7 @@ public actor FloeAgentRuntime {
               current.toolCall.id == callID else { return }
         switch decision {
         case .allow, .deny, .stopped:
-            if waiting.toolCall.toolName == "task.schedule" {
+            if ["task.schedule", "browser.tab"].contains(waiting.toolCall.toolName) {
                 policyResolvedScheduleApprovals.insert(waiting.generation)
                 if !(await resolveApproval(decision, matching: waiting)) {
                     policyResolvedScheduleApprovals.remove(waiting.generation)
@@ -3959,7 +3959,7 @@ public actor FloeAgentRuntime {
                 expiresAt: expiresAt,
                 policyName: policy.policyName
             )
-            if call.toolName == "task.schedule" { scheduleGrantProvenance[grant.id] = .automatic }
+            if ["task.schedule", "browser.tab"].contains(call.toolName) { scheduleGrantProvenance[grant.id] = .automatic }
             return .approved(grant: grant)
         case .deny(let reason):
             return .denied(reason: reason, decision: "deny:\(reason)")
@@ -4036,12 +4036,12 @@ public actor FloeAgentRuntime {
             switch humanDecision {
             case .allow(let scope, let expiresAt):
                 let grant = ApprovalGrant(
-                    id: call.toolName == "task.schedule" && !policyResolved ? humanApproval.generation : UUID(),
+                    id: ["task.schedule", "browser.tab"].contains(call.toolName) && !policyResolved ? humanApproval.generation : UUID(),
                     scope: Self.bind(scope, to: authorizationIdentity),
                     expiresAt: expiresAt,
                     policyName: "human"
                 )
-                if call.toolName == "task.schedule" { scheduleGrantProvenance[grant.id] = policyResolved ? .automatic : .human }
+                if ["task.schedule", "browser.tab"].contains(call.toolName) { scheduleGrantProvenance[grant.id] = policyResolved ? .automatic : .human }
                 return .approved(grant: grant)
             case .deny(let denyReason):
                 return .denied(reason: denyReason, decision: "deny:human:\(denyReason)")

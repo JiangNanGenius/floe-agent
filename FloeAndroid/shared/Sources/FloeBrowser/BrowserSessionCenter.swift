@@ -348,6 +348,22 @@ public actor BrowserSessionCenter {
         sessions[conversationID]
     }
 
+    /// Read-only: never creates or reactivates a released browser.
+    public func existingSession(for owner: BrowserOwnerID) -> BrowserTaskSession? {
+        guard sessionOwnerBindings[owner.taskID] == owner, !isReleaseFenced(owner.taskID) else { return nil }
+        return sessions[owner.taskID]
+    }
+
+    /// Prepare the ordinary blank browser session when showing the first
+    /// approval. Revalidation must be read-only and must never recreate a
+    /// session discarded while the user was deciding.
+    public func approvalSession(for owner: BrowserOwnerID, preparingIfNeeded: Bool) async throws -> BrowserTaskSession? {
+        if !preparingIfNeeded { return existingSession(for: owner) }
+        let session = try await taskSession(for: owner)
+        guard existingSession(for: owner) === session else { return nil }
+        return session
+    }
+
     public var activeTaskSessionCount: Int { sessions.count }
 
     public func handoff(for conversationID: UUID) -> BrowserHandoff? {
@@ -581,7 +597,17 @@ public actor BrowserSessionCenter {
         cancellation: CancellationToken? = nil
     ) async -> BrowserResult {
         do {
-            let session = try await taskSession(for: owner)
+            let session: BrowserTaskSession
+            if command.tabApprovalProof != nil {
+                guard let existing = existingSession(for: owner) else {
+                    return BrowserResult(requestID: command.requestID, status: .stale,
+                        message: "Browser session is no longer available",
+                        error: BrowserFailure(code: "approval-changed", message: "Browser session is no longer available"))
+                }
+                session = existing
+            } else {
+                session = try await taskSession(for: owner)
+            }
             let result = await session.execute(command, cancellation: cancellation)
             emitProjection()
             return result

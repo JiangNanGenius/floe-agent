@@ -127,8 +127,7 @@ internal class UserQuestionHostController(
             if (now - previous < REFRESH_THROTTLE_MILLIS) return false
         }
         lastRefreshAt[session.conversationId] = now
-        val generation = (generations[session.conversationId] ?: 0L) + 1L
-        generations[session.conversationId] = generation
+        val generation = nextGeneration(session.conversationId)
         val payload = requestId?.let {
             JsonObject(mapOf("requestID" to JsonPrimitive(it)))
         }
@@ -267,8 +266,20 @@ internal class UserQuestionHostController(
                         surface.publishFailure(session, "questionReceiptMalformed")
                         return@trackOperation
                     }
-                    surface.publishReceipt(session, receipt)
-                    refresh(session, request.requestId, force = true)
+                    if (receipt.requestId != request.requestId || receipt.questionId != request.questionId) {
+                        surface.publishFailure(session, "questionReceiptMalformed")
+                        return@trackOperation
+                    }
+                    // Invalidate pending reads started before this CAS receipt.
+                    // Publish only to the visible request owned by the same run.
+                    nextGeneration(session.conversationId)
+                    val visible = lastSnapshotFor(session.conversationId)
+                    if (visible?.runId == request.runId &&
+                        visible.requestId == request.requestId &&
+                        visible.requestDigest == request.requestDigest
+                    ) surface.publishReceipt(session, receipt)
+                    // Another request may now be pending in this conversation.
+                    refresh(session, force = true)
                 }
                 is HostOperationOutcome.Rejected -> {
                     surface.publishFailure(session, outcome.code)
@@ -324,6 +335,9 @@ internal class UserQuestionHostController(
         if (snapshot.runId != runId) return
         cancel(session, snapshot.requestId)
     }
+
+    private fun nextGeneration(conversationId: String): Long =
+        generations.compute(conversationId) { _, previous -> (previous ?: 0L) + 1L }!!
 
     private val lastSnapshots = ConcurrentHashMap<String, UserQuestionSnapshotUi>()
 

@@ -8,6 +8,7 @@ import com.floe.android.feature.conversation.ApprovalTargetUi
 import com.floe.android.feature.conversation.WorkspaceFileApprovalUi
 import com.floe.android.feature.conversation.LocalShellApprovalUi
 import com.floe.android.feature.conversation.ScheduleCreateApprovalUi
+import com.floe.android.feature.conversation.BrowserTabApprovalUi
 import com.floe.android.feature.conversation.DeviceActionApprovalRequestUi
 import com.floe.android.feature.conversation.AttachmentChipUi
 import com.floe.android.feature.conversation.AttachmentKindUi
@@ -196,6 +197,18 @@ private fun privateApprovalPage(value: JsonElement?, card: ApprovalCardUi,
 internal fun privateWorkspaceApprovalPage(value: JsonElement?, card: ApprovalCardUi): Pair<WorkspaceFileApprovalUi, String>? {
     val (details, token) = privateApprovalPage(value, card) ?: return null
     return (workspaceApprovalDetails(card.toolName, details) ?: return null) to (token ?: return null)
+}
+
+/** Accept only the exact private, complete and generation-bound tab target. */
+internal fun privateBrowserTabApprovalPage(value: JsonElement?, card: ApprovalCardUi): Pair<BrowserTabApprovalUi, String>? {
+    if (card.toolName != "browser.tab") return null
+    val (details, token) = privateApprovalPage(value, card, requiredRisk = "controlsGUI", workspaceVerified = false) ?: return null
+    if (details.keys != setOf("kind", "operation", "url", "title")) return null
+    fun str(key: String) = (details[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
+    if (str("kind") != "browserTab" || str("operation") != "create" ||
+        details["url"] !is kotlinx.serialization.json.JsonNull ||
+        details["title"] !is kotlinx.serialization.json.JsonNull) return null
+    return BrowserTabApprovalUi("create", null, null) to (token ?: return null)
 }
 
 /** Accept only a complete, generation-bound, local human-review page. */

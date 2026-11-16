@@ -67,6 +67,22 @@ public enum BrowserTarget: Sendable, Codable, Hashable {
     case point(x: Double, y: Double)
 }
 
+/// Read-only tab presentation identity. It is not an authorization grant.
+public struct BrowserTabApprovalProof: Sendable, Codable, Hashable {
+    public let owner: BrowserOwnerID
+    public let sessionID: UUID
+    public let operation: String
+    public let tabID: UUID?
+    public let activeTabID: UUID?
+    public let documentID: String?
+    public let navigationRevision: UInt64?
+    public let url: String?
+    public let title: String?
+    public let tabCount: Int
+    public let maximumTabs: Int
+    public let tabIDs: [UUID]
+}
+
 public struct BrowserCommand: Sendable, Codable, Hashable {
     public var version: Int
     public var requestID: UUID
@@ -79,6 +95,8 @@ public struct BrowserCommand: Sendable, Codable, Hashable {
     public var visualEvidenceSHA256: String?
     /// Why semantic DOM observation was not sufficient for this action.
     public var visualFallbackReason: String?
+    /// Set only by the trusted human-approval bridge, never by model arguments.
+    public var tabApprovalProof: BrowserTabApprovalProof?
     public var action: BrowserAction
 
     public init(
@@ -90,6 +108,7 @@ public struct BrowserCommand: Sendable, Codable, Hashable {
         timeoutMilliseconds: Int = 15_000,
         visualEvidenceSHA256: String? = nil,
         visualFallbackReason: String? = nil,
+        tabApprovalProof: BrowserTabApprovalProof? = nil,
         action: BrowserAction
     ) {
         self.version = version
@@ -100,6 +119,7 @@ public struct BrowserCommand: Sendable, Codable, Hashable {
         self.timeoutMilliseconds = timeoutMilliseconds
         self.visualEvidenceSHA256 = visualEvidenceSHA256
         self.visualFallbackReason = visualFallbackReason
+        self.tabApprovalProof = tabApprovalProof
         self.action = action
     }
 }

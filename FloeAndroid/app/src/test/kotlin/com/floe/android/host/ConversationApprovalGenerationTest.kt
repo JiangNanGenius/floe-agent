@@ -249,6 +249,32 @@ class ConversationApprovalGenerationTest {
         )) assertNull(decode(bad))
     }
 
+    @Test fun privateBrowserTabOnlyAllowsExactCreateForTheSameGeneration() {
+        val builder = builder()
+        val risks = """["controlsGUI"]"""
+        builder.applySnapshot(page(tool = "browser.tab", detailStatus = "unavailable", risks = risks))
+        val card = builder.build().pendingApprovals.single()
+        val token = "55555555-5555-4555-8555-555555555555"
+        val raw = """{"schema":"floe.approval-presentation/1","conversationID":"$conversation","runID":"$run","callID":"c1","generation":"$generation","presentationToken":"$token","presentation":{"status":"available","generation":"$generation","tool":"browser.tab","effect":"mutating","isSideEffecting":true,"riskLabels":$risks,"requestedScope":"local","grantScope":"singleUse","workspaceVerified":false,"descriptorIdentity":"$descriptor","detailStatus":"available","actionDetails":{"kind":"browserTab","operation":"create","url":null,"title":null}}}"""
+        fun decode(s: String) = privateBrowserTabApprovalPage(Json.parseToJsonElement(s), card)
+        val accepted = requireNotNull(decode(raw))
+        assertEquals("create", accepted.first.operation)
+        assertNull(accepted.first.url)
+        assertNull(accepted.first.title)
+        assertEquals(token, accepted.second)
+        for (bad in listOf(
+            raw.replace("\"operation\":\"create\"", "\"operation\":\"activate\""),
+            raw.replace("\"operation\":\"create\"", "\"operation\":\"close\""),
+            raw.replace("\"url\":null", "\"url\":\"https://example.com\""),
+            raw.replace("\"title\":null", "\"title\":\"title\""),
+            raw.replace("\"kind\":\"browserTab\"", "\"extra\":true,\"kind\":\"browserTab\""),
+            raw.replace("\"workspaceVerified\":false", "\"workspaceVerified\":true"),
+            raw.replace("\"callID\":\"c1\"", "\"callID\":\"c2\""),
+            raw.replace(descriptor, "b".repeat(64)),
+            raw.replace(token, "not-a-uuid"),
+        )) assertNull(decode(bad))
+    }
+
     @Test fun privateDeviceRequestNeverExposesInputAndNeedsVerifiedTarget() {
         val builder = builder()
         builder.applySnapshot(page(tool = "device.act", detailStatus = "unavailable", risks = """["controlsGUI"]"""))

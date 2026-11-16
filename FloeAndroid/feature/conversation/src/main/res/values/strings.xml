@@ -510,6 +510,7 @@
     <string name="approval_copy_move_directories">Directories can be processed recursively; missing parents may be created.</string>
     <string name="approval_source_exists">The source must exist.</string>
     <string name="approval_schedule_create">Create a scheduled task</string>
+    <string name="approval_browser_tab_create">Create a browser tab</string>
     <string name="approval_schedule_title">Title</string>
     <string name="approval_schedule_prompt">Complete task instruction</string>
     <string name="approval_schedule_repeat">Trigger</string>

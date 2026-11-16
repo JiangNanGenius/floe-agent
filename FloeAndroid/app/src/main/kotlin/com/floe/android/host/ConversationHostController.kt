@@ -4884,7 +4884,7 @@ class ConversationHostController internal constructor(
                     "expectedDescriptorIdentity" to JsonPrimitive(descriptor),
                 )),
             ),
-            beforeSubmit = if (card.toolName == "task.schedule") ({
+            beforeSubmit = if (card.toolName in setOf("task.schedule", "browser.tab")) ({
                 admitted() && ownCurrentEntry(entry, session.conversationId, session.sessionEpoch) &&
                     entry.holder.isPrivateApprovalLeaseCurrent(session, card, lease) &&
                     entry.builder.approvalBinding(card.runId, card.approvalId) == card
@@ -4899,6 +4899,9 @@ class ConversationHostController internal constructor(
                 } else if (card.toolName == "task.schedule") {
                     val result = privateScheduleCreateApprovalPage(outcome.value, card) ?: return@trackOperation
                     entry.holder.acceptPrivateScheduleApproval(session, card, lease, result.first, result.second)
+                } else if (card.toolName == "browser.tab") {
+                    val result = privateBrowserTabApprovalPage(outcome.value, card) ?: return@trackOperation
+                    entry.holder.acceptPrivateBrowserTabApproval(session, card, lease, result.first, result.second)
                 } else {
                     val result = privateWorkspaceApprovalPage(outcome.value, card) ?: return@trackOperation
                     entry.holder.acceptPrivateApproval(session, card, lease, result.first, result.second)
@@ -5016,7 +5019,7 @@ class ConversationHostController internal constructor(
                         val lease = request.presentationLease
                         floating != null && lease != null && floating.target?.digest == request.canonicalTargetDigest &&
                             devicePresentationCurrent(entry, floating, lease)
-                    }) else if (decision == "allow" && card.toolName == "task.schedule") ({
+                    }) else if (decision == "allow" && card.toolName in setOf("task.schedule", "browser.tab")) ({
                         admitted() && ownCurrentEntry(entry, session.conversationId, session.sessionEpoch) &&
                             entry.builder.approvalBinding(request.runId, request.approvalId) == card &&
                             entry.holder.privateApprovalValid(card, request.presentationLease, request.presentationToken)

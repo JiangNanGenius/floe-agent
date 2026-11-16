@@ -215,8 +215,9 @@ public actor BrowserTaskSession {
     }
 
     @discardableResult
-    public func createTab() async -> UUID? {
+    public func createTab(tabApprovalProof: BrowserTabApprovalProof? = nil, cancellation: CancellationToken? = nil) async -> UUID? {
         guard !isReleased, tabs.count < maximumTabs else { return nil }
+        if let proof = tabApprovalProof, !matchesCreateApproval(proof) { return nil }
         lastActivityAt = Date()
         let id = UUID()
         tabs.append(Tab(id: id, documentID: UUID().uuidString))
@@ -232,9 +233,39 @@ public actor BrowserTaskSession {
             await renderer.destroyTab(tabID: id)
             return nil
         }
+        if let proof = tabApprovalProof,
+           (isUserControlling || cancellation?.isCancelled == true || Task.isCancelled ||
+            activeTabID != proof.activeTabID || tabs.filter({ $0.id != id }).map(\.id) != proof.tabIDs) {
+            // Creation was already dispatched; preserve the tab and the user's
+            // current selection, and let the caller inspect the uncertain result.
+            appendEvent(tabID: id, method: "Target.targetCreated")
+            return nil
+        }
         activeTabID = id
         appendEvent(tabID: id, method: "Target.targetCreated")
         return id
+    }
+
+    /// Complete, non-mutating presentation proof. Creating a new tab needs
+    /// no page-derived JavaScript or inferred document identity.
+    public func approvalTabProof(action: String, tabID: UUID?) async throws -> BrowserTabApprovalProof {
+        guard action == "create", tabID == nil, !isReleased, !isUserControlling,
+              tabs.count < maximumTabs,
+              !BrowserLifecycleHealth.shared.epochIsSaturated(owner.rootEpoch) else {
+            throw BrowserInteractionError.stale("The browser tab action cannot be reviewed")
+        }
+        return BrowserTabApprovalProof(owner: owner, sessionID: sessionID, operation: "create",
+            tabID: nil, activeTabID: activeTabID, documentID: nil, navigationRevision: nil,
+            url: nil, title: nil, tabCount: tabs.count, maximumTabs: maximumTabs, tabIDs: tabs.map(\.id))
+    }
+
+    private func matchesCreateApproval(_ proof: BrowserTabApprovalProof) -> Bool {
+        !isReleased && !isUserControlling && !BrowserLifecycleHealth.shared.epochIsSaturated(owner.rootEpoch) &&
+            proof.owner == owner && proof.sessionID == sessionID && proof.operation == "create" &&
+            proof.tabID == nil && proof.documentID == nil && proof.navigationRevision == nil &&
+            proof.url == nil && proof.title == nil && proof.activeTabID == activeTabID &&
+            proof.tabCount == tabs.count && proof.maximumTabs == maximumTabs &&
+            proof.tabIDs == tabs.map(\.id) && tabs.count < maximumTabs
     }
 
     public func activate(_ id: UUID) {
@@ -547,6 +578,12 @@ public actor BrowserTaskSession {
         guard command.sessionID == sessionID else {
             return failure(command, status: .stale, code: "session", "Browser session is no longer active")
         }
+        if let proof = command.tabApprovalProof {
+            guard case .create = command.action, command.tabID == nil,
+                  command.expectedDocumentID == nil, matchesCreateApproval(proof) else {
+                return failure(command, status: .stale, code: "approval-changed", "The reviewed browser tab state changed")
+            }
+        }
         if isUserControlling {
             switch command.action {
             case .protocolInfo, .observe, .listTabs, .events:
@@ -568,7 +605,10 @@ public actor BrowserTaskSession {
                 protocolVersion: protocolVersion
             )
         case .create:
-            guard let id = await createTab() else {
+            guard let id = await createTab(tabApprovalProof: command.tabApprovalProof, cancellation: cancellation) else {
+                if command.tabApprovalProof != nil {
+                    return failure(command, status: .failed, code: "outcome-unknown", "Tab creation may have started. Inspect the tabs before trying again.")
+                }
                 return failure(command, status: .blocked, code: "tab-limit", "The six-tab limit was reached")
             }
             return tabManagementResult(command, tabID: id, message: "Tab created. Page contents have not been observed.")

@@ -564,7 +564,7 @@ class ConversationFlowHolder(
     /** Approvals dispatched with no projection change yet (duplicate-press
      * latch; cleared when the card leaves the projection). */
     private val approvalDispatched = mutableSetOf<String>()
-    private data class PrivateApproval(val card: ApprovalCardUi, val details: WorkspaceFileApprovalUi? = null, val token: String? = null, val shell: LocalShellApprovalUi? = null, val device: DeviceActionApprovalUi? = null, val schedule: ScheduleCreateApprovalUi? = null) {
+    private data class PrivateApproval(val card: ApprovalCardUi, val details: WorkspaceFileApprovalUi? = null, val token: String? = null, val shell: LocalShellApprovalUi? = null, val device: DeviceActionApprovalUi? = null, val schedule: ScheduleCreateApprovalUi? = null, val browserTab: BrowserTabApprovalUi? = null) {
         override fun toString() = "PrivateApproval(redacted)"
     }
     private val privateApprovals = mutableStateOf<Map<String, PrivateApproval>>(emptyMap())
@@ -1433,10 +1433,10 @@ class ConversationFlowHolder(
     @Synchronized fun showPrivateApproval(card: ApprovalCardUi, lease: String) {
         val state = snapshot.value ?: return
         if (retired || card.key in approvalDispatched || !card.identityVerified || card.scopeVerified ||
-            card.toolName !in setOf("workspace.createFile", "workspace.writeFile", "workspace.applyPatch", "workspace.appendFile", "workspace.replaceText", "workspace.createDirectory", "workspace.moveFile", "workspace.copyFile", "workspace.deleteFile", "exec.shell", "device.act", "task.schedule") ||
+            card.toolName !in setOf("workspace.createFile", "workspace.writeFile", "workspace.applyPatch", "workspace.appendFile", "workspace.replaceText", "workspace.createDirectory", "workspace.moveFile", "workspace.copyFile", "workspace.deleteFile", "exec.shell", "device.act", "task.schedule", "browser.tab") ||
             state.selectedRunId != card.runId || (selectedRunId.value != null && selectedRunId.value != card.runId) ||
             state.pendingApprovals.none { it == card }) return
-        if (card.toolName == "device.act") {
+        if (card.toolName == "device.act" || card.toolName == "browser.tab") {
             privateApprovals.value = privateApprovals.value.filterValues { it.card != card }
         }
         privateApprovals.value = privateApprovals.value + (lease to PrivateApproval(card))
@@ -1486,6 +1486,17 @@ class ConversationFlowHolder(
         return true
     }
 
+    @Synchronized fun acceptPrivateBrowserTabApproval(echo: ConversationSessionToken, card: ApprovalCardUi,
+        lease: String, details: BrowserTabApprovalUi, token: String): Boolean {
+        val current = privateApprovals.value[lease] ?: return false
+        if (!isPrivateApprovalLeaseCurrent(echo, card, lease) || card.toolName != "browser.tab" ||
+            details.operation != "create" || details.url != null || details.title != null ||
+            current.details != null || current.shell != null || current.device != null ||
+            current.schedule != null || current.browserTab != null) return false
+        privateApprovals.value = privateApprovals.value + (lease to PrivateApproval(card, token = token, browserTab = details))
+        return true
+    }
+
     @Synchronized fun acceptPrivateDeviceApproval(echo: ConversationSessionToken, card: ApprovalCardUi,
         lease: String, details: DeviceActionApprovalUi, token: String): Boolean {
         val current = privateApprovals.value[lease] ?: return false
@@ -1497,6 +1508,8 @@ class ConversationFlowHolder(
 
     @Synchronized fun visibleApprovalCard(card: ApprovalCardUi, lease: String): ApprovalCardUi {
         val privateEntry = privateApprovals.value[lease]?.takeIf { it.card == card } ?: return card
+        val browserTab = privateEntry.browserTab
+        if (browserTab != null && card.toolName == "browser.tab") return card.copy(browserTabAction = browserTab, scopeVerified = true)
         val schedule = privateEntry.schedule
         if (schedule != null && card.toolName == "task.schedule") return card.copy(scheduleCreateAction = schedule, scopeVerified = true)
         val device = privateEntry.device
@@ -1517,7 +1530,8 @@ class ConversationFlowHolder(
             ((item.details != null && sameWorkspace(state.boundWorkspaceId, item.details.workspaceId)) ||
                 (item.shell != null && card.toolName == "exec.shell" && sameWorkspace(state.boundWorkspaceId, item.shell.workspaceId)) ||
                 (item.device != null && card.toolName == "device.act") ||
-                (item.schedule != null && card.toolName == "task.schedule")) &&
+                (item.schedule != null && card.toolName == "task.schedule") ||
+                (item.browserTab != null && card.toolName == "browser.tab")) &&
             state.selectedRunId == card.runId && (selectedRunId.value == null || selectedRunId.value == card.runId) &&
             state.pendingApprovals.any { it == card }
     }
@@ -1551,7 +1565,7 @@ class ConversationFlowHolder(
         val privateEntry = presentationLease?.let { privateApprovals.value[it] }
         val privateToken = privateEntry?.token
         val privateVisible = privateEntry != null && privateEntry.card == live &&
-            (privateEntry.details != null || privateEntry.shell != null || privateEntry.device != null || privateEntry.schedule != null) &&
+            (privateEntry.details != null || privateEntry.shell != null || privateEntry.device != null || privateEntry.schedule != null || privateEntry.browserTab != null) &&
             visibleApprovalCard(live, presentationLease ?: "") == approval
         if ((live != approval && !privateVisible) || state.selectedRunId != live.runId ||
             (selectedRunId.value != null && selectedRunId.value != live.runId)) return ConversationFlowResult.Stale
@@ -2909,10 +2923,32 @@ class ConversationFlowHolder(
 
     fun applyUserQuestionReceipt(receipt: UserQuestionAnswerReceiptUi) {
         if (retired) return
+        val snapshot = userQuestionSnapshot ?: return
+        val question = snapshot.currentQuestion ?: return
+        if (snapshot.requestId != receipt.requestId ||
+            question.questionId != receipt.questionId ||
+            receipt.revision < question.revision
+        ) return
         userQuestionSubmitting = false
         if (receipt.settled) {
             userQuestionNotice = null
             userQuestionError = null
+            val status = when {
+                receipt.statusRaw == UserQuestionStatusUi.ANSWERED.raw -> UserQuestionStatusUi.ANSWERED
+                receipt.statusRaw == UserQuestionStatusUi.EXPIRED.raw -> UserQuestionStatusUi.EXPIRED
+                receipt.statusRaw == UserQuestionStatusUi.CANCELLED.raw -> UserQuestionStatusUi.CANCELLED
+                receipt.accepted -> UserQuestionStatusUi.ANSWERED
+                else -> return // An ambiguous receipt still needs the native re-read.
+            }
+            // Only this matching question settled. Preserve the rest of a
+            // multi-question request and let the next pending question open.
+            val updated = snapshot.copy(questions = snapshot.questions.map {
+                if (it.questionId == receipt.questionId) it.copy(
+                    status = status, revision = receipt.revision,
+                    answeredLabels = receipt.selectedLabels,
+                ) else it
+            })
+            applyUserQuestionSnapshot(session, updated)
         }
     }
 

@@ -3,6 +3,7 @@ import Foundation
 import FloeAgentRuntime
 import FloeModels
 import FloeWorkspace
+import FloeBrowser
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
@@ -60,6 +61,7 @@ struct WorkspaceApprovalReceiptStore {
         let digest: String
         var shellTarget: C02ResolvedExecutionTarget? = nil
         var deviceTargetDigest: String? = nil
+        var browserTabProof: BrowserTabApprovalProof? = nil
     }
     struct Claim {
         let binding: Binding

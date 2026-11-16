@@ -100,13 +100,13 @@ struct G04BrowserToolRouting: Sendable {
     /// ORIGINAL envelope out, with BrowserToolError mapped onto the same
     /// FloeError shapes the original tool path produced.
     func invoke(name: String, arguments: BrowserToolArguments,
-                context: ToolContext) async throws -> ToolExecutionOutput {
+                context: ToolContext, tabApprovalProof: BrowserTabApprovalProof? = nil) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
         let caller = try await makeCaller(context)
         do {
             return try await surface.invoke(
                 name: name, caller: caller, arguments: arguments,
-                cancellation: context.cancellation)
+                cancellation: context.cancellation, approvalTabProof: tabApprovalProof)
         } catch let error as BrowserToolError {
             switch error {
             case .validation(let message):
@@ -386,10 +386,20 @@ struct G04BrowserTabTool: AgentTool {
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
         try validate(args)
+        let proof: BrowserTabApprovalProof?
+        if case .human = context.approvalProvenance {
+            guard let call = context.toolCallID, let grant = context.approvalGrantID,
+                  let checked = G04BrowserTabApprovalGate.shared.take(run: context.runID, call: call, grant: grant) else {
+                throw FloeError.validationFailed("This browser action needs a current reviewed approval.")
+            }
+            proof = checked
+        } else if case .unspecified = context.approvalProvenance, context.runtimeAuthority != nil {
+            throw FloeError.validationFailed("The browser approval source could not be verified.")
+        } else { proof = nil }
         return try await routing.invoke(
             name: Self.name,
             arguments: .tab(action: args.action, tabID: args.tabID),
-            context: context)
+            context: context, tabApprovalProof: proof)
     }
 }
 

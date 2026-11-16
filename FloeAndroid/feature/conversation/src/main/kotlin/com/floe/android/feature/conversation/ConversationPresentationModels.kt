@@ -301,6 +301,11 @@ data class ScheduleCreateApprovalUi(
     override fun toString(): String = "ScheduleCreateApprovalUi(details=redacted)"
 }
 
+/** Complete private tab operation, scoped to the currently visible card. */
+data class BrowserTabApprovalUi(val operation: String, val url: String?, val title: String?) {
+    override fun toString(): String = "BrowserTabApprovalUi(redacted)"
+}
+
 data class ApprovalCardUi(
     val approvalId: String,           // ⇄ toolCall.id (provider call id)
     val runId: String,
@@ -330,6 +335,7 @@ data class ApprovalCardUi(
     val workspaceAction: WorkspaceFileApprovalUi? = null,
     val localShellAction: LocalShellApprovalUi? = null,
     val scheduleCreateAction: ScheduleCreateApprovalUi? = null,
+    val browserTabAction: BrowserTabApprovalUi? = null,
     val deviceAction: DeviceActionApprovalUi? = null,
     /** The generation and descriptor are verified independently of whether
      * enough action detail exists to allow the request. */
