@@ -242,6 +242,7 @@ private fun FloeShellContent(
     var settingsSectionKey by rememberSaveable { mutableStateOf("") }
     var previewVisible by rememberSaveable { mutableStateOf(false) }
     var meetingsVisible by rememberSaveable { mutableStateOf(false) }
+    var spaceFilesVisible by rememberSaveable { mutableStateOf(false) }
     var inspectorRoute by rememberSaveable { mutableStateOf<String?>(null) }
     fun dismissInspector() {
         application?.componentDocumentReturns?.clear()
@@ -286,8 +287,8 @@ private fun FloeShellContent(
     // and every launch behavior stay exactly as they are; the Settings Dialog
     // overlays the still-composed chat without clearing privacyVisibleHolder,
     // which is precisely why this separate fact exists.
-    androidx.compose.runtime.LaunchedEffect(settingsVisible, previewVisible, drawerOpen, meetingsVisible) {
-        runtimeHost?.uiModalSurfaceOwned = settingsVisible || previewVisible || drawerOpen || meetingsVisible
+    androidx.compose.runtime.LaunchedEffect(settingsVisible, previewVisible, drawerOpen, meetingsVisible, spaceFilesVisible) {
+        runtimeHost?.uiModalSurfaceOwned = settingsVisible || previewVisible || drawerOpen || meetingsVisible || spaceFilesVisible
     }
 
     // The actual viewer claim reads these mutable state delegates on the
@@ -297,7 +298,7 @@ private fun FloeShellContent(
     androidx.compose.runtime.SideEffect {
         officePreviews?.setAiLaunchAdmission(officeAiAdmissionOwner) { taskId ->
             taskId != null && application?.isActivityInForeground() == true &&
-                !settingsVisible && !previewVisible && !drawerOpen && !meetingsVisible &&
+                !settingsVisible && !previewVisible && !drawerOpen && !meetingsVisible && !spaceFilesVisible &&
                 runtimeHost?.conversations?.currentVisibleConversationId() == taskId
         }
     }
@@ -750,7 +751,7 @@ private fun FloeShellContent(
         // temporary one, whose id never reaches the persisted key; the
         // decision therefore reads the live selection, not the saved key.
         val baseNavCanRun = !persistentSidebar && route == null && !drawerOpen &&
-            !settingsVisible && !previewVisible && !meetingsVisible &&
+            !settingsVisible && !previewVisible && !meetingsVisible && !spaceFilesVisible &&
             selection.key != SidebarSelection.Workbench(WorkbenchSelection.NEW_TASK).key
         ImeFirstBackHandler(enabled = baseNavCanRun) {
             // System Back at a conversation surface IS an actual navigation
@@ -1320,6 +1321,11 @@ private fun FloeShellContent(
                     // serial reducer (including the temporary-chat fence).
                     onNavigate = select,
                     onOpenDocument = openDocument,
+                    onOpenFolderManager = {
+                        dismissIme()
+                        drawerOpen = false
+                        spaceFilesVisible = true
+                    },
                     onOpenMeetings = openMeetings,
                     phoneAccessSection = phoneAccessSection,
                 )
@@ -1533,6 +1539,19 @@ private fun FloeShellContent(
                         C07EntryFlowFeature.settingsSection(),
                     ),
         )
+
+        if (spaceFilesVisible) {
+            Dialog(
+                onDismissRequest = {},
+                properties = DialogProperties(
+                    dismissOnBackPress = false,
+                    dismissOnClickOutside = false,
+                    usePlatformDefaultWidth = false,
+                ),
+            ) {
+                SpaceFilesDestination(onClose = { spaceFilesVisible = false })
+            }
+        }
 
         if (meetingsVisible) {
             // Exit is owned by MeetingDestination so unsaved notes and an

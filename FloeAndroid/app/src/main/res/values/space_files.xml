@@ -1,0 +1,116 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Space → Files: strings for the authorized-folder manager. New file only;
+     existing Space/Settings/dialog resources are reused (cancel/retry/close). -->
+<resources>
+    <string name="space_files_title">Files</string>
+    <string name="space_files_subtitle">Folders you authorized on this device.</string>
+    <string name="space_files_add_folder">Choose folder</string>
+    <string name="space_files_add_folder_caption">Use the system picker to authorize a folder.</string>
+    <string name="space_files_roots">Authorized folders</string>
+    <string name="space_files_no_roots_title">No folders yet</string>
+    <string name="space_files_no_roots_description">Choose a folder to browse and manage its files here.</string>
+    <string name="space_files_root_unnamed">Selected folder</string>
+    <string name="space_files_root_status_permanent">Access is kept across restarts.</string>
+    <string name="space_files_root_status_session">Access lasts until the app closes. Choose the folder again to keep it.</string>
+    <string name="space_files_root_status_revoked">Access was revoked. Choose the folder again.</string>
+    <string name="space_files_root_badge_permanent">Permanent</string>
+    <string name="space_files_root_badge_session">Session only</string>
+    <string name="space_files_root_badge_revoked">Revoked</string>
+    <string name="space_files_root_badge_read_only">Read-only</string>
+    <string name="space_files_root_open">Open</string>
+    <string name="space_files_root_reselect">Choose again</string>
+    <string name="space_files_root_remove">Remove</string>
+    <string name="space_files_root_remove_title">Remove folder from Space?</string>
+    <string name="space_files_root_remove_message">This removes the saved shortcut only. It does not change the system permission.</string>
+
+    <string name="space_files_loading">Loading…</string>
+    <string name="space_files_empty">This folder is empty.</string>
+    <string name="space_files_open_root_hint">Open an authorized folder to see its files.</string>
+    <string name="space_files_virtual_hint">The provider serves this document in its own format, so it can\'t be opened here.</string>
+    <string name="space_files_load_more">Load more</string>
+    <string name="space_files_refresh">Refresh</string>
+    <string name="space_files_up">Up</string>
+    <string name="space_files_new_folder">New folder</string>
+    <string name="space_files_new_file">New file</string>
+    <string name="space_files_folder">Folder</string>
+    <string name="space_files_size_unknown">Size unknown</string>
+    <string name="space_files_row_meta">%1$s · %2$s</string>
+    <string name="space_files_row_meta_unknown">%1$s</string>
+    <string name="space_files_error_title">Couldn\'t load this folder</string>
+    <string name="space_files_actions">Actions for %1$s</string>
+    <string name="space_files_capability_hint">Some actions are unavailable because this provider doesn\'t support them.</string>
+    <string name="space_files_folder_copy_hint">Folders can be moved here, not copied.</string>
+    <string name="space_files_preview">Preview</string>
+    <string name="space_files_open_with">Open with another app</string>
+    <string name="space_files_rename">Rename</string>
+    <string name="space_files_copy_to">Copy to…</string>
+    <string name="space_files_move_to">Move to…</string>
+    <string name="space_files_delete">Delete</string>
+    <string name="space_files_delete_title">Delete %1$s?</string>
+    <string name="space_files_delete_message">It is removed from this folder. Folders are removed with everything inside them. This cannot be undone.</string>
+    <string name="space_files_create">Create</string>
+    <string name="space_files_rename_title">Rename %1$s</string>
+    <string name="space_files_new_folder_title">New folder</string>
+    <string name="space_files_new_file_title">New file</string>
+    <string name="space_files_new_file_hint">A plain text document is created.</string>
+    <string name="space_files_name_label">Name</string>
+    <string name="space_files_name_hint">One name, without slashes.</string>
+    <string name="space_files_read_only_hint">The provider does not allow changes in this folder.</string>
+    <string name="space_files_create_unavailable">This folder doesn\'t allow new items.</string>
+    <string name="space_files_busy_create">Creating…</string>
+    <string name="space_files_busy_rename">Renaming…</string>
+    <string name="space_files_busy_delete">Deleting…</string>
+    <string name="space_files_busy_copy">Copying…</string>
+    <string name="space_files_busy_move">Moving…</string>
+    <string name="space_files_busy_preview">Loading preview…</string>
+
+    <string name="space_files_transfer_copy_title">Copy %1$s</string>
+    <string name="space_files_transfer_move_title">Move %1$s</string>
+    <string name="space_files_transfer_destination">Destination</string>
+    <string name="space_files_transfer_empty">No subfolders here.</string>
+    <string name="space_files_transfer_copy_here">Copy here</string>
+    <string name="space_files_transfer_move_here">Move here</string>
+    <string name="space_files_transfer_hint_copy">The provider copy is verified against the source before it is reported.</string>
+    <string name="space_files_transfer_hint_move">The copy is verified first. The original is removed only when it matches.</string>
+    <string name="space_files_move_confirm_title">Move %1$s?</string>
+    <string name="space_files_move_confirm_message">The item is copied and verified first. The original is removed only when the copy matches.</string>
+    <string name="space_files_move_confirm">Move</string>
+
+    <string name="space_files_preview_unavailable">Preview not available</string>
+    <string name="space_files_preview_empty">This file is empty.</string>
+
+    <string name="space_files_notice_added">Folder added.</string>
+    <string name="space_files_notice_added_session">Folder added. Access lasts until the app closes.</string>
+    <string name="space_files_notice_removed">Folder removed from Space.</string>
+    <string name="space_files_notice_pick_cancelled">No folder was chosen.</string>
+    <string name="space_files_notice_pick_rejected">That selection can\'t be used as a folder.</string>
+    <string name="space_files_notice_created_folder">Created the folder %1$s.</string>
+    <string name="space_files_notice_created_file">Created the file %1$s.</string>
+    <string name="space_files_notice_renamed">Renamed to %1$s.</string>
+    <string name="space_files_notice_renamed_pending">Rename sent. The provider hasn\'t refreshed its listing yet.</string>
+    <string name="space_files_notice_deleted">Deleted %1$s.</string>
+    <string name="space_files_notice_copied">Copied %1$s.</string>
+    <string name="space_files_notice_moved">Moved %1$s.</string>
+    <string name="space_files_notice_moved_source_kept">Copied and verified %1$s. The original was kept.</string>
+    <string name="space_files_notice_page_reloaded">The folder list changed and was reloaded.</string>
+    <string name="space_files_notice_dismiss">Dismiss</string>
+
+    <string name="space_files_error_revoked">Access to this folder was revoked. Choose it again.</string>
+    <string name="space_files_error_grant_missing">This folder is no longer authorized.</string>
+    <string name="space_files_error_re_pick">Choose the folder again to restore access.</string>
+    <string name="space_files_error_read_only">The provider does not allow changes here.</string>
+    <string name="space_files_error_unsupported">The folder\'s provider does not support this action.</string>
+    <string name="space_files_error_not_found">The item no longer exists.</string>
+    <string name="space_files_error_provider_offline">The folder\'s provider is not responding.</string>
+    <string name="space_files_error_conflict">The provider reported a conflicting result.</string>
+    <string name="space_files_error_size_limit">This file is too large to preview or verify here.</string>
+    <string name="space_files_error_ambiguous">The provider returned an unexpected item.</string>
+    <string name="space_files_error_cancelled">The action was cancelled.</string>
+    <string name="space_files_error_invalid_name">Enter a name without slashes.</string>
+    <string name="space_files_error_invalid_destination">Choose a different destination folder.</string>
+    <string name="space_files_error_no_handler">No installed app can open this file.</string>
+    <string name="space_files_error_binary">This file is not text or an image.</string>
+    <string name="space_files_error_io">The file couldn\'t be read or written.</string>
+    <string name="space_files_error_failed">The action did not complete.</string>
+    <string name="space_files_error_details">Details</string>
+</resources>

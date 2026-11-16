@@ -86,6 +86,7 @@ internal fun FloeSpaceDestination(
     onOpenSettingsSection: (String) -> Unit,
     modifier: Modifier = Modifier,
     onOpenDocument: (() -> Unit)? = null,
+    onOpenFolderManager: (() -> Unit)? = null,
     /** Supplied only once the parallel meeting service exposes its real
      * entry. Until then the overview omits the row completely. */
     onOpenMeetings: (() -> Unit)? = null,
@@ -180,6 +181,7 @@ internal fun FloeSpaceDestination(
                     canCreateProject = canCreateProject,
                     onNavigate = onNavigate,
                     onOpenDocument = onOpenDocument,
+                    onOpenFolderManager = onOpenFolderManager,
                     onCreateProject = {
                         runtimeHost?.projects?.create(
                             name = defaultProjectName,
@@ -372,10 +374,19 @@ private fun FloeSpaceFiles(
     canCreateProject: Boolean,
     onNavigate: (SidebarSelection) -> Unit,
     onOpenDocument: (() -> Unit)?,
+    onOpenFolderManager: (() -> Unit)?,
     onCreateProject: () -> Unit,
     onRetryProjects: () -> Unit,
 ) {
     SpaceScrollPage {
+        if (onOpenFolderManager != null) {
+            SpaceActionCard(
+                icon = FloeIcons.Folder,
+                title = stringResource(R.string.space_files_roots),
+                caption = stringResource(R.string.space_files_subtitle),
+                onClick = onOpenFolderManager,
+            )
+        }
         SpaceGroupTitle(
             stringResource(R.string.space_project_sources),
             stringResource(R.string.space_project_sources_caption),

@@ -85,6 +85,7 @@ fun FloeDetailColumn(
     /** Existing Office system-picker entry, owned by the shell. Null keeps
      * the Space row hidden (fixtures or a build without the preview host). */
     onOpenDocument: (() -> Unit)? = null,
+    onOpenFolderManager: (() -> Unit)? = null,
     /** Optional meeting entry supplied only once the meeting service has a
      * real surface. Null keeps the entry invisible. */
     onOpenMeetings: (() -> Unit)? = null,
@@ -197,6 +198,7 @@ fun FloeDetailColumn(
                 onNavigate = onNavigate,
                 onOpenSettingsSection = onOpenSettingsSection,
                 onOpenDocument = onOpenDocument,
+                onOpenFolderManager = onOpenFolderManager,
                 onOpenMeetings = onOpenMeetings,
                 phoneAccessSection = phoneAccessSection,
             )
