@@ -1,5 +1,15 @@
 # Floe Android 分目标实施记录
 
+## 1.0.18／127 已公开：授权应用发现与增量升级（2026-11-16）
+
+[Android 1.0.18 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v1.0.18)固定源码 `03b777b3dd791367b83125e1329e829fe0852b3e`；Full APK 为 167247443 字节，SHA-256 `46d4d990022fd8441ab264bc06e6a305b5f63f401724c47010a937c7de3a6703`。本版含更新等待修复和已授权可启动应用的发现与分页；Full 构建成功，未变原生库复用 1.0.17 生产证据。公开七附件包括主包、Office／CAD 组件、对应源码、校验文件及从 1.0.17 的补丁和清单；匿名读取的字节逐项匹配，iOS Latest 未改变。
+
+增量补丁为 34219684 字节，SHA-256 `b4d6e4cd07d3035e54e9951542c491cdca357b7242c1e54806badc5ae0c644cb`；本机生产时从精确 1.0.17 主包重建出相同 1.0.18 字节。三星在应用内实际选择、下载并应用补丁，界面显示增量准备和校验成功；经系统确认后主应用和 Linux 运行环境均升级到 127，安装字节与发布主包及其内嵌运行环境一致，UID 保持。不同基底及补丁失败后的完整包回退尚未在设备上单独复测。
+
+三星真实 Ark `ark-code-latest` 任务读取已授权列表后选中三星计算器，实际打开并观察到计算器，任务自然结束；操作结束后的画面没有悬浮球。该测试只覆盖单个授权应用和无障碍后端，未验证多页、授权变更竞态或 ADB 后端。测试任务已删除，临时设备权限和电源设置已恢复；截图与此前失败证据保留。
+
+English: Android 1.0.18/code127 is published from the exact source above. Samsung updated from 1.0.17 using the actual delta and installed matching application and runtime bytes with UIDs retained. An Ark task found, opened and observed the authorized Samsung calculator; the bubble was absent after the operation. Multi-page discovery, ADB and delta failure fallback remain unverified on device.
+
 ## 1.0.17／126 已公开：设备控制与完整包升级（2026-11-16）
 
 [Android 1.0.17 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v1.0.17)固定源码 `d15f230b896e432c435dc340970f07cbdd4b4677`；Full APK 为 167223647 字节，SHA-256 `53a58fd061ae12f5e983979b2f3b6a382820cfc1ed04e913e3918f18421795ce`。实际 Android ARM64 原生及 Full 构建完成，签名和 ZIP 16 KiB 对齐通过；主包、Office／CAD 按需组件、对应源码与校验文件共五附件，匿名下载字节逐项匹配，iOS Latest 未改变。
