@@ -111,6 +111,8 @@ struct TaskClosureGate: Sendable {
     static func promisesExecution(_ answer:String,knownWork:Bool,tools:[String]) -> Bool {
         let text = answer.lowercased().replacingOccurrences(of:"(?<=[.!?])\\s+",with:"\n",options:.regularExpression)
         let clauses = text.components(separatedBy:CharacterSet(charactersIn:"\n。！？!?;；，,"))
+        let awaitsUser = ["你确认", "您确认", "用户确认", "需要你", "等待你", "请确认", "if you", "once you", "after you"]
+            .contains(where: text.contains)
         let immediate = ["我现在","现在用","现在调用","接下来我","下一步我","我会立即","立即调用","让我","我先","准备调用","准备执行",
             "i'll now","i will now","next i'll","next i will","let me","i'm going to","i am going to","now i'll","now i will"]
         let continuing = ["接下来继续","下一步继续","我会继续","我将继续","我继续","i will continue","i'll continue","i will proceed","i'll proceed"]
@@ -121,6 +123,15 @@ struct TaskClosureGate: Sendable {
         for clause in clauses {
             guard !negative.contains(where:clause.contains) else { continue }
             let immediatePromise = immediate.contains(where:clause.contains)
+            // An explicit first-person commitment can be the only evidence of
+            // unfinished work when the model never created a checklist.
+            // Require a concrete work verb so ordinary offers of help do not
+            // keep a completed conversation running.
+            let explicitFutureWork = !awaitsUser && ["我会继续", "我将继续", "我接着", "我会", "我将", "i will continue", "i'll continue"]
+                .contains(where: clause.contains)
+                && (actions + workActions).contains(where: clause.contains)
+                && !["确认后", "同意后", "批准后", "授权后", "提供后", "if you", "once you", "after you"]
+                    .contains(where: clause.contains)
             let continuationPromise = knownWork && continuing.contains(where:clause.contains)
             // Chinese task replies often omit "I": the observed terminal
             // answer said "接下来按…修正编辑输入，并继续…". Require owned
@@ -128,8 +139,8 @@ struct TaskClosureGate: Sendable {
             let implicitNext = knownWork && ["接下来","下一步"].contains(where:clause.contains)
                 && !["你可以","您可以","请你","请先","请提供","需要你","等待你","用户"].contains(where:clause.contains)
                 && (actions+workActions+["继续"]).contains(where:clause.contains)
-            guard immediatePromise || continuationPromise || implicitNext else { continue }
-            if implicitNext { return true }
+            guard immediatePromise || explicitFutureWork || continuationPromise || implicitNext else { continue }
+            if implicitNext || explicitFutureWork { return true }
             if continuationPromise || actions.contains(where:clause.contains) { return true }
             if knownWork && workActions.contains(where:clause.contains) { return true }
             if tools.contains(where:{ clause.contains($0.lowercased()) || clause.contains($0.lowercased().replacingOccurrences(of:".",with:"_")) }) { return true }

@@ -117,7 +117,7 @@ struct SkillHubDiscoveryView<Connections: View>: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 20) {
                     if normalizedQuery.isEmpty, category == nil, !featured.isEmpty {
-                        featuredShelf(wide: geometry.size.width >= 700 && !dynamicTypeSize.isAccessibilitySize)
+                        featuredShelf(width: min(geometry.size.width, 1100) - 32)
                     }
                     if categories.count > 1 {
                         ScrollView(.horizontal) {
@@ -174,8 +174,10 @@ struct SkillHubDiscoveryView<Connections: View>: View {
         }
     }
 
-    private func featuredShelf(wide: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
+    private func featuredShelf(width: CGFloat) -> some View {
+        let count: Int = dynamicTypeSize.isAccessibilitySize ? 1 :
+            (width >= 980 ? 4 : width >= 700 ? 3 : width >= 480 ? 2 : 1)
+        return VStack(alignment: .leading, spacing: 12) {
             Text("skills.hub.featured").font(.title2.bold())
             ScrollView(.horizontal) {
                 LazyHStack(alignment: .top, spacing: 14) {
@@ -207,7 +209,7 @@ struct SkillHubDiscoveryView<Connections: View>: View {
                                         .accessibilityHidden(true)
                                     VStack(alignment: .leading, spacing: 8) {
                                         Text(item.title)
-                                            .font(.title2.bold())
+                                            .font(.headline)
                                             .foregroundStyle(.primary)
                                             .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
                                             .fixedSize(horizontal: false, vertical: true)
@@ -238,7 +240,7 @@ struct SkillHubDiscoveryView<Connections: View>: View {
                         .background(Color(uiColor: .secondarySystemGroupedBackground),
                             in: RoundedRectangle(cornerRadius: 20))
                         .clipShape(RoundedRectangle(cornerRadius: 20))
-                        .containerRelativeFrame(.horizontal, count: wide ? 2 : 1, spacing: 14)
+                        .containerRelativeFrame(.horizontal, count: count, spacing: 14)
                         .accessibilityElement(children: .contain)
                         .accessibilityIdentifier("skills.featured.card.\(item.id)")
                     }

@@ -69,6 +69,14 @@ final class SkillsCenter: ObservableObject {
         // A failed or cancelled check must not poison the one-hour slot: the
         // store honestly shows its failure and stays free to retry live.
         defer { isRefreshingCuratedCatalog = false }
+        // Restore first, so a cold launch can render the last authenticated
+        // catalog while the live publication is checked. Verification uses
+        // the same production signature and commit checks as a live load.
+        if curatedPublication == nil,
+           let restored = try? await Self.restoredCuratedPublication(channel: .ios, mode: .production) {
+            guard !Task.isCancelled else { return }
+            curatedPublication = restored
+        }
         do {
             let publication = try await loadCuratedPublication()
             try Task.checkCancellation()

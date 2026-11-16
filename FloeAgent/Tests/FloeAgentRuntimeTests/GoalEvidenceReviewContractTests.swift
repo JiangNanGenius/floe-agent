@@ -37,6 +37,21 @@ struct GoalEvidenceReviewContractTests {
         #expect(result.stepEvidence == [step.id: [second.id]])
     }
 
+    @Test("prior evidence may prove a criterion but cannot masquerade as new progress")
+    func historicalEvidenceNeedsCurrentProgress() throws {
+        let oldOnly = try reply(criteria: [claim(criterion.id, [first.id])], progress: [first.id])
+        let stale = GoalEvidenceReviewContract.parse(oldOnly, goal: goal, evidence: [first, second], currentEvidenceIDs: [second.id])
+        #expect(!stale.isValid)
+        #expect(stale.criterionEvidence.isEmpty)
+        let newProgress = try reply(criteria: [claim(criterion.id, [first.id])], progress: [second.id])
+        let verified = GoalEvidenceReviewContract.parse(newProgress, goal: goal, evidence: [first, second], currentEvidenceIDs: [second.id])
+        #expect(verified.isValid)
+        #expect(verified.criterionEvidence[criterion.id] == [first.id])
+        let oldBlocker = try reply(progress: [second.id], blocker: "Credentials unavailable", blockingEvidence: [first.id])
+        let staleBlocker = GoalEvidenceReviewContract.parse(oldBlocker, goal: goal, evidence: [first, second], currentEvidenceIDs: [second.id])
+        #expect(staleBlocker.blockingCondition == nil)
+    }
+
     @Test("unknown, empty, or mixed unknown citations do not complete an item")
     func inventedCitations() throws {
         for ids in [[], [UUID()], [first.id, UUID()]] {

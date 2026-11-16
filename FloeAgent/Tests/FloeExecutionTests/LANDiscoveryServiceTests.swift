@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 import FloeToolboxDiagnostics
 @testable import FloeExecution
@@ -59,7 +60,7 @@ struct LANDiscoveryServiceTests {
     @Test("Blocked browsing without results throws a typed unavailable error, never an empty success")
     func blockedBrowsingThrowsTypedError() async throws {
         let blocked = LANDiscoveryService(scan: { _, _ in self.report([], status: .permissionUncertain,
-            notes: ["_http._tcp: waiting: Local network access is not allowed"])) })
+            notes: ["_http._tcp: waiting: Local network access is not allowed"]) })
         await #expect(throws: (any Error).self) { try await blocked.discover(timeoutSeconds: 3) }
         let noWiFi = LANDiscoveryService(scan: { _, _ in self.report([], status: .noWiFiPath) })
         await #expect(throws: (any Error).self) { try await noWiFi.discover(timeoutSeconds: 3) }

@@ -2656,16 +2656,22 @@ public actor LinuxGuestCommandChannel {
         }
         defer { timeoutTask?.cancel() }
 
-        let cancellationTask = Task {
-            while !Task.isCancelled {
-                if cancellation?.isCancelled == true {
-                    await self.requestInterrupt(token: token, error: FloeError.cancelled)
-                    return
+        let cancellationTask: Task<Void, Never>?
+        if let cancellation {
+            cancellationTask = Task {
+                while !Task.isCancelled {
+                    if cancellation.isCancelled {
+                        await self.requestInterrupt(token: token, error: FloeError.cancelled)
+                        return
+                    }
+                    do { try await Task.sleep(for: .milliseconds(100)) }
+                    catch { return }
                 }
-                try? await Task.sleep(for: .milliseconds(100))
             }
+        } else {
+            cancellationTask = nil
         }
-        defer { cancellationTask.cancel() }
+        defer { cancellationTask?.cancel() }
 
         let recoveryTask = Task {
             // Watch the interrupt state; once one is pending, give the guest
@@ -2700,6 +2706,8 @@ public actor LinuxGuestCommandChannel {
             guard !Task.isCancelled else { return }
             await self.failSilentStartup(token)
         }
+
+        defer { startupWatchdog.cancel() }
 
         ExecutionBreadcrumbs.shared.record(.shell, .sending, id: breadcrumbID)
         try await send(LinuxGuestFraming.payloadFrames(

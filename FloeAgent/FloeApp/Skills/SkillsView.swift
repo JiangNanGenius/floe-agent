@@ -313,16 +313,15 @@ struct SkillsView: View {
             }
         }
         .task {
-            await authoring.reload()
-            // Open the trusted bundled seed on first entry so a historical
-            // mistaken removal repairs here too, not only inside a task.
-            await center.seedBuiltinDomainSkills()
-            await center.load()
-            // The official bundled channel and the curated signed channel are
-            // independent stores: one slow or failing anonymous GitHub check
-            // must never delay or block the other store feed.
+            // Restore the curated storefront while local skills load. The
+            // official update check still follows the installed-skill load.
             await withTaskGroup(of: Void.self) { group in
-                group.addTask { await center.refreshOfficialCatalog() }
+                group.addTask {
+                    await authoring.reload()
+                    await center.seedBuiltinDomainSkills()
+                    await center.load()
+                    await center.refreshOfficialCatalog()
+                }
                 group.addTask { await center.refreshCuratedCatalog() }
             }
         }

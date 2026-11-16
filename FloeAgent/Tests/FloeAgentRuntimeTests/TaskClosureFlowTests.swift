@@ -35,6 +35,17 @@ struct TaskClosureFlowTests {
             checkpointStore:checkpointStore,sink:sink,runID:runID)
     }
 
+    @Test("An explicit future action without a checklist cannot end the run")
+    func explicitFutureWorkRequiresContinuation() {
+        let facts = TaskClosureGate.Facts(steps: [], receipts: [], availableToolNames: ["exec.shell"])
+        let gate = TaskClosureGate()
+        #expect(gate.evaluate(answer: "我会继续检查执行结果。", facts: facts, corrections: 0, isVerification: false) == .reconcileOnce)
+        #expect(gate.evaluate(answer: "我会继续检查执行结果。", facts: facts, corrections: 1, isVerification: false) == .reportUnfinished)
+        #expect(gate.evaluate(answer: "结果已检查完成。", facts: facts, corrections: 0, isVerification: false) == .allow)
+        #expect(gate.evaluate(answer: "你确认后我会继续检查。", facts: facts, corrections: 0, isVerification: false) == .allow)
+        #expect(gate.evaluate(answer: "请确认，之后我会继续检查。", facts: facts, corrections: 0, isVerification: false) == .allow)
+    }
+
     @Test("A pending task promise continues through the actual executor once")
     func promisedWorkActuallyExecutes() async throws {
         let run = UUID(), adapter = MockAdapter(), calls = executor()

@@ -60,7 +60,6 @@ public actor ShellOperationJournal {
 
     private let fileURL: URL
     private let encoder: JSONEncoder
-    private var pendingWrites = 0
 
     public init(rootURL: URL? = nil) {
         let directory: URL
@@ -78,7 +77,8 @@ public actor ShellOperationJournal {
 
     public func record(_ entry: Entry) {
         do {
-            let data = try encoder.encode(entry)
+            var data = try encoder.encode(entry)
+            data.append(0x0A)
             try rotateIfNeeded()
             if !FileManager.default.fileExists(atPath: fileURL.path) {
                 FileManager.default.createFile(atPath: fileURL.path, contents: nil)
@@ -87,8 +87,6 @@ public actor ShellOperationJournal {
             defer { try? handle.close() }
             try handle.seekToEnd()
             try handle.write(contentsOf: data)
-            try handle.write(contentsOf: Data("\n".utf8))
-            pendingWrites += 1
         } catch {
             FloeLogger(category: .tools).error("shellJournalWriteFailed error=\(error.localizedDescription)")
         }

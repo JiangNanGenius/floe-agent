@@ -380,7 +380,7 @@ private func identityDescriptor(id: String, imageID: String) -> LinuxGuestEnviro
     LinuxGuestEnvironmentDescriptor(id: id, ownerID: "owner", imageID: imageID)
 }
 
-private func caps(_ token: String) -> [Data] {
+private func localServiceCaps(_ token: String) -> [Data] {
     [Data("\u{1e}FLOE-CAPS \(token) runner=2.0.0 protocol=3 maxCommands=8 maxSessions=4\u{1e}\u{1e}FLOE-END \(token) 0\u{1e}".utf8)]
 }
 
@@ -558,7 +558,7 @@ final class LinuxGuestLocalServiceTests: XCTestCase {
             images: FakeImageResolver(images: [image.id: image]),
             limits: .standard,
             factory: FakeSessionFactory(ledger: FakeSessionLedger()) { _, token in
-                token.hasPrefix("hello-") ? caps(token) : reply(token)
+                token.hasPrefix("hello-") ? localServiceCaps(token) : reply(token)
             },
             runtimeV2: ScriptedIdentityV2Integrator(root: root, expandedRoot: expandedRoot)
         )

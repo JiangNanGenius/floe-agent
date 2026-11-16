@@ -733,7 +733,7 @@ struct ThreadDetailView: View {
                     "Long-term advancement is paused; this round continues. Use Stop in the composer to end this round."))
                     .font(.caption).foregroundStyle(.secondary)
             }
-            if goal.status == .verifying {
+            if goal.status == .verifying && goal.acceptanceCriteria.contains(where: \.requiresUserConfirmation) {
                 Button("goal.confirm_complete") {
                     Task { await viewModel.confirmGoalCompletion() }
                 }

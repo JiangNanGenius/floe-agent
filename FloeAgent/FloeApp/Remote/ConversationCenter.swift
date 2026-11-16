@@ -8681,7 +8681,7 @@ final class ConversationCenter: ObservableObject {
 
         let nextPrompt = """
         Continue the active task goal: \(goal.objective)
-        This is a new execution cycle in the same task. Inspect prior messages and tool evidence, make concrete progress, and produce inspectable evidence. Do not repeat an unchanged attempt. End this cycle when no further safe action is available.
+        This is a new execution cycle in the same task. Read the current goal and its criteria, inspect prior messages and tool evidence, and make concrete progress. Before claiming completion, independently check every criterion against the actual deliverable using available inspection or test tools and produce evidence for each. Repair remaining authorized work when possible. Do not ask the user to decide ordinary completion; request their input only when the criterion requires their own judgment, permission, or information unavailable to you. Do not repeat an unchanged attempt. End this cycle when no further safe action is available.
         """
         _ = try? await startRun(
             goal: nextPrompt,
@@ -8736,7 +8736,17 @@ final class ConversationCenter: ObservableObject {
         provider: ProviderProfile,
         model: ModelProfile
     ) async -> GoalEvidenceReviewContract.Result {
-        guard let input = try? GoalEvidenceReviewContract.input(goal: goal, evidence: newEvidence) else {
+        // A criterion may depend on an earlier cycle as well as this one.
+        // Bound the projection and require actual new progress separately so
+        // old receipts cannot keep a stalled goal alive by themselves.
+        let current = Array(newEvidence.suffix(24))
+        let currentIDs = Set(current.map(\.id))
+        let allNewIDs = Set(newEvidence.map(\.id))
+        let previous = goal.evidence.filter { !allNewIDs.contains($0.id) }.suffix(24)
+        let visibleEvidence = Array(previous) + current
+        guard let input = try? GoalEvidenceReviewContract.input(
+            goal: goal, evidence: visibleEvidence, currentEvidenceIDs: currentIDs
+        ) else {
             return GoalEvidenceReviewContract.Result()
         }
         let request = ProviderStreamRequest(
@@ -8765,7 +8775,7 @@ final class ConversationCenter: ObservableObject {
                 }
             }
         } catch { return GoalEvidenceReviewContract.Result() }
-        return GoalEvidenceReviewContract.parse(output, goal: goal, evidence: newEvidence)
+        return GoalEvidenceReviewContract.parse(output, goal: goal, evidence: visibleEvidence, currentEvidenceIDs: currentIDs)
     }
 
     func persistActiveRecoveryPoints() async {

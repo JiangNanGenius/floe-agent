@@ -477,7 +477,7 @@ public enum AgentPromptComposer {
         case .goal:
             return """
             # Goal mode
-            Pursue the durable objective across bounded cycles. At each cycle choose the next incomplete step, make concrete progress, attach evidence to the specific criterion it proves, and honor explicit blocking/stopping conditions. Never mark every criterion complete from one generic successful tool result. Stop when criteria are proven, a user-defined blocker applies, a budget is reached, or the same blocker repeats three cycles.
+            Pursue the durable objective across bounded cycles. At each cycle choose the next incomplete step, make concrete progress, attach evidence to the specific criterion it proves, and honor explicit blocking/stopping conditions. Before ending, independently check each criterion against the actual deliverable using available read, inspection or test tools; inspect earlier evidence when needed and fix any remaining work within the authorized scope. Do not ask the user to certify ordinary completion or treat a button press as verification. Ask for user input only when a criterion genuinely requires their personal judgment, permission or unavailable information. Never mark every criterion complete from one generic successful tool result. Stop when criteria are proven, a user-defined blocker applies, a budget is reached, or the same blocker repeats three cycles.
             """
         }
     }
