@@ -1166,6 +1166,105 @@ internal class PhoneControlSession(
             record.observation.packageName,
             effective,
         )?.let { return it }
+        // A date cell can keep the same path, view id and bounds while its
+        // label changes. Re-prove the bounded labels from the live node before
+        // dispatch. Never read any text or description from an editable,
+        // password or previously redacted node (including explicit secrets).
+        if (requirement == NodeRequirement.CLICK) {
+            PhoneControlSemanticIdentity.clickEvidenceDenial(
+                flagsUnavailable = nodeRecord.semanticFlagsUnavailable,
+                hasIdentity = nodeRecord.semanticIdentity != null,
+                ownIncomplete = nodeRecord.semanticOwnIncomplete,
+                childrenIncomplete = nodeRecord.semanticChildrenIncomplete,
+                childrenTextIncomplete = nodeRecord.semanticChildrenTextIncomplete,
+            )?.let { return it }
+        }
+        nodeRecord.semanticIdentity?.let { expected ->
+            val flags = runCatching {
+                Triple(
+                    node.isEditable,
+                    node.isPassword,
+                    node.actionList.any { it?.id == AccessibilityNodeInfo.ACTION_SET_TEXT },
+                )
+            }.getOrNull() ?: return PhoneControlDenial.STALE_OBSERVATION
+            val denial = runCatching {
+                PhoneControlSemanticIdentity.validate(
+                    expected = expected,
+                    visible = true,
+                    editable = flags.first || flags.third,
+                    password = flags.second,
+                    redacted = PhoneControlText.isSensitiveViewId(viewId),
+                    sensitiveInput = sensitiveInput,
+                    text = { node.text },
+                    description = { node.contentDescription },
+                )
+            }.getOrElse { PhoneControlDenial.STALE_OBSERVATION }
+            if (denial != null) return denial
+        }
+        if (requirement == NodeRequirement.CLICK &&
+            (nodeRecord.needsChildIdentity || nodeRecord.semanticChildren.isNotEmpty())
+        ) {
+            // An unlabeled clickable container may represent its meaning in a
+            // child (for example a calendar day). Do not reuse its old ref if
+            // that observed label moved, changed, or cannot be safely read.
+            if (nodeRecord.needsChildIdentity && nodeRecord.semanticChildren.isEmpty()) {
+                val count = runCatching { node.childCount }.getOrNull()
+                    ?: return PhoneControlDenial.STALE_OBSERVATION
+                if (count > 0) return PhoneControlDenial.NODE_UNAVAILABLE
+            }
+            for (childRecord in nodeRecord.semanticChildren) {
+                // Re-prove the entire ancestry before touching the label: a
+                // formerly ordinary intermediate node may now be an input.
+                for (end in 1 until childRecord.path.size) {
+                    val ancestor = resolveNode(node, childRecord.path.take(end))
+                        ?: return PhoneControlDenial.STALE_OBSERVATION
+                    val safe = try {
+                        runCatching {
+                            ancestor.isVisibleToUser && !ancestor.isEditable && !ancestor.isPassword &&
+                                !PhoneControlText.isSensitiveViewId(ancestor.viewIdResourceName) &&
+                                ancestor.actionList.none { it?.id == AccessibilityNodeInfo.ACTION_SET_TEXT } &&
+                                PhoneControlPolicy.nodeTargetDenial(
+                                    ancestor.packageName?.toString(), record.observation.packageName, effective,
+                                ) == null
+                        }.getOrDefault(false)
+                    } finally {
+                        @Suppress("DEPRECATION")
+                        runCatching { ancestor.recycle() }
+                    }
+                    if (!safe) return PhoneControlDenial.STALE_OBSERVATION
+                }
+                val child = resolveNode(node, childRecord.path)
+                    ?: return PhoneControlDenial.STALE_OBSERVATION
+                val valid = try {
+                    runCatching {
+                        val childViewId = child.viewIdResourceName
+                        val childPackage = child.packageName?.toString()
+                        if (!child.isVisibleToUser || child.className?.toString().orEmpty() != childRecord.className ||
+                            childViewId != childRecord.viewId ||
+                            PhoneControlPolicy.nodeTargetDenial(childPackage, record.observation.packageName, effective) != null
+                        ) false else {
+                            val editable = child.isEditable || child.actionList.any {
+                                it?.id == AccessibilityNodeInfo.ACTION_SET_TEXT
+                            }
+                            PhoneControlSemanticIdentity.validate(
+                                expected = childRecord.identity,
+                                visible = true,
+                                editable = editable,
+                                password = child.isPassword,
+                                redacted = PhoneControlText.isSensitiveViewId(childViewId),
+                                sensitiveInput = sensitiveInput,
+                                text = { child.text },
+                                description = { child.contentDescription },
+                            ) == null
+                        }
+                    }.getOrDefault(false)
+                } finally {
+                    @Suppress("DEPRECATION")
+                    runCatching { child.recycle() }
+                }
+                if (!valid) return PhoneControlDenial.STALE_OBSERVATION
+            }
+        }
         return when (requirement) {
             // The platform's own ACTION_CLICK advertisement is real declared
             // capability; a View that reports isClickable=false can still

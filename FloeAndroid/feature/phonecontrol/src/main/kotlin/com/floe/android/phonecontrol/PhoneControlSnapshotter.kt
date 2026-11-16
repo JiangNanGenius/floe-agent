@@ -339,7 +339,12 @@ internal class PhoneControlSnapshotter(private val service: AccessibilityService
             )
         }
         val viewId = runCatching { node.viewIdResourceName }.getOrNull()
-        val password = runCatching { node.isPassword }.getOrDefault(false)
+        // Unknown field flags are never evidence that reading it for an
+        // identity check is safe. Redact an unknown password flag and leave
+        // semantic matching disabled unless both flags were read as false.
+        val passwordFlag = runCatching { node.isPassword }.getOrNull()
+        val editableFlag = runCatching { node.isEditable }.getOrNull()
+        val password = passwordFlag != false
         val sensitive = password || PhoneControlText.isSensitiveViewId(viewId)
         if (sensitive) stats.hasSensitiveField = true
         val redact = redactAllText || sensitive
@@ -363,7 +368,8 @@ internal class PhoneControlSnapshotter(private val service: AccessibilityService
         val bounds = Rect()
         runCatching { node.getBoundsInScreen(bounds) }
         val scrollable = runCatching { node.isScrollable }.getOrDefault(false)
-        val childCount = runCatching { node.childCount }.getOrDefault(0)
+        val observedChildCount = runCatching { node.childCount }.getOrNull()
+        val childCount = observedChildCount ?: 0
         // Platform-declared actions/range are read from the SAME live handle.
         // They are real metadata (never class-name inference) and are used both
         // for honest presentation and for dispatch-time capability checks.
@@ -376,6 +382,8 @@ internal class PhoneControlSnapshotter(private val service: AccessibilityService
                 ).takeIf { it.valid }
             }
         }.getOrNull()
+        val advertisedActions = runCatching { node.actionList }.getOrNull()
+        val actions = readActions(advertisedActions)
         out += PhoneControlRawNode(
             path = path,
             parentPath = if (path.isEmpty()) null else path.dropLast(1),
@@ -391,7 +399,7 @@ internal class PhoneControlSnapshotter(private val service: AccessibilityService
             bounds = PhoneControlBounds(bounds.left, bounds.top, bounds.right, bounds.bottom),
             visible = runCatching { node.isVisibleToUser }.getOrDefault(false),
             clickable = runCatching { node.isClickable }.getOrDefault(false),
-            editable = runCatching { node.isEditable }.getOrDefault(false),
+            editable = editableFlag ?: false,
             scrollable = scrollable,
             enabled = runCatching { node.isEnabled }.getOrDefault(false),
             selected = runCatching { node.isSelected }.getOrDefault(false),
@@ -399,10 +407,15 @@ internal class PhoneControlSnapshotter(private val service: AccessibilityService
             checked = runCatching { node.isChecked }.getOrDefault(false),
             password = password,
             insideScrollable = insideScrollable,
-            actions = readActions(node),
+            actions = actions,
             focusable = runCatching { node.isFocusable }.getOrDefault(false),
             focused = runCatching { node.isFocused }.getOrDefault(false),
             range = range,
+            semanticEligible = editableFlag == false && passwordFlag == false && !redact &&
+                advertisedActions != null && PhoneControlNodeAction.SET_TEXT !in actions,
+            semanticFlagsUnavailable = editableFlag == null || passwordFlag == null ||
+                advertisedActions == null,
+            observedChildCount = observedChildCount ?: -1,
         )
         return PhoneControlCaptureWalk.Visit(
             childCount = childCount,
@@ -416,8 +429,10 @@ internal class PhoneControlSnapshotter(private val service: AccessibilityService
      * keep API-30 IME and API-23 directional scroll constants off older
      * devices (API 28 is the supported floor, but the guard stays explicit).
      */
-    private fun readActions(node: AccessibilityNodeInfo): Set<PhoneControlNodeAction> {
-        val advertised = runCatching { node.actionList }.getOrNull() ?: return emptySet()
+    private fun readActions(
+        advertised: List<AccessibilityNodeInfo.AccessibilityAction>?,
+    ): Set<PhoneControlNodeAction> {
+        if (advertised == null) return emptySet()
         if (advertised.isEmpty()) return emptySet()
         val actions = LinkedHashSet<PhoneControlNodeAction>(minOf(advertised.size, 8))
         for (action in advertised) {
