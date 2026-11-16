@@ -1001,6 +1001,39 @@ internal class DeviceAccessHost(
         if (!closed) publish()
     }
 
+    /** The chat Stop is a user request, not proof that the durable run has
+     * already settled. Fence only its exact device owner immediately. */
+    fun onRunStopRequested(epoch: Long, taskID: UUID, runID: UUID) {
+        val applyStop = stop@{
+            if (closed || epoch <= 0 || host.nativeRootEpoch() != epoch) return@stop
+            val owner = PhoneControlOwner(taskID, runID)
+            if (controlOwner() != owner) {
+                // Another owner can be arming while this owner is still
+                // retiring. Fence the stopped owner without touching the new
+                // session or its controls.
+                synchronized(activeStopLock) {
+                    if (host.nativeRootEpoch() != epoch) return@stop
+                    if (!stopFence.isStopped(owner) && (armedOwner == owner || armingOwner == owner ||
+                        automatedOwner.get() == owner || phoneStatus.activeOwner == owner)) {
+                        phoneControlRevision.bump(owner)
+                        stopFence.markStopped(owner, epoch)
+                    }
+                }
+                automatedOwner.compareAndSet(owner, null)
+                screenShare.clearExactTask(owner)
+                automationControls.clear(expectedOwner = owner)
+                deviceRunLiveness.stop(owner)
+                return@stop
+            }
+            // The caller already sends canonical run.cancel; never send a
+            // second cancel or wait for the native terminal before hiding.
+            stopActiveTask(takeOver = true, expectedOwner = owner,
+                requestRunCancellation = false, userStopEpoch = epoch)
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) applyStop()
+        else Handler(Looper.getMainLooper()).post { applyStop() }
+    }
+
     fun onBackgroundWorkStarted(epoch: Long, taskID: UUID, runID: UUID) {
         if (closed || host.nativeRootEpoch() != epoch) return
         val owner = PhoneControlOwner(taskID, runID)
@@ -2353,7 +2386,9 @@ internal class DeviceAccessHost(
     private fun claimTaskStop(
         owner: PhoneControlOwner,
         takeOver: Boolean,
+        expectedEpoch: Long? = null,
     ): PhoneControlStopClaims.Claim? = synchronized(activeStopLock) {
+        if (expectedEpoch != null && host.nativeRootEpoch() != expectedEpoch) return@synchronized null
         val currentToken = stopFence.entry(owner)?.token
         if (currentToken != null && stopClaims.isDuplicate(owner, currentToken)) {
             return@synchronized null
@@ -3164,12 +3199,19 @@ internal class DeviceAccessHost(
         )
     }
 
-    private fun stopActiveTask(takeOver: Boolean, expectedOwner: PhoneControlOwner? = null) {
+    private fun stopActiveTask(
+        takeOver: Boolean,
+        expectedOwner: PhoneControlOwner? = null,
+        requestRunCancellation: Boolean = true,
+        userStopEpoch: Long? = null,
+    ) {
+        if (userStopEpoch != null && host.nativeRootEpoch() != userStopEpoch) return
         // Prefer an actual arm/admission owner over an in-flight arming
         // placeholder, so a stale A arm cannot misdirect a Stop meant for a
         // newly admitted B.
         val owner = expectedOwner ?: armedOwner ?: automatedOwner.get() ?: armingOwner ?: currentCandidate()?.owner
-        if (expectedOwner != null && (!isOwnerRunLive(expectedOwner) || controlOwner() != expectedOwner)) {
+        if (expectedOwner != null &&
+            ((userStopEpoch == null && !isOwnerRunLive(expectedOwner)) || controlOwner() != expectedOwner)) {
             // A late notification callback for an old owner may remove only
             // that owner's presentation. It must not stop/renew the current
             // actual owner or create a new cross-task stop latch.
@@ -3193,10 +3235,15 @@ internal class DeviceAccessHost(
         OwnedExternalViewLaunch.clearForOwner(owner.taskID.toString(), owner.runID.toString())
         // Dedupe only the SAME still-current stop owner/generation. A pending
         // A cleanup must not swallow an immediate Stop of a newly active B.
-        val stop = claimTaskStop(owner, takeOver)
+        val stop = claimTaskStop(owner, takeOver, expectedEpoch = userStopEpoch)
         if (stop == null) {
+            if (userStopEpoch != null && host.nativeRootEpoch() != userStopEpoch) return
             automationControls.clear(expectedOwner = owner)
             publish()
+            return
+        }
+        if (userStopEpoch != null && host.nativeRootEpoch() != userStopEpoch) {
+            finishTaskStop(stop)
             return
         }
         // Retire this owner's controls and presentation BEFORE any queued or
@@ -3239,7 +3286,7 @@ internal class DeviceAccessHost(
                 // Retire only this owner's native observer after fencing
                 // input, so a later owner's proof is untouched.
                 if (stillThisStop()) deviceRunLiveness.stop(stoppingOwner)
-                if (stillThisStop()) {
+                if (requestRunCancellation && stillThisStop()) {
                     runCatching {
                         host.conversations.cancelRunFromNotification(
                             stoppingOwner.taskID.toString(), stoppingOwner.runID.toString())

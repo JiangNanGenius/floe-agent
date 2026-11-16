@@ -47,6 +47,10 @@ interface RuntimePlatformExtension {
     /** Notification only: authoritative holder activity changed, including in background. */
     fun onRunActivityChanged() = Unit
 
+    /** A user requested Stop for this exact live-generation run. This is not a
+     * claim that its durable cancellation has already completed. */
+    fun onRunStopRequested(epoch: Long, taskID: UUID, runID: UUID) = Unit
+
     /** Presentation only, from an admitted native workspace grant, never tool arguments. */
     fun onBackgroundWorkStarted(epoch: Long, taskID: UUID, runID: UUID) = Unit
 

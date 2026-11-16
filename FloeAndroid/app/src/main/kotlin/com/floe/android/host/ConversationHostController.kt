@@ -4141,6 +4141,13 @@ class ConversationHostController internal constructor(
     override fun cancelRun(session: ConversationSessionToken, runId: String): Boolean {
         if (!admitted()) return false
         val entry = holders[session.conversationId] ?: return false
+        if (!ownCurrentEntry(entry, session.conversationId, session.sessionEpoch)) return false
+        val stopEpoch = host.nativeRootEpoch()
+        val taskId = runCatching { java.util.UUID.fromString(session.conversationId) }.getOrNull()
+        val runUuid = runCatching { java.util.UUID.fromString(runId) }.getOrNull()
+        if (stopEpoch != null && taskId != null && runUuid != null &&
+            host.nativeRootEpoch() == stopEpoch && ownCurrentEntry(entry, session.conversationId, session.sessionEpoch)
+        ) runCatching { host.platformExtension?.onRunStopRequested(stopEpoch, taskId, runUuid) }
         // `run.cancel` requires revision run.<runID>/<state> AND
         // expectedState == the durable record state (any "any" sentinel is a
         // guaranteed staleRevision).

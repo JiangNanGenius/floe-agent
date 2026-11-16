@@ -79,6 +79,10 @@ private class FullRuntimePlatformExtension(
         device?.onRunActivityChanged()
     }
 
+    override fun onRunStopRequested(epoch: Long, taskID: UUID, runID: UUID) {
+        device?.onRunStopRequested(epoch, taskID, runID)
+    }
+
     override fun onBackgroundWorkStarted(epoch: Long, taskID: UUID, runID: UUID) {
         device?.onBackgroundWorkStarted(epoch, taskID, runID)
     }
