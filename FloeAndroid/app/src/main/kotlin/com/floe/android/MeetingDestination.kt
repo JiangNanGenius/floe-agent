@@ -1,0 +1,2823 @@
+// SPDX-License-Identifier: MPL-2.0
+package com.floe.android
+
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.listSaver
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.floe.android.design.Floe
+import com.floe.android.design.FloeActivityIndicator
+import com.floe.android.design.FloeBadgePill
+import com.floe.android.design.FloeBadgeTone
+import com.floe.android.design.FloeCapsuleAction
+import com.floe.android.design.FloeCircleButton
+import com.floe.android.design.FloeConfirmDialog
+import com.floe.android.design.FloeDetailToolbar
+import com.floe.android.design.FloeDivider
+import com.floe.android.design.FloeIcons
+import com.floe.android.design.FloePlainFormField
+import com.floe.android.design.FloePrimaryAction
+import com.floe.android.design.FloeSettingsSectionCard
+import com.floe.android.design.FloeStatusLine
+import com.floe.android.design.FloeText
+import com.floe.android.design.FloeToolbar
+import com.floe.android.design.FloeToolbarIconButton
+import com.floe.android.design.FloeUnavailableView
+import com.floe.android.design.FloeVerticalDivider
+import com.floe.android.design.IconGlyph
+import com.floe.android.host.meeting.MeetingDetail
+import com.floe.android.host.meeting.MeetingError
+import com.floe.android.host.meeting.MeetingErrorCode
+import com.floe.android.host.meeting.MeetingException
+import com.floe.android.host.meeting.MeetingManager
+import com.floe.android.host.meeting.MeetingMaterial
+import com.floe.android.host.meeting.MeetingMaterialKind
+import com.floe.android.host.meeting.MeetingMaterialStatus
+import com.floe.android.host.meeting.MeetingPermissionState
+import com.floe.android.host.meeting.MeetingPlayer
+import com.floe.android.host.meeting.MeetingPlayerState
+import com.floe.android.host.meeting.MeetingPlayerStatus
+import com.floe.android.host.meeting.MeetingRecordingPhase
+import com.floe.android.host.meeting.MeetingRecordingState
+import com.floe.android.host.meeting.MeetingSummary
+import io.github.robinpcrd.cupertino.CupertinoAlertDialog
+import io.github.robinpcrd.cupertino.cancel
+import io.github.robinpcrd.cupertino.default
+import io.github.robinpcrd.cupertino.destructive
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
+import java.text.DateFormat
+import java.util.Date
+
+/**
+ * Standalone Android meeting workspace for the Space entry.
+ *
+ * ```kotlin
+ * MeetingDestination(
+ *     manager = remember { MeetingManager(context) },
+ *     compact = compact,
+ *     showSidebarToggle = showSidebarToggle,
+ *     onExpandSidebar = onExpandSidebar,
+ *     onOpenDrawer = onOpenDrawer,
+ *     onExit = onExit,
+ * )
+ *
+ * The onExit callback returns from the Space meeting surface.
+ * ```
+ *
+ * The page reads [MeetingManager.meetings]/[MeetingManager.ready] and the
+ * process-wide [MeetingManager.recorder] state. Every mutation calls the
+ * manager's suspend API; failures remain visible instead of being converted
+ * into local success. Recording is owned by the foreground service, so this
+ * composable never stops capture on disposal. Playback is owned by this page
+ * and is released when the page or material changes.
+ *
+ * Phone windows show one pane (list or detail); tablet windows use a list /
+ * detail split. [onExit] is the shell-owned return path and runs only after
+ * the unsaved-notes and active-recording guards.
+ */
+@Composable
+internal fun MeetingDestination(
+    manager: MeetingManager,
+    compact: Boolean,
+    showSidebarToggle: Boolean,
+    onExpandSidebar: () -> Unit,
+    onOpenDrawer: () -> Unit,
+    onExit: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val meetings by manager.meetings.collectAsState()
+    val ready by manager.ready.collectAsState()
+    val recorderState by manager.recorder.state.collectAsState()
+    val permission by manager.permission.collectAsState()
+    val scope = rememberCoroutineScope()
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    var selectedId by rememberSaveable { mutableStateOf<String?>(null) }
+    var listError by remember { mutableStateOf<MeetingError?>(null) }
+    var listNoticeRes by remember { mutableStateOf<Int?>(null) }
+    var refreshing by remember { mutableStateOf(false) }
+
+    var createVisible by rememberSaveable { mutableStateOf(false) }
+    var createTitle by rememberSaveable { mutableStateOf("") }
+    var createBusy by remember { mutableStateOf(false) }
+    var createError by remember { mutableStateOf<MeetingError?>(null) }
+
+    var detail by remember(selectedId) { mutableStateOf<MeetingDetail?>(null) }
+    var detailLoading by remember(selectedId) { mutableStateOf(selectedId != null) }
+    var detailError by remember(selectedId) { mutableStateOf<MeetingError?>(null) }
+    var detailNoticeRes by remember(selectedId) { mutableStateOf<Int?>(null) }
+    var notesState by rememberSaveable(
+        selectedId,
+        stateSaver = MeetingNotesUiStateSaver,
+    ) {
+        mutableStateOf(MeetingNotesUiState())
+    }
+    var notesBusy by remember(selectedId) { mutableStateOf(false) }
+    var notesError by remember(selectedId) { mutableStateOf<MeetingError?>(null) }
+    var notesNoticeRes by remember(selectedId) { mutableStateOf<Int?>(null) }
+
+    var recordBusy by remember(selectedId) { mutableStateOf(false) }
+    var recordBusyLabelRes by remember(selectedId) { mutableStateOf<Int?>(null) }
+    var recordError by remember(selectedId) { mutableStateOf<MeetingError?>(null) }
+    var recordNoticeRes by remember(selectedId) { mutableStateOf<Int?>(null) }
+    var recordRetainedTake by remember(selectedId) { mutableStateOf<MeetingMaterial?>(null) }
+    var listRetainedTake by remember { mutableStateOf<MeetingMaterial?>(null) }
+
+    var importBusy by remember(selectedId) { mutableStateOf(false) }
+    var importError by remember(selectedId) { mutableStateOf<MeetingError?>(null) }
+    var importNotice by remember(selectedId) { mutableStateOf<String?>(null) }
+
+    var renameVisible by remember(selectedId) { mutableStateOf(false) }
+    var renameTitle by remember(selectedId) { mutableStateOf("") }
+    var renameBusy by remember(selectedId) { mutableStateOf(false) }
+    var renameError by remember(selectedId) { mutableStateOf<MeetingError?>(null) }
+
+    var deleteVisible by remember(selectedId) { mutableStateOf(false) }
+    var deleteBusy by remember(selectedId) { mutableStateOf(false) }
+    var deleteError by remember(selectedId) { mutableStateOf<MeetingError?>(null) }
+
+    var pendingNotesLeave by remember { mutableStateOf<MeetingLeaveTarget?>(null) }
+    var pendingRecordingLeave by remember { mutableStateOf<MeetingLeaveTarget?>(null) }
+    var stoppingToLeave by remember { mutableStateOf(false) }
+    var permissionStartMeetingId by remember { mutableStateOf<String?>(null) }
+
+    val selectedSummary = meetings.firstOrNull { it.id == selectedId }
+    val recordingMeetingTitle = recorderState.meetingId?.let { activeId ->
+        meetings.firstOrNull { it.id == activeId }?.title
+    }
+
+    suspend fun loadDetail(id: String) {
+        try {
+            val loaded = manager.meeting(id)
+            if (selectedId != id) return
+            detail = loaded
+            detailError = null
+            notesState = notesState.afterLoad(loaded.notes, loaded.notesRevision)
+        } catch (error: MeetingException) {
+            if (selectedId == id) detailError = error.error
+        }
+    }
+
+    suspend fun refreshCatalogQuietly() {
+        try {
+            manager.refresh()
+        } catch (_: MeetingException) {
+            // The durable state is authoritative; a failed catalog rescan
+            // must not turn a completed mutation into a fake failure.
+        }
+    }
+
+    fun saveNotes(onSaved: (() -> Unit)? = null) {
+        val id = selectedId ?: return
+        if (notesBusy || !notesState.canSave) return
+        notesBusy = true
+        notesError = null
+        notesNoticeRes = null
+        scope.launch {
+            try {
+                val saved = manager.updateNotes(id, notesState.draft, notesState.revision)
+                if (selectedId != id) return@launch
+                detail = saved
+                notesState = notesState.afterSave(saved.notes, saved.notesRevision)
+                notesNoticeRes = R.string.meeting_ui_notes_saved_notice
+                refreshCatalogQuietly()
+                onSaved?.invoke()
+            } catch (error: MeetingException) {
+                if (selectedId != id) return@launch
+                if (error.code == MeetingErrorCode.CONFLICT) {
+                    notesState = notesState.copy(
+                        conflict = true,
+                        recovery = notesState.recovery ?: notesState.draft,
+                    )
+                    try {
+                        val latest = manager.meeting(id)
+                        if (selectedId != id) return@launch
+                        detail = latest
+                        notesState = notesState.afterConflict(latest.notes, latest.notesRevision)
+                    } catch (fetchError: MeetingException) {
+                        if (selectedId == id) notesError = fetchError.error
+                    }
+                } else {
+                    notesError = error.error
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } finally {
+                if (selectedId == id) notesBusy = false
+            }
+        }
+    }
+
+    fun reloadLatestNotes() {
+        val id = selectedId ?: return
+        if (notesBusy) return
+        notesBusy = true
+        notesError = null
+        notesNoticeRes = null
+        scope.launch {
+            try {
+                val latest = manager.meeting(id)
+                if (selectedId != id) return@launch
+                detail = latest
+                notesState = notesState.reloadLatest(latest.notes, latest.notesRevision)
+                notesNoticeRes = R.string.meeting_ui_notes_reloaded
+                refreshCatalogQuietly()
+            } catch (error: MeetingException) {
+                if (selectedId == id) notesError = error.error
+            } catch (error: CancellationException) {
+                throw error
+            } finally {
+                if (selectedId == id) notesBusy = false
+            }
+        }
+    }
+
+    fun restoreMyNotes() {
+        val id = selectedId ?: return
+        if (notesBusy) return
+        notesBusy = true
+        notesError = null
+        notesNoticeRes = null
+        scope.launch {
+            try {
+                val latest = manager.meeting(id)
+                if (selectedId != id) return@launch
+                detail = latest
+                notesState = notesState.restore(latest.notes, latest.notesRevision)
+                notesNoticeRes = R.string.meeting_ui_notes_restored
+                refreshCatalogQuietly()
+            } catch (error: MeetingException) {
+                if (selectedId == id) notesError = error.error
+            } catch (error: CancellationException) {
+                throw error
+            } finally {
+                if (selectedId == id) notesBusy = false
+            }
+        }
+    }
+
+    fun performRecordAction(
+        id: String,
+        busyLabelRes: Int,
+        successRes: Int,
+        action: suspend () -> Unit,
+    ) {
+        if (recordBusy) return
+        recordBusy = true
+        recordBusyLabelRes = busyLabelRes
+        recordError = null
+        recordNoticeRes = null
+        recordRetainedTake = null
+        listRetainedTake = null
+        scope.launch {
+            try {
+                action()
+                if (selectedId == id) {
+                    recordNoticeRes = successRes
+                    loadDetail(id)
+                }
+                refreshCatalogQuietly()
+            } catch (error: MeetingException) {
+                if (selectedId == id) recordError = error.error
+            } catch (error: CancellationException) {
+                throw error
+            } finally {
+                if (selectedId == id) {
+                    recordBusy = false
+                    recordBusyLabelRes = null
+                }
+            }
+        }
+    }
+
+    fun performStopRecording(id: String) {
+        if (recordBusy) return
+        recordBusy = true
+        recordBusyLabelRes = R.string.meeting_ui_record_stopping
+        recordError = null
+        recordNoticeRes = null
+        recordRetainedTake = null
+        listRetainedTake = null
+        scope.launch {
+            try {
+                val material = manager.recorder.stop()
+                if (selectedId == id) {
+                    if (meetingStopSucceeded(material.status, material.isPlayable)) {
+                        recordNoticeRes = R.string.meeting_ui_record_stopped
+                    } else {
+                        recordRetainedTake = material
+                    }
+                    loadDetail(id)
+                } else if (selectedId == null && !meetingStopSucceeded(material.status, material.isPlayable)) {
+                    listRetainedTake = material
+                }
+                refreshCatalogQuietly()
+            } catch (error: MeetingException) {
+                if (selectedId == id) {
+                    recordError = error.error
+                } else if (selectedId == null) {
+                    listError = error.error
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } finally {
+                if (selectedId == id) {
+                    recordBusy = false
+                    recordBusyLabelRes = null
+                }
+            }
+        }
+    }
+
+    fun performStartRecording(id: String) {
+        performRecordAction(
+            id = id,
+            busyLabelRes = R.string.meeting_ui_record_starting,
+            successRes = R.string.meeting_ui_record_started,
+        ) {
+            manager.recorder.start(id)
+        }
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { _ ->
+        manager.refreshPermissionState()
+        val pendingId = permissionStartMeetingId
+        permissionStartMeetingId = null
+        if (pendingId != null) {
+            if (manager.permission.value.microphoneGranted) {
+                performStartRecording(pendingId)
+            } else if (selectedId == pendingId) {
+                recordError = MeetingError(
+                    code = MeetingErrorCode.PERMISSION_REQUIRED,
+                    message = "Microphone permission is required.",
+                    retryable = true,
+                )
+            }
+        }
+    }
+
+    fun startRecording(id: String) {
+        if (manager.permission.value.microphoneGranted) {
+            performStartRecording(id)
+        } else {
+            permissionStartMeetingId = id
+            permissionLauncher.launch(manager.requiredPermissions().toTypedArray())
+        }
+    }
+
+    fun grantMicrophone() {
+        permissionStartMeetingId = null
+        permissionLauncher.launch(manager.requiredPermissions().toTypedArray())
+    }
+
+    fun importMedia(id: String, uri: Uri) {
+        if (importBusy) return
+        importBusy = true
+        importError = null
+        importNotice = null
+        scope.launch {
+            try {
+                val material = manager.importMedia(id, uri)
+                if (selectedId == id) {
+                    importNotice = material.displayName
+                    loadDetail(id)
+                }
+                refreshCatalogQuietly()
+            } catch (error: MeetingException) {
+                if (selectedId == id) importError = error.error
+            } catch (error: CancellationException) {
+                throw error
+            } finally {
+                if (selectedId == id) importBusy = false
+            }
+        }
+    }
+
+    fun openRenameDialog() {
+        renameTitle = detail?.title.orEmpty()
+        renameError = null
+        renameVisible = true
+    }
+
+    fun submitRename() {
+        val id = selectedId ?: return
+        if (renameBusy || renameTitle.isBlank()) return
+        renameBusy = true
+        renameError = null
+        scope.launch {
+            try {
+                val updated = manager.renameMeeting(id, renameTitle)
+                if (selectedId == id) {
+                    detail = updated
+                    renameVisible = false
+                    detailNoticeRes = R.string.meeting_ui_renamed
+                }
+                refreshCatalogQuietly()
+            } catch (error: MeetingException) {
+                if (selectedId == id) renameError = error.error
+            } catch (error: CancellationException) {
+                throw error
+            } finally {
+                if (selectedId == id) renameBusy = false
+            }
+        }
+    }
+
+    fun submitDelete() {
+        val id = selectedId ?: return
+        if (deleteBusy) return
+        deleteVisible = false
+        deleteBusy = true
+        deleteError = null
+        scope.launch {
+            try {
+                manager.deleteMeeting(id)
+                if (selectedId == id) selectedId = null
+                listRetainedTake = null
+                listNoticeRes = R.string.meeting_ui_deleted
+                refreshCatalogQuietly()
+            } catch (error: MeetingException) {
+                if (selectedId == id) deleteError = error.error else listError = error.error
+            } catch (error: CancellationException) {
+                throw error
+            } finally {
+                if (selectedId == id) deleteBusy = false
+            }
+        }
+    }
+
+    fun finishNavigation(target: MeetingLeaveTarget) {
+        pendingNotesLeave = null
+        pendingRecordingLeave = null
+        listNoticeRes = null
+        listRetainedTake = null
+        when (target) {
+            MeetingLeaveTarget.Page -> onExit()
+            MeetingLeaveTarget.ClearSelection -> selectedId = null
+            is MeetingLeaveTarget.Select -> selectedId = target.id
+        }
+    }
+
+    fun continueNavigation(target: MeetingLeaveTarget) {
+        val leavingMeetingId = when (target) {
+            MeetingLeaveTarget.Page -> null
+            MeetingLeaveTarget.ClearSelection -> selectedId
+            is MeetingLeaveTarget.Select -> if (target.id == selectedId) null else selectedId
+        }
+        val needsRecordingPrompt = meetingLeaveNeedsRecordingPrompt(
+            phase = recorderState.phase,
+            activeMeetingId = recorderState.meetingId,
+            leavingMeetingId = leavingMeetingId,
+            leavingPage = target is MeetingLeaveTarget.Page,
+        )
+        if (needsRecordingPrompt) {
+            pendingRecordingLeave = target
+        } else {
+            finishNavigation(target)
+        }
+    }
+
+    fun requestNavigation(target: MeetingLeaveTarget) {
+        if (notesState.dirty || notesState.conflict) {
+            pendingNotesLeave = target
+        } else {
+            continueNavigation(target)
+        }
+    }
+
+    fun submitCreateMeeting() {
+        if (createBusy) return
+        createBusy = true
+        createError = null
+        scope.launch {
+            try {
+                val created = manager.createMeeting(createTitle)
+                createVisible = false
+                createTitle = ""
+                refreshCatalogQuietly()
+                requestNavigation(MeetingLeaveTarget.Select(created.id))
+            } catch (error: MeetingException) {
+                createError = error.error
+            } catch (error: CancellationException) {
+                throw error
+            } finally {
+                createBusy = false
+            }
+        }
+    }
+
+    fun stopRecordingAndLeave() {
+        val target = pendingRecordingLeave ?: return
+        if (stoppingToLeave) return
+        stoppingToLeave = true
+        recordError = null
+        recordNoticeRes = null
+        recordRetainedTake = null
+        listRetainedTake = null
+        scope.launch {
+            try {
+                val material = manager.recorder.stop()
+                pendingRecordingLeave = null
+                stoppingToLeave = false
+                refreshCatalogQuietly()
+                if (meetingStopSucceeded(material.status, material.isPlayable)) {
+                    finishNavigation(target)
+                } else if (selectedId == null) {
+                    // The stop left retained bytes. Stay on the list so the
+                    // user sees the outcome and decides when to leave.
+                    listRetainedTake = material
+                } else {
+                    // Stay on the meeting detail for the same reason.
+                    recordRetainedTake = material
+                }
+            } catch (error: MeetingException) {
+                stoppingToLeave = false
+                pendingRecordingLeave = null
+                if (selectedId == null) {
+                    listError = error.error
+                } else {
+                    recordError = error.error
+                }
+            } catch (error: CancellationException) {
+                throw error
+            }
+        }
+    }
+
+    LaunchedEffect(manager) {
+        manager.refreshPermissionState()
+        try {
+            manager.refresh()
+            listError = null
+        } catch (error: MeetingException) {
+            listError = error.error
+        }
+    }
+
+    DisposableEffect(lifecycleOwner, manager) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) manager.refreshPermissionState()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    LaunchedEffect(selectedId, selectedSummary?.revision) {
+        val id = selectedId ?: return@LaunchedEffect
+        if (detail == null) detailLoading = true
+        detailError = null
+        try {
+            loadDetail(id)
+        } finally {
+            if (selectedId == id) detailLoading = false
+        }
+    }
+
+    ImeFirstBackHandler {
+        if (selectedId != null) {
+            requestNavigation(MeetingLeaveTarget.ClearSelection)
+        } else {
+            requestNavigation(MeetingLeaveTarget.Page)
+        }
+    }
+
+    BoxWithConstraints(
+        modifier
+            .fillMaxSize()
+            .background(Floe.colors.readingSurface),
+    ) {
+        val twoPane = !compact && maxWidth >= 600.dp
+        if (twoPane) {
+            val listWidth = (maxWidth.value * 0.32f).coerceIn(280f, 380f).dp
+            Row(Modifier.fillMaxSize()) {
+                Box(Modifier.width(listWidth).fillMaxHeight()) {
+                    MeetingListPane(
+                        meetings = meetings,
+                        ready = ready,
+                        selectedId = selectedId,
+                        recorderState = recorderState,
+                        listError = listError,
+                        listNoticeRes = listNoticeRes,
+                        listRetainedTake = listRetainedTake,
+                        refreshing = refreshing,
+                        compact = compact,
+                        showSidebarToggle = showSidebarToggle,
+                        onExpandSidebar = onExpandSidebar,
+                        onOpenDrawer = onOpenDrawer,
+                        onExitPage = { requestNavigation(MeetingLeaveTarget.Page) },
+                        onSelect = { requestNavigation(MeetingLeaveTarget.Select(it)) },
+                        onCreate = {
+                            createTitle = ""
+                            createError = null
+                            createVisible = true
+                        },
+                        onRefresh = {
+                            if (!refreshing) {
+                                refreshing = true
+                                scope.launch {
+                                    try {
+                                        manager.refresh()
+                                        listError = null
+                                    } catch (error: MeetingException) {
+                                        listError = error.error
+                                    } finally {
+                                        refreshing = false
+                                    }
+                                }
+                            }
+                        },
+                        onOpenRecordingMeeting = { id ->
+                            requestNavigation(MeetingLeaveTarget.Select(id))
+                        },
+                    )
+                }
+                FloeVerticalDivider()
+                Box(Modifier.weight(1f).fillMaxHeight()) {
+                    if (selectedId == null) {
+                        MeetingSelectPlaceholder()
+                    } else {
+                        MeetingDetailHost(
+                            manager = manager,
+                            meetingId = selectedId.orEmpty(),
+                            summary = selectedSummary,
+                            detail = detail,
+                            loading = detailLoading,
+                            loadError = detailError,
+                            notesState = notesState,
+                            notesBusy = notesBusy,
+                            notesError = notesError,
+                            notesNoticeRes = notesNoticeRes,
+                            detailNoticeRes = detailNoticeRes,
+                            recorderState = recorderState,
+                            recordingMeetingTitle = recordingMeetingTitle,
+                            permission = permission,
+                            recordBusy = recordBusy,
+                            recordBusyLabelRes = recordBusyLabelRes,
+                            recordError = recordError,
+                            recordNoticeRes = recordNoticeRes,
+                            recordRetainedTake = recordRetainedTake,
+                            importBusy = importBusy,
+                            importError = importError,
+                            importNotice = importNotice,
+                            deleteBusy = deleteBusy,
+                            deleteError = deleteError,
+                            twoPane = true,
+                            onBack = { requestNavigation(MeetingLeaveTarget.ClearSelection) },
+                            onRefresh = {
+                                scope.launch {
+                                    if (selectedId != null) {
+                                        detailLoading = true
+                                        loadDetail(selectedId.orEmpty())
+                                        detailLoading = false
+                                    }
+                                }
+                            },
+                            onNotesChange = { value ->
+                                notesState = notesState.edited(value)
+                                notesNoticeRes = null
+                            },
+                            onSaveNotes = { saveNotes() },
+                            onReloadNotes = { reloadLatestNotes() },
+                            onRestoreNotes = { restoreMyNotes() },
+                            onStartRecording = {
+                                if (selectedId != null) startRecording(selectedId.orEmpty())
+                            },
+                            onPauseRecording = {
+                                if (selectedId != null) {
+                                    performRecordAction(
+                                        id = selectedId.orEmpty(),
+                                        busyLabelRes = R.string.meeting_ui_record_pausing,
+                                        successRes = R.string.meeting_ui_record_paused,
+                                    ) { manager.recorder.pause() }
+                                }
+                            },
+                            onResumeRecording = {
+                                if (selectedId != null) {
+                                    performRecordAction(
+                                        id = selectedId.orEmpty(),
+                                        busyLabelRes = R.string.meeting_ui_record_resuming,
+                                        successRes = R.string.meeting_ui_record_resumed,
+                                    ) { manager.recorder.resume() }
+                                }
+                            },
+                            onStopRecording = {
+                                if (selectedId != null) {
+                                    performStopRecording(selectedId.orEmpty())
+                                }
+                            },
+                            onGrantMicrophone = { grantMicrophone() },
+                            onImport = { uri ->
+                                if (selectedId != null) importMedia(selectedId.orEmpty(), uri)
+                            },
+                            onRename = { openRenameDialog() },
+                            onDelete = {
+                                deleteError = null
+                                deleteVisible = true
+                            },
+                            onOpenOtherMeeting = { id ->
+                                requestNavigation(MeetingLeaveTarget.Select(id))
+                            },
+                        )
+                    }
+                }
+            }
+        } else if (selectedId == null) {
+            MeetingListPane(
+                meetings = meetings,
+                ready = ready,
+                selectedId = selectedId,
+                recorderState = recorderState,
+                listError = listError,
+                listNoticeRes = listNoticeRes,
+                listRetainedTake = listRetainedTake,
+                refreshing = refreshing,
+                compact = compact,
+                showSidebarToggle = showSidebarToggle,
+                onExpandSidebar = onExpandSidebar,
+                onOpenDrawer = onOpenDrawer,
+                onExitPage = { requestNavigation(MeetingLeaveTarget.Page) },
+                onSelect = { requestNavigation(MeetingLeaveTarget.Select(it)) },
+                onCreate = {
+                    createTitle = ""
+                    createError = null
+                    createVisible = true
+                },
+                onRefresh = {
+                    if (!refreshing) {
+                        refreshing = true
+                        scope.launch {
+                            try {
+                                manager.refresh()
+                                listError = null
+                            } catch (error: MeetingException) {
+                                listError = error.error
+                            } finally {
+                                refreshing = false
+                            }
+                        }
+                    }
+                },
+                onOpenRecordingMeeting = { id ->
+                    requestNavigation(MeetingLeaveTarget.Select(id))
+                },
+            )
+        } else {
+            MeetingDetailHost(
+                manager = manager,
+                meetingId = selectedId.orEmpty(),
+                summary = selectedSummary,
+                detail = detail,
+                loading = detailLoading,
+                loadError = detailError,
+                notesState = notesState,
+                notesBusy = notesBusy,
+                notesError = notesError,
+                notesNoticeRes = notesNoticeRes,
+                detailNoticeRes = detailNoticeRes,
+                recorderState = recorderState,
+                recordingMeetingTitle = recordingMeetingTitle,
+                permission = permission,
+                recordBusy = recordBusy,
+                recordBusyLabelRes = recordBusyLabelRes,
+                recordError = recordError,
+                recordNoticeRes = recordNoticeRes,
+                recordRetainedTake = recordRetainedTake,
+                importBusy = importBusy,
+                importError = importError,
+                importNotice = importNotice,
+                deleteBusy = deleteBusy,
+                deleteError = deleteError,
+                twoPane = false,
+                onBack = { requestNavigation(MeetingLeaveTarget.ClearSelection) },
+                onRefresh = {
+                    scope.launch {
+                        if (selectedId != null) {
+                            detailLoading = true
+                            loadDetail(selectedId.orEmpty())
+                            detailLoading = false
+                        }
+                    }
+                },
+                onNotesChange = { value ->
+                    notesState = notesState.edited(value)
+                    notesNoticeRes = null
+                },
+                onSaveNotes = { saveNotes() },
+                onReloadNotes = { reloadLatestNotes() },
+                onRestoreNotes = { restoreMyNotes() },
+                onStartRecording = {
+                    if (selectedId != null) startRecording(selectedId.orEmpty())
+                },
+                onPauseRecording = {
+                    if (selectedId != null) {
+                        performRecordAction(
+                            id = selectedId.orEmpty(),
+                            busyLabelRes = R.string.meeting_ui_record_pausing,
+                            successRes = R.string.meeting_ui_record_paused,
+                        ) { manager.recorder.pause() }
+                    }
+                },
+                onResumeRecording = {
+                    if (selectedId != null) {
+                        performRecordAction(
+                            id = selectedId.orEmpty(),
+                            busyLabelRes = R.string.meeting_ui_record_resuming,
+                            successRes = R.string.meeting_ui_record_resumed,
+                        ) { manager.recorder.resume() }
+                    }
+                },
+                onStopRecording = {
+                    if (selectedId != null) {
+                        performStopRecording(selectedId.orEmpty())
+                    }
+                },
+                onGrantMicrophone = { grantMicrophone() },
+                onImport = { uri ->
+                    if (selectedId != null) importMedia(selectedId.orEmpty(), uri)
+                },
+                onRename = { openRenameDialog() },
+                onDelete = {
+                    deleteError = null
+                    deleteVisible = true
+                },
+                onOpenOtherMeeting = { id ->
+                    requestNavigation(MeetingLeaveTarget.Select(id))
+                },
+            )
+        }
+    }
+
+    if (createVisible) {
+        MeetingTitleDialog(
+            title = stringResource(R.string.meeting_ui_new),
+            fieldLabel = stringResource(R.string.meeting_ui_new_hint),
+            confirmLabel = stringResource(R.string.meeting_ui_create),
+            busyLabelRes = R.string.meeting_ui_creating,
+            value = createTitle,
+            onValueChange = { createTitle = it },
+            busy = createBusy,
+            error = createError,
+            confirmEnabled = true,
+            onConfirm = { submitCreateMeeting() },
+            onDismiss = {
+                if (!createBusy) {
+                    createVisible = false
+                    createError = null
+                }
+            },
+        )
+    }
+
+    if (renameVisible) {
+        MeetingTitleDialog(
+            title = stringResource(R.string.meeting_ui_rename),
+            fieldLabel = stringResource(R.string.meeting_ui_rename_hint),
+            confirmLabel = stringResource(R.string.meeting_ui_rename_save),
+            busyLabelRes = R.string.meeting_ui_saving_title,
+            value = renameTitle,
+            onValueChange = { renameTitle = it },
+            busy = renameBusy,
+            error = renameError,
+            confirmEnabled = renameTitle.isNotBlank(),
+            onConfirm = { submitRename() },
+            onDismiss = {
+                if (!renameBusy) {
+                    renameVisible = false
+                    renameError = null
+                }
+            },
+        )
+    }
+
+    if (deleteVisible) {
+        val title = detail?.title ?: selectedSummary?.title ?: stringResource(R.string.meeting_ui_detail_title)
+        FloeConfirmDialog(
+            title = stringResource(R.string.meeting_ui_delete_title),
+            message = stringResource(R.string.meeting_ui_delete_body, title),
+            confirmLabel = stringResource(R.string.meeting_ui_delete_confirm),
+            dismissLabel = stringResource(R.string.meeting_ui_cancel),
+            onConfirm = { submitDelete() },
+            onDismiss = { deleteVisible = false },
+        )
+    }
+
+    pendingNotesLeave?.let { target ->
+        MeetingLeaveNotesDialog(
+            canSave = notesState.canSave && !notesBusy,
+            saving = notesBusy,
+            onSave = {
+                pendingNotesLeave = null
+                saveNotes(onSaved = { continueNavigation(target) })
+            },
+            onDiscard = {
+                notesState = notesState.discarded()
+                pendingNotesLeave = null
+                continueNavigation(target)
+            },
+            onStay = { pendingNotesLeave = null },
+        )
+    }
+
+    pendingRecordingLeave?.let { target ->
+        MeetingLeaveRecordingDialog(
+            meetingTitle = recordingMeetingTitle,
+            stopping = stoppingToLeave,
+            onContinueBackground = {
+                pendingRecordingLeave = null
+                finishNavigation(target)
+            },
+            onStay = {
+                if (!stoppingToLeave) pendingRecordingLeave = null
+            },
+            onStop = { stopRecordingAndLeave() },
+        )
+    }
+}
+
+/**
+ * Convenience overload for the Space integration point. The explicit
+ * [MeetingManager] overload remains the testable seam; this one only creates
+ * the cheap process-wide facade.
+ */
+@Composable
+internal fun MeetingDestination(
+    compact: Boolean,
+    showSidebarToggle: Boolean,
+    onExpandSidebar: () -> Unit,
+    onOpenDrawer: () -> Unit,
+    onExit: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val applicationContext = LocalContext.current.applicationContext
+    val manager = remember(applicationContext) { MeetingManager(applicationContext) }
+    DisposableEffect(manager) { onDispose { manager.close() } }
+    MeetingDestination(
+        manager = manager,
+        compact = compact,
+        showSidebarToggle = showSidebarToggle,
+        onExpandSidebar = onExpandSidebar,
+        onOpenDrawer = onOpenDrawer,
+        onExit = onExit,
+        modifier = modifier,
+    )
+}
+
+@Composable
+private fun MeetingListPane(
+    meetings: List<MeetingSummary>,
+    ready: Boolean,
+    selectedId: String?,
+    recorderState: MeetingRecordingState,
+    listError: MeetingError?,
+    listNoticeRes: Int?,
+    listRetainedTake: MeetingMaterial?,
+    refreshing: Boolean,
+    compact: Boolean,
+    showSidebarToggle: Boolean,
+    onExpandSidebar: () -> Unit,
+    onOpenDrawer: () -> Unit,
+    onExitPage: () -> Unit,
+    onSelect: (String) -> Unit,
+    onCreate: () -> Unit,
+    onRefresh: () -> Unit,
+    onOpenRecordingMeeting: (String) -> Unit,
+) {
+    Column(Modifier.fillMaxSize().background(Floe.colors.readingSurface)) {
+        FloeToolbar(
+            title = stringResource(R.string.meeting_ui_title),
+            background = Floe.colors.readingSurface,
+            navigation = {
+                FloeCircleButton(
+                    icon = FloeIcons.ChevronBack,
+                    contentDescription = stringResource(R.string.meeting_ui_back),
+                    onClick = onExitPage,
+                )
+            },
+            actions = {
+                if (refreshing) {
+                    FloeActivityIndicator(
+                        modifier = Modifier.padding(horizontal = 6.dp),
+                        description = stringResource(R.string.meeting_ui_refreshing),
+                    )
+                } else {
+                    FloeToolbarIconButton(
+                        icon = FloeIcons.Refresh,
+                        contentDescription = stringResource(R.string.meeting_ui_refresh),
+                        onClick = onRefresh,
+                    )
+                }
+                FloeToolbarIconButton(
+                    icon = FloeIcons.Plus,
+                    contentDescription = stringResource(R.string.meeting_ui_new),
+                    onClick = onCreate,
+                )
+            },
+        )
+        FloeDivider()
+
+        val activeId = recorderState.meetingId
+        if (meetingRecordingActive(recorderState.phase) && activeId != null) {
+            val title = meetings.firstOrNull { it.id == activeId }?.title
+                ?: stringResource(R.string.meeting_ui_detail_title)
+            MeetingActiveRecordingBanner(
+                title = title,
+                status = stringResource(meetingRecordingStatusResource(recorderState.phase)),
+                elapsed = meetingDurationLabel(recorderState.elapsedMillis),
+                onClick = { activeId?.let(onOpenRecordingMeeting) },
+            )
+        }
+
+        if (meetings.isNotEmpty()) {
+            listError?.let { error ->
+                MeetingErrorBanner(
+                    text = meetingErrorText(error),
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    actionLabel = stringResource(R.string.meeting_ui_retry),
+                    onAction = onRefresh,
+                )
+            }
+        }
+
+        listNoticeRes?.let { noticeRes ->
+            MeetingNoticeBanner(
+                text = stringResource(noticeRes),
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            )
+        }
+
+        listRetainedTake?.let { retained ->
+            MeetingRetainedTakeBanner(
+                material = retained,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            )
+        }
+
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            when {
+                !ready && meetings.isEmpty() -> MeetingLoadingView(
+                    text = stringResource(R.string.meeting_ui_loading),
+                )
+                meetings.isEmpty() && listError != null -> FloeUnavailableView(
+                    icon = FloeIcons.Bubble,
+                    title = stringResource(R.string.meeting_ui_load_failed),
+                    description = meetingErrorText(listError),
+                    action = {
+                        FloePrimaryAction(
+                            label = stringResource(R.string.meeting_ui_retry),
+                            onClick = onRefresh,
+                        )
+                    },
+                )
+                meetings.isEmpty() -> FloeUnavailableView(
+                    icon = FloeIcons.Bubble,
+                    title = stringResource(R.string.meeting_ui_empty_title),
+                    description = stringResource(R.string.meeting_ui_empty_body),
+                    action = {
+                        FloePrimaryAction(
+                            label = stringResource(R.string.meeting_ui_new),
+                            onClick = onCreate,
+                        )
+                    },
+                )
+                else -> LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    items(meetings, key = { it.id }) { summary ->
+                        MeetingListRow(
+                            summary = summary,
+                            selected = summary.id == selectedId,
+                            recordingElapsed = recorderState
+                                .takeIf { it.meetingId == summary.id && meetingRecordingActive(it.phase) }
+                                ?.elapsedMillis,
+                            onClick = { onSelect(summary.id) },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MeetingListRow(
+    summary: MeetingSummary,
+    selected: Boolean,
+    recordingElapsed: Long?,
+    onClick: () -> Unit,
+) {
+    val title = if (summary.metadataCorrupt) {
+        stringResource(R.string.meeting_ui_unreadable_title)
+    } else {
+        summary.title
+    }
+    val preview = if (summary.metadataCorrupt) {
+        stringResource(R.string.meeting_ui_metadata_corrupt_note)
+    } else {
+        summary.notesPreview.lineSequence().firstOrNull { it.isNotBlank() }?.trim()
+            ?: stringResource(R.string.meeting_ui_no_notes)
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(if (selected) Floe.colors.accentFillFaint else Color.Transparent)
+            .clickable(role = Role.Button, onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(36.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(
+                    if (summary.metadataCorrupt) {
+                        Floe.colors.destructive.copy(alpha = 0.12f)
+                    } else {
+                        Floe.colors.accentFillFaint
+                    },
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            IconGlyph(
+                icon = if (summary.metadataCorrupt) FloeIcons.WarningTriangle else FloeIcons.Bubble,
+                tint = if (summary.metadataCorrupt) Floe.colors.destructive else Floe.colors.accent,
+                size = 20.dp,
+            )
+        }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                FloeText(
+                    text = title,
+                    style = Floe.typography.bodyEmphasized,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                if (recordingElapsed != null) {
+                    FloeBadgePill(
+                        text = stringResource(
+                            R.string.meeting_ui_active_recording_badge,
+                            meetingDurationLabel(recordingElapsed),
+                        ),
+                        tone = FloeBadgeTone.ACCENT,
+                    )
+                }
+                if (summary.metadataCorrupt) {
+                    FloeBadgePill(
+                        text = stringResource(R.string.meeting_ui_metadata_corrupt),
+                        tone = FloeBadgeTone.DESTRUCTIVE,
+                    )
+                }
+            }
+            FloeText(
+                text = stringResource(
+                    R.string.meeting_ui_summary_meta,
+                    meetingDateLabel(summary.updatedAtMillis),
+                    summary.materialCount,
+                    summary.recordingCount,
+                ),
+                style = Floe.typography.metadata,
+                color = Floe.colors.secondaryLabel,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            FloeText(
+                text = preview,
+                style = Floe.typography.metadata,
+                color = Floe.colors.secondaryLabel,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+@Composable
+private fun MeetingActiveRecordingBanner(
+    title: String,
+    status: String,
+    elapsed: String,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(Floe.colors.accentFillFaint)
+            .clickable(role = Role.Button, onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        IconGlyph(FloeIcons.Mic, Floe.colors.accent, 18.dp)
+        Column(Modifier.weight(1f)) {
+            FloeText(title, style = Floe.typography.bodyEmphasized, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            FloeText(
+                "$status · $elapsed",
+                style = Floe.typography.metadata,
+                color = Floe.colors.secondaryLabel,
+            )
+        }
+        IconGlyph(FloeIcons.ChevronForward, Floe.colors.secondaryLabel, 16.dp)
+    }
+}
+
+@Composable
+private fun MeetingSelectPlaceholder() {
+    FloeUnavailableView(
+        icon = FloeIcons.Bubble,
+        title = stringResource(R.string.meeting_ui_select_title),
+        description = stringResource(R.string.meeting_ui_select_body),
+    )
+}
+
+@Composable
+private fun MeetingLoadingView(text: String) {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        FloeActivityIndicator(description = text)
+        Spacer(Modifier.height(10.dp))
+        FloeText(text, style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
+    }
+}
+
+@Composable
+private fun MeetingDetailHost(
+    manager: MeetingManager,
+    meetingId: String,
+    summary: MeetingSummary?,
+    detail: MeetingDetail?,
+    loading: Boolean,
+    loadError: MeetingError?,
+    notesState: MeetingNotesUiState,
+    notesBusy: Boolean,
+    notesError: MeetingError?,
+    notesNoticeRes: Int?,
+    detailNoticeRes: Int?,
+    recorderState: MeetingRecordingState,
+    recordingMeetingTitle: String?,
+    permission: MeetingPermissionState,
+    recordBusy: Boolean,
+    recordBusyLabelRes: Int?,
+    recordError: MeetingError?,
+    recordNoticeRes: Int?,
+    recordRetainedTake: MeetingMaterial?,
+    importBusy: Boolean,
+    importError: MeetingError?,
+    importNotice: String?,
+    deleteBusy: Boolean,
+    deleteError: MeetingError?,
+    twoPane: Boolean,
+    onBack: () -> Unit,
+    onRefresh: () -> Unit,
+    onNotesChange: (String) -> Unit,
+    onSaveNotes: () -> Unit,
+    onReloadNotes: () -> Unit,
+    onRestoreNotes: () -> Unit,
+    onStartRecording: () -> Unit,
+    onPauseRecording: () -> Unit,
+    onResumeRecording: () -> Unit,
+    onStopRecording: () -> Unit,
+    onGrantMicrophone: () -> Unit,
+    onImport: (Uri) -> Unit,
+    onRename: () -> Unit,
+    onDelete: () -> Unit,
+    onOpenOtherMeeting: (String) -> Unit,
+) {
+    Column(Modifier.fillMaxSize().background(Floe.colors.readingSurface)) {
+        FloeToolbar(
+            title = detail?.title ?: summary?.title ?: stringResource(R.string.meeting_ui_detail_title),
+            background = Floe.colors.readingSurface,
+            navigation = if (twoPane) {
+                null
+            } else {
+                {
+                    FloeCircleButton(
+                        icon = FloeIcons.ChevronBack,
+                        contentDescription = stringResource(R.string.meeting_ui_back),
+                        onClick = onBack,
+                    )
+                }
+            },
+            actions = {
+                FloeToolbarIconButton(
+                    icon = FloeIcons.Refresh,
+                    contentDescription = stringResource(R.string.meeting_ui_refresh),
+                    onClick = onRefresh,
+                )
+            },
+        )
+        FloeDivider()
+
+        when {
+            loading && detail == null -> MeetingLoadingView(
+                text = stringResource(R.string.meeting_ui_detail_loading),
+            )
+            detail == null && loadError != null -> FloeUnavailableView(
+                icon = FloeIcons.WarningTriangle,
+                title = stringResource(R.string.meeting_ui_detail_load_failed),
+                description = meetingErrorText(loadError),
+                action = {
+                    FloePrimaryAction(
+                        label = stringResource(R.string.meeting_ui_retry),
+                        onClick = onRefresh,
+                    )
+                },
+            )
+            detail == null -> MeetingSelectPlaceholder()
+            else -> Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.TopCenter,
+            ) {
+                LazyColumn(
+                    modifier = Modifier
+                        .widthIn(max = 900.dp)
+                        .fillMaxWidth()
+                        .fillMaxHeight()
+                        .imePadding()
+                        .navigationBarsPadding(),
+                    contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 14.dp, bottom = 32.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    loadError?.let { error ->
+                        item(key = "load-error") {
+                            MeetingErrorBanner(
+                                text = meetingErrorText(error),
+                                actionLabel = stringResource(R.string.meeting_ui_retry),
+                                onAction = onRefresh,
+                            )
+                        }
+                    }
+                    item(key = "header") {
+                        MeetingHeader(
+                            detail = detail,
+                            noticeRes = detailNoticeRes,
+                            onRename = onRename,
+                        )
+                    }
+                    item(key = "notes") {
+                        MeetingNotesSection(
+                            state = notesState,
+                            busy = notesBusy,
+                            error = notesError,
+                            noticeRes = notesNoticeRes,
+                            onNotesChange = onNotesChange,
+                            onSave = onSaveNotes,
+                            onReload = onReloadNotes,
+                            onRestore = onRestoreNotes,
+                        )
+                    }
+                    item(key = "recording") {
+                        MeetingRecordingSection(
+                            meetingId = meetingId,
+                            recorderState = recorderState,
+                            recordingMeetingTitle = recordingMeetingTitle,
+                            permission = permission,
+                            busy = recordBusy,
+                            busyLabelRes = recordBusyLabelRes,
+                            error = recordError,
+                            noticeRes = recordNoticeRes,
+                            retainedTake = recordRetainedTake,
+                            onStart = onStartRecording,
+                            onPause = onPauseRecording,
+                            onResume = onResumeRecording,
+                            onStop = onStopRecording,
+                            onGrantMicrophone = onGrantMicrophone,
+                            onOpenOtherMeeting = onOpenOtherMeeting,
+                        )
+                    }
+                    item(key = "media") {
+                        MeetingMediaSection(
+                            manager = manager,
+                            meetingId = meetingId,
+                            materials = detail.materials,
+                            importBusy = importBusy,
+                            importError = importError,
+                            importNotice = importNotice,
+                            onImport = onImport,
+                        )
+                    }
+                    item(key = "transcription") {
+                        MeetingTranscriptionSection(detail = detail)
+                    }
+                    item(key = "delete") {
+                        MeetingDeleteSection(
+                            busy = deleteBusy,
+                            error = deleteError,
+                            onDelete = onDelete,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MeetingHeader(
+    detail: MeetingDetail,
+    noticeRes: Int?,
+    onRename: () -> Unit,
+) {
+    FloeSettingsSectionCard(title = null) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FloeText(
+                    text = detail.title,
+                    style = Floe.typography.title,
+                    modifier = Modifier.weight(1f),
+                )
+                FloeCapsuleAction(
+                    label = stringResource(R.string.meeting_ui_rename),
+                    onClick = onRename,
+                )
+            }
+            FloeText(
+                text = stringResource(
+                    R.string.meeting_ui_summary_meta,
+                    meetingDateLabel(detail.updatedAtMillis),
+                    detail.materials.size,
+                    detail.recordings.size,
+                ),
+                style = Floe.typography.metadata,
+                color = Floe.colors.secondaryLabel,
+            )
+            noticeRes?.let { MeetingNoticeBanner(text = stringResource(it)) }
+        }
+    }
+}
+
+@Composable
+private fun MeetingNotesSection(
+    state: MeetingNotesUiState,
+    busy: Boolean,
+    error: MeetingError?,
+    noticeRes: Int?,
+    onNotesChange: (String) -> Unit,
+    onSave: () -> Unit,
+    onReload: () -> Unit,
+    onRestore: () -> Unit,
+) {
+    FloeSettingsSectionCard(title = stringResource(R.string.meeting_ui_notes)) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (busy) {
+                    FloeActivityIndicator(description = stringResource(R.string.meeting_ui_notes_saving))
+                    FloeText(
+                        stringResource(R.string.meeting_ui_notes_saving),
+                        style = Floe.typography.metadata,
+                        color = Floe.colors.secondaryLabel,
+                    )
+                } else if (state.conflict) {
+                    FloeStatusLine(
+                        icon = FloeIcons.WarningTriangle,
+                        text = stringResource(R.string.meeting_ui_notes_conflict_title),
+                        color = Floe.colors.pending,
+                    )
+                } else if (state.dirty) {
+                    FloeStatusLine(
+                        icon = FloeIcons.Clock,
+                        text = stringResource(R.string.meeting_ui_notes_unsaved),
+                        color = Floe.colors.pending,
+                    )
+                } else {
+                    FloeStatusLine(
+                        icon = FloeIcons.CheckCircle,
+                        text = stringResource(R.string.meeting_ui_notes_saved),
+                        color = Floe.colors.success,
+                    )
+                }
+            }
+
+            if (state.conflict) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Floe.colors.pending.copy(alpha = 0.10f))
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    FloeText(
+                        stringResource(R.string.meeting_ui_notes_conflict_body),
+                        style = Floe.typography.metadata,
+                        color = Floe.colors.label,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FloeCapsuleAction(
+                            label = stringResource(R.string.meeting_ui_notes_reload),
+                            onClick = onReload,
+                            enabled = !busy,
+                        )
+                        if (state.recovery != null) {
+                            FloeCapsuleAction(
+                                label = stringResource(R.string.meeting_ui_notes_restore),
+                                onClick = onRestore,
+                                enabled = !busy,
+                            )
+                        }
+                    }
+                }
+            } else if (state.canRestore) {
+                FloeStatusLine(
+                    icon = FloeIcons.InfoCircle,
+                    text = stringResource(R.string.meeting_ui_notes_restore_available),
+                    color = Floe.colors.secondaryLabel,
+                )
+                FloeCapsuleAction(
+                    label = stringResource(R.string.meeting_ui_notes_restore),
+                    onClick = onRestore,
+                    enabled = !busy,
+                )
+            }
+
+            FloePlainFormField(
+                label = stringResource(R.string.meeting_ui_notes_hint),
+                value = state.draft,
+                onValueChange = onNotesChange,
+                modifier = Modifier.fillMaxWidth().heightIn(min = 180.dp),
+                enabled = !busy,
+                singleLine = false,
+                maxLines = 18,
+                minLines = 8,
+                isError = state.conflict,
+            )
+
+            error?.let { MeetingErrorBanner(text = meetingErrorText(it)) }
+            noticeRes?.let { MeetingNoticeBanner(text = stringResource(it)) }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FloeCapsuleAction(
+                    label = stringResource(R.string.meeting_ui_notes_save),
+                    onClick = onSave,
+                    enabled = state.canSave && !busy,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun MeetingRecordingSection(
+    meetingId: String,
+    recorderState: MeetingRecordingState,
+    recordingMeetingTitle: String?,
+    permission: MeetingPermissionState,
+    busy: Boolean,
+    busyLabelRes: Int?,
+    error: MeetingError?,
+    noticeRes: Int?,
+    retainedTake: MeetingMaterial?,
+    onStart: () -> Unit,
+    onPause: () -> Unit,
+    onResume: () -> Unit,
+    onStop: () -> Unit,
+    onGrantMicrophone: () -> Unit,
+    onOpenOtherMeeting: (String) -> Unit,
+) {
+    val phase = recorderState.phase
+    val active = meetingRecordingActive(phase)
+    val ownedByThisMeeting = active && recorderState.meetingId == meetingId
+    val ownedByOtherMeeting = active && recorderState.meetingId != null && recorderState.meetingId != meetingId
+    val liveError = recordLiveError(error, recorderState, meetingId)
+
+    FloeSettingsSectionCard(title = stringResource(R.string.meeting_ui_recording_section)) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(Floe.colors.accentFillFaint),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    IconGlyph(FloeIcons.Mic, Floe.colors.accent, 20.dp)
+                }
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    FloeText(
+                        text = stringResource(meetingRecordingStatusResource(phase)),
+                        style = Floe.typography.bodyEmphasized,
+                    )
+                    if (ownedByThisMeeting) {
+                        FloeText(
+                            text = stringResource(
+                                R.string.meeting_ui_record_elapsed,
+                                meetingDurationLabel(recorderState.elapsedMillis),
+                            ),
+                            style = Floe.typography.metadata,
+                            color = Floe.colors.secondaryLabel,
+                        )
+                    } else if (ownedByOtherMeeting) {
+                        FloeText(
+                            text = recordingMeetingTitle?.let {
+                                stringResource(R.string.meeting_ui_record_other, it)
+                            } ?: stringResource(R.string.meeting_ui_record_other_unknown),
+                            style = Floe.typography.metadata,
+                            color = Floe.colors.pending,
+                        )
+                    }
+                }
+                if (busy) {
+                    FloeActivityIndicator(
+                        description = busyLabelRes?.let { stringResource(it) },
+                    )
+                }
+            }
+
+            if (busyLabelRes != null) {
+                FloeText(
+                    text = stringResource(busyLabelRes),
+                    style = Floe.typography.metadata,
+                    color = Floe.colors.secondaryLabel,
+                )
+            }
+
+            if (ownedByOtherMeeting) {
+                recorderState.meetingId?.let { activeMeetingId ->
+                    FloeCapsuleAction(
+                        label = stringResource(R.string.meeting_ui_record_open_other),
+                        onClick = { onOpenOtherMeeting(activeMeetingId) },
+                    )
+                }
+            }
+
+            if (!permission.microphoneGranted && !ownedByOtherMeeting) {
+                FloeText(
+                    text = stringResource(R.string.meeting_ui_record_permission_needed),
+                    style = Floe.typography.metadata,
+                    color = Floe.colors.pending,
+                )
+                FloePrimaryAction(
+                    label = stringResource(R.string.meeting_ui_record_grant),
+                    onClick = onGrantMicrophone,
+                )
+            } else if (permission.notificationsRuntimeRequired && !permission.notificationsGranted) {
+                FloeStatusLine(
+                    icon = FloeIcons.WarningTriangle,
+                    text = stringResource(R.string.meeting_ui_notifications_off),
+                    color = Floe.colors.pending,
+                )
+            }
+
+            if (retainedTake == null) {
+                liveError?.let { MeetingErrorBanner(text = meetingErrorText(it)) }
+            }
+            retainedTake?.let { MeetingRetainedTakeBanner(material = it) }
+            noticeRes?.let { MeetingNoticeBanner(text = stringResource(it)) }
+
+            if (!ownedByOtherMeeting) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    when {
+                        phase == MeetingRecordingPhase.RECORDING -> {
+                            FloeCapsuleAction(
+                                label = stringResource(R.string.meeting_ui_record_pause),
+                                onClick = onPause,
+                                enabled = !busy,
+                            )
+                            FloeCapsuleAction(
+                                label = stringResource(R.string.meeting_ui_record_stop),
+                                onClick = onStop,
+                                enabled = !busy,
+                                tint = Floe.colors.destructive,
+                            )
+                        }
+                        phase == MeetingRecordingPhase.PAUSED -> {
+                            FloeCapsuleAction(
+                                label = stringResource(R.string.meeting_ui_record_resume),
+                                onClick = onResume,
+                                enabled = !busy,
+                            )
+                            FloeCapsuleAction(
+                                label = stringResource(R.string.meeting_ui_record_stop),
+                                onClick = onStop,
+                                enabled = !busy,
+                                tint = Floe.colors.destructive,
+                            )
+                        }
+                        phase == MeetingRecordingPhase.STARTING ||
+                            phase == MeetingRecordingPhase.STOPPING -> {
+                            FloeCapsuleAction(
+                                label = stringResource(R.string.meeting_ui_record_stop),
+                                onClick = onStop,
+                                enabled = !busy && phase != MeetingRecordingPhase.STOPPING,
+                                tint = Floe.colors.destructive,
+                            )
+                        }
+                        else -> {
+                            FloeCapsuleAction(
+                                label = stringResource(R.string.meeting_ui_record_start),
+                                onClick = onStart,
+                                enabled = !busy &&
+                                    meetingCanStartRecording(phase, permission.microphoneGranted),
+                            )
+                        }
+                    }
+                }
+            }
+
+            FloeText(
+                text = stringResource(R.string.meeting_ui_record_service_note),
+                style = Floe.typography.metadata,
+                color = Floe.colors.secondaryLabel,
+            )
+        }
+    }
+}
+
+@Composable
+private fun MeetingMediaSection(
+    manager: MeetingManager,
+    meetingId: String,
+    materials: List<MeetingMaterial>,
+    importBusy: Boolean,
+    importError: MeetingError?,
+    importNotice: String?,
+    onImport: (Uri) -> Unit,
+) {
+    val importPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri: Uri? ->
+        if (uri != null) onImport(uri)
+    }
+
+    var playbackMaterialId by rememberSaveable(meetingId) { mutableStateOf<String?>(null) }
+    var resumePosition by rememberSaveable(meetingId) { mutableStateOf(0L) }
+    var playbackRequested by remember(meetingId) { mutableStateOf(false) }
+    var openNonce by remember(meetingId) { mutableStateOf(0) }
+    var playbackSession by remember(meetingId) { mutableStateOf<MeetingPlaybackSession?>(null) }
+    var playbackState by remember(meetingId) { mutableStateOf<MeetingPlayerState?>(null) }
+    var playbackError by remember(meetingId) { mutableStateOf<MeetingError?>(null) }
+    var playbackLoading by remember(meetingId) { mutableStateOf(false) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val latestPlaybackState by rememberUpdatedState(playbackState)
+    val latestPlaybackSession by rememberUpdatedState(playbackSession)
+
+    LaunchedEffect(playbackMaterialId, openNonce, meetingId) {
+        val requestedId = playbackMaterialId ?: return@LaunchedEffect
+        val material = materials.firstOrNull { it.id == requestedId }
+        if (material == null || !material.isPlayable) {
+            playbackMaterialId = null
+            return@LaunchedEffect
+        }
+        playbackLoading = true
+        playbackError = null
+        try {
+            val player = manager.playerFor(meetingId, requestedId)
+            if (playbackMaterialId != requestedId) {
+                player.release()
+                return@LaunchedEffect
+            }
+            if (resumePosition > 0L) player.seekTo(resumePosition)
+            playbackSession = MeetingPlaybackSession(requestedId, player)
+            if (playbackRequested) {
+                playbackRequested = false
+                player.play()
+            }
+        } catch (error: MeetingException) {
+            if (playbackMaterialId == requestedId) {
+                playbackError = error.error
+                playbackSession = null
+            }
+        } catch (error: CancellationException) {
+            throw error
+        } finally {
+            playbackLoading = false
+        }
+    }
+
+    LaunchedEffect(playbackSession) {
+        val session = playbackSession ?: return@LaunchedEffect
+        session.player.state.collect { state ->
+            if (playbackSession?.materialId != session.materialId) return@collect
+            playbackState = state
+            if (state.status == MeetingPlayerStatus.PLAYING ||
+                state.status == MeetingPlayerStatus.PAUSED
+            ) {
+                resumePosition = state.positionMillis
+            }
+            if (state.status == MeetingPlayerStatus.ERROR) {
+                playbackError = state.error ?: MeetingError(
+                    code = MeetingErrorCode.PLAYBACK_FAILED,
+                    message = "Playback failed.",
+                    retryable = false,
+                )
+            }
+        }
+    }
+
+    DisposableEffect(playbackSession) {
+        val session = playbackSession
+        onDispose {
+            latestPlaybackState?.let { state ->
+                if (state.status == MeetingPlayerStatus.PLAYING ||
+                    state.status == MeetingPlayerStatus.PAUSED
+                ) {
+                    resumePosition = state.positionMillis
+                }
+            }
+            session?.player?.release()
+        }
+    }
+
+    fun closePlayback() {
+        playbackSession?.player?.release()
+        playbackSession = null
+        playbackState = null
+        playbackError = null
+        playbackLoading = false
+        playbackRequested = false
+        playbackMaterialId = null
+        resumePosition = 0L
+    }
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP) {
+                latestPlaybackState?.let { state ->
+                    if (state.status == MeetingPlayerStatus.PLAYING ||
+                        state.status == MeetingPlayerStatus.PAUSED
+                    ) {
+                        resumePosition = state.positionMillis
+                    }
+                }
+                latestPlaybackSession?.player?.pause()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    LaunchedEffect(materials) {
+        val selected = playbackMaterialId ?: return@LaunchedEffect
+        if (materials.none { it.id == selected }) {
+            closePlayback()
+        }
+    }
+
+    fun togglePlayback(material: MeetingMaterial) {
+        if (!material.isPlayable || playbackLoading) return
+        val session = playbackSession
+        if (playbackMaterialId == material.id && session != null) {
+            when (playbackState?.status) {
+                MeetingPlayerStatus.PLAYING -> {
+                    resumePosition = playbackState?.positionMillis ?: resumePosition
+                    session.player.pause()
+                }
+                MeetingPlayerStatus.PAUSED -> session.player.play()
+                MeetingPlayerStatus.ENDED -> {
+                    session.player.seekTo(0L)
+                    session.player.play()
+                }
+                MeetingPlayerStatus.ERROR -> {
+                    closePlayback()
+                    playbackMaterialId = material.id
+                    playbackRequested = true
+                    openNonce += 1
+                }
+                MeetingPlayerStatus.PREPARING -> Unit
+                else -> session.player.play()
+            }
+        } else {
+            resumePosition = playbackState?.positionMillis ?: resumePosition
+            session?.player?.release()
+            playbackSession = null
+            playbackState = null
+            playbackError = null
+            playbackMaterialId = material.id
+            resumePosition = 0L
+            playbackRequested = true
+            openNonce += 1
+        }
+    }
+
+    val currentMaterial = materials.firstOrNull { it.id == playbackMaterialId }
+    val playbackVisible = currentMaterial != null &&
+        (playbackSession != null || playbackLoading || playbackError != null)
+
+    FloeSettingsSectionCard(title = stringResource(R.string.meeting_ui_media_section)) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                FloeText(
+                    text = stringResource(
+                        R.string.meeting_ui_media_counts,
+                        materials.size,
+                        materials.count { it.kind == MeetingMaterialKind.RECORDING },
+                    ),
+                    style = Floe.typography.metadata,
+                    color = Floe.colors.secondaryLabel,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                FloeCapsuleAction(
+                    label = stringResource(R.string.meeting_ui_import),
+                    onClick = {
+                        importPicker.launch(arrayOf("audio/*", "video/*"))
+                    },
+                    enabled = !importBusy,
+                )
+            }
+
+            if (importBusy) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FloeActivityIndicator(description = stringResource(R.string.meeting_ui_importing))
+                    FloeText(
+                        stringResource(R.string.meeting_ui_importing),
+                        style = Floe.typography.metadata,
+                        color = Floe.colors.secondaryLabel,
+                    )
+                }
+            }
+            importError?.let { MeetingErrorBanner(text = meetingErrorText(it)) }
+            importNotice?.let {
+                MeetingNoticeBanner(text = stringResource(R.string.meeting_ui_imported, it))
+            }
+
+            if (materials.isEmpty()) {
+                MeetingInlineEmpty(
+                    icon = FloeIcons.Film,
+                    title = stringResource(R.string.meeting_ui_no_media),
+                )
+            } else {
+                materials.forEach { material ->
+                    MeetingMaterialRow(
+                        material = material,
+                        playing = material.id == playbackMaterialId &&
+                            playbackState?.status == MeetingPlayerStatus.PLAYING,
+                        loading = material.id == playbackMaterialId && playbackLoading,
+                        onToggle = { togglePlayback(material) },
+                    )
+                    FloeDivider()
+                }
+            }
+
+            if (playbackVisible && currentMaterial != null) {
+                MeetingPlaybackCard(
+                    material = currentMaterial,
+                    state = playbackState,
+                    loading = playbackLoading,
+                    error = playbackError,
+                    onToggle = { togglePlayback(currentMaterial) },
+                    onStop = { closePlayback() },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun MeetingMaterialRow(
+    material: MeetingMaterial,
+    playing: Boolean,
+    loading: Boolean,
+    onToggle: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(34.dp)
+                .clip(RoundedCornerShape(9.dp))
+                .background(Floe.colors.fillTertiary),
+            contentAlignment = Alignment.Center,
+        ) {
+            IconGlyph(
+                icon = when (material.kind) {
+                    MeetingMaterialKind.RECORDING -> FloeIcons.Mic
+                    MeetingMaterialKind.AUDIO_IMPORT -> FloeIcons.Paperclip
+                    MeetingMaterialKind.VIDEO_IMPORT -> FloeIcons.Film
+                },
+                tint = Floe.colors.secondaryLabel,
+                size = 18.dp,
+            )
+        }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            FloeText(
+                text = material.displayName,
+                style = Floe.typography.body,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                FloeText(
+                    text = stringResource(
+                        R.string.meeting_ui_material_meta,
+                        stringResource(meetingMaterialKindResource(material.kind)),
+                        meetingDurationLabel(material.durationMillis),
+                    ),
+                    style = Floe.typography.metadata,
+                    color = Floe.colors.secondaryLabel,
+                )
+                FloeBadgePill(
+                    text = stringResource(meetingMaterialStatusResource(material.status)),
+                    tone = meetingMaterialTone(material.status),
+                )
+            }
+            if (!material.isPlayable) {
+                FloeText(
+                    text = stringResource(
+                        when (material.status) {
+                            MeetingMaterialStatus.RECORDING,
+                            MeetingMaterialStatus.PAUSED,
+                            MeetingMaterialStatus.FINALIZING,
+                            -> R.string.meeting_ui_material_not_ready
+                            else -> R.string.meeting_ui_material_not_playable
+                        },
+                    ),
+                    style = Floe.typography.metadata,
+                    color = Floe.colors.secondaryLabel,
+                )
+            }
+        }
+        if (material.isPlayable) {
+            if (loading) {
+                FloeActivityIndicator(description = stringResource(R.string.meeting_ui_playback_preparing))
+            } else {
+                FloeCapsuleAction(
+                    label = stringResource(
+                        if (playing) R.string.meeting_ui_pause_playback else R.string.meeting_ui_play,
+                    ),
+                    onClick = onToggle,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun MeetingPlaybackCard(
+    material: MeetingMaterial,
+    state: MeetingPlayerState?,
+    loading: Boolean,
+    error: MeetingError?,
+    onToggle: () -> Unit,
+    onStop: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(Floe.colors.groupedSurface)
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            IconGlyph(FloeIcons.PlayRuns, Floe.colors.accent, 18.dp)
+            FloeText(
+                text = stringResource(R.string.meeting_ui_playback_now, material.displayName),
+                style = Floe.typography.bodyEmphasized,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            FloeText(
+                text = stringResource(
+                    R.string.meeting_ui_playback_position,
+                    meetingDurationLabel(state?.positionMillis ?: 0L),
+                    meetingDurationLabel(state?.durationMillis ?: material.durationMillis),
+                ),
+                style = Floe.typography.evidence,
+                color = Floe.colors.secondaryLabel,
+            )
+        }
+        if (loading || state == null || state.status == MeetingPlayerStatus.PREPARING) {
+            FloeStatusLine(
+                icon = FloeIcons.Clock,
+                text = stringResource(R.string.meeting_ui_playback_preparing),
+                color = Floe.colors.secondaryLabel,
+            )
+        }
+        error?.let { MeetingErrorBanner(text = meetingErrorText(it)) }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FloeCapsuleAction(
+                label = stringResource(
+                    if (state?.status == MeetingPlayerStatus.PLAYING) {
+                        R.string.meeting_ui_pause_playback
+                    } else {
+                        R.string.meeting_ui_play
+                    },
+                ),
+                onClick = onToggle,
+                enabled = !loading && error == null,
+            )
+            FloeCapsuleAction(
+                label = stringResource(R.string.meeting_ui_stop_playback),
+                onClick = onStop,
+                tint = Floe.colors.destructive,
+            )
+        }
+    }
+}
+
+@Composable
+private fun MeetingTranscriptionSection(detail: MeetingDetail) {
+    val transcription = detail.transcription
+    FloeSettingsSectionCard(title = stringResource(R.string.meeting_ui_transcription_section)) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (transcription.segments.isEmpty()) {
+                MeetingInlineEmpty(
+                    icon = FloeIcons.Document,
+                    title = stringResource(R.string.meeting_ui_transcription_empty_title),
+                    body = stringResource(R.string.meeting_ui_transcription_empty_body),
+                )
+            } else {
+                FloeText(
+                    text = stringResource(
+                        R.string.meeting_ui_transcription_meta,
+                        transcription.segments.size,
+                        transcription.revision,
+                    ),
+                    style = Floe.typography.metadata,
+                    color = Floe.colors.secondaryLabel,
+                )
+                transcription.segments.forEachIndexed { index, segment ->
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                        verticalArrangement = Arrangement.spacedBy(3.dp),
+                    ) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            FloeText(
+                                text = segment.speaker?.let {
+                                    stringResource(R.string.meeting_ui_transcription_speaker, it)
+                                } ?: stringResource(R.string.meeting_ui_transcription_unknown_speaker),
+                                style = Floe.typography.metadata,
+                                color = Floe.colors.secondaryLabel,
+                            )
+                            FloeText(
+                                text = stringResource(
+                                    R.string.meeting_ui_transcription_time,
+                                    meetingDurationLabel(segment.startMillis),
+                                    meetingDurationLabel(segment.endMillis),
+                                ),
+                                style = Floe.typography.evidence,
+                                color = Floe.colors.tertiaryLabel,
+                            )
+                        }
+                        FloeText(segment.text, style = Floe.typography.body)
+                    }
+                    if (index != transcription.segments.lastIndex) FloeDivider()
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MeetingDeleteSection(
+    busy: Boolean,
+    error: MeetingError?,
+    onDelete: () -> Unit,
+) {
+    FloeSettingsSectionCard(title = null) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (busy) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FloeActivityIndicator(description = stringResource(R.string.meeting_ui_deleting))
+                    FloeText(
+                        stringResource(R.string.meeting_ui_deleting),
+                        style = Floe.typography.metadata,
+                        color = Floe.colors.secondaryLabel,
+                    )
+                }
+            }
+            error?.let { MeetingErrorBanner(text = meetingErrorText(it)) }
+            FloeCapsuleAction(
+                label = stringResource(R.string.meeting_ui_delete),
+                onClick = onDelete,
+                enabled = !busy,
+                tint = Floe.colors.destructive,
+            )
+        }
+    }
+}
+
+@Composable
+private fun MeetingInlineEmpty(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    body: String? = null,
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 18.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        IconGlyph(icon, Floe.colors.tertiaryLabel, 26.dp)
+        FloeText(title, style = Floe.typography.bodyEmphasized, color = Floe.colors.secondaryLabel)
+        body?.let {
+            FloeText(
+                text = it,
+                style = Floe.typography.metadata,
+                color = Floe.colors.secondaryLabel,
+                modifier = Modifier.widthIn(max = 360.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun MeetingErrorBanner(
+    text: String,
+    modifier: Modifier = Modifier,
+    actionLabel: String? = null,
+    onAction: (() -> Unit)? = null,
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(Floe.colors.destructive.copy(alpha = 0.10f))
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        IconGlyph(FloeIcons.WarningTriangle, Floe.colors.destructive, 18.dp)
+        FloeText(
+            text = text,
+            style = Floe.typography.metadata,
+            color = Floe.colors.destructive,
+            modifier = Modifier.weight(1f),
+        )
+        if (actionLabel != null && onAction != null) {
+            FloeCapsuleAction(
+                label = actionLabel,
+                onClick = onAction,
+                tint = Floe.colors.destructive,
+            )
+        }
+    }
+}
+
+@Composable
+private fun MeetingRetainedTakeBanner(
+    material: MeetingMaterial,
+    modifier: Modifier = Modifier,
+) {
+    val explanation = stringResource(
+        if (material.status == MeetingMaterialStatus.MISSING) {
+            R.string.meeting_ui_record_retained_missing
+        } else {
+            R.string.meeting_ui_record_retained_incomplete
+        },
+    )
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(Floe.colors.pending.copy(alpha = 0.10f))
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        IconGlyph(FloeIcons.WarningTriangle, Floe.colors.pending, 18.dp)
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            FloeText(
+                text = material.displayName,
+                style = Floe.typography.bodyEmphasized,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            FloeText(
+                text = explanation,
+                style = Floe.typography.metadata,
+                color = Floe.colors.label,
+            )
+        }
+    }
+}
+
+@Composable
+private fun MeetingNoticeBanner(
+    text: String,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(Floe.colors.success.copy(alpha = 0.10f))
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        IconGlyph(FloeIcons.CheckCircle, Floe.colors.success, 18.dp)
+        FloeText(
+            text = text,
+            style = Floe.typography.metadata,
+            color = Floe.colors.label,
+            modifier = Modifier.weight(1f),
+        )
+    }
+}
+
+@Composable
+private fun MeetingTitleDialog(
+    title: String,
+    fieldLabel: String,
+    confirmLabel: String,
+    busyLabelRes: Int,
+    value: String,
+    onValueChange: (String) -> Unit,
+    busy: Boolean,
+    error: MeetingError?,
+    confirmEnabled: Boolean,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    CupertinoAlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        title = { FloeText(title, style = Floe.typography.section) },
+        message = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                FloePlainFormField(
+                    label = fieldLabel,
+                    value = value,
+                    onValueChange = onValueChange,
+                    enabled = !busy,
+                    singleLine = true,
+                )
+                if (busy) {
+                    val busyLabel = stringResource(busyLabelRes)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        FloeActivityIndicator(description = busyLabel)
+                        FloeText(
+                            busyLabel,
+                            style = Floe.typography.metadata,
+                            color = Floe.colors.secondaryLabel,
+                        )
+                    }
+                }
+                error?.let {
+                    FloeStatusLine(
+                        icon = FloeIcons.WarningTriangle,
+                        text = meetingErrorText(it),
+                        color = Floe.colors.destructive,
+                    )
+                }
+            }
+        },
+        buttons = {
+            cancel(onClick = { if (!busy) onDismiss() }) {
+                FloeText(
+                    stringResource(R.string.meeting_ui_cancel),
+                    style = Floe.typography.bodyEmphasized,
+                    color = Floe.colors.accent,
+                )
+            }
+            default(onClick = { if (!busy && confirmEnabled) onConfirm() }) {
+                FloeText(
+                    confirmLabel,
+                    style = Floe.typography.bodyEmphasized,
+                    color = if (!busy && confirmEnabled) Floe.colors.accent else Floe.colors.tertiaryLabel,
+                )
+            }
+        },
+    )
+}
+
+@Composable
+private fun MeetingLeaveNotesDialog(
+    canSave: Boolean,
+    saving: Boolean,
+    onSave: () -> Unit,
+    onDiscard: () -> Unit,
+    onStay: () -> Unit,
+) {
+    CupertinoAlertDialog(
+        onDismissRequest = { if (!saving) onStay() },
+        title = { FloeText(stringResource(R.string.meeting_ui_unsaved_leave_title), style = Floe.typography.section) },
+        message = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                FloeText(
+                    stringResource(R.string.meeting_ui_unsaved_leave_body),
+                    style = Floe.typography.metadata,
+                    color = Floe.colors.secondaryLabel,
+                )
+                if (saving) {
+                    FloeActivityIndicator(description = stringResource(R.string.meeting_ui_notes_saving))
+                }
+            }
+        },
+        buttons = {
+            cancel(onClick = { if (!saving) onStay() }) {
+                FloeText(
+                    stringResource(R.string.meeting_ui_leave_stay),
+                    style = Floe.typography.bodyEmphasized,
+                    color = Floe.colors.accent,
+                )
+            }
+            if (canSave) {
+                default(onClick = { if (!saving) onSave() }) {
+                    FloeText(
+                        stringResource(R.string.meeting_ui_leave_save),
+                        style = Floe.typography.bodyEmphasized,
+                        color = Floe.colors.accent,
+                    )
+                }
+            }
+            destructive(onClick = { if (!saving) onDiscard() }) {
+                FloeText(
+                    stringResource(R.string.meeting_ui_leave_discard),
+                    style = Floe.typography.bodyEmphasized,
+                    color = Floe.colors.destructive,
+                )
+            }
+        },
+    )
+}
+
+@Composable
+private fun MeetingLeaveRecordingDialog(
+    meetingTitle: String?,
+    stopping: Boolean,
+    onContinueBackground: () -> Unit,
+    onStay: () -> Unit,
+    onStop: () -> Unit,
+) {
+    CupertinoAlertDialog(
+        onDismissRequest = { if (!stopping) onStay() },
+        title = { FloeText(stringResource(R.string.meeting_ui_leave_recording_title), style = Floe.typography.section) },
+        message = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                FloeText(
+                    text = meetingTitle?.let {
+                        stringResource(R.string.meeting_ui_leave_recording_body, it)
+                    } ?: stringResource(R.string.meeting_ui_leave_recording_body_unknown),
+                    style = Floe.typography.metadata,
+                    color = Floe.colors.secondaryLabel,
+                )
+                if (stopping) {
+                    FloeActivityIndicator(description = stringResource(R.string.meeting_ui_record_stopping))
+                }
+            }
+        },
+        buttons = {
+            cancel(onClick = { if (!stopping) onStay() }) {
+                FloeText(
+                    stringResource(R.string.meeting_ui_leave_stay_page),
+                    style = Floe.typography.bodyEmphasized,
+                    color = Floe.colors.accent,
+                )
+            }
+            default(onClick = { if (!stopping) onContinueBackground() }) {
+                FloeText(
+                    stringResource(R.string.meeting_ui_leave_background),
+                    style = Floe.typography.bodyEmphasized,
+                    color = Floe.colors.accent,
+                )
+            }
+            destructive(onClick = { if (!stopping) onStop() }) {
+                FloeText(
+                    stringResource(R.string.meeting_ui_leave_stop_recording),
+                    style = Floe.typography.bodyEmphasized,
+                    color = Floe.colors.destructive,
+                )
+            }
+        },
+    )
+}
+
+@Composable
+private fun meetingErrorText(error: MeetingError): String =
+    stringResource(meetingErrorResource(error.code))
+
+private fun meetingDateLabel(millis: Long): String =
+    DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(millis))
+
+private fun recordLiveError(
+    explicit: MeetingError?,
+    state: MeetingRecordingState,
+    meetingId: String,
+): MeetingError? {
+    if (explicit != null) return explicit
+    val error = state.error ?: return null
+    if (state.meetingId == null || state.meetingId == meetingId) return error
+    return null
+}
+
+/* ------------------------------------------------------------------------- */
+/* Pure logic helpers (unit tested in MeetingDestinationLogicTest)            */
+/* ------------------------------------------------------------------------- */
+
+/**
+ * Notes editor state with optimistic revision checks.
+ *
+ * [draft] is always the user's current text. [base] is the last server text
+ * this editor knows; [revision] is the expected `notesRevision`. A conflict
+ * never replaces [draft]: it records [recovery] and the newest server values
+ * so the user can explicitly reload or restore.
+ */
+internal data class MeetingNotesUiState(
+    val draft: String = "",
+    val base: String = "",
+    val revision: Long = 0L,
+    val conflict: Boolean = false,
+    val recovery: String? = null,
+    val latestNotes: String? = null,
+    val latestRevision: Long? = null,
+) {
+    val dirty: Boolean get() = draft != base
+    val canSave: Boolean get() = dirty && !conflict
+    val canRestore: Boolean get() = recovery != null && recovery != draft
+
+    fun edited(value: String): MeetingNotesUiState = if (conflict) {
+        copy(draft = value, recovery = value)
+    } else {
+        copy(draft = value)
+    }
+
+    fun afterLoad(serverNotes: String, serverRevision: Long): MeetingNotesUiState {
+        if (serverRevision == revision) {
+            return if (!dirty && !conflict) {
+                copy(draft = serverNotes, base = serverNotes)
+            } else {
+                this
+            }
+        }
+        return if (!dirty && !conflict) {
+            copy(
+                draft = serverNotes,
+                base = serverNotes,
+                revision = serverRevision,
+                latestNotes = null,
+                latestRevision = null,
+            )
+        } else {
+            copy(
+                conflict = true,
+                recovery = recovery ?: draft,
+                latestNotes = serverNotes,
+                latestRevision = serverRevision,
+            )
+        }
+    }
+
+    fun afterConflict(serverNotes: String, serverRevision: Long): MeetingNotesUiState = copy(
+        conflict = true,
+        recovery = recovery ?: draft,
+        latestNotes = serverNotes,
+        latestRevision = serverRevision,
+    )
+
+    fun reloadLatest(serverNotes: String, serverRevision: Long): MeetingNotesUiState = copy(
+        draft = serverNotes,
+        base = serverNotes,
+        revision = serverRevision,
+        conflict = false,
+        latestNotes = null,
+        latestRevision = null,
+    )
+
+    fun restore(serverNotes: String, serverRevision: Long): MeetingNotesUiState = copy(
+        draft = recovery ?: draft,
+        base = serverNotes,
+        revision = serverRevision,
+        conflict = false,
+        latestNotes = null,
+        latestRevision = null,
+    )
+
+    fun afterSave(savedNotes: String, savedRevision: Long): MeetingNotesUiState = copy(
+        draft = savedNotes,
+        base = savedNotes,
+        revision = savedRevision,
+        conflict = false,
+        recovery = null,
+        latestNotes = null,
+        latestRevision = null,
+    )
+
+    fun discarded(): MeetingNotesUiState = copy(
+        draft = base,
+        conflict = false,
+        recovery = null,
+        latestNotes = null,
+        latestRevision = null,
+    )
+}
+
+internal fun meetingRecordingActive(phase: MeetingRecordingPhase): Boolean =
+    phase == MeetingRecordingPhase.STARTING ||
+        phase == MeetingRecordingPhase.RECORDING ||
+        phase == MeetingRecordingPhase.PAUSED ||
+        phase == MeetingRecordingPhase.STOPPING
+
+internal fun meetingCanStartRecording(
+    phase: MeetingRecordingPhase,
+    microphoneGranted: Boolean,
+): Boolean = microphoneGranted && !meetingRecordingActive(phase)
+
+/**
+ * Stop is successful only when the backend returned a finalized, playable
+ * material. INCOMPLETE and MISSING are retained originals, not success, and
+ * must keep the user on the page until they choose to leave.
+ */
+internal fun meetingStopSucceeded(
+    status: MeetingMaterialStatus,
+    isPlayable: Boolean,
+): Boolean = status == MeetingMaterialStatus.COMPLETED && isPlayable
+
+internal fun meetingLeaveNeedsRecordingPrompt(
+    phase: MeetingRecordingPhase,
+    activeMeetingId: String?,
+    leavingMeetingId: String?,
+    leavingPage: Boolean,
+): Boolean {
+    if (!meetingRecordingActive(phase)) return false
+    if (leavingPage) return true
+    return leavingMeetingId != null && activeMeetingId == leavingMeetingId
+}
+
+internal fun meetingDurationLabel(durationMillis: Long): String {
+    val totalSeconds = durationMillis.coerceAtLeast(0L) / 1_000L
+    val hours = totalSeconds / 3_600L
+    val minutes = (totalSeconds % 3_600L) / 60L
+    val seconds = totalSeconds % 60L
+    return if (hours > 0L) {
+        "$hours:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}"
+    } else {
+        "$minutes:${seconds.toString().padStart(2, '0')}"
+    }
+}
+
+internal fun meetingErrorResource(code: MeetingErrorCode): Int = when (code) {
+    MeetingErrorCode.PERMISSION_REQUIRED -> R.string.meeting_ui_error_permission
+    MeetingErrorCode.NOT_FOUND -> R.string.meeting_ui_error_not_found
+    MeetingErrorCode.INVALID_IDENTIFIER -> R.string.meeting_ui_error_invalid_identifier
+    MeetingErrorCode.INVALID_INPUT -> R.string.meeting_ui_error_invalid_input
+    MeetingErrorCode.CONFLICT -> R.string.meeting_ui_error_conflict
+    MeetingErrorCode.SOURCE_UNAVAILABLE -> R.string.meeting_ui_error_source_unavailable
+    MeetingErrorCode.UNSUPPORTED_MEDIA -> R.string.meeting_ui_error_unsupported_media
+    MeetingErrorCode.CORRUPT_MEDIA -> R.string.meeting_ui_error_corrupt_media
+    MeetingErrorCode.TOO_LARGE -> R.string.meeting_ui_error_too_large
+    MeetingErrorCode.STORAGE_FAILURE -> R.string.meeting_ui_error_storage
+    MeetingErrorCode.RECORDING_BUSY -> R.string.meeting_ui_error_recording_busy
+    MeetingErrorCode.RECORDING_NOT_ACTIVE -> R.string.meeting_ui_error_recording_not_active
+    MeetingErrorCode.RECORDING_START_DENIED -> R.string.meeting_ui_error_recording_start_denied
+    MeetingErrorCode.RECORDING_FAILED -> R.string.meeting_ui_error_recording_failed
+    MeetingErrorCode.INTERRUPTED -> R.string.meeting_ui_error_interrupted
+    MeetingErrorCode.PLAYBACK_FAILED -> R.string.meeting_ui_error_playback
+    MeetingErrorCode.MISSING_MEDIA -> R.string.meeting_ui_error_missing_media
+}
+
+internal fun meetingRecordingStatusResource(phase: MeetingRecordingPhase): Int = when (phase) {
+    MeetingRecordingPhase.IDLE -> R.string.meeting_ui_record_status_idle
+    MeetingRecordingPhase.STARTING -> R.string.meeting_ui_record_status_starting
+    MeetingRecordingPhase.RECORDING -> R.string.meeting_ui_record_status_recording
+    MeetingRecordingPhase.PAUSED -> R.string.meeting_ui_record_status_paused
+    MeetingRecordingPhase.STOPPING -> R.string.meeting_ui_record_status_stopping
+    MeetingRecordingPhase.COMPLETED -> R.string.meeting_ui_record_status_completed
+    MeetingRecordingPhase.FAILED -> R.string.meeting_ui_record_status_failed
+}
+
+internal fun meetingMaterialKindResource(kind: MeetingMaterialKind): Int = when (kind) {
+    MeetingMaterialKind.RECORDING -> R.string.meeting_ui_kind_recording
+    MeetingMaterialKind.AUDIO_IMPORT -> R.string.meeting_ui_kind_audio
+    MeetingMaterialKind.VIDEO_IMPORT -> R.string.meeting_ui_kind_video
+}
+
+internal fun meetingMaterialStatusResource(status: MeetingMaterialStatus): Int = when (status) {
+    MeetingMaterialStatus.RECORDING -> R.string.meeting_ui_material_status_recording
+    MeetingMaterialStatus.PAUSED -> R.string.meeting_ui_material_status_paused
+    MeetingMaterialStatus.FINALIZING -> R.string.meeting_ui_material_status_finalizing
+    MeetingMaterialStatus.COMPLETED -> R.string.meeting_ui_material_status_completed
+    MeetingMaterialStatus.INCOMPLETE -> R.string.meeting_ui_material_status_incomplete
+    MeetingMaterialStatus.MISSING -> R.string.meeting_ui_material_status_missing
+}
+
+internal fun meetingMaterialTone(status: MeetingMaterialStatus): FloeBadgeTone = when (status) {
+    MeetingMaterialStatus.COMPLETED -> FloeBadgeTone.SUCCESS
+    MeetingMaterialStatus.RECORDING,
+    MeetingMaterialStatus.PAUSED,
+    MeetingMaterialStatus.FINALIZING,
+    -> FloeBadgeTone.ACCENT
+    MeetingMaterialStatus.INCOMPLETE,
+    MeetingMaterialStatus.MISSING,
+    -> FloeBadgeTone.DESTRUCTIVE
+}
+
+private sealed interface MeetingLeaveTarget {
+    data object Page : MeetingLeaveTarget
+    data object ClearSelection : MeetingLeaveTarget
+    data class Select(val id: String) : MeetingLeaveTarget
+}
+
+private class MeetingPlaybackSession(
+    val materialId: String,
+    val player: MeetingPlayer,
+)
+
+private val MeetingNotesUiStateSaver = listSaver<MeetingNotesUiState, Any>(
+    save = { state ->
+        listOf(
+            state.draft,
+            state.base,
+            state.revision,
+            state.conflict,
+            state.recovery ?: "",
+            state.recovery != null,
+            state.latestNotes ?: "",
+            state.latestNotes != null,
+            state.latestRevision ?: -1L,
+        )
+    },
+    restore = { values ->
+        if (values.size < 9) {
+            MeetingNotesUiState()
+        } else {
+            MeetingNotesUiState(
+                draft = values[0] as? String ?: "",
+                base = values[1] as? String ?: "",
+                revision = values[2] as? Long ?: 0L,
+                conflict = values[3] as? Boolean ?: false,
+                recovery = if (values[5] as? Boolean == true) values[4] as? String else null,
+                latestNotes = if (values[7] as? Boolean == true) values[6] as? String else null,
+                latestRevision = (values[8] as? Long)?.takeIf { it >= 0L },
+            )
+        }
+    },
+)

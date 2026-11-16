@@ -59,6 +59,8 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
@@ -239,6 +241,7 @@ private fun FloeShellContent(
     var settingsVisible by rememberSaveable { mutableStateOf(false) }
     var settingsSectionKey by rememberSaveable { mutableStateOf("") }
     var previewVisible by rememberSaveable { mutableStateOf(false) }
+    var meetingsVisible by rememberSaveable { mutableStateOf(false) }
     var inspectorRoute by rememberSaveable { mutableStateOf<String?>(null) }
     fun dismissInspector() {
         application?.componentDocumentReturns?.clear()
@@ -283,8 +286,8 @@ private fun FloeShellContent(
     // and every launch behavior stay exactly as they are; the Settings Dialog
     // overlays the still-composed chat without clearing privacyVisibleHolder,
     // which is precisely why this separate fact exists.
-    androidx.compose.runtime.LaunchedEffect(settingsVisible, previewVisible, drawerOpen) {
-        runtimeHost?.uiModalSurfaceOwned = settingsVisible || previewVisible || drawerOpen
+    androidx.compose.runtime.LaunchedEffect(settingsVisible, previewVisible, drawerOpen, meetingsVisible) {
+        runtimeHost?.uiModalSurfaceOwned = settingsVisible || previewVisible || drawerOpen || meetingsVisible
     }
 
     // The actual viewer claim reads these mutable state delegates on the
@@ -294,7 +297,7 @@ private fun FloeShellContent(
     androidx.compose.runtime.SideEffect {
         officePreviews?.setAiLaunchAdmission(officeAiAdmissionOwner) { taskId ->
             taskId != null && application?.isActivityInForeground() == true &&
-                !settingsVisible && !previewVisible && !drawerOpen &&
+                !settingsVisible && !previewVisible && !drawerOpen && !meetingsVisible &&
                 runtimeHost?.conversations?.currentVisibleConversationId() == taskId
         }
     }
@@ -747,7 +750,7 @@ private fun FloeShellContent(
         // temporary one, whose id never reaches the persisted key; the
         // decision therefore reads the live selection, not the saved key.
         val baseNavCanRun = !persistentSidebar && route == null && !drawerOpen &&
-            !settingsVisible && !previewVisible &&
+            !settingsVisible && !previewVisible && !meetingsVisible &&
             selection.key != SidebarSelection.Workbench(WorkbenchSelection.NEW_TASK).key
         ImeFirstBackHandler(enabled = baseNavCanRun) {
             // System Back at a conversation surface IS an actual navigation
@@ -1140,11 +1143,11 @@ private fun FloeShellContent(
             }
         }
 
-        // MEETINGS SEAM (parallel owner): the meeting service has no real
-        // entry yet, so this stays null and the Space overview row is never
-        // composed. The main integration replaces this value with the actual
-        // service entry; Space itself needs no other change.
-        val openMeetings: (() -> Unit)? = null
+        val openMeetings: () -> Unit = {
+            dismissIme()
+            drawerOpen = false
+            meetingsVisible = true
+        }
 
         // PHONE SEAM: reuse the REAL G08 settings section (its exact Compose
         // content and authorization callbacks) only while the device-access
@@ -1530,6 +1533,27 @@ private fun FloeShellContent(
                         C07EntryFlowFeature.settingsSection(),
                     ),
         )
+
+        if (meetingsVisible) {
+            // Exit is owned by MeetingDestination so unsaved notes and an
+            // active recording get their explicit leave confirmation.
+            Dialog(
+                onDismissRequest = {},
+                properties = DialogProperties(
+                    dismissOnBackPress = false,
+                    dismissOnClickOutside = false,
+                    usePlatformDefaultWidth = false,
+                ),
+            ) {
+                MeetingDestination(
+                    compact = !twoColumn,
+                    showSidebarToggle = false,
+                    onExpandSidebar = {},
+                    onOpenDrawer = {},
+                    onExit = { meetingsVisible = false },
+                )
+            }
+        }
 
         // G05-R3 Alpha14: one self-update surface (full channel only; the
         // Play flavour object renders nothing and opens no dialog).
