@@ -10,7 +10,7 @@ English: This unreleased checkpoint adds approval for explicitly timed schedule 
 
 ## 1.0.20 后源码检查点：设备工具可用性发布（2026-11-16，未发版）
 
-修复设备工具可用性状态的并发发布：读取、比较和发布统一串行，停止或环境代次变更后旧发布不能重新开放工具。Full Kotlin 编译及并发定向测试通过。三星诊断任务曾返回 `device.observe` 不在工具目录，系统同时显示无障碍服务已绑定；现有证据不足以证明该竞态就是当次报错原因，修复尚未实机验证。诊断日志未采到悬浮球触摸事件；测试已停止并恢复公开版、临时权限及诊断开关。
+修复设备工具可用性状态的并发发布：读取、比较和发布统一串行，停止或环境代次变更后旧发布不能重新开放工具。Full Kotlin 编译及并发定向测试通过。三星诊断任务曾返回 `device.observe` 不在工具目录，系统同时显示无障碍服务已绑定；测试使用的 `uiautomator dump` 可能暂时压制其他无障碍服务，现有证据不足以把报错归因于 App 或此竞态，修复尚未实机验证。诊断日志未采到悬浮球触摸事件；测试已停止并恢复公开版、临时权限及诊断开关。
 
 English: Device-tool availability publications are now serialized and fenced on stop or epoch change. Focused Full Kotlin checks passed; the relationship to the observed Samsung tool-unavailable error remains unverified.
 
@@ -24,15 +24,15 @@ English: An opt-in, bounded local timing diagnostic was added for overlay touch 
 
 [Android 1.0.20 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v1.0.20)固定源码 `3a98cf86e37ad0f31f241fd5666ce44fc55b61fe`；Full APK SHA-256 `6eb25e50f4d050bf8b5b8e35b12a42876f3c94da717af07f79296bf098388232`。公开七附件匿名下载字节逐项匹配，GitHub 更新列表可发现本版，iOS Latest 保持 `v1.8.25`。1.0.19 的增量包已在本机从精确基底重建到本版完整字节；三星本次使用 ADB 覆盖安装，并未验证本版设备内在线升级或增量失败回退。
 
-三星前一私有候选实际通过文件创建的单次授权、工具读回及内置编辑器打开。本发布包只比该候选增加设备等待状态刷新：三星实际出现带等待标识的悬浮球，但点球后没有展开审批、球消失；任务按失败即停，现场保留，发布说明明确列为已知问题。设备操作人工审批当前仅接入可核验的无障碍点击，实际交互尚未闭环；其他设备动作及部分浏览器、定时、远程和特殊命令的人工审批仍不完整。停止后的聊天界面没有浮球，但此次不证明消失的精确时刻。
+三星前一私有候选实际通过文件创建的单次授权、工具读回及内置编辑器打开。本发布包只比该候选增加设备等待状态刷新：三星实际出现带等待标识的悬浮球；随后测试点球并使用 `uiautomator dump`，截图中球已消失、审批未完成。该检查工具可能压制 Floe 的无障碍服务，不能确认消失由点球本身引起；任务按失败即停，现场保留，发布说明已更正。设备操作人工审批当前仅接入可核验的无障碍点击，实际交互尚未闭环；其他设备动作及部分浏览器、定时、远程和特殊命令的人工审批仍不完整。停止后的聊天界面没有浮球，但此次不证明消失的精确时刻。
 
-English: Android 1.0.20 is a published prerelease from the source and APK above. All seven public assets matched; delta reconstruction was verified locally, not as an on-device OTA. A Samsung file-approval flow passed on the preceding candidate. The release candidate showed the waiting bubble, but tapping it did not open approval; this remains a documented issue.
+English: Android 1.0.20 is a published prerelease from the source and APK above. All seven public assets matched; delta reconstruction was verified locally, not as an on-device OTA. A Samsung file-approval flow passed on the preceding candidate. The waiting bubble appeared, but overlay approval did not complete; the UI inspection tool may have interrupted the accessibility service, so the cause remains unconfirmed.
 
 ## 1.0.20 私有候选：三星文件审批通过，设备浮窗待修复（2026-11-16）
 
 候选 `candidate129-c03` 固定源码 `25c6109993b7d15b80d094f0d7a80d24793a9eb0`，Full APK SHA-256 `3c93ea4f4800669d2adbc766214ef21d907224e46dd959d5edb9a8d787344dfb`。三星保留 UID 覆盖安装，主应用及运行组件均为 1.0.20／129，安装字节与候选主包和内嵌组件一致。使用 Ark Plan 的 `ark-code-latest`，在新建项目触发 `workspace.createFile`；授权卡显示实际目标路径，单次允许后文件创建成功，`workspace.readFile` 读回 `qa129_ok`，工作区列表和内置文本编辑器打开同一文件。第一次测试因误判权限模式而人为停止，未计为通过。
 
-独立计算器任务中，实际启动应用成功、模型观察到页面并请求点击，但外部页面未出现审批浮窗；回到 Floe 时显示详情未就绪，任务已停止，原画面保留。代码确认审批等待变化未触发设备状态刷新，已补通知及定向测试，尚需新包复测，不能断言这是唯一原因。测试期间临时启用的设备权限、悬浮开关、目标应用和电源设置已恢复；失败任务及证据保留。c03 未公开发布。
+独立计算器任务中，实际启动应用成功、模型观察到页面并请求点击，但外部页面未出现审批浮窗；测试期间使用的 `uiautomator dump` 可能压制无障碍服务，不能仅凭此次结果归因。回到 Floe 时显示详情未就绪，任务已停止，原画面保留。代码确认审批等待变化未触发设备状态刷新，已补通知及定向测试，尚需不干扰服务的复测。测试期间临时启用的设备权限、悬浮开关、目标应用和电源设置已恢复；失败任务及证据保留。c03 未公开发布。
 
 English: A private 1.0.20 candidate passed Samsung's real file approval, creation, model readback and editor open. The separate calculator click waited without a visible approval overlay; the task was stopped and evidence retained. A missing waiting-state notification was fixed and unit-tested but requires a new candidate and device retest.
 
