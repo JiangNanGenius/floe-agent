@@ -109,8 +109,17 @@ final class C01LinuxSessionServiceTests: XCTestCase {
         XCTAssertEqual(clamped["timeoutSeconds"], .fractional(0.05))
         XCTAssertEqual(clamped["maxOutputBytes"], .integer(262_144))
         XCTAssertEqual(clamped["environmentTransaction"], .boolean(true))
-        XCTAssertNil(try project(#"{"command":"printf hi","stdin":"secret"}"#))
-        XCTAssertNil(try project(#"{"command":"printf hi","env":{"A":"secret"}}"#))
+        let stdin = try XCTUnwrap(project(#"{"command":"printf hi","stdin":""}"#))
+        XCTAssertEqual(stdin["stdinPresent"], .boolean(true))
+        XCTAssertEqual(stdin["envCount"], .integer(0))
+        XCTAssertNil(stdin["stdin"])
+        let env = try XCTUnwrap(project(#"{"command":"printf hi","env":{"A":"secret"}}"#))
+        XCTAssertEqual(env["stdinPresent"], .boolean(false))
+        XCTAssertEqual(env["envCount"], .integer(1))
+        XCTAssertNil(env["env"])
+        XCTAssertNil(try project(#"{"command":"printf hi","stdin":null}"#))
+        XCTAssertNil(try project(#"{"command":"printf hi","env":{"PATH":"forbidden"}}"#))
+        XCTAssertNil(try project(#"{"command":"printf hi","env":{"FLOE_SECRET":"forbidden"}}"#))
         XCTAssertNil(try project(#"{"command":"printf hi","cwd":"../outside"}"#))
         XCTAssertNil(try project("{\"command\":\"echo x\\u202ey\"}"))
         var remote = resolved
@@ -120,6 +129,33 @@ final class C01LinuxSessionServiceTests: XCTestCase {
         changed.target.revision += 1
         XCTAssertFalse(LocalShellApprovalPresentation.samePinnedTarget(resolved, changed))
     }
+    func testShellToolArgumentLimitCoversEscapedMaximumStdinOnlyForShell() throws {
+        let stdin = String(repeating: "\u{0001}", count: 256 * 1024)
+        let encoded = try JSONSerialization.data(withJSONObject: ["command": "cat", "stdin": stdin], options: [.sortedKeys])
+        XCTAssertGreaterThan(encoded.count, 65_536)
+        let call = try ToolCall(id: "large-shell", toolName: "exec.shell", argumentsJSON: encoded, scope: .local)
+        let waiting = AgentState.WaitingApproval(toolCall: call, reason: "test")
+        let privateData = try XCTUnwrap(LocalShellApprovalPresentation.privatePayload(waiting: waiting))
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: privateData) as? [String: Any])
+        XCTAssertEqual(object["stdin"] as? String, stdin)
+        var assembled = Data(), cursor: Int? = 0, chunks = 0
+        while let offset = cursor {
+            let chunk = try XCTUnwrap(LocalShellApprovalPresentation.privateChunk(privateData, offset: offset))
+            XCTAssertLessThanOrEqual(chunk.data.count, 24_576)
+            assembled.append(chunk.data); cursor = chunk.nextOffset; chunks += 1
+        }
+        XCTAssertGreaterThan(chunks, 1)
+        XCTAssertEqual(assembled, privateData)
+        XCTAssertNil(LocalShellApprovalPresentation.privateChunk(privateData, offset: privateData.count))
+        XCTAssertThrowsError(try ToolCall(id: "large-other", toolName: "other.tool", argumentsJSON: encoded, scope: .local))
+        let args = try JSONDecoder().decode(LocalShellTool.Arguments.self, from: encoded)
+        let shell = LocalShellService(backend: C01FakeSessionBackend(), rootProvider: { URL(fileURLWithPath: NSTemporaryDirectory()) })
+        XCTAssertNoThrow(try LocalShellTool(shell: shell).validate(args))
+        var tooLarge = args
+        tooLarge.stdin = stdin + "x"
+        XCTAssertThrowsError(try LocalShellTool(shell: shell).validate(tooLarge))
+    }
+
     func testModelSessionRefusalPreventsAnyEngineDispatch() async throws {
         let backend = C01FakeSessionBackend()
         let center = ShellSessionCenter(backend: backend,

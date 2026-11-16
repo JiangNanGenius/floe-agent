@@ -307,6 +307,18 @@ final class PhoneTextInputRuntimeRedactionTests: XCTestCase {
         let legacy = try AgentCheckpoint.decoded(from: legacyJSON)
         XCTAssertNil(legacy.sensitiveToolCallIDs)
     }
+    func testShellStdinAndEnvironmentNeverEnterPersistedArguments() throws {
+        let raw = Data(#"{"command":"cat","stdin":"synthetic-input","env":{"API":"synthetic-env"}}"#.utf8)
+        let cleaned = ToolArgumentSanitizer.redactedArgumentsJSON(raw, toolName: "exec.shell")
+        let text = String(decoding: cleaned, as: UTF8.self)
+        XCTAssertFalse(text.contains("synthetic-input")); XCTAssertFalse(text.contains("synthetic-env"))
+        XCTAssertTrue(ToolArgumentSanitizer.containsSensitiveValues(raw, toolName: "exec.shell"))
+        let broken = Data(#"{"command":"cat","stdin":"synthetic-input"#.utf8)
+        XCTAssertFalse(String(decoding: ToolArgumentSanitizer.redactedArgumentsJSON(broken, toolName: "exec.shell"), as: UTF8.self).contains("synthetic-input"))
+        let normal = Data(#"{"command":"echo hi"}"#.utf8)
+        XCTAssertFalse(ToolArgumentSanitizer.containsSensitiveValues(normal, toolName: "exec.shell"))
+    }
+
     func testBrowserTypeTextIsNeverPersistedEvenWhenMalformed() {
         let secret = "example-sensitive-input"
         let raw = Data("{\"ref\":\"n1\",\"documentID\":\"d1\",\"text\":\"\(secret)\"}".utf8)

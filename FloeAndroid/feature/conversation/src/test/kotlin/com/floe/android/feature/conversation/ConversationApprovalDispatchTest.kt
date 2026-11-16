@@ -9,6 +9,8 @@ package com.floe.android.feature.conversation
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -291,6 +293,167 @@ class ConversationApprovalDispatchTest {
         holder.hidePrivateApproval("new-lease")
         assertNull(holder.visibleApprovalCard(card, "new-lease").localShellAction)
         assertEquals(false, holder.privateApprovalValid(card, "new-lease", "new-token"))
+    }
+
+    @Test fun shellPrivateInputRequiresVerifiedLoadAndExplicitReviewOnCurrentRoot() {
+        val card = approvalCard().copy(toolName = "exec.shell", scopeVerified = false)
+        val host = RecordingHost().apply {
+            privatePresentationAccepted = true; privateShellReadAccepted = true; privateRootEpoch = 7
+        }
+        val holder = holderWithApproval(host, card)
+        val workspace = "abcdefab-1234-4567-89ab-abcdefabcdef"
+        holder.applyHostSnapshot(threadState(holder.session, pendingApprovals = listOf(card), boundWorkspaceId = workspace))
+        val shell = LocalShellApprovalUi("env-1", workspace, 1, "cat", ".", 10.0, 65536, false,
+            shellPrivateBytes = 50, shellPrivateSHA256 = "a".repeat(64),
+            stdinPresent = true, envCount = 1, nativeEpoch = 7)
+        holder.showPrivateApproval(card, "lease")
+        holder.acceptPrivateShellApproval(holder.session, card, "lease", shell, "token")
+        var displayed = holder.visibleApprovalCard(card, "lease")
+        holder.resolveApproval(displayed, allow = true, presentationLease = "lease")
+        assertEquals(0, host.count("resolveApproval"))
+        holder.loadPrivateShellDetails(card, "lease")
+        assertEquals(1, host.count("requestPrivateShellDetails"))
+        assertFalse(holder.privateShellLoadResult(holder.session, card, "lease", "wrong", "", mapOf("A" to "secret")))
+        assertTrue(holder.privateShellLoadResult(holder.session, card, "lease", "token", "", mapOf("A" to "secret")))
+        displayed = holder.visibleApprovalCard(card, "lease")
+        assertEquals("", displayed.localShellAction?.stdin)
+        assertFalse(displayed.toString().contains("secret"))
+        holder.resolveApproval(displayed, allow = true, presentationLease = "lease")
+        assertEquals(0, host.count("resolveApproval"))
+        holder.confirmPrivateShellDetails(card, "lease")
+        assertTrue(holder.privateApprovalValid(card, "lease", "token"))
+        host.privateRootEpoch = 8
+        assertFalse(holder.privateApprovalValid(card, "lease", "token"))
+        holder.resolveApproval(displayed, allow = true, presentationLease = "lease")
+        assertEquals(0, host.count("resolveApproval"))
+        holder.discardBrowserVisualApprovals(onlyStale = true)
+        assertNull(holder.visibleApprovalCard(card, "lease").localShellAction)
+    }
+
+    @Test fun stoppingRevokesPrivateShellLeaseAndLateChunksCannotRestoreIt() {
+        for (fromCard in listOf(false, true)) {
+            val card = approvalCard().copy(toolName = "exec.shell", scopeVerified = false)
+            val host = RecordingHost().apply {
+                privatePresentationAccepted = true; privateShellReadAccepted = true; privateRootEpoch = 7
+            }
+            val holder = holderWithApproval(host, card)
+            val workspace = "abcdefab-1234-4567-89ab-abcdefabcdef"
+            holder.applyHostSnapshot(threadState(holder.session, pendingApprovals = listOf(card), boundWorkspaceId = workspace))
+            val shell = LocalShellApprovalUi("env-1", workspace, 1, "cat", ".", 10.0, 65536, false,
+                shellPrivateBytes = 50, shellPrivateSHA256 = "a".repeat(64),
+                stdinPresent = true, envCount = 1, nativeEpoch = 7)
+            holder.showPrivateApproval(card, "old")
+            holder.acceptPrivateShellApproval(holder.session, card, "old", shell, "old-token")
+            holder.loadPrivateShellDetails(card, "old")
+            val stale = holder.visibleApprovalCard(card, "old")
+            if (fromCard) assertTrue(holder.stopForApproval(card))
+            else assertEquals(ConversationFlowResult.Accepted, holder.cancel())
+            val oldAttempt = requireNotNull(holder.shellStopAttempt(card.runId))
+            assertEquals(true, holder.shellStopPending(card))
+            assertFalse(holder.privateShellLoadResult(holder.session, card, "old", "old-token", "", mapOf("A" to "secret")))
+            holder.showPrivateApproval(card, "blocked")
+            assertNull(holder.visibleApprovalCard(card, "blocked").localShellAction)
+            holder.resolveApproval(stale, allow = true, presentationLease = "old")
+            assertEquals(0, host.count("resolveApproval"))
+            holder.recheckApproval(card)
+            assertEquals(0, host.count("refreshApproval"))
+            holder.markShellStopUnconfirmed(card.runId, oldAttempt)
+            assertEquals(false, holder.shellStopPending(card))
+            holder.recheckApproval(card)
+            assertEquals(1, host.count("refreshApproval"))
+            holder.showPrivateApproval(card, "fresh")
+            holder.acceptPrivateShellApproval(holder.session, card, "fresh", shell, "new-token")
+            holder.loadPrivateShellDetails(card, "fresh")
+            assertFalse(holder.privateShellLoadResult(holder.session, card, "old", "old-token", "", mapOf("A" to "stale")))
+            assertTrue(holder.privateShellLoadResult(holder.session, card, "fresh", "new-token", "", mapOf("A" to "new")))
+            holder.confirmPrivateShellDetails(card, "fresh")
+            val fresh = holder.visibleApprovalCard(card, "fresh")
+            assertEquals(ConversationFlowResult.Accepted,
+                holder.resolveApproval(fresh, allow = true, presentationLease = "fresh"))
+            val request = host.lastArgs("resolveApproval")!![0] as ApprovalDecisionRequest
+            assertEquals("new-token", request.presentationToken)
+        }
+    }
+
+    @Test fun oldStopFailureCannotUnblockANewerStop() {
+        val card = approvalCard().copy(toolName = "exec.shell", scopeVerified = false)
+        val host = RecordingHost()
+        val holder = holderWithApproval(host, card)
+        assertEquals(ConversationFlowResult.Accepted, holder.cancel())
+        val old = requireNotNull(holder.shellStopAttempt(card.runId))
+        assertEquals(ConversationFlowResult.Accepted, holder.cancel())
+        val newer = requireNotNull(holder.shellStopAttempt(card.runId))
+        assertNotEquals(old, newer)
+        holder.markShellStopUnconfirmed(card.runId, old)
+        assertEquals(true, holder.shellStopPending(card))
+    }
+
+    @Test fun notificationStopFencesOnlyItsExistingTaskAndRun() {
+        val card = approvalCard().copy(toolName = "exec.shell", scopeVerified = false)
+        val holder = holderWithApproval(RecordingHost().apply { privatePresentationAccepted = true; privateRootEpoch = 7 }, card)
+        val workspace = "abcdefab-1234-4567-89ab-abcdefabcdef"
+        holder.applyHostSnapshot(threadState(holder.session, pendingApprovals = listOf(card), boundWorkspaceId = workspace))
+        holder.showPrivateApproval(card, "old")
+        val shell = LocalShellApprovalUi("env-1", workspace, 1, "cat", ".", 10.0, 65536, false, nativeEpoch = 7)
+        holder.acceptPrivateShellApproval(holder.session, card, "old", shell, "old-token")
+        assertTrue(holder.privateApprovalValid(card, "old", "old-token"))
+        assertNull(holder.fenceShellApprovalForNotificationStop("other-task", card.runId))
+        assertNotNull(holder.fenceShellApprovalForNotificationStop(card.conversationId, "other-run"))
+        assertNull(holder.shellStopPending(card))
+
+        val old = requireNotNull(holder.fenceShellApprovalForNotificationStop(card.conversationId.uppercase(), card.runId.uppercase()))
+        assertEquals(true, holder.shellStopPending(card))
+        assertFalse(holder.privateApprovalValid(card, "old", "old-token"))
+        val newer = requireNotNull(holder.fenceShellApprovalForNotificationStop(card.conversationId, card.runId))
+        holder.markShellStopUnconfirmed(card.runId, old)
+        assertEquals(true, holder.shellStopPending(card))
+        holder.markShellStopUnconfirmed(card.runId, newer)
+        assertEquals(false, holder.shellStopPending(card))
+    }
+
+    @Test fun notificationStopFencesRunBeforeItsApprovalCardIsLoaded() {
+        val card = approvalCard().copy(toolName = "exec.shell", scopeVerified = false)
+        val host = RecordingHost().apply { privatePresentationAccepted = true }
+        val holder = holderWithApproval(host, card)
+        holder.applyHostSnapshot(threadState(holder.session, selectedRunId = "other-run", isRunning = true))
+        val attempt = requireNotNull(holder.fenceShellApprovalForNotificationStop(card.conversationId, card.runId))
+        val other = card.copy(runId = "other-run")
+        assertNull(holder.shellStopPending(other))
+        holder.applyHostSnapshot(threadState(holder.session, pendingApprovals = listOf(card)))
+        assertEquals(true, holder.shellStopPending(card))
+        holder.showPrivateApproval(card, "late")
+        assertFalse(holder.privateApprovalValid(card, "late", "old-token"))
+        holder.recheckApproval(card)
+        assertEquals(0, host.count("refreshApproval"))
+        holder.markShellStopUnconfirmed(card.runId, attempt)
+        holder.recheckApproval(card)
+        assertEquals(1, host.count("refreshApproval"))
+        assertNull(holder.shellStopPending(card))
+    }
+
+    @Test fun confirmedRetryRetiresOnlyTheOffscreenStopAttemptItObserved() {
+        val card = approvalCard().copy(toolName = "exec.shell", scopeVerified = false)
+        val holder = holderWithApproval(RecordingHost(), card)
+        holder.applyHostSnapshot(threadState(holder.session, selectedRunId = "other-run", isRunning = true))
+        val oldAttempt = requireNotNull(holder.fenceShellApprovalForNotificationStop(card.conversationId, card.runId))
+        val newAttempt = requireNotNull(holder.fenceShellApprovalForNotificationStop(card.conversationId, card.runId))
+        holder.applyHostSnapshot(threadState(holder.session, pendingApprovals = listOf(card)))
+        holder.retireShellStopAfterConfirmedRetry(card.runId, oldAttempt)
+        assertEquals(true, holder.shellStopPending(card))
+        holder.retireShellStopAfterConfirmedRetry("other-run", newAttempt)
+        assertEquals(true, holder.shellStopPending(card))
+        holder.retireShellStopAfterConfirmedRetry(card.runId, newAttempt)
+        assertNull(holder.shellStopPending(card))
+    }
+
+    @Test fun shellPrivateEscapingNeverConfusesControlCharactersWithLiteralText() {
+        assertEquals("a\\\\b\\n\\u{202E}\\t\\\"",
+            escapePrivateShellText("a\\b\n\u202e\t\""))
+        val original = "x".repeat(2047) + "😀" + "\u202e" + "end"
+        val chunks = chunkPrivateShellText(original)
+        assertEquals(escapePrivateShellText(original), chunks.joinToString(""))
+        assertTrue(chunks.none { it.lastOrNull()?.isHighSurrogate() == true ||
+            it.firstOrNull()?.isLowSurrogate() == true })
     }
 
     @Test fun scheduleApprovalRequiresCurrentVisibleLeaseAndClearsOnLeave() {

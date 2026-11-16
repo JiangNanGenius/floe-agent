@@ -4215,10 +4215,12 @@ public actor FacadeRunDomain {
         let generation: UUID
         let descriptorID: String
         let deviceTargetDigest: String?
+        let shellChunkOffset: Int64?
+        let shellChunkToken: String?
         do {
             owner = try envelope.requireTaskAndRun()
             let payload = try RunPayloadReader.Object(envelope.payloadValue ?? .object([:]),
-                allowed: ["approvalSchema", "callID", "generation", "expectedDescriptorIdentity", "canonicalTargetDigest"])
+                allowed: ["approvalSchema", "callID", "generation", "expectedDescriptorIdentity", "canonicalTargetDigest", "shellChunkOffset", "presentationToken"])
             guard try payload.string("approvalSchema", maxBytes: 32) == "generation-v1" else {
                 throw RunDomainError(.invalidState, .payloadInvalid)
             }
@@ -4231,6 +4233,12 @@ public actor FacadeRunDomain {
             generation = parsed
             descriptorID = try payload.string("expectedDescriptorIdentity", maxBytes: 64)
             deviceTargetDigest = try payload.optionalString("canonicalTargetDigest", maxBytes: 64)
+            shellChunkOffset = try payload.optionalInteger("shellChunkOffset", min: 0, max: 2 * 1024 * 1024)
+            shellChunkToken = try payload.optionalString("presentationToken", maxBytes: 36)
+            guard (shellChunkOffset == nil) == (shellChunkToken == nil),
+                  shellChunkOffset == nil || deviceTargetDigest == nil else {
+                throw RunDomainError(.invalidState, .payloadInvalid)
+            }
             if let digest = deviceTargetDigest {
                 guard digest.utf8.count == 64,
                       digest.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
@@ -4262,6 +4270,9 @@ public actor FacadeRunDomain {
               let descriptor = tools.registry.descriptor(named: waiting.toolCall.toolName),
               descriptor.authorizationIdentity == descriptorID else {
             return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalGenerationMismatch)))
+        }
+        if shellChunkOffset != nil && waiting.toolCall.toolName != "exec.shell" {
+            return RunDomainReply(.rejected(RunDomainError(.invalidState, .payloadInvalid)))
         }
         let details: [String: SettingsDomainV1.JSONValue]
         let shellTarget: C02ResolvedExecutionTarget?
@@ -4350,6 +4361,28 @@ public actor FacadeRunDomain {
             generation: generation, descriptorIdentity: descriptorID, workspaceProof: (deviceAction || scheduleAction || browserTabAction || browserInteractionAction) ? nil : proof, digest: digest,
             shellTarget: shellTarget, deviceTargetDigest: deviceTargetDigest, browserTabProof: browserTabProof,
             browserInteractionProof: browserInteractionProof)
+        if let offset = shellChunkOffset, let token = shellChunkToken {
+            guard waiting.toolCall.toolName == "exec.shell", shellTarget != nil,
+                  workspaceApprovalReceipts.matches(token, binding: binding, now: ProcessInfo.processInfo.systemUptime),
+                  let data = LocalShellApprovalPresentation.privatePayload(waiting: waiting),
+                  let slice = LocalShellApprovalPresentation.privateChunk(data, offset: Int(offset)) else {
+                return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalGenerationMismatch)))
+            }
+            let chunk: SettingsDomainV1.JSONValue = .object([
+                "schema": .string("floe.shell-approval-chunk/1"),
+                "conversationID": .string(owner.taskID.uuidString), "runID": .string(owner.runID.uuidString),
+                "callID": .string(callID), "generation": .string(generation.uuidString.lowercased()),
+                "offset": .integer(offset), "totalBytes": .integer(Int64(data.count)),
+                "sha256": .string(RunWireDigest.sha256Hex(data)),
+                "dataBase64": .string(slice.data.base64EncodedString()),
+                "nextOffset": slice.nextOffset.map { .integer(Int64($0)) } ?? .null,
+            ])
+            let bytes = FacadeFrameBudget.serializedBytes(Self.unwrap(chunk))
+            guard bytes <= 40_000 else {
+                return RunDomainReply(.rejected(RunDomainError(.payloadTooLarge, .payloadTooLarge)))
+            }
+            return RunDomainReply(.completedPage(page: RunTypedPage(object: chunk, pageBytes: bytes), nextCursor: nil))
+        }
         guard let token = workspaceApprovalReceipts.issue(binding, now: ProcessInfo.processInfo.systemUptime) else {
             return RunDomainReply(.rejected(RunDomainError(.capabilityNotUsable, .internal)))
         }

@@ -120,6 +120,10 @@ public enum ToolArgumentSanitizer {
         return toolName.lowercased().replacingOccurrences(of: "_", with: ".") == "browser.type"
     }
 
+    static func isLocalShellTool(_ toolName: String?) -> Bool {
+        toolName?.lowercased().replacingOccurrences(of: "_", with: ".") == "exec.shell"
+    }
+
     /// Conservative device.act rule: any root-level `text`/`sensitiveText`
     /// key (case-insensitive) is a credential regardless of the declared
     /// action, and any NON-OBJECT parsed device.act payload fails closed as
@@ -140,6 +144,9 @@ public enum ToolArgumentSanitizer {
     ) -> Data {
         let storageSetter = isBrowserStorageSetter(toolName)
         guard let object = try? JSONSerialization.jsonObject(with: data) else {
+            if isLocalShellTool(toolName) {
+                return Data(#"{"_redacted":"Malformed shell arguments omitted"}"#.utf8)
+            }
             // A truncated credential container cannot be scrubbed structurally:
             // its nested value or header-list entry may lack a closing quote.
             // Persist only an omission marker; dispatch still uses the original.
@@ -147,6 +154,20 @@ public enum ToolArgumentSanitizer {
                 return Data(#"{"_redacted":"Malformed credential arguments omitted"}"#.utf8)
             }
             return Data(redactedText(String(decoding: data, as: UTF8.self)).utf8)
+        }
+        if isLocalShellTool(toolName) {
+            guard var dictionary = object as? [String: Any] else {
+                return Data(#"{"_redacted":"Shell arguments omitted"}"#.utf8)
+            }
+            for key in dictionary.keys where key.lowercased() == "stdin" || key.lowercased() == "env" {
+                dictionary[key] = "[redacted]"
+            }
+            guard let encoded = try? JSONSerialization.data(withJSONObject: dictionary, options: [.sortedKeys]) else {
+                return Data(#"{"_redacted":"Shell arguments omitted"}"#.utf8)
+            }
+            // Apply the ordinary credential scrub as well, without mutating
+            // the original call used by the running tool.
+            return redactedArgumentsJSON(encoded, toolName: nil)
         }
         if (isPhoneActTool(toolName) || isBrowserTypeTool(toolName)), object as? [String: Any] == nil {
             // A non-object device.act document (array or fragment) cannot be
@@ -191,7 +212,7 @@ public enum ToolArgumentSanitizer {
         toolName: String? = nil
     ) -> Bool {
         guard let object = try? JSONSerialization.jsonObject(with: data) else {
-            if isPhoneActTool(toolName) || isBrowserTypeTool(toolName) {
+            if isPhoneActTool(toolName) || isBrowserTypeTool(toolName) || isLocalShellTool(toolName) {
                 // Malformed or partial device.act bytes are omitted whole:
                 // escaped key names and field order must never evade the
                 // detection by substring scanning.
@@ -203,6 +224,10 @@ public enum ToolArgumentSanitizer {
         }
         if phoneTextInputRequested(object, toolName: toolName) {
             return true
+        }
+        if isLocalShellTool(toolName) {
+            guard let dictionary = object as? [String: Any] else { return true }
+            if dictionary.keys.contains(where: { $0.lowercased() == "stdin" || $0.lowercased() == "env" }) { return true }
         }
         let storageSetter = isBrowserStorageSetter(toolName)
             && (object as? [String: Any]).map {

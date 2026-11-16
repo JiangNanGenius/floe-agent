@@ -268,6 +268,54 @@ data class DeviceActionApprovalUi(
 }
 
 /** Full local-only shell review, never an execution grant. */
+internal fun escapePrivateShellText(value: String): String = buildString {
+    var index = 0
+    while (index < value.length) {
+        val cp = Character.codePointAt(value, index)
+        when (cp) {
+            0x5c -> append("\\\\")
+            0x22 -> append("\\\"")
+            0x0a -> append("\\n")
+            0x0d -> append("\\r")
+            0x09 -> append("\\t")
+            else -> when (Character.getType(cp)) {
+                Character.CONTROL.toInt(), Character.FORMAT.toInt(),
+                Character.LINE_SEPARATOR.toInt(), Character.PARAGRAPH_SEPARATOR.toInt(),
+                Character.SURROGATE.toInt(), Character.UNASSIGNED.toInt() ->
+                    append("\\u{").append(cp.toString(16).uppercase()).append('}')
+                else -> appendCodePoint(cp)
+            }
+        }
+        index += Character.charCount(cp)
+    }
+}
+
+/** Split without bisecting a surrogate pair or an escaped control token. */
+internal fun chunkPrivateShellText(value: String, limit: Int = 2048): List<String> {
+    require(limit >= 16)
+    val escaped = escapePrivateShellText(value)
+    if (escaped.isEmpty()) return listOf("")
+    val chunks = mutableListOf<String>()
+    val current = StringBuilder()
+    var index = 0
+    while (index < escaped.length) {
+        val end = if (escaped[index] == '\\' && index + 1 < escaped.length) {
+            if (escaped[index + 1] == 'u' && index + 2 < escaped.length && escaped[index + 2] == '{') {
+                val closing = escaped.indexOf('}', index + 3)
+                if (closing >= 0) closing + 1 else index + 2
+            } else index + 2
+        } else index + Character.charCount(Character.codePointAt(escaped, index))
+        if (current.isNotEmpty() && current.length + end - index > limit) {
+            chunks += current.toString()
+            current.setLength(0)
+        }
+        current.append(escaped, index, end)
+        index = end
+    }
+    if (current.isNotEmpty()) chunks += current.toString()
+    return chunks
+}
+
 data class LocalShellApprovalUi(
     val environmentId: String,
     val workspaceId: String,
@@ -277,6 +325,14 @@ data class LocalShellApprovalUi(
     val timeoutSeconds: Double,
     val maxOutputBytes: Int,
     val environmentTransaction: Boolean,
+    val shellPrivateBytes: Int? = null,
+    val shellPrivateSHA256: String? = null,
+    val stdinPresent: Boolean = false,
+    val envCount: Int = 0,
+    val stdin: String? = null,
+    /** Null until the complete private page has been verified. */
+    val env: Map<String, String>? = null,
+    val nativeEpoch: Long? = null,
 ) {
     override fun toString(): String = "LocalShellApprovalUi(details=redacted)"
 }

@@ -29,11 +29,12 @@ enum LocalShellApprovalPresentation {
               target.pin.matches(target.target), target.target.revision > 0,
               let object = try? JSONSerialization.jsonObject(with: waiting.toolCall.argumentsJSON) as? [String: Any],
               Set(object.keys).isSubset(of: ["command", "script", "cwd", "env", "stdin", "timeout", "maxOutputBytes", "environmentTransaction", "packages", "packagePurpose", "packageCapabilities"]),
-              !object.keys.contains("stdin"),
               let args = try? JSONDecoder().decode(LocalShellTool.Arguments.self, from: waiting.toolCall.argumentsJSON),
               (args.command == nil) != (args.script == nil),
-              args.env?.isEmpty != false, args.packagePurpose == nil, args.packageCapabilities == nil,
+              (object["stdin"] == nil || object["stdin"] is String),
+              args.packagePurpose == nil, args.packageCapabilities == nil,
               args.packages?.isEmpty != false,
+              LinuxShellStartRequest.environmentRefusal(args.env ?? [:]) == nil,
               let command = args.resolvedCommand, !command.isEmpty, command.utf8.count <= 16_384,
               safeText(command, allowNewlines: true),
               safeText(target.target.environmentID, allowNewlines: false),
@@ -48,7 +49,7 @@ enum LocalShellApprovalPresentation {
               let resolved = try? ShellInputValidation.directory(cwd: cwd, root: workspace.rootURL),
               resolved.standardizedFileURL == (cwd == "." ? canonicalRoot : canonicalRoot.appendingPathComponent(cwd).standardizedFileURL),
               workspace.rootHandle.matches(root: workspace.rootURL) else { return nil }
-        return [
+        var result: [String: Value] = [
             "kind": .string("localShell"), "target": .string("localLinux"),
             "environmentID": .string(target.target.environmentID),
             "workspaceID": .string(workspace.workspaceID.uuidString.lowercased()),
@@ -58,6 +59,31 @@ enum LocalShellApprovalPresentation {
             "maxOutputBytes": .integer(Int64(shell.normalizedOutputCap(args.maxOutputBytes))),
             "environmentTransaction": .boolean(args.environmentTransaction ?? false),
         ]
+        if args.stdin != nil || !(args.env ?? [:]).isEmpty {
+            guard let data = privatePayload(waiting: waiting) else { return nil }
+            result["stdinPresent"] = .boolean(args.stdin != nil)
+            result["envCount"] = .integer(Int64(args.env?.count ?? 0))
+            result["shellPrivateBytes"] = .integer(Int64(data.count))
+            result["shellPrivateSHA256"] = .string(RunWireDigest.sha256Hex(data))
+        }
+        return result
+    }
+
+    /// Never persisted or sent to a model; recreated from the current exact
+    /// waiting request for each private, owner-bound chunk read.
+    static func privatePayload(waiting: AgentState.WaitingApproval) -> Data? {
+        guard let args = try? JSONDecoder().decode(LocalShellTool.Arguments.self, from: waiting.toolCall.argumentsJSON),
+              args.stdin != nil || !(args.env ?? [:]).isEmpty else { return nil }
+        let data = try? JSONSerialization.data(withJSONObject: ["stdin": args.stdin as Any? ?? NSNull(),
+                                                                 "env": args.env ?? [:]], options: [.sortedKeys])
+        guard let data, data.count > 0, data.count <= 2 * 1024 * 1024 else { return nil }
+        return data
+    }
+
+    static func privateChunk(_ data: Data, offset: Int) -> (data: Data, nextOffset: Int?)? {
+        guard offset >= 0, offset < data.count else { return nil }
+        let end = min(data.count, offset + 24_576)
+        return (data.subdata(in: offset..<end), end == data.count ? nil : end)
     }
 
     private static func safeText(_ text: String, allowNewlines: Bool) -> Bool {

@@ -82,6 +82,13 @@ struct WorkspaceApprovalReceiptStore {
         return token
     }
 
+    /// Read-only check for a private content chunk; does not extend or consume
+    /// the one-use approval receipt.
+    func matches(_ token: String, binding: Binding, now: TimeInterval) -> Bool {
+        guard let receipt = entries[token], receipt.expiresAt > now else { return false }
+        return receipt.binding == binding
+    }
+
     /// Remove before any asynchronous revalidation, so concurrent taps cannot
     /// carry the same capability across an actor suspension.
     mutating func take(_ token: String, now: TimeInterval) -> Claim? {

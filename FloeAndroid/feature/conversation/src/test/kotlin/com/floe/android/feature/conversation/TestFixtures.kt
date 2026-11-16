@@ -28,6 +28,7 @@ class RecordingHost : ConversationUiCallbacks {
     var markdownBackendAvailable = true
     var selectModelPersisted = true
     var exportAccepted = true
+    var cancelRunAccepted = true
 
     /** C04 queue-body lane: default false = "the host refused the bounded
      * body read" (the interface default); calls are recorded so tests can
@@ -66,7 +67,7 @@ class RecordingHost : ConversationUiCallbacks {
     }
 
     override fun cancelRun(session: ConversationSessionToken, runId: String): Boolean {
-        record("cancelRun", session, runId); return true
+        record("cancelRun", session, runId); return cancelRunAccepted
     }
 
     override fun retryRun(session: ConversationSessionToken, runId: String): Boolean {
@@ -111,6 +112,17 @@ class RecordingHost : ConversationUiCallbacks {
     }
 
     var privatePresentationAccepted = false
+    override fun refreshApproval(session: ConversationSessionToken, runId: String): Boolean {
+        record("refreshApproval", session, runId)
+        return true
+    }
+    var privateShellReadAccepted = false
+    var privateRootEpoch: Long? = null
+    override fun browserVisualApprovalEpochCurrent(epoch: Long): Boolean = privateRootEpoch == epoch
+    override fun requestPrivateShellDetails(session: ConversationSessionToken, card: ApprovalCardUi, lease: String): Boolean {
+        record("requestPrivateShellDetails", session, card, lease)
+        return privateShellReadAccepted
+    }
     override fun requestApprovalPresentation(session: ConversationSessionToken, card: ApprovalCardUi, lease: String): Boolean {
         record("requestApprovalPresentation", session, card, lease)
         return privatePresentationAccepted

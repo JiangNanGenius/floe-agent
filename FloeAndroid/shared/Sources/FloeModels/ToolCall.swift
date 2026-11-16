@@ -20,6 +20,10 @@ public let toolArgumentsMaxBytes = 65_536 // 64 KiB
 /// the smaller default. Underscore aliases cover compatible provider wire names.
 public func toolArgumentsByteLimit(for toolName: String) -> Int {
     switch toolName {
+    // The shell validates its own 256 KiB stdin and 32 KiB environment;
+    // allow worst-case JSON escaping without raising unrelated tool limits.
+    case "exec.shell", "exec_shell":
+        return 2_097_152
     case "document.createMarkdown", "document_createMarkdown",
          "workspace.createFile", "workspace.writeFile", "workspace.applyPatch",
          "workspace_createFile", "workspace_writeFile", "workspace_applyPatch":

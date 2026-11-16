@@ -564,10 +564,14 @@ class ConversationFlowHolder(
     /** Approvals dispatched with no projection change yet (duplicate-press
      * latch; cleared when the card leaves the projection). */
     private val approvalDispatched = mutableSetOf<String>()
-    private data class PrivateApproval(val card: ApprovalCardUi, val details: WorkspaceFileApprovalUi? = null, val token: String? = null, val shell: LocalShellApprovalUi? = null, val device: DeviceActionApprovalUi? = null, val schedule: ScheduleCreateApprovalUi? = null, val browserTab: BrowserTabApprovalUi? = null, val browserInteraction: BrowserInteractionApprovalUi? = null, val browserVisual: BrowserVisualApprovalUi? = null, val visualVisible: Boolean = false) {
+    private data class PrivateApproval(val card: ApprovalCardUi, val details: WorkspaceFileApprovalUi? = null, val token: String? = null, val shell: LocalShellApprovalUi? = null, val device: DeviceActionApprovalUi? = null, val schedule: ScheduleCreateApprovalUi? = null, val browserTab: BrowserTabApprovalUi? = null, val browserInteraction: BrowserInteractionApprovalUi? = null, val browserVisual: BrowserVisualApprovalUi? = null, val visualVisible: Boolean = false, val shellLoading: Boolean = false, val shellLoadFailed: Boolean = false, val shellReviewed: Boolean = false) {
         override fun toString() = "PrivateApproval(redacted)"
     }
     private val privateApprovals = mutableStateOf<Map<String, PrivateApproval>>(emptyMap())
+    private data class ShellStopIdentity(val key: String, val generation: String?)
+    private data class ShellStopBarrier(val attempt: Long, val identities: List<ShellStopIdentity>, val failed: Boolean = false)
+    private val shellStopBarriers = mutableStateOf<Map<String, ShellStopBarrier>>(emptyMap())
+    private var nextShellStopAttempt = 0L
     val privateApprovalRefresh = mutableStateOf<Map<String, Int>>(emptyMap())
     private val rejectedPrivateApprovals = mutableSetOf<String>()
     private var publishedDeviceApproval: ApprovalCardUi? = null
@@ -821,6 +825,7 @@ class ConversationFlowHolder(
         expandedApprovalEvidence.value = emptySet()
         approvalScopeChoices.value = emptyMap()
         privateApprovals.value = emptyMap()
+        shellStopBarriers.value = emptyMap()
         deviceApprovalStops.value = emptyMap()
         if (publishedDeviceApproval != null) host.onDeviceApprovalWaiting(this, session, null)
         publishedDeviceApproval = null
@@ -1397,12 +1402,16 @@ class ConversationFlowHolder(
 
     /** ⇄ cancel(): stop the composer immediately; the durable cancelled state
      * arrives later through the authoritative projection. */
-    fun cancel(): ConversationFlowResult {
+    @Synchronized fun cancel(): ConversationFlowResult {
         val runId = snapshot.value?.selectedRunId
             ?: return rejected(ConversationRejectedReason.RUN_NOT_CONTINUABLE)
+        val shellAttempt = fenceShellApprovalsForStop(runId)
         actionError = null
         return if (host.cancelRun(session, runId)) ConversationFlowResult.Accepted
-        else rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
+        else {
+            shellAttempt?.let { markShellStopUnconfirmed(runId, it) }
+            rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
+        }
     }
 
     /** Explicit human Stop for LIVE post-run goal REVIEW/continuation work.
@@ -1452,8 +1461,69 @@ class ConversationFlowHolder(
     @Synchronized fun approvalCard(key: String): ApprovalCardUi? =
         snapshot.value?.pendingApprovals?.firstOrNull { it.key == key }
 
+    private fun shellStopBlocked(card: ApprovalCardUi): Boolean {
+        if (card.toolName != "exec.shell") return false
+        val stopped = shellStopBarriers.value[card.runId.lowercase(java.util.Locale.ROOT)] ?: return false
+        // When Stop arrived off-screen there was no card whose generation
+        // could be captured; no later card is proof it belongs to a new run.
+        if (stopped.identities.isEmpty()) return true
+        val identity = stopped.identities.firstOrNull { deviceApprovalKeysMatch(it.key, card.key) } ?: return false
+        val generation = card.requestGeneration
+        // Missing or malformed identity is not proof of a new request.
+        return generation == null || identity.generation == null || generation == identity.generation ||
+            !card.identityVerified || card.approvalRevision != "generation:$generation"
+    }
+
+    /** Stop immediately invalidates this run's old private lease and token. */
+    private fun fenceShellApprovalsForStop(runId: String, evenIfNoCard: Boolean = false): Long? {
+        val cards = snapshot.value?.pendingApprovals.orEmpty().filter {
+            it.toolName == "exec.shell" && it.runId.equals(runId, ignoreCase = true)
+        }
+        if (cards.isEmpty() && !evenIfNoCard) return null
+        val attempt = ++nextShellStopAttempt
+        shellStopBarriers.value = shellStopBarriers.value + (
+            runId.lowercase(java.util.Locale.ROOT) to
+                ShellStopBarrier(attempt, cards.map { ShellStopIdentity(it.key, it.requestGeneration) }))
+        privateApprovals.value = privateApprovals.value.filterValues {
+            it.card.toolName != "exec.shell" || !it.card.runId.equals(runId, ignoreCase = true)
+        }
+        return attempt
+    }
+
+    /** Notification stops can target an existing holder without navigating to it. */
+    @Synchronized fun fenceShellApprovalForNotificationStop(taskId: String, runId: String): Long? {
+        if (retired || !conversationId.equals(taskId, ignoreCase = true) || runId.isBlank()) return null
+        return fenceShellApprovalsForStop(runId, evenIfNoCard = true)
+    }
+
+    @Synchronized fun shellStopAttempt(runId: String): Long? =
+        shellStopBarriers.value[runId.lowercase(java.util.Locale.ROOT)]?.attempt
+
+    /** Null means this card is not blocked; true means Stop is in flight. */
+    @Synchronized fun shellStopPending(card: ApprovalCardUi): Boolean? {
+        if (!shellStopBlocked(card)) return null
+        return shellStopBarriers.value[card.runId.lowercase(java.util.Locale.ROOT)]?.failed == false
+    }
+
+    @Synchronized fun markShellStopUnconfirmed(runId: String, attempt: Long) {
+        val key = runId.lowercase(java.util.Locale.ROOT)
+        val current = shellStopBarriers.value[key] ?: return
+        if (current.attempt == attempt) shellStopBarriers.value =
+            shellStopBarriers.value + (key to current.copy(failed = true))
+    }
+
+    /** Only a confirmed retry may retire the off-screen Stop it observed. */
+    @Synchronized fun retireShellStopAfterConfirmedRetry(runId: String, attempt: Long) {
+        val key = runId.lowercase(java.util.Locale.ROOT)
+        val current = shellStopBarriers.value[key] ?: return
+        if (current.attempt == attempt && current.identities.isEmpty()) {
+            shellStopBarriers.value = shellStopBarriers.value - key
+        }
+    }
+
     @Synchronized fun showPrivateApproval(card: ApprovalCardUi, lease: String) {
         val state = snapshot.value ?: return
+        if (shellStopBlocked(card)) return
         // A user Stop/Takeover or a revoked host identity closes this exact
         // call: a later scroll/resume must not re-open a decision lease.
         if (card.toolName == "device.act" &&
@@ -1479,7 +1549,9 @@ class ConversationFlowHolder(
     @Synchronized fun discardBrowserVisualApprovals(onlyStale: Boolean = false) {
         privateApprovals.value = privateApprovals.value.filterValues { item ->
             val visual = item.browserVisual
-            visual == null || (onlyStale && host.browserVisualApprovalEpochCurrent(visual.nativeEpoch))
+            val shellEpoch = item.shell?.takeIf { it.shellPrivateBytes != null }?.nativeEpoch
+            (visual == null || (onlyStale && host.browserVisualApprovalEpochCurrent(visual.nativeEpoch))) &&
+                (shellEpoch == null || (onlyStale && host.browserVisualApprovalEpochCurrent(shellEpoch)))
         }
     }
 
@@ -1578,10 +1650,70 @@ class ConversationFlowHolder(
         privateApprovals.value = privateApprovals.value + (lease to PrivateApproval(card, token = token, shell = details))
     }
 
+    @Synchronized fun privateShellLoading(lease: String): Boolean = privateApprovals.value[lease]?.shellLoading == true
+    @Synchronized fun privateShellLoadFailed(lease: String): Boolean = privateApprovals.value[lease]?.shellLoadFailed == true
+    @Synchronized fun privateShellReviewed(lease: String): Boolean {
+        val item = privateApprovals.value[lease] ?: return false
+        return item.shellReviewed && item.shell?.nativeEpoch?.let {
+            host.browserVisualApprovalEpochCurrent(it)
+        } == true
+    }
+    @Synchronized fun currentPrivateShellRequest(echo: ConversationSessionToken, card: ApprovalCardUi,
+        lease: String): Pair<LocalShellApprovalUi, String>? {
+        val item = privateApprovals.value[lease] ?: return null
+        val shell = item.shell ?: return null
+        val token = item.token ?: return null
+        if (!item.shellLoading || shell.env != null ||
+            !isPrivateApprovalLeaseCurrent(echo, card, lease) ||
+            shell.nativeEpoch?.let { host.browserVisualApprovalEpochCurrent(it) } != true) return null
+        return shell to token
+    }
+
+    @Synchronized fun loadPrivateShellDetails(card: ApprovalCardUi, lease: String) {
+        val item = privateApprovals.value[lease] ?: return
+        val shell = item.shell ?: return
+        if (!isPrivateApprovalLeaseCurrent(session, card, lease) || shell.shellPrivateBytes == null ||
+            shell.env != null || item.shellLoading ||
+            shell.nativeEpoch?.let { host.browserVisualApprovalEpochCurrent(it) } != true) return
+        privateApprovals.value = privateApprovals.value + (lease to item.copy(shellLoading = true, shellLoadFailed = false))
+        if (!host.requestPrivateShellDetails(session, card, lease)) {
+            privateApprovals.value[lease]?.takeIf { it.card == card }?.let {
+                privateApprovals.value = privateApprovals.value + (lease to it.copy(shellLoading = false, shellLoadFailed = true))
+            }
+        }
+    }
+
+    @Synchronized fun privateShellLoadResult(echo: ConversationSessionToken, card: ApprovalCardUi, lease: String,
+        token: String, stdin: String?, env: Map<String, String>?): Boolean {
+        val item = privateApprovals.value[lease] ?: return false
+        val shell = item.shell ?: return false
+        if (!isPrivateApprovalLeaseCurrent(echo, card, lease) || item.token != token || !item.shellLoading ||
+            shell.nativeEpoch?.let { host.browserVisualApprovalEpochCurrent(it) } != true) return false
+        if (env == null || (stdin != null) != shell.stdinPresent || env.size != shell.envCount) {
+            privateApprovals.value = privateApprovals.value + (lease to item.copy(shellLoading = false, shellLoadFailed = true))
+            return false
+        }
+        privateApprovals.value = privateApprovals.value + (lease to item.copy(
+            shell = shell.copy(stdin = stdin, env = env.toMap()), shellLoading = false, shellLoadFailed = false))
+        return true
+    }
+
+    @Synchronized fun confirmPrivateShellDetails(card: ApprovalCardUi, lease: String) {
+        val item = privateApprovals.value[lease] ?: return
+        val shell = item.shell ?: return
+        if (!isPrivateApprovalLeaseCurrent(session, card, lease) || shell.env == null ||
+            shell.nativeEpoch?.let { host.browserVisualApprovalEpochCurrent(it) } != true) return
+        privateApprovals.value = privateApprovals.value + (lease to item.copy(shellReviewed = true))
+    }
+
     @Synchronized fun isPrivateApprovalLeaseCurrent(echo: ConversationSessionToken, card: ApprovalCardUi, lease: String): Boolean {
         val state = snapshot.value ?: return false
+        if (shellStopBlocked(card)) return false
         val item = privateApprovals.value[lease] ?: return false
-        if (item.browserVisual?.let { !host.browserVisualApprovalEpochCurrent(it.nativeEpoch) } == true) {
+        if (item.browserVisual?.let { !host.browserVisualApprovalEpochCurrent(it.nativeEpoch) } == true ||
+            item.shell?.takeIf { it.shellPrivateBytes != null }?.nativeEpoch?.let {
+                !host.browserVisualApprovalEpochCurrent(it)
+            } == true) {
             privateApprovals.value = privateApprovals.value - lease
             return false
         }
@@ -1669,7 +1801,8 @@ class ConversationFlowHolder(
         val device = privateEntry.device
         if (device != null && card.toolName == "device.act") return card.copy(deviceAction = device, scopeVerified = true)
         val shell = privateEntry.shell
-        if (shell != null && card.toolName == "exec.shell" && sameWorkspace(snapshot.value?.boundWorkspaceId, shell.workspaceId))
+        if (shell != null && card.toolName == "exec.shell" && sameWorkspace(snapshot.value?.boundWorkspaceId, shell.workspaceId) &&
+            (shell.shellPrivateBytes == null || shell.nativeEpoch?.let { host.browserVisualApprovalEpochCurrent(it) } == true))
             return card.copy(localShellAction = shell, scopeVerified = true)
         val details = privateEntry.details ?: return card
         if (!sameWorkspace(snapshot.value?.boundWorkspaceId, details.workspaceId)) return card
@@ -1682,7 +1815,10 @@ class ConversationFlowHolder(
         val state = snapshot.value ?: return false
         return !retired && token != null && item.token == token && item.card == card &&
             ((item.details != null && sameWorkspace(state.boundWorkspaceId, item.details.workspaceId)) ||
-                (item.shell != null && card.toolName == "exec.shell" && sameWorkspace(state.boundWorkspaceId, item.shell.workspaceId)) ||
+                (item.shell != null && card.toolName == "exec.shell" && sameWorkspace(state.boundWorkspaceId, item.shell.workspaceId) &&
+                    (item.shell.shellPrivateBytes == null ||
+                        (item.shell.env != null && item.shellReviewed &&
+                            item.shell.nativeEpoch?.let { host.browserVisualApprovalEpochCurrent(it) } == true))) ||
                 (item.device != null && card.toolName == "device.act") ||
                 (item.schedule != null && card.toolName == "task.schedule") ||
                 (item.browserTab?.isReviewable() == true && card.toolName == "browser.tab") ||
@@ -1721,6 +1857,7 @@ class ConversationFlowHolder(
         val state = snapshot.value ?: return rejected(ConversationRejectedReason.NO_SESSION)
         val live = state.pendingApprovals.firstOrNull { it.key == approval.key }
             ?: return ConversationFlowResult.Stale
+        if (shellStopBlocked(live)) return rejected(ConversationRejectedReason.STALE)
         // The host's exact-run Stop/Takeover projection wins over a stale
         // private lease: no allow/deny may be dispatched for a retired call.
         if (live.toolName == "device.act" &&
@@ -1729,6 +1866,11 @@ class ConversationFlowHolder(
         }
         val privateEntry = presentationLease?.let { privateApprovals.value[it] }
         val privateToken = privateEntry?.token
+        val privateShell = privateEntry?.shell
+        if (allow && live.toolName == "exec.shell" && privateShell?.shellPrivateBytes != null &&
+            (privateShell.env == null || privateEntry?.shellReviewed != true ||
+                privateShell.nativeEpoch?.let { host.browserVisualApprovalEpochCurrent(it) } != true))
+            return rejected(ConversationRejectedReason.INPUT_INSUFFICIENT)
         if (allow && live.toolName == "browser.clickPoint" &&
             (privateEntry?.visualVisible != true || privateEntry?.browserVisual?.let {
                 host.browserVisualApprovalEpochCurrent(it.nativeEpoch)
@@ -1827,6 +1969,13 @@ class ConversationFlowHolder(
 
     @Synchronized fun recheckApproval(card: ApprovalCardUi) {
         if (snapshot.value?.pendingApprovals?.firstOrNull { it.key == card.key } != card) return
+        if (shellStopBlocked(card)) {
+            val key = card.runId.lowercase(java.util.Locale.ROOT)
+            val barrier = shellStopBarriers.value[key] ?: return
+            if (!barrier.failed) return
+            // A deliberate retry obtains a NEW native presentation token.
+            shellStopBarriers.value = shellStopBarriers.value - key
+        }
         if (approvalDispatchStates.value[card.key] == ApprovalDispatchState.NEEDS_CHECK) {
             approvalChecks[card.key]?.invoke()
         } else if (approvalDispatchStates.value[card.key] != ApprovalDispatchState.PROCESSING &&
@@ -1845,7 +1994,10 @@ class ConversationFlowHolder(
         if (retired || state.selectedRunId != card.runId ||
             state.pendingApprovals.firstOrNull { it.key == card.key } != card ||
             (selectedRunId.value != null && selectedRunId.value != card.runId)) return false
-        return host.cancelRun(session, card.runId)
+        val shellAttempt = fenceShellApprovalsForStop(card.runId)
+        val started = host.cancelRun(session, card.runId)
+        if (!started) shellAttempt?.let { markShellStopUnconfirmed(card.runId, it) }
+        return started
     }
 
     /**

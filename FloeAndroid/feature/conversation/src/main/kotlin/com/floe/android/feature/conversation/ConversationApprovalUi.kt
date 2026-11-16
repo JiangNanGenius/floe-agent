@@ -30,6 +30,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -77,6 +78,23 @@ fun ConversationApprovalRow(
      * [onResolve]. Production keeps the holder's canonical path. */
     onEndTerminalAndRun: ((ApprovalCardUi, TerminalHandoffConsentUi) -> Unit)? = null,
 ) {
+    val shellStop = if (card.toolName == "exec.shell") holder.shellStopPending(card) else null
+    if (shellStop != null) {
+        val colors = Floe.colors
+        Column(modifier = modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            FloeText(stringResource(if (shellStop) R.string.approval_shell_stop_pending
+                else R.string.approval_shell_stop_unconfirmed),
+                style = Floe.typography.metadata,
+                color = if (shellStop) colors.pending else colors.destructive)
+            if (!shellStop) {
+                FloeText(stringResource(R.string.approval_recheck),
+                    modifier = Modifier.clickable { holder.recheckApproval(card) }.padding(vertical = 8.dp),
+                    style = Floe.typography.bodyEmphasized, color = colors.accent)
+            }
+        }
+        return
+    }
     val deviceStop = if (card.toolName == "device.act") holder.deviceApprovalStopFor(card) else null
     if (deviceStop != null) {
         // Takeover has removed this approval from the actionable UI. Keep a
@@ -151,6 +169,7 @@ fun ConversationApprovalRow(
     val decisionInFlight = dispatchState != null && dispatchState != ApprovalDispatchState.RETRY_READY
     val fileAction = presentedCard.workspaceAction
     val shellAction = presentedCard.localShellAction
+    var shellExpanded by remember(card.key, lease) { mutableStateOf(false) }
     val scheduleAction = presentedCard.scheduleCreateAction
     val browserTabAction = presentedCard.browserTabAction
     val browserInteraction = presentedCard.browserInteractionAction
@@ -176,8 +195,10 @@ fun ConversationApprovalRow(
         "launch" -> !presentedCard.actionPackage.isNullOrBlank()
         else -> false
     }
+    val shellDetailsReady = shellAction?.shellPrivateBytes == null ||
+        (lease != null && shellAction.env != null && holder.privateShellReviewed(lease!!))
     val canAllow = presentedCard.identityVerified && presentedCard.scopeVerified &&
-        detailsVisible && !decisionInFlight
+        detailsVisible && shellDetailsReady && !decisionInFlight
     val canDeny = presentedCard.identityVerified && !decisionInFlight
     val gateStopped = ApprovalGrantMapping.isGateStopped(presentedCard.reason) && !reasonIsSlotConflict
     val headerTitle = stringResource(R.string.approval_required)
@@ -494,6 +515,64 @@ fun ConversationApprovalRow(
                     FloeText(stringResource(if (shellAction.environmentTransaction) R.string.approval_shell_transaction_on
                         else R.string.approval_shell_transaction_off),
                         style = Floe.typography.metadata, color = colors.secondaryLabel)
+                    if (shellAction.shellPrivateBytes != null && lease != null) {
+                        val currentLease = lease!!
+                        FloeText(stringResource(if (shellExpanded) R.string.approval_shell_hide_private
+                            else R.string.approval_shell_show_private),
+                            modifier = Modifier.clickable {
+                                shellExpanded = !shellExpanded
+                                if (shellExpanded && shellAction.env == null)
+                                    holder.loadPrivateShellDetails(card, currentLease)
+                            }.padding(vertical = 8.dp),
+                            style = Floe.typography.bodyEmphasized, color = colors.accent)
+                        if (shellExpanded) {
+                            if (holder.privateShellLoading(currentLease)) {
+                                FloeText(stringResource(R.string.approval_shell_private_loading),
+                                    style = Floe.typography.metadata, color = colors.secondaryLabel)
+                            } else if (holder.privateShellLoadFailed(currentLease)) {
+                                FloeText(stringResource(R.string.approval_shell_private_failed),
+                                    modifier = Modifier.clickable { holder.loadPrivateShellDetails(card, currentLease) },
+                                    style = Floe.typography.metadata, color = colors.destructive)
+                            } else if (shellAction.env != null) {
+                                val absent = stringResource(R.string.approval_shell_stdin_absent)
+                                val noEnv = stringResource(R.string.approval_shell_env_empty)
+                                val sections = remember(shellAction.stdin, shellAction.env, absent, noEnv) {
+                                    val values = mutableListOf<Triple<String, String, Boolean>>()
+                                    values += Triple("stdin", shellAction.stdin ?: absent, shellAction.stdin != null)
+                                    if (shellAction.env.isEmpty()) values += Triple("env", noEnv, false)
+                                    else shellAction.env.toSortedMap().forEach { (key, value) ->
+                                        values += Triple(key, value, true)
+                                    }
+                                    values.flatMap { (name, value, quoted) ->
+                                        val chunks = if (quoted) chunkPrivateShellText(value) else listOf(value)
+                                        chunks.mapIndexed { index, chunk ->
+                                            val content = (if (quoted && index == 0) "\"" else "") + chunk +
+                                                (if (quoted && index == chunks.lastIndex) "\"" else "")
+                                            (if (chunks.size == 1) name else "$name (${index + 1}/${chunks.size})") to content
+                                        }
+                                    }
+                                }
+                                FloeText(stringResource(R.string.approval_shell_private_escape_note),
+                                    style = Floe.typography.metadata, color = colors.secondaryLabel)
+                                LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(min = 96.dp, max = 240.dp)) {
+                                    items(sections.size) { index ->
+                                        val (label, value) = sections[index]
+                                        FloeText(label, style = Floe.typography.metadata, color = colors.secondaryLabel)
+                                        SelectionContainer {
+                                            FloeText(value, modifier = Modifier.fillMaxWidth(),
+                                                style = Floe.typography.evidence, color = colors.label)
+                                        }
+                                    }
+                                }
+                                FloeText(stringResource(if (holder.privateShellReviewed(currentLease))
+                                    R.string.approval_shell_private_confirmed else R.string.approval_shell_private_confirm),
+                                    modifier = Modifier.clickable {
+                                        holder.confirmPrivateShellDetails(card, currentLease)
+                                    }.padding(vertical = 8.dp),
+                                    style = Floe.typography.bodyEmphasized, color = colors.accent)
+                            }
+                        }
+                    }
                 }
                 presentedCard.actionPackage?.let { packageName ->
                     FloeText(stringResource(R.string.approval_device_package),

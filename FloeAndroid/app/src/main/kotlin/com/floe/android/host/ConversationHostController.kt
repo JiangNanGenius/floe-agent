@@ -4249,6 +4249,7 @@ class ConversationHostController internal constructor(
         val stopAttemptGeneration = deviceStopAttemptSequence.incrementAndGet()
         deviceStopAttemptGenerations[stopAttemptKey] = stopAttemptGeneration
         val stopStreamStamp = deviceStopStreamStamp(session.conversationId, runId)
+        val shellStopAttempt = entry.holder.shellStopAttempt(runId)
         fun stillSameStopRun(): Boolean = stopEpoch != null && host.nativeRootEpoch() == stopEpoch &&
             ownCurrentEntry(entry, session.conversationId, session.sessionEpoch) &&
             deviceStopAttemptGenerations[stopAttemptKey] == stopAttemptGeneration &&
@@ -4263,9 +4264,10 @@ class ConversationHostController internal constructor(
                 it.toolName == "device.act" && it.runId.equals(runId, ignoreCase = true)
             }
         fun markStopUnconfirmed() {
+            if (!stillSameStopRun()) return
+            shellStopAttempt?.let { entry.holder.markShellStopUnconfirmed(runId, it) }
             val card = deviceCard ?: return
-            if (!stillSameStopRun() ||
-                entry.holder.snapshot.value?.pendingApprovals?.none { it == card } != false ||
+            if (entry.holder.snapshot.value?.pendingApprovals?.none { it == card } != false ||
                 entry.holder.deviceApprovalStopFor(card) == null) return
             applyDeviceApprovalStop(session.conversationId, runId,
                 DeviceApprovalStopUi(DeviceApprovalStopPhaseUi.FAILED, card.key))
@@ -4298,6 +4300,10 @@ class ConversationHostController internal constructor(
             correlationPrefix = "rcancel",
             payloadFor = { state ->
                 JsonObject(mapOf("expectedState" to JsonPrimitive(state)))
+            },
+            onCompleted = { outcome ->
+                if (outcome.detail["cancel"] in setOf("unverified", "notStopped"))
+                    markStopUnconfirmed()
             },
             onDefinitelyNotAdmitted = { markStopUnconfirmed() },
             onUnconfirmed = { markStopUnconfirmed() },
@@ -4335,16 +4341,43 @@ class ConversationHostController internal constructor(
     internal fun cancelRunFromNotification(conversationID: String, runID: String): Boolean {
         val ownerEpoch = host.nativeRootEpoch() ?: return false
         if (!admitted()) return false
+        // A notification may stop a run while its conversation is already open.
+        // Fence only that existing task/run before the asynchronous readback.
+        val entry = exactHolderForTask(conversationID)?.takeIf {
+            ownCurrentEntry(it, it.holder.session.conversationId, it.holder.session.sessionEpoch)
+        }
+        val holderSession = entry?.holder?.session
+        val shellAttempt = entry?.holder?.fenceShellApprovalForNotificationStop(conversationID, runID)
+        val stopStreamStamp = deviceStopStreamStamp(conversationID, runID)
+        fun markShellStopUnconfirmed() {
+            val current = entry ?: return
+            val session = holderSession ?: return
+            val attempt = shellAttempt ?: return
+            if (host.nativeRootEpoch() != ownerEpoch ||
+                !ownCurrentEntry(current, session.conversationId, session.sessionEpoch) ||
+                deviceStopStreamStamp(conversationID, runID) != stopStreamStamp) return
+            current.holder.markShellStopUnconfirmed(runID, attempt)
+        }
         fun readAndCancel(retried: Boolean) {
             if (host.nativeRootEpoch() != ownerEpoch) return
             host.trackOperation(HostCommandRequest(
                 command = "run.snapshot", scope = HostScope.TaskExecution(conversationID, runID),
                 stateful = false, correlationID = client().correlationID("notify-snapshot"),
             )) { outcome ->
-                if (host.nativeRootEpoch() != ownerEpoch || outcome !is HostOperationOutcome.Completed) return@trackOperation
-                val page = ConversationWire.decodeSnapshotPage(outcome.value) ?: return@trackOperation
+                if (host.nativeRootEpoch() != ownerEpoch) return@trackOperation
+                if (outcome !is HostOperationOutcome.Completed) {
+                    markShellStopUnconfirmed()
+                    return@trackOperation
+                }
+                val page = ConversationWire.decodeSnapshotPage(outcome.value) ?: run {
+                    markShellStopUnconfirmed()
+                    return@trackOperation
+                }
                 val durableRunID = com.floe.android.host.notification.NotificationRunIdentity
-                    .resolve(runID, page.runID) ?: return@trackOperation
+                    .resolve(runID, page.runID) ?: run {
+                        markShellStopUnconfirmed()
+                        return@trackOperation
+                    }
                 val awaitingJobs = FloeRunStateLocalizer.isAwaitingBackgroundJobs(
                     page.durableState, page.checkpointReason)
                 if (page.isTerminal && !awaitingJobs) {
@@ -4360,7 +4393,12 @@ class ConversationHostController internal constructor(
                     revision = HostRevision(page.revision.resourceID, page.revision.version),
                     payload = JsonObject(mapOf("expectedState" to JsonPrimitive(page.durableState))),
                 )) { cancelled ->
-                    if (!retried && cancelled is HostOperationOutcome.Rejected && host.nativeRootEpoch() == ownerEpoch) readAndCancel(true)
+                    if (!retried && cancelled is HostOperationOutcome.Rejected && host.nativeRootEpoch() == ownerEpoch) {
+                        readAndCancel(true)
+                    } else if (cancelled !is HostOperationOutcome.Completed ||
+                        cancelled.detail["cancel"] in setOf("unverified", "notStopped")) {
+                        markShellStopUnconfirmed()
+                    }
                 }
             }
         }
@@ -4623,6 +4661,13 @@ class ConversationHostController internal constructor(
         ) {
             return false
         }
+        // Capture before dispatch: an older retry receipt must never retire a
+        // Stop that was requested after this retry began.
+        val retryStopAttempt = entry.holder.shellStopAttempt(runId)
+        val retryRootEpoch = host.nativeRootEpoch()
+        fun retryStillOwnsHolder(): Boolean = retryRootEpoch != null &&
+            host.nativeRootEpoch() == retryRootEpoch &&
+            ownCurrentEntry(entry, session.conversationId, session.sessionEpoch)
         withLaunchProtection(session.conversationId,
             isCurrent = { ownCurrentEntry(entry, session.conversationId, session.sessionEpoch) },
             abandoned = { surfaceError(entry, "cancelled") },
@@ -4639,7 +4684,13 @@ class ConversationHostController internal constructor(
                 host.runForeground?.agentLaunchDefinitelyNotAdmitted(foregroundLaunch.operationID)
             },
             mayDispatch = { !foregroundLaunch.stop.get() && ownCurrentEntry(entry, session.conversationId, session.sessionEpoch) },
-            onCompleted = {
+            onCompleted = { outcome ->
+                if (retryStillOwnsHolder()) retryStopAttempt?.let { attempt ->
+                    if (outcome.detail["resumed"] == "true")
+                        entry.holder.retireShellStopAfterConfirmedRetry(runId, attempt)
+                    else
+                        entry.holder.markShellStopUnconfirmed(runId, attempt)
+                }
                 admitForegroundLaunch(foregroundLaunch, session.conversationId, runId)
                 // A REAL accepted run.retry re-opens the SAME durable run id
                 // as a NEW stream incarnation. Only here may the closed-tail
@@ -5298,7 +5349,7 @@ class ConversationHostController internal constructor(
                     "expectedDescriptorIdentity" to JsonPrimitive(descriptor),
                 )),
             ),
-            beforeSubmit = if (card.toolName in setOf("task.schedule", "browser.tab", "browser.click", "browser.type", "browser.scroll", "browser.clickPoint")) ({
+            beforeSubmit = if (card.toolName in setOf("exec.shell", "task.schedule", "browser.tab", "browser.click", "browser.type", "browser.scroll", "browser.clickPoint")) ({
                 admitted() && ownCurrentEntry(entry, session.conversationId, session.sessionEpoch) &&
                     entry.holder.isPrivateApprovalLeaseCurrent(session, card, lease) &&
                     entry.builder.approvalBinding(card.runId, card.approvalId) == card
@@ -5309,7 +5360,9 @@ class ConversationHostController internal constructor(
                 entry.builder.approvalBinding(card.runId, card.approvalId) == card) {
                 if (card.toolName == "exec.shell") {
                     val result = privateLocalShellApprovalPage(outcome.value, card) ?: return@trackOperation
-                    entry.holder.acceptPrivateShellApproval(session, card, lease, result.first, result.second)
+                    if (host.nativeRootEpoch() != presentationEpoch) return@trackOperation
+                    entry.holder.acceptPrivateShellApproval(session, card, lease,
+                        result.first.copy(nativeEpoch = presentationEpoch), result.second)
                 } else if (card.toolName == "task.schedule") {
                     val result = privateScheduleCreateApprovalPage(outcome.value, card) ?: return@trackOperation
                     entry.holder.acceptPrivateScheduleApproval(session, card, lease, result.first, result.second)
@@ -5339,6 +5392,76 @@ class ConversationHostController internal constructor(
                 }
             }
         }
+        return true
+    }
+
+    override fun requestPrivateShellDetails(
+        session: ConversationSessionToken, card: ApprovalCardUi, lease: String,
+    ): Boolean {
+        val entry = holders[session.conversationId] ?: return false
+        val request = entry.holder.currentPrivateShellRequest(session, card, lease) ?: return false
+        val shell = request.first
+        val token = request.second
+        val epoch = shell.nativeEpoch ?: return false
+        val total = shell.shellPrivateBytes ?: return false
+        val generation = card.requestGeneration ?: return false
+        val descriptor = card.descriptorIdentity ?: return false
+        val revision = card.approvalRevision ?: return false
+        val bytes = ByteArray(total)
+        val ended = AtomicBoolean(false)
+        fun current(): Boolean = browserVisualApprovalEpochCurrent(epoch) && admitted() &&
+            ownCurrentEntry(entry, session.conversationId, session.sessionEpoch) &&
+            entry.holder.currentPrivateShellRequest(session, card, lease)?.let {
+                it.first == shell && it.second == token
+            } == true && entry.builder.approvalBinding(card.runId, card.approvalId) == card
+        fun finish(stdin: String?, env: Map<String, String>?) {
+            if (!ended.compareAndSet(false, true)) return
+            bytes.fill(0)
+            entry.holder.privateShellLoadResult(session, card, lease, token, stdin, env)
+        }
+        lateinit var fetch: (Int) -> Unit
+        fetch = fetch@{ offset ->
+            if (ended.get()) return@fetch
+            if (!current()) { finish(null, null); return@fetch }
+            host.trackOperation(
+                HostCommandRequest(
+                    command = "run.approval.presentation",
+                    scope = HostScope.TaskExecution(session.conversationId, card.runId),
+                    stateful = true,
+                    correlationID = client().correlationID("shell-private"),
+                    revision = HostRevision(ConversationWire.approvalResourceID(card.approvalId), revision),
+                    payload = JsonObject(mapOf(
+                        "approvalSchema" to JsonPrimitive("generation-v1"),
+                        "callID" to JsonPrimitive(card.approvalId),
+                        "generation" to JsonPrimitive(generation),
+                        "expectedDescriptorIdentity" to JsonPrimitive(descriptor),
+                        "presentationToken" to JsonPrimitive(token),
+                        "shellChunkOffset" to JsonPrimitive(offset),
+                    )),
+                ),
+                beforeSubmit = { current() },
+            ) { outcome ->
+                if (!current() || outcome !is HostOperationOutcome.Completed) {
+                    finish(null, null)
+                    return@trackOperation
+                }
+                val chunk = privateShellChunk(outcome.value, card, shell, offset)
+                if (chunk == null) { finish(null, null); return@trackOperation }
+                val next = chunk.nextOffset
+                try { chunk.bytes.copyInto(bytes, offset) } finally { chunk.bytes.fill(0) }
+                if (next != null) {
+                    fetch(next)
+                } else {
+                    val digest = java.security.MessageDigest.getInstance("SHA-256").digest(bytes)
+                        .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+                    val parsed = if (digest == shell.shellPrivateSHA256 && current())
+                        privateShellPayload(bytes, shell) else null
+                    finish(parsed?.first, parsed?.second)
+                }
+            }
+        }
+        if (!current()) { bytes.fill(0); return false }
+        fetch(0)
         return true
     }
 
@@ -5450,7 +5573,7 @@ class ConversationHostController internal constructor(
                         val lease = request.presentationLease
                         floating != null && lease != null && floating.target?.digest == request.canonicalTargetDigest &&
                             devicePresentationCurrent(entry, floating, lease)
-                    }) else if (decision == "allow" && card.toolName in setOf("task.schedule", "browser.tab", "browser.click", "browser.type", "browser.scroll", "browser.clickPoint")) ({
+                    }) else if (decision == "allow" && card.toolName in setOf("exec.shell", "task.schedule", "browser.tab", "browser.click", "browser.type", "browser.scroll", "browser.clickPoint")) ({
                         admitted() && ownCurrentEntry(entry, session.conversationId, session.sessionEpoch) &&
                             entry.builder.approvalBinding(request.runId, request.approvalId) == card &&
                             entry.holder.privateApprovalValid(card, request.presentationLease, request.presentationToken)

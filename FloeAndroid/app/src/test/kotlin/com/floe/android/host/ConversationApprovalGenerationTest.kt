@@ -209,6 +209,33 @@ class ConversationApprovalGenerationTest {
         )) assertNull(decode(bad))
     }
 
+    @Test fun shellPrivateChunksMustBeCompleteBoundAndTyped() {
+        val builder = builder()
+        builder.applySnapshot(page(tool = "exec.shell", detailStatus = "unavailable", risks = """["writesFiles"]"""))
+        val card = builder.build().pendingApprovals.single()
+        val token = "55555555-5555-4555-8555-555555555555"
+        val payload = """{"stdin":"","env":{"LANG":"en_US.UTF-8"}}""".toByteArray()
+        val digest = java.security.MessageDigest.getInstance("SHA-256").digest(payload)
+            .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        val raw = """{"schema":"floe.approval-presentation/1","conversationID":"$conversation","runID":"$run","callID":"c1","generation":"$generation","presentationToken":"$token","presentation":{"status":"available","generation":"$generation","tool":"exec.shell","effect":"mutating","isSideEffecting":true,"riskLabels":["writesFiles"],"requestedScope":"local","grantScope":"singleUse","workspaceVerified":true,"descriptorIdentity":"$descriptor","detailStatus":"available","actionDetails":{"kind":"localShell","target":"localLinux","environmentID":"env-one","workspaceID":"$conversation","targetRevision":2,"command":"printf x","cwd":".","timeoutSeconds":10.0,"maxOutputBytes":65536,"environmentTransaction":false,"shellPrivateBytes":${payload.size},"shellPrivateSHA256":"$digest","stdinPresent":true,"envCount":1}}}"""
+        val shell = requireNotNull(privateLocalShellApprovalPage(Json.parseToJsonElement(raw), card)).first
+        val encoded = java.util.Base64.getEncoder().encodeToString(payload)
+        val chunk = """{"schema":"floe.shell-approval-chunk/1","conversationID":"$conversation","runID":"$run","callID":"c1","generation":"$generation","offset":0,"totalBytes":${payload.size},"sha256":"$digest","dataBase64":"$encoded","nextOffset":null}"""
+        val parsedChunk = requireNotNull(privateShellChunk(Json.parseToJsonElement(chunk), card, shell, 0))
+        assertArrayEquals(payload, parsedChunk.bytes)
+        val parsed = requireNotNull(privateShellPayload(parsedChunk.bytes, shell))
+        assertEquals("", parsed.first)
+        assertEquals(mapOf("LANG" to "en_US.UTF-8"), parsed.second)
+        assertNull(privateShellChunk(Json.parseToJsonElement(chunk.replace("\"offset\":0", "\"offset\":1")), card, shell, 0))
+        assertNull(privateShellChunk(Json.parseToJsonElement(chunk.replace("\"callID\":\"c1\"", "\"callID\":\"c2\"")), card, shell, 0))
+        assertNull(privateShellChunk(Json.parseToJsonElement(chunk.replace("\"nextOffset\":null", "\"nextOffset\":1")), card, shell, 0))
+        assertNull(privateShellPayload("""{"stdin":null,"env":{"LANG":"en_US.UTF-8"}}""".toByteArray(), shell))
+        assertNull(privateShellPayload("""{"stdin":"","env":{"HOME":"/secret"}}""".toByteArray(), shell))
+        assertNull(privateShellPayload(byteArrayOf(0xc3.toByte(), 0x28), shell))
+        assertNull(privateLocalShellApprovalPage(Json.parseToJsonElement(raw.replace("\"stdinPresent\":true", "\"stdinPresent\":\"true\"")), card))
+        assertNull(privateLocalShellApprovalPage(Json.parseToJsonElement(raw.replace("\"envCount\":1", "\"envCount\":33")), card))
+    }
+
     @Test fun privateScheduleCreateRequiresCompleteTypedSameGenerationDetails() {
         val builder = builder()
         val risks = """["persistsPersonalData","changesAgentBehavior"]"""

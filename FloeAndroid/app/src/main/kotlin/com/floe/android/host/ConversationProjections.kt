@@ -407,8 +407,11 @@ internal fun privateDeviceActionApprovalPage(value: JsonElement?, card: Approval
 internal fun privateLocalShellApprovalPage(value: JsonElement?, card: ApprovalCardUi): Pair<LocalShellApprovalUi, String>? {
     if (card.toolName != "exec.shell") return null
     val (details, token) = privateApprovalPage(value, card) ?: return null
-    if (details.keys != setOf("kind", "target", "environmentID", "workspaceID", "targetRevision", "command", "cwd",
-            "timeoutSeconds", "maxOutputBytes", "environmentTransaction")) return null
+    val baseKeys = setOf("kind", "target", "environmentID", "workspaceID", "targetRevision", "command", "cwd",
+        "timeoutSeconds", "maxOutputBytes", "environmentTransaction")
+    val privateKeys = setOf("shellPrivateBytes", "shellPrivateSHA256", "stdinPresent", "envCount")
+    val hasPrivate = details.keys == baseKeys + privateKeys
+    if (!hasPrivate && details.keys != baseKeys) return null
     fun str(key: String): String? = (details[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
     fun primitive(key: String): JsonPrimitive? = (details[key] as? JsonPrimitive)?.takeUnless { it.isString }
     fun readable(value: String, limit: Int, allowNewline: Boolean): Boolean {
@@ -429,7 +432,78 @@ internal fun privateLocalShellApprovalPage(value: JsonElement?, card: ApprovalCa
     val timeout = primitive("timeoutSeconds")?.doubleOrNull?.takeIf { it.isFinite() && it >= 0.05 && it <= 120.0 } ?: return null
     val maxOutput = primitive("maxOutputBytes")?.longOrNull?.takeIf { it in 1L..262144L }?.toInt() ?: return null
     val transaction = primitive("environmentTransaction")?.booleanOrNull ?: return null
-    return LocalShellApprovalUi(environment, workspace, revision, command, cwd, timeout, maxOutput, transaction) to (token ?: return null)
+    val privateBytes = if (hasPrivate) primitive("shellPrivateBytes")?.longOrNull
+        ?.takeIf { it in 1..2_097_152 }?.toInt() ?: return null else null
+    val privateSHA = if (hasPrivate) str("shellPrivateSHA256")
+        ?.takeIf { it.matches(Regex("[0-9a-f]{64}")) } ?: return null else null
+    val stdinPresent = if (hasPrivate) primitive("stdinPresent")?.booleanOrNull ?: return null else false
+    val envCount = if (hasPrivate) primitive("envCount")?.longOrNull
+        ?.takeIf { it in 0..32 }?.toInt() ?: return null else 0
+    if (hasPrivate && !stdinPresent && envCount == 0) return null
+    return LocalShellApprovalUi(environment, workspace, revision, command, cwd, timeout, maxOutput, transaction,
+        privateBytes, privateSHA, stdinPresent, envCount) to (token ?: return null)
+}
+
+internal data class ShellPrivateChunk(val bytes: ByteArray, val nextOffset: Int?) {
+    override fun toString() = "ShellPrivateChunk(redacted)"
+}
+
+internal fun privateShellChunk(value: JsonElement?, card: ApprovalCardUi,
+    shell: LocalShellApprovalUi, expectedOffset: Int): ShellPrivateChunk? {
+    val root = value as? JsonObject ?: return null
+    if (root.keys != setOf("schema", "conversationID", "runID", "callID", "generation",
+            "offset", "totalBytes", "sha256", "dataBase64", "nextOffset")) return null
+    fun str(key: String) = (root[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
+    fun num(key: String) = (root[key] as? JsonPrimitive)?.takeIf { !it.isString }?.longOrNull
+    fun sameUUID(a: String?, b: String) = runCatching {
+        java.util.UUID.fromString(a) == java.util.UUID.fromString(b)
+    }.getOrDefault(false)
+    val total = shell.shellPrivateBytes ?: return null
+    if (str("schema") != "floe.shell-approval-chunk/1" ||
+        !sameUUID(str("conversationID"), card.conversationId) || !sameUUID(str("runID"), card.runId) ||
+        str("callID") != card.approvalId || str("generation") != card.requestGeneration ||
+        num("offset") != expectedOffset.toLong() || num("totalBytes") != total.toLong() ||
+        str("sha256") != shell.shellPrivateSHA256) return null
+    val encoded = str("dataBase64")?.takeIf { it.length <= 32_768 } ?: return null
+    val bytes = runCatching { java.util.Base64.getDecoder().decode(encoded) }.getOrNull() ?: return null
+    if (bytes.isEmpty() || bytes.size > 24_576 || expectedOffset < 0 ||
+        bytes.size > total - expectedOffset) { bytes.fill(0); return null }
+    val end = expectedOffset + bytes.size
+    val next = if (root["nextOffset"] is kotlinx.serialization.json.JsonNull) null
+        else num("nextOffset")?.takeIf { it in 0..Int.MAX_VALUE }?.toInt() ?: run { bytes.fill(0); return null }
+    if ((end == total && next != null) || (end < total && next != end)) {
+        bytes.fill(0); return null
+    }
+    return ShellPrivateChunk(bytes, next)
+}
+
+internal fun privateShellPayload(bytes: ByteArray, shell: LocalShellApprovalUi): Pair<String?, Map<String, String>>? {
+    val text = runCatching {
+        Charsets.UTF_8.newDecoder().onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+            .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+            .decode(java.nio.ByteBuffer.wrap(bytes)).toString()
+    }.getOrNull() ?: return null
+    val root = runCatching { kotlinx.serialization.json.Json.parseToJsonElement(text) as? JsonObject }.getOrNull() ?: return null
+    if (root.keys != setOf("stdin", "env")) return null
+    val stdin = if (root["stdin"] is kotlinx.serialization.json.JsonNull) null else
+        (root["stdin"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: return null
+    if ((stdin != null) != shell.stdinPresent || (stdin?.toByteArray(Charsets.UTF_8)?.size ?: 0) > 262_144) return null
+    val raw = root["env"] as? JsonObject ?: return null
+    if (raw.size != shell.envCount || raw.size > 32) return null
+    var bytesTotal = 0L
+    val env = linkedMapOf<String, String>()
+    for ((key, value) in raw) {
+        val string = (value as? JsonPrimitive)?.takeIf { it.isString }?.content ?: return null
+        if (!key.matches(Regex("[A-Za-z_][A-Za-z0-9_]{0,63}")) ||
+            key.startsWith("PROOT_") || key.startsWith("FLOE_") ||
+            key.startsWith("DYLD_") || key.startsWith("LD_") ||
+            key in setOf("HOME", "TMPDIR", "PATH", "PYTHONHOME", "PYTHONPATH") ||
+            '\u0000' in string || string.toByteArray(Charsets.UTF_8).size > 16_384) return null
+        bytesTotal += key.toByteArray(Charsets.UTF_8).size + string.toByteArray(Charsets.UTF_8).size
+        if (bytesTotal > 32_768) return null
+        env[key] = string
+    }
+    return stdin to env
 }
 
 class ThreadProjectionBuilder internal constructor(
