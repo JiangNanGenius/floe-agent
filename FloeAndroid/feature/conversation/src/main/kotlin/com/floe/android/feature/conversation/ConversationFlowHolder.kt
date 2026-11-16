@@ -893,7 +893,8 @@ class ConversationFlowHolder(
         snapshot.value = next
         // Background services must see this canonical transition directly;
         // history refresh and Compose apply notifications can wait for UI.
-        if (previous?.isRunning != next.isRunning || previous?.selectedRunId != next.selectedRunId) {
+        if (previous?.isRunning != next.isRunning || previous?.selectedRunId != next.selectedRunId ||
+            previous?.pendingApprovals?.isNotEmpty() != next.pendingApprovals.isNotEmpty()) {
             onRunActivityChanged()
         }
 

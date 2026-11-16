@@ -60,4 +60,21 @@ class ConversationRunActivityTest {
         assertEquals(2, calls)
         assertNull(holder.snapshot.value)
     }
+    @Test
+    fun backgroundOwnerIsNotifiedWhenApprovalWaitStartsAndEndsWithoutRunChange() {
+        lateinit var holder: ConversationFlowHolder
+        val seen = mutableListOf<Boolean>()
+        holder = ConversationFlowHolder(RecordingHost(), "background", onRunActivityChanged = {
+            seen += holder.snapshot.value!!.pendingApprovals.isNotEmpty()
+        })
+        val card = approvalCard(conversationId = "background")
+        holder.applyHostSnapshot(threadState(holder.session, isRunning = true, selectedRunId = card.runId))
+        holder.applyHostSnapshot(threadState(holder.session, isRunning = true, selectedRunId = card.runId,
+            pendingApprovals = listOf(card)))
+        holder.applyHostSnapshot(threadState(holder.session, isRunning = true, selectedRunId = card.runId,
+            pendingApprovals = listOf(card), liveAssistantText = "stream update"))
+        holder.applyHostSnapshot(threadState(holder.session, isRunning = true, selectedRunId = card.runId))
+        assertEquals(listOf(false, true, false), seen)
+    }
+
 }

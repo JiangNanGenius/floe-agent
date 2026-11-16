@@ -1,5 +1,13 @@
 # Floe Android 分目标实施记录
 
+## 1.0.20 私有候选：三星文件审批通过，设备浮窗待修复（2026-11-16）
+
+候选 `candidate129-c03` 固定源码 `25c6109993b7d15b80d094f0d7a80d24793a9eb0`，Full APK SHA-256 `3c93ea4f4800669d2adbc766214ef21d907224e46dd959d5edb9a8d787344dfb`。三星保留 UID 覆盖安装，主应用及运行组件均为 1.0.20／129，安装字节与候选主包和内嵌组件一致。使用 Ark Plan 的 `ark-code-latest`，在新建项目触发 `workspace.createFile`；授权卡显示实际目标路径，单次允许后文件创建成功，`workspace.readFile` 读回 `qa129_ok`，工作区列表和内置文本编辑器打开同一文件。第一次测试因误判权限模式而人为停止，未计为通过。
+
+独立计算器任务中，实际启动应用成功、模型观察到页面并请求点击，但外部页面未出现审批浮窗；回到 Floe 时显示详情未就绪，任务已停止，原画面保留。代码确认审批等待变化未触发设备状态刷新，已补通知及定向测试，尚需新包复测，不能断言这是唯一原因。测试期间临时启用的设备权限、悬浮开关、目标应用和电源设置已恢复；失败任务及证据保留。c03 未公开发布。
+
+English: A private 1.0.20 candidate passed Samsung's real file approval, creation, model readback and editor open. The separate calculator click waited without a visible approval overlay; the task was stopped and evidence retained. A missing waiting-state notification was fixed and unit-tested but requires a new candidate and device retest.
+
 ## 1.0.19 后源码检查点：扩展文件审批与设备浮窗（2026-11-16，未发版）
 
 工作区审批增加追加、替换、创建目录、移动、复制和删除的实际路径及操作条件。设备人工审批接入现有非抢焦点浮窗及单次请求身份，当前只有无障碍点击在目标可实时核验时可批准；ADB、输入和其他动作尚未接通。目标失效或无法核验时显示失败并允许拒绝，暂停、停止、页面释放和旧事件按任务及浮窗实例处理；提交前再次检查归属，原生 CAS 和设备执行期校验仍是最后边界。
