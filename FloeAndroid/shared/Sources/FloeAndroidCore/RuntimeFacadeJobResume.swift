@@ -215,10 +215,13 @@ extension FacadeRunDomain {
         let conversationID = record.conversationID
         guard let identity = await runStopIdentity(
             runID: runID, conversationID: conversationID),
-              identity.state == "checkpointed",
-              let sourceIncarnation = identity.incarnation else {
+              identity.state == "checkpointed" else {
             return .unverified
         }
+        // Legacy parks can predate activation markers. The store must prove
+        // the entire legacy history and bootstrap inside the same park CAS;
+        // a missing identity is never itself evidence of a completed stop.
+        let sourceIncarnation = identity.incarnation
         // Re-prove the owner/fences after the edge read suspend.
         guard !retirementFenced, globalFence == nil,
               deleteGuards[conversationID] == nil,
@@ -405,7 +408,7 @@ extension FacadeRunDomain {
             }
             committedIncarnation = try await resumable.beginDependencyResume(
                 runID: runID, conversationID: conversationID,
-                expectedIncarnation: sourceIncarnation.proof,
+                expectedIncarnation: sourceIncarnation?.proof,
                 observedSettlementSequence: identity.latestSettlementSequence,
                 expectedParkSequence: park.sequence)
         } catch let error as RunDomainError {
@@ -435,7 +438,8 @@ extension FacadeRunDomain {
         let fenceVerdict = RunDependencyResumeFence.verdict(
             park: park,
             eventsAfterPark: await resumeFenceEvents(
-                runID: runID, afterSequence: park.sequence))
+                runID: runID, afterSequence: park.sequence),
+            allowsLegacyBootstrap: sourceIncarnation == nil)
         switch fenceVerdict {
         case .clean:
             break

@@ -266,6 +266,21 @@ final class RunDomainJobForegroundAdmissionTests: XCTestCase {
             park: park,
             eventsAfterPark: [row(6, .status, resumeMarker)]), .foreign,
             "a marker BEFORE the park sequence proves nothing")
+        let bootstrap = """
+        {"floeLegacyBootstrap":{"version":1},"state":"checkpointed"}
+        """
+        XCTAssertEqual(RunDependencyResumeFence.verdict(
+            park: park, eventsAfterPark: [row(8, .status, bootstrap),
+                                          row(9, .status, resumeMarker)],
+            allowsLegacyBootstrap: true), .clean)
+        XCTAssertEqual(RunDependencyResumeFence.verdict(
+            park: park, eventsAfterPark: [row(8, .status, bootstrap),
+                                          row(9, .status, resumeMarker)]), .foreign)
+        XCTAssertEqual(RunDependencyResumeFence.verdict(
+            park: park, eventsAfterPark: [row(8, .status, bootstrap),
+                                          row(9, .status, stopRow),
+                                          row(10, .status, resumeMarker)],
+            allowsLegacyBootstrap: true), .userStopped)
     }
 
     // MARK: - Live parent lifecycle receipt

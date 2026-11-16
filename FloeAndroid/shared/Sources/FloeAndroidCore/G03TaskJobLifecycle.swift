@@ -274,7 +274,8 @@ public enum RunDependencyResumeFence {
     /// than the park marker's sequence (bounded read).
     public static func verdict(
         park: RunDependencyParkMarker,
-        eventsAfterPark: [(sequence: Int, kind: RunEventRecord.Kind, payload: String)]?
+        eventsAfterPark: [(sequence: Int, kind: RunEventRecord.Kind, payload: String)]?,
+        allowsLegacyBootstrap: Bool = false
     ) -> Verdict {
         guard let eventsAfterPark else { return .unreadable }
         let statuses = eventsAfterPark
@@ -283,6 +284,16 @@ public enum RunDependencyResumeFence {
         guard !statuses.isEmpty else { return .unreadable }
         if statuses.contains(where: { isUserStopPayload($0.payload) }) {
             return .userStopped
+        }
+        // Only the atomic writer for a previously unbound run may emit this
+        // additional marker, immediately before its single userResume row.
+        // Every other interleaving remains foreign and blocks the handoff.
+        if allowsLegacyBootstrap, statuses.count == 2,
+           statuses[0].sequence > park.sequence,
+           statuses[1].sequence > statuses[0].sequence,
+           isLegacyBootstrapPayload(statuses[0].payload),
+           isResumeMarkerPayload(statuses[1].payload) {
+            return .clean
         }
         guard statuses.count == 1, let marker = statuses.last,
               marker.sequence > park.sequence,
@@ -303,6 +314,17 @@ public enum RunDependencyResumeFence {
               (object["state"] as? String) == "preparing",
               let activation = object["floeActivation"] as? [String: Any],
               (activation["kind"] as? String) == "userResume" else {
+            return false
+        }
+        return true
+    }
+
+    static func isLegacyBootstrapPayload(_ payload: String) -> Bool {
+        guard let object = jsonObject(payload),
+              (object["state"] as? String) == "checkpointed",
+              let marker = object["floeLegacyBootstrap"] as? [String: Any],
+              let version = marker["version"] as? Int, version == 1,
+              object["reason"] == nil, object["floeActivation"] == nil else {
             return false
         }
         return true

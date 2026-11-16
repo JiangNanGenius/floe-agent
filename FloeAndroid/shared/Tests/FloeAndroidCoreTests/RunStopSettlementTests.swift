@@ -542,6 +542,60 @@ final class RunStopSettlementTests: XCTestCase {
         XCTAssertEqual(current?.state, "checkpointed")
     }
 
+    func testLegacyDependencyResumeBootstrapsAtExactPark() async throws {
+        let conversationID = try await fixture.makeOrdinaryConversation()
+        let runID = try await seedCheckpointedRun(
+            conversationID: conversationID, goal: "legacy dependency")
+        let park = try await fixture.runStore.appendEvent(
+            runID: runID, kind: .status,
+            payloadJSON: "{\"state\":\"checkpointed\",\"reason\":\"awaiting.finite.job\"}")
+        let capturedValue = try await fixture.runStore.stopIdentity(
+            runID: runID, conversationID: conversationID)
+        let captured = try XCTUnwrap(capturedValue)
+        XCTAssertNil(captured.incarnation)
+        let resumed = try await fixture.runStore.beginDependencyResume(
+            runID: runID, conversationID: conversationID,
+            expectedIncarnation: nil,
+            observedSettlementSequence: captured.latestSettlementSequence,
+            expectedParkSequence: park.sequence)
+        XCTAssertNotNil(resumed)
+        let status = try await statusObjects(runID)
+        XCTAssertEqual(status.filter { $0["floeLegacyBootstrap"] != nil }.count, 1)
+        XCTAssertEqual(status.compactMap { $0["floeActivation"] as? [String: Any] }
+            .filter { ($0["kind"] as? String) == "userResume" }.count, 1)
+        let row = try await fixture.runStore.run(id: runID)
+        XCTAssertEqual(row?.state, "preparing")
+    }
+
+    func testLegacyDependencyStopWinsBeforeResumeTransaction() async throws {
+        let conversationID = try await fixture.makeOrdinaryConversation()
+        let runID = try await seedCheckpointedRun(
+            conversationID: conversationID, goal: "legacy dependency stop")
+        let park = try await fixture.runStore.appendEvent(
+            runID: runID, kind: .status,
+            payloadJSON: "{\"state\":\"checkpointed\",\"reason\":\"awaiting.finite.job\"}")
+        let capturedValue = try await fixture.runStore.stopIdentity(
+            runID: runID, conversationID: conversationID)
+        let captured = try XCTUnwrap(capturedValue)
+        let stopped = try await fixture.runStore.commitParkedUserStop(
+            runID: runID, conversationID: conversationID,
+            expectedState: "checkpointed", expectedIncarnation: nil,
+            expectedStatusSequence: captured.latestStatusSequence)
+        guard case .unboundStopped = stopped else {
+            return XCTFail("the legacy Stop must commit")
+        }
+        let resumed = try await fixture.runStore.beginDependencyResume(
+            runID: runID, conversationID: conversationID,
+            expectedIncarnation: nil,
+            observedSettlementSequence: captured.latestSettlementSequence,
+            expectedParkSequence: park.sequence)
+        XCTAssertNil(resumed)
+        let status = try await statusObjects(runID)
+        XCTAssertFalse(status.contains { $0["floeLegacyBootstrap"] != nil })
+        let row = try await fixture.runStore.run(id: runID)
+        XCTAssertEqual(row?.state, "checkpointed")
+    }
+
     func testLegacyExplicitContinueBootstrapsWithinResumeTransaction() async throws {
         let conversationID = try await fixture.makeOrdinaryConversation()
         let runID = try await seedCheckpointedRun(

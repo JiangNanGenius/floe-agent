@@ -933,7 +933,7 @@ public protocol ResumeActivationRunStore: Sendable {
     /// status row observed at its park boundary, in the same writer.
     @discardableResult
     func beginDependencyResume(runID: UUID, conversationID: UUID,
-                               expectedIncarnation: String,
+                               expectedIncarnation: String?,
                                observedSettlementSequence: Int?,
                                expectedParkSequence: Int) async throws
         -> RunIncarnation?
@@ -957,7 +957,7 @@ public extension ResumeActivationRunStore {
                                  expectedStatusSequence: Int) async throws
         -> RunIncarnation? { nil }
     func beginDependencyResume(runID: UUID, conversationID: UUID,
-                               expectedIncarnation: String,
+                               expectedIncarnation: String?,
                                observedSettlementSequence: Int?,
                                expectedParkSequence: Int) async throws
         -> RunIncarnation? { nil }
@@ -1002,7 +1002,7 @@ extension SQLiteRunStore: ResumeActivationRunStore {
     }
 
     public func beginDependencyResume(runID: UUID, conversationID: UUID,
-                                      expectedIncarnation: String,
+                                      expectedIncarnation: String?,
                                       observedSettlementSequence: Int?,
                                       expectedParkSequence: Int) async throws
         -> RunIncarnation? {
@@ -1011,7 +1011,8 @@ extension SQLiteRunStore: ResumeActivationRunStore {
             expectedState: "checkpointed",
             expectedIncarnation: expectedIncarnation,
             observedSettlementSequence: observedSettlementSequence,
-            expectedStatusSequence: expectedParkSequence) else { return nil }
+            expectedStatusSequence: expectedParkSequence,
+            allowLegacyBootstrap: expectedIncarnation == nil) else { return nil }
         return committed.incarnation
     }
 
