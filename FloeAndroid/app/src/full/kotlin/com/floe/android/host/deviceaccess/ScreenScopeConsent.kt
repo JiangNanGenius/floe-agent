@@ -171,9 +171,10 @@ internal class ScreenScopeConsent(
      * exact "This task" consent. A fresh This-task choice for the NEW task and
      * the explicit broader mode both survive by design.
      */
-    fun clearExactTask(endedOwner: PhoneControlOwner) {
+    fun clearExactTask(endedOwner: PhoneControlOwner, expectedRevision: Long? = null) {
         synchronized(lock) {
             val snapshot = state
+            if (expectedRevision != null && snapshot.revision != expectedRevision) return
             val current = snapshot.binding
             if (current?.mode == DeviceAccessScreenScopeUi.CURRENT_TASK &&
                 current.owner == endedOwner

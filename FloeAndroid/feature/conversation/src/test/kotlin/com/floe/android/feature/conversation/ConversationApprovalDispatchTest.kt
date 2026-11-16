@@ -434,6 +434,35 @@ class ConversationApprovalDispatchTest {
         assertFalse(holder.privateApprovalValid(card, "lease", "token"))
     }
 
+    @Test fun settledStopKeepsOldAndIncompleteCardsBlockedButNotNewGeneration() {
+        val host = RecordingHost()
+        val old = approvalCard().copy(toolName = "device.act", scopeVerified = true,
+            requestGeneration = "old-generation", approvalRevision = "old-revision",
+            descriptorIdentity = "old-descriptor")
+        val holder = holderWithApproval(host, old)
+        holder.applyDeviceApprovalStop(old.runId, DeviceApprovalStopUi(
+            DeviceApprovalStopPhaseUi.STOPPED, old.key))
+        val late = old.copy(requestGeneration = null, approvalRevision = null, descriptorIdentity = null)
+        holder.applyHostSnapshot(threadState(holder.session, pendingApprovals = listOf(late),
+            selectedRunId = old.runId, isRunning = true))
+        assertEquals(DeviceApprovalStopPhaseUi.STOPPED, holder.deviceApprovalStopFor(late)?.phase)
+        assertTrue(holder.resolveApproval(late, allow = false) is ConversationFlowResult.Rejected)
+        val changedDescriptor = old.copy(descriptorIdentity = "changed-descriptor",
+            approvalRevision = "changed-revision")
+        holder.applyHostSnapshot(threadState(holder.session, pendingApprovals = listOf(changedDescriptor),
+            selectedRunId = old.runId, isRunning = true))
+        assertEquals(DeviceApprovalStopPhaseUi.STOPPED, holder.deviceApprovalStopFor(changedDescriptor)?.phase)
+        val incomplete = old.copy(requestGeneration = "new-generation", approvalRevision = null)
+        holder.applyHostSnapshot(threadState(holder.session, pendingApprovals = listOf(incomplete),
+            selectedRunId = old.runId, isRunning = true))
+        assertEquals(DeviceApprovalStopPhaseUi.STOPPED, holder.deviceApprovalStopFor(incomplete)?.phase)
+        val newer = old.copy(requestGeneration = "new-generation", approvalRevision = "generation:new-generation",
+            identityVerified = true)
+        holder.applyHostSnapshot(threadState(holder.session, pendingApprovals = listOf(newer),
+            selectedRunId = old.runId, isRunning = true))
+        assertNull(holder.deviceApprovalStopFor(newer))
+    }
+
     @Test fun stopStateIsBoundToTheRetiredCallAndEmptyReadDoesNotClearIt() {
         val host = RecordingHost().apply { privatePresentationAccepted = true }
         val stopped = approvalCard().copy(toolName = "device.act", scopeVerified = false)

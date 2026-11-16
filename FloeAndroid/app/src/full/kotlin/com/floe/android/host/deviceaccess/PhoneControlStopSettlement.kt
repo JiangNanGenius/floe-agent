@@ -13,7 +13,7 @@ import com.floe.android.phonecontrol.PhoneControlOwner
  * not be proven. Nothing here claims a run terminated, undoes an already
  * issued device action or authorizes a new one.
  */
-internal enum class DeviceStopUiPhase { STOPPING, FAILED }
+internal enum class DeviceStopUiPhase { STOPPING, FAILED, STOPPED }
 
 /**
  * Exact-generation stop settlement projection.

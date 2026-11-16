@@ -386,7 +386,7 @@ data class ApprovalCardUi(
     val key: String get() = "$runId/$approvalId"
 }
 
-enum class DeviceApprovalStopPhaseUi { STOPPING, FAILED }
+enum class DeviceApprovalStopPhaseUi { STOPPING, FAILED, STOPPED }
 
 /**
  * Host-owned projection that a user Stop/Takeover already retired one device

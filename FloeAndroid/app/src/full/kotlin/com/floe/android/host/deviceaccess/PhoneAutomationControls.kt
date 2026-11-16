@@ -94,9 +94,20 @@ internal class DeviceApprovalRegistration {
  * Notifications and overlays cannot revive a past run: [clear] removes both,
  * and a stale receiver token is ignored.
  */
+internal data class OverlayTakeoverBinding(
+    val epoch: Long,
+    val ownerRevision: Long,
+    val streamStamp: Map<String, Long>,
+) {
+    fun matches(epoch: Long?, revision: Long, stream: Map<String, Long>, closed: Boolean): Boolean =
+        !closed && epoch == this.epoch && revision == ownerRevision && stream == streamStamp
+}
+
 internal class PhoneAutomationControls(
     private val context: Context,
     private val act: (PhoneControlOwner, Action) -> Unit,
+    private val captureTakeover: (PhoneControlOwner) -> OverlayTakeoverBinding?,
+    private val takeOver: (PhoneControlOwner, OverlayTakeoverBinding) -> Unit,
     private val canPresent: (PhoneControlOwner) -> Boolean,
     private val ownerStillLive: (PhoneControlOwner) -> Boolean,
     private val approvalStillCurrent: (DeviceApprovalIdentity) -> Boolean,
@@ -108,6 +119,8 @@ internal class PhoneAutomationControls(
     private val themeStore by lazy { FloeThemeStore(context) }
     private var owner: PhoneControlOwner? = null
     private var token = UUID.randomUUID().toString()
+    private var takeoverBinding: OverlayTakeoverBinding? = null
+    private var deferredClear: Runnable? = null
     enum class Action { PAUSE, RESUME, TAKE_OVER }
 
     private var bubble: FrameLayout? = null
@@ -280,6 +293,7 @@ internal class PhoneAutomationControls(
                 clear(expectedOwner = owner, retainApprovalRegistration = ownerStillLive(owner))
                 return@post
             }
+            val nextTakeoverBinding = captureTakeover(owner)
             if (this.owner != owner && operationOwner != owner) {
                 this.operation = null
                 this.operationOwner = null
@@ -290,12 +304,15 @@ internal class PhoneAutomationControls(
                 this.operationOwner = null
                 activeOperationID = null
             }
-            if (this.owner != owner || this.paused != paused) {
+            if (this.owner != owner || this.paused != paused || takeoverBinding != nextTakeoverBinding) {
                 cancelRetireFinished()
                 clearAfterOperation = false
                 removeOverlay()
                 token = UUID.randomUUID().toString()
+                takeoverBinding = nextTakeoverBinding
             }
+            deferredClear?.let(main::removeCallbacks)
+            deferredClear = null
             this.owner = owner
             this.paused = paused
             this.waitingForUser = waitingForUser
@@ -426,21 +443,27 @@ internal class PhoneAutomationControls(
     }
 
     internal fun receive(receivedToken: String?, action: String?) {
-        main.post {
-            if (owner == null || token != receivedToken) return@post
-            val current = owner ?: return@post
+        val deliver = deliver@{
+            if (owner == null || token != receivedToken) return@deliver
+            val current = owner ?: return@deliver
+            // A physical tap can fence Accessibility before this callback.
+            // The pre-bound token authorizes only this exact owner's Stop.
+            if (action == "stop") {
+                takeoverBinding?.let { takeOver(current, it) }
+                return@deliver
+            }
             if (!canPresent(current)) {
                 clear(expectedOwner = current, retainApprovalRegistration = ownerStillLive(current))
-                return@post
+                return@deliver
             }
             val accepted = when (action) {
-                "pause" -> if (!paused) Action.PAUSE else return@post
-                "resume" -> if (paused) Action.RESUME else return@post
-                "stop" -> Action.TAKE_OVER
-                else -> return@post
+                "pause" -> if (!paused) Action.PAUSE else return@deliver
+                "resume" -> if (paused) Action.RESUME else return@deliver
+                else -> return@deliver
             }
             act(current, accepted)
         }
+        if (Looper.myLooper() == main.looper) deliver() else main.post { deliver() }
     }
 
     private fun statusLine(): String {
@@ -843,6 +866,15 @@ internal class PhoneAutomationControls(
             noteUserInteraction()
             receive(controlsToken, "stop")
         }
+        // Handle the confirmed control on touch-down, before the same touch
+        // can tear down its Accessibility owner and remove this window.
+        takeOver.setOnTouchListener { _, event ->
+            if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+                noteUserInteraction()
+                receive(controlsToken, "stop")
+            }
+            true
+        }
         panelTitle = title
         panelStatus = status
         panelPause = pause
@@ -1055,19 +1087,37 @@ internal class PhoneAutomationControls(
         unregisterConfigCallbacks()
     }
 
-    fun clear(expectedOwner: PhoneControlOwner? = null, retainApprovalRegistration: Boolean = false) {
+    fun clear(expectedOwner: PhoneControlOwner? = null, retainApprovalRegistration: Boolean = false,
+              deferAllowed: Boolean = true) {
         if (!retainApprovalRegistration) {
             if (expectedOwner == null) approvalRegistration.clear() else approvalRegistration.cancelOwner(expectedOwner)
         }
         val clear = clear@{
             val presentationOwner = owner ?: pendingOperation?.owner ?: operationOwner
             if (expectedOwner != null && presentationOwner != expectedOwner) return@clear
+            // Keep only the already-visible panel briefly while a raw touch
+            // is delivered. It grants neither control nor approval.
+            if (deferAllowed && retainApprovalRegistration && expanded && expectedOwner == owner) {
+                if (deferredClear == null) {
+                    val oldToken = token
+                    val task = Runnable {
+                        deferredClear = null
+                        if (token == oldToken) clear(expectedOwner, retainApprovalRegistration, false)
+                    }
+                    deferredClear = task
+                    main.postDelayed(task, 350L)
+                }
+                return@clear
+            }
+            deferredClear?.let(main::removeCallbacks)
+            deferredClear = null
             // Clearing the floating presentation must also retire the exact
             // approval lease and notify the chat card. Otherwise a takeover
             // hides the bubble/panel while the private approval stays usable.
             retireApproval()
             owner = null
             token = UUID.randomUUID().toString()
+            takeoverBinding = null
             paused = false
             waitingForUser = false
             title = ""

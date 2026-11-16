@@ -181,6 +181,27 @@ class ScreenScopeConsentTest {
     }
 
     @Test
+    fun staleStopCannotClearARegrantedScreenScope() {
+        val consent = ScreenScopeConsent()
+        consent.untilStopped(a)
+        val oldRevision = consent.revision
+        consent.untilStopped(b)
+        consent.clearIfRevision(oldRevision)
+        assertNotNull(consent.binding)
+
+        consent.clearExactTask(a, expectedRevision = oldRevision)
+        assertNotNull(consent.binding)
+        consent.thisTask(a)
+        val oldExactRevision = consent.revision
+        consent.thisTask(a)
+        consent.clearExactTask(a, expectedRevision = oldExactRevision)
+        assertNotNull(consent.binding)
+        val currentRevision = consent.revision
+        consent.clearIfRevision(currentRevision)
+        assertNull(consent.binding)
+    }
+
+    @Test
     fun untilStoppedSurvivesTaskTerminalButNotAnActualStop() {
         val consent = ScreenScopeConsent()
         consent.untilStopped(a)

@@ -77,8 +77,11 @@ fun ConversationApprovalRow(
         Column(modifier = modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp)) {
             FloeText(
-                stringResource(if (deviceStop.phase == DeviceApprovalStopPhaseUi.FAILED)
-                    R.string.approval_device_stop_failed else R.string.approval_device_stopping),
+                stringResource(when (deviceStop.phase) {
+                    DeviceApprovalStopPhaseUi.FAILED -> R.string.approval_device_stop_failed
+                    DeviceApprovalStopPhaseUi.STOPPED -> R.string.state_stopped
+                    DeviceApprovalStopPhaseUi.STOPPING -> R.string.approval_device_stopping
+                }),
                 style = Floe.typography.metadata,
                 color = if (deviceStop.phase == DeviceApprovalStopPhaseUi.FAILED) colors.destructive else colors.pending,
             )

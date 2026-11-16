@@ -653,7 +653,8 @@ internal class DeviceAccessHost(
     @Volatile private var explicitResumeOwner: PhoneControlOwner? = null
     @Volatile private var pauseStateInvalid = pauseSaved != null && phonePause.snapshot == null
     private val automationControls = PhoneAutomationControls(
-        context, ::onAutomationControl, ::canPresentAutomationControls, ::automationOwnerStillLive,
+        context, ::onAutomationControl, ::captureOverlayTakeover, ::onOverlayTakeover,
+        ::canPresentAutomationControls, ::automationOwnerStillLive,
         approvalStillCurrent = { identity ->
             val owner = PhoneControlOwner(identity.taskID, identity.runID)
             !closed && host.nativeRootEpoch() == identity.nativeEpoch &&
@@ -2545,8 +2546,10 @@ internal class DeviceAccessHost(
         owner: PhoneControlOwner,
         takeOver: Boolean,
         expectedEpoch: Long? = null,
+        overlayBinding: OverlayTakeoverBinding? = null,
     ): PhoneControlStopClaims.Claim? = synchronized(activeStopLock) {
         if (expectedEpoch != null && host.nativeRootEpoch() != expectedEpoch) return@synchronized null
+        if (overlayBinding != null && !overlayTakeoverIsCurrent(owner, overlayBinding)) return@synchronized null
         val currentToken = stopFence.entry(owner)?.token
         if (currentToken != null && stopClaims.isDuplicate(owner, currentToken)) {
             return@synchronized null
@@ -3275,6 +3278,26 @@ internal class DeviceAccessHost(
         }
     }
 
+    private fun captureOverlayTakeover(owner: PhoneControlOwner): OverlayTakeoverBinding? {
+        val epoch = host.nativeRootEpoch()?.takeIf { it > 0 } ?: return null
+        return OverlayTakeoverBinding(
+            epoch = epoch,
+            ownerRevision = phoneControlRevision.current(owner),
+            streamStamp = host.conversations.deviceStopStreamStamp(
+                owner.taskID.toString(), owner.runID.toString()),
+        )
+    }
+
+    private fun overlayTakeoverIsCurrent(owner: PhoneControlOwner, binding: OverlayTakeoverBinding): Boolean =
+        binding.matches(host.nativeRootEpoch(), phoneControlRevision.current(owner),
+            host.conversations.deviceStopStreamStamp(owner.taskID.toString(), owner.runID.toString()), closed)
+
+    private fun onOverlayTakeover(owner: PhoneControlOwner, binding: OverlayTakeoverBinding) {
+        if (!overlayTakeoverIsCurrent(owner, binding)) return
+        stopActiveTask(takeOver = true, expectedOwner = owner,
+            userStopEpoch = binding.epoch, overlayBinding = binding)
+    }
+
     /** A real user Continue settles only the matching durable pause question
      * through its existing digest/nonce/revision CAS. No synthetic run start. */
     private fun resumePausedQuestion(pause: PhoneAutomationPause.Snapshot) {
@@ -3351,13 +3374,14 @@ internal class DeviceAccessHost(
         expectedOwner: PhoneControlOwner? = null,
         requestRunCancellation: Boolean = true,
         userStopEpoch: Long? = null,
+        overlayBinding: OverlayTakeoverBinding? = null,
     ) {
         if (userStopEpoch != null && host.nativeRootEpoch() != userStopEpoch) return
         // Prefer an actual arm/admission owner over an in-flight arming
         // placeholder, so a stale A arm cannot misdirect a Stop meant for a
         // newly admitted B.
         val owner = expectedOwner ?: armedOwner ?: automatedOwner.get() ?: armingOwner ?: currentCandidate()?.owner
-        if (expectedOwner != null &&
+        if (expectedOwner != null && overlayBinding == null &&
             ((userStopEpoch == null && !isOwnerRunLive(expectedOwner)) || controlOwner() != expectedOwner)) {
             // A late notification callback for an old owner may remove only
             // that owner's presentation. It must not stop/renew the current
@@ -3379,18 +3403,26 @@ internal class DeviceAccessHost(
             publish()
             return
         }
-        OwnedExternalViewLaunch.clearForOwner(owner.taskID.toString(), owner.runID.toString())
+        // Capture the exact launch before claiming Stop. A late callback must
+        // never clear a replacement launch, even for the same task/run.
+        val ownedLaunch = OwnedExternalViewLaunch.current()?.takeIf {
+            it.taskID.equals(owner.taskID.toString(), ignoreCase = true) &&
+                it.runID.equals(owner.runID.toString(), ignoreCase = true) &&
+                (userStopEpoch == null || it.nativeEpoch == userStopEpoch)
+        }
         // The registered device card is captured BEFORE the presentation is
         // cleared, so the stop note is bound to the call it actually retired
         // and a later retry/new call of the same run is not blocked.
         val approvalKey = automationControls.approvalKey(owner)
         // A later retry may reuse the exact run ID. Capture the stream stamp
         // synchronously at the user's gesture, before any async cleanup.
-        val streamStamp = host.conversations.deviceStopStreamStamp(
+        val streamStamp = overlayBinding?.streamStamp ?: host.conversations.deviceStopStreamStamp(
             owner.taskID.toString(), owner.runID.toString())
+        val screenConsentRevision = screenShare.revision
         // Dedupe only the SAME still-current stop owner/generation. A pending
         // A cleanup must not swallow an immediate Stop of a newly active B.
-        val stop = claimTaskStop(owner, takeOver, expectedEpoch = userStopEpoch)
+        val stop = claimTaskStop(owner, takeOver, expectedEpoch = userStopEpoch,
+            overlayBinding = overlayBinding)
         if (stop == null) {
             if (userStopEpoch != null && host.nativeRootEpoch() != userStopEpoch) return
             automationControls.clear(expectedOwner = owner)
@@ -3401,6 +3433,7 @@ internal class DeviceAccessHost(
             finishTaskStop(stop)
             return
         }
+        ownedLaunch?.let(OwnedExternalViewLaunch::clearIfCurrent)
         val stopEpoch = host.nativeRootEpoch() ?: 0L
         stopSettlements.begin(owner, stop.stopToken, stopEpoch, approvalKey)
         // Immediate truthful projection: the user's stop is recorded and the
@@ -3421,7 +3454,8 @@ internal class DeviceAccessHost(
         // An actual Stop/Takeover ends BOTH screen-share modes, including the
         // broader "Until stopped"; a later task must ask again. This is
         // synchronous so a pending capture ticket is invalidated immediately.
-        screenShare.clear()
+        if (controlOwner() == null || controlOwner() == owner) screenShare.clearIfRevision(screenConsentRevision)
+        else screenShare.clearExactTask(owner, expectedRevision = screenConsentRevision)
         publish()
         val stoppingOwner = stop.owner
         val stopToken = stop.stopToken
@@ -3474,10 +3508,10 @@ internal class DeviceAccessHost(
     ) {
         val ui = phase?.let {
             DeviceApprovalStopUi(
-                phase = if (it == DeviceStopUiPhase.FAILED) {
-                    DeviceApprovalStopPhaseUi.FAILED
-                } else {
-                    DeviceApprovalStopPhaseUi.STOPPING
+                phase = when (it) {
+                    DeviceStopUiPhase.FAILED -> DeviceApprovalStopPhaseUi.FAILED
+                    DeviceStopUiPhase.STOPPED -> DeviceApprovalStopPhaseUi.STOPPED
+                    DeviceStopUiPhase.STOPPING -> DeviceApprovalStopPhaseUi.STOPPING
                 },
                 approvalKey = approvalKey,
             )
@@ -3547,7 +3581,10 @@ internal class DeviceAccessHost(
             is DeviceRunStopReceipt.Settled -> {
                 stopSettlements.clear(owner, stopToken)
                 stopFence.settle(owner, stopToken)
-                publishDeviceStop(owner, null, key)
+                // The independent proof may arrive before the chat holder's
+                // authoritative page. Retain the exact old card barrier so a
+                // delayed page cannot make that call actionable again.
+                publishDeviceStop(owner, DeviceStopUiPhase.STOPPED, key)
             }
             DeviceRunStopReceipt.StillStopping -> {
                 stopSettlements.mark(owner, stopToken, DeviceStopUiPhase.STOPPING)

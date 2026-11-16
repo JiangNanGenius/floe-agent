@@ -963,7 +963,7 @@ class ConversationFlowHolder(
                 val sameKey = next.pendingApprovals.firstOrNull {
                     it.toolName == "device.act" && deviceApprovalKeysMatch(stop.approvalKey, it.key)
                 }
-                sameKey == null || deviceStopMatches(stop, sameKey)
+                sameKey == null || !deviceStopProvenDifferent(stop, sameKey)
             }
         }
         val replaced = next.pendingApprovals.filter { card ->
@@ -1528,8 +1528,16 @@ class ConversationFlowHolder(
 
     private fun deviceStopMatches(stop: DeviceApprovalStopUi, card: ApprovalCardUi): Boolean =
         stop.identityCaptured && deviceApprovalKeysMatch(stop.approvalKey, card.key) &&
-            stop.requestGeneration == card.requestGeneration && stop.approvalRevision == card.approvalRevision &&
-            stop.descriptorIdentity == card.descriptorIdentity
+            !deviceStopProvenDifferent(stop, card)
+
+    /** Missing identity or changed presentation on a late page is uncertainty.
+     * Only an explicitly different request generation retires the barrier. */
+    private fun deviceStopProvenDifferent(stop: DeviceApprovalStopUi, card: ApprovalCardUi): Boolean {
+        val old = stop.requestGeneration
+        val new = card.requestGeneration
+        return old != null && new != null && old != new && card.identityVerified &&
+            card.approvalRevision == "generation:$new"
+    }
 
     /** UUID spelling may differ by case; tool call IDs are case-sensitive. */
     private fun deviceApprovalKeysMatch(left: String?, right: String?): Boolean {
