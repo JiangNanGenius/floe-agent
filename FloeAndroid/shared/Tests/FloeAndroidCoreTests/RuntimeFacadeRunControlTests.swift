@@ -19,6 +19,25 @@ import FloeTools
 final class RuntimeFacadeRunControlTests: XCTestCase {
     private var fixture: RunDomainFixture!
 
+    func testDeviceActionApprovalProjectionNeverIncludesInputAndRejectsAmbiguity() throws {
+        let observation = UUID().uuidString.lowercased()
+        func project(_ json: String) throws -> [String: SettingsDomainV1.JSONValue]? {
+            let call = try ToolCall(id: "call", toolName: "device.act", argumentsJSON: Data(json.utf8), scope: .local)
+            return DeviceActionApprovalPresentation.details(waiting: .init(toolCall: call, reason: "test"))
+        }
+        let secret = "synthetic-canary-credential"
+        let input = try XCTUnwrap(project("{\"action\":\"setText\",\"observationId\":\"\(observation)\",\"nodeRef\":\"n3\",\"sensitiveText\":\"\(secret)\"}"))
+        XCTAssertEqual(input["inputKind"], .string("sensitiveText"))
+        XCTAssertEqual(input["direction"], .null)
+        XCTAssertFalse(String(describing: input).contains(secret))
+        let swipe = try XCTUnwrap(project("{\"action\":\"swipe\",\"observationId\":\"adbui-\(observation)\",\"nodeRef\":\"n3\",\"direction\":\"up\"}"))
+        XCTAssertEqual(swipe["direction"], .string("up"))
+        XCTAssertNil(try project("{\"action\":\"setText\",\"observationId\":\"\(observation)\",\"nodeRef\":\"n3\",\"text\":\"a\",\"sensitiveText\":\"b\"}"))
+        XCTAssertNil(try project("{\"action\":\"click\",\"observationId\":\"\(observation)\",\"nodeRef\":\"n3\",\"extra\":true}"))
+        XCTAssertNil(try project("{\"action\":\"click\",\"observationId\":\"foreign\",\"nodeRef\":\"n3\"}"))
+        XCTAssertNil(try project("{\"action\":\"scroll\",\"observationId\":\"\(observation)\",\"nodeRef\":\"n3\",\"direction\":\"up\"}"))
+    }
+
     func testWorkspaceApprovalReadbackRejectsTerminalAndUnknownStates() {
         XCTAssertTrue(LinuxWorkspaceAuthority.approvalWorkspaceStateAllowed("preparing"))
         XCTAssertTrue(LinuxWorkspaceAuthority.approvalWorkspaceStateAllowed("waitingApproval"))
@@ -56,6 +75,15 @@ final class RuntimeFacadeRunControlTests: XCTestCase {
         XCTAssertFalse(store.consume(old, matching: original, now: 12))
         store.retire(runID: run)
         XCTAssertFalse(store.consume(replacement, matching: original, now: 12))
+        let device = WorkspaceApprovalReceiptStore.Binding(epoch: 7, taskID: task, runID: run,
+            callID: "device-call", generation: generation, descriptorIdentity: "descriptor",
+            workspaceProof: nil, digest: "request", deviceTargetDigest: String(repeating: "a", count: 64))
+        let changedTarget = WorkspaceApprovalReceiptStore.Binding(epoch: 7, taskID: task, runID: run,
+            callID: "device-call", generation: generation, descriptorIdentity: "descriptor",
+            workspaceProof: nil, digest: "request", deviceTargetDigest: String(repeating: "b", count: 64))
+        let deviceToken = try XCTUnwrap(store.issue(device, now: 13))
+        XCTAssertFalse(store.consume(deviceToken, matching: changedTarget, now: 14))
+        XCTAssertFalse(store.consume(deviceToken, matching: device, now: 14))
     }
 
     func testWorkspaceApprovalDetailsRequireOriginalRootAndNeverIncludeContent() throws {
@@ -98,6 +126,26 @@ final class RuntimeFacadeRunControlTests: XCTestCase {
         XCTAssertEqual(draft["overwrite"], .string("forbidden"))
         let patch = try XCTUnwrap(details("workspace.applyPatch", #"{"path":"a.txt","patch":"synthetic-secret"}"#))
         XCTAssertEqual(patch["precondition"], .string("patchContext"))
+        let append = try XCTUnwrap(details("workspace.appendFile", #"{"path":"a.txt","content":"synthetic-secret","expectedSHA256":"hash-value"}"#))
+        XCTAssertEqual(append["precondition"], .string("fileExistsAndSha256"))
+        XCTAssertFalse(String(describing: append).contains("synthetic-secret"))
+        XCTAssertFalse(String(describing: append).contains("hash-value"))
+        let replace = try XCTUnwrap(details("workspace.replaceText", #"{"path":"a.txt","oldText":"secret-old","newText":"secret-new","expectedOccurrences":2}"#))
+        XCTAssertEqual(replace["expectedOccurrences"], .integer(2))
+        XCTAssertEqual(replace["precondition"], .string("occurrences"))
+        XCTAssertFalse(String(describing: replace).contains("secret-old"))
+        let directory = try XCTUnwrap(details("workspace.createDirectory", #"{"path":"new/目录"}"#))
+        XCTAssertEqual(directory["overwrite"], .string("forbidden"))
+        for operation in ["moveFile", "copyFile"] {
+            let transfer = try XCTUnwrap(details("workspace.\(operation)", #"{"from":"one.txt","to":"new/two.txt"}"#))
+            XCTAssertEqual(transfer["sourcePath"], .string("one.txt"))
+            XCTAssertEqual(transfer["target"], .string("new/two.txt"))
+            XCTAssertEqual(transfer["sourcePrecondition"], .string("exists"))
+            XCTAssertNil(try details("workspace.\(operation)", #"{"from":"one.txt","to":"../outside"}"#))
+        }
+        let deletion = try XCTUnwrap(details("workspace.deleteFile", #"{"path":"folder","recursive":true}"#))
+        XCTAssertEqual(deletion["recursive"], .boolean(true))
+        XCTAssertNil(try details("workspace.deleteFile", #"{"path":"folder","scope":"remote"}"#))
         XCTAssertFalse(String(describing: patch).contains("synthetic-secret"))
         let call = try ToolCall(id: "call", toolName: "workspace.createFile",
             argumentsJSON: Data(#"{"path":"a.txt","content":"first"}"#.utf8), scope: .local)

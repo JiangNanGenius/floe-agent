@@ -731,7 +731,8 @@ enum RunSnapshotWireBuilder {
     static func approvalPresentation(
         _ waiting: AgentState.WaitingApproval,
         descriptor: ToolCatalog.Descriptor?,
-        workspaceDetails: [String: SettingsDomainV1.JSONValue]? = nil
+        workspaceDetails: [String: SettingsDomainV1.JSONValue]? = nil,
+        workspaceVerified: Bool? = nil
     ) -> SettingsDomainV1.JSONValue {
         let generation = waiting.generation.uuidString.lowercased()
         guard let descriptor else {
@@ -753,7 +754,7 @@ enum RunSnapshotWireBuilder {
             "riskLabels": .array(descriptor.riskLabels.map(\.rawValue).sorted().map { .string($0) }),
             "requestedScope": .string(requestedScope),
             "grantScope": .string("singleUse"),
-            "workspaceVerified": .boolean(workspaceDetails != nil),
+            "workspaceVerified": .boolean(workspaceVerified ?? (workspaceDetails != nil)),
             "descriptorIdentity": .string(descriptor.authorizationIdentity),
             "detailStatus": .string(details == nil ? "unavailable" : "available"),
         ]

@@ -239,8 +239,32 @@ data class WorkspaceFileApprovalUi(
     val precondition: String,
     val sourcePath: String? = null,
     val sourcePrecondition: String? = null,
+    val expectedOccurrences: Long? = null,
+    val recursive: Boolean? = null,
 ) {
     override fun toString(): String = "WorkspaceFileApprovalUi(operation=$operation, details=redacted)"
+}
+
+/** Private request identity only; a verified live node is still required before allowing. */
+data class DeviceActionApprovalRequestUi(
+    val action: String,
+    val observationId: String,
+    val nodeRef: String,
+    val direction: String?,
+    val inputKind: String?,
+) {
+    override fun toString(): String = "DeviceActionApprovalRequestUi(action=$action, details=redacted)"
+}
+
+data class DeviceActionApprovalUi(
+    val request: DeviceActionApprovalRequestUi,
+    val packageName: String,
+    val className: String,
+    val label: String,
+    val left: Int, val top: Int, val right: Int, val bottom: Int,
+    val canonicalTargetDigest: String,
+) {
+    override fun toString(): String = "DeviceActionApprovalUi(details=redacted)"
 }
 
 /** Full local-only shell review, never an execution grant. */
@@ -285,6 +309,7 @@ data class ApprovalCardUi(
     val actionPackage: String? = null,
     val workspaceAction: WorkspaceFileApprovalUi? = null,
     val localShellAction: LocalShellApprovalUi? = null,
+    val deviceAction: DeviceActionApprovalUi? = null,
     /** The generation and descriptor are verified independently of whether
      * enough action detail exists to allow the request. */
     val identityVerified: Boolean = false,

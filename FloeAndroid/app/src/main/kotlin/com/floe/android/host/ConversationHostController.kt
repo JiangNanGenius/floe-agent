@@ -9,6 +9,8 @@ import com.floe.android.design.SidebarSelection
 import com.floe.android.design.WorkbenchSelection
 import com.floe.android.feature.conversation.AgentExecutionModeUi
 import com.floe.android.feature.conversation.ApprovalCardUi
+import com.floe.android.feature.conversation.DeviceActionApprovalUi
+import com.floe.android.feature.conversation.DeviceActionApprovalRequestUi
 import com.floe.android.feature.conversation.ApprovalDecisionRequest
 import com.floe.android.feature.conversation.ApprovalDispatchState
 import com.floe.android.feature.conversation.ApprovalUserDecisionUi
@@ -144,6 +146,14 @@ private val DEVICE_QUESTION_TOOLS = setOf(
     "phone.observe", "phone.act", "phone.screenshot",
 )
 
+
+/** Sequence holder notifications before their asynchronous main-thread delivery. */
+internal class FloatingApprovalEventFence {
+    private val sequence = java.util.concurrent.atomic.AtomicLong()
+    fun issue(): Long = sequence.incrementAndGet()
+    fun isCurrent(ticket: Long): Boolean = sequence.get() == ticket
+    fun invalidate() { sequence.incrementAndGet() }
+}
 
 /**
  * App-host binding for the conversation feature component: conversation
@@ -432,6 +442,23 @@ class ConversationHostController internal constructor(
     }
 
     private val holders = ConcurrentHashMap<String, ConversationFlowHolderEntry>()
+    private class FloatingDeviceApproval(
+        val identity: DeviceApprovalIdentity, val session: ConversationSessionToken, val card: ApprovalCardUi,
+        val holder: com.floe.android.feature.conversation.ConversationFlowHolder,
+    ) {
+        @Volatile var registrationAttempts: Int = 0
+        @Volatile var registered: Boolean = false
+        @Volatile var registrationRevocations: Int = 0
+        @Volatile var failedPresentationId: String? = null
+        @Volatile var presentationId: String? = null
+        @Volatile var target: DeviceApprovalTarget? = null
+        @Volatile var action: DeviceApprovalAction? = null
+        @Volatile var revalidatedPresentationId: String? = null
+    }
+    private val floatingDeviceApprovals = ConcurrentHashMap<String, FloatingDeviceApproval>()
+    private val floatingApprovalEvents = ConcurrentHashMap<com.floe.android.feature.conversation.ConversationFlowHolder, FloatingApprovalEventFence>()
+
+
 
     /**
      * Application-scoped durable question attention. It re-reads the
@@ -1190,6 +1217,14 @@ class ConversationHostController internal constructor(
         invalidatePendingInputBodies(conversationId)
         terminalNoticeFence.discardConversation(conversationId)
         holders.remove(conversationId)?.let { entry ->
+            floatingApprovalEvents.remove(entry.holder)?.invalidate()
+            host.scope.launch(kotlinx.coroutines.Dispatchers.Main.immediate) {
+                val old = floatingDeviceApprovals[conversationId]
+                if (old != null && old.holder === entry.holder && floatingDeviceApprovals.remove(conversationId, old)) {
+                    old.presentationId?.let { entry.holder.hidePrivateApproval(it) }
+                    host.platformExtension?.dismissDeviceApproval(old.identity)
+                }
+            }
             host.voiceOrNull()?.cancelForConversation(conversationId)
             retireHolderResources(conversationId, entry)
         }
@@ -1455,6 +1490,12 @@ class ConversationHostController internal constructor(
                         val selectedHere = entry.builder.selectedRunId == runID
                         if (selectedHere) entry.builder.applySnapshotLiveText(page)
                         entry.holder.applyHostSnapshot(entry.builder.build())
+                        val retry = floatingDeviceApprovals[ownerConversation]
+                        if (retry != null && !retry.registered && retry.registrationAttempts < 2 && retry.holder === entry.holder) {
+                            host.scope.launch(kotlinx.coroutines.Dispatchers.Main.immediate) {
+                                reconcileDeviceApproval(entry.holder, entry.holder.session, retry.card, explicitRetry = false)
+                            }
+                        }
                         // The page's own `checkpointReason` is omitted by a
                         // retired owner; the projection keeps the durable
                         // status-event reason. Use the PROJECTED waiting flag
@@ -4603,9 +4644,227 @@ class ConversationHostController internal constructor(
      * scope is NEVER chosen by the payload — native re-derives it from the
      * live call-bound request (a human tap only picks allow/deny).
      */
+    override fun onDeviceApprovalWaiting(holder: com.floe.android.feature.conversation.ConversationFlowHolder,
+        session: ConversationSessionToken, card: ApprovalCardUi?) {
+        if (holders[session.conversationId]?.holder !== holder) return
+        val fence = floatingApprovalEvents.computeIfAbsent(holder) { FloatingApprovalEventFence() }
+        if (holders[session.conversationId]?.holder !== holder) {
+            if (floatingApprovalEvents.remove(holder, fence)) fence.invalidate()
+            return
+        }
+        val ticket = fence.issue()
+        host.scope.launch(kotlinx.coroutines.Dispatchers.Main.immediate) {
+            if (floatingApprovalEvents[holder] !== fence || !fence.isCurrent(ticket)) return@launch
+            reconcileDeviceApproval(holder, session, card, explicitRetry = false)
+        }
+    }
+
+    private fun reconcileDeviceApproval(holder: com.floe.android.feature.conversation.ConversationFlowHolder,
+        session: ConversationSessionToken, card: ApprovalCardUi?, explicitRetry: Boolean) {
+        val old = floatingDeviceApprovals[session.conversationId]
+        if (card == null) {
+            if (old != null && old.holder === holder && old.session == session &&
+                floatingDeviceApprovals.remove(session.conversationId, old)) {
+                old.presentationId?.let { holder.hidePrivateApproval(it) }
+                host.platformExtension?.dismissDeviceApproval(old.identity)
+            }
+            return
+        }
+        val entry = holders[session.conversationId] ?: return
+        if (entry.holder !== holder || !ownCurrentEntry(entry, session.conversationId, session.sessionEpoch) ||
+            entry.holder.snapshot.value?.pendingApprovals?.none { it == card } != false) return
+        if (old != null && old.holder === holder && old.session == session && old.card == card) {
+            if (old.registered || (!explicitRetry && old.registrationAttempts >= 2)) return
+            if (explicitRetry) old.registrationAttempts = 0
+        }
+        if (old != null && floatingDeviceApprovals.remove(session.conversationId, old)) {
+            old.presentationId?.let { old.holder.hidePrivateApproval(it) }
+            host.platformExtension?.dismissDeviceApproval(old.identity)
+        }
+        if (!admitted()) return
+        val epoch = host.nativeRootEpoch() ?: return
+        val task = runCatching { java.util.UUID.fromString(session.conversationId) }.getOrNull() ?: return
+        val run = runCatching { java.util.UUID.fromString(card.runId) }.getOrNull() ?: return
+        val generation = card.requestGeneration ?: return
+        val descriptor = card.descriptorIdentity ?: return
+        val identity = DeviceApprovalIdentity(task, run, epoch, host.commandClient.generation(),
+            card.approvalId, generation, descriptor)
+        val state = FloatingDeviceApproval(identity, session, card, holder)
+        state.registrationAttempts = if (old != null && old.holder === holder && old.session == session && old.card == card)
+            old.registrationAttempts else 0
+        floatingDeviceApprovals[session.conversationId] = state
+        val callbacks = object : DeviceApprovalOverlayCallbacks {
+            override fun onVisibilityChanged(identity: DeviceApprovalIdentity, presentationId: String, visible: Boolean) {
+                if (identity != state.identity || floatingDeviceApprovals[session.conversationId] !== state) return
+                if (!visible && presentationId.isEmpty()) {
+                    state.registrationRevocations++
+                    state.registered = false
+                    state.presentationId?.let { entry.holder.hidePrivateApproval(it) }
+                    state.presentationId = null
+                    state.failedPresentationId = null
+                    state.target = null
+                    state.action = null
+                    state.revalidatedPresentationId = null
+                    return
+                }
+                if (visible) {
+                    state.presentationId?.let { entry.holder.hidePrivateApproval(it) }
+                    state.presentationId = presentationId
+                    state.failedPresentationId = null
+                    state.target = null
+                    state.action = null
+                    state.revalidatedPresentationId = null
+                    entry.holder.showPrivateApproval(card, presentationId)
+                    if (!entry.holder.isPrivateApprovalLeaseCurrent(session, card, presentationId)) {
+                        failDevicePresentation(entry, state, presentationId, null)
+                    }
+                    host.scope.launch {
+                        delay(15_000)
+                        if (state.target == null) failDevicePresentation(entry, state, presentationId, state.action)
+                    }
+                } else if (state.presentationId == presentationId) {
+                    state.presentationId = null
+                    state.failedPresentationId = null
+                    state.target = null
+                    state.action = null
+                    state.revalidatedPresentationId = null
+                    entry.holder.hidePrivateApproval(presentationId)
+                }
+            }
+            override fun onDecision(identity: DeviceApprovalIdentity, presentationId: String, allow: Boolean) {
+                if (identity != state.identity || !devicePresentationOwned(entry, state, presentationId)) return
+                if (!allow) {
+                    entry.holder.resolveApproval(card, allow = false)
+                    return
+                }
+                if (!devicePresentationCurrent(entry, state, presentationId)) return
+                val target = state.target ?: return
+                val action = state.action ?: return
+                host.scope.launch(host.ioDispatcher) {
+                    val fresh = runCatching { host.platformExtension?.readDeviceApprovalTarget(identity, presentationId, action) {
+                        devicePresentationCurrent(entry, state, presentationId)
+                    } }.getOrNull()
+                    if (fresh == null || fresh != target) {
+                        failDevicePresentation(entry, state, presentationId, action)
+                        return@launch
+                    }
+                    if (!devicePresentationCurrent(entry, state, presentationId)) return@launch
+                    state.revalidatedPresentationId = presentationId
+                    val shown = entry.holder.visibleApprovalCard(card, presentationId)
+                    if (shown.deviceAction?.canonicalTargetDigest != target.digest ||
+                        entry.holder.resolveApproval(shown, allow = true, presentationLease = presentationId) !=
+                            com.floe.android.feature.conversation.ConversationFlowResult.Accepted) {
+                        state.revalidatedPresentationId = null
+                        failDevicePresentation(entry, state, presentationId, action)
+                    }
+                }
+            }
+        }
+        state.registrationAttempts++
+        val revocationsBefore = state.registrationRevocations
+        val accepted = runCatching { host.platformExtension?.presentDeviceApproval(identity, callbacks) == true }.getOrDefault(false)
+        state.registered = accepted && state.registrationRevocations == revocationsBefore
+    }
+
+    private fun devicePresentationOwned(entry: ConversationFlowHolderEntry, state: FloatingDeviceApproval, lease: String): Boolean =
+        floatingDeviceApprovals[state.session.conversationId] === state && state.presentationId == lease &&
+            admitted() && ownCurrentEntry(entry, state.session.conversationId, state.session.sessionEpoch) &&
+            host.nativeRootEpoch() == state.identity.nativeEpoch && host.commandClient.generation() == state.identity.hostGeneration &&
+            entry.builder.approvalBinding(state.card.runId, state.card.approvalId) == state.card
+
+    private fun devicePresentationCurrent(entry: ConversationFlowHolderEntry, state: FloatingDeviceApproval, lease: String): Boolean =
+        devicePresentationOwned(entry, state, lease) && state.failedPresentationId != lease &&
+            entry.holder.isPrivateApprovalLeaseCurrent(state.session, state.card, lease)
+
+    private fun failDevicePresentation(entry: ConversationFlowHolderEntry, state: FloatingDeviceApproval,
+        lease: String, action: DeviceApprovalAction?) {
+        host.scope.launch(kotlinx.coroutines.Dispatchers.Main.immediate) {
+            if (!devicePresentationOwned(entry, state, lease) || state.failedPresentationId == lease) return@launch
+            state.failedPresentationId = lease
+            state.target = null
+            state.action = null
+            state.revalidatedPresentationId = null
+            entry.holder.hidePrivateApproval(lease)
+            host.platformExtension?.setDeviceApprovalTarget(state.identity, lease, action, null, false)
+        }
+    }
+
+    private fun requestDeviceApprovalPresentation(entry: ConversationFlowHolderEntry,
+        session: ConversationSessionToken, card: ApprovalCardUi, lease: String): Boolean {
+        val state = floatingDeviceApprovals[session.conversationId] ?: return false
+        if (state.card != card || !devicePresentationCurrent(entry, state, lease)) return false
+        val extension = host.platformExtension ?: return false
+        fun request(digest: String?, finished: (HostOperationOutcome) -> Unit) {
+            host.trackOperation(HostCommandRequest(
+                command = "run.approval.presentation", scope = HostScope.TaskExecution(session.conversationId, card.runId),
+                stateful = true, correlationID = client().correlationID("dapres"),
+                revision = HostRevision(ConversationWire.approvalResourceID(card.approvalId), card.approvalRevision ?: return),
+                payload = JsonObject(buildMap {
+                    put("approvalSchema", JsonPrimitive("generation-v1"))
+                    put("callID", JsonPrimitive(card.approvalId))
+                    put("generation", JsonPrimitive(card.requestGeneration ?: return))
+                    put("expectedDescriptorIdentity", JsonPrimitive(card.descriptorIdentity ?: return))
+                    if (digest != null) put("canonicalTargetDigest", JsonPrimitive(digest))
+                }),
+            ), beforeSubmit = { devicePresentationCurrent(entry, state, lease) }, onTerminal = finished)
+        }
+        request(null) first@{ first ->
+            if (!devicePresentationCurrent(entry, state, lease)) return@first
+            if (first !is HostOperationOutcome.Completed) {
+                failDevicePresentation(entry, state, lease, null)
+                return@first
+            }
+            val parsed = privateDeviceActionApprovalPage(first.value, card) ?: run {
+                failDevicePresentation(entry, state, lease, null)
+                return@first
+            }
+            val incoming = parsed.first
+            val action = DeviceApprovalAction(incoming.observationId, incoming.nodeRef, incoming.action, incoming.direction, incoming.inputKind)
+            host.scope.launch(host.ioDispatcher) {
+                val target = runCatching { extension.readDeviceApprovalTarget(state.identity, lease, action) {
+                    devicePresentationCurrent(entry, state, lease)
+                } }.getOrNull()
+                if (target == null || !target.digest.matches(Regex("[0-9a-f]{64}"))) {
+                    failDevicePresentation(entry, state, lease, action)
+                    return@launch
+                }
+                if (!devicePresentationCurrent(entry, state, lease)) return@launch
+                request(target.digest) second@{ second ->
+                    if (!devicePresentationCurrent(entry, state, lease)) return@second
+                    val confirmed = (second as? HostOperationOutcome.Completed)?.let {
+                        privateDeviceActionApprovalPage(it.value, card, target.digest)
+                    }
+                    val token = confirmed?.second
+                    if (confirmed == null || token == null || confirmed.first != incoming) {
+                        failDevicePresentation(entry, state, lease, action)
+                        return@second
+                    }
+                    host.scope.launch(host.ioDispatcher) {
+                        val fresh = runCatching { extension.readDeviceApprovalTarget(state.identity, lease, action) {
+                            devicePresentationCurrent(entry, state, lease)
+                        } }.getOrNull()
+                        if (fresh == null || fresh != target) {
+                            failDevicePresentation(entry, state, lease, action)
+                            return@launch
+                        }
+                        if (!devicePresentationCurrent(entry, state, lease)) return@launch
+                        val details = DeviceActionApprovalUi(incoming, target.packageName, target.className, target.label,
+                            target.left, target.top, target.right, target.bottom, target.digest)
+                        if (!entry.holder.acceptPrivateDeviceApproval(session, card, lease, details, token)) return@launch
+                        state.action = action
+                        state.target = target
+                        extension.setDeviceApprovalTarget(state.identity, lease, action, target, true)
+                    }
+                }
+            }
+        }
+        return true
+    }
+
     override fun requestApprovalPresentation(session: ConversationSessionToken, card: ApprovalCardUi, lease: String): Boolean {
         if (!admitted()) return false
         val entry = holders[session.conversationId] ?: return false
+        if (card.toolName == "device.act") return requestDeviceApprovalPresentation(entry, session, card, lease)
         val generation = card.requestGeneration ?: return false
         val revision = card.approvalRevision ?: return false
         val descriptor = card.descriptorIdentity ?: return false
@@ -4654,6 +4913,12 @@ class ConversationHostController internal constructor(
             card.approvalId != request.approvalId || card.toolName != request.toolName ||
             !card.identityVerified || (request.decision is ApprovalUserDecisionUi.Allow && !card.scopeVerified &&
                 !entry.holder.privateApprovalValid(card, request.presentationLease, request.presentationToken))) return false
+        if (request.decision is ApprovalUserDecisionUi.Allow && card.toolName == "device.act" && !card.scopeVerified) {
+            val state = floatingDeviceApprovals[request.conversationId] ?: return false
+            if (state.presentationId != request.presentationLease || state.revalidatedPresentationId != request.presentationLease ||
+                state.target?.digest != request.canonicalTargetDigest || !devicePresentationCurrent(entry, state, request.presentationLease ?: return false)) return false
+            state.revalidatedPresentationId = null
+        }
         val attempt = entry.holder.approvalAttempt(session, card.key) ?: return false
         val terminalRefusal = AtomicBoolean(false)
         val retryProven = AtomicBoolean(false)
@@ -4724,6 +4989,8 @@ class ConversationHostController internal constructor(
                             put("expectedDescriptorIdentity", JsonPrimitive(descriptorIdentity))
                             if (decision == "allow" && request.presentationToken != null)
                                 put("presentationToken", JsonPrimitive(request.presentationToken))
+                            if (decision == "allow" && request.canonicalTargetDigest != null)
+                                put("canonicalTargetDigest", JsonPrimitive(request.canonicalTargetDigest))
                             if (decision == "deny") {
                                 put(
                                     "reason",
@@ -4736,6 +5003,12 @@ class ConversationHostController internal constructor(
                     onFrame = { frame ->
                         if (frame.kind == "rejected") terminalRefusal.set(true)
                     },
+                    beforeSubmit = if (decision == "allow" && card.toolName == "device.act" && request.canonicalTargetDigest != null) ({
+                        val floating = floatingDeviceApprovals[request.conversationId]
+                        val lease = request.presentationLease
+                        floating != null && lease != null && floating.target?.digest == request.canonicalTargetDigest &&
+                            devicePresentationCurrent(entry, floating, lease)
+                    }) else null,
                 ) { outcome ->
                     when (outcome) {
                     is HostOperationOutcome.Completed -> {
@@ -4754,10 +5027,21 @@ class ConversationHostController internal constructor(
                         }
                     }
                     is HostOperationOutcome.Rejected -> {
-                        if (terminalRefusal.get()) {
+                        if (terminalRefusal.get() || outcome.code == "not_submitted") {
                             if (decision == "allow" && request.presentationToken != null) {
                                 entry.holder.invalidateRejectedPrivateApproval(session, card, attempt,
                                     request.presentationLease, request.presentationToken)
+                                if (card.toolName == "device.act") {
+                                    val floating = floatingDeviceApprovals[request.conversationId]
+                                    val presentationLease = request.presentationLease
+                                    if (floating != null && presentationLease != null && floating.presentationId == presentationLease) {
+                                        floating.target = null
+                                        floating.action = null
+                                        floating.revalidatedPresentationId = null
+                                        host.platformExtension?.setDeviceApprovalTarget(floating.identity,
+                                            presentationLease, null, null, false)
+                                    }
+                                }
                             }
                             retryProven.set(true)
                         }
@@ -4806,7 +5090,16 @@ class ConversationHostController internal constructor(
         val entry = holders[session.conversationId] ?: return false
         if (!ownCurrentEntry(entry, session.conversationId, session.sessionEpoch) ||
             entry.holder.snapshot.value?.selectedRunId != runId) return false
-        refreshRunSnapshot(entry, runId)
+        refreshRunSnapshot(entry, runId, onApplied = { applied ->
+            if (applied) {
+                val pending = entry.holder.snapshot.value?.pendingApprovals?.firstOrNull {
+                    it.runId == runId && it.toolName == "device.act" && it.identityVerified && !it.scopeVerified
+                }
+                if (pending != null) host.scope.launch(kotlinx.coroutines.Dispatchers.Main.immediate) {
+                    reconcileDeviceApproval(entry.holder, session, pending, explicitRetry = true)
+                }
+            }
+        })
         return true
     }
 

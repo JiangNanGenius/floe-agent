@@ -492,4 +492,21 @@
     <string name="approval_shell_transaction_on">Environment transaction: on</string>
     <string name="approval_shell_transaction_off">Environment transaction: off</string>
     <string name="approval_shell_scope_note">The task’s existing permissions and command restrictions still apply.</string>
+    <string name="approval_workspace_append">Append to a file</string>
+    <string name="approval_workspace_replace">Replace text in a file</string>
+    <string name="approval_workspace_create_directory">Create a directory</string>
+    <string name="approval_workspace_move">Move a file or directory</string>
+    <string name="approval_workspace_copy">Copy a file or directory</string>
+    <string name="approval_workspace_delete">Delete a file or directory</string>
+    <string name="approval_precondition_exists">The target must exist.</string>
+    <string name="approval_precondition_exists_sha">The target must exist and match the supplied SHA-256.</string>
+    <string name="approval_precondition_occurrences">The expected number of matches must be present.</string>
+    <string name="approval_precondition_occurrences_sha">The expected matches and supplied SHA-256 must both match.</string>
+    <string name="approval_precondition_source_exists">The source must exist.</string>
+    <string name="approval_expected_occurrences">Expected matches: %1$s</string>
+    <string name="approval_recursive_on">Recursive deletion is enabled, including directory contents.</string>
+    <string name="approval_recursive_off">A directory must be empty before deletion.</string>
+    <string name="approval_directory_parents">Missing parent directories may also be created.</string>
+    <string name="approval_copy_move_directories">Directories can be processed recursively; missing parents may be created.</string>
+    <string name="approval_source_exists">The source must exist.</string>
 </resources>

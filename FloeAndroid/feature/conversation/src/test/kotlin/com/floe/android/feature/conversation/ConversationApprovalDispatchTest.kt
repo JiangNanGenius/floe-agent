@@ -8,6 +8,7 @@
 package com.floe.android.feature.conversation
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -290,6 +291,28 @@ class ConversationApprovalDispatchTest {
         holder.hidePrivateApproval("new-lease")
         assertNull(holder.visibleApprovalCard(card, "new-lease").localShellAction)
         assertEquals(false, holder.privateApprovalValid(card, "new-lease", "new-token"))
+    }
+
+    @Test fun deviceApprovalIsBoundToOneVisibleLeaseAndDigest() {
+        val card = approvalCard().copy(toolName = "device.act", scopeVerified = false)
+        val host = RecordingHost().apply { privatePresentationAccepted = true }
+        val holder = holderWithApproval(host, card)
+        val request = DeviceActionApprovalRequestUi("click", "observation", "n1", null, null)
+        val target = DeviceActionApprovalUi(request, "app.example", "Button", "Save", 1, 2, 3, 4, "a".repeat(64))
+        holder.showPrivateApproval(card, "old")
+        holder.showPrivateApproval(card, "new")
+        assertEquals(false, holder.acceptPrivateDeviceApproval(holder.session, card, "old", target, "old-token"))
+        assertEquals(true, holder.acceptPrivateDeviceApproval(holder.session, card, "new", target, "new-token"))
+        assertNull(holder.visibleApprovalCard(card, "old").deviceAction)
+        val displayed = holder.visibleApprovalCard(card, "new")
+        assertEquals(target, displayed.deviceAction)
+        assertEquals(ConversationFlowResult.Accepted, holder.resolveApproval(displayed, true, presentationLease = "new"))
+        val submitted = host.lastArgs("resolveApproval")!![0] as ApprovalDecisionRequest
+        assertEquals("new-token", submitted.presentationToken)
+        assertEquals("a".repeat(64), submitted.canonicalTargetDigest)
+        holder.hidePrivateApproval("new")
+        assertEquals(false, holder.privateApprovalValid(card, "new", "new-token"))
+        assertFalse(displayed.toString().contains("Save"))
     }
 
 }

@@ -160,6 +160,7 @@ data class ApprovalDecisionRequest(
     val expectedCard: ApprovalCardUi? = null,
     val presentationLease: String? = null,
     val presentationToken: String? = null,
+    val canonicalTargetDigest: String? = null,
 ) {
     override fun toString(): String =
         "ApprovalDecisionRequest(approval=$approvalId, run=$runId, decision=$decision" +
@@ -444,6 +445,9 @@ interface ConversationUiCallbacks {
     /** ⇄ center.resolve(approval, decision:) for the EXACT run+call identity.
      * True only when the host accepted the decision for that identity. */
     fun resolveApproval(request: ApprovalDecisionRequest): Boolean
+
+    /** Inform the device overlay about this holder's exact pending device card. */
+    fun onDeviceApprovalWaiting(holder: ConversationFlowHolder, session: ConversationSessionToken, card: ApprovalCardUi?) = Unit
 
     /** Read a private presentation only for a visible, exact approval card. */
     fun requestApprovalPresentation(session: ConversationSessionToken, card: ApprovalCardUi, lease: String): Boolean = false

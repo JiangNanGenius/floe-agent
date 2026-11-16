@@ -56,9 +56,10 @@ struct WorkspaceApprovalReceiptStore {
         let callID: String
         let generation: UUID
         let descriptorIdentity: String
-        let workspaceProof: WorkspaceApprovalLaunchProof
+        let workspaceProof: WorkspaceApprovalLaunchProof?
         let digest: String
         var shellTarget: C02ResolvedExecutionTarget? = nil
+        var deviceTargetDigest: String? = nil
     }
     struct Claim {
         let binding: Binding
@@ -97,6 +98,11 @@ struct WorkspaceApprovalReceiptStore {
 /// Read-only display proof, never an authorization or file mutation.
 enum WorkspaceApprovalPresentation {
     typealias Value = SettingsDomainV1.JSONValue
+    static let toolNames: Set<String> = [
+        "workspace.createFile", "workspace.writeFile", "workspace.applyPatch",
+        "workspace.appendFile", "workspace.replaceText", "workspace.createDirectory",
+        "workspace.moveFile", "workspace.copyFile", "workspace.deleteFile",
+    ]
 
     /// Bind both the complete captured request and every visible detail. The
     /// digests stay in process memory and never authorize a model path.
@@ -189,6 +195,51 @@ enum WorkspaceApprovalPresentation {
             result.merge(["operation": .string("applyPatch"), "target": .string(target),
                           "source": .string("patch"), "overwrite": .string("conditional"),
                           "precondition": .string("patchContext")]) { _, new in new }
+        case "workspace.appendFile":
+            guard Set(raw.keys).isSubset(of: ["path", "content", "expectedSHA256"]),
+                  let args = try? decoder.decode(WorkspaceAppendFileTool.Arguments.self, from: waiting.toolCall.argumentsJSON),
+                  (try? WorkspaceAppendFileTool(environment: environment).validate(args)) != nil,
+                  let target = path(args.path) else { return nil }
+            result.merge(["operation": .string("appendFile"), "target": .string(target),
+                          "source": .string("inline"), "overwrite": .string("conditional"),
+                          "precondition": .string(args.expectedSHA256 == nil ? "fileExists" : "fileExistsAndSha256")]) { _, new in new }
+        case "workspace.replaceText":
+            guard Set(raw.keys).isSubset(of: ["path", "oldText", "newText", "expectedOccurrences", "expectedSHA256"]),
+                  let args = try? decoder.decode(WorkspaceReplaceTextTool.Arguments.self, from: waiting.toolCall.argumentsJSON),
+                  (try? WorkspaceReplaceTextTool(environment: environment).validate(args)) != nil,
+                  let target = path(args.path), let occurrences = Int64(exactly: args.expectedOccurrences ?? 1) else { return nil }
+            result.merge(["operation": .string("replaceText"), "target": .string(target),
+                          "source": .string("inline"), "overwrite": .string("conditional"),
+                          "precondition": .string(args.expectedSHA256 == nil ? "occurrences" : "occurrencesAndSha256"),
+                          "expectedOccurrences": .integer(occurrences)]) { _, new in new }
+        case "workspace.createDirectory":
+            guard Set(raw.keys).isSubset(of: ["path", "scope"]),
+                  let args = try? decoder.decode(WorkspaceCreateDirectoryTool.Arguments.self, from: waiting.toolCall.argumentsJSON),
+                  args.scope == nil || args.scope == "local",
+                  (try? WorkspaceCreateDirectoryTool(environment: environment).validate(args)) != nil,
+                  let target = path(args.path) else { return nil }
+            result.merge(["operation": .string("createDirectory"), "target": .string(target),
+                          "source": .string("none"), "overwrite": .string("forbidden"),
+                          "precondition": .string("none")]) { _, new in new }
+        case "workspace.moveFile", "workspace.copyFile":
+            guard Set(raw.keys).isSubset(of: ["from", "to", "scope"]),
+                  let args = try? decoder.decode(WorkspaceMoveFileTool.Arguments.self, from: waiting.toolCall.argumentsJSON),
+                  args.scope == nil || args.scope == "local",
+                  (try? WorkspaceMoveFileTool(environment: environment).validate(args)) != nil,
+                  let source = path(args.from), let target = path(args.to), source != target else { return nil }
+            result.merge(["operation": .string(waiting.toolCall.toolName == "workspace.moveFile" ? "moveFile" : "copyFile"),
+                          "target": .string(target), "source": .string("workspaceFile"),
+                          "sourcePath": .string(source), "sourcePrecondition": .string("exists"),
+                          "overwrite": .string("forbidden"), "precondition": .string("sourceExists")]) { _, new in new }
+        case "workspace.deleteFile":
+            guard Set(raw.keys).isSubset(of: ["path", "recursive", "scope"]),
+                  let args = try? decoder.decode(WorkspaceDeleteFileTool.Arguments.self, from: waiting.toolCall.argumentsJSON),
+                  args.scope == nil || args.scope == "local",
+                  (try? WorkspaceDeleteFileTool(environment: environment).validate(args)) != nil,
+                  let target = path(args.path) else { return nil }
+            result.merge(["operation": .string("deleteFile"), "target": .string(target),
+                          "source": .string("none"), "overwrite": .string("conditional"),
+                          "precondition": .string("exists"), "recursive": .boolean(args.recursive ?? false)]) { _, new in new }
         default: return nil
         }
         return result

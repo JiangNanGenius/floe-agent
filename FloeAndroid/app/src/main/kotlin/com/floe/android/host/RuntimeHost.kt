@@ -1423,6 +1423,12 @@ class RuntimeHost internal constructor(
      * reusing the original correlation; a UI dismissal or request id is
      * never presented as a domain receipt. Terminal-once delivery and
      * effect ownership are unchanged.
+     *
+     * [beforeSubmit] is optional and runs on the IO dispatcher immediately
+     * before bridge exchange. It must be fast and thread-safe. A false result
+     * or callback failure yields `Rejected("not_submitted", "not_submitted")`
+     * without an accepted receipt or a frame. After exchange starts its outcome
+     * remains subject to the ordinary unknown/cancellation semantics.
      */
     private val snapshotTextHandles = SnapshotTextHandleRegistry()
 
@@ -1430,11 +1436,12 @@ class RuntimeHost internal constructor(
         request: HostCommandRequest,
         onFrame: (HostEffectFrame) -> Unit = { },
         onAccepted: ((String) -> Unit)? = null,
+        beforeSubmit: (() -> Boolean)? = null,
         onTerminal: (HostOperationOutcome) -> Unit,
     ) {
         scope.launch(ioDispatcher) {
             val snapshotTicket = snapshotTextHandles.prepare(request, commandClient.generation())
-            when (val submitted = commandClient.submit(snapshotTicket.request)) {
+            when (val submitted = commandClient.submit(snapshotTicket.request, beforeSubmit)) {
                 is HostSubmitResult.Accepted -> {
                     onAccepted?.invoke(submitted.operationReceiptID)
                     commandClient.openEffectStream(

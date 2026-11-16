@@ -227,6 +227,12 @@ fun ConversationApprovalRow(
                     "createFile" -> stringResource(R.string.approval_workspace_create)
                     "writeFile" -> stringResource(R.string.approval_workspace_write)
                     "applyPatch" -> stringResource(R.string.approval_workspace_patch)
+                    "appendFile" -> stringResource(R.string.approval_workspace_append)
+                    "replaceText" -> stringResource(R.string.approval_workspace_replace)
+                    "createDirectory" -> stringResource(R.string.approval_workspace_create_directory)
+                    "moveFile" -> stringResource(R.string.approval_workspace_move)
+                    "copyFile" -> stringResource(R.string.approval_workspace_copy)
+                    "deleteFile" -> stringResource(R.string.approval_workspace_delete)
                     else -> ""
                 } else when (presentedCard.actionKind) {
                     "back" -> stringResource(R.string.approval_device_back)
@@ -247,19 +253,40 @@ fun ConversationApprovalRow(
                         FloeText(fileAction.targetPath, modifier = Modifier.fillMaxWidth(),
                             style = Floe.typography.evidence, color = colors.label)
                     }
-                    FloeText(stringResource(when (fileAction.overwrite) {
-                        "allowed" -> R.string.approval_overwrite_allowed
-                        "forbidden" -> R.string.approval_overwrite_forbidden
-                        else -> R.string.approval_overwrite_conditional
-                    }), style = Floe.typography.metadata, color = colors.secondaryLabel)
+                    if (fileAction.operation in setOf("createFile", "writeFile", "moveFile", "copyFile", "createDirectory")) {
+                        FloeText(stringResource(when (fileAction.overwrite) {
+                            "allowed" -> R.string.approval_overwrite_allowed
+                            "forbidden" -> R.string.approval_overwrite_forbidden
+                            else -> R.string.approval_overwrite_conditional
+                        }), style = Floe.typography.metadata, color = colors.secondaryLabel)
+                    }
                     FloeText(stringResource(when (fileAction.precondition) {
                         "sha256" -> R.string.approval_precondition_sha
                         "mtime" -> R.string.approval_precondition_mtime
                         "sha256AndMtime" -> R.string.approval_precondition_both
                         "patchContext" -> R.string.approval_precondition_patch
+                        "fileExists" -> R.string.approval_precondition_exists
+                        "fileExistsAndSha256" -> R.string.approval_precondition_exists_sha
+                        "occurrences" -> R.string.approval_precondition_occurrences
+                        "occurrencesAndSha256" -> R.string.approval_precondition_occurrences_sha
+                        "sourceExists" -> R.string.approval_precondition_source_exists
+                        "exists" -> R.string.approval_precondition_exists
                         else -> R.string.approval_precondition_none
                     }), style = Floe.typography.metadata, color = colors.secondaryLabel)
-                    FloeText(stringResource(when (fileAction.source) {
+                    fileAction.expectedOccurrences?.let {
+                        FloeText(stringResource(R.string.approval_expected_occurrences, it.toString()),
+                            style = Floe.typography.metadata, color = colors.secondaryLabel)
+                    }
+                    fileAction.recursive?.let {
+                        FloeText(stringResource(if (it) R.string.approval_recursive_on else R.string.approval_recursive_off),
+                            style = Floe.typography.metadata, color = colors.destructive)
+                    }
+                    if (fileAction.operation in setOf("createDirectory", "moveFile", "copyFile")) {
+                        FloeText(stringResource(if (fileAction.operation == "createDirectory") R.string.approval_directory_parents
+                            else R.string.approval_copy_move_directories),
+                            style = Floe.typography.metadata, color = colors.secondaryLabel)
+                    }
+                    if (fileAction.source != "none") FloeText(stringResource(when (fileAction.source) {
                         "workspaceFile" -> R.string.approval_source_file
                         "patch" -> R.string.approval_source_patch
                         else -> R.string.approval_source_inline
@@ -269,7 +296,8 @@ fun ConversationApprovalRow(
                             FloeText(sourcePath, modifier = Modifier.fillMaxWidth(),
                                 style = Floe.typography.evidence, color = colors.label)
                         }
-                        FloeText(stringResource(R.string.approval_source_sha),
+                        FloeText(stringResource(if (fileAction.sourcePrecondition == "sha256") R.string.approval_source_sha
+                            else R.string.approval_source_exists),
                             style = Floe.typography.metadata, color = colors.secondaryLabel)
                     }
                 }

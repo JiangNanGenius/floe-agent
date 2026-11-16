@@ -31,6 +31,7 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
+import android.widget.ScrollView
 import android.widget.TextView
 import androidx.core.app.NotificationCompat
 import com.floe.android.FloeThemeStore
@@ -38,10 +39,38 @@ import com.floe.android.MainActivity
 import com.floe.android.R
 import com.floe.android.design.FloeThemeMode
 import com.floe.android.phonecontrol.PhoneControlOwner
+import com.floe.android.host.DeviceApprovalIdentity
+import com.floe.android.host.DeviceApprovalAction
+import com.floe.android.host.DeviceApprovalTarget
+import com.floe.android.host.DeviceApprovalOverlayCallbacks
 import java.util.UUID
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
+
+/** One cancellable pending card; no timer and no approval authority. */
+internal class DeviceApprovalRegistration {
+    data class Entry(val identity: DeviceApprovalIdentity, val callbacks: DeviceApprovalOverlayCallbacks)
+    private var value: Entry? = null
+    @Synchronized fun register(entry: Entry) { value = entry }
+    @Synchronized fun current(): Entry? = value
+    @Synchronized fun isCurrent(entry: Entry): Boolean = value === entry
+    @Synchronized fun cancelEntry(entry: Entry): Boolean {
+        if (value !== entry) return false
+        value = null
+        return true
+    }
+    @Synchronized fun cancel(identity: DeviceApprovalIdentity): Entry? {
+        val old = value?.takeIf { it.identity == identity } ?: return null
+        value = null
+        return old
+    }
+    @Synchronized fun cancelOwner(owner: PhoneControlOwner) {
+        val current = value?.identity ?: return
+        if (current.taskID == owner.taskID && current.runID == owner.runID) value = null
+    }
+    @Synchronized fun clear() { value = null }
+}
 
 /**
  * Process-local, revocable controls plus a compact, truthful floating status.
@@ -69,6 +98,7 @@ internal class PhoneAutomationControls(
     private val act: (PhoneControlOwner, Action) -> Unit,
     private val canPresent: (PhoneControlOwner) -> Boolean,
     private val ownerStillLive: (PhoneControlOwner) -> Boolean,
+    private val approvalStillCurrent: (DeviceApprovalIdentity) -> Boolean,
 ) {
     private val main = Handler(Looper.getMainLooper())
     private val notifications = context.getSystemService(NotificationManager::class.java)
@@ -106,6 +136,18 @@ internal class PhoneAutomationControls(
     private var lastPanelTitle: String? = null
     private var lastPanelStatus: String? = null
     private var lastPanelPaused: Boolean? = null
+    private var approvalIdentity: DeviceApprovalIdentity? = null
+    private var approvalCallbacks: DeviceApprovalOverlayCallbacks? = null
+    private var approvalVisible = false
+    private var approvalPresentationId: String? = null
+    private var approvalAction: DeviceApprovalAction? = null
+    private var approvalTarget: DeviceApprovalTarget? = null
+    private var approvalEnabled = false
+    private var approvalFailed = false
+    private val approvalRegistration = DeviceApprovalRegistration()
+    private var approvalText: TextView? = null
+    private var approvalAllow: Button? = null
+    private var approvalDeny: Button? = null
     private var configCallbacksRegistered = false
 
     private val configCallbacks = object : ComponentCallbacks {
@@ -130,11 +172,98 @@ internal class PhoneAutomationControls(
     private var clearAfterOperation = false
     private var retireFinishedRunnable: Runnable? = null
 
+    /** Accepts a cancellable pending request; true means queued, not displayed. */
+    fun presentApproval(identity: DeviceApprovalIdentity, callbacks: DeviceApprovalOverlayCallbacks): Boolean {
+        val entry = DeviceApprovalRegistration.Entry(identity, callbacks)
+        approvalRegistration.register(entry)
+        if (main.post { tryPresentApproval(entry) }) return true
+        approvalRegistration.cancelEntry(entry)
+        return false
+    }
+
+    private fun tryPresentApproval(entry: DeviceApprovalRegistration.Entry) {
+        if (!approvalRegistration.isCurrent(entry)) return
+        val identity = entry.identity
+        val expected = PhoneControlOwner(identity.taskID, identity.runID)
+        if (approvalIdentity != null &&
+            (approvalIdentity != identity || approvalCallbacks !== entry.callbacks)) {
+            retireApproval()
+            if (expanded) collapsePanel()
+        }
+        if (!approvalStillCurrent(identity)) {
+            if (approvalRegistration.cancelEntry(entry)) {
+                if (approvalIdentity == identity && approvalCallbacks === entry.callbacks) {
+                    retireApproval()
+                }
+                entry.callbacks.onVisibilityChanged(identity, "", false)
+            }
+            return
+        }
+        if (owner != expected || !canPresent(expected) || !ownerStillLive(expected) ||
+            !waitingForUser || paused || !showOverlay || !Settings.canDrawOverlays(context) || bubble == null) return
+        if (approvalIdentity == identity && approvalCallbacks === entry.callbacks) return
+        if (!approvalRegistration.isCurrent(entry)) return
+        retireApproval()
+        approvalIdentity = identity
+        approvalCallbacks = entry.callbacks
+        if (panel != null && expanded) {
+            collapsePanel()
+            expandPanel()
+        }
+    }
+
+    fun isApprovalVisible(identity: DeviceApprovalIdentity, presentationId: String): Boolean =
+        Looper.myLooper() == main.looper && approvalIdentity == identity && approvalVisible &&
+            approvalPresentationId == presentationId &&
+            expanded && panel?.isAttachedToWindow == true && waitingForUser && !paused && showOverlay &&
+            owner == PhoneControlOwner(identity.taskID, identity.runID) &&
+            owner?.let { canPresent(it) && ownerStillLive(it) } == true && approvalStillCurrent(identity) &&
+            approvalRegistration.current()?.let { it.identity == identity && it.callbacks === approvalCallbacks } == true &&
+            Settings.canDrawOverlays(context)
+
+    fun setApprovalTarget(identity: DeviceApprovalIdentity, presentationId: String,
+                          action: DeviceApprovalAction?, target: DeviceApprovalTarget?, enabled: Boolean) {
+        if (Looper.myLooper() != main.looper) { main.post { setApprovalTarget(identity, presentationId, action, target, enabled) }; return }
+        if (!isApprovalVisible(identity, presentationId)) return
+        approvalAction = action
+        approvalTarget = target
+        approvalFailed = target == null
+        approvalEnabled = enabled && target != null && action?.action == "click"
+        updateApprovalContent()
+    }
+
+    fun dismissApproval(identity: DeviceApprovalIdentity) {
+        val cancelled = approvalRegistration.cancel(identity) ?: return
+        val dismiss = {
+            if (approvalIdentity == identity && approvalCallbacks === cancelled.callbacks) {
+                retireApproval()
+                if (expanded) { collapsePanel(); expandPanel() }
+            }
+        }
+        if (Looper.myLooper() == main.looper) dismiss() else main.post { dismiss() }
+    }
+
+    private fun retireApproval() {
+        val old = approvalIdentity
+        val callback = approvalCallbacks
+        val wasVisible = approvalVisible
+        val presentationId = approvalPresentationId
+        approvalIdentity = null
+        approvalCallbacks = null
+        approvalVisible = false
+        approvalPresentationId = null
+        approvalAction = null
+        approvalTarget = null
+        approvalEnabled = false
+        approvalFailed = false
+        if (wasVisible && old != null && presentationId != null) callback?.onVisibilityChanged(old, presentationId, false)
+    }
+
     fun show(owner: PhoneControlOwner, title: String, overlay: Boolean, paused: Boolean = false,
              waitingForUser: Boolean = false) {
         main.post {
             if (!canPresent(owner)) {
-                clear(expectedOwner = owner)
+                clear(expectedOwner = owner, retainApprovalRegistration = ownerStillLive(owner))
                 return@post
             }
             if (this.owner != owner && operationOwner != owner) {
@@ -156,6 +285,7 @@ internal class PhoneAutomationControls(
             this.owner = owner
             this.paused = paused
             this.waitingForUser = waitingForUser
+            if (!waitingForUser || paused) retireApproval()
             this.title = PhoneAutomationStatusText.bounded(title, 48)
             showOverlay = overlay
             // The trusted pump calls start immediately before the first
@@ -174,6 +304,7 @@ internal class PhoneAutomationControls(
             }
             PhoneAutomationRelay.controls = this
             render()
+            approvalRegistration.current()?.let(::tryPresentApproval)
             if (paused || waitingForUser) {
                 cancelRetireFinished()
             } else if (retireFinishedRunnable == null && operationOwner == owner) {
@@ -285,7 +416,7 @@ internal class PhoneAutomationControls(
             if (owner == null || token != receivedToken) return@post
             val current = owner ?: return@post
             if (!canPresent(current)) {
-                clear(expectedOwner = current)
+                clear(expectedOwner = current, retainApprovalRegistration = ownerStillLive(current))
                 return@post
             }
             val accepted = when (action) {
@@ -324,7 +455,7 @@ internal class PhoneAutomationControls(
     private fun render() {
         val current = owner ?: return
         if (!canPresent(current)) {
-            clear(expectedOwner = current)
+            clear(expectedOwner = current, retainApprovalRegistration = ownerStillLive(current))
             return
         }
         runCatching { renderNotification() }
@@ -364,7 +495,7 @@ internal class PhoneAutomationControls(
             return
         }
         if (!canPresent(current)) {
-            clear(expectedOwner = current)
+            clear(expectedOwner = current, retainApprovalRegistration = ownerStillLive(current))
             return
         }
         if (!showOverlay || !Settings.canDrawOverlays(context) ||
@@ -585,6 +716,17 @@ internal class PhoneAutomationControls(
     }
 
     private fun collapsePanel() {
+        if (approvalVisible) {
+            val presentationId = approvalPresentationId
+            approvalVisible = false
+            approvalPresentationId = null
+            approvalEnabled = false
+            approvalAction = null
+            approvalTarget = null
+            approvalFailed = false
+            val identity = approvalIdentity
+            if (identity != null && presentationId != null) approvalCallbacks?.onVisibilityChanged(identity, presentationId, false)
+        }
         expanded = false
         cancelCollapse()
         removePanel()
@@ -593,6 +735,9 @@ internal class PhoneAutomationControls(
 
     private fun scheduleCollapse() {
         cancelCollapse()
+        // An explicit approval needs enough time to read the complete target.
+        // It is still retired by collapse, owner loss, Stop and lease changes.
+        if (approvalVisible) return
         val expectedOwner = owner ?: return
         val expectedToken = token
         val runnable = Runnable {
@@ -636,6 +781,12 @@ internal class PhoneAutomationControls(
         if (runCatching { windows.addView(view, params) }.isFailure) return null
         panel = view
         panelParams = params
+        approvalIdentity?.let { identity ->
+            val presentationId = UUID.randomUUID().toString()
+            approvalPresentationId = presentationId
+            approvalVisible = true
+            main.post { if (isApprovalVisible(identity, presentationId)) approvalCallbacks?.onVisibilityChanged(identity, presentationId, true) }
+        }
         return view
     }
 
@@ -692,6 +843,37 @@ internal class PhoneAutomationControls(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
             topMargin = dp(10)
         })
+        val identity = approvalIdentity
+        if (identity != null) {
+            val text = TextView(context).apply {
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                setTextIsSelectable(false)
+            }
+            val scroller = ScrollView(context).apply { addView(text) }
+            root.addView(scroller, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(120)))
+            val allow = actionButton {
+                val presentationId = approvalPresentationId
+                if (presentationId != null && isApprovalVisible(identity, presentationId) && approvalEnabled && approvalTarget != null) {
+                    approvalEnabled = false
+                    updateApprovalContent()
+                    approvalCallbacks?.onDecision(identity, presentationId, true)
+                }
+            }
+            val deny = actionButton {
+                val presentationId = approvalPresentationId
+                if (presentationId != null && isApprovalVisible(identity, presentationId)) approvalCallbacks?.onDecision(identity, presentationId, false)
+            }
+            allow.text = context.getString(R.string.device_approval_allow)
+            deny.text = context.getString(R.string.device_approval_deny)
+            val row = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+            row.addView(allow, LinearLayout.LayoutParams(0, dp(48), 1f))
+            row.addView(deny, LinearLayout.LayoutParams(0, dp(48), 1f))
+            root.addView(row)
+            approvalText = text
+            approvalAllow = allow
+            approvalDeny = deny
+            updateApprovalContent()
+        }
         root.setOnTouchListener { _, event ->
             if (event.actionMasked == MotionEvent.ACTION_DOWN) noteUserInteraction()
             false
@@ -723,6 +905,7 @@ internal class PhoneAutomationControls(
             palette.surface, palette.separator, dp(14), 1)
         panelTitle?.setTextColor(palette.label)
         panelStatus?.setTextColor(palette.secondaryLabel)
+        approvalText?.setTextColor(palette.label)
         panelPause?.apply {
             setTextColor(palette.accent)
             background = actionBackground(palette.accentFill, palette.accentFillPressed)
@@ -731,6 +914,15 @@ internal class PhoneAutomationControls(
             setTextColor(palette.destructive)
             background = actionBackground(palette.destructiveFill, palette.destructiveFillPressed)
         }
+    }
+
+    private fun updateApprovalContent() {
+        val target = approvalTarget
+        approvalText?.text = if (target == null && approvalFailed) context.getString(R.string.device_approval_unavailable)
+            else if (target == null) context.getString(R.string.device_approval_checking)
+            else context.getString(R.string.device_approval_click_target, target.packageName, target.label)
+        approvalAllow?.isEnabled = approvalEnabled && target != null
+        approvalDeny?.isEnabled = true
     }
 
     /** Returns true when the rendered height may have changed. */
@@ -811,6 +1003,9 @@ internal class PhoneAutomationControls(
         panelStatus = null
         panelPause = null
         panelTakeOver = null
+        approvalText = null
+        approvalAllow = null
+        approvalDeny = null
         panelParams = null
         panelWidth = 0
         panelHeight = 0
@@ -822,6 +1017,7 @@ internal class PhoneAutomationControls(
     // ---------------------------------------------------------- lifecycle
 
     private fun removeOverlay() {
+        retireApproval()
         cancelCollapse()
         expanded = false
         removePanel()
@@ -835,7 +1031,10 @@ internal class PhoneAutomationControls(
         unregisterConfigCallbacks()
     }
 
-    fun clear(expectedOwner: PhoneControlOwner? = null) {
+    fun clear(expectedOwner: PhoneControlOwner? = null, retainApprovalRegistration: Boolean = false) {
+        if (!retainApprovalRegistration) {
+            if (expectedOwner == null) approvalRegistration.clear() else approvalRegistration.cancelOwner(expectedOwner)
+        }
         val clear = clear@{
             val presentationOwner = owner ?: pendingOperation?.owner ?: operationOwner
             if (expectedOwner != null && presentationOwner != expectedOwner) return@clear

@@ -574,6 +574,11 @@
     <string name="external_edit_keep_current">Keep current file</string>
     <string name="external_edit_finish">End editing</string>
     <string name="phone_automation_title">Device automation</string>
+    <string name="device_approval_allow">Allow</string>
+    <string name="device_approval_deny">Deny</string>
+    <string name="device_approval_checking">Checking the device target…</string>
+    <string name="device_approval_unavailable">Could not verify the target. Collapse and reopen to retry, or deny and observe again.</string>
+    <string name="device_approval_click_target">Click in %1$s:\n%2$s</string>
     <string name="phone_automation_automatic">Allow authorized tasks to control apps</string>
     <string name="phone_automation_automatic_hint">Tasks can operate your selected apps. If you are using the device, execution pauses for confirmation. Stop and takeover always cancel control.</string>
     <string name="phone_automation_unlock">Unlock for tasks</string>

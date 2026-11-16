@@ -490,4 +490,21 @@
     <string name="approval_shell_transaction_on">环境事务：开启</string>
     <string name="approval_shell_transaction_off">环境事务：关闭</string>
     <string name="approval_shell_scope_note">仍受此任务已有权限和命令限制约束。</string>
+    <string name="approval_workspace_append">向文件追加内容</string>
+    <string name="approval_workspace_replace">替换文件中的文本</string>
+    <string name="approval_workspace_create_directory">创建文件夹</string>
+    <string name="approval_workspace_move">移动文件或文件夹</string>
+    <string name="approval_workspace_copy">复制文件或文件夹</string>
+    <string name="approval_workspace_delete">删除文件或文件夹</string>
+    <string name="approval_precondition_exists">目标必须存在。</string>
+    <string name="approval_precondition_exists_sha">目标必须存在且符合提供的 SHA-256 摘要。</string>
+    <string name="approval_precondition_occurrences">必须符合预期匹配次数。</string>
+    <string name="approval_precondition_occurrences_sha">必须同时符合预期匹配次数和提供的 SHA-256 摘要。</string>
+    <string name="approval_precondition_source_exists">源文件或文件夹必须存在。</string>
+    <string name="approval_expected_occurrences">预期匹配次数：%1$s</string>
+    <string name="approval_recursive_on">允许递归删除，包括文件夹内的内容。</string>
+    <string name="approval_recursive_off">删除文件夹时必须为空。</string>
+    <string name="approval_directory_parents">也可能创建不存在的上级文件夹。</string>
+    <string name="approval_copy_move_directories">文件夹可递归处理，也可能创建不存在的上级文件夹。</string>
+    <string name="approval_source_exists">源文件或文件夹必须存在。</string>
 </resources>

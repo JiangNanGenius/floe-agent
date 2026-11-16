@@ -3,6 +3,7 @@ package com.floe.android.host
 
 import com.floe.android.bridge.SwiftCore
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
@@ -102,17 +103,36 @@ class RuntimeHostCommandClient internal constructor(
      * receipt on admission; the caller learns outcomes exclusively through
      * the async effect channel (see [openEffectStream]).
      */
-    suspend fun submit(request: HostCommandRequest): HostSubmitResult {
+    suspend fun submit(
+        request: HostCommandRequest,
+        beforeSubmit: (() -> Boolean)? = null,
+    ): HostSubmitResult {
         HostCommandValidator.validate(request)?.let { return HostSubmitResult.Rejected(it) }
         val envelope = buildCommandEnvelope(request)
         val utf8 = envelope.toByteArray(Charsets.UTF_8)
         if (utf8.size > budgets.maxFrameBytes) {
             return HostSubmitResult.Rejected("frameBudgetExceeded")
         }
+        val exchangeStarted = AtomicBoolean(false)
         val raw = try {
-            withDispatcher { exchange.exchange(envelope) }
+            withDispatcher {
+                val permitted = try {
+                    beforeSubmit?.invoke() ?: true
+                } catch (c: CancellationException) {
+                    throw c
+                } catch (_: Throwable) {
+                    false
+                }
+                if (!permitted) return@withDispatcher null
+                exchangeStarted.set(true)
+                exchange.exchange(envelope)
+            } ?: return HostSubmitResult.Rejected("not_submitted")
         } catch (c: CancellationException) {
-            return HostSubmitResult.Superseded
+            return if (beforeSubmit != null && !exchangeStarted.get()) {
+                HostSubmitResult.Rejected("not_submitted")
+            } else {
+                HostSubmitResult.Superseded
+            }
         } catch (t: Throwable) {
             return HostSubmitResult.Rejected("exchangeUnavailable")
         }

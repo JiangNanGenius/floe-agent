@@ -46,6 +46,10 @@ import com.floe.android.DeviceAccessUiError
 import com.floe.android.R
 import com.floe.android.credentials.AndroidKeystoreCredentialStore
 import com.floe.android.host.RuntimeHost
+import com.floe.android.host.DeviceApprovalIdentity
+import com.floe.android.host.DeviceApprovalAction
+import com.floe.android.host.DeviceApprovalTarget
+import com.floe.android.host.DeviceApprovalOverlayCallbacks
 import com.floe.android.host.HostCommandRequest
 import com.floe.android.host.HostOperationOutcome
 import com.floe.android.host.HostScope
@@ -168,6 +172,48 @@ internal class DeviceAccessHost(
     private val scope: CoroutineScope,
     private val io: CoroutineDispatcher,
 ) {
+    fun presentDeviceApproval(identity: DeviceApprovalIdentity, callbacks: DeviceApprovalOverlayCallbacks): Boolean =
+        automationControls.presentApproval(identity, callbacks)
+
+    fun setDeviceApprovalTarget(identity: DeviceApprovalIdentity, presentationId: String,
+                                action: DeviceApprovalAction?, target: DeviceApprovalTarget?, enabled: Boolean) =
+        automationControls.setApprovalTarget(identity, presentationId, action, target, enabled)
+
+    fun dismissDeviceApproval(identity: DeviceApprovalIdentity) = automationControls.dismissApproval(identity)
+
+    /** No platform-tool claim is manufactured. A null result never authorizes an action. */
+    suspend fun readDeviceApprovalTarget(identity: DeviceApprovalIdentity, presentationId: String, action: DeviceApprovalAction,
+                                         stillCurrent: () -> Boolean): DeviceApprovalTarget? =
+        withContext(Dispatchers.Main.immediate) {
+            sensitiveGuardMutex.withLock {
+                val owner = PhoneControlOwner(identity.taskID, identity.runID)
+                val revision = phoneControlRevision.current(owner)
+                val targetRevision = targetScopeRevision.get()
+                fun live(): Boolean = !closed && targetRevision % 2L == 0L &&
+                    targetScopeRevision.get() == targetRevision && phoneControlRevision.current(owner) == revision &&
+                    host.nativeRootEpoch() == identity.nativeEpoch &&
+                    host.commandClient.generation() == identity.hostGeneration &&
+                    armedOwner == owner && armedBackend == PhoneControlBackend.ACCESSIBILITY &&
+                    phoneStatus.activeOwner == owner && phoneStatus.blocker == null &&
+                    !phoneStatus.automationFinishing && !pauseStateInvalid && !phonePause.isPaused(owner) &&
+                    !isOwnerStopped(owner) && isOwnerRunLive(owner) && phoneServiceUsable() &&
+                    automationControls.isApprovalVisible(identity, presentationId) && runCatching { stillCurrent() }.getOrDefault(false)
+                if (action.action != "click" || action.direction != null || action.inputKind != null || !live()) return@withLock null
+                val packages = settings.allowedPackages
+                if (packages.isEmpty()) return@withLock null
+                val principal = PhoneControlPrincipal(owner, identity.nativeEpoch, packages,
+                    generation = identity.nativeEpoch, grantID = null, callID = null)
+                val client = phoneClient?.takeIf { !it.isClosed } ?: return@withLock null
+                val target = client.approvalClickTarget(principal, action.observationId, action.nodeRef, ::live)
+                    ?: return@withLock null
+                if (!live()) return@withLock null
+                val b = target.bounds
+                val digest = DeviceApprovalDigest.compute(identity, action, target, revision, targetRevision)
+                if (!live()) return@withLock null
+                DeviceApprovalTarget(target.packageName, target.className, target.label,
+                    b.left, b.top, b.right, b.bottom, digest)
+            }
+        }
     private data class AccessSettings(
         val allowedPackages: Set<String> = emptySet(),
         val fileRootIds: Set<String> = emptySet(),
@@ -561,7 +607,13 @@ internal class DeviceAccessHost(
     @Volatile private var explicitResumeOwner: PhoneControlOwner? = null
     @Volatile private var pauseStateInvalid = pauseSaved != null && phonePause.snapshot == null
     private val automationControls = PhoneAutomationControls(
-        context, ::onAutomationControl, ::canPresentAutomationControls, ::automationOwnerStillLive)
+        context, ::onAutomationControl, ::canPresentAutomationControls, ::automationOwnerStillLive,
+        approvalStillCurrent = { identity ->
+            val owner = PhoneControlOwner(identity.taskID, identity.runID)
+            !closed && host.nativeRootEpoch() == identity.nativeEpoch &&
+                host.commandClient.generation() == identity.hostGeneration &&
+                !isOwnerStopped(owner) && isOwnerRunLive(owner)
+        })
     private val automatedOwner = java.util.concurrent.atomic.AtomicReference<PhoneControlOwner?>(null)
     /** Seqlock for exposing selected app metadata; never authorizes an action. */
     private val targetScopeRevision = AtomicLong(0)
@@ -2496,7 +2548,7 @@ internal class DeviceAccessHost(
                 val waiting = candidate?.phase == DeviceAccessTaskPhaseUi.WAITING_FOR_USER
                 automationControls.show(owner, titleFor(owner), settings.floatingControls, phonePause.isPaused(owner), waiting)
             } else {
-                automationControls.clear(expectedOwner = owner)
+                automationControls.clear(expectedOwner = owner, retainApprovalRegistration = automationOwnerStillLive(owner))
             }
         }
         reconcileScreenShare()

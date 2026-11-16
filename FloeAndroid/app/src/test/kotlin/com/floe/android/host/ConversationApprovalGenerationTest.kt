@@ -209,4 +209,59 @@ class ConversationApprovalGenerationTest {
         )) assertNull(decode(bad))
     }
 
+    @Test fun privateDeviceRequestNeverExposesInputAndNeedsVerifiedTarget() {
+        val builder = builder()
+        builder.applySnapshot(page(tool = "device.act", detailStatus = "unavailable", risks = """["controlsGUI"]"""))
+        val card = builder.build().pendingApprovals.single()
+        val token = "55555555-5555-4555-8555-555555555555"
+        val observation = "66666666-6666-4666-8666-666666666666"
+        val raw = """{"schema":"floe.approval-presentation/1","conversationID":"$conversation","runID":"$run","callID":"c1","generation":"$generation","presentationToken":null,"canonicalTargetDigest":null,"presentation":{"status":"available","generation":"$generation","tool":"device.act","effect":"mutating","isSideEffecting":true,"riskLabels":["controlsGUI"],"requestedScope":"local","grantScope":"singleUse","workspaceVerified":false,"descriptorIdentity":"$descriptor","detailStatus":"available","actionDetails":{"kind":"deviceAction","action":"setText","observationId":"$observation","nodeRef":"n6","direction":null,"inputKind":"sensitiveText","canonicalTargetDigest":null}}}"""
+        fun decode(s: String) = privateDeviceActionApprovalPage(Json.parseToJsonElement(s), card)
+        val request = requireNotNull(decode(raw)).first
+        assertEquals("setText", request.action)
+        assertEquals("sensitiveText", request.inputKind)
+        val digest = "c".repeat(64)
+        val issued = raw.replace("\"presentationToken\":null", "\"presentationToken\":\"$token\"")
+            .replace("\"canonicalTargetDigest\":null", "\"canonicalTargetDigest\":\"$digest\"")
+        assertEquals(token, requireNotNull(privateDeviceActionApprovalPage(Json.parseToJsonElement(issued), card, digest)).second)
+        assertNull(privateDeviceActionApprovalPage(Json.parseToJsonElement(issued), card, "d".repeat(64)))
+        assertNull(decode(issued))
+        assertFalse(request.toString().contains(observation))
+        assertFalse(card.scopeVerified) // page is a request, never the host target proof
+        for (bad in listOf(
+            raw.replace("\"inputKind\":\"sensitiveText\"", "\"inputKind\":\"secret-value\""),
+            raw.replace("\"inputKind\":\"sensitiveText\"", "\"inputKind\":\"sensitiveText\",\"text\":\"secret-value\""),
+            raw.replace("\"nodeRef\":\"n6\"", "\"nodeRef\":\"n 6\""),
+            raw.replace(observation, "invalid"),
+            raw.replace("\"direction\":null", "\"direction\":\"up\""),
+            raw.replace("\"workspaceVerified\":false", "\"workspaceVerified\":true"),
+            raw.replace("\"workspaceVerified\":false", "\"workspaceVerified\":\"false\""),
+            raw.replace("\"action\":\"setText\"", "\"action\":\"click\""),
+            raw.replace(descriptor, "b".repeat(64)),
+        )) assertNull(decode(bad))
+    }
+
+    @Test fun privateWorkspaceMoreOperationsExposeAllMaterialEffects() {
+        val common = "\"kind\":\"workspaceFile\",\"workspaceID\":\"$conversation\",\"target\":\"目标/结果\""
+        val operations = listOf(
+            "appendFile" to "\"source\":\"inline\",\"overwrite\":\"conditional\",\"precondition\":\"fileExistsAndSha256\"",
+            "replaceText" to "\"source\":\"inline\",\"overwrite\":\"conditional\",\"precondition\":\"occurrencesAndSha256\",\"expectedOccurrences\":2",
+            "createDirectory" to "\"source\":\"none\",\"overwrite\":\"forbidden\",\"precondition\":\"none\"",
+            "moveFile" to "\"source\":\"workspaceFile\",\"overwrite\":\"forbidden\",\"precondition\":\"sourceExists\",\"sourcePath\":\"源/原件\",\"sourcePrecondition\":\"exists\"",
+            "copyFile" to "\"source\":\"workspaceFile\",\"overwrite\":\"forbidden\",\"precondition\":\"sourceExists\",\"sourcePath\":\"源/原件\",\"sourcePrecondition\":\"exists\"",
+            "deleteFile" to "\"source\":\"none\",\"overwrite\":\"conditional\",\"precondition\":\"exists\",\"recursive\":true",
+        )
+        for ((operation, fields) in operations) {
+            val raw = "{$common,\"operation\":\"$operation\",$fields}"
+            val details = requireNotNull(workspaceApprovalDetails("workspace.$operation", Json.parseToJsonElement(raw).jsonObject))
+            assertEquals(operation, details.operation)
+            if (operation == "replaceText") assertEquals(2L, details.expectedOccurrences)
+            if (operation == "deleteFile") assertEquals(true, details.recursive)
+            if (operation in setOf("moveFile", "copyFile")) assertEquals("源/原件", details.sourcePath)
+            assertNull(workspaceApprovalDetails("workspace.$operation", Json.parseToJsonElement(raw.dropLast(1) + ",\"extra\":true}").jsonObject))
+        }
+        val invalidDelete = """{"kind":"workspaceFile","workspaceID":"$conversation","operation":"deleteFile","target":"x","source":"none","overwrite":"conditional","precondition":"exists","recursive":"true"}"""
+        assertNull(workspaceApprovalDetails("workspace.deleteFile", Json.parseToJsonElement(invalidDelete).jsonObject))
+    }
+
 }

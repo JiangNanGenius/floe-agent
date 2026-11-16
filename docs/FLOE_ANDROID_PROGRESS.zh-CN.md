@@ -1,5 +1,13 @@
 # Floe Android 分目标实施记录
 
+## 1.0.19 后源码检查点：扩展文件审批与设备浮窗（2026-11-16，未发版）
+
+工作区审批增加追加、替换、创建目录、移动、复制和删除的实际路径及操作条件。设备人工审批接入现有非抢焦点浮窗及单次请求身份，当前只有无障碍点击在目标可实时核验时可批准；ADB、输入和其他动作尚未接通。目标失效或无法核验时显示失败并允许拒绝，暂停、停止、页面释放和旧事件按任务及浮窗实例处理；提交前再次检查归属，原生 CAS 和设备执行期校验仍是最后边界。
+
+Android ARM64 两个原生产品实际编译、链接成功；Kotlin 生产编译及会话、目标摘要、浮窗登记和提交围栏的定向用例通过。旧回调顺序修正后补跑对应定向用例通过，之前并发修改期间的构建失败和可空类型编译失败均保留。Swift 行为测试仍受已有邮件测试编译问题阻断；尚无本批 APK 或三星验收，浮窗触摸是否触发系统接管仍未知。其他浏览器、定时和远程等人工审批仍有缺口，不能将本记录当作全功能完成。
+
+English: This unreleased checkpoint extends workspace approvals and connects an accessibility-click approval overlay to task ownership and live target checks. ARM64 products linked and focused Kotlin checks passed. The actual APK, Samsung behavior and other approval families remain unverified or incomplete.
+
 ## 1.0.19 后源码检查点：文件与本地命令审批（2026-11-16，未发版）
 
 补接工作区创建、写入和补丁的私有审批详情，以及本地 Linux 命令的完整命令、工作目录和执行目标展示。允许决定绑定实际任务、运行代次、工具请求和一次性回执；工作区重新选择、恢复任务或执行目标迁移后重新核对。异步拒绝后可重新检查，不自动重放。终端交接使用按钮展示时的会话身份，避免关闭替代会话；结束或变更时给出提示。

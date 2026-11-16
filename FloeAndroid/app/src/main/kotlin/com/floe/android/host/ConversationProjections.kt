@@ -7,6 +7,7 @@ import com.floe.android.feature.conversation.ApprovalModeUi
 import com.floe.android.feature.conversation.ApprovalTargetUi
 import com.floe.android.feature.conversation.WorkspaceFileApprovalUi
 import com.floe.android.feature.conversation.LocalShellApprovalUi
+import com.floe.android.feature.conversation.DeviceActionApprovalRequestUi
 import com.floe.android.feature.conversation.AttachmentChipUi
 import com.floe.android.feature.conversation.AttachmentKindUi
 import com.floe.android.feature.conversation.BackgroundJobUi
@@ -121,8 +122,16 @@ internal fun workspaceApprovalDetails(tool: String, value: JsonObject?): Workspa
     val baseKeys = setOf("kind", "workspaceID", "operation", "target", "source", "overwrite", "precondition")
     val sourcePath = if (source == "workspaceFile") path(string("sourcePath")) ?: return null else null
     val sourcePrecondition = if (source == "workspaceFile") string("sourcePrecondition") else null
-    val expectedKeys = if (source == "workspaceFile") baseKeys + setOf("sourcePath", "sourcePrecondition") else baseKeys
+    val expectedKeys = baseKeys + (if (source == "workspaceFile") setOf("sourcePath", "sourcePrecondition") else emptySet()) +
+        (if (operation == "replaceText") setOf("expectedOccurrences") else emptySet()) +
+        (if (operation == "deleteFile") setOf("recursive") else emptySet())
     if (details.keys != expectedKeys) return null
+    val occurrences = if (operation == "replaceText") {
+        (details["expectedOccurrences"] as? JsonPrimitive)?.takeUnless { it.isString }?.longOrNull?.takeIf { it > 0 } ?: return null
+    } else null
+    val recursive = if (operation == "deleteFile") {
+        (details["recursive"] as? JsonPrimitive)?.takeUnless { it.isString }?.booleanOrNull ?: return null
+    } else null
     val valid = when (operation) {
         "createFile" -> source == "inline" && overwrite in setOf("allowed", "forbidden") && precondition == "none"
         "applyPatch" -> source == "patch" && overwrite == "conditional" && precondition == "patchContext"
@@ -135,15 +144,23 @@ internal fun workspaceApprovalDetails(tool: String, value: JsonObject?): Workspa
             source in setOf("inline", "workspaceFile") && overwrite == expectedOverwrite &&
                 (source != "workspaceFile" || sourcePrecondition == "sha256")
         }
+        "appendFile" -> source == "inline" && overwrite == "conditional" && precondition in setOf("fileExists", "fileExistsAndSha256")
+        "replaceText" -> source == "inline" && overwrite == "conditional" && precondition in setOf("occurrences", "occurrencesAndSha256")
+        "createDirectory" -> source == "none" && overwrite == "forbidden" && precondition == "none"
+        "moveFile", "copyFile" -> source == "workspaceFile" && sourcePath != target && sourcePrecondition == "exists" &&
+            overwrite == "forbidden" && precondition == "sourceExists"
+        "deleteFile" -> source == "none" && overwrite == "conditional" && precondition == "exists"
         else -> false
     }
     if (!valid) return null
     return WorkspaceFileApprovalUi(workspaceId, operation, target, source, overwrite, precondition,
-        sourcePath, sourcePrecondition)
+        sourcePath, sourcePrecondition, occurrences, recursive)
 }
 
 /** Decode only the ephemeral human-facing page; never project it into a run snapshot. */
-private fun privateApprovalPage(value: JsonElement?, card: ApprovalCardUi): Pair<JsonObject, String>? {
+private fun privateApprovalPage(value: JsonElement?, card: ApprovalCardUi,
+    requiredRisk: String = "writesFiles", workspaceVerified: Boolean = true,
+    requireToken: Boolean = true): Pair<JsonObject, String?>? {
     val page = value as? JsonObject ?: return null
     fun str(o: JsonObject, key: String) = (o[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
     fun sameUUID(a: String?, b: String): Boolean = runCatching {
@@ -151,31 +168,66 @@ private fun privateApprovalPage(value: JsonElement?, card: ApprovalCardUi): Pair
     }.getOrDefault(false)
     val generation = card.requestGeneration ?: return null
     val descriptor = card.descriptorIdentity ?: return null
-    val token = str(page, "presentationToken") ?: return null
-    if (runCatching { java.util.UUID.fromString(token).toString() }.getOrNull() != token ||
+    val token = str(page, "presentationToken")
+    if ((requireToken && token == null) || (token != null &&
+            runCatching { java.util.UUID.fromString(token).toString() }.getOrNull() != token) ||
         str(page, "schema") != "floe.approval-presentation/1" ||
         !sameUUID(str(page, "conversationID"), card.conversationId) ||
         !sameUUID(str(page, "runID"), card.runId) || str(page, "callID") != card.approvalId ||
         str(page, "generation") != generation || card.approvalRevision != "generation:$generation" ||
         !card.identityVerified || card.scopeVerified) return null
     val presentation = page["presentation"] as? JsonObject ?: return null
+    fun bool(key: String): Boolean? = (presentation[key] as? JsonPrimitive)?.takeUnless { it.isString }?.booleanOrNull
     val risks = (presentation["riskLabels"] as? JsonArray)?.map {
         (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content ?: return null
     } ?: return null
     if (str(presentation, "status") != "available" || str(presentation, "detailStatus") != "available" ||
         str(presentation, "generation") != generation || str(presentation, "tool") != card.toolName ||
         str(presentation, "descriptorIdentity") != descriptor || str(presentation, "effect") != "mutating" ||
-        (presentation["isSideEffecting"] as? JsonPrimitive)?.booleanOrNull != true || !card.isSideEffecting ||
+        bool("isSideEffecting") != true || !card.isSideEffecting ||
         risks.toSet() != card.riskLabels || risks.size != risks.toSet().size ||
-        "writesFiles" !in card.riskLabels || str(presentation, "requestedScope") != "local" ||
+        requiredRisk !in card.riskLabels || str(presentation, "requestedScope") != "local" ||
         card.requestedScope != "local" || str(presentation, "grantScope") != "singleUse" ||
-        (presentation["workspaceVerified"] as? JsonPrimitive)?.booleanOrNull != true) return null
+        bool("workspaceVerified") != workspaceVerified) return null
     return (presentation["actionDetails"] as? JsonObject ?: return null) to token
 }
 
 internal fun privateWorkspaceApprovalPage(value: JsonElement?, card: ApprovalCardUi): Pair<WorkspaceFileApprovalUi, String>? {
     val (details, token) = privateApprovalPage(value, card) ?: return null
-    return (workspaceApprovalDetails(card.toolName, details) ?: return null) to token
+    return (workspaceApprovalDetails(card.toolName, details) ?: return null) to (token ?: return null)
+}
+
+/** Decode an action request only. This is not a target proof or an Allow. */
+internal fun privateDeviceActionApprovalPage(value: JsonElement?, card: ApprovalCardUi,
+    expectedDigest: String? = null): Pair<DeviceActionApprovalRequestUi, String?>? {
+    if (card.toolName != "device.act") return null
+    val (details, token) = privateApprovalPage(value, card, requiredRisk = "controlsGUI", workspaceVerified = false, requireToken = false) ?: return null
+    if (details.keys != setOf("kind", "action", "observationId", "nodeRef", "direction", "inputKind", "canonicalTargetDigest")) return null
+    fun str(key: String): String? = (details[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
+    val root = value as? JsonObject ?: return null
+    val rootDigest = (root["canonicalTargetDigest"] as? JsonPrimitive)?.takeIf { it.isString }?.content
+    val actionDigest = str("canonicalTargetDigest")
+    if (expectedDigest == null) {
+        if (token != null || root["presentationToken"] !is kotlinx.serialization.json.JsonNull ||
+            root["canonicalTargetDigest"] !is kotlinx.serialization.json.JsonNull ||
+            details["canonicalTargetDigest"] !is kotlinx.serialization.json.JsonNull) return null
+    } else if (!expectedDigest.matches(Regex("[0-9a-f]{64}")) || rootDigest != expectedDigest ||
+        actionDigest != expectedDigest || token == null) return null
+    if (str("kind") != "deviceAction") return null
+    val action = str("action")?.takeIf { it in setOf("click", "setText", "scroll", "swipe", "focus", "commit") } ?: return null
+    val observation = str("observationId") ?: return null
+    val suffix = observation.removePrefix("adbui-")
+    if (runCatching { java.util.UUID.fromString(suffix).toString() }.getOrNull() != suffix) return null
+    val ref = str("nodeRef")?.takeIf { it.matches(Regex("[A-Za-z0-9]{1,16}")) } ?: return null
+    val direction = if (details["direction"] is kotlinx.serialization.json.JsonNull) null else str("direction") ?: return null
+    val input = if (details["inputKind"] is kotlinx.serialization.json.JsonNull) null else str("inputKind") ?: return null
+    when (action) {
+        "scroll" -> if (direction !in setOf("forward", "backward") || input != null) return null
+        "swipe" -> if (direction !in setOf("up", "down", "left", "right") || input != null) return null
+        "setText" -> if (input !in setOf("text", "sensitiveText") || direction != null) return null
+        else -> if (direction != null || input != null) return null
+    }
+    return DeviceActionApprovalRequestUi(action, observation, ref, direction, input) to token
 }
 
 internal fun privateLocalShellApprovalPage(value: JsonElement?, card: ApprovalCardUi): Pair<LocalShellApprovalUi, String>? {
@@ -203,7 +255,7 @@ internal fun privateLocalShellApprovalPage(value: JsonElement?, card: ApprovalCa
     val timeout = primitive("timeoutSeconds")?.doubleOrNull?.takeIf { it.isFinite() && it >= 0.05 && it <= 120.0 } ?: return null
     val maxOutput = primitive("maxOutputBytes")?.longOrNull?.takeIf { it in 1L..262144L }?.toInt() ?: return null
     val transaction = primitive("environmentTransaction")?.booleanOrNull ?: return null
-    return LocalShellApprovalUi(environment, workspace, revision, command, cwd, timeout, maxOutput, transaction) to token
+    return LocalShellApprovalUi(environment, workspace, revision, command, cwd, timeout, maxOutput, transaction) to (token ?: return null)
 }
 
 class ThreadProjectionBuilder internal constructor(

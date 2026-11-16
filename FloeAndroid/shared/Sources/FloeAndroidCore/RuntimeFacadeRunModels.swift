@@ -1058,23 +1058,25 @@ public struct RunApprovalResolveQuery: Sendable, Equatable {
     public var expectedApprovalVersion: String
     public var expectedDescriptorIdentity: String
     public var presentationToken: String?
+    public var canonicalTargetDigest: String?
     public var branch: Branch
     public var denyReason: String?
 
 
-    public init(conversationID: UUID, runID: UUID, callID: String, expectedApprovalVersion: String, expectedDescriptorIdentity: String, presentationToken: String? = nil, branch: Branch, denyReason: String?) {
+    public init(conversationID: UUID, runID: UUID, callID: String, expectedApprovalVersion: String, expectedDescriptorIdentity: String, presentationToken: String? = nil, canonicalTargetDigest: String? = nil, branch: Branch, denyReason: String?) {
         self.conversationID = conversationID
         self.runID = runID
         self.callID = callID
         self.expectedApprovalVersion = expectedApprovalVersion
         self.expectedDescriptorIdentity = expectedDescriptorIdentity
         self.presentationToken = presentationToken
+        self.canonicalTargetDigest = canonicalTargetDigest
         self.branch = branch
         self.denyReason = denyReason
     }
 
     public static let allowedKeys: Set<String> = [
-        "callID", "decision", "reason", "expectedApprovalVersion", "approvalSchema", "expectedDescriptorIdentity", "presentationToken",
+        "callID", "decision", "reason", "expectedApprovalVersion", "approvalSchema", "expectedDescriptorIdentity", "presentationToken", "canonicalTargetDigest",
     ]
 
     public static func parse(payload: SettingsDomainV1.JSONValue?, owner: OwnerIdentity) throws
@@ -1094,6 +1096,7 @@ public struct RunApprovalResolveQuery: Sendable, Equatable {
             expectedApprovalVersion: try object.string("expectedApprovalVersion", maxBytes: 64),
             expectedDescriptorIdentity: try object.string("expectedDescriptorIdentity", maxBytes: 64, nonBlank: true),
             presentationToken: try object.optionalString("presentationToken", maxBytes: 36),
+            canonicalTargetDigest: try object.optionalString("canonicalTargetDigest", maxBytes: 64),
             branch: branch,
             denyReason: try object.optionalString("reason", maxBytes: 512))
     }

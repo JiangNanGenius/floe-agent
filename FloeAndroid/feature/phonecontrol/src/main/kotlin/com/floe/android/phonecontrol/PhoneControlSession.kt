@@ -125,6 +125,72 @@ internal class PhoneControlSession(
 
     private enum class NodeRequirement { CLICK, SET_TEXT, SCROLL, SWIPE, FOCUS, COMMIT }
 
+    /** Re-proves a retained target on the current foreground without dispatching. */
+    fun approvalClickTarget(
+        principal: PhoneControlPrincipal,
+        grant: PhoneControlGrant,
+        observationId: String,
+        nodeRef: String,
+    ): PhoneControlApprovalTarget? {
+        if (closed || inFlightId != null || keyguardLocked() || powerManager?.isInteractive == false ||
+            principal.epoch != principalEpoch || principal.generation != principalGeneration ||
+            PhoneControlPolicy.grantDenial(principal, grant) != null ||
+            PhoneControlSensitiveGuard.snapshot(service)?.isEmpty() != true) return null
+        val record = latest ?: return null
+        val action = PhoneControlAction.Click(nodeRef)
+        if (record.protectedWindow || record.hasSensitiveField || record.observation.sensitiveWindow ||
+            record.observation.navigationOnly || validateBeforeDispatch(record, principal, observationId, action, grant) != null) return null
+        val retained = record.records[nodeRef] ?: return null
+        val projected = record.observation.nodes.singleOrNull { it.ref == nodeRef } ?: return null
+        if (retained.semanticIdentity == null || projected.editable || projected.password ||
+            projected.redacted || projected.truncated || projected.bounds.isEmpty ||
+            retained.semanticOwnIncomplete || retained.semanticChildrenIncomplete ||
+            retained.semanticChildrenTextIncomplete) return null
+        val label = projected.contentDescription?.takeIf { it.isNotBlank() }
+            ?: projected.text?.takeIf { it.isNotBlank() } ?: return null
+        val pkg = record.observation.packageName ?: return null
+        val effective = PhoneControlPolicy.effectivePackages(principal, grant)
+        if (PhoneControlPolicy.observationDenial(pkg, effective, homePackage(), grant.allowGlobalNavigation, false) != null) return null
+        val root = service.rootInActiveWindow ?: return null
+        try {
+            if (foregroundDenial(root, record) != null) return null
+            val node = resolveNode(root, retained.path) ?: return null
+            try {
+                if (validateResolved(node, retained, record, effective, NodeRequirement.CLICK) != null) return null
+                if (latest !== record || PhoneControlSensitiveGuard.snapshot(service)?.isEmpty() != true ||
+                    validateBeforeDispatch(record, principal, observationId, action, grant) != null) return null
+                // Reacquire the foreground: the original root object can
+                // survive a switch while an accessibility event is queued.
+                val currentRoot = service.rootInActiveWindow ?: return null
+                try {
+                    if (foregroundDenial(currentRoot, record) != null) return null
+                    val currentNode = resolveNode(currentRoot, retained.path) ?: return null
+                    try {
+                        if (validateResolved(currentNode, retained, record, effective, NodeRequirement.CLICK) != null) return null
+                    } finally {
+                        if (currentNode !== currentRoot) {
+                            @Suppress("DEPRECATION")
+                            runCatching { currentNode.recycle() }
+                        }
+                    }
+                } finally {
+                    if (currentRoot !== root) {
+                        @Suppress("DEPRECATION")
+                        runCatching { currentRoot.recycle() }
+                    }
+                }
+                return PhoneControlApprovalTarget(pkg, projected.className, projected.bounds, label,
+                    record.observation.windowId, record.observation.displayId,
+                    record.observation.fenceGeneration, record.observation.pageGeneration)
+            } finally {
+                if (node !== root) { @Suppress("DEPRECATION") runCatching { node.recycle() } }
+            }
+        } finally {
+            @Suppress("DEPRECATION")
+            runCatching { root.recycle() }
+        }
+    }
+
     // ---------------------------------------------------------------------
     // Observation
     // ---------------------------------------------------------------------
