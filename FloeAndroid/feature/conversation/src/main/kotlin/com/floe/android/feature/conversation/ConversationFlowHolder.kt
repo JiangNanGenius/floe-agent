@@ -906,8 +906,12 @@ class ConversationFlowHolder(
         snapshot.value = next
         // Background services must see this canonical transition directly;
         // history refresh and Compose apply notifications can wait for UI.
+        fun ThreadUiState.waitsForDeviceApproval() = pendingApprovals.any {
+            it.toolName == "device.act" && it.runId == selectedRunId
+        }
         if (previous?.isRunning != next.isRunning || previous?.selectedRunId != next.selectedRunId ||
-            previous?.pendingApprovals?.isNotEmpty() != next.pendingApprovals.isNotEmpty()) {
+            previous?.pendingApprovals?.isNotEmpty() != next.pendingApprovals.isNotEmpty() ||
+            previous?.waitsForDeviceApproval() != next.waitsForDeviceApproval()) {
             onRunActivityChanged()
         }
 

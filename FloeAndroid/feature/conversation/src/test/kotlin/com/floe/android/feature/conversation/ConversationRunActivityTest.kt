@@ -77,4 +77,19 @@ class ConversationRunActivityTest {
         assertEquals(listOf(false, true, false), seen)
     }
 
+    @Test
+    fun switchingBetweenDeviceAndOtherApprovalsRefreshesBackgroundControls() {
+        var calls = 0
+        val holder = ConversationFlowHolder(RecordingHost(), "background", onRunActivityChanged = { calls++ })
+        val shell = approvalCard(conversationId = "background").copy(toolName = "exec.shell")
+        val device = shell.copy(toolName = "device.act")
+        holder.applyHostSnapshot(threadState(holder.session, isRunning = true, selectedRunId = shell.runId,
+            pendingApprovals = listOf(shell)))
+        holder.applyHostSnapshot(threadState(holder.session, isRunning = true, selectedRunId = shell.runId,
+            pendingApprovals = listOf(device)))
+        holder.applyHostSnapshot(threadState(holder.session, isRunning = true, selectedRunId = shell.runId,
+            pendingApprovals = listOf(shell)))
+        assertEquals(3, calls)
+    }
+
 }
