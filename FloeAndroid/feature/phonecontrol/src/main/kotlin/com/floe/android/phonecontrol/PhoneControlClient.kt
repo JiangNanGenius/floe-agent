@@ -130,7 +130,10 @@ class PhoneControlClient internal constructor(
             is PhoneControlResult.Failed -> return answer
         }
         return dispatch { session, token, finish ->
-            session.perform(principal, grant, observationId, action, token, finish)
+            session.perform(principal, grant, observationId, action, token,
+                refreshAuthority = { (authorization(principal) as? PhoneControlResult.Ok)?.value },
+                complete = finish,
+            )
         }
     }
 

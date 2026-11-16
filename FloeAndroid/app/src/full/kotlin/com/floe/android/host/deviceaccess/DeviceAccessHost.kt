@@ -5016,7 +5016,23 @@ internal class DeviceAccessHost(
                         actionOutcome(value, sensitiveInput)
                     }
                 }
-                is PhoneControlResult.Denied -> deniedOutcome(result.reason)
+                is PhoneControlResult.Denied -> {
+                    val recovery = result.observation
+                    if (recovery != null && !sensitiveInput &&
+                        source == PhoneControlStructuredSource.ACCESSIBILITY &&
+                        result.reason == PhoneControlDenial.OBSERVATION_EXPIRED
+                    ) {
+                        if (isOwnerStopped(owner) || phonePause.isPaused(owner) || armedOwner != owner) {
+                            PlatformToolOutcome.Failure("device_stopped_by_user")
+                        } else {
+                            phonePrecondition(call, requireApproval = true) ?: PlatformToolOutcome.Failure(
+                                denialCode(result.reason),
+                                "Action was not dispatched. Use the fresh observation; do not repeat blindly.",
+                                recoveryObservation = observationDigest(recovery),
+                            )
+                        }
+                    } else deniedOutcome(result.reason)
+                }
                 is PhoneControlResult.Unavailable -> unavailableOutcome(result.reason)
                 is PhoneControlResult.Failed -> {
                     if (result.reason == PhoneControlFailure.TIMEOUT ||

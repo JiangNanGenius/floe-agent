@@ -563,6 +563,7 @@ internal class PhoneControlSession(
         observationId: String,
         action: PhoneControlAction,
         operationToken: String,
+        refreshAuthority: () -> PhoneControlGrant?,
         complete: (PhoneControlResult<PhoneControlActionResult>) -> Unit,
     ) {
         if (closed) {
@@ -608,7 +609,16 @@ internal class PhoneControlSession(
                     " page_matches=${record?.observation?.pageGeneration == state.pageGeneration}" +
                     " remaining_ms=${record?.observation?.expiresAtElapsedRealtimeMillis?.minus(SystemClock.elapsedRealtime())}",
             )
-            complete(early)
+            if (record != null && PhoneControlRecoveryPolicy.eligible(
+                    early.reason, action, record.observation, record.hasSensitiveField, record.protectedWindow,
+                )
+            ) {
+                refreshExpiredBeforeDispatch(
+                    principal, grant, record, observationId, operationToken, refreshAuthority, early, complete,
+                )
+            } else {
+                complete(early)
+            }
             return
         }
         val activeRecord = record ?: run {
@@ -630,6 +640,54 @@ internal class PhoneControlSession(
             execute(effective, activeRecord, action, opId)
         } catch (error: Exception) {
             finishAction(PhoneControlResult.Failed(PhoneControlFailure.INTERNAL_ERROR))
+        }
+    }
+
+    /** One read-only recovery; the failed action is never retried. */
+    private fun refreshExpiredBeforeDispatch(
+        principal: PhoneControlPrincipal,
+        grant: PhoneControlGrant,
+        old: ObservationRecord,
+        observationId: String,
+        operationToken: String,
+        refreshAuthority: () -> PhoneControlGrant?,
+        refusal: PhoneControlResult.Denied,
+        complete: (PhoneControlResult<PhoneControlActionResult>) -> Unit,
+    ) {
+        val oldObservation = old.observation
+        val ticket = PhoneControlFence.Ticket(
+            owner = oldObservation.owner,
+            fenceGeneration = oldObservation.fenceGeneration,
+            pageGeneration = oldObservation.pageGeneration,
+        )
+        fun sameForeground(): Boolean = runCatching {
+            val root = service.rootInActiveWindow ?: return@runCatching false
+            try {
+                foregroundDenial(root, old) == null
+            } finally {
+                @Suppress("DEPRECATION")
+                runCatching { root.recycle() }
+            }
+        }.getOrDefault(false)
+        fun stillAuthorized(): Boolean = runCatching {
+            !closed && refreshAuthority() == grant && fence.validate(ticket) == PhoneControlFence.Verdict.Open
+        }.getOrDefault(false)
+        if (oldObservation.observationId != observationId || oldObservation.owner != principal.owner ||
+            !stillAuthorized() || !sameForeground()
+        ) {
+            complete(refusal.copy(detail = "No same-page recovery was available; call device.observe."))
+            return
+        }
+        observe(principal, grant, old.request, operationToken) { captured ->
+            val next = (captured as? PhoneControlResult.Ok)?.value
+            val matching = next != null && PhoneControlRecoveryPolicy.samePage(oldObservation, next) &&
+                stillAuthorized() && sameForeground()
+            if (matching) {
+                complete(refusal.copy(detail = "Action was not dispatched; use the fresh observation.", observation = next))
+            } else {
+                if (next != null && latest?.observation?.observationId == next.observationId) latest = null
+                complete(refusal.copy(detail = "Same-page recovery failed; call device.observe."))
+            }
         }
     }
 
