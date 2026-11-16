@@ -1681,6 +1681,21 @@ public actor FloeAgentRuntime {
     @discardableResult
     public func resolveApproval(_ decision: ApprovalDecision, for callID: String) async -> Bool {
         guard case .waitingApproval = state else { return false }
+        return consumePendingApproval(decision, callID: callID)
+    }
+
+    /// The bound entry point validates the precise live request and consumes
+    /// its gate in the same actor turn, with no suspension between them. A
+    /// reused provider call ID can never make an old decision authorize a new
+    /// generation or a different set of arguments/scope.
+    @discardableResult
+    public func resolveApproval(_ decision: ApprovalDecision,
+                                matching expected: AgentState.WaitingApproval) async -> Bool {
+        guard case .waitingApproval(let current) = state, current == expected else { return false }
+        return consumePendingApproval(decision, callID: expected.toolCall.id)
+    }
+
+    private func consumePendingApproval(_ decision: ApprovalDecision, callID: String) -> Bool {
         switch approvalGate {
         case .waiting(let current):
             guard current == callID, let continuation = approvalContinuation else { return false }
@@ -1743,7 +1758,7 @@ public actor FloeAgentRuntime {
               current.toolCall.id == callID else { return }
         switch decision {
         case .allow, .deny, .stopped:
-            await resolveApproval(decision, for: callID)
+            await resolveApproval(decision, matching: waiting)
         case .escalateToHuman:
             break
         }

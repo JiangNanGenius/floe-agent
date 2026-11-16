@@ -471,6 +471,77 @@ final class RuntimeFacadeRunControlTests: XCTestCase {
 
     // MARK: - approval.resolve / policy.update / skillcancel
 
+    func testBoundApprovalConsumesOnlyExactLiveGenerationAndCall() async throws {
+        let conversationID = try await fixture.makeOrdinaryConversation()
+        let domain = fixture.makeDomain()
+        let call = try ToolCall(
+            id: "call-bound-generation", toolName: FixtureSideEffectTool.name,
+            argumentsJSON: Data(#"{"target":"notes.txt"}"#.utf8),
+            scope: .hostPath(hostID: UUID(), path: "notes.txt"))
+        fixture.adapter.enqueue(script: .init(events: [
+            .toolRequest(call), .completed(.init(stopReason: .endTurn)),
+        ]), forRequest: fixture.adapter.requestCount)
+        let revision = try await fixture.revision(conversationID: conversationID)
+        let receipt = try XCTUnwrap(fixture.effects.register(correlationID: "corr-bound-generation"))
+        _ = await domain.start(envelope: fixture.launchEnvelope(
+            conversationID: conversationID, payload: fixture.startPayload(goal: "modify a file"),
+            revisionVersion: revision, correlation: "corr-bound-generation"),
+            receipt: receipt, correlation: "corr-bound-generation")
+        let runID = try XCTUnwrap(pollEffects(fixture.effects, receipt: receipt)
+            .first { $0.kind == .prepared }?.detail?["runID"].flatMap(UUID.init(uuidString:)))
+        let pending = await pollFor(timeoutSeconds: 8) {
+            await domain.liveService(runID)?.snapshot().pendingApproval != nil
+        }
+        XCTAssertTrue(pending)
+        let service = try unwrapAsync(await domain.liveService(runID))
+        let waiting = try unwrapAsync(await service.snapshot().pendingApproval)
+        let deny = ApprovalDecision.deny(reason: "test decision")
+
+        let newGeneration = AgentState.WaitingApproval(
+            toolCall: waiting.toolCall, reason: waiting.reason,
+            requestedAt: waiting.requestedAt, generation: UUID())
+        var changedArguments = waiting
+        changedArguments.toolCall.argumentsJSON = Data(#"{"target":"another.txt"}"#.utf8)
+        var changedScope = waiting
+        changedScope.toolCall.scope = .hostPath(hostID: UUID(), path: "another.txt")
+        var changedTool = waiting
+        changedTool.toolCall.toolName = "fixture.different"
+        var changedReason = waiting
+        changedReason.reason = "different reason"
+        let changedTime = AgentState.WaitingApproval(
+            toolCall: waiting.toolCall, reason: waiting.reason,
+            requestedAt: waiting.requestedAt.addingTimeInterval(1), generation: waiting.generation)
+        for mismatch in [newGeneration, changedArguments, changedScope, changedTool, changedReason, changedTime] {
+            let accepted = await service.resolveApproval(deny, matching: mismatch)
+            XCTAssertFalse(accepted, "a stale or modified exact request cannot consume the gate")
+        }
+        let stillWaiting = await service.snapshot().pendingApproval
+        XCTAssertEqual(stillWaiting, waiting)
+        let accepted = await service.resolveApproval(deny, matching: waiting)
+        XCTAssertTrue(accepted)
+        let repeated = await service.resolveApproval(deny, matching: waiting)
+        XCTAssertFalse(repeated, "the bound decision can only consume once")
+    }
+
+    func testLegacyApprovalDecodingMintsAStableFreshGeneration() throws {
+        let call = try ToolCall(id: "legacy-call", toolName: FixtureSideEffectTool.name,
+            argumentsJSON: Data(#"{"target":"notes.txt"}"#.utf8), scope: .local)
+        let original = AgentState.WaitingApproval(toolCall: call, reason: "needs approval")
+        let encoder = JSONEncoder()
+        let decoder = JSONDecoder()
+        let encoded = try encoder.encode(original)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        object.removeValue(forKey: "generation")
+        let legacy = try JSONSerialization.data(withJSONObject: object)
+        let recovered = try decoder.decode(AgentState.WaitingApproval.self, from: legacy)
+        let anotherRecovery = try decoder.decode(AgentState.WaitingApproval.self, from: legacy)
+        XCTAssertEqual(recovered.toolCall, original.toolCall)
+        XCTAssertEqual(recovered.requestedAt, original.requestedAt)
+        XCTAssertNotEqual(recovered.generation, anotherRecovery.generation)
+        let roundTrip = try decoder.decode(AgentState.WaitingApproval.self, from: encoder.encode(recovered))
+        XCTAssertEqual(roundTrip, recovered)
+    }
+
     func testApprovalCardAppearsFromRealEngineAndResolveIsCallBound() async throws {
         let conversationID = try await fixture.makeOrdinaryConversation()
         let domain = fixture.makeDomain()

@@ -660,6 +660,14 @@ public actor ConversationRunService {
         await runtime.resolveApproval(decision, for: callID)
     }
 
+    /// Consumes only the exact request captured by the caller. The runtime
+    /// actor performs matching and gate consumption without an intervening await.
+    @discardableResult
+    public func resolveApproval(_ decision: ApprovalDecision,
+                                matching expected: AgentState.WaitingApproval) async -> Bool {
+        await runtime.resolveApproval(decision, matching: expected)
+    }
+
     /// Applies a composer permission change to this live run. If the run is
     /// already parked on an approval card, the runtime immediately
     /// re-evaluates that exact call under the new policy.
