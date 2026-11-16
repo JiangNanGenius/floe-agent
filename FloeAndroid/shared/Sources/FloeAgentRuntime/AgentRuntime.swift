@@ -2306,6 +2306,16 @@ public actor FloeAgentRuntime {
         // On-device runs keep their curated discovery behavior; the frozen
         // identity above already carries the curated ceiling.
         let isLocalProvider = configuration.provider.kind == .local
+        // Presentation base for THIS run. Plan keeps its read-only
+        // investigation set plus the two policy-approved main-run internal
+        // tools; an ordinary cloud Agent run gets the base memory/workspace/
+        // conversation/jobs/user.ask set so it does not need a discovery
+        // round-trip for ordinary work. The catalog above is already the real
+        // availability/ceiling projection, so this never invents a tool.
+        let coreNames = ToolDiscovery.baseNames(
+            mode: configuration.conversationMode,
+            isLocalProvider: isLocalProvider
+        )
         discoverableDescriptors = catalogDescriptors
         let userTask = messages.last(where: { $0.role == "user" })?.content ?? ""
         // Eviction notices only make sense for schemas the model actually saw
@@ -2335,7 +2345,7 @@ public actor FloeAgentRuntime {
         // Restore recently used groups without replaying a discovery call.
         let recentGroups = Set(executionLedger.entries.suffix(6).map { ToolDiscovery.group($0.toolName) })
         catalogDescriptors = catalogDescriptors.filter {
-            ToolDiscovery.coreNames.contains($0.name) || discoveredToolNames.contains($0.name) || recentGroups.contains(ToolDiscovery.group($0.name))
+            coreNames.contains($0.name) || discoveredToolNames.contains($0.name) || recentGroups.contains(ToolDiscovery.group($0.name))
         }
         let statefulGroups: Set<String> = ["vnc", "executor", "terminal"]
         var pinned = Set(catalogDescriptors.filter { statefulGroups.contains(ToolDiscovery.group($0.name)) && recentGroups.contains(ToolDiscovery.group($0.name)) }.map(\.name))
@@ -2356,7 +2366,7 @@ public actor FloeAgentRuntime {
             catalogDescriptors,
             priority: discoveryPriority,
             pinned: pinned,
-            coreNames: ToolDiscovery.coreNames
+            coreNames: coreNames
         )
         catalogDescriptors.append(ToolDiscovery.descriptor)
         catalogDescriptors.append(ToolDiscovery.listDescriptor)
@@ -2729,7 +2739,7 @@ public actor FloeAgentRuntime {
             // then the previous request's surviving order, then newly
             // admitted definitions appended. Admission itself never changes
             // permissions; this only orders complete definitions.
-            let baseNames = ToolDiscovery.coreNames
+            let baseNames = coreNames
                 .union([ToolDiscovery.name, ToolDiscovery.listName])
             var ordered = schemas.sorted { left, right in
                 let leftBase = baseNames.contains(left.name)
