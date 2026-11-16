@@ -110,7 +110,7 @@ public struct LocalShellTool: AgentTool {
       "cwd":{"type":"string","description":"Workspace-relative working directory (default: session cwd or workspace root)"},
       "env":{"type":"object","additionalProperties":{"type":"string"},"description":"Extra environment variables for this run only"},
       "stdin":{"type":"string","description":"Optional stdin content (max 256 KiB)"},
-      "timeout":{"type":"number","description":"Wall-clock timeout seconds (foreground default 10, max 120; jobs.submit background default/max 600). An explicit smaller timeout is honored."},
+      "timeout":{"type":"number","description":"Process execution timeout in seconds, starting when the process is accepted. Environment preparation and result settlement have separate limits (foreground default 10, max 120; jobs.submit background default/max 600). An explicit smaller timeout is honored."},
       "maxOutputBytes":{"type":"integer","description":"Combined output cap (default 65536, max 262144)"},
       "environmentTransaction":{"type":"boolean","description":"Opt-in local guest filesystem transaction for package changes. Requires idle sessions and recovery space. Failure/cancellation restores guest files after real process settlement; workspace/external/SSH effects are excluded. Not available for managed services."}},
      "additionalProperties":false}
