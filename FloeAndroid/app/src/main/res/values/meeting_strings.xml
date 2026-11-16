@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Meeting recording foreground notification and durable defaults. -->
+    <string name="meeting_default_title">New meeting</string>
+    <string name="meeting_recording_name">Recording %1$d</string>
+    <string name="meeting_import_default_name">Imported media</string>
+    <string name="meeting_channel_name">Meeting recording</string>
+    <string name="meeting_channel_description">Ongoing microphone recording for a meeting. The notification shows the single active take.</string>
+    <string name="meeting_notification_title">Meeting recording</string>
+    <string name="meeting_notification_starting">Starting microphone\u2026</string>
+    <string name="meeting_notification_recording">Recording \u00b7 %1$s</string>
+    <string name="meeting_notification_paused">Paused \u00b7 %1$s</string>
+    <string name="meeting_notification_finishing">Saving recording\u2026</string>
+    <string name="meeting_notification_stop">Stop</string>
+</resources>
