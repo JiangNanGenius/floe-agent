@@ -1,5 +1,13 @@
 # Floe Android 分目标实施记录
 
+## 三星设备浮窗复测（2026-11-16，私有候选）
+
+在源码 `36b98b4f11056787420761f4afee4eea95565343` 的私有诊断包上，使用 Ark Plan `ark-code-latest` 执行计算器任务，期间使用截图观察而未调用会压制无障碍服务的界面树读取。ADB 注入触摸展开悬浮球、允许一次点击后，计算器实际显示 1；任务完成后球不再显示。测试没有验证真实手指，也没有单独验证手动停止动作的瞬间。回到聊天时发现已完成任务仍显示旧的屏幕接管提问，正在修复。旧的浮球故障可能受测试工具干扰，不能归因为应用本身。
+
+三星已恢复公开 1.0.20 主包和其内嵌运行组件，设备端字节摘要均匹配公开包；无障碍、悬浮开关、目标应用及屏幕设置已恢复，测试用临时组件已删除。此项不代表公开包完成了同一设备流程验收。
+
+English: A private Samsung candidate completed a calculator click through the floating approval using ADB-injected touches; the bubble was absent after completion. Physical touch and explicit Stop remain unverified. A stale screen-control question remained after completion and is being fixed. The public 1.0.20 app and runtime were restored and hash-checked on device.
+
 ## 1.0.20 后源码检查点：定时审批与设备服务状态（2026-11-16，未发版）
 
 接入明确时间的定时任务创建审批，展示任务、触发、时区和执行绑定；人工授权与运行、调用和授权代次绑定，执行前重新核对。其他定时操作和无法完整确认的参数仍不能通过该审批，既有自动授权路径保持。Android ARM64 原生核心及运行库已实际编译链接，相关 Kotlin 编译与定向检查通过；Swift 行为测试仍受既有邮件测试图编译问题阻断，尚未用三星验证定时结果。
