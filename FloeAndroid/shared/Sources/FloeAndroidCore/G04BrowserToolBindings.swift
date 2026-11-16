@@ -644,7 +644,7 @@ struct G04BrowserClickPointTool: AgentTool {
                                    x: args.x, y: args.y,
                                    screenshotSHA256: args.screenshotSHA256,
                                    fallbackReason: args.fallbackReason),
-            context: context)
+            context: context, interactionApprovalProof: try browserInteractionProof(context, operation: "clickPoint"))
     }
 }
 

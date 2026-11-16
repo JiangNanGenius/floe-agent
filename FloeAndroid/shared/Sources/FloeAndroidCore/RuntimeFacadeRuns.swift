@@ -4188,13 +4188,13 @@ public actor FacadeRunDomain {
 
     private func browserInteractionApprovalDetails(waiting: AgentState.WaitingApproval, taskID: UUID,
         runID: UUID, service: ConversationRunService) async -> ([String: SettingsDomainV1.JSONValue], BrowserInteractionApprovalProof)? {
-        guard let (action, tabID) = G04BrowserInteractionApprovalPresentation.arguments(waiting),
+        guard let (action, tabID, visualSHA256, visualReason, visualDocument) = G04BrowserInteractionApprovalPresentation.arguments(waiting),
               let owner = owners[runID], owner.conversationID == taskID, owner.epoch == epoch,
               !owner.cancelRequested, fenceIsValid(owner.launchToken),
               let routing = G04BrowserHostRegistry.shared.currentRouting, routing.epoch == epoch, routing.isLive(),
               let browserOwner = try? await routing.ladder.ownerVerified(taskID: taskID),
               let session = await routing.center.existingSession(for: browserOwner),
-              let checked = try? await session.approvalInteractionProof(action: action, tabID: tabID),
+              let checked = try? await session.approvalInteractionProof(action: action, tabID: tabID, visualSHA256: visualSHA256, visualReason: visualReason, visualDocument: visualDocument),
               checked.owner == browserOwner, checked.sessionID == (await session.sessionID),
               let details = G04BrowserInteractionApprovalPresentation.details(checked),
               let currentOwner = try? await routing.ladder.ownerVerified(taskID: taskID), currentOwner == browserOwner,

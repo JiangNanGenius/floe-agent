@@ -94,6 +94,7 @@ public actor BrowserTaskSession {
         public var documentToken: String
         public var documentURL: String
         public var sha256: String
+        public var artifact: BrowserArtifactReference
         public var capturedAt: Date
         public var pixelWidth: Int
         public var pixelHeight: Int
@@ -286,7 +287,9 @@ public actor BrowserTaskSession {
 
     /// Inspect the live target without returning its current value. This is a
     /// presentation proof, not a grant; it must be checked again on dispatch.
-    public func approvalInteractionProof(action: BrowserAction, tabID requested: UUID?) async throws -> BrowserInteractionApprovalProof {
+    public func approvalInteractionProof(action: BrowserAction, tabID requested: UUID?,
+                                         visualSHA256: String? = nil, visualReason: String? = nil,
+                                         visualDocument: String? = nil) async throws -> BrowserInteractionApprovalProof {
         guard !isReleased, !isUserControlling,
               !BrowserLifecycleHealth.shared.epochIsSaturated(owner.rootEpoch),
               let id = requested ?? activeTabID, let tab = tabs.first(where: { $0.id == id }),
@@ -298,10 +301,30 @@ public actor BrowserTaskSession {
         var operation = ""; var ref: String?; var role: String?; var label: String?
         var targetRole: String?; var targetLabel: String?
         var digest: String?; var bytes: Int?; var submit: Bool?; var dx: Double?; var dy: Double?
+        var visual: BrowserVisualApprovalEvidence?
         switch action {
         case .click(.element(let target, let document)):
             guard document == tab.documentID, !target.isEmpty, target.utf8.count <= 128 else { throw BrowserInteractionError.stale("The browser target changed") }
             operation = "click"; ref = target
+        case .click(.point(let x, let y)):
+            guard visualDocument == tab.documentID else { throw BrowserInteractionError.stale("The browser page changed") }
+            let command = BrowserCommand(sessionID: sessionID, tabID: requested,
+                expectedDocumentID: tab.documentID, visualEvidenceSHA256: visualSHA256,
+                visualFallbackReason: visualReason, action: action)
+            let evidence = try validateVisualFallback(command, in: id)
+            guard x.isFinite, y.isFinite, x >= 0, y >= 0,
+                  x < Double(evidence.pixelWidth), y < Double(evidence.pixelHeight),
+                  let reason = visualReason,
+                  let bytes = artifacts.read(evidence.artifact),
+                  bytes.count == evidence.artifact.byteCount,
+                  FloeDigest.sha256Hex(bytes) == evidence.sha256 else {
+                throw BrowserInteractionError.stale("The screenshot is unavailable; observe the page again")
+            }
+            try await verifyVisualStillCurrent(evidence, tabID: id, cancellation: nil)
+            operation = "clickPoint"
+            visual = BrowserVisualApprovalEvidence(artifact: evidence.artifact, x: x, y: y,
+                fallbackReason: reason, viewportWidth: evidence.viewportWidth,
+                viewportHeight: evidence.viewportHeight, scrollX: evidence.scrollX, scrollY: evidence.scrollY)
         case .type(.element(let target, let document), let text, let shouldSubmit):
             guard document == tab.documentID, !target.isEmpty, target.utf8.count <= 128,
                   text.utf8.count <= 16 * 1024 else { throw BrowserInteractionError.stale("The browser target changed") }
@@ -341,13 +364,20 @@ public actor BrowserTaskSession {
                   let pageRevision = item.revision, pageRevision >= 0 else { throw BrowserInteractionError.stale("The browser page cannot be reviewed") }
             revision = pageRevision
         }
+        if let visual {
+            guard let current = tabs.first(where: { $0.id == id })?.visualFallbackEvidence,
+                  current.artifact == visual.artifact, current.revision == revision,
+                  Self.visualEvidenceIsFresh(capturedAt: current.capturedAt, now: Date()) else {
+                throw BrowserInteractionError.stale("The screenshot changed; observe the page again")
+            }
+        }
         guard !isUserControlling, requested != nil || activeTabID == id else { throw BrowserInteractionError.stale("The active browser tab changed") }
         return BrowserInteractionApprovalProof(owner: owner, sessionID: sessionID, operation: operation,
             requestedTabID: requested, tabID: id, documentID: tab.documentID,
             navigationRevision: tab.navigationRevision, documentToken: token, pageRevision: revision,
             url: url, title: Self.approvalDisplayText(tab.surface.title, maximumBytes: 512),
             ref: ref, role: role, label: label, targetRole: targetRole, targetLabel: targetLabel,
-            textDigest: digest, textBytes: bytes, submit: submit, deltaX: dx, deltaY: dy)
+            textDigest: digest, textBytes: bytes, submit: submit, deltaX: dx, deltaY: dy, visual: visual)
     }
 
     private static func approvalDisplayText(_ text: String?, maximumBytes: Int) -> String? {
@@ -373,6 +403,14 @@ public actor BrowserTaskSession {
         case .click(.element(let ref, let document)):
             return proof.operation == "click" && proof.ref == ref && proof.documentID == document &&
                 proof.targetRole != nil && proof.targetLabel != nil
+        case .click(.point(let x, let y)):
+            guard let visual = proof.visual, let evidence = tab.visualFallbackEvidence else { return false }
+            return proof.operation == "clickPoint" && visual.x == x && visual.y == y &&
+                visual.fallbackReason == command.visualFallbackReason &&
+                visual.artifact.sha256.lowercased() == command.visualEvidenceSHA256?.lowercased() &&
+                evidence.artifact == visual.artifact && evidence.revision == proof.pageRevision &&
+                evidence.scrollX == visual.scrollX && evidence.scrollY == visual.scrollY &&
+                evidence.viewportWidth == visual.viewportWidth && evidence.viewportHeight == visual.viewportHeight
         case .type(.element(let ref, let document), let text, let submit):
             return proof.operation == "type" && proof.ref == ref && proof.documentID == document &&
                 proof.targetRole != nil && proof.targetLabel != nil &&
@@ -951,6 +989,7 @@ public actor BrowserTaskSession {
                         documentToken: capture.token,
                         documentURL: capture.url,
                         sha256: artifact.sha256.lowercased(),
+                        artifact: artifact,
                         capturedAt: Date(),
                         pixelWidth: artifact.pixelWidth,
                         pixelHeight: artifact.pixelHeight,
@@ -982,6 +1021,15 @@ public actor BrowserTaskSession {
                         throw BrowserPolicyError.blocked(
                             "Visual click coordinates are outside the referenced screenshot"
                         )
+                    }
+                    if let proof = command.interactionApprovalProof {
+                        try await verifyVisualStillCurrent(evidence, tabID: tabID, cancellation: cancellation)
+                        // The capture itself can cross the expiry boundary. Re-read
+                        // the authoritative evidence immediately before dispatch.
+                        _ = try validateVisualFallback(command, in: tabID)
+                        guard matchesInteractionApproval(proof, command: command) else {
+                            throw BrowserInteractionError.stale("The screenshot changed; observe the page again")
+                        }
                     }
                     let cssTarget = BrowserTarget.point(
                         x: x / Double(evidence.pixelWidth) * evidence.viewportWidth,
@@ -1031,6 +1079,7 @@ public actor BrowserTaskSession {
                             documentToken: postCapture.token,
                             documentURL: postCapture.url,
                             sha256: postArtifact.sha256.lowercased(),
+                            artifact: postArtifact,
                             capturedAt: Date(),
                             pixelWidth: postArtifact.pixelWidth,
                             pixelHeight: postArtifact.pixelHeight,
@@ -1492,6 +1541,11 @@ public actor BrowserTaskSession {
         }
     }
 
+    static func visualEvidenceIsFresh(capturedAt: Date, now: Date) -> Bool {
+        let age = now.timeIntervalSince(capturedAt)
+        return age >= 0 && age <= 120
+    }
+
     private func validateVisualFallback(_ command: BrowserCommand, in tabID: UUID) throws -> VisualFallbackEvidence {
         guard let tab = tabs.first(where: { $0.id == tabID }) else {
             throw BrowserInteractionError.stale("Browser tab is no longer available")
@@ -1514,7 +1568,7 @@ public actor BrowserTaskSession {
               evidence.pixelHeight > 0,
               evidence.viewportWidth > 0,
               evidence.viewportHeight > 0,
-              Date().timeIntervalSince(evidence.capturedAt) <= 120 else {
+              Self.visualEvidenceIsFresh(capturedAt: evidence.capturedAt, now: Date()) else {
             throw BrowserPolicyError.blocked(
                 "Coordinate fallback requires a fresh screenshot from the current page"
             )
@@ -1971,6 +2025,30 @@ public actor BrowserTaskSession {
             let revision = await screenshotProbeFrame(tabID: tabID, token: capture.token, url: capture.url, cancellation: cancellation)
             try ensureObservationCurrent(tabID: tabID, documentID: capture.documentID, revision: capture.navigationRevision)
             guard revision == expected else { throw BrowserInteractionError.stale("The page changed after capture; capture again") }
+        }
+    }
+
+    /// Re-capture the viewport to detect non-DOM rendering changes, then
+    /// discard the temporary comparison image. Any difference fails closed.
+    private func verifyVisualStillCurrent(_ evidence: VisualFallbackEvidence, tabID: UUID,
+                                          cancellation: CancellationToken?) async throws {
+        guard let original = artifacts.read(evidence.artifact),
+              original.count == evidence.artifact.byteCount,
+              FloeDigest.sha256Hex(original) == evidence.sha256 else {
+            throw BrowserInteractionError.stale("The screenshot is unavailable; observe the page again")
+        }
+        let current = try await saveSnapshot(of: tabID, cancellation: cancellation)
+        defer { artifacts.discard(current.artifact) }
+        try await verifyScreenshot(current, tabID: tabID, cancellation: cancellation)
+        guard current.artifact.sha256.lowercased() == evidence.sha256,
+              current.artifact.pixelWidth == evidence.pixelWidth,
+              current.artifact.pixelHeight == evidence.pixelHeight,
+              current.documentID == evidence.documentID,
+              current.token == evidence.documentToken, current.url == evidence.documentURL,
+              let frame = current.probeFrame, frame.revision == evidence.revision,
+              frame.scrollX == evidence.scrollX, frame.scrollY == evidence.scrollY,
+              frame.width == evidence.viewportWidth, frame.height == evidence.viewportHeight else {
+            throw BrowserInteractionError.stale("The screenshot changed; observe the page again")
         }
     }
 

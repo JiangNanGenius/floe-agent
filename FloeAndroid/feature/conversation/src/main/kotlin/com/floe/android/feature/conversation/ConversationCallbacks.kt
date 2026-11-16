@@ -459,6 +459,8 @@ interface ConversationUiCallbacks {
 
     /** Read a private presentation only for a visible, exact approval card. */
     fun requestApprovalPresentation(session: ConversationSessionToken, card: ApprovalCardUi, lease: String): Boolean = false
+    /** True only while a private visual approval still belongs to the live native root. */
+    fun browserVisualApprovalEpochCurrent(epoch: Long): Boolean = false
 
     /** Read-only refresh of the selected run's authoritative approval. */
     fun refreshApproval(session: ConversationSessionToken, runId: String): Boolean = false

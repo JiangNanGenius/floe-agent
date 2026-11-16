@@ -339,6 +339,15 @@ class ConversationApprovalDispatchTest {
         assertFalse(holder.privateApprovalValid(card, "current", "token"))
     }
 
+    @Test fun sampledVisualPointMapsOriginalCoordinatesThroughFit() {
+        val center = browserVisualFitPoint(1440, 3040, 720, 1520, 720.0, 1520.0, 400f, 300f)
+        assertEquals(200f, center.first, 0.001f)
+        assertEquals(150f, center.second, 0.001f)
+        val bottom = browserVisualFitPoint(1440, 3040, 720, 1520, 0.0, 3040.0, 400f, 300f)
+        assertEquals(200f - 300f * 720f / 1520f / 2f, bottom.first, 0.001f)
+        assertEquals(300f, bottom.second, 0.001f)
+    }
+
     @Test fun browserInteractionsRequireCurrentExactPrivateLease() {
         val tab = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
         for (operation in listOf("click", "type", "scroll")) {

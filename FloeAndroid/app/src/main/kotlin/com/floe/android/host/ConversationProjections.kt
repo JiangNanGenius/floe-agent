@@ -263,6 +263,71 @@ internal fun privateBrowserInteractionApprovalPage(
     return if (action.isWellFormed()) action to (token ?: return null) else null
 }
 
+/** Private screenshot metadata; no path is accepted from this page. */
+internal data class BrowserVisualEvidence(
+    val url: String, val title: String?, val filename: String, val sha256: String,
+    val byteCount: Int, val width: Int, val height: Int,
+    val pointX: Double, val pointY: Double, val fallbackReason: String,
+) {
+    override fun toString() = "BrowserVisualEvidence(redacted)"
+}
+
+/** Power-of-two sampling bounds decoded pixels independently of source size. */
+internal fun browserVisualSampleSize(width: Int, height: Int): Int? {
+    if (width !in 1..8192 || height !in 1..8192 || width.toLong() * height > 33_554_432) return null
+    var sample = 1
+    while (((width.toLong() + sample - 1) / sample) *
+        ((height.toLong() + sample - 1) / sample) > 4_194_304) sample *= 2
+    return sample
+}
+
+internal fun browserVisualRootCurrent(epoch: Long, native: Long?, accepted: Long?, admitted: Boolean): Boolean =
+    epoch > 0 && admitted && native == epoch && accepted == epoch
+
+internal fun privateBrowserVisualApprovalPage(value: JsonElement?, card: ApprovalCardUi): Pair<BrowserVisualEvidence, String>? {
+    if (card.toolName != "browser.clickPoint") return null
+    val (details, token) = privateApprovalPage(value, card, requiredRisk = "controlsGUI", workspaceVerified = false) ?: return null
+    if (details.keys != setOf("kind", "operation", "tabID", "documentID", "url", "title",
+            "ref", "role", "label", "textBytes", "submit", "deltaX", "deltaY",
+            "evidenceFileName", "evidenceSHA256", "evidenceByteCount", "pixelWidth", "pixelHeight",
+            "pointX", "pointY", "fallbackReason")) return null
+    fun str(key: String) = (details[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
+    fun number(key: String) = (details[key] as? JsonPrimitive)?.takeIf { !it.isString }
+        ?.content?.toDoubleOrNull()?.takeIf { it.isFinite() }
+    fun integer(key: String) = (details[key] as? JsonPrimitive)?.takeIf { !it.isString }?.longOrNull
+    fun safe(value: String?, max: Int): Boolean {
+        if (value == null || value.isBlank() || value.toByteArray(Charsets.UTF_8).size > max) return false
+        return value.codePoints().allMatch { cp ->
+            Character.getType(cp) !in setOf(Character.CONTROL.toInt(), Character.FORMAT.toInt(),
+                Character.LINE_SEPARATOR.toInt(), Character.PARAGRAPH_SEPARATOR.toInt(),
+                Character.SURROGATE.toInt(), Character.UNASSIGNED.toInt())
+        }
+    }
+    if (str("kind") != "browserInteraction" || str("operation") != "clickPoint" ||
+        listOf("ref", "role", "label", "textBytes", "submit", "deltaX", "deltaY")
+            .any { details[it] !is kotlinx.serialization.json.JsonNull }) return null
+    val tab = str("tabID") ?: return null
+    if (runCatching { java.util.UUID.fromString(tab).toString() != tab }.getOrDefault(true) ||
+        !safe(str("documentID"), 128)) return null
+    val url = str("url")?.takeIf { safe(it, 2048) } ?: return null
+    val title = str("title")
+    if (details["title"] !is kotlinx.serialization.json.JsonNull && !safe(title, 512)) return null
+    val filename = str("evidenceFileName") ?: return null
+    if (!filename.endsWith(".jpg") || runCatching {
+            val id = filename.removeSuffix(".jpg")
+            java.util.UUID.fromString(id).toString().equals(id, ignoreCase = true)
+        }.getOrDefault(false).not()) return null
+    val sha = str("evidenceSHA256")?.takeIf { it.matches(Regex("[0-9a-f]{64}")) } ?: return null
+    val count = integer("evidenceByteCount")?.takeIf { it in 1..(8L * 1024 * 1024) }?.toInt() ?: return null
+    val width = integer("pixelWidth")?.takeIf { it in 1..8192 }?.toInt() ?: return null
+    val height = integer("pixelHeight")?.takeIf { it in 1..8192 }?.toInt() ?: return null
+    if (browserVisualSampleSize(width, height) == null) return null
+    val x = number("pointX")?.takeIf { it >= 0 && it < width } ?: return null
+    val y = number("pointY")?.takeIf { it >= 0 && it < height } ?: return null
+    val reason = str("fallbackReason")?.takeIf { it in setOf("noStructuredTarget", "insufficientStructuredInformation") } ?: return null
+    return BrowserVisualEvidence(url, title, filename, sha, count, width, height, x, y, reason) to (token ?: return null)
+}
+
 /** Accept only a complete, generation-bound, local human-review page. */
 internal fun privateScheduleCreateApprovalPage(value: JsonElement?, card: ApprovalCardUi): Pair<ScheduleCreateApprovalUi, String>? {
     if (card.toolName != "task.schedule") return null

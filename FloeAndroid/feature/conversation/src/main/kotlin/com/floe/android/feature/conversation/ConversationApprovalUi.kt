@@ -15,6 +15,8 @@
 package com.floe.android.feature.conversation
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -24,6 +26,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -44,6 +47,11 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import java.util.UUID
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
@@ -146,9 +154,13 @@ fun ConversationApprovalRow(
     val scheduleAction = presentedCard.scheduleCreateAction
     val browserTabAction = presentedCard.browserTabAction
     val browserInteraction = presentedCard.browserInteractionAction
+    val browserVisual = presentedCard.browserVisualAction
+    var visualSeen by remember(card.key, lease, browserVisual) { mutableStateOf(false) }
     val unidentifiedBrowserTarget = browserTabAction != null && browserTabAction.operation != "create" &&
         browserTabAction.isWellFormed() && !browserTabAction.isReviewable()
-    val detailsVisible = if (browserInteraction != null) {
+    val detailsVisible = if (browserVisual != null) {
+        presentedCard.toolName == "browser.clickPoint" && browserVisual.isWellFormed() && visualSeen
+    } else if (browserInteraction != null) {
         presentedCard.toolName == "browser.${browserInteraction.operation}" && browserInteraction.isWellFormed()
     } else if (browserTabAction != null) {
         presentedCard.toolName == "browser.tab" && browserTabAction.isReviewable()
@@ -187,7 +199,7 @@ fun ConversationApprovalRow(
     // without a human tap on these two controls.
     val backendResolve: (ApprovalCardUi, Boolean) -> Unit =
         { c, allow ->
-            if (c.workspaceAction != null || c.localShellAction != null || c.scheduleCreateAction != null || c.browserTabAction != null || c.browserInteractionAction != null) holder.resolveApproval(c, allow, presentationLease = lease)
+            if (c.workspaceAction != null || c.localShellAction != null || c.scheduleCreateAction != null || c.browserTabAction != null || c.browserInteractionAction != null || c.browserVisualAction != null) holder.resolveApproval(c, allow, presentationLease = lease)
             else if (onResolve != null) onResolve(c, allow) else holder.resolveApproval(c, allow)
         }
     // The current native decision contract is call-bound. Never promise
@@ -258,7 +270,8 @@ fun ConversationApprovalRow(
                 FloeText(presentedCard.toolName, style = Floe.typography.evidence, color = colors.label)
             }
             if (presentedCard.scopeVerified) {
-                FloeText(if (browserInteraction != null) stringResource(when (browserInteraction.operation) {
+                FloeText(if (browserVisual != null) stringResource(R.string.approval_browser_visual_click)
+                else if (browserInteraction != null) stringResource(when (browserInteraction.operation) {
                     "click" -> R.string.approval_browser_click
                     "type" -> R.string.approval_browser_type
                     else -> R.string.approval_browser_scroll
@@ -287,6 +300,47 @@ fun ConversationApprovalRow(
                     "launch" -> stringResource(R.string.approval_device_launch)
                     else -> ""
                 }, style = Floe.typography.bodyEmphasized, color = colors.label)
+                if (browserVisual != null) {
+                    browserVisual.title?.let { title ->
+                        FloeText(title, style = Floe.typography.evidence, color = colors.label)
+                    }
+                    FloeText(browserVisual.url, style = Floe.typography.evidence, color = colors.label)
+                    FloeText(stringResource(R.string.approval_browser_visual_coordinates,
+                        browserVisual.pointX.toString(), browserVisual.pointY.toString()),
+                        style = Floe.typography.metadata, color = colors.label)
+                    FloeText(stringResource(if (browserVisual.fallbackReason == "noStructuredTarget")
+                        R.string.approval_browser_visual_no_target else R.string.approval_browser_visual_insufficient),
+                        style = Floe.typography.metadata, color = colors.secondaryLabel)
+                    FloeText(stringResource(R.string.approval_browser_visual_hint),
+                        style = Floe.typography.metadata, color = colors.secondaryLabel)
+                    Box(Modifier.fillMaxWidth().height(220.dp).onGloballyPositioned { coordinates ->
+                        val bounds = coordinates.boundsInWindow()
+                        val whollyVisible = coordinates.isAttached && coordinates.size.width > 0 &&
+                            coordinates.size.height > 0 && bounds.width >= coordinates.size.width * 0.95f &&
+                            bounds.height >= coordinates.size.height * 0.95f
+                        if (whollyVisible && !visualSeen && lease != null && resumed) {
+                            holder.setPrivateBrowserVisualVisible(card, lease!!, true)
+                            visualSeen = true
+                        }
+                    }) {
+                        Image(bitmap = browserVisual.screenshot.asImageBitmap(),
+                            contentDescription = stringResource(R.string.approval_browser_visual_hint),
+                            contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
+                        Canvas(Modifier.fillMaxSize()) {
+                            val point = browserVisualFitPoint(
+                                browserVisual.originalWidth, browserVisual.originalHeight,
+                                browserVisual.screenshot.width, browserVisual.screenshot.height,
+                                browserVisual.pointX, browserVisual.pointY, size.width, size.height)
+                            val center = Offset(point.first, point.second)
+                            drawCircle(Color.White, radius = 13.dp.toPx(), center = center, style = Stroke(4.dp.toPx()))
+                            drawCircle(Color.Red, radius = 11.dp.toPx(), center = center, style = Stroke(2.dp.toPx()))
+                            drawLine(Color.Red, Offset(center.x - 16.dp.toPx(), center.y),
+                                Offset(center.x + 16.dp.toPx(), center.y), 2.dp.toPx())
+                            drawLine(Color.Red, Offset(center.x, center.y - 16.dp.toPx()),
+                                Offset(center.x, center.y + 16.dp.toPx()), 2.dp.toPx())
+                        }
+                    }
+                }
                 if (browserInteraction != null) {
                     browserInteraction.title?.let { title ->
                         FloeText(stringResource(R.string.approval_browser_tab_title),

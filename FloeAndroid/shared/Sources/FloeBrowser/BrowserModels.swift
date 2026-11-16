@@ -91,6 +91,24 @@ public struct BrowserTabApprovalProof: Sendable, Codable, Hashable {
 
 /// A private, one-use snapshot of the exact reviewed page action. Text is
 /// represented only by a digest and byte count and never by its contents.
+public struct BrowserVisualApprovalEvidence: Sendable, Codable, Hashable {
+    public let artifact: BrowserArtifactReference
+    public let x: Double
+    public let y: Double
+    public let fallbackReason: String
+    public let viewportWidth: Double
+    public let viewportHeight: Double
+    public let scrollX: Double
+    public let scrollY: Double
+
+    public init(artifact: BrowserArtifactReference, x: Double, y: Double, fallbackReason: String,
+                viewportWidth: Double, viewportHeight: Double, scrollX: Double, scrollY: Double) {
+        self.artifact = artifact; self.x = x; self.y = y; self.fallbackReason = fallbackReason
+        self.viewportWidth = viewportWidth; self.viewportHeight = viewportHeight
+        self.scrollX = scrollX; self.scrollY = scrollY
+    }
+}
+
 public struct BrowserInteractionApprovalProof: Sendable, Codable, Hashable {
     public let owner: BrowserOwnerID
     public let sessionID: UUID
@@ -115,20 +133,21 @@ public struct BrowserInteractionApprovalProof: Sendable, Codable, Hashable {
     public let submit: Bool?
     public let deltaX: Double?
     public let deltaY: Double?
+    public let visual: BrowserVisualApprovalEvidence?
 
     public init(owner: BrowserOwnerID, sessionID: UUID, operation: String, requestedTabID: UUID?,
                 tabID: UUID, documentID: String, navigationRevision: UInt64, documentToken: String,
                 pageRevision: Int, url: String, title: String?, ref: String?, role: String?,
                 label: String?, targetRole: String? = nil, targetLabel: String? = nil,
                 textDigest: String?, textBytes: Int?, submit: Bool?,
-                deltaX: Double?, deltaY: Double?) {
+                deltaX: Double?, deltaY: Double?, visual: BrowserVisualApprovalEvidence? = nil) {
         self.owner = owner; self.sessionID = sessionID; self.operation = operation
         self.requestedTabID = requestedTabID; self.tabID = tabID; self.documentID = documentID
         self.navigationRevision = navigationRevision; self.documentToken = documentToken
         self.pageRevision = pageRevision; self.url = url; self.title = title; self.ref = ref
         self.role = role; self.label = label; self.targetRole = targetRole; self.targetLabel = targetLabel
         self.textDigest = textDigest; self.textBytes = textBytes
-        self.submit = submit; self.deltaX = deltaX; self.deltaY = deltaY
+        self.submit = submit; self.deltaX = deltaX; self.deltaY = deltaY; self.visual = visual
     }
 }
 

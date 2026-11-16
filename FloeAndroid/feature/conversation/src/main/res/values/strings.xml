@@ -514,6 +514,11 @@
     <string name="approval_schedule_create">Create a scheduled task</string>
     <string name="approval_browser_tab_create">Create a browser tab</string>
     <string name="approval_browser_click">Click a page element</string>
+    <string name="approval_browser_visual_click">Click the marked point</string>
+    <string name="approval_browser_visual_hint">Review the screenshot and marked point before allowing.</string>
+    <string name="approval_browser_visual_coordinates">Pixel coordinates: X %1$s, Y %2$s</string>
+    <string name="approval_browser_visual_no_target">No structured target was found.</string>
+    <string name="approval_browser_visual_insufficient">Structured information was insufficient.</string>
     <string name="approval_browser_type">Enter text on the page</string>
     <string name="approval_browser_scroll">Scroll the page</string>
     <string name="approval_browser_target">Target element</string>

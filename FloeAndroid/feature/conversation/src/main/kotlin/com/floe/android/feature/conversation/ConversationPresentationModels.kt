@@ -393,6 +393,38 @@ data class BrowserInteractionApprovalUi(
     override fun toString(): String = "BrowserInteractionApprovalUi(redacted)"
 }
 
+/** A verified private screenshot; retained only while its approval lease is visible. */
+internal fun browserVisualFitPoint(
+    originalWidth: Int, originalHeight: Int, decodedWidth: Int, decodedHeight: Int,
+    x: Double, y: Double, viewportWidth: Float, viewportHeight: Float,
+): Pair<Float, Float> {
+    val scale = minOf(viewportWidth / decodedWidth, viewportHeight / decodedHeight)
+    val left = (viewportWidth - decodedWidth * scale) / 2f
+    val top = (viewportHeight - decodedHeight * scale) / 2f
+    return (left + (x / originalWidth).toFloat() * decodedWidth * scale) to
+        (top + (y / originalHeight).toFloat() * decodedHeight * scale)
+}
+
+data class BrowserVisualApprovalUi(
+    val url: String,
+    val title: String?,
+    val screenshot: android.graphics.Bitmap,
+    val originalWidth: Int,
+    val originalHeight: Int,
+    val nativeEpoch: Long,
+    val pointX: Double,
+    val pointY: Double,
+    val fallbackReason: String,
+) {
+    fun isWellFormed(): Boolean = nativeEpoch > 0 && !screenshot.isRecycled &&
+        originalWidth > 0 && originalHeight > 0 && screenshot.width > 0 && screenshot.height > 0 &&
+        pointX.isFinite() && pointY.isFinite() && pointX >= 0 && pointY >= 0 &&
+        pointX < originalWidth && pointY < originalHeight &&
+        fallbackReason in setOf("noStructuredTarget", "insufficientStructuredInformation")
+
+    override fun toString(): String = "BrowserVisualApprovalUi(redacted)"
+}
+
 data class ApprovalCardUi(
     val approvalId: String,           // ⇄ toolCall.id (provider call id)
     val runId: String,
@@ -424,6 +456,7 @@ data class ApprovalCardUi(
     val scheduleCreateAction: ScheduleCreateApprovalUi? = null,
     val browserTabAction: BrowserTabApprovalUi? = null,
     val browserInteractionAction: BrowserInteractionApprovalUi? = null,
+    val browserVisualAction: BrowserVisualApprovalUi? = null,
     val deviceAction: DeviceActionApprovalUi? = null,
     /** The generation and descriptor are verified independently of whether
      * enough action detail exists to allow the request. */

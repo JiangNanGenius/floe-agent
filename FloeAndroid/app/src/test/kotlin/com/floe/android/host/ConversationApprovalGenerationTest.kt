@@ -326,6 +326,62 @@ class ConversationApprovalGenerationTest {
         }
     }
 
+    @Test fun visualApprovalAcceptsOnlyBoundImageEvidenceAndPixelCoordinates() {
+        val risks = """["controlsGUI"]"""
+        val builder = builder()
+        builder.applySnapshot(page(tool = "browser.clickPoint", detailStatus = "unavailable", risks = risks))
+        val card = builder.build().pendingApprovals.single()
+        val token = "55555555-5555-4555-8555-555555555555"
+        val tab = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        val file = "BBBBBBBB-BBBB-4BBB-8BBB-BBBBBBBBBBBB.jpg"
+        val digest = "a".repeat(64)
+        val raw = """{"schema":"floe.approval-presentation/1","conversationID":"$conversation","runID":"$run","callID":"c1","generation":"$generation","presentationToken":"$token","presentation":{"status":"available","generation":"$generation","tool":"browser.clickPoint","effect":"mutating","isSideEffecting":true,"riskLabels":$risks,"requestedScope":"local","grantScope":"singleUse","workspaceVerified":false,"descriptorIdentity":"$descriptor","detailStatus":"available","actionDetails":{"kind":"browserInteraction","operation":"clickPoint","tabID":"$tab","documentID":"doc-1","url":"https://example.com/","title":null,"ref":null,"role":null,"label":null,"textBytes":null,"submit":null,"deltaX":null,"deltaY":null,"evidenceFileName":"$file","evidenceSHA256":"$digest","evidenceByteCount":4096,"pixelWidth":1080,"pixelHeight":1920,"pointX":123.5,"pointY":456,"fallbackReason":"noStructuredTarget"}}}"""
+        fun decode(value: String) = privateBrowserVisualApprovalPage(Json.parseToJsonElement(value), card)
+        val result = requireNotNull(decode(raw))
+        assertEquals(file, result.first.filename)
+        assertEquals(123.5, result.first.pointX, 0.0)
+        assertFalse(result.first.toString().contains(file))
+        assertNotNull(decode(raw.replace("\"pixelWidth\":1080", "\"pixelWidth\":1440")
+            .replace("\"pixelHeight\":1920", "\"pixelHeight\":3040")))
+        for (bad in listOf(
+            raw.replace(file, "../$file"),
+            raw.replace("\"evidenceSHA256\":\"$digest\"", "\"evidenceSHA256\":\"bad\""),
+            raw.replace("\"evidenceByteCount\":4096", "\"evidenceByteCount\":9000000"),
+            raw.replace("\"pixelWidth\":1080", "\"pixelWidth\":8193"),
+            raw.replace("\"pointX\":123.5", "\"pointX\":1080"),
+            raw.replace("\"pointY\":456", "\"pointY\":-1"),
+            raw.replace("\"pointY\":456", "\"pointY\":1e999"),
+            raw.replace("\"ref\":null", "\"ref\":\"node\""),
+            raw.replace("\"fallbackReason\":\"noStructuredTarget\"", "\"fallbackReason\":\"unknown\""),
+            raw.replace("\"callID\":\"c1\"", "\"callID\":\"c2\""),
+        )) assertNull(decode(bad))
+    }
+
+    @Test fun visualDecodeSamplingKeepsCommonScreensWithinBound() {
+        assertEquals(1, browserVisualSampleSize(1080, 1920))
+        assertEquals(2, browserVisualSampleSize(1440, 3040))
+        assertEquals(2, browserVisualSampleSize(4096, 2160))
+        assertNull(browserVisualSampleSize(8192, 8192))
+        assertNull(browserVisualSampleSize(0, 100))
+        assertNull(browserVisualSampleSize(8193, 1))
+        for ((width, height) in listOf(1080 to 1920, 1440 to 3040, 4096 to 2160, 8191 to 4095)) {
+            val sample = requireNotNull(browserVisualSampleSize(width, height))
+            val decodedWidth = (width + sample - 1) / sample
+            val decodedHeight = (height + sample - 1) / sample
+            assertTrue(decodedWidth.toLong() * decodedHeight <= 4_194_304)
+        }
+    }
+
+    @Test fun visualLeaseRequiresTheSameAdmittedNativeAndAcceptedRootEpoch() {
+        assertTrue(browserVisualRootCurrent(7, 7, 7, true))
+        assertFalse(browserVisualRootCurrent(7, 8, 7, true))
+        assertFalse(browserVisualRootCurrent(7, 7, 8, true))
+        assertFalse(browserVisualRootCurrent(7, null, 7, true))
+        assertFalse(browserVisualRootCurrent(7, 7, null, true))
+        assertFalse(browserVisualRootCurrent(7, 7, 7, false))
+        assertFalse(browserVisualRootCurrent(0, 0, 0, true))
+    }
+
     @Test fun privateBrowserTabTargetRequiresAnExactSafeSingleUsePresentation() {
         val builder = builder()
         val risks = """["controlsGUI"]"""

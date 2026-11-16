@@ -36,4 +36,31 @@ final class G04BrowserInteractionApprovalTests: XCTestCase {
         XCTAssertEqual(gate.take(run: run, call: "c1", grant: grant), proof)
         XCTAssertNil(gate.take(run: run, call: "c1", grant: grant))
     }
+    func testClickPointRejectsUnknownArgumentsAndBindsVisibleEvidence() throws {
+        let sha = String(repeating: "a", count: 64)
+        func waiting(_ json: String) throws -> AgentState.WaitingApproval {
+            AgentState.WaitingApproval(toolCall: try ToolCall(id: "c", toolName: "browser.clickPoint",
+                argumentsJSON: Data(json.utf8), scope: .local), reason: "test")
+        }
+        let json = "{\"documentID\":\"doc\",\"x\":12,\"y\":13,\"screenshotSHA256\":\"\(sha)\",\"fallbackReason\":\"noStructuredTarget\"}"
+        let parsed = try XCTUnwrap(G04BrowserInteractionApprovalPresentation.arguments(try waiting(json)))
+        XCTAssertEqual(parsed.2, sha); XCTAssertEqual(parsed.3, "noStructuredTarget"); XCTAssertEqual(parsed.4, "doc")
+        XCTAssertNil(G04BrowserInteractionApprovalPresentation.arguments(try waiting(String(json.dropLast()) + ",\"extra\":true}")))
+        let artifactID = UUID()
+        let artifact = BrowserArtifactReference(id: artifactID, relativePath: "BrowserArtifacts/\(artifactID.uuidString).jpg",
+            mimeType: "image/jpeg", byteCount: 123, sha256: sha, pixelWidth: 100, pixelHeight: 200)
+        let visual = BrowserVisualApprovalEvidence(artifact: artifact, x: 12, y: 13,
+            fallbackReason: "noStructuredTarget", viewportWidth: 100, viewportHeight: 200, scrollX: 0, scrollY: 0)
+        let proof = BrowserInteractionApprovalProof(owner: BrowserOwnerID(taskID: UUID(), workspaceID: UUID(), rootEpoch: 7),
+            sessionID: UUID(), operation: "clickPoint", requestedTabID: nil, tabID: UUID(), documentID: "doc",
+            navigationRevision: 3, documentToken: "private", pageRevision: 4, url: "https://example.test/",
+            title: nil, ref: nil, role: nil, label: nil, textDigest: nil, textBytes: nil,
+            submit: nil, deltaX: nil, deltaY: nil, visual: visual)
+        let details = try XCTUnwrap(G04BrowserInteractionApprovalPresentation.details(proof))
+        XCTAssertEqual(details["evidenceSHA256"], .string(sha))
+        XCTAssertEqual(details["pointX"], .fractional(12))
+        XCTAssertNil(details["documentToken"])
+        XCTAssertNil(details["viewportWidth"])
+    }
+
 }

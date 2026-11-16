@@ -187,7 +187,7 @@ public actor BrowserToolSurface {
             }
         }
         if let proof = interactionProof {
-            guard proof.owner == owner, ["browser.click", "browser.type", "browser.scroll"].contains(name),
+            guard proof.owner == owner, ["browser.click", "browser.clickPoint", "browser.type", "browser.scroll"].contains(name),
                   name == "browser.\(proof.operation)" else {
                 throw BrowserToolError.validation("The browser approval does not match this operation")
             }
@@ -316,7 +316,8 @@ public actor BrowserToolSurface {
                 documentID: documentID,
                 visualEvidenceSHA256: screenshotSHA256,
                 visualFallbackReason: fallbackReason,
-                cancellation: cancellation
+                cancellation: cancellation,
+                interactionApprovalProof: interactionProof
             )
         case ("browser.type", .type(let tabID, let ref, let documentID, let text, let submit)):
             guard !ref.isEmpty, !documentID.isEmpty else {

@@ -728,6 +728,9 @@ class ConversationHostController internal constructor(
                 var previousConversationAdmitted =
                     host.readiness.value.conversationDomainAdmitted
                 host.readiness.collect { readiness ->
+                    holders.values.forEach { entry ->
+                        entry.holder.discardBrowserVisualApprovals(onlyStale = true)
+                    }
                     if (readiness.conversationDomainAdmitted &&
                         !previousConversationAdmitted
                     ) {
@@ -769,6 +772,7 @@ class ConversationHostController internal constructor(
     }
 
     internal fun stop() {
+        holders.values.forEach { it.holder.discardBrowserVisualApprovals() }
         eventPumps.values.forEach { it.close() }
         eventPumps.clear()
         recordedHistoryReads.clear()
@@ -5208,6 +5212,68 @@ class ConversationHostController internal constructor(
         return true
     }
 
+    private fun readBrowserVisualEvidence(
+        evidence: BrowserVisualEvidence, epoch: Long,
+    ): com.floe.android.feature.conversation.BrowserVisualApprovalUi? {
+        val app = host.appContextOrNull?.applicationContext as? com.floe.android.FloeApplication ?: return null
+        val accepted = app.acceptedRuntimeStorageRoot() ?: return null
+        if (accepted.epoch != epoch || host.nativeRootEpoch() != epoch) return null
+        return runCatching {
+            val root = java.io.File(accepted.path).canonicalFile
+            val directory = java.io.File(root, "Browser").canonicalFile
+            if (directory.parentFile != root) return@runCatching null
+            val file = java.io.File(directory, evidence.filename).canonicalFile
+            if (file.parentFile != directory || !file.isFile || file.length() != evidence.byteCount.toLong())
+                return@runCatching null
+            val bytes = ByteArray(evidence.byteCount)
+            try {
+                file.inputStream().use { input ->
+                    var offset = 0
+                    while (offset < bytes.size) {
+                        val count = input.read(bytes, offset, bytes.size - offset)
+                        if (count <= 0) return@runCatching null
+                        offset += count
+                    }
+                    if (input.read() != -1) return@runCatching null
+                }
+                val digest = java.security.MessageDigest.getInstance("SHA-256").digest(bytes)
+                    .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+                if (digest != evidence.sha256) return@runCatching null
+                val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+                if (bounds.outMimeType != "image/jpeg" || bounds.outWidth != evidence.width ||
+                    bounds.outHeight != evidence.height) return@runCatching null
+                val sample = browserVisualSampleSize(evidence.width, evidence.height) ?: return@runCatching null
+                val options = android.graphics.BitmapFactory.Options().apply {
+                    inSampleSize = sample
+                    inScaled = false
+                }
+                val bitmap = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+                    ?: return@runCatching null
+                val latest = app.acceptedRuntimeStorageRoot()
+                val maxWidth = (evidence.width + sample - 1) / sample
+                val maxHeight = (evidence.height + sample - 1) / sample
+                if (latest != accepted || host.nativeRootEpoch() != epoch ||
+                    bitmap.width !in 1..maxWidth || bitmap.height !in 1..maxHeight ||
+                    bitmap.width.toLong() * bitmap.height > 4_194_304) {
+                    bitmap.recycle()
+                    return@runCatching null
+                }
+                com.floe.android.feature.conversation.BrowserVisualApprovalUi(
+                    evidence.url, evidence.title, bitmap, evidence.width, evidence.height, epoch,
+                    evidence.pointX, evidence.pointY, evidence.fallbackReason)
+            } finally {
+                bytes.fill(0)
+            }
+        }.getOrNull()
+    }
+
+    override fun browserVisualApprovalEpochCurrent(epoch: Long): Boolean {
+        val app = host.appContextOrNull?.applicationContext as? com.floe.android.FloeApplication ?: return false
+        return browserVisualRootCurrent(epoch, host.nativeRootEpoch(),
+            app.acceptedRuntimeStorageRoot()?.epoch, host.readiness.value.runDomainAdmitted)
+    }
+
     override fun requestApprovalPresentation(session: ConversationSessionToken, card: ApprovalCardUi, lease: String): Boolean {
         if (!admitted()) return false
         val entry = holders[session.conversationId] ?: return false
@@ -5215,6 +5281,7 @@ class ConversationHostController internal constructor(
         val generation = card.requestGeneration ?: return false
         val revision = card.approvalRevision ?: return false
         val descriptor = card.descriptorIdentity ?: return false
+        val presentationEpoch = host.nativeRootEpoch() ?: return false
         if (!ownCurrentEntry(entry, session.conversationId, session.sessionEpoch) ||
             entry.builder.approvalBinding(card.runId, card.approvalId) != card) return false
         host.trackOperation(
@@ -5231,7 +5298,7 @@ class ConversationHostController internal constructor(
                     "expectedDescriptorIdentity" to JsonPrimitive(descriptor),
                 )),
             ),
-            beforeSubmit = if (card.toolName in setOf("task.schedule", "browser.tab", "browser.click", "browser.type", "browser.scroll")) ({
+            beforeSubmit = if (card.toolName in setOf("task.schedule", "browser.tab", "browser.click", "browser.type", "browser.scroll", "browser.clickPoint")) ({
                 admitted() && ownCurrentEntry(entry, session.conversationId, session.sessionEpoch) &&
                     entry.holder.isPrivateApprovalLeaseCurrent(session, card, lease) &&
                     entry.builder.approvalBinding(card.runId, card.approvalId) == card
@@ -5252,6 +5319,20 @@ class ConversationHostController internal constructor(
                 } else if (card.toolName in setOf("browser.click", "browser.type", "browser.scroll")) {
                     val result = privateBrowserInteractionApprovalPage(outcome.value, card) ?: return@trackOperation
                     entry.holder.acceptPrivateBrowserInteractionApproval(session, card, lease, result.first, result.second)
+                } else if (card.toolName == "browser.clickPoint") {
+                    val result = privateBrowserVisualApprovalPage(outcome.value, card) ?: return@trackOperation
+                    host.scope.launch(host.ioDispatcher) {
+                        fun current(): Boolean = admitted() && host.nativeRootEpoch() == presentationEpoch &&
+                            ownCurrentEntry(entry, session.conversationId, session.sessionEpoch) &&
+                            entry.holder.isPrivateApprovalLeaseCurrent(session, card, lease) &&
+                            entry.builder.approvalBinding(card.runId, card.approvalId) == card
+                        if (!current()) return@launch
+                        val visual = readBrowserVisualEvidence(result.first, presentationEpoch) ?: return@launch
+                        if (!current() || !entry.holder.acceptPrivateBrowserVisualApproval(
+                                session, card, lease, visual, result.second)) {
+                            visual.screenshot.recycle()
+                        }
+                    }
                 } else {
                     val result = privateWorkspaceApprovalPage(outcome.value, card) ?: return@trackOperation
                     entry.holder.acceptPrivateApproval(session, card, lease, result.first, result.second)
@@ -5369,7 +5450,7 @@ class ConversationHostController internal constructor(
                         val lease = request.presentationLease
                         floating != null && lease != null && floating.target?.digest == request.canonicalTargetDigest &&
                             devicePresentationCurrent(entry, floating, lease)
-                    }) else if (decision == "allow" && card.toolName in setOf("task.schedule", "browser.tab", "browser.click", "browser.type", "browser.scroll")) ({
+                    }) else if (decision == "allow" && card.toolName in setOf("task.schedule", "browser.tab", "browser.click", "browser.type", "browser.scroll", "browser.clickPoint")) ({
                         admitted() && ownCurrentEntry(entry, session.conversationId, session.sessionEpoch) &&
                             entry.builder.approvalBinding(request.runId, request.approvalId) == card &&
                             entry.holder.privateApprovalValid(card, request.presentationLease, request.presentationToken)

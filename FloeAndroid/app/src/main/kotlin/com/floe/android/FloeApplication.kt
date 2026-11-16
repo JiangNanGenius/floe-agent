@@ -429,6 +429,8 @@ class FloeApplication : Application() {
 
     @Suppress("unused")
     private lateinit var runtimeCoordinator: RuntimeBootstrapCoordinator
+    internal fun acceptedRuntimeStorageRoot(): com.floe.android.host.creative.CreativeAcceptedRoot? =
+        if (this::runtimeCoordinator.isInitialized) runtimeCoordinator.acceptedStorageRoot() else null
 
     /**
      * The Application-owned G02 host binding. Created data-only in onCreate;
