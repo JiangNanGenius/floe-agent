@@ -76,6 +76,7 @@ import com.floe.android.phonecontrol.PhoneControlNodeAction
 import com.floe.android.phonecontrol.PhoneControlObservation
 import com.floe.android.phonecontrol.PhoneControlObserveRequest
 import com.floe.android.phonecontrol.PhoneControlOwner
+import com.floe.android.phonecontrol.PhoneControlLaunchTargets
 import com.floe.android.phonecontrol.PhoneControlPrincipal
 import com.floe.android.phonecontrol.PhoneControlSensitiveGuard
 import com.floe.android.DeviceAccessSensitiveGuardUi
@@ -120,6 +121,7 @@ import java.io.File
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CancellationException
@@ -561,6 +563,9 @@ internal class DeviceAccessHost(
     private val automationControls = PhoneAutomationControls(
         context, ::onAutomationControl, ::canPresentAutomationControls, ::automationOwnerStillLive)
     private val automatedOwner = java.util.concurrent.atomic.AtomicReference<PhoneControlOwner?>(null)
+    /** Seqlock for exposing selected app metadata; never authorizes an action. */
+    private val targetScopeRevision = AtomicLong(0)
+    private val launchScopeTokens = DeviceLaunchScopeTokens()
     private val deviceRunLiveness = DeviceRunLiveness(
         HostDeviceRunReadPort(host),
         ownerStopped = { owner -> stopFence.isStopped(owner) },
@@ -1201,7 +1206,9 @@ internal class DeviceAccessHost(
             .take(MAX_TARGET_PACKAGES)
             .toSet()
         val changed = next != settings.allowedPackages
+        if (changed) targetScopeRevision.incrementAndGet()
         settings = settings.copy(allowedPackages = next)
+        if (changed) targetScopeRevision.incrementAndGet()
         if (changed && armedBackend == PhoneControlBackend.ADB_UI_AUTOMATION) {
             // The UI target ceiling changed: the old ADB session grant is no
             // longer the user's selection, so it is retired, not widened.
@@ -2995,6 +3002,9 @@ internal class DeviceAccessHost(
      * exact owner's latest action and its actual settled state.
      */
     private fun onPlatformToolStarted(call: PlatformToolCall) {
+        // Paging the already-authorized target list is part of the same
+        // device interaction sequence, but is not itself a screen operation.
+        if (call.tool == DeviceAccessToolCatalog.SYSTEM_ACCESS_STATUS && call.arguments.has("appOffset")) return
         if (call.tool !in DeviceAccessToolCatalog.DEVICE_INTERACTION_NAMES) {
             automationControls.backgroundWorkStarted(ownerOf(call))
             return
@@ -4204,6 +4214,7 @@ internal class DeviceAccessHost(
 
     private suspend fun executeTool(call: PlatformToolCall): PlatformToolOutcome {
         val revision = phoneControlRevision.current(ownerOf(call))
+        val targetRevision = targetScopeRevision.get()
         val outcome = when (call.tool) {
             DeviceAccessToolCatalog.DEVICE_OBSERVE -> sensitiveGuardMutex.withLock { deviceObserve(call) }
             DeviceAccessToolCatalog.DEVICE_ACT -> sensitiveGuardMutex.withLock { deviceAct(call) }
@@ -4244,6 +4255,10 @@ internal class DeviceAccessHost(
         if (call.tool in DeviceAccessToolCatalog.DEVICE_INTERACTION_NAMES &&
             revision != phoneControlRevision.current(ownerOf(call)))
             return PlatformToolOutcome.Failure("device_interrupted", "Observe the current screen before continuing device actions.")
+        if ((call.tool == DeviceAccessToolCatalog.DEVICE_OBSERVE ||
+                (call.tool == DeviceAccessToolCatalog.SYSTEM_ACCESS_STATUS && call.arguments.has("appOffset"))) &&
+            (targetRevision % 2L != 0L || targetRevision != targetScopeRevision.get()))
+            return PlatformToolOutcome.Failure("device_stale_observation", "The selected apps changed; observe again before using device controls.")
         return outcome
     }
 
@@ -4794,7 +4809,7 @@ internal class DeviceAccessHost(
                         PlatformToolOutcome.Failure("device_stopped_by_user")
                     } else {
                         if (readbackOwner == ownerOf(call)) readbackOwner = null
-                        observationOutcome(result.value)
+                        observationOutcome(call, principal, source, result.value)
                     }
                 }
                 is PhoneControlResult.Denied -> deniedOutcome(result.reason)
@@ -4847,7 +4862,7 @@ internal class DeviceAccessHost(
         return when (fallback) {
             is PhoneControlResult.Ok -> {
                 if (readbackOwner == owner) readbackOwner = null
-                observationOutcome(fallback.value)
+                observationOutcome(call, principal, PhoneControlStructuredSource.ADB_UI_AUTOMATION, fallback.value)
             }
             is PhoneControlResult.Denied -> deniedOutcome(fallback.reason)
             is PhoneControlResult.Unavailable -> unavailableOutcome(fallback.reason)
@@ -5336,11 +5351,104 @@ internal class DeviceAccessHost(
 
     // ------------------------------------------------------------ phone results
 
-    private fun observationOutcome(observation: PhoneControlObservation): PlatformToolOutcome =
+    private fun observationOutcome(
+        call: PlatformToolCall,
+        principal: PhoneControlPrincipal,
+        source: PhoneControlStructuredSource,
+        observation: PhoneControlObservation,
+    ): PlatformToolOutcome =
         PlatformToolOutcome.Success(
-            summary = observationDigest(observation),
+            // This metadata precedes the digest so the 2048-character wire
+            // limit cannot hide the package list. The short first page and
+            // the 1800-character digest fit together without truncation.
+            summary = listOfNotNull((authorizedLaunchTargetPage(call, principal, source, 0, maxJsonChars = 130)
+                as? AuthorizedLaunchPage.Ready)?.text,
+                observationDigest(observation)).joinToString("\n"),
             evidence = observationEvidence(observation),
         )
+
+    /** The selected scope is metadata, not authority to launch. A fresh live
+     * claim and backend grant are checked on BOTH sides of package lookup. */
+    private fun authorizedLaunchScope(
+        call: PlatformToolCall,
+        principal: PhoneControlPrincipal,
+        source: PhoneControlStructuredSource,
+    ): DeviceLaunchScopeTokens.Scope? {
+        val owner = principal.owner
+        val targetRevision = targetScopeRevision.get()
+        if (targetRevision % 2L != 0L) return null
+        val controlRevision = phoneControlRevision.current(owner)
+        if (closed || isOwnerStopped(owner) || phonePause.isPaused(owner) ||
+            armedOwner != owner || host.nativeRootEpoch() != call.epoch ||
+            !isOwnerRunLive(owner) || !PlatformToolsNativeLive.isLive(call.claim) ||
+            PlatformToolsNativeLive.shouldStop(call.claim) ||
+            activeStructuredSource(owner, call.epoch) != source) return null
+        val (granted, session) = when (source) {
+            PhoneControlStructuredSource.ACCESSIBILITY -> {
+                if (armedBackend != PhoneControlBackend.ACCESSIBILITY || phoneStatus.activeOwner != owner ||
+                    phoneStatus.blocker != null) return null
+                val grant = authorizePhone(principal) ?: return null
+                (PhoneControlLaunchTargets.allowed(principal, grant) ?: return null) to
+                    "accessibility:${phoneStatus.fenceGeneration}"
+            }
+            PhoneControlStructuredSource.ADB_UI_AUTOMATION -> {
+                val backend = adbUiBackend ?: return null
+                if (!backend.isArmed(owner, call.epoch)) return null
+                val sessionTargets = backend.targets(owner) ?: return null
+                val identity = backend.scopeSessionIdentity(owner, call.epoch) ?: return null
+                val grant = PhoneControlGrant(owner, principal.epoch, sessionTargets,
+                    allowGlobalNavigation = true, allowScreenshot = false,
+                    generation = principal.generation, grantID = principal.grantID)
+                (PhoneControlLaunchTargets.allowed(principal, grant) ?: return null) to identity
+            }
+            PhoneControlStructuredSource.NONE -> return null
+        }
+        val selected = granted intersect settings.allowedPackages
+        if (targetScopeRevision.get() != targetRevision ||
+            phoneControlRevision.current(owner) != controlRevision) return null
+        return DeviceLaunchScopeTokens.Scope(
+            owner = "${owner.taskID}/${owner.runID}", epoch = call.epoch, backend = source.name,
+            session = session, controlRevision = controlRevision, targetRevision = targetRevision,
+            packages = selected,
+        )
+    }
+
+    private sealed interface AuthorizedLaunchPage {
+        data class Ready(val text: String) : AuthorizedLaunchPage
+        data object ScopeChanged : AuthorizedLaunchPage
+        data object Unavailable : AuthorizedLaunchPage
+    }
+
+    private fun authorizedLaunchTargetPage(
+        call: PlatformToolCall,
+        principal: PhoneControlPrincipal,
+        source: PhoneControlStructuredSource,
+        offset: Int,
+        expectedScope: String? = null,
+        maxJsonChars: Int = 1_500,
+    ): AuthorizedLaunchPage {
+        val scope = authorizedLaunchScope(call, principal, source) ?: return AuthorizedLaunchPage.Unavailable
+        if (expectedScope != null && !launchScopeTokens.matches(scope, expectedScope)) {
+            return AuthorizedLaunchPage.ScopeChanged
+        }
+        val token = launchScopeTokens.token(scope)
+        val manager = context.packageManager
+        val page = DeviceLaunchTargetPage.render(scope.packages, offset, token, maxJsonChars) { packageName ->
+            runCatching {
+                val info = if (Build.VERSION.SDK_INT >= 33) {
+                    manager.getApplicationInfo(packageName, android.content.pm.PackageManager.ApplicationInfoFlags.of(0L))
+                } else {
+                    @Suppress("DEPRECATION")
+                    manager.getApplicationInfo(packageName, 0)
+                }
+                val launch = manager.getLaunchIntentForPackage(packageName)
+                if (!info.enabled || launch?.component?.packageName != packageName) null
+                else DeviceLaunchTargetPage.Target(packageName, info.loadLabel(manager).toString())
+            }.getOrNull()
+        }
+        val after = authorizedLaunchScope(call, principal, source) ?: return AuthorizedLaunchPage.Unavailable
+        return if (after == scope) AuthorizedLaunchPage.Ready(page) else AuthorizedLaunchPage.ScopeChanged
+    }
 
     private fun detailOutcome(page: PhoneControlDetailPage): PlatformToolOutcome {
         val remaining = (page.expiresAtElapsedRealtimeMillis - SystemClock.elapsedRealtime())
@@ -5486,6 +5594,23 @@ internal class DeviceAccessHost(
     // ------------------------------------------------------------- system tools
 
     private fun systemStatus(call: PlatformToolCall): PlatformToolOutcome {
+        val appOffset = when (val raw = call.arguments.opt("appOffset")) {
+            null -> null
+            is Int -> raw
+            is Long -> raw.takeIf { it in 0..PhoneControlLimits.MAX_TARGET_PACKAGES.toLong() }?.toInt() ?: -1
+            else -> -1
+        }
+        if (appOffset != null && appOffset !in 0..PhoneControlLimits.MAX_TARGET_PACKAGES) {
+            return PlatformToolOutcome.Failure("invalid_arguments", "appOffset must be between 0 and 64")
+        }
+        val rawAppScope = call.arguments.opt("appScope")
+        if (rawAppScope != null && (rawAppScope !is String || appOffset == null)) {
+            return PlatformToolOutcome.Failure("invalid_arguments", "appScope requires appOffset")
+        }
+        val appScope = rawAppScope as? String
+        if (appOffset != null && appOffset > 0 && appScope == null) {
+            return PlatformToolOutcome.Failure("device_stale_observation")
+        }
         val adb = adbStatus
         val root = rootStatus
         val phone = phoneStatus
@@ -5622,7 +5747,21 @@ internal class DeviceAccessHost(
                 },
             )
         }
-        return PlatformToolOutcome.Success(summary = summary)
+        if (appOffset == null) return PlatformToolOutcome.Success(summary = summary)
+        // Status is otherwise always available, but app identities are only
+        // disclosed to the same task's existing live device-control grant.
+        val principal = phonePrincipal(call)
+            ?: return PlatformToolOutcome.Failure("device_arm_required")
+        bindPhoneCall(call)
+        return try {
+            when (val page = authorizedLaunchTargetPage(call, principal, structuredSource, appOffset, appScope)) {
+                is AuthorizedLaunchPage.Ready -> PlatformToolOutcome.Success(summary = page.text)
+                AuthorizedLaunchPage.ScopeChanged -> PlatformToolOutcome.Failure("device_stale_observation")
+                AuthorizedLaunchPage.Unavailable -> PlatformToolOutcome.Failure("device_arm_required")
+            }
+        } finally {
+            unbindPhoneCall(call)
+        }
     }
 
     private val readOnlyOperations = setOf(

@@ -191,6 +191,15 @@ internal class AdbUiBackend(
         session?.takeIf { it.spec.owner == owner }?.spec?.targets
     }
 
+    /** Identity for cursor fencing only; never sent to the model. */
+    fun scopeSessionIdentity(owner: PhoneControlOwner, epoch: Long): String? = synchronized(gate) {
+        session?.takeIf {
+            it.spec.owner == owner && it.spec.epoch == epoch &&
+                SystemClock.elapsedRealtime() < it.registeredAtElapsed + SESSION_TTL_ELAPSED &&
+                ownerIsLive(owner, epoch)
+        }?.spec?.grantId
+    }
+
     fun screenshotAllowed(owner: PhoneControlOwner): Boolean = synchronized(gate) {
         session?.takeIf { it.spec.owner == owner }?.spec?.screenshotAllowed == true
     }
