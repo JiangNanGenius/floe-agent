@@ -8,6 +8,8 @@
 
 本版完成悬浮球结束自动收起及旧回调隔离、部分同页观察过期恢复和敏感输入保护。三星实际显示气泡并点击接管后气泡消失，设备页显示没有任务正在控制；模型在计算器测试中先尝试未授权的另一款计算器，被拒绝后停止，不能作为完整跨应用操作通过。临时测试任务、权限和电源设置已恢复。分页过期恢复、敏感输入跨后端流程、浏览器修复和增量升级仍需实际设备场景验证；原生任务已结束但最后一次变更快照仍有工具／Agent 计数，资源完全释放尚未证明。
 
+发布后源码 `0ba873b248bebbcb87333a69c9a031154930dad5` 修正安装等待的后台工作文案、五分钟后重新检查入口、旧等待回调竞态以及本次强制安装选择在运行环境繁忙等待中的传递；运行环境空闲检查保留。定向竞态宿主及 Full 主应用 Kotlin 编译通过；此修复不在 1.0.17 APK 中，尚未实机验证。
+
 English: Android 1.0.17/code126 is published from the exact source and APK above. Samsung completed an in-app full-package update from 1.0.16, including its matching runtime; installed bytes and UIDs were checked. A device-control takeover removed the bubble; the calculator flow was stopped after the model selected an unauthorized package. Delta updates and the remaining device flows are not claimed as verified.
 
 ## 1.0.16／125 已公开：任务收尾与设备控制（2026-11-16）
