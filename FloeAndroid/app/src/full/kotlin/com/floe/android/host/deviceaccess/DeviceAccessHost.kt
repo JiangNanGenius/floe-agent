@@ -5533,7 +5533,15 @@ internal class DeviceAccessHost(
     }
 
     private fun observationDigest(observation: PhoneControlObservation): String {
-        return com.floe.android.phonecontrol.PhoneControlObservationText.summary(observation, MAX_DIGEST_NODES)
+        // The persisted guard applies across windows, not just to a password
+        // field on this observation. Never infer it from sensitiveWindow,
+        // which also represents ordinary protected system/password screens.
+        val notice = PhoneControlSensitiveGuard.state(context)?.tickets
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { context.getString(R.string.device_sensitive_guard_observe_notice) }
+        return com.floe.android.phonecontrol.PhoneControlObservationText.summary(
+            observation, MAX_DIGEST_NODES, protectionNotice = notice,
+        )
     }
 
     private fun observationEvidence(observation: PhoneControlObservation): List<String> {

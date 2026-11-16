@@ -16,6 +16,27 @@ import org.junit.Test
  */
 class PhoneControlObservationProjectionTest {
     @Test
+    fun guardRecoveryNoticePrecedesBoundedRowsWithoutRevealingProtectedText() {
+        val secret = testNode(
+            ref = "n0", className = "android.widget.EditText", editable = true,
+            password = true, redacted = true, text = "synthetic-secret",
+        )
+        val buttons = (1..60).map { index ->
+            testNode(ref = "n$index", className = "android.widget.Button",
+                text = "Item $index", clickable = true)
+        }
+        val notice = "protection=active. Ask the user to clear the content and leave the screen; " +
+            "manually release it in Floe Settings, then observe again."
+        val observation = testObservation(listOf(secret) + buttons)
+        val text = PhoneControlObservationText.summary(observation, protectionNotice = notice)
+        assertTrue(text.startsWith(notice + "\n"))
+        assertTrue(text.length <= 1_800)
+        assertTrue(text.contains("[protected]"))
+        assertFalse(text.contains("synthetic-secret"))
+        assertFalse(PhoneControlObservationText.summary(observation).contains("protection=active"))
+    }
+
+    @Test
     fun structuralIdsDoNotCrowdOutDateAndTimeControls() {
         val structural = (0 until 40).map { index ->
             testNode(

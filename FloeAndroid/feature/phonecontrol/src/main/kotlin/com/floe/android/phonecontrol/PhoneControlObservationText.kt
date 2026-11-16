@@ -36,8 +36,17 @@ object PhoneControlObservationText {
 
     private data class LabelPart(val value: String, val kind: LabelKind)
 
-    fun summary(observation: PhoneControlObservation, maxNodes: Int = 24): String {
+    fun summary(
+        observation: PhoneControlObservation,
+        maxNodes: Int = 24,
+        protectionNotice: String? = null,
+    ): String {
         val out = StringBuilder(2_000)
+        // This is fixed application copy, never text from the captured page.
+        // Put it before rows so a bounded result cannot hide recovery steps.
+        protectionNotice?.takeIf { it.isNotBlank() }?.take(400)?.let {
+            out.append(it).append('\n')
+        }
         out.append("observation=").append(observation.observationId)
         out.append(" page=").append(observation.packageName ?: "unknown")
         observation.windowTitle?.replace('\n', ' ')?.replace('\r', ' ')?.take(48)?.let { out.append(" title=").append(it) }
