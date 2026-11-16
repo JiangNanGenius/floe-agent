@@ -581,7 +581,8 @@ extension FacadeRunDomain {
         workspaceName: String?,
         hostToolCeiling: [String]?,
         environmentID: String?,
-        notes: NotesRunBinding? = nil
+        notes: NotesRunBinding? = nil,
+        retryWorkspaceReadOnly: Bool = false
     ) async throws -> ConversationRunService {
         let temporary = bundle.identity == .temporary
         let isNotes = bundle.identity == .notes
@@ -665,6 +666,16 @@ extension FacadeRunDomain {
             } ?? .notAttempted
         }
         let resolvedExecutionTarget = routeAdmission.target
+        if let resolved = resolvedExecutionTarget,
+           resolved.target.taskID == conversationID,
+           resolved.pin.taskID == conversationID, resolved.pin.runID == runID,
+           resolved.pin.rootEpoch == epoch, resolved.pin.matches(resolved.target),
+           var owner = owners[runID], owner.conversationID == conversationID,
+           owner.epoch == epoch, !owner.cancelRequested,
+           G02NativeRootEpoch.readback() == epoch, fenceIsValid(owner.launchToken) {
+            owner.shellApprovalTarget = resolved
+            register(owner)
+        }
         // The persisted task policy row was committed by the ORIGINAL
         // prepare (or an earlier turn); the service policy is rebuilt from
         // THAT truth, never from envelope/model text. A TEMPORARY session
@@ -799,8 +810,48 @@ extension FacadeRunDomain {
             // root. No App-root, first-project or temporary-directory fallback.
             // A Notes run is chat-only: it gets no Linux workspace root and no
             // job dependency probe (no Linux/environment/job role).
-            configuration.workspaceRootURL = await LinuxWorkspaceAuthority.trustedWorkspaceRoot(
-                runID: runID, conversationID: conversationID)
+            let selectedBinding: (workspaceID: UUID, conversationID: UUID, rootURL: URL)?
+            if retryWorkspaceReadOnly {
+                selectedBinding = await LinuxWorkspaceAuthority.retryWorkspaceRootReadOnly(
+                    runID: runID, conversationID: conversationID)
+            } else {
+                selectedBinding = await LinuxWorkspaceAuthority.trustedWorkspaceBinding(
+                    runID: runID, conversationID: conversationID)
+            }
+            configuration.workspaceRootURL = selectedBinding?.rootURL
+            // Capture the ACTUAL root passed into this service, without an
+            // intervening suspension. A candidate is not approval authority:
+            // normal starts promote it only with an active-run readback;
+            // retry can promote it only after the resume transaction commits.
+            if let configured = configuration.workspaceRootURL, let selected = selectedBinding,
+               selected.conversationID == conversationID,
+               selected.rootURL.standardizedFileURL == configured.standardizedFileURL,
+               let rootHandle = WorkspaceApprovalRootHandle(root: configured),
+               var owner = owners[runID], owner.conversationID == conversationID,
+               owner.epoch == epoch, !owner.cancelRequested,
+               G02NativeRootEpoch.readback() == epoch, fenceIsValid(owner.launchToken) {
+                // Both fresh and resumed candidates freeze the ID and URL
+                // that were selected together for the actual service.
+                let candidate = WorkspaceApprovalLaunchCandidate(
+                    workspaceID: selected.workspaceID, rootURL: configured,
+                    allowedPaths: configuration.allowedWorkspacePaths, rootHandle: rootHandle)
+                owner.workspaceApprovalCandidate = candidate
+                register(owner)
+                // Retry is NEVER promoted until its own C1 commit succeeds.
+                if !retryWorkspaceReadOnly {
+                    let resolved = await LinuxWorkspaceAuthority.approvalWorkspaceReadOnly(runID: runID)
+                    if var current = owners[runID], current.conversationID == conversationID,
+                       current.epoch == epoch, !current.cancelRequested,
+                       current.launchToken == owner.launchToken, fenceIsValid(current.launchToken),
+                       G02NativeRootEpoch.readback() == epoch,
+                       current.workspaceApprovalCandidate == candidate,
+                       let proof = candidate.promote(current: resolved, conversationID: conversationID) {
+                        current.workspaceApprovalProof = proof
+                        current.workspaceApprovalCandidate = nil
+                        register(current)
+                    }
+                }
+            }
             // PRoot is not a VM; retain the conservative approval class.
             configuration.outstandingDependencies = {
                 await RuntimeFacadeJobBindings.shared.outstandingRunDependencies(runID: runID)

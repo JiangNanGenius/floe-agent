@@ -238,6 +238,7 @@ object BridgeV3CommandMatrix {
         rule("run.input.remove", BridgeV3Scope.Kind.TASK_EXECUTION, revision = true),
         rule("run.input.reorder", BridgeV3Scope.Kind.TASK_EXECUTION, revision = true),
         rule("run.approval.resolve", BridgeV3Scope.Kind.TASK_EXECUTION, revision = true),
+        rule("run.approval.presentation", BridgeV3Scope.Kind.TASK_EXECUTION, revision = true),
         rule("run.policy.update", BridgeV3Scope.Kind.TASK_EXECUTION, revision = true),
         rule("run.skillcancel", BridgeV3Scope.Kind.TASK_EXECUTION, revision = true),
         rule("run.snapshot", BridgeV3Scope.Kind.TASK_EXECUTION),

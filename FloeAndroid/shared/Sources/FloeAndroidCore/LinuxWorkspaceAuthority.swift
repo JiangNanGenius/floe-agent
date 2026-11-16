@@ -393,6 +393,71 @@ public enum LinuxWorkspaceAuthority {
         return await resolveWorkspace(conversationID: run.conversationID)
     }
 
+    /// Approval display/decision readback only: never materializes a missing
+    /// workspace. This proves the current persisted owner and managed path;
+    /// the caller separately compares the retained directory identity.
+    static func approvalWorkspaceReadOnly(runID: UUID) async -> (workspaceID: UUID, conversationID: UUID, rootURL: URL)? {
+        await managedWorkspaceReadOnly(runID: runID, allowTerminalForRootSelection: false)
+    }
+
+    /// Service assembly for a retry may inspect a terminal row solely to
+    /// select an existing root. This does not establish a live run or grant
+    /// approval; promotion still requires the active-only readback after C1.
+    static func retryWorkspaceRootReadOnly(runID: UUID, conversationID: UUID) async -> (workspaceID: UUID, conversationID: UUID, rootURL: URL)? {
+        guard let current = await managedWorkspaceReadOnly(runID: runID, allowTerminalForRootSelection: true),
+              current.conversationID == conversationID else { return nil }
+        return current
+    }
+
+    /// A negative terminal blacklist would accidentally admit newly introduced
+    /// or malformed states. Interruptions and cancellation are not live
+    /// approval carriers, even though other run controls may operate on them.
+    static func approvalWorkspaceStateAllowed(_ state: String) -> Bool {
+        ["preparing", "streamingModel", "waitingApproval", "executingTool",
+         "compacting", "paused", "verifying"].contains(state)
+    }
+
+    private static func managedWorkspaceReadOnly(runID: UUID, allowTerminalForRootSelection: Bool) async -> (workspaceID: UUID, conversationID: UUID, rootURL: URL)? {
+        func allowed(_ state: String) -> Bool {
+            approvalWorkspaceStateAllowed(state) ||
+                (allowTerminalForRootSelection && ["failed", "interrupted", "checkpointed"].contains(state))
+        }
+        guard let composition = G02RuntimeComposition.shared.installedComposition,
+              let storagePath = currentStorageRootPath(),
+              let run = try? await composition.cluster.runStore.run(id: runID),
+              allowed(run.state),
+              let workspaceID = try? await composition.cluster.workspaceStore.workspaceID(conversationID: run.conversationID),
+              let record = try? await composition.cluster.workspaceStore.workspace(id: workspaceID),
+              record.id == workspaceID, let relative = record.internalRelativePath,
+              let currentRun = try? await composition.cluster.runStore.run(id: runID),
+              currentRun.conversationID == run.conversationID, allowed(currentRun.state),
+              let currentWorkspaceID = try? await composition.cluster.workspaceStore.workspaceID(conversationID: run.conversationID),
+              currentWorkspaceID == workspaceID,
+              currentStorageRootPath() == storagePath,
+              G02RuntimeComposition.shared.installedComposition?.epoch == composition.epoch
+        else { return nil }
+        let root = storagePath + "/Workspace"
+        let parent: String
+        let target: String
+        switch record.kind {
+        case .privateTask:
+            guard relative == "PrivateTasks/\(run.conversationID.uuidString)" else { return nil }
+            parent = root + "/PrivateTasks"
+            target = root + "/" + relative
+        case .project:
+            guard relative == C01ProjectRootLayout.internalRelativePath(projectID: workspaceID),
+                  C01ProjectRootLayout.isManagedProject(record),
+                  C01ProjectRootLayout.inspectProjectDirectory(rootPath: storagePath, projectID: workspaceID) == .available
+            else { return nil }
+            parent = root + "/Projects"
+            target = C01ProjectRootLayout.projectDirectory(rootPath: storagePath, projectID: workspaceID)
+        }
+        guard WorkspaceNoFollow.kind(root) == .directory,
+              WorkspaceNoFollow.kind(parent) == .directory,
+              WorkspaceNoFollow.kind(target) == .directory else { return nil }
+        return (workspaceID, run.conversationID, URL(fileURLWithPath: target, isDirectory: true))
+    }
+
     public static func resolveWorkspace(conversationID: UUID) async -> (workspaceID: UUID, conversationID: UUID, rootURL: URL)? {
         guard let composition = G02RuntimeComposition.shared.installedComposition else { return nil }
         let store = composition.cluster.workspaceStore
@@ -484,11 +549,17 @@ public enum LinuxWorkspaceAuthority {
     /// workspace binding. Nil instead of a guess, exactly as the shell lane
     /// contract requires.
     public static func trustedWorkspaceRoot(runID: UUID?, conversationID: UUID?) async -> URL? {
+        await trustedWorkspaceBinding(runID: runID, conversationID: conversationID)?.rootURL
+    }
+
+    /// Preserve the original run-first/conversation-fallback selection while
+    /// carrying the workspace identity that produced the selected URL.
+    static func trustedWorkspaceBinding(runID: UUID?, conversationID: UUID?) async -> (workspaceID: UUID, conversationID: UUID, rootURL: URL)? {
         if let runID, let resolved = await resolveWorkspace(runID: runID) {
-            return resolved.rootURL
+            return resolved
         }
         if let conversationID, let resolved = await resolveWorkspace(conversationID: conversationID) {
-            return resolved.rootURL
+            return resolved
         }
         return nil
     }

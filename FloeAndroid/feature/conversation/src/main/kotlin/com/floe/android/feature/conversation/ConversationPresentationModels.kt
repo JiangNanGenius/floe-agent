@@ -230,6 +230,33 @@ enum class ApprovalScopeChoiceUi(val swiftRaw: String) {
  * first became visible: an allowed workspace action is denied if the user
  * switches roots (the host enforces; the UI preserves the identity).
  */
+data class WorkspaceFileApprovalUi(
+    val workspaceId: String,
+    val operation: String,
+    val targetPath: String,
+    val source: String,
+    val overwrite: String,
+    val precondition: String,
+    val sourcePath: String? = null,
+    val sourcePrecondition: String? = null,
+) {
+    override fun toString(): String = "WorkspaceFileApprovalUi(operation=$operation, details=redacted)"
+}
+
+/** Full local-only shell review, never an execution grant. */
+data class LocalShellApprovalUi(
+    val environmentId: String,
+    val workspaceId: String,
+    val targetRevision: Long,
+    val command: String,
+    val cwd: String,
+    val timeoutSeconds: Double,
+    val maxOutputBytes: Int,
+    val environmentTransaction: Boolean,
+) {
+    override fun toString(): String = "LocalShellApprovalUi(details=redacted)"
+}
+
 data class ApprovalCardUi(
     val approvalId: String,           // ⇄ toolCall.id (provider call id)
     val runId: String,
@@ -256,6 +283,8 @@ data class ApprovalCardUi(
     val workspaceVerified: Boolean = false,
     val actionKind: String? = null,
     val actionPackage: String? = null,
+    val workspaceAction: WorkspaceFileApprovalUi? = null,
+    val localShellAction: LocalShellApprovalUi? = null,
     /** The generation and descriptor are verified independently of whether
      * enough action detail exists to allow the request. */
     val identityVerified: Boolean = false,

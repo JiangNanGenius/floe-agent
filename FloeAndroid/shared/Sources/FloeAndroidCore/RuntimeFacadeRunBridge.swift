@@ -211,6 +211,8 @@ public enum RunDomainFacade {
                 reply = await domain.inputReorder(envelope: envelope)
             case "run.approval.resolve":
                 reply = await domain.resolveApproval(envelope: envelope)
+            case "run.approval.presentation":
+                reply = await domain.approvalPresentation(envelope: envelope)
             case "run.policy.update":
                 reply = await domain.policyUpdate(envelope: envelope)
             case "run.skillcancel":

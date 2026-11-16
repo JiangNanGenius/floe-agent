@@ -425,6 +425,9 @@ enum RunSnapshotWireBuilder {
                     "reason": .string(bounded(waiting.reason, maxBytes: 1_024)),
                     "requestedAt": .string(RunWireDate.encode(waiting.requestedAt)),
                     "generation": .string(waiting.generation.uuidString.lowercased()),
+                    // The generic snapshot is shared by several host readers.
+                    // Never add workspace paths to it; a dedicated human-only
+                    // presentation channel is needed before enabling them.
                     "presentation": approvalPresentation(waiting, descriptor: descriptorLookup(waiting.toolCall.toolName)),
                 ])
                 fields["approvalRevision"] = .object([
@@ -727,7 +730,8 @@ enum RunSnapshotWireBuilder {
     /// values can contain credentials that key-based redaction cannot prove safe.
     static func approvalPresentation(
         _ waiting: AgentState.WaitingApproval,
-        descriptor: ToolCatalog.Descriptor?
+        descriptor: ToolCatalog.Descriptor?,
+        workspaceDetails: [String: SettingsDomainV1.JSONValue]? = nil
     ) -> SettingsDomainV1.JSONValue {
         let generation = waiting.generation.uuidString.lowercased()
         guard let descriptor else {
@@ -739,7 +743,7 @@ enum RunSnapshotWireBuilder {
         case .host: requestedScope = "host"
         case .hostPath: requestedScope = "hostPath"
         }
-        let details = safeApprovalActionDetails(waiting.toolCall)
+        let details = safeApprovalActionDetails(waiting.toolCall) ?? workspaceDetails
         var value: [String: SettingsDomainV1.JSONValue] = [
             "status": .string("available"),
             "generation": .string(generation),
@@ -749,7 +753,7 @@ enum RunSnapshotWireBuilder {
             "riskLabels": .array(descriptor.riskLabels.map(\.rawValue).sorted().map { .string($0) }),
             "requestedScope": .string(requestedScope),
             "grantScope": .string("singleUse"),
-            "workspaceVerified": .boolean(false),
+            "workspaceVerified": .boolean(workspaceDetails != nil),
             "descriptorIdentity": .string(descriptor.authorizationIdentity),
             "detailStatus": .string(details == nil ? "unavailable" : "available"),
         ]

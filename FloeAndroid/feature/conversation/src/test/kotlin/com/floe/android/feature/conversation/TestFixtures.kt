@@ -110,6 +110,12 @@ class RecordingHost : ConversationUiCallbacks {
         record("reorderPendingInputs", session, orderedInputIds); return true
     }
 
+    var privatePresentationAccepted = false
+    override fun requestApprovalPresentation(session: ConversationSessionToken, card: ApprovalCardUi, lease: String): Boolean {
+        record("requestApprovalPresentation", session, card, lease)
+        return privatePresentationAccepted
+    }
+
     override fun resolveApproval(request: ApprovalDecisionRequest): Boolean {
         record("resolveApproval", request); return true
     }

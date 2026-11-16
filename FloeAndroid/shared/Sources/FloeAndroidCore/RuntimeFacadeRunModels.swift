@@ -1057,22 +1057,24 @@ public struct RunApprovalResolveQuery: Sendable, Equatable {
     public var callID: String
     public var expectedApprovalVersion: String
     public var expectedDescriptorIdentity: String
+    public var presentationToken: String?
     public var branch: Branch
     public var denyReason: String?
 
 
-    public init(conversationID: UUID, runID: UUID, callID: String, expectedApprovalVersion: String, expectedDescriptorIdentity: String, branch: Branch, denyReason: String?) {
+    public init(conversationID: UUID, runID: UUID, callID: String, expectedApprovalVersion: String, expectedDescriptorIdentity: String, presentationToken: String? = nil, branch: Branch, denyReason: String?) {
         self.conversationID = conversationID
         self.runID = runID
         self.callID = callID
         self.expectedApprovalVersion = expectedApprovalVersion
         self.expectedDescriptorIdentity = expectedDescriptorIdentity
+        self.presentationToken = presentationToken
         self.branch = branch
         self.denyReason = denyReason
     }
 
     public static let allowedKeys: Set<String> = [
-        "callID", "decision", "reason", "expectedApprovalVersion", "approvalSchema", "expectedDescriptorIdentity",
+        "callID", "decision", "reason", "expectedApprovalVersion", "approvalSchema", "expectedDescriptorIdentity", "presentationToken",
     ]
 
     public static func parse(payload: SettingsDomainV1.JSONValue?, owner: OwnerIdentity) throws
@@ -1091,6 +1093,7 @@ public struct RunApprovalResolveQuery: Sendable, Equatable {
             callID: try object.string("callID", maxBytes: 128, nonBlank: true),
             expectedApprovalVersion: try object.string("expectedApprovalVersion", maxBytes: 64),
             expectedDescriptorIdentity: try object.string("expectedDescriptorIdentity", maxBytes: 64, nonBlank: true),
+            presentationToken: try object.optionalString("presentationToken", maxBytes: 36),
             branch: branch,
             denyReason: try object.optionalString("reason", maxBytes: 512))
     }
@@ -1541,6 +1544,10 @@ public enum RunDomainHandlerPlan {
                     command: "run.approval.resolve", scope: .taskExecution, configurationScope: nil,
                     serviceMethod: "FacadeRunDomain.resolveApproval",
                     integrationNote: "revision approval.<callID>/generation; only a matching LIVE request resolves; scope re-derived from the bound ToolCall (call-bound + toolAuthorizationIdentity), card retires only on durable approvalResolved"),
+            Binding(handlerKey: BridgeV3.handlerKey(scope: .taskExecution, command: "run.approval.presentation"),
+                    command: "run.approval.presentation", scope: .taskExecution, configurationScope: nil,
+                    serviceMethod: "FacadeRunDomain.approvalPresentation",
+                    integrationNote: "host-only ephemeral approval details, exact live owner and generation; never a model tool or durable event"),
             Binding(handlerKey: BridgeV3.handlerKey(scope: .taskExecution, command: "run.policy.update"),
                     command: "run.policy.update", scope: .taskExecution, configurationScope: nil,
                     serviceMethod: "FacadeRunDomain.policyUpdate",

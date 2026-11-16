@@ -365,6 +365,42 @@ public enum RunLaunchPhase: String, Sendable, Equatable {
 /// One facade-owned run projection. Mutable ONLY through the domain actor;
 /// the Task/actor references live in the parallel `liveServices` map so the
 /// struct itself stays value-typed.
+struct WorkspaceApprovalLaunchProof: Sendable, Equatable {
+    let workspaceID: UUID
+    let rootURL: URL
+    let allowedPaths: [String]
+    let rootHandle: WorkspaceApprovalRootHandle
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.workspaceID == rhs.workspaceID && lhs.rootURL == rhs.rootURL &&
+            lhs.allowedPaths == rhs.allowedPaths && lhs.rootHandle === rhs.rootHandle
+    }
+}
+
+/// The exact runtime-configured root retained during service assembly. This
+/// is not approval authority: retry remains terminal until C1 commits and an
+/// independent active-run workspace readback promotes it to a proof.
+struct WorkspaceApprovalLaunchCandidate: Sendable, Equatable {
+    let workspaceID: UUID
+    let rootURL: URL
+    let allowedPaths: [String]
+    let rootHandle: WorkspaceApprovalRootHandle
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.workspaceID == rhs.workspaceID && lhs.rootURL == rhs.rootURL &&
+            lhs.allowedPaths == rhs.allowedPaths && lhs.rootHandle === rhs.rootHandle
+    }
+
+    func promote(current: (workspaceID: UUID, conversationID: UUID, rootURL: URL)?,
+                 conversationID: UUID) -> WorkspaceApprovalLaunchProof? {
+        guard let current, current.conversationID == conversationID, current.workspaceID == workspaceID,
+              current.rootURL.standardizedFileURL == rootURL.standardizedFileURL,
+              rootHandle.matches(root: current.rootURL) else { return nil }
+        return WorkspaceApprovalLaunchProof(workspaceID: current.workspaceID, rootURL: rootURL,
+                                            allowedPaths: allowedPaths, rootHandle: rootHandle)
+    }
+}
+
 public struct RunOwnership: Sendable, Equatable {
     public var conversationID: UUID
     public var runID: UUID
@@ -405,6 +441,12 @@ public struct RunOwnership: Sendable, Equatable {
     public var environmentID: String?
     /// The EXACT admitted job identity (nil when not requested).
     public var jobID: String?
+    // Display proof only, captured from the actual runtime configuration;
+    // never a grant or a replacement for the workspace guard.
+    var workspaceApprovalProof: WorkspaceApprovalLaunchProof?
+    var workspaceApprovalCandidate: WorkspaceApprovalLaunchCandidate?
+    // Exact target+run pin resolved for this service, never a model label.
+    var shellApprovalTarget: C02ResolvedExecutionTarget?
 
     public init(conversationID: UUID, runID: UUID, epoch: UInt64,
                 identity: RunExecutionIdentity,
@@ -428,6 +470,9 @@ public struct RunOwnership: Sendable, Equatable {
         self.intelligenceTerminalFed = false
         self.environmentID = nil
         self.jobID = nil
+        self.workspaceApprovalProof = nil
+        self.workspaceApprovalCandidate = nil
+        self.shellApprovalTarget = nil
         self.bundle = bundle
     }
 
@@ -453,6 +498,9 @@ public struct RunOwnership: Sendable, Equatable {
             && lhs.intelligenceTerminalFed == rhs.intelligenceTerminalFed
             && lhs.environmentID == rhs.environmentID
             && lhs.jobID == rhs.jobID
+            && lhs.workspaceApprovalProof == rhs.workspaceApprovalProof
+            && lhs.workspaceApprovalCandidate == rhs.workspaceApprovalCandidate
+            && lhs.shellApprovalTarget == rhs.shellApprovalTarget
     }
 }
 
@@ -703,6 +751,7 @@ public actor FacadeRunDomain {
     internal let tools: RunToolAssembly
 
     internal var owners: [UUID: RunOwnership] = [:]
+    private var workspaceApprovalReceipts = WorkspaceApprovalReceiptStore()
     internal var conversationRuns: [UUID: Set<UUID>] = [:]
     internal var deleteGuards: [UUID: DeleteGuardState] = [:]
     internal var guardCounter: UInt64 = 0
@@ -979,6 +1028,7 @@ public actor FacadeRunDomain {
     }
 
     func unregister(_ ownership: RunOwnership) {
+        workspaceApprovalReceipts.retire(runID: ownership.runID)
         owners[ownership.runID] = nil
         conversationRuns[ownership.conversationID]?.remove(ownership.runID)
         liveServices[ownership.runID] = nil
@@ -2519,7 +2569,7 @@ public actor FacadeRunDomain {
                 // The retry envelope carries no requested environment/job
                 // role; there is no accepted binding to forward here (the
                 // original launch's admission was not durable state).
-                environmentID: nil)
+                environmentID: nil, retryWorkspaceReadOnly: true)
         } catch let error as RunDomainError {
             // C0: nothing durable was committed for this resume yet (the
             // failed/checkpointed row is untouched), so the exact owner is
@@ -2571,6 +2621,14 @@ public actor FacadeRunDomain {
                                 error: RunDomainError(.persistenceUnavailable,
                                                       .storeWriteFailed))
         }
+        // C1 is durable now. Only now can the read-only resolver treat this
+        // run as active; the retained candidate names the root that was
+        // actually supplied to the already-assembled service. A terminal,
+        // missing, replaced or unreadable directory yields no proof and does
+        // not create or recreate it.
+        let retryCandidate = owners[record.id]?.workspaceApprovalCandidate
+        let retryWorkspace = retryCandidate == nil ? nil :
+            await LinuxWorkspaceAuthority.approvalWorkspaceReadOnly(runID: record.id)
         // C1 landed. Re-prove that the owner is STILL this exact admission
         // before touching anything: if a cancel/retire or a newer resume
         // replaced it while the writer awaited, this admission owns nothing
@@ -2598,6 +2656,13 @@ public actor FacadeRunDomain {
             return RunDomainReply(.rejected(RunDomainError(.sessionFenced,
                                                            .deletingGuarded)))
         }
+        if let candidate = retryCandidate,
+           committedOwnership.workspaceApprovalCandidate == candidate,
+           G02NativeRootEpoch.readback() == epoch,
+           let proof = candidate.promote(current: retryWorkspace, conversationID: record.conversationID) {
+            committedOwnership.workspaceApprovalProof = proof
+        }
+        committedOwnership.workspaceApprovalCandidate = nil
         // Handoff in ONE actor step (no await between the prepared flip and
         // the live-service publication), so a Stop can no longer observe a
         // half-prepared resume owner.
@@ -3656,6 +3721,133 @@ public actor FacadeRunDomain {
 
     // MARK: - run.approval.resolve
 
+    /// Read-only proof of the exact local target captured at service assembly.
+    /// The executor's existing live routing, policy and workspace checks stay
+    /// authoritative after approval; this is only a presentation precondition.
+    private func localShellApprovalDetails(waiting: AgentState.WaitingApproval,
+        taskID: UUID, runID: UUID, service: ConversationRunService,
+        proof: WorkspaceApprovalLaunchProof) async -> ([String: SettingsDomainV1.JSONValue], C02ResolvedExecutionTarget)? {
+        guard let owner = owners[runID], owner.conversationID == taskID,
+              let frozen = owner.shellApprovalTarget, proof.allowedPaths.isEmpty,
+              frozen.target.kind == .localLinux, frozen.target.taskID == taskID,
+              frozen.target.workspaceID == proof.workspaceID,
+              frozen.pin.runID == runID, frozen.pin.taskID == taskID,
+              frozen.pin.rootEpoch == epoch, G02NativeRootEpoch.readback() == epoch,
+              let targets = components.executionTargets?.domain else { return nil }
+        guard let current = try? await targets.localShellApprovalReadback(taskID: taskID, runID: runID),
+              LocalShellApprovalPresentation.samePinnedTarget(frozen, current) else { return nil }
+        let currentWorkspace = await LinuxWorkspaceAuthority.approvalWorkspaceReadOnly(runID: runID)
+        let latest = await service.snapshot().pendingApproval
+        guard ownsLiveService(service, runID: runID, conversationID: taskID),
+              owners[runID]?.workspaceApprovalProof == proof,
+              owners[runID]?.shellApprovalTarget == frozen,
+              G02NativeRootEpoch.readback() == epoch, latest == waiting,
+              let currentWorkspace, currentWorkspace.conversationID == taskID,
+              currentWorkspace.workspaceID == proof.workspaceID,
+              currentWorkspace.rootURL.standardizedFileURL == proof.rootURL.standardizedFileURL,
+              let shell = RuntimeFacadeLinuxBindings.shared.components?.service,
+              let details = LocalShellApprovalPresentation.details(waiting: waiting, target: frozen,
+                                                                   workspace: proof, shell: shell) else { return nil }
+        return (details, frozen)
+    }
+
+    /// Ephemeral, App-host-only human approval details. No event, diagnostic,
+    /// model tool or durable row receives the returned page or file paths.
+    public func approvalPresentation(envelope: RunCommandEnvelope) async -> RunDomainReply {
+        let owner: OwnerIdentity
+        let callID: String
+        let generation: UUID
+        let descriptorID: String
+        do {
+            owner = try envelope.requireTaskAndRun()
+            let payload = try RunPayloadReader.Object(envelope.payloadValue ?? .object([:]),
+                allowed: ["approvalSchema", "callID", "generation", "expectedDescriptorIdentity"])
+            guard try payload.string("approvalSchema", maxBytes: 32) == "generation-v1" else {
+                throw RunDomainError(.invalidState, .payloadInvalid)
+            }
+            callID = try payload.string("callID", maxBytes: 128)
+            let rawGeneration = try payload.string("generation", maxBytes: 36)
+            guard let parsed = UUID(uuidString: rawGeneration),
+                  parsed.uuidString.lowercased() == rawGeneration else {
+                throw RunDomainError(.invalidState, .payloadInvalid)
+            }
+            generation = parsed
+            descriptorID = try payload.string("expectedDescriptorIdentity", maxBytes: 64)
+            guard descriptorID.utf8.count == 64,
+                  descriptorID.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
+                throw RunDomainError(.invalidState, .payloadInvalid)
+            }
+            try envelope.revisionMatches(resourceID: RunWireRevision.approvalResourceID(callID: callID),
+                version: RunWireRevision.approvalVersion(generation: generation))
+        } catch let error as RunDomainError {
+            return RunDomainReply(.rejected(error))
+        } catch {
+            return RunDomainReply(.rejected(RunDomainError(.invalidState, .payloadInvalid)))
+        }
+        guard let ownership = owners[owner.runID], ownership.conversationID == owner.taskID,
+              ownership.epoch == epoch, G02NativeRootEpoch.readback() == epoch,
+              let service = liveServices[owner.runID], service.conversationID == owner.taskID,
+              let proof = ownership.workspaceApprovalProof else {
+            return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalWorkspaceOwnershipChanged)))
+        }
+        guard let waiting = await service.snapshot().pendingApproval,
+              waiting.toolCall.id == callID, waiting.generation == generation,
+              ["workspace.createFile", "workspace.writeFile", "workspace.applyPatch", "exec.shell"].contains(waiting.toolCall.toolName),
+              let descriptor = tools.registry.descriptor(named: waiting.toolCall.toolName),
+              descriptor.authorizationIdentity == descriptorID else {
+            return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalGenerationMismatch)))
+        }
+        let details: [String: SettingsDomainV1.JSONValue]
+        let shellTarget: C02ResolvedExecutionTarget?
+        if waiting.toolCall.toolName == "exec.shell" {
+            guard let checked = await localShellApprovalDetails(waiting: waiting, taskID: owner.taskID,
+                runID: owner.runID, service: service, proof: proof) else {
+                return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalWorkspaceOwnershipChanged)))
+            }
+            (details, shellTarget) = checked
+        } else {
+            let current = await LinuxWorkspaceAuthority.approvalWorkspaceReadOnly(runID: owner.runID)
+            let latestWaiting = await service.snapshot().pendingApproval
+            guard latestWaiting == waiting,
+                  let checked = WorkspaceApprovalPresentation.details(waiting: waiting, launch: proof,
+                      current: current, conversationID: owner.taskID) else {
+                return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalWorkspaceOwnershipChanged)))
+            }
+            details = checked
+            shellTarget = nil
+        }
+        guard ownsLiveService(service, runID: owner.runID, conversationID: owner.taskID),
+              owners[owner.runID]?.workspaceApprovalProof == proof,
+              G02NativeRootEpoch.readback() == epoch,
+              tools.registry.descriptor(named: waiting.toolCall.toolName)?.authorizationIdentity == descriptorID,
+              let digest = WorkspaceApprovalPresentation.bindingDigest(waiting: waiting, details: details) else {
+            return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalWorkspaceOwnershipChanged)))
+        }
+        let binding = WorkspaceApprovalReceiptStore.Binding(
+            epoch: epoch, taskID: owner.taskID, runID: owner.runID, callID: callID,
+            generation: generation, descriptorIdentity: descriptorID, workspaceProof: proof, digest: digest,
+            shellTarget: shellTarget)
+        guard let token = workspaceApprovalReceipts.issue(binding, now: ProcessInfo.processInfo.systemUptime) else {
+            return RunDomainReply(.rejected(RunDomainError(.capabilityNotUsable, .internal)))
+        }
+        let page: SettingsDomainV1.JSONValue = .object([
+            "schema": .string("floe.approval-presentation/1"),
+            "conversationID": .string(owner.taskID.uuidString),
+            "runID": .string(owner.runID.uuidString),
+            "callID": .string(callID),
+            "generation": .string(generation.uuidString.lowercased()),
+            "presentationToken": .string(token),
+            "presentation": RunSnapshotWireBuilder.approvalPresentation(waiting, descriptor: descriptor,
+                                                                          workspaceDetails: details),
+        ])
+        let bytes = FacadeFrameBudget.serializedBytes(Self.unwrap(page))
+        guard bytes <= 40_000 else {
+            _ = workspaceApprovalReceipts.consume(token, matching: binding, now: ProcessInfo.processInfo.systemUptime)
+            return RunDomainReply(.rejected(RunDomainError(.payloadTooLarge, .payloadTooLarge)))
+        }
+        return RunDomainReply(.completedPage(page: RunTypedPage(object: page, pageBytes: bytes), nextCursor: nil))
+    }
+
     public func resolveApproval(envelope: RunCommandEnvelope) async -> RunDomainReply {
         let owner: OwnerIdentity
         let query: RunApprovalResolveQuery
@@ -3697,6 +3889,30 @@ public actor FacadeRunDomain {
         } catch {
             return RunDomainReply(.rejected(RunDomainError(.staleRevision, .revisionAbsent)))
         }
+        let fileTools: Set<String> = ["workspace.createFile", "workspace.writeFile", "workspace.applyPatch"]
+        // A positively pinned SSH target keeps its existing remote approval
+        // path. An unknown target cannot be relabelled as local or remote.
+        let localShell: Bool
+        if case .allow = query.branch, waiting.toolCall.toolName == "exec.shell" {
+            guard let pinned = owners[query.runID]?.shellApprovalTarget,
+                  pinned.target.taskID == query.conversationID,
+                  pinned.pin.runID == query.runID, pinned.pin.rootEpoch == epoch else {
+                return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalGenerationMismatch)))
+            }
+            localShell = pinned.target.kind == .localLinux
+        } else {
+            localShell = false
+        }
+        let needsPresentation = fileTools.contains(waiting.toolCall.toolName) || localShell
+        var workspaceClaim: WorkspaceApprovalReceiptStore.Claim?
+        if case .allow = query.branch, needsPresentation {
+            guard let token = query.presentationToken,
+                  let tokenUUID = UUID(uuidString: token), tokenUUID.uuidString.lowercased() == token,
+                  let claim = workspaceApprovalReceipts.take(token, now: ProcessInfo.processInfo.systemUptime) else {
+                return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalGenerationMismatch)))
+            }
+            workspaceClaim = claim
+        }
         // Grant scope is re-DERIVED from the LIVE request (call-bound +
         // descriptor identity); the payload never carries scope/host/paths.
         let decision: ApprovalDecision
@@ -3717,6 +3933,49 @@ public actor FacadeRunDomain {
                         descriptorLookup: { _ in descriptor }),
                     expiresAt: nil)
             }
+        }
+        if case .allow = query.branch,
+           needsPresentation {
+            guard let owner = owners[query.runID], owner.conversationID == query.conversationID,
+                  let proof = owner.workspaceApprovalProof, G02NativeRootEpoch.readback() == owner.epoch else {
+                return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalWorkspaceOwnershipChanged)))
+            }
+            let details: [String: SettingsDomainV1.JSONValue]
+            let shellTarget: C02ResolvedExecutionTarget?
+            if waiting.toolCall.toolName == "exec.shell" {
+                guard let checked = await localShellApprovalDetails(waiting: waiting, taskID: query.conversationID,
+                    runID: query.runID, service: service, proof: proof) else {
+                    return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalWorkspaceOwnershipChanged)))
+                }
+                (details, shellTarget) = checked
+            } else {
+                let current = await LinuxWorkspaceAuthority.approvalWorkspaceReadOnly(runID: query.runID)
+                guard let checked = WorkspaceApprovalPresentation.details(waiting: waiting, launch: proof,
+                    current: current, conversationID: query.conversationID) else {
+                    return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalWorkspaceOwnershipChanged)))
+                }
+                details = checked
+                shellTarget = nil
+            }
+            guard ownsLiveService(service, runID: query.runID, conversationID: query.conversationID),
+                  owners[query.runID]?.workspaceApprovalProof == proof,
+                  G02NativeRootEpoch.readback() == owner.epoch,
+                  let digest = WorkspaceApprovalPresentation.bindingDigest(waiting: waiting, details: details),
+                  let claim = workspaceClaim else {
+                return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalWorkspaceOwnershipChanged)))
+            }
+            let binding = WorkspaceApprovalReceiptStore.Binding(
+                epoch: owner.epoch, taskID: query.conversationID, runID: query.runID,
+                callID: waiting.toolCall.id, generation: waiting.generation,
+                descriptorIdentity: query.expectedDescriptorIdentity, workspaceProof: proof, digest: digest,
+                shellTarget: shellTarget)
+            guard claim.expiresAt > ProcessInfo.processInfo.systemUptime, claim.binding == binding else {
+                return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalGenerationMismatch)))
+            }
+        }
+        guard tools.registry.descriptor(named: waiting.toolCall.toolName)?.authorizationIdentity ==
+                query.expectedDescriptorIdentity else {
+            return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalGenerationMismatch)))
         }
         let accepted = await service.resolveApproval(decision, matching: waiting)
         guard accepted else {

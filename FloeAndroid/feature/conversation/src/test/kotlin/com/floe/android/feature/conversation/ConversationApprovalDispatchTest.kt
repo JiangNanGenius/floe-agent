@@ -189,4 +189,107 @@ class ConversationApprovalDispatchTest {
         assertEquals("workspace.writeFile", request.toolName)
         assertEquals("call-1", request.approvalId)
     }
+    @Test
+    fun privateFileDetailsFenceWorkspaceAndConsumeRejectedToken() {
+        val workspace = "abcdefab-1234-4567-89ab-abcdefabcdef"
+        val card = approvalCard().copy(scopeVerified = false, workspaceId = null)
+        val host = RecordingHost().apply { privatePresentationAccepted = true }
+        val holder = ConversationFlowHolder(host, "conv-1")
+        fun bind(id: String) = holder.applyHostSnapshot(threadState(holder.session,
+            pendingApprovals = listOf(card), boundWorkspaceId = id))
+        val details = WorkspaceFileApprovalUi(workspace, "writeFile", "项目/a.txt", "inline", "allowed", "none")
+        bind(workspace.uppercase())
+        holder.showPrivateApproval(card, "lease-1")
+        holder.acceptPrivateApproval(holder.session, card, "lease-1", details, "token-1")
+        assertEquals(details, holder.visibleApprovalCard(card, "lease-1").workspaceAction)
+        bind("01234567-1234-4567-89ab-abcdefabcdef")
+        assertNull(holder.visibleApprovalCard(card, "lease-1").workspaceAction)
+        assertEquals(false, holder.privateApprovalValid(card, "lease-1", "token-1"))
+        bind(workspace.uppercase())
+        holder.showPrivateApproval(card, "lease-2")
+        holder.acceptPrivateApproval(holder.session, card, "lease-2", details, "token-2")
+        val displayed = holder.visibleApprovalCard(card, "lease-2")
+        assertEquals(ConversationFlowResult.Accepted,
+            holder.resolveApproval(displayed, allow = true, presentationLease = "lease-2"))
+        val attempt = requireNotNull(holder.approvalAttempt(holder.session, card.key))
+        holder.invalidateRejectedPrivateApproval(holder.session, card, attempt, "lease-2", "token-2")
+        assertNull(holder.visibleApprovalCard(card, "lease-2").workspaceAction)
+        assertEquals(false, holder.privateApprovalValid(card, "lease-2", "token-2"))
+        val before = holder.privateApprovalRefresh.value[card.key] ?: 0
+        holder.setApprovalRecovery(holder.session, card, attempt, ApprovalDispatchState.NEEDS_CHECK)
+        assertEquals(before, holder.privateApprovalRefresh.value[card.key] ?: 0)
+        holder.showPrivateApproval(card, "lease-unsafe")
+        assertNull(holder.visibleApprovalCard(card, "lease-unsafe").workspaceAction)
+        holder.setApprovalRecovery(holder.session, card, attempt, ApprovalDispatchState.RETRY_READY)
+        assertEquals(before + 1, holder.privateApprovalRefresh.value[card.key])
+        holder.showPrivateApproval(card, "lease-3")
+        holder.acceptPrivateApproval(holder.session, card, "lease-3", details, "token-3")
+        assertEquals(details, holder.visibleApprovalCard(card, "lease-3").workspaceAction)
+        assertEquals(1, host.count("resolveApproval")) // retry needs another human tap
+    }
+
+    @Test
+    fun workspaceRoundTripRefreshesPendingPrivateLeaseAndRejectsLateDetails() {
+        val workspaceA = "abcdefab-1234-4567-89ab-abcdefabcdef"
+        val workspaceB = "01234567-1234-4567-89ab-abcdefabcdef"
+        val card = approvalCard().copy(scopeVerified = false)
+        val host = RecordingHost().apply { privatePresentationAccepted = true }
+        val holder = ConversationFlowHolder(host, "conv-1")
+        fun bind(id: String) = holder.applyHostSnapshot(threadState(holder.session,
+            pendingApprovals = listOf(card), boundWorkspaceId = id))
+        fun details(id: String) = WorkspaceFileApprovalUi(id, "writeFile", "result.txt", "inline", "allowed", "none")
+        bind(workspaceA)
+        holder.showPrivateApproval(card, "lease-a-old") // no reply yet
+        val before = holder.privateApprovalRefresh.value[card.key] ?: 0
+        bind(workspaceB)
+        assertEquals(before + 1, holder.privateApprovalRefresh.value[card.key])
+        holder.showPrivateApproval(card, "lease-b") // still awaiting its reply
+        bind(workspaceA.uppercase())
+        assertEquals(before + 2, holder.privateApprovalRefresh.value[card.key])
+        holder.acceptPrivateApproval(holder.session, card, "lease-a-old", details(workspaceA), "token-old")
+        holder.acceptPrivateApproval(holder.session, card, "lease-b", details(workspaceB), "token-b")
+        assertNull(holder.visibleApprovalCard(card, "lease-a-old").workspaceAction)
+        assertNull(holder.visibleApprovalCard(card, "lease-b").workspaceAction)
+        holder.showPrivateApproval(card, "lease-a-new")
+        holder.acceptPrivateApproval(holder.session, card, "lease-a-new", details(workspaceA), "token-new")
+        assertEquals(details(workspaceA), holder.visibleApprovalCard(card, "lease-a-new").workspaceAction)
+        assertEquals(true, holder.privateApprovalValid(card, "lease-a-new", "token-new"))
+        assertEquals(3, host.count("requestApprovalPresentation"))
+    }
+
+    @Test
+    fun localShellApprovalUsesVisibleLeaseAndOneShotRecovery() {
+        val card = approvalCard().copy(toolName = "exec.shell", scopeVerified = false)
+        val host = RecordingHost().apply { privatePresentationAccepted = true }
+        val holder = holderWithApproval(host, card)
+        val workspace = "abcdefab-1234-4567-89ab-abcdefabcdef"
+        holder.applyHostSnapshot(threadState(holder.session, pendingApprovals = listOf(card), boundWorkspaceId = workspace))
+        val shell = LocalShellApprovalUi("env-1", workspace, 1, "printf 'hello'", ".", 10.0, 65536, false)
+        holder.showPrivateApproval(card, "shell-lease")
+        holder.acceptPrivateShellApproval(holder.session, card, "shell-lease", shell, "shell-token")
+        val displayed = holder.visibleApprovalCard(card, "shell-lease")
+        assertEquals(shell, displayed.localShellAction)
+        assertEquals(false, displayed.toString().contains(shell.command))
+        assertEquals(ConversationFlowResult.Accepted,
+            holder.resolveApproval(displayed, allow = true, presentationLease = "shell-lease"))
+        val req = host.lastArgs("resolveApproval")!![0] as ApprovalDecisionRequest
+        assertEquals("shell-token", req.presentationToken)
+        assertEquals(card, req.expectedCard)
+        val attempt = requireNotNull(holder.approvalAttempt(holder.session, card.key))
+        holder.invalidateRejectedPrivateApproval(holder.session, card, attempt, "shell-lease", "shell-token")
+        assertNull(holder.visibleApprovalCard(card, "shell-lease").localShellAction)
+        assertEquals(false, holder.privateApprovalValid(card, "shell-lease", "shell-token"))
+        holder.setApprovalRecovery(holder.session, card, attempt, ApprovalDispatchState.NEEDS_CHECK)
+        holder.showPrivateApproval(card, "unknown-result")
+        assertNull(holder.visibleApprovalCard(card, "unknown-result").localShellAction)
+        holder.setApprovalRecovery(holder.session, card, attempt, ApprovalDispatchState.RETRY_READY)
+        holder.showPrivateApproval(card, "new-lease")
+        holder.acceptPrivateShellApproval(holder.session, card, "new-lease", shell, "new-token")
+        assertEquals(shell, holder.visibleApprovalCard(card, "new-lease").localShellAction)
+        assertEquals(1, host.count("resolveApproval"))
+        holder.hidePrivateApproval("new-lease")
+        assertNull(holder.visibleApprovalCard(card, "new-lease").localShellAction)
+        assertEquals(false, holder.privateApprovalValid(card, "new-lease", "new-token"))
+    }
+
 }

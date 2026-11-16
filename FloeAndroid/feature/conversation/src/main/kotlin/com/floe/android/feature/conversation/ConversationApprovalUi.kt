@@ -31,6 +31,17 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import java.util.UUID
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -58,24 +69,44 @@ fun ConversationApprovalRow(
      * [onResolve]. Production keeps the holder's canonical path. */
     onEndTerminalAndRun: ((ApprovalCardUi, TerminalHandoffConsentUi) -> Unit)? = null,
 ) {
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    var resumed by remember(lifecycle) { mutableStateOf(lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) }
+    var visible by remember(card.key, card.requestGeneration, card.descriptorIdentity) { mutableStateOf(false) }
+    var lease by remember(card.key, card.requestGeneration, card.descriptorIdentity) { mutableStateOf<String?>(null) }
+    DisposableEffect(lifecycle) {
+        val observer = LifecycleEventObserver { _, _ -> resumed = lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) }
+        lifecycle.addObserver(observer)
+        onDispose { lifecycle.removeObserver(observer) }
+    }
+    val privateRefresh = holder.privateApprovalRefresh.value[card.key] ?: 0
+    DisposableEffect(holder, card, resumed, visible, privateRefresh) {
+        val active = if (resumed && visible) UUID.randomUUID().toString() else null
+        lease = active
+        if (active != null) holder.showPrivateApproval(card, active)
+        onDispose {
+            if (active != null) holder.hidePrivateApproval(active)
+            if (lease == active) lease = null
+        }
+    }
+    val presentedCard = lease?.let { holder.visibleApprovalCard(card, it) } ?: card
     val colors = Floe.colors
     // Owned Linux engine slot conflict (Main ruling 2026-10-28): the runtime
     // escalated THIS exact call because its trusted G04 probe found this
     // conversation's own live interactive terminal really holding the
     // dedicated execution slot. The typed reason token is an opaque identifier
-    // and is NEVER rendered as prose — the card shows its own short localized
+    // and is NEVER rendered as prose — the presentedCard shows its own short localized
     // copy.
     //
     // A live TTY alone is NOT a conflict: under the approved separated pool
     // (TWO interactive tabs + ONE Agent/run execution slot) it never blocks an
     // Agent command. The App therefore asks the host for the live capture only
     // when the trusted token is present, and requires that exact capture for
-    // the destructive control. No token ⇒ an ordinary card, unchanged.
-    val reasonIsSlotConflict = ApprovalGrantMapping.terminalHandoffConflict(card.reason)
+    // the destructive control. No token ⇒ an ordinary presentedCard, unchanged.
+    val reasonIsSlotConflict = ApprovalGrantMapping.terminalHandoffConflict(presentedCard.reason)
     val handoff = ApprovalGrantMapping.terminalHandoffProjection(
-        reason = card.reason,
-        toolName = card.toolName,
-        liveConsent = if (reasonIsSlotConflict && card.conversationId == holder.conversationId) {
+        reason = presentedCard.reason,
+        toolName = presentedCard.toolName,
+        liveConsent = if (reasonIsSlotConflict && presentedCard.conversationId == holder.conversationId) {
             holder.liveTerminalHandoffConsent()
         } else {
             null
@@ -83,17 +114,24 @@ fun ConversationApprovalRow(
     )
     val slotConflict = handoff.showsConflictNote
     val handoffRefusal = holder.terminalHandoffRefusal.value
-        ?.takeIf { it.approvalKey == card.key }
-    val dispatchState = holder.approvalDispatchStates.value[card.key]
+        ?.takeIf { it.approvalKey == presentedCard.key }
+    val dispatchState = holder.approvalDispatchStates.value[presentedCard.key]
     val decisionInFlight = dispatchState != null && dispatchState != ApprovalDispatchState.RETRY_READY
-    val detailsVisible = when (card.actionKind) {
+    val fileAction = presentedCard.workspaceAction
+    val shellAction = presentedCard.localShellAction
+    val detailsVisible = if (shellAction != null) {
+        presentedCard.toolName == "exec.shell"
+    } else if (fileAction != null) {
+        presentedCard.workspaceVerified && presentedCard.workspaceId == fileAction.workspaceId &&
+            presentedCard.toolName == "workspace.${fileAction.operation}"
+    } else when (presentedCard.actionKind) {
         "back", "home" -> true
-        "launch" -> !card.actionPackage.isNullOrBlank()
+        "launch" -> !presentedCard.actionPackage.isNullOrBlank()
         else -> false
     }
-    val canAllow = card.identityVerified && card.scopeVerified && detailsVisible && !decisionInFlight
-    val canDeny = card.identityVerified && !decisionInFlight
-    val gateStopped = ApprovalGrantMapping.isGateStopped(card.reason) && !reasonIsSlotConflict
+    val canAllow = presentedCard.identityVerified && presentedCard.scopeVerified && detailsVisible && !decisionInFlight
+    val canDeny = presentedCard.identityVerified && !decisionInFlight
+    val gateStopped = ApprovalGrantMapping.isGateStopped(presentedCard.reason) && !reasonIsSlotConflict
     val headerTitle = stringResource(R.string.approval_required)
     val actionLabel = stringResource(R.string.approval_action)
     val evidenceLabel = stringResource(R.string.approval_evidence)
@@ -109,14 +147,17 @@ fun ConversationApprovalRow(
         stringResource(R.string.approval_scope_once),
     )
     val headerTint = if (gateStopped) colors.destructive else colors.pending
-    // One stable resolution lambda: the card NEVER fabricates a decision
+    // One stable resolution lambda: the presentedCard NEVER fabricates a decision
     // without a human tap on these two controls.
     val backendResolve: (ApprovalCardUi, Boolean) -> Unit =
-        onResolve ?: { c, allow -> holder.resolveApproval(c, allow) }
+        { c, allow ->
+            if (c.workspaceAction != null || c.localShellAction != null) holder.resolveApproval(c, allow, presentationLease = lease)
+            else if (onResolve != null) onResolve(c, allow) else holder.resolveApproval(c, allow)
+        }
     // The current native decision contract is call-bound. Never promise
     // task/project/host grants that the producer cannot forward.
     val resolve: (ApprovalCardUi, Boolean) -> Unit = { c, allow ->
-        if (allow) holder.setApprovalScope(c.key, ApprovalScopeChoiceUi.ONCE, expected = c)
+        if (allow) holder.setApprovalScope(c.key, ApprovalScopeChoiceUi.ONCE, expected = card)
         backendResolve(c, allow)
     }
     // The explicit handoff is a THIRD human control, not a variant of Allow:
@@ -126,21 +167,20 @@ fun ConversationApprovalRow(
     // route. Nothing here stops anything itself.
     val backendEndTerminalAndRun: (ApprovalCardUi, TerminalHandoffConsentUi) -> Unit =
         onEndTerminalAndRun ?: { c, consent ->
-            holder.resolveApproval(c, allow = true, terminalHandoff = consent)
+            holder.resolveApproval(c, allow = true, terminalHandoff = consent, presentationLease = lease)
         }
     val endTerminalAndRun: (ApprovalCardUi) -> Unit = { c ->
-        // Re-read the live identity at tap time: the consent names the session
-        // that is live NOW, so the host can refuse a replacement instead of
-        // stopping a different terminal. The capture is never cached in the
-        // card and no consent is fabricated when the terminal already settled.
-        val consent = holder.liveTerminalHandoffConsent()
-        if (consent == null || consent.sessionToken.isEmpty()) {
-            // The terminal settled between the card being projected and this
-            // tap. Nothing is stopped, approved or dispatched; the card says
+        // Consent belongs to the terminal captured when this control was
+        // presented. Never replace it with another live session at tap time.
+        val consent = handoff.consent
+        if (consent == null || consent.sessionToken.isEmpty() ||
+            consent != holder.liveTerminalHandoffConsent()) {
+            // The terminal settled between the presentedCard being projected and this
+            // tap. Nothing is stopped, approved or dispatched; the presentedCard says
             // so plainly and the ordinary Allow/Deny stays available.
-            holder.noteTerminalCaptureRefusal(c, "staleCapture")
+            holder.noteTerminalCaptureRefusal(card, "staleCapture")
         } else {
-            holder.setApprovalScope(c.key, ApprovalScopeChoiceUi.ONCE, expected = c)
+            holder.setApprovalScope(c.key, ApprovalScopeChoiceUi.ONCE, expected = card)
             backendEndTerminalAndRun(c, consent)
         }
     }
@@ -149,6 +189,10 @@ fun ConversationApprovalRow(
 
     Column(
         modifier = modifier
+            .onGloballyPositioned { coordinates ->
+                val bounds = coordinates.boundsInWindow()
+                visible = coordinates.isAttached && bounds.width > 0f && bounds.height > 0f
+            }
             .fillMaxWidth()
             .clip(shape)
             .border(1.dp, borderTint, shape)
@@ -169,22 +213,102 @@ fun ConversationApprovalRow(
             )
             FloeText(headerTitle, style = Floe.typography.section, color = colors.label)
             Spacer(Modifier.weight(1f))
-            FloeText(card.requestedAtLabel, style = Floe.typography.metadata, color = colors.secondaryLabel)
+            FloeText(presentedCard.requestedAtLabel, style = Floe.typography.metadata, color = colors.secondaryLabel)
         }
 
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FloeText(actionLabel, style = Floe.typography.metadata, color = colors.secondaryLabel)
-                FloeText(card.toolName, style = Floe.typography.evidence, color = colors.label)
+                FloeText(presentedCard.toolName, style = Floe.typography.evidence, color = colors.label)
             }
-            if (card.scopeVerified) {
-                FloeText(when (card.actionKind) {
+            if (presentedCard.scopeVerified) {
+                FloeText(if (shellAction != null) stringResource(R.string.approval_shell_action)
+                else if (fileAction != null) when (fileAction.operation) {
+                    "createFile" -> stringResource(R.string.approval_workspace_create)
+                    "writeFile" -> stringResource(R.string.approval_workspace_write)
+                    "applyPatch" -> stringResource(R.string.approval_workspace_patch)
+                    else -> ""
+                } else when (presentedCard.actionKind) {
                     "back" -> stringResource(R.string.approval_device_back)
                     "home" -> stringResource(R.string.approval_device_home)
                     "launch" -> stringResource(R.string.approval_device_launch)
                     else -> ""
                 }, style = Floe.typography.bodyEmphasized, color = colors.label)
-                card.actionPackage?.let { packageName ->
+                if (fileAction != null) {
+                    FloeText(stringResource(R.string.approval_workspace_id),
+                        style = Floe.typography.metadata, color = colors.secondaryLabel)
+                    SelectionContainer {
+                        FloeText(fileAction.workspaceId, modifier = Modifier.fillMaxWidth(),
+                            style = Floe.typography.evidence, color = colors.label)
+                    }
+                    FloeText(stringResource(R.string.approval_workspace_target),
+                        style = Floe.typography.metadata, color = colors.secondaryLabel)
+                    SelectionContainer {
+                        FloeText(fileAction.targetPath, modifier = Modifier.fillMaxWidth(),
+                            style = Floe.typography.evidence, color = colors.label)
+                    }
+                    FloeText(stringResource(when (fileAction.overwrite) {
+                        "allowed" -> R.string.approval_overwrite_allowed
+                        "forbidden" -> R.string.approval_overwrite_forbidden
+                        else -> R.string.approval_overwrite_conditional
+                    }), style = Floe.typography.metadata, color = colors.secondaryLabel)
+                    FloeText(stringResource(when (fileAction.precondition) {
+                        "sha256" -> R.string.approval_precondition_sha
+                        "mtime" -> R.string.approval_precondition_mtime
+                        "sha256AndMtime" -> R.string.approval_precondition_both
+                        "patchContext" -> R.string.approval_precondition_patch
+                        else -> R.string.approval_precondition_none
+                    }), style = Floe.typography.metadata, color = colors.secondaryLabel)
+                    FloeText(stringResource(when (fileAction.source) {
+                        "workspaceFile" -> R.string.approval_source_file
+                        "patch" -> R.string.approval_source_patch
+                        else -> R.string.approval_source_inline
+                    }), style = Floe.typography.metadata, color = colors.secondaryLabel)
+                    fileAction.sourcePath?.let { sourcePath ->
+                        SelectionContainer {
+                            FloeText(sourcePath, modifier = Modifier.fillMaxWidth(),
+                                style = Floe.typography.evidence, color = colors.label)
+                        }
+                        FloeText(stringResource(R.string.approval_source_sha),
+                            style = Floe.typography.metadata, color = colors.secondaryLabel)
+                    }
+                }
+                if (shellAction != null) {
+                    FloeText(stringResource(R.string.approval_shell_target),
+                        style = Floe.typography.metadata, color = colors.secondaryLabel)
+                    FloeText(stringResource(R.string.approval_shell_local_linux),
+                        style = Floe.typography.bodyEmphasized, color = colors.label)
+                    SelectionContainer {
+                        FloeText(shellAction.environmentId, modifier = Modifier.fillMaxWidth(),
+                            style = Floe.typography.evidence, color = colors.label)
+                    }
+                    FloeText(stringResource(R.string.approval_workspace_id),
+                        style = Floe.typography.metadata, color = colors.secondaryLabel)
+                    SelectionContainer {
+                        FloeText(shellAction.workspaceId, modifier = Modifier.fillMaxWidth(),
+                            style = Floe.typography.evidence, color = colors.label)
+                    }
+                    FloeText(stringResource(R.string.approval_shell_cwd),
+                        style = Floe.typography.metadata, color = colors.secondaryLabel)
+                    SelectionContainer {
+                        FloeText(shellAction.cwd, modifier = Modifier.fillMaxWidth(),
+                            style = Floe.typography.evidence, color = colors.label)
+                    }
+                    FloeText(stringResource(R.string.approval_shell_command),
+                        style = Floe.typography.metadata, color = colors.secondaryLabel)
+                    SelectionContainer {
+                        FloeText(shellAction.command, modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            style = Floe.typography.evidence, color = colors.label)
+                    }
+                    FloeText(stringResource(R.string.approval_shell_timeout, shellAction.timeoutSeconds.toString()),
+                        style = Floe.typography.metadata, color = colors.secondaryLabel)
+                    FloeText(stringResource(R.string.approval_shell_output, shellAction.maxOutputBytes),
+                        style = Floe.typography.metadata, color = colors.secondaryLabel)
+                    FloeText(stringResource(if (shellAction.environmentTransaction) R.string.approval_shell_transaction_on
+                        else R.string.approval_shell_transaction_off),
+                        style = Floe.typography.metadata, color = colors.secondaryLabel)
+                }
+                presentedCard.actionPackage?.let { packageName ->
                     FloeText(stringResource(R.string.approval_device_package),
                         style = Floe.typography.metadata, color = colors.secondaryLabel)
                     SelectionContainer {
@@ -192,14 +316,16 @@ fun ConversationApprovalRow(
                             style = Floe.typography.evidence, color = colors.label)
                     }
                 }
-                FloeText(stringResource(R.string.approval_requested_scope_note),
+                FloeText(stringResource(if (shellAction != null) R.string.approval_shell_scope_note
+                    else if (fileAction == null) R.string.approval_requested_scope_note
+                    else R.string.approval_workspace_scope_note),
                     style = Floe.typography.metadata, color = colors.secondaryLabel)
             }
-            if (card.reason.isNotEmpty() && !reasonIsSlotConflict) {
+            if (presentedCard.reason.isNotEmpty() && !reasonIsSlotConflict) {
                 FloeText(
-                    if (card.reason == "No approval model is configured for this sensitive action") {
+                    if (presentedCard.reason == "No approval model is configured for this sensitive action") {
                         stringResource(R.string.approval_model_missing)
-                    } else card.reason,
+                    } else presentedCard.reason,
                     style = Floe.typography.metadata,
                     color = if (gateStopped) colors.destructive else colors.secondaryLabel,
                 )
@@ -214,12 +340,12 @@ fun ConversationApprovalRow(
                     color = colors.pending,
                 )
             }
-            if (ApprovalGrantMapping.isSkillCreation(card.toolName)) {
+            if (ApprovalGrantMapping.isSkillCreation(presentedCard.toolName)) {
                 FloeText(skillNote, style = Floe.typography.metadata, color = colors.pending)
             }
         }
 
-        if (card.riskLabels.isNotEmpty()) {
+        if (presentedCard.riskLabels.isNotEmpty()) {
             val riskGroupLabel = stringResource(R.string.approval_risks)
             Row(
                 modifier = Modifier
@@ -228,7 +354,7 @@ fun ConversationApprovalRow(
                     .semantics { contentDescription = riskGroupLabel },
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                card.riskLabels.sorted().forEach { raw ->
+                presentedCard.riskLabels.sorted().forEach { raw ->
                     val localized = riskLabelText(raw)
                     FloeBadgePill(text = localized, tone = FloeBadgeTone.PENDING)
                 }
@@ -236,18 +362,18 @@ fun ConversationApprovalRow(
         }
 
         // A handoff refusal carries a diagnostic code, so the fold must exist
-        // even for a card that would otherwise have no evidence section:
+        // even for a presentedCard that would otherwise have no evidence section:
         // message on the surface, opaque code in the opened details only.
-        if (ApprovalGrantMapping.requiresEvidence(card.isSideEffecting, card.riskLabels) ||
+        if (ApprovalGrantMapping.requiresEvidence(presentedCard.isSideEffecting, presentedCard.riskLabels) ||
             handoffRefusal != null
         ) {
-            val expanded = card.key in holder.expandedApprovalEvidence.value
+            val expanded = presentedCard.key in holder.expandedApprovalEvidence.value
             Column {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .heightIn(min = FloeLayout.MinimumTarget)
-                        .clickable { holder.toggleApprovalEvidence(card.key, expected = card) },
+                        .clickable { holder.toggleApprovalEvidence(presentedCard.key, expected = card) },
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
@@ -269,7 +395,7 @@ fun ConversationApprovalRow(
                             .background(colors.readingSurface)
                             .padding(8.dp),
                     ) {
-                        card.evidenceLines.forEach { line ->
+                        presentedCard.evidenceLines.forEach { line ->
                             FloeText(line, style = Floe.typography.evidence, color = colors.secondaryLabel)
                         }
                         if (handoffRefusal != null) {
@@ -284,7 +410,7 @@ fun ConversationApprovalRow(
             }
         }
 
-        if (card.scopeVerified) Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        if (presentedCard.scopeVerified) Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             FloeText(chooseScopeLabel, style = Floe.typography.metadata, color = colors.secondaryLabel)
             FloeSegmented(
                 options = tierLabels,
@@ -305,7 +431,7 @@ fun ConversationApprovalRow(
                     .heightIn(min = FloeLayout.MinimumTarget)
                     .clip(RoundedCornerShape(FloeLayout.CircleToolbarCorner))
                     .background(colors.pending)
-                    .clickable(enabled = canAllow) { endTerminalAndRun(card) }
+                    .clickable(enabled = canAllow) { endTerminalAndRun(presentedCard) }
                     .semantics { contentDescription = endTerminalAndRunLabel }
                     .padding(horizontal = 14.dp, vertical = 8.dp),
                 contentAlignment = Alignment.Center,
@@ -318,7 +444,7 @@ fun ConversationApprovalRow(
             }
         }
         if (handoffRefusal != null) {
-            // Honest refusal: nothing was approved, nothing ran, and the card
+            // Honest refusal: nothing was approved, nothing ran, and the presentedCard
             // stays actionable. The opaque code lives in the details line.
             FloeText(
                 handoffRefusalNote,
@@ -338,17 +464,17 @@ fun ConversationApprovalRow(
                 stringResource(R.string.approval_retry_ready), style = Floe.typography.metadata, color = colors.destructive)
             null -> Unit
         }
-        if (!card.identityVerified || !card.scopeVerified || !detailsVisible) {
-            FloeText(stringResource(if (!card.identityVerified) R.string.approval_identity_unavailable
+        if (!presentedCard.identityVerified || !presentedCard.scopeVerified || !detailsVisible) {
+            FloeText(stringResource(if (!presentedCard.identityVerified) R.string.approval_identity_unavailable
                 else R.string.approval_details_unavailable), style = Floe.typography.metadata, color = colors.secondaryLabel)
         }
         if (dispatchState == ApprovalDispatchState.NEEDS_CHECK ||
-            (!decisionInFlight && (!card.identityVerified || !card.scopeVerified || !detailsVisible))) {
+            (!decisionInFlight && (!presentedCard.identityVerified || !presentedCard.scopeVerified || !detailsVisible))) {
             FloeText(stringResource(R.string.approval_recheck),
                 modifier = Modifier.clickable { holder.recheckApproval(card) }.padding(vertical = 8.dp),
                 style = Floe.typography.bodyEmphasized, color = colors.accent)
         }
-        if (!card.identityVerified || dispatchState == ApprovalDispatchState.NEEDS_CHECK ||
+        if (!presentedCard.identityVerified || dispatchState == ApprovalDispatchState.NEEDS_CHECK ||
             dispatchState == ApprovalDispatchState.STOP_REQUIRED) {
             FloeText(stringResource(R.string.action_stop),
                 modifier = Modifier.clickable { holder.stopForApproval(card) }.padding(vertical = 8.dp),
@@ -362,7 +488,7 @@ fun ConversationApprovalRow(
                     .heightIn(min = FloeLayout.MinimumTarget)
                     .clip(RoundedCornerShape(FloeLayout.CircleToolbarCorner))
                     .border(0.5.dp, colors.chromeHairline, RoundedCornerShape(FloeLayout.CircleToolbarCorner))
-                    .clickable(enabled = canDeny) { resolve(card, false) }
+                    .clickable(enabled = canDeny) { resolve(presentedCard, false) }
                     .semantics { contentDescription = denyLabel }
                     .padding(horizontal = 14.dp, vertical = 8.dp),
                 contentAlignment = Alignment.Center,
@@ -371,14 +497,14 @@ fun ConversationApprovalRow(
                     color = if (canDeny) colors.label else colors.secondaryLabel.copy(alpha = 0.45f))
             }
             val allowTint = if (!canAllow) colors.secondaryLabel.copy(alpha = 0.25f)
-                else if (card.isSideEffecting) colors.destructive else colors.accent
+                else if (presentedCard.isSideEffecting) colors.destructive else colors.accent
             Box(
                 modifier = Modifier
                     .weight(1f)
                     .heightIn(min = FloeLayout.MinimumTarget)
                     .clip(RoundedCornerShape(FloeLayout.CircleToolbarCorner))
                     .background(allowTint)
-                    .clickable(enabled = canAllow) { resolve(card, true) }
+                    .clickable(enabled = canAllow) { resolve(presentedCard, true) }
                     .semantics { contentDescription = approveLabel }
                     .padding(horizontal = 14.dp, vertical = 8.dp),
                 contentAlignment = Alignment.Center,

@@ -1,5 +1,13 @@
 # Floe Android 分目标实施记录
 
+## 1.0.19 后源码检查点：文件与本地命令审批（2026-11-16，未发版）
+
+补接工作区创建、写入和补丁的私有审批详情，以及本地 Linux 命令的完整命令、工作目录和执行目标展示。允许决定绑定实际任务、运行代次、工具请求和一次性回执；工作区重新选择、恢复任务或执行目标迁移后重新核对。异步拒绝后可重新检查，不自动重放。终端交接使用按钮展示时的会话身份，避免关闭替代会话；结束或变更时给出提示。
+
+Android ARM64 的 `FloeAndroidCore` 和 `FloeAndroidLinuxAuthority` 已实际编译、链接并导出；相关 Kotlin 编译及会话／宿主定向用例通过。Swift 行为测试仍受既有邮件测试模块编译失败阻断，本批尚未构建新 APK、未在三星验证审批和外测故障。现阶段带标准输入、自定义环境变量或目标不能完整核实的命令不可批准；其他设备动作、浏览器、定时等需要人工审批的工具仍有覆盖缺口，本源码检查点不能作为完整功能候选发布。保留原外测证据，截图只能证明工作区创建授权持续等待，不能确定点击或后端回执的具体原因。
+
+English: This unreleased checkpoint connects private workspace-write and local Linux command approval presentations with run ownership and single-use receipts. ARM64 native products linked and focused Kotlin checks passed; Swift behavior tests, an updated APK and Samsung approval flows remain unverified. Other approval families remain incomplete.
+
 ## 1.0.19 后源码检查点：审批身份与展示（2026-11-16，未发版）
 
 Android 独立运行时为审批引入唯一代次，决议在 runtime actor 内匹配完整原请求；快照、修订号及界面接入该身份，旧协议缺字段时拒绝决议。旧事件不能提供新卡范围，结果未知的提交不自动重发。当前仅 `device.act` 的返回、主页和启动应用具备完整展示并允许单次批准；其他需要人工审批的操作可在身份可核对时拒绝、否则停止，尚不能批准。工作区、终端和其他常用操作必须继续补全，**此中间源码不可作为完整功能候选发布**。

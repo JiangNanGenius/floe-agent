@@ -19,6 +19,113 @@ import FloeTools
 final class RuntimeFacadeRunControlTests: XCTestCase {
     private var fixture: RunDomainFixture!
 
+    func testWorkspaceApprovalReadbackRejectsTerminalAndUnknownStates() {
+        XCTAssertTrue(LinuxWorkspaceAuthority.approvalWorkspaceStateAllowed("preparing"))
+        XCTAssertTrue(LinuxWorkspaceAuthority.approvalWorkspaceStateAllowed("waitingApproval"))
+        for state in ["failed", "interrupted", "checkpointed", "completed", "cancelling", "idle", "futureUnknown"] {
+            XCTAssertFalse(LinuxWorkspaceAuthority.approvalWorkspaceStateAllowed(state), state)
+        }
+    }
+
+    func testWorkspacePresentationReceiptIsBoundOneShotAndExpires() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let proof = WorkspaceApprovalLaunchProof(workspaceID: UUID(), rootURL: root, allowedPaths: [],
+            rootHandle: try XCTUnwrap(WorkspaceApprovalRootHandle(root: root)))
+        let task = UUID(), run = UUID(), generation = UUID()
+        let original = WorkspaceApprovalReceiptStore.Binding(epoch: 7, taskID: task, runID: run,
+            callID: "call", generation: generation, descriptorIdentity: "descriptor", workspaceProof: proof, digest: "digest")
+        let otherRun = WorkspaceApprovalReceiptStore.Binding(epoch: 7, taskID: task, runID: UUID(),
+            callID: "call", generation: generation, descriptorIdentity: "descriptor", workspaceProof: proof, digest: "digest")
+        let changedDetails = WorkspaceApprovalReceiptStore.Binding(epoch: 7, taskID: task, runID: run,
+            callID: "call", generation: generation, descriptorIdentity: "descriptor", workspaceProof: proof, digest: "different")
+        var store = WorkspaceApprovalReceiptStore()
+        let wrongOwner = try XCTUnwrap(store.issue(original, now: 1))
+        XCTAssertFalse(store.consume(wrongOwner, matching: otherRun, now: 2))
+        XCTAssertFalse(store.consume(wrongOwner, matching: original, now: 2))
+        let changed = try XCTUnwrap(store.issue(original, now: 2))
+        XCTAssertFalse(store.consume(changed, matching: changedDetails, now: 3))
+        let valid = try XCTUnwrap(store.issue(original, now: 3))
+        XCTAssertTrue(store.consume(valid, matching: original, now: 4))
+        XCTAssertFalse(store.consume(valid, matching: original, now: 4))
+        let expired = try XCTUnwrap(store.issue(original, now: 4))
+        XCTAssertFalse(store.consume(expired, matching: original, now: 604))
+        let old = try XCTUnwrap(store.issue(original, now: 10))
+        let replacement = try XCTUnwrap(store.issue(original, now: 11))
+        XCTAssertFalse(store.consume(old, matching: original, now: 12))
+        store.retire(runID: run)
+        XCTAssertFalse(store.consume(replacement, matching: original, now: 12))
+    }
+
+    func testWorkspaceApprovalDetailsRequireOriginalRootAndNeverIncludeContent() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let conversationID = UUID(), workspaceID = UUID()
+        let launch = WorkspaceApprovalLaunchProof(workspaceID: workspaceID, rootURL: root, allowedPaths: [],
+            rootHandle: try XCTUnwrap(WorkspaceApprovalRootHandle(root: root)))
+        let current = (workspaceID: workspaceID, conversationID: conversationID, rootURL: root)
+        let candidate = WorkspaceApprovalLaunchCandidate(workspaceID: workspaceID, rootURL: root,
+            allowedPaths: [], rootHandle: launch.rootHandle)
+        XCTAssertNil(candidate.promote(current: nil, conversationID: conversationID),
+                     "a terminal or absent run has no active workspace readback")
+        XCTAssertNil(candidate.promote(current: current, conversationID: UUID()),
+                     "another conversation cannot promote this root")
+        XCTAssertNil(candidate.promote(current: (workspaceID: UUID(), conversationID: conversationID, rootURL: root),
+                                       conversationID: conversationID),
+                     "the same path cannot replace the workspace identity frozen at selection")
+        XCTAssertNil(candidate.promote(current: (workspaceID: workspaceID, conversationID: conversationID,
+                                                 rootURL: root.appendingPathComponent("other")),
+                                       conversationID: conversationID),
+                     "the same workspace ID cannot replace the root selected for the service")
+        XCTAssertEqual(candidate.promote(current: current, conversationID: conversationID), launch)
+        func details(_ tool: String, _ json: String, currentWorkspace: UUID? = nil) throws -> [String: SettingsDomainV1.JSONValue]? {
+            let call = try ToolCall(id: "call", toolName: tool, argumentsJSON: Data(json.utf8), scope: .local)
+            return WorkspaceApprovalPresentation.details(waiting: .init(toolCall: call, reason: "test"),
+                launch: launch, current: (workspaceID: currentWorkspace ?? current.workspaceID,
+                    conversationID: current.conversationID, rootURL: current.rootURL), conversationID: conversationID)
+        }
+        let create = try XCTUnwrap(details("workspace.createFile", #"{"path":"notes/a.txt","content":"synthetic-secret","overwrite":false}"#))
+        XCTAssertEqual(create["target"], .string("notes/a.txt"))
+        XCTAssertEqual(create["overwrite"], .string("forbidden"))
+        XCTAssertFalse(String(describing: create).contains("synthetic-secret"))
+        let write = try XCTUnwrap(details("workspace.writeFile", #"{"path":"report.txt","content":"synthetic-secret","expectedMtime":5}"#))
+        XCTAssertEqual(write["overwrite"], .string("conditional"))
+        XCTAssertEqual(write["precondition"], .string("mtime"))
+        let draft = try XCTUnwrap(details("workspace.writeFile", "{\"path\":\"final.txt\",\"sourcePath\":\"draft.txt\",\"expectedSourceSHA256\":\"" + String(repeating: "a", count: 64) + "\"}"))
+        XCTAssertEqual(draft["sourcePath"], .string("draft.txt"))
+        XCTAssertEqual(draft["overwrite"], .string("forbidden"))
+        let patch = try XCTUnwrap(details("workspace.applyPatch", #"{"path":"a.txt","patch":"synthetic-secret"}"#))
+        XCTAssertEqual(patch["precondition"], .string("patchContext"))
+        XCTAssertFalse(String(describing: patch).contains("synthetic-secret"))
+        let call = try ToolCall(id: "call", toolName: "workspace.createFile",
+            argumentsJSON: Data(#"{"path":"a.txt","content":"first"}"#.utf8), scope: .local)
+        let firstWaiting = AgentState.WaitingApproval(toolCall: call, reason: "test")
+        var changedWaiting = firstWaiting
+        changedWaiting.toolCall.argumentsJSON = Data(#"{"path":"a.txt","content":"second"}"#.utf8)
+        XCTAssertNotEqual(WorkspaceApprovalPresentation.bindingDigest(waiting: firstWaiting, details: create),
+                          WorkspaceApprovalPresentation.bindingDigest(waiting: changedWaiting, details: create))
+        XCTAssertNil(try details("workspace.createFile", #"{"path":"Network/remote/a.txt","content":""}"#))
+        XCTAssertNil(try details("workspace.createFile", #"{"path":"../escape","content":""}"#))
+        XCTAssertNil(try details("workspace.createFile", #"{"path":".env","content":""}"#))
+        let chinese = try XCTUnwrap(details("workspace.createFile", #"{"path":"文档/报告.txt","content":""}"#))
+        XCTAssertEqual(chinese["target"], .string("文档/报告.txt"))
+        XCTAssertNil(try details("workspace.createFile", "{\"path\":\"ab\u{202e}cd.txt\",\"content\":\"\"}"))
+        XCTAssertNil(try details("workspace.createFile", #"{"path":"file.txt","content":""}"#, currentWorkspace: UUID()))
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("real"), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("link"), withDestinationURL: root.appendingPathComponent("real"))
+        XCTAssertNil(try details("workspace.createFile", #"{"path":"link/file.txt","content":""}"#))
+        let moved = root.deletingLastPathComponent().appendingPathComponent("old-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: moved) }
+        try FileManager.default.moveItem(at: root, to: moved)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        XCTAssertNil(candidate.promote(current: current, conversationID: conversationID),
+                     "a replacement directory is not the root passed to the service")
+        XCTAssertNil(try details("workspace.createFile", #"{"path":"file.txt","content":""}"#))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: moved.path))
+    }
+
     func testApprovalPresentationFailsClosedForUnknownOrSensitiveActions() throws {
         let descriptor = ToolCatalog.Descriptor(name: "device.act", riskLabels: [.controlsGUI], isSideEffecting: true)
         func project(_ json: String, descriptor: ToolCatalog.Descriptor?) throws -> SettingsDomainV1.JSONValue {
@@ -620,6 +727,32 @@ final class RuntimeFacadeRunControlTests: XCTestCase {
         XCTAssertEqual(presentation["status"], .string("available"))
         XCTAssertEqual(presentation["detailStatus"], .string("unavailable"))
         XCTAssertEqual(presentation["workspaceVerified"], .boolean(false))
+        let forgedPresentation = await domain.approvalPresentation(envelope: fixture.executionEnvelope(
+            command: "run.approval.presentation", conversationID: conversationID, runID: runID,
+            payload: ["approvalSchema": "generation-v1", "callID": waiting.toolCall.id,
+                      "generation": waiting.generation.uuidString.lowercased(),
+                      "expectedDescriptorIdentity": try XCTUnwrap(fixture.registry.descriptor(named: waiting.toolCall.toolName)).authorizationIdentity,
+                      "target": "synthetic-secret"],
+            correlation: "corr-forged-presentation",
+            revision: ["resourceID": RunWireRevision.approvalResourceID(callID: waiting.toolCall.id),
+                       "version": requestVersion]))
+        guard case .rejected(let invalidPresentation) = forgedPresentation.outcome else {
+            return XCTFail("a client cannot inject a displayed target")
+        }
+        XCTAssertEqual(invalidPresentation.reason, .payloadInvalid)
+        XCTAssertFalse(String(describing: forgedPresentation.outcome).contains("synthetic-secret"))
+        let mismatch = await domain.approvalPresentation(envelope: fixture.executionEnvelope(
+            command: "run.approval.presentation", conversationID: conversationID, runID: runID,
+            payload: ["approvalSchema": "generation-v1", "callID": waiting.toolCall.id,
+                      "generation": waiting.generation.uuidString.lowercased(),
+                      "expectedDescriptorIdentity": try XCTUnwrap(fixture.registry.descriptor(named: waiting.toolCall.toolName)).authorizationIdentity],
+            correlation: "corr-presentation-stale",
+            revision: ["resourceID": RunWireRevision.approvalResourceID(callID: waiting.toolCall.id),
+                       "version": RunWireRevision.approvalVersion(generation: UUID())]))
+        guard case .rejected(let stalePresentation) = mismatch.outcome else {
+            return XCTFail("a stale revision cannot read an approval")
+        }
+        XCTAssertEqual(stalePresentation.code, .staleRevision)
         let legacy = await domain.resolveApproval(envelope: fixture.executionEnvelope(
             command: "run.approval.resolve", conversationID: conversationID, runID: runID,
             payload: ["callID": waiting.toolCall.id, "decision": "allow",
@@ -880,7 +1013,7 @@ final class RuntimeFacadeRunControlTests: XCTestCase {
             XCTAssertTrue(result.isValid, "\(command): \(result.errorCode)/\(result.reason)")
         }
         // taskExecution stateful trio with revision + owner roles:
-        for command in ["run.cancel", "run.retry", "run.approval.resolve", "run.policy.update",
+        for command in ["run.cancel", "run.retry", "run.approval.resolve", "run.approval.presentation", "run.policy.update",
                         "run.skillcancel"] {
             let envelope: [String: Any] = [
                 "schema": BridgeV3.commandSchema,

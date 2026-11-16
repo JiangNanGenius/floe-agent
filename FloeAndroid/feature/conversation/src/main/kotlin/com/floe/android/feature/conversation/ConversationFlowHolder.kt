@@ -564,6 +564,20 @@ class ConversationFlowHolder(
     /** Approvals dispatched with no projection change yet (duplicate-press
      * latch; cleared when the card leaves the projection). */
     private val approvalDispatched = mutableSetOf<String>()
+    private data class PrivateApproval(val card: ApprovalCardUi, val details: WorkspaceFileApprovalUi? = null, val token: String? = null, val shell: LocalShellApprovalUi? = null) {
+        override fun toString() = "PrivateApproval(redacted)"
+    }
+    private val privateApprovals = mutableStateOf<Map<String, PrivateApproval>>(emptyMap())
+    val privateApprovalRefresh = mutableStateOf<Map<String, Int>>(emptyMap())
+    private val rejectedPrivateApprovals = mutableSetOf<String>()
+
+    private fun sameWorkspace(a: String?, b: String?): Boolean = a != null && b != null &&
+        runCatching { UUID.fromString(a) == UUID.fromString(b) }.getOrDefault(false)
+
+    private fun refreshPrivateApproval(key: String) {
+        privateApprovalRefresh.value = privateApprovalRefresh.value +
+            (key to ((privateApprovalRefresh.value[key] ?: 0) + 1))
+    }
     val approvalDispatchStates: MutableState<Map<String, ApprovalDispatchState>> = mutableStateOf(emptyMap())
     private val approvalAttempts = mutableMapOf<String, String>()
     private val approvalChecks = mutableMapOf<String, () -> Unit>()
@@ -794,6 +808,9 @@ class ConversationFlowHolder(
         expandedToolCards.value = emptySet()
         expandedApprovalEvidence.value = emptySet()
         approvalScopeChoices.value = emptyMap()
+        privateApprovals.value = emptyMap()
+        privateApprovalRefresh.value = emptyMap()
+        rejectedPrivateApprovals.clear()
         approvalDispatched.clear()
         approvalDispatchStates.value = emptyMap()
         approvalAttempts.clear()
@@ -918,6 +935,20 @@ class ConversationFlowHolder(
                 old.approvalRevision != card.approvalRevision || old.descriptorIdentity != card.descriptorIdentity)
         }.map { it.key }.toSet()
         val stillSame = liveKeys - replaced
+        val bindingChanged = previous != null && previous.boundWorkspaceId != next.boundWorkspaceId &&
+            !sameWorkspace(previous.boundWorkspaceId, next.boundWorkspaceId)
+        val revokedDetails = privateApprovals.value.values.filter { item ->
+            bindingChanged || (item.details != null && !sameWorkspace(next.boundWorkspaceId, item.details.workspaceId)) ||
+                (item.shell != null && !sameWorkspace(next.boundWorkspaceId, item.shell.workspaceId))
+        }.map { it.card.key }.toSet()
+        privateApprovals.value = privateApprovals.value.filterValues { item ->
+            !bindingChanged && next.selectedRunId == item.card.runId && next.pendingApprovals.any { it == item.card } &&
+                (item.details == null || sameWorkspace(next.boundWorkspaceId, item.details.workspaceId)) &&
+                (item.shell == null || sameWorkspace(next.boundWorkspaceId, item.shell.workspaceId))
+        }
+        rejectedPrivateApprovals.retainAll(stillSame)
+        privateApprovalRefresh.value = privateApprovalRefresh.value.filterKeys { it in stillSame }
+        revokedDetails.filter { it in stillSame }.forEach(::refreshPrivateApproval)
         approvalScopeChoices.value = approvalScopeChoices.value.filterKeys { it in stillSame }
         expandedApprovalEvidence.value = expandedApprovalEvidence.value.intersect(stillSame)
         approvalDispatchStates.value = approvalDispatchStates.value.filterKeys { it in stillSame }
@@ -1375,6 +1406,7 @@ class ConversationFlowHolder(
     @Synchronized fun selectRun(runId: String) {
         if (retired) return
         selectedRunId.value = runId
+        privateApprovals.value = emptyMap()
     }
 
     /* ---------------------------------- approvals ---------------------------------- */
@@ -1382,6 +1414,77 @@ class ConversationFlowHolder(
     /** Current projected card for one run+call key, or null. */
     @Synchronized fun approvalCard(key: String): ApprovalCardUi? =
         snapshot.value?.pendingApprovals?.firstOrNull { it.key == key }
+
+    @Synchronized fun showPrivateApproval(card: ApprovalCardUi, lease: String) {
+        val state = snapshot.value ?: return
+        if (retired || card.key in approvalDispatched || !card.identityVerified || card.scopeVerified ||
+            card.toolName !in setOf("workspace.createFile", "workspace.writeFile", "workspace.applyPatch", "exec.shell") ||
+            state.selectedRunId != card.runId || (selectedRunId.value != null && selectedRunId.value != card.runId) ||
+            state.pendingApprovals.none { it == card }) return
+        privateApprovals.value = privateApprovals.value + (lease to PrivateApproval(card))
+        if (!host.requestApprovalPresentation(session, card, lease)) {
+            privateApprovals.value = privateApprovals.value - lease
+        }
+    }
+
+    @Synchronized fun hidePrivateApproval(lease: String) {
+        privateApprovals.value = privateApprovals.value - lease
+    }
+
+    @Synchronized fun acceptPrivateApproval(echo: ConversationSessionToken, card: ApprovalCardUi,
+        lease: String, details: WorkspaceFileApprovalUi, token: String) {
+        val state = snapshot.value ?: return
+        val current = privateApprovals.value[lease] ?: return
+        if (retired || !echo.isCurrentFor(session) || current.card != card || current.details != null || current.shell != null ||
+            state.selectedRunId != card.runId || (selectedRunId.value != null && selectedRunId.value != card.runId) ||
+            !sameWorkspace(state.boundWorkspaceId, details.workspaceId) || state.pendingApprovals.none { it == card }) return
+        privateApprovals.value = privateApprovals.value + (lease to PrivateApproval(card, details, token))
+    }
+
+    @Synchronized fun acceptPrivateShellApproval(echo: ConversationSessionToken, card: ApprovalCardUi,
+        lease: String, details: LocalShellApprovalUi, token: String) {
+        val state = snapshot.value ?: return
+        val current = privateApprovals.value[lease] ?: return
+        if (retired || !echo.isCurrentFor(session) || current.card != card || current.details != null ||
+            current.shell != null || card.toolName != "exec.shell" || !sameWorkspace(state.boundWorkspaceId, details.workspaceId) ||
+            state.selectedRunId != card.runId || (selectedRunId.value != null && selectedRunId.value != card.runId) ||
+            state.pendingApprovals.none { it == card }) return
+        privateApprovals.value = privateApprovals.value + (lease to PrivateApproval(card, token = token, shell = details))
+    }
+
+    @Synchronized fun visibleApprovalCard(card: ApprovalCardUi, lease: String): ApprovalCardUi {
+        val privateEntry = privateApprovals.value[lease]?.takeIf { it.card == card } ?: return card
+        val shell = privateEntry.shell
+        if (shell != null && card.toolName == "exec.shell" && sameWorkspace(snapshot.value?.boundWorkspaceId, shell.workspaceId))
+            return card.copy(localShellAction = shell, scopeVerified = true)
+        val details = privateEntry.details ?: return card
+        if (!sameWorkspace(snapshot.value?.boundWorkspaceId, details.workspaceId)) return card
+        return card.copy(workspaceId = details.workspaceId, workspaceVerified = true,
+            workspaceAction = details, scopeVerified = true)
+    }
+
+    @Synchronized fun privateApprovalValid(card: ApprovalCardUi, lease: String?, token: String?): Boolean {
+        val item = privateApprovals.value[lease ?: return false] ?: return false
+        val state = snapshot.value ?: return false
+        return !retired && token != null && item.token == token && item.card == card &&
+            ((item.details != null && sameWorkspace(state.boundWorkspaceId, item.details.workspaceId)) ||
+                (item.shell != null && card.toolName == "exec.shell" && sameWorkspace(state.boundWorkspaceId, item.shell.workspaceId))) &&
+            state.selectedRunId == card.runId && (selectedRunId.value == null || selectedRunId.value == card.runId) &&
+            state.pendingApprovals.any { it == card }
+    }
+
+    /** A terminal rejection may have consumed the one-shot token; never reuse it. */
+    @Synchronized fun invalidateRejectedPrivateApproval(
+        echo: ConversationSessionToken, card: ApprovalCardUi, attempt: String, lease: String?, token: String?,
+    ) {
+        withCurrentApproval(echo, card, attempt) {
+            if (token == null || lease == null) return@withCurrentApproval
+            // A disappeared lease is still unusable; invalidate every view of
+            // this card and require a fresh read after the pending check.
+            privateApprovals.value = privateApprovals.value.filterValues { it.card != card }
+            rejectedPrivateApprovals.add(card.key)
+        }
+    }
 
     /** ⇄ resolve(approval, decision): dispatch the EXACT run+call identity
      * once. Deny carries the stable "user denied" vocabulary; the grant tier
@@ -1391,13 +1494,19 @@ class ConversationFlowHolder(
         approval: ApprovalCardUi,
         allow: Boolean,
         terminalHandoff: TerminalHandoffConsentUi? = null,
+        presentationLease: String? = null,
     ): ConversationFlowResult {
         val state = snapshot.value ?: return rejected(ConversationRejectedReason.NO_SESSION)
         val live = state.pendingApprovals.firstOrNull { it.key == approval.key }
             ?: return ConversationFlowResult.Stale
-        if (live != approval || state.selectedRunId != live.runId ||
+        val privateEntry = presentationLease?.let { privateApprovals.value[it] }
+        val privateToken = privateEntry?.token
+        val privateVisible = privateEntry != null && privateEntry.card == live &&
+            (privateEntry.details != null || privateEntry.shell != null) &&
+            visibleApprovalCard(live, presentationLease ?: "") == approval
+        if ((live != approval && !privateVisible) || state.selectedRunId != live.runId ||
             (selectedRunId.value != null && selectedRunId.value != live.runId)) return ConversationFlowResult.Stale
-        if (!live.identityVerified || (allow && !live.scopeVerified) || live.requestGeneration == null ||
+        if (!live.identityVerified || (allow && !live.scopeVerified && !privateVisible) || live.requestGeneration == null ||
             live.approvalRevision == null || live.descriptorIdentity == null)
             return rejected(ConversationRejectedReason.INPUT_INSUFFICIENT)
         if (live.key in approvalDispatched) return rejected(ConversationRejectedReason.OPERATION_IN_FLIGHT)
@@ -1431,6 +1540,8 @@ class ConversationFlowHolder(
                 // as a refusal.
                 terminalHandoff = if (allow) terminalHandoff else null,
                 expectedCard = live,
+                presentationLease = if (allow && privateVisible) presentationLease else null,
+                presentationToken = if (allow && privateVisible) privateToken else null,
             )
         )
         if (!started) {
@@ -1471,6 +1582,7 @@ class ConversationFlowHolder(
                 approvalDispatched.remove(expected.key)
                 approvalAttempts.remove(expected.key)
                 approvalChecks.remove(expected.key)
+                if (rejectedPrivateApprovals.remove(expected.key)) refreshPrivateApproval(expected.key)
             }
             approvalDispatchStates.value = approvalDispatchStates.value + (expected.key to state)
         }
@@ -1482,6 +1594,10 @@ class ConversationFlowHolder(
             approvalChecks[card.key]?.invoke()
         } else if (approvalDispatchStates.value[card.key] != ApprovalDispatchState.PROCESSING &&
             approvalDispatchStates.value[card.key] != ApprovalDispatchState.CHECKING) {
+            if (!card.scopeVerified && card.toolName in setOf("workspace.createFile", "workspace.writeFile", "workspace.applyPatch", "exec.shell")) {
+                privateApprovals.value = privateApprovals.value.filterValues { it.card != card }
+                refreshPrivateApproval(card.key)
+            }
             host.refreshApproval(session, card.runId)
         }
     }

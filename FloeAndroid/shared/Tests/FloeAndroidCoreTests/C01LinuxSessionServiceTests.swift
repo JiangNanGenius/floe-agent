@@ -11,6 +11,8 @@ import XCTest
 import Foundation
 import FloeCore
 import FloeTools
+import FloeModels
+import FloeAgentRuntime
 @testable import FloeAndroidShellTools
 @testable import FloeAndroidJobTools
 @testable import FloeAndroidCore
@@ -76,6 +78,48 @@ private struct C01FakeEnvironmentHost: C01LinuxEnvironmentHosting {
 }
 
 final class C01LinuxSessionServiceTests: XCTestCase {
+    func testLocalShellApprovalShowsEffectiveBoundedSettingsAndRejectsUnsafeShapes() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let task = UUID(), run = UUID(), workspaceID = UUID(), now = Date()
+        let target = C02ExecutionTarget(taskID: task, revision: 2, kind: .localLinux,
+            environmentID: "env-test", projectID: nil, workspaceID: workspaceID,
+            shellRootHash: String(repeating: "a", count: 64), engineOwnerHash: String(repeating: "b", count: 64),
+            rootEpoch: 7, remote: nil, provenance: .explicitUserSelection, createdAt: now, updatedAt: now)
+        let pin = C02RunTargetPin(runID: run, taskID: task, targetRevision: 2,
+            environmentID: target.environmentID, shellRootHash: target.shellRootHash,
+            engineOwnerHash: target.engineOwnerHash, rootEpoch: 7, pinnedAt: now)
+        let resolved = C02ResolvedExecutionTarget(target: target, pin: pin)
+        let workspace = WorkspaceApprovalLaunchProof(workspaceID: workspaceID, rootURL: root,
+            allowedPaths: [], rootHandle: try XCTUnwrap(WorkspaceApprovalRootHandle(root: root)))
+        let shell = LocalShellService(backend: C01FakeSessionBackend(), rootProvider: { root })
+        func project(_ json: String, target: C02ResolvedExecutionTarget = resolved) throws -> [String: SettingsDomainV1.JSONValue]? {
+            let call = try ToolCall(id: "call", toolName: "exec.shell", argumentsJSON: Data(json.utf8), scope: .local)
+            return LocalShellApprovalPresentation.details(waiting: .init(toolCall: call, reason: "test"),
+                target: target, workspace: workspace, shell: shell)
+        }
+        let normal = try XCTUnwrap(project(#"{"command":"printf hi"}"#))
+        XCTAssertEqual(normal["command"], .string("printf hi"))
+        XCTAssertEqual(normal["cwd"], .string("."))
+        XCTAssertEqual(normal["timeoutSeconds"], .fractional(10))
+        XCTAssertEqual(normal["maxOutputBytes"], .integer(65_536))
+        XCTAssertEqual(normal["environmentTransaction"], .boolean(false))
+        let clamped = try XCTUnwrap(project(#"{"script":"printf hi","timeout":0.01,"maxOutputBytes":999999,"environmentTransaction":true}"#))
+        XCTAssertEqual(clamped["timeoutSeconds"], .fractional(0.05))
+        XCTAssertEqual(clamped["maxOutputBytes"], .integer(262_144))
+        XCTAssertEqual(clamped["environmentTransaction"], .boolean(true))
+        XCTAssertNil(try project(#"{"command":"printf hi","stdin":"secret"}"#))
+        XCTAssertNil(try project(#"{"command":"printf hi","env":{"A":"secret"}}"#))
+        XCTAssertNil(try project(#"{"command":"printf hi","cwd":"../outside"}"#))
+        XCTAssertNil(try project("{\"command\":\"echo x\\u202ey\"}"))
+        var remote = resolved
+        remote.target.kind = .ssh
+        XCTAssertNil(try project(#"{"command":"printf hi"}"#, target: remote))
+        var changed = resolved
+        changed.target.revision += 1
+        XCTAssertFalse(LocalShellApprovalPresentation.samePinnedTarget(resolved, changed))
+    }
     func testModelSessionRefusalPreventsAnyEngineDispatch() async throws {
         let backend = C01FakeSessionBackend()
         let center = ShellSessionCenter(backend: backend,

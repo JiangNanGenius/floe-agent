@@ -5,6 +5,8 @@ import com.floe.android.feature.conversation.AgentExecutionModeUi
 import com.floe.android.feature.conversation.ApprovalCardUi
 import com.floe.android.feature.conversation.ApprovalModeUi
 import com.floe.android.feature.conversation.ApprovalTargetUi
+import com.floe.android.feature.conversation.WorkspaceFileApprovalUi
+import com.floe.android.feature.conversation.LocalShellApprovalUi
 import com.floe.android.feature.conversation.AttachmentChipUi
 import com.floe.android.feature.conversation.AttachmentKindUi
 import com.floe.android.feature.conversation.BackgroundJobUi
@@ -64,6 +66,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.longOrNull
 
 /**
@@ -81,6 +84,128 @@ private const val BACKGROUND_LIFECYCLE_PREFIX = "[Floe background work]"
  * The builder never invents identities: everything traces to a decoded wire
  * page or typed effect.
  */
+/** Reject partial, ambiguous or misleading file targets rather than
+ * displaying a truncated/rewritten name as an approved destination. */
+// A general run.snapshot is not yet an approved private channel for these
+// paths. Keep the parser and UI dormant until a dedicated, verified local
+// human-approval channel is integrated; never infer its presence from fields.
+private const val WORKSPACE_APPROVAL_CHANNEL_READY = false
+
+internal fun workspaceApprovalDetails(tool: String, value: JsonObject?): WorkspaceFileApprovalUi? {
+    val details = value ?: return null
+    fun string(key: String): String? = (details[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
+    fun path(raw: String?): String? {
+        val value = raw ?: return null
+        if (value.isEmpty() || value.toByteArray(Charsets.UTF_8).size > 256 || value.trim() != value ||
+            '\\' in value) return null
+        val prohibitedTypes = setOf(Character.CONTROL.toInt(), Character.FORMAT.toInt(),
+            Character.LINE_SEPARATOR.toInt(), Character.PARAGRAPH_SEPARATOR.toInt(),
+            Character.SURROGATE.toInt(), Character.UNASSIGNED.toInt())
+        if (value.codePoints().anyMatch { Character.getType(it) in prohibitedTypes } ||
+            Character.isSpaceChar(value.codePointAt(0)) ||
+            Character.isSpaceChar(value.codePointBefore(value.length))) return null
+        val pieces = value.split('/')
+        if (pieces.any { it.isEmpty() || it == "." || it == ".." } ||
+            pieces.first() == "Network" || pieces.first() == "Mounts") return null
+        return value
+    }
+    if (string("kind") != "workspaceFile") return null
+    val workspaceId = string("workspaceID") ?: return null
+    if (runCatching { java.util.UUID.fromString(workspaceId).toString() }.getOrNull() != workspaceId) return null
+    val operation = string("operation") ?: return null
+    if (tool != "workspace.$operation") return null
+    val target = path(string("target")) ?: return null
+    val source = string("source") ?: return null
+    val overwrite = string("overwrite") ?: return null
+    val precondition = string("precondition") ?: return null
+    val baseKeys = setOf("kind", "workspaceID", "operation", "target", "source", "overwrite", "precondition")
+    val sourcePath = if (source == "workspaceFile") path(string("sourcePath")) ?: return null else null
+    val sourcePrecondition = if (source == "workspaceFile") string("sourcePrecondition") else null
+    val expectedKeys = if (source == "workspaceFile") baseKeys + setOf("sourcePath", "sourcePrecondition") else baseKeys
+    if (details.keys != expectedKeys) return null
+    val valid = when (operation) {
+        "createFile" -> source == "inline" && overwrite in setOf("allowed", "forbidden") && precondition == "none"
+        "applyPatch" -> source == "patch" && overwrite == "conditional" && precondition == "patchContext"
+        "writeFile" -> {
+            val expectedOverwrite = when (precondition) {
+                "none" -> if (source == "inline") "allowed" else "forbidden"
+                "sha256", "mtime", "sha256AndMtime" -> "conditional"
+                else -> null
+            }
+            source in setOf("inline", "workspaceFile") && overwrite == expectedOverwrite &&
+                (source != "workspaceFile" || sourcePrecondition == "sha256")
+        }
+        else -> false
+    }
+    if (!valid) return null
+    return WorkspaceFileApprovalUi(workspaceId, operation, target, source, overwrite, precondition,
+        sourcePath, sourcePrecondition)
+}
+
+/** Decode only the ephemeral human-facing page; never project it into a run snapshot. */
+private fun privateApprovalPage(value: JsonElement?, card: ApprovalCardUi): Pair<JsonObject, String>? {
+    val page = value as? JsonObject ?: return null
+    fun str(o: JsonObject, key: String) = (o[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
+    fun sameUUID(a: String?, b: String): Boolean = runCatching {
+        java.util.UUID.fromString(a) == java.util.UUID.fromString(b)
+    }.getOrDefault(false)
+    val generation = card.requestGeneration ?: return null
+    val descriptor = card.descriptorIdentity ?: return null
+    val token = str(page, "presentationToken") ?: return null
+    if (runCatching { java.util.UUID.fromString(token).toString() }.getOrNull() != token ||
+        str(page, "schema") != "floe.approval-presentation/1" ||
+        !sameUUID(str(page, "conversationID"), card.conversationId) ||
+        !sameUUID(str(page, "runID"), card.runId) || str(page, "callID") != card.approvalId ||
+        str(page, "generation") != generation || card.approvalRevision != "generation:$generation" ||
+        !card.identityVerified || card.scopeVerified) return null
+    val presentation = page["presentation"] as? JsonObject ?: return null
+    val risks = (presentation["riskLabels"] as? JsonArray)?.map {
+        (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content ?: return null
+    } ?: return null
+    if (str(presentation, "status") != "available" || str(presentation, "detailStatus") != "available" ||
+        str(presentation, "generation") != generation || str(presentation, "tool") != card.toolName ||
+        str(presentation, "descriptorIdentity") != descriptor || str(presentation, "effect") != "mutating" ||
+        (presentation["isSideEffecting"] as? JsonPrimitive)?.booleanOrNull != true || !card.isSideEffecting ||
+        risks.toSet() != card.riskLabels || risks.size != risks.toSet().size ||
+        "writesFiles" !in card.riskLabels || str(presentation, "requestedScope") != "local" ||
+        card.requestedScope != "local" || str(presentation, "grantScope") != "singleUse" ||
+        (presentation["workspaceVerified"] as? JsonPrimitive)?.booleanOrNull != true) return null
+    return (presentation["actionDetails"] as? JsonObject ?: return null) to token
+}
+
+internal fun privateWorkspaceApprovalPage(value: JsonElement?, card: ApprovalCardUi): Pair<WorkspaceFileApprovalUi, String>? {
+    val (details, token) = privateApprovalPage(value, card) ?: return null
+    return (workspaceApprovalDetails(card.toolName, details) ?: return null) to token
+}
+
+internal fun privateLocalShellApprovalPage(value: JsonElement?, card: ApprovalCardUi): Pair<LocalShellApprovalUi, String>? {
+    if (card.toolName != "exec.shell") return null
+    val (details, token) = privateApprovalPage(value, card) ?: return null
+    if (details.keys != setOf("kind", "target", "environmentID", "workspaceID", "targetRevision", "command", "cwd",
+            "timeoutSeconds", "maxOutputBytes", "environmentTransaction")) return null
+    fun str(key: String): String? = (details[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
+    fun primitive(key: String): JsonPrimitive? = (details[key] as? JsonPrimitive)?.takeUnless { it.isString }
+    fun readable(value: String, limit: Int, allowNewline: Boolean): Boolean {
+        if (value.isEmpty() || value.toByteArray(Charsets.UTF_8).size > limit) return false
+        val badTypes = setOf(Character.CONTROL.toInt(), Character.FORMAT.toInt(), Character.LINE_SEPARATOR.toInt(),
+            Character.PARAGRAPH_SEPARATOR.toInt(), Character.SURROGATE.toInt(), Character.UNASSIGNED.toInt())
+        return value.codePoints().noneMatch { cp -> !(allowNewline && cp == 10) && Character.getType(cp) in badTypes }
+    }
+    if (str("kind") != "localShell" || str("target") != "localLinux") return null
+    val environment = str("environmentID")?.takeIf { readable(it, 128, false) } ?: return null
+    val workspace = str("workspaceID") ?: return null
+    if (runCatching { java.util.UUID.fromString(workspace).toString() }.getOrNull() != workspace) return null
+    val revision = primitive("targetRevision")?.longOrNull?.takeIf { it > 0 } ?: return null
+    val command = str("command")?.takeIf { readable(it, 16384, true) && it.isNotBlank() } ?: return null
+    val cwd = str("cwd")?.takeIf { readable(it, 1024, false) } ?: return null
+    if (cwd != "." && (cwd.startsWith("/") || cwd.startsWith("~") || '\\' in cwd ||
+            cwd.split('/').any { it.isEmpty() || it == "." || it == ".." })) return null
+    val timeout = primitive("timeoutSeconds")?.doubleOrNull?.takeIf { it.isFinite() && it >= 0.05 && it <= 120.0 } ?: return null
+    val maxOutput = primitive("maxOutputBytes")?.longOrNull?.takeIf { it in 1L..262144L }?.toInt() ?: return null
+    val transaction = primitive("environmentTransaction")?.booleanOrNull ?: return null
+    return LocalShellApprovalUi(environment, workspace, revision, command, cwd, timeout, maxOutput, transaction) to token
+}
+
 class ThreadProjectionBuilder internal constructor(
     private val conversationId: String,
     /** Read at build time so permission/TTS readiness never stays stale. */
@@ -762,7 +887,7 @@ class ThreadProjectionBuilder internal constructor(
                     it.status == "available" && it.generation == generation && it.tool == approval.tool &&
                         it.effect in setOf("readOnly", "internalState", "mutating") &&
                         it.requestedScope in setOf("local", "host", "hostPath") &&
-                        it.grantScope == "singleUse" && it.workspaceVerified == false &&
+                        it.grantScope == "singleUse" && it.workspaceVerified != null &&
                         it.descriptorIdentity?.matches(Regex("[0-9a-f]{64}")) == true &&
                         it.isSideEffecting != null && it.riskLabels != null
                 }
@@ -779,16 +904,23 @@ class ThreadProjectionBuilder internal constructor(
                     "launch" -> details?.keys == setOf("action", "packageName") && validPackage
                     else -> false
                 }
-                val allowReady = revision != null && presentation != null && approval.tool == "device.act" &&
+                val deviceReady = revision != null && presentation != null && approval.tool == "device.act" &&
                     presentation.detailStatus == "available" && completeAction && presentation.requestedScope == "local" &&
+                    presentation.workspaceVerified == false &&
                     !(presentation.effect == "readOnly" && presentation.isSideEffecting == true)
+                val fileDetails = if (WORKSPACE_APPROVAL_CHANNEL_READY && revision != null && presentation != null &&
+                    presentation.workspaceVerified == true && presentation.detailStatus == "available" &&
+                    presentation.requestedScope == "local" && presentation.effect == "mutating" &&
+                    presentation.isSideEffecting == true && presentation.riskLabels?.contains("writesFiles") == true
+                ) workspaceApprovalDetails(approval.tool, details) else null
+                val allowReady = deviceReady || fileDetails != null
                 // Every field comes from THIS snapshot. In particular, never
                 // carry an old unversioned event's tool, path or scope here.
                 val card = ApprovalCardUi(
                             approvalId = approval.callID,
                             runId = page.runID,
                             conversationId = conversationId,
-                            workspaceId = null,
+                            workspaceId = fileDetails?.workspaceId,
                             toolName = approval.tool,
                             target = ApprovalTargetUi.Local,
                             scopeDescription = "",
@@ -801,9 +933,10 @@ class ThreadProjectionBuilder internal constructor(
                             approvalRevision = revision,
                             descriptorIdentity = presentation?.descriptorIdentity,
                             requestedScope = presentation?.requestedScope,
-                            workspaceVerified = false,
-                            actionKind = action.takeIf { allowReady },
-                            actionPackage = packageName.takeIf { allowReady },
+                            workspaceVerified = fileDetails != null,
+                            actionKind = action.takeIf { deviceReady },
+                            actionPackage = packageName.takeIf { deviceReady },
+                            workspaceAction = fileDetails,
                             identityVerified = revision != null && presentation != null,
                             scopeVerified = allowReady,
                         )

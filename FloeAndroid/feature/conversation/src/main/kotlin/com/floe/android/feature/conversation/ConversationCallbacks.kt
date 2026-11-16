@@ -158,6 +158,8 @@ data class ApprovalDecisionRequest(
     val terminalHandoff: TerminalHandoffConsentUi? = null,
     /** The exact immutable card and revision shown when the human chose. */
     val expectedCard: ApprovalCardUi? = null,
+    val presentationLease: String? = null,
+    val presentationToken: String? = null,
 ) {
     override fun toString(): String =
         "ApprovalDecisionRequest(approval=$approvalId, run=$runId, decision=$decision" +
@@ -442,6 +444,9 @@ interface ConversationUiCallbacks {
     /** ⇄ center.resolve(approval, decision:) for the EXACT run+call identity.
      * True only when the host accepted the decision for that identity. */
     fun resolveApproval(request: ApprovalDecisionRequest): Boolean
+
+    /** Read a private presentation only for a visible, exact approval card. */
+    fun requestApprovalPresentation(session: ConversationSessionToken, card: ApprovalCardUi, lease: String): Boolean = false
 
     /** Read-only refresh of the selected run's authoritative approval. */
     fun refreshApproval(session: ConversationSessionToken, runId: String): Boolean = false

@@ -113,11 +113,11 @@ final class BridgeEnvelopeV3Tests: XCTestCase {
         // G07.3B appends thirteen schedule configuration tuples to the
         // preserved Alpha20 matrix. Existing role counts and mailbox bounds
         // are unchanged; the new label grants no execution role by itself.
-        XCTAssertEqual(rules.count, 116)
+        XCTAssertEqual(rules.count, 117)
         XCTAssertEqual(rules.filter { $0.scope == .applicationConfiguration }.count, 75)
         XCTAssertEqual(rules.filter { $0.scope == .conversationLifecycle }.count, 21)
         XCTAssertEqual(rules.filter { $0.scope == .launch }.count, 5)
-        XCTAssertEqual(rules.filter { $0.scope == .taskExecution }.count, 15)
+        XCTAssertEqual(rules.filter { $0.scope == .taskExecution }.count, 16)
         // The third content.read entry shares (scope, command) with the
         // conversations entry but has a different configuration label, so the
         // uniqueness key must include the label.
@@ -235,6 +235,7 @@ final class BridgeEnvelopeV3Tests: XCTestCase {
             ("taskExecution", nil, "run.input.remove"),
             ("taskExecution", nil, "run.input.reorder"),
             ("taskExecution", nil, "run.approval.resolve"),
+            ("taskExecution", nil, "run.approval.presentation"),
             ("taskExecution", nil, "run.policy.update"),
             ("taskExecution", nil, "run.skillcancel"),
             ("taskExecution", nil, "run.snapshot"),

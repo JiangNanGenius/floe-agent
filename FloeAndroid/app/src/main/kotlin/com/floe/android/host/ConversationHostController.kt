@@ -8,6 +8,7 @@ import com.floe.android.feature.conversation.GoalDefinitionUi
 import com.floe.android.design.SidebarSelection
 import com.floe.android.design.WorkbenchSelection
 import com.floe.android.feature.conversation.AgentExecutionModeUi
+import com.floe.android.feature.conversation.ApprovalCardUi
 import com.floe.android.feature.conversation.ApprovalDecisionRequest
 import com.floe.android.feature.conversation.ApprovalDispatchState
 import com.floe.android.feature.conversation.ApprovalUserDecisionUi
@@ -4602,6 +4603,44 @@ class ConversationHostController internal constructor(
      * scope is NEVER chosen by the payload — native re-derives it from the
      * live call-bound request (a human tap only picks allow/deny).
      */
+    override fun requestApprovalPresentation(session: ConversationSessionToken, card: ApprovalCardUi, lease: String): Boolean {
+        if (!admitted()) return false
+        val entry = holders[session.conversationId] ?: return false
+        val generation = card.requestGeneration ?: return false
+        val revision = card.approvalRevision ?: return false
+        val descriptor = card.descriptorIdentity ?: return false
+        if (!ownCurrentEntry(entry, session.conversationId, session.sessionEpoch) ||
+            entry.builder.approvalBinding(card.runId, card.approvalId) != card) return false
+        host.trackOperation(
+            HostCommandRequest(
+                command = "run.approval.presentation",
+                scope = HostScope.TaskExecution(session.conversationId, card.runId),
+                stateful = true,
+                correlationID = client().correlationID("apres"),
+                revision = HostRevision(ConversationWire.approvalResourceID(card.approvalId), revision),
+                payload = JsonObject(mapOf(
+                    "approvalSchema" to JsonPrimitive("generation-v1"),
+                    "callID" to JsonPrimitive(card.approvalId),
+                    "generation" to JsonPrimitive(generation),
+                    "expectedDescriptorIdentity" to JsonPrimitive(descriptor),
+                )),
+            ),
+        ) { outcome ->
+            if (outcome is HostOperationOutcome.Completed &&
+                ownCurrentEntry(entry, session.conversationId, session.sessionEpoch) &&
+                entry.builder.approvalBinding(card.runId, card.approvalId) == card) {
+                if (card.toolName == "exec.shell") {
+                    val result = privateLocalShellApprovalPage(outcome.value, card) ?: return@trackOperation
+                    entry.holder.acceptPrivateShellApproval(session, card, lease, result.first, result.second)
+                } else {
+                    val result = privateWorkspaceApprovalPage(outcome.value, card) ?: return@trackOperation
+                    entry.holder.acceptPrivateApproval(session, card, lease, result.first, result.second)
+                }
+            }
+        }
+        return true
+    }
+
     override fun resolveApproval(request: ApprovalDecisionRequest): Boolean {
         if (!admitted()) return false
         val entry = holders[request.conversationId] ?: return false
@@ -4613,7 +4652,8 @@ class ConversationHostController internal constructor(
         val descriptorIdentity = card.descriptorIdentity ?: return false
         if (card.conversationId != request.conversationId || card.runId != request.runId ||
             card.approvalId != request.approvalId || card.toolName != request.toolName ||
-            !card.identityVerified || (request.decision is ApprovalUserDecisionUi.Allow && !card.scopeVerified)) return false
+            !card.identityVerified || (request.decision is ApprovalUserDecisionUi.Allow && !card.scopeVerified &&
+                !entry.holder.privateApprovalValid(card, request.presentationLease, request.presentationToken))) return false
         val attempt = entry.holder.approvalAttempt(session, card.key) ?: return false
         val terminalRefusal = AtomicBoolean(false)
         val retryProven = AtomicBoolean(false)
@@ -4661,7 +4701,9 @@ class ConversationHostController internal constructor(
         fun dispatch() {
             var submitted = false
             withCurrent {
-                if (!admitted() || entry.builder.approvalBinding(request.runId, request.approvalId) != card) return@withCurrent
+                if (!admitted() || entry.builder.approvalBinding(request.runId, request.approvalId) != card ||
+                    (decision == "allow" && !card.scopeVerified && !entry.holder.privateApprovalValid(
+                        card, request.presentationLease, request.presentationToken))) return@withCurrent
                 submitted = true
                 host.trackOperation(
                     HostCommandRequest(
@@ -4680,6 +4722,8 @@ class ConversationHostController internal constructor(
                             put("expectedApprovalVersion", JsonPrimitive(approvalVersion))
                             put("approvalSchema", JsonPrimitive("generation-v1"))
                             put("expectedDescriptorIdentity", JsonPrimitive(descriptorIdentity))
+                            if (decision == "allow" && request.presentationToken != null)
+                                put("presentationToken", JsonPrimitive(request.presentationToken))
                             if (decision == "deny") {
                                 put(
                                     "reason",
@@ -4710,7 +4754,13 @@ class ConversationHostController internal constructor(
                         }
                     }
                     is HostOperationOutcome.Rejected -> {
-                        if (terminalRefusal.get()) retryProven.set(true)
+                        if (terminalRefusal.get()) {
+                            if (decision == "allow" && request.presentationToken != null) {
+                                entry.holder.invalidateRejectedPrivateApproval(session, card, attempt,
+                                    request.presentationLease, request.presentationToken)
+                            }
+                            retryProven.set(true)
+                        }
                         check()
                     }
                     is HostOperationOutcome.Failed -> check()
