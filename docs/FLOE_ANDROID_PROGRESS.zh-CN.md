@@ -1,5 +1,13 @@
 # Floe Android 分目标实施记录
 
+## 1.0.20／129 已公开：文件审批与设备等待提示（2026-11-16）
+
+[Android 1.0.20 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v1.0.20)固定源码 `3a98cf86e37ad0f31f241fd5666ce44fc55b61fe`；Full APK SHA-256 `6eb25e50f4d050bf8b5b8e35b12a42876f3c94da717af07f79296bf098388232`。公开七附件匿名下载字节逐项匹配，GitHub 更新列表可发现本版，iOS Latest 保持 `v1.8.25`。1.0.19 的增量包已在本机从精确基底重建到本版完整字节；三星本次使用 ADB 覆盖安装，并未验证本版设备内在线升级或增量失败回退。
+
+三星前一私有候选实际通过文件创建的单次授权、工具读回及内置编辑器打开。本发布包只比该候选增加设备等待状态刷新：三星实际出现带等待标识的悬浮球，但点球后没有展开审批、球消失；任务按失败即停，现场保留，发布说明明确列为已知问题。设备操作人工审批当前仅接入可核验的无障碍点击，实际交互尚未闭环；其他设备动作及部分浏览器、定时、远程和特殊命令的人工审批仍不完整。停止后的聊天界面没有浮球，但此次不证明消失的精确时刻。
+
+English: Android 1.0.20 is a published prerelease from the source and APK above. All seven public assets matched; delta reconstruction was verified locally, not as an on-device OTA. A Samsung file-approval flow passed on the preceding candidate. The release candidate showed the waiting bubble, but tapping it did not open approval; this remains a documented issue.
+
 ## 1.0.20 私有候选：三星文件审批通过，设备浮窗待修复（2026-11-16）
 
 候选 `candidate129-c03` 固定源码 `25c6109993b7d15b80d094f0d7a80d24793a9eb0`，Full APK SHA-256 `3c93ea4f4800669d2adbc766214ef21d907224e46dd959d5edb9a8d787344dfb`。三星保留 UID 覆盖安装，主应用及运行组件均为 1.0.20／129，安装字节与候选主包和内嵌组件一致。使用 Ark Plan 的 `ark-code-latest`，在新建项目触发 `workspace.createFile`；授权卡显示实际目标路径，单次允许后文件创建成功，`workspace.readFile` 读回 `qa129_ok`，工作区列表和内置文本编辑器打开同一文件。第一次测试因误判权限模式而人为停止，未计为通过。
