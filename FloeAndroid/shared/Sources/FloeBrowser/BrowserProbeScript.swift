@@ -14,8 +14,8 @@
 //
 // The probe maintains stable per-document node references and a small
 // lifecycle/DOM queue, and deliberately exposes no arbitrary JavaScript
-// evaluation endpoint (snapshot/perform/status/drainEvents only, exactly the
-// original four).
+// evaluation endpoint. The Android identity read is a passive observation
+// used to reject snapshots spanning two real page documents.
 
 import Foundation
 
@@ -27,6 +27,17 @@ public enum BrowserProbeScript {
     (() => {
       if (globalThis.__floeProtocol) return;
       let documentID = '';
+      // This is an observation identity, never an authority token. It makes
+      // same-URL reloads distinguishable while Android lifecycle callbacks
+      // are still travelling through the host mailbox.
+      const documentToken = (() => {
+        const existing = globalThis.__floeDocumentTokenV1;
+        if (typeof existing === 'string' && existing.length > 0 && existing.length <= 128) return existing;
+        const token = `${Date.now()}-${Math.random()}-${Math.random()}`;
+        try { Object.defineProperty(globalThis, '__floeDocumentTokenV1', {value:token, configurable:false, writable:false}); }
+        catch (_) { return ''; }
+        return token;
+      })();
       let revision = 0;
       let nextRef = 1;
       let lastMutation = performance.now();
@@ -117,6 +128,9 @@ public enum BrowserProbeScript {
         const count = Math.min(50, Math.max(1, Number(limit) || 40));
         const end = Math.min(nodes.length, start + count);
         return {
+          probeAvailable: documentToken.length > 0,
+          documentToken,
+          documentURL: String(window.location.href),
           revision,
           viewportWidth: Math.max(1, Number(window.innerWidth) || 1),
           viewportHeight: Math.max(1, Number(window.innerHeight) || 1),
@@ -124,7 +138,11 @@ public enum BrowserProbeScript {
           nextCursor: end < nodes.length ? end : null
         };
       };
-      const perform = (operation, target, expectedDocumentID, text, submit, visualFallbackReason) => {
+      const perform = (operation, target, expectedDocumentID, text, submit, visualFallbackReason, expectedRevision, expectedToken, expectedURL, expectedScrollX, expectedScrollY, expectedWidth, expectedHeight) => {
+        // Check the observed document inside the same JS turn and BEFORE
+        // resolving refs, touching inputs, or dispatching any pointer event.
+        if (!expectedToken || expectedToken !== documentToken || !expectedURL || expectedURL !== String(window.location.href)) return {status:'stale'};
+        if (target.kind === 'point' && (expectedRevision !== revision || expectedScrollX !== Number(window.scrollX || 0) || expectedScrollY !== Number(window.scrollY || 0) || expectedWidth !== Number(window.innerWidth) || expectedHeight !== Number(window.innerHeight))) return {status:'stale'};
         setDocument(expectedDocumentID);
         if (target.kind === 'element' && target.documentID !== documentID) return {status:'stale'};
         const el = target.kind === 'element'
@@ -217,7 +235,14 @@ public enum BrowserProbeScript {
       addEventListener('load', () => push('Page.loadEventFired'), {once:true});
       addEventListener('hashchange', () => push('Page.navigatedWithinDocument'));
       addEventListener('popstate', () => push('Page.navigatedWithinDocument'));
-      globalThis.__floeProtocol = {snapshot, perform, status, drainEvents};
+      const identity = () => ({probeAvailable:documentToken.length > 0, documentToken, documentURL:String(window.location.href), revision, scrollX:Number(window.scrollX || 0), scrollY:Number(window.scrollY || 0), viewportWidth:Number(window.innerWidth), viewportHeight:Number(window.innerHeight)});
+      const scroll = (x, y, expectedToken, expectedURL) => {
+        if (!expectedToken || expectedToken !== documentToken || !expectedURL || expectedURL !== String(window.location.href)) return {status:'stale'};
+        if (!Number.isFinite(x) || !Number.isFinite(y)) return {status:'blocked'};
+        window.scrollBy(x, y);
+        return {status:'ok'};
+      };
+      globalThis.__floeProtocol = {snapshot, perform, status, drainEvents, identity, scroll};
       push('Runtime.executionContextCreated');
     })();
     """#
@@ -248,11 +273,33 @@ public enum BrowserProbeScript {
         let safeLimit = min(50, max(1, limit))
         return """
         (() => { const p = globalThis.__floeProtocol;
-          if (!p) return JSON.stringify({revision:0,viewportWidth:Math.max(1,Number(window.innerWidth)||1),viewportHeight:Math.max(1,Number(window.innerHeight)||1),nodes:[],nextCursor:null});
+          if (!p) return JSON.stringify({probeAvailable:false});
           return JSON.stringify(p.snapshot(\(jsStringLiteral(documentID)), \(safeCursor), \(safeLimit)));
         })()
         """
     }
+
+    /// Stamp the current actual document before requesting navigation. This
+    /// is a passive identity marker only and cannot grant any capability.
+    public static let documentStampExpression = #"""
+        (() => {
+          let token = globalThis.__floeDocumentTokenV1;
+          if (typeof token !== 'string' || token.length === 0 || token.length > 128) {
+            token = `${Date.now()}-${Math.random()}-${Math.random()}`;
+            try { Object.defineProperty(globalThis, '__floeDocumentTokenV1', {value:token, configurable:false, writable:false}); }
+            catch (_) { return JSON.stringify({probeAvailable:false}); }
+          }
+          return JSON.stringify({probeAvailable:true, documentToken:token, documentURL:String(window.location.href)});
+        })()
+        """#
+
+    /// Read the actual page identity again after the platform state read.
+    public static let identityExpression = #"""
+        (() => { const p = globalThis.__floeProtocol;
+          if (!p || typeof p.identity !== 'function') return JSON.stringify({probeAvailable:false});
+          return JSON.stringify(p.identity());
+        })()
+        """#
 
     /// Wait-condition probe expression.
     public static func statusExpression(documentID: String, selector: String, text: String) -> String {
@@ -275,9 +322,14 @@ public enum BrowserProbeScript {
 
     /// Viewport scroll. Only finite bounded doubles are embedded; nothing
     /// page-derived reaches this builder.
-    public static func scrollExpression(deltaX: Double, deltaY: Double) -> String {
-        guard deltaX.isFinite, deltaY.isFinite else { return "void 0" }
-        return "window.scrollBy(\(deltaX), \(deltaY)); 'ok'"
+    public static func scrollExpression(deltaX: Double, deltaY: Double, expectedDocumentToken: String, expectedDocumentURL: String) -> String {
+        guard deltaX.isFinite, deltaY.isFinite else { return "'{\"status\":\"blocked\"}'" }
+        return """
+        (() => { const p = globalThis.__floeProtocol;
+          if (!p || typeof p.scroll !== 'function') return JSON.stringify({status:'stale'});
+          return JSON.stringify(p.scroll(\(deltaX), \(deltaY), \(jsStringLiteral(expectedDocumentToken)), \(jsStringLiteral(expectedDocumentURL))));
+        })()
+        """
     }
 
     /// Actuator payload for one admitted action. The target object is
@@ -289,7 +341,14 @@ public enum BrowserProbeScript {
         documentID: String,
         text: String,
         submit: Bool,
-        visualFallbackReason: String?
+        visualFallbackReason: String?,
+        expectedVisualRevision: Int? = nil,
+        expectedDocumentToken: String,
+        expectedDocumentURL: String,
+        expectedScrollX: Double? = nil,
+        expectedScrollY: Double? = nil,
+        expectedViewportWidth: Double? = nil,
+        expectedViewportHeight: Double? = nil
     ) -> String {
         let targetLiteral: String
         switch target {
@@ -304,10 +363,15 @@ public enum BrowserProbeScript {
             // session enforces this; the builder refuses the raw form.
             return "'{\"status\":\"blocked\"}'"
         }
+        let revisionLiteral = expectedVisualRevision.map { String($0) } ?? "null"
+        let scrollXLiteral = expectedScrollX.map { String($0) } ?? "null"
+        let scrollYLiteral = expectedScrollY.map { String($0) } ?? "null"
+        let widthLiteral = expectedViewportWidth.map { String($0) } ?? "null"
+        let heightLiteral = expectedViewportHeight.map { String($0) } ?? "null"
         return """
         (() => { const p = globalThis.__floeProtocol;
           if (!p) return JSON.stringify({status:'stale'});
-          return JSON.stringify(p.perform(\(jsStringLiteral(operation)), \(targetLiteral), \(jsStringLiteral(documentID)), \(jsStringLiteral(text)), \(submit ? "true" : "false"), \(jsStringLiteral(visualFallbackReason ?? ""))));
+          return JSON.stringify(p.perform(\(jsStringLiteral(operation)), \(targetLiteral), \(jsStringLiteral(documentID)), \(jsStringLiteral(text)), \(submit ? "true" : "false"), \(jsStringLiteral(visualFallbackReason ?? "")), \(revisionLiteral), \(jsStringLiteral(expectedDocumentToken)), \(jsStringLiteral(expectedDocumentURL)), \(scrollXLiteral), \(scrollYLiteral), \(widthLiteral), \(heightLiteral)));
         })()
         """
     }

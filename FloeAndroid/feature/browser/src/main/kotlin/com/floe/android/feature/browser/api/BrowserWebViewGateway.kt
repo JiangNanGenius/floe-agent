@@ -16,6 +16,8 @@ public data class RendererTabState(
     val viewportHeight: Double,
     val scrollX: Double,
     val scrollY: Double,
+    val canGoBack: Boolean = false,
+    val canGoForward: Boolean = false,
 )
 
 public data class RendererScreenshot(

@@ -51,6 +51,14 @@ public struct BrowserArtifactStore: Sendable {
         return try? Data(contentsOf: directory.appendingPathComponent(filename))
     }
 
+    /// Discard only the exact artifact created by this store when its
+    /// document identity could not be confirmed.
+    func discard(_ reference: BrowserArtifactReference) {
+        let name = "\(reference.id.uuidString).jpg"
+        guard reference.relativePath == "BrowserArtifacts/\(name)" else { return }
+        try? FileManager.default.removeItem(at: directory.appendingPathComponent(name))
+    }
+
     /// Keep a bounded recent set and remove stale Floe-owned artifacts
     /// without touching user files.
     public func sweep(now: Date = Date()) {
