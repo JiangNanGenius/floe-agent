@@ -286,6 +286,7 @@ internal class DeviceAccessHost(
         val owner: PhoneControlOwner,
         val title: String,
         val phase: DeviceAccessTaskPhaseUi,
+        val waitingForDeviceApproval: Boolean,
     )
 
     private class PhoneCallBinding(
@@ -2442,6 +2443,11 @@ internal class DeviceAccessHost(
             owner = PhoneControlOwner(taskUuid, runUuid),
             title = state.taskTitle.ifBlank { context.getString(R.string.device_access_current_task) },
             phase = phase,
+            // General task approvals also set phase to WAITING_FOR_USER. They
+            // must not keep the screen-control bubble alive after device work.
+            waitingForDeviceApproval = state.pendingApprovals.any {
+                it.runId == runId && it.toolName == "device.act"
+            },
         )
     }
 
@@ -2659,7 +2665,7 @@ internal class DeviceAccessHost(
             if (canPresentAutomationControls(owner)) {
                 val candidate = PhoneTaskPresentation.holderLookupKeys(owner.taskID)
                     .firstNotNullOfOrNull { key -> candidateFor(key)?.takeIf { it.owner == owner } }
-                val waiting = candidate?.phase == DeviceAccessTaskPhaseUi.WAITING_FOR_USER
+                val waiting = candidate?.waitingForDeviceApproval == true
                 automationControls.show(owner, titleFor(owner), settings.floatingControls, phonePause.isPaused(owner), waiting)
             } else {
                 automationControls.clear(expectedOwner = owner, retainApprovalRegistration = automationOwnerStillLive(owner))
