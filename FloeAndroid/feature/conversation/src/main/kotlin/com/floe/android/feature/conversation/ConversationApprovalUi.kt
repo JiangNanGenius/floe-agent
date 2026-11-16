@@ -69,6 +69,27 @@ fun ConversationApprovalRow(
      * [onResolve]. Production keeps the holder's canonical path. */
     onEndTerminalAndRun: ((ApprovalCardUi, TerminalHandoffConsentUi) -> Unit)? = null,
 ) {
+    val deviceStop = if (card.toolName == "device.act") holder.deviceApprovalStopFor(card) else null
+    if (deviceStop != null) {
+        // Takeover has removed this approval from the actionable UI. Keep a
+        // small truthful status without showing the obsolete target/buttons.
+        val colors = Floe.colors
+        Column(modifier = modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            FloeText(
+                stringResource(if (deviceStop.phase == DeviceApprovalStopPhaseUi.FAILED)
+                    R.string.approval_device_stop_failed else R.string.approval_device_stopping),
+                style = Floe.typography.metadata,
+                color = if (deviceStop.phase == DeviceApprovalStopPhaseUi.FAILED) colors.destructive else colors.pending,
+            )
+            if (deviceStop.phase == DeviceApprovalStopPhaseUi.FAILED) {
+                FloeText(stringResource(R.string.action_stop),
+                    modifier = Modifier.clickable { holder.stopForApproval(card) }.padding(vertical = 8.dp),
+                    style = Floe.typography.bodyEmphasized, color = colors.destructive)
+            }
+        }
+        return
+    }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     var resumed by remember(lifecycle) { mutableStateOf(lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) }
     var visible by remember(card.key, card.requestGeneration, card.descriptorIdentity) { mutableStateOf(false) }
@@ -121,9 +142,10 @@ fun ConversationApprovalRow(
     val shellAction = presentedCard.localShellAction
     val scheduleAction = presentedCard.scheduleCreateAction
     val browserTabAction = presentedCard.browserTabAction
+    val unidentifiedBrowserTarget = browserTabAction != null && browserTabAction.operation != "create" &&
+        browserTabAction.isWellFormed() && !browserTabAction.isReviewable()
     val detailsVisible = if (browserTabAction != null) {
-        presentedCard.toolName == "browser.tab" && browserTabAction.operation == "create" &&
-            browserTabAction.url == null && browserTabAction.title == null
+        presentedCard.toolName == "browser.tab" && browserTabAction.isReviewable()
     } else if (scheduleAction != null) {
         presentedCard.toolName == "task.schedule"
     } else if (shellAction != null) {
@@ -136,7 +158,8 @@ fun ConversationApprovalRow(
         "launch" -> !presentedCard.actionPackage.isNullOrBlank()
         else -> false
     }
-    val canAllow = presentedCard.identityVerified && presentedCard.scopeVerified && detailsVisible && !decisionInFlight
+    val canAllow = presentedCard.identityVerified && presentedCard.scopeVerified &&
+        detailsVisible && !decisionInFlight
     val canDeny = presentedCard.identityVerified && !decisionInFlight
     val gateStopped = ApprovalGrantMapping.isGateStopped(presentedCard.reason) && !reasonIsSlotConflict
     val headerTitle = stringResource(R.string.approval_required)
@@ -229,7 +252,11 @@ fun ConversationApprovalRow(
                 FloeText(presentedCard.toolName, style = Floe.typography.evidence, color = colors.label)
             }
             if (presentedCard.scopeVerified) {
-                FloeText(if (browserTabAction != null) stringResource(R.string.approval_browser_tab_create)
+                FloeText(if (browserTabAction != null) stringResource(when (browserTabAction.operation) {
+                    "activate" -> R.string.approval_browser_tab_activate
+                    "close" -> R.string.approval_browser_tab_close
+                    else -> R.string.approval_browser_tab_create
+                })
                 else if (scheduleAction != null) stringResource(R.string.approval_schedule_create)
                 else if (shellAction != null) stringResource(R.string.approval_shell_action)
                 else if (fileAction != null) when (fileAction.operation) {
@@ -249,6 +276,29 @@ fun ConversationApprovalRow(
                     "launch" -> stringResource(R.string.approval_device_launch)
                     else -> ""
                 }, style = Floe.typography.bodyEmphasized, color = colors.label)
+                if (browserTabAction != null && browserTabAction.operation != "create") {
+                    if (browserTabAction.tabIndex != null && browserTabAction.tabCount != null) {
+                        FloeText(stringResource(R.string.approval_browser_tab_position,
+                            browserTabAction.tabIndex, browserTabAction.tabCount),
+                            style = Floe.typography.body, color = colors.label)
+                    }
+                    browserTabAction.title?.takeUnless { it.isBlank() }?.let { title ->
+                        FloeText(stringResource(R.string.approval_browser_tab_title),
+                            style = Floe.typography.metadata, color = colors.secondaryLabel)
+                        SelectionContainer {
+                            FloeText(title, modifier = Modifier.fillMaxWidth(),
+                                style = Floe.typography.evidence, color = colors.label)
+                        }
+                    }
+                    browserTabAction.url?.takeUnless { it.isBlank() }?.let { url ->
+                        FloeText(stringResource(R.string.approval_browser_tab_url),
+                            style = Floe.typography.metadata, color = colors.secondaryLabel)
+                        SelectionContainer {
+                            FloeText(url, modifier = Modifier.fillMaxWidth(),
+                                style = Floe.typography.evidence, color = colors.label)
+                        }
+                    }
+                }
                 if (scheduleAction != null) {
                     ScheduleApprovalDetails(scheduleAction)
                 }
@@ -506,8 +556,11 @@ fun ConversationApprovalRow(
             null -> Unit
         }
         if (!presentedCard.identityVerified || !presentedCard.scopeVerified || !detailsVisible) {
-            FloeText(stringResource(if (!presentedCard.identityVerified) R.string.approval_identity_unavailable
-                else R.string.approval_details_unavailable), style = Floe.typography.metadata, color = colors.secondaryLabel)
+            FloeText(stringResource(when {
+                !presentedCard.identityVerified -> R.string.approval_identity_unavailable
+                unidentifiedBrowserTarget -> R.string.approval_browser_tab_unidentified
+                else -> R.string.approval_details_unavailable
+            }), style = Floe.typography.metadata, color = colors.secondaryLabel)
         }
         if (dispatchState == ApprovalDispatchState.NEEDS_CHECK ||
             (!decisionInFlight && (!presentedCard.identityVerified || !presentedCard.scopeVerified || !detailsVisible))) {

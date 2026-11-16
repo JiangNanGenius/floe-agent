@@ -389,7 +389,9 @@ struct G04BrowserTabTool: AgentTool {
         let proof: BrowserTabApprovalProof?
         if case .human = context.approvalProvenance {
             guard let call = context.toolCallID, let grant = context.approvalGrantID,
-                  let checked = G04BrowserTabApprovalGate.shared.take(run: context.runID, call: call, grant: grant) else {
+                  let checked = G04BrowserTabApprovalGate.shared.take(run: context.runID, call: call, grant: grant),
+                  checked.owner.taskID == context.conversationID,
+                  checked.operation == args.action, checked.tabID == args.tabID else {
                 throw FloeError.validationFailed("This browser action needs a current reviewed approval.")
             }
             proof = checked

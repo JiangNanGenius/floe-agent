@@ -120,6 +120,12 @@ class RecordingHost : ConversationUiCallbacks {
         record("resolveApproval", request); return true
     }
 
+    /** Exact card keys the fake host reports as retired by a run Stop. */
+    val deviceRevokedCards = mutableSetOf<String>()
+
+    override fun deviceApprovalRevoked(card: ApprovalCardUi): Boolean =
+        record("deviceApprovalRevoked", card.key).let { card.key in deviceRevokedCards }
+
     /** What the host would answer for the on-demand single-slot capture. Null
      * by default: a live TTY alone is not a blocker under the separated pool. */
     var liveTerminalConsent: TerminalHandoffConsentUi? = null

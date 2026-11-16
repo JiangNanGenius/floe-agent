@@ -63,6 +63,14 @@ interface RuntimePlatformExtension {
     suspend fun readDeviceApprovalTarget(identity: DeviceApprovalIdentity, presentationId: String, action: DeviceApprovalAction,
                                          stillCurrent: () -> Boolean): DeviceApprovalTarget? = null
 
+    /**
+     * Synchronous narrowing for a device approval decision: true when this
+     * exact card was retired by the user's Stop/Takeover (or its native epoch/
+     * host generation is gone). It grants nothing; PLAY/inert hosts keep the
+     * default false and never own device control.
+     */
+    fun isDeviceApprovalRevoked(identity: DeviceApprovalIdentity): Boolean = false
+
     fun onHostStarted(host: RuntimeHost) = Unit
 
     fun onOwnedStoreReady(epoch: Long) = Unit

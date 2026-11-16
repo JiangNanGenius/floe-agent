@@ -92,6 +92,20 @@ internal class PhoneControlStopFence {
     }
 
     /**
+     * Settle exactly one stop generation after a trustworthy proof (native
+     * snapshot or the actual holder) shows the run no longer holds the device
+     * approval. A newer stop for the same owner is never overwritten, and an
+     * already-settled entry is left as-is.
+     */
+    @Synchronized
+    fun settle(owner: PhoneControlOwner, token: Long): Boolean {
+        val current = entries[owner] ?: return false
+        if (current.token != token || current.settled) return false
+        entries[owner] = current.copy(settled = true)
+        return true
+    }
+
+    /**
      * Explicit re-allow/Continue of one exact owner, or native teardown.
      * When [token] is supplied, only the same stop generation may be cleared;
      * this is what stops an old async cleanup from reviving a newer stop.

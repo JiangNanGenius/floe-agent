@@ -113,6 +113,22 @@ class PhoneControlStopFenceTest {
     }
 
     @Test
+    fun settlingRequiresTheExactStopGeneration() {
+        val fence = PhoneControlStopFence()
+        val a = owner(1, 11)
+        val first = fence.markStopped(a, epoch = 7)
+        val second = fence.markStopped(a, epoch = 7)
+
+        assertFalse("an old read-back cannot settle the newer stop", fence.settle(a, first.token))
+        assertFalse(fence.isSettled(a))
+        assertTrue(fence.settle(a, second.token))
+        assertTrue(fence.isSettled(a))
+        assertTrue("settled is still stopped until an explicit gesture",
+            fence.isStopped(a))
+        assertFalse("settling twice is a no-op", fence.settle(a, second.token))
+    }
+
+    @Test
     fun retainedStopCardIsTheMostRecentOwnerOnly() {
         val fence = PhoneControlStopFence()
         val a = owner(1, 11)

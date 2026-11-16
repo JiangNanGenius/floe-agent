@@ -213,6 +213,19 @@ internal class PhoneAutomationControls(
         }
     }
 
+    /**
+     * The exact pending approval card (`run/call`) registered for this owner,
+     * if any. Presentation bookkeeping only: it grants nothing and is used to
+     * bind a Stop/Takeover projection to the call it actually retired.
+     */
+    fun approvalKey(owner: PhoneControlOwner): String? {
+        val identity = approvalRegistration.current()?.identity ?: return null
+        if (identity.taskID != owner.taskID || identity.runID != owner.runID) return null
+        return "${identity.runID}/${identity.callID}"
+    }
+
+    fun hasApprovalFor(owner: PhoneControlOwner): Boolean = approvalKey(owner) != null
+
     fun isApprovalVisible(identity: DeviceApprovalIdentity, presentationId: String): Boolean =
         Looper.myLooper() == main.looper && approvalIdentity == identity && approvalVisible &&
             approvalPresentationId == presentationId &&
@@ -1049,6 +1062,10 @@ internal class PhoneAutomationControls(
         val clear = clear@{
             val presentationOwner = owner ?: pendingOperation?.owner ?: operationOwner
             if (expectedOwner != null && presentationOwner != expectedOwner) return@clear
+            // Clearing the floating presentation must also retire the exact
+            // approval lease and notify the chat card. Otherwise a takeover
+            // hides the bubble/panel while the private approval stays usable.
+            retireApproval()
             owner = null
             token = UUID.randomUUID().toString()
             paused = false

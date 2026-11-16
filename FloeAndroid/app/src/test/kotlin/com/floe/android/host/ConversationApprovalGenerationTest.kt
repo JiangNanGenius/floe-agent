@@ -266,11 +266,68 @@ class ConversationApprovalGenerationTest {
             raw.replace("\"operation\":\"create\"", "\"operation\":\"activate\""),
             raw.replace("\"operation\":\"create\"", "\"operation\":\"close\""),
             raw.replace("\"url\":null", "\"url\":\"https://example.com\""),
+            raw.replace("\"url\":null", "\"url\":\" \""),
             raw.replace("\"title\":null", "\"title\":\"title\""),
+            raw.replace("\"operation\":\"create\"", "\"operation\":\"create\",\"tabIndex\":1,\"tabCount\":2"),
             raw.replace("\"kind\":\"browserTab\"", "\"extra\":true,\"kind\":\"browserTab\""),
             raw.replace("\"workspaceVerified\":false", "\"workspaceVerified\":true"),
             raw.replace("\"callID\":\"c1\"", "\"callID\":\"c2\""),
             raw.replace(descriptor, "b".repeat(64)),
+            raw.replace(token, "not-a-uuid"),
+        )) assertNull(decode(bad))
+    }
+
+    @Test fun privateBrowserTabTargetRequiresAnExactSafeSingleUsePresentation() {
+        val builder = builder()
+        val risks = """["controlsGUI"]"""
+        builder.applySnapshot(page(tool = "browser.tab", detailStatus = "unavailable", risks = risks))
+        val card = builder.build().pendingApprovals.single()
+        val token = "55555555-5555-4555-8555-555555555555"
+        val tab = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        val raw = """{"schema":"floe.approval-presentation/1","conversationID":"$conversation","runID":"$run","callID":"c1","generation":"$generation","presentationToken":"$token","presentation":{"status":"available","generation":"$generation","tool":"browser.tab","effect":"mutating","isSideEffecting":true,"riskLabels":$risks,"requestedScope":"local","grantScope":"singleUse","workspaceVerified":false,"descriptorIdentity":"$descriptor","detailStatus":"available","actionDetails":{"kind":"browserTab","operation":"activate","tabID":"$tab","tabIndex":2,"tabCount":3,"url":"https://example.com/","title":"Example"}}}"""
+        fun decode(s: String) = privateBrowserTabApprovalPage(Json.parseToJsonElement(s), card)
+
+        val activate = requireNotNull(decode(raw))
+        assertEquals("activate", activate.first.operation)
+        assertEquals(tab, activate.first.tabId)
+        assertEquals(2, activate.first.tabIndex)
+        assertEquals(3, activate.first.tabCount)
+        assertEquals("https://example.com/", activate.first.url)
+        assertEquals("Example", activate.first.title)
+        assertEquals(token, activate.second)
+        val close = requireNotNull(decode(raw.replace("\"activate\"", "\"close\"")))
+        assertEquals("close", close.first.operation)
+        assertEquals(tab, close.first.tabId)
+        assertNotNull(decode(raw.replace("\"url\":\"https://example.com/\"", "\"url\":null")
+            .replace("\"title\":\"Example\"", "\"title\":null")))
+        val unnamed = requireNotNull(decode(raw.replace("\"url\":\"https://example.com/\"", "\"url\":\" \"")
+            .replace("\"title\":\"Example\"", "\"title\":\"\""))).first
+        assertNull(unnamed.url)
+        assertNull(unnamed.title)
+        assertFalse(unnamed.isReviewable())
+
+        for (bad in listOf(
+            raw.replace(",\"tabID\":\"$tab\"", ""),
+            raw.replace(",\"tabIndex\":2", ""),
+            raw.replace(",\"tabCount\":3", ""),
+            raw.replace("\"tabIndex\":2", "\"tabIndex\":0"),
+            raw.replace("\"tabIndex\":2", "\"tabIndex\":4"),
+            raw.replace("\"tabIndex\":2", "\"tabIndex\":\"2\""),
+            raw.replace("\"tabIndex\":2", "\"tabIndex\":1.5"),
+            raw.replace("\"tabCount\":3", "\"tabCount\":1"),
+            raw.replace("\"tabCount\":3", "\"tabCount\":null"),
+            raw.replace("\"tabID\":\"$tab\"", "\"tabID\":\"not-a-uuid\""),
+            raw.replace(tab, tab.uppercase()),
+            raw.replace("\"url\":\"https://example.com/\"", "\"url\":12"),
+            raw.replace("\"title\":\"Example\"", "\"title\":true"),
+            raw.replace("Example", "\\u202eExample"),
+            raw.replace("Example", "a".repeat(513)),
+            raw.replace("Example", "字".repeat(171)), // UTF-8 bytes, not character count.
+            raw.replace("https://example.com/", "a".repeat(2049)),
+            raw.replace("\"kind\":\"browserTab\"", "\"kind\":\"browserTab\",\"extra\":true"),
+            raw.replace("\"operation\":\"activate\"", "\"operation\":\"create\""),
+            raw.replace("\"callID\":\"c1\"", "\"callID\":\"c2\""),
+            raw.replace("\"generation\":\"$generation\"", "\"generation\":\"wrong\""),
             raw.replace(token, "not-a-uuid"),
         )) assertNull(decode(bad))
     }

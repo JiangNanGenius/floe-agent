@@ -39,10 +39,34 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.jsonObject
+
+/** A partial list would shift every subsequent native tab position. */
+internal fun decodeBrowserTabRows(value: JsonElement?): List<BrowserTabRow>? {
+    if (value == null || value is JsonNull) return emptyList()
+    val entries = value as? JsonArray ?: return null
+    val seen = mutableSetOf<String>()
+    val result = ArrayList<BrowserTabRow>(entries.size)
+    for (element in entries) {
+        val row = element as? JsonObject ?: return null
+        fun text(key: String): String? = (row[key] as? JsonPrimitive)
+            ?.takeIf { it.isString }?.content
+        val id = text("id") ?: return null
+        val canonical = runCatching { UUID.fromString(id).toString() }.getOrNull() ?: return null
+        if (!canonical.equals(id, ignoreCase = true) || !seen.add(canonical)) return null
+        val url = text("url") ?: return null
+        val title = text("title") ?: return null
+        val activeValue = row["isActive"] as? JsonPrimitive ?: return null
+        val active = activeValue.takeUnless { it.isString }?.booleanOrNull ?: return null
+        result.add(BrowserTabRow(id = id, url = url, title = title, isActive = active))
+    }
+    return result
+}
 
 /**
  * RuntimeHost-owned controlled-browser host (G04-R1 composition).
@@ -1124,7 +1148,7 @@ internal class BrowserHostController(private val host: RuntimeHost) {
         ownerEpoch: Long,
     ): BrowserProjectionSnapshot {
         val fields = runCatching { json.parseToJsonElement(text).jsonObject }.getOrNull()
-            ?: return emptySnapshot(ownerTask, ownerWorkspace, ownerEpoch)
+            ?: return emptySnapshot(ownerTask, ownerWorkspace, ownerEpoch).copy(tabListUnavailable = true)
         val surfaceKind: String
         val surfaceDetail: String?
         when (val surface = fields["surfaceState"]) {
@@ -1144,16 +1168,7 @@ internal class BrowserHostController(private val host: RuntimeHost) {
         }
         val presentation = fields["presentationRequest"] as? JsonObject
         val handoff = fields["handoff"] as? JsonObject
-        val tabs = (fields["tabs"] as? JsonArray)?.mapNotNull { element ->
-            val row = element as? JsonObject ?: return@mapNotNull null
-            val id = row.string("id") ?: return@mapNotNull null
-            BrowserTabRow(
-                id = id,
-                url = row.string("url") ?: "",
-                title = row.string("title") ?: "",
-                isActive = row.boolean("isActive") ?: false,
-            )
-        } ?: emptyList()
+        val tabs = decodeBrowserTabRows(fields["tabs"])
         val visible = fields.string("visibleTaskID")
         return BrowserProjectionSnapshot(
             ownerTaskId = ownerTask,
@@ -1171,13 +1186,14 @@ internal class BrowserHostController(private val host: RuntimeHost) {
             returningControl = fields.boolean("returningControl") ?: false,
             surfaceStateKind = surfaceKind,
             surfaceStateDetail = surfaceDetail,
-            tabs = tabs,
+            tabs = tabs ?: emptyList(),
             activeTabId = fields.string("activeTabID"),
             isUserControlling = fields.boolean("isUserControlling") ?: false,
             addressText = fields.string("addressText") ?: "",
             isEditingAddress = fields.boolean("isEditingAddress") ?: false,
             technicalAddress = fields.string("technicalAddress"),
             isDisplayingLocalPreview = fields.boolean("isDisplayingLocalPreview") ?: false,
+            tabListUnavailable = tabs == null,
         )
     }
 

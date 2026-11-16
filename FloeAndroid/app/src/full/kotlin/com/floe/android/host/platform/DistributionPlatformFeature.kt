@@ -101,6 +101,9 @@ private class FullRuntimePlatformExtension(
         device?.onRunStopRequested(epoch, taskID, runID)
     }
 
+    override fun isDeviceApprovalRevoked(identity: DeviceApprovalIdentity): Boolean =
+        device?.isDeviceApprovalRevoked(identity) ?: true
+
     override fun onBackgroundWorkStarted(epoch: Long, taskID: UUID, runID: UUID) {
         device?.onBackgroundWorkStarted(epoch, taskID, runID)
     }

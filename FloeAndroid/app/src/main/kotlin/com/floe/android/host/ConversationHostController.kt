@@ -10,6 +10,8 @@ import com.floe.android.design.WorkbenchSelection
 import com.floe.android.feature.conversation.AgentExecutionModeUi
 import com.floe.android.feature.conversation.ApprovalCardUi
 import com.floe.android.feature.conversation.DeviceActionApprovalUi
+import com.floe.android.feature.conversation.DeviceApprovalStopPhaseUi
+import com.floe.android.feature.conversation.DeviceApprovalStopUi
 import com.floe.android.feature.conversation.DeviceActionApprovalRequestUi
 import com.floe.android.feature.conversation.ApprovalDecisionRequest
 import com.floe.android.feature.conversation.ApprovalDispatchState
@@ -94,6 +96,26 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.longOrNull
+
+/** Admission fence for an async device-stop read or cancel. The immutable
+ * stream stamp is captured at the user's Stop gesture, while the token and
+ * root epoch are rechecked on the transport dispatcher immediately before
+ * each exchange. Once an exchange has started its effect is still subject
+ * to the native revision CAS; this fence cannot recall an admitted command. */
+internal class DeviceStopDispatchFence(
+    private val expectedEpoch: Long,
+    expectedStreamStamp: Map<String, Long>,
+    private val currentEpoch: () -> Long?,
+    private val currentStreamStamp: () -> Map<String, Long>,
+    private val stopStillCurrent: () -> Boolean,
+) {
+    private val expectedStreamStamp = expectedStreamStamp.toMap()
+
+    fun permits(): Boolean = runCatching {
+        currentEpoch() == expectedEpoch && stopStillCurrent() &&
+            currentStreamStamp() == expectedStreamStamp
+    }.getOrDefault(false)
+}
 
 /**
  * The shared reader's aggregate content bound divided by the P0 per-chunk
@@ -533,6 +555,10 @@ class ConversationHostController internal constructor(
      * touch it. No wire/Core epoch is invented.
      */
     private val runStreamGenerations = ConcurrentHashMap<String, Long>()
+    /** Exact run UI-stop attempt. A late rejection from an earlier user
+     * gesture must not mark a newer explicit retry as failed. */
+    private val deviceStopAttemptGenerations = ConcurrentHashMap<String, Long>()
+    private val deviceStopAttemptSequence = AtomicLong()
 
     /**
      * Last durable event sequence observed for a run. A resumed incarnation
@@ -760,6 +786,7 @@ class ConversationHostController internal constructor(
         queueSettleConsumedCursors.clear()
         liveSnapshotRefreshes.clear()
         runStreamGenerations.clear()
+        deviceStopAttemptGenerations.clear()
         runDurableWatermarks.clear()
         terminalReconcileInFlight.clear()
         terminalReconciled.clear()
@@ -1259,6 +1286,7 @@ class ConversationHostController internal constructor(
         entry.builder.runIds().forEach { runID ->
             liveSnapshotRefreshes.remove(runID)
             runStreamGenerations.remove(streamKey(conversationId, runID))
+            deviceStopAttemptGenerations.remove(streamKey(conversationId, runID))
             runDurableWatermarks.remove(streamKey(conversationId, runID))
         }
     }
@@ -1837,6 +1865,16 @@ class ConversationHostController internal constructor(
 
     private fun currentRunStreamGeneration(conversationId: String, runID: String): Long =
         runStreamGenerations[streamKey(conversationId, runID)] ?: 0L
+
+    /** Capture every spelling of this exact UUID pair: native and JVM owners
+     * may differ in letter case, and a same-run retry adds/updates a stream
+     * generation. The stamp is captured at Stop, not on a later callback. */
+    internal fun deviceStopStreamStamp(conversationID: String, runID: String): Map<String, Long> =
+        runStreamGenerations.entries.filter { (key, _) ->
+            val separator = key.indexOf('/')
+            separator > 0 && key.substring(0, separator).equals(conversationID, ignoreCase = true) &&
+                key.substring(separator + 1).equals(runID, ignoreCase = true)
+        }.associate { it.key to it.value }
 
     // ------------------------------------------- live streaming reconciliation
 
@@ -4108,6 +4146,8 @@ class ConversationHostController internal constructor(
         payloadFor: (state: String) -> JsonObject,
         onCompleted: (HostOperationOutcome.Completed) -> Unit = { },
         onDefinitelyNotAdmitted: () -> Unit = { },
+        onUnconfirmed: () -> Unit = { },
+        retryOnRejected: Boolean = true,
         mayDispatch: () -> Boolean = { true },
     ) {
         fun submit(state: String, revision: Revision, isRetry: Boolean) {
@@ -4122,11 +4162,18 @@ class ConversationHostController internal constructor(
                     revision = HostRevision(revision.resourceID, revision.version),
                     payload = payloadFor(state),
                 ),
+                beforeSubmit = mayDispatch,
             ) { outcome ->
+                // A late receipt from a superseded retry/stop must not put
+                // an error or apply completion to the new run incarnation.
+                if (!mayDispatch()) {
+                    onUnconfirmed()
+                    return@trackOperation
+                }
                 when (outcome) {
                     is HostOperationOutcome.Completed -> onCompleted(outcome)
                     is HostOperationOutcome.Rejected -> {
-                        if (!isRetry) {
+                        if (!isRetry && retryOnRejected) {
                             refreshRunSnapshot(entry, runID) { applied ->
                                 val freshState = entry.builder.runStateName(runID)
                                 val freshRevision = entry.builder.runRevision(runID)
@@ -4144,8 +4191,11 @@ class ConversationHostController internal constructor(
                             surfaceError(entry, outcome.code)
                         }
                     }
-                    is HostOperationOutcome.Failed -> surfaceError(entry, outcome.code)
-                    else -> Unit
+                    is HostOperationOutcome.Failed -> {
+                        onUnconfirmed()
+                        surfaceError(entry, outcome.code)
+                    }
+                    HostOperationOutcome.Cancelled, HostOperationOutcome.Superseded -> onUnconfirmed()
                 }
             }
         }
@@ -4191,6 +4241,46 @@ class ConversationHostController internal constructor(
         val stopEpoch = host.nativeRootEpoch()
         val taskId = runCatching { java.util.UUID.fromString(session.conversationId) }.getOrNull()
         val runUuid = runCatching { java.util.UUID.fromString(runId) }.getOrNull()
+        val stopAttemptKey = streamKey(session.conversationId, runId)
+        val stopAttemptGeneration = deviceStopAttemptSequence.incrementAndGet()
+        deviceStopAttemptGenerations[stopAttemptKey] = stopAttemptGeneration
+        val stopStreamStamp = deviceStopStreamStamp(session.conversationId, runId)
+        fun stillSameStopRun(): Boolean = stopEpoch != null && host.nativeRootEpoch() == stopEpoch &&
+            ownCurrentEntry(entry, session.conversationId, session.sessionEpoch) &&
+            deviceStopAttemptGenerations[stopAttemptKey] == stopAttemptGeneration &&
+            deviceStopStreamStamp(session.conversationId, runId) == stopStreamStamp
+        // A device approval for this exact run becomes non-actionable NOW.
+        // The user asked to stop; the canonical run.cancel/read-back still
+        // decides settlement and the host re-fences the decision itself.
+        val deviceCard = floatingDeviceApprovals[session.conversationId]
+            ?.takeIf { it.holder === entry.holder && it.card.runId.equals(runId, ignoreCase = true) }
+            ?.card
+            ?: entry.holder.snapshot.value?.pendingApprovals?.firstOrNull {
+                it.toolName == "device.act" && it.runId.equals(runId, ignoreCase = true)
+            }
+        fun markStopUnconfirmed() {
+            val card = deviceCard ?: return
+            if (!stillSameStopRun() ||
+                entry.holder.snapshot.value?.pendingApprovals?.none { it == card } != false ||
+                entry.holder.deviceApprovalStopFor(card) == null) return
+            applyDeviceApprovalStop(session.conversationId, runId,
+                DeviceApprovalStopUi(DeviceApprovalStopPhaseUi.FAILED, card.key))
+        }
+        if (deviceCard != null) {
+            val floating = floatingDeviceApprovals[session.conversationId]
+            if (floating != null && floating.card.key == deviceCard.key) {
+                floating.presentationId?.let { entry.holder.hidePrivateApproval(it) }
+                floating.presentationId = null
+                floating.target = null
+                floating.action = null
+                floating.revalidatedPresentationId = null
+                runCatching { host.platformExtension?.dismissDeviceApproval(floating.identity) }
+            }
+            applyDeviceApprovalStop(
+                session.conversationId, runId,
+                DeviceApprovalStopUi(DeviceApprovalStopPhaseUi.STOPPING, deviceCard.key),
+            )
+        }
         if (stopEpoch != null && taskId != null && runUuid != null &&
             host.nativeRootEpoch() == stopEpoch && ownCurrentEntry(entry, session.conversationId, session.sessionEpoch)
         ) runCatching { host.platformExtension?.onRunStopRequested(stopEpoch, taskId, runUuid) }
@@ -4205,6 +4295,12 @@ class ConversationHostController internal constructor(
             payloadFor = { state ->
                 JsonObject(mapOf("expectedState" to JsonPrimitive(state)))
             },
+            onDefinitelyNotAdmitted = { markStopUnconfirmed() },
+            onUnconfirmed = { markStopUnconfirmed() },
+            // A CAS rejection may belong to a newly resumed incarnation;
+            // allow an explicit retry instead of cancelling a refreshed one.
+            retryOnRejected = false,
+            mayDispatch = { stillSameStopRun() },
         )
         return true
     }
@@ -4266,6 +4362,252 @@ class ConversationHostController internal constructor(
         }
         readAndCancel(false)
         return true // actual request only; terminal proof settles the lease
+    }
+
+    // ------------------------------------------------- device stop settlement
+
+    /**
+     * Publish a Stop/Takeover projection to the EXACT holder/call this device
+     * stop retired. The key is resolved from the host's own pending device
+     * card, never invented by the caller. Passing null clears only the stop
+     * note; it does not change any approval authority.
+     */
+    internal fun applyDeviceApprovalStop(taskID: String, runID: String, stop: DeviceApprovalStopUi?) {
+        val entry = exactHolderForTask(taskID) ?: return
+        if (stop == null) {
+            entry.holder.applyDeviceApprovalStop(runID, null)
+            return
+        }
+        val floatingCard = floatingDeviceApprovals[entry.holder.conversationId]
+            ?.takeIf { it.holder === entry.holder && it.card.runId.equals(runID, ignoreCase = true) }
+            ?.card
+        val pendingCard = entry.holder.snapshot.value?.pendingApprovals?.firstOrNull {
+            it.toolName == "device.act" && it.runId.equals(runID, ignoreCase = true)
+        }
+        val key = stop.approvalKey ?: floatingCard?.key ?: pendingCard?.key ?: return
+        entry.holder.applyDeviceApprovalStop(runID, stop.copy(approvalKey = key))
+    }
+
+    /** Holders are keyed by the exact text the host opened them with; native
+     * run identities are uppercase, JVM identities lowercase. Try only the two
+     * spellings of THIS task id — never a scan or another owner's key. */
+    private fun exactHolderForTask(taskID: String): ConversationFlowHolderEntry? =
+        holders[taskID]
+            ?: holders[taskID.uppercase(java.util.Locale.ROOT)]
+            ?: holders[taskID.lowercase(java.util.Locale.ROOT)]
+
+    /**
+     * Synchronous host narrowing for a device approval decision. True when
+     * the exact card can no longer be decided: the user stopped/took over its
+     * run or its native epoch/host generation is gone. It never grants.
+     */
+    override fun deviceApprovalRevoked(card: ApprovalCardUi): Boolean {
+        if (card.toolName != "device.act") return false
+        val extension = host.platformExtension ?: return false
+        val epoch = host.nativeRootEpoch() ?: return true
+        val task = runCatching { java.util.UUID.fromString(card.conversationId) }.getOrNull() ?: return true
+        val run = runCatching { java.util.UUID.fromString(card.runId) }.getOrNull() ?: return true
+        val generation = card.requestGeneration ?: return true
+        val descriptor = card.descriptorIdentity ?: return true
+        val identity = DeviceApprovalIdentity(
+            task, run, epoch, host.commandClient.generation(),
+            card.approvalId, generation, descriptor,
+        )
+        return runCatching { extension.isDeviceApprovalRevoked(identity) }.getOrDefault(true)
+    }
+
+    /**
+     * Truthful device-stop settlement for the EXACT run:
+     *
+     *  - read the canonical run snapshot (ownership-checked);
+     *  - when requested, submit `run.cancel` with that snapshot's own
+     *    revision + expectedState; never retry a rejected CAS against a
+     *    later snapshot that might belong to a resumed incarnation;
+     *  - verify with bounded read-backs before claiming the approval is gone.
+     *
+     * The terminal callback is delivered exactly once, may run on the IO
+     * dispatcher, and a dispatched request is NEVER reported as cancelled.
+     * Returns false only when no read was started; the callback has still
+     * received the typed reason.
+     */
+    internal fun observeDeviceRunStop(
+        conversationID: String,
+        runID: String,
+        ownerEpoch: Long,
+        dispatchCancel: Boolean,
+        expectedStreamStamp: Map<String, Long>,
+        stopStillCurrent: () -> Boolean,
+        onReceipt: (DeviceRunStopReceipt) -> Unit,
+    ): Boolean {
+        if (ownerEpoch <= 0 || host.nativeRootEpoch() != ownerEpoch) {
+            onReceipt(DeviceRunStopReceipt.EpochChanged)
+            return false
+        }
+        if (!admitted()) {
+            onReceipt(DeviceRunStopReceipt.Unverified("run_domain_unavailable"))
+            return false
+        }
+        return DeviceStopReadback(conversationID, runID, ownerEpoch, dispatchCancel,
+            expectedStreamStamp, stopStillCurrent, onReceipt).start()
+    }
+
+    /**
+     * One bounded stop verifier. It owns only its own generation: an epoch
+     * change cancels all further work, and the caller additionally fences the
+     * callback by its exact stop token.
+     */
+    private inner class DeviceStopReadback(
+        private val conversationID: String,
+        private val runID: String,
+        private val ownerEpoch: Long,
+        private val dispatchCancel: Boolean,
+        private val expectedStreamStamp: Map<String, Long>,
+        private val stopStillCurrent: () -> Boolean,
+        private val onReceipt: (DeviceRunStopReceipt) -> Unit,
+    ) {
+        private val delivered = AtomicBoolean(false)
+        private var readbackIndex = 0
+        private val submissionFence = DeviceStopDispatchFence(
+            expectedEpoch = ownerEpoch,
+            expectedStreamStamp = expectedStreamStamp,
+            currentEpoch = { host.nativeRootEpoch() },
+            currentStreamStamp = { deviceStopStreamStamp(conversationID, runID) },
+            stopStillCurrent = stopStillCurrent,
+        )
+
+        fun start(): Boolean {
+            readback(afterCancel = false)
+            return true
+        }
+
+        private fun isCurrent(): Boolean = submissionFence.permits()
+
+        private fun retireIfStale(): Boolean {
+            if (isCurrent()) return false
+            // This only withdraws the old projection. It never claims the
+            // already-submitted native operation did or did not take effect.
+            report(DeviceRunStopReceipt.EpochChanged)
+            return true
+        }
+
+        private fun report(receipt: DeviceRunStopReceipt) {
+            if (delivered.compareAndSet(false, true)) onReceipt(receipt)
+        }
+
+        private fun scheduleReadback(afterCancel: Boolean) {
+            if (delivered.get()) return
+            if (retireIfStale()) return
+            val delayMillis = DEVICE_STOP_READBACK_DELAYS.getOrNull(readbackIndex)
+            if (delayMillis == null) {
+                // A request that outlived the bounded confirmation window is
+                // not proof of cancellation. Surface the existing retryable
+                // failure state instead of leaving an endless spinner with no
+                // subsequent observer or user action.
+                report(DeviceRunStopReceipt.Unverified("settlement_pending"))
+                return
+            }
+            readbackIndex += 1
+            host.scope.launch(host.ioDispatcher) {
+                delay(delayMillis)
+                readback(afterCancel)
+            }
+        }
+
+        private fun classifyPage(page: ConversationWire.SnapshotPage, afterCancel: Boolean) {
+            if (retireIfStale()) return
+            val awaitingJobs = FloeRunStateLocalizer.isAwaitingBackgroundJobs(
+                page.durableState, page.checkpointReason)
+            when (val verdict = DeviceRunStopPolicy.classify(page, awaitingJobs)) {
+                is DeviceRunStopReceipt.Settled -> report(verdict)
+                DeviceRunStopReceipt.StillStopping -> {
+                    if (dispatchCancel && !afterCancel) {
+                        cancel(page)
+                    } else {
+                        scheduleReadback(afterCancel)
+                    }
+                }
+                else -> Unit
+            }
+        }
+
+        private fun readback(afterCancel: Boolean) {
+            if (delivered.get()) return
+            if (retireIfStale()) return
+            host.trackOperation(HostCommandRequest(
+                command = "run.snapshot",
+                scope = HostScope.TaskExecution(conversationID, runID),
+                stateful = false,
+                correlationID = client().correlationID("devstop-read"),
+            ), beforeSubmit = { isCurrent() }) { outcome ->
+                if (retireIfStale()) return@trackOperation
+                if (outcome !is HostOperationOutcome.Completed) {
+                    val code = when (outcome) {
+                        is HostOperationOutcome.Rejected ->
+                            "snapshot_" + DeviceRunStopPolicy.safeCode(outcome.code)
+                        is HostOperationOutcome.Failed ->
+                            "snapshot_" + DeviceRunStopPolicy.safeCode(outcome.code)
+                        HostOperationOutcome.Cancelled -> "snapshot_cancelled"
+                        HostOperationOutcome.Superseded -> "epoch_changed"
+                        else -> "snapshot_invalid"
+                    }
+                    if (code == "epoch_changed") report(DeviceRunStopReceipt.EpochChanged)
+                    else report(DeviceRunStopReceipt.Unverified(code))
+                    return@trackOperation
+                }
+                val page = ConversationWire.decodeSnapshotPage(outcome.value)
+                if (page == null) {
+                    report(DeviceRunStopReceipt.Unverified("snapshot_invalid"))
+                    return@trackOperation
+                }
+                // Never settle a different run/task that happens to share an id.
+                if (com.floe.android.host.notification.NotificationRunIdentity
+                        .resolve(runID, page.runID) == null ||
+                    page.conversationID == null ||
+                    com.floe.android.host.notification.NotificationRunIdentity
+                        .resolve(conversationID, page.conversationID) == null
+                ) {
+                    report(DeviceRunStopReceipt.Unverified("snapshot_identity_mismatch"))
+                    return@trackOperation
+                }
+                classifyPage(page, afterCancel)
+            }
+        }
+
+        private fun cancel(page: ConversationWire.SnapshotPage) {
+            if (delivered.get()) return
+            if (retireIfStale()) return
+            host.trackOperation(HostCommandRequest(
+                command = "run.cancel",
+                scope = HostScope.TaskExecution(conversationID, runID),
+                stateful = true,
+                correlationID = client().correlationID("devstop-cancel"),
+                revision = HostRevision(page.revision.resourceID, page.revision.version),
+                payload = JsonObject(mapOf("expectedState" to JsonPrimitive(page.durableState))),
+            ), beforeSubmit = { isCurrent() }) { outcome ->
+                if (retireIfStale()) return@trackOperation
+                when (outcome) {
+                    is HostOperationOutcome.Completed -> {
+                        // Accepted is not cancelled. Verify the exact run.
+                        readbackIndex = 0
+                        readback(afterCancel = true)
+                    }
+                    is HostOperationOutcome.Rejected -> {
+                        // Never refresh a rejected cancel into a newer native
+                        // run incarnation. The user may explicitly Stop again.
+                        report(DeviceRunStopReceipt.Refused(
+                            DeviceRunStopPolicy.safeCode(outcome.code)))
+                    }
+                    is HostOperationOutcome.Failed -> report(DeviceRunStopReceipt.Refused(
+                        DeviceRunStopPolicy.safeCode(outcome.code)))
+                    else -> report(DeviceRunStopReceipt.Unverified("cancel_not_confirmed"))
+                }
+            }
+        }
+    }
+
+    private companion object {
+        /** Initial read plus three bounded re-reads after a real cancel. */
+        val DEVICE_STOP_READBACK_DELAYS = longArrayOf(300L, 900L, 2_000L)
     }
 
     override fun retryRun(session: ConversationSessionToken, runId: String): Boolean {
@@ -4770,6 +5112,11 @@ class ConversationHostController internal constructor(
         floatingDeviceApprovals[state.session.conversationId] === state && state.presentationId == lease &&
             admitted() && ownCurrentEntry(entry, state.session.conversationId, state.session.sessionEpoch) &&
             host.nativeRootEpoch() == state.identity.nativeEpoch && host.commandClient.generation() == state.identity.hostGeneration &&
+            // A user Stop/Takeover closes every present/decide path for this
+            // exact identity synchronously, even before the visibility
+            // callback or the run projection catches up.
+            runCatching { host.platformExtension?.isDeviceApprovalRevoked(state.identity) != true }
+                .getOrDefault(false) &&
             entry.builder.approvalBinding(state.card.runId, state.card.approvalId) == state.card
 
     private fun devicePresentationCurrent(entry: ConversationFlowHolderEntry, state: FloatingDeviceApproval, lease: String): Boolean =

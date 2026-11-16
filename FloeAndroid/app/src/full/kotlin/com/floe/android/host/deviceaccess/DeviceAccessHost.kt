@@ -50,9 +50,13 @@ import com.floe.android.host.DeviceApprovalIdentity
 import com.floe.android.host.DeviceApprovalAction
 import com.floe.android.host.DeviceApprovalTarget
 import com.floe.android.host.DeviceApprovalOverlayCallbacks
+import com.floe.android.host.DeviceRunStopPolicy
+import com.floe.android.host.DeviceRunStopReceipt
 import com.floe.android.host.HostCommandRequest
 import com.floe.android.host.HostOperationOutcome
 import com.floe.android.host.HostScope
+import com.floe.android.feature.conversation.DeviceApprovalStopPhaseUi
+import com.floe.android.feature.conversation.DeviceApprovalStopUi
 import com.floe.android.host.questions.UserQuestionWire
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
@@ -182,6 +186,17 @@ internal fun deviceAccessibilityUi(enabled: Boolean, status: PhoneControlStatus)
     }
 }
 
+/** Only an explicitly retried, still-current failed stop may start another
+ * bounded native readback; it cannot replace another owner's generation. */
+internal fun mayRetryDeviceStopReadback(
+    owner: PhoneControlOwner,
+    epoch: Long,
+    stop: PhoneControlStopFence.Entry?,
+    settlement: PhoneControlStopSettlements.Entry?,
+): Boolean = stop != null && settlement != null && stop.owner == owner &&
+    settlement.owner == owner && stop.epoch == epoch && settlement.epoch == epoch &&
+    settlement.token == stop.token && settlement.phase == DeviceStopUiPhase.FAILED
+
 internal class DeviceAccessHost(
     private val context: Context,
     private val host: RuntimeHost,
@@ -196,6 +211,19 @@ internal class DeviceAccessHost(
         automationControls.setApprovalTarget(identity, presentationId, action, target, enabled)
 
     fun dismissDeviceApproval(identity: DeviceApprovalIdentity) = automationControls.dismissApproval(identity)
+
+    /**
+     * Synchronous narrowing used by the chat decision path: this exact device
+     * approval may no longer be presented or decided. It grants nothing and
+     * never fabricates a stop/terminal; only the exact stopped owner or a
+     * changed native/host generation revokes it.
+     */
+    fun isDeviceApprovalRevoked(identity: DeviceApprovalIdentity): Boolean {
+        if (closed) return true
+        if (host.nativeRootEpoch() != identity.nativeEpoch) return true
+        if (host.commandClient.generation() != identity.hostGeneration) return true
+        return isOwnerStopped(PhoneControlOwner(identity.taskID, identity.runID))
+    }
 
     /** No platform-tool claim is manufactured. A null result never authorizes an action. */
     suspend fun readDeviceApprovalTarget(identity: DeviceApprovalIdentity, presentationId: String, action: DeviceApprovalAction,
@@ -618,6 +646,8 @@ internal class DeviceAccessHost(
      * different live task under the saved Automatic device-control consent.
      */
     private val stopFence = PhoneControlStopFence()
+    /** Exact-generation stop projection; never an authorization source. */
+    private val stopSettlements = PhoneControlStopSettlements()
     /** Per-owner asynchronous fences; stopping A never invalidates B's call. */
     private val phoneControlRevision = PhoneControlRevisions()
     @Volatile private var explicitResumeOwner: PhoneControlOwner? = null
@@ -1037,6 +1067,7 @@ internal class DeviceAccessHost(
         recentOwner = null
         recentTitle = null
         stopFence.clearAll()
+        stopSettlements.clearAll()
         phoneControlRevision.clearAll()
         screenShare.clear()
         publish()
@@ -1092,18 +1123,41 @@ internal class DeviceAccessHost(
                 // Another owner can be arming while this owner is still
                 // retiring. Fence the stopped owner without touching the new
                 // session or its controls.
+                // A user retry after an unconfirmed stop has no overlay
+                // registration left. Preserve the exact old card identity;
+                // never select another task's current overlay.
+                val approvalKey = automationControls.approvalKey(owner)
+                    ?: stopSettlements.entry(owner)?.approvalKey
+                val streamStamp = host.conversations.deviceStopStreamStamp(
+                    owner.taskID.toString(), owner.runID.toString())
+                var markedToken: Long? = null
                 synchronized(activeStopLock) {
                     if (host.nativeRootEpoch() != epoch) return@stop
-                    if (!stopFence.isStopped(owner) && (armedOwner == owner || armingOwner == owner ||
-                        automatedOwner.get() == owner || phoneStatus.activeOwner == owner)) {
+                    val oldStop = stopFence.entry(owner)
+                    val oldSettlement = stopSettlements.entry(owner)
+                    val explicitRetry = mayRetryDeviceStopReadback(owner, epoch, oldStop, oldSettlement)
+                    if (explicitRetry || (oldStop == null && (armedOwner == owner || armingOwner == owner ||
+                        automatedOwner.get() == owner || phoneStatus.activeOwner == owner))) {
                         phoneControlRevision.bump(owner)
-                        stopFence.markStopped(owner, epoch)
+                        markedToken = stopFence.markStopped(owner, epoch).token
                     }
                 }
                 automatedOwner.compareAndSet(owner, null)
                 screenShare.clearExactTask(owner)
+                // Bind to the exact card BEFORE clear() retires its
+                // registration, then make it non-actionable immediately.
+                // Unconditional: it resolves the exact card in the real
+                // holder; a task with no device card is a no-op.
+                publishDeviceStop(owner, DeviceStopUiPhase.STOPPING, approvalKey)
                 automationControls.clear(expectedOwner = owner)
                 deviceRunLiveness.stop(owner)
+                // The chat path already dispatches canonical run.cancel; this
+                // only performs the bounded read-only settlement proof.
+                markedToken?.let {
+                    stopSettlements.begin(owner, it, epoch, approvalKey)
+                    startDeviceStopReadback(owner, it, dispatchCancel = false,
+                        approvalKey = approvalKey, expectedStreamStamp = streamStamp)
+                }
                 return@stop
             }
             // The caller already sends canonical run.cancel; never send a
@@ -1152,6 +1206,7 @@ internal class DeviceAccessHost(
         automatedOwner.getAndSet(null)?.let { phoneClient?.finishAutomation(it) }
         automationControls.clear()
         stopFence.clearAll()
+        stopSettlements.clearAll()
         phoneControlRevision.clearAll()
         closePairingSession()
         PairingNotificationRelay.detach(this)
@@ -2561,23 +2616,10 @@ internal class DeviceAccessHost(
         )
     }
 
-    /**
-     * Latch each exact stop as settled only after the ACTUAL holder no longer
-     * reports that run live. This is what separates the short cancellation
-     * window from a real Continue/retry incarnation of the same run id.
-     * A missing/released holder is not live and therefore settled. Other
-     * stopped owners are evaluated independently; nothing becomes host-wide.
-     */
-    private fun markStoppedOwnersSettled() {
-        if (stopFence.size() == 0) return
-        stopFence.settleIfNotLive(::isOwnerRunLive)
-    }
-
     // ------------------------------------------------------------ presentation
 
     private fun publish() {
         if (closed) return
-        markStoppedOwnersSettled()
         val ended = automatedOwner.get()?.takeUnless { isOwnerRunLive(it) }
         if (ended != null && automatedOwner.compareAndSet(ended, null)) {
             runCatching { android.util.Log.i("FloePhoneUnlock", "AUTOMATION_RUN_NO_LONGER_LIVE") }
@@ -2613,6 +2655,8 @@ internal class DeviceAccessHost(
         // another owner's retained stop never colors the current run.
         val stoppedCandidate = candidate?.owner?.takeIf(stopFence::isStopped)
         val retainedStoppedOwner = if (candidate == null) stopFence.lastStoppedOwner() else null
+        val stoppedDisplayOwner = stoppedCandidate ?: retainedStoppedOwner
+        val stoppedDisplaySettled = stoppedDisplayOwner?.let { stopFence.entry(it)?.settled } == true
         val ownership = PhoneTaskPresentation.ownership(
             candidate = candidate?.let {
                 PhoneTaskLiveCandidate(it.owner, it.title, it.phase)
@@ -2623,8 +2667,9 @@ internal class DeviceAccessHost(
             } else {
                 phoneStatus.activeOwner
             },
-            stoppedOwner = stoppedCandidate ?: retainedStoppedOwner,
-            userStopped = stoppedCandidate != null || retainedStoppedOwner != null,
+            stoppedOwner = stoppedDisplayOwner,
+            userStopped = stoppedDisplayOwner != null,
+            stoppedOwnerSettled = stoppedDisplaySettled,
         )
         val active = ownership?.let {
             DeviceAccessActiveTaskUi(
@@ -2847,7 +2892,6 @@ internal class DeviceAccessHost(
     }
 
     private fun armVisibleTask() {
-        markStoppedOwnersSettled()
         val candidate = currentCandidate()
         if (busy != DeviceAccessBusyUi.NONE) {
             // A pending STOP/TAKE_OVER for a DIFFERENT owner must not block
@@ -3004,6 +3048,10 @@ internal class DeviceAccessHost(
                             recentOwner = owner
                             recentTitle = title
                             error = null
+                            // An explicit re-allow/Continue of this exact
+                            // owner clears only that owner's stop projection.
+                            stopSettlements.clear(owner)
+                            publishDeviceStop(owner, null, null)
                         }
                         is PhoneControlResult.Denied -> {
                             error = DeviceAccessUiError(
@@ -3085,6 +3133,10 @@ internal class DeviceAccessHost(
                         recentOwner = owner
                         recentTitle = title
                         error = null
+                        // An explicit re-allow/Continue of this exact owner
+                        // clears only that owner's stop projection.
+                        stopSettlements.clear(owner)
+                        publishDeviceStop(owner, null, null)
                     }
                     is PhoneControlResult.Denied -> {
                         error = DeviceAccessUiError(
@@ -3328,6 +3380,14 @@ internal class DeviceAccessHost(
             return
         }
         OwnedExternalViewLaunch.clearForOwner(owner.taskID.toString(), owner.runID.toString())
+        // The registered device card is captured BEFORE the presentation is
+        // cleared, so the stop note is bound to the call it actually retired
+        // and a later retry/new call of the same run is not blocked.
+        val approvalKey = automationControls.approvalKey(owner)
+        // A later retry may reuse the exact run ID. Capture the stream stamp
+        // synchronously at the user's gesture, before any async cleanup.
+        val streamStamp = host.conversations.deviceStopStreamStamp(
+            owner.taskID.toString(), owner.runID.toString())
         // Dedupe only the SAME still-current stop owner/generation. A pending
         // A cleanup must not swallow an immediate Stop of a newly active B.
         val stop = claimTaskStop(owner, takeOver, expectedEpoch = userStopEpoch)
@@ -3341,6 +3401,12 @@ internal class DeviceAccessHost(
             finishTaskStop(stop)
             return
         }
+        val stopEpoch = host.nativeRootEpoch() ?: 0L
+        stopSettlements.begin(owner, stop.stopToken, stopEpoch, approvalKey)
+        // Immediate truthful projection: the user's stop is recorded and the
+        // exact old approval is no longer decidable, but nothing is claimed
+        // settled until the real cancel/snapshot proof arrives.
+        publishDeviceStop(owner, DeviceStopUiPhase.STOPPING, approvalKey)
         // Retire this owner's controls and presentation BEFORE any queued or
         // backend cleanup. Late show/result posts recheck the live authority.
         automatedOwner.compareAndSet(owner, null)
@@ -3381,11 +3447,15 @@ internal class DeviceAccessHost(
                 // Retire only this owner's native observer after fencing
                 // input, so a later owner's proof is untouched.
                 if (stillThisStop()) deviceRunLiveness.stop(stoppingOwner)
-                if (requestRunCancellation && stillThisStop()) {
-                    runCatching {
-                        host.conversations.cancelRunFromNotification(
-                            stoppingOwner.taskID.toString(), stoppingOwner.runID.toString())
-                    }
+                // The canonical cancel is fire-and-verify: its snapshot/cancel
+                // receipt is the only thing that may settle this stop. A chat
+                // Stop already dispatched run.cancel itself, so that path only
+                // performs the read-only settlement check.
+                if (stillThisStop()) {
+                    startDeviceStopReadback(
+                        stoppingOwner, stopToken, dispatchCancel = requestRunCancellation,
+                        approvalKey = approvalKey, expectedStreamStamp = streamStamp,
+                    )
                 }
             } finally {
                 // Clear busy only when this exact stop still owns it; a later
@@ -3394,6 +3464,121 @@ internal class DeviceAccessHost(
                 publish()
             }
         }
+    }
+
+    /** Display-only projection of one exact-owner stop. Never a grant. */
+    private fun publishDeviceStop(
+        owner: PhoneControlOwner,
+        phase: DeviceStopUiPhase?,
+        approvalKey: String?,
+    ) {
+        val ui = phase?.let {
+            DeviceApprovalStopUi(
+                phase = if (it == DeviceStopUiPhase.FAILED) {
+                    DeviceApprovalStopPhaseUi.FAILED
+                } else {
+                    DeviceApprovalStopPhaseUi.STOPPING
+                },
+                approvalKey = approvalKey,
+            )
+        }
+        runCatching {
+            host.conversations.applyDeviceApprovalStop(
+                owner.taskID.toString(), owner.runID.toString(), ui)
+        }
+    }
+
+    private fun startDeviceStopReadback(
+        owner: PhoneControlOwner,
+        stopToken: Long,
+        dispatchCancel: Boolean,
+        approvalKey: String?,
+        expectedStreamStamp: Map<String, Long>,
+    ) {
+        val epoch = host.nativeRootEpoch() ?: return
+        val delivered = AtomicBoolean(false)
+        fun deliver(receipt: DeviceRunStopReceipt) {
+            if (delivered.compareAndSet(false, true)) {
+                onDeviceStopReceipt(owner, stopToken, epoch, approvalKey, receipt)
+            }
+        }
+        val started = runCatching {
+            host.conversations.observeDeviceRunStop(
+                owner.taskID.toString(), owner.runID.toString(), epoch, dispatchCancel,
+                expectedStreamStamp,
+                stopStillCurrent = {
+                    !closed && host.nativeRootEpoch() == epoch &&
+                        stopFence.entry(owner)?.token == stopToken &&
+                        stopSettlements.entry(owner)?.token == stopToken
+                },
+            ) { receipt -> deliver(receipt) }
+        }.getOrElse { false }
+        if (!started && delivered.compareAndSet(false, true)) {
+            onDeviceStopReceipt(owner, stopToken, epoch, approvalKey,
+                DeviceRunStopReceipt.Refused("not_dispatched"))
+        }
+    }
+
+    /**
+     * Apply only the still-current stop generation. A settled receipt marks
+     * the fence settled only because the REAL native snapshot/holder proof
+     * said the exact run no longer holds the device approval; a refusal or an
+     * unverifiable read-back stays visibly recoverable and never claims a
+     * cancellation or terminal state.
+     */
+    private fun onDeviceStopReceipt(
+        owner: PhoneControlOwner,
+        stopToken: Long,
+        epoch: Long,
+        approvalKey: String?,
+        receipt: DeviceRunStopReceipt,
+    ) {
+        if (closed) return
+        val settlement = stopSettlements.entry(owner) ?: return
+        if (settlement.token != stopToken) return
+        val key = settlement.approvalKey ?: approvalKey
+        if (host.nativeRootEpoch() != epoch) {
+            stopSettlements.clear(owner, stopToken)
+            publishDeviceStop(owner, null, key)
+            publish()
+            return
+        }
+        when (receipt) {
+            is DeviceRunStopReceipt.Settled -> {
+                stopSettlements.clear(owner, stopToken)
+                stopFence.settle(owner, stopToken)
+                publishDeviceStop(owner, null, key)
+            }
+            DeviceRunStopReceipt.StillStopping -> {
+                stopSettlements.mark(owner, stopToken, DeviceStopUiPhase.STOPPING)
+                publishDeviceStop(owner, DeviceStopUiPhase.STOPPING, key)
+            }
+            is DeviceRunStopReceipt.Refused ->
+                failDeviceStop(owner, stopToken, key, receipt.code)
+            is DeviceRunStopReceipt.Unverified ->
+                failDeviceStop(owner, stopToken, key, receipt.code)
+            DeviceRunStopReceipt.EpochChanged -> {
+                // The native generation changed: this stop projection is moot.
+                // The root-stop path clears the fence; never settle it here.
+                stopSettlements.clear(owner, stopToken)
+                publishDeviceStop(owner, null, key)
+            }
+        }
+        publish()
+    }
+
+    private fun failDeviceStop(
+        owner: PhoneControlOwner,
+        stopToken: Long,
+        approvalKey: String?,
+        code: String,
+    ) {
+        stopSettlements.mark(owner, stopToken, DeviceStopUiPhase.FAILED, code)
+        error = DeviceAccessUiError(
+            context.getString(R.string.device_access_error_backend_failed),
+            "run_cancel_" + DeviceRunStopPolicy.safeCode(code),
+        )
+        publishDeviceStop(owner, DeviceStopUiPhase.FAILED, approvalKey)
     }
 
     // ---------------------------------------------------------------- ADB flow

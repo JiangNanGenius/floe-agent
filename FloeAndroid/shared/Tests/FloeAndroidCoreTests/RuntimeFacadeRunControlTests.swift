@@ -394,9 +394,14 @@ final class RuntimeFacadeRunControlTests: XCTestCase {
             payload: ["expectedState": state], correlation: "corr-late2",
             revision: ["resourceID": RunWireRevision.runResourceID(runID), "version": state]))
         guard case .mutationAccepted(let detail) = again.outcome else {
-            return XCTFail("already-retired cancel reports alreadyRequested")
+            return XCTFail("a retired, settled run must answer from its durable settlement")
         }
-        XCTAssertEqual(detail["cancel"], "alreadyRequested")
+        // The earlier live Stop appended a typed settlement; a cold second
+        // Stop reads that EXACT proof. The old `alreadyRequested` string alone
+        // was never a settlement claim.
+        XCTAssertEqual(detail["cancel"], "alreadySettled")
+        XCTAssertEqual(detail["settled"], "true")
+        XCTAssertEqual(detail["incarnation"]?.count, 64)
     }
 
     func testCancelBeforePrepareCommitProvesC0NoEffect() async throws {

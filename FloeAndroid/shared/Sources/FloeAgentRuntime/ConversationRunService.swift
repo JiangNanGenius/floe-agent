@@ -605,8 +605,11 @@ public actor ConversationRunService {
     }
 
     /// Cancels the run. The runtime owns the terminal transition; persistence
-    /// of the checkpoint happens via the runtime's checkpoint store.
-    public func cancel() async {
+    /// of the checkpoint happens via the runtime's checkpoint store. The
+    /// returned value is the authoritative local fact `run.cancel` uses: only
+    /// `.stopped` means THIS call really produced the stopped checkpoint.
+    @discardableResult
+    public func cancel() async -> FloeAgentRuntime.AgentCancelSettlement {
         await runtime.cancel()
     }
 

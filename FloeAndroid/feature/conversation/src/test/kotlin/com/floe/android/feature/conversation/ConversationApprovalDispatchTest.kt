@@ -339,6 +339,159 @@ class ConversationApprovalDispatchTest {
         assertFalse(holder.privateApprovalValid(card, "current", "token"))
     }
 
+    @Test fun browserTargetApprovalBindsVisibleTabAndPrivateLease() {
+        val tab = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        val otherTab = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        for (operation in listOf("activate", "close")) {
+            val host = RecordingHost().apply { privatePresentationAccepted = true }
+            val card = approvalCard().copy(toolName = "browser.tab", scopeVerified = false)
+            val holder = holderWithApproval(host, card)
+            val details = BrowserTabApprovalUi(operation, "https://example.com/", "Example", tab, 2, 3)
+            holder.showPrivateApproval(card, "old")
+            holder.showPrivateApproval(card, "current")
+            assertFalse(holder.acceptPrivateBrowserTabApproval(holder.session, card, "old", details, "old-token"))
+            assertFalse(holder.acceptPrivateBrowserTabApproval(holder.session, card, "current", details.copy(tabId = "bad"), "token"))
+            assertFalse(holder.acceptPrivateBrowserTabApproval(holder.session, card, "current", details.copy(tabIndex = 0), "token"))
+            assertFalse(holder.acceptPrivateBrowserTabApproval(holder.session, card, "current", details.copy(tabIndex = 4), "token"))
+            assertFalse(holder.acceptPrivateBrowserTabApproval(holder.session, card, "current", details.copy(tabCount = null), "token"))
+            assertFalse(holder.acceptPrivateBrowserTabApproval(holder.session, card, "current", details.copy(title = "bad\u202etitle"), "token"))
+            assertTrue(holder.acceptPrivateBrowserTabApproval(holder.session, card, "current", details, "token"))
+            val displayed = holder.visibleApprovalCard(card, "current")
+            assertEquals(details, displayed.browserTabAction)
+            assertFalse(holder.privateApprovalValid(card, "current", "other-token"))
+            assertTrue(holder.privateApprovalValid(card, "current", "token"))
+            assertEquals(ConversationFlowResult.Stale, holder.resolveApproval(
+                displayed.copy(browserTabAction = details.copy(tabId = otherTab)),
+                allow = true, presentationLease = "current"))
+            assertEquals(ConversationFlowResult.Stale, holder.resolveApproval(
+                displayed.copy(browserTabAction = details.copy(tabIndex = 1)),
+                allow = true, presentationLease = "current"))
+            assertEquals(0, host.count("resolveApproval"))
+            assertEquals(ConversationFlowResult.Accepted,
+                holder.resolveApproval(displayed, allow = true, presentationLease = "current"))
+            val request = host.lastArgs("resolveApproval")!![0] as ApprovalDecisionRequest
+            assertEquals("token", request.presentationToken)
+            assertEquals(card, request.expectedCard)
+            holder.hidePrivateApproval("current")
+            assertFalse(holder.privateApprovalValid(card, "current", "token"))
+        }
+    }
+
+    @Test fun unidentifiedBrowserTabCannotBeAllowedButCanBeDenied() {
+        val host = RecordingHost().apply { privatePresentationAccepted = true }
+        val card = approvalCard().copy(toolName = "browser.tab", scopeVerified = false)
+        val holder = holderWithApproval(host, card)
+        val details = BrowserTabApprovalUi("close", null, null,
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", 2, 3)
+        assertTrue(details.isWellFormed())
+        assertFalse(details.isReviewable())
+        holder.showPrivateApproval(card, "lease")
+        assertTrue(holder.acceptPrivateBrowserTabApproval(holder.session, card, "lease", details, "token"))
+        val displayed = holder.visibleApprovalCard(card, "lease")
+        assertFalse(holder.privateApprovalValid(card, "lease", "token"))
+        assertTrue(holder.resolveApproval(displayed, allow = true, presentationLease = "lease") is ConversationFlowResult.Rejected)
+        assertEquals(0, host.count("resolveApproval"))
+        assertEquals(ConversationFlowResult.Accepted,
+            holder.resolveApproval(displayed, allow = false, presentationLease = "lease"))
+        assertEquals(1, host.count("resolveApproval"))
+    }
+
+    @Test fun stoppedDeviceCallIsImmediatelyNonDecidableAndNonReopenable() {
+        val host = RecordingHost().apply { privatePresentationAccepted = true }
+        val card = approvalCard().copy(toolName = "device.act", scopeVerified = true)
+        val holder = holderWithApproval(host, card)
+        holder.applyDeviceApprovalStop(card.runId, DeviceApprovalStopUi(
+            DeviceApprovalStopPhaseUi.STOPPING, card.key))
+
+        // Both decisions are blocked before the run snapshot catches up; the
+        // host would have re-fenced it too, but the card must not look usable.
+        assertTrue(holder.resolveApproval(card, allow = true) is ConversationFlowResult.Rejected)
+        assertTrue(holder.resolveApproval(card, allow = false) is ConversationFlowResult.Rejected)
+        assertEquals(0, host.count("resolveApproval"))
+        assertEquals(DeviceApprovalStopPhaseUi.STOPPING, holder.deviceApprovalStopFor(card)?.phase)
+
+        // Scroll/resume must not re-open a private decision lease either.
+        holder.showPrivateApproval(card, "lease")
+        assertFalse(holder.privateApprovalValid(card, "lease", "token"))
+
+        holder.applyDeviceApprovalStop(card.runId, DeviceApprovalStopUi(
+            DeviceApprovalStopPhaseUi.FAILED, card.key))
+        assertEquals(DeviceApprovalStopPhaseUi.FAILED, holder.deviceApprovalStopFor(card)?.phase)
+        assertTrue(holder.resolveApproval(card, allow = false) is ConversationFlowResult.Rejected)
+        assertEquals(0, host.count("resolveApproval"))
+    }
+
+    @Test fun hostRevocationAloneBlocksTheExactDeviceCard() {
+        val host = RecordingHost()
+        val card = approvalCard().copy(toolName = "device.act", scopeVerified = true)
+        val holder = holderWithApproval(host, card)
+        host.deviceRevokedCards += card.key
+
+        assertTrue(holder.resolveApproval(card, allow = true) is ConversationFlowResult.Rejected)
+        assertTrue(holder.resolveApproval(card, allow = false) is ConversationFlowResult.Rejected)
+        assertEquals(0, host.count("resolveApproval"))
+        holder.showPrivateApproval(card, "lease")
+        assertFalse(holder.privateApprovalValid(card, "lease", "token"))
+    }
+
+    @Test fun stopStateIsBoundToTheRetiredCallAndEmptyReadDoesNotClearIt() {
+        val host = RecordingHost().apply { privatePresentationAccepted = true }
+        val stopped = approvalCard().copy(toolName = "device.act", scopeVerified = false)
+        val holder = holderWithApproval(host, stopped)
+        holder.applyDeviceApprovalStop(stopped.runId, DeviceApprovalStopUi(
+            DeviceApprovalStopPhaseUi.STOPPING, stopped.key))
+        assertEquals(DeviceApprovalStopPhaseUi.STOPPING, holder.deviceApprovalStopFor(stopped)?.phase)
+
+        // A retried/new call of the SAME run must not inherit the old stop.
+        val nextCall = stopped.copy(approvalId = "call-2")
+        assertNull(holder.deviceApprovalStopFor(nextCall))
+        // Provider call IDs are case-sensitive even though run UUID spelling
+        // can vary by case between Android and the native runtime.
+        assertNull(holder.deviceApprovalStopFor(stopped.copy(approvalId = stopped.approvalId.uppercase())))
+
+        // An empty selected-run projection is not authoritative settlement.
+        holder.applyHostSnapshot(threadState(holder.session, pendingApprovals = emptyList(), isRunning = true))
+        assertEquals(DeviceApprovalStopPhaseUi.STOPPING, holder.deviceApprovalStopFor(stopped)?.phase)
+        holder.applyDeviceApprovalStop(stopped.runId, null)
+        assertNull(holder.deviceApprovalStopFor(stopped))
+    }
+
+    @Test fun switchingRunsPreservesOnlyTheStoppedCallAndDoesNotInheritANewGeneration() {
+        val host = RecordingHost()
+        val first = approvalCard().copy(toolName = "device.act", scopeVerified = true)
+        val holder = holderWithApproval(host, first)
+        holder.applyDeviceApprovalStop(first.runId, DeviceApprovalStopUi(
+            DeviceApprovalStopPhaseUi.STOPPING, first.key))
+
+        // The projection carries approvals only for the selected run. A
+        // different run's pending list cannot prove the first run settled.
+        val second = first.copy(runId = "run-2", approvalId = "call-2")
+        holder.applyHostSnapshot(threadState(holder.session, pendingApprovals = listOf(second),
+            selectedRunId = second.runId, isRunning = true))
+        assertEquals(DeviceApprovalStopPhaseUi.STOPPING, holder.deviceApprovalStopFor(first)?.phase)
+        assertNull(holder.deviceApprovalStopFor(second))
+
+        // A delayed failure update while another run is selected still binds
+        // to the original generation, not the currently visible approval.
+        holder.applyDeviceApprovalStop(first.runId, DeviceApprovalStopUi(
+            DeviceApprovalStopPhaseUi.FAILED, first.key))
+        holder.applyHostSnapshot(threadState(holder.session, pendingApprovals = listOf(first),
+            selectedRunId = first.runId, isRunning = true))
+        assertEquals(DeviceApprovalStopPhaseUi.FAILED, holder.deviceApprovalStopFor(first)?.phase)
+
+        // Reused run/call ID alone is not the same native approval. A new
+        // generation remains actionable after the host issues its own grant.
+        val newGeneration = first.copy(
+            requestGeneration = "22222222-2222-4222-8222-222222222222",
+            approvalRevision = "generation:22222222-2222-4222-8222-222222222222",
+        )
+        holder.applyHostSnapshot(threadState(holder.session, pendingApprovals = listOf(newGeneration),
+            selectedRunId = newGeneration.runId, isRunning = true))
+        assertNull(holder.deviceApprovalStopFor(newGeneration))
+        assertEquals(ConversationFlowResult.Accepted, holder.resolveApproval(newGeneration, allow = true))
+        assertEquals(1, host.count("resolveApproval"))
+    }
+
     @Test fun deviceApprovalIsBoundToOneVisibleLeaseAndDigest() {
         val card = approvalCard().copy(toolName = "device.act", scopeVerified = false)
         val host = RecordingHost().apply { privatePresentationAccepted = true }

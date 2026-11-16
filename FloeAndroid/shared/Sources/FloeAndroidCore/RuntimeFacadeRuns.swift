@@ -278,6 +278,14 @@ public struct RunDomainComponents: Sendable {
     /// the row still belongs to the conversation and still holds the expected
     /// state, so a Stop can never overwrite a resume that committed first.
     public var commitParkedRunStop: (@Sendable (UUID, UUID, String) async -> Bool)?
+    /// Additive typed variant (default nil): the SAME parked-stop writer, but
+    /// in one transaction it re-proves the captured run incarnation and
+    /// appends the self-checking stop settlement row. Production binds it to
+    /// `G02ParkedRunStopCommitter.commitTyped`; when nil, the legacy closure
+    /// above preserves the old plain-row behavior (and no typed proof).
+    public var commitParkedRunStopSettlement:
+        (@Sendable (UUID, UUID, String, RunIncarnation?, Int?) async
+            -> RunStopSettlementCommitResult)?
     /// G03-R4 (additive, default nil): cooperative cancellation of the exact
     /// pending dependency jobs of THIS run after its explicit Stop. The third
     /// argument is the durable pending-edge job set (never "every job of the
@@ -320,6 +328,9 @@ public struct RunDomainComponents: Sendable {
                 executionTargets: C02ExecutionTargetProduction.Components? = nil,
                 runDependencyEdges: (any RunDependencyEdgeReading)? = nil,
                 commitParkedRunStop: (@Sendable (UUID, UUID, String) async -> Bool)? = nil,
+                commitParkedRunStopSettlement:
+                    (@Sendable (UUID, UUID, String, RunIncarnation?, Int?) async
+                        -> RunStopSettlementCommitResult)? = nil,
                 cancelParkedRunJobs: (@Sendable (UUID, UUID, [UUID]) async -> [UUID])? = nil,
                 runForegroundAdmission: (any RunForegroundAdmissionPort)? = nil) {
         self.context = context
@@ -348,6 +359,7 @@ public struct RunDomainComponents: Sendable {
         self.executionTargets = executionTargets
         self.runDependencyEdges = runDependencyEdges
         self.commitParkedRunStop = commitParkedRunStop
+        self.commitParkedRunStopSettlement = commitParkedRunStopSettlement
         self.cancelParkedRunJobs = cancelParkedRunJobs
         self.runForegroundAdmission = runForegroundAdmission
     }
@@ -403,6 +415,8 @@ struct WorkspaceApprovalLaunchCandidate: Sendable, Equatable {
 }
 
 public struct RunOwnership: Sendable, Equatable {
+    /// Unlike a scoped launch fence, this identifies one admission instance.
+    let instanceID: UUID
     public var conversationID: UUID
     public var runID: UUID
     public var epoch: UInt64
@@ -417,6 +431,14 @@ public struct RunOwnership: Sendable, Equatable {
     /// failed stage after invalidation must stay observable and NEVER
     /// resurrect the old route.
     public var launchToken: LaunchEpochFence.Token
+    /// Durable activation proof of THIS incarnation (launch marker or the
+    /// committed `userResume` marker). `run.cancel` compares it with the
+    /// incarnation captured from the same authority so an old cancel can
+    /// never mark or close a newer incarnation of the same run id. Nil is
+    /// honest for a RAM-only temporary launch and for legacy runs with no
+    /// activation marker; such a run can still be stopped, but no typed
+    /// settlement is minted.
+    public var incarnation: RunIncarnation?
     /// The command receipt whose stream carries this launch's
     /// prepared/started stages (appended BEFORE the command terminal).
     public var commandReceipt: String?
@@ -455,12 +477,14 @@ public struct RunOwnership: Sendable, Equatable {
                 identity: RunExecutionIdentity,
                 launchToken: LaunchEpochFence.Token,
                 bundle: RunPersistenceBundle) {
+        self.instanceID = UUID()
         self.conversationID = conversationID
         self.runID = runID
         self.epoch = epoch
         self.identity = identity
         self.phase = .admitting
         self.launchToken = launchToken
+        self.incarnation = nil
         self.commandReceipt = nil
         self.preparedEffectEmitted = false
         self.startedEffectEmitted = false
@@ -485,12 +509,14 @@ public struct RunOwnership: Sendable, Equatable {
     /// bundle is implied by (runID, epoch) identity — the stores are
     /// reference-typed protocols and are never compared.
     public static func == (lhs: RunOwnership, rhs: RunOwnership) -> Bool {
-        lhs.conversationID == rhs.conversationID
+        lhs.instanceID == rhs.instanceID
+            && lhs.conversationID == rhs.conversationID
             && lhs.runID == rhs.runID
             && lhs.epoch == rhs.epoch
             && lhs.identity == rhs.identity
             && lhs.phase == rhs.phase
             && lhs.launchToken == rhs.launchToken
+            && lhs.incarnation == rhs.incarnation
             && lhs.commandReceipt == rhs.commandReceipt
             && lhs.preparedEffectEmitted == rhs.preparedEffectEmitted
             && lhs.startedEffectEmitted == rhs.startedEffectEmitted
@@ -758,6 +784,24 @@ public actor FacadeRunDomain {
     internal let tools: RunToolAssembly
 
     internal var owners: [UUID: RunOwnership] = [:]
+    // Global generation avoids unbounded per-run tombstones and ABA after an
+    // owner is removed. Exhaustion permanently disables snapshot proof.
+    private var stopOwnershipGeneration: UInt64 = 0
+    private var stopOwnershipGenerationExhausted = false
+
+    func bumpStopOwnershipStamp() {
+        guard !stopOwnershipGenerationExhausted else { return }
+        if stopOwnershipGeneration == UInt64.max {
+            stopOwnershipGenerationExhausted = true
+        } else {
+            stopOwnershipGeneration += 1
+        }
+    }
+
+    func stopOwnershipStamp(runID: UUID) -> UInt64? {
+        guard !stopOwnershipGenerationExhausted else { return nil }
+        return stopOwnershipGeneration
+    }
     private var workspaceApprovalReceipts = WorkspaceApprovalReceiptStore()
     internal var conversationRuns: [UUID: Set<UUID>] = [:]
     internal var deleteGuards: [UUID: DeleteGuardState] = [:]
@@ -907,6 +951,7 @@ public actor FacadeRunDomain {
             // Post-DB-commit cleanup for the removed conversation: any
             // residual bookkeeping maps must not outlive the row.
             for runID in conversationRuns[fence.conversationID] ?? [] {
+                bumpStopOwnershipStamp()
                 owners[runID] = nil
                 lastObservedState[runID] = nil
             }
@@ -1027,6 +1072,7 @@ public actor FacadeRunDomain {
     // MARK: Ownership helpers
 
     func register(_ ownership: RunOwnership) {
+        bumpStopOwnershipStamp()
         owners[ownership.runID] = ownership
         conversationRuns[ownership.conversationID, default: []].insert(ownership.runID)
         if retiredRunSet.remove(ownership.runID) != nil {
@@ -1038,12 +1084,43 @@ public actor FacadeRunDomain {
         workspaceApprovalReceipts.retire(runID: ownership.runID)
         G073ScheduleApprovalGate.shared.retire(run: ownership.runID)
         G04BrowserTabApprovalGate.shared.retire(run: ownership.runID)
+        bumpStopOwnershipStamp()
         owners[ownership.runID] = nil
         conversationRuns[ownership.conversationID]?.remove(ownership.runID)
         liveServices[ownership.runID] = nil
     }
 
     func ownership(runID: UUID) -> RunOwnership? { owners[runID] }
+
+    /// Capture before suspension: a scoped launch token alone can be reused.
+    enum StopOwnerCapture: Sendable, Equatable {
+        case absent(stamp: UInt64)
+        case owner(instance: UUID, epoch: UInt64, token: LaunchEpochFence.Token)
+        case unavailable
+    }
+
+    func captureStopOwner(runID: UUID) -> StopOwnerCapture {
+        guard !retirementFenced else { return .unavailable }
+        if let owner = owners[runID] {
+            return .owner(instance: owner.instanceID, epoch: owner.epoch,
+                          token: owner.launchToken)
+        }
+        guard let stamp = stopOwnershipStamp(runID: runID) else { return .unavailable }
+        return .absent(stamp: stamp)
+    }
+
+    func stopOwnerMatches(_ capture: StopOwnerCapture, runID: UUID) -> Bool {
+        guard !retirementFenced else { return false }
+        switch (capture, owners[runID]) {
+        case (.absent(let stamp), nil):
+            return stopOwnershipStamp(runID: runID) == stamp
+        case (.owner(let instance, let expectedEpoch, let token), .some(let owner)):
+            return owner.instanceID == instance && owner.epoch == expectedEpoch
+                && expectedEpoch == epoch && owner.launchToken == token
+        default:
+            return false
+        }
+    }
 
     func owners(conversationID: UUID) -> [RunOwnership] {
         (conversationRuns[conversationID] ?? []).compactMap { owners[$0] }
@@ -1792,6 +1869,18 @@ public actor FacadeRunDomain {
                 ])
         }
         register(current)
+        // Bind the EXACT durable incarnation (activation event + derived
+        // proof) this launch committed. The read happens after the committed
+        // prepare and re-reads the CURRENT owner so a Stop that interleaved
+        // during the read keeps its flags (never resurrect a retired owner).
+        if let launchIncarnation = (await runStopIdentity(
+            runID: prepared.run.id,
+            conversationID: prepared.conversation.id))?.incarnation,
+           var refreshed = owners[prepared.run.id] {
+            refreshed.incarnation = launchIncarnation
+            register(refreshed)
+            current = refreshed
+        }
         // goal-core batch: freeze the RUN identity for the original post-run
         // goal review/continuation lane (ordinary goal-mode launches only;
         // temporary and chat/plan runs never register, so they can never
@@ -2162,7 +2251,23 @@ public actor FacadeRunDomain {
 
     // MARK: - run.cancel
 
+    /// Explicit user Stop of ONE run. The accepted detail now carries a TYPED
+    /// settlement fact in addition to the historical `cancel` vocabulary:
+    ///
+    ///   * `settled = "true"` ONLY when a valid durable settlement row exists
+    ///     for the CURRENT incarnation and no live producer owns the run;
+    ///   * `cancel = "requested"/"stopping"/"pendingC0"/"appliedC1"` never
+    ///     proves a stop — the host must keep waiting/refresh;
+    ///   * `cancel = "alreadySettled"` is a cold/hot read-back of that same
+    ///     proof, never the old `alreadyRequested` inference;
+    ///   * localized checkpoint reasons and `null` fields are never used.
+    ///
+    /// Incarnation seal: the command captures the run's durable incarnation and
+    /// re-proves the row state in one read before any mutation. An old cancel
+    /// that races a native retry sees the newer incarnation and refuses stale
+    /// instead of marking/cancelling the newer owner.
     public func cancel(envelope: RunCommandEnvelope) async -> RunDomainReply {
+        let stopAttemptID = UUID()
         let owner: OwnerIdentity
         let query: RunCancelQuery
         do {
@@ -2173,6 +2278,7 @@ public actor FacadeRunDomain {
         } catch {
             return RunDomainReply(.rejected(RunDomainError(.invalidState, .payloadInvalid)))
         }
+        let stopOwner = captureStopOwner(runID: query.runID)
         let record: RunRecord
         do {
             // The run's OWN record. Temporary runs live in the session RAM
@@ -2199,40 +2305,134 @@ public actor FacadeRunDomain {
         } catch {
             return RunDomainReply(.rejected(RunDomainError(.staleRevision, .revisionAbsent)))
         }
+        // Re-prove state + capture the durable incarnation in ONE read before
+        // any mutation. This closes the window where a retry commits between
+        // the record read above and the owner mutation below. An unreadable
+        // extra proof read never blocks the user's physical Stop; it only
+        // means no typed settlement can be claimed.
+        let settlementStore = await runStopSettlementStore(
+            runID: query.runID, conversationID: query.conversationID)
+        var expectedIncarnation: RunIncarnation?
+        var expectedStopStatusSequence: Int?
+        if let settlementStore {
+            do {
+                guard let identity = try await settlementStore.stopIdentity(
+                    runID: query.runID,
+                    conversationID: query.conversationID) else {
+                    return RunDomainReply(.rejected(
+                        RunDomainError(.notFound, .runMissing)))
+                }
+                guard identity.state == record.state else {
+                    return RunDomainReply(.rejected(
+                        RunDomainError(.staleRevision, .revisionMismatch)))
+                }
+                expectedIncarnation = identity.incarnation
+                expectedStopStatusSequence = identity.latestStatusSequence
+            } catch {
+                // Keep stopping; the reply explicitly reports no typed proof.
+                expectedIncarnation = nil
+            }
+        }
+
+        func reply(_ presentation: RunCancelPresentation) -> RunDomainReply {
+            RunDomainReply(.mutationAccepted(detail: presentation.detail(
+                runID: query.runID,
+                ownerPhase: runCancelOwnerPhase(runID: query.runID),
+                liveProducer: runCancelLiveProducer(runID: query.runID))))
+        }
+        guard stopOwnerMatches(stopOwner, runID: query.runID) else {
+            return RunDomainReply(.rejected(RunDomainError(.staleRevision, .revisionMismatch)))
+        }
+
+        // Cold durable proof FIRST: an already-settled run answered from the
+        // append-only settlement row (never from a localized reason or the
+        // small "recent events" tail).
+        if owners[query.runID] == nil, record.state == "checkpointed",
+           let readback = await runStopReadback(
+            runID: query.runID, conversationID: query.conversationID),
+           readback.isSettled, let settlement = readback.settlement {
+            guard stopOwnerMatches(stopOwner, runID: query.runID) else {
+                return RunDomainReply(.rejected(
+                    RunDomainError(.staleRevision, .revisionMismatch)))
+            }
+            return reply(RunCancelPresentation(
+                cancel: "alreadySettled", settled: true,
+                settlement: settlement, reason: nil, pendingJobs: nil,
+                durableState: readback.runState, attemptID: stopAttemptID))
+        }
+
         // G03-R4: a PARKED awaiting-dependency run has no live service owner,
         // yet the user's explicit Stop must really stop it. The CAS commits
-        // checkpointed→cancelled only when no resume won the race; the same
-        // call fences every pending edge, requests cooperative cancellation of
-        // exactly this run's jobs and leaves a truthful stopped checkpoint.
-        // A resume that committed first falls through to the ORIGINAL live
-        // cancel path below (the user's Stop still wins).
+        // checkpointed→checkpointed only when no resume won the race; the
+        // typed settlement row is written in the SAME transaction as the row
+        // CAS and the exact incarnation re-proof. A resume that committed
+        // first falls through to the live-owner branch below (the user's Stop
+        // still wins when the newer incarnation is the one being addressed).
         // An admission that is STILL in flight (a `.admitting` owner) is also
         // routed here: the parked Stop marks that exact admission
         // synchronously so it can never dispatch a provider/tool turn after
-        // the user's Stop. A committed/handed-off resume falls through to the
-        // ORIGINAL live cancel branch below.
+        // the user's Stop.
         if record.state == "checkpointed",
            owners[query.runID] == nil || owners[query.runID]?.phase == .admitting,
            await isAwaitingDependency(runID: query.runID) {
-            switch await stopAwaitingDependency(
-                runID: query.runID, conversationID: query.conversationID) {
+            // An unreadable identity cannot be rebound to a later run while
+            // trying to stop a parked task.
+            if settlementStore != nil && expectedStopStatusSequence == nil {
+                return reply(RunCancelPresentation(
+                    cancel: "unverified", settled: false, settlement: nil,
+                    reason: "incarnationUnbound", pendingJobs: nil,
+                    durableState: record.state, attemptID: stopAttemptID))
+            }
+            switch await stopAwaitingDependencyBound(
+                runID: query.runID, conversationID: query.conversationID,
+                expectedIncarnation: expectedIncarnation,
+                expectedStatusSequence: expectedStopStatusSequence,
+                expectedOwner: stopOwner) {
+            case .settled(let jobs, let settlement):
+                return reply(RunCancelPresentation(
+                    cancel: "settled", settled: true,
+                    settlement: settlement, reason: nil,
+                    pendingJobs: jobs.count,
+                    durableState: "checkpointed", attemptID: stopAttemptID))
+            case .alreadySettled(let settlement):
+                return reply(RunCancelPresentation(
+                    cancel: "alreadySettled", settled: true,
+                    settlement: settlement, reason: nil, pendingJobs: nil,
+                    durableState: "checkpointed", attemptID: stopAttemptID))
             case .stopped(let jobs):
-                return RunDomainReply(.mutationAccepted(detail: [
-                    "cancel": "stoppedAwaitingDependency",
-                    "resourceID": RunWireRevision.runResourceID(query.runID),
-                    "pendingJobs": String(jobs.count),
-                ]))
+                return reply(RunCancelPresentation(
+                    cancel: "stoppedAwaitingDependency", settled: false,
+                    settlement: nil, reason: "incarnationUnbound",
+                    pendingJobs: jobs.count,
+                    durableState: "checkpointed", attemptID: stopAttemptID))
+            case .staleIncarnation:
+                return RunDomainReply(.rejected(
+                    RunDomainError(.staleRevision, .revisionMismatch)))
             case .alreadyStarted(let state):
-                if state == "cancelled" {
-                    return RunDomainReply(.mutationAccepted(detail: [
-                        "cancel": "alreadyRequested"]))
+                if let readback = await runStopReadback(
+                    runID: query.runID,
+                    conversationID: query.conversationID),
+                   readback.isSettled, let settlement = readback.settlement {
+                    return reply(RunCancelPresentation(
+                        cancel: "alreadySettled", settled: true,
+                        settlement: settlement, reason: nil,
+                        pendingJobs: nil, durableState: readback.runState,
+                        attemptID: stopAttemptID))
                 }
-                // A resume committed first: continue to the live-owner branch.
-                break
+                if state != record.state, state != "checkpointed" {
+                    // A newer activation/terminal won while this old cancel
+                    // was in flight. Never fall through and touch it.
+                    return RunDomainReply(.rejected(
+                        RunDomainError(.staleRevision, .revisionMismatch)))
+                }
+                // Still checkpointed for a non-dependency cause: continue to
+                // the ordinary branches below.
             case .busy:
-                // A concurrent parked Stop is already in flight.
-                return RunDomainReply(.mutationAccepted(detail: [
-                    "cancel": "alreadyRequested"]))
+                return reply(RunCancelPresentation(
+                    cancel: "alreadyRequested", settled: false,
+                    settlement: nil, reason: "stopInFlight",
+                    pendingJobs: nil, durableState: record.state,
+                    attemptID: stopAttemptID))
             case .refused(let code, _):
                 let mapped: RunDomainError
                 switch code {
@@ -2248,20 +2448,30 @@ public actor FacadeRunDomain {
             }
         }
         // A parked run already stopped by the user keeps its checkpointed row
-        // with the canonical stop cause: a second Stop is a truthful no-op,
-        // never a generic runNotRetryable error.
+        // with the canonical stop cause. If the durable settlement is not
+        // present/current, this is a LEGACY stop: answer truthfully without a
+        // typed success claim (the old `alreadyRequested` alone is not proof).
         if record.state == "checkpointed", owners[query.runID] == nil,
            await durableCheckpointReason(runID: query.runID)
                 == Self.parkedUserStopReason {
-            return RunDomainReply(.mutationAccepted(detail: [
-                "cancel": "alreadyRequested"]))
+            return reply(RunCancelPresentation(
+                cancel: "unverified", settled: false,
+                settlement: nil, reason: "legacyStopWithoutTypedSettlement",
+                pendingJobs: nil, durableState: record.state,
+                attemptID: stopAttemptID))
+        }
+        guard stopOwnerMatches(stopOwner, runID: query.runID) else {
+            return RunDomainReply(.rejected(RunDomainError(.staleRevision, .revisionMismatch)))
         }
         // Native maintenance work has a real durable header and the same
         // conversation-owned operation lease as other native workspace work.
         // The authoritative owner/state/revision checks above still apply.
         if owners[query.runID] == nil,
            requestG04NativeRunStop(runID: query.runID, conversationID: query.conversationID) {
-            return RunDomainReply(.mutationAccepted(detail: ["cancel": "stopping"]))
+            return reply(RunCancelPresentation(
+                cancel: "stopping", settled: false, settlement: nil,
+                reason: "nativeMaintenanceStopping", pendingJobs: nil,
+                durableState: record.state, attemptID: stopAttemptID))
         }
         // post-run stop wiring (Main review 2026-10-21): for an ordinary
         // COMPLETED goal-mode run, the ORIGINAL post-run review/continuation
@@ -2284,22 +2494,24 @@ public actor FacadeRunDomain {
             // the review can still act. The `run.snapshot` goalReview field
             // reads back the real settlement (stopping -> none only after
             // the actual owner returned).
-            return RunDomainReply(.mutationAccepted(detail: [
-                "cancel": "reviewStopping",
-                "resourceID": RunWireRevision.runResourceID(query.runID),
-            ]))
+            return reply(RunCancelPresentation(
+                cancel: "reviewStopping", settled: false, settlement: nil,
+                reason: "goalReviewStopping", pendingJobs: nil,
+                durableState: record.state, attemptID: stopAttemptID))
         }
         if owners[query.runID] == nil, retiredRunSet.contains(query.runID) {
-            // THIS domain retired this run in the current generation: the
-            // cancel was already requested and settled; answering honestly
-            // (never a fake re-owning, never a runMissing for known work).
-            // A goal review that REALLY settled already cleared its work
-            // handle, so this path only answers after actual settlement.
-            return RunDomainReply(.mutationAccepted(detail: ["cancel": "alreadyRequested"]))
+            // THIS domain retired this run: the only truthful answer now is
+            // the durable settlement (read above). Without a current typed
+            // settlement, do not claim the historical `alreadyRequested` as
+            // proof.
+            return reply(RunCancelPresentation(
+                cancel: "unverified", settled: false, settlement: nil,
+                reason: "retiredWithoutCurrentSettlement", pendingJobs: nil,
+                durableState: record.state, attemptID: stopAttemptID))
         }
         if Self.terminalRunStates.contains(record.state), owners[query.runID] == nil {
             // Already durable-terminal and unowned: nothing to cancel and
-            // NO fake "cancelled" claim.
+            // NO fake "cancelled"/settled claim.
             return RunDomainReply(.rejected(RunDomainError(.invalidState, .runNotRetryable)))
         }
         guard var ownership = owners[query.runID] else {
@@ -2309,6 +2521,15 @@ public actor FacadeRunDomain {
             // process's work this facade must not pretend to own.
             return RunDomainReply(.rejected(RunDomainError(.notFound, .runMissing)))
         }
+        // INCARNATION SEAL: an owner that already committed a newer
+        // incarnation must never be marked/cancelled by this command. Nil
+        // owner incarnations are uncommitted admissions (a Stop during
+        // admission is the documented winner) or legacy RAM launches.
+        if let expectedIncarnation, let ownerIncarnation = ownership.incarnation,
+           ownerIncarnation.proof != expectedIncarnation.proof {
+            return RunDomainReply(.rejected(
+                RunDomainError(.staleRevision, .revisionMismatch)))
+        }
         _ = requestG04NativeRunStop(runID: query.runID, conversationID: query.conversationID)
         switch ownership.phase {
         case .admitting:
@@ -2316,7 +2537,10 @@ public actor FacadeRunDomain {
             // no-effect.
             ownership.cancelRequested = true
             register(ownership)
-            return RunDomainReply(.mutationAccepted(detail: ["cancel": "pendingC0"]))
+            return reply(RunCancelPresentation(
+                cancel: "pendingC0", settled: false, settlement: nil,
+                reason: "startAdmission", pendingJobs: nil,
+                durableState: record.state, attemptID: stopAttemptID))
         case .prepared:
             // C1 before handoff: the committed launch fails truthfully.
             // The run's own bundle performs the marking (the ordinary
@@ -2329,21 +2553,137 @@ public actor FacadeRunDomain {
                                                reason: "cancelledDuringPrepare",
                                                bundle: bundle)
             await retire(runID: query.runID, terminalSucceeded: false, feedTerminal: false)
-            return RunDomainReply(.mutationAccepted(detail: [
-                "cancel": "appliedC1", "resourceID": RunWireRevision.runResourceID(query.runID)]))
+            let durableState = (try? await durable.runs.run(id: query.runID))?.state
+                ?? record.state
+            return reply(RunCancelPresentation(
+                cancel: "appliedC1", settled: false, settlement: nil,
+                reason: "launchAbortedBeforeHandoff", pendingJobs: nil,
+                durableState: durableState, attemptID: stopAttemptID))
         case .handedOff:
+            guard let service = liveServices[query.runID] else {
+                // A handedOff owner without the live producer is an
+                // inconsistent authority state, NOT a successful request.
+                return reply(RunCancelPresentation(
+                    cancel: "unverified", settled: false, settlement: nil,
+                    reason: "liveProducerMissing", pendingJobs: nil,
+                    durableState: record.state, attemptID: stopAttemptID))
+            }
+            ownership.cancelRequested = true
             ownership.phase = .terminating
             register(ownership)
-            // Close the ACTUAL owned producer. The runtime cancel cascade
-            // (stream + in-flight tool + approval expiry + final
-            // checkpoint) is the ORIGINAL engine path.
-            if let service = liveServices[query.runID] {
-                await service.cancel()
+            // The runtime returns the AUTHORITATIVE local fact: only
+            // `.stopped` means this exact call produced the stopped
+            // checkpoint. The localized reason is never consulted.
+            let runtimeOutcome = await service.cancel()
+            switch runtimeOutcome {
+            case .stopped:
+                guard let settlementStore, let expectedIncarnation else {
+                    return reply(RunCancelPresentation(
+                        cancel: "requested", settled: false,
+                        settlement: nil, reason: "incarnationUnbound",
+                        pendingJobs: nil, durableState: "checkpointed",
+                        attemptID: stopAttemptID))
+                }
+                do {
+                    guard let identity = try await settlementStore.stopIdentity(
+                        runID: query.runID,
+                        conversationID: query.conversationID),
+                          identity.state == "checkpointed",
+                          identity.incarnation?.proof
+                            == expectedIncarnation.proof else {
+                        return reply(RunCancelPresentation(
+                            cancel: "unverified", settled: false,
+                            settlement: nil,
+                            reason: "durableTerminalUnproven",
+                            pendingJobs: nil,
+                            durableState: (try? await settlementStore
+                                .stopIdentity(runID: query.runID,
+                                              conversationID: query.conversationID))?
+                                .state ?? record.state,
+                            attemptID: stopAttemptID))
+                    }
+                    let commit = try await settlementStore.commitRuntimeUserStop(
+                        runID: query.runID,
+                        conversationID: query.conversationID,
+                        expectedIncarnation: expectedIncarnation)
+                    switch commit {
+                    case .settled(let settlement):
+                        return reply(RunCancelPresentation(
+                            cancel: "settled", settled: true,
+                            settlement: settlement, reason: nil,
+                            pendingJobs: nil, durableState: "checkpointed",
+                            attemptID: stopAttemptID))
+                    case .alreadySettled(let settlement):
+                        return reply(RunCancelPresentation(
+                            cancel: "alreadySettled", settled: true,
+                            settlement: settlement, reason: nil,
+                            pendingJobs: nil, durableState: "checkpointed",
+                            attemptID: stopAttemptID))
+                    case .staleIncarnation:
+                        return reply(RunCancelPresentation(
+                            cancel: "unverified", settled: false,
+                            settlement: nil, reason: "incarnationChanged",
+                            pendingJobs: nil,
+                            durableState: identity.state,
+                            attemptID: stopAttemptID))
+                    case .notStopped(let state):
+                        return reply(RunCancelPresentation(
+                            cancel: "unverified", settled: false,
+                            settlement: nil, reason: "runtimeStateUnproven",
+                            pendingJobs: nil, durableState: state,
+                            attemptID: stopAttemptID))
+                    case .unboundStopped:
+                        return reply(RunCancelPresentation(
+                            cancel: "requested", settled: false,
+                            settlement: nil, reason: "incarnationUnbound",
+                            pendingJobs: nil, durableState: identity.state,
+                            attemptID: stopAttemptID))
+                    case .unreadable:
+                        return reply(RunCancelPresentation(
+                            cancel: "unverified", settled: false,
+                            settlement: nil,
+                            reason: "settlementStoreUnavailable",
+                            pendingJobs: nil, durableState: identity.state,
+                            attemptID: stopAttemptID))
+                    }
+                } catch {
+                    return reply(RunCancelPresentation(
+                        cancel: "unverified", settled: false,
+                        settlement: nil,
+                        reason: "settlementStoreUnavailable",
+                        pendingJobs: nil, durableState: "checkpointed",
+                        attemptID: stopAttemptID))
+                }
+            case .checkpointFailed:
+                return reply(RunCancelPresentation(
+                    cancel: "unverified", settled: false, settlement: nil,
+                    reason: "checkpointFailed", pendingJobs: nil,
+                    durableState: (try? await durable.runs.run(id: query.runID))?
+                        .state ?? "failed",
+                    attemptID: stopAttemptID))
+            case .notStopped(let state):
+                return reply(RunCancelPresentation(
+                    cancel: "notStopped", settled: false, settlement: nil,
+                    reason: "runtimeAlreadyStoppable", pendingJobs: nil,
+                    durableState: state, attemptID: stopAttemptID))
             }
-            return RunDomainReply(.mutationAccepted(detail: [
-                "cancel": "requested", "resourceID": RunWireRevision.runResourceID(query.runID)]))
         case .terminating, .retired:
-            return RunDomainReply(.mutationAccepted(detail: ["cancel": "alreadyRequested"]))
+            if let readback = await runStopReadback(
+                runID: query.runID, conversationID: query.conversationID),
+               readback.isSettled, let settlement = readback.settlement {
+                return reply(RunCancelPresentation(
+                    cancel: "alreadySettled", settled: true,
+                    settlement: settlement, reason: nil, pendingJobs: nil,
+                    durableState: readback.runState,
+                    attemptID: stopAttemptID))
+            }
+            return reply(RunCancelPresentation(
+                cancel: ownership.phase == .terminating ? "stopping" : "unverified",
+                settled: false, settlement: nil,
+                reason: ownership.phase == .terminating
+                    ? "stopInFlight" : "retiredWithoutCurrentSettlement",
+                pendingJobs: nil, durableState: record.state,
+                attemptID: stopAttemptID))
         }
     }
 
@@ -2398,7 +2738,8 @@ public actor FacadeRunDomain {
         } catch {
             return RunDomainReply(.rejected(RunDomainError(.internalError, .internal)))
         }
-        guard owners[query.runID] == nil else {
+        guard owners[query.runID] == nil,
+              !stoppingDependencyRuns.contains(query.runID) else {
             return RunDomainReply(.rejected(RunDomainError(.duplicateInFlight,
                                                            .launchAlreadyInFlight)))
         }
@@ -2453,6 +2794,25 @@ public actor FacadeRunDomain {
             return refuseLaunch(runID: record.id,
                                 error: RunDomainError(.invalidState, .runNotRetryable))
         }
+        // Capture the SOURCE incarnation in one authority read. A moved row
+        // makes this retry stale, and the SAME proof is handed to the atomic
+        // resume writer so it refuses if a newer Stop/incarnation won.
+        guard let retryIdentity = await runStopIdentity(
+            runID: record.id, conversationID: record.conversationID) else {
+            return refuseLaunch(runID: record.id,
+                                error: RunDomainError(.persistenceUnavailable,
+                                                      .storeReadFailed))
+        }
+        if retryIdentity.state != record.state {
+            return refuseLaunch(runID: record.id,
+                                error: RunDomainError(.staleRevision,
+                                                      .revisionMismatch))
+        }
+        if var owner = owners[record.id] {
+            owner.incarnation = retryIdentity.incarnation
+            register(owner)
+        }
+        let resumeSourceIncarnation = retryIdentity.incarnation?.proof
         // A parked awaiting-dependency run is NOT finished while a required
         // edge is still pending: refuse Continue exactly like the native
         // guard, because its resumption belongs to the exact job callback.
@@ -2613,22 +2973,36 @@ public actor FacadeRunDomain {
         // and writes NOTHING; nothing is inferred from untrusted content, no
         // synthetic user message is written and the completed run stays
         // NONRESUMABLE (the state guard above still refuses it).
+        let resumedIncarnation: RunIncarnation
         do {
             guard let resumable = durable.runs as? any ResumeActivationRunStore else {
                 throw RunDomainError(.capabilityNotUsable, .intelligenceStoreUnbound)
             }
-            guard try await resumable.beginUserResume(
+            guard let committed = try await resumable.beginVerifiedUserResume(
                 runID: record.id,
                 conversationID: record.conversationID,
-                expectedState: record.state) != nil else {
+                expectedState: record.state,
+                expectedIncarnation: resumeSourceIncarnation,
+                observedSettlementSequence:
+                    retryIdentity.latestSettlementSequence,
+                expectedStatusSequence: retryIdentity.latestStatusSequence) else {
                 throw RunDomainError(.staleRevision, .revisionMismatch)
             }
+            resumedIncarnation = committed
         } catch let error as RunDomainError {
             return refuseLaunch(runID: record.id, error: error)
         } catch {
             return refuseLaunch(runID: record.id,
                                 error: RunDomainError(.persistenceUnavailable,
                                                       .storeWriteFailed))
+        }
+        // The committed `userResume` marker's DERIVED incarnation is returned
+        // by the same transaction. Publish it on the current ownership
+        // SYNCHRONOUSLY (no await) so an old cancel that captured the parked
+        // incarnation refuses stale instead of marking the new admission.
+        if var committed = owners[record.id] {
+            committed.incarnation = resumedIncarnation
+            register(committed)
         }
         // C1 is durable now. Only now can the read-only resolver treat this
         // run as active; the retained candidate names the root that was
@@ -3793,9 +4167,14 @@ public actor FacadeRunDomain {
               !owner.cancelRequested, fenceIsValid(owner.launchToken),
               let routing = G04BrowserHostRegistry.shared.currentRouting, routing.epoch == epoch, routing.isLive(),
               let browserOwner = try? await routing.ladder.ownerVerified(taskID: taskID),
-              let session = try? await routing.center.approvalSession(for: browserOwner, preparingIfNeeded: prepareSession),
+              // Only "create" may prepare a blank session. Activate/close must
+              // review an already existing session; a stale or forged target
+              // never causes a browser session (or a release fence) to appear.
+              let session = try? await routing.center.approvalSession(for: browserOwner,
+                    preparingIfNeeded: prepareSession && args.action == "create"),
               let checked = try? await session.approvalTabProof(action: args.action, tabID: args.tabID),
-              checked.operation == "create", checked.url == nil, checked.title == nil,
+              checked.owner == browserOwner, checked.sessionID == (await session.sessionID),
+              let details = G04BrowserTabApprovalPresentation.details(for: args, proof: checked),
               let currentOwner = try? await routing.ladder.ownerVerified(taskID: taskID), currentOwner == browserOwner,
               await routing.center.existingSession(for: browserOwner) === session,
               await service.snapshot().pendingApproval == waiting,
@@ -3803,8 +4182,7 @@ public actor FacadeRunDomain {
               let latest = owners[runID], latest.conversationID == taskID, latest.epoch == epoch,
               !latest.cancelRequested, latest.launchToken == owner.launchToken, fenceIsValid(latest.launchToken),
               G02NativeRootEpoch.readback() == epoch, routing.isLive() else { return nil }
-        return (["kind": .string("browserTab"), "operation": .string("create"),
-                 "url": .null, "title": .null], checked)
+        return (details, checked)
     }
 
     /// Ephemeral, App-host-only human approval details. No event, diagnostic,

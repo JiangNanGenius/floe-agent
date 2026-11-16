@@ -107,6 +107,8 @@ public data class BrowserProjectionSnapshot(
     val isEditingAddress: Boolean,
     val technicalAddress: String?,
     val isDisplayingLocalPreview: Boolean,
+    /** A partial or duplicated native tab list cannot be assigned safe positions. */
+    val tabListUnavailable: Boolean = false,
 )
 
 public data class BrowserTabRow(

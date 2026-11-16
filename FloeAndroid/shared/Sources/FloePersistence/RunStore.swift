@@ -258,7 +258,11 @@ public struct DailyUsage: Sendable, Codable, Hashable, Identifiable {
 
 /// SQLite/GRDB implementation of `RunStore`.
 public actor SQLiteRunStore: RunStore {
-    private let database: DatabaseManager
+    /// Internal (not private): the additive typed stop-settlement capability
+    /// in `RunStopSettlement.swift` is an extension of THIS exact store, so
+    /// it must reach the same `DatabaseManager` instance. Nothing public is
+    /// widened and no second store is created.
+    let database: DatabaseManager
 
     public init(database: DatabaseManager) {
         self.database = database
@@ -910,12 +914,137 @@ public protocol ResumeActivationRunStore: Sendable {
     @discardableResult
     func beginUserResume(runID: UUID, conversationID: UUID,
                          expectedState: String) async throws -> String?
+
+    /// Incarnation-bound variant used by explicit `run.retry`: in the SAME
+    /// writer transaction it additionally re-proves that the caller's captured
+    /// activation marker is still the run's CURRENT incarnation and that no
+    /// newer typed userStop settlement exists. An old retry can therefore
+    /// never reopen a run that a newer Stop already settled, and a retry can
+    /// never resume from a superseded incarnation. An absent identity fails
+    /// closed; it must not silently select the legacy unbound path.
+    @discardableResult
+    func beginUserResume(runID: UUID, conversationID: UUID,
+                         expectedState: String,
+                         expectedIncarnation: String?,
+                         observedSettlementSequence: Int?) async throws
+        -> RunIncarnation?
+
+    /// Automatic dependency continuation must also bind the exact latest
+    /// status row observed at its park boundary, in the same writer.
+    @discardableResult
+    func beginDependencyResume(runID: UUID, conversationID: UUID,
+                               expectedIncarnation: String,
+                               observedSettlementSequence: Int?,
+                               expectedParkSequence: Int) async throws
+        -> RunIncarnation?
+
+    /// Explicit Continue: compare the observed status and stop watermarks in
+    /// the writer. A legacy run without an activation can be bootstrapped
+    /// only after its complete history is checked in that same transaction.
+    func beginVerifiedUserResume(runID: UUID, conversationID: UUID,
+                                 expectedState: String,
+                                 expectedIncarnation: String?,
+                                 observedSettlementSequence: Int?,
+                                 expectedStatusSequence: Int) async throws
+        -> RunIncarnation?
+}
+
+public extension ResumeActivationRunStore {
+    func beginVerifiedUserResume(runID: UUID, conversationID: UUID,
+                                 expectedState: String,
+                                 expectedIncarnation: String?,
+                                 observedSettlementSequence: Int?,
+                                 expectedStatusSequence: Int) async throws
+        -> RunIncarnation? { nil }
+    func beginDependencyResume(runID: UUID, conversationID: UUID,
+                               expectedIncarnation: String,
+                               observedSettlementSequence: Int?,
+                               expectedParkSequence: Int) async throws
+        -> RunIncarnation? { nil }
+    @discardableResult
+    func beginUserResume(runID: UUID, conversationID: UUID,
+                         expectedState: String,
+                         expectedIncarnation: String?,
+                         observedSettlementSequence: Int?) async throws
+        -> RunIncarnation? {
+        // A non-SQLite conformer cannot prove the new incarnation; fail
+        // honestly instead of minting a marker without a derived identity.
+        nil
+    }
 }
 
 extension SQLiteRunStore: ResumeActivationRunStore {
     @discardableResult
     public func beginUserResume(runID: UUID, conversationID: UUID,
                                 expectedState: String) async throws -> String? {
+        guard let committed = try await commitUserResume(
+            runID: runID, conversationID: conversationID,
+            expectedState: expectedState,
+            expectedIncarnation: nil,
+            observedSettlementSequence: nil) else { return nil }
+        return committed.activationProof
+    }
+
+    @discardableResult
+    public func beginUserResume(runID: UUID, conversationID: UUID,
+                                expectedState: String,
+                                expectedIncarnation: String?,
+                                observedSettlementSequence: Int?) async throws
+        -> RunIncarnation? {
+        guard expectedIncarnation != nil else { return nil }
+        guard let committed = try await commitUserResume(
+            runID: runID, conversationID: conversationID,
+            expectedState: expectedState,
+            expectedIncarnation: expectedIncarnation,
+            observedSettlementSequence: observedSettlementSequence)
+        else { return nil }
+        return committed.incarnation
+    }
+
+    public func beginDependencyResume(runID: UUID, conversationID: UUID,
+                                      expectedIncarnation: String,
+                                      observedSettlementSequence: Int?,
+                                      expectedParkSequence: Int) async throws
+        -> RunIncarnation? {
+        guard let committed = try await commitUserResume(
+            runID: runID, conversationID: conversationID,
+            expectedState: "checkpointed",
+            expectedIncarnation: expectedIncarnation,
+            observedSettlementSequence: observedSettlementSequence,
+            expectedStatusSequence: expectedParkSequence) else { return nil }
+        return committed.incarnation
+    }
+
+    public func beginVerifiedUserResume(runID: UUID, conversationID: UUID,
+                                        expectedState: String,
+                                        expectedIncarnation: String?,
+                                        observedSettlementSequence: Int?,
+                                        expectedStatusSequence: Int) async throws
+        -> RunIncarnation? {
+        let committed = try await commitUserResume(
+            runID: runID, conversationID: conversationID,
+            expectedState: expectedState,
+            expectedIncarnation: expectedIncarnation,
+            observedSettlementSequence: observedSettlementSequence,
+            expectedStatusSequence: expectedStatusSequence,
+            allowLegacyBootstrap: expectedIncarnation == nil)
+        return committed?.incarnation
+    }
+
+    /// ONE writer transaction shared by both public overloads. It commits the
+    /// ORIGINAL `preparing` resume transition, appends/dates the `userResume`
+    /// marker, and (when requested) re-proves the caller's source incarnation
+    /// and observed Stop watermark in the SAME transaction. The derived
+    /// incarnation is returned so the caller can publish the NEW identity on
+    /// its ownership before any further suspension.
+    private func commitUserResume(
+        runID: UUID, conversationID: UUID,
+        expectedState: String,
+        expectedIncarnation: String?,
+        observedSettlementSequence: Int?,
+        expectedStatusSequence: Int? = nil,
+        allowLegacyBootstrap: Bool = false
+    ) async throws -> (activationProof: String, incarnation: RunIncarnation)? {
         // The ORIGINAL retry-admissible vocabulary (the same states the
         // original `run.retry` guard admits): every active state plus the
         // three recoverable ones. `completed` is FINAL, `idle` and any
@@ -928,6 +1057,79 @@ extension SQLiteRunStore: ResumeActivationRunStore {
         ]
         guard admissible.contains(expectedState) else { return nil }
         return try await database.writer { db in
+            // Read the exact row identity + state in the writer. The state
+            // pre-check is the same CAS condition; a foreign/advanced row
+            // writes nothing.
+            guard let row = try Row.fetchOne(
+                db,
+                sql: "SELECT state, started_at FROM runs WHERE id = ? AND conversation_id = ?",
+                arguments: [runID.uuidString, conversationID.uuidString])
+            else { return nil }
+            let state: String = row["state"]
+            guard state == expectedState else { return nil }
+            if let expectedStatusSequence {
+                let latest = try Int.fetchOne(db, sql: """
+                    SELECT COALESCE(MAX(sequence), 0) FROM run_events
+                    WHERE run_id = ? AND kind = 'status'
+                    """, arguments: [runID.uuidString])
+                guard latest == expectedStatusSequence else { return nil }
+            }
+            let startedAt: String = row["started_at"]
+            if allowLegacyBootstrap {
+                // Do not interpret an old checkpoint as a successful Stop.
+                // A full streaming scan rules out an old/malformed activation
+                // hidden past the bounded normal lookup before bootstrapping.
+                guard expectedStatusSequence != nil,
+                      try RunStopSettlementStoreCore.latestIncarnation(
+                        db: db, runID: runID, conversationID: conversationID,
+                        startedAt: startedAt) == nil else { return nil }
+                let statuses = try String.fetchCursor(db, sql: """
+                    SELECT payload_json FROM run_events
+                    WHERE run_id = ? AND kind = 'status' ORDER BY sequence
+                    """, arguments: [runID.uuidString])
+                while let payload = try statuses.next() {
+                    guard let object = RunStopSettlementStoreCore.jsonObject(payload),
+                          (object["state"] as? String) != "preparing",
+                          object["floeLegacyBootstrap"] == nil else { return nil }
+                }
+                let latestStop = try RunStopSettlementStoreCore.latestSettlementSequence(
+                    db: db, runID: runID, conversationID: conversationID)
+                guard latestStop == observedSettlementSequence else { return nil }
+                let bootstrap = try JSONSerialization.data(withJSONObject: [
+                    "state": state,
+                    "floeLegacyBootstrap": ["version": 1],
+                ], options: [.sortedKeys])
+                _ = try RunStopSettlementStoreCore.appendStatus(
+                    db: db, runID: runID,
+                    payload: String(decoding: bootstrap, as: UTF8.self))
+                guard try RunStopSettlementStoreCore.latestIncarnation(
+                    db: db, runID: runID, conversationID: conversationID,
+                    startedAt: startedAt) != nil else {
+                    throw FloeError.storageCorrupted("Legacy bootstrap identity unavailable")
+                }
+            }
+            if let expectedIncarnation {
+                // Prove the EXACT source incarnation before any mutation.
+                guard let current = try RunStopSettlementStoreCore
+                    .latestIncarnation(
+                        db: db, runID: runID,
+                        conversationID: conversationID,
+                        startedAt: startedAt),
+                      current.proof == expectedIncarnation else {
+                    return nil
+                }
+                // Only a Stop NEWER than the caller's observed watermark may
+                // refuse the retry. A Stop that already settled the run
+                // before the user pressed Continue is exactly what retry is
+                // allowed to reopen.
+                if let settlementSequence = try RunStopSettlementStoreCore
+                    .latestSettlementSequence(
+                        db: db, runID: runID,
+                        conversationID: conversationID),
+                   settlementSequence > (observedSettlementSequence ?? 0) {
+                    return nil
+                }
+            }
             // ORIGINAL updateRunState semantics, conditionally: the row must
             // still belong to this conversation and still be in the caller's
             // expected state. changesCount == 1 is the committed transition
@@ -940,7 +1142,12 @@ extension SQLiteRunStore: ResumeActivationRunStore {
                     """,
                 arguments: ["preparing", runID.uuidString,
                             conversationID.uuidString, expectedState])
-            guard db.changesCount == 1 else { return nil }
+            guard db.changesCount == 1 else {
+                if allowLegacyBootstrap {
+                    throw FloeError.storageCorrupted("Legacy resume state changed")
+                }
+                return nil
+            }
             let markerID = UUID()
             let sequence = try Int.fetchOne(
                 db,
@@ -978,7 +1185,12 @@ extension SQLiteRunStore: ResumeActivationRunStore {
                     String(decoding: committed, as: UTF8.self),
                     markerID.uuidString,
                 ])
-            return proof
+            let incarnation = RunStopSettlementStoreCore.makeIncarnation(
+                runID: runID, conversationID: conversationID,
+                eventID: markerID, sequence: sequence,
+                source: .activation, activationKind: "userResume",
+                activationProof: proof, startedAt: startedAt)
+            return (proof, incarnation)
         }
     }
 }

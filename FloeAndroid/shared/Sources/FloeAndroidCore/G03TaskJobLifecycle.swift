@@ -200,6 +200,28 @@ public struct G02ParkedRunStopCommitter: Sendable {
             return false
         }
     }
+
+    /// Typed variant: the row CAS, the canonical userStop row and the
+    /// self-checking settlement row commit in ONE writer transaction, and the
+    /// transaction re-proves the caller's captured incarnation. When
+    /// `expectedIncarnation` is nil this writes ONLY the ORIGINAL plain
+    /// userStop row and reports `.unboundStopped` (no typed proof).
+    public func commitTyped(runID: UUID, conversationID: UUID,
+                            expectedState: String,
+                            expectedIncarnation: RunIncarnation?,
+                            expectedStatusSequence: Int?) async
+        -> RunStopSettlementCommitResult {
+        let store = SQLiteRunStore(database: database)
+        do {
+            return try await store.commitParkedUserStop(
+                runID: runID, conversationID: conversationID,
+                expectedState: expectedState,
+                expectedIncarnation: expectedIncarnation,
+                expectedStatusSequence: expectedStatusSequence)
+        } catch {
+            return .unreadable
+        }
+    }
 }
 
 // MARK: - Parked reason + gate
@@ -453,12 +475,22 @@ public enum JobDependencyResumeResult: Sendable, Equatable {
 }
 
 public enum JobDependencyStopResult: Sendable, Equatable {
-    /// The durable run row committed the canonical stopped checkpoint; these
-    /// job identities had a cooperative cancellation request issued (they are
+    /// The durable run row committed the canonical stopped checkpoint AND a
+    /// valid typed settlement bound to the exact incarnation. These job
+    /// identities had a cooperative cancellation request issued (they are
     /// NOT claimed terminal — the original processors settle them).
+    case settled(cancelledJobIDs: [UUID], settlement: RunStopSettlement)
+    /// The exact incarnation already had a valid typed settlement; nothing
+    /// was rewritten and no duplicate row was appended.
+    case alreadySettled(settlement: RunStopSettlement)
+    /// The legacy plain `userStop` row committed but no incarnation was
+    /// provable, so no typed settlement exists. Never a typed success.
     case stopped(cancelledJobIDs: [UUID])
     /// The run was already terminal/resumed; nothing was rewritten.
     case alreadyStarted(state: String)
+    /// A newer activation/incarnation owns the run; the old Stop wrote
+    /// nothing.
+    case staleIncarnation
     /// A resume/Stop is in flight for this run.
     case busy
     case refused(code: String, reason: String)

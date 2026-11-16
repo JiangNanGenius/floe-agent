@@ -246,26 +246,100 @@ public actor BrowserTaskSession {
         return id
     }
 
-    /// Complete, non-mutating presentation proof. Creating a new tab needs
-    /// no page-derived JavaScript or inferred document identity.
+    /// Complete, non-mutating presentation proof for one reviewed tab
+    /// action. `create` needs no target identity; `activate`/`close` bind the
+    /// exact target tab through native session state (tab UUID, document
+    /// identity, navigation revision and the surfaced URL/title). Page
+    /// JavaScript never supplies or overrides any of these facts.
     public func approvalTabProof(action: String, tabID: UUID?) async throws -> BrowserTabApprovalProof {
-        guard action == "create", tabID == nil, !isReleased, !isUserControlling,
-              tabs.count < maximumTabs,
+        guard !isReleased, !isUserControlling,
               !BrowserLifecycleHealth.shared.epochIsSaturated(owner.rootEpoch) else {
             throw BrowserInteractionError.stale("The browser tab action cannot be reviewed")
         }
-        return BrowserTabApprovalProof(owner: owner, sessionID: sessionID, operation: "create",
-            tabID: nil, activeTabID: activeTabID, documentID: nil, navigationRevision: nil,
-            url: nil, title: nil, tabCount: tabs.count, maximumTabs: maximumTabs, tabIDs: tabs.map(\.id))
+        switch action {
+        case "create":
+            guard tabID == nil, tabs.count < maximumTabs else {
+                throw BrowserInteractionError.stale("The browser tab action cannot be reviewed")
+            }
+            return BrowserTabApprovalProof(owner: owner, sessionID: sessionID, operation: "create",
+                tabID: nil, activeTabID: activeTabID, documentID: nil, navigationRevision: nil,
+                url: nil, title: nil, tabCount: tabs.count, maximumTabs: maximumTabs, tabIDs: tabs.map(\.id))
+        case "activate", "close":
+            guard let tabID, let tab = tabs.first(where: { $0.id == tabID }),
+                  targetIsReviewable(tab) else {
+                throw BrowserInteractionError.stale("The browser tab is no longer available")
+            }
+            if action == "activate", activeTabID == tabID {
+                throw BrowserInteractionError.stale("The browser tab is already active")
+            }
+            if action == "close", tabs.count <= 1 {
+                throw BrowserInteractionError.stale("The last browser tab cannot be closed")
+            }
+            return BrowserTabApprovalProof(owner: owner, sessionID: sessionID, operation: action,
+                tabID: tabID, activeTabID: activeTabID, documentID: tab.documentID,
+                navigationRevision: tab.navigationRevision, url: tab.surface.url, title: tab.surface.title,
+                tabCount: tabs.count, maximumTabs: maximumTabs, tabIDs: tabs.map(\.id))
+        default:
+            throw BrowserInteractionError.stale("The browser tab action cannot be reviewed")
+        }
     }
 
     private func matchesCreateApproval(_ proof: BrowserTabApprovalProof) -> Bool {
-        !isReleased && !isUserControlling && !BrowserLifecycleHealth.shared.epochIsSaturated(owner.rootEpoch) &&
-            proof.owner == owner && proof.sessionID == sessionID && proof.operation == "create" &&
-            proof.tabID == nil && proof.documentID == nil && proof.navigationRevision == nil &&
-            proof.url == nil && proof.title == nil && proof.activeTabID == activeTabID &&
-            proof.tabCount == tabs.count && proof.maximumTabs == maximumTabs &&
-            proof.tabIDs == tabs.map(\.id) && tabs.count < maximumTabs
+        guard !isReleased, !isUserControlling,
+              !BrowserLifecycleHealth.shared.epochIsSaturated(owner.rootEpoch),
+              proof.owner == owner, proof.sessionID == sessionID, proof.operation == "create",
+              proof.tabID == nil, proof.documentID == nil, proof.navigationRevision == nil,
+              proof.url == nil, proof.title == nil,
+              proof.activeTabID == activeTabID, proof.tabCount == tabs.count,
+              proof.maximumTabs == maximumTabs, proof.tabIDs == tabs.map(\.id) else { return false }
+        return tabs.count < maximumTabs
+    }
+
+    /// Recheck the complete reviewed snapshot immediately before the exact
+    /// tab action runs. Every difference (target document/navigation, the tab
+    /// set, the active tab, ownership, session or user takeover) is a refusal,
+    /// never a substitute target.
+    private func matchesTabApproval(_ proof: BrowserTabApprovalProof, command: BrowserCommand) -> Bool {
+        guard !isReleased, !isUserControlling,
+              !BrowserLifecycleHealth.shared.epochIsSaturated(owner.rootEpoch),
+              proof.owner == owner, proof.sessionID == sessionID,
+              command.expectedDocumentID == nil,
+              proof.activeTabID == activeTabID,
+              proof.tabCount == tabs.count, proof.maximumTabs == maximumTabs,
+              proof.tabIDs == tabs.map(\.id) else { return false }
+        switch command.action {
+        case .create:
+            guard command.tabID == nil else { return false }
+            return matchesCreateApproval(proof)
+        case .activateTab(let id):
+            guard proof.operation == "activate", proof.tabID == id,
+                  command.tabID == nil || command.tabID == id,
+                  activeTabID != id,
+                  let tab = tabs.first(where: { $0.id == id }) else { return false }
+            return matchesApprovedTarget(proof, tab: tab)
+        case .closeTab(let id):
+            guard proof.operation == "close", proof.tabID == id,
+                  command.tabID == nil || command.tabID == id,
+                  tabs.count > 1,
+                  let tab = tabs.first(where: { $0.id == id }) else { return false }
+            return matchesApprovedTarget(proof, tab: tab)
+        default:
+            return false
+        }
+    }
+
+    private func matchesApprovedTarget(_ proof: BrowserTabApprovalProof, tab: Tab) -> Bool {
+        targetIsReviewable(tab) && proof.documentID == tab.documentID &&
+            proof.navigationRevision == tab.navigationRevision &&
+            proof.url == tab.surface.url &&
+            proof.title == tab.surface.title
+    }
+
+    /// A retained URL/title is not evidence of the currently displayed page
+    /// while navigation is in flight, uncertain, or lifecycle events were lost.
+    private func targetIsReviewable(_ tab: Tab) -> Bool {
+        !tab.navigationPending && !tab.navigationUncertain &&
+            !BrowserLifecycleHealth.shared.hasGap(epoch: owner.rootEpoch, tabID: tab.id)
     }
 
     public func activate(_ id: UUID) {
@@ -579,8 +653,7 @@ public actor BrowserTaskSession {
             return failure(command, status: .stale, code: "session", "Browser session is no longer active")
         }
         if let proof = command.tabApprovalProof {
-            guard case .create = command.action, command.tabID == nil,
-                  command.expectedDocumentID == nil, matchesCreateApproval(proof) else {
+            guard matchesTabApproval(proof, command: command) else {
                 return failure(command, status: .stale, code: "approval-changed", "The reviewed browser tab state changed")
             }
         }

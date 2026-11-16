@@ -84,10 +84,23 @@ class PhoneControlStopAdmissionTest {
             actualOwner = null,
             stoppedOwner = fence.lastStoppedOwner(),
             userStopped = fence.size() > 0,
+            stoppedOwnerSettled = fence.entry(a)?.settled == true,
         )
         assertEquals(a, display?.owner)
         assertEquals(DeviceAccessTaskControlUi.STOPPED, display?.control)
-        assertEquals(DeviceAccessTaskPhaseUi.TAKEN_OVER, display?.phase)
+        // Not settled yet: the run may still be live/cancelling.
+        assertEquals(DeviceAccessTaskPhaseUi.STOPPING, display?.phase)
+
+        assertTrue(fence.settle(a, fence.entry(a)!!.token))
+        val settled = PhoneTaskPresentation.ownership(
+            candidate = null,
+            armedOwner = null,
+            actualOwner = null,
+            stoppedOwner = fence.lastStoppedOwner(),
+            userStopped = fence.size() > 0,
+            stoppedOwnerSettled = fence.entry(a)?.settled == true,
+        )
+        assertEquals(DeviceAccessTaskPhaseUi.TAKEN_OVER, settled?.phase)
 
         fence.clear(a)
         assertNull(

@@ -123,6 +123,13 @@ public struct PreparedRun: Sendable, Hashable {
     public var userMessage: PersistedMessage
     public var attachments: [AttachmentRef]
     public var createdConversation: Bool
+    /// The native activation proof WRITTEN INTO this launch's `preparing`
+    /// status row in the same transaction. Additive optional (the RAM-only
+    /// ephemeral launch store and older fixtures legitimately have none): the
+    /// run ownership and the typed stop settlement use it as the exact
+    /// incarnation identity. It is a durable consistency proof, never an
+    /// authorization or secret.
+    public var activationProof: String?
 
     public init(
         conversation: ConversationRecord,
@@ -130,7 +137,8 @@ public struct PreparedRun: Sendable, Hashable {
         run: RunRecord,
         userMessage: PersistedMessage,
         attachments: [AttachmentRef],
-        createdConversation: Bool
+        createdConversation: Bool,
+        activationProof: String? = nil
     ) {
         self.conversation = conversation
         self.workspace = workspace
@@ -138,6 +146,7 @@ public struct PreparedRun: Sendable, Hashable {
         self.userMessage = userMessage
         self.attachments = attachments
         self.createdConversation = createdConversation
+        self.activationProof = activationProof
     }
 }
 
@@ -592,7 +601,8 @@ public actor SQLiteRunLaunchStore: ExistingConversationRunLaunchStore, AtomicInt
                 run: run,
                 userMessage: userMessage,
                 attachments: normalizedAttachments,
-                createdConversation: createdConversation
+                createdConversation: createdConversation,
+                activationProof: activationProof
             )
         }
     }

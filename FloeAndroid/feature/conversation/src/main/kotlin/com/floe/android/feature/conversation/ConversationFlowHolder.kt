@@ -572,6 +572,13 @@ class ConversationFlowHolder(
     private val rejectedPrivateApprovals = mutableSetOf<String>()
     private var publishedDeviceApproval: ApprovalCardUi? = null
 
+    /**
+     * Host-authored Stop/Takeover projection for one exact run/call. It only
+     * narrows presentation and decisions; settlement is decided by the host
+     * from the real cancel/snapshot receipt.
+     */
+    private val deviceApprovalStops = mutableStateOf<Map<String, DeviceApprovalStopUi>>(emptyMap())
+
     private fun sameWorkspace(a: String?, b: String?): Boolean = a != null && b != null &&
         runCatching { UUID.fromString(a) == UUID.fromString(b) }.getOrDefault(false)
 
@@ -814,6 +821,7 @@ class ConversationFlowHolder(
         expandedApprovalEvidence.value = emptySet()
         approvalScopeChoices.value = emptyMap()
         privateApprovals.value = emptyMap()
+        deviceApprovalStops.value = emptyMap()
         if (publishedDeviceApproval != null) host.onDeviceApprovalWaiting(this, session, null)
         publishedDeviceApproval = null
         privateApprovalRefresh.value = emptyMap()
@@ -944,6 +952,20 @@ class ConversationFlowHolder(
         }
         val oldByKey = previous?.pendingApprovals?.associateBy { it.key }.orEmpty()
         val liveKeys = next.pendingApprovals.map { it.key }.toSet()
+        // The pending list only covers the selected run. A different run or
+        // a transient empty list cannot retire this run's stop projection.
+        // A visible same-key card with a different request identity is a new
+        // incarnation and must never inherit the older call's stop state.
+        deviceApprovalStops.value = deviceApprovalStops.value.filter { (runKey, stop) ->
+            if (!runKey.equals(next.selectedRunId, ignoreCase = true) || !stop.identityCaptured) {
+                true
+            } else {
+                val sameKey = next.pendingApprovals.firstOrNull {
+                    it.toolName == "device.act" && deviceApprovalKeysMatch(stop.approvalKey, it.key)
+                }
+                sameKey == null || deviceStopMatches(stop, sameKey)
+            }
+        }
         val replaced = next.pendingApprovals.filter { card ->
             val old = oldByKey[card.key]
             old != null && (old.requestGeneration != card.requestGeneration ||
@@ -1432,6 +1454,10 @@ class ConversationFlowHolder(
 
     @Synchronized fun showPrivateApproval(card: ApprovalCardUi, lease: String) {
         val state = snapshot.value ?: return
+        // A user Stop/Takeover or a revoked host identity closes this exact
+        // call: a later scroll/resume must not re-open a decision lease.
+        if (card.toolName == "device.act" &&
+            (deviceApprovalStopFor(card) != null || host.deviceApprovalRevoked(card))) return
         if (retired || card.key in approvalDispatched || !card.identityVerified || card.scopeVerified ||
             card.toolName !in setOf("workspace.createFile", "workspace.writeFile", "workspace.applyPatch", "workspace.appendFile", "workspace.replaceText", "workspace.createDirectory", "workspace.moveFile", "workspace.copyFile", "workspace.deleteFile", "exec.shell", "device.act", "task.schedule", "browser.tab") ||
             state.selectedRunId != card.runId || (selectedRunId.value != null && selectedRunId.value != card.runId) ||
@@ -1447,6 +1473,72 @@ class ConversationFlowHolder(
 
     @Synchronized fun hidePrivateApproval(lease: String) {
         privateApprovals.value = privateApprovals.value - lease
+    }
+
+    /**
+     * Host publication of a Stop/Takeover that already retired one exact
+     * device approval. [approvalKey] binds it to the call card that was
+     * retired, so a later retry/new call of the same run is not blocked.
+     * The phase is display/decision gating only; settlement stays with the
+     * host's real cancel/snapshot receipt.
+     */
+    @Synchronized fun applyDeviceApprovalStop(runId: String, stop: DeviceApprovalStopUi?) {
+        val runKey = runId.lowercase(java.util.Locale.ROOT)
+        val current = deviceApprovalStops.value
+        val previous = current[runKey]
+        val card = snapshot.value?.pendingApprovals?.firstOrNull {
+            it.toolName == "device.act" && it.runId.equals(runId, ignoreCase = true) &&
+                (stop?.approvalKey == null || deviceApprovalKeysMatch(stop.approvalKey, it.key))
+        }
+        // An update to an existing stop retains the original request identity;
+        // the next selected snapshot will retire it if that identity changes.
+        val boundStop = stop?.let {
+            when {
+                it.identityCaptured -> it
+                previous?.identityCaptured == true &&
+                    deviceApprovalKeysMatch(previous.approvalKey, it.approvalKey) ->
+                    it.copy(approvalKey = previous.approvalKey, identityCaptured = true,
+                        requestGeneration = previous.requestGeneration,
+                        approvalRevision = previous.approvalRevision,
+                        descriptorIdentity = previous.descriptorIdentity)
+                card != null -> it.copy(approvalKey = card.key, identityCaptured = true,
+                    requestGeneration = card.requestGeneration,
+                    approvalRevision = card.approvalRevision,
+                    descriptorIdentity = card.descriptorIdentity)
+                else -> it
+            }
+        }
+        val next = if (boundStop == null) current - runKey else current + (runKey to boundStop)
+        if (next != current) deviceApprovalStops.value = next
+        if (stop != null) {
+            // Withdraw the private lease immediately; don't wait for a host
+            // visibility callback that may already be queued behind the tap.
+            privateApprovals.value = privateApprovals.value.filterValues { item ->
+                !item.card.runId.equals(runId, ignoreCase = true) ||
+                    (stop.approvalKey != null && !deviceApprovalKeysMatch(stop.approvalKey, item.card.key))
+            }
+        }
+    }
+
+    /** Stop state for this exact call card (never another call of the run). */
+    fun deviceApprovalStopFor(card: ApprovalCardUi): DeviceApprovalStopUi? {
+        val stop = deviceApprovalStops.value[card.runId.lowercase(java.util.Locale.ROOT)] ?: return null
+        return stop.takeIf { deviceStopMatches(it, card) }
+    }
+
+    private fun deviceStopMatches(stop: DeviceApprovalStopUi, card: ApprovalCardUi): Boolean =
+        stop.identityCaptured && deviceApprovalKeysMatch(stop.approvalKey, card.key) &&
+            stop.requestGeneration == card.requestGeneration && stop.approvalRevision == card.approvalRevision &&
+            stop.descriptorIdentity == card.descriptorIdentity
+
+    /** UUID spelling may differ by case; tool call IDs are case-sensitive. */
+    private fun deviceApprovalKeysMatch(left: String?, right: String?): Boolean {
+        if (left == null || right == null) return false
+        val leftSlash = left.indexOf('/')
+        val rightSlash = right.indexOf('/')
+        if (leftSlash <= 0 || rightSlash <= 0) return false
+        return left.substring(0, leftSlash).equals(right.substring(0, rightSlash), ignoreCase = true) &&
+            left.substring(leftSlash + 1) == right.substring(rightSlash + 1)
     }
 
     @Synchronized fun acceptPrivateApproval(echo: ConversationSessionToken, card: ApprovalCardUi,
@@ -1490,7 +1582,7 @@ class ConversationFlowHolder(
         lease: String, details: BrowserTabApprovalUi, token: String): Boolean {
         val current = privateApprovals.value[lease] ?: return false
         if (!isPrivateApprovalLeaseCurrent(echo, card, lease) || card.toolName != "browser.tab" ||
-            details.operation != "create" || details.url != null || details.title != null ||
+            !details.isWellFormed() ||
             current.details != null || current.shell != null || current.device != null ||
             current.schedule != null || current.browserTab != null) return false
         privateApprovals.value = privateApprovals.value + (lease to PrivateApproval(card, token = token, browserTab = details))
@@ -1531,7 +1623,7 @@ class ConversationFlowHolder(
                 (item.shell != null && card.toolName == "exec.shell" && sameWorkspace(state.boundWorkspaceId, item.shell.workspaceId)) ||
                 (item.device != null && card.toolName == "device.act") ||
                 (item.schedule != null && card.toolName == "task.schedule") ||
-                (item.browserTab != null && card.toolName == "browser.tab")) &&
+                (item.browserTab?.isReviewable() == true && card.toolName == "browser.tab")) &&
             state.selectedRunId == card.runId && (selectedRunId.value == null || selectedRunId.value == card.runId) &&
             state.pendingApprovals.any { it == card }
     }
@@ -1562,8 +1654,17 @@ class ConversationFlowHolder(
         val state = snapshot.value ?: return rejected(ConversationRejectedReason.NO_SESSION)
         val live = state.pendingApprovals.firstOrNull { it.key == approval.key }
             ?: return ConversationFlowResult.Stale
+        // The host's exact-run Stop/Takeover projection wins over a stale
+        // private lease: no allow/deny may be dispatched for a retired call.
+        if (live.toolName == "device.act" &&
+            (deviceApprovalStopFor(live) != null || host.deviceApprovalRevoked(live))) {
+            return rejected(ConversationRejectedReason.STALE)
+        }
         val privateEntry = presentationLease?.let { privateApprovals.value[it] }
         val privateToken = privateEntry?.token
+        if (allow && privateEntry?.browserTab?.isReviewable() == false) {
+            return rejected(ConversationRejectedReason.INPUT_INSUFFICIENT)
+        }
         val privateVisible = privateEntry != null && privateEntry.card == live &&
             (privateEntry.details != null || privateEntry.shell != null || privateEntry.device != null || privateEntry.schedule != null || privateEntry.browserTab != null) &&
             visibleApprovalCard(live, presentationLease ?: "") == approval

@@ -1143,12 +1143,30 @@ public actor FloeAgentRuntime {
         executionLedger.entries
     }
 
+    /// Authoritative result of ONE runtime cancel call. A state name, a
+    /// localized checkpoint reason or an owner's disappearance is not proof:
+    /// only `.stopped` means THIS call performed the cancel terminal and the
+    /// recovery checkpoint was really persisted. The Android run domain uses
+    /// this value before it appends any durable user-stop settlement.
+    public enum AgentCancelSettlement: Sendable, Equatable {
+        /// An active run was transitioned to `checkpointed` by THIS call and
+        /// the recovery checkpoint write completed.
+        case stopped
+        /// An active run was transitioned to `failed` because the checkpoint
+        /// write failed. No stopped checkpoint exists.
+        case checkpointFailed
+        /// The prior state did not admit a cancel (idle/terminal/cancelling);
+        /// this call wrote nothing.
+        case notStopped(String)
+    }
+
     /// streamingModel/executingTool/waitingApproval → cancelling → checkpointed.
-    public func cancel() async {
+    @discardableResult
+    public func cancel() async -> AgentCancelSettlement {
         let prior = state
         switch prior {
         case .idle, .completed, .failed, .checkpointed, .cancelling:
-            return
+            return .notStopped(prior.name)
         default:
             break
         }
@@ -1197,15 +1215,18 @@ public actor FloeAgentRuntime {
         await activeRunTask?.value
         // 5. Persist and park.
         await releaseRunAuthorities()
+        let settlement: AgentCancelSettlement
         do {
             try await writeCheckpoint()
             await transition(to: .checkpointed(AgentState.CheckpointRef(
                 reason: FloeL10n.l("runtime.agent_runtime.the_task_was_stopped_by_you")
             )))
+            settlement = .stopped
         } catch {
             await transition(to: .failed(AgentState.AgentFailure(
                 message: "Checkpoint write failed during cancel: \(error.localizedDescription)"
             )))
+            settlement = .checkpointFailed
         }
         // 6. Release any model loop waiting in `quiesceCancellingRun`. The
         // loop can exit on `modelTurnContinuationRequested == false` while
@@ -1217,6 +1238,7 @@ public actor FloeAgentRuntime {
             cancelCompletion = nil
             continuation.resume()
         }
+        return settlement
     }
 
     /// Set while `start`/`resume` wait for an in-flight caller cancel to reach

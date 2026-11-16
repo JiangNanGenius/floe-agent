@@ -598,8 +598,13 @@ public actor BrowserSessionCenter {
     ) async -> BrowserResult {
         do {
             let session: BrowserTaskSession
-            if command.tabApprovalProof != nil {
-                guard let existing = existingSession(for: owner) else {
+            if let proof = command.tabApprovalProof {
+                // A reviewed proof belongs to the exact admitted owner and
+                // session it was captured from. It may never be replayed
+                // against another task's browser, and an approval-bound
+                // command may never create or reactivate a released session.
+                guard proof.owner == owner, let existing = existingSession(for: owner),
+                      await existing.sessionID == proof.sessionID else {
                     return BrowserResult(requestID: command.requestID, status: .stale,
                         message: "Browser session is no longer available",
                         error: BrowserFailure(code: "approval-changed", message: "Browser session is no longer available"))

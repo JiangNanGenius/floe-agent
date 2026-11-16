@@ -221,19 +221,36 @@ class PhoneTaskPresentationTest {
     }
 
     @Test
-    fun retainedStoppedOwnerIsStoppedTakenOverAndNotArmed() {
+    fun retainedStoppedOwnerIsTakenOverOnlyAfterASettledProof() {
         val stopped = owner(1, 1)
-        val display = PhoneTaskPresentation.ownership(
+        // No live candidate and no proven settlement: the exact run may still
+        // be cancelling, so the retained row must say "Stopping", not claim a
+        // completed takeover from the local stop request alone.
+        val stopping = PhoneTaskPresentation.ownership(
             candidate = null,
             armedOwner = null,
             actualOwner = null,
             stoppedOwner = stopped,
             userStopped = true,
+            stoppedOwnerSettled = false,
         )
-        assertEquals(stopped, display?.owner)
-        assertEquals(DeviceAccessTaskControlUi.STOPPED, display?.control)
-        assertEquals(DeviceAccessTaskPhaseUi.TAKEN_OVER, display?.phase)
-        assertEquals(PhoneTaskTitleSource.RETAINED, display?.titleSource)
+        assertEquals(stopped, stopping?.owner)
+        assertEquals(DeviceAccessTaskControlUi.STOPPED, stopping?.control)
+        assertEquals(DeviceAccessTaskPhaseUi.STOPPING, stopping?.phase)
+        assertEquals(PhoneTaskTitleSource.RETAINED, stopping?.titleSource)
+
+        val settled = PhoneTaskPresentation.ownership(
+            candidate = null,
+            armedOwner = null,
+            actualOwner = null,
+            stoppedOwner = stopped,
+            userStopped = true,
+            stoppedOwnerSettled = true,
+        )
+        assertEquals(stopped, settled?.owner)
+        assertEquals(DeviceAccessTaskControlUi.STOPPED, settled?.control)
+        assertEquals(DeviceAccessTaskPhaseUi.TAKEN_OVER, settled?.phase)
+        assertEquals(PhoneTaskTitleSource.RETAINED, settled?.titleSource)
     }
 
     @Test
@@ -271,7 +288,9 @@ class PhoneTaskPresentationTest {
             userStopped = true,
         )
         assertEquals(DeviceAccessTaskControlUi.STOPPED, display?.control)
-        assertEquals(DeviceAccessTaskPhaseUi.TAKEN_OVER, display?.phase)
+        // The holder still reports this exact run live: a takeover must not be
+        // claimed before the canonical cancel/read-back settles it.
+        assertEquals(DeviceAccessTaskPhaseUi.STOPPING, display?.phase)
 
         assertEquals(
             PhoneTaskArmDecision.Refuse(PhoneTaskPresentation.CODE_STOP_SETTLING),

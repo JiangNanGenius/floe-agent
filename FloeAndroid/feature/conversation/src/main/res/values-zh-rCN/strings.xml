@@ -171,6 +171,8 @@
     <string name="approval_identity_unavailable">无法核对这项请求，可以重新检查或停止任务。</string>
     <string name="approval_details_unavailable">完整操作详情尚未就绪，暂不能允许。可以拒绝或重新检查。</string>
     <string name="approval_recheck">重新检查</string>
+    <string name="approval_device_stopping">正在停止此任务… 此操作已不可用。</string>
+    <string name="approval_device_stop_failed">尚未确认任务已停止，可再次点按“停止”或检查任务。</string>
     <string name="approval_terminal_handoff_details">详情：</string>
     <string name="risk_reads_files">读取文件</string>
     <string name="risk_writes_files">写入文件</string>
@@ -509,6 +511,12 @@
     <string name="approval_source_exists">源文件或文件夹必须存在。</string>
     <string name="approval_schedule_create">创建定时任务</string>
     <string name="approval_browser_tab_create">创建浏览器标签页</string>
+    <string name="approval_browser_tab_activate">切换到浏览器标签页</string>
+    <string name="approval_browser_tab_close">关闭浏览器标签页</string>
+    <string name="approval_browser_tab_title">页面标题</string>
+    <string name="approval_browser_tab_url">页面地址</string>
+    <string name="approval_browser_tab_position">第 %1$d 个标签页（共 %2$d 个）</string>
+    <string name="approval_browser_tab_unidentified">目标标签页没有标题或地址。请先打开并加载该标签页，再重新检查；也可以拒绝此请求。</string>
     <string name="approval_schedule_title">标题</string>
     <string name="approval_schedule_prompt">完整任务指令</string>
     <string name="approval_schedule_repeat">触发方式</string>

@@ -67,7 +67,13 @@ public enum BrowserTarget: Sendable, Codable, Hashable {
     case point(x: Double, y: Double)
 }
 
-/// Read-only tab presentation identity. It is not an authorization grant.
+/// Read-only tab presentation identity for one reviewed `browser.tab`
+/// operation. It is not itself an authorization grant: a trusted one-use
+/// receipt binds it to an exact task/run/call, and the owning session rechecks
+/// every field immediately before execution. `create` carries no target;
+/// `activate`/`close` carry the exact native tab UUID, document identity,
+/// navigation revision and surfaced URL/title. Never populated from page
+/// JavaScript or model arguments.
 public struct BrowserTabApprovalProof: Sendable, Codable, Hashable {
     public let owner: BrowserOwnerID
     public let sessionID: UUID

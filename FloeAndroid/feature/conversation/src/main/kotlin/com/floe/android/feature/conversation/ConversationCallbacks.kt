@@ -449,6 +449,14 @@ interface ConversationUiCallbacks {
     /** Inform the device overlay about this holder's exact pending device card. */
     fun onDeviceApprovalWaiting(holder: ConversationFlowHolder, session: ConversationSessionToken, card: ApprovalCardUi?) = Unit
 
+    /**
+     * Synchronous, host-authored narrowing: this exact device approval may no
+     * longer be decided (the user stopped/took over its run, or its native
+     * epoch/generation is gone). It grants nothing and never fabricates a
+     * decision; hosts that do not own device control return false.
+     */
+    fun deviceApprovalRevoked(card: ApprovalCardUi): Boolean = false
+
     /** Read a private presentation only for a visible, exact approval card. */
     fun requestApprovalPresentation(session: ConversationSessionToken, card: ApprovalCardUi, lease: String): Boolean = false
 

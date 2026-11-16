@@ -255,6 +255,7 @@ extension FacadeRunDomain {
     /// zero ONLY at real settlement; nothing here waits on a timer and
     /// nothing detaches early.
     func beginGenerationRetirement() async {
+        bumpStopOwnershipStamp()
         retirementFenced = true
         cancelG04WorkspaceOperations()
         retiredRunSet.removeAll()

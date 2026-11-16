@@ -172,6 +172,8 @@
     <string name="approval_identity_unavailable">This request could not be verified. Check again or stop the task.</string>
     <string name="approval_details_unavailable">Full action details are not ready, so allowing is unavailable. You can deny or check again.</string>
     <string name="approval_recheck">Check again</string>
+    <string name="approval_device_stopping">Stopping this task… This action is no longer available.</string>
+    <string name="approval_device_stop_failed">The task could not be confirmed stopped. Use Stop to try again, or check the task.</string>
     <string name="approval_terminal_handoff_details">Details:</string>
     <string name="risk_reads_files">Reads files</string>
     <string name="risk_writes_files">Writes files</string>
@@ -511,6 +513,12 @@
     <string name="approval_source_exists">The source must exist.</string>
     <string name="approval_schedule_create">Create a scheduled task</string>
     <string name="approval_browser_tab_create">Create a browser tab</string>
+    <string name="approval_browser_tab_activate">Switch to a browser tab</string>
+    <string name="approval_browser_tab_close">Close a browser tab</string>
+    <string name="approval_browser_tab_title">Page title</string>
+    <string name="approval_browser_tab_url">Page address</string>
+    <string name="approval_browser_tab_position">Tab %1$d of %2$d</string>
+    <string name="approval_browser_tab_unidentified">The target tab has no title or address. Open and load it, then check again; you can also deny this request.</string>
     <string name="approval_schedule_title">Title</string>
     <string name="approval_schedule_prompt">Complete task instruction</string>
     <string name="approval_schedule_repeat">Trigger</string>

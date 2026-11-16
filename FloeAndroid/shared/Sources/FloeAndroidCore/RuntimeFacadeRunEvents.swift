@@ -336,6 +336,9 @@ enum RunSnapshotWireBuilder {
         // the session's ORIGINAL Ephemeral* set. The durable singleton is
         // never a fallback for a supplied temporary bundle.
         let stores = readBundle ?? ownership?.bundle ?? components.durable
+        // Observe before the first suspension: a complete same-run restart
+        // during the storage reads must not turn an old proof into a new one.
+        let initialOwner = await domain.currentStopOwnership(runID: query.runID)
         let record: RunRecord?
         do {
             record = try await stores.runs.run(id: query.runID)
@@ -364,7 +367,7 @@ enum RunSnapshotWireBuilder {
             // explicitly parked approval) is a terminal disposition.
             let disposition = N113RunTerminal.disposition(
                 state: record.state, isLiveOwner: liveOwner)
-            let page: [String: SettingsDomainV1.JSONValue] = [
+            var page: [String: SettingsDomainV1.JSONValue] = [
                 "schema": .string(BridgeV3.commandSchema),
                 "conversationID": .string(record.conversationID.uuidString),
                 "runID": .string(record.id.uuidString),
@@ -379,6 +382,26 @@ enum RunSnapshotWireBuilder {
                 "liveOwner": .boolean(liveOwner),
                 "durableWatermark": .integer(Int64(watermark)),
             ]
+            let readback: RunStopSettlementReadback?
+            if record.state == "checkpointed" {
+                readback = await RunStopSettlementWire.readback(
+                    store: stores.runs, runID: record.id,
+                    conversationID: record.conversationID)
+            } else {
+                readback = nil
+            }
+            let current = await domain.currentStopOwnership(runID: record.id)
+            let verified = initialOwner.isStable(through: current)
+            page["liveOwner"] = verified ? .boolean(current.ownerPresent) : .null
+            page["currentOwnerPhase"] = .string(verified ? current.ownerPhase : "unknown")
+            page["currentLiveProducer"] = verified ? .boolean(current.liveProducer) : .null
+            if record.state == "checkpointed" {
+                page["stopSettlement"] = RunStopSettlementWire.snapshotValue(
+                    readback, currentOwnerPresent: current.ownerPresent,
+                    currentOwnerPhase: current.ownerPhase,
+                    currentLiveProducer: current.liveProducer,
+                    ownershipVerified: verified)
+            }
             return RunDomainReply(.completedPage(
                 page: RunTypedPage(object: .object(page), pageBytes: measured(page)),
                 nextCursor: nil))
@@ -476,6 +499,17 @@ enum RunSnapshotWireBuilder {
                     break
                 }
             }
+        }
+
+        // Typed stop settlement: the cold/hot authoritative read-back. The
+        // localized `checkpointReason` above stays for human copy only; a
+        // host must key "stopped" on `stopSettlement.settled` (and, for a
+        // cold ownerless read, `liveOwner == false`), never on the reason
+        // string or on a null field.
+        if record.state == "checkpointed" {
+            fields["stopSettlement"] = RunStopSettlementWire.snapshotValue(
+                nil, currentOwnerPresent: true, currentOwnerPhase: "unknown",
+                currentLiveProducer: true, ownershipVerified: false)
         }
 
         // Usage (original records, bounded to last 16 + run totals).
@@ -719,7 +753,31 @@ enum RunSnapshotWireBuilder {
             // silent truncation. (The durable pages + cursor walk remain.)
             return RunDomainReply(.rejected(RunDomainError(.payloadTooLarge, .payloadTooLarge)))
         }
+        let stopReadback: RunStopSettlementReadback?
+        if record.state == "checkpointed" {
+            stopReadback = await RunStopSettlementWire.readback(
+                store: stores.runs, runID: record.id,
+                conversationID: record.conversationID)
+        } else {
+            stopReadback = nil
+        }
+        let current = await domain.currentStopOwnership(runID: record.id)
+        let verified = initialOwner.isStable(through: current)
+        page["liveOwner"] = verified ? .boolean(current.ownerPresent) : .null
+        page["currentOwnerPhase"] = .string(verified ? current.ownerPhase : "unknown")
+        page["currentLiveProducer"] = verified ? .boolean(current.liveProducer) : .null
+        if record.state == "checkpointed" {
+            page["stopSettlement"] = RunStopSettlementWire.snapshotValue(
+                stopReadback, currentOwnerPresent: current.ownerPresent,
+                currentOwnerPhase: current.ownerPhase,
+                currentLiveProducer: current.liveProducer,
+                ownershipVerified: verified)
+        }
         let bytes = measured(page)
+        guard bytes <= 64 * 1024 else {
+            return RunDomainReply(.rejected(
+                RunDomainError(.payloadTooLarge, .payloadTooLarge)))
+        }
         return RunDomainReply(.completedPage(
             page: RunTypedPage(object: .object(page), pageBytes: bytes),
             nextCursor: nil))

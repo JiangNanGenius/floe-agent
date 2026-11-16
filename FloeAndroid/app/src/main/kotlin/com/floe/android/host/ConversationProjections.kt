@@ -203,12 +203,28 @@ internal fun privateWorkspaceApprovalPage(value: JsonElement?, card: ApprovalCar
 internal fun privateBrowserTabApprovalPage(value: JsonElement?, card: ApprovalCardUi): Pair<BrowserTabApprovalUi, String>? {
     if (card.toolName != "browser.tab") return null
     val (details, token) = privateApprovalPage(value, card, requiredRisk = "controlsGUI", workspaceVerified = false) ?: return null
-    if (details.keys != setOf("kind", "operation", "url", "title")) return null
     fun str(key: String) = (details[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
-    if (str("kind") != "browserTab" || str("operation") != "create" ||
-        details["url"] !is kotlinx.serialization.json.JsonNull ||
-        details["title"] !is kotlinx.serialization.json.JsonNull) return null
-    return BrowserTabApprovalUi("create", null, null) to (token ?: return null)
+    val operation = str("operation") ?: return null
+    val expected = when (operation) {
+        "create" -> setOf("kind", "operation", "url", "title")
+        "activate", "close" -> setOf("kind", "operation", "tabID", "tabIndex", "tabCount", "url", "title")
+        else -> return null
+    }
+    if (details.keys != expected || str("kind") != "browserTab") return null
+    for (key in listOf("url", "title")) {
+        val field = details[key]
+        if (field !is kotlinx.serialization.json.JsonNull &&
+            (field !is JsonPrimitive || !field.isString)) return null
+    }
+    if (operation == "create" && (details["url"] !is kotlinx.serialization.json.JsonNull ||
+            details["title"] !is kotlinx.serialization.json.JsonNull)) return null
+    fun integer(key: String): Int? = (details[key] as? JsonPrimitive)
+        ?.takeUnless { it.isString }?.content?.toIntOrNull()
+    val action = BrowserTabApprovalUi(operation, str("url")?.takeUnless { it.isBlank() },
+        str("title")?.takeUnless { it.isBlank() }, str("tabID"),
+        integer("tabIndex"), integer("tabCount"))
+    if (!action.isWellFormed()) return null
+    return action to (token ?: return null)
 }
 
 /** Accept only a complete, generation-bound, local human-review page. */
@@ -2493,6 +2509,22 @@ internal object ConversationWire {
         val conversationModeRaw: String? = null,
         val durableTerminal: Boolean? = null,
         val terminalDispositionRaw: String? = null,
+        /** Whether the native snapshot actually supplied a valid liveOwner
+         * boolean. Existing presentation may use the false fallback above;
+         * stop settlement must not confuse an omitted member with proof that
+         * a run has no live owner. */
+        val liveOwnerPresent: Boolean = false,
+        /** Strict stop-proof carrier facts. Missing/malformed members are
+         * unknown, never evidence that a run or its approval has settled. */
+        val snapshotSchema: String? = null,
+        val isTerminalPresent: Boolean = false,
+        val durableTerminalPresent: Boolean = false,
+        val durableWatermarkPresent: Boolean = false,
+        val pendingApprovalExplicitlyAbsent: Boolean = false,
+        val stopSettlement: JsonObject? = null,
+        /** Current native ownership; absent or malformed is unknown. */
+        val currentOwnerPhase: String? = null,
+        val currentLiveProducer: Boolean? = null,
     )
 
     class PendingApprovalWire(
@@ -3022,6 +3054,21 @@ internal object ConversationWire {
             conversationModeRaw = root.string("conversationMode"),
             durableTerminal = root.bool("durableTerminal"),
             terminalDispositionRaw = root.string("terminalDisposition"),
+            liveOwnerPresent = (root["liveOwner"] as? JsonPrimitive)
+                ?.takeIf { !it.isString }?.booleanOrNull != null,
+            snapshotSchema = root.string("schema"),
+            isTerminalPresent = (root["isTerminal"] as? JsonPrimitive)
+                ?.takeIf { !it.isString }?.booleanOrNull != null,
+            durableTerminalPresent = (root["durableTerminal"] as? JsonPrimitive)
+                ?.takeIf { !it.isString }?.booleanOrNull != null,
+            durableWatermarkPresent = (root["durableWatermark"] as? JsonPrimitive)
+                ?.takeIf { !it.isString }?.longOrNull != null,
+            pendingApprovalExplicitlyAbsent = root["pendingApproval"] is kotlinx.serialization.json.JsonNull,
+            stopSettlement = root["stopSettlement"] as? JsonObject,
+            currentOwnerPhase = (root["currentOwnerPhase"] as? JsonPrimitive)
+                ?.takeIf { it.isString }?.contentOrNull,
+            currentLiveProducer = (root["currentLiveProducer"] as? JsonPrimitive)
+                ?.takeIf { !it.isString }?.booleanOrNull,
         )
     }
 

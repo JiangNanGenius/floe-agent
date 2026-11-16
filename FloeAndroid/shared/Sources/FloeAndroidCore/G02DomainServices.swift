@@ -723,6 +723,14 @@ public final class G02InstalledComposition: @unchecked Sendable {
                     runID: runID, conversationID: conversationID,
                     expectedState: expectedState)
             },
+            commitParkedRunStopSettlement: {
+                runID, conversationID, expectedState, expectedIncarnation, expectedStatusSequence in
+                await G02ParkedRunStopCommitter(database: database).commitTyped(
+                    runID: runID, conversationID: conversationID,
+                    expectedState: expectedState,
+                    expectedIncarnation: expectedIncarnation,
+                    expectedStatusSequence: expectedStatusSequence)
+            },
             cancelParkedRunJobs: { runID, conversationID, jobIDs in
                 await RuntimeFacadeJobBindings.shared.requestCancellationForRunJobs(
                     runID: runID, conversationID: conversationID, jobIDs: jobIDs)

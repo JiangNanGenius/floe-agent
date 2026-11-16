@@ -173,9 +173,15 @@ public actor BrowserToolSurface {
             throw BrowserToolError.validation("Unknown browser tool '\(name)'")
         }
         let owner = try Self.resolveOwner(for: caller)
-        if tabApprovalProof != nil {
-            guard name == "browser.tab", case .tab(let action, let tabID) = arguments,
-                  action == "create", tabID == nil else {
+        if let proof = tabApprovalProof {
+            // The reviewed operation and its exact target are part of the
+            // one-use approval. A proof for one action/tab can never be
+            // applied to a different action, a different tab or a session the
+            // model selected.
+            guard name == "browser.tab", ["create", "activate", "close"].contains(proof.operation),
+                  case .tab(let action, let tabID) = arguments,
+                  action == proof.operation, tabID == proof.tabID,
+                  (proof.operation == "create") == (tabID == nil) else {
                 throw BrowserToolError.validation("The browser approval does not match this operation")
             }
         }

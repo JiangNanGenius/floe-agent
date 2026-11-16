@@ -17,6 +17,8 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 
 class RuntimeHostSubmitFenceTest {
     private fun request() = HostCommandRequest(
@@ -76,5 +78,48 @@ class RuntimeHostSubmitFenceTest {
         assertEquals(0, calls.get())
         assertEquals(HostSubmitResult.Superseded, client.submit(request()) { true })
         assertEquals(1, calls.get())
+    }
+
+    @Test
+    fun queuedDeviceStopNeverExchangesAfterSameRunRetryOrReallow() = runBlocking {
+        for (invalidation in listOf("retry", "reallow", "epoch")) {
+            val executor = Executors.newSingleThreadExecutor()
+            val dispatcher = executor.asCoroutineDispatcher()
+            val held = CountDownLatch(1)
+            val release = CountDownLatch(1)
+            val calls = AtomicInteger()
+            try {
+                executor.execute { held.countDown(); release.await() }
+                assertTrue(held.await(5, TimeUnit.SECONDS))
+                val client = RuntimeHostCommandClient(
+                    exchange = object : HostBridgeExchange {
+                        override fun exchange(request: String): String { calls.incrementAndGet(); return "{}" }
+                    },
+                    scope = CoroutineScope(Dispatchers.Default),
+                    ioDispatcher = dispatcher,
+                )
+                val epoch = AtomicLong(7)
+                val stopCurrent = AtomicBoolean(true)
+                val stamp = AtomicReference(mapOf("task/run" to 3L))
+                val fence = DeviceStopDispatchFence(7, stamp.get(),
+                    currentEpoch = { epoch.get() }, currentStreamStamp = { stamp.get() },
+                    stopStillCurrent = { stopCurrent.get() })
+                val result = async(start = CoroutineStart.UNDISPATCHED) {
+                    client.submit(request(), beforeSubmit = fence::permits)
+                }
+                when (invalidation) {
+                    "retry" -> stamp.set(mapOf("task/run" to 4L))
+                    "reallow" -> stopCurrent.set(false)
+                    else -> epoch.set(8)
+                }
+                release.countDown()
+                assertEquals(HostSubmitResult.Rejected("not_submitted"), result.await())
+                assertEquals(0, calls.get())
+            } finally {
+                release.countDown()
+                dispatcher.close()
+                executor.shutdownNow()
+            }
+        }
     }
 }

@@ -137,6 +137,22 @@ public fun FloeBrowserPanelContent(
             return@Column
         }
         BrowserControlBanner(service = service, projection = projection)
+        if (projection.tabListUnavailable) {
+            Column(
+                modifier = Modifier.fillMaxWidth().weight(1f).padding(24.dp),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                FloeText(stringResource(R.string.browser_tabs_unavailable),
+                    style = Floe.typography.section, color = Floe.colors.label)
+                Spacer(Modifier.height(8.dp))
+                FloeText(stringResource(R.string.browser_tabs_reopen),
+                    style = Floe.typography.body, color = Floe.colors.secondaryLabel)
+                Spacer(Modifier.height(12.dp))
+                FloeCapsuleButton(stringResource(R.string.browser_close_panel), onClick = onCloseRequested)
+            }
+            return@Column
+        }
         BrowserTabStrip(projection = projection, service = service)
         FloeDivider()
         BrowserAddressRow(service = service, projection = projection)
@@ -263,7 +279,7 @@ private fun BrowserTabStrip(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        projection.tabs.forEach { tab ->
+        projection.tabs.forEachIndexed { index, tab ->
             val selected = tab.id == projection.activeTabId
             Row(
                 modifier = Modifier
@@ -274,6 +290,13 @@ private fun BrowserTabStrip(
                     .padding(horizontal = 10.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                FloeText(
+                    text = stringResource(R.string.browser_tab_position, index + 1),
+                    style = Floe.typography.metadata,
+                    color = if (selected) Floe.colors.accent else Floe.colors.secondaryLabel,
+                    maxLines = 1,
+                )
+                Spacer(Modifier.width(6.dp))
                 FloeText(
                     text = tab.title.ifBlank {
                         tab.url.ifBlank { stringResource(R.string.browser_new_tab) }

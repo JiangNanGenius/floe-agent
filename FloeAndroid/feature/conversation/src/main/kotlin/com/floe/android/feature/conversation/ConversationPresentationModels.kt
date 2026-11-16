@@ -302,7 +302,46 @@ data class ScheduleCreateApprovalUi(
 }
 
 /** Complete private tab operation, scoped to the currently visible card. */
-data class BrowserTabApprovalUi(val operation: String, val url: String?, val title: String?) {
+data class BrowserTabApprovalUi(
+    val operation: String,
+    val url: String?,
+    val title: String?,
+    val tabId: String? = null,
+    val tabIndex: Int? = null,
+    val tabCount: Int? = null,
+) {
+    /** Match the native private presentation contract; never infer a tab from a URL. */
+    fun isWellFormed(): Boolean = when (operation) {
+        "create" -> tabId == null && tabIndex == null && tabCount == null && url == null && title == null
+        "activate", "close" -> isCanonicalTabId(tabId) &&
+            tabCount != null && tabCount > 1 && tabIndex != null && tabIndex in 1..tabCount &&
+            isSafeDisplayText(url, 2_048) && isSafeDisplayText(title, 512)
+        else -> false
+    }
+
+    /** An ordinal alone is insufficient if the tab strip is momentarily stale. */
+    fun isReviewable(): Boolean = isWellFormed() && (operation == "create" ||
+        !url.isNullOrBlank() || !title.isNullOrBlank())
+
+    private fun isCanonicalTabId(value: String?): Boolean = value != null &&
+        runCatching { java.util.UUID.fromString(value).toString() == value }.getOrDefault(false)
+
+    private fun isSafeDisplayText(value: String?, maximumBytes: Int): Boolean {
+        if (value == null) return true
+        if (value.isBlank() || value.toByteArray(Charsets.UTF_8).size > maximumBytes) return false
+        var offset = 0
+        while (offset < value.length) {
+            val scalar = Character.codePointAt(value, offset)
+            when (Character.getType(scalar)) {
+                Character.CONTROL.toInt(), Character.FORMAT.toInt(),
+                Character.LINE_SEPARATOR.toInt(), Character.PARAGRAPH_SEPARATOR.toInt(),
+                Character.SURROGATE.toInt(), Character.UNASSIGNED.toInt() -> return false
+            }
+            offset += Character.charCount(scalar)
+        }
+        return true
+    }
+
     override fun toString(): String = "BrowserTabApprovalUi(redacted)"
 }
 
@@ -346,6 +385,28 @@ data class ApprovalCardUi(
     /** Exact card identity: runID + callID (the membership predicate rule). */
     val key: String get() = "$runId/$approvalId"
 }
+
+enum class DeviceApprovalStopPhaseUi { STOPPING, FAILED }
+
+/**
+ * Host-owned projection that a user Stop/Takeover already retired one device
+ * approval of this run. Display and decision-gating only: the host still
+ * decides settlement from the real cancel/snapshot receipt, and a FAILED
+ * phase never claims the run terminated.
+ *
+ * [approvalKey] binds the state to the exact call card that was retired, so a
+ * later retry/incarnation with a new call is not blocked by an old stop.
+ */
+data class DeviceApprovalStopUi(
+    val phase: DeviceApprovalStopPhaseUi,
+    val approvalKey: String? = null,
+    /** Captured from the real card, including explicit nulls. A reused
+     * run/call ID with a new native request must not inherit the old stop. */
+    val identityCaptured: Boolean = false,
+    val requestGeneration: String? = null,
+    val approvalRevision: String? = null,
+    val descriptorIdentity: String? = null,
+)
 
 /**
  * Host truth (never inferred in this module): THIS conversation owns a LIVE
