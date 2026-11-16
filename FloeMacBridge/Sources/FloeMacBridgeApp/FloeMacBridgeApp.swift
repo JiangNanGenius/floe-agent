@@ -65,6 +65,9 @@ final class BridgeAppModel: ObservableObject {
     private(set) var paths: BridgePaths?
     private var service: BridgeService?
     private var server: BridgeHTTPServer?
+    // Held until the application exits, including while the listener drains.
+    // It must be acquired before BridgeService reads pairing data or Keychain.
+    private var storeLock: BridgeStoreLock?
     private var applicationLaunched = false
     init() {
         let activity = BridgeUpdateActivity()
@@ -72,6 +75,7 @@ final class BridgeAppModel: ObservableObject {
         BridgeApplicationDelegate.model = self
         do {
             let paths = try BridgePaths(); self.paths = paths
+            self.storeLock = try BridgeStoreLock(root: paths.root)
             let service = try BridgeService(paths: paths, updateActivity: activity); self.service = service
             updates.installation.useServiceAdmission(service)
             let server = try BridgeHTTPServer(service: service); self.server = server
