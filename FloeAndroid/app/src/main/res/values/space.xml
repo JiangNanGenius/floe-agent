@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="space_title">Space</string>
+    <string name="space_subtitle">Notes, project files, and Android device tools in one place.</string>
+    <string name="space_section_overview">Overview</string>
+    <string name="space_section_notes">Notes</string>
+    <string name="space_section_files">Files</string>
+    <string name="space_section_toolbox">Toolbox</string>
+    <string name="space_quick_access">Quick access</string>
+    <string name="space_notes_caption">Write, draw, and keep documents.</string>
+    <string name="space_files_caption">Projects and their task files.</string>
+    <string name="space_toolbox_caption">Device features and connections.</string>
+    <string name="space_new_task_caption">Start a task with the current model.</string>
+    <string name="space_pick_document">Open a document</string>
+    <string name="space_pick_document_caption">Use the system file picker for a Word, Excel, PowerPoint, or PDF file.</string>
+    <string name="space_meetings">Meetings</string>
+    <string name="space_meetings_caption">Recordings, transcripts, and meeting summaries.</string>
+    <string name="space_project_sources">Project sources</string>
+    <string name="space_project_sources_caption">Each project keeps its task workspaces together.</string>
+    <string name="space_no_projects_title">No projects yet</string>
+    <string name="space_no_projects_description">Create a project to keep task files together.</string>
+    <string name="space_projects_loading">Loading projects…</string>
+    <string name="space_projects_unavailable">Projects are unavailable. Reconnect the runtime and retry.</string>
+    <string name="space_show_all_projects">Show all projects</string>
+    <string name="space_phone">Phone</string>
+    <string name="space_phone_caption">Manage this phone\'s access, pairing, and control.</string>
+    <string name="space_device_tools">Device tools</string>
+    <string name="space_tool_devices">Device communication</string>
+    <string name="space_tool_devices_caption">TCP, Telnet, Bluetooth LE, and USB serial connections.</string>
+    <string name="space_tool_system_services">System services</string>
+    <string name="space_tool_system_services_caption">Location, contacts, health, and system permissions.</string>
+    <string name="space_tool_network">Network</string>
+    <string name="space_tool_network_caption">Live connections, capture, and diagnostics.</string>
+    <string name="space_tool_remote">Remote hosts</string>
+    <string name="space_tool_remote_caption">Saved hosts and remote desktop sessions.</string>
+</resources>

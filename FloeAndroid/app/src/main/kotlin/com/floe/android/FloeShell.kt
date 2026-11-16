@@ -1110,6 +1110,53 @@ private fun FloeShellContent(
             }
         }
 
+        // ONE owner for the existing Office system-picker entry: the sidebar
+        // folder button and the Space Files row share the exact same
+        // temporary-chat fence, generation invalidation and picker request.
+        val openDocument: (() -> Unit)? = officePreviews?.let { controller ->
+            {
+                val navigation = ++officeNavigationGeneration
+                application?.componentDocumentReturns?.clear()
+                drawerOpen = false
+                scope.launch {
+                    val temporary = runtimeHost?.conversations?.activeTemporarySession()
+                    if (runtimeHost != null && temporary != null) {
+                        // This is explicit navigation to a local document,
+                        // not an expanded temporary-chat tool ceiling or a
+                        // view reconstruction.
+                        runtimeHost.conversations.tempFence.beginEnd(temporary)
+                        if (!runtimeHost.conversations.tempFence.awaitAdmission(temporary) ||
+                            navigation != officeNavigationGeneration ||
+                            runtimeHost.conversations.activeTemporarySession() != null) return@launch
+                        val home = SidebarSelection.Workbench(WorkbenchSelection.NEW_TASK)
+                        runtimeHost.home.onNavigation(home)
+                        commitVisibleSelection(home)
+                    }
+                    if (navigation != officeNavigationGeneration) return@launch
+                    inspectorRoute = null
+                    controller.requestProviderPick()
+                }
+                Unit
+            }
+        }
+
+        // MEETINGS SEAM (parallel owner): the meeting service has no real
+        // entry yet, so this stays null and the Space overview row is never
+        // composed. The main integration replaces this value with the actual
+        // service entry; Space itself needs no other change.
+        val openMeetings: (() -> Unit)? = null
+
+        // PHONE SEAM: reuse the REAL G08 settings section (its exact Compose
+        // content and authorization callbacks) only while the device-access
+        // host has attached it. `sections()` returns an empty list on Play
+        // and before the full host is wired, so Space has no Phone workspace
+        // in those states instead of substituting BLE/USB communication or a
+        // generic settings card.
+        val phoneAccessSection =
+            com.floe.android.host.settings.DistributionSettingsFeature
+                .sections()
+                .firstOrNull { it.key == FLOE_PHONE_ACCESS_SECTION_KEY }
+
         val sidebarBody: @Composable (Boolean) -> Unit = { inDrawer ->
             FloeSidebar(
                 selection = selection,
@@ -1130,32 +1177,7 @@ private fun FloeShellContent(
                     { sidebarCollapsed = true }
                 } else null,
                 runtimeHost = runtimeHost,
-                onOpenDocument = officePreviews?.let { controller ->
-                    {
-                        val navigation = ++officeNavigationGeneration
-                        application?.componentDocumentReturns?.clear()
-                        drawerOpen = false
-                        scope.launch {
-                            val temporary = runtimeHost?.conversations?.activeTemporarySession()
-                            if (runtimeHost != null && temporary != null) {
-                                // This is explicit navigation to a local
-                                // document, not an expanded temporary-chat
-                                // tool ceiling or a view reconstruction.
-                                runtimeHost.conversations.tempFence.beginEnd(temporary)
-                                if (!runtimeHost.conversations.tempFence.awaitAdmission(temporary) ||
-                                    navigation != officeNavigationGeneration ||
-                                    runtimeHost.conversations.activeTemporarySession() != null) return@launch
-                                val home = SidebarSelection.Workbench(WorkbenchSelection.NEW_TASK)
-                                runtimeHost.home.onNavigation(home)
-                                commitVisibleSelection(home)
-                            }
-                            if (navigation != officeNavigationGeneration) return@launch
-                            inspectorRoute = null
-                            controller.requestProviderPick()
-                        }
-                        Unit
-                    }
-                },
+                onOpenDocument = openDocument,
             )
         }
 
@@ -1290,6 +1312,13 @@ private fun FloeShellContent(
                     onTaskCenterSchedulesHandled = {
                         taskCenterSchedulesToken = 0
                     },
+                    // Space never commits a local route: every project,
+                    // device and network row travels the shell's single
+                    // serial reducer (including the temporary-chat fence).
+                    onNavigate = select,
+                    onOpenDocument = openDocument,
+                    onOpenMeetings = openMeetings,
+                    phoneAccessSection = phoneAccessSection,
                 )
             }
         }
@@ -1534,9 +1563,11 @@ internal val SidebarSelection.key: String
         is SidebarSelection.More -> "m:${destination.name}"
         is SidebarSelection.Workspace -> "p:$workspaceId"
         is SidebarSelection.Conversation -> "c:$conversationId"
+        is SidebarSelection.Space -> "s:space"
     }
 
 internal fun selectionFromKey(key: String): SidebarSelection = when {
+    key == "s:space" -> SidebarSelection.Space
     key.startsWith("w:") -> SidebarSelection.Workbench(WorkbenchSelection.valueOf(key.removePrefix("w:")))
     key.startsWith("m:") -> SidebarSelection.More(MoreDestination.valueOf(key.removePrefix("m:")))
     key.startsWith("p:") -> SidebarSelection.Workspace(key.removePrefix("p:"))

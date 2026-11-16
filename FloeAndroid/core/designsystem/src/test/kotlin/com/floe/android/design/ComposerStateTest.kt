@@ -58,7 +58,7 @@ class ComposerStateTest {
             listOf(
                 SidebarSelection.Workbench(WorkbenchSelection.NEW_TASK),
                 SidebarSelection.Workbench(WorkbenchSelection.OVERVIEW),
-                SidebarSelection.More(MoreDestination.NOTES),
+                SidebarSelection.Space,
                 SidebarSelection.More(MoreDestination.CREATIVE),
                 SidebarSelection.More(MoreDestination.SKILLS),
             ),
