@@ -98,6 +98,78 @@ final class LinuxResidentGenerationReceiptTests: XCTestCase, @unchecked Sendable
         XCTAssertEqual(try Data(contentsOf: f.current.appendingPathComponent("disk.img")), f.newBytes)
     }
 
+    func testIdentityMismatchTicketAllowsSameImageRebuildButPreservesExactOldDisk() throws {
+        let f = try Fixture(); defer { f.remove() }
+        let original = try f.rebuild()
+        XCTAssertNil(try LinuxResidentDiskBarrier.committedIdentityRepairTicket(root: f.root))
+        let unexpected = Data("preserve-unverified-disk".utf8)
+        try unexpected.write(to: f.current.appendingPathComponent("disk.img"), options: .atomic)
+        let ticket = try XCTUnwrap(LinuxResidentDiskBarrier.committedIdentityRepairTicket(root: f.root))
+        let transaction = try LinuxResidentRecoveryStore(root: f.root).begin(imageID: "trusted-new", repairTicket: ticket)
+        defer { transaction.endAdmission() }
+        let receipt = try transaction.replace { try f.prepare($0) }
+        XCTAssertNotEqual(receipt.recoveryID, original.recoveryID)
+        XCTAssertEqual(try Data(contentsOf: f.current.appendingPathComponent("disk.img")), f.newBytes)
+        let preserved = f.root.appendingPathComponent(try XCTUnwrap(receipt.preservedRelativePath)).appendingPathComponent("disk.img")
+        XCTAssertEqual(try Data(contentsOf: preserved), unexpected)
+    }
+
+    func testIdentityRepairRejectsStaleTicketWithoutReplacingDisk() throws {
+        let f = try Fixture(); defer { f.remove() }
+        _ = try f.rebuild()
+        try Data("first-replacement".utf8).write(to: f.current.appendingPathComponent("disk.img"), options: .atomic)
+        let ticket = try XCTUnwrap(LinuxResidentDiskBarrier.committedIdentityRepairTicket(root: f.root))
+        let changed = Data("later-replacement".utf8)
+        try changed.write(to: f.current.appendingPathComponent("disk.img"), options: .atomic)
+        XCTAssertThrowsError(try LinuxResidentRecoveryStore(root: f.root).begin(imageID: "trusted-new", repairTicket: ticket)) {
+            XCTAssertEqual($0 as? LinuxResidentRecoveryError, .identityChanged)
+        }
+        XCTAssertEqual(try Data(contentsOf: f.current.appendingPathComponent("disk.img")), changed)
+    }
+
+    func testIdentityRepairNeverOffersToRetainMissingOrUnsafeDisk() throws {
+        let f = try Fixture(); defer { f.remove() }
+        _ = try f.rebuild()
+        let disk = f.current.appendingPathComponent("disk.img")
+        let held = f.root.appendingPathComponent("held-disk.img")
+        try FileManager.default.moveItem(at: disk, to: held)
+        XCTAssertNil(try LinuxResidentDiskBarrier.committedIdentityRepairTicket(root: f.root))
+        try FileManager.default.createSymbolicLink(at: disk, withDestinationURL: held)
+        XCTAssertNil(try LinuxResidentDiskBarrier.committedIdentityRepairTicket(root: f.root))
+        XCTAssertEqual(try Data(contentsOf: held), f.newBytes)
+    }
+
+    func testPreservingRebuildRefusesDiskMissingAfterConfirmation() throws {
+        let f = try Fixture(); defer { f.remove() }
+        _ = try f.rebuild()
+        let disk = f.current.appendingPathComponent("disk.img")
+        let held = f.root.appendingPathComponent("held-disk.img")
+        let transaction = try LinuxResidentRecoveryStore(root: f.root).begin(imageID: "trusted-new", requireExistingDisk: true)
+        defer { transaction.endAdmission() }
+        try FileManager.default.moveItem(at: disk, to: held)
+        XCTAssertThrowsError(try transaction.replace { try f.prepare($0) }) {
+            XCTAssertEqual($0 as? LinuxResidentRecoveryError, .invalidStorage)
+        }
+        XCTAssertEqual(try Data(contentsOf: held), f.newBytes)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: f.root.appendingPathComponent(".resident-recovery/pending.json").path))
+    }
+
+    func testIdentityRepairRechecksAfterAdmissionAndPreservesConcurrentChange() throws {
+        let f = try Fixture(); defer { f.remove() }
+        _ = try f.rebuild()
+        try Data("first-replacement".utf8).write(to: f.current.appendingPathComponent("disk.img"), options: .atomic)
+        let ticket = try XCTUnwrap(LinuxResidentDiskBarrier.committedIdentityRepairTicket(root: f.root))
+        let transaction = try LinuxResidentRecoveryStore(root: f.root).begin(imageID: "trusted-new", repairTicket: ticket)
+        defer { transaction.endAdmission() }
+        let changed = Data("concurrent-replacement".utf8)
+        try changed.write(to: f.current.appendingPathComponent("disk.img"), options: .atomic)
+        XCTAssertThrowsError(try transaction.replace { try f.prepare($0) }) {
+            XCTAssertEqual($0 as? LinuxResidentRecoveryError, .identityChanged)
+        }
+        XCTAssertEqual(try Data(contentsOf: f.current.appendingPathComponent("disk.img")), changed)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: f.root.appendingPathComponent(".resident-recovery/pending.json").path))
+    }
+
     func testOrdinaryFreshOriginDoesNotSelectAnOldHistoryRecord() throws {
         let f = try Fixture(); defer { f.remove() }
         _ = try f.rebuild()

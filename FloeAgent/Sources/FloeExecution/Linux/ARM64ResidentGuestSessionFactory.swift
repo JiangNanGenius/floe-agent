@@ -96,6 +96,12 @@ public final class ARM64ResidentGuestSessionFactory: LinuxGuestSessionCreating, 
     public func residentRecoveryReceipt() async throws -> LinuxResidentRecoveryReceipt? {
         try LinuxResidentDiskBarrier.currentRecoveryReceipt(root: root)
     }
+    public func residentIdentityRepairTicket() async throws -> LinuxResidentRepairTicket? {
+        try LinuxResidentDiskBarrier.committedIdentityRepairTicket(root: root)
+    }
+    public func rebuildPreservingData(image: LinuxGuestImage, imageDirectory: URL, repairTicket: LinuxResidentRepairTicket, onPhase: @escaping @Sendable (LinuxGuestImageTransferPhase) -> Void) async throws -> LinuxResidentRecoveryReceipt {
+        try await resident.rebuildPreservingData(image: image, directory: imageDirectory, onPhase: onPhase, repairTicket: repairTicket)
+    }
     public func rebuildPreservingData(image: LinuxGuestImage, imageDirectory: URL) async throws -> LinuxResidentRecoveryReceipt {
         try await resident.rebuildPreservingData(image: image, directory: imageDirectory)
     }
@@ -689,11 +695,11 @@ private actor ARM64ResidentGuestOwner {
     }
 
     func rebuildPreservingData(image: LinuxGuestImage, directory: URL,
-        onPhase: @escaping @Sendable (LinuxGuestImageTransferPhase) -> Void = { _ in }) async throws -> LinuxResidentRecoveryReceipt {
+        onPhase: @escaping @Sendable (LinuxGuestImageTransferPhase) -> Void = { _ in }, repairTicket: LinuxResidentRepairTicket? = nil) async throws -> LinuxResidentRecoveryReceipt {
         try await acquireLifecycle()
         defer { releaseLifecycle() }
         guard projects.isEmpty else { throw LinuxGuestError.guestBusy(environmentID: "shared") }
-        let transaction = try LinuxResidentRecoveryStore(root: root).begin(imageID: image.id)
+        let transaction = try LinuxResidentRecoveryStore(root: root).begin(imageID: image.id, repairTicket: repairTicket, requireExistingDisk: true)
         defer { transaction.endAdmission() }
         // The durable admission fence already exists. Other factory instances
         // cannot open the disk while this owner awaits its real worker join.

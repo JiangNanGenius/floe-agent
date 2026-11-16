@@ -5,6 +5,33 @@ import FloeGameCore
 @testable import FloeGameBuildKit
 
 final class GameProjectSourceImporterTests: XCTestCase {
+    func testLargeZipAndFolderKeepTheEntireGame() async throws {
+        let f = try GameArchiveFixture()
+        defer { f.cleanup() }
+        let source = f.root.appendingPathComponent("large-game")
+        try FileManager.default.createDirectory(at: source.appendingPathComponent("www"), withIntermediateDirectories: true)
+        try Data("<html></html>".utf8).write(to: source.appendingPathComponent("www/index.html"))
+        let big = source.appendingPathComponent("nw.dll")
+        XCTAssertTrue(FileManager.default.createFile(atPath: big.path, contents: nil))
+        let handle = try FileHandle(forWritingTo: big)
+        try handle.truncate(atOffset: 270 * 1_024 * 1_024)
+        try handle.close()
+        let repository = try FileGameProjectRepository(directory: f.root.appendingPathComponent("big-repo"))
+        let store = try GameArchiveOriginalStore(directory: f.root.appendingPathComponent("big-originals"))
+        let importer = GameProjectSourceImporter(originalStore: store)
+        let zip = f.root.appendingPathComponent("large.zip")
+        _ = try GameArchiveExchange().archive(directory: source, to: zip)
+        for selected in [source, zip] {
+            let id = UUID(), owner = GameProjectOwner.space(recordID: id)
+            let created = try await repository.createProject(projectID: id, owner: owner, title: "Large")
+            let result = try await importer.importSource(selected, into: created, repository: repository,
+                                                        workspace: f.root.appendingPathComponent("big-jobs"))
+            XCTAssertEqual(result.project.files.first { $0.path.value == "nw.dll" }?.bytes, 270 * 1_024 * 1_024)
+            XCTAssertTrue(result.project.files.contains { $0.path.value == "www/index.html" })
+            XCTAssertEqual(result.originalArchiveSHA256 != nil, selected == zip)
+        }
+    }
+
     func testWindowsWebDeploymentRetainsLargeRuntimeAndGameFiles() async throws {
         let f = try GameArchiveFixture()
         defer { f.cleanup() }

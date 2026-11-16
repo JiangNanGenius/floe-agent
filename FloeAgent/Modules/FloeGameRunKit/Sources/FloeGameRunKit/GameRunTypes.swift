@@ -15,13 +15,12 @@ public struct GameRunPreparationLimits: Sendable, Equatable {
 
     public init(maximumEntries: Int = 20_000, maximumDepth: Int = 32,
                 maximumFileBytes: Int = 64 * 1_024 * 1_024,
-                maximumProjectBytes: Int = 512 * 1_024 * 1_024,
+                maximumProjectBytes: Int = Int.max,
                 maximumIndexBytes: Int = 1 * 1_024 * 1_024) throws {
         guard (1...100_000).contains(maximumEntries),
               (1...32).contains(maximumDepth),
               (1...256 * 1_024 * 1_024).contains(maximumFileBytes),
               maximumProjectBytes >= maximumFileBytes,
-              maximumProjectBytes <= 1_024 * 1_024 * 1_024,
               (1_024...4_194_304).contains(maximumIndexBytes) else {
             throw GameRunPreparationError.invalidConfiguration("limits")
         }

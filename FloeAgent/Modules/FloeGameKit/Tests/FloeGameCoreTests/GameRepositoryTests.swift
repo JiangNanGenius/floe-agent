@@ -128,6 +128,22 @@ private func commitAttempt(_ repository: FileGameProjectRepository, id: UUID, ow
         catch { XCTAssertEqual(error as? GameProjectError, .corruptStorage) }
     }
 
+    func testLargeArtifactIsSealedWithoutAnUnboundedResourceRead() throws {
+        let fixture = try RepositoryFixture(), source = try fixture.source()
+        try Data("<!doctype html>".utf8).write(to: source.appendingPathComponent("index.html"))
+        let asset = source.appendingPathComponent("large.ogg")
+        XCTAssertTrue(FileManager.default.createFile(atPath: asset.path, contents: nil))
+        let handle = try FileHandle(forWritingTo: asset)
+        try handle.truncate(atOffset: 70 * 1_024 * 1_024)
+        try handle.close()
+        let id = UUID(), context = try GameProjectContext(projectID: id, owner: .space(recordID: id), rootURL: source, savedRevision: "saved")
+        let artifact = try GameWebArtifactPackage.build(source: context, engine: .phaser, entry: GameRelativePath("index.html"), to: fixture.root.appendingPathComponent("artifact"))
+        try artifact.verify()
+        XCTAssertThrowsError(try artifact.readResource(GameRelativePath("large.ogg"))) {
+            XCTAssertEqual($0 as? GameProjectError, .limitExceeded("large.ogg"))
+        }
+    }
+
     func testArtifactCopiesAndVerifiesRealBytesAndPreservesLicenses() throws {
         let fixture = try RepositoryFixture(), source = try fixture.source()
         try Data("<!doctype html><p>Artifact</p>".utf8).write(to: source.appendingPathComponent("index.html"))

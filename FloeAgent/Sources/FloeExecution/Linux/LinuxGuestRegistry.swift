@@ -102,6 +102,8 @@ public protocol LinuxGuestSessionCreating: Sendable {
     func rebuildPreservingData(image: LinuxGuestImage, imageDirectory: URL, onPhase: @escaping @Sendable (LinuxGuestImageTransferPhase) -> Void) async throws -> LinuxResidentRecoveryReceipt
     func residentRecoveryReceipt() async throws -> LinuxResidentRecoveryReceipt?
     func acquireResidentRecoveryGuard() async throws -> LinuxResidentRecoveryGuard
+    func residentIdentityRepairTicket() async throws -> LinuxResidentRepairTicket?
+    func rebuildPreservingData(image: LinuxGuestImage, imageDirectory: URL, repairTicket: LinuxResidentRepairTicket, onPhase: @escaping @Sendable (LinuxGuestImageTransferPhase) -> Void) async throws -> LinuxResidentRecoveryReceipt
 }
 
 public extension LinuxGuestSessionCreating {
@@ -136,6 +138,8 @@ public extension LinuxGuestSessionCreating {
     }
     func residentRecoveryReceipt() async throws -> LinuxResidentRecoveryReceipt? { nil }
     func acquireResidentRecoveryGuard() async throws -> LinuxResidentRecoveryGuard { throw LinuxResidentRecoveryError.unsupported }
+    func residentIdentityRepairTicket() async throws -> LinuxResidentRepairTicket? { nil }
+    func rebuildPreservingData(image: LinuxGuestImage, imageDirectory: URL, repairTicket: LinuxResidentRepairTicket, onPhase: @escaping @Sendable (LinuxGuestImageTransferPhase) -> Void) async throws -> LinuxResidentRecoveryReceipt { throw LinuxResidentRecoveryError.unsupported }
 }
 
 /// A registry without explicit runtime wiring cannot execute on the host.
@@ -3144,6 +3148,9 @@ public actor LinuxGuestRegistry {
     public func acquireResidentRecoveryGuard() async throws -> LinuxResidentRecoveryGuard {
         try await factory.acquireResidentRecoveryGuard()
     }
+    public func residentIdentityRepairTicket() async throws -> LinuxResidentRepairTicket? {
+        try await factory.residentIdentityRepairTicket()
+    }
 
     /// Explicit fresh install with the complete old resident disk retained.
     /// This uses the existing registry admission fence and real stop/join, but
@@ -3153,6 +3160,10 @@ public actor LinuxGuestRegistry {
     }
 
     public func rebuildPreservingData(imageID: String, onPhase: @escaping @Sendable (LinuxGuestImageTransferPhase) -> Void) async throws -> LinuxResidentRecoveryReceipt {
+        try await rebuildPreservingData(imageID: imageID, repairTicket: nil, onPhase: onPhase)
+    }
+
+    public func rebuildPreservingData(imageID: String, repairTicket: LinuxResidentRepairTicket?, onPhase: @escaping @Sendable (LinuxGuestImageTransferPhase) -> Void) async throws -> LinuxResidentRecoveryReceipt {
         guard factory.usesResidentMachine, !restoringInitialState else {
             throw LinuxGuestError.guestBusy(environmentID: "shared")
         }
@@ -3175,7 +3186,12 @@ public actor LinuxGuestRegistry {
             throw LinuxGuestError.stopFailed(environmentID: "shared", detail: "Running work has not stopped; existing data was retained")
         }
         try Task.checkCancellation()
-        var receipt = try await factory.rebuildPreservingData(image: image, imageDirectory: directory, onPhase: onPhase)
+        var receipt: LinuxResidentRecoveryReceipt
+        if let repairTicket {
+            receipt = try await factory.rebuildPreservingData(image: image, imageDirectory: directory, repairTicket: repairTicket, onPhase: onPhase)
+        } else {
+            receipt = try await factory.rebuildPreservingData(image: image, imageDirectory: directory, onPhase: onPhase)
+        }
         receipt.environmentIDs = affected.sorted()
         return receipt
     }
@@ -4536,6 +4552,16 @@ public struct LinuxGuestCommandService: LinuxCommandRunning, LinuxGuestControlli
     }
     public func acquireResidentRecoveryGuard() async throws -> LinuxResidentRecoveryGuard {
         try await registry.acquireResidentRecoveryGuard()
+    }
+    public func residentIdentityRepairTicket() async throws -> LinuxResidentRepairTicket? {
+        try await registry.residentIdentityRepairTicket()
+    }
+    public func rebuildPreservingData(imageID: String, repairTicket: LinuxResidentRepairTicket, onPhase: @escaping @Sendable (LinuxGuestImageTransferPhase) -> Void) async throws -> LinuxResidentRecoveryReceipt {
+        guard try await registry.residentIdentityRepairTicket() == repairTicket else {
+            throw LinuxResidentRecoveryError.identityChanged
+        }
+        await localServices.stopAllLocalServices()
+        return try await registry.rebuildPreservingData(imageID: imageID, repairTicket: repairTicket, onPhase: onPhase)
     }
 
     public func rebuildPreservingData(imageID: String) async throws -> LinuxResidentRecoveryReceipt {

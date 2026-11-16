@@ -36,39 +36,11 @@ struct SystemSpeechAuthorizationProvider: SpeechAuthorizationProviding {
     }
 
     func requestSpeechRecognitionAccess() async -> Bool {
-        let method = VoiceRecognitionPreferences.method
-        // A configured cloud primary needs the microphone only. Apple speech
-        // permission is requested later, exactly when an Apple fallback is
-        // actually selected. An explicit cloud route with no usable profile
-        // also never prompts for Apple here; it surfaces its configuration
-        // error through the normal voice failure path.
-        if await Self.cloudRouteSelected(method: method) { return true }
-        #if canImport(WhisperKit)
-        if method == .enhanced { return true }
-        if method == .automatic, await WhisperModelStore.shared.isInstalled() { return true }
-        #endif
+        // Cloud and enhanced routes need only the microphone. Automatic may
+        // later select Apple, whose factory requests permission at that point;
+        // probing every credential and local model here duplicates route setup.
+        guard VoiceRecognitionPreferences.method == .system else { return true }
         return await Self.requestAppleAccess()
-    }
-
-    /// Whether the CURRENT primary method resolves to a cloud attempt. This
-    /// is metadata only (no endpoint call, no credential probe) and runs on
-    /// the MainActor because the profile store is App-owned.
-    static func cloudRouteSelected(method: VoiceRecognitionPreferences.Method) async -> Bool {
-        if method == .cloud { return true }
-        guard method == .automatic else { return false }
-        return await MainActor.run {
-            let store = CloudASRSettingsStore.shared
-            let resolution = CloudASRRouteResolver.resolve(
-                method: method.rawValue,
-                profiles: store.profiles,
-                primaryProfileID: store.primaryProfileID,
-                readyProfileIDs: Set(store.readyProfiles.map(\.id)))
-            if case .cloud = resolution.route { return true }
-            // Selected-but-unusable cloud is still a cloud attempt (normal
-            // configuration error), not an Apple permission request.
-            if case .cloudUnavailable = resolution.route { return true }
-            return false
-        }
     }
     static func requestAppleAccess() async -> Bool {
         await withCheckedContinuation { continuation in
@@ -638,12 +610,16 @@ extension VoiceInputController {
     @MainActor
     static func makePreferredTranscriber(language: VoiceRecognitionLanguage, diagnostics: (any VoiceInputDiagnostics)? = nil) async throws -> any SpeechTranscribing {
         let method = VoiceRecognitionPreferences.method
-        let store = CloudASRSettingsStore.shared
-        let resolution = CloudASRRouteResolver.resolve(
-            method: method.rawValue,
-            profiles: store.profiles,
-            primaryProfileID: store.primaryProfileID,
-            readyProfileIDs: Set(store.readyProfiles.map(\.id)))
+        if method == .system {
+            return try await Self.makeAppleTranscriber(language: language, diagnostics: diagnostics)
+        }
+        let resolution: CloudASRRouteResolution
+        if method == .enhanced {
+            resolution = CloudASRRouteResolver.resolve(method: method.rawValue, profiles: [],
+                                                       primaryProfileID: nil, readyProfileIDs: [])
+        } else {
+            resolution = CloudASRSettingsStore.shared.primaryRouteResolution(method: method.rawValue)
+        }
         switch resolution.route {
         case .cloud(let profile):
             do {
@@ -672,9 +648,6 @@ extension VoiceInputController {
             throw VoiceSessionError.failure(.modelNotReady)
         case .localWhisper, .apple:
             break
-        }
-        if method == .system {
-            return try await Self.makeAppleTranscriber(language: language, diagnostics: diagnostics)
         }
         #if canImport(WhisperKit)
         if method != .system {

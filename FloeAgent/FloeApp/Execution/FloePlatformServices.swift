@@ -950,8 +950,17 @@ final class FloePlatformServices: @unchecked Sendable {
     func reconcileResidentRuntimeGeneration() async throws {
         guard let registry = lock.withLock({ registry }),
               let guests = currentLinuxCommandService() as? any LinuxGuestControlling else { return }
-        let receipt = try await guests.residentRecoveryReceipt()
-        try await registry.reconcileResidentRuntimeGeneration(recoveryID: receipt?.recoveryID)
+        try await ResidentRecoveryAvailability.checked {
+            let receipt = try await guests.residentRecoveryReceipt()
+            try await registry.reconcileResidentRuntimeGeneration(recoveryID: receipt?.recoveryID)
+        }
+    }
+
+    /// A ticket is available only for a committed identity mismatch with no
+    /// pending exchange. It cannot authorize adopting the old disk.
+    func residentIdentityRepairTicket() async throws -> LinuxResidentRepairTicket? {
+        guard let guests = currentLinuxCommandService() as? any LinuxGuestControlling else { return nil }
+        return try await guests.residentIdentityRepairTicket()
     }
 
     static let residentRecoveryJobID = "linux-resident-recovery"
@@ -1066,7 +1075,7 @@ final class FloePlatformServices: @unchecked Sendable {
     /// A new environment, explicitly requested after unresolved provenance.
     /// Downloads the trusted default without adopting the retained disk as that
     /// image. Old disk bytes and host environment metadata are kept unchanged.
-    func rebuildLinuxRuntimePreservingData(cancellation: CancellationToken = CancellationToken()) async throws {
+    func rebuildLinuxRuntimePreservingData(cancellation: CancellationToken = CancellationToken(), repairTicket: LinuxResidentRepairTicket? = nil) async throws {
         guard let guests = currentLinuxCommandService() as? any LinuxGuestControlling,
               let registry = lock.withLock({ registry }), let lifecycle = lock.withLock({ lifecycle }),
               let coordinator = lock.withLock({ executionCoordinator }) else {
@@ -1086,12 +1095,15 @@ final class FloePlatformServices: @unchecked Sendable {
             try cancellation.throwIfCancelled()
             try Task.checkCancellation()
             try await registry.prepare()
+            if let repairTicket, try await guests.residentIdentityRepairTicket() != repairTicket {
+                throw LinuxResidentRecoveryError.identityChanged
+            }
             // A delayed confirmation (or a concurrent upgrade) may have
             // already replaced the disk while this pass prepared the image.
             // NO-OP BEFORE the admission fence: beginLinuxRuntimeMaintenance
             // cancels every active Linux lease, so a stale confirmation must
             // not disturb unrelated work just because it arrived late.
-            if let active = try? await self.linuxResidentImageSource.imageID(requireExistingDisk: true),
+            if repairTicket == nil, let active = try? await self.linuxResidentImageSource.imageID(requireExistingDisk: true),
                active == replacementImageID {
                 self.linuxImageStatusCache.bumpRevision()
                 // Converge a previous pass's deferred cleanup; the retirement
@@ -1112,7 +1124,10 @@ final class FloePlatformServices: @unchecked Sendable {
                 // concurrent commit. The destructive rebuild must never run
                 // twice for one target.
                 let activeImageID = try? await self.linuxResidentImageSource.imageID(requireExistingDisk: true)
-                if activeImageID == replacementImageID {
+                if let repairTicket, try await guests.residentIdentityRepairTicket() != repairTicket {
+                    throw LinuxResidentRecoveryError.identityChanged
+                }
+                if repairTicket == nil, activeImageID == replacementImageID {
                     await coordinator.endLinuxRuntimeMaintenance(maintenance)
                     self.linuxImageStatusCache.bumpRevision()
                     StorageMutationHooks.invalidate(.environmentChanged)
@@ -1125,7 +1140,12 @@ final class FloePlatformServices: @unchecked Sendable {
                 try await lifecycle.quiesceLinuxRuntime(containerIDs: records.map(\.id))
                 try await coordinator.waitForLinuxRuntimeMaintenance(maintenance)
                 try cancellation.throwIfCancelled(); try Task.checkCancellation()
-                let receipt = try await guests.rebuildPreservingData(imageID: replacementImageID, onPhase: report.phase)
+                let receipt: LinuxResidentRecoveryReceipt
+                if let repairTicket {
+                    receipt = try await guests.rebuildPreservingData(imageID: replacementImageID, repairTicket: repairTicket, onPhase: report.phase)
+                } else {
+                    receipt = try await guests.rebuildPreservingData(imageID: replacementImageID, onPhase: report.phase)
+                }
                 report.phase(.finalizing)
                 // Publish the physical commit, not merely successful download or
                 // a stop request. The persistent native receipt repairs this step

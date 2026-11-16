@@ -7,6 +7,29 @@ import FloeSecurity
 @testable import FloeApp
 
 final class CloudASRPreloadIntegrationTests: XCTestCase {
+    @MainActor
+    func testRecognitionStartupReadsOnlySelectedCloudCredential() throws {
+        let suite = "floe.asr.startup.selected." + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let credentials = CountingASRKeychain()
+        let store = CloudASRSettingsStore(defaults: defaults, keychain: credentials,
+                                          legacyKeychain: credentials)
+        let selected = try store.addProfile(.openAICompatible(name: "Selected"), credential: "selected-test-key")
+        for index in 0..<8 {
+            _ = try store.addProfile(.openAICompatible(name: "Other \(index)"), credential: "other-test-key")
+        }
+        credentials.resetReads()
+        let route = store.primaryRouteResolution(method: CloudASRMethod.cloud)
+        XCTAssertEqual(route.cloudProfile?.id, selected.id)
+        XCTAssertEqual(credentials.readCount, 1, "Startup must not probe unrelated profile credentials")
+
+        credentials.failReads = true
+        credentials.resetReads()
+        XCTAssertEqual(store.primaryRouteResolution(method: CloudASRMethod.cloud).route, .cloudUnavailable)
+        XCTAssertEqual(credentials.readCount, 1, "A locked selected key must not silently switch providers")
+    }
+
     func testDeepSeekContinuousSpeechEmitsCompletedSegmentsBeforeStop() async throws {
         let file = RecordingBatchASR()
         let transcriber = try CloudSpeechTranscriber(

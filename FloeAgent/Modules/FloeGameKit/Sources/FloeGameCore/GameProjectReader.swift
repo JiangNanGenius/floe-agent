@@ -188,7 +188,7 @@ public final class GameProjectReader {
             throw GameProjectError.limitExceeded(path.value)
         }
         var result = Data()
-        var buffer = [UInt8](repeating: 0, count: min(32_768, limit + 1))
+        var buffer = [UInt8](repeating: 0, count: min(32_768, limit))
         while true {
             if honorCancellation { try Task.checkCancellation() }
             let count = buffer.withUnsafeMutableBytes { bytes in

@@ -36,14 +36,34 @@ public struct GameWebArtifactPackage: Sendable {
             try Task.checkCancellation()
             let output = stage.appendingPathComponent(item.path.value)
             if item.directory { try GameFileStorage.directory(output); continue }
-            guard let bytes = try reader.read(item.path), total <= bounds.maximumProjectBytes - bytes.count else {
+            let fd = Darwin.open(output.path, O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW | O_CLOEXEC, 0o600)
+            guard fd >= 0 else { throw GameProjectError.io("stage web artifact") }
+            let fingerprint: (bytes: Int, sha256: String)?
+            do {
+                fingerprint = try reader.fingerprint(item.path, writeChunk: { chunk in
+                    try chunk.withUnsafeBytes { bytes in
+                        var offset = 0
+                        while offset < bytes.count {
+                            try Task.checkCancellation()
+                            let n = Darwin.write(fd, bytes.baseAddress!.advanced(by: offset), bytes.count - offset)
+                            if n < 0 && errno == EINTR { continue }
+                            if n <= 0 && errno == ENOSPC { throw NSError(domain: NSPOSIXErrorDomain, code: Int(ENOSPC)) }
+                            guard n > 0 else { throw GameProjectError.io("write web artifact") }
+                            offset += n
+                        }
+                    }
+                })
+                guard fsync(fd) == 0 else { throw GameProjectError.io("flush web artifact") }
+                Darwin.close(fd)
+            } catch { Darwin.close(fd); throw error }
+            guard let bytes = fingerprint, total <= bounds.maximumProjectBytes - bytes.bytes else {
                 throw GameProjectError.limitExceeded("artifactBytes")
             }
-            total += bytes.count
-            let record = try GameProjectFile(path: item.path, sha256: GameDigest.sha256(bytes), bytes: bytes.count, executable: reader.isExecutable(item.path))
-            try GameFileStorage.atomicWrite(bytes, to: output)
+            total += bytes.bytes
+            let record = try GameProjectFile(path: item.path, sha256: bytes.sha256, bytes: bytes.bytes, executable: reader.isExecutable(item.path))
             if record.executable { try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: output.path) }
-            guard try GameFileStorage.read(output, maximum: bounds.maximumFileBytes) == bytes else { throw GameProjectError.corruptStorage }
+            let staged = try GameProjectReader(rootURL: stage, maximumFileBytes: bounds.maximumFileBytes)
+            guard let saved = try staged.fingerprint(item.path), saved.bytes == record.bytes, saved.sha256 == record.sha256 else { throw GameProjectError.corruptStorage }
             files.append(record)
         }
         // Recheck all source bytes before claiming this snapshot belongs to the saved revision.
@@ -53,7 +73,7 @@ public struct GameWebArtifactPackage: Sendable {
             throw GameProjectError.corruptStorage
         }
         for file in files {
-            guard let bytes = try reader.read(file.path), GameDigest.sha256(bytes) == file.sha256 else { throw GameProjectError.corruptStorage }
+            guard let bytes = try reader.fingerprint(file.path), bytes.bytes == file.bytes, bytes.sha256 == file.sha256 else { throw GameProjectError.corruptStorage }
         }
         let digest = try GameDigest.sha256(GameFileStorage.encode(ContentManifest(engine: engine, files: files)))
         try Task.checkCancellation()
@@ -67,13 +87,22 @@ public struct GameWebArtifactPackage: Sendable {
 
     public func readResource(_ path: GameRelativePath) throws -> Data {
         guard let record = files.first(where: { $0.path == path }) else { throw GameProjectError.unreadableFile(path.value) }
-        let reader = try GameProjectReader(rootURL: directory, maximumFileBytes: maximumFileBytes)
+        let inMemoryLimit = min(maximumFileBytes, 64 * 1_024 * 1_024)
+        guard record.bytes <= inMemoryLimit else { throw GameProjectError.limitExceeded(path.value) }
+        let reader = try GameProjectReader(rootURL: directory, maximumFileBytes: inMemoryLimit)
         guard let bytes = try reader.read(path), bytes.count == record.bytes,
               GameDigest.sha256(bytes) == record.sha256 else { throw GameProjectError.corruptStorage }
         return bytes
     }
 
-    public func verify() throws { for file in files { _ = try readResource(file.path) } }
+    public func verify() throws {
+        let reader = try GameProjectReader(rootURL: directory, maximumFileBytes: maximumFileBytes)
+        for file in files {
+            guard let saved = try reader.fingerprint(file.path), saved.bytes == file.bytes, saved.sha256 == file.sha256 else {
+                throw GameProjectError.corruptStorage
+            }
+        }
+    }
 
     /// The validated preparer supplies the original relative game root. Bytes
     /// remain sealed; only the host-owned save scope differs between nested games.

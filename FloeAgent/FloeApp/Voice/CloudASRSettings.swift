@@ -104,6 +104,17 @@ final class CloudASRSettingsStore: ObservableObject {
 
     var hasAnyReadyProfile: Bool { !readyProfiles.isEmpty }
 
+    /// A recognition request uses exactly one selected profile. Do not read
+    /// every other profile's Keychain entry while starting the microphone.
+    func primaryRouteResolution(method: String) -> CloudASRRouteResolution {
+        let selected = CloudASRRouteResolver.selectedProfile(
+            profiles: profiles, primaryProfileID: primaryProfileID)
+        var ready: Set<UUID> = []
+        if let selected, isReady(selected) { ready.insert(selected.id) }
+        return CloudASRRouteResolver.resolve(method: method, profiles: profiles,
+                                              primaryProfileID: primaryProfileID, readyProfileIDs: ready)
+    }
+
     func profile(id: UUID?) -> ASRProfile? {
         guard let id else { return nil }
         return profiles.first { $0.id == id }

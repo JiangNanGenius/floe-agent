@@ -2,6 +2,7 @@
 import Foundation
 import FloeGameCore
 import ZIPFoundation
+import CryptoKit
 
 public enum GameArchiveError: Error, Equatable, Sendable {
     case unreadableArchive
@@ -30,11 +31,11 @@ public struct GameArchiveExchangeLimits: Sendable {
     public let maximumEntries: Int
     public let maximumDepth: Int
 
-    public init(maximumFileBytes: Int = 64 * 1_024 * 1_024,
-                maximumProjectBytes: Int = 512 * 1_024 * 1_024,
+    public init(maximumFileBytes: Int = Int.max,
+                maximumProjectBytes: Int = Int.max,
                 maximumEntries: Int = 10_000,
                 maximumDepth: Int = 32) throws {
-        guard maximumFileBytes > 0, maximumFileBytes <= 256 * 1_024 * 1_024,
+        guard maximumFileBytes > 0,
               maximumProjectBytes >= maximumFileBytes,
               maximumEntries > 0, maximumEntries <= 100_000,
               maximumDepth > 0, maximumDepth <= 128 else {
@@ -97,9 +98,8 @@ public struct GameArchivePublication: Sendable {
 }
 
 /// Real ZIP exchange on top of the reviewed ZIPFoundation vendor. Import is a
-/// validate-everything-first pipeline over in-memory entry data (ZIPFoundation
-/// never touches the filesystem during extraction); publication is staged and
-/// exclusive. Export packs a safe directory walk with permissions, empty
+/// validate-everything-first pipeline over bounded entry chunks; extraction
+/// and publication are staged and exclusive. Export packs a safe directory walk with permissions, empty
 /// directories and binary bytes preserved, then re-reads and CRC-checks the
 /// produced archive before reporting success.
 public struct GameArchiveExchange: Sendable {
@@ -117,6 +117,7 @@ public struct GameArchiveExchange: Sendable {
         var topLevel = Set<String>()
         for entry in archive {
             let path = decodedPath(entry, filenameEncoding: filenameEncoding)
+            guard entry.uncompressedSize <= UInt64(Int.max) else { throw GameArchiveError.fileLimitExceeded(path) }
             if let first = path.split(separator: "/", omittingEmptySubsequences: true).first {
                 topLevel.insert(String(first))
             }
@@ -172,12 +173,15 @@ public struct GameArchiveExchange: Sendable {
         guard target.isFileURL, !FileManager.default.fileExists(atPath: target.path) else {
             throw GameArchiveError.destinationExists(target.lastPathComponent)
         }
-        let originalBytes = try Data(contentsOf: archiveURL, options: [.mappedIfSafe])
-        let archive = try openArchive(archiveURL)
+        let original = try GameBuildFileSupport.fingerprint(archiveURL)
+        let archive = try openArchive(archiveURL, filenameEncoding: filenameEncoding)
         let plan = try validatedExtractionPlan(archive: archive, rootChoice: rootChoice,
                                                filenameEncoding: filenameEncoding)
         let (stage, publish) = try GameBuildFileSupport.stagedDirectory(near: target, prefix: "floe-import")
         do {
+            let free = (try FileManager.default.attributesOfFileSystem(forPath: stage.path)[.systemFreeSize] as? NSNumber)?.uint64Value
+            let required = plan.files.reduce(UInt64(0)) { $0 + UInt64($1.entry.uncompressedSize) }
+            if let free, required > free { throw GameArchiveError.io("insufficient storage") }
             for directory in plan.directories {
                 try Task.checkCancellation()
                 try GameBuildFileSupport.makeDirectory(stage.appendingPathComponent(directory.value))
@@ -185,17 +189,12 @@ public struct GameArchiveExchange: Sendable {
             var files: [GameProjectFile] = []
             for item in plan.files {
                 try Task.checkCancellation()
-                let data = try extractBytes(archive, entry: item.entry)
-                guard data.count == item.entry.uncompressedSize else {
-                    throw GameArchiveError.truncatedEntry(item.path.value)
-                }
-                let record = GameProjectFile(path: item.path, sha256: GameDigest.sha256(data),
-                                             bytes: data.count, executable: item.executable)
                 let output = stage.appendingPathComponent(item.path.value)
                 // Nested files without an explicit directory entry still need
                 // their parent directories inside the stage.
                 try GameBuildFileSupport.makeDirectory(output.deletingLastPathComponent())
-                try GameBuildFileSupport.publish(data, to: output)
+                let record = try extractFile(archive, entry: item.entry, path: item.path,
+                                             executable: item.executable, output: output)
                 if item.executable {
                     try FileManager.default.setAttributes([.posixPermissions: 0o755],
                                                           ofItemAtPath: stage.appendingPathComponent(item.path.value).path)
@@ -207,7 +206,7 @@ public struct GameArchiveExchange: Sendable {
             let manifest = GameArchiveManifest(files: files.sorted { $0.path.value < $1.path.value },
                                                directories: plan.directories.sorted { $0.value < $1.value })
             return .init(rootURL: target, manifest: manifest,
-                         originalArchiveSHA256: GameDigest.sha256(originalBytes))
+                         originalArchiveSHA256: original.digest)
         } catch {
             try? FileManager.default.removeItem(at: stage)
             throw error
@@ -248,7 +247,7 @@ public struct GameArchiveExchange: Sendable {
                 let handle = try FileHandle(forReadingFrom: sourceFile)
                 defer { try? handle.close() }
                 let permissions: UInt16 = entry.executable ? 0o755 : 0o644
-                var crcData = Data()
+                var sourceHash = SHA256(), sourceCount = 0
                 try archive.addEntry(with: entry.path.value, type: .file,
                                      uncompressedSize: Int64(entry.bytes),
                                      permissions: permissions,
@@ -256,13 +255,17 @@ public struct GameArchiveExchange: Sendable {
                                      bufferSize: defaultWriteChunkSize, progress: nil) { position, size in
                     try handle.seek(toOffset: UInt64(position))
                     let chunk = try handle.read(upToCount: size) ?? Data()
-                    crcData.append(chunk)
+                    sourceHash.update(data: chunk)
+                    sourceCount += chunk.count
                     return chunk
                 }
-                let bytes = try Data(contentsOf: sourceFile, options: [.mappedIfSafe])
-                guard crcData == bytes else { throw GameArchiveError.io("read during pack \(entry.path.value)") }
-                manifestFiles.append(.init(path: entry.path, sha256: GameDigest.sha256(bytes),
-                                           bytes: bytes.count, executable: entry.executable))
+                let digest = sourceHash.finalize().map { String(format: "%02x", $0) }.joined()
+                let verified = try GameBuildFileSupport.fingerprint(sourceFile, maximum: limits.maximumFileBytes)
+                guard sourceCount == entry.bytes, verified.bytes == sourceCount, verified.digest == digest else {
+                    throw GameArchiveError.io("read during pack \(entry.path.value)")
+                }
+                manifestFiles.append(.init(path: entry.path, sha256: digest,
+                                           bytes: sourceCount, executable: entry.executable))
             }
             try Task.checkCancellation()
             try GameBuildFileSupport.publishFile(from: stagedZIP, to: target)
@@ -284,7 +287,7 @@ public struct GameArchiveExchange: Sendable {
     public func verifyArchive(_ url: URL, expectFiles: [GameProjectFile],
                               expectDirectories: [GameRelativePath],
                               filenameEncoding: String.Encoding? = nil) throws -> String {
-        let bytes = try Data(contentsOf: url, options: [.mappedIfSafe])
+        let archiveFingerprint = try GameBuildFileSupport.fingerprint(url)
         let archive = try openArchive(url, filenameEncoding: filenameEncoding)
         var seenFiles: [GameProjectFile] = []
         var seenDirs: [GameRelativePath] = []
@@ -293,11 +296,19 @@ public struct GameArchiveExchange: Sendable {
             let decoded = decodedPath(entry, filenameEncoding: filenameEncoding)
             switch kind(of: entry) {
             case .file:
-                var data = Data()
-                _ = try archive.extract(entry) { chunk in data.append(chunk) }
+                var hash = SHA256(), count = 0
+                let crc = try archive.extract(entry) { chunk in
+                    try Task.checkCancellation()
+                    guard count <= Int.max - chunk.count else { throw GameArchiveError.projectLimitExceeded }
+                    hash.update(data: chunk)
+                    count += chunk.count
+                }
+                guard crc == entry.checksum, count == entry.uncompressedSize else {
+                    throw GameArchiveError.checksumMismatch(decoded)
+                }
                 let path = try validatedRelativePath(decoded)
-                seenFiles.append(.init(path: path, sha256: GameDigest.sha256(data),
-                                       bytes: data.count, executable: isExecutable(entry)))
+                seenFiles.append(.init(path: path, sha256: hash.finalize().map { String(format: "%02x", $0) }.joined(),
+                                       bytes: count, executable: isExecutable(entry)))
             case .directory:
                 var path = decoded
                 if path.hasSuffix("/") { path.removeLast() }
@@ -310,7 +321,7 @@ public struct GameArchiveExchange: Sendable {
               seenDirs.sorted(by: { $0.value < $1.value }) == expectDirectories.sorted(by: { $0.value < $1.value }) else {
             throw GameArchiveError.checksumMismatch("archive entry set changed between write and read")
         }
-        return GameDigest.sha256(bytes)
+        return archiveFingerprint.digest
     }
 
     // MARK: - Internals
@@ -447,7 +458,13 @@ public struct GameArchiveExchange: Sendable {
             guard folded.insert(fold).inserted else { throw GameArchiveError.caseCollision(key) }
             guard kinds[key] == nil else { throw GameArchiveError.duplicateEntry(key) }
             kinds[key] = item.kind
-            if item.kind == .file { total += Int(item.entry.uncompressedSize) }
+            if item.kind == .file {
+                guard item.entry.uncompressedSize <= limits.maximumFileBytes,
+                      total <= limits.maximumProjectBytes - Int(item.entry.uncompressedSize) else {
+                    throw GameArchiveError.projectLimitExceeded
+                }
+                total += Int(item.entry.uncompressedSize)
+            }
         }
         guard total <= limits.maximumProjectBytes else { throw GameArchiveError.projectLimitExceeded }
         // Ancestor collision: every proper prefix of any path must not be a file,
@@ -470,6 +487,47 @@ public struct GameArchiveExchange: Sendable {
             }
         }
         return (files, directories)
+    }
+
+    private func extractFile(_ archive: Archive, entry: Entry, path: GameRelativePath,
+                             executable: Bool, output: URL) throws -> GameProjectFile {
+        guard entry.uncompressedSize <= UInt64(Int.max) else { throw GameArchiveError.fileLimitExceeded(path.value) }
+        let expected = Int(entry.uncompressedSize)
+        let fd = open(output.path, O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        if fd < 0 && errno == ENOSPC { throw NSError(domain: NSPOSIXErrorDomain, code: Int(ENOSPC)) }
+        guard fd >= 0 else { throw GameArchiveError.io("stage extracted file") }
+        defer { close(fd) }
+        var hash = SHA256(), count = 0
+        do {
+            let checksum = try archive.extract(entry, bufferSize: 64 * 1_024, skipCRC32: false) { chunk in
+                try Task.checkCancellation()
+                guard chunk.count <= expected, count <= expected - chunk.count else {
+                    throw GameArchiveError.truncatedEntry(path.value)
+                }
+                try chunk.withUnsafeBytes { bytes in
+                    var offset = 0
+                    while offset < bytes.count {
+                        let n = write(fd, bytes.baseAddress!.advanced(by: offset), bytes.count - offset)
+                        if n < 0 && errno == EINTR { continue }
+                        if n <= 0 && errno == ENOSPC { throw NSError(domain: NSPOSIXErrorDomain, code: Int(ENOSPC)) }
+                        guard n > 0 else { throw GameArchiveError.io("write extracted file") }
+                        offset += n
+                    }
+                }
+                hash.update(data: chunk)
+                count += chunk.count
+            }
+            guard checksum == entry.checksum else { throw GameArchiveError.checksumMismatch(path.value) }
+        } catch let error as CancellationError { throw error }
+          catch let error as GameArchiveError { throw error }
+          catch let error as NSError where error.domain == NSPOSIXErrorDomain && error.code == Int(ENOSPC) { throw error }
+          catch { throw GameArchiveError.truncatedEntry(path.value) }
+        guard count == entry.uncompressedSize else { throw GameArchiveError.truncatedEntry(path.value) }
+        let flushed = fsync(fd)
+        if flushed != 0 && errno == ENOSPC { throw NSError(domain: NSPOSIXErrorDomain, code: Int(ENOSPC)) }
+        guard flushed == 0 else { throw GameArchiveError.io("flush extracted file") }
+        return .init(path: path, sha256: hash.finalize().map { String(format: "%02x", $0) }.joined(),
+                     bytes: count, executable: executable)
     }
 
     private func extractBytes(_ archive: Archive, entry: Entry) throws -> Data {

@@ -1123,6 +1123,8 @@ public protocol LinuxGuestControlling: Sendable {
     func rebuildPreservingData(imageID: String, onPhase: @escaping @Sendable (LinuxGuestImageTransferPhase) -> Void) async throws -> LinuxResidentRecoveryReceipt
     func residentRecoveryReceipt() async throws -> LinuxResidentRecoveryReceipt?
     func acquireResidentRecoveryGuard() async throws -> LinuxResidentRecoveryGuard
+    func residentIdentityRepairTicket() async throws -> LinuxResidentRepairTicket?
+    func rebuildPreservingData(imageID: String, repairTicket: LinuxResidentRepairTicket, onPhase: @escaping @Sendable (LinuxGuestImageTransferPhase) -> Void) async throws -> LinuxResidentRecoveryReceipt
     func preferredGuestConfiguration(environmentID: String) async -> LinuxGuestLifecycleConfig?
     /// Starts the environment's guest. Returns false when this service does
     /// not own the environment (native environments are untouched). Throws
@@ -1300,6 +1302,8 @@ public extension LinuxGuestControlling {
     }
     func residentRecoveryReceipt() async throws -> LinuxResidentRecoveryReceipt? { nil }
     func acquireResidentRecoveryGuard() async throws -> LinuxResidentRecoveryGuard { throw LinuxResidentRecoveryError.unsupported }
+    func residentIdentityRepairTicket() async throws -> LinuxResidentRepairTicket? { nil }
+    func rebuildPreservingData(imageID: String, repairTicket: LinuxResidentRepairTicket, onPhase: @escaping @Sendable (LinuxGuestImageTransferPhase) -> Void) async throws -> LinuxResidentRecoveryReceipt { throw LinuxResidentRecoveryError.unsupported }
     func preferredGuestConfiguration(environmentID: String) async -> LinuxGuestLifecycleConfig? { nil }
     /// Default explicit-shape start: nil shape forwards to the shape-less
     /// start; a non-nil shape is refused honestly by a backend that cannot

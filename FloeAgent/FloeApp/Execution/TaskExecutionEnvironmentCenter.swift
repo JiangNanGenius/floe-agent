@@ -14,6 +14,18 @@ struct TaskExecutionAvailabilityError: LocalizedError {
     var errorDescription: String? { message }
 }
 
+/// Recovery identity errors fence the physical Linux disk. Surface that fence
+/// as an unavailable command target so native tools and model chat can run;
+/// never replace the pin, relax identity checks, or start another guest.
+enum ResidentRecoveryAvailability {
+    static func checked(_ operation: () async throws -> Void) async throws {
+        do { try await operation() }
+        catch let error as LinuxResidentRecoveryError {
+            throw TaskExecutionAvailabilityError(message: error.localizedDescription)
+        }
+    }
+}
+
 @MainActor
 final class TaskExecutionEnvironmentCenter: ObservableObject {
     struct Choice: Identifiable, Equatable {

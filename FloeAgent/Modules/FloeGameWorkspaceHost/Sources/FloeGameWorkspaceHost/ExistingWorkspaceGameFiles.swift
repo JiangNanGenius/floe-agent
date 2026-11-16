@@ -124,7 +124,9 @@ public final class ExistingWorkspaceGameFiles: GameWorkingTreePort, @unchecked S
               try target.revisions.revisionID() == snapshot.revision else { throw GameProjectError.invalidContext }
         let service = scoped(target, limits)
         _ = try service.guardResolver.resolve(file.path.value)
-        let reader = try GameProjectReader(rootURL: target.binding.rootURL, maximumFileBytes: limits.maximumFileBytes)
+        let inMemoryLimit = min(limits.maximumFileBytes, 64 * 1_024 * 1_024)
+        guard file.bytes <= inMemoryLimit else { throw GameProjectError.limitExceeded(file.path.value) }
+        let reader = try GameProjectReader(rootURL: target.binding.rootURL, maximumFileBytes: inMemoryLimit)
         guard let data = try reader.read(file.path), data.count == file.bytes,
               GameDigest.sha256(data) == file.sha256,
               try reader.isExecutable(file.path) == file.executable else {
@@ -192,6 +194,14 @@ public final class ExistingWorkspaceGameFiles: GameWorkingTreePort, @unchecked S
         let old = Dictionary(uniqueKeysWithValues: before.files.map { ($0.path.value, $0) })
         let new = Dictionary(uniqueKeysWithValues: project.files.map { ($0.path.value, $0) })
         let changed = Set(old.keys).union(new.keys).filter { old[$0] != new[$0] }.sorted()
+        // Existing-file replacement and rollback still use Data-based APIs.
+        // Refuse those operations before mutation when their payload is large;
+        // importing a new file remains streaming and has no fixed byte cap.
+        let inMemoryLimit = min(limits.maximumFileBytes, 64 * 1_024 * 1_024)
+        for path in changed where old[path] != nil {
+            guard (old[path]?.bytes ?? 0) <= inMemoryLimit,
+                  (new[path]?.bytes ?? 0) <= inMemoryLimit else { throw GameProjectError.limitExceeded(path) }
+        }
         // Administrative Git data may exist in an imported original archive,
         // but a game save must never adopt it over the live IDE repository.
         for path in project.files.map({ $0.path.value }) + project.directories.map({ $0.value }) {
@@ -360,7 +370,7 @@ public final class ExistingWorkspaceGameFiles: GameWorkingTreePort, @unchecked S
                 if current?.digest == item.before?.digest, current?.mode == item.before?.mode { continue }
                 guard item.applied, current == item.installed else { conflicts.append(item.path); continue }
                 if let backup = item.backup, let before = item.before {
-                    let bytes = try GameWorkingTreeJournalFiles.read(directory.appendingPathComponent(backup), maximum: limits.maximumFileBytes)
+                    let bytes = try GameWorkingTreeJournalFiles.read(directory.appendingPathComponent(backup), maximum: min(limits.maximumFileBytes, 64 * 1_024 * 1_024))
                     guard GameDigest.sha256(bytes) == before.digest else { throw GameProjectError.corruptStorage }
                     try service.createBinaryFile(item.path, data: bytes, overwrite: current != nil)
                     let url = try service.guardResolver.resolve(item.path)

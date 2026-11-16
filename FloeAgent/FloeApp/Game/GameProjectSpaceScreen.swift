@@ -4,6 +4,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 import FloeCore
 import FloeGameCore
+import FloeGameBuildKit
 import FloeGameAuthoring
 import FloeGameAuthoringUI
 import FloeGameIDEBridge
@@ -32,6 +33,10 @@ struct GameProjectSpaceScreen: View {
     @State private var showingDeploymentAssets = false
     @State private var showingHistory = false
     @State private var showingImporter = false
+    @State private var showingProjectSetup = false
+    @State private var importAfterSetup = false
+    @State private var assistantAfterSetup = false
+    @State private var manualPromptAfterSetup: GameManualSelectionPrompt?
     @State private var showingEngineChange = false
     @State private var showingCreateStarter = false
     @State private var ideRequest: GameIDEOpenRequest?
@@ -71,10 +76,13 @@ struct GameProjectSpaceScreen: View {
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Button(IDELanguageRunText.t("构建／导出", "Build / export"), systemImage: "shippingbox") {
                         showingBuild = true
-                    }.disabled(session == nil)
+                    }.disabled(session == nil || pending != nil)
                     Button(IDELanguageRunText.t("助手", "Assistant"), systemImage: "sparkles") {
                         showingAssistant = true
-                    }.disabled(session == nil)
+                    }.disabled(session == nil || pending != nil)
+                    if let session {
+                        projectMenu(session)
+                    }
                 }
             }
             .task { await load() }
@@ -115,6 +123,36 @@ struct GameProjectSpaceScreen: View {
                 if let session {
                     GameProjectHistoryScreen(session: session)
                         .environmentObject(environment)
+                }
+            }
+            .sheet(isPresented: $showingProjectSetup, onDismiss: {
+                if importAfterSetup {
+                    importAfterSetup = false
+                    showingImporter = true
+                } else if assistantAfterSetup {
+                    assistantAfterSetup = false
+                    showingAssistant = true
+                } else if let prompt = manualPromptAfterSetup {
+                    manualPromptAfterSetup = nil
+                    manualSelectionPrompt = prompt
+                }
+            }) {
+                if let session {
+                    NavigationStack {
+                        ScrollView {
+                            VStack(spacing: 0) {
+                                if let error { noticeBar(error, failed: true) }
+                                setupPanel(session)
+                            }
+                        }
+                            .navigationTitle(IDELanguageRunText.t("游戏引擎", "Game engine"))
+                            .navigationBarTitleDisplayMode(.inline)
+                            .toolbar {
+                                ToolbarItem(placement: .cancellationAction) {
+                                    Button(IDELanguageRunText.t("完成", "Done")) { showingProjectSetup = false }
+                                }
+                            }
+                    }
                 }
             }
             .fullScreenCover(isPresented: $showingPlay) {
@@ -200,21 +238,37 @@ struct GameProjectSpaceScreen: View {
             if let error { noticeBar(error, failed: true) }
             if let notice { noticeBar(notice, failed: false) }
             runtimeBanner(session)
-            GameProjectSetupPanel(
+            if pending == .importProject {
+                importProgress
+            }
+            engineSummary(session)
+            GameProjectOverviewView(content: content(session), pendingAction: pending,
+                status: status(session), showEngineSummary: false) { action in
+                    perform(action, session: session)
+                }
+        }
+    }
+
+    private func setupPanel(_ session: GameWorkspaceSession) -> some View {
+        GameProjectSetupPanel(
                 snapshot: snapshot,
                 library: environment.gameWorkspaces.library,
                 proposal: session.project.pendingSelectionProposal,
                 proposalIsStale: session.project.isPendingSelectionProposalStale,
                 onRecognized: { root, engine in
+                    error = nil
                     await select(session, root: root, engine: engine)
+                    if error == nil { showingProjectSetup = false }
                 },
                 onManual: { root, engine in
-                    manualSelectionPrompt = GameManualSelectionPrompt(
+                    manualPromptAfterSetup = GameManualSelectionPrompt(
                         root: root, engine: engine, createsStarter: false)
+                    showingProjectSetup = false
                 },
                 onStarter: { engine in
-                    manualSelectionPrompt = GameManualSelectionPrompt(
+                    manualPromptAfterSetup = GameManualSelectionPrompt(
                         root: nil, engine: engine, createsStarter: true)
+                    showingProjectSetup = false
                 },
                 onConfirmProposal: { proposal in
                     await confirmProposal(session, proposal)
@@ -227,18 +281,56 @@ struct GameProjectSpaceScreen: View {
                         "请检查我导入的游戏文件，判断使用了哪个引擎，以及哪个文件夹是游戏根目录。请列出判断依据，有不确定的地方请指出。",
                         "Inspect my imported game files. Which engine and project root do they use? Show the evidence and explain any uncertainty."
                     ), attachments: [])
-                    showingAssistant = true
+                    assistantAfterSetup = true
+                    showingProjectSetup = false
                 },
                 onImport: {
-                    showingImporter = true
+                    importAfterSetup = true
+                    showingProjectSetup = false
                 })
-            GameProjectOverviewView(content: content(session), pendingAction: pending,
-                status: status(session)) { action in
-                    perform(action, session: session)
+    }
+
+    private func engineSummary(_ session: GameWorkspaceSession) -> some View {
+        Button { showingProjectSetup = true } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "gamecontroller")
+                    .font(.body.weight(.medium)).foregroundStyle(.tint)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(IDELanguageRunText.t("游戏引擎", "Game engine"))
+                        .font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
+                    Text(content(session).engineSummary)
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(2)
                 }
-            Divider()
-            secondaryActions(session)
+                Spacer(minLength: 8)
+                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 14).frame(minHeight: 58)
+            .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 14))
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .disabled(pending != nil)
+        .padding(.horizontal, 16).padding(.top, 8)
+        .accessibilityIdentifier("game.setup.open")
+    }
+
+    private var importProgress: some View {
+        HStack(alignment: .center, spacing: 12) {
+            ProgressView()
+            VStack(alignment: .leading, spacing: 2) {
+                Text(IDELanguageRunText.t("正在导入游戏", "Importing game"))
+                    .font(.subheadline.weight(.semibold))
+                Text(IDELanguageRunText.t("正在复制并检查文件，大型游戏可能需要一些时间。", "Copying and checking files. Large games may take a while."))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.tint.opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
+        .padding(.horizontal, 16).padding(.top, 8)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("game.import.progress")
     }
 
     @ViewBuilder private func runtimeBanner(_ session: GameWorkspaceSession) -> some View {
@@ -310,11 +402,13 @@ struct GameProjectSpaceScreen: View {
     private func content(_ session: GameWorkspaceSession) -> GameProjectOverviewContent {
         let state = session.project.selectionSnapshot
         let project = session.project.project
-        let engineName = state?.selectedEngine?.rawValue
+        let engineName = state?.selectedEngine.map { engine in
+            environment.gameWorkspaces.library?.entries.first { $0.engine == engine }?.displayName ?? engine.rawValue
+        }
             ?? IDELanguageRunText.t("尚未选择引擎", "No engine selected")
         let summary: String
         if let state, state.selectedEngine != nil {
-            summary = engineName + " · " + (state.selectedRoot?.value ?? ".")
+            summary = engineName + " · " + (state.selectedRoot?.value ?? IDELanguageRunText.t("工程根目录", "Project root"))
                 + (state.isManualUnverified
                     ? " · " + IDELanguageRunText.t("手动未验证", "manual, unverified")
                     : "")
@@ -337,6 +431,7 @@ struct GameProjectSpaceScreen: View {
     }
 
     private func status(_ session: GameWorkspaceSession) -> String? {
+        if pending == .importProject { return nil }
         if pending != nil { return IDELanguageRunText.t("正在处理…", "Working…") }
         if let snapshot = session.project.selectionSnapshot {
             if snapshot.state == .empty {
@@ -365,22 +460,25 @@ struct GameProjectSpaceScreen: View {
         return nil
     }
 
-    private func secondaryActions(_ session: GameWorkspaceSession) -> some View {
-        HStack(spacing: 10) {
+    private func projectMenu(_ session: GameWorkspaceSession) -> some View {
+        Menu {
+            Button(IDELanguageRunText.t("游戏引擎", "Game engine"), systemImage: "gamecontroller") {
+                showingProjectSetup = true
+            }
+            Button(IDELanguageRunText.t("导入文件夹或 ZIP", "Import folder or ZIP"),
+                   systemImage: "square.and.arrow.down") {
+                showingImporter = true
+            }
             Button(IDELanguageRunText.t("切换引擎（新副本）", "Change engine (new copy)"),
                    systemImage: "arrow.triangle.branch") {
                 showingEngineChange = true
-            }.buttonStyle(.bordered)
+            }
             if let engine = snapshot?.selectedEngine,
                [.rpgMakerXP, .rpgMakerVX, .rpgMakerVXAce, .rpgMakerMV, .rpgMakerMZ].contains(engine) {
                 Button(IDELanguageRunText.t("部署资源", "Deployment assets"), systemImage: "archivebox") {
                     showingDeploymentAssets = true
-                }.buttonStyle(.bordered)
+                }
             }
-            Button(IDELanguageRunText.t("导入文件", "Import files"),
-                   systemImage: "square.and.arrow.down") {
-                showingImporter = true
-            }.buttonStyle(.bordered)
             if session.project.project.files.isEmpty {
                 Button(IDELanguageRunText.t("创建起始工程", "Create starter"),
                        systemImage: "wand.and.stars") {
@@ -388,10 +486,13 @@ struct GameProjectSpaceScreen: View {
                     starterEngine = nil
                     starterError = nil
                     showingCreateStarter = true
-                }.buttonStyle(.borderedProminent)
+                }
             }
-            Spacer()
-        }.padding(16)
+        } label: {
+            Label(IDELanguageRunText.t("更多", "More"), systemImage: "ellipsis.circle")
+        }
+        .disabled(pending != nil)
+        .accessibilityIdentifier("game.project.menu")
     }
 
     /// Bind a real game environment before the assistant starts its first run.
@@ -495,17 +596,28 @@ struct GameProjectSpaceScreen: View {
 
     private func importSource(_ result: Result<[URL], Error>) async {
         do {
-            guard let url = try result.get().first, let session else { return }
+            guard pending == nil, let url = try result.get().first, let session else { return }
+            error = nil
+            notice = nil
             pending = .importProject
             defer { pending = nil }
             try await environment.gameWorkspaces.importSource(url, into: session)
-            notice = IDELanguageRunText.t("已导入完整工程文件。", "The complete project tree was imported.")
             await refresh(session)
+            if error == nil {
+                notice = IDELanguageRunText.t("已导入游戏文件，查看引擎识别结果后即可继续。", "Game files imported. Check the engine selection to continue.")
+            }
         } catch {
+            let underlying = error as NSError
+            if error is CancellationError || (underlying.domain == NSCocoaErrorDomain && underlying.code == NSUserCancelledError) { return }
             if case GameProjectError.limitExceeded(let detail) = error {
                 self.error = detail == "projectBytes"
-                    ? IDELanguageRunText.t("工程文件总大小超出导入上限。", "The project exceeds the import size limit.")
-                    : IDELanguageRunText.t("导入内容超出大小或数量限制：\(detail)", "The import exceeds a size or item limit: \(detail)")
+                    ? IDELanguageRunText.t("游戏文件总量过大，无法完成导入。", "The game files are too large to import.")
+                    : IDELanguageRunText.t("导入内容超出大小或数量限制。", "The import exceeds a size or item limit.")
+            } else if case GameArchiveError.io("insufficient storage") = error {
+                self.error = IDELanguageRunText.t("存储空间不足，请清理空间后重试。", "Not enough storage space. Free up space and try again.")
+            } else if underlying.domain == NSCocoaErrorDomain && underlying.code == NSFileWriteOutOfSpaceError
+                        || underlying.domain == NSPOSIXErrorDomain && underlying.code == 28 {
+                self.error = IDELanguageRunText.t("存储空间不足，请清理空间后重试。", "Not enough storage space. Free up space and try again.")
             } else {
                 self.error = error.localizedDescription
             }
@@ -611,6 +723,14 @@ struct GameProjectSpaceScreen: View {
             Image(systemName: failed ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
             Text(text).font(.callout)
             Spacer()
+            Button {
+                if failed { error = nil } else { notice = nil }
+            } label: {
+                Image(systemName: "xmark").font(.caption.weight(.semibold))
+                    .frame(width: 36, height: 36).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(IDELanguageRunText.t("关闭提示", "Dismiss message"))
         }
         .foregroundStyle(failed ? Color.red : Color.secondary)
         .padding(.horizontal, 16).padding(.vertical, 8)

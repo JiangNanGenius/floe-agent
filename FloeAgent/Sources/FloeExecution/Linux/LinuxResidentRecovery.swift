@@ -24,6 +24,12 @@ public struct LinuxResidentRecoveryReceipt: Codable, Equatable, Sendable {
     }
 }
 
+/// A path-free snapshot of the exact fenced tree shown to the user. This is
+/// never authority to adopt the old disk; it only bounds a preserving rebuild.
+public struct LinuxResidentRepairTicket: Equatable, Sendable {
+    fileprivate let fingerprint: String
+}
+
 /// Native-only admission guard held through an explicit task-pin CAS. It
 /// prevents another physical rebuild from changing the confirmed generation
 /// between verification and database commit. It grants no tool permission.
@@ -41,10 +47,10 @@ public final class LinuxResidentRecoveryGuard: @unchecked Sendable {
     deinit { finish() }
 }
 
-enum LinuxResidentRecoveryError: Error, LocalizedError, Equatable, Sendable {
+public enum LinuxResidentRecoveryError: Error, LocalizedError, Equatable, Sendable {
     case busy, invalidStorage, interrupted, identityChanged, persistence, unsupported
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
         let zh = FloeL10n.isChinese
         switch self {
         case .busy:
@@ -119,7 +125,12 @@ enum LinuxResidentDiskBarrier {
                 let disk = try store.lockFile("disk-use.lock", operation: LOCK_EX | LOCK_NB)
                 defer { _ = close(disk) }
                 _ = try store.recoverPending()
-            } catch { _ = close(recoveryGate); throw error }
+            } catch {
+                if error as? LinuxResidentRecoveryError == .identityChanged {
+                    FloeLogger(category: .tools).error("residentRecoveryIdentityMismatch phase=pending")
+                }
+                _ = close(recoveryGate); throw error
+            }
             _ = close(recoveryGate)
         }
         throw LinuxResidentRecoveryError.busy
@@ -129,7 +140,12 @@ enum LinuxResidentDiskBarrier {
         let store = try LinuxResidentRecoveryStore(root: root)
         let gate = try admissionRead(store)
         do { return LinuxResidentRecoveryGuard(receipt: try store.currentCommittedReceipt(), descriptor: gate) }
-        catch { _ = close(gate); throw error }
+        catch {
+            if error as? LinuxResidentRecoveryError == .identityChanged {
+                FloeLogger(category: .tools).error("residentRecoveryIdentityMismatch phase=committed")
+            }
+            _ = close(gate); throw error
+        }
     }
 
     static func currentRecoveryReceipt(root: URL) throws -> LinuxResidentRecoveryReceipt? {
@@ -140,6 +156,13 @@ enum LinuxResidentDiskBarrier {
         let lease = try acquireRecoveryGuard(root: root)
         defer { lease.finish() }
         return lease.receipt
+    }
+
+    static func committedIdentityRepairTicket(root: URL) throws -> LinuxResidentRepairTicket? {
+        let store = try LinuxResidentRecoveryStore(root: root)
+        let gate = try store.lockFile("admission.lock", operation: LOCK_SH | LOCK_NB)
+        defer { _ = close(gate) }
+        return try store.committedIdentityRepairTicket()
     }
 
     static func acquireUse(root: URL) throws -> Use {
@@ -269,13 +292,32 @@ struct LinuxResidentRecoveryStore {
 
     /// Acquires the admission fence before the owner awaits physical shutdown.
     /// The exclusive disk-use claim is acquired only after that shutdown joins.
-    func begin(imageID: String) throws -> Transaction {
+    func committedIdentityRepairTicket() throws -> LinuxResidentRepairTicket? {
+        // A pending exchange must be resolved by its own recovery protocol;
+        // it cannot authorize a fresh repair of the current pathname.
+        guard try Node.read(pending) == nil else { return nil }
+        do { _ = try currentCommittedReceipt(); return nil }
+        catch LinuxResidentRecoveryError.identityChanged {
+            // Do not offer to retain a disk that is absent or an unsafe node.
+            guard let tree = try Tree.read(current), tree.disk?.isRegular == true,
+                  tree.origin?.isRegular == true else { return nil }
+            let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+            return LinuxResidentRepairTicket(fingerprint: FloeDigest.sha256Hex(try encoder.encode(tree)))
+        }
+    }
+
+    func begin(imageID: String, repairTicket: LinuxResidentRepairTicket? = nil, requireExistingDisk: Bool = false) throws -> Transaction {
         guard !imageID.isEmpty, imageID.utf8.count <= 240,
               !imageID.contains("/"), !imageID.contains("\\"), !imageID.contains("\0") else {
             throw LinuxResidentRecoveryError.invalidStorage
         }
         let gate = try lockFile("admission.lock", operation: LOCK_EX | LOCK_NB)
         do {
+            if let repairTicket {
+                guard try committedIdentityRepairTicket() == repairTicket else {
+                    throw LinuxResidentRecoveryError.identityChanged
+                }
+            }
             let hasPending = try Node.read(pending) != nil
             if !hasPending {
                 let record = Record(id: UUID(), imageID: imageID, createdAt: Date())
@@ -283,7 +325,7 @@ struct LinuxResidentRecoveryStore {
                 try persist(record)
                 try write(Pending(id: record.id), to: pending)
             }
-            return Transaction(store: self, gate: gate, imageID: imageID, resumed: hasPending)
+            return Transaction(store: self, gate: gate, imageID: imageID, resumed: hasPending, repairTicket: repairTicket, requireExistingDisk: requireExistingDisk)
         } catch { _ = close(gate); throw error }
     }
 
@@ -292,8 +334,10 @@ struct LinuxResidentRecoveryStore {
         private var gate: Int32
         private let imageID: String
         private let resumed: Bool
-        fileprivate init(store: LinuxResidentRecoveryStore, gate: Int32, imageID: String, resumed: Bool) {
-            self.store = store; self.gate = gate; self.imageID = imageID; self.resumed = resumed
+        private let repairTicket: LinuxResidentRepairTicket?
+        private let requireExistingDisk: Bool
+        fileprivate init(store: LinuxResidentRecoveryStore, gate: Int32, imageID: String, resumed: Bool, repairTicket: LinuxResidentRepairTicket?, requireExistingDisk: Bool) {
+            self.store = store; self.gate = gate; self.imageID = imageID; self.resumed = resumed; self.repairTicket = repairTicket; self.requireExistingDisk = requireExistingDisk
         }
         deinit { endAdmission() }
         func endAdmission() {
@@ -306,6 +350,19 @@ struct LinuxResidentRecoveryStore {
                      prepare: (URL) throws -> URL) throws -> LinuxResidentRecoveryReceipt {
             let disk = try store.lockFile("disk-use.lock", operation: LOCK_EX | LOCK_NB)
             defer { _ = close(disk) }
+            if let repairTicket {
+                // begin() created our own pending record; validate the exact
+                // old tree here rather than treating that intent as foreign.
+                guard let observed = try Tree.read(store.current) else {
+                    _ = try store.recoverPending()
+                    throw LinuxResidentRecoveryError.identityChanged
+                }
+                let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+                guard FloeDigest.sha256Hex(try encoder.encode(observed)) == repairTicket.fingerprint else {
+                    _ = try store.recoverPending()
+                    throw LinuxResidentRecoveryError.identityChanged
+                }
+            }
             if resumed, let receipt = try store.recoverPending() { return receipt }
             var record: Record
             if let pointer: Pending = try store.read(Pending.self, from: store.pending) {
@@ -320,6 +377,10 @@ struct LinuxResidentRecoveryStore {
                 throw LinuxResidentRecoveryError.interrupted
             }
             record.old = try Tree.read(store.current)
+            if requireExistingDisk, record.old?.disk?.isRegular != true {
+                _ = try store.recoverPending()
+                throw LinuxResidentRecoveryError.invalidStorage
+            }
             record.oldObserved = true
             try store.persist(record)
             do {

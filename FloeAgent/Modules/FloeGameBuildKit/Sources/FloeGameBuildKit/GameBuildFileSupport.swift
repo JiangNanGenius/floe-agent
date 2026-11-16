@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 import Foundation
 import FloeGameCore
+import CryptoKit
 #if canImport(Darwin)
 import Darwin
 #else
@@ -13,6 +14,39 @@ import Glibc
 /// module keeps an equivalent minimal implementation instead of weakening
 /// the core package's API surface.
 enum GameBuildFileSupport {
+    /// Hash and optionally copy a regular file without loading it into RAM.
+    static func fingerprint(_ url: URL, maximum: Int = Int.max,
+                            consumer: ((Data) throws -> Void)? = nil) throws -> (bytes: Int, digest: String) {
+        guard url.isFileURL else { throw GameArchiveError.invalidTarget }
+        let fd = systemOpen(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC, 0)
+        guard fd >= 0 else { throw GameArchiveError.unreadableArchive }
+        defer { systemClose(fd) }
+        var before = stat()
+        guard fstat(fd, &before) == 0, before.st_mode & S_IFMT == S_IFREG,
+              before.st_size >= 0, before.st_size <= maximum else {
+            throw GameArchiveError.limitExceeded("archiveBytes")
+        }
+        var total = 0, hash = SHA256()
+        var buffer = [UInt8](repeating: 0, count: 1_048_576)
+        while true {
+            try Task.checkCancellation()
+            let count = buffer.withUnsafeMutableBytes { read(fd, $0.baseAddress!, $0.count) }
+            if count < 0 && errno == EINTR { continue }
+            guard count >= 0 else { throw GameArchiveError.io("read archive") }
+            if count == 0 { break }
+            guard total <= maximum - count else { throw GameArchiveError.limitExceeded("archiveBytes") }
+            let chunk = Data(buffer.prefix(count))
+            hash.update(data: chunk)
+            try consumer?(chunk)
+            total += count
+        }
+        var after = stat()
+        guard fstat(fd, &after) == 0, before.st_size == after.st_size,
+              before.st_ino == after.st_ino, total == before.st_size else {
+            throw GameArchiveError.io("archive changed during read")
+        }
+        return (total, hash.finalize().map { String(format: "%02x", $0) }.joined())
+    }
     enum FileKind: Equatable {
         case directory
         case regularFile

@@ -71,6 +71,13 @@ struct CloudASRRouteResolution: Equatable, Sendable {
 }
 
 enum CloudASRRouteResolver {
+    static func selectedProfile(profiles: [ASRProfile], primaryProfileID: UUID?) -> ASRProfile? {
+        if let primaryProfileID {
+            return profiles.first(where: { $0.id == primaryProfileID })
+        }
+        return profiles.first
+    }
+
     static func resolve(
         method: String,
         profiles: [ASRProfile],
@@ -79,17 +86,7 @@ enum CloudASRRouteResolver {
     ) -> CloudASRRouteResolution {
         // Metadata selection is independent of readiness and never replaced by
         // a different ready profile.
-        let selected: ASRProfile? = {
-            if let primaryProfileID,
-               let selected = profiles.first(where: { $0.id == primaryProfileID }) {
-                return selected
-            }
-            // No primary selection exists at all (for example a fresh store
-            // before the first selection): the deterministic first profile is
-            // the only automatic metadata choice.
-            if primaryProfileID == nil { return profiles.first }
-            return nil
-        }()
+        let selected = selectedProfile(profiles: profiles, primaryProfileID: primaryProfileID)
         let ready = selected.flatMap { readyProfileIDs.contains($0.id) ? $0 : nil }
 
         switch method {

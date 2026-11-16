@@ -16,9 +16,8 @@ public actor GameArchiveOriginalStore {
     /// Bounded acceptance for preserved originals (applies to every caller).
     public let maximumOriginalBytes: Int
 
-    public init(directory: URL, maximumOriginalBytes: Int = 512 * 1_024 * 1_024) throws {
-        guard directory.isFileURL, maximumOriginalBytes > 0,
-              maximumOriginalBytes <= 1_024 * 1_024 * 1_024 else {
+    public init(directory: URL, maximumOriginalBytes: Int = Int.max) throws {
+        guard directory.isFileURL, maximumOriginalBytes > 0 else {
             throw GameArchiveError.invalidTarget
         }
         self.directory = directory.standardizedFileURL.resolvingSymlinksInPath()
@@ -48,9 +47,45 @@ public actor GameArchiveOriginalStore {
         }
     }
 
+    /// Preserve a selected archive with bounded memory and exclusive publication.
+    public func preserve(file source: URL) throws -> GameArchiveOriginal {
+        let stage = directory.appendingPathComponent(".original-" + UUID().uuidString)
+        let descriptor = open(stage.path, O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        if descriptor < 0 && errno == ENOSPC { throw NSError(domain: NSPOSIXErrorDomain, code: Int(ENOSPC)) }
+        guard descriptor >= 0 else { throw GameArchiveError.io("stage original") }
+        defer { close(descriptor); unlink(stage.path) }
+        let result = try GameBuildFileSupport.fingerprint(source, maximum: maximumOriginalBytes) { chunk in
+            try chunk.withUnsafeBytes { bytes in
+                var offset = 0
+                while offset < bytes.count {
+                    try Task.checkCancellation()
+                    let n = write(descriptor, bytes.baseAddress!.advanced(by: offset), bytes.count - offset)
+                    if n < 0 && errno == EINTR { continue }
+                    if n <= 0 && errno == ENOSPC { throw NSError(domain: NSPOSIXErrorDomain, code: Int(ENOSPC)) }
+                    guard n > 0 else { throw GameArchiveError.io("write original") }
+                    offset += n
+                }
+            }
+        }
+        let flushed = fsync(descriptor)
+        if flushed != 0 && errno == ENOSPC { throw NSError(domain: NSPOSIXErrorDomain, code: Int(ENOSPC)) }
+        guard flushed == 0 else { throw GameArchiveError.io("flush original") }
+        let target = try objectURL(result.digest)
+        return try GameBuildFileSupport.locked(root: directory, name: ".original-store.lock") {
+            if !FileManager.default.fileExists(atPath: target.path) {
+                try GameBuildFileSupport.publishFile(from: stage, to: target)
+            }
+            let saved = try GameBuildFileSupport.fingerprint(target, maximum: maximumOriginalBytes)
+            guard saved.digest == result.digest, saved.bytes == result.bytes else {
+                throw GameArchiveError.checksumMismatch(target.lastPathComponent)
+            }
+            return .init(sha256: result.digest, bytes: result.bytes, url: target)
+        }
+    }
+
     public func read(sha256: String) throws -> Data {
         try GameBuildFileSupport.readVerified(try objectURL(sha256), expected: sha256,
-                                              maximum: maximumOriginalBytes)
+                                              maximum: min(maximumOriginalBytes, 64 * 1_024 * 1_024))
     }
 
     private func objectURL(_ digest: String) throws -> URL {

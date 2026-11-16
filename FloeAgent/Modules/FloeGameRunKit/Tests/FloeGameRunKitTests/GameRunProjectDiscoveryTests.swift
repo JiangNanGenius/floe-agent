@@ -16,6 +16,11 @@ private actor DiscoveryRevisionChange: GameRunContextHost {
 }
 
 final class GameRunProjectDiscoveryTests: XCTestCase {
+    func testDefaultPreparationHasNoFixedTotalByteCeiling() {
+        XCTAssertEqual(GameRunPreparationLimits.default.maximumProjectBytes, Int.max)
+        XCTAssertEqual(GameRunPreparationLimits.default.maximumFileBytes, 64 * 1_024 * 1_024)
+    }
+
     func testNestedDistinctGamesAndUnknownHTMLAreSeparateChoices() async throws {
         let workspace = try TestWorkspace()
         let project = try await TestProject.make(workspace: workspace, files: [

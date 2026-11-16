@@ -5,6 +5,7 @@ import FloeEnvironments
 import FloeTools
 import FloeModels
 import FloePersistence
+import FloeExecution
 #if canImport(UIKit)
 @testable import FloeApp
 #endif
@@ -13,6 +14,35 @@ import FloePersistence
 struct TaskEnvironmentOwnershipTests {
 
 #if canImport(UIKit)
+    @MainActor @Test("Missing runtime disks receive the non-retention warning")
+    func missingDiskRecoveryDoesNotPromiseToRetainDisk() {
+        #expect(LinuxImageInstallModel.confirmationRequiresMissingDiskWarning(.missingDisk))
+        #expect(!LinuxImageInstallModel.confirmationRequiresMissingDiskWarning(nil))
+        #expect(!LinuxImageInstallModel.confirmationRequiresMissingDiskWarning(.invalidOrigin))
+        #expect(!LinuxImageInstallModel.mayOfferPreservingRebuild(.missingDisk))
+        #expect(LinuxImageInstallModel.mayOfferPreservingRebuild(.invalidOrigin))
+    }
+
+    @Test("A resident identity fence makes only the command environment unavailable")
+    func residentIdentityFailureIsAvailabilityError() async throws {
+        await #expect(throws: TaskExecutionAvailabilityError.self) {
+            try await ResidentRecoveryAvailability.checked {
+                throw LinuxResidentRecoveryError.identityChanged
+            }
+        }
+        await #expect(throws: CancellationError.self) {
+            try await ResidentRecoveryAvailability.checked {
+                throw CancellationError()
+            }
+        }
+        await #expect(throws: FloeError.self) {
+            try await ResidentRecoveryAvailability.checked {
+                throw FloeError.validationFailed("fixture")
+            }
+        }
+        try await ResidentRecoveryAvailability.checked { }
+    }
+
     @MainActor @Test("A saved Linux pin loads the cold registry without starting or replacing its environment")
     func savedLinuxPinLoadsColdRegistry() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

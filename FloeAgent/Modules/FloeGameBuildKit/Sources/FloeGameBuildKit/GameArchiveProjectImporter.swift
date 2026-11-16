@@ -160,10 +160,10 @@ public struct GameArchiveProjectImporter: Sendable {
             guard entry.bytes <= exchange.limits.maximumFileBytes else {
                 throw GameExternalArchiveError.limitExceeded(entry.path.value)
             }
-            total += entry.bytes
-            guard total <= exchange.limits.maximumProjectBytes else {
+            guard entry.bytes >= 0, total <= exchange.limits.maximumProjectBytes - entry.bytes else {
                 throw GameExternalArchiveError.limitExceeded("projectBytes")
             }
+            total += entry.bytes
         }
         // 4. Advisory diagnostics on the host-extracted tree.
         let preview = try previewer.preview(tree: extracted)
@@ -187,8 +187,7 @@ public struct GameArchiveProjectImporter: Sendable {
         guard info.st_size <= originalStore.maximumOriginalBytes else {
             throw GameArchiveError.limitExceeded("originalArchiveBytes")
         }
-        let bytes = try Data(contentsOf: archive)
-        return try await originalStore.preserve(bytes)
+        return try await originalStore.preserve(file: archive)
     }
 
     private func importIntoProject(archive: URL,

@@ -14,6 +14,12 @@ import FloeTools
 import FloeCore
 @MainActor
 final class LinuxImageInstallModel: ObservableObject {
+    static func confirmationRequiresMissingDiskWarning(_ issue: LinuxResidentImageResolutionError?) -> Bool {
+        issue == .missingDisk
+    }
+    static func mayOfferPreservingRebuild(_ issue: LinuxResidentImageResolutionError?) -> Bool {
+        issue != .missingDisk
+    }
     private let requestedImageID: String?
     @Published private(set) var imageID: String
     @Published private(set) var state: LinuxGuestInstallState = .storageInitializing
@@ -27,11 +33,13 @@ final class LinuxImageInstallModel: ObservableObject {
     @Published private(set) var recoveryError: String?
     @Published private(set) var recoveryNotice: String?
     @Published private(set) var recoveryCancelling = false
+    @Published private(set) var identityRepairTicket: LinuxResidentRepairTicket?
     private var recoveryCancellation: CancellationToken?
 
     var canRebuildPreservingData: Bool {
         requestedImageID == nil &&
-            (resolutionIssue?.permitsPreservingRebuild == true || canUpgradeKnownOldImage)
+            Self.mayOfferPreservingRebuild(resolutionIssue) &&
+            (identityRepairTicket != nil || resolutionIssue?.permitsPreservingRebuild == true || canUpgradeKnownOldImage)
     }
     /// A valid retained disk stays pinned to its original component. A plain
     /// re-download repairs that old image and cannot add newer screen/service
@@ -137,6 +145,7 @@ final class LinuxImageInstallModel: ObservableObject {
     private var jobs: EnvironmentPackageJobs { .shared }
 
     func probeOnce() async {
+        guard identityRepairTicket == nil else { return }
         guard !didProbe else { return }
         do {
             acceptImageID(try await selectedImageID())
@@ -212,6 +221,26 @@ final class LinuxImageInstallModel: ObservableObject {
                 guard isCurrent() else { return }
                 state = .storageUnavailable
                 imageIssue = nil
+                return
+            }
+        }
+        if requestedImageID == nil {
+            do {
+                let ticket = try await services.residentIdentityRepairTicket()
+                guard isCurrent() else { return }
+                identityRepairTicket = ticket
+                if ticket != nil {
+                    imageID = ""
+                    resolutionIssue = nil
+                    imageIssue = nil
+                    state = .repairRequired(environmentID: environmentIDHint,
+                        message: IDELanguageRunText.t("无法确认当前运行盘，请保留旧环境并重建。", "The current runtime disk could not be verified. Retain it and rebuild the environment."))
+                    return
+                }
+            } catch {
+                guard isCurrent() else { return }
+                identityRepairTicket = nil
+                showResolutionFailure(error)
                 return
             }
         }
@@ -308,8 +337,14 @@ final class LinuxImageInstallModel: ObservableObject {
         }
     }
 
-    func rebuildPreservingData() {
+    func rebuildPreservingData(confirmedTicket: LinuxResidentRepairTicket?, confirmedIssue: LinuxResidentImageResolutionError?) {
         guard canStartPreservingRebuild else { return }
+        let repairTicket = confirmedTicket
+        // A refresh while the confirmation was open cannot retarget it.
+        guard repairTicket == identityRepairTicket, confirmedIssue == resolutionIssue else {
+            recoveryError = IDELanguageRunText.t("环境已变化，请重新检查后确认。", "The environment changed. Check it and confirm again.")
+            return
+        }
         rebuilding = true
         recoveryNotice = nil; recoveryCancelling = false
         recoveryError = nil
@@ -317,7 +352,7 @@ final class LinuxImageInstallModel: ObservableObject {
         recoveryCancellation = cancellation
         Task {
             do {
-                try await FloePlatformServices.shared.rebuildLinuxRuntimePreservingData(cancellation: cancellation)
+                try await FloePlatformServices.shared.rebuildLinuxRuntimePreservingData(cancellation: cancellation, repairTicket: repairTicket)
                 recoveryNotice = String(localized: "execution.runtime_rebuild.complete")
             } catch is CancellationError { recoveryNotice = String(localized: "envmgr.job_cancelled") }
             catch { recoveryError = error.localizedDescription }
@@ -425,6 +460,8 @@ final class LinuxImageInstallModel: ObservableObject {
 /// never shows a download button for an installed or running component.
 struct LinuxImageInstallCard: View {
     @State private var showsPreservingRecovery = false
+    @State private var confirmedRepairTicket: LinuxResidentRepairTicket?
+    @State private var confirmedResolutionIssue: LinuxResidentImageResolutionError?
     @ObservedObject var model: LinuxImageInstallModel
     /// Observed directly: byte progress and the phase of the shared job live
     /// here, so the card re-renders on every service report instead of only
@@ -471,10 +508,14 @@ struct LinuxImageInstallCard: View {
         }
         .accessibilityElement(children: .contain)
         .confirmationDialog(preservingRecoveryTitle, isPresented: $showsPreservingRecovery, titleVisibility: .visible) {
-            Button(preservingRecoveryTitle) { model.rebuildPreservingData() }
+            Button(preservingRecoveryTitle) { model.rebuildPreservingData(confirmedTicket: confirmedRepairTicket, confirmedIssue: confirmedResolutionIssue) }
             Button("action.cancel", role: .cancel) { }
         } message: {
-            Text("execution.runtime_rebuild.confirm")
+            if LinuxImageInstallModel.confirmationRequiresMissingDiskWarning(confirmedResolutionIssue) {
+                Text(IDELanguageRunText.t("当前运行盘已缺失，无法保留其中的内容。工作区文件会保留；新环境需要重新安装软件。", "The current runtime disk is missing, so its contents cannot be retained. Workspace files are kept; reinstall software in the new environment."))
+            } else {
+                Text("execution.runtime_rebuild.confirm")
+            }
         }
         .onChange(of: EnvironmentPackageJobs.shared.revision) { _, _ in
             // Refresh first, then continue only when THIS image's own shared
@@ -654,9 +695,11 @@ struct LinuxImageInstallCard: View {
                 .font(.caption)
                 .foregroundStyle(FloeTheme.destructive)
                 .textSelection(.enabled)
-            if model.imageID.isEmpty {
+            if model.imageID.isEmpty || model.identityRepairTicket != nil {
                 if model.canStartPreservingRebuild {
                     Button {
+                        confirmedRepairTicket = model.identityRepairTicket
+                        confirmedResolutionIssue = model.resolutionIssue
                         showsPreservingRecovery = true
                     } label: {
                         Label("execution.runtime_rebuild.title", systemImage: "arrow.down.circle")
@@ -687,6 +730,8 @@ struct LinuxImageInstallCard: View {
         }
         if model.canUpgradeKnownOldImage && model.canStartPreservingRebuild {
             Button {
+                confirmedRepairTicket = model.identityRepairTicket
+                confirmedResolutionIssue = model.resolutionIssue
                 showsPreservingRecovery = true
             } label: {
                 Label(preservingRecoveryTitle, systemImage: "arrow.up.circle")

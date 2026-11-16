@@ -6,9 +6,9 @@ public struct GameRepositoryLimits: Sendable {
     public let maximumFileBytes: Int
     public let maximumProjectBytes: Int
     public let maximumEntries: Int
-    public init(maximumFileBytes: Int = 256 * 1_024 * 1_024,
-                maximumProjectBytes: Int = 2 * 1_024 * 1_024 * 1_024, maximumEntries: Int = 10_000) throws {
-        guard maximumFileBytes > 0, maximumFileBytes <= 256 * 1_024 * 1_024,
+    public init(maximumFileBytes: Int = Int.max,
+                maximumProjectBytes: Int = Int.max, maximumEntries: Int = 10_000) throws {
+        guard maximumFileBytes > 0,
               maximumProjectBytes >= maximumFileBytes, maximumEntries > 0, maximumEntries <= 100_000 else {
             throw GameProjectError.invalidContext
         }
@@ -339,7 +339,7 @@ public actor FileGameProjectRepository {
             try requireRevision(current, expectedRevision)
             let old = try loadRevision(id, revision: historicalRevision)
             guard old.owner == owner else { throw GameProjectError.ownershipMismatch }
-            for file in old.files { _ = try object(file) }
+            for file in old.files { try verifyObject(file) }
             return try publish(.init(version: 1, projectID: id, owner: owner, revision: UUID().uuidString.lowercased(),
                 parent: current.revision, title: old.title, engine: old.engine, directories: old.directories, files: old.files))
         }
@@ -352,7 +352,7 @@ public actor FileGameProjectRepository {
         try validateIdentity(newID, owner: newOwner, title: title ?? source.title)
         return try locked(newID) {
             guard !FileManager.default.fileExists(atPath: headURL(newID).path) else { throw GameProjectError.destinationExists }
-            for file in source.files { _ = try object(file) }
+            for file in source.files { try verifyObject(file) }
             return try publish(.init(version: 1, projectID: newID, owner: newOwner, revision: UUID().uuidString.lowercased(),
                 parent: nil, title: title ?? source.title, engine: source.engine, directories: source.directories, files: source.files))
         }
@@ -368,7 +368,7 @@ public actor FileGameProjectRepository {
             let source = try load(sourceID, owner: sourceOwner), target = try load(targetID, owner: targetOwner)
             try requireRevision(source, sourceRevision)
             try requireRevision(target, expectedTargetRevision)
-            for file in source.files { try Task.checkCancellation(); _ = try object(file) }
+            for file in source.files { try Task.checkCancellation(); try verifyObject(file) }
             let result = GameStoredProject(version: 1, projectID: targetID, owner: targetOwner,
                 revision: UUID().uuidString.lowercased(), parent: target.revision, title: target.title,
                 engine: source.engine, directories: source.directories, files: source.files)
@@ -418,7 +418,7 @@ public actor FileGameProjectRepository {
         for path in project.directories { try GameFileStorage.directory(stage.appendingPathComponent(path.value)) }
         for file in project.files {
             try Task.checkCancellation()
-            try GameFileStorage.atomicWrite(object(file), to: stage.appendingPathComponent(file.path.value))
+            try copyObject(file, to: stage.appendingPathComponent(file.path.value))
             if file.executable { try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: stage.appendingPathComponent(file.path.value).path) }
         }
         try Task.checkCancellation()
@@ -482,13 +482,45 @@ public actor FileGameProjectRepository {
         return directory.appendingPathComponent("Objects/" + digest)
     }
     private func object(_ file: GameProjectFile) throws -> Data {
-        let bytes = try GameFileStorage.read(objectURL(file.sha256), maximum: limits.maximumFileBytes)
+        // In-memory editor APIs are distinct from streaming import. Refuse a
+        // large edit rather than allocate an unbounded selected game file.
+        let inMemoryLimit = min(limits.maximumFileBytes, 64 * 1_024 * 1_024)
+        guard file.bytes <= inMemoryLimit else { throw GameProjectError.limitExceeded(file.path.value) }
+        let bytes = try GameFileStorage.read(objectURL(file.sha256), maximum: inMemoryLimit)
         guard bytes.count == file.bytes, GameDigest.sha256(bytes) == file.sha256 else { throw GameProjectError.corruptStorage }
         return bytes
+    }
+    private func verifyObject(_ file: GameProjectFile) throws {
+        let url = try objectURL(file.sha256)
+        let reader = try GameProjectReader(rootURL: url.deletingLastPathComponent(), maximumFileBytes: limits.maximumFileBytes)
+        guard let actual = try reader.fingerprint(GameRelativePath(url.lastPathComponent)),
+              actual.bytes == file.bytes, actual.sha256 == file.sha256 else { throw GameProjectError.corruptStorage }
+    }
+    private func copyObject(_ file: GameProjectFile, to destination: URL) throws {
+        let url = try objectURL(file.sha256)
+        let fd = Darwin.open(destination.path, O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { throw GameProjectError.io("stage export") }
+        defer { Darwin.close(fd) }
+        let reader = try GameProjectReader(rootURL: url.deletingLastPathComponent(), maximumFileBytes: limits.maximumFileBytes)
+        guard let actual = try reader.fingerprint(GameRelativePath(url.lastPathComponent), writeChunk: { chunk in
+            try chunk.withUnsafeBytes { bytes in
+                var offset = 0
+                while offset < bytes.count {
+                    try Task.checkCancellation()
+                    let n = Darwin.write(fd, bytes.baseAddress!.advanced(by: offset), bytes.count - offset)
+                    if n < 0 && errno == EINTR { continue }
+                    if n <= 0 && errno == ENOSPC { throw NSError(domain: NSPOSIXErrorDomain, code: Int(ENOSPC)) }
+                    guard n > 0 else { throw GameProjectError.io("write export") }
+                    offset += n
+                }
+            }
+        }), actual.bytes == file.bytes, actual.sha256 == file.sha256 else { throw GameProjectError.corruptStorage }
+        guard fsync(fd) == 0 else { throw GameProjectError.io("flush export") }
     }
     private func put(reader: GameProjectReader, path: GameRelativePath) throws -> GameProjectFile {
         let temporary = directory.appendingPathComponent("Objects/.game-import-" + UUID().uuidString)
         let descriptor = Darwin.open(temporary.path, O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        if descriptor < 0 && errno == ENOSPC { throw NSError(domain: NSPOSIXErrorDomain, code: Int(ENOSPC)) }
         guard descriptor >= 0 else { throw GameProjectError.io("stage import") }
         defer { Darwin.close(descriptor); unlink(temporary.path) }
         guard let fingerprint = try reader.fingerprint(path, writeChunk: { chunk in
@@ -498,12 +530,15 @@ public actor FileGameProjectRepository {
                     try Task.checkCancellation()
                     let count = Darwin.write(descriptor, bytes.baseAddress!.advanced(by: offset), bytes.count - offset)
                     if count < 0, errno == EINTR { continue }
+                    if count <= 0 && errno == ENOSPC { throw NSError(domain: NSPOSIXErrorDomain, code: Int(ENOSPC)) }
                     guard count > 0 else { throw GameProjectError.io("write import") }
                     offset += count
                 }
             }
         }) else { throw GameProjectError.unreadableFile(path.value) }
-        guard fsync(descriptor) == 0 else { throw GameProjectError.io("flush import") }
+        let flushed = fsync(descriptor)
+        if flushed != 0 && errno == ENOSPC { throw NSError(domain: NSPOSIXErrorDomain, code: Int(ENOSPC)) }
+        guard flushed == 0 else { throw GameProjectError.io("flush import") }
         let file = GameProjectFile(path: path, sha256: fingerprint.sha256, bytes: fingerprint.bytes,
                                    executable: try reader.isExecutable(path))
         let target = try objectURL(file.sha256)
@@ -525,7 +560,7 @@ public actor FileGameProjectRepository {
         guard bytes.count <= limits.maximumFileBytes else { throw GameProjectError.limitExceeded(path.value) }
         let file = GameProjectFile(path: path, sha256: GameDigest.sha256(bytes), bytes: bytes.count, executable: executable)
         let target = try objectURL(file.sha256)
-        if FileManager.default.fileExists(atPath: target.path) { _ = try object(file) }
+        if FileManager.default.fileExists(atPath: target.path) { try verifyObject(file) }
         else { try GameFileStorage.atomicWrite(bytes, to: target); stagedFiles.append(target) }
         return file
     }
