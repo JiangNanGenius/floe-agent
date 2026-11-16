@@ -1,5 +1,11 @@
 # Floe Android 分目标实施记录
 
+## 1.0.20 后源码检查点：浮窗触摸诊断（2026-11-16，未发版）
+
+为定位三星点悬浮球后消失的问题，增加默认关闭的有限本机事件日志；只记录事件类别、时间和触点数量，不记录坐标、界面内容、包名、设备或任务身份，也不改变用户接管规则。phonecontrol 与 Full 主应用 Kotlin 编译通过；尚未用此源码打包或采集设备事件，暂不能确定实机事件顺序。
+
+English: An opt-in, bounded local timing diagnostic was added for overlay touch investigation. Relevant Kotlin compilation passed; no device event sequence has yet been captured.
+
 ## 1.0.20／129 已公开：文件审批与设备等待提示（2026-11-16）
 
 [Android 1.0.20 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v1.0.20)固定源码 `3a98cf86e37ad0f31f241fd5666ce44fc55b61fe`；Full APK SHA-256 `6eb25e50f4d050bf8b5b8e35b12a42876f3c94da717af07f79296bf098388232`。公开七附件匿名下载字节逐项匹配，GitHub 更新列表可发现本版，iOS Latest 保持 `v1.8.25`。1.0.19 的增量包已在本机从精确基底重建到本版完整字节；三星本次使用 ADB 覆盖安装，并未验证本版设备内在线升级或增量失败回退。

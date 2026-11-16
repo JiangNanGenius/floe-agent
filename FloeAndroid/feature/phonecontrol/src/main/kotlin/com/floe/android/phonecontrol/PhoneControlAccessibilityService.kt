@@ -7,7 +7,41 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
+import android.os.SystemClock
+import android.util.Log
 import android.view.accessibility.AccessibilityEvent
+import java.util.concurrent.atomic.AtomicInteger
+
+/** Opt-in, process-bounded timing only; never receives screen or owner data. */
+object PhoneControlTouchDiagnostic {
+    enum class Event {
+        AS_START, RAW_CLOSED, RAW_SUPPRESSED, RAW_ECHO, RAW_ACCEPT, FENCE_USER_TOUCH,
+        BUBBLE_DOWN, BUBBLE_UP, BUBBLE_CANCEL, EXPAND_REQUEST, EXPAND_OPEN,
+        EXPAND_UNAVAILABLE, OVERLAY_REMOVE,
+    }
+
+    private const val TAG = "FloeTouchDiag"
+    private const val MAX_EVENTS = 128
+    private val count = AtomicInteger()
+
+    fun record(event: Event, eventTime: Long? = null, downTime: Long? = null, pointerCount: Int? = null) {
+        runCatching {
+            if (!Log.isLoggable(TAG, Log.DEBUG)) return
+            while (true) {
+                val current = count.get()
+                if (current >= MAX_EVENTS) return
+                if (count.compareAndSet(current, current + 1)) break
+            }
+            val message = buildString {
+                append(event.name).append(" uptime=").append(SystemClock.uptimeMillis())
+                if (eventTime != null) append(" event=").append(eventTime)
+                if (downTime != null) append(" down=").append(downTime)
+                if (pointerCount != null) append(" pointers=").append(pointerCount.coerceIn(0, 32))
+            }
+            Log.d(TAG, message)
+        }
+    }
+}
 
 /**
  * The only exported component in this module, protected by
@@ -82,8 +116,10 @@ class PhoneControlAccessibilityService : AccessibilityService() {
             // Raw touch interaction: the unambiguous human signal, with the
             // session's existing own-dispatch echo attribution. The session's
             // owned-view transition never absorbs this.
-            AccessibilityEvent.TYPE_TOUCH_INTERACTION_START ->
+            AccessibilityEvent.TYPE_TOUCH_INTERACTION_START -> {
+                PhoneControlTouchDiagnostic.record(PhoneControlTouchDiagnostic.Event.AS_START, eventTime = event.eventTime)
                 session.onRawTouchInteraction(event.eventTime)
+            }
         }
     }
 

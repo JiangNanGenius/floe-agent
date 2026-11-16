@@ -2006,6 +2006,7 @@ internal class PhoneControlSession(
         unlocker.userInteraction()
         if (fence.state().owner == null && inFlightId == null) return
         traceObservationClear("own_app_user_interaction")
+        PhoneControlTouchDiagnostic.record(PhoneControlTouchDiagnostic.Event.FENCE_USER_TOUCH)
         fence.block(PhoneControlBlocker.USER_TOUCH)
         latest = null
         abortInFlight(PhoneControlBlocker.USER_TOUCH, "a user touch on Floe's own window interrupted the run")
@@ -2119,13 +2120,21 @@ internal class PhoneControlSession(
      * never absorbs it.
      */
     fun onRawTouchInteraction(eventUptimeMillis: Long? = null) {
-        if (closed) return
+        if (closed) {
+            PhoneControlTouchDiagnostic.record(PhoneControlTouchDiagnostic.Event.RAW_CLOSED)
+            return
+        }
         val now = SystemClock.elapsedRealtime()
-        if (now <= suppressUserTouchUntil) return
+        if (now <= suppressUserTouchUntil) {
+            PhoneControlTouchDiagnostic.record(PhoneControlTouchDiagnostic.Event.RAW_SUPPRESSED)
+            return
+        }
         if (eventUptimeMillis != null && ownInputEcho.isOwnEcho(eventUptimeMillis)) {
+            PhoneControlTouchDiagnostic.record(PhoneControlTouchDiagnostic.Event.RAW_ECHO)
             runCatching { android.util.Log.i("FloePhoneUnlock", "LATE_OWN_INPUT_ECHO_IGNORED") }
             return
         }
+        PhoneControlTouchDiagnostic.record(PhoneControlTouchDiagnostic.Event.RAW_ACCEPT)
         acceptHumanInteraction(
             source = PhoneUserInteractionSource.PLATFORM_RAW_TOUCH,
             packageName = null,
@@ -2170,6 +2179,7 @@ internal class PhoneControlSession(
         unlocker.userInteraction()
         if (fence.state().owner == null && inFlightId == null) return
         traceObservationClear("user_interaction")
+        PhoneControlTouchDiagnostic.record(PhoneControlTouchDiagnostic.Event.FENCE_USER_TOUCH)
         fence.block(PhoneControlBlocker.USER_TOUCH)
         latest = null
         abortInFlight(PhoneControlBlocker.USER_TOUCH, "a user touch interrupted the run")

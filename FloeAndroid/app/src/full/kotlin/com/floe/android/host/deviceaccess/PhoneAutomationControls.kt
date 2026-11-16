@@ -39,6 +39,7 @@ import com.floe.android.MainActivity
 import com.floe.android.R
 import com.floe.android.design.FloeThemeMode
 import com.floe.android.phonecontrol.PhoneControlOwner
+import com.floe.android.phonecontrol.PhoneControlTouchDiagnostic
 import com.floe.android.host.DeviceApprovalIdentity
 import com.floe.android.host.DeviceApprovalAction
 import com.floe.android.host.DeviceApprovalTarget
@@ -649,6 +650,8 @@ internal class PhoneAutomationControls(
     private fun onBubbleTouch(view: View, event: MotionEvent): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                PhoneControlTouchDiagnostic.record(PhoneControlTouchDiagnostic.Event.BUBBLE_DOWN,
+                    event.eventTime, event.downTime, event.pointerCount)
                 view.isPressed = true
                 if (expanded) noteUserInteraction()
                 dragDownRawX = event.rawX
@@ -678,12 +681,16 @@ internal class PhoneAutomationControls(
                 return true
             }
             MotionEvent.ACTION_UP -> {
+                PhoneControlTouchDiagnostic.record(PhoneControlTouchDiagnostic.Event.BUBBLE_UP,
+                    event.eventTime, event.downTime, event.pointerCount)
                 view.isPressed = false
                 if (!dragging) view.performClick()
                 dragging = false
                 return true
             }
             MotionEvent.ACTION_CANCEL -> {
+                PhoneControlTouchDiagnostic.record(PhoneControlTouchDiagnostic.Event.BUBBLE_CANCEL,
+                    event.eventTime, event.downTime, event.pointerCount)
                 view.isPressed = false
                 dragging = false
                 return true
@@ -704,12 +711,15 @@ internal class PhoneAutomationControls(
     }
 
     private fun expandPanel() {
+        PhoneControlTouchDiagnostic.record(PhoneControlTouchDiagnostic.Event.EXPAND_REQUEST)
         if (owner == null) return
         expanded = true
         runCatching { renderOverlay() }
         if (panel == null) {
+            PhoneControlTouchDiagnostic.record(PhoneControlTouchDiagnostic.Event.EXPAND_UNAVAILABLE)
             expanded = false
         } else {
+            PhoneControlTouchDiagnostic.record(PhoneControlTouchDiagnostic.Event.EXPAND_OPEN)
             scheduleCollapse()
         }
         bubble?.contentDescription = bubbleDescription()
@@ -1017,6 +1027,7 @@ internal class PhoneAutomationControls(
     // ---------------------------------------------------------- lifecycle
 
     private fun removeOverlay() {
+        PhoneControlTouchDiagnostic.record(PhoneControlTouchDiagnostic.Event.OVERLAY_REMOVE)
         retireApproval()
         cancelCollapse()
         expanded = false
