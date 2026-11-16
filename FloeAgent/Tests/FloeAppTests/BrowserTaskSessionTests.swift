@@ -39,6 +39,52 @@ struct BrowserTaskSessionTests {
         return registry
     }
 
+    @Test("Scroll advertises the actual bounded delta arguments")
+    func scrollSchemaMatchesArguments() throws {
+        _ = makeRegistry(makeCenter())
+        let descriptor = try #require(ToolCatalog.descriptor(named: "browser.scroll"))
+        let schema = try #require(JSONSerialization.jsonObject(with: Data(descriptor.parametersJSON.utf8)) as? [String: Any])
+        let properties = try #require(schema["properties"] as? [String: [String: Any]])
+        #expect(Set(properties.keys) == Set(["tabID", "deltaX", "deltaY"]))
+        #expect(schema["required"] as? [String] == ["deltaY"])
+        #expect(schema["additionalProperties"] as? Bool == false)
+        for key in ["deltaX", "deltaY"] {
+            let delta = try #require(properties[key])
+            #expect(delta["type"] as? String == "number")
+            #expect(delta["minimum"] as? Int == -20_000)
+            #expect(delta["maximum"] as? Int == 20_000)
+        }
+    }
+
+    @Test("Browser download resolves a Unicode workspace consistently and still rejects escape")
+    func downloadAcceptsNormalizedWorkspaceBeforeTrustGate() async throws {
+        let container = FileManager.default.temporaryDirectory
+            .appendingPathComponent("BrowserDownload-\(UUID().uuidString)", isDirectory: true)
+        let workspace = container.appendingPathComponent("资料-é", isDirectory: true)
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: container) }
+        let owner = UUID()
+        let ctx = ToolContext(runID: UUID(), workspaceRootURL: workspace,
+                              cancellation: CancellationToken(), conversationID: owner)
+        let registry = makeRegistry(makeCenter())
+        do {
+            _ = try await run(registry, "browser.download",
+                #"{"url":"https://example.com/fixture.png","path":"fixture.png"}"#, as: ctx)
+            Issue.record("An unbound run must never bypass browser data authorization")
+        } catch {
+            let message = error.localizedDescription
+            #expect(!message.contains("different workspace"), Comment(rawValue: message))
+            #expect(message.contains("browser") || message.contains("Browser"), Comment(rawValue: message))
+        }
+        do {
+            _ = try await run(registry, "browser.download",
+                #"{"url":"https://example.com/fixture.png","path":"../escape.png"}"#, as: ctx)
+            Issue.record("Download must reject an escape before authorization or network access")
+        } catch {
+            #expect(!error.localizedDescription.contains("Advanced browser features"))
+        }
+    }
+
     private func context(
         for owner: UUID,
         runID: UUID = UUID(),
@@ -2102,6 +2148,35 @@ struct BrowserTaskSessionTests {
         let loaded = await session.execute(BrowserCommand(sessionID: session.sessionID, tabID: tabID,
             action: .wait(.text("Current preview document"))), control: lease)
         #expect(loaded.status == .ok && loaded.page?.nodes.contains(where: { $0.text == "Current preview document" }) == true)
+    }
+
+    @Test("Submitted input may navigate, while an already stale target cannot submit")
+    func submittedInputNavigatesAndStaleTargetIsRejected() async throws {
+        let center = makeCenter()
+        let (session, tabID, _) = try isolatedSession(owner: UUID(), center: center)
+        defer { session.release(); try? FileManager.default.removeItem(at: session.artifactDirectory) }
+        try Data("""
+            <!doctype html><form action="done.html"><input name="query"><button>Submit</button></form>
+            """.utf8).write(to: session.artifactDirectory.appendingPathComponent("index.html"))
+        try Data("<!doctype html><p>Submission received</p>".utf8)
+            .write(to: session.artifactDirectory.appendingPathComponent("done.html"))
+        let (server, site) = try await LocalPreviewServer.start(root: session.artifactDirectory, entry: "index.html")
+        defer { server.stop() }
+        let lease = try acquirePreviewLease(session)
+        let opened = await session.execute(BrowserCommand(sessionID: session.sessionID, tabID: tabID,
+            action: .navigate(url: site.url.absoluteString)), control: lease)
+        let page = try #require(opened.page)
+        let input = try #require(page.nodes.first(where: { $0.role == "input" }))
+        let oldTarget = BrowserTarget.element(ref: input.ref, documentID: page.documentID)
+        let submitted = await session.execute(BrowserCommand(sessionID: session.sessionID, tabID: tabID,
+            expectedDocumentID: page.documentID, action: .type(oldTarget, text: "sample", submit: true)), control: lease)
+        #expect(submitted.status == .ok, Comment(rawValue: submitted.message ?? submitted.error?.message ?? ""))
+        let loaded = await session.execute(BrowserCommand(sessionID: session.sessionID, tabID: tabID,
+            action: .wait(.text("Submission received"))), control: lease)
+        #expect(loaded.status == .ok)
+        let stale = await session.execute(BrowserCommand(sessionID: session.sessionID, tabID: tabID,
+            expectedDocumentID: page.documentID, action: .type(oldTarget, text: "must-not-submit", submit: true)), control: lease)
+        #expect(stale.status == .stale && stale.error?.code == "document")
     }
 
     @Test("A dispatched navigation never reports another page or returns page data after takeover", arguments: [false, true])

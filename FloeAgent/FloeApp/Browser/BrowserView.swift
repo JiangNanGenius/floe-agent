@@ -630,7 +630,10 @@ private struct BrowserSurface: View {
             VStack(spacing: 0) {
                 if session.usesFixedViewport {
                     HStack {
-                        Label(IDELanguageRunText.t("AI 正在浏览", "AI browsing"), systemImage: "sparkles")
+                        Label(session.humanBrowsingTabID == nil
+                              ? IDELanguageRunText.t("AI 正在浏览", "AI browsing")
+                              : IDELanguageRunText.t("浏览标签页", "Browsing tab"),
+                              systemImage: session.humanBrowsingTabID == nil ? "sparkles" : "safari")
                         Spacer()
                         Button { activeSheet = .settings } label: { Image(systemName: "gearshape") }
                             .accessibilityLabel(IDELanguageRunText.t("浏览器设置", "Browser settings"))
@@ -716,18 +719,60 @@ private struct BrowserConcurrentTabStrip: View {
         ScrollView(.horizontal) {
             HStack(spacing: 4) {
                 ForEach(session.tabs) { tab in
-                    let isModelTab = tab.id == session.fixedViewportTab?.id
+                    let isModelTab = tab.id == session.fixedViewportTab?.id || tab.id == session.activeTabID
                     let selected = isModelTab ? session.humanBrowsingTabID == nil : session.humanBrowsingTabID == tab.id
-                    Button {
-                        session.browseWhileModelRuns(isModelTab ? nil : tab.id)
-                    } label: {
-                        Label(tab.webView.title.flatMap { $0.isEmpty ? nil : $0 } ??
-                            tab.webView.url?.host ?? IDELanguageRunText.t("新标签页", "New tab"),
-                            systemImage: isModelTab ? "sparkles" : "safari")
-                            .lineLimit(1).padding(.horizontal, 10).frame(minHeight: 44)
-                            .background(selected ? Color.accentColor.opacity(0.15) : .clear, in: Capsule())
+                    HStack(spacing: 0) {
+                        if !isModelTab {
+                            Button {
+                                // Recheck ownership at the instant of the tap: the
+                                // model can switch targets while this strip is visible.
+                                guard session.modelControl != nil,
+                                      tab.id != session.fixedViewportTab?.id,
+                                      tab.id != session.activeTabID else { return }
+                                if session.humanBrowsingTabID == tab.id {
+                                    let index = session.tabs.firstIndex { $0.id == tab.id }
+                                    let candidates = index.map { i in
+                                        Array(session.tabs.dropFirst(i + 1)) + Array(session.tabs.prefix(i).reversed())
+                                    } ?? []
+                                    let next = candidates.first {
+                                        $0.id != session.fixedViewportTab?.id && $0.id != session.activeTabID
+                                    }?.id
+                                    session.closeHumanBrowsingTab(tab.id)
+                                    if !session.tabs.contains(where: { $0.id == tab.id }), let next {
+                                        session.browseWhileModelRuns(next)
+                                    }
+                                } else {
+                                    session.close(tab.id)
+                                }
+                            } label: {
+                                Image(systemName: "xmark")
+                                    .font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                                    .frame(width: 44, height: 44).contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(IDELanguageRunText.t("关闭标签页", "Close tab"))
+                        }
+                        Button {
+                            session.browseWhileModelRuns(isModelTab ? nil : tab.id)
+                        } label: {
+                            Label(tab.webView.title.flatMap { $0.isEmpty ? nil : $0 } ??
+                                tab.webView.url?.host ?? IDELanguageRunText.t("新标签页", "New tab"),
+                                systemImage: isModelTab ? "sparkles" : "safari")
+                                .font(.subheadline).lineLimit(1)
+                                .foregroundStyle(selected ? .primary : .secondary)
+                                .padding(.leading, isModelTab ? 12 : 0).padding(.trailing, 16)
+                                .frame(minWidth: 80, maxWidth: 180, minHeight: 44, alignment: .leading)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityAddTraits(selected ? .isSelected : [])
+                        .accessibilityHint(isModelTab
+                            ? IDELanguageRunText.t("查看 AI 正在操作的标签页", "View the tab controlled by AI")
+                            : IDELanguageRunText.t("打开这个标签页", "Open this tab"))
                     }
-                    .buttonStyle(.plain)
+                    .background(selected ? Color(uiColor: .systemBackground) : .clear,
+                                in: UnevenRoundedRectangle(topLeadingRadius: 10, topTrailingRadius: 10))
+                    .accessibilityElement(children: .contain)
                 }
                 Button { _ = session.createHumanBrowsingTab() } label: {
                     Image(systemName: "plus").frame(width: 44, height: 44)
@@ -749,30 +794,43 @@ private struct BrowserHumanTabSurface: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Button { tab.webView.goBack() } label: { Image(systemName: "chevron.backward") }
+                Button { tab.webView.goBack() } label: { Image(systemName: "chevron.backward").frame(width: 44, height: 44).contentShape(Rectangle()) }
                     .disabled(!tab.webView.canGoBack)
-                Button { tab.webView.goForward() } label: { Image(systemName: "chevron.forward") }
+                    .accessibilityLabel(IDELanguageRunText.t("后退", "Back"))
+                Button { tab.webView.goForward() } label: { Image(systemName: "chevron.forward").frame(width: 44, height: 44).contentShape(Rectangle()) }
                     .disabled(!tab.webView.canGoForward)
+                    .accessibilityLabel(IDELanguageRunText.t("前进", "Forward"))
                 TextField(IDELanguageRunText.t("输入网址", "Enter address"), text: $address)
-                    .textInputAutocapitalization(.never).keyboardType(.URL)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL).submitLabel(.go)
                     .focused($editingAddress)
                     .onSubmit {
-                        let candidate = address.contains("://") ? address : "https://\(address)"
+                        let trimmed = address.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let candidate = trimmed.contains("://") ? trimmed : "https://\(trimmed)"
                         if let url = try? BrowserURLPolicy.validate(candidate, conversationID: session.conversationID, allowLocalNetwork: true) {
                             tab.webView.load(URLRequest(url: url))
                             editingAddress = false
                         }
                     }
-                Button { tab.webView.reload() } label: { Image(systemName: "arrow.clockwise") }
+                Button {
+                    if tab.webView.isLoading { tab.webView.stopLoading() } else { tab.webView.reload() }
+                } label: {
+                    Image(systemName: tab.webView.isLoading ? "xmark" : "arrow.clockwise")
+                        .frame(width: 44, height: 44).contentShape(Rectangle())
+                }
+                .accessibilityLabel(tab.webView.isLoading
+                    ? IDELanguageRunText.t("停止载入", "Stop loading") : IDELanguageRunText.t("刷新", "Reload"))
                 Button {
                     session.closeHumanBrowsingTab(tab.id)
-                } label: { Image(systemName: "xmark") }
+                } label: { Image(systemName: "xmark").frame(width: 44, height: 44).contentShape(Rectangle()) }
                 .accessibilityLabel(IDELanguageRunText.t("关闭标签页", "Close tab"))
-            }.padding(.horizontal, 12).frame(minHeight: 44)
+            }.buttonStyle(.plain).padding(.horizontal, 8).frame(minHeight: 44)
             BrowserWebContainer(tab: tab, presentationID: presentationID, priority: 3,
                                 active: active, onUserInteraction: {})
         }
-        .onChange(of: tab.id, initial: true) { _, _ in address = tab.webView.url?.absoluteString ?? "" }
+        .onChange(of: tab.id, initial: true) { _, _ in
+            editingAddress = false
+            address = tab.webView.url?.absoluteString ?? ""
+        }
         .onChange(of: session.tabStateRevision) { _, _ in
             if !editingAddress, let url = tab.webView.url { address = url.absoluteString }
         }

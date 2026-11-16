@@ -1,0 +1,4 @@
+{
+  "zh-Hans": "测试工具完成后的状态和模型回复等待；试用浏览器滚动、输入提交、下载、多标签以及接管和交还。检查目标任务续接、Skill Hub 布局与缓存，以及火山语音断线恢复和 DeepSeek 分段识别。",
+  "en-US": "Check tool completion and the wait for the model. Try browser scrolling, form submission, downloads, tabs and handoff. Test goal continuation, the Skill Hub layout and cache, Volcengine reconnection, and segmented DeepSeek speech recognition."
+}

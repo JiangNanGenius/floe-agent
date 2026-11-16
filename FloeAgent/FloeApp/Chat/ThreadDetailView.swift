@@ -1061,6 +1061,8 @@ struct ThreadDetailView: View {
                 isLatest: isLatest,
                 isLive: viewModel.isRunning && events.contains { $0.runID == viewModel.selectedRunID },
                 hasError: events.contains { $0.kind == .error },
+                liveFinishedTools: events.contains { $0.runID == viewModel.selectedRunID }
+                    ? viewModel.liveFinishedTools : [:],
                 pendingApprovals: viewModel.pendingApprovals,
                 decisions: viewModel.decisionAnnotations,
                 childRunRecords: viewModel.childRunRecords,

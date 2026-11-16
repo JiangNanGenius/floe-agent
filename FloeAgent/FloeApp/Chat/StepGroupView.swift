@@ -25,6 +25,7 @@ struct StepGroupView: View {
     let isLatest: Bool
     let isLive: Bool
     let hasError: Bool
+    private let liveFinishedTools: [String: String]
     private let allPendingApprovals: [PendingApproval]
     private var pendingApprovals: [PendingApproval] { allPendingApprovals.filter { requestCallIDs.contains($0.toolCall.id) } }
     /// Decision records projected onto this group's tool calls (see
@@ -51,6 +52,7 @@ struct StepGroupView: View {
         isLatest: Bool,
         isLive: Bool,
         hasError: Bool,
+        liveFinishedTools: [String: String] = [:],
         pendingApprovals: [PendingApproval] = [],
         decisions: [ToolDecisionAnnotation] = [],
         childRunRecords: [ChildRunRecord] = [],
@@ -63,6 +65,7 @@ struct StepGroupView: View {
         self.isLatest = isLatest
         self.isLive = isLive
         self.hasError = hasError
+        self.liveFinishedTools = liveFinishedTools
         self.allPendingApprovals = pendingApprovals
         self.decisions = decisions
         self.childRunRecords = childRunRecords
@@ -84,7 +87,8 @@ struct StepGroupView: View {
     }
     private var toolCount: Int { displayedEvents.filter { $0.kind == .toolRequest || $0.kind == .toolResult }.count }
     private var activeTools: [RunEventRecord] {
-        displayedEvents.filter { $0.kind == .toolRequest && matchingResult(for: $0) == nil && isLive }
+        displayedEvents.filter { $0.kind == .toolRequest && matchingResult(for: $0) == nil
+            && callID(for: $0).flatMap { liveFinishedTools[$0] } == nil && isLive }
     }
     private var failedTools: [RunEventRecord] {
         displayedEvents.filter {
@@ -260,6 +264,7 @@ struct StepGroupView: View {
         if let result = matchingResult(for: event) {
             return (payloads[result.id] ?? [:])["status"] ?? "completed"
         }
+        if let callID = callID(for: event), let status = liveFinishedTools[callID] { return status }
         if pendingApproval(for: event) != nil { return "pending" }
         return isLive ? "running" : "failed"
     }

@@ -130,6 +130,8 @@ final class ThreadDetailViewModel: ObservableObject {
     @Published private(set) var liveUsage = UsageSnapshot()
     @Published private(set) var latestUsage = UsageSnapshot()
     @Published private(set) var nativeToolDiagnostics: [String: [TaskDiagnosticProgress]] = [:]
+    /// Executor returns are transient; the persisted result always wins once available.
+    @Published private(set) var liveFinishedTools: [String: String] = [:]
     /// Live snapshot of the selected run, when the center owns it.
     @Published private(set) var liveStateName: String?
     @Published private(set) var approvalReviewSummary: String?
@@ -2629,6 +2631,7 @@ final class ThreadDetailViewModel: ObservableObject {
         liveUsage = UsageSnapshot()
         latestUsage = UsageSnapshot()
         nativeToolDiagnostics = [:]
+        liveFinishedTools = [:]
         guard let run = selectedRun else {
             isRunning = false
             return
@@ -2661,6 +2664,7 @@ final class ThreadDetailViewModel: ObservableObject {
             // inferring a phase from the state name.
             self.applyLiveCompression(snapshot.contextCompression)
             self.nativeToolDiagnostics = snapshot.nativeToolDiagnostics
+            self.liveFinishedTools = snapshot.finishedToolExecutions.mapValues(\.rawValue)
             var answerTarget = snapshot.streamedText
             if !self.locallyStoppedRunIDs.contains(run.id) {
                 self.animator.update(target: answerTarget)
@@ -2724,7 +2728,8 @@ final class ThreadDetailViewModel: ObservableObject {
                     } else {
                         self.nativeToolDiagnostics[callID] = observations
                     }
-                case .toolLifecycle(.requested):
+                case .toolLifecycle(.requested(let call)):
+                    self.liveFinishedTools.removeValue(forKey: call.id)
                     if self.liveStateName == "preparingToolCall" { self.liveStateName = "streamingModel" }
                     // A new call starts: the previous settlement note is no
                     // longer the current truth.
@@ -2741,6 +2746,9 @@ final class ThreadDetailViewModel: ObservableObject {
                         self.reasoningAnimator.reset()
                     }
                     self.hasProviderActivity = true
+                case .toolLifecycle(.executionFinished(let callID, let status)):
+                    guard !self.locallyStoppedRunIDs.contains(run.id) else { continue liveEvents }
+                    self.liveFinishedTools[callID] = status.rawValue
                 case .userInputConsumed:
                     guard !self.locallyStoppedRunIDs.contains(run.id) else { continue liveEvents }
                     answerTarget = ""

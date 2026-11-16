@@ -62,6 +62,8 @@ public actor ConversationRunService {
         public var recentToolOutcomes: [ToolOutcomeClassification]
         /// RAM-only native observations, keyed within this exact run.
         public var nativeToolDiagnostics: [String: [TaskDiagnosticProgress]]
+        /// Transient execution completions awaiting durable tool results.
+        public var finishedToolExecutions: [String: ToolResult.Status]
 
         public var lastToolOutcome: ToolOutcomeClassification? {
             recentToolOutcomes.last
@@ -90,7 +92,8 @@ public actor ConversationRunService {
             checkpointReason: String? = nil,
             contextCompression: ContextCompressionSnapshot? = nil,
             recentToolOutcomes: [ToolOutcomeClassification] = [],
-            nativeToolDiagnostics: [String: [TaskDiagnosticProgress]] = [:]
+            nativeToolDiagnostics: [String: [TaskDiagnosticProgress]] = [:],
+            finishedToolExecutions: [String: ToolResult.Status] = [:]
         ) {
             self.runID = runID
             self.conversationID = conversationID
@@ -107,6 +110,7 @@ public actor ConversationRunService {
             self.contextCompression = contextCompression
             self.recentToolOutcomes = recentToolOutcomes
             self.nativeToolDiagnostics = nativeToolDiagnostics
+            self.finishedToolExecutions = finishedToolExecutions
         }
     }
 
@@ -269,6 +273,7 @@ public actor ConversationRunService {
     /// batch settles, so parallel calls keep their own real durations.
     private var toolCompletedAt: [String: ContinuousClock.Instant] = [:]
     private var toolNames: [String: String] = [:]
+    private var finishedToolExecutions: [String: ToolResult.Status] = [:]
     /// Prevents the legacy Markdown fallback from overwriting a structured
     /// plan submitted during this run.
     private var receivedStructuredPlan = false
@@ -492,8 +497,8 @@ public actor ConversationRunService {
         forwarder.onToolDispatch = { [weak self] call, stamp in
             await self?.handleToolDispatch(call, at: stamp)
         }
-        forwarder.onToolFinish = { [weak self] call, stamp in
-            await self?.handleToolFinish(callID: call.id, at: stamp)
+        forwarder.onToolFinish = { [weak self] call, status, stamp in
+            await self?.handleToolFinish(callID: call.id, status: status, at: stamp)
         }
         forwarder.onNativeDiagnostic = { [weak self] callID, observation in
             await self?.handleNativeDiagnostic(observation, callID: callID)
@@ -566,7 +571,8 @@ public actor ConversationRunService {
             checkpointReason: checkpointReason,
             contextCompression: contextCompression,
             recentToolOutcomes: recentToolOutcomes,
-            nativeToolDiagnostics: nativeToolDiagnostics
+            nativeToolDiagnostics: nativeToolDiagnostics,
+            finishedToolExecutions: finishedToolExecutions
         )
     }
 
@@ -1408,8 +1414,10 @@ public actor ConversationRunService {
 
     /// Per-call executor return: the execution end boundary for this callID,
     /// independent of when the whole batch settles.
-    private func handleToolFinish(callID: String, at stamp: ToolTimingStamp) {
+    private func handleToolFinish(callID: String, status: ToolResult.Status, at stamp: ToolTimingStamp) {
         toolCompletedAt[callID] = stamp.monotonic
+        finishedToolExecutions[callID] = status
+        eventChannel.yield(.toolLifecycle(.executionFinished(callID: callID, status: status)))
     }
 
     private func handleNativeDiagnostic(_ observation: TaskDiagnosticProgress, callID: String) {
@@ -1509,6 +1517,7 @@ public actor ConversationRunService {
             nativeToolDiagnostics[call.id] = nil
             nativeDiagnosticCallOrder.removeAll { $0 == call.id }
             toolNames[call.id] = call.toolName
+            finishedToolExecutions.removeValue(forKey: call.id)
             toolRequestedAt[call.id] = ContinuousClock.now
             // Explicit Cookie/Authorization argument values are scrubbed
             // over the FULL argument data BEFORE the bounded event projection.
@@ -1608,12 +1617,13 @@ public actor ConversationRunService {
                     )
                 }
             }
-            _ = await appendEventReliably(
+            let resultPersisted = await appendEventReliably(
                 runID: runID, kind: .toolResult,
                 payloadJSON: Self.jsonPayload(persisted),
                 boundary: "toolResult",
                 completionCritical: true
             )
+            if resultPersisted { finishedToolExecutions.removeValue(forKey: result.callID) }
         case .usage(let report):
             eventChannel.yield(.usageChanged(UsageSnapshot(
                 inputTokens: report.inputTokens,
@@ -2923,7 +2933,7 @@ private final class SinkForwarder: AgentEventSink, @unchecked Sendable {
     var onApprovalReview: (@Sendable (ApprovalReviewSnapshot) async -> Void)?
     var onApprovalDecisionRecorded: (@Sendable (ApprovalDecisionReceipt) async -> Void)?
     var onToolDispatch: (@Sendable (ToolCall, ToolTimingStamp) async -> Void)?
-    var onToolFinish: (@Sendable (ToolCall, ToolTimingStamp) async -> Void)?
+    var onToolFinish: (@Sendable (ToolCall, ToolResult.Status, ToolTimingStamp) async -> Void)?
     var onNativeDiagnostic: (@Sendable (String, TaskDiagnosticProgress) async -> Void)?
     var onContextCompression: (@Sendable (ContextCompressionSnapshot) async -> Void)?
     var onToolOutcome: (@Sendable (ToolOutcomeClassification) async -> Void)?
@@ -2946,7 +2956,7 @@ private final class SinkForwarder: AgentEventSink, @unchecked Sendable {
         result: ToolResult,
         at stamp: ToolTimingStamp
     ) async {
-        await onToolFinish?(call, stamp)
+        await onToolFinish?(call, result.status, stamp)
     }
 
     func agentRuntime(_ runtime: FloeAgentRuntime, didObserveNativeDiagnostic observation: TaskDiagnosticProgress, callID: String) async {

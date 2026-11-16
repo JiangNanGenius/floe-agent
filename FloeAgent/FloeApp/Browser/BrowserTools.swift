@@ -359,7 +359,7 @@ private final class BrowserToolEnvironment: @unchecked Sendable {
             path,
             for: overwrite == true ? .replace(consent: true) : .createNew
         )
-        guard destination.path.hasPrefix(physicalRoot.path + "/") else {
+        guard destination.path.hasPrefix(pathGuard.rootURL.path + "/") else {
             throw FloeError.validationFailed("The download destination belongs to a different workspace")
         }
         // Consent is awaited before the page is held; a takeover during the
@@ -980,6 +980,7 @@ private struct BrowserScrollTool: AgentTool {
     struct Arguments: Decodable, Sendable { let tabID: UUID?; let deltaX: Double?; let deltaY: Double }
     static let name = "browser.scroll"
     static let toolDescription = "Scroll this task's browser viewport"
+    static let parametersJSON = #"{"type":"object","properties":{"tabID":{"type":"string","format":"uuid"},"deltaX":{"type":"number","minimum":-20000,"maximum":20000},"deltaY":{"type":"number","minimum":-20000,"maximum":20000}},"required":["deltaY"],"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.controlsGUI]
     static let isSideEffecting = true
     static let toolEffect: ToolEffect = .mutating

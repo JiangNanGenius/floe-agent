@@ -1898,7 +1898,16 @@ final class BrowserTaskSession: NSObject, ObservableObject {
             case .protocolInfo, .create, .listTabs, .activateTab, .closeTab, .takeover:
                 break
             }
-            return await observeResult(command, tabID: tabID, cursor: nil)
+            let observation = await observeResult(command, tabID: tabID, cursor: nil)
+            if case .type(_, _, let submit) = command.action, submit,
+               observation.status == .stale, observation.error?.code == "document" {
+                return BrowserResult(
+                    requestID: command.requestID,
+                    status: .ok,
+                    message: "Input and submit were dispatched. The page changed; observe it before the next action."
+                )
+            }
+            return observation
         } catch BrowserProbeError.timedOut {
             return failure(command, status: .timeout, code: "timeout", "WebKit did not return a current viewport in time.")
         } catch BrowserInteractionError.needsUser(let message) {

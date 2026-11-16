@@ -11094,6 +11094,10 @@ final class ConversationCenter: ObservableObject {
                     guard !Task.isCancelled, self.runServices[runID] === service else { break trackLoop }
                     checklistChanged = false
                     switch lifecycle {
+                    case .executionFinished:
+                        // Presentation-only early signal; the durable result
+                        // remains authoritative for background state.
+                        break
                     case .requested(let call), .started(let call):
                         if ["checklist.updatePlan", "checklist.resetPlan"].contains(call.toolName) { checklistCalls.insert(call.id) }
                         toolNamesByCallID[call.id] = call.toolName
