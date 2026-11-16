@@ -1,12 +1,14 @@
 # Floe Android 分目标实施记录
 
-## Full124 C06补丁：审批后的设备接管确认（2026-11-16）
+## Full124 C06三星验收：审批后的设备接管确认（2026-11-16）
 
 修复询问模式中审批后的确认读取缺口：原窗口从审批请求开始计时，用户较晚点允许时，执行内部才创建的必答设备接管问题可能没有入口显示。现在仅在真实接受允许决定后，为同一设备工具调用重新开启既有有界读取窗口；沿用任务、会话、流代次与终态校验，不代答、不放宽权限、不重放操作。拒绝、失效决定及被替换的会话不会启动该窗口。
 
-实际生产Kotlin对象与对应测试对象已编译，22项定向测试通过；同一新回归在原代码上明确失败，保留原失败。Swift、原生输入和悬浮控制未改。当前准备C06私有Full包，用新的三星询问模式任务验证较晚允许后能显示接管确认，并取得真实启动／观察回执；旧失败任务不继续。C05完全访问的成功与原询问故障分别保留，不互相销账。
+实际生产Kotlin对象与对应测试对象已编译，22项定向测试通过；同一新回归在原代码上明确失败，保留原失败。C06固定APK源码`9a595ae9f29e36d6fde8325e43b2a4d6180bd17e`，实际Full构建123.3秒，58项绑定／16KiB与四包API28–29签名通过；166936483字节／SHA-256`d9e29863905ceb664145a30e498e95136a2f7fd88de11dea13b4a63248e4da1e`已在三星覆盖安装并读回，原UID保持。Swift、native63和悬浮控制未改。
 
-English: C06 restarts the existing bounded question reader only after a real accepted allow decision for the exact device call. This exposes a required presence/handover question created inside execution when a slow human decision outlives the request-anchored window. Existing identity, session, generation and terminal fences remain; no answer, permission widening or effect retry is introduced. Actual production/test Kotlin objects compiled and22 focused tests passed; the same new regression fails against the original code. Native inputs and floating controls are unchanged. C06 packaging and a fresh delayed-allow Samsung ASK flow are pending; retained old runs are not continued and the independent C05 FullAccess success does not qualify ASK recovery.
+三星新询问模式任务在超出原读取窗口后仅点一次允许，真实日志记录`INITIAL_PHONE_PRESENCE_REQUIRED`／`own_app_touch`，随后必答接管确认实际出现；通过原生界面提交一次回答后，Chrome启动与默认结构观察均成功，返回30个`accessibilityService`／`nativeTree`节点。原生导出为自然`completed`，工具发现、启动、观察三对回执全为成功；没有重试、继续旧任务、点击条款、登录、输入或给模型截图。执行耗时包含人工确认等待，不当作纯启动延迟。原C05缺少当时接管日志的不确定性仍保留，不改写旧失败。临时授权、目标应用及电源已恢复为AS关闭、目标0、控制关闭、0／30000；完整活动目标仍由独立录像任务验收，不能用这项定向成功代替。
+
+English: C06 restarts the bounded question reader after a real accepted allow decision for the exact device call. Identity, session, generation and terminal fences remain; no answer, permission widening or effect replay is introduced. Production/test Kotlin objects compiled and 22 focused tests passed; the same regression fails against the original code. The exact-source/hash APK above passed Full packaging,58 native bindings/16KiB and four API28–29 signer checks and is installed with unchanged UIDs. A fresh Samsung ASK run deliberately outlived the old reader window: one canonical allow triggered the real own-App-touch presence branch and an actual required card; one native answer then led to successful Chrome launch and a default30-node accessibility/nativeTree observation. Discovery, launch and observation all have paired successful native receipts and the run completed naturally, without retries, old-run continuation, terms/login/input or screenshots sent to the model. Durations include human waiting. The original C05 missing presence trace remains unavailable. Native63/floating controls are unchanged; temporary permissions, targets and true power0/30000 are restored. This directed case does not replace the independent full natural-goal recording.
 
 ## Full124 C05候选：设备观察结果的Unicode契约（2026-11-16）
 
