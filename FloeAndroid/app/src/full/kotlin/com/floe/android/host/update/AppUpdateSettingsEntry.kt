@@ -132,6 +132,8 @@ private fun primaryAction(
             }
         }
         ui.install is AppInstallState.Succeeded -> controller.clearInstallSucceeded()
+        ui.install is AppInstallState.WaitingForJobs &&
+            !(ui.install as AppInstallState.WaitingForJobs).monitoring -> controller.installNow(force = false)
         ui.install is AppInstallState.Preparing ||
             ui.install is AppInstallState.AwaitingSystem ||
             ui.install is AppInstallState.WaitingForJobs ||
@@ -208,7 +210,8 @@ internal object AppUpdateCopy {
         if (install !is AppInstallState.Idle) {
             return when (install) {
                 is AppInstallState.Preparing -> stringResource(R.string.app_update_preparing)
-                is AppInstallState.WaitingForJobs -> stringResource(R.string.app_update_waiting_jobs)
+                is AppInstallState.WaitingForJobs -> stringResource(
+                    if (install.monitoring) R.string.app_update_waiting_jobs else R.string.app_update_wait_expired)
                 is AppInstallState.NeedsPermission ->
                     if (install.deniedOnce) stringResource(R.string.app_update_permission_denied)
                     else stringResource(R.string.app_update_permission)
@@ -262,7 +265,9 @@ internal object AppUpdateCopy {
         ui.install is AppInstallState.Confirming -> stringResource(R.string.app_update_confirm_now)
         ui.install is AppInstallState.Preparing -> stringResource(R.string.app_update_preparing)
         ui.install is AppInstallState.AwaitingSystem -> stringResource(R.string.app_update_check_status)
-        ui.install is AppInstallState.WaitingForJobs -> stringResource(R.string.app_update_install_now)
+        ui.install is AppInstallState.WaitingForJobs -> stringResource(
+            if ((ui.install as AppInstallState.WaitingForJobs).monitoring) R.string.app_update_install_now
+            else R.string.app_update_recheck_work)
         ui.install is AppInstallState.Committing -> stringResource(R.string.app_update_committing)
         ui.install is AppInstallState.Succeeded -> stringResource(R.string.done)
         ui.install is AppInstallState.Failed -> stringResource(R.string.retry)

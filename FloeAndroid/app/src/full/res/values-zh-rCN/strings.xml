@@ -32,6 +32,10 @@
     <string name="app_update_disk_full">可用空间不足，无法下载更新</string>
     <string name="app_update_waiting_jobs">已下载，等待当前任务完成后安装</string>
     <string name="app_update_waiting_jobs_kinds">等待：%1$s</string>
+    <string name="app_update_wait_expired">自动检查已停止。准备安装时，请重新检查。</string>
+    <string name="app_update_last_checked_kinds">上次检查：%1$s</string>
+    <string name="app_update_runtime_busy">上次检查时 Linux 环境仍在使用。</string>
+    <string name="app_update_recheck_work">重新检查</string>
     <string name="app_update_install_kills_app">安装会关闭应用，请先保存工作</string>
     <string name="app_update_permission">需要允许从此应用安装</string>
     <string name="app_update_permission_detail">安卓仅需授权一次，将打开系统设置页面</string>
@@ -47,8 +51,8 @@
     <string name="app_update_install_failed">安装失败</string>
     <string name="app_update_install_identity_failed">安装包身份校验失败，已拒绝安装</string>
     <string name="app_update_system_note">安卓要求你在系统界面确认安装，应用不能静默覆盖安装。</string>
-    <string name="app_update_job_agent">模型任务</string>
-    <string name="app_update_job_terminal">终端会话</string>
+    <string name="app_update_job_agent">任务及后台处理</string>
+    <string name="app_update_job_terminal">本地环境操作</string>
     <string name="app_update_job_durable">后台任务</string>
     <string name="app_update_job_environment">环境安装</string>
     <string name="app_update_list_separator">、</string>

@@ -36,6 +36,10 @@
     <string name="app_update_disk_full">Not enough free space to download the update</string>
     <string name="app_update_waiting_jobs">Downloaded. Waiting for current tasks to finish</string>
     <string name="app_update_waiting_jobs_kinds">Waiting for: %1$s</string>
+    <string name="app_update_wait_expired">Automatic checking has stopped. Check again when you are ready to install.</string>
+    <string name="app_update_last_checked_kinds">At last check: %1$s</string>
+    <string name="app_update_runtime_busy">The Linux environment was still in use at the last check.</string>
+    <string name="app_update_recheck_work">Check again</string>
     <string name="app_update_install_kills_app">Installing closes the app. Save your work first</string>
     <string name="app_update_permission">Allow installing apps from Floe</string>
     <string name="app_update_permission_detail">Android asks for this permission once and opens the system settings page</string>
@@ -51,8 +55,8 @@
     <string name="app_update_install_failed">Installation failed</string>
     <string name="app_update_install_identity_failed">Package identity check failed; installation refused</string>
     <string name="app_update_system_note">Android requires the system install confirmation. The app cannot install silently.</string>
-    <string name="app_update_job_agent">Model task</string>
-    <string name="app_update_job_terminal">Terminal session</string>
+    <string name="app_update_job_agent">Tasks and background processing</string>
+    <string name="app_update_job_terminal">Local environment operations</string>
     <string name="app_update_job_durable">Background task</string>
     <string name="app_update_job_environment">Environment install</string>
     <string name="app_update_list_separator">", "</string>
