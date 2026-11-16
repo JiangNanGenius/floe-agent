@@ -29,6 +29,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -83,10 +84,18 @@ fun ConversationApprovalRow(
     val slotConflict = handoff.showsConflictNote
     val handoffRefusal = holder.terminalHandoffRefusal.value
         ?.takeIf { it.approvalKey == card.key }
+    val dispatchState = holder.approvalDispatchStates.value[card.key]
+    val decisionInFlight = dispatchState != null && dispatchState != ApprovalDispatchState.RETRY_READY
+    val detailsVisible = when (card.actionKind) {
+        "back", "home" -> true
+        "launch" -> !card.actionPackage.isNullOrBlank()
+        else -> false
+    }
+    val canAllow = card.identityVerified && card.scopeVerified && detailsVisible && !decisionInFlight
+    val canDeny = card.identityVerified && !decisionInFlight
     val gateStopped = ApprovalGrantMapping.isGateStopped(card.reason) && !reasonIsSlotConflict
     val headerTitle = stringResource(R.string.approval_required)
     val actionLabel = stringResource(R.string.approval_action)
-    val scopeLabel = stringResource(R.string.approval_scope_label)
     val evidenceLabel = stringResource(R.string.approval_evidence)
     val chooseScopeLabel = stringResource(R.string.approval_scope_choose)
     val denyLabel = stringResource(R.string.action_deny)
@@ -107,7 +116,7 @@ fun ConversationApprovalRow(
     // The current native decision contract is call-bound. Never promise
     // task/project/host grants that the producer cannot forward.
     val resolve: (ApprovalCardUi, Boolean) -> Unit = { c, allow ->
-        if (allow) holder.setApprovalScope(c.key, ApprovalScopeChoiceUi.ONCE)
+        if (allow) holder.setApprovalScope(c.key, ApprovalScopeChoiceUi.ONCE, expected = c)
         backendResolve(c, allow)
     }
     // The explicit handoff is a THIRD human control, not a variant of Allow:
@@ -129,9 +138,9 @@ fun ConversationApprovalRow(
             // The terminal settled between the card being projected and this
             // tap. Nothing is stopped, approved or dispatched; the card says
             // so plainly and the ordinary Allow/Deny stays available.
-            holder.applyTerminalHandoffRefusal(holder.session, c.key, "staleCapture")
+            holder.noteTerminalCaptureRefusal(c, "staleCapture")
         } else {
-            holder.setApprovalScope(c.key, ApprovalScopeChoiceUi.ONCE)
+            holder.setApprovalScope(c.key, ApprovalScopeChoiceUi.ONCE, expected = c)
             backendEndTerminalAndRun(c, consent)
         }
     }
@@ -168,9 +177,23 @@ fun ConversationApprovalRow(
                 FloeText(actionLabel, style = Floe.typography.metadata, color = colors.secondaryLabel)
                 FloeText(card.toolName, style = Floe.typography.evidence, color = colors.label)
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FloeText(scopeLabel, style = Floe.typography.metadata, color = colors.secondaryLabel)
-                FloeText(card.scopeDescription, style = Floe.typography.evidence, color = colors.label)
+            if (card.scopeVerified) {
+                FloeText(when (card.actionKind) {
+                    "back" -> stringResource(R.string.approval_device_back)
+                    "home" -> stringResource(R.string.approval_device_home)
+                    "launch" -> stringResource(R.string.approval_device_launch)
+                    else -> ""
+                }, style = Floe.typography.bodyEmphasized, color = colors.label)
+                card.actionPackage?.let { packageName ->
+                    FloeText(stringResource(R.string.approval_device_package),
+                        style = Floe.typography.metadata, color = colors.secondaryLabel)
+                    SelectionContainer {
+                        FloeText(packageName, modifier = Modifier.fillMaxWidth(),
+                            style = Floe.typography.evidence, color = colors.label)
+                    }
+                }
+                FloeText(stringResource(R.string.approval_requested_scope_note),
+                    style = Floe.typography.metadata, color = colors.secondaryLabel)
             }
             if (card.reason.isNotEmpty() && !reasonIsSlotConflict) {
                 FloeText(
@@ -224,7 +247,7 @@ fun ConversationApprovalRow(
                     modifier = Modifier
                         .fillMaxWidth()
                         .heightIn(min = FloeLayout.MinimumTarget)
-                        .clickable { holder.toggleApprovalEvidence(card.key) },
+                        .clickable { holder.toggleApprovalEvidence(card.key, expected = card) },
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
@@ -261,13 +284,13 @@ fun ConversationApprovalRow(
             }
         }
 
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        if (card.scopeVerified) Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             FloeText(chooseScopeLabel, style = Floe.typography.metadata, color = colors.secondaryLabel)
             FloeSegmented(
                 options = tierLabels,
                 selectedIndex = 0,
                 onSelect = { _ ->
-                    holder.setApprovalScope(card.key, ApprovalScopeChoiceUi.ONCE)
+                    holder.setApprovalScope(card.key, ApprovalScopeChoiceUi.ONCE, expected = card)
                 },
             )
         }
@@ -282,7 +305,7 @@ fun ConversationApprovalRow(
                     .heightIn(min = FloeLayout.MinimumTarget)
                     .clip(RoundedCornerShape(FloeLayout.CircleToolbarCorner))
                     .background(colors.pending)
-                    .clickable { endTerminalAndRun(card) }
+                    .clickable(enabled = canAllow) { endTerminalAndRun(card) }
                     .semantics { contentDescription = endTerminalAndRunLabel }
                     .padding(horizontal = 14.dp, vertical = 8.dp),
                 contentAlignment = Alignment.Center,
@@ -304,6 +327,34 @@ fun ConversationApprovalRow(
             )
         }
 
+        when (dispatchState) {
+            ApprovalDispatchState.PROCESSING, ApprovalDispatchState.CHECKING -> FloeText(
+                stringResource(R.string.approval_processing), style = Floe.typography.metadata, color = colors.secondaryLabel)
+            ApprovalDispatchState.NEEDS_CHECK -> FloeText(
+                stringResource(R.string.approval_result_unknown), style = Floe.typography.metadata, color = colors.destructive)
+            ApprovalDispatchState.STOP_REQUIRED -> FloeText(
+                stringResource(R.string.approval_changed_stop), style = Floe.typography.metadata, color = colors.destructive)
+            ApprovalDispatchState.RETRY_READY -> FloeText(
+                stringResource(R.string.approval_retry_ready), style = Floe.typography.metadata, color = colors.destructive)
+            null -> Unit
+        }
+        if (!card.identityVerified || !card.scopeVerified || !detailsVisible) {
+            FloeText(stringResource(if (!card.identityVerified) R.string.approval_identity_unavailable
+                else R.string.approval_details_unavailable), style = Floe.typography.metadata, color = colors.secondaryLabel)
+        }
+        if (dispatchState == ApprovalDispatchState.NEEDS_CHECK ||
+            (!decisionInFlight && (!card.identityVerified || !card.scopeVerified || !detailsVisible))) {
+            FloeText(stringResource(R.string.approval_recheck),
+                modifier = Modifier.clickable { holder.recheckApproval(card) }.padding(vertical = 8.dp),
+                style = Floe.typography.bodyEmphasized, color = colors.accent)
+        }
+        if (!card.identityVerified || dispatchState == ApprovalDispatchState.NEEDS_CHECK ||
+            dispatchState == ApprovalDispatchState.STOP_REQUIRED) {
+            FloeText(stringResource(R.string.action_stop),
+                modifier = Modifier.clickable { holder.stopForApproval(card) }.padding(vertical = 8.dp),
+                style = Floe.typography.bodyEmphasized, color = colors.destructive)
+        }
+
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Box(
                 modifier = Modifier
@@ -311,21 +362,23 @@ fun ConversationApprovalRow(
                     .heightIn(min = FloeLayout.MinimumTarget)
                     .clip(RoundedCornerShape(FloeLayout.CircleToolbarCorner))
                     .border(0.5.dp, colors.chromeHairline, RoundedCornerShape(FloeLayout.CircleToolbarCorner))
-                    .clickable { resolve(card, false) }
+                    .clickable(enabled = canDeny) { resolve(card, false) }
                     .semantics { contentDescription = denyLabel }
                     .padding(horizontal = 14.dp, vertical = 8.dp),
                 contentAlignment = Alignment.Center,
             ) {
-                FloeText(denyLabel, style = Floe.typography.bodyEmphasized, color = colors.label)
+                FloeText(denyLabel, style = Floe.typography.bodyEmphasized,
+                    color = if (canDeny) colors.label else colors.secondaryLabel.copy(alpha = 0.45f))
             }
-            val allowTint = if (card.isSideEffecting) colors.destructive else colors.accent
+            val allowTint = if (!canAllow) colors.secondaryLabel.copy(alpha = 0.25f)
+                else if (card.isSideEffecting) colors.destructive else colors.accent
             Box(
                 modifier = Modifier
                     .weight(1f)
                     .heightIn(min = FloeLayout.MinimumTarget)
                     .clip(RoundedCornerShape(FloeLayout.CircleToolbarCorner))
                     .background(allowTint)
-                    .clickable { resolve(card, true) }
+                    .clickable(enabled = canAllow) { resolve(card, true) }
                     .semantics { contentDescription = approveLabel }
                     .padding(horizontal = 14.dp, vertical = 8.dp),
                 contentAlignment = Alignment.Center,

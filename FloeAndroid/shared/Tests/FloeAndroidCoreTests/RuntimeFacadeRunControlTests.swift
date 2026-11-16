@@ -13,10 +13,37 @@ import FloeProviders
 import FloePersistence
 import FloeAgentRuntime
 import FloeSecurity
+import FloeTools
 @testable import FloeAndroidCore
 
 final class RuntimeFacadeRunControlTests: XCTestCase {
     private var fixture: RunDomainFixture!
+
+    func testApprovalPresentationFailsClosedForUnknownOrSensitiveActions() throws {
+        let descriptor = ToolCatalog.Descriptor(name: "device.act", riskLabels: [.controlsGUI], isSideEffecting: true)
+        func project(_ json: String, descriptor: ToolCatalog.Descriptor?) throws -> SettingsDomainV1.JSONValue {
+            let call = try ToolCall(id: "one", toolName: "device.act", argumentsJSON: Data(json.utf8), scope: .local)
+            return RunSnapshotWireBuilder.approvalPresentation(.init(toolCall: call, reason: "test"), descriptor: descriptor)
+        }
+        let back = try project(#"{"action":"back","observationId":"00000000-0000-0000-0000-000000000001"}"#, descriptor: descriptor)
+        guard case .object(let fields) = back else { return XCTFail("object expected") }
+        XCTAssertEqual(fields["detailStatus"], .string("available"))
+        XCTAssertEqual(fields["actionDetails"], .object(["action": .string("back")]))
+        let launch = try project(#"{"action":"launch","packageName":"org.example.editor"}"#, descriptor: descriptor)
+        guard case .object(let launchFields) = launch else { return XCTFail("object expected") }
+        XCTAssertEqual(launchFields["detailStatus"], .string("available"))
+        XCTAssertEqual(launchFields["actionDetails"], .object([
+            "action": .string("launch"), "packageName": .string("org.example.editor")]))
+        let secret = try project(#"{"action":"setText","sensitiveText":"synthetic-secret"}"#, descriptor: descriptor)
+        guard case .object(let secretFields) = secret else { return XCTFail("object expected") }
+        XCTAssertEqual(secretFields["detailStatus"], .string("unavailable"))
+        XCTAssertNil(secretFields["actionDetails"])
+        XCTAssertFalse(String(describing: secret).contains("synthetic-secret"))
+        let unknown = try project(#"{"action":"home","observationId":"00000000-0000-0000-0000-000000000001"}"#, descriptor: nil)
+        guard case .object(let unknownFields) = unknown else { return XCTFail("object expected") }
+        XCTAssertEqual(unknownFields["status"], .string("unavailable"))
+        XCTAssertNil(unknownFields["descriptorIdentity"])
+    }
 
     override func setUp() async throws {
         fixture = try await RunDomainFixture.make()
@@ -573,11 +600,60 @@ final class RuntimeFacadeRunControlTests: XCTestCase {
         }
         XCTAssertTrue(pending, "the ENGINE must request approval, not a synthesized card")
         let waiting = try unwrapAsync(await domain.liveService(runID)?.snapshot().pendingApproval)
-        let requestVersion = RunWireRevision.approvalVersion(requestedAt: waiting.requestedAt)
+        let requestVersion = RunWireRevision.approvalVersion(generation: waiting.generation)
+        let snapshotReply = await domain.snapshot(envelope: fixture.executionEnvelope(
+            command: "run.snapshot", conversationID: conversationID, runID: runID,
+            payload: nil, correlation: "corr-approval-generation-snapshot"))
+        guard case .completedPage(let page, _) = snapshotReply.outcome,
+              case .object(let fields) = page.object,
+              case .object(let pending) = fields["pendingApproval"],
+              case .object(let revision) = fields["approvalRevision"] else {
+            return XCTFail("a live approval must publish its exact generation")
+        }
+        XCTAssertEqual(pending["generation"], .string(waiting.generation.uuidString.lowercased()))
+        XCTAssertEqual(pending["requestedAt"], .string(RunWireDate.encode(waiting.requestedAt)))
+        XCTAssertEqual(revision["version"], .string(requestVersion))
+        guard case .object(let presentation) = pending["presentation"] else {
+            return XCTFail("the same live snapshot must carry its presentation")
+        }
+        XCTAssertEqual(presentation["generation"], pending["generation"])
+        XCTAssertEqual(presentation["status"], .string("available"))
+        XCTAssertEqual(presentation["detailStatus"], .string("unavailable"))
+        XCTAssertEqual(presentation["workspaceVerified"], .boolean(false))
+        let legacy = await domain.resolveApproval(envelope: fixture.executionEnvelope(
+            command: "run.approval.resolve", conversationID: conversationID, runID: runID,
+            payload: ["callID": waiting.toolCall.id, "decision": "allow",
+                      "expectedApprovalVersion": requestVersion],
+            correlation: "corr-old-client-generation",
+            revision: ["resourceID": RunWireRevision.approvalResourceID(callID: waiting.toolCall.id),
+                       "version": requestVersion]))
+        guard case .rejected = legacy.outcome else {
+            return XCTFail("a client unaware of presentation schema must be rejected")
+        }
+        // Legacy timestamp revisions and a different generation must never
+        // authorize the current request, even for the same call/time.
+        for stale in [RunWireDate.encode(waiting.requestedAt),
+                      RunWireRevision.approvalVersion(generation: UUID())] {
+            let staleReply = await domain.resolveApproval(envelope: fixture.executionEnvelope(
+                command: "run.approval.resolve", conversationID: conversationID, runID: runID,
+                payload: ["callID": waiting.toolCall.id, "decision": "allow",
+                          "approvalSchema": "generation-v1",
+                          "expectedDescriptorIdentity": try XCTUnwrap(fixture.registry.descriptor(named: waiting.toolCall.toolName)).authorizationIdentity,
+                          "expectedApprovalVersion": stale],
+                correlation: "corr-stale-generation-\(UUID().uuidString)",
+                revision: ["resourceID": RunWireRevision.approvalResourceID(callID: waiting.toolCall.id),
+                           "version": stale]))
+            guard case .rejected(let error) = staleReply.outcome else {
+                return XCTFail("a stale approval revision must not resolve")
+            }
+            XCTAssertEqual(error, RunDomainError(.staleRevision, .revisionMismatch))
+        }
         // Wrong callID can never resolve the pending request.
         let wrong = await domain.resolveApproval(envelope: fixture.executionEnvelope(
             command: "run.approval.resolve", conversationID: conversationID, runID: runID,
             payload: ["callID": "not-the-live-call", "decision": "allow",
+                      "approvalSchema": "generation-v1",
+                      "expectedDescriptorIdentity": try XCTUnwrap(fixture.registry.descriptor(named: waiting.toolCall.toolName)).authorizationIdentity,
                       "expectedApprovalVersion": requestVersion],
             correlation: "corr-wrong",
             revision: ["resourceID": RunWireRevision.approvalResourceID(callID: "not-the-live-call"),
@@ -590,6 +666,8 @@ final class RuntimeFacadeRunControlTests: XCTestCase {
         let right = await domain.resolveApproval(envelope: fixture.executionEnvelope(
             command: "run.approval.resolve", conversationID: conversationID, runID: runID,
             payload: ["callID": waiting.toolCall.id, "decision": "allow",
+                      "approvalSchema": "generation-v1",
+                      "expectedDescriptorIdentity": try XCTUnwrap(fixture.registry.descriptor(named: waiting.toolCall.toolName)).authorizationIdentity,
                       "expectedApprovalVersion": requestVersion],
             correlation: "corr-right",
             revision: ["resourceID": RunWireRevision.approvalResourceID(callID: waiting.toolCall.id),

@@ -98,6 +98,63 @@ class ConversationApprovalDispatchTest {
     }
 
     @Test
+    fun incompleteDetailsBlockAllowButVerifiedIdentityCanDeny() {
+        val card = approvalCard().copy(scopeVerified = false)
+        val host = RecordingHost()
+        val holder = holderWithApproval(host, card)
+        assertTrue(holder.resolveApproval(card, allow = true) is ConversationFlowResult.Rejected)
+        assertEquals(0, host.count("resolveApproval"))
+        assertEquals(ConversationFlowResult.Accepted, holder.resolveApproval(card, allow = false))
+        assertEquals(1, host.count("resolveApproval"))
+    }
+
+    @Test
+    fun unverifiableIdentityCannotDenyAndCanStopOnlyItsSelectedRun() {
+        val card = approvalCard().copy(identityVerified = false, scopeVerified = false)
+        val host = RecordingHost()
+        val holder = holderWithApproval(host, card)
+        assertTrue(holder.resolveApproval(card, allow = false) is ConversationFlowResult.Rejected)
+        assertTrue(holder.stopForApproval(card))
+        assertEquals(1, host.count("cancelRun"))
+        holder.selectRun("different-run")
+        assertEquals(false, holder.stopForApproval(card))
+        assertEquals(1, host.count("cancelRun"))
+    }
+
+    @Test
+    fun newGenerationClearsPerCardStateAndFencesOldRecovery() {
+        val card = approvalCard()
+        val holder = holderWithApproval(RecordingHost(), card)
+        holder.setApprovalScope(card.key, ApprovalScopeChoiceUi.PROJECT)
+        holder.toggleApprovalEvidence(card.key)
+        holder.resolveApproval(card, allow = true)
+        val session = holder.session
+        val attempt = requireNotNull(holder.approvalAttempt(session, card.key))
+        val next = card.copy(requestGeneration = "22222222-2222-4222-8222-222222222222",
+            approvalRevision = "generation:22222222-2222-4222-8222-222222222222")
+        holder.applyHostSnapshot(threadState(session, pendingApprovals = listOf(next)))
+        holder.setApprovalRecovery(session, card, attempt, ApprovalDispatchState.RETRY_READY)
+        assertEquals(emptyMap<String, ApprovalScopeChoiceUi>(), holder.approvalScopeChoices.value)
+        assertEquals(emptySet<String>(), holder.expandedApprovalEvidence.value)
+        assertEquals(null, holder.approvalDispatchStates.value[card.key])
+        assertEquals(ConversationFlowResult.Stale, holder.resolveApproval(card, allow = true))
+    }
+
+    @Test
+    fun changedDetailsDuringAnAttemptRequireStopWithoutRetry() {
+        val card = approvalCard()
+        val host = RecordingHost()
+        val holder = holderWithApproval(host, card)
+        holder.resolveApproval(card, allow = true)
+        val changed = card.copy(reason = "changed request details")
+        holder.applyHostSnapshot(threadState(holder.session, pendingApprovals = listOf(changed)))
+        assertEquals(ApprovalDispatchState.STOP_REQUIRED, holder.approvalDispatchStates.value[card.key])
+        assertTrue(holder.resolveApproval(changed, allow = true) is ConversationFlowResult.Rejected)
+        assertTrue(holder.stopForApproval(changed))
+        assertEquals(1, host.count("resolveApproval"))
+    }
+
+    @Test
     fun cardMissingFromTheProjectionIsStaleAndEmitsNothing() {
         val host = RecordingHost()
         val holder = holderWithApproval(host)

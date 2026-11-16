@@ -377,6 +377,11 @@ fun approvalCard(
     isSideEffecting = true,
     requestedAtLabel = "10:00",
     evidenceLines = listOf("path: notes.md"),
+    requestGeneration = "11111111-1111-4111-8111-111111111111",
+    approvalRevision = "generation:11111111-1111-4111-8111-111111111111",
+    descriptorIdentity = "a".repeat(64),
+    identityVerified = true,
+    scopeVerified = true,
 )
 
 fun pendingInput(
@@ -416,7 +421,8 @@ fun threadState(
     models: List<ModelOptionUi> = listOf(model()),
     // A RUNNING projection always owns a displayed run (host truth); an idle
     // one without rows honestly has none.
-    selectedRunId: String? = if (rows.isEmpty() && !isRunning) null else "run-1",
+    selectedRunId: String? = pendingApprovals.firstOrNull()?.runId
+        ?: if (rows.isEmpty() && !isRunning) null else "run-1",
     liveStateName: String? = null,
     runStateName: String = "idle",
     usage: UsageUi? = null,

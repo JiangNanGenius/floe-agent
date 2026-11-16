@@ -53,6 +53,8 @@ class ConversationOrdinaryPathTest {
     private val childId = "33333333-3333-4333-8333-333333333333"
     private val callId = "call_abc123"
     private val requestedAt = "2026-10-20T01:02:03.456Z"
+    private val approvalGeneration = "55555555-5555-4555-8555-555555555555"
+    private val descriptorIdentity = "a".repeat(64)
 
     // ------------------------------------------------------------------ wire
 
@@ -174,11 +176,17 @@ class ConversationOrdinaryPathTest {
         watermark: Long = 4,
         pendingTool: String = "workspace.writeFile",
     ): String {
+        val detailStatus = if (pendingTool == "device.act") "available" else "unavailable"
+        val actionDetails = if (pendingTool == "device.act") ""","actionDetails":{"action":"back"}""" else ""
         val approval = if (!pendingApproval) "null" else
             """{"callID":"$callId","tool":"$pendingTool","reason":"Needs approval",""" +
-                """"requestedAt":"$requestedAt"}"""
+                """"requestedAt":"$requestedAt","generation":"$approvalGeneration",""" +
+                """"presentation":{"status":"available","generation":"$approvalGeneration","tool":"$pendingTool",""" +
+                """"effect":"mutating","isSideEffecting":true,"riskLabels":[],"requestedScope":"local",""" +
+                """"grantScope":"singleUse","workspaceVerified":false,"descriptorIdentity":"$descriptorIdentity",""" +
+                """"detailStatus":"$detailStatus"$actionDetails}}"""
         val approvalRevision = if (!pendingApproval) "null" else
-            """{"resourceID":"approval.$callId","version":"$requestedAt"}"""
+            """{"resourceID":"approval.$callId","version":"generation:$approvalGeneration"}"""
         return """{"schema":"floe.command-envelope/3","conversationID":"$conversationId",""" +
             """"runID":"$runId","durableState":"$state",""" +
             """"revision":{"resourceID":"run.${runId.uppercase()}","version":"$state"},""" +
@@ -205,6 +213,7 @@ class ConversationOrdinaryPathTest {
         @Volatile var pendingApproval = false
         var pendingTool = "workspace.writeFile"
         var approvalEventWatermark = false
+        @Volatile var approvalEffectKind = "accepted"
         var archiveAccepted = true
         val questionReads = AtomicInteger()
         @Volatile var questionReply: (() -> String)? = null
@@ -362,10 +371,11 @@ class ConversationOrdinaryPathTest {
                     )
                     "op:v1:inputEdit", "op:v1:inputRemove", "op:v1:inputReorder" ->
                         effectPage(correlation, receiptTag, accepted(null, detail("mutated" to "true")))
-                    "op:v1:approvalResolve" -> effectPage(
-                        correlation, "approvalResolve",
-                        accepted(null, detail("bound" to "true", "awaitReceipt" to "approvalResolved")),
-                    )
+                    "op:v1:approvalResolve" -> if (script.approvalEffectKind == "unavailable") "invalid effect page"
+                    else effectPage(correlation, "approvalResolve", when (script.approvalEffectKind) {
+                        "failed", "rejected" -> """{"sequence":1,"kind":"${script.approvalEffectKind}","code":"unavailable"}"""
+                        else -> accepted(null, detail("bound" to "true", "awaitReceipt" to "approvalResolved"))
+                    })
                     "op:v1:childList" -> effectPage(
                         correlation, "childList",
                         accepted(
@@ -726,6 +736,61 @@ class ConversationOrdinaryPathTest {
         "createdAt":"$requestedAt","updatedAt":"$requestedAt"}]}"""
 
     @Test
+    fun failedOrLostApprovalEffectNeverEnablesRetry() = runBlocking {
+        for (effect in listOf("failed", "unavailable")) {
+            val script = LocalScript().apply {
+                runState = "waitingApproval"
+                pendingApproval = true
+                pendingTool = "device.act"
+                approvalEffectKind = effect
+            }
+            val exchange = buildExchange(script)
+            val host = readyHost(script, exchange)
+            try {
+                val holder = loadedHolder(host)
+                assertTrue(awaitCondition { holder.snapshot.value?.pendingApprovals?.isNotEmpty() == true })
+                val card = holder.snapshot.value!!.pendingApprovals.single()
+                assertEquals(ConversationFlowResult.Accepted, holder.resolveApproval(card, allow = true))
+                assertTrue(awaitCondition {
+                    holder.approvalDispatchStates.value[card.key] ==
+                        com.floe.android.feature.conversation.ApprovalDispatchState.NEEDS_CHECK
+                })
+                holder.recheckApproval(card)
+                assertTrue(awaitCondition {
+                    holder.approvalDispatchStates.value[card.key] ==
+                        com.floe.android.feature.conversation.ApprovalDispatchState.NEEDS_CHECK
+                })
+                assertTrue(holder.resolveApproval(card, allow = true) is ConversationFlowResult.Rejected)
+                assertEquals(1, exchange.commandsOf("run.approval.resolve").size)
+            } finally { host.stop() }
+        }
+    }
+
+    @Test
+    fun authoritativeRejectedEffectNeedsMatchingSnapshotAndExplicitRetry() = runBlocking {
+        val script = LocalScript().apply {
+            runState = "waitingApproval"
+            pendingApproval = true
+            pendingTool = "device.act"
+            approvalEffectKind = "rejected"
+        }
+        val exchange = buildExchange(script)
+        val host = readyHost(script, exchange)
+        try {
+            val holder = loadedHolder(host)
+            assertTrue(awaitCondition { holder.snapshot.value?.pendingApprovals?.isNotEmpty() == true })
+            val card = holder.snapshot.value!!.pendingApprovals.single()
+            assertEquals(ConversationFlowResult.Accepted, holder.resolveApproval(card, allow = true))
+            assertTrue(awaitCondition {
+                holder.approvalDispatchStates.value[card.key] ==
+                    com.floe.android.feature.conversation.ApprovalDispatchState.RETRY_READY
+            })
+            assertEquals(1, exchange.commandsOf("run.approval.resolve").size)
+            assertEquals(ConversationFlowResult.Accepted, holder.resolveApproval(card, allow = false))
+        } finally { host.stop() }
+    }
+
+    @Test
     fun approvedDeviceActionStartsQuestionDiscoveryAfterAcceptedDecision() = runBlocking {
         val script = LocalScript().apply {
             runState = "waitingApproval"
@@ -936,37 +1001,30 @@ class ConversationOrdinaryPathTest {
         val host = readyHost(script, exchange)
         val holder = loadedHolder(host)
         val cardOk = awaitCondition { holder.snapshot.value?.pendingApprovals?.isNotEmpty() == true }
-        assertTrue("approval card must render from the durable approval kind", cardOk)
+        assertTrue("approval card must render from the authoritative snapshot", cardOk)
         val card = holder.snapshot.value!!.pendingApprovals.first()
         assertEquals(callId, card.approvalId)
-        assertEquals("workspace/notes.md", card.scopeDescription)
-        // The snapshot's approvalRevision supplies the requestedAt CAS version.
+        assertEquals("", card.scopeDescription)
+        assertFalse(card.scopeVerified)
+        assertTrue(card.identityVerified)
+        // The snapshot's approvalRevision supplies the generation CAS version.
         val snapshotJson = snapshotValue("waitingApproval", pendingApproval = true)
         assertEquals(true, snapshotJson.contains("approval.$callId"))
         script.eventScript = { correlation -> eventPage(correlation, "attached", nextSequence = 1) }
-        host.conversations.resolveApproval(
-            com.floe.android.feature.conversation.ApprovalDecisionRequest(
-                conversationId = conversationId,
-                sessionEpoch = holder.session.sessionEpoch,
-                approvalId = callId,
-                runId = runId,
-                workspaceId = null,
-                toolName = "workspace.writeFile",
-                decision = ApprovalUserDecisionUi.Allow(ApprovalScopeChoiceUi.ONCE),
-                grant = null,
-                reason = null,
-            ),
-        )
+        assertTrue(holder.resolveApproval(card, allow = true) is ConversationFlowResult.Rejected)
+        assertEquals(ConversationFlowResult.Accepted, holder.resolveApproval(card, allow = false))
         assertTrue(awaitCondition { exchange.commandsOf("run.approval.resolve").isNotEmpty() })
         val envelope = exchange.commandsOf("run.approval.resolve").first()
         val payload = envelope["payload"]!!.jsonObject
         assertEquals(callId, payload["callID"]!!.jsonPrimitive.content)
-        assertEquals("allow", payload["decision"]!!.jsonPrimitive.content)
-        assertEquals(requestedAt, payload["expectedApprovalVersion"]!!.jsonPrimitive.content)
+        assertEquals("deny", payload["decision"]!!.jsonPrimitive.content)
+        assertEquals("generation:$approvalGeneration", payload["expectedApprovalVersion"]!!.jsonPrimitive.content)
+        assertEquals("generation-v1", payload["approvalSchema"]!!.jsonPrimitive.content)
+        assertEquals(descriptorIdentity, payload["expectedDescriptorIdentity"]!!.jsonPrimitive.content)
         assertFalse("scope is never chosen by the payload", payload.containsKey("scope"))
         val revision = envelope["revision"]!!.jsonObject
         assertEquals("approval.$callId", revision["resourceID"]!!.jsonPrimitive.content)
-        assertEquals(requestedAt, revision["version"]!!.jsonPrimitive.content)
+        assertEquals("generation:$approvalGeneration", revision["version"]!!.jsonPrimitive.content)
         host.stop()
     }
 

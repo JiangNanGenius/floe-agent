@@ -1,5 +1,13 @@
 # Floe Android 分目标实施记录
 
+## 1.0.19 后源码检查点：审批身份与展示（2026-11-16，未发版）
+
+Android 独立运行时为审批引入唯一代次，决议在 runtime actor 内匹配完整原请求；快照、修订号及界面接入该身份，旧协议缺字段时拒绝决议。旧事件不能提供新卡范围，结果未知的提交不自动重发。当前仅 `device.act` 的返回、主页和启动应用具备完整展示并允许单次批准；其他需要人工审批的操作可在身份可核对时拒绝、否则停止，尚不能批准。工作区、终端和其他常用操作必须继续补全，**此中间源码不可作为完整功能候选发布**。
+
+Android ARM64 `FloeAndroidCore` 实际编译与链接通过，Full Debug Kotlin 编译通过，会话模块 280 项检查及 App 侧选定的 5 项检查通过。Swift 行为测试尚未执行：SwiftPM 测试图被既有邮件测试模块编译错误阻断，原始诊断保留；上述不代表新协议已在三星实测或旧数据恢复已完整验证。
+
+English: This is an unreleased source checkpoint. Generation-bound approval is connected and compiled, but only three device actions can be approved; ordinary file, shell and other approval coverage is incomplete. Swift behavioral tests remain blocked by unrelated mail-test compilation errors, and the integrated flow has not been tested on the device.
+
 ## 1.0.19／128 已公开：停止任务后收起设备控制（2026-11-16）
 
 [Android 1.0.19 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v1.0.19)固定源码 `875803254f2929a8410ec81a25d65a6eee94f77b`。聊天停止立即按运行环境代次和任务归属撤销对应设备控制、收起浮球；原有任务取消继续执行，其他任务的控制不受该通知影响。Full 发布构建和定向编译通过；独立 JVM 场景检查覆盖同任务、旧代次和其他任务。主包 SHA-256 为 `a73f555057b5848cae6c35827a04db1908c42654c0c4aec277b6b74147c7c565`。

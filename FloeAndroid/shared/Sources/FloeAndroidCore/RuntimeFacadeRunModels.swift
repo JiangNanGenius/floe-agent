@@ -227,7 +227,7 @@ public struct RunDomainError: Error, Sendable, Equatable {
 
 /// Canonical resourceID spelling for run-domain revisions. Values mirror the
 /// contract binding table exactly: `run.<runID>/state`,
-/// `approval.<callID>/requestedAt`, `taskPolicy.<conversationID>/updatedAt`,
+/// `approval.<callID>/generation`, `taskPolicy.<conversationID>/updatedAt`,
 /// plus the conversation-row CAS (`ConversationRowRevision.resourceID`,
 /// floe.conversation-row.v1) reused from RB3 for `run.start` / `run.queue`.
 /// `pendingInput.<inputID>` / `pendingQueue.<conversationID>` are the closed
@@ -270,10 +270,10 @@ public enum RunWireRevision {
     /// AgentState.name) — never a facade-invented status promotion.
     public static func runVersion(state: String) -> String { state }
 
-    /// Approval revision version = requestedAt wire date (fractional-second
-    /// ISO-8601, the mirrored original PersistenceCodec shape).
-    public static func approvalVersion(requestedAt: Date) -> String {
-        RunWireDate.encode(requestedAt)
+    /// Per-decision identity. A call ID or timestamp can recur, so neither
+    /// can authorize a newer waiting approval on its own.
+    public static func approvalVersion(generation: UUID) -> String {
+        "generation:\(generation.uuidString.lowercased())"
     }
 
     public static func taskPolicyVersion(updatedAt: Date) -> String {
@@ -1056,27 +1056,32 @@ public struct RunApprovalResolveQuery: Sendable, Equatable {
     public var runID: UUID
     public var callID: String
     public var expectedApprovalVersion: String
+    public var expectedDescriptorIdentity: String
     public var branch: Branch
     public var denyReason: String?
 
 
-    public init(conversationID: UUID, runID: UUID, callID: String, expectedApprovalVersion: String, branch: Branch, denyReason: String?) {
+    public init(conversationID: UUID, runID: UUID, callID: String, expectedApprovalVersion: String, expectedDescriptorIdentity: String, branch: Branch, denyReason: String?) {
         self.conversationID = conversationID
         self.runID = runID
         self.callID = callID
         self.expectedApprovalVersion = expectedApprovalVersion
+        self.expectedDescriptorIdentity = expectedDescriptorIdentity
         self.branch = branch
         self.denyReason = denyReason
     }
 
     public static let allowedKeys: Set<String> = [
-        "callID", "decision", "reason", "expectedApprovalVersion",
+        "callID", "decision", "reason", "expectedApprovalVersion", "approvalSchema", "expectedDescriptorIdentity",
     ]
 
     public static func parse(payload: SettingsDomainV1.JSONValue?, owner: OwnerIdentity) throws
         -> RunApprovalResolveQuery {
         let object = try RunPayloadReader.Object(
             payload ?? .object([:]), allowed: allowedKeys)
+        guard try object.string("approvalSchema", maxBytes: 32) == "generation-v1" else {
+            throw RunDomainError(.invalidState, .payloadInvalid)
+        }
         let rawBranch = try object.string("decision", maxBytes: 12)
         guard let branch = Branch(rawValue: rawBranch) else {
             throw RunDomainError(.invalidState, .payloadInvalid)
@@ -1085,6 +1090,7 @@ public struct RunApprovalResolveQuery: Sendable, Equatable {
             conversationID: owner.taskID, runID: owner.runID,
             callID: try object.string("callID", maxBytes: 128, nonBlank: true),
             expectedApprovalVersion: try object.string("expectedApprovalVersion", maxBytes: 64),
+            expectedDescriptorIdentity: try object.string("expectedDescriptorIdentity", maxBytes: 64, nonBlank: true),
             branch: branch,
             denyReason: try object.optionalString("reason", maxBytes: 512))
     }
@@ -1534,7 +1540,7 @@ public enum RunDomainHandlerPlan {
             Binding(handlerKey: BridgeV3.handlerKey(scope: .taskExecution, command: "run.approval.resolve"),
                     command: "run.approval.resolve", scope: .taskExecution, configurationScope: nil,
                     serviceMethod: "FacadeRunDomain.resolveApproval",
-                    integrationNote: "revision approval.<callID>/requestedAt; only a matching LIVE request resolves; scope re-derived from the bound ToolCall (call-bound + toolAuthorizationIdentity), card retires only on durable approvalResolved"),
+                    integrationNote: "revision approval.<callID>/generation; only a matching LIVE request resolves; scope re-derived from the bound ToolCall (call-bound + toolAuthorizationIdentity), card retires only on durable approvalResolved"),
             Binding(handlerKey: BridgeV3.handlerKey(scope: .taskExecution, command: "run.policy.update"),
                     command: "run.policy.update", scope: .taskExecution, configurationScope: nil,
                     serviceMethod: "FacadeRunDomain.policyUpdate",

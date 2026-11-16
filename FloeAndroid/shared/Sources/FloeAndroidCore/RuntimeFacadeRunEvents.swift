@@ -58,6 +58,7 @@ import FloeModels
 import FloePersistence
 import FloeAgentRuntime
 import FloeSecurity
+import FloeTools
 
 // MARK: - Track producer
 
@@ -328,7 +329,8 @@ enum RunSnapshotWireBuilder {
                       liveService: ConversationRunService?,
                       readBundle: RunPersistenceBundle? = nil,
                       metadataOnly: Bool = false,
-                      snapshotRequestID: UUID? = nil) async -> RunDomainReply {
+                      snapshotRequestID: UUID? = nil,
+                      descriptorLookup: @Sendable (String) -> ToolCatalog.Descriptor?) async -> RunDomainReply {
         // The RUN'S OWN stores answer every run-scoped read. An ordinary
         // run's bundle IS the durable cluster; a temporary run's bundle is
         // the session's ORIGINAL Ephemeral* set. The durable singleton is
@@ -422,12 +424,14 @@ enum RunSnapshotWireBuilder {
                     "tool": .string(waiting.toolCall.toolName),
                     "reason": .string(bounded(waiting.reason, maxBytes: 1_024)),
                     "requestedAt": .string(RunWireDate.encode(waiting.requestedAt)),
+                    "generation": .string(waiting.generation.uuidString.lowercased()),
+                    "presentation": approvalPresentation(waiting, descriptor: descriptorLookup(waiting.toolCall.toolName)),
                 ])
                 fields["approvalRevision"] = .object([
                     "resourceID": .string(RunWireRevision.approvalResourceID(
                         callID: waiting.toolCall.id)),
                     "version": .string(RunWireRevision.approvalVersion(
-                        requestedAt: waiting.requestedAt)),
+                        generation: waiting.generation)),
                 ])
             }
             if let reason = snapshot.checkpointReason {
@@ -716,6 +720,65 @@ enum RunSnapshotWireBuilder {
         return RunDomainReply(.completedPage(
             page: RunTypedPage(object: .object(page), pageBytes: bytes),
             nextCursor: nil))
+    }
+
+    /// A same-generation, display-only projection. Never copy arbitrary
+    /// arguments here: shell commands, URLs and even innocently named string
+    /// values can contain credentials that key-based redaction cannot prove safe.
+    static func approvalPresentation(
+        _ waiting: AgentState.WaitingApproval,
+        descriptor: ToolCatalog.Descriptor?
+    ) -> SettingsDomainV1.JSONValue {
+        let generation = waiting.generation.uuidString.lowercased()
+        guard let descriptor else {
+            return .object(["status": .string("unavailable"), "generation": .string(generation)])
+        }
+        let requestedScope: String
+        switch waiting.toolCall.scope {
+        case .local: requestedScope = "local"
+        case .host: requestedScope = "host"
+        case .hostPath: requestedScope = "hostPath"
+        }
+        let details = safeApprovalActionDetails(waiting.toolCall)
+        var value: [String: SettingsDomainV1.JSONValue] = [
+            "status": .string("available"),
+            "generation": .string(generation),
+            "tool": .string(waiting.toolCall.toolName),
+            "effect": .string(descriptor.effect.rawValue),
+            "isSideEffecting": .boolean(descriptor.isSideEffecting),
+            "riskLabels": .array(descriptor.riskLabels.map(\.rawValue).sorted().map { .string($0) }),
+            "requestedScope": .string(requestedScope),
+            "grantScope": .string("singleUse"),
+            "workspaceVerified": .boolean(false),
+            "descriptorIdentity": .string(descriptor.authorizationIdentity),
+            "detailStatus": .string(details == nil ? "unavailable" : "available"),
+        ]
+        if let details { value["actionDetails"] = .object(details) }
+        return .object(value)
+    }
+
+    private static func safeApprovalActionDetails(_ call: ToolCall) -> [String: SettingsDomainV1.JSONValue]? {
+        guard call.toolName == "device.act",
+              let values = try? JSONSerialization.jsonObject(with: call.argumentsJSON) as? [String: Any],
+              let action = values["action"] as? String else { return nil }
+        switch action {
+        case "back", "home":
+            guard Set(values.keys).isSubset(of: ["action", "observationId"]),
+                  let observation = values["observationId"] as? String,
+                  UUID(uuidString: observation) != nil else { return nil }
+            return ["action": .string(action)]
+        case "launch":
+            guard Set(values.keys).isSubset(of: ["action", "packageName", "observationId"]),
+                  let package = values["packageName"] as? String,
+                  (values["observationId"] == nil ||
+                    (values["observationId"] as? String).flatMap(UUID.init(uuidString:)) != nil),
+                  package.utf8.count <= 180,
+                  package.range(of: #"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$"#,
+                                options: .regularExpression) != nil else { return nil }
+            return ["action": .string(action), "packageName": .string(package)]
+        default:
+            return nil
+        }
     }
 
     /// Bounded child list page.

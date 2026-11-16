@@ -239,7 +239,8 @@ public enum C02TaskContinuityProduction {
                 callID: waiting.toolCall.id,
                 tool: waiting.toolCall.toolName,
                 reason: waiting.reason,
-                requestedAt: waiting.requestedAt)
+                requestedAt: waiting.requestedAt,
+                generation: waiting.generation)
         }
         let waitProvider = C02SQLiteTaskContinuityWaitProvider(
             database: database,

@@ -9,6 +9,7 @@ import com.floe.android.design.SidebarSelection
 import com.floe.android.design.WorkbenchSelection
 import com.floe.android.feature.conversation.AgentExecutionModeUi
 import com.floe.android.feature.conversation.ApprovalDecisionRequest
+import com.floe.android.feature.conversation.ApprovalDispatchState
 import com.floe.android.feature.conversation.ApprovalUserDecisionUi
 import com.floe.android.feature.conversation.AttachmentImportUi
 import com.floe.android.feature.conversation.AttachmentOpenRequest
@@ -1409,9 +1410,10 @@ class ConversationHostController internal constructor(
         runID: String,
         reconcileTerminal: Boolean = false,
         streamGeneration: Long? = null,
+        onPage: ((ConversationWire.SnapshotPage) -> Unit)? = null,
         onApplied: ((Boolean) -> Unit)? = null,
     ) = refreshRunSnapshotGuarded(entry, runID, reconcileTerminal,
-        streamGeneration, null, onApplied)
+        streamGeneration, null, onPage, onApplied)
 
     private fun refreshRunSnapshotGuarded(
         entry: ConversationFlowHolderEntry,
@@ -1419,6 +1421,7 @@ class ConversationHostController internal constructor(
         reconcileTerminal: Boolean = false,
         streamGeneration: Long? = null,
         queueOwner: QueueSettleReconcileRun? = null,
+        onPage: ((ConversationWire.SnapshotPage) -> Unit)? = null,
         onApplied: ((Boolean) -> Unit)? = null,
     ) {
         val ownerConversation = entry.holder.session.conversationId
@@ -1469,6 +1472,7 @@ class ConversationHostController internal constructor(
                         // executing. The controller throttles the read.
                         userQuestions.refresh(entry.holder.session)
                         applied = queueOwner == null || page.pendingInputsTruncated == false
+                        if (applied) onPage?.invoke(page)
                         if (reconcileTerminal && page.isTerminal) {
                             // A terminal page is the durable close boundary for
                             // ITS OWN run. Close that run's pump; only the SELECTED
@@ -4593,21 +4597,74 @@ class ConversationHostController internal constructor(
     }
 
     /**
-     * `run.approval.resolve`: revision `approval.<callID>/<requestedAt>` and
-     * payload `{callID,decision,reason?,expectedApprovalVersion}`. The grant
+     * `run.approval.resolve`: generation-bound revision and exact trusted
+     * descriptor. The grant
      * scope is NEVER chosen by the payload — native re-derives it from the
      * live call-bound request (a human tap only picks allow/deny).
      */
     override fun resolveApproval(request: ApprovalDecisionRequest): Boolean {
         if (!admitted()) return false
         val entry = holders[request.conversationId] ?: return false
+        val session = entry.holder.session
+        if (session.sessionEpoch != request.sessionEpoch) return false
+        val card = request.expectedCard ?: return false
+        val requestGeneration = card.requestGeneration ?: return false
+        val approvalVersion = card.approvalRevision ?: return false
+        val descriptorIdentity = card.descriptorIdentity ?: return false
+        if (card.conversationId != request.conversationId || card.runId != request.runId ||
+            card.approvalId != request.approvalId || card.toolName != request.toolName ||
+            !card.identityVerified || (request.decision is ApprovalUserDecisionUi.Allow && !card.scopeVerified)) return false
+        val attempt = entry.holder.approvalAttempt(session, card.key) ?: return false
+        val terminalRefusal = AtomicBoolean(false)
+        val retryProven = AtomicBoolean(false)
+        val checkSerial = java.util.concurrent.atomic.AtomicInteger()
+        fun withCurrent(action: () -> Unit): Boolean = entry.holder.withCurrentApproval(session, card, attempt) {
+            if (ownCurrentEntry(entry, request.conversationId, request.sessionEpoch)) action()
+        }
+        fun current(): Boolean {
+            var owned = false
+            withCurrent { owned = true }
+            return owned
+        }
+        lateinit var check: () -> Unit
+        check = check@{
+            if (!current()) return@check
+            val serial = checkSerial.incrementAndGet()
+            val mayRetryAfterRead = retryProven.get()
+            entry.holder.setApprovalRecovery(session, card, attempt, ApprovalDispatchState.CHECKING, check)
+            var page: ConversationWire.SnapshotPage? = null
+            refreshRunSnapshot(entry, request.runId, onPage = { page = it }) { applied ->
+                if (!current() || serial != checkSerial.get()) return@refreshRunSnapshot
+                val p = page
+                val samePending = applied && p != null && p.liveOwner && !p.isTerminal &&
+                    sameUUIDIdentity(p.conversationID, request.conversationId) && sameUUIDIdentity(p.runID, request.runId) &&
+                    p.pendingApproval?.callID == request.approvalId &&
+                    p.pendingApproval.generation == requestGeneration &&
+                    p.approvalRevision?.resourceID == ConversationWire.approvalResourceID(request.approvalId) &&
+                    p.approvalRevision.version == approvalVersion &&
+                    entry.builder.approvalBinding(request.runId, request.approvalId) == card
+                val state = if (mayRetryAfterRead && samePending) ApprovalDispatchState.RETRY_READY
+                    else ApprovalDispatchState.NEEDS_CHECK
+                withCurrent {
+                    if (serial == checkSerial.get() && (state != ApprovalDispatchState.RETRY_READY ||
+                            entry.builder.approvalBinding(request.runId, request.approvalId) == card)) {
+                        entry.holder.setApprovalRecovery(session, card, attempt, state, check)
+                    }
+                }
+            }
+        }
+        entry.holder.setApprovalRecovery(session, card, attempt, ApprovalDispatchState.PROCESSING, check)
         val decision = when (request.decision) {
             is ApprovalUserDecisionUi.Allow -> "allow"
             ApprovalUserDecisionUi.Deny -> "deny"
         }
-        fun dispatch(approvalVersion: String) {
-            host.trackOperation(
-                HostCommandRequest(
+        fun dispatch() {
+            var submitted = false
+            withCurrent {
+                if (!admitted() || entry.builder.approvalBinding(request.runId, request.approvalId) != card) return@withCurrent
+                submitted = true
+                host.trackOperation(
+                    HostCommandRequest(
                     command = "run.approval.resolve",
                     scope = HostScope.TaskExecution(request.conversationId, request.runId),
                     stateful = true,
@@ -4621,6 +4678,8 @@ class ConversationHostController internal constructor(
                             put("callID", JsonPrimitive(request.approvalId))
                             put("decision", JsonPrimitive(decision))
                             put("expectedApprovalVersion", JsonPrimitive(approvalVersion))
+                            put("approvalSchema", JsonPrimitive("generation-v1"))
+                            put("expectedDescriptorIdentity", JsonPrimitive(descriptorIdentity))
                             if (decision == "deny") {
                                 put(
                                     "reason",
@@ -4629,9 +4688,12 @@ class ConversationHostController internal constructor(
                             }
                         },
                     ),
-                ),
-            ) { outcome ->
-                when (outcome) {
+                    ),
+                    onFrame = { frame ->
+                        if (frame.kind == "rejected") terminalRefusal.set(true)
+                    },
+                ) { outcome ->
+                    when (outcome) {
                     is HostOperationOutcome.Completed -> {
                         // The accepted human decision is the REAL presentation
                         // boundary for a phone-control handover/presence
@@ -4643,14 +4705,22 @@ class ConversationHostController internal constructor(
                         // only a lossy, throttled hint. Anchor a fresh bounded
                         // window to the accepted decision for the exact
                         // run/call the user approved.
-                        if (decision == "allow") {
+                        if (decision == "allow" && current()) {
                             beginApprovedDeviceQuestionDiscovery(entry, request)
                         }
                     }
-                    is HostOperationOutcome.Rejected -> surfaceError(entry, outcome.code)
-                    is HostOperationOutcome.Failed -> surfaceError(entry, outcome.code)
-                    else -> Unit
+                    is HostOperationOutcome.Rejected -> {
+                        if (terminalRefusal.get()) retryProven.set(true)
+                        check()
+                    }
+                    is HostOperationOutcome.Failed -> check()
+                        else -> Unit
+                    }
                 }
+            }
+            if (!submitted && current()) {
+                retryProven.set(true) // No command was submitted by this attempt.
+                check()
             }
         }
         // The ONE dispatch entry shared by both paths. It is reached at most
@@ -4658,19 +4728,14 @@ class ConversationHostController internal constructor(
         // held, so the already-proposed command is never dispatched twice and
         // a failed command is never replayed.
         fun beginDispatch() {
-            val known = entry.builder.approvalVersion(request.approvalId)
-            if (known != null) {
-                dispatch(known)
-                return
-            }
-            // The requestedAt version exists only on the authoritative snapshot.
-            refreshRunSnapshot(entry, request.runId) { applied ->
-                val version = entry.builder.approvalVersion(request.approvalId)
-                if (applied && version != null) {
-                    dispatch(version)
-                } else {
-                    surfaceError(entry, "approval_version_unavailable")
-                }
+            dispatch()
+        }
+
+        fun showWaitNotice() {
+            host.scope.launch {
+                delay(15_000)
+                if (current()) entry.holder.setApprovalRecovery(session, card, attempt,
+                    ApprovalDispatchState.NEEDS_CHECK, check, onlyIfState = ApprovalDispatchState.PROCESSING)
             }
         }
 
@@ -4679,9 +4744,20 @@ class ConversationHostController internal constructor(
             // Ordinary approval-without-conflict: unchanged. A consent can only
             // ride an allow, so a denial never ends a terminal.
             beginDispatch()
+            showWaitNotice()
             return true
         }
-        return beginTerminalHandoffThenDispatch(entry, request, consent) { beginDispatch() }
+        return beginTerminalHandoffThenDispatch(entry, request, consent, card, attempt) { beginDispatch() }
+            .also { if (it) showWaitNotice() }
+    }
+
+    override fun refreshApproval(session: ConversationSessionToken, runId: String): Boolean {
+        if (!admitted()) return false
+        val entry = holders[session.conversationId] ?: return false
+        if (!ownCurrentEntry(entry, session.conversationId, session.sessionEpoch) ||
+            entry.holder.snapshot.value?.selectedRunId != runId) return false
+        refreshRunSnapshot(entry, runId)
+        return true
     }
 
     /**
@@ -4750,6 +4826,8 @@ class ConversationHostController internal constructor(
         entry: ConversationFlowHolderEntry,
         request: ApprovalDecisionRequest,
         consent: TerminalHandoffConsentUi,
+        expected: com.floe.android.feature.conversation.ApprovalCardUi,
+        attempt: String,
         dispatchOnce: () -> Unit,
     ): Boolean {
         val session = ConversationSessionToken(request.conversationId, request.sessionEpoch)
@@ -4757,7 +4835,7 @@ class ConversationHostController internal constructor(
         fun refuse(code: String): Boolean {
             // Nothing was dispatched, so the once-only latch must not be taken:
             // publish the typed refusal and report "not started".
-            entry.holder.applyTerminalHandoffRefusal(session, approvalKey, code)
+            entry.holder.applyTerminalHandoffRefusal(session, approvalKey, code, expected, attempt)
             return false
         }
         val terminal = host.workspaceTerminal ?: return refuse("hostUnavailable")
@@ -4793,7 +4871,7 @@ class ConversationHostController internal constructor(
                     dispatchOnce()
                 } else {
                     val code = (result as? TerminalHandoffResult.Refused)?.code ?: "notAdmitted"
-                    entry.holder.applyTerminalHandoffRefusal(session, approvalKey, code)
+                    entry.holder.applyTerminalHandoffRefusal(session, approvalKey, code, expected, attempt)
                 }
             } finally {
                 terminalHandoffInFlight.remove(request.conversationId, true)

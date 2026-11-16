@@ -3680,7 +3680,11 @@ public actor FacadeRunDomain {
             return RunDomainReply(.rejected(RunDomainError(.invalidState,
                                                            .approvalGenerationMismatch)))
         }
-        guard RunWireRevision.approvalVersion(requestedAt: waiting.requestedAt)
+        guard let descriptor = tools.registry.descriptor(named: waiting.toolCall.toolName),
+              descriptor.authorizationIdentity == query.expectedDescriptorIdentity else {
+            return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalGenerationMismatch)))
+        }
+        guard RunWireRevision.approvalVersion(generation: waiting.generation)
                 == query.expectedApprovalVersion else {
             return RunDomainReply(.rejected(RunDomainError(.staleRevision, .revisionMismatch)))
         }
@@ -3710,11 +3714,11 @@ public actor FacadeRunDomain {
                 decision = .allow(
                     scope: RunApprovalScopeBinding.scope(
                         for: waiting.toolCall,
-                        descriptorLookup: { tools.registry.descriptor(named: $0) }),
+                        descriptorLookup: { _ in descriptor }),
                     expiresAt: nil)
             }
         }
-        let accepted = await service.resolveApproval(decision, for: waiting.toolCall.id)
+        let accepted = await service.resolveApproval(decision, matching: waiting)
         guard accepted else {
             let still = await service.snapshot().pendingApproval?.toolCall.id
             if still != waiting.toolCall.id {
@@ -3918,13 +3922,15 @@ public actor FacadeRunDomain {
             return RunDomainReply(.rejected(RunDomainError(.invalidState, .payloadInvalid)))
         }
         let requestID = UUID()
+        let registry = tools.registry
         let reply = await RunSnapshotWireBuilder.build(
             domain: self, components: components,
             query: SnapshotQuery(conversationID: owner.taskID, runID: owner.runID),
             ownership: owners[owner.runID],
             liveService: liveServices[owner.runID],
             readBundle: readBundle, metadataOnly: metadataOnly,
-            snapshotRequestID: requestID)
+            snapshotRequestID: requestID,
+            descriptorLookup: { registry.descriptor(named: $0) })
         if case .completedPage = reply.outcome { return reply }
         // Failed page construction must not strand handles never delivered
         // to a client. The request token isolates concurrent reads/owners.

@@ -102,7 +102,7 @@ class ThreadProjectionBuilder internal constructor(
     var conversationRevision: Revision? = null
     var earlierCursor: MessagePageCursorUi? = null
     var hasEarlierMessages: Boolean = false
-    var selectedRunId: String? = null
+    @Volatile var selectedRunId: String? = null
     val childDetails = mutableMapOf<String, ChildRunDetailUi>()
     /**
      * Durable next-input mode + presentation acknowledgement for THIS task
@@ -329,6 +329,13 @@ class ThreadProjectionBuilder internal constructor(
     private val approvalVersionByRunCall = LinkedHashMap<String, String>()
     private val retiredApprovalVersions = LinkedHashSet<String>()
     private fun approvalKey(runID: String, callID: String) = "$runID/$callID"
+
+    private fun sameApprovalOwner(value: String?): Boolean {
+        if (value.isNullOrBlank()) return false
+        val actual = runCatching { java.util.UUID.fromString(value) }.getOrNull()
+        val expected = runCatching { java.util.UUID.fromString(conversationId) }.getOrNull()
+        return if (actual != null && expected != null) actual == expected else value == conversationId
+    }
 
     private fun pruneApprovalFences() {
         while (retiredApprovalVersions.size > 4096) {
@@ -609,7 +616,16 @@ class ThreadProjectionBuilder internal constructor(
     internal fun runRevision(runID: String): Revision? = runRevisions[runID]
 
     /** The tracked `requestedAt` approval version for one live call. */
-    internal fun approvalVersion(callID: String): String? = approvalVersions[callID]
+    @Synchronized internal fun approvalVersion(callID: String): String? = approvalVersions[callID]
+
+    /** Only immutable, exact-run, generation-bound trusted presentations can
+     * become a human decision. The current native snapshot does not yet carry
+     * complete scope information, so such cards remain non-decidable. */
+    @Synchronized internal fun approvalBinding(runID: String, callID: String): ApprovalCardUi? =
+        pendingApprovalsByRun[runID]?.firstOrNull {
+            it.approvalId == callID && it.identityVerified && it.approvalRevision != null &&
+                approvalVersionByRunCall[approvalKey(runID, callID)] == it.approvalRevision
+        }
 
     /** The tracked `inputVersion` of one durable pending-input row. */
     internal fun inputVersion(inputID: String): String? = inputVersions[inputID]
@@ -706,7 +722,7 @@ class ThreadProjectionBuilder internal constructor(
      * pending-input rows with their `inputVersion`, and the queue-order
      * revision. Nothing here is synthesized: a missing member stays absent.
      */
-    internal fun applySnapshot(page: ConversationWire.SnapshotPage) {
+    @Synchronized internal fun applySnapshot(page: ConversationWire.SnapshotPage) {
         runRows[page.runID] = (runRows[page.runID]
             ?: RunRowUi(page.runID, page.durableState, null, ""))
             .copy(
@@ -723,7 +739,7 @@ class ThreadProjectionBuilder internal constructor(
             // after its live owner retired. This does not claim an allow.
             retirePendingApprovals(page.runID, page.durableWatermark)
             advanceApprovalFence(page.runID, page.durableWatermark)
-        } else if (approval != null) {
+        } else if (approval != null && page.liveOwner && sameApprovalOwner(page.conversationID)) {
             // A page older than the newest observed approval state for this
             // run is a late pre-decision read: it must not resurrect a
             // retired card nor roll back a newer request.
@@ -734,11 +750,41 @@ class ThreadProjectionBuilder internal constructor(
                 page.durableWatermark > (approvalAbsenceFenceByRun[page.runID] ?: -1L) && !retired
             ) {
                 val cards = pendingApprovalsByRun.getOrPut(page.runID) { mutableListOf() }
-                val existing = cards.firstOrNull { it.approvalId == approval.callID }
-                val knownVersion = approvalVersions[approval.callID]
-                if (existing == null) {
-                    cards.add(
-                        ApprovalCardUi(
+                val generation = approval.generation?.let { raw ->
+                    runCatching { java.util.UUID.fromString(raw) }.getOrNull()
+                        ?.toString()?.takeIf { it == raw }
+                }
+                val revision = page.approvalRevision?.takeIf {
+                    generation != null && it.resourceID == ConversationWire.approvalResourceID(approval.callID) &&
+                        it.version == "generation:$generation"
+                }?.version
+                val presentation = approval.presentation?.takeIf {
+                    it.status == "available" && it.generation == generation && it.tool == approval.tool &&
+                        it.effect in setOf("readOnly", "internalState", "mutating") &&
+                        it.requestedScope in setOf("local", "host", "hostPath") &&
+                        it.grantScope == "singleUse" && it.workspaceVerified == false &&
+                        it.descriptorIdentity?.matches(Regex("[0-9a-f]{64}")) == true &&
+                        it.isSideEffecting != null && it.riskLabels != null
+                }
+                // The first complete, generation-bound detail schema only
+                // describes device back/home/launch. Other actions remain
+                // closed until native can show their actual targets in full.
+                val details = presentation?.actionDetails
+                val action = details?.get("action")?.let { (it as? JsonPrimitive)?.takeIf { v -> v.isString }?.content }
+                val packageName = details?.get("packageName")?.let { (it as? JsonPrimitive)?.takeIf { v -> v.isString }?.content }
+                val validPackage = packageName != null && packageName.toByteArray(Charsets.UTF_8).size <= 180 &&
+                    packageName.matches(Regex("[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+"))
+                val completeAction = when (action) {
+                    "back", "home" -> details?.keys == setOf("action")
+                    "launch" -> details?.keys == setOf("action", "packageName") && validPackage
+                    else -> false
+                }
+                val allowReady = revision != null && presentation != null && approval.tool == "device.act" &&
+                    presentation.detailStatus == "available" && completeAction && presentation.requestedScope == "local" &&
+                    !(presentation.effect == "readOnly" && presentation.isSideEffecting == true)
+                // Every field comes from THIS snapshot. In particular, never
+                // carry an old unversioned event's tool, path or scope here.
+                val card = ApprovalCardUi(
                             approvalId = approval.callID,
                             runId = page.runID,
                             conversationId = conversationId,
@@ -747,25 +793,48 @@ class ThreadProjectionBuilder internal constructor(
                             target = ApprovalTargetUi.Local,
                             scopeDescription = "",
                             reason = approval.reason,
-                            riskLabels = emptySet(),
-                            isSideEffecting = false,
+                            riskLabels = presentation?.riskLabels?.toSet() ?: emptySet(),
+                            isSideEffecting = presentation?.isSideEffecting ?: true,
                             requestedAtLabel = approval.requestedAt,
                             evidenceLines = emptyList(),
-                        ),
-                    )
-                } else if (incomingVersion != null && incomingVersion != knownVersion) {
-                    // A genuinely NEW request for the SAME call id (a new
-                    // `requestedAt` ⇒ a new CAS version): refresh the
-                    // request-bound fields; the run/card identity is kept.
-                    cards[cards.indexOf(existing)] = existing.copy(
-                        reason = approval.reason,
-                        requestedAtLabel = approval.requestedAt,
-                    )
+                            requestGeneration = generation,
+                            approvalRevision = revision,
+                            descriptorIdentity = presentation?.descriptorIdentity,
+                            requestedScope = presentation?.requestedScope,
+                            workspaceVerified = false,
+                            actionKind = action.takeIf { allowReady },
+                            actionPackage = packageName.takeIf { allowReady },
+                            identityVerified = revision != null && presentation != null,
+                            scopeVerified = allowReady,
+                        )
+                val previousVersion = approvalVersionByRunCall[key]
+                if (previousVersion != null && previousVersion != revision) {
+                    retiredApprovalVersions.add("$key/$previousVersion")
                 }
-                incomingVersion?.let {
+                // The live snapshot has one pending approval for this run;
+                // cards for older calls must not survive a changed gate.
+                val oldCallIDs = cards.map { it.approvalId }.toSet()
+                for (old in cards) {
+                    if (old.approvalId != approval.callID) {
+                        val oldKey = approvalKey(page.runID, old.approvalId)
+                        approvalVersionByRunCall.remove(oldKey)?.let { retiredApprovalVersions.add("$oldKey/$it") }
+                    }
+                }
+                cards.clear()
+                cards.add(card)
+                for (oldID in oldCallIDs) {
+                    if (oldID != approval.callID && pendingApprovalsByRun.values.none { list -> list.any { it.approvalId == oldID } }) {
+                        approvalVersions.remove(oldID)
+                    }
+                }
+                approvalVersionByRunCall.remove(key)
+                revision?.let {
                     approvalVersions[approval.callID] = it
                     approvalVersionByRunCall[key] = it
                 }
+                if (revision == null && pendingApprovalsByRun.none { (run, list) ->
+                        run != page.runID && list.any { it.approvalId == approval.callID }
+                    }) approvalVersions.remove(approval.callID)
                 advanceApprovalFence(page.runID, page.durableWatermark)
             }
         } else if (page.liveOwner) {
@@ -909,7 +978,7 @@ class ThreadProjectionBuilder internal constructor(
      * successful provider-completion close. Both update the durable run state
      * and its CAS revision version — never an invented `stateChanged`.
      */
-    fun applyRunEvent(frame: HostRunEventFrame) {
+    @Synchronized fun applyRunEvent(frame: HostRunEventFrame) {
         val kind = frame.kind
         val payload = frame.payload
         when (kind) {
@@ -985,43 +1054,9 @@ class ThreadProjectionBuilder internal constructor(
                 if (frame.runID == liveTailRunId || frame.runID == selectedRunId) {
                     reasoningStepOpen = false
                 }
-                // Engine approval rows: a REQUEST carries
-                // {tool,callID,scope,reason}; an OUTCOME carries
-                // {tool,callID,outcome}. Presence of `outcome` is the exact
-                // discriminator (never an invented approvalResolved).
-                val callID = payload?.string("callID")
-                if (callID != null && frame.sequence >= approvalFence(frame.runID) &&
-                    frame.sequence > (approvalAbsenceFenceByRun[frame.runID] ?: -1L)
-                ) {
-                    if (payload.string("outcome") != null) {
-                        val key = approvalKey(frame.runID, callID)
-                        approvalVersionByRunCall.remove(key)?.let { retiredApprovalVersions.add("$key/$it") }
-                        pendingApprovalsByRun[frame.runID]?.removeAll { it.approvalId == callID }
-                        if (pendingApprovalsByRun.values.none { cards -> cards.any { it.approvalId == callID } }) {
-                            approvalVersions.remove(callID)
-                        }
-                        approvalAbsenceFenceByRun[frame.runID] = frame.sequence
-                        // Fence at the outcome record: a pre-outcome snapshot
-                        // page (or a replayed request) must never resurrect
-                        // the retired card.
-                        advanceApprovalFence(frame.runID, frame.sequence)
-                    } else {
-                        val card = ConversationWire.decodeApprovalCard(
-                            conversationId, frame.runID, payload)
-                        if (card != null) {
-                            pendingApprovalsByRun.getOrPut(frame.runID) {
-                                mutableListOf()
-                            }.removeAll { it.approvalId == card.approvalId }
-                            pendingApprovalsByRun.getOrPut(frame.runID) {
-                                mutableListOf()
-                            }.add(card)
-                            // Fence at the request record: a snapshot page
-                            // fetched before this request landed is stale and
-                            // must not clear the just-projected card.
-                            advanceApprovalFence(frame.runID, frame.sequence)
-                        }
-                    }
-                }
+                // Historical approval events have no generation and cannot
+                // establish scope or retire a newer card. The host schedules
+                // an authoritative run.snapshot after this hint instead.
             }
             "userInputConsumed" -> {
                 // Historical/forward-compatible vocabulary: the durable queue
@@ -1902,8 +1937,10 @@ class ThreadProjectionBuilder internal constructor(
         if (reasoningTail.isNotEmpty()) {
             rows.add(TimelineRowUi.LiveReasoning)
         }
-        val selected = selectedRunId
-        val approvals = selected?.let { pendingApprovalsByRun[it].orEmpty() }.orEmpty()
+        val (selected, approvals) = synchronized(this) {
+            val run = selectedRunId
+            run to run?.let { pendingApprovalsByRun[it]?.toList() }.orEmpty()
+        }
         val selectedState = selected?.let { runRows[it]?.stateName }
         // ⇄ the ORIGINAL AgentState vocabulary (FloeAgentRuntime/AgentState.swift):
         // only these states are live work; `interrupted` is a PARKED
@@ -2221,6 +2258,15 @@ internal object ConversationWire {
         val tool: String,
         val reason: String,
         val requestedAt: String,
+        val generation: String? = null,
+        val presentation: ApprovalPresentationWire? = null,
+    )
+
+    class ApprovalPresentationWire(
+        val status: String?, val generation: String?, val tool: String?, val effect: String?,
+        val isSideEffecting: Boolean?, val riskLabels: List<String>?, val requestedScope: String?,
+        val grantScope: String?, val workspaceVerified: Boolean?, val descriptorIdentity: String?,
+        val detailStatus: String?, val actionDetails: JsonObject?,
     )
 
     class PendingInputWire(
@@ -2631,11 +2677,25 @@ internal object ConversationWire {
         } ?: return null
         val approval = (root["pendingApproval"] as? JsonObject)?.let { obj ->
             val callID = obj.string("callID") ?: return@let null
+            val presentation = (obj["presentation"] as? JsonObject)?.let { value ->
+                val riskArray = value["riskLabels"] as? JsonArray
+                val risks = riskArray?.mapNotNull { element ->
+                    (element as? JsonPrimitive)?.takeIf { it.isString }?.content
+                        ?.takeIf { it.length in 1..64 }
+                }?.takeIf { it.size == riskArray.size && it.size <= 32 }
+                ApprovalPresentationWire(value.string("status"), value.string("generation"),
+                    value.string("tool"), value.string("effect"), value.bool("isSideEffecting"), risks,
+                    value.string("requestedScope"), value.string("grantScope"),
+                    value.bool("workspaceVerified"), value.string("descriptorIdentity"),
+                    value.string("detailStatus"), value["actionDetails"] as? JsonObject)
+            }
             PendingApprovalWire(
                 callID = callID,
                 tool = obj.string("tool") ?: "",
                 reason = obj.string("reason") ?: "",
                 requestedAt = obj.string("requestedAt") ?: "",
+                generation = obj.string("generation"),
+                presentation = presentation,
             )
         }
         val approvalRevision = (root["approvalRevision"] as? JsonObject)?.let {

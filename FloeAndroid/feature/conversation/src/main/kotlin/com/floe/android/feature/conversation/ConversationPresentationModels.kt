@@ -248,6 +248,19 @@ data class ApprovalCardUi(
     /** Foldable exact evidence (⇄ argumentSummary): host-projected key-sorted
      * argument lines, size-capped and redacted upstream. Display-only. */
     val evidenceLines: List<String>,
+    /** Exact native request identity; absent means the runtime must be updated. */
+    val requestGeneration: String? = null,
+    val approvalRevision: String? = null,
+    val descriptorIdentity: String? = null,
+    val requestedScope: String? = null,
+    val workspaceVerified: Boolean = false,
+    val actionKind: String? = null,
+    val actionPackage: String? = null,
+    /** The generation and descriptor are verified independently of whether
+     * enough action detail exists to allow the request. */
+    val identityVerified: Boolean = false,
+    /** True only when this presentation is sufficient for a decision. */
+    val scopeVerified: Boolean = false,
 ) {
     /** Exact card identity: runID + callID (the membership predicate rule). */
     val key: String get() = "$runId/$approvalId"

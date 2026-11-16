@@ -60,6 +60,8 @@ enum class ConversationRejectedReason {
     HOST_UNAVAILABLE,
 }
 
+enum class ApprovalDispatchState { PROCESSING, CHECKING, NEEDS_CHECK, STOP_REQUIRED, RETRY_READY }
+
 private fun rejected(reason: ConversationRejectedReason): ConversationFlowResult =
     ConversationFlowResult.Rejected(reason)
 
@@ -85,7 +87,7 @@ class ConversationFlowHolder(
     val conversationId: String get() = conversationIdInternal
 
     /** Current session identity; epoch bumps on every rebind. */
-    var session: ConversationSessionToken = ConversationSessionToken(conversationIdInternal, initialSessionEpoch)
+    @Volatile var session: ConversationSessionToken = ConversationSessionToken(conversationIdInternal, initialSessionEpoch)
         private set
 
     /**
@@ -562,6 +564,9 @@ class ConversationFlowHolder(
     /** Approvals dispatched with no projection change yet (duplicate-press
      * latch; cleared when the card leaves the projection). */
     private val approvalDispatched = mutableSetOf<String>()
+    val approvalDispatchStates: MutableState<Map<String, ApprovalDispatchState>> = mutableStateOf(emptyMap())
+    private val approvalAttempts = mutableMapOf<String, String>()
+    private val approvalChecks = mutableMapOf<String, () -> Unit>()
 
     /** Host-published live truth: THIS conversation's own interactive terminal
      * currently holds the single Linux engine workload slot (⇄
@@ -691,7 +696,7 @@ class ConversationFlowHolder(
     /** Genuine conversation change (NOT a recreation): fence the old session,
      * drop presentation state, and rebind with a new epoch. View
      * reconstruction never calls this. */
-    fun rebind(newConversationId: String, initialDraft: ComposerDraftSeedUi? = null) {
+    @Synchronized fun rebind(newConversationId: String, initialDraft: ComposerDraftSeedUi? = null) {
         if (newConversationId == conversationIdInternal) return
         host.threadViewDetached(session)
         conversationIdInternal = newConversationId
@@ -723,7 +728,7 @@ class ConversationFlowHolder(
     }
 
     /** True after a GENUINE navigation retired this holder. */
-    var retired: Boolean = false
+    @Volatile var retired: Boolean = false
         private set
 
     /**
@@ -745,7 +750,7 @@ class ConversationFlowHolder(
      * host's durable draft store exactly as before (this holder is
      * RAM-only), and [detach] still retains everything.
      */
-    fun retireForNavigation() {
+    @Synchronized fun retireForNavigation() {
         if (retired) return
         host.threadViewDetached(session)
         // The temporary posture is captured BEFORE the snapshot clear
@@ -790,6 +795,9 @@ class ConversationFlowHolder(
         expandedApprovalEvidence.value = emptySet()
         approvalScopeChoices.value = emptyMap()
         approvalDispatched.clear()
+        approvalDispatchStates.value = emptyMap()
+        approvalAttempts.clear()
+        approvalChecks.clear()
         // The reset/rebind ends this surface's ownership: the live conflict
         // fact and any pending handoff refusal belong to the retired session
         // and must not survive into a replacement (the host republishes the
@@ -855,7 +863,7 @@ class ConversationFlowHolder(
 
     /** Apply one immutable host snapshot. Stale epochs and foreign
      * conversations are ignored (late results cannot touch another session). */
-    fun applyHostSnapshot(next: ThreadUiState) {
+    @Synchronized fun applyHostSnapshot(next: ThreadUiState) {
         if (!echoAccepted(next.session)) return
         val previous = snapshot.value
         snapshot.value = next
@@ -902,13 +910,34 @@ class ConversationFlowHolder(
 
         // Approvals that left the projection were resolved/expired
         // host-side; their dispatch latches are released with the card.
+        val oldByKey = previous?.pendingApprovals?.associateBy { it.key }.orEmpty()
         val liveKeys = next.pendingApprovals.map { it.key }.toSet()
-        approvalDispatched.retainAll(liveKeys)
+        val replaced = next.pendingApprovals.filter { card ->
+            val old = oldByKey[card.key]
+            old != null && (old.requestGeneration != card.requestGeneration ||
+                old.approvalRevision != card.approvalRevision || old.descriptorIdentity != card.descriptorIdentity)
+        }.map { it.key }.toSet()
+        val stillSame = liveKeys - replaced
+        approvalScopeChoices.value = approvalScopeChoices.value.filterKeys { it in stillSame }
+        expandedApprovalEvidence.value = expandedApprovalEvidence.value.intersect(stillSame)
+        approvalDispatchStates.value = approvalDispatchStates.value.filterKeys { it in stillSame }
+        approvalAttempts.keys.retainAll(stillSame)
+        approvalChecks.keys.retainAll(stillSame)
+        approvalDispatched.retainAll(stillSame)
+        val changedInFlight = next.pendingApprovals.filter { card ->
+            card.key in approvalDispatched && card.key in stillSame &&
+                oldByKey[card.key] != null && oldByKey[card.key] != card
+        }
+        if (changedInFlight.isNotEmpty()) {
+            for (card in changedInFlight) approvalChecks.remove(card.key)
+            approvalDispatchStates.value = approvalDispatchStates.value +
+                changedInFlight.associate { it.key to ApprovalDispatchState.STOP_REQUIRED }
+        }
         // A handoff refusal for a card that left the projection describes a
         // decision that no longer exists; drop it with the card instead of
         // keeping a stale banner over an unrelated approval.
         terminalHandoffRefusal.value?.let { refusal ->
-            if (refusal.approvalKey !in liveKeys) terminalHandoffRefusal.value = null
+            if (refusal.approvalKey !in stillSame) terminalHandoffRefusal.value = null
         }
 
         // ⇄ onChange(of: hasLoaded) → scroll to latest anchor.
@@ -1343,7 +1372,7 @@ class ConversationFlowHolder(
         else rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
     }
 
-    fun selectRun(runId: String) {
+    @Synchronized fun selectRun(runId: String) {
         if (retired) return
         selectedRunId.value = runId
     }
@@ -1351,14 +1380,14 @@ class ConversationFlowHolder(
     /* ---------------------------------- approvals ---------------------------------- */
 
     /** Current projected card for one run+call key, or null. */
-    fun approvalCard(key: String): ApprovalCardUi? =
+    @Synchronized fun approvalCard(key: String): ApprovalCardUi? =
         snapshot.value?.pendingApprovals?.firstOrNull { it.key == key }
 
     /** ⇄ resolve(approval, decision): dispatch the EXACT run+call identity
      * once. Deny carries the stable "user denied" vocabulary; the grant tier
      * is the user's chosen scope for the projected target — never a
      * content-imported permission (APR-UNTRUSTED-NO-GRANT / APR-CALL-BOUND). */
-    fun resolveApproval(
+    @Synchronized fun resolveApproval(
         approval: ApprovalCardUi,
         allow: Boolean,
         terminalHandoff: TerminalHandoffConsentUi? = null,
@@ -1366,6 +1395,11 @@ class ConversationFlowHolder(
         val state = snapshot.value ?: return rejected(ConversationRejectedReason.NO_SESSION)
         val live = state.pendingApprovals.firstOrNull { it.key == approval.key }
             ?: return ConversationFlowResult.Stale
+        if (live != approval || state.selectedRunId != live.runId ||
+            (selectedRunId.value != null && selectedRunId.value != live.runId)) return ConversationFlowResult.Stale
+        if (!live.identityVerified || (allow && !live.scopeVerified) || live.requestGeneration == null ||
+            live.approvalRevision == null || live.descriptorIdentity == null)
+            return rejected(ConversationRejectedReason.INPUT_INSUFFICIENT)
         if (live.key in approvalDispatched) return rejected(ConversationRejectedReason.OPERATION_IN_FLIGHT)
         val choice = approvalScopeChoices.value[live.key] ?: ApprovalScopeChoiceUi.ONCE
         val decision: ApprovalUserDecisionUi =
@@ -1377,6 +1411,10 @@ class ConversationFlowHolder(
         // the same card: the stale refusal must not keep shouting over a new
         // attempt, and it can never widen the once-only dispatch latch.
         terminalHandoffRefusal.value?.let { if (it.approvalKey == live.key) terminalHandoffRefusal.value = null }
+        approvalDispatched.add(live.key)
+        val attempt = UUID.randomUUID().toString()
+        approvalAttempts[live.key] = attempt
+        approvalDispatchStates.value = approvalDispatchStates.value + (live.key to ApprovalDispatchState.PROCESSING)
         val started = host.resolveApproval(
             ApprovalDecisionRequest(
                 conversationId = conversationId,
@@ -1392,11 +1430,69 @@ class ConversationFlowHolder(
                 // of a denial, and the host treats a consent on anything else
                 // as a refusal.
                 terminalHandoff = if (allow) terminalHandoff else null,
+                expectedCard = live,
             )
         )
-        if (!started) return rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
-        approvalDispatched.add(live.key)
+        if (!started) {
+            if (approvalAttempts[live.key] == attempt) {
+                approvalDispatched.remove(live.key)
+                approvalAttempts.remove(live.key)
+                approvalChecks.remove(live.key)
+                approvalDispatchStates.value = approvalDispatchStates.value + (live.key to ApprovalDispatchState.RETRY_READY)
+            }
+            return rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
+        }
         return ConversationFlowResult.Accepted
+    }
+
+    @Synchronized fun approvalAttempt(session: ConversationSessionToken, key: String): String? =
+        if (!retired && session.isCurrentFor(this.session)) approvalAttempts[key] else null
+
+    @Synchronized fun withCurrentApproval(
+        session: ConversationSessionToken, expected: ApprovalCardUi, attempt: String, action: () -> Unit,
+    ): Boolean {
+        val state = snapshot.value ?: return false
+        if (retired || !session.isCurrentFor(this.session) || approvalAttempts[expected.key] != attempt ||
+            state.selectedRunId != expected.runId || (selectedRunId.value != null && selectedRunId.value != expected.runId) ||
+            state.pendingApprovals.firstOrNull { it.key == expected.key } != expected) return false
+        action()
+        return true
+    }
+
+    @Synchronized fun setApprovalRecovery(
+        session: ConversationSessionToken, expected: ApprovalCardUi, attempt: String,
+        state: ApprovalDispatchState, check: (() -> Unit)? = null,
+        onlyIfState: ApprovalDispatchState? = null,
+    ) {
+        withCurrentApproval(session, expected, attempt) {
+            if (onlyIfState != null && approvalDispatchStates.value[expected.key] != onlyIfState) return@withCurrentApproval
+            if (check != null) approvalChecks[expected.key] = check
+            if (state == ApprovalDispatchState.RETRY_READY) {
+                approvalDispatched.remove(expected.key)
+                approvalAttempts.remove(expected.key)
+                approvalChecks.remove(expected.key)
+            }
+            approvalDispatchStates.value = approvalDispatchStates.value + (expected.key to state)
+        }
+    }
+
+    @Synchronized fun recheckApproval(card: ApprovalCardUi) {
+        if (snapshot.value?.pendingApprovals?.firstOrNull { it.key == card.key } != card) return
+        if (approvalDispatchStates.value[card.key] == ApprovalDispatchState.NEEDS_CHECK) {
+            approvalChecks[card.key]?.invoke()
+        } else if (approvalDispatchStates.value[card.key] != ApprovalDispatchState.PROCESSING &&
+            approvalDispatchStates.value[card.key] != ApprovalDispatchState.CHECKING) {
+            host.refreshApproval(session, card.runId)
+        }
+    }
+
+    /** Explicit Stop when even the current approval identity is unverifiable. */
+    @Synchronized fun stopForApproval(card: ApprovalCardUi): Boolean {
+        val state = snapshot.value ?: return false
+        if (retired || state.selectedRunId != card.runId ||
+            state.pendingApprovals.firstOrNull { it.key == card.key } != card ||
+            (selectedRunId.value != null && selectedRunId.value != card.runId)) return false
+        return host.cancelRun(session, card.runId)
     }
 
     /**
@@ -1432,15 +1528,22 @@ class ConversationFlowHolder(
      * any approval was dispatched. The duplicate-press latch is released for
      * exactly that card so the user can decide again explicitly; nothing is
      * re-dispatched here and no other card is touched. */
-    fun applyTerminalHandoffRefusal(
+    @Synchronized fun applyTerminalHandoffRefusal(
         session: ConversationSessionToken,
         approvalKey: String,
         code: String,
+        expected: ApprovalCardUi? = null,
+        attempt: String? = null,
     ) {
         if (retired) return
         if (!session.isCurrentFor(this.session)) return
         if (approvalKey.isBlank()) return
+        if (expected != null && (attempt == null || expected.key != approvalKey ||
+                !withCurrentApproval(session, expected, attempt) {})) return
         approvalDispatched.remove(approvalKey)
+        approvalAttempts.remove(approvalKey)
+        approvalChecks.remove(approvalKey)
+        approvalDispatchStates.value = approvalDispatchStates.value - approvalKey
         terminalHandoffRefusal.value = TerminalHandoffRefusalUi(approvalKey, code)
     }
 
@@ -1448,11 +1551,22 @@ class ConversationFlowHolder(
         terminalHandoffRefusal.value = null
     }
 
-    fun setApprovalScope(key: String, choice: ApprovalScopeChoiceUi) {
+    /** A stale UI tap must not release a newer attempt for the same call. */
+    @Synchronized fun noteTerminalCaptureRefusal(expected: ApprovalCardUi, code: String) {
+        if (retired || expected.key in approvalDispatched ||
+            snapshot.value?.pendingApprovals?.firstOrNull { it.key == expected.key } != expected) return
+        terminalHandoffRefusal.value = TerminalHandoffRefusalUi(expected.key, code)
+    }
+
+    @Synchronized fun setApprovalScope(key: String, choice: ApprovalScopeChoiceUi, expected: ApprovalCardUi? = null) {
+        if (retired || snapshot.value?.pendingApprovals?.none { it.key == key } != false) return
+        if (expected != null && snapshot.value?.pendingApprovals?.firstOrNull { it.key == key } != expected) return
         approvalScopeChoices.value = approvalScopeChoices.value + (key to choice)
     }
 
-    fun toggleApprovalEvidence(key: String) {
+    @Synchronized fun toggleApprovalEvidence(key: String, expected: ApprovalCardUi? = null) {
+        if (retired || snapshot.value?.pendingApprovals?.none { it.key == key } != false) return
+        if (expected != null && snapshot.value?.pendingApprovals?.firstOrNull { it.key == key } != expected) return
         val current = expandedApprovalEvidence.value
         expandedApprovalEvidence.value = if (key in current) current - key else current + key
     }
