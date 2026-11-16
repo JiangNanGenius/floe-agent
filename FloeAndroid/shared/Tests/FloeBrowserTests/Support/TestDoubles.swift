@@ -27,13 +27,30 @@ actor FakeRenderer: BrowserRenderer {
     var released = false
 
     var tabStates: [UUID: BrowserRendererTabState] = [:]
+    private var documentTokens: [UUID: String] = [:]
     var snapshotJSON = #"{"revision":3,"viewportWidth":1280,"viewportHeight":800,"nodes":[],"nextCursor":null}"#
+    private var preserveRawSnapshot = false
     var statusJSON = #"{"readyState":"complete","selectorFound":false,"textFound":false,"idleMilliseconds":900,"revision":3}"#
     var performStatus = "ok"
     var screenshotBytes = Data([0xFF, 0xD8, 0xFF, 0xE0]) + Data(repeating: 7, count: 512)
     var screenshotPixels = (width: 1280, height: 800)
     var lastProbeSource = ""
     nonisolated(unsafe) var evaluateDelayNanoseconds: UInt64 = 0
+    // WebView.loadUrl() returns before the new page commits. Keep the old
+    // surface observable until the test injects a real lifecycle event.
+    var preserveStateOnNavigate = false
+    private var holdNextSnapshot = false
+    private var heldSnapshot: (CheckedContinuation<String, Never>, String)?
+    var identityJSON: String?
+    var documentStampJSON: String?
+    private var holdNextIdentity = false
+    private var heldIdentity: CheckedContinuation<Void, Never>?
+    private var holdNextScreenshot = false
+    private var heldScreenshot: CheckedContinuation<Void, Never>?
+    private enum Event {
+        case navigation(Int), history(Int), snapshot, identity, screenshot
+    }
+    private var eventWaiters: [UUID: (Event, CheckedContinuation<Bool, Never>)] = [:]
 
     // MARK: protocol
 
@@ -44,12 +61,14 @@ actor FakeRenderer: BrowserRenderer {
             createdTabs.append(tabID)
             lastProbeSource = probeSource
             tabStates[tabID] = BrowserRendererTabState(url: nil, title: nil, isLoading: false)
+            documentTokens[tabID] = UUID().uuidString
         }
     }
 
     func destroyTab(tabID: UUID) async {
         destroyedTabs.append(tabID)
         tabStates[tabID] = nil
+        documentTokens[tabID] = nil
     }
 
     func navigate(tabID: UUID, url: URL) async throws {
@@ -57,12 +76,16 @@ actor FakeRenderer: BrowserRenderer {
         case .unavailable: throw BrowserRendererError.unavailable
         default:
             navigations.append((tabID, url.absoluteString))
-            tabStates[tabID] = BrowserRendererTabState(url: url.absoluteString, title: "Page", isLoading: false)
+            notifyEventWaiters()
+            if !preserveStateOnNavigate {
+                documentTokens[tabID] = UUID().uuidString
+                tabStates[tabID] = BrowserRendererTabState(url: url.absoluteString, title: "Page", isLoading: false)
+            }
         }
     }
 
-    func goBack(tabID: UUID) async throws { backForwards.append((tabID, "back")) }
-    func goForward(tabID: UUID) async throws { backForwards.append((tabID, "forward")) }
+    func goBack(tabID: UUID) async throws { recordHistory(tabID: tabID, direction: "back") }
+    func goForward(tabID: UUID) async throws { recordHistory(tabID: tabID, direction: "forward") }
     func reload(tabID: UUID) async throws { reloads.append(tabID) }
     func stopLoading(tabID: UUID) async { stops.append(tabID) }
 
@@ -85,23 +108,52 @@ actor FakeRenderer: BrowserRenderer {
         if evaluateDelayNanoseconds > 0, expression.contains("p.perform(") {
             try? await Task.sleep(nanoseconds: evaluateDelayNanoseconds)
         }
-        if expression.contains("p.snapshot(") { return snapshotJSON }
+        if expression.contains("p.snapshot(") {
+            let captured = renderedSnapshot(tabID: tabID)
+            if holdNextSnapshot {
+                holdNextSnapshot = false
+                return await withCheckedContinuation { continuation in
+                    heldSnapshot = (continuation, captured)
+                    notifyEventWaiters()
+                }
+            }
+            return captured
+        }
+        if expression.contains("__floeDocumentTokenV1") { return documentStampJSON ?? identityForTab(tabID) }
+        if expression.contains("p.identity()") {
+            if holdNextIdentity {
+                holdNextIdentity = false
+                await withCheckedContinuation { continuation in
+                    heldIdentity = continuation
+                    notifyEventWaiters()
+                }
+            }
+            return identityJSON ?? identityForTab(tabID)
+        }
         if expression.contains("p.status(") { return statusJSON }
         if expression.contains("p.drainEvents(") { return "[]" }
         if expression.contains("p.perform(") { return #"{"status":"\#(performStatus)"}"# }
-        if expression.contains("scrollBy") { return "'ok'" }
+        if expression.contains("p.scroll(") { return #"{"status":"ok"}"# }
         return "{}"
     }
 
     func captureScreenshot(tabID: UUID) async throws -> BrowserScreenshotData {
         if mode == .unavailable { throw BrowserRendererError.unavailable }
         guard let value = tabStates[tabID] else { throw BrowserRendererError.failed("unknown tab") }
-        return BrowserScreenshotData(
+        let captured = BrowserScreenshotData(
             jpeg: screenshotBytes,
             pixelWidth: screenshotPixels.width,
             pixelHeight: screenshotPixels.height,
             state: value
         )
+        if holdNextScreenshot {
+            holdNextScreenshot = false
+            await withCheckedContinuation { continuation in
+                heldScreenshot = continuation
+                notifyEventWaiters()
+            }
+        }
+        return captured
     }
 
     func release() async { released = true }
@@ -112,10 +164,130 @@ actor FakeRenderer: BrowserRenderer {
         evaluateDelayNanoseconds = nanoseconds
     }
 
-    func setSnapshot(_ json: String) { snapshotJSON = json }
+    func setSnapshot(_ json: String) { snapshotJSON = json; preserveRawSnapshot = false }
 
-    func setTabState(_ tabID: UUID, url: String?, title: String? = "Page", loading: Bool = false) {
-        tabStates[tabID] = BrowserRendererTabState(url: url, title: title, isLoading: loading)
+    func setRawSnapshot(_ json: String) { snapshotJSON = json; preserveRawSnapshot = true }
+
+    /// Mimics a real new document before its loadCommitted callback. A
+    /// fragment/history transition deliberately does not call this.
+    func commitNewDocument(_ tabID: UUID) { documentTokens[tabID] = UUID().uuidString }
+
+    private func identityForTab(_ tabID: UUID) -> String {
+        let snapshot = (try? JSONSerialization.jsonObject(with: Data(snapshotJSON.utf8))) as? [String: Any]
+        let value: [String: Any] = [
+            "probeAvailable": true,
+            "documentToken": documentTokens[tabID] ?? "missing-tab",
+            "documentURL": tabStates[tabID]?.url ?? "about:blank",
+            "revision": snapshot?["revision"] as? Int ?? 0,
+            "scrollX": 0, "scrollY": 0,
+            "viewportWidth": snapshot?["viewportWidth"] as? Double ?? 1280,
+            "viewportHeight": snapshot?["viewportHeight"] as? Double ?? 800,
+        ]
+        return String(data: try! JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]), encoding: .utf8)!
+    }
+
+    private func renderedSnapshot(tabID: UUID) -> String {
+        guard !preserveRawSnapshot,
+              var object = (try? JSONSerialization.jsonObject(with: Data(snapshotJSON.utf8))) as? [String: Any],
+              object["probeAvailable"] as? Bool != false,
+              object["revision"] != nil, object["nodes"] != nil else { return snapshotJSON }
+        if object["probeAvailable"] == nil { object["probeAvailable"] = true }
+        if object["documentToken"] == nil { object["documentToken"] = documentTokens[tabID] ?? "missing-tab" }
+        if object["documentURL"] == nil { object["documentURL"] = tabStates[tabID]?.url ?? "about:blank" }
+        return String(data: try! JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]), encoding: .utf8)!
+    }
+
+    func setProbeStatus(_ json: String) { statusJSON = json }
+
+    func setScreenshot(_ data: Data, width: Int, height: Int) {
+        screenshotBytes = data
+        screenshotPixels = (width, height)
+    }
+
+    func holdNextScreenshotReply() { holdNextScreenshot = true }
+
+    func waitForScreenshotReplyToBeHeld() async -> Bool { await waitForEvent(.screenshot) }
+
+    func releaseHeldScreenshotReply() {
+        guard let continuation = heldScreenshot else { return }
+        heldScreenshot = nil
+        continuation.resume()
+    }
+
+    func setIdentity(_ json: String) { identityJSON = json }
+
+    func setDocumentStamp(_ json: String) { documentStampJSON = json }
+
+    func holdNextIdentityReply() { holdNextIdentity = true }
+
+    func waitForIdentityReplyToBeHeld() async -> Bool { await waitForEvent(.identity) }
+
+    func releaseHeldIdentityReply() {
+        guard let continuation = heldIdentity else { return }
+        heldIdentity = nil
+        continuation.resume()
+    }
+
+    func setPreserveStateOnNavigate(_ value: Bool) { preserveStateOnNavigate = value }
+
+    private func recordHistory(tabID: UUID, direction: String) {
+        backForwards.append((tabID, direction))
+        notifyEventWaiters()
+    }
+
+    func waitForHistoryCount(_ count: Int) async -> Bool { await waitForEvent(.history(count)) }
+
+    func waitForNavigationCount(_ count: Int) async -> Bool { await waitForEvent(.navigation(count)) }
+
+    func holdNextSnapshotReply() { holdNextSnapshot = true }
+
+    func waitForSnapshotReplyToBeHeld() async -> Bool { await waitForEvent(.snapshot) }
+
+    /// Event-driven synchronization with a bounded failure path: a regression
+    /// that never reaches the fake renderer must not hang the whole suite.
+    private func waitForEvent(_ event: Event) async -> Bool {
+        if eventIsReady(event) { return true }
+        let id = UUID()
+        return await withCheckedContinuation { continuation in
+            eventWaiters[id] = (event, continuation)
+            Task {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                expireEventWaiter(id)
+            }
+        }
+    }
+
+    private func eventIsReady(_ event: Event) -> Bool {
+        switch event {
+        case .navigation(let count): return navigations.count >= count
+        case .history(let count): return backForwards.count >= count
+        case .snapshot: return heldSnapshot != nil
+        case .identity: return heldIdentity != nil
+        case .screenshot: return heldScreenshot != nil
+        }
+    }
+
+    private func notifyEventWaiters() {
+        let ready = eventWaiters.filter { eventIsReady($0.value.0) }.map(\.key)
+        for id in ready { eventWaiters.removeValue(forKey: id)?.1.resume(returning: true) }
+    }
+
+    private func expireEventWaiter(_ id: UUID) {
+        eventWaiters.removeValue(forKey: id)?.1.resume(returning: false)
+    }
+
+    func releaseHeldSnapshotReply() {
+        guard let (continuation, value) = heldSnapshot else { return }
+        heldSnapshot = nil
+        continuation.resume(returning: value)
+    }
+
+    func setTabState(_ tabID: UUID, url: String?, title: String? = "Page", loading: Bool = false,
+                     canGoBack: Bool? = nil, canGoForward: Bool? = nil) {
+        let previous = tabStates[tabID]
+        tabStates[tabID] = BrowserRendererTabState(url: url, title: title, isLoading: loading,
+            canGoBack: canGoBack ?? previous?.canGoBack ?? false,
+            canGoForward: canGoForward ?? previous?.canGoForward ?? false)
     }
 
     func nodes(_ nodesJSON: String, nextCursor: Int?) {
@@ -300,6 +472,8 @@ struct BrowserTestHarness {
     }
 }
 
+enum FakeRendererWaitFailure: Error { case navigationNotDispatched }
+
 func makeNavigatedSession(
     harness: BrowserTestHarness,
     owner: BrowserOwnerID
@@ -308,12 +482,21 @@ func makeNavigatedSession(
     let sessionID = await session.sessionID
     let tabs = await session.tabSnapshots()
     let tabID = tabs.first!.id
-    _ = await harness.center.execute(
-        BrowserCommand(sessionID: sessionID, tabID: tabID, action: .navigate(url: "https://example.test/feed")),
-        in: owner
-    )
+    let priorCount = await harness.renderer.navigations.count
+    let center = harness.center
+    let navigation = Task {
+        await center.execute(
+            BrowserCommand(sessionID: sessionID, tabID: tabID, action: .navigate(url: "https://example.test/feed")),
+            in: owner
+        )
+    }
+    guard await harness.renderer.waitForNavigationCount(priorCount + 1) else {
+        navigation.cancel()
+        throw FakeRendererWaitFailure.navigationNotDispatched
+    }
     await harness.center.ingress(.loadStarted(tabID: tabID))
     await harness.center.ingress(.loadCommitted(tabID: tabID))
     await harness.center.ingress(.loadFinished(tabID: tabID, url: "https://example.test/feed", title: "Feed"))
+    _ = await navigation.value
     return (session, sessionID)
 }

@@ -297,6 +297,9 @@ public struct PageSnapshot: Sendable, Codable, Hashable {
     public var visualTextRegions: [VisualTextRegion]
     public var nextCursor: Int?
     public var screenshotArtifact: BrowserArtifactReference?
+    /// False means this is a tab-management or screenshot-only receipt, not
+    /// evidence that the actual page has an empty semantic DOM.
+    public var structuredObservationAvailable: Bool?
 
     public init(
         documentID: String,
@@ -312,7 +315,8 @@ public struct PageSnapshot: Sendable, Codable, Hashable {
         nodes: [BrowserNode],
         visualTextRegions: [VisualTextRegion] = [],
         nextCursor: Int?,
-        screenshotArtifact: BrowserArtifactReference?
+        screenshotArtifact: BrowserArtifactReference?,
+        structuredObservationAvailable: Bool? = nil
     ) {
         self.documentID = documentID
         self.revision = revision
@@ -328,6 +332,7 @@ public struct PageSnapshot: Sendable, Codable, Hashable {
         self.visualTextRegions = visualTextRegions
         self.nextCursor = nextCursor
         self.screenshotArtifact = screenshotArtifact
+        self.structuredObservationAvailable = structuredObservationAvailable
     }
 }
 

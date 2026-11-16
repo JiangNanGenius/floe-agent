@@ -96,13 +96,14 @@ final class ExecShellJobSettlementTests: XCTestCase {
         XCTAssertTrue(output.summary.contains("leaseReleased=true"), output.summary)
     }
 
-    func testEngineProvenTimedOutPassesThroughWithoutDoubleAnnotation() async throws {
-        // The backend proves the release inside its own bounded wait
-        // (release visible from the first poll): the ORIGINAL tool output
-        // already carries the engine truth and must pass through WITHOUT
-        // the reconciliation re-annotation and without any gate query.
+    func testEngineProvenTimedOutIsConfirmedByExactHostReceipt() async throws {
+        // A missing backend session alone is not proof: independently confirm
+        // the exact job with the host receipt even if the local poll released.
         let root = try JobTestRoot.make()
-        let gate = ScriptedJobGate()
+        let gate = ScriptedJobGate(answers: [
+            .released(sessionID: "lease-proven", cancelled: true, stopReason: "timeout",
+                      exitCode: nil, termSig: nil, waitErrno: 0, workspaceStatus: "synced"),
+        ])
         let index = JobLiveWorkIndex()
         let (transport, _, runner) = makeExecShellRunner(root: root, gate: gate, index: index)
         transport.pollScript = { session, cursor, _ in
@@ -113,10 +114,93 @@ final class ExecShellJobSettlementTests: XCTestCase {
         let output = try await runner.run(jobPayload(), jobContext(
             runID: UUID(), jobID: UUID(), root: root, cancellation: CancellationToken()))
         XCTAssertEqual(output.exitStatus, 124)
-        XCTAssertFalse(output.summary.contains("engine terminal (reconciled after local wait)"),
-                       "engine-proven timeouts already settle in the delivered backend; "
-                       + "the wait extension must not re-annotate a proven terminal")
-        XCTAssertEqual(gate.queryCount, 0)
+        XCTAssertTrue(output.summary.contains("leaseReleased=true"), output.summary)
+        XCTAssertEqual(gate.queryCount, 1)
+    }
+
+    func testCancellationDuringUnresolvedStartWaitsForExactHostProof() async throws {
+        let root = try JobTestRoot.make()
+        let gate = ScriptedJobGate(answers: [
+            .unconfirmed(reason: "start claim still owned"),
+            .released(sessionID: "same-job-lease", cancelled: false, stopReason: nil,
+                      exitCode: 0, termSig: nil, waitErrno: 0, workspaceStatus: "synced"),
+        ])
+        let (transport, _, runner) = makeExecShellRunner(root: root, gate: gate, index: JobLiveWorkIndex())
+        // The Swift backend has no session after a start wait is cancelled;
+        // the real host may nevertheless retain a possibly-admitted claim.
+        transport.startError = CancellationError()
+        let output = try await runner.run(jobPayload(), jobContext(
+            runID: UUID(), jobID: UUID(), root: root, cancellation: CancellationToken()))
+        XCTAssertEqual(output.exitStatus, 0, "the host-proven real exit outranks local cancellation")
+        XCTAssertTrue(output.summary.contains("leaseReleased=true"), output.summary)
+        XCTAssertGreaterThanOrEqual(gate.queryCount, 2)
+        XCTAssertTrue(gate.recordedQueries.allSatisfy { $0.lastKnownSessionID == nil })
+        XCTAssertEqual(transport.recordedStartCount, 1, "uncertain start must never be replayed")
+    }
+
+    func testMissingExactSessionDoesNotTurnTimeoutIntoConfirmedSettlement() async throws {
+        let root = try JobTestRoot.make()
+        let gate = ScriptedJobGate()
+        let (backend, transport, original) = makeExecShellInner(root: root)
+        // Model a local timeout with no exact session identity. The gate must
+        // not claim release merely because the backend lookup returned nil.
+        let inner = AnyAgentTool(descriptor: original.descriptor, run: { _, _ in
+            ToolExecutionOutput(digesting: "exit=124 status=timedOut", exitStatus: 124)
+        })
+        let runner = ExecShellJobRunner(
+            inner: inner, backend: backend, transport: transport,
+            gate: { query in gate.answer(for: query) }, index: JobLiveWorkIndex(),
+            configuration: ExecShellJobRunnerConfiguration(
+                queryIntervalNanos: 10_000_000, maxQueryIntervalNanos: 20_000_000,
+                reconcileCeiling: 0.15)).makeRunner()
+        do {
+            _ = try await runner.run(jobPayload(), jobContext(
+                runID: UUID(), jobID: UUID(), root: root, cancellation: CancellationToken()))
+            XCTFail("unconfirmed timeout must not be presented as a clean settlement")
+        } catch let error as NativeJobSafetyFailure {
+            XCTAssertTrue(error.isUnsafeResourceState)
+        }
+        XCTAssertGreaterThanOrEqual(gate.queryCount, 1)
+        XCTAssertEqual(transport.recordedStartCount, 0)
+    }
+
+    func testCancellationBeforeProvenAdmissionRemainsARefusal() async throws {
+        let root = try JobTestRoot.make()
+        let gate = ScriptedJobGate(answers: [.notStarted(reason: "runtime_stopping")])
+        let (transport, _, runner) = makeExecShellRunner(root: root, gate: gate, index: JobLiveWorkIndex())
+        transport.startError = CancellationError()
+        let output = try await runner.run(jobPayload(), jobContext(
+            runID: UUID(), jobID: UUID(), root: root, cancellation: CancellationToken()))
+        XCTAssertEqual(output.exitStatus, 125, "a proved refusal is not a clean engine cancellation")
+        XCTAssertTrue(output.summary.contains("notStarted=true"), output.summary)
+        XCTAssertEqual(gate.queryCount, 1)
+    }
+
+    func testUnownedCancellationHasShortSafetyBoundAndRequestsHostStop() async throws {
+        let root = try JobTestRoot.make()
+        let gate = ScriptedJobGate()
+        let (backend, transport, original) = makeExecShellInner(root: root)
+        let inner = AnyAgentTool(descriptor: original.descriptor, run: { _, _ in
+            ToolExecutionOutput(digesting: "exit=130 status=cancelled", exitStatus: 130)
+        })
+        let runner = ExecShellJobRunner(
+            inner: inner, backend: backend, transport: transport,
+            gate: { query in gate.answer(for: query) }, index: JobLiveWorkIndex(),
+            configuration: ExecShellJobRunnerConfiguration(
+                queryIntervalNanos: 10_000_000, maxQueryIntervalNanos: 20_000_000,
+                reconcileCeiling: 5, unownedCancellationCeiling: 0.12)).makeRunner()
+        let started = Date()
+        do {
+            _ = try await runner.run(jobPayload(), jobContext(
+                runID: UUID(), jobID: UUID(), root: root, cancellation: CancellationToken()))
+            XCTFail("an unproven stop must not be reported as a clean cancellation")
+        } catch let error as NativeJobSafetyFailure {
+            XCTAssertTrue(error.isUnsafeResourceState)
+        }
+        XCTAssertLessThan(Date().timeIntervalSince(started), 2)
+        XCTAssertGreaterThanOrEqual(gate.queryCount, 1)
+        XCTAssertTrue(gate.recordedQueries.allSatisfy { $0.cancellationRequested },
+                      "even a local Task cancellation must request the host's exact stop")
     }
 
     // MARK: - Cancellation routes the REAL stop, not only the Task token
@@ -210,6 +294,117 @@ final class ExecShellJobSettlementTests: XCTestCase {
         let live = await index.live()
         XCTAssertTrue(live.isEmpty)
         XCTAssertGreaterThanOrEqual(gate.queryCount, 2)
+    }
+
+    // MARK: - Proven refused start: positive not-started, never success
+
+    func testProvenNotStartedSettlesWithoutClaimingSuccessOrWatching() async throws {
+        let root = try JobTestRoot.make()
+        let gate = ScriptedJobGate(answers: [.notStarted(reason: "runtime_stopping")])
+        let index = JobLiveWorkIndex()
+        let (transport, _, runner) = makeExecShellRunner(root: root, gate: gate, index: index)
+        transport.startError = LinuxShellTransportError.remoteFailed(code: "runtime_stopping")
+        let started = Date()
+        let output = try await runner.run(jobPayload(), jobContext(
+            runID: UUID(), jobID: UUID(), root: root, cancellation: CancellationToken()))
+        XCTAssertLessThan(Date().timeIntervalSince(started), 2.0,
+                          "a positively proven refusal must not wait for the reconciliation ceiling")
+        XCTAssertEqual(output.exitStatus, 125,
+                       "a refused start preserves the original engine-unavailable terminal")
+        XCTAssertTrue(output.summary.contains("notStarted=true"), output.summary)
+        XCTAssertTrue(output.summary.contains("nothing ran"), output.summary)
+        XCTAssertTrue(output.summary.contains("reason=runtime_stopping"), output.summary)
+        XCTAssertFalse(output.summary.contains("engine terminal (reconciled after local wait)"),
+                       "a never-admitted start has no engine terminal")
+        XCTAssertEqual(gate.queryCount, 1)
+        XCTAssertNil(gate.recordedQueries.first?.lastKnownSessionID,
+                     "a start that never returned a session must not carry a session hint")
+        XCTAssertEqual(transport.recordedCancelCount, 0,
+                       "there was no live session to stop")
+    }
+
+    func testProvenNotStartedDuringCancellationIsNotACleanStop() async throws {
+        let root = try JobTestRoot.make()
+        let gate = ScriptedJobGate(answers: [
+            .unconfirmed(reason: "receipt still pending"),
+            .notStarted(reason: "runtime_stopping"),
+        ])
+        let index = JobLiveWorkIndex()
+        let (backend, transport, inner) = makeExecShellInner(root: root)
+        let token = CancellationToken()
+        // Cancel only AFTER the first gate query proved the adapter is still
+        // owning an unproven start: the next query must carry the real
+        // cancellation intent, yet the proven refusal still cannot become 130.
+        let wrapper = ExecShellJobRunner(
+            inner: inner,
+            backend: backend,
+            transport: transport,
+            gate: { query in
+                let answer = gate.answer(for: query)
+                if gate.queryCount == 1 { token.cancel() }
+                return answer
+            },
+            index: index,
+            configuration: ExecShellJobRunnerConfiguration(
+                pollIntervalNanos: 5_000_000,
+                queryIntervalNanos: 10_000_000,
+                maxQueryIntervalNanos: 50_000_000,
+                reconcileCeiling: 5))
+        transport.startError = LinuxShellTransportError.remoteFailed(code: "runtime_stopping")
+        let output = try await wrapper.makeRunner().run(jobPayload(), jobContext(
+            runID: UUID(), jobID: UUID(), root: root, cancellation: token))
+        XCTAssertEqual(output.exitStatus, 125,
+                       "nothing ran; a cancellation request cannot fabricate exit 130")
+        XCTAssertTrue(output.summary.contains("notStarted=true"), output.summary)
+        XCTAssertTrue(output.summary.contains("there was no running command to stop"), output.summary)
+        XCTAssertFalse(output.summary.contains("status=cancelled"), output.summary)
+        XCTAssertEqual(transport.recordedCancelCount, 0,
+                       "no session existed, so no stop may be routed")
+        XCTAssertEqual(gate.queryCount, 2)
+        XCTAssertTrue(gate.recordedQueries.last?.cancellationRequested == true)
+    }
+
+    func testUnrelatedSameRunSessionIsNeverWatchedOrStopped() async throws {
+        let root = try JobTestRoot.make()
+        let gate = ScriptedJobGate(answers: [.notStarted(reason: "runtime_stopping")])
+        let index = JobLiveWorkIndex()
+        let (transport, backend, runner) = makeExecShellRunner(root: root, gate: gate, index: index)
+        let runID = UUID()
+        transport.pollScript = { session, cursor, nth in
+            if nth == 1 {
+                return FakeJobShellTransport.page(session: session, cursor: cursor,
+                                                  text: "ready\n", more: false)
+            }
+            return nil
+        }
+        // A real interactive terminal in the SAME run: it belongs to another
+        // processor and must never be mistaken for this job's lease.
+        let open = try await backend.openSession(ShellOpenRequest(
+            command: "sleep 300", rootURL: root, gateTimeout: 0.2,
+            sessionID: "unrelated-terminal", runID: runID,
+            conversationID: UUID(), leaseRole: .interactive),
+            cancellation: CancellationToken())
+        XCTAssertTrue(open.alive)
+        let jobID = UUID()
+        let wrongOwner = await backend.ownedSession(runID: runID,
+                                                    toolCallID: "jobs.\(jobID.uuidString)")
+        XCTAssertNil(wrongOwner,
+                     "an interactive session is not this job's exact owner")
+        let pollsAfterOpen = transport.recordedPollTotal
+
+        transport.startError = LinuxShellTransportError.remoteFailed(code: "runtime_stopping")
+        let output = try await runner.run(jobPayload(), jobContext(
+            runID: runID, jobID: jobID, root: root, cancellation: CancellationToken()))
+        XCTAssertEqual(output.exitStatus, 125)
+        XCTAssertTrue(output.summary.contains("notStarted=true"), output.summary)
+        XCTAssertEqual(gate.queryCount, 1)
+        XCTAssertEqual(transport.recordedPollTotal, pollsAfterOpen,
+                       "the adapter must not poll an unrelated same-run session")
+        XCTAssertEqual(transport.recordedCancelCount, 0,
+                       "the adapter must not stop an unrelated same-run session")
+        let retained = await backend.ownedSessions(runID: runID)
+        XCTAssertTrue(retained.contains { $0.sessionKey == "unrelated-terminal" },
+                      "the unrelated session keeps its real ownership")
     }
 
     // MARK: - Swift Task cancellation boundary (Main's merged shape)

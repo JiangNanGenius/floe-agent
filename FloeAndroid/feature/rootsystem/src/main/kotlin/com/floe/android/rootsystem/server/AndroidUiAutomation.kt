@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 package com.floe.android.rootsystem.server
 
+import com.floe.android.contracts.SensitiveUiGuardPolicy
+import com.floe.android.contracts.SensitiveUiLabelKey
+import com.floe.android.contracts.SensitiveUiLabelFingerprint
+
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.app.KeyguardManager
 import android.app.UiAutomation
@@ -77,6 +81,7 @@ internal class AndroidUiAutomationBridge(
         val actions: Set<String>,
         val range: UiRangeInfo?,
         val path: List<Int>,
+        val safeLabelHmac: String? = null,
     )
 
     data class Page(
@@ -300,6 +305,8 @@ internal class AndroidUiAutomationBridge(
         request: UiObserveRequest,
         cancelled: () -> Boolean,
         generation: Long,
+        protectedBaseline: Map<UiSensitiveBaseline.Key, UiSensitiveBaseline.Entry>? = null,
+        labelKey: SensitiveUiLabelKey? = null,
     ): Page {
         if (cancelled()) throw UiBridgeException("cancelled")
         if (keyguardLocked()) throw UiBridgeException("locked")
@@ -360,16 +367,20 @@ internal class AndroidUiAutomationBridge(
                 )
             }
             val className = root.className?.toString()
-            val rawWindowTitle = runCatching { window?.title?.toString() }.getOrNull()
+            val rawWindowTitle = if (protectedBaseline == null) {
+                runCatching { window?.title?.toString() }.getOrNull()
+            } else null
 
             val nodes = ArrayList<Node>(minOf(request.maxNodes, MAX_NODES))
+            // Live structural proof for direct child labels of known buttons.
+            val safeButtonParents = HashMap<String, UiSensitiveBaseline.Key>()
             var scanned = 0
             var textSpent = 0
             var textLimited = false
             var scanLimited = false
             var timeLimited = false
             var depthLimited = false
-            var sensitive = false
+            var sensitive = protectedBaseline != null
             val deadline = SystemClock.elapsedRealtime() + SCAN_TIME_BUDGET_MS
             val queue = ArrayDeque<Frame>()
             queue += Frame(root, null, 0, emptyList(), false)
@@ -398,11 +409,37 @@ internal class AndroidUiAutomationBridge(
                         val bounds = Rect()
                         runCatching { node.getBoundsInScreen(bounds) }
                         val visible = runCatching { node.isVisibleToUser }.getOrDefault(false)
-                        val password = runCatching { node.isPassword }.getOrDefault(false)
+                        val password = runCatching { node.isPassword }.getOrDefault(true)
                         val viewId = runCatching { node.viewIdResourceName }.getOrNull()
+                        val className = runCatching { node.className?.toString()?.take(200) }
+                            .getOrNull().orEmpty()
+                        // A failed editable/action read is unsafe, not evidence of a button.
+                        val editable = runCatching { node.isEditable }.getOrDefault(true)
+                        val clickable = runCatching { node.isClickable }.getOrDefault(false)
+                        val actions = actionNames(node)
+                        val maySetText = runCatching {
+                            node.actionList.any {
+                                it.id == AccessibilityNodeInfo.AccessibilityAction.ACTION_SET_TEXT.id
+                            }
+                        }.getOrDefault(true)
                         val sensitiveField = password || isSensitiveViewId(viewId)
                         if (sensitiveField) sensitive = true
-                        val redact = sensitiveField
+                        val nodeKey = UiSensitiveBaseline.Key(
+                            packageName, windowId, displayId, frame.path, className, viewId?.take(255),
+                        )
+                        val baseline = protectedBaseline?.get(nodeKey)
+                        val safeButtonChild = baseline?.safeParent != null &&
+                            frame.parentRef?.let(safeButtonParents::get) == baseline.safeParent
+                        var redact = !SensitiveUiGuardPolicy.canReadNodeText(
+                            guarded = protectedBaseline != null,
+                            platformSensitive = sensitiveField,
+                            editable = editable,
+                            clickable = clickable,
+                            advertisesSetText = maySetText,
+                            knownButton = baseline != null &&
+                                (baseline.safeParent == null || safeButtonChild),
+                            safeButtonChild = safeButtonChild,
+                        )
                         val remaining = (request.textBudgetChars - textSpent).coerceAtLeast(0)
                         // A protected field's contents are not even
                         // materialized here: redaction happens before the
@@ -413,19 +450,37 @@ internal class AndroidUiAutomationBridge(
                         } else {
                             node.contentDescription?.toString()
                         }
-                        val rawHint = if (redact || Build.VERSION.SDK_INT < 26) {
+                        val rawHint = if (redact || protectedBaseline != null || Build.VERSION.SDK_INT < 26) {
                             null
                         } else {
                             node.hintText?.toString()
                         }
-                        val text = if (redact) null else boundField(rawText, remaining)
-                        val description = if (redact) null else
+                        var text = if (redact) null else boundField(rawText, remaining)
+                        var description = if (redact) null else
                             boundField(rawDescription, remaining - (text?.length ?: 0))
-                        val hint = if (redact) null else
+                        var hint = if (redact) null else
                             boundField(
                                 rawHint,
                                 remaining - (text?.length ?: 0) - (description?.length ?: 0),
                             )
+                        // New or altered labels might echo a secret. Only an unchanged
+                        // pre-input button label is eligible for publication.
+                        if (!redact && protectedBaseline != null &&
+                            (labelKey == null || SensitiveUiLabelFingerprint.hmac(
+                                labelKey, rawText, rawDescription,
+                            ) != baseline?.fingerprint)
+                        ) {
+                            text = null; description = null; hint = null; redact = true
+                        }
+                        // Only emit a pre-input digest if the host received the exact,
+                        // complete original fields. Active guards never create baselines.
+                        val safeParent = frame.parentRef?.let(safeButtonParents::get)
+                        val safeLabelHmac = if (protectedBaseline == null && labelKey != null &&
+                            visible && !editable && !sensitiveField && !maySetText &&
+                            (clickable || safeParent != null) &&
+                            (rawText != null || rawDescription != null) &&
+                            rawText == text && rawDescription == description
+                        ) SensitiveUiLabelFingerprint.hmac(labelKey, rawText, rawDescription) else null
                         if (!redact) {
                             val used = (text?.length ?: 0) + (description?.length ?: 0) +
                                 (hint?.length ?: 0)
@@ -448,7 +503,7 @@ internal class AndroidUiAutomationBridge(
                                 ref = ref,
                                 parentRef = frame.parentRef,
                                 depth = frame.depth,
-                                className = node.className?.toString()?.take(200).orEmpty(),
+                                className = className,
                                 packageName = nodePackage ?: packageName,
                                 viewId = viewId?.take(255),
                                 text = text,
@@ -457,8 +512,8 @@ internal class AndroidUiAutomationBridge(
                                 bounds = UiBounds(bounds.left, bounds.top, bounds.right, bounds.bottom),
                                 visible = visible,
                                 enabled = runCatching { node.isEnabled }.getOrDefault(false),
-                                clickable = runCatching { node.isClickable }.getOrDefault(false),
-                                editable = runCatching { node.isEditable }.getOrDefault(false),
+                                clickable = clickable,
+                                editable = editable,
                                 scrollable = runCatching { node.isScrollable }.getOrDefault(false),
                                 focusable = runCatching { node.isFocusable }.getOrDefault(false),
                                 focused = runCatching { node.isFocused }.getOrDefault(false),
@@ -468,15 +523,19 @@ internal class AndroidUiAutomationBridge(
                                 password = password,
                                 redacted = redact,
                                 insideScrollable = frame.insideScrollable,
-                                actions = actionNames(node),
+                                actions = actions,
                                 range = runCatching {
                                     node.rangeInfo?.let {
                                         UiRangeInfo(it.min, it.max, it.current)
                                     }
                                 }.getOrNull(),
                                 path = frame.path,
+                                safeLabelHmac = safeLabelHmac,
                             )
                             frame.ref = ref
+                            if (visible && clickable && !editable && !sensitiveField && !maySetText) {
+                                safeButtonParents[ref] = nodeKey
+                            }
                         }
                         if (frame.depth < request.maxDepth && node.childCount > 0) {
                             for (index in 0 until node.childCount) {
@@ -553,6 +612,8 @@ internal class AndroidUiAutomationBridge(
         targetPackage: String?,
         targets: Set<String>,
         cancelled: () -> Boolean,
+        guardActive: Boolean = false,
+        guardProtectedTarget: Boolean = false,
     ): ActExecution {
         if (cancelled()) throw UiBridgeException("cancelled")
         if (keyguardLocked()) throw UiBridgeException("locked")
@@ -616,8 +677,14 @@ internal class AndroidUiAutomationBridge(
             } else {
                 resolveNode(root, stored.path.dropLast(1))
             }
-            val pageIdentity = storedIdentity(retained, stored)
-            val liveIdentity = readLiveIdentity(targetNode, parent, pageIdentity)
+            val originalIdentity = storedIdentity(retained, stored)
+            val pageIdentity = if (guardActive) originalIdentity.copy(
+                redacted = stored.password || isSensitiveViewId(stored.viewId) || guardProtectedTarget,
+                text = null, contentDescription = null, hintText = null,
+                childAnchors = emptyList(), parentAnchor = null,
+            ) else originalIdentity
+            val liveIdentity = readLiveIdentity(targetNode, parent, pageIdentity,
+                forceNoText = guardActive, forceRedacted = guardProtectedTarget)
                 ?: return ActExecution(
                     UiDispatchOutcome.NOT_DISPATCHED, null, "node_changed",
                 )
@@ -1309,15 +1376,17 @@ internal class AndroidUiAutomationBridge(
         node: AccessibilityNodeInfo,
         parent: AccessibilityNodeInfo?,
         stored: UiNodeIdentity,
+        forceNoText: Boolean = false,
+        forceRedacted: Boolean = false,
     ): UiNodeIdentity? {
         return try {
             val livePassword = runCatching { node.isPassword }.getOrDefault(false)
             val viewId = runCatching { node.viewIdResourceName }.getOrNull()
                 ?.take(255)
-            val liveRedacted = livePassword || isSensitiveViewId(viewId)
+            val liveRedacted = livePassword || isSensitiveViewId(viewId) || forceRedacted
             val bounds = Rect()
             runCatching { node.getBoundsInScreen(bounds) }
-            val mayReadText = !stored.redacted && !liveRedacted
+            val mayReadText = !forceNoText && !stored.redacted && !liveRedacted
             val childAnchors = ArrayList<UiIdentityAnchor>(
                 stored.childAnchors.size,
             )

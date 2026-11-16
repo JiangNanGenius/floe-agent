@@ -86,7 +86,7 @@ public struct ShellRunRequest: Sendable {
     public var environment: [String: String]
     /// Optional stdin content (≤256 KiB enforced by the tool).
     public var stdin: String?
-    /// Wall-clock timeout in seconds.
+    /// Process execution timeout in seconds; preparation and settlement have separate limits.
     public var timeout: TimeInterval
     /// Bounded wait for the engine's process-wide run gate. A command that
     /// cannot start inside this window is reported as not-started, never as an

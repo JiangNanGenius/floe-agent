@@ -299,7 +299,15 @@ public final class UserQuestionHostAPI: @unchecked Sendable {
     @discardableResult
     public func install(database: DatabaseManager, epoch: UInt64) -> UserQuestionCoordinator {
         let store = UserQuestionStore(database: database)
-        let coordinator = UserQuestionCoordinator(store: store)
+        // Wire the EXISTING durable question lifecycle to the App-owned wake
+        // sequence. This is the exact registration/settlement boundary; the
+        // Kotlin host re-reads `question.pending` and never receives question
+        // text, an answer or a permission through this signal.
+        let coordinator = UserQuestionCoordinator(
+            store: store,
+            eventHandler: { event in
+                UserQuestionLifecycleSignal.didChange(event)
+            })
         lock.lock()
         installed = Installed(epoch: epoch, database: database, store: store,
                               coordinator: coordinator)
@@ -336,6 +344,10 @@ public final class UserQuestionHostAPI: @unchecked Sendable {
         lock.unlock()
         if shouldRetire {
             UserQuestionToolRegistration.unregister()
+            // The generation's coordinator is gone; a durable pending row is
+            // no longer answerable in this process. Wake the App so it can
+            // re-read and withdraw any stale reminder for that generation.
+            UserQuestionLifecycleSignal.didRetire()
         }
     }
 

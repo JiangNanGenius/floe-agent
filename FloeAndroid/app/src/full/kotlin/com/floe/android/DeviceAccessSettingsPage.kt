@@ -309,6 +309,14 @@ data class DeviceAccessUiError(
     val section: DeviceAccessErrorSectionUi = DeviceAccessErrorSectionUi.GENERAL,
 )
 
+/** Display-only guard metadata; the id is an opaque host-issued token. */
+data class DeviceAccessSensitiveGuardUi(
+    val id: String,
+    val packageName: String,
+    val windowId: Int,
+    val displayId: Int,
+)
+
 data class DeviceAccessPresentationState(
     val accessibility: DeviceAccessAccessibilityUi = DeviceAccessAccessibilityUi.Off,
     val adb: DeviceAccessAdbUi = DeviceAccessAdbUi.Off,
@@ -334,6 +342,9 @@ data class DeviceAccessPresentationState(
     val autoUnlock: Boolean = false,
     val unlockConfigured: Boolean = false,
     val floatingControls: Boolean = false,
+    /** False also covers a load/synchronization failure; never infer empty. */
+    val sensitiveGuardsAvailable: Boolean = false,
+    val sensitiveGuards: List<DeviceAccessSensitiveGuardUi> = emptyList(),
 )
 
 /**
@@ -358,6 +369,8 @@ class DeviceAccessCallbacks(
     val onSaveUnlockCredential: (String) -> Unit = {},
     val onForgetUnlockCredential: () -> Unit = {},
     val onFloatingControlsChange: (Boolean) -> Unit = {},
+    /** USER-ONLY: called after the user confirms releasing the exact guard. */
+    val onReleaseSensitiveGuard: (String) -> Unit = {},
     val onStopActiveTask: () -> Unit = {},
     val onTakeOverActiveTask: () -> Unit = {},
     val onAllowedPackagesChange: (Set<String>) -> Unit = {},
@@ -702,6 +715,7 @@ fun DeviceAccessSettingsPage(
     var confirmUnlock by remember { mutableStateOf(false) }
     var unlockDraft by remember { mutableStateOf("") }
     var revealUnlock by remember { mutableStateOf(false) }
+    var pendingSensitiveGuard by remember { mutableStateOf<DeviceAccessSensitiveGuardUi?>(null) }
     // FULL-only inline notification permission. The notification is what lets
     // the user enter the six-digit code while Android's pairing dialog stays
     // in front; when it is unavailable the page says so and keeps the manual
@@ -1426,6 +1440,36 @@ fun DeviceAccessSettingsPage(
             })
         }
 
+        // Sensitive input guards survive interrupted tasks. Their release is
+        // a deliberate user action; the page never reveals field contents.
+        FloeSettingsSectionCard(title = stringResource(R.string.device_sensitive_guard_title)) {
+            when {
+                !state.sensitiveGuardsAvailable -> {
+                    FloeSectionRow(title = {
+                        CaptionText(stringResource(R.string.device_sensitive_guard_unavailable))
+                    })
+                    FloeActionRow(label = stringResource(R.string.device_access_retry),
+                        onClick = callbacks.onRefresh)
+                }
+                state.sensitiveGuards.isEmpty() -> FloeSectionRow(title = {
+                    CaptionText(stringResource(R.string.device_sensitive_guard_empty))
+                })
+                else -> {
+                    FloeSectionRow(title = {
+                        CaptionText(stringResource(R.string.device_sensitive_guard_hint))
+                    })
+                    state.sensitiveGuards.forEach { guard ->
+                        FloeValueRow(
+                            title = guard.packageName,
+                            value = stringResource(R.string.device_sensitive_guard_window,
+                                guard.windowId, guard.displayId),
+                            onClick = { pendingSensitiveGuard = guard },
+                        )
+                    }
+                }
+            }
+        }
+
         // ------------------------------------------------------ file ceilings
         // Progressive disclosure (N08): one count row per folder class opens
         // the child sheet with the per-folder switches, so the phone overview
@@ -1779,6 +1823,21 @@ fun DeviceAccessSettingsPage(
         }
     }
 
+    pendingSensitiveGuard?.let { guard ->
+        FloeConfirmDialog(
+            title = stringResource(R.string.device_sensitive_guard_release_title),
+            message = stringResource(R.string.device_sensitive_guard_release_message, guard.packageName),
+            confirmLabel = stringResource(R.string.device_sensitive_guard_release),
+            dismissLabel = stringResource(R.string.cancel),
+            onConfirm = {
+                pendingSensitiveGuard = null
+                if (state.sensitiveGuardsAvailable && state.sensitiveGuards.any { it.id == guard.id }) {
+                    callbacks.onReleaseSensitiveGuard(guard.id)
+                }
+            },
+            onDismiss = { pendingSensitiveGuard = null },
+        )
+    }
     if (confirmAutomatic) {
         FloeConfirmDialog(
             title = stringResource(R.string.phone_automation_automatic),

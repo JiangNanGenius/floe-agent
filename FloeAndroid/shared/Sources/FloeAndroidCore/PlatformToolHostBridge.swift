@@ -63,6 +63,8 @@ public enum PlatformToolHostLimits {
     public static let maximumArgumentArrayItems = 256
     public static let maximumReplyBytes = 64 * 1024
     public static let maximumFailureReplyBytes = 512
+    /// Only device.act pre-dispatch failures may carry this bounded observation.
+    public static let maximumRecoveryFailureReplyBytes = 16 * 1024
     public static let maximumLiveTickets = 8
     public static let maximumRetired = 128
     public static let maximumCodeCharacters = 64

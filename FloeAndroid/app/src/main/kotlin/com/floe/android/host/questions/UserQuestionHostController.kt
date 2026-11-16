@@ -69,6 +69,38 @@ internal interface UserQuestionSurface {
     fun publishSearchRevealFailure(session: ConversationSessionToken, token: Long)
 }
 
+/** Result of an app-owned authoritative `question.pending` read. It never
+ * carries a synthetic/optimistic snapshot and never settles anything. */
+internal sealed interface UserQuestionPendingRead {
+    data class Snapshot(val snapshot: UserQuestionSnapshotUi) : UserQuestionPendingRead
+    data object Empty : UserQuestionPendingRead
+    data class Failure(val code: String?) : UserQuestionPendingRead
+}
+
+/** Exact existing command envelope used by the durable attention signal. It
+ * deliberately requires no holder/session; the conversation identity is the
+ * task fence and the native handler revalidates every question identity. */
+internal object UserQuestionPendingCommand {
+    fun build(
+        conversationId: String,
+        requestId: String?,
+        correlationID: String,
+    ): HostCommandRequest? {
+        val canonical = runCatching {
+            java.util.UUID.fromString(conversationId).toString()
+        }.getOrNull() ?: return null
+        return HostCommandRequest(
+            command = "question.pending",
+            scope = HostScope.ConversationLifecycle(canonical),
+            stateful = false,
+            correlationID = correlationID,
+            payload = requestId?.let {
+                JsonObject(mapOf("requestID" to JsonPrimitive(it)))
+            },
+        )
+    }
+}
+
 internal class UserQuestionHostController(
     private val host: RuntimeHost,
     private val surface: UserQuestionSurface,
@@ -77,6 +109,7 @@ internal class UserQuestionHostController(
     private val isCurrentSession: (ConversationSessionToken) -> Boolean = { true },
 ) {
     private val generations = ConcurrentHashMap<String, Long>()
+    private val pendingReadGenerations = ConcurrentHashMap<String, Long>()
     private val lastRefreshAt = ConcurrentHashMap<String, Long>()
     private val searchGenerations = ConcurrentHashMap<String, Long>()
     private val revealGenerations = ConcurrentHashMap<String, Long>()
@@ -128,6 +161,67 @@ internal class UserQuestionHostController(
                     surface.publishFailure(session, outcome.code)
                 HostOperationOutcome.Cancelled,
                 HostOperationOutcome.Superseded -> Unit
+            }
+        }
+        return true
+    }
+
+    /**
+     * App-owned AUTHORITATIVE pending read for the durable attention signal.
+     *
+     * Unlike [refresh], this needs no visible holder/session: it exists so a
+     * question registered for a background/scheduled run, or after the
+     * bounded discovery window, can still be discovered and signaled. It
+     * only re-reads the existing `question.pending` command; it never
+     * publishes into a conversation surface, answers, cancels or fabricates
+     * a snapshot. The callback is fenced on this conversation's latest read,
+     * the accepted root epoch and the command-client generation.
+     */
+    fun readPending(
+        conversationId: String,
+        requestId: String? = null,
+        onResult: (UserQuestionPendingRead) -> Unit,
+    ): Boolean {
+        if (!host.readiness.value.conversationDomainAdmitted) return false
+        val canonical = runCatching {
+            java.util.UUID.fromString(conversationId).toString()
+        }.getOrNull() ?: return false
+        val rootEpoch = host.nativeRootEpoch()
+        val clientGeneration = host.commandClient.generation()
+        val readGeneration = (pendingReadGenerations[canonical] ?: 0L) + 1L
+        pendingReadGenerations[canonical] = readGeneration
+        val request = UserQuestionPendingCommand.build(
+            conversationId = canonical,
+            requestId = requestId,
+            correlationID = "qwatch-${correlation.incrementAndGet()}",
+        ) ?: return false
+        host.trackOperation(request) { outcome ->
+            if (pendingReadGenerations[canonical] != readGeneration) {
+                return@trackOperation
+            }
+            if (!host.readiness.value.conversationDomainAdmitted) return@trackOperation
+            if (host.nativeRootEpoch() != rootEpoch) return@trackOperation
+            if (host.commandClient.generation() != clientGeneration) return@trackOperation
+            when (outcome) {
+                is HostOperationOutcome.Completed -> {
+                    val snapshots = outcome.value?.let(UserQuestionWire::decodePending)
+                    if (snapshots == null) {
+                        onResult(UserQuestionPendingRead.Failure("questionMalformed"))
+                    } else {
+                        val snapshot = snapshots.firstOrNull { it.hasPending }
+                        onResult(
+                            snapshot?.let { UserQuestionPendingRead.Snapshot(it) }
+                                ?: UserQuestionPendingRead.Empty,
+                        )
+                    }
+                }
+                is HostOperationOutcome.Rejected ->
+                    onResult(UserQuestionPendingRead.Failure(outcome.code))
+                is HostOperationOutcome.Failed ->
+                    onResult(UserQuestionPendingRead.Failure(outcome.code))
+                HostOperationOutcome.Cancelled,
+                HostOperationOutcome.Superseded ->
+                    onResult(UserQuestionPendingRead.Failure(null))
             }
         }
         return true
@@ -245,6 +339,7 @@ internal class UserQuestionHostController(
     fun forget(conversationId: String) {
         lastSnapshots.remove(conversationId)
         generations.remove(conversationId)
+        pendingReadGenerations.remove(conversationId)
         lastRefreshAt.remove(conversationId)
         searchGenerations.remove(conversationId)
         revealGenerations.remove(conversationId)

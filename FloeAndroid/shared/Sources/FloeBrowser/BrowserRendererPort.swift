@@ -10,6 +10,22 @@
 
 import Foundation
 
+/// Synchronous cross-actor fence for trusted lifecycle events lost at ingress.
+/// A tab remains fenced until its queued gap is delivered to its owner.
+public final class BrowserLifecycleHealth: @unchecked Sendable {
+    public static let shared = BrowserLifecycleHealth()
+    private struct Key: Hashable { let epoch: UInt64; let tabID: UUID }
+    private let lock = NSLock()
+    private var gaps: Set<Key> = []
+    private var saturatedEpoch: UInt64?
+    private init() {}
+    public func markGap(epoch: UInt64, tabID: UUID) { lock.lock(); gaps.insert(Key(epoch: epoch, tabID: tabID)); lock.unlock() }
+    public func clearGap(epoch: UInt64, tabID: UUID) { lock.lock(); gaps.remove(Key(epoch: epoch, tabID: tabID)); lock.unlock() }
+    public func markEpochSaturated(_ epoch: UInt64) { lock.lock(); if saturatedEpoch == nil || epoch > saturatedEpoch! { saturatedEpoch = epoch }; lock.unlock() }
+    public func epochIsSaturated(_ epoch: UInt64) -> Bool { lock.lock(); defer { lock.unlock() }; return saturatedEpoch == epoch }
+    public func hasGap(epoch: UInt64, tabID: UUID) -> Bool { lock.lock(); defer { lock.unlock() }; return saturatedEpoch == epoch || gaps.contains(Key(epoch: epoch, tabID: tabID)) }
+}
+
 /// Snapshot of the renderer's tab surface. `url`/`title`/`isLoading` are
 /// Android WebView getters surfaced as data; the original read the same
 /// values from WKWebView on MainActor.
@@ -21,6 +37,8 @@ public struct BrowserRendererTabState: Sendable, Codable, Hashable {
     public var viewportHeight: Double
     public var scrollX: Double
     public var scrollY: Double
+    public var canGoBack: Bool
+    public var canGoForward: Bool
 
     public init(
         url: String? = nil,
@@ -29,7 +47,9 @@ public struct BrowserRendererTabState: Sendable, Codable, Hashable {
         viewportWidth: Double = 1,
         viewportHeight: Double = 1,
         scrollX: Double = 0,
-        scrollY: Double = 0
+        scrollY: Double = 0,
+        canGoBack: Bool = false,
+        canGoForward: Bool = false
     ) {
         self.url = url
         self.title = title
@@ -38,6 +58,27 @@ public struct BrowserRendererTabState: Sendable, Codable, Hashable {
         self.viewportHeight = max(1, viewportHeight)
         self.scrollX = scrollX
         self.scrollY = scrollY
+        self.canGoBack = canGoBack
+        self.canGoForward = canGoForward
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case url, title, isLoading, viewportWidth, viewportHeight, scrollX, scrollY, canGoBack, canGoForward
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            url: try values.decodeIfPresent(String.self, forKey: .url),
+            title: try values.decodeIfPresent(String.self, forKey: .title),
+            isLoading: try values.decode(Bool.self, forKey: .isLoading),
+            viewportWidth: try values.decode(Double.self, forKey: .viewportWidth),
+            viewportHeight: try values.decode(Double.self, forKey: .viewportHeight),
+            scrollX: try values.decode(Double.self, forKey: .scrollX),
+            scrollY: try values.decode(Double.self, forKey: .scrollY),
+            canGoBack: try values.decodeIfPresent(Bool.self, forKey: .canGoBack) ?? false,
+            canGoForward: try values.decodeIfPresent(Bool.self, forKey: .canGoForward) ?? false
+        )
     }
 }
 
@@ -82,8 +123,8 @@ public protocol BrowserRenderer: Sendable {
     /// Creates the platform tab and arranges for `BrowserProbeScript.installSource`
     /// to run before document scripts where the platform supports it
     /// (document-start); otherwise the renderer re-injects it at every page
-    /// commit. The probe tolerates the race exactly like the iOS original
-    /// (absent `__floeProtocol` returns the degraded honest snapshot).
+    /// commit. An absent `__floeProtocol` is an unavailable observation,
+    /// not evidence that the real page has an empty DOM.
     func createTab(tabID: UUID, probeSource: String) async throws
 
     func destroyTab(tabID: UUID) async

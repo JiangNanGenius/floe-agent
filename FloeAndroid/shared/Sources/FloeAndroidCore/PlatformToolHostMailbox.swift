@@ -182,6 +182,7 @@ public enum PlatformToolTransportError: Error, Sendable, Equatable {
     case cancelled
     case resultInvalid
     case remoteFailed(code: String, detail: String?)
+    case remoteFailedWithRecovery(code: String, detail: String?, observation: String)
 }
 
 // MARK: - Mailbox
@@ -885,6 +886,12 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
             }
         } catch let error as PlatformToolTransportError {
             if context.cancellation.isCancelled { throw FloeError.cancelled }
+            // Failures, including recovery observations, must not cross a
+            // native epoch change before the mailbox has been rebound.
+            guard currentEpoch() == boundEpoch, isBound(to: boundEpoch) else {
+                throw FloeError.invalidConfiguration(
+                    "Device and system tool generation changed before completion")
+            }
             throw Self.mapped(error)
         }
         try context.cancellation.throwIfCancelled()
@@ -1131,7 +1138,7 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
                 return PlatformToolHostStatus.oversized
             }
         } else {
-            guard value.count <= PlatformToolHostLimits.maximumFailureReplyBytes
+            guard value.count <= PlatformToolHostLimits.maximumRecoveryFailureReplyBytes
             else { return PlatformToolHostStatus.oversized }
         }
 
@@ -1166,15 +1173,39 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
             return PlatformToolHostStatus.cancelled
         }
         if status == 1 {
-            let failure = Self.failure(from: value)
+            let failure = Self.failure(from: value, allowRecovery: Self.allowsObservationRecovery(
+                toolName: ticket.toolName, payload: ticket.payload))
+            guard value.count <= PlatformToolHostLimits.maximumFailureReplyBytes || failure.recovery != nil else {
+                condition.unlock()
+                return PlatformToolHostStatus.oversized
+            }
             let continuation = ticket.continuation
             ticket.continuation = nil
             ticket.state = 2
+            if failure.recovery != nil && ticket.cancellation.isCancelled {
+                counters.cancelled += 1
+                condition.unlock()
+                retireAndCount(claim)
+                continuation?.resume(throwing: .cancelled)
+                return PlatformToolHostStatus.cancelled
+            }
+            if failure.recovery != nil && liveEpoch != ticket.createdEpoch {
+                counters.lateSettle += 1
+                condition.unlock()
+                retireAndCount(claim)
+                continuation?.resume(throwing: .hostFenced)
+                return PlatformToolHostStatus.generationFenced
+            }
             counters.failed += 1
             condition.unlock()
             retireAndCount(claim)
-            continuation?.resume(throwing: .remoteFailed(
-                code: failure.code, detail: failure.detail))
+            if let recovery = failure.recovery {
+                continuation?.resume(throwing: .remoteFailedWithRecovery(
+                    code: failure.code, detail: failure.detail, observation: recovery))
+            } else {
+                continuation?.resume(throwing: .remoteFailed(
+                    code: failure.code, detail: failure.detail))
+            }
             return PlatformToolHostStatus.ok
         }
         let continuation = ticket.continuation
@@ -1479,15 +1510,29 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
     }
 
     private struct FailureBody: Decodable {
+        struct Recovery: Decodable { let kind: String; let summary: String }
         let code: String
         let detail: String?
+        let recovery: Recovery?
     }
 
-    private static func failure(from data: Data) -> (code: String, detail: String?) {
+    private struct ObservationPageArguments: Decodable {
+        let observationId: String
+    }
+
+    private static func allowsObservationRecovery(toolName: String, payload: Data) -> Bool {
+        if toolName == "device.act" { return true }
+        guard toolName == "device.observe",
+              let arguments = try? JSONDecoder().decode(ObservationPageArguments.self, from: payload),
+              !arguments.observationId.isEmpty, arguments.observationId.count <= 64 else { return false }
+        return true
+    }
+
+    private static func failure(from data: Data, allowRecovery: Bool) -> (code: String, detail: String?, recovery: String?) {
         guard !data.isEmpty,
               let body = try? JSONDecoder().decode(FailureBody.self, from: data),
               isValidFailureCode(body.code) else {
-            return ("internal", nil)
+            return ("internal", nil, nil)
         }
         let detail = body.detail.map { value -> String in
             let cleaned = String(value.filter { character in
@@ -1497,7 +1542,19 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
             })
             return String(cleaned.prefix(PlatformToolHostLimits.maximumDetailCharacters))
         }
-        return (body.code, detail)
+        let recovery: String?
+        if allowRecovery, body.code == "device_observation_expired",
+           let value = body.recovery, value.kind == "device_observation",
+           !value.summary.isEmpty, value.summary.count <= 2_048,
+           value.summary.utf8.count <= 8_192,
+           value.summary.unicodeScalars.allSatisfy({
+               !CharacterSet.controlCharacters.contains($0) || $0.value == 10 || $0.value == 9
+           }) {
+            recovery = value.summary
+        } else {
+            recovery = nil
+        }
+        return (body.code, detail, recovery)
     }
 
     private static func isValidFailureCode(_ code: String) -> Bool {
@@ -1527,6 +1584,9 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
                 "The device tool request or reply exceeded its bounded size")
         case .resultInvalid:
             return .internalError("The device returned an invalid tool result")
+        case .remoteFailedWithRecovery(let rawCode, _, let observation):
+            let code = PlatformDeviceWireCode.canonical(rawCode)
+            return .validationFailed("Device tool failed (\(code)); the original request did not complete. Use the fresh observation below, discard previous node references, and restart pagination from offset 0 when paging. Do not repeat an action without choosing it again from the fresh observation.\nFresh observation:\n\(observation)")
         case .remoteFailed(let rawCode, let detail):
             let code = PlatformDeviceWireCode.canonical(rawCode)
             switch code {
@@ -1534,6 +1594,14 @@ public final class PlatformToolHostMailbox: @unchecked Sendable {
                 return .cancelled
             case "timeout":
                 return .validationFailed("The device tool timed out")
+            case "device_stale_observation", "device_observation_expired":
+                return .validationFailed(
+                    "The observation is stale or expired. Call device.observe before choosing another action.")
+            case "device_sensitive_guard_limit":
+                let chinese = Locale.current.identifier.lowercased().hasPrefix("zh")
+                return .validationFailed(chinese
+                    ? "保护记录已满，未输入内容。请在设置 › 设备 › 敏感输入保护中检查旧记录；清空相应敏感内容并离开屏幕后，再手动解除保护。"
+                    : "Protection records are full. Nothing was entered. Review old records in Settings › Device › Sensitive input protection. Clear the sensitive content and leave its screen before releasing protection.")
             case "device_run_unavailable":
                 let chinese = Locale.current.identifier.lowercased().hasPrefix("zh")
                 if detail?.hasPrefix("snapshot_") == true {

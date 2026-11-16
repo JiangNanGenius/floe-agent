@@ -736,6 +736,101 @@ final class G08PlatformToolTests: XCTestCase {
         XCTAssertEqual(mailbox.nextClaim(timeoutMillis: 0), 0)
     }
 
+    func testExpiredDeviceActionRecoveryRemainsFailureAndContainsFreshObservation() async throws {
+        let box = EpochBox(5)
+        let mailbox = mailbox(box)
+        XCTAssertEqual(bindAndExpose(mailbox, epoch: 5, tools: [makeEntry(name: "device.act")]), 0)
+        let toolContext = context(origin: mainOrigin(tool: "device.act"))
+        let task = Task {
+            try await mailbox.execute(toolName: "device.act", argumentsJSON: Data("{}".utf8), context: toolContext)
+        }
+        let claim = await waitForClaim(mailbox)
+        XCTAssertGreaterThan(claim, 0)
+        let summary = "observation=fresh-1 nodes=n0:Save " + String(repeating: "x", count: 600)
+        let payload = try JSONSerialization.data(withJSONObject: [
+            "version": 1, "code": "device_observation_expired",
+            "detail": "Action was not dispatched",
+            "recovery": ["kind": "device_observation", "summary": summary],
+        ])
+        XCTAssertGreaterThan(payload.count, PlatformToolHostLimits.maximumFailureReplyBytes)
+        XCTAssertEqual(mailbox.complete(claim: claim, status: 1, value: payload), 0)
+        do {
+            _ = try await task.value
+            XCTFail("an observation must never turn a refused action into success")
+        } catch let error as FloeError {
+            XCTAssertTrue(error.reason.contains("device_observation_expired"))
+            XCTAssertTrue(error.reason.contains("not dispatched"))
+            XCTAssertTrue(error.reason.contains("observation=fresh-1"))
+            XCTAssertTrue(error.reason.contains("n0:Save"))
+        }
+    }
+
+    func testRecoveryForAnotherToolCannotExpandFailureEnvelope() async throws {
+        let box = EpochBox(5)
+        let mailbox = mailbox(box)
+        XCTAssertEqual(bindAndExpose(mailbox, epoch: 5, tools: [makeEntry(name: "alpha.read")]), 0)
+        let task = Task {
+            try await mailbox.execute(toolName: "alpha.read", argumentsJSON: Data("{}".utf8),
+                                      context: context(origin: mainOrigin(tool: "alpha.read")))
+        }
+        let claim = await waitForClaim(mailbox)
+        let payload = try JSONSerialization.data(withJSONObject: [
+            "version": 1, "code": "device_observation_expired",
+            "recovery": ["kind": "device_observation", "summary": String(repeating: "x", count: 600)],
+        ])
+        XCTAssertEqual(mailbox.complete(claim: claim, status: 1, value: payload), -107)
+        XCTAssertEqual(mailbox.complete(claim: claim, status: 1,
+            value: Data(#"{"code":"rejected"}"#.utf8)), 0)
+        do { _ = try await task.value; XCTFail("expected failure") } catch {}
+    }
+
+    func testCancelledDeviceActionNeverReceivesRecoveryObservation() async throws {
+        let box = EpochBox(5)
+        let mailbox = mailbox(box)
+        XCTAssertEqual(bindAndExpose(mailbox, epoch: 5, tools: [makeEntry(name: "device.act")]), 0)
+        let cancellation = CancellationToken()
+        let toolContext = context(cancellation: cancellation, origin: mainOrigin(tool: "device.act"))
+        let task = Task {
+            try await mailbox.execute(toolName: "device.act", argumentsJSON: Data("{}".utf8), context: toolContext)
+        }
+        let claim = await waitForClaim(mailbox)
+        XCTAssertGreaterThan(claim, 0)
+        cancellation.cancel()
+        box.set(6) // Cancellation must win even if the live epoch changed.
+        let payload = Data(#"{"version":1,"code":"device_observation_expired","recovery":{"kind":"device_observation","summary":"observation=fresh-1 n0:Save"}}"#.utf8)
+        XCTAssertEqual(mailbox.complete(claim: claim, status: 1, value: payload), -109)
+        do {
+            _ = try await task.value
+            XCTFail("cancelled recovery must not be returned")
+        } catch let error as FloeError {
+            XCTAssertEqual(error, .cancelled)
+        }
+    }
+
+    func testRecoveryFromOldLiveEpochIsFencedBeforeMailboxRebind() async throws {
+        let box = EpochBox(5)
+        let mailbox = mailbox(box)
+        XCTAssertEqual(bindAndExpose(mailbox, epoch: 5, tools: [makeEntry(name: "device.act")]), 0)
+        let toolContext = context(origin: mainOrigin(tool: "device.act"))
+        let task = Task {
+            try await mailbox.execute(toolName: "device.act", argumentsJSON: Data("{}".utf8), context: toolContext)
+        }
+        let claim = await waitForClaim(mailbox)
+        XCTAssertGreaterThan(claim, 0)
+        box.set(6) // The native epoch changes while the mailbox is still bound to 5.
+        let payload = Data(#"{"version":1,"code":"device_observation_expired","recovery":{"kind":"device_observation","summary":"observation=old-epoch n0:Save"}}"#.utf8)
+        XCTAssertEqual(mailbox.complete(claim: claim, status: 1, value: payload),
+                       PlatformToolHostStatus.generationFenced)
+        do {
+            _ = try await task.value
+            XCTFail("an old generation must not deliver a recovery observation")
+        } catch let error as FloeError {
+            XCTAssertEqual(error, .invalidConfiguration(
+                "Device and system tool generation changed before completion"))
+            XCTAssertFalse(error.reason.contains("observation=old-epoch"))
+        }
+    }
+
     // MARK: - Screenshot evidence
 
     func testScreenshotArtifactMustBeVerifiedOnDisk() async throws {

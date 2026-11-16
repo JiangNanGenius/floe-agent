@@ -20,7 +20,7 @@
 //    a late renderer answer is dropped exactly like a late WebKit callback.
 //  * `WKContentWorld` has no Android equivalent. Isolation of the probe is
 //    therefore a documented platform limitation (see MODULE_API honest
-//    availability): the probe exposes only its four whitelisted functions and
+//    availability): the probe exposes only bounded whitelisted functions and
 //    no evaluation endpoint; the page can overwrite it, which can only make
 //    observations degraded/stale, never privileged, and no privileged JS API
 //    is bridged (addJavascriptInterface is never used).
@@ -76,6 +76,7 @@ public enum BrowserVisualTextRecognitionPorts {
 enum BrowserProbeError: Error, Sendable, Equatable {
     case timedOut
     case released
+    case unavailable
 }
 
 enum BrowserInteractionError: Error, Sendable, Equatable {
@@ -83,15 +84,23 @@ enum BrowserInteractionError: Error, Sendable, Equatable {
     case stale(String)
 }
 
+enum BrowserNavigationError: Error, Sendable {
+    case failed(BrowserFailure)
+}
+
 public actor BrowserTaskSession {
     public struct VisualFallbackEvidence: Sendable {
         public var documentID: String
+        public var documentToken: String
+        public var documentURL: String
         public var sha256: String
         public var capturedAt: Date
         public var pixelWidth: Int
         public var pixelHeight: Int
         public var viewportWidth: Double
         public var viewportHeight: Double
+        public var scrollX: Double
+        public var scrollY: Double
         public var revision: Int
         public var visualTextRegions: [VisualTextRegion]
     }
@@ -109,6 +118,15 @@ public actor BrowserTaskSession {
         // A platform error can be followed by loadFinished for its error page.
         // Keep that fact per tab until a genuinely new navigation starts.
         var navigationFailure: BrowserFailure?
+        /// Invalidates reads as soon as a navigation is requested or begins,
+        /// not only after the platform eventually reports its commit.
+        var navigationRevision: UInt64 = 0
+        var navigationPending = false
+        var navigationUncertain = false
+        var navigationAttempt: UInt64 = 0
+        var committedAttempt: UInt64?
+        var probeDocumentToken: String?
+        var previousProbeDocumentToken: String?
 
         init(id: UUID, documentID: String) {
             self.id = id
@@ -210,6 +228,10 @@ public actor BrowserTaskSession {
             tabs.removeAll { $0.id == id }
             return nil
         }
+        guard !isReleased, tabs.contains(where: { $0.id == id }) else {
+            await renderer.destroyTab(tabID: id)
+            return nil
+        }
         activeTabID = id
         appendEvent(tabID: id, method: "Target.targetCreated")
         return id
@@ -227,7 +249,7 @@ public actor BrowserTaskSession {
         let closed = tabs.remove(at: index)
         await renderer.stopLoading(tabID: closed.id)
         await renderer.destroyTab(tabID: closed.id)
-        if activeTabID == id { activeTabID = tabs[min(index, tabs.count - 1)].id }
+        if activeTabID == id, !isReleased, !tabs.isEmpty { activeTabID = tabs[min(index, tabs.count - 1)].id }
     }
 
     public func navigateFromAddressBar() async {
@@ -407,6 +429,13 @@ public actor BrowserTaskSession {
         switch event {
         case .loadStarted(let tabID):
             guard let index = tabs.firstIndex(where: { $0.id == tabID }) else { return }
+            if !tabs[index].navigationPending {
+                tabs[index].navigationRevision &+= 1
+                tabs[index].navigationAttempt &+= 1
+                tabs[index].navigationPending = true
+                tabs[index].previousProbeDocumentToken = tabs[index].probeDocumentToken
+                tabs[index].visualFallbackEvidence = nil
+            }
             tabs[index].navigationFailure = nil
             tabs[index].surface.isLoading = true
             appendEvent(tabID: tabID, method: "Page.frameStartedLoading")
@@ -417,10 +446,18 @@ public actor BrowserTaskSession {
             // original didCommit: older refs and evidence are dead data.
             tabs[index].documentID = UUID().uuidString
             tabs[index].revision = 0
+            tabs[index].navigationRevision &+= 1
+            tabs[index].navigationPending = false
+            tabs[index].navigationUncertain = false
+            tabs[index].committedAttempt = tabs[index].navigationAttempt
+            tabs[index].probeDocumentToken = nil
             tabs[index].visualFallbackEvidence = nil
             appendEvent(tabID: tabs[index].id, method: "Page.frameNavigated")
         case .loadFinished(let tabID, let url, let title):
             guard let index = tabs.firstIndex(where: { $0.id == tabID }) else { return }
+            // A finish without a matching commit may belong to the previous
+            // page. It cannot complete an outstanding navigation.
+            guard !tabs[index].navigationPending || tabs[index].navigationFailure != nil else { return }
             tabs[index].surface.url = url
             tabs[index].surface.title = title
             tabs[index].surface.isLoading = false
@@ -439,6 +476,12 @@ public actor BrowserTaskSession {
             }
         case .loadFailed(let tabID, let errorDomain, let errorCode, let errorDescription):
             guard let index = tabs.firstIndex(where: { $0.id == tabID }) else { return }
+            tabs[index].navigationPending = false
+            tabs[index].navigationRevision &+= 1
+            if errorDomain == "FloeLifecycle" && errorCode == -699 {
+                tabs[index].navigationUncertain = true
+                tabs[index].visualFallbackEvidence = nil
+            }
             tabs[index].surface.isLoading = false
             tabs[index].navigationFailure = BrowserFailure(
                 code: "navigation-load-failed",
@@ -528,15 +571,24 @@ public actor BrowserTaskSession {
             guard let id = await createTab() else {
                 return failure(command, status: .blocked, code: "tab-limit", "The six-tab limit was reached")
             }
-            return await observeResult(command, tabID: id, cursor: nil, cancellation: cancellation)
+            return tabManagementResult(command, tabID: id, message: "Tab created. Page contents have not been observed.")
         case .listTabs:
-            return await observeResult(command, tabID: command.tabID ?? activeTabID, cursor: nil, cancellation: cancellation)
+            return tabManagementResult(command, tabID: command.tabID ?? activeTabID, message: "Tabs listed. Page contents have not been observed.")
         case .activateTab(let id):
+            guard tabs.contains(where: { $0.id == id }) else {
+                return failure(command, status: .stale, code: "tab", "Browser tab is no longer available")
+            }
             activate(id)
-            return await observeResult(command, tabID: id, cursor: nil, cancellation: cancellation)
+            return tabManagementResult(command, tabID: id, message: "Tab activated. Page contents have not been observed.")
         case .closeTab(let id):
+            guard tabs.contains(where: { $0.id == id }) else {
+                return failure(command, status: .stale, code: "tab", "Browser tab is no longer available")
+            }
+            guard tabs.count > 1 else {
+                return failure(command, status: .blocked, code: "last-tab", "The last browser tab cannot be closed")
+            }
             await close(id)
-            return await observeResult(command, tabID: activeTabID, cursor: nil, cancellation: cancellation)
+            return tabManagementResult(command, tabID: activeTabID, message: "Tab closed. Page contents have not been observed.")
         case .takeover:
             requestUserControlHook(conversationID, "Browser control was handed to the user")
             return failure(command, status: .needsUser, code: "takeover", "Browser control was handed to the user")
@@ -567,6 +619,10 @@ public actor BrowserTaskSession {
         guard tabs.contains(where: { $0.id == tabID }) else {
             return failure(command, status: .stale, code: "tab", "Browser tab is no longer available")
         }
+        if let expected = command.expectedDocumentID,
+           tabs.first(where: { $0.id == tabID })?.documentID != expected {
+            return failure(command, status: .stale, code: "document", "The page changed; observe it again")
+        }
         // Re-read the takeover fence AFTER the gate: an action queued behind
         // slow work while the agent still had control must be refused if the
         // user took control during its wait. The flag is never captured at
@@ -575,46 +631,118 @@ public actor BrowserTaskSession {
             return failure(command, status: .needsUser, code: "takeover", "The user currently controls the browser")
         }
 
+        var startedAttempt: UInt64?
+        defer {
+            if let attempt = startedAttempt,
+               let index = tabs.firstIndex(where: { $0.id == tabID }),
+               tabs[index].navigationAttempt == attempt, tabs[index].navigationPending {
+                // A timeout or cancellation does not establish which document
+                // is visible. Fence reads until a real commit or new navigation.
+                tabs[index].navigationPending = false
+                tabs[index].navigationUncertain = true
+                tabs[index].navigationRevision &+= 1
+                tabs[index].visualFallbackEvidence = nil
+            }
+        }
+        if BrowserLifecycleHealth.shared.epochIsSaturated(owner.rootEpoch) {
+            return failure(command, status: .stale, code: "lifecycle-capacity", "Browser events could not be processed. Restart the app to resume browsing.")
+        }
+        if BrowserLifecycleHealth.shared.hasGap(epoch: owner.rootEpoch, tabID: tabID) {
+            return failure(command, status: .stale, code: "lifecycle-gap", "Browser events were missed. Wait, then reload or navigate again.")
+        }
+        if tabs.first(where: { $0.id == tabID })?.navigationUncertain == true {
+            switch command.action {
+            case .navigate, .reload:
+                break // A new explicit navigation can recover this tab.
+            default:
+                return failure(command, status: .stale, code: "navigation-uncertain",
+                               "The page could not be confirmed. Navigate to the address again or reload it.")
+            }
+        }
         do {
             switch command.action {
             case .navigate(let value):
                 let url = try policy.validate(value, conversationID: conversationID)
-                if let index = tabs.firstIndex(where: { $0.id == tabID }) {
-                    tabs[index].navigationFailure = nil
-                }
+                let prior = await currentProbeToken(tabID: tabID, cancellation: cancellation)
+                let priorURL = try? await rendererState(tabID: tabID, timeout: 1_200, cancellation: cancellation).url
+                let sameDocument = priorURL.flatMap(URL.init(string:)).map { Self.isFragmentChange(from: $0, to: url) } ?? false
+                let attempt = try beginNavigation(tabID: tabID, priorToken: prior, expectedDocumentID: command.expectedDocumentID, cancellation: cancellation)
+                startedAttempt = attempt
                 try await rendererCall(cancellation) { renderer in
                     try await renderer.navigate(tabID: tabID, url: url)
                 }
+                if sameDocument, let prior {
+                    try await waitForFragmentNavigation(tabID: tabID, attempt: attempt, target: url,
+                                                        token: prior, timeout: command.timeoutMilliseconds,
+                                                        cancellation: cancellation)
+                } else {
+                    try await waitForNavigationCommit(tabID: tabID, attempt: attempt,
+                                                      timeout: command.timeoutMilliseconds, cancellation: cancellation)
+                }
             case .back:
+                let state = try await rendererState(tabID: tabID, timeout: 1_200, cancellation: cancellation)
+                guard state.canGoBack else { return failure(command, status: .blocked, code: "no-history", "There is no previous page") }
+                let prior = await currentProbeToken(tabID: tabID, cancellation: cancellation)
+                let attempt = try beginNavigation(tabID: tabID, priorToken: prior, expectedDocumentID: command.expectedDocumentID, cancellation: cancellation)
+                startedAttempt = attempt
                 try await rendererCall(cancellation) { renderer in
                     try await renderer.goBack(tabID: tabID)
                 }
+                try await waitForHistoryNavigation(tabID: tabID, attempt: attempt, oldURL: state.url,
+                                                   token: prior, timeout: command.timeoutMilliseconds, cancellation: cancellation)
             case .forward:
+                let state = try await rendererState(tabID: tabID, timeout: 1_200, cancellation: cancellation)
+                guard state.canGoForward else { return failure(command, status: .blocked, code: "no-history", "There is no next page") }
+                let prior = await currentProbeToken(tabID: tabID, cancellation: cancellation)
+                let attempt = try beginNavigation(tabID: tabID, priorToken: prior, expectedDocumentID: command.expectedDocumentID, cancellation: cancellation)
+                startedAttempt = attempt
                 try await rendererCall(cancellation) { renderer in
                     try await renderer.goForward(tabID: tabID)
                 }
+                try await waitForHistoryNavigation(tabID: tabID, attempt: attempt, oldURL: state.url,
+                                                   token: prior, timeout: command.timeoutMilliseconds, cancellation: cancellation)
             case .reload:
+                let prior = await currentProbeToken(tabID: tabID, cancellation: cancellation)
+                let attempt = try beginNavigation(tabID: tabID, priorToken: prior, expectedDocumentID: command.expectedDocumentID, cancellation: cancellation)
+                startedAttempt = attempt
                 try await rendererCall(cancellation) { renderer in
                     try await renderer.reload(tabID: tabID)
                 }
+                try await waitForNavigationCommit(tabID: tabID, attempt: attempt,
+                                                  timeout: command.timeoutMilliseconds, cancellation: cancellation)
             case .observe(let cursor):
                 return await observeResult(command, tabID: tabID, cursor: cursor, cancellation: cancellation)
             case .screenshot:
-                let artifact = try await saveSnapshot(of: tabID, cancellation: cancellation)
+                let capture = try await saveSnapshot(of: tabID, cancellation: cancellation)
+                let artifact = capture.artifact
+                var delivered = false
+                defer { if !delivered { artifacts.discard(artifact) } }
                 let visualTextRegions = try recognizeVisualText(in: artifact)
                 var result = await observeResult(command, tabID: tabID, cursor: nil, cancellation: cancellation)
+                try await verifyScreenshot(capture, tabID: tabID, cancellation: cancellation)
+                if result.error?.code == "probe-unavailable" {
+                    result = tabManagementResult(command, tabID: tabID, message: "Screenshot captured; structured page contents are unavailable.")
+                    result.page?.url = capture.url
+                }
                 result.page?.screenshotArtifact = artifact
                 result.page?.visualTextRegions = visualTextRegions
-                if let page = result.page,
+                delivered = result.page != nil
+                if let page = result.page, page.structuredObservationAvailable == true,
+                   capture.probeFrame?.revision == page.revision, capture.probeFrame?.width == page.viewportWidth,
+                   capture.probeFrame?.height == page.viewportHeight, capture.probeFrame != nil,
                    let currentIndex = tabs.firstIndex(where: { $0.id == tabID }) {
                     tabs[currentIndex].visualFallbackEvidence = VisualFallbackEvidence(
                         documentID: tabs[currentIndex].documentID,
+                        documentToken: capture.token,
+                        documentURL: capture.url,
                         sha256: artifact.sha256.lowercased(),
                         capturedAt: Date(),
                         pixelWidth: artifact.pixelWidth,
                         pixelHeight: artifact.pixelHeight,
                         viewportWidth: page.viewportWidth,
                         viewportHeight: page.viewportHeight,
+                        scrollX: capture.probeFrame!.scrollX,
+                        scrollY: capture.probeFrame!.scrollY,
                         revision: page.revision,
                         visualTextRegions: visualTextRegions
                     )
@@ -651,32 +779,50 @@ public actor BrowserTaskSession {
                         text: nil,
                         submit: false,
                         visualFallbackReason: command.visualFallbackReason,
+                        expectedVisualRevision: evidence.revision,
+                        expectedVisualToken: evidence.documentToken,
+                        expectedVisualURL: evidence.documentURL,
+                        expectedVisualScrollX: evidence.scrollX,
+                        expectedVisualScrollY: evidence.scrollY,
+                        expectedVisualWidth: evidence.viewportWidth,
+                        expectedVisualHeight: evidence.viewportHeight,
                         cancellation: cancellation
                     )
                     // Synthetic pointer dispatch is not proof that the
                     // intended visual target accepted the action. Capture the
                     // viewport again and require an observable state change.
                     try? await Task.sleep(for: .milliseconds(250))
-                    let postArtifact = try await saveSnapshot(of: tabID, cancellation: cancellation)
+                    let postCapture = try await saveSnapshot(of: tabID, cancellation: cancellation)
+                    let postArtifact = postCapture.artifact
+                    var delivered = false
+                    defer { if !delivered { artifacts.discard(postArtifact) } }
                     let postVisualTextRegions = try recognizeVisualText(in: postArtifact)
                     var result = await observeResult(command, tabID: tabID, cursor: nil, cancellation: cancellation)
+                    try await verifyScreenshot(postCapture, tabID: tabID, cancellation: cancellation)
                     result.page?.screenshotArtifact = postArtifact
                     result.page?.visualTextRegions = postVisualTextRegions
+                    delivered = result.page != nil
                     let changed = (result.page.map {
                         $0.documentID != evidence.documentID
                             || $0.revision > evidence.revision
                             || postArtifact.sha256.lowercased() != evidence.sha256
                     } ?? false)
-                    if let page = result.page,
+                    if let page = result.page, page.structuredObservationAvailable == true,
+                       postCapture.probeFrame?.revision == page.revision, postCapture.probeFrame?.width == page.viewportWidth,
+                       postCapture.probeFrame?.height == page.viewportHeight, postCapture.probeFrame != nil,
                        let currentIndex = tabs.firstIndex(where: { $0.id == tabID }) {
                         tabs[currentIndex].visualFallbackEvidence = VisualFallbackEvidence(
                             documentID: page.documentID,
+                            documentToken: postCapture.token,
+                            documentURL: postCapture.url,
                             sha256: postArtifact.sha256.lowercased(),
                             capturedAt: Date(),
                             pixelWidth: postArtifact.pixelWidth,
                             pixelHeight: postArtifact.pixelHeight,
                             viewportWidth: page.viewportWidth,
                             viewportHeight: page.viewportHeight,
+                            scrollX: postCapture.probeFrame!.scrollX,
+                            scrollY: postCapture.probeFrame!.scrollY,
                             revision: page.revision,
                             visualTextRegions: postVisualTextRegions
                         )
@@ -714,7 +860,22 @@ public actor BrowserTaskSession {
                     cancellation: cancellation
                 )
             case .scroll(let x, let y):
-                _ = try await evaluate(tabID: tabID, expression: BrowserProbeScript.scrollExpression(deltaX: x, deltaY: y), cancellation: cancellation)
+                guard let index = tabs.firstIndex(where: { $0.id == tabID }),
+                      !tabs[index].navigationPending, !tabs[index].navigationUncertain,
+                      !BrowserLifecycleHealth.shared.hasGap(epoch: owner.rootEpoch, tabID: tabID),
+                      let token = tabs[index].probeDocumentToken, !token.isEmpty,
+                      let url = tabs[index].surface.url, !url.isEmpty else {
+                    throw BrowserInteractionError.stale("Observe the current page before scrolling")
+                }
+                let documentID = tabs[index].documentID
+                let navigationRevision = tabs[index].navigationRevision
+                tabs[index].visualFallbackEvidence = nil
+                let raw = try await evaluate(tabID: tabID, expression: BrowserProbeScript.scrollExpression(deltaX: x, deltaY: y, expectedDocumentToken: token, expectedDocumentURL: url), cancellation: cancellation)
+                try ensureObservationCurrent(tabID: tabID, documentID: documentID, revision: navigationRevision)
+                struct ScrollReply: Decodable { let status: String }
+                guard let reply = try? JSONDecoder().decode(ScrollReply.self, from: Data(raw.utf8)), reply.status == "ok" else {
+                    throw BrowserInteractionError.stale("The page changed; observe it again before scrolling")
+                }
                 appendEvent(tabID: tabID, method: "Input.dispatchMouseEvent", detail: "scroll")
             case .wait(let condition):
                 return await waitResult(command, tabID: tabID, condition: condition, cancellation: cancellation)
@@ -741,6 +902,10 @@ public actor BrowserTaskSession {
             return failure(command, status: .failed, code: "cancelled", "Browser action was cancelled")
         } catch BrowserProbeError.released {
             return failure(command, status: .stale, code: "released", "This task's browser session was released")
+        } catch BrowserProbeError.timedOut {
+            return failure(command, status: .timeout, code: "timeout", "Browser navigation did not commit before the deadline")
+        } catch BrowserNavigationError.failed(let error) {
+            return BrowserResult(requestID: command.requestID, status: .failed, message: error.message, error: error)
         } catch {
             return failure(command, status: .failed, code: "webview", error.localizedDescription)
         }
@@ -848,6 +1013,186 @@ public actor BrowserTaskSession {
 
     // MARK: - Actuator
 
+    /// Tab management commits independently of page JS. Return its real tab
+    /// receipt even if a blank/new page has not installed a semantic probe.
+    private func tabManagementResult(_ command: BrowserCommand, tabID: UUID?, message: String) -> BrowserResult {
+        guard !isReleased, let tabID, let tab = tabs.first(where: { $0.id == tabID }) else {
+            return failure(command, status: .stale, code: "tab", "Browser tab is no longer available")
+        }
+        let state = tab.surface
+        let page = PageSnapshot(documentID: tab.documentID, revision: tab.revision,
+                                url: state.url ?? "", title: state.title ?? "", isLoading: state.isLoading,
+                                viewportWidth: state.viewportWidth, viewportHeight: state.viewportHeight,
+                                scrollX: state.scrollX, scrollY: state.scrollY, tabs: tabSnapshots(), nodes: [],
+                                nextCursor: nil, screenshotArtifact: nil, structuredObservationAvailable: false)
+        return BrowserResult(requestID: command.requestID, status: .ok, page: page, message: message)
+    }
+
+    /// Fence old document data before asking the platform to start a load.
+    private func beginNavigation(
+        tabID: UUID, priorToken: String?, expectedDocumentID: String?, cancellation: CancellationToken?
+    ) throws -> UInt64 {
+        try Task.checkCancellation()
+        if cancellation?.isCancelled == true { throw CancellationError() }
+        guard !isReleased else { throw BrowserProbeError.released }
+        if isUserControlling { throw BrowserInteractionError.needsUser("The user currently controls the browser") }
+        guard let index = tabs.firstIndex(where: { $0.id == tabID }) else {
+            throw BrowserInteractionError.stale("Browser tab is no longer available")
+        }
+        if let expectedDocumentID, tabs[index].documentID != expectedDocumentID {
+            throw BrowserInteractionError.stale("The page changed; observe it again")
+        }
+        tabs[index].navigationAttempt &+= 1
+        tabs[index].navigationRevision &+= 1
+        tabs[index].navigationPending = true
+        tabs[index].navigationUncertain = false
+        tabs[index].navigationFailure = nil
+        tabs[index].previousProbeDocumentToken = priorToken ?? tabs[index].probeDocumentToken
+        tabs[index].visualFallbackEvidence = nil
+        return tabs[index].navigationAttempt
+    }
+
+    private struct ProbeIdentity: Decodable {
+        let probeAvailable: Bool
+        let documentToken: String?
+        let documentURL: String?
+        let revision: Int?
+        let scrollX: Double?
+        let scrollY: Double?
+        let viewportWidth: Double?
+        let viewportHeight: Double?
+    }
+
+    private static func isFragmentChange(from oldURL: URL, to newURL: URL) -> Bool {
+        guard var old = URLComponents(url: oldURL, resolvingAgainstBaseURL: false),
+              var new = URLComponents(url: newURL, resolvingAgainstBaseURL: false),
+              old.fragment != new.fragment else { return false }
+        old.fragment = nil
+        new.fragment = nil
+        return old.url == new.url
+    }
+
+    /// Fragment changes do not always emit a WebView commit. Confirm both
+    /// the actual destination and the unchanged real document token instead.
+    private func waitForFragmentNavigation(
+        tabID: UUID, attempt: UInt64, target: URL, token: String,
+        timeout: Int, cancellation: CancellationToken?
+    ) async throws {
+        let deadline = Date().addingTimeInterval(Double(min(30_000, max(250, timeout))) / 1_000)
+        while Date() < deadline {
+            try Task.checkCancellation()
+            if cancellation?.isCancelled == true { throw CancellationError() }
+            guard !isReleased else { throw BrowserProbeError.released }
+            guard !BrowserLifecycleHealth.shared.hasGap(epoch: owner.rootEpoch, tabID: tabID) else {
+                throw BrowserInteractionError.stale("Browser events were missed. Reload or navigate again.")
+            }
+            guard let tab = tabs.first(where: { $0.id == tabID }), tab.navigationAttempt == attempt else {
+                throw BrowserInteractionError.stale("The page changed; observe it again")
+            }
+            if isUserControlling { throw BrowserInteractionError.needsUser("The user currently controls the browser") }
+            if let error = tab.navigationFailure { throw BrowserNavigationError.failed(error) }
+            if !tab.navigationPending && tab.committedAttempt == attempt { return }
+            if let surface = try? await rendererState(tabID: tabID, timeout: 1_000, cancellation: cancellation),
+               surface.url.flatMap(URL.init(string:)) == target,
+               let raw = try? await evaluate(tabID: tabID, expression: BrowserProbeScript.documentStampExpression,
+                                              cancellation: cancellation, timeout: 1_000),
+               let identity = try? JSONDecoder().decode(ProbeIdentity.self, from: Data(raw.utf8)),
+               identity.probeAvailable, identity.documentToken == token,
+               identity.documentURL.flatMap(URL.init(string:)) == target,
+               let index = tabs.firstIndex(where: { $0.id == tabID }),
+               !isReleased, !isUserControlling, !Task.isCancelled, cancellation?.isCancelled != true,
+               tabs[index].navigationPending, tabs[index].navigationAttempt == attempt {
+                tabs[index].navigationPending = false
+                tabs[index].navigationRevision &+= 1
+                tabs[index].committedAttempt = attempt
+                tabs[index].probeDocumentToken = token
+                tabs[index].previousProbeDocumentToken = nil
+                tabs[index].surface = surface
+                return
+            }
+            try await Task.sleep(for: .milliseconds(75))
+        }
+        throw BrowserProbeError.timedOut
+    }
+
+    private func waitForHistoryNavigation(tabID: UUID, attempt: UInt64, oldURL: String?, token: String?, timeout: Int, cancellation: CancellationToken?) async throws {
+        let deadline = Date().addingTimeInterval(Double(min(30_000, max(250, timeout))) / 1_000)
+        while Date() < deadline {
+            try Task.checkCancellation()
+            if cancellation?.isCancelled == true { throw CancellationError() }
+            guard !isReleased else { throw BrowserProbeError.released }
+            guard !BrowserLifecycleHealth.shared.hasGap(epoch: owner.rootEpoch, tabID: tabID) else {
+                throw BrowserInteractionError.stale("Browser events were missed. Reload or navigate again.")
+            }
+            guard let tab = tabs.first(where: { $0.id == tabID }), tab.navigationAttempt == attempt else { throw BrowserInteractionError.stale("The page changed; observe it again") }
+            if isUserControlling { throw BrowserInteractionError.needsUser("The user currently controls the browser") }
+            if let error = tab.navigationFailure { throw BrowserNavigationError.failed(error) }
+            if !tab.navigationPending && tab.committedAttempt == attempt { return }
+            if let token, let oldURL,
+               let state = try? await rendererState(tabID: tabID, timeout: 1_000, cancellation: cancellation),
+               let url = state.url, url != oldURL,
+               let raw = try? await evaluate(tabID: tabID, expression: BrowserProbeScript.documentStampExpression, cancellation: cancellation, timeout: 1_000),
+               let identity = try? JSONDecoder().decode(ProbeIdentity.self, from: Data(raw.utf8)),
+               identity.probeAvailable, identity.documentToken == token, identity.documentURL == url,
+               let index = tabs.firstIndex(where: { $0.id == tabID }), !isReleased, !isUserControlling,
+               !Task.isCancelled, cancellation?.isCancelled != true,
+               tabs[index].navigationPending, tabs[index].navigationAttempt == attempt {
+                tabs[index].navigationPending = false
+                tabs[index].navigationUncertain = false
+                tabs[index].navigationRevision &+= 1
+                tabs[index].committedAttempt = attempt
+                tabs[index].probeDocumentToken = token
+                tabs[index].previousProbeDocumentToken = nil
+                tabs[index].surface = state
+                return
+            }
+            try await Task.sleep(for: .milliseconds(75))
+        }
+        throw BrowserProbeError.timedOut
+    }
+
+    /// Capture even an old page that has not yet been observed by a tool.
+    /// Failure is non-authoritative; it never blocks a new navigation.
+    private func currentProbeToken(tabID: UUID, cancellation: CancellationToken?) async -> String? {
+        guard let before = tabs.first(where: { $0.id == tabID }), !before.navigationPending else { return nil }
+        if let token = before.probeDocumentToken { return token }
+        guard let raw = try? await evaluate(tabID: tabID, expression: BrowserProbeScript.documentStampExpression,
+                                            cancellation: cancellation, timeout: 1_200),
+              let identity = try? JSONDecoder().decode(ProbeIdentity.self, from: Data(raw.utf8)),
+              identity.probeAvailable, let token = identity.documentToken, !token.isEmpty, token.utf8.count <= 128,
+              let after = tabs.first(where: { $0.id == tabID }), !after.navigationPending,
+              after.navigationRevision == before.navigationRevision,
+              after.documentID == before.documentID else { return nil }
+        return token
+    }
+
+    /// A dispatched load is not a new page. Wait for that tab's platform
+    /// commit and retain the actual URL (which may be a valid redirect).
+    private func waitForNavigationCommit(
+        tabID: UUID, attempt: UInt64, timeout: Int, cancellation: CancellationToken?
+    ) async throws {
+        let deadline = Date().addingTimeInterval(Double(min(30_000, max(250, timeout))) / 1_000)
+        while Date() < deadline {
+            try Task.checkCancellation()
+            if cancellation?.isCancelled == true { throw CancellationError() }
+            guard !isReleased else { throw BrowserProbeError.released }
+            guard !BrowserLifecycleHealth.shared.hasGap(epoch: owner.rootEpoch, tabID: tabID) else {
+                throw BrowserInteractionError.stale("Browser events were missed. Reload or navigate again.")
+            }
+            guard let tab = tabs.first(where: { $0.id == tabID }) else {
+                throw BrowserInteractionError.stale("Browser tab is no longer available")
+            }
+            guard tab.navigationAttempt == attempt else {
+                throw BrowserInteractionError.stale("The page changed; observe it again")
+            }
+            if isUserControlling { throw BrowserInteractionError.needsUser("The user currently controls the browser") }
+            if let error = tab.navigationFailure { throw BrowserNavigationError.failed(error) }
+            if !tab.navigationPending && tab.committedAttempt == attempt { return }
+            try await Task.sleep(for: .milliseconds(75))
+        }
+        throw BrowserProbeError.timedOut
+    }
+
     private func perform(
         target: BrowserTarget,
         in tabID: UUID,
@@ -855,10 +1200,24 @@ public actor BrowserTaskSession {
         text: String?,
         submit: Bool,
         visualFallbackReason: String?,
+        expectedVisualRevision: Int? = nil,
+        expectedVisualToken: String? = nil,
+        expectedVisualURL: String? = nil,
+        expectedVisualScrollX: Double? = nil,
+        expectedVisualScrollY: Double? = nil,
+        expectedVisualWidth: Double? = nil,
+        expectedVisualHeight: Double? = nil,
         cancellation: CancellationToken?
     ) async throws {
         guard let tab = tabs.first(where: { $0.id == tabID }) else {
             throw BrowserInteractionError.stale("Browser tab is no longer available")
+        }
+        guard !BrowserLifecycleHealth.shared.hasGap(epoch: owner.rootEpoch, tabID: tabID), !tab.navigationPending, !tab.navigationUncertain else {
+            throw BrowserInteractionError.stale("Browser events were missed. Reload or navigate again.")
+        }
+        guard let token = expectedVisualToken ?? tab.probeDocumentToken, !token.isEmpty,
+              let url = expectedVisualURL ?? tab.surface.url, !url.isEmpty else {
+            throw BrowserInteractionError.stale("Observe the current page before interacting with it")
         }
         let expression = BrowserProbeScript.performExpression(
             operation: operation,
@@ -866,9 +1225,17 @@ public actor BrowserTaskSession {
             documentID: tab.documentID,
             text: text ?? "",
             submit: submit,
-            visualFallbackReason: visualFallbackReason
+            visualFallbackReason: visualFallbackReason,
+            expectedVisualRevision: expectedVisualRevision,
+            expectedDocumentToken: token,
+            expectedDocumentURL: url,
+            expectedScrollX: expectedVisualScrollX,
+            expectedScrollY: expectedVisualScrollY,
+            expectedViewportWidth: expectedVisualWidth,
+            expectedViewportHeight: expectedVisualHeight
         )
         let value = try await evaluate(tabID: tabID, expression: expression, cancellation: cancellation)
+        try ensureObservationCurrent(tabID: tabID, documentID: tab.documentID, revision: tab.navigationRevision)
         struct PerformReply: Decodable { var status: String; var ref: String? }
         let reply = (try? JSONDecoder().decode(PerformReply.self, from: Data(value.utf8))) ?? PerformReply(status: "stale", ref: nil)
         switch reply.status {
@@ -903,6 +1270,8 @@ public actor BrowserTaskSession {
               expectedDigest.allSatisfy(\.isHexDigit),
               let evidence = tab.visualFallbackEvidence,
               evidence.documentID == tab.documentID,
+              evidence.documentToken == tab.probeDocumentToken,
+              evidence.documentURL == tab.surface.url,
               evidence.sha256 == expectedDigest,
               evidence.pixelWidth > 0,
               evidence.pixelHeight > 0,
@@ -933,11 +1302,17 @@ public actor BrowserTaskSession {
         guard let tabID, tabs.contains(where: { $0.id == tabID }) else {
             return failure(command, status: .stale, code: "tab", "Browser tab is no longer available")
         }
+        guard let original = tabs.first(where: { $0.id == tabID }), !original.navigationPending, !original.navigationUncertain else {
+            return failure(command, status: .stale, code: "navigation-pending", "The page is still navigating; wait for it to load")
+        }
+        let documentID = original.documentID
+        let navigationRevision = original.navigationRevision
         let timeout = min(30_000, max(250, command.timeoutMilliseconds))
         do {
             try Task.checkCancellation()
             await collectProbeEvents(tabID: tabID, timeout: timeout, cancellation: cancellation)
             try Task.checkCancellation()
+            try ensureObservationCurrent(tabID: tabID, documentID: documentID, revision: navigationRevision)
             let start = max(0, cursor ?? 0)
             let pageSize = 40
             let probe = try await semanticSnapshot(
@@ -948,13 +1323,41 @@ public actor BrowserTaskSession {
                 cancellation: cancellation
             )
             guard !isReleased else { throw BrowserProbeError.released }
+            try ensureObservationCurrent(tabID: tabID, documentID: documentID, revision: navigationRevision)
             if let index = tabs.firstIndex(where: { $0.id == tabID }) {
                 tabs[index].revision = max(tabs[index].revision, probe.revision)
             }
             let surface = try await rendererState(tabID: tabID, timeout: timeout, cancellation: cancellation)
+            try ensureObservationCurrent(tabID: tabID, documentID: documentID, revision: navigationRevision)
+            if probe.documentURL != surface.url {
+                throw BrowserInteractionError.stale("The page changed during observation; observe it again")
+            }
+            if let token = probe.documentToken {
+                // The platform's lifecycle event can lag behind evaluateJS.
+                // Re-read the identity in the actual document, including for
+                // a same-URL reload, before binding its DOM to this snapshot.
+                let rawIdentity = try await evaluate(tabID: tabID, expression: BrowserProbeScript.identityExpression,
+                                                     cancellation: cancellation, timeout: timeout)
+                guard let identity = try? JSONDecoder().decode(ProbeIdentity.self, from: Data(rawIdentity.utf8)),
+                      identity.probeAvailable, identity.documentToken == token,
+                      identity.documentURL == probe.documentURL else {
+                    throw BrowserInteractionError.stale("The page changed during observation; observe it again")
+                }
+                try ensureObservationCurrent(tabID: tabID, documentID: documentID, revision: navigationRevision)
+                guard let index = tabs.firstIndex(where: { $0.id == tabID }) else { throw BrowserProbeError.released }
+                if tabs[index].previousProbeDocumentToken == token {
+                    throw BrowserInteractionError.stale("The previous page is still visible; wait for the new page")
+                }
+                if let bound = tabs[index].probeDocumentToken, bound != token {
+                    throw BrowserInteractionError.stale("The page changed during observation; observe it again")
+                }
+                tabs[index].probeDocumentToken = token
+                tabs[index].previousProbeDocumentToken = nil
+            }
             if let index = tabs.firstIndex(where: { $0.id == tabID }) {
                 tabs[index].surface = surface
             }
+            guard cancellation?.isCancelled != true, !Task.isCancelled else { throw CancellationError() }
             guard let tab = tabs.first(where: { $0.id == tabID }) else {
                 return failure(command, status: .stale, code: "tab", "Browser tab is no longer available")
             }
@@ -971,7 +1374,8 @@ public actor BrowserTaskSession {
                 tabs: tabSnapshots(),
                 nodes: probe.nodes,
                 nextCursor: probe.nextCursor,
-                screenshotArtifact: nil
+                screenshotArtifact: nil,
+                structuredObservationAvailable: true
             )
             if let failure = tab.navigationFailure, !surface.isLoading {
                 return BrowserResult(requestID: command.requestID, status: .failed,
@@ -982,6 +1386,10 @@ public actor BrowserTaskSession {
             return failure(command, status: .timeout, code: "timeout", "Browser page observation timed out")
         } catch BrowserProbeError.released {
             return failure(command, status: .stale, code: "released", "This task's browser session was released")
+        } catch BrowserProbeError.unavailable {
+            return failure(command, status: .failed, code: "probe-unavailable", "Page contents are not available yet; wait or try a screenshot")
+        } catch BrowserInteractionError.stale(let message) {
+            return failure(command, status: .stale, code: "document", message)
         } catch is CancellationError {
             return failure(command, status: .failed, code: "cancelled", "Browser page observation was cancelled")
         } catch {
@@ -990,6 +1398,9 @@ public actor BrowserTaskSession {
     }
 
     private struct ProbeSnapshot: Decodable {
+        var probeAvailable: Bool?
+        var documentToken: String?
+        var documentURL: String?
         var revision: Int
         var viewportWidth: Double
         var viewportHeight: Double
@@ -1019,25 +1430,46 @@ public actor BrowserTaskSession {
         cancellation: CancellationToken?
     ) async throws -> ProbeSnapshot {
         guard let tab = tabs.first(where: { $0.id == tabID }) else { throw BrowserProbeError.released }
-        let value = try await evaluate(
-            tabID: tabID,
-            expression: BrowserProbeScript.observeExpression(documentID: tab.documentID, cursor: cursor, limit: limit),
-            cancellation: cancellation,
-            timeout: timeout
-        )
-        if let probe = try? JSONDecoder().decode(ProbeSnapshot.self, from: Data(value.utf8)) {
-            return probe
+        let deadline = Date().addingTimeInterval(Double(timeout) / 1_000)
+        for attempt in 0..<4 {
+            let remaining = Int(deadline.timeIntervalSinceNow * 1_000)
+            guard remaining > 0 else { throw BrowserProbeError.timedOut }
+            let value = try await evaluate(
+                tabID: tabID,
+                expression: BrowserProbeScript.observeExpression(documentID: tab.documentID, cursor: cursor, limit: limit),
+                cancellation: cancellation,
+                timeout: remaining
+            )
+            if let object = try? JSONSerialization.jsonObject(with: Data(value.utf8)) as? [String: Any],
+               object["probeAvailable"] as? Bool == false {
+                // Page commit and WebView probe injection are asynchronous.
+                // Give a real committed page a short opportunity to install
+                // its probe without turning absence into an empty DOM.
+                if attempt < 3 {
+                    try await Task.sleep(for: .milliseconds(100))
+                    continue
+                }
+                throw BrowserProbeError.unavailable
+            }
+            if let probe = try? JSONDecoder().decode(ProbeSnapshot.self, from: Data(value.utf8)),
+               probe.probeAvailable == true,
+               let token = probe.documentToken, !token.isEmpty, token.utf8.count <= 128,
+               let url = probe.documentURL, !url.isEmpty, url.utf8.count <= 8192,
+               URL(string: url)?.scheme != nil {
+                return probe
+            }
+            throw BrowserProbeError.unavailable
         }
-        // A page without the installed probe still yields the honest degraded
-        // snapshot (the original fallback contract, preserved).
-        let surface = try await rendererState(tabID: tabID, timeout: timeout, cancellation: cancellation)
-        return ProbeSnapshot(
-            revision: 0,
-            viewportWidth: surface.viewportWidth,
-            viewportHeight: surface.viewportHeight,
-            nodes: [],
-            nextCursor: nil
-        )
+        throw BrowserProbeError.unavailable
+    }
+
+    private func ensureObservationCurrent(tabID: UUID, documentID: String, revision: UInt64) throws {
+        guard !isReleased else { throw BrowserProbeError.released }
+        guard !BrowserLifecycleHealth.shared.hasGap(epoch: owner.rootEpoch, tabID: tabID),
+              let tab = tabs.first(where: { $0.id == tabID }), !tab.navigationPending, !tab.navigationUncertain,
+              tab.documentID == documentID, tab.navigationRevision == revision else {
+            throw BrowserInteractionError.stale("The page changed during observation; observe it again")
+        }
     }
 
     private func probeState(
@@ -1119,6 +1551,9 @@ public actor BrowserTaskSession {
         cancellation: CancellationToken?
     ) async -> BrowserResult {
         await collectProbeEvents(tabID: tabID, timeout: min(30_000, max(250, command.timeoutMilliseconds)), cancellation: cancellation)
+        guard !BrowserLifecycleHealth.shared.hasGap(epoch: owner.rootEpoch, tabID: tabID) else {
+            return failure(command, status: .stale, code: "lifecycle-gap", "Browser events were missed. Reload or navigate again.")
+        }
         guard let tab = tabs.first(where: { $0.id == tabID }) else {
             return failure(command, status: .stale, code: "tab", "Browser tab is no longer available")
         }
@@ -1147,10 +1582,24 @@ public actor BrowserTaskSession {
             guard !isReleased else {
                 return failure(command, status: .stale, code: "released", "This task's browser session was released")
             }
+            guard !BrowserLifecycleHealth.shared.hasGap(epoch: owner.rootEpoch, tabID: tabID) else {
+                return failure(command, status: .stale, code: "lifecycle-gap", "Browser events were missed. Reload or navigate again.")
+            }
             guard let tab = tabs.first(where: { $0.id == tabID }) else {
                 return failure(command, status: .stale, code: "tab", "Browser tab is no longer available")
             }
+            if let failure = tab.navigationFailure {
+                return BrowserResult(requestID: command.requestID, status: .failed,
+                                     message: failure.message, error: failure)
+            }
+            if tab.navigationPending {
+                try? await Task.sleep(for: .milliseconds(100))
+                continue
+            }
             await collectProbeEvents(tabID: tabID, timeout: timeout, cancellation: cancellation)
+            guard let current = tabs.first(where: { $0.id == tabID }),
+                  !current.navigationPending, !current.navigationUncertain,
+                  !BrowserLifecycleHealth.shared.hasGap(epoch: owner.rootEpoch, tabID: tabID), current.navigationRevision == tab.navigationRevision else { continue }
             if case .documentChanged(let oldDocumentID) = condition,
                tab.documentID != oldDocumentID {
                 appendEvent(tabID: tabID, method: "Runtime.waitConditionSatisfied")
@@ -1158,7 +1607,11 @@ public actor BrowserTaskSession {
             }
             do {
                 let state = try await probeState(tabID: tabID, condition: condition, timeout: timeout, cancellation: cancellation)
-                let isLoading = tabs.first(where: { $0.id == tabID })?.surface.isLoading ?? false
+                guard let current = tabs.first(where: { $0.id == tabID }),
+                      !current.navigationPending, !current.navigationUncertain,
+                      !BrowserLifecycleHealth.shared.hasGap(epoch: owner.rootEpoch, tabID: tabID), current.navigationRevision == tab.navigationRevision,
+                      current.documentID == tab.documentID else { continue }
+                let isLoading = current.surface.isLoading
                 let satisfied: Bool
                 switch condition {
                 case .load:
@@ -1200,12 +1653,88 @@ public actor BrowserTaskSession {
 
     // MARK: - Screenshot evidence
 
-    private func saveSnapshot(of tabID: UUID, cancellation: CancellationToken?) async throws -> BrowserArtifactReference {
-        guard !isReleased else { throw BrowserProbeError.released }
+    private struct BoundScreenshot {
+        let artifact: BrowserArtifactReference
+        let documentID: String
+        let navigationRevision: UInt64
+        let token: String
+        let url: String
+        let probeFrame: ScreenshotProbeFrame?
+    }
+
+    private struct ScreenshotProbeFrame: Equatable {
+        let revision: Int
+        let scrollX: Double
+        let scrollY: Double
+        let width: Double
+        let height: Double
+    }
+
+    private func screenshotProbeFrame(tabID: UUID, token: String, url: String, cancellation: CancellationToken?) async -> ScreenshotProbeFrame? {
+        guard let raw = try? await evaluate(tabID: tabID, expression: BrowserProbeScript.identityExpression, cancellation: cancellation, timeout: 1_200),
+              let identity = try? JSONDecoder().decode(ProbeIdentity.self, from: Data(raw.utf8)),
+              identity.probeAvailable, identity.documentToken == token, identity.documentURL == url,
+              let revision = identity.revision, revision >= 0,
+              let x = identity.scrollX, x.isFinite, let y = identity.scrollY, y.isFinite,
+              let width = identity.viewportWidth, width.isFinite, width > 0,
+              let height = identity.viewportHeight, height.isFinite, height > 0 else { return nil }
+        return ScreenshotProbeFrame(revision: revision, scrollX: x, scrollY: y, width: width, height: height)
+    }
+
+    private func screenshotIdentity(tabID: UUID, cancellation: CancellationToken?) async throws -> ProbeIdentity {
+        let raw = try await evaluate(tabID: tabID, expression: BrowserProbeScript.documentStampExpression, cancellation: cancellation, timeout: 1_200)
+        guard let identity = try? JSONDecoder().decode(ProbeIdentity.self, from: Data(raw.utf8)),
+              identity.probeAvailable, let token = identity.documentToken, !token.isEmpty, token.utf8.count <= 128,
+              let url = identity.documentURL, !url.isEmpty, url.utf8.count <= 8192, URL(string: url)?.scheme != nil else {
+            throw BrowserInteractionError.stale("Cannot identify the page for this screenshot")
+        }
+        return identity
+    }
+
+    private func saveSnapshot(of tabID: UUID, cancellation: CancellationToken?) async throws -> BoundScreenshot {
+        guard let tab = tabs.first(where: { $0.id == tabID }), !tab.navigationPending, !tab.navigationUncertain else {
+            throw BrowserInteractionError.stale("The page is navigating; capture again")
+        }
+        let before = try await screenshotIdentity(tabID: tabID, cancellation: cancellation)
+        try ensureObservationCurrent(tabID: tabID, documentID: tab.documentID, revision: tab.navigationRevision)
+        guard let token = before.documentToken, let url = before.documentURL,
+              tab.probeDocumentToken == nil || tab.probeDocumentToken == token,
+              tab.previousProbeDocumentToken != token else {
+            throw BrowserInteractionError.stale("The page changed; capture again")
+        }
+        let beforeRevision = await screenshotProbeFrame(tabID: tabID, token: token, url: url, cancellation: cancellation)
+        try ensureObservationCurrent(tabID: tabID, documentID: tab.documentID, revision: tab.navigationRevision)
         let shot = try await raced(timeout: 30_000, cancellation: cancellation) { [renderer] in
             try await renderer.captureScreenshot(tabID: tabID)
         }
-        return try artifacts.store(jpeg: shot.jpeg, pixelWidth: shot.pixelWidth, pixelHeight: shot.pixelHeight)
+        try ensureObservationCurrent(tabID: tabID, documentID: tab.documentID, revision: tab.navigationRevision)
+        guard shot.state.url == url else { throw BrowserInteractionError.stale("The page changed during capture") }
+        let after = try await screenshotIdentity(tabID: tabID, cancellation: cancellation)
+        try ensureObservationCurrent(tabID: tabID, documentID: tab.documentID, revision: tab.navigationRevision)
+        guard after.documentToken == token, after.documentURL == url else {
+            throw BrowserInteractionError.stale("The page changed during capture")
+        }
+        let afterRevision = await screenshotProbeFrame(tabID: tabID, token: token, url: url, cancellation: cancellation)
+        try ensureObservationCurrent(tabID: tabID, documentID: tab.documentID, revision: tab.navigationRevision)
+        if let beforeRevision, beforeRevision != afterRevision {
+            throw BrowserInteractionError.stale("The page changed during capture; capture again")
+        }
+        let artifact = try artifacts.store(jpeg: shot.jpeg, pixelWidth: shot.pixelWidth, pixelHeight: shot.pixelHeight)
+        return BoundScreenshot(artifact: artifact, documentID: tab.documentID, navigationRevision: tab.navigationRevision, token: token, url: url, probeFrame: beforeRevision)
+    }
+
+    private func verifyScreenshot(_ capture: BoundScreenshot, tabID: UUID, cancellation: CancellationToken?) async throws {
+        try ensureObservationCurrent(tabID: tabID, documentID: capture.documentID, revision: capture.navigationRevision)
+        let identity = try await screenshotIdentity(tabID: tabID, cancellation: cancellation)
+        try ensureObservationCurrent(tabID: tabID, documentID: capture.documentID, revision: capture.navigationRevision)
+        guard identity.documentToken == capture.token, identity.documentURL == capture.url else {
+            throw BrowserInteractionError.stale("The page changed after capture")
+        }
+        if let expected = capture.probeFrame {
+            let revision = await screenshotProbeFrame(tabID: tabID, token: capture.token, url: capture.url, cancellation: cancellation)
+            try ensureObservationCurrent(tabID: tabID, documentID: capture.documentID, revision: capture.navigationRevision)
+            guard revision == expected else { throw BrowserInteractionError.stale("The page changed after capture; capture again") }
+        }
     }
 
     private func recognizeVisualText(in artifact: BrowserArtifactReference) throws -> [VisualTextRegion] {
@@ -1233,21 +1762,10 @@ public actor BrowserTaskSession {
         timeout: Int,
         cancellation: CancellationToken?
     ) async throws -> BrowserRendererTabState {
-        if !isReleased {
-            do {
-                return try await raced(timeout: timeout, cancellation: cancellation) { [renderer] in
-                    try await renderer.state(tabID: tabID)
-                }
-            } catch {
-                // Fall back to the last trusted platform snapshot for reads.
-                // A stale surface never grants new capability; it only
-                // describes the last observed page.
-                if let tab = tabs.first(where: { $0.id == tabID }) { return tab.surface }
-                throw error
-            }
+        guard !isReleased else { throw BrowserProbeError.released }
+        return try await raced(timeout: timeout, cancellation: cancellation) { [renderer] in
+            try await renderer.state(tabID: tabID)
         }
-        guard let tab = tabs.first(where: { $0.id == tabID }) else { throw BrowserProbeError.released }
-        return tab.surface
     }
 
     private func evaluate(

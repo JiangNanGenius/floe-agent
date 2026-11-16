@@ -93,6 +93,74 @@ final class LinuxShellToolMirrorTests: XCTestCase {
         XCTAssertTrue(output.summary.contains("exit=0"))
     }
 
+    func testExecuteReportsUpstreamPtyTruncationInCaptureMetadata() async throws {
+        let transport = FakeLinuxShellTransport()
+        transport.pollScript = { session, cursor, nth in
+            if nth == 1 {
+                return FakeLinuxShellTransport.page(session: session, cursor: cursor,
+                                                    text: String(repeating: "x", count: 256))
+            }
+            return FakeLinuxShellTransport.page(session: session, cursor: cursor + 256, text: "",
+                                                state: .terminated, released: true, exit: 0)
+        }
+        let tool = LocalShellTool(shell: try service(qualified: true, transport: transport))
+        let output = try await tool.execute(
+            LocalShellTool.Arguments(command: "printf test", maxOutputBytes: 64), context: context())
+        XCTAssertEqual(output.exitStatus, 0)
+        XCTAssertTrue(output.summary.contains("stdoutTruncated"))
+        XCTAssertTrue(output.capturedOutputTruncated)
+    }
+
+    /// C06: the durable job adapter may only watch/inspect the session of its
+    /// OWN trusted call identity. Other sessions in the same run (interactive
+    /// terminals, services, sibling jobs) must never be selected by identity.
+    func testExactOwnedSessionLookupSeparatesSameRunCallIdentities() async throws {
+        let root = try ShellTestRoot.make()
+        let transport = FakeLinuxShellTransport()
+        transport.startReply = { request in
+            LinuxShellStartReply(sessionID: "engine-\(request.hostToolCallID ?? "none")",
+                                 environmentID: "linux.local")
+        }
+        transport.pollScript = { session, cursor, nth in
+            if nth == 1 {
+                return FakeLinuxShellTransport.page(session: session, cursor: cursor,
+                                                    text: "ready\n", more: false)
+            }
+            return nil
+        }
+        let backend = AndroidLinuxShellBackend(
+            transport: transport, readiness: StaticLinuxShellReadiness(qualified: true))
+        let runID = UUID()
+        let callA = "jobs.\(UUID().uuidString)"
+        let callB = "jobs.\(UUID().uuidString)"
+        let openA = try await backend.openSession(ShellOpenRequest(
+            command: "sleep 300", rootURL: root, gateTimeout: 0.2,
+            sessionID: "ui-a", runID: runID, conversationID: UUID(),
+            hostToolCallID: callA, leaseRole: .interactive),
+            cancellation: CancellationToken())
+        let openB = try await backend.openSession(ShellOpenRequest(
+            command: "sleep 300", rootURL: root, gateTimeout: 0.2,
+            sessionID: "ui-b", runID: runID, conversationID: UUID(),
+            hostToolCallID: callB, leaseRole: .interactive),
+            cancellation: CancellationToken())
+        XCTAssertTrue(openA.alive)
+        XCTAssertTrue(openB.alive)
+
+        let exactA = await backend.ownedSession(runID: runID, toolCallID: callA)
+        let exactB = await backend.ownedSession(runID: runID, toolCallID: callB)
+        XCTAssertEqual(exactA?.engineSessionID, openA.runtimeSessionID)
+        XCTAssertEqual(exactB?.engineSessionID, openB.runtimeSessionID)
+        XCTAssertNotEqual(exactA?.engineSessionID, exactB?.engineSessionID,
+                          "each call identity addresses exactly its own session")
+        let unknown = await backend.ownedSession(
+            runID: runID, toolCallID: "jobs.\(UUID().uuidString)")
+        XCTAssertNil(unknown, "an unrelated call identity never selects a same-run session")
+        let anonymous = await backend.ownedSession(runID: runID, toolCallID: nil)
+        XCTAssertNil(anonymous, "a missing identity fails closed instead of choosing a session")
+        let otherRun = await backend.ownedSession(runID: UUID(), toolCallID: callA)
+        XCTAssertNil(otherRun, "a foreign run identity never selects this session")
+    }
+
     func testRegistrationClosesOverExecShellAndSessionToolsOnly() throws {
         let transport = FakeLinuxShellTransport()
         let service = try self.service(qualified: false, transport: transport)

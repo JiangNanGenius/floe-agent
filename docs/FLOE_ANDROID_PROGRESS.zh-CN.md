@@ -1,5 +1,37 @@
 # Floe Android 分目标实施记录
 
+## 1.0.18／127 已公开：授权应用发现与增量升级（2026-11-16）
+
+[Android 1.0.18 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v1.0.18)固定源码 `03b777b3dd791367b83125e1329e829fe0852b3e`；Full APK 为 167247443 字节，SHA-256 `46d4d990022fd8441ab264bc06e6a305b5f63f401724c47010a937c7de3a6703`。本版含更新等待修复和已授权可启动应用的发现与分页；Full 构建成功，未变原生库复用 1.0.17 生产证据。公开七附件包括主包、Office／CAD 组件、对应源码、校验文件及从 1.0.17 的补丁和清单；匿名读取的字节逐项匹配，iOS Latest 未改变。
+
+增量补丁为 34219684 字节，SHA-256 `b4d6e4cd07d3035e54e9951542c491cdca357b7242c1e54806badc5ae0c644cb`；本机生产时从精确 1.0.17 主包重建出相同 1.0.18 字节。三星在应用内实际选择、下载并应用补丁，界面显示增量准备和校验成功；经系统确认后主应用和 Linux 运行环境均升级到 127，安装字节与发布主包及其内嵌运行环境一致，UID 保持。不同基底及补丁失败后的完整包回退尚未在设备上单独复测。
+
+三星真实 Ark `ark-code-latest` 任务读取已授权列表后选中三星计算器，实际打开并观察到计算器，任务自然结束；操作结束后的画面没有悬浮球。该测试只覆盖单个授权应用和无障碍后端，未验证多页、授权变更竞态或 ADB 后端。测试任务已删除，临时设备权限和电源设置已恢复；截图与此前失败证据保留。
+
+English: Android 1.0.18/code127 is published from the exact source above. Samsung updated from 1.0.17 using the actual delta and installed matching application and runtime bytes with UIDs retained. An Ark task found, opened and observed the authorized Samsung calculator; the bubble was absent after the operation. Multi-page discovery, ADB and delta failure fallback remain unverified on device.
+
+## 1.0.17／126 已公开：设备控制与完整包升级（2026-11-16）
+
+[Android 1.0.17 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v1.0.17)固定源码 `d15f230b896e432c435dc340970f07cbdd4b4677`；Full APK 为 167223647 字节，SHA-256 `53a58fd061ae12f5e983979b2f3b6a382820cfc1ed04e913e3918f18421795ce`。实际 Android ARM64 原生及 Full 构建完成，签名和 ZIP 16 KiB 对齐通过；主包、Office／CAD 按需组件、对应源码与校验文件共五附件，匿名下载字节逐项匹配，iOS Latest 未改变。
+
+三星从 1.0.16 的应用内更新入口发现本版，通过已选镜像下载完整包并校验，按系统提示确认后，主应用和 Linux 运行环境均安装为 1.0.17／126。系统 UID 保持，两个安装包读回摘要分别与公开主包及其内嵌运行环境一致；应用可打开，原有任务列表和模型配置可见。这次验证的是完整包升级，不代表增量升级或全部数据类型均已复核。此前一次系统安装确认被取消，保留为实测记录，重试后完成。
+
+本版完成悬浮球结束自动收起及旧回调隔离、部分同页观察过期恢复和敏感输入保护。三星实际显示气泡并点击接管后气泡消失，设备页显示没有任务正在控制；模型在计算器测试中先尝试未授权的另一款计算器，被拒绝后停止，不能作为完整跨应用操作通过。临时测试任务、权限和电源设置已恢复。分页过期恢复、敏感输入跨后端流程、浏览器修复和增量升级仍需实际设备场景验证；原生任务已结束但最后一次变更快照仍有工具／Agent 计数，资源完全释放尚未证明。
+
+发布后源码 `0ba873b248bebbcb87333a69c9a031154930dad5` 修正安装等待的后台工作文案、五分钟后重新检查入口、旧等待回调竞态以及本次强制安装选择在运行环境繁忙等待中的传递；运行环境空闲检查保留。定向竞态宿主及 Full 主应用 Kotlin 编译通过；此修复不在 1.0.17 APK 中，尚未实机验证。
+
+English: Android 1.0.17/code126 is published from the exact source and APK above. Samsung completed an in-app full-package update from 1.0.16, including its matching runtime; installed bytes and UIDs were checked. A device-control takeover removed the bubble; the calculator flow was stopped after the model selected an unauthorized package. Delta updates and the remaining device flows are not claimed as verified.
+
+## 1.0.16／125 已公开：任务收尾与设备控制（2026-11-16）
+
+[Android 1.0.16 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v1.0.16)固定源码 `4e4a321941dd1e7a1485b4b475e98ed2d90a7165`；Full APK 为 166998015 字节，SHA-256 为 `ec58a7f3767bc9d1107a3f961354474df0226eb530a4e5aedc985515e81da773`。本批修复后台作业收尾、结果读取、设备控制所有者与提问通知等路径，保留原失败证据；真实 ARM64 原生生产、Full 构建、签名、16 KiB 和原生库剥离等价检查已完成。公开主包、Office／CAD 按需组件、对应源码及校验文件共五附件，匿名下载字节和摘要一致；iOS Latest 未改变。
+
+三星覆盖安装并读回同一主包和内嵌运行时字节，UID 保持；运行时安装通过 ADB 完成，应用内安装器及在线升级未完整实测。独立 Ark `ark-code-latest` 测试中，短命令和 `sleep 12` 后输出均返回退出码 0；后者后端调用总耗时 69492 毫秒，覆盖排队、准备、执行和收尾，尚未定位额外等待。独立计算器任务实际显示悬浮球，点击接管后球消失且设备页显示控制已停止；未将此记为完整计算任务通过。临时测试设置恢复后设备交给录像线程，用全新任务进行一次发送的完整演示；旧 C06 失败任务和未证明的资源释放状态保留，不继续旧运行。
+
+四个已编译更新器读取器共 24 个版本样本能够解析公开版本、完整包摘要和已知问题；这不是设备 OTA 安装结果。发布后的下一源码检查点修正 `exec.shell` 超时说明，明确执行预算与准备／收尾分别计时，该文字修改不在 1.0.16 APK 内。
+
+English: Full 1.0.16/code125 is public from the exact source and APK hash above. ARM64 production, packaging, native strip equivalence and public byte read-back passed; iOS Latest is unchanged. Samsung verified the exact app and embedded runtime bytes, but installed the runtime through ADB. Short and 12-second shell commands returned the expected output; the latter reported 69492 ms for the whole backend call, whose extra latency remains unexplained. A separate device-control takeover removed the floating bubble. Four compiled updater readers found the public full package and known issues across 24 samples, without proving device OTA installation. The prior failed C06 run remains preserved; the independent recording uses a new task.
+
 ## Full124 C06三星验收：审批后的设备接管确认（2026-11-16）
 
 修复询问模式中审批后的确认读取缺口：原窗口从审批请求开始计时，用户较晚点允许时，执行内部才创建的必答设备接管问题可能没有入口显示。现在仅在真实接受允许决定后，为同一设备工具调用重新开启既有有界读取窗口；沿用任务、会话、流代次与终态校验，不代答、不放宽权限、不重放操作。拒绝、失效决定及被替换的会话不会启动该窗口。

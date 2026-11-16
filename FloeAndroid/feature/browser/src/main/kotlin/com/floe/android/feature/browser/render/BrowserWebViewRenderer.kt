@@ -80,6 +80,7 @@ public class BrowserWebViewRenderer(
          * (onPageStarted → true; onPageFinished / main-frame error /
          * SSL cancel / stopLoading / surface replacement → false). */
         var loading: Boolean = false,
+        var mainFrameUrl: String? = null,
     )
 
     private val slots = ConcurrentHashMap<String, Slot>()
@@ -126,10 +127,16 @@ public class BrowserWebViewRenderer(
     }
 
     override fun navigate(tabId: String, url: String) = onMain {
-        val slot = slots[tabId]
-        val view = slot?.webView
+        val slot = slots[tabId] ?: return@onMain
+        val view = slot.webView
+        val oldUrl = view?.url
+        val sameDocumentFragment = oldUrl != null && oldUrl != url &&
+            oldUrl.substringBefore('#') == url.substringBefore('#')
+        if (!sameDocumentFragment) slot.loading = true
+        slot.mainFrameUrl = url
+        slot.state = slot.state.copy(isLoading = slot.loading)
         if (view == null) {
-            slot?.pendingLoad = url
+            slot.pendingLoad = url
         } else {
             // Swift already validated this URL; onInterceptRequest re-checks
             // it (and every redirect hop) against the policy anyway.
@@ -149,8 +156,8 @@ public class BrowserWebViewRenderer(
     }
 
     /** Synchronous read used by the JNI proxy: main-thread getters with a
-     * short bounded wait; falls back to the last trusted cached facts. A
-     * stale surface never grants capability — it only describes a page. */
+     * short bounded wait. An unavailable fresh state returns null, since a
+     * cached URL cannot prove which document an observation belongs to. */
     override fun state(tabId: String): RendererTabState? {
         val slot = slots[tabId] ?: return null
         if (Looper.myLooper() == Looper.getMainLooper()) return refreshState(slot)
@@ -160,7 +167,9 @@ public class BrowserWebViewRenderer(
             fresh = refreshState(slot)
             latch.countDown()
         }
-        return if (latch.await(150, TimeUnit.MILLISECONDS)) fresh ?: slot.state else slot.state
+        // A cached page can belong to the previous navigation. An observation
+        // needing current identity must fail rather than silently use it.
+        return if (latch.await(1_000, TimeUnit.MILLISECONDS)) fresh else null
     }
 
     override fun evaluate(tabId: String, expression: String, timeoutMs: Int, reply: (String?) -> Unit) {
@@ -314,6 +323,8 @@ public class BrowserWebViewRenderer(
                 viewportHeight = if (view.height > 0) view.height.toDouble() else 768.0 * view.resources.displayMetrics.density.toDouble(),
                 scrollX = view.scrollX.toDouble(),
                 scrollY = view.scrollY.toDouble(),
+                canGoBack = view.canGoBack(),
+                canGoForward = view.canGoForward(),
             )
         }
         slot.state = fresh
@@ -378,13 +389,19 @@ public class BrowserWebViewRenderer(
         view.webViewClient = object : WebViewClient() {
             override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
                 super.onPageStarted(view, url, favicon)
+                if (view == null || slots[tabId]?.webView !== view) return
                 slots[tabId]?.loading = true
+                slots[tabId]?.mainFrameUrl = url
                 service.ingestLifecycle(hooks.lifecycleEventJson("loadStarted", tabId))
                 injectProbe(tabId)
             }
 
             override fun onPageCommitVisible(view: WebView?, info: String?) {
                 super.onPageCommitVisible(view, info)
+                if (view == null || slots[tabId]?.webView !== view) return
+                val committedUrl = info ?: return
+                val currentUrl = view.url ?: return
+                if (committedUrl.substringBefore('#') != currentUrl.substringBefore('#')) return
                 // The exact iOS didCommit role: document identity rotates so
                 // pre-navigation refs/evidence die with the old document.
                 service.ingestLifecycle(hooks.lifecycleEventJson("loadCommitted", tabId))
@@ -393,9 +410,15 @@ public class BrowserWebViewRenderer(
 
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
+                if (view == null || slots[tabId]?.webView !== view) return
+                // Android may deliver the old load's finish after another
+                // page has begun. It must not retire the current load.
+                val finishedPage = url ?: return
+                val currentPage = view.url ?: return
+                if (finishedPage.substringBefore('#') != currentPage.substringBefore('#')) return
                 slots[tabId]?.loading = false
                 injectProbe(tabId)
-                val finishedUrl = url ?: view?.url
+                val finishedUrl = url
                 val title = view?.title
                 service.ingestLifecycle(hooks.lifecycleFinishedJson(tabId, finishedUrl, title))
             }
@@ -406,7 +429,10 @@ public class BrowserWebViewRenderer(
                 error: WebResourceError?,
             ) {
                 super.onReceivedError(view, request, error)
+                if (view == null || slots[tabId]?.webView !== view) return
                 if (request?.isForMainFrame == true) {
+                    val currentRequest = slots[tabId]?.mainFrameUrl
+                    if (currentRequest != null && request.url.toString() != currentRequest) return
                     // A failed main-frame load ends that load for real; some
                     // WebView builds never follow it with onPageFinished.
                     slots[tabId]?.loading = false
@@ -429,7 +455,10 @@ public class BrowserWebViewRenderer(
                 errorResponse: WebResourceResponse?,
             ) {
                 super.onReceivedHttpError(view, request, errorResponse)
+                if (view == null || slots[tabId]?.webView !== view) return
                 if (request?.isForMainFrame == true) {
+                    val currentRequest = slots[tabId]?.mainFrameUrl
+                    if (currentRequest != null && request.url.toString() != currentRequest) return
                     service.ingestLifecycle(
                         hooks.lifecycleFailedJson(
                             tabId = tabId,
@@ -444,8 +473,21 @@ public class BrowserWebViewRenderer(
             override fun onReceivedSslError(view: WebView?, handler: SslErrorHandler?, error: SslError?) {
                 // No silent TLS grants: the original delegate policy stays.
                 handler?.cancel()
+                if (view == null || slots[tabId]?.webView !== view) return
+                // A failed image/iframe certificate is not proof that the
+                // main page failed. Preserve only the current main-frame
+                // failure; subresources are still refused by WebView.
+                val mainFrameUrl = slots[tabId]?.mainFrameUrl
+                val failedUrl = error?.url ?: return
+                if (mainFrameUrl == null || failedUrl != mainFrameUrl) return
                 // Cancelling ends the main-frame load with no finish callback.
                 slots[tabId]?.loading = false
+                service.ingestLifecycle(hooks.lifecycleFailedJson(
+                    tabId = tabId,
+                    domain = "ssl",
+                    code = error?.primaryError ?: -1,
+                    description = "TLS certificate validation failed",
+                ))
             }
 
             /** The navigation gate for EVERY frame and redirect hop. Runs on

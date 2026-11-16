@@ -370,16 +370,23 @@ private fun InstallContent(ui: AppUpdateUiState) {
         }
         is AppInstallState.WaitingForJobs -> {
             FloeText(
-                stringResource(R.string.app_update_waiting_jobs),
+                stringResource(if (install.monitoring) R.string.app_update_waiting_jobs else R.string.app_update_wait_expired),
                 style = Floe.typography.body,
                 color = Floe.colors.label,
             )
             if (ui.blockingKinds.isNotEmpty()) {
                 FloeText(
                     stringResource(
-                        R.string.app_update_waiting_jobs_kinds,
+                        if (install.monitoring) R.string.app_update_waiting_jobs_kinds else R.string.app_update_last_checked_kinds,
                         AppUpdateCopy.blockingKindLabels(ui.blockingKinds),
                     ),
+                    style = Floe.typography.metadata,
+                    color = Floe.colors.secondaryLabel,
+                )
+            }
+            if (install.runtimeBusy) {
+                FloeText(
+                    stringResource(R.string.app_update_runtime_busy),
                     style = Floe.typography.metadata,
                     color = Floe.colors.secondaryLabel,
                 )
@@ -556,6 +563,13 @@ private fun InstallActions(controller: AppUpdateController, ui: AppUpdateUiState
     when (val install = ui.install) {
         is AppInstallState.WaitingForJobs -> {
             FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (!install.monitoring) {
+                    FloeCapsuleAction(
+                        label = stringResource(R.string.app_update_recheck_work),
+                        onClick = { controller.installNow(force = false) },
+                        tint = Floe.colors.accent,
+                    )
+                }
                 FloeCapsuleAction(
                     label = stringResource(R.string.app_update_install_now),
                     onClick = { controller.installNow(force = true) },

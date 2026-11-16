@@ -107,6 +107,12 @@ class RuntimeKernel(context: Context) {
     fun hasOwnedWork(): Boolean = count.get() > 0 || operations?.hasOwnedWork() == true
     fun isExecuting(): Boolean = operations?.isExecuting() == true
 
+    /** This invocation failed a closed admission check; a previous invocation
+     * with the same request ID may still have been admitted. */
+    private fun requireAdmission(condition: Boolean, refusal: RuntimeAdmissionRefusal) {
+        if (!condition) throw RuntimeOperationRefused(refusal)
+    }
+
     fun exchange(request: RuntimeWire.Request, workspaceGrant: IBinder?, foregroundAllowed: () -> Boolean): JSONObject {
         val traceStart = request.operation == "shell.start" || request.operation == "stdio.start"
         if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_START_ENTER)
@@ -162,8 +168,7 @@ class RuntimeKernel(context: Context) {
                             snapshot.put("requestReleased", id !in ownedRequestIDs())
                         }
                     }
-                }
-                    ?: JSONObject().put("state", "unknown")
+                } ?: JSONObject().put("state", "unknown")
             }
         }
         operations?.snapshot(request)?.let { return it }
@@ -194,9 +199,10 @@ class RuntimeKernel(context: Context) {
         val cleanupLane = request.operation == RuntimeWire.CLEANUP
         if (request.operation == "shell.start" || request.operation == "stdio.start" ||
             request.operation == RuntimeWire.PREFLIGHT || request.operation == RuntimeWire.SYNC_INPUTS
-        ) check(workspaceGrant != null) { "Owned workspace grant is required" }
-        check(metadataOnly || cleanupLane || foregroundAllowed()) { "Foreground work ownership is required" }
-        check(!fence.isStopping) { "Runtime is stopping" }
+        ) requireAdmission(workspaceGrant != null, RuntimeAdmissionRefusal.WORKSPACE_GRANT_MISSING)
+        requireAdmission(metadataOnly || cleanupLane || foregroundAllowed(),
+            RuntimeAdmissionRefusal.FOREGROUND_REQUIRED)
+        requireAdmission(!fence.isStopping, RuntimeAdmissionRefusal.STOPPING)
         synchronized(receipts) {
             refreshEnvironmentTransactionFence()
             receipts[request.id]?.let { return JSONObject(it.toString()) }
@@ -206,7 +212,8 @@ class RuntimeKernel(context: Context) {
                 throw RuntimeOperationRefused(RuntimeAdmissionRefusal.ENVIRONMENT_TRANSACTION_BUSY)
             }
             if (transactional) {
-                check(request.payload.optString("leaseRole", "agent") == "agent") { "environmentTransactionRequiresOneShot" }
+                requireAdmission(request.payload.optString("leaseRole", "agent") == "agent",
+                    RuntimeAdmissionRefusal.ENVIRONMENT_TRANSACTION_REQUIRES_ONESHOT)
                 if (hasOwnedWork()) throw RuntimeOperationRefused(RuntimeAdmissionRefusal.ENVIRONMENT_TRANSACTION_REQUIRES_IDLE)
             }
             if (request.operation == RuntimeWire.STORAGE_CLEANUP && hasOwnedWork()) {
@@ -214,25 +221,25 @@ class RuntimeKernel(context: Context) {
                     JSONObject().put("status", "deferred").put("reason", "activeWork")
                         .put("reclaimedBytes", JSONObject.NULL))
             }
-            check(storageMaintenanceID.get() == null || metadataOnly || cleanupLane) {
-                "Storage maintenance is in progress"
-            }
+            requireAdmission(storageMaintenanceID.get() == null || metadataOnly || cleanupLane,
+                RuntimeAdmissionRefusal.STORAGE_MAINTENANCE)
             if (request.operation == "install.start" || request.operation == RuntimeWire.PREFLIGHT) {
                 // Install / first-use preflight stay EXCLUSIVE: they rewrite or
                 // mirror shared state and must never race a live workload.
                 if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_ADMISSION_CHECK)
-                check(!hasOwnedWork()) { "Runtime already owns work" }
+                requireAdmission(!hasOwnedWork(), RuntimeAdmissionRefusal.ALREADY_OWNS_WORK)
             } else if (request.operation == "shell.start" || request.operation == "stdio.start") {
                 // G07.3A: concurrent workloads are admitted by ROLE/CAPACITY in
                 // LinuxRuntimeOperations (2 interactive + ONE shared Agent/run +
                 // TWO managed services), but never while an install or
                 // first-use preflight owns the UID.
                 if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_ADMISSION_CHECK)
-                check(operations?.hasExclusiveWork() != true) { "Runtime is preparing an exclusive lane" }
+                requireAdmission(operations?.hasExclusiveWork() != true,
+                    RuntimeAdmissionRefusal.EXCLUSIVE_LANE)
             }
             while (receipts.size >= 64) {
                 val evict = receipts.entries.firstOrNull { it.value.optString("state") in setOf("completed", "failed") }
-                    ?: error("Runtime control is busy")
+                    ?: throw RuntimeOperationRefused(RuntimeAdmissionRefusal.CONTROL_BUSY)
                 receipts.remove(evict.key)
             }
             receipts[request.id] = JSONObject().put("requestID", request.id).put("state", "queued")
@@ -378,7 +385,7 @@ class RuntimeKernel(context: Context) {
             targetStoppedIDs.remove(request.id)
             count.decrementAndGet()
             synchronized(receipts) { receipts.remove(request.id) }
-            throw IllegalStateException("Runtime control queue full")
+            throw RuntimeOperationRefused(RuntimeAdmissionRefusal.CONTROL_QUEUE_FULL)
         }
         onChanged?.invoke(false)
         return JSONObject().put("requestID", request.id).put("state", "queued")

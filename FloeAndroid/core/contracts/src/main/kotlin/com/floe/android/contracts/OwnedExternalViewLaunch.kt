@@ -116,6 +116,24 @@ object OwnedExternalViewLaunch {
     /** The current record, for host diagnostics; null when none/cleared. */
     fun current(): Snapshot? = slot.get()?.snapshot
 
+    /** Revalidate an already matched event without extending its event window.
+     * A later launch, host retirement or explicit clear invalidates the fact. */
+    fun isStillCurrent(snapshot: Snapshot): Boolean {
+        val entry = slot.get() ?: return false
+        if (entry.snapshot !== snapshot) return false
+        if (!runCatching { entry.isCurrentHost() }.getOrDefault(false)) {
+            slot.compareAndSet(entry, null)
+            return false
+        }
+        return slot.get() === entry
+    }
+
+    /** Retire only this exact launch; a late callback must not clear a replacement. */
+    fun clearIfCurrent(snapshot: Snapshot): Boolean {
+        val entry = slot.get() ?: return false
+        return entry.snapshot === snapshot && slot.compareAndSet(entry, null)
+    }
+
     /** Clears the record. Returns what was cleared (for a closed log token). */
     fun clear(): Snapshot? = slot.getAndSet(null)?.snapshot
 

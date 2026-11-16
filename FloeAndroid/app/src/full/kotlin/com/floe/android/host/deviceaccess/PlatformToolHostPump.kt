@@ -54,6 +54,8 @@ internal sealed interface PlatformToolOutcome {
     data class Failure(
         val code: String,
         val detail: String? = null,
+        /** Read-only recovery, never a successful action receipt. */
+        val recoveryObservation: String? = null,
     ) : PlatformToolOutcome
 }
 
@@ -370,7 +372,7 @@ internal class PlatformToolHostPump(
                 }
             }
             is PlatformToolOutcome.Failure ->
-                completeFailure(claim, outcome.code, outcome.detail)
+                completeFailure(claim, outcome.code, outcome.detail, outcome.recoveryObservation)
         }
     }
 
@@ -431,8 +433,10 @@ internal class PlatformToolHostPump(
         )
     }
 
-    private fun completeFailure(claim: Long, code: String, detail: String? = null) {
-        val encoded = encodeFailure(code, detail)
+    private fun completeFailure(
+        claim: Long, code: String, detail: String? = null, recoveryObservation: String? = null,
+    ) {
+        val encoded = encodeFailure(code, detail, recoveryObservation)
         try {
             transport.complete(claim, 1, encoded)
         } catch (_: Throwable) {
@@ -533,11 +537,15 @@ internal class PlatformToolHostPump(
         return root.toString().toByteArray(Charsets.UTF_8)
     }
 
-    private fun encodeFailure(code: String, detail: String?): ByteArray {
+    private fun encodeFailure(code: String, detail: String?, recoveryObservation: String?): ByteArray {
         val root = JSONObject()
             .put("version", 1)
             .put("code", BoundedResultText.token(code))
         detail?.let { root.put("detail", BoundedResultText.detail(it)) }
+        recoveryObservation?.let {
+            root.put("recovery", JSONObject().put("kind", "device_observation")
+                .put("summary", BoundedResultText.summary(it)))
+        }
         return root.toString().toByteArray(Charsets.UTF_8)
     }
 }

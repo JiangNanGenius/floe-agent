@@ -29,6 +29,23 @@ internal data class PhoneControlRawNode(
     val focusable: Boolean = false,
     val focused: Boolean = false,
     val range: PhoneControlRangeInfo? = null,
+    /** True only when the live platform positively proved non-editable and non-password. */
+    val semanticEligible: Boolean = false,
+    /** Snapshot could not establish the input/password/action flags. */
+    val semanticFlagsUnavailable: Boolean = false,
+    /** Child count from the live node; -1 means a read failure, null means unavailable adapter metadata. */
+    val observedChildCount: Int? = null,
+    val privacyRedacted: Boolean = false,
+    /** Pre-guard HMAC of complete raw labels; never contains label text. */
+    val safeLabelHmac: String? = null,
+)
+
+/** Identity of an observed safe descendant label, relative to its actionable parent. */
+internal data class PhoneControlSemanticChild(
+    val path: List<Int>,
+    val className: String,
+    val viewId: String?,
+    val identity: PhoneControlSemanticIdentity,
 )
 
 /** Locator retained for a returned ref; resolved again against a fresh tree. */
@@ -51,6 +68,16 @@ internal data class PhoneControlNodeRecord(
     val actions: Set<PhoneControlNodeAction> = emptySet(),
     /** Real structural fact used to keep coordinate swipes inside a scroller. */
     val insideScrollable: Boolean = false,
+    /** RAM-only identity for the visible non-editable node's own label. */
+    val semanticIdentity: PhoneControlSemanticIdentity? = null,
+    /** Only unlabeled actionable containers need evidence from observed children. */
+    val needsChildIdentity: Boolean = false,
+    val semanticChildren: List<PhoneControlSemanticChild> = emptyList(),
+    val semanticFlagsUnavailable: Boolean = false,
+    val semanticChildrenIncomplete: Boolean = false,
+    val semanticOwnIncomplete: Boolean = false,
+    val semanticChildrenTextIncomplete: Boolean = false,
+    val safeLabelHmac: String? = null,
 )
 
 internal data class PhoneControlShaped(
@@ -97,6 +124,7 @@ internal object PhoneControlTreeShaper {
         val nodes = ArrayList<PhoneControlNode>(minOf(selected.size, req.maxNodes))
         val records = LinkedHashMap<String, PhoneControlNodeRecord>(minOf(selected.size, req.maxNodes))
         val refByPath = HashMap<List<Int>, String>()
+        val semanticTextIncompleteByPath = HashMap<List<Int>, Boolean>()
         var anySensitive = redactAllText
         var textTruncated = false
 
@@ -105,7 +133,7 @@ internal object PhoneControlTreeShaper {
             if (nodes.size >= req.maxNodes) break
             if (!req.includeInvisible && !rawNode.visible) continue
 
-            val redacted = redactAllText || rawNode.password ||
+            val redacted = redactAllText || rawNode.password || rawNode.privacyRedacted ||
                 PhoneControlText.isSensitiveViewId(rawNode.viewId)
             if (redacted) anySensitive = true
             val sensitiveField = rawNode.password || redacted
@@ -119,6 +147,8 @@ internal object PhoneControlTreeShaper {
             val fieldTruncated =
                 textBound.truncated || descriptionBound.truncated || hintBound.truncated
             if (budget.truncated) textTruncated = true
+            semanticTextIncompleteByPath[rawNode.path] =
+                textBound.truncated || descriptionBound.truncated
 
             val parentRef = rawNode.path.indices.reversed()
                 .asSequence()
@@ -163,6 +193,10 @@ internal object PhoneControlTreeShaper {
                 focused = rawNode.focused,
                 range = rawNode.range?.takeIf { it.valid },
             )
+            val childCapture = childLabels(
+                rawNode, selected, raw, redactAllText,
+                scanIncomplete = nodeLimited || depthLimited || timeLimited,
+            )
             records[ref] = PhoneControlNodeRecord(
                 ref = ref,
                 path = rawNode.path.toList(),
@@ -179,10 +213,43 @@ internal object PhoneControlTreeShaper {
                 enabled = rawNode.enabled,
                 actions = rawNode.actionSet(),
                 insideScrollable = rawNode.insideScrollable,
+                semanticFlagsUnavailable = rawNode.semanticFlagsUnavailable,
+                safeLabelHmac = rawNode.safeLabelHmac?.takeIf {
+                    !textBound.truncated && !descriptionBound.truncated &&
+                        rawNode.text == textBound.text && rawNode.contentDescription == descriptionBound.text &&
+                        (rawNode.text != null || rawNode.contentDescription != null)
+                },
+                semanticOwnIncomplete = !redacted && (textBound.truncated || descriptionBound.truncated),
+                needsChildIdentity = !redacted && rawNode.semanticEligible &&
+                    !rawNode.editable && !rawNode.password &&
+                    PhoneControlNodeAction.SET_TEXT !in rawNode.actions &&
+                    (rawNode.clickable || PhoneControlNodeAction.CLICK in rawNode.actions) &&
+                    rawNode.text.isNullOrBlank() && rawNode.contentDescription.isNullOrBlank(),
+                semanticChildren = childCapture.children,
+                semanticChildrenIncomplete = childCapture.incomplete,
+                semanticIdentity = PhoneControlSemanticIdentity.capture(
+                    visible = rawNode.visible,
+                    editable = rawNode.editable || !rawNode.semanticEligible ||
+                        PhoneControlNodeAction.SET_TEXT in rawNode.actionSet(),
+                    password = rawNode.password,
+                    redacted = redacted,
+                    text = { rawNode.text },
+                    description = { rawNode.contentDescription },
+                ),
             )
             refByPath[rawNode.path] = ref
         }
 
+        // Child labels are processed after their parent's record. Resolve
+        // their own presentation completeness after the full bounded pass.
+        for ((ref, record) in records.toMap()) {
+            val childTextIncomplete = record.semanticChildren.any { child ->
+                semanticTextIncompleteByPath[record.path + child.path] != false
+            }
+            if (childTextIncomplete) {
+                records[ref] = record.copy(semanticChildrenTextIncomplete = true)
+            }
+        }
         val textLimited = textTruncated || budget.truncated || fieldLimited
         val truncated = nodeLimited || depthLimited || timeLimited ||
             textLimited || omittedBySelection
@@ -199,6 +266,67 @@ internal object PhoneControlTreeShaper {
             selectionLimited = omittedBySelection,
             textLimited = textLimited,
         )
+    }
+
+    private data class ChildCapture(
+        val children: List<PhoneControlSemanticChild>,
+        val incomplete: Boolean,
+    )
+
+    /** Only safe, visible descendants returned in this observation can identify a parent. */
+    private fun childLabels(
+        parent: PhoneControlRawNode,
+        selected: List<PhoneControlRawNode>,
+        raw: List<PhoneControlRawNode>,
+        redactAllText: Boolean,
+        scanIncomplete: Boolean,
+    ): ChildCapture {
+        if (redactAllText || PhoneControlText.isSensitiveViewId(parent.viewId) ||
+            !parent.semanticEligible || parent.editable || parent.password ||
+            PhoneControlNodeAction.SET_TEXT in parent.actions ||
+            !(parent.clickable || PhoneControlNodeAction.CLICK in parent.actions)
+        ) return ChildCapture(emptyList(), false)
+        val byPath = selected.associateBy { it.path }
+        val subtree = raw.filter {
+            it.path.size >= parent.path.size && it.path.take(parent.path.size) == parent.path
+        }
+        val scannedPaths = subtree.mapTo(HashSet()) { it.path }
+        val subtreeIncomplete = subtree.any { part ->
+            val count = part.observedChildCount
+            when {
+                count == null -> scanIncomplete
+                count < 0 -> true
+                else -> (0 until count).any { (part.path + it) !in scannedPaths }
+            }
+        } || subtree.any { part ->
+            part.path != parent.path && part.visible && part.path !in byPath
+        }
+        val candidates = selected.asSequence().filter { child ->
+            child.path.size > parent.path.size && child.path.take(parent.path.size) == parent.path &&
+                child.visible && child.packageName == parent.packageName &&
+                (parent.path.size + 1..child.path.size).all { end ->
+                    val part = byPath[child.path.take(end)]
+                    part != null && part.visible && part.semanticEligible && !part.editable &&
+                        !part.password && PhoneControlNodeAction.SET_TEXT !in part.actions &&
+                        !PhoneControlText.isSensitiveViewId(part.viewId)
+                }
+        }.toList()
+        // Prefer labels; blank structural nodes are a fallback for icon-only
+        // controls. Never inspect text on an ineligible or protected node.
+        val labeled = candidates.filter { !it.text.isNullOrBlank() || !it.contentDescription.isNullOrBlank() }
+        val preferred = if (labeled.isNotEmpty()) labeled else candidates
+        val children = preferred.take(8).mapNotNull { child ->
+            PhoneControlSemanticIdentity.capture(
+                visible = true, editable = false, password = false, redacted = false,
+                text = { child.text }, description = { child.contentDescription },
+            )?.let { PhoneControlSemanticChild(
+                child.path.drop(parent.path.size), child.className, child.viewId, it,
+            ) }
+        }
+        // Even when all current labels fit, omitted blank nodes could later
+        // acquire a label at the same location, so a partial subtree is not
+        // sufficient proof for dispatch.
+        return ChildCapture(children, subtreeIncomplete || candidates.size > 8)
     }
 
     /** Defensive copy: callers never share a mutable action set with a node. */

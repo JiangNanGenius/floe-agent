@@ -1255,6 +1255,8 @@ internal class BrowserHostController(private val host: RuntimeHost) {
         append(",\"viewportHeight\":").append(state.viewportHeight)
         append(",\"scrollX\":").append(state.scrollX)
         append(",\"scrollY\":").append(state.scrollY)
+        append(",\"canGoBack\":").append(state.canGoBack)
+        append(",\"canGoForward\":").append(state.canGoForward)
         append('}')
     }
 

@@ -47,6 +47,82 @@ import FloePersistence
 import FloeAgentRuntime
 import FloeBrowser
 
+/// Kotlin posts WebView lifecycle callbacks on the main looper, but creating
+/// an independent Swift Task for each callback does not preserve their order
+/// at the center actor. Serialize each tab's ingress without blocking that
+/// looper; other tabs continue independently. Limits fail closed under load.
+final class G04BrowserLifecycleFIFO: @unchecked Sendable {
+    private struct Key: Hashable { let epoch: UInt64; let tabID: UUID }
+    private struct Lane { var tail: Task<Void, Never>; var count: Int }
+    private let lock = NSLock()
+    private var lanes: [Key: Lane] = [:]
+    private var gapPending: Set<Key> = []
+    private let maximumLanes: Int
+    private let maximumPendingPerLane: Int
+
+    init(maximumLanes: Int = 256, maximumPendingPerLane: Int = 256) {
+        self.maximumLanes = max(1, maximumLanes)
+        self.maximumPendingPerLane = max(1, maximumPendingPerLane)
+    }
+
+    func enqueue(epoch: UInt64, tabID: UUID, onOverflow: @escaping @Sendable () async -> Void = {}, _ operation: @escaping @Sendable () async -> Void) -> Bool {
+        lock.lock()
+        let key = Key(epoch: epoch, tabID: tabID)
+        let lane = lanes[key]
+        if gapPending.contains(key) {
+            lock.unlock()
+            return false
+        }
+        if (lane == nil && lanes.count >= maximumLanes) ||
+           ((lane?.count ?? 0) >= maximumPendingPerLane && gapPending.count >= maximumLanes) {
+            // No per-tab slot can be allocated safely. One epoch-wide fence
+            // remains until a new root epoch, with constant memory and no task.
+            BrowserLifecycleHealth.shared.markEpochSaturated(epoch)
+            lock.unlock()
+            return false
+        }
+        guard (lane?.count ?? 0) < maximumPendingPerLane else {
+            // Fence synchronously before returning to Kotlin. Deliver one
+            // gap after all prior accepted callbacks for this exact tab.
+            gapPending.insert(key)
+            BrowserLifecycleHealth.shared.markGap(epoch: epoch, tabID: tabID)
+            let previous = lane?.tail
+            Task { [self] in
+                await previous?.value
+                await onOverflow()
+                finishGap(key)
+            }
+            lock.unlock()
+            return false
+        }
+        let previous = lane?.tail
+        let task = Task { [self] in
+            await previous?.value
+            await operation()
+            finish(key)
+        }
+        lanes[key] = Lane(tail: task, count: (lane?.count ?? 0) + 1)
+        lock.unlock()
+        return true
+    }
+
+    private func finishGap(_ key: Key) {
+        lock.lock(); defer { lock.unlock() }
+        gapPending.remove(key)
+        BrowserLifecycleHealth.shared.clearGap(epoch: key.epoch, tabID: key.tabID)
+    }
+
+    private func finish(_ key: Key) {
+        lock.lock(); defer { lock.unlock() }
+        guard var lane = lanes[key] else { return }
+        lane.count -= 1
+        if lane.count == 0 { lanes.removeValue(forKey: key) }
+        else { lanes[key] = lane }
+    }
+}
+
+private let g04BrowserLifecycleFIFO = G04BrowserLifecycleFIFO()
+
 // MARK: - Buffer helpers
 
 private func g04BrowserWrite(_ data: Data, into buffer: UnsafeMutablePointer<CChar>?,
@@ -227,8 +303,22 @@ public func floeBrowserIngestEvent(_ json: UnsafePointer<CChar>?) -> Int32 {
           let event = try? JSONDecoder().decode(BrowserRendererLifecycleEvent.self, from: data)
     else { return -603 }
     let center = services.center
-    Task { await center.ingress(event) }
-    return 0
+    let tabID: UUID
+    switch event {
+    case .loadStarted(let id), .loadCommitted(let id),
+         .loadFinished(let id, _, _), .loadFailed(let id, _, _, _):
+        tabID = id
+    }
+    let accepted = g04BrowserLifecycleFIFO.enqueue(epoch: services.epoch, tabID: tabID, onOverflow: {
+        guard G04BrowserHostRegistry.shared.services(epoch: services.epoch)?.center === center else { return }
+        await center.ingress(.loadFailed(tabID: tabID, errorDomain: "FloeLifecycle", errorCode: -699,
+                                         errorDescription: "Browser events were missed. Reload or navigate to the address again."))
+    }) {
+        // An event queued by a retired epoch cannot reach a replacement root.
+        guard G04BrowserHostRegistry.shared.services(epoch: services.epoch)?.center === center else { return }
+        await center.ingress(event)
+    }
+    return accepted ? 0 : -699
 }
 
 /// Synchronous, bounded navigation policy decision for

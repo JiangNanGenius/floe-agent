@@ -18,6 +18,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -49,8 +50,14 @@ internal sealed interface AppInstallState {
      */
     data object Preparing : AppInstallState
 
-    /** Downloaded and verified; owned work is still running (never force-stopped). */
-    data class WaitingForJobs(val blockingKinds: Set<OperationKind>) : AppInstallState
+    /** The last actual check; monitoring becomes false when the bounded wait ends. */
+    data class WaitingForJobs(
+        val blockingKinds: Set<OperationKind>,
+        val runtimeBusy: Boolean = false,
+        val monitoring: Boolean = true,
+        /** This request's explicit choice, never inherited by a later request. */
+        val forceRequested: Boolean = false,
+    ) : AppInstallState
 
     /**
      * The OS must grant "install unknown apps" for this package first.
@@ -314,6 +321,7 @@ internal class AppUpdateInstaller(
     private val mutable = MutableStateFlow<AppInstallState>(AppInstallState.Idle)
     val state = mutable.asStateFlow()
     private val waitingJob = AtomicReference<Job?>(null)
+    private val waitingLock = Any()
 
     /** One admission at a time; the UI never owns the blocking work. */
     private val admissionHeld = AtomicBoolean(false)
@@ -446,7 +454,7 @@ internal class AppUpdateInstaller(
      *   gate only. Identity, signer, checksum and permission checks always
      *   run.
      */
-    fun requestInstall(versionName: String, apk: File, sha256: String, force: Boolean) {
+    fun requestInstall(versionName: String, apk: File, sha256: String, force: Boolean): Unit = synchronized(waitingLock) {
         when (mutable.value) {
             is AppInstallState.Preparing,
             is AppInstallState.Committing,
@@ -485,6 +493,7 @@ internal class AppUpdateInstaller(
                 admissionHeld.set(false)
             }
         }
+        Unit
     }
 
     /**
@@ -506,8 +515,8 @@ internal class AppUpdateInstaller(
         if (!force) {
             val kinds = heldOperationKinds()
             if (kinds.isNotEmpty()) {
-                mutable.value = AppInstallState.WaitingForJobs(kinds)
-                startWaiting(request)
+                mutable.value = AppInstallState.WaitingForJobs(kinds, forceRequested = force)
+                startWaiting(request, force)
                 return
             }
         }
@@ -523,7 +532,7 @@ internal class AppUpdateInstaller(
             mutable.value = AppInstallState.Failed(InstallFailure.STORAGE, "install-space")
             return
         }
-        commit(request)
+        commit(request, force)
     }
 
     private fun permissionState(
@@ -562,12 +571,9 @@ internal class AppUpdateInstaller(
                 // quiescence state are re-proved after the settings round trip.
                 requestInstall(pending.versionName, pending.apk, pending.sha256, force = false)
             }
-            is AppInstallState.WaitingForJobs -> {
-                if (heldOperationKinds().isEmpty()) {
-                    val pending = permissionPending ?: return
-                    requestInstall(pending.versionName, pending.apk, pending.sha256, force = false)
-                }
-            }
+            // The exact waiting job owns rechecks; a foreground callback
+            // must not race it or reuse an older request's force choice.
+            is AppInstallState.WaitingForJobs -> Unit
             is AppInstallState.AwaitingSystem -> refreshSession(current.sessionID)
             else -> Unit
         }
@@ -583,7 +589,7 @@ internal class AppUpdateInstaller(
         mutable.value = permissionState(deniedOnce = true, settingsUnavailable = true)
     }
 
-    fun cancelWaiting() {
+    fun cancelWaiting() = synchronized(waitingLock) {
         waitingJob.getAndSet(null)?.cancel()
         if (mutable.value is AppInstallState.WaitingForJobs) {
             mutable.value = AppInstallState.Idle
@@ -624,41 +630,69 @@ internal class AppUpdateInstaller(
     /**
      * Bounded quiescence wait on an owned coroutine. When it drains, a NEW
      * admission revalidates everything before commit (see [admit]). Reaching
-     * the deadline does not commit and does not spin: the explicit "install
-     * now" action remains the only way past a still-busy device.
+     * the deadline does not commit and does not spin: the user can check
+     * again or explicitly choose to install despite held app work.
      */
-    private fun startWaiting(request: PendingInstallRequest) {
+    private fun startWaiting(request: PendingInstallRequest, force: Boolean): Unit = synchronized(waitingLock) {
         if (waitingJob.get() != null) return
-        val job = scope.launch(Dispatchers.IO) {
+        val job = scope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
+            val self = checkNotNull(kotlinx.coroutines.currentCoroutineContext()[Job])
+            fun currentWaiting(): AppInstallState.WaitingForJobs? = synchronized(waitingLock) {
+                if (!self.isActive || waitingJob.get() !== self) return@synchronized null
+                (mutable.value as? AppInstallState.WaitingForJobs)?.takeIf { it.monitoring }
+            }
             try {
                 val deadline = System.currentTimeMillis() + UpdateConfig.QUIESCENCE_WAIT_MS
                 while (isActive && System.currentTimeMillis() < deadline) {
                     delay(2_000L)
-                    if (mutable.value !is AppInstallState.WaitingForJobs) return@launch
+                    if (currentWaiting() == null) return@launch
                     val kinds = heldOperationKinds()
-                    if (kinds.isEmpty() && runtimeUpdates.isIdle()) {
-                        waitingJob.set(null)
-                        requestInstall(request.versionName, request.apk, request.sha256, force = false)
-                        return@launch
+                    if (currentWaiting() == null) return@launch
+                    val mayProceed = force || kinds.isEmpty()
+                    val runtimeBusy = mayProceed && !runtimeUpdates.isIdle()
+                    if (currentWaiting() == null) return@launch
+                    if (mayProceed && !runtimeBusy) {
+                        synchronized(waitingLock) {
+                            if (currentWaiting() != null && !admissionHeld.get() &&
+                                waitingJob.compareAndSet(self, null)) {
+                                requestInstall(request.versionName, request.apk, request.sha256, force = force)
+                                return@launch
+                            }
+                        }
+                        // The current admission is still completing; retry on
+                        // the next tick without dropping this watcher.
+                        continue
                     }
-                    mutable.value = AppInstallState.WaitingForJobs(kinds)
+                    synchronized(waitingLock) {
+                        val current = currentWaiting() ?: return@launch
+                        mutable.compareAndSet(current, AppInstallState.WaitingForJobs(
+                            kinds, runtimeBusy = runtimeBusy, forceRequested = force))
+                    }
                 }
-                // Deadline reached with work still owned: stay in the explicit
-                // waiting state (no commit, no infinite loop, no false success).
-                if (mutable.value is AppInstallState.WaitingForJobs) {
-                    mutable.value = AppInstallState.WaitingForJobs(heldOperationKinds())
+                // A stopped or superseded watcher cannot update its successor.
+                synchronized(waitingLock) {
+                    val current = currentWaiting() ?: return@launch
+                    mutable.compareAndSet(current, current.copy(monitoring = false))
                 }
             } catch (cancellation: CancellationException) {
                 throw cancellation
             } catch (_: Exception) {
-                mutable.value = AppInstallState.Failed(InstallFailure.SYSTEM, "runtime-idle-unconfirmed")
+                synchronized(waitingLock) {
+                    val current = currentWaiting() ?: return@launch
+                    mutable.compareAndSet(current, AppInstallState.Failed(InstallFailure.SYSTEM, "runtime-idle-unconfirmed"))
+                }
             } finally {
-                val self = kotlinx.coroutines.currentCoroutineContext()[Job]
-                if (waitingJob.get() === self) waitingJob.set(null)
+                synchronized(waitingLock) {
+                    waitingJob.compareAndSet(self, null)
+                }
             }
         }
         waitingJob.set(job)
-        job.invokeOnCompletion { if (waitingJob.get() === job) waitingJob.set(null) }
+        job.invokeOnCompletion {
+            synchronized(waitingLock) { waitingJob.compareAndSet(job, null) }
+        }
+        job.start()
+        Unit
     }
 
     /**
@@ -667,17 +701,17 @@ internal class AppUpdateInstaller(
      * a mismatch abandons the session BEFORE commit. Only the final
      * [PackageInstaller.Session.commit] hands ownership to the system.
      */
-    private fun commit(request: PendingInstallRequest) {
+    private fun commit(request: PendingInstallRequest, force: Boolean) {
         synchronized(com.floe.android.host.optionalsplit.PackageInstallAdmission.lock) {
             if (com.floe.android.host.optionalsplit.PackageInstallAdmission.optionalSessions(context).isNotEmpty()) {
                 mutable.value = AppInstallState.Failed(InstallFailure.SYSTEM, "component-install-pending")
                 return
             }
-            commitAdmitted(request)
+            commitAdmitted(request, force)
         }
     }
 
-    private fun commitAdmitted(request: PendingInstallRequest) {
+    private fun commitAdmitted(request: PendingInstallRequest, force: Boolean) {
         val apk = request.apk
         val candidate = reader.read(apk)
         if (candidate == null || reader.rejectionFor(apk) != null) {
@@ -693,8 +727,8 @@ internal class AppUpdateInstaller(
             // Replacing the companion terminates its process. A visible force
             // choice cannot turn unknown/busy runtime work into idle work.
             if (runtimeInstalled && !runtimeUpdates.isIdle()) {
-                mutable.value = AppInstallState.WaitingForJobs(heldOperationKinds() + OperationKind.LOCAL_EXECUTION)
-                startWaiting(request)
+                mutable.value = AppInstallState.WaitingForJobs(heldOperationKinds(), runtimeBusy = true, forceRequested = force)
+                startWaiting(request, force)
                 return
             }
             runtime = runtimeUpdates.prepare(apk, candidate)

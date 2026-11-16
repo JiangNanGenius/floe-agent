@@ -110,7 +110,7 @@ public struct LocalShellTool: AgentTool {
       "cwd":{"type":"string","description":"Workspace-relative working directory (default: session cwd or workspace root)"},
       "env":{"type":"object","additionalProperties":{"type":"string"},"description":"Extra environment variables for this run only"},
       "stdin":{"type":"string","description":"Optional stdin content (max 256 KiB)"},
-      "timeout":{"type":"number","description":"Wall-clock timeout seconds (foreground default 10, max 120; jobs.submit background default/max 600). An explicit smaller timeout is honored."},
+      "timeout":{"type":"number","description":"Process execution timeout in seconds, starting when the process is accepted. Environment preparation and result settlement have separate limits (foreground default 10, max 120; jobs.submit background default/max 600). An explicit smaller timeout is honored."},
       "maxOutputBytes":{"type":"integer","description":"Combined output cap (default 65536, max 262144)"},
       "environmentTransaction":{"type":"boolean","description":"Opt-in local guest filesystem transaction for package changes. Requires idle sessions and recovery space. Failure/cancellation restores guest files after real process settlement; workspace/external/SSH effects are excluded. Not available for managed services."}},
      "additionalProperties":false}
@@ -214,7 +214,7 @@ public struct LocalShellTool: AgentTool {
             if stderrTruncated { text += " stderrTruncated" }
             text += "\n--- output (merged PTY) ---\n\(cleanOut)"
             if !cleanErr.isEmpty { text += "\n--- stderr (backend metadata) ---\n\(cleanErr)" }
-            return Self.output(text, exitStatus: code)
+            return Self.output(text, exitStatus: code, captureTruncated: truncated || stderrTruncated)
         case .timedOut(let partialStdout, let partialStderr, let durationMs):
             var text = "exit=124 durationMs=\(durationMs) cwd=\(cwd) status=timedOut effectiveTimeoutSeconds=\(effectiveTimeout)"
             text += isBackground
@@ -224,7 +224,9 @@ public struct LocalShellTool: AgentTool {
             if !cleanOut.isEmpty { text += "\n--- output (merged PTY) ---\n\(cleanOut)" }
             let cleanErr = SecretRedactor.redact(ShellOutputSanitizer.sanitize(partialStderr))
             if !cleanErr.isEmpty { text += "\n--- stderr (backend metadata) ---\n\(cleanErr)" }
-            return Self.output(text, exitStatus: 124)
+            // A timed-out command only returns its partial output; the
+            // outcome does not carry a separate capture-limit flag.
+            return Self.output(text, exitStatus: 124, captureTruncated: true)
         case .cancelled:
             return Self.output("exit=130 status=cancelled cwd=\(cwd)", exitStatus: 130)
         case .notStarted(let reason):
@@ -237,7 +239,10 @@ public struct LocalShellTool: AgentTool {
         }
     }
 
-    private static func output(_ text: String, exitStatus: Int32) -> ToolExecutionOutput {
-        ToolExecutionOutput(digesting: text, exitStatus: exitStatus)
+    private static func output(_ text: String, exitStatus: Int32,
+                               captureTruncated: Bool = false) -> ToolExecutionOutput {
+        var output = ToolExecutionOutput(digesting: text, exitStatus: exitStatus)
+        output.capturedOutputTruncated = output.capturedOutputTruncated || captureTruncated
+        return output
     }
 }

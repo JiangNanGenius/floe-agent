@@ -312,6 +312,44 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
             JSONObject(proof.toString())
         }
 
+        /** The POSITIVE pre-admission terminal: the runtime refused this exact
+         *  start before any command could be admitted. Unlike [finish] this
+         *  records no workspace/terminal fields (none were ever observed),
+         *  closes only what THIS claim really holds, and keeps the proof
+         *  minimal so it can never be mistaken for a released lease. */
+        suspend fun finishNotStarted(reason: String?) = settlementLock.withLock {
+            settledProof?.let { return@withLock JSONObject(it) }
+            workspaceGrant?.close()
+            workspaceGrant = null
+            channel.close()
+            if (this::lease.isInitialized) lease.close()
+            work.remove(controlID, this)
+            val proof = notStartedProof(reason)
+            synchronized(terminals) {
+                terminals[controlID] = TerminalReceipt(nativeEpoch, runID, toolCallID, null, proof.toString())
+                while (terminals.size > 128) terminals.remove(terminals.keys.first())
+            }
+            settledProof = proof.toString()
+            JSONObject(proof.toString())
+        }
+
+        /** Proof-only variant for a failure that happened BEFORE this claim
+         *  registered its lease/grant (nothing is left to close). */
+        fun publishUnstartedProof(reason: String?) {
+            val proof = notStartedProof(reason)
+            synchronized(terminals) {
+                terminals[controlID] = TerminalReceipt(nativeEpoch, runID, toolCallID, null, proof.toString())
+                while (terminals.size > 128) terminals.remove(terminals.keys.first())
+            }
+        }
+
+        private fun notStartedProof(reason: String?): JSONObject =
+            JSONObject().put("state", "not_started").put("requestID", controlID)
+                .put("epoch", nativeEpoch).also { proof ->
+                    reason?.takeIf { REFUSAL_TOKEN.matches(it) }
+                        ?.let { token -> proof.put("reason", token) }
+                }
+
     }
 
     /** Polls the runtime's REAL shared-export status, then closes the
@@ -971,6 +1009,8 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
         val owned = OwnedSession(UUID.randomUUID().toString(), acceptedEpoch, runID, callID, stdio)
         var possiblyAdmitted = false
         var handedToWatcher = false
+        var publishedPreAdmission = false
+        var refusalCode: String? = null
         try {
             // Ownership is registered BEFORE any IPC may start a process.
             RuntimeExecutionTrace.mark(Stage.PUMP_REGISTER)
@@ -1047,32 +1087,42 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
             scope.launch(Dispatchers.IO) { watch(owned) }
         } catch (failure: Exception) {
             RuntimeExecutionTrace.mark(if (failure is AdmissionRefused) Stage.PUMP_ADMISSION_REFUSED else Stage.PUMP_START_EXCEPTION)
-            if (failure is AdmissionRefused) possiblyAdmitted = false
+            // A refusal after dispatch is ambiguous, including a named typed
+            // refusal: IDs can be reused and existing receipts can be evicted.
+            // Only a failure before dispatch can prove this claim not started.
+            val admission = failure as? AdmissionRefused
+            refusalCode = admission?.code?.takeIf { it in ADMISSION_REFUSAL_CODES } ?: "runtime_not_started"
+            if (admission != null && !admissionFailureIsPreAdmission(admission)) {
+                possiblyAdmitted = true
+            }
             // Diagnostic only: a start that provably crossed no wire to a live
             // workload ends here with the phases it actually reached. A
             // possibly-admitted start keeps ownership and is published by its
             // real terminal observer instead (never a fabricated terminal).
-            if (!possiblyAdmitted) owned.latency.publish(LinuxTerminalLatency.TERMINAL_FAILED)
             if (!possiblyAdmitted) {
-                if (work.containsKey(owned.controlID)) owned.finish(JSONObject().put("state", "quiescent"))
-                // A refused admission already crossed the wire and names its
-                // own bounded code. The historical environment-transaction
-                // names stay byte-identical; other reviewed admission names
-                // (runtime_not_ready/runtime_not_started/...) are preserved so
-                // the next device case can tell a stopping/idle/refusing
-                // engine from a transport failure instead of one opaque
-                // runtime_unavailable. Anything else keeps the old default.
-                val code = (failure as? AdmissionRefused)?.code?.takeIf {
-                    it in ADMISSION_REFUSAL_CODES
-                } ?: "runtime_not_started"
-                complete(claim, 1, JSONObject().put("code", code))
+                owned.latency.publish(LinuxTerminalLatency.TERMINAL_FAILED)
+                // Publish the POSITIVE not-started proof BEFORE completing the
+                // claim, so a host settlement query can never race it.
+                if (work.containsKey(owned.controlID)) {
+                    owned.finishNotStarted(refusalCode)
+                } else {
+                    owned.publishUnstartedProof(refusalCode)
+                }
+                publishedPreAdmission = true
+                complete(claim, 1, JSONObject().put("code", refusalCode ?: "runtime_not_started"))
             }
         } finally {
-            if (!handedToWatcher && work.containsKey(owned.controlID)) {
+            if (!handedToWatcher && !publishedPreAdmission) {
                 if (possiblyAdmitted) {
                     owned.stop.set(true)
                     scope.launch(Dispatchers.IO) { watch(owned, failedStartClaim = claim) }
-                } else owned.finish(JSONObject().put("state", "quiescent"))
+                } else if (work.containsKey(owned.controlID)) {
+                    // Defensive: a pre-admission failure outside the catch path
+                    // still gets the same positive proof, never quiescence.
+                    owned.finishNotStarted(refusalCode)
+                } else {
+                    owned.publishUnstartedProof(refusalCode)
+                }
             }
         }
     }
@@ -1147,17 +1197,16 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
                             else -> Stage.PUMP_WATCH_UNKNOWN
                         }
                         if (emittedStages.add(stage)) RuntimeExecutionTrace.mark(stage)
-                        if (failedStartClaim != null &&
-                            isReleasedFailedStartReceipt(receipt.toString(), owned.controlID)) {
-                            // This exact request has no pending admission,
-                            // retained lease or export. Siblings may remain
-                            // active: their global quiescence is irrelevant to
-                            // this never-started claim. finish still drains and
-                            // closes THIS Core grant before its failure reply.
+                        val failedReceiptState = if (failedStartClaim != null)
+                            releasedFailedStartSettlement(receipt.toString(), owned.controlID) else null
+                        if (failedStartClaim != null && failedReceiptState != null) {
+                            // This exact failed request has released its owned
+                            // resources. That does not prove it never ran or
+                            // had side effects; record drained/quiescent rather
+                            // than the stronger not-started assertion.
                             owned.latency.mark(LinuxTerminalLatency.Phase.SETTLE)
                             owned.latency.publish(LinuxTerminalLatency.TERMINAL_FAILED)
-                            owned.finish(JSONObject().put("state", "not_started")
-                                .put("requestID", owned.controlID))
+                            owned.finish(JSONObject().put("state", failedReceiptState))
                             complete(failedStartClaim, 1, failedStartProof(owned, "runtime_start_failed"))
                             RuntimeExecutionTrace.mark(Stage.PUMP_FINISHED)
                             return@withContext
@@ -2030,12 +2079,27 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
          *  refusal: a single transient answer is never treated as final. */
         internal const val POLL_REFUSAL_LATCH_AFTER = 3
 
-        /** Reviewed admission-refusal names preserved verbatim on a refused
-         *  start (the historical environment-transaction pair included). */
+        /** Refusal codes carry diagnostic detail, not proof of non-admission. */
         internal val ADMISSION_REFUSAL_CODES = setOf(
-            "environment_transaction_busy", "environment_transaction_requires_idle",
-            "runtime_not_ready", "runtime_not_started", "invalid_request",
+            "environment_transaction_busy",
+            "environment_transaction_requires_idle",
+            "environment_transaction_requires_oneshot",
+            "runtime_foreground_inactive",
+            "runtime_foreground_required",
+            "runtime_workspace_grant_missing",
+            "runtime_stopping",
+            "runtime_storage_maintenance",
+            "runtime_already_owns_work",
+            "runtime_exclusive_lane",
+            "runtime_control_busy",
+            "runtime_control_queue_full",
+            "invalid_request",
+            "runtime_not_ready", "runtime_not_started",
         )
+
+        /** Wire refusal codes, including typed codes from a newer helper, do
+         * not bind the attempted admission to a fresh request ID. */
+        internal fun admissionFailureIsPreAdmission(@Suppress("UNUSED_PARAMETER") failure: Exception): Boolean = false
 
         internal val REFUSAL_TOKEN = Regex("^[a-z][a-z0-9_]{0,47}$")
 
@@ -2332,6 +2396,11 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
                 value.stringValue("requestID") == controlID &&
                 (value["requestReleased"] as? JsonPrimitive)?.let { !it.isString && it.content == "true" } == true
         }
+
+        /** A drained failed request proves only that its own resources have
+         * released, not that no command or side effect ever occurred. */
+        internal fun releasedFailedStartSettlement(receiptJson: String, controlID: String): String? =
+            if (isReleasedFailedStartReceipt(receiptJson, controlID)) "quiescent" else null
 
         /** Strict closed-grammar capture of the kernel failed terminal for
          *  exactly [controlID]. Returns null for ANY violation (wrong state,

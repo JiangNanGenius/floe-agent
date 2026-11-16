@@ -1652,6 +1652,11 @@ internal class SystemOperations(
 
     fun uiStatus(): com.floe.android.rootsystem.UiBackendStatus = uiOperations.status()
 
+    fun uiGuardSession(): String = uiOperations.guardSession
+
+    fun syncUiSensitiveGuard(snapshot: com.floe.android.contracts.SensitiveUiGuardSnapshot, session: String?) =
+        uiOperations.syncSensitiveGuard(snapshot, session)
+
     fun uiObserve(
         claim: com.floe.android.rootsystem.OperationClaim,
         targets: Set<String>,

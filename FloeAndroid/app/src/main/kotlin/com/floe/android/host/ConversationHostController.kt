@@ -61,6 +61,7 @@ import com.floe.android.host.jobs.BackgroundJobsHostController
 import com.floe.android.host.notification.RunTerminalNoticeKind
 import com.floe.android.host.notification.RunTerminalNoticePolicy
 import com.floe.android.host.notification.TaskResultNotifications
+import com.floe.android.host.questions.UserQuestionAttentionSignal
 import com.floe.android.host.questions.UserQuestionHostController
 import com.floe.android.host.voice.C03DictationSink
 import com.floe.android.host.voice.C03StartOutcome
@@ -183,10 +184,10 @@ class ConversationHostController internal constructor(
                 if (!ownCurrentEntry(entry, session.conversationId, session.sessionEpoch)) return
                 rememberUserQuestionSnapshot(session, snapshot)
                 entry.holder.applyUserQuestionSnapshot(session, snapshot)
-                host.appContextOrNull?.let { context ->
-                    com.floe.android.host.questions.UserQuestionNotifications.onSnapshot(
-                        context = context, session = session, snapshot = snapshot)
-                }
+                // The durable App-owned signal shares the SAME private
+                // reminder path but survives holder release/navigation and
+                // the bounded discovery window.
+                questionAttention.present(session, snapshot)
             }
 
             override fun publishReceipt(
@@ -197,10 +198,11 @@ class ConversationHostController internal constructor(
                 if (!ownCurrentEntry(entry, session.conversationId, session.sessionEpoch)) return
                 entry.holder.applyUserQuestionReceipt(receipt)
                 if (receipt.settled) {
-                    host.appContextOrNull?.let { context ->
-                        com.floe.android.host.questions.UserQuestionNotifications.cancel(
-                            context, session.conversationId)
-                    }
+                    questionAttention.settled(
+                        session = session,
+                        requestId = receipt.requestId,
+                        questionId = receipt.questionId,
+                    )
                 }
             }
 
@@ -428,6 +430,36 @@ class ConversationHostController internal constructor(
     }
 
     private val holders = ConcurrentHashMap<String, ConversationFlowHolderEntry>()
+
+    /**
+     * Application-scoped durable question attention. It re-reads the
+     * authoritative `question.pending` command on the coordinator's real
+     * registration/settlement event, so a background question is signaled
+     * without a transient holder or a short discovery window. It never
+     * answers or cancels a question, never fakes screen-control authority and
+     * persists only conversation/request/run/question identifiers.
+     */
+    internal val questionAttention: UserQuestionAttentionSignal = UserQuestionAttentionSignal(
+        host = host,
+        questions = userQuestions,
+        currentSession = { conversationId ->
+            val matching = holders.entries.firstOrNull { it.key.equals(conversationId, ignoreCase = true) }
+            val entry = matching?.value
+            val holderKey = matching?.key
+            if (entry == null || holderKey == null ||
+                !ownCurrentEntry(entry, holderKey, entry.holder.session.sessionEpoch)
+            ) {
+                null
+            } else {
+                entry.holder.session
+            }
+        },
+    )
+
+    init {
+        questionAttention.start()
+    }
+
     private val sessionEpochs = AtomicLong(0)
     private val launchCorrelations = ConcurrentHashMap<String, LaunchCorrelation>()
     private val launchOutcomeListeners =
@@ -1161,13 +1193,11 @@ class ConversationHostController internal constructor(
         }
         // Question/search facts are RAM-only per holder; drop them with the
         // holder instead of retaining question text after task navigation.
+        // A durable pending question remains signaled: navigation is NOT
+        // settlement, so the app-owned attention signal keeps its exact
+        // reminder until the authoritative read/settlement removes it.
         userQuestions.forget(conversationId)
-        runCatching {
-            host.appContextOrNull?.let { context ->
-                com.floe.android.host.questions.UserQuestionNotifications.cancel(
-                    context, conversationId)
-            }
-        }
+        questionAttention.onSurfaceReleased(conversationId)
     }
 
     private fun retireHolderResources(
@@ -3300,6 +3330,10 @@ class ConversationHostController internal constructor(
             // still-pending question owned by THIS run instead of leaving an
             // actionable card that would silently settle nothing.
             userQuestions.terminalFence(entry.holder.session, runID)
+            // The terminal run can no longer consume an answer. Withdraw a
+            // durable reminder owned by THIS run even when no holder
+            // snapshot/window ever saw the question.
+            questionAttention.runTerminal(conversationId, runID)
             // Durable close boundary: stop THIS run's pump and re-read the
             // committed user/assistant rows plus the authoritative snapshot.
             // A terminal for a run that is no longer selected updates that
@@ -3365,6 +3399,9 @@ class ConversationHostController internal constructor(
         phonePreparation: Boolean = false,
         restart: Boolean = false,
     ) {
+        // The durable attention signal watches this exact conversation even
+        // if this holder/window ends before the question is registered.
+        questionAttention.arm(conversationId)
         val key = "$conversationId/$sessionEpoch/$runID/$callID"
         if (restart) questionDiscoveryJobs.remove(key)?.cancel()
         if (questionDiscoveryJobs[key]?.isActive == true) return
@@ -7413,6 +7450,9 @@ class ConversationHostController internal constructor(
                                  }
                              }
                              releaseHolder(conversationId)
+                             // The durable task's question rows cascade with
+                             // the deletion; no reminder or watch may survive it.
+                             questionAttention.onConversationDeleted(conversationId)
                          }
                          // A fresh single-row success replaces the last real
                          // settlement failure on this surface (the bulk lane
