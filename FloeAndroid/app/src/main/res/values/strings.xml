@@ -591,6 +591,7 @@
     <string name="phone_automation_resume">Continue</string>
     <string name="phone_automation_paused">Device control is paused</string>
     <string name="phone_automation_resume_failed">Could not continue. Open the task and try again.</string>
+    <string name="phone_automation_control_changed">Control changed. Open the task and try again.</string>
     <string name="phone_automation_in_use">Allow task to use the screen?</string>
     <string name="phone_automation_in_use_hint">The task is waiting while you use the device. Allow it to continue, or cancel to keep control.</string>
     <string name="phone_automation_allow">Allow</string>

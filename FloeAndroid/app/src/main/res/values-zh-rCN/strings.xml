@@ -595,6 +595,7 @@
     <string name="phone_automation_resume">继续</string>
     <string name="phone_automation_paused">设备操作已暂停</string>
     <string name="phone_automation_resume_failed">无法继续，请打开任务重试。</string>
+    <string name="phone_automation_control_changed">控制状态已变化，请返回任务重试。</string>
     <string name="phone_automation_credential_failed">无法更新解锁凭据，请重试。</string>
     <string name="phone_automation_bubble_show">%1$s。%2$s。点按显示控制。</string>
     <string name="phone_automation_bubble_hide">%1$s。%2$s。点按收起控制。</string>

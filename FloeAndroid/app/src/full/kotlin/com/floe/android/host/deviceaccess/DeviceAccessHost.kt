@@ -3325,7 +3325,14 @@ internal class DeviceAccessHost(
             host.conversations.deviceStopStreamStamp(owner.taskID.toString(), owner.runID.toString()), closed)
 
     private fun onOverlayTakeover(owner: PhoneControlOwner, binding: OverlayTakeoverBinding) {
-        if (!overlayTakeoverIsCurrent(owner, binding)) return
+        if (!overlayTakeoverIsCurrent(owner, binding)) {
+            // A stale tap cannot stop a newly resumed run. Refresh the
+            // presentation so its next tap is bound to the current owner.
+            publish()
+            android.widget.Toast.makeText(context, R.string.phone_automation_control_changed,
+                android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
         stopActiveTask(takeOver = true, expectedOwner = owner,
             userStopEpoch = binding.epoch, overlayBinding = binding)
     }

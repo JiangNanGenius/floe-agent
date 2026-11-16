@@ -449,7 +449,10 @@ internal class PhoneAutomationControls(
             // A physical tap can fence Accessibility before this callback.
             // The pre-bound token authorizes only this exact owner's Stop.
             if (action == "stop") {
-                takeoverBinding?.let { takeOver(current, it) }
+                val binding = takeoverBinding
+                if (binding != null) takeOver(current, binding)
+                else android.widget.Toast.makeText(context, R.string.phone_automation_control_changed,
+                    android.widget.Toast.LENGTH_SHORT).show()
                 return@deliver
             }
             if (!canPresent(current)) {
