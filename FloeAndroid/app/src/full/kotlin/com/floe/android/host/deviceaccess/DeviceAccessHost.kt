@@ -2537,6 +2537,24 @@ internal class DeviceAccessHost(
             else !stopFence.isStopped(owner)
         }
 
+    /** Called while the backend admission mutex is held. Stop and adoption
+     * use the same short lock so neither can observe a half-admitted owner. */
+    private fun noteSuccessfulScreenAdmission(
+        owner: PhoneControlOwner, epoch: Long, expectedRevision: Long,
+        rearmStopToken: Long? = null,
+    ) = synchronized(activeStopLock) {
+        val currentStop = stopFence.entry(owner)
+        if (!closed && host.nativeRootEpoch() == epoch &&
+            phoneControlRevision.current(owner) == expectedRevision &&
+            !phonePause.isPaused(owner) && isOwnerRunLive(owner) &&
+            (if (rearmStopToken == null) currentStop == null else currentStop?.token == rearmStopToken)) {
+            // The matching stop token denotes a fresh explicit re-arm even
+            // when it reuses the same task/run identity. Advance its consent
+            // use before the old stop worker can clear that old ticket.
+            screenShare.noteAdmitted(owner, epoch, newSession = rearmStopToken != null)
+        }
+    }
+
     /**
      * Claim one exact-owner stop and its stop generation. A duplicate Stop for
      * the SAME still-current owner returns null; a different owner's pending
@@ -3003,9 +3021,6 @@ internal class DeviceAccessHost(
                         )
                         return@launch
                     }
-                    val screenAllowed = screenShare.allows(
-                        owner, epoch, ownerRunLive = isOwnerRunLive(owner),
-                    )
                     // Serialize the actual-owner takeover check with the ADB
                     // arm under the same admission mutex used by automatic
                     // arms and the global stop decision.
@@ -3015,13 +3030,20 @@ internal class DeviceAccessHost(
                         ) {
                             client?.takeover()
                         }
-                        backend.arm(
+                        val screenAllowed = screenShare.allows(
+                            owner, epoch, ownerRunLive = isOwnerRunLive(owner),
+                        )
+                        val result = backend.arm(
                             owner = owner,
                             epoch = epoch,
                             targets = packages,
                             screenAllowed = true,
                             screenshotAllowed = screenAllowed,
                         )
+                        if (result is PhoneControlResult.Ok) {
+                            noteSuccessfulScreenAdmission(owner, epoch, armRevision, rearmStopToken)
+                        }
+                        result
                     }
                     when (armResult) {
                         is PhoneControlResult.Ok -> {
@@ -3105,7 +3127,11 @@ internal class DeviceAccessHost(
                         screenShare.clearExactTask(liveOwner)
                         asClient.takeover()
                     }
-                    asClient.arm(principal)
+                    val result = asClient.arm(principal)
+                    if (result is PhoneControlResult.Ok) {
+                        noteSuccessfulScreenAdmission(owner, epoch, armRevision, rearmStopToken)
+                    }
+                    result
                 }
                 when (armResult) {
                     is PhoneControlResult.Ok -> {
@@ -3418,11 +3444,15 @@ internal class DeviceAccessHost(
         // synchronously at the user's gesture, before any async cleanup.
         val streamStamp = overlayBinding?.streamStamp ?: host.conversations.deviceStopStreamStamp(
             owner.taskID.toString(), owner.runID.toString())
-        val screenConsentRevision = screenShare.revision
         // Dedupe only the SAME still-current stop owner/generation. A pending
         // A cleanup must not swallow an immediate Stop of a newly active B.
-        val stop = claimTaskStop(owner, takeOver, expectedEpoch = userStopEpoch,
-            overlayBinding = overlayBinding)
+        var screenStopTicket: ScreenScopeStopTicket? = null
+        val stop = synchronized(activeStopLock) {
+            val claimed = claimTaskStop(owner, takeOver, expectedEpoch = userStopEpoch,
+                overlayBinding = overlayBinding)
+            if (claimed != null) screenStopTicket = screenShare.stopTicket(owner)
+            claimed
+        }
         if (stop == null) {
             if (userStopEpoch != null && host.nativeRootEpoch() != userStopEpoch) return
             automationControls.clear(expectedOwner = owner)
@@ -3451,11 +3481,6 @@ internal class DeviceAccessHost(
         }
         if (readbackOwner == owner) readbackOwner = null
         recentOwner = owner
-        // An actual Stop/Takeover ends BOTH screen-share modes, including the
-        // broader "Until stopped"; a later task must ask again. This is
-        // synchronous so a pending capture ticket is invalidated immediately.
-        if (controlOwner() == null || controlOwner() == owner) screenShare.clearIfRevision(screenConsentRevision)
-        else screenShare.clearExactTask(owner, expectedRevision = screenConsentRevision)
         publish()
         val stoppingOwner = stop.owner
         val stopToken = stop.stopToken
@@ -3467,6 +3492,12 @@ internal class DeviceAccessHost(
                 // newer session or cancel a different owner's run.
                 fun stillThisStop(): Boolean =
                     stopFence.entry(stoppingOwner)?.token == stopToken
+                // Serialize against successful backend admissions. A's
+                // synchronous run/phone revision fence already blocks its
+                // in-flight capture; B's accepted reuse advances this ticket.
+                automationMutex.withLock {
+                    if (stillThisStop()) screenShare.clearIfStopTicket(screenStopTicket)
+                }
                 if (stillThisStop()) {
                     phonePause.snapshot?.takeIf { it.owner == stoppingOwner }?.let {
                         phonePause.resume(stoppingOwner, it.id, ::clearPersistedPause)
@@ -4712,6 +4743,7 @@ internal class DeviceAccessHost(
             // Never silently switch an armed ADB observation base to a newly
             // enabled Accessibility service; the old page refs stay backend-
             // specific until a fresh observation.
+            noteSuccessfulScreenAdmission(owner, call.epoch, phoneControlRevision.current(owner))
             return@withLock null
         }
         val asClient = client?.takeIf { !it.isClosed }
@@ -4729,6 +4761,7 @@ internal class DeviceAccessHost(
         if (armedOwner == owner && phoneStatus.activeOwner == owner &&
             armedBackend == PhoneControlBackend.ACCESSIBILITY
         ) {
+            noteSuccessfulScreenAdmission(owner, call.epoch, phoneControlRevision.current(owner))
             return@withLock null
         }
         if (!settings.automaticPhoneControl && explicitResumeOwner != owner) return@withLock null
@@ -4832,6 +4865,7 @@ internal class DeviceAccessHost(
             }
             when (val result = asClient.arm(principal)) {
                 is PhoneControlResult.Ok -> {
+                    noteSuccessfulScreenAdmission(owner, call.epoch, armRevision)
                     if (isOwnerStopped(owner) || phonePause.isPaused(owner) ||
                         armRevision != phoneControlRevision.current(owner)
                     ) {
@@ -4953,6 +4987,7 @@ internal class DeviceAccessHost(
                 screenshotAllowed = screenAllowed,
             )) {
                 is PhoneControlResult.Ok -> {
+                    noteSuccessfulScreenAdmission(owner, call.epoch, armRevision)
                     if (isOwnerStopped(owner) || phonePause.isPaused(owner) ||
                         armRevision != phoneControlRevision.current(owner)
                     ) {

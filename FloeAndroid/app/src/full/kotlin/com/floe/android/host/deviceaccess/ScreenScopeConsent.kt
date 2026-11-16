@@ -53,6 +53,9 @@ internal data class ScreenScopeTicket(
     val serviceTeardownGeneration: Long,
 )
 
+/** Stop can revoke only the exact consent use it observed. */
+internal data class ScreenScopeStopTicket(val revision: Long, val owner: PhoneControlOwner)
+
 /**
  * True only when the Accessibility/driver service itself is gone. A
  * STOPPED/TAKEN_OVER blocker belongs to the explicit Stop/Takeover/arm flow
@@ -79,6 +82,7 @@ internal class ScreenScopeConsent(
     private data class State(
         val binding: ScreenScopeBinding?,
         val revision: Long,
+        val useOwner: PhoneControlOwner? = null,
     )
 
     private val lock = Any()
@@ -118,7 +122,7 @@ internal class ScreenScopeConsent(
                 val owner = candidateOwner
                     ?: return ScreenScopeSelection.Refused(CODE_NO_LIVE_TASK)
                 val active = ScreenScopeBinding(requested, owner, epoch, serviceTeardownGeneration())
-                replace(active)
+                replace(active, owner)
                 ScreenScopeSelection.Active(active)
             }
             DeviceAccessScreenScopeUi.UNTIL_STOPPED -> {
@@ -126,7 +130,7 @@ internal class ScreenScopeConsent(
                     return ScreenScopeSelection.Refused(CODE_NO_LIVE_TASK)
                 }
                 val active = ScreenScopeBinding(requested, null, epoch, serviceTeardownGeneration())
-                replace(active)
+                replace(active, sessionOwner)
                 ScreenScopeSelection.Active(active)
             }
             DeviceAccessScreenScopeUi.OFF -> ScreenScopeSelection.Cleared
@@ -165,6 +169,31 @@ internal class ScreenScopeConsent(
 
     /** Do not erase a newer explicit selection during asynchronous teardown. */
     fun clearIfRevision(expected: Long) = replaceIfRevision(expected, null)
+
+    /** Called only after this exact run's backend admission really succeeds. */
+    fun noteAdmitted(owner: PhoneControlOwner, epoch: Long, newSession: Boolean = false) = synchronized(lock) {
+        val snapshot = state
+        if (allows(snapshot.binding, owner, epoch, ownerRunLive = true) &&
+            (snapshot.useOwner != owner || newSession)) {
+            state = snapshot.copy(revision = snapshot.revision + 1, useOwner = owner)
+        }
+    }
+
+    fun stopTicket(owner: PhoneControlOwner): ScreenScopeStopTicket? = synchronized(lock) {
+        val snapshot = state
+        val binding = snapshot.binding ?: return@synchronized null
+        if (binding.serviceTeardownGeneration != serviceTeardownGeneration() ||
+            snapshot.useOwner != owner) return@synchronized null
+        ScreenScopeStopTicket(snapshot.revision, owner)
+    }
+
+    fun clearIfStopTicket(ticket: ScreenScopeStopTicket?) = synchronized(lock) {
+        if (ticket == null) return@synchronized
+        val snapshot = state
+        if (snapshot.revision == ticket.revision && snapshot.useOwner == ticket.owner) {
+            state = State(binding = null, revision = snapshot.revision + 1)
+        }
+    }
 
     /**
      * Moving the one phone-control grant away from [endedOwner] ends only that
@@ -282,9 +311,9 @@ internal class ScreenScopeConsent(
         }
     }
 
-    private fun replace(next: ScreenScopeBinding?) {
+    private fun replace(next: ScreenScopeBinding?, useOwner: PhoneControlOwner? = null) {
         synchronized(lock) {
-            state = State(binding = next, revision = state.revision + 1)
+            state = State(binding = next, revision = state.revision + 1, useOwner = useOwner)
         }
     }
 

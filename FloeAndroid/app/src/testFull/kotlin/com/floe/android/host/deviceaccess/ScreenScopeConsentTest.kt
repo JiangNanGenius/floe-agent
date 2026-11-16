@@ -202,6 +202,92 @@ class ScreenScopeConsentTest {
     }
 
     @Test
+    fun acceptedNewOwnerFencesAnOlderStopAndOldCapture() {
+        val consent = ScreenScopeConsent()
+        consent.untilStopped(a)
+        val oldCapture = consent.ticket(a, epoch, ownerRunLive = true)
+        val oldStop = consent.stopTicket(a)
+        assertNotNull(oldStop)
+        consent.noteAdmitted(b, epoch)
+        consent.clearIfStopTicket(oldStop)
+        assertTrue(consent.allows(b, epoch, ownerRunLive = true))
+        assertFalse(consent.ticketStillValid(oldCapture, a, epoch,
+            ownerRunLive = true, displayCapture = false, wholeScreenConsent = false))
+        assertNotNull(consent.ticket(b, epoch, ownerRunLive = true))
+        assertNull("an old owner cannot capture the new use", consent.stopTicket(a))
+        val currentStop = consent.stopTicket(b)
+        consent.clearIfStopTicket(currentStop)
+        assertNull(consent.binding)
+    }
+
+    @Test
+    fun explicitSameOwnerRearmFencesOldStopAndCapture() {
+        val consent = ScreenScopeConsent()
+        consent.untilStopped(a)
+        val oldStop = consent.stopTicket(a)
+        val oldCapture = consent.ticket(a, epoch, ownerRunLive = true)
+        val oldRevision = consent.revision
+        consent.noteAdmitted(a, epoch, newSession = true)
+        assertNotEquals(oldRevision, consent.revision)
+        consent.clearIfStopTicket(oldStop)
+        assertTrue(consent.allows(a, epoch, ownerRunLive = true))
+        assertFalse(consent.ticketStillValid(oldCapture, a, epoch,
+            ownerRunLive = true, displayCapture = false, wholeScreenConsent = false))
+        assertNotNull(consent.ticket(a, epoch, ownerRunLive = true))
+        consent.clearIfStopTicket(consent.stopTicket(a))
+        assertNull(consent.binding)
+    }
+
+    @Test
+    fun concurrentStopCannotClearAfterAnotherOwnerIsAdmitted() {
+        val consent = ScreenScopeConsent()
+        consent.untilStopped(a)
+        val oldStop = consent.stopTicket(a)
+        val accepted = java.util.concurrent.CountDownLatch(1)
+        val done = java.util.concurrent.CountDownLatch(1)
+        val worker = Thread {
+            consent.noteAdmitted(b, epoch)
+            accepted.countDown()
+            done.await()
+        }
+        worker.isDaemon = true
+        worker.start()
+        try {
+            assertTrue(accepted.await(2, java.util.concurrent.TimeUnit.SECONDS))
+            consent.clearIfStopTicket(oldStop)
+        } finally {
+            done.countDown()
+        }
+        worker.join(2_000)
+        assertTrue(consent.allows(b, epoch, ownerRunLive = true))
+    }
+
+    @Test
+    fun failedOrForeignAdmissionDoesNotProtectFromOldOwnersStop() {
+        val consent = ScreenScopeConsent()
+        consent.untilStopped(a)
+        val stop = consent.stopTicket(a)
+        // A refused backend does not call noteAdmitted; an invalid epoch
+        // must not manufacture a successful use either.
+        consent.noteAdmitted(b, epoch + 1)
+        consent.clearIfStopTicket(stop)
+        assertNull(consent.binding)
+    }
+
+    @Test
+    fun thisTaskConsentNeverFollowsADifferentAdmittedOwner() {
+        val consent = ScreenScopeConsent()
+        consent.thisTask(a)
+        val stop = consent.stopTicket(a)
+        val oldRevision = consent.revision
+        consent.noteAdmitted(b, epoch)
+        assertEquals(oldRevision, consent.revision)
+        assertFalse(consent.allows(b, epoch, ownerRunLive = true))
+        consent.clearIfStopTicket(stop)
+        assertNull(consent.binding)
+    }
+
+    @Test
     fun untilStoppedSurvivesTaskTerminalButNotAnActualStop() {
         val consent = ScreenScopeConsent()
         consent.untilStopped(a)
