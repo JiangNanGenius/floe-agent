@@ -205,7 +205,7 @@ struct RunFileChangeList {
         return try? JSONDecoder().decode(type, from: Data(value.utf8))
     }
 
-    static func load(runID: UUID, conversationID: UUID, store: any RunStore) async throws -> [RunFileChange] {
+    static func load(runID: UUID, conversationID: UUID, answerEventID: UUID? = nil, store: any RunStore) async throws -> [RunFileChange] {
         guard let run = try await store.run(id: runID), run.conversationID == conversationID else { return [] }
         var list = Self(runID: runID, conversationID: conversationID)
         let root = try? FloeArtifactStore.root()
@@ -214,17 +214,28 @@ struct RunFileChangeList {
             try Task.checkCancellation()
             let page = try await store.events(runID: runID, afterSequence: sequence, limit: 100)
             guard let last = page.last, last.sequence > sequence else { break }
-            for event in page { list.consume(event, artifactRoot: root) }
+            for event in page {
+                if let answerEventID, event.kind == .assistantText {
+                    if event.id == answerEventID { return list.changes }
+                    // A reply owns only the verified results since the preceding
+                    // assistant reply, not the complete multi-reply task.
+                    list = Self(runID: runID, conversationID: conversationID)
+                } else {
+                    list.consume(event, artifactRoot: root)
+                }
+            }
             sequence = last.sequence
             if page.count < 100 { break }
         }
-        return list.changes
+        // An unbound/missing answer must not borrow another reply's changes.
+        return answerEventID == nil ? list.changes : []
     }
 }
 
 struct RunFileChangesDisclosure: View {
     let runID: UUID
     let conversationID: UUID
+    var answerEventID: UUID? = nil
     @EnvironmentObject private var environment: AppEnvironment
     @EnvironmentObject private var router: AppRouter
     @State private var changes: [RunFileChange] = []
@@ -255,8 +266,8 @@ struct RunFileChangesDisclosure: View {
                 .accessibilityIdentifier("chat.turnFileChanges")
             }
         }
-        .task(id: runID) {
-            let result = try? await RunFileChangeList.load(runID: runID, conversationID: conversationID, store: environment.runStore)
+        .task(id: answerEventID ?? runID) {
+            let result = try? await RunFileChangeList.load(runID: runID, conversationID: conversationID, answerEventID: answerEventID, store: environment.runStore)
             guard !Task.isCancelled else { return }
             changes = result ?? []
         }

@@ -69,6 +69,7 @@ public protocol GameWorkingTreePort: Sendable {
     func transact(project: GameStoredProject, previous: GameStoredProject?,
                   limits: GameRepositoryLimits,
                   readObject: (GameProjectFile) throws -> Data,
+                  objectURL: (GameProjectFile) throws -> URL,
                   publishMetadata: (String?) throws -> Void) throws
 }
 

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 import Foundation
+import CryptoKit
 #if canImport(Darwin)
 import Darwin
 #else
@@ -130,6 +131,39 @@ public final class GameProjectReader {
 
     public func read(_ path: GameRelativePath, honorCancellation: Bool = true) throws -> Data? {
         try read(path, limit: maximumFileBytes, honorCancellation: honorCancellation)
+    }
+
+    /// Fingerprint and optionally copy a regular file in bounded chunks. The
+    /// descriptor walk retains the same no-symlink rules as ordinary reads.
+    public func fingerprint(_ path: GameRelativePath, honorCancellation: Bool = true,
+                            writeChunk: ((Data) throws -> Void)? = nil) throws -> (bytes: Int, sha256: String)? {
+        guard let descriptor = try openRelative(path, directory: false) else { return nil }
+        defer { close(descriptor) }
+        var before = stat()
+        guard fstat(descriptor, &before) == 0, before.st_mode & S_IFMT == S_IFREG else {
+            throw GameProjectError.unsafePath(path.value)
+        }
+        guard before.st_size >= 0, before.st_size <= off_t(maximumFileBytes) else {
+            throw GameProjectError.limitExceeded(path.value)
+        }
+        var hash = SHA256(), total = 0
+        var buffer = [UInt8](repeating: 0, count: 1_048_576)
+        while true {
+            if honorCancellation { try Task.checkCancellation() }
+            let count = buffer.withUnsafeMutableBytes { systemRead(descriptor, $0.baseAddress!, $0.count) }
+            if count < 0, errno == EINTR { continue }
+            guard count >= 0 else { throw GameProjectError.unreadableFile(path.value) }
+            if count == 0 { break }
+            guard total <= maximumFileBytes - count else { throw GameProjectError.limitExceeded(path.value) }
+            let chunk = Data(buffer.prefix(count))
+            hash.update(data: chunk)
+            try writeChunk?(chunk)
+            total += count
+        }
+        var after = stat()
+        guard fstat(descriptor, &after) == 0, before.st_size == after.st_size,
+              total == before.st_size else { throw GameProjectError.corruptStorage }
+        return (total, hash.finalize().map { String(format: "%02x", $0) }.joined())
     }
 
     /// Engine-project readers pass their own bounded allowance without raising

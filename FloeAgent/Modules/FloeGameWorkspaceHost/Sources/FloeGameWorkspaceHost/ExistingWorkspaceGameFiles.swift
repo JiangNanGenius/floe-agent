@@ -171,6 +171,7 @@ public final class ExistingWorkspaceGameFiles: GameWorkingTreePort, @unchecked S
     public func transact(project: GameStoredProject, previous: GameStoredProject?,
                          limits: GameRepositoryLimits,
                          readObject: (GameProjectFile) throws -> Data,
+                         objectURL: (GameProjectFile) throws -> URL,
                          publishMetadata: (String?) throws -> Void) throws {
         lock.lock(); defer { lock.unlock() }
         guard !activeTransactions.contains(project.projectID) else { throw GameProjectError.invalidContext }
@@ -242,9 +243,14 @@ public final class ExistingWorkspaceGameFiles: GameWorkingTreePort, @unchecked S
                     throw GameProjectError.conflict(expected: "captured file", actual: "file changed")
                 }
                 if let file = new[path] {
-                    let data = try readObject(file)
-                    guard data.count == file.bytes, GameDigest.sha256(data) == file.sha256 else { throw GameProjectError.corruptStorage }
-                    try service.createBinaryFile(path, data: data, overwrite: old[path] != nil)
+                    if old[path] == nil, file.bytes > 0 {
+                        let outcome = try service.importUserFile(from: objectURL(file), to: path, expectedSHA256: file.sha256)
+                        guard outcome.bytesWritten == file.bytes, outcome.sha256 == file.sha256 else { throw GameProjectError.corruptStorage }
+                    } else {
+                        let data = try readObject(file)
+                        guard data.count == file.bytes, GameDigest.sha256(data) == file.sha256 else { throw GameProjectError.corruptStorage }
+                        try service.createBinaryFile(path, data: data, overwrite: old[path] != nil)
+                    }
                     journal.items[index].applied = true
                     journal.items[index].installed = try stamp(path, target, limits: limits)
                     try save(journal, at: directory)
@@ -296,11 +302,11 @@ public final class ExistingWorkspaceGameFiles: GameWorkingTreePort, @unchecked S
         for entry in entries {
             _ = try service.guardResolver.resolve(entry.path.value)
             if entry.directory { continue }
-            guard let data = try reader.read(entry.path), total <= limits.maximumProjectBytes - data.count else {
+            guard let data = try reader.fingerprint(entry.path), total <= limits.maximumProjectBytes - data.bytes else {
                 throw GameProjectError.limitExceeded("projectBytes")
             }
-            total += data.count
-            files.append(.init(path: entry.path, sha256: GameDigest.sha256(data), bytes: data.count,
+            total += data.bytes
+            files.append(.init(path: entry.path, sha256: data.sha256, bytes: data.bytes,
                                executable: try reader.isExecutable(entry.path)))
         }
         guard revision == (try target.revisions.revisionID()) else { throw GameProjectError.invalidContext }
@@ -327,9 +333,9 @@ public final class ExistingWorkspaceGameFiles: GameWorkingTreePort, @unchecked S
         let url = try scoped(target, limits).guardResolver.resolve(path)
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
         let reader = try GameProjectReader(rootURL: target.binding.rootURL, maximumFileBytes: limits.maximumFileBytes)
-        guard let data = try reader.read(GameRelativePath(path), honorCancellation: false) else { return nil }
+        guard let data = try reader.fingerprint(GameRelativePath(path), honorCancellation: false) else { return nil }
         let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
-        return .init(digest: GameDigest.sha256(data), inode: (attributes[.systemFileNumber] as? NSNumber)?.uint64Value ?? 0,
+        return .init(digest: data.sha256, inode: (attributes[.systemFileNumber] as? NSNumber)?.uint64Value ?? 0,
             modified: (attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0,
             mode: (attributes[.posixPermissions] as? NSNumber)?.intValue ?? 0o600)
     }

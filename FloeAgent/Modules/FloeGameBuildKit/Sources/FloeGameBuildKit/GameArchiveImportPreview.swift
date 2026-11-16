@@ -120,14 +120,16 @@ public struct GameArchiveProjectPreviewer: Sendable {
             engines.insert(engine)
             sawEditorMarker = true
         }
-        if has("rpg_rt.exe") || has("game.exe") || has("rpg_rt.ini") {
+        let hasWebDeployment = lowercased.contains("www/index.html") ||
+            (lowercased.contains(where: { $0.hasPrefix("www/") }) && has("package.json"))
+        if has("rpg_rt.exe") || has("rpg_rt.ini") || (has("game.exe") && !hasWebDeployment) {
             sawPublishedRuntime = true
             if has(".rxdata") { engines.insert(.rpgMakerXP) }
             else if has(".rvdata") { engines.insert(.rpgMakerVX) }
             else if has(".rvdata2") { engines.insert(.rpgMakerVXAce) }
             else { engines.formUnion([.rpgMakerXP, .rpgMakerVX, .rpgMakerVXAce]) }
         }
-        if lowercased.contains("www/index.html") || (lowercased.contains(where: { $0.hasPrefix("www/") }) && has("package.json")) {
+        if hasWebDeployment {
             sawPublishedRuntime = true
             engines.formUnion([.rpgMakerMV, .rpgMakerMZ])
         }

@@ -5,6 +5,38 @@ import FloeGameCore
 @testable import FloeGameBuildKit
 
 final class GameProjectSourceImporterTests: XCTestCase {
+    func testWindowsWebDeploymentRetainsLargeRuntimeAndGameFiles() async throws {
+        let f = try GameArchiveFixture()
+        defer { f.cleanup() }
+        let source = f.root.appendingPathComponent("Windows deployment")
+        for path in ["www/js", "www/data", "locales"] {
+            try FileManager.default.createDirectory(at: source.appendingPathComponent(path), withIntermediateDirectories: true)
+        }
+        for (path, contents) in [("Game.exe", "windows binary"), ("package.json", "{}"),
+                                 ("www/index.html", "<html></html>"), ("www/js/rpg_core.js", "// MV"),
+                                 ("www/data/System.json", "{}"), ("locales/en.pak", "locale")] {
+            try Data(contents.utf8).write(to: source.appendingPathComponent(path))
+        }
+        let dll = source.appendingPathComponent("nw.dll")
+        XCTAssertTrue(FileManager.default.createFile(atPath: dll.path, contents: nil))
+        let handle = try FileHandle(forWritingTo: dll)
+        try handle.truncate(atOffset: 190 * 1_024 * 1_024)
+        try handle.close()
+        let repository = try FileGameProjectRepository(directory: f.root.appendingPathComponent("repo"))
+        let id = UUID(), owner = GameProjectOwner.space(recordID: id)
+        let created = try await repository.createProject(projectID: id, owner: owner, title: "Windows")
+        let store = try GameArchiveOriginalStore(directory: f.root.appendingPathComponent("originals"))
+        let result = try await GameProjectSourceImporter(originalStore: store).importSource(source,
+            into: created, repository: repository, workspace: f.root.appendingPathComponent("jobs"))
+        XCTAssertEqual(result.project.files.first { $0.path.value == "nw.dll" }?.bytes, 190 * 1_024 * 1_024)
+        XCTAssertTrue(result.project.files.contains { $0.path.value == "www/index.html" })
+        XCTAssertTrue(result.project.files.contains { $0.path.value == "locales/en.pak" })
+        XCTAssertTrue(result.preview.recognizedEngines.contains(.rpgMakerMV))
+        XCTAssertFalse(result.preview.recognizedEngines.contains(.rpgMakerXP))
+        let reopened = try await repository.open(id, owner: owner)
+        XCTAssertEqual(reopened.revision, result.project.revision)
+    }
+
     func testFolderSelectionPreservesUnknownFilesAndEmptyDirectories() async throws {
         let f = try GameArchiveFixture()
         defer { f.cleanup() }

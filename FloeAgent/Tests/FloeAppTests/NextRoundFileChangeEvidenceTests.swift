@@ -3,6 +3,7 @@ import Foundation
 import XCTest
 import FloeCore
 import FloeModels
+import FloePersistence
 import FloeTools
 @testable import FloeWorkspace
 @testable import FloeApp
@@ -240,6 +241,32 @@ import FloeTools
         XCTAssertEqual(changes.changes.map(\.id), [.path(path, workspaceID: ownerA), .path(path, workspaceID: nil)])
         XCTAssertEqual(try String(contentsOf: first.root.appendingPathComponent(path), encoding: .utf8), "first")
         XCTAssertFalse(FileManager.default.fileExists(atPath: second.root.appendingPathComponent(path).path))
+    }
+
+    func testEachReplyOwnsOnlyItsPrecedingSavedChangesAcrossPages() async throws {
+        let conversation = UUID(), runID = UUID()
+        let store = EphemeralRunStore(hostedConversationID: conversation)
+        try await store.saveRun(RunRecord(id: runID, conversationID: conversation, state: "running", goal: "", startedAt: Date()))
+        func saved(_ path: String) throws -> String {
+            let digest = FloeDigest.sha256Hex(Data("x".utf8))
+            let fields = ["id": UUID().uuidString, "tool": "workspace.writeFile", "status": "ok",
+                          "summary": "written=\(path) bytes=1 sha256=\(digest) change=saved saved=true"]
+            return String(decoding: try JSONEncoder().encode(fields), as: UTF8.self)
+        }
+        try await store.appendEvent(runID: runID, kind: .toolResult, payloadJSON: saved("first.txt"))
+        let first = try await store.appendEvent(runID: runID, kind: .assistantText, payloadJSON: #"{"text":"first reply"}"#)
+        for _ in 0..<105 { try await store.appendEvent(runID: runID, kind: .reasoning, payloadJSON: "{}") }
+        try await store.appendEvent(runID: runID, kind: .toolResult, payloadJSON: saved("second.txt"))
+        let second = try await store.appendEvent(runID: runID, kind: .assistantText, payloadJSON: #"{"text":"second reply"}"#)
+        try await store.appendEvent(runID: runID, kind: .toolResult, payloadJSON: saved("later.txt"))
+        let firstChanges = try await RunFileChangeList.load(runID: runID, conversationID: conversation, answerEventID: first.id, store: store)
+        let secondChanges = try await RunFileChangeList.load(runID: runID, conversationID: conversation, answerEventID: second.id, store: store)
+        let missing = try await RunFileChangeList.load(runID: runID, conversationID: conversation, answerEventID: UUID(), store: store)
+        let wrongOwner = try await RunFileChangeList.load(runID: runID, conversationID: UUID(), answerEventID: second.id, store: store)
+        XCTAssertEqual(firstChanges.map(\.path), ["first.txt"])
+        XCTAssertEqual(secondChanges.map(\.path), ["second.txt"])
+        XCTAssertTrue(missing.isEmpty)
+        XCTAssertTrue(wrongOwner.isEmpty)
     }
 }
 #endif

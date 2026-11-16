@@ -502,7 +502,13 @@ struct GameProjectSpaceScreen: View {
             notice = IDELanguageRunText.t("已导入完整工程文件。", "The complete project tree was imported.")
             await refresh(session)
         } catch {
-            self.error = error.localizedDescription
+            if case GameProjectError.limitExceeded(let detail) = error {
+                self.error = detail == "projectBytes"
+                    ? IDELanguageRunText.t("工程文件总大小超出导入上限。", "The project exceeds the import size limit.")
+                    : IDELanguageRunText.t("导入内容超出大小或数量限制：\(detail)", "The import exceeds a size or item limit: \(detail)")
+            } else {
+                self.error = error.localizedDescription
+            }
         }
     }
 

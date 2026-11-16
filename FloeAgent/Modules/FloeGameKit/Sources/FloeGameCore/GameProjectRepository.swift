@@ -6,8 +6,8 @@ public struct GameRepositoryLimits: Sendable {
     public let maximumFileBytes: Int
     public let maximumProjectBytes: Int
     public let maximumEntries: Int
-    public init(maximumFileBytes: Int = 64 * 1_024 * 1_024,
-                maximumProjectBytes: Int = 512 * 1_024 * 1_024, maximumEntries: Int = 10_000) throws {
+    public init(maximumFileBytes: Int = 256 * 1_024 * 1_024,
+                maximumProjectBytes: Int = 2 * 1_024 * 1_024 * 1_024, maximumEntries: Int = 10_000) throws {
         guard maximumFileBytes > 0, maximumFileBytes <= 256 * 1_024 * 1_024,
               maximumProjectBytes >= maximumFileBytes, maximumEntries > 0, maximumEntries <= 100_000 else {
             throw GameProjectError.invalidContext
@@ -149,14 +149,16 @@ public actor FileGameProjectRepository {
             var files: [GameProjectFile] = [], total = 0
             for item in entries where !item.directory {
                 try Task.checkCancellation()
-                guard let bytes = try reader.read(item.path), total <= limits.maximumProjectBytes - bytes.count else { throw GameProjectError.limitExceeded("projectBytes") }
-                total += bytes.count
-                files.append(try put(bytes, path: item.path, executable: reader.isExecutable(item.path)))
+                let file = try put(reader: reader, path: item.path)
+                guard total <= limits.maximumProjectBytes - file.bytes else { throw GameProjectError.limitExceeded("projectBytes") }
+                total += file.bytes
+                files.append(file)
             }
             let finalEntries = try reader.tree(maximumEntries: limits.maximumEntries)
             guard entries.map(\.path) == finalEntries.map(\.path), entries.map(\.directory) == finalEntries.map(\.directory) else { throw GameProjectError.corruptStorage }
             for file in files {
-                guard let bytes = try reader.read(file.path), GameDigest.sha256(bytes) == file.sha256 else { throw GameProjectError.corruptStorage }
+                guard let actual = try reader.fingerprint(file.path), actual.bytes == file.bytes,
+                      actual.sha256 == file.sha256 else { throw GameProjectError.corruptStorage }
             }
             let imported = GameStoredProject(version: 1, projectID: projectID, owner: owner,
                 revision: UUID().uuidString.lowercased(), parent: current.revision, title: current.title, engine: current.engine,
@@ -181,10 +183,10 @@ public actor FileGameProjectRepository {
             var files: [GameProjectFile] = [], total = 0
             for entry in entries where !entry.directory {
                 try Task.checkCancellation()
-                guard let bytes = try reader.read(entry.path) else { throw GameProjectError.unreadableFile(entry.path.value) }
-                guard total <= limits.maximumProjectBytes - bytes.count else { throw GameProjectError.limitExceeded("projectBytes") }
-                total += bytes.count
-                files.append(try put(bytes, path: entry.path, executable: reader.isExecutable(entry.path)))
+                let file = try put(reader: reader, path: entry.path)
+                guard total <= limits.maximumProjectBytes - file.bytes else { throw GameProjectError.limitExceeded("projectBytes") }
+                total += file.bytes
+                files.append(file)
             }
             let result = GameStoredProject(version: 1, projectID: projectID, owner: owner,
                 revision: UUID().uuidString.lowercased(), parent: nil, title: title, engine: engine,
@@ -196,7 +198,7 @@ public actor FileGameProjectRepository {
             guard entries.map({ $0.path }) == finalEntries.map({ $0.path }),
                   entries.map({ $0.directory }) == finalEntries.map({ $0.directory }) else { throw GameProjectError.corruptStorage }
             for file in result.files {
-                guard let bytes = try reader.read(file.path), GameDigest.sha256(bytes) == file.sha256 else {
+                guard let actual = try reader.fingerprint(file.path), actual.bytes == file.bytes, actual.sha256 == file.sha256 else {
                     throw GameProjectError.unreadableFile(file.path.value)
                 }
             }
@@ -484,6 +486,41 @@ public actor FileGameProjectRepository {
         guard bytes.count == file.bytes, GameDigest.sha256(bytes) == file.sha256 else { throw GameProjectError.corruptStorage }
         return bytes
     }
+    private func put(reader: GameProjectReader, path: GameRelativePath) throws -> GameProjectFile {
+        let temporary = directory.appendingPathComponent("Objects/.game-import-" + UUID().uuidString)
+        let descriptor = Darwin.open(temporary.path, O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard descriptor >= 0 else { throw GameProjectError.io("stage import") }
+        defer { Darwin.close(descriptor); unlink(temporary.path) }
+        guard let fingerprint = try reader.fingerprint(path, writeChunk: { chunk in
+            try chunk.withUnsafeBytes { bytes in
+                var offset = 0
+                while offset < bytes.count {
+                    try Task.checkCancellation()
+                    let count = Darwin.write(descriptor, bytes.baseAddress!.advanced(by: offset), bytes.count - offset)
+                    if count < 0, errno == EINTR { continue }
+                    guard count > 0 else { throw GameProjectError.io("write import") }
+                    offset += count
+                }
+            }
+        }) else { throw GameProjectError.unreadableFile(path.value) }
+        guard fsync(descriptor) == 0 else { throw GameProjectError.io("flush import") }
+        let file = GameProjectFile(path: path, sha256: fingerprint.sha256, bytes: fingerprint.bytes,
+                                   executable: try reader.isExecutable(path))
+        let target = try objectURL(file.sha256)
+        try Task.checkCancellation()
+        if link(temporary.path, target.path) == 0 {
+            stagedFiles.append(target)
+            let parent = Darwin.open(target.deletingLastPathComponent().path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard parent >= 0 else { throw GameProjectError.io("open import directory") }
+            defer { Darwin.close(parent) }
+            guard fsync(parent) == 0 else { throw GameProjectError.io("flush import directory") }
+        } else if errno == EEXIST {
+            let existing = try GameProjectReader(rootURL: target.deletingLastPathComponent(), maximumFileBytes: limits.maximumFileBytes)
+            guard let actual = try existing.fingerprint(GameRelativePath(target.lastPathComponent)),
+                  actual.bytes == file.bytes, actual.sha256 == file.sha256 else { throw GameProjectError.corruptStorage }
+        } else { throw GameProjectError.io("commit import") }
+        return file
+    }
     private func put(_ bytes: Data, path: GameRelativePath, executable: Bool = false) throws -> GameProjectFile {
         guard bytes.count <= limits.maximumFileBytes else { throw GameProjectError.limitExceeded(path.value) }
         let file = GameProjectFile(path: path, sha256: GameDigest.sha256(bytes), bytes: bytes.count, executable: executable)
@@ -588,7 +625,7 @@ public actor FileGameProjectRepository {
             let previous = FileManager.default.fileExists(atPath: headURL(project.projectID).path)
                 ? try loadStored(project.projectID, owner: project.owner) : nil
             try workingTree.transact(project: project, previous: previous, limits: limits,
-                readObject: { try object($0) }, publishMetadata: metadata)
+                readObject: { try object($0) }, objectURL: { try objectURL($0.sha256) }, publishMetadata: metadata)
         } else { try metadata(project.workspaceRevision) }
         guard published else { throw GameProjectError.invalidEdit }
         return try loadStored(project.projectID, owner: project.owner, honorCancellation: false)

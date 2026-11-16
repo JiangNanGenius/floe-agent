@@ -1031,11 +1031,12 @@ struct ThreadDetailView: View {
             .environment(\.inlineTimerProjection, timerProjection)
             #endif
             if searchRanges.isEmpty, let owningRunID, let answerID = UUID(uuidString: idSuffix),
-               let run = viewModel.runs.first(where: { $0.id == owningRunID }),
-               RunStateLocalizer.isTerminal(run.state),
-               (FinalAnswerSpeech.answer(runID: owningRunID, events: viewModel.eventsByRun[owningRunID] ?? [],
-                                         messages: viewModel.messages)?.id ?? legacyAnswerID(runID: owningRunID)) == answerID {
-                RunFileChangesDisclosure(runID: owningRunID, conversationID: run.conversationID)
+               let run = viewModel.runs.first(where: { $0.id == owningRunID }) {
+                if (viewModel.eventsByRun[owningRunID] ?? []).contains(where: { $0.id == answerID && $0.kind == .assistantText }) {
+                    RunFileChangesDisclosure(runID: owningRunID, conversationID: run.conversationID, answerEventID: answerID)
+                } else if RunStateLocalizer.isTerminal(run.state), legacyAnswerID(runID: owningRunID) == answerID {
+                    RunFileChangesDisclosure(runID: owningRunID, conversationID: run.conversationID)
+                }
             }
 
         case .event(let event):
