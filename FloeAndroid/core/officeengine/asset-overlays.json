@@ -1054,8 +1054,8 @@
     }
   ],
   "sourceAccess": {
-    "tag": "android/v1.0.19",
-    "archiveUrl": "https://github.com/JiangNanGenius/floe-agent/releases/download/android/v1.0.19/floe-android-corresponding-source-1.0.19.tar.gz",
+    "tag": "android/v1.0.20",
+    "archiveUrl": "https://github.com/JiangNanGenius/floe-agent/releases/download/android/v1.0.20/floe-android-corresponding-source-1.0.20.tar.gz",
     "nativeSource": "https://github.com/CollaboraOnline/online.mirror/tree/2333344185931274f9c49d6c12a408cefcef6844",
     "privatePathsExcluded": true
   }
