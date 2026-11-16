@@ -220,17 +220,21 @@ internal class PlatformToolHostPump(
     }
 
     private fun publishAvailabilityNow(target: Session): Boolean {
-        val names = try {
-            availability().filter { it in DeviceAccessToolCatalog.allNames }.toSortedSet()
-        } catch (_: Throwable) {
-            emptySet()
-        }
         synchronized(availabilityLock) {
+            // Read and publish under the SAME serialization boundary. A slow
+            // older caller cannot publish a precomputed stale mask after a
+            // newer status/settings publication. Stop and epoch replacement
+            // fence this exact session before any further writes.
+            if (session !== target || target.stopping.get() || currentEpoch() != target.epoch) return false
+            val names = try {
+                availability().filter { it in DeviceAccessToolCatalog.allNames }.toSortedSet()
+            } catch (_: Throwable) {
+                emptySet()
+            }
             if (lastPublished == names) {
                 publishAdmissionNow(target)
                 return true
             }
-            if (currentEpoch() != target.epoch) return false
             val json = names.joinToString(
                 prefix = "[", postfix = "]", separator = ",",
             ) { "\"" + it + "\"" }
@@ -481,9 +485,11 @@ internal class PlatformToolHostPump(
         target.stopping.set(true)
         // 1) Fence queued/new dispatch FIRST for the same epoch.
         val emptyNames = "[]".toByteArray(Charsets.UTF_8)
-        val current = currentEpoch()
-        if (current == target.epoch) {
-            runCatching { transport.setAvailability(target.epoch, emptyNames) }
+        synchronized(availabilityLock) {
+            if (currentEpoch() == target.epoch && session === target) {
+                val status = runCatching { transport.setAvailability(target.epoch, emptyNames) }.getOrNull()
+                if (status == 0) lastPublished = emptySet()
+            }
         }
         // 2) Cancel real backend work for the claimed ticket.
         target.inFlight.get()?.let { call -> runCatching { onCancelBackend(call) } }
@@ -493,7 +499,7 @@ internal class PlatformToolHostPump(
         }
         if (!drained) return false
         // 3) Exact-epoch teardown only after the claim settled.
-        if (current == target.epoch) {
+        if (currentEpoch() == target.epoch) {
             runCatching { transport.close(target.epoch) }
         }
         if (session === target) {
@@ -509,9 +515,13 @@ internal class PlatformToolHostPump(
         target.stopping.set(true)
         target.inFlight.get()?.let { call -> runCatching { onCancelBackend(call) } }
         target.reader?.cancel()
-        runCatching { transport.close(target.epoch) }
-        session = null
-        lastPublished = null
+        synchronized(availabilityLock) {
+            if (session === target) {
+                runCatching { transport.close(target.epoch) }
+                session = null
+                lastPublished = null
+            }
+        }
     }
 
     // ------------------------------------------------------------- encoding

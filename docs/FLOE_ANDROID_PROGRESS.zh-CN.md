@@ -1,5 +1,11 @@
 # Floe Android 分目标实施记录
 
+## 1.0.20 后源码检查点：设备工具可用性发布（2026-11-16，未发版）
+
+修复设备工具可用性状态的并发发布：读取、比较和发布统一串行，停止或环境代次变更后旧发布不能重新开放工具。Full Kotlin 编译及并发定向测试通过。三星诊断任务曾返回 `device.observe` 不在工具目录，系统同时显示无障碍服务已绑定；现有证据不足以证明该竞态就是当次报错原因，修复尚未实机验证。诊断日志未采到悬浮球触摸事件；测试已停止并恢复公开版、临时权限及诊断开关。
+
+English: Device-tool availability publications are now serialized and fenced on stop or epoch change. Focused Full Kotlin checks passed; the relationship to the observed Samsung tool-unavailable error remains unverified.
+
 ## 1.0.20 后源码检查点：浮窗触摸诊断（2026-11-16，未发版）
 
 为定位三星点悬浮球后消失的问题，增加默认关闭的有限本机事件日志；只记录事件类别、时间和触点数量，不记录坐标、界面内容、包名、设备或任务身份，也不改变用户接管规则。phonecontrol 与 Full 主应用 Kotlin 编译通过；尚未用此源码打包或采集设备事件，暂不能确定实机事件顺序。
