@@ -119,6 +119,7 @@
 //     restores the row to `queued`.
 
 import Foundation
+import FloeAgentRuntime
 import FloeCore
 import FloeModels
 import FloePersistence
