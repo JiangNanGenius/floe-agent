@@ -28,7 +28,7 @@ class CloudDeviceWorkflowTests(unittest.TestCase):
         self.assertIn('needs: validate-selectors', header)
         self.assertIn("github.event_name == 'workflow_dispatch' && inputs.cloud_device_only", header)
         self.assertIn('uses: ./.github/workflows/cloud-device-build-only.yml', header)
-        for key in ('source_sha', 'infra_sha', 'recipient_certificate_base64', 'recipient_sha256'):
+        for key in ('source_sha', 'infra_sha', 'simulation_release_id', 'simulation_asset_id', 'simulation_sha256', 'recipient_certificate_base64', 'recipient_sha256'):
             self.assertIn(key + ': ${{ inputs.cloud_', header)
         self.assertIn('test "$INFRA_SHA" = "$GITHUB_SHA"', self.build)
         self.assertIn('test "$SOURCE_SHA" = fa252b61852dd37d489635c0dd83fe8c6b4b2d00', self.build)
@@ -49,7 +49,6 @@ class CloudDeviceWorkflowTests(unittest.TestCase):
         self.assertIn('prime_shell_artifact_cache.py', native)
         job_header = self.build.split('    steps:', 1)[0]
         self.assertNotIn('GH_TOKEN:', job_header)
-        self.assertNotIn('contents: write', self.build)
 
     def test_qualified_occt_is_derived_with_locked_toolchain_and_rechecked(self):
         derive = next(s for s in self.steps if s.startswith('Derive and qualify locked OCCT inputs with Xcode 27.1\n'))
@@ -70,8 +69,20 @@ class CloudDeviceWorkflowTests(unittest.TestCase):
             self.assertNotIn(forbidden, self.build)
             self.assertNotIn(forbidden, self.caller)
         cloud_header = self.caller.split('  cloud-device:', 1)[1].split('\n  live-agent-demo:', 1)[0]
-        self.assertNotIn('contents: write', self.build)
-        self.assertNotIn('contents: write', cloud_header)
+        self.assertIn('contents: write', cloud_header)
+        self.assertRegex(self.build, r'device:\s*\n(?:.*\n)*?    permissions:\s*\n\s+contents: write')
+
+    def test_restricted_simulation_input_checked_before_and_after_build(self):
+        step = next(s for s in self.steps if s.startswith('Retrieve and verify restricted SimulationKit inputs\n'))
+        for required in ('.draft == true', 'verified-simulation-inputs.zip', 'SIMULATION_RELEASE_ID',
+                         'SIMULATION_ASSET_ID', 'SIMULATION_SHA256', 'simulation_transport.py" install', 'simulation_transport.py" verify-release-target',
+                         'verify_apple.py --check'):
+            self.assertIn(required, step)
+        self.assertIn('simulation_transport.py" verify', self.build)
+        self.assertGreaterEqual(self.build.count('verify_apple.py --check'), 2)
+        self.assertIn("'simulationInputs': simulation_evidence", self.build)
+        self.assertIn('-p test_cloud_simulation_transport.py', self.caller)
+        self.assertIn('DRAFT ONLY', self.build)
 
     def test_failure_diagnostics_work_when_checkout_fails(self):
         diagnostics = next(s for s in self.steps if s.startswith('Encrypt failure diagnostics\n'))

@@ -95,6 +95,18 @@ on:
         description: 'Full commit SHA of the dispatched infrastructure ref'
         type: string
         default: ''
+      cloud_simulation_release_id:
+        description: 'Restricted temporary SimulationKit draft release ID'
+        type: string
+        default: ''
+      cloud_simulation_asset_id:
+        description: 'Unique SimulationKit transport asset ID'
+        type: string
+        default: ''
+      cloud_simulation_sha256:
+        description: 'SHA256 of the restricted SimulationKit transport ZIP'
+        type: string
+        default: ''
       cloud_recipient_certificate_base64:
         description: 'Canonical DER public recipient certificate, Base64 encoded; no private key'
         type: string
@@ -197,6 +209,7 @@ jobs:
           python3 -m unittest discover -s scripts/tests -p test_ci_ide_only.py
           python3 -m unittest discover -s scripts/tests -p test_cloud_device_workflow.py
           python3 -m unittest discover -s scripts/tests -p test_cloud_occt_transport.py
+          python3 -m unittest discover -s scripts/tests -p test_cloud_simulation_transport.py
 
       # Pinned, checksum-verified release binary: this lane runs on
       # ubuntu-latest, where no macOS package manager exists. The digest comes
@@ -228,12 +241,18 @@ jobs:
     needs: validate-selectors
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.cloud_device_only }}
     permissions:
-      contents: read
+      # DRAFT: GitHub denied contents:read for draft release assets. This
+      # job-wide write permission is proposed for review; it can mutate the
+      # repository and must not be enabled or dispatched before approval.
+      contents: write
       actions: read
     uses: ./.github/workflows/cloud-device-build-only.yml
     with:
       source_sha: ${{ inputs.cloud_source_sha }}
       infra_sha: ${{ inputs.cloud_infra_sha }}
+      simulation_release_id: ${{ inputs.cloud_simulation_release_id }}
+      simulation_asset_id: ${{ inputs.cloud_simulation_asset_id }}
+      simulation_sha256: ${{ inputs.cloud_simulation_sha256 }}
       recipient_certificate_base64: ${{ inputs.cloud_recipient_certificate_base64 }}
       recipient_sha256: ${{ inputs.cloud_recipient_sha256 }}
 
