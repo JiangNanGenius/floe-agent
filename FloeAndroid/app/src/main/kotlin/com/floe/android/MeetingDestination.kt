@@ -61,7 +61,6 @@ import com.floe.android.design.FloeBadgeTone
 import com.floe.android.design.FloeCapsuleAction
 import com.floe.android.design.FloeCircleButton
 import com.floe.android.design.FloeConfirmDialog
-import com.floe.android.design.FloeDetailToolbar
 import com.floe.android.design.FloeDivider
 import com.floe.android.design.FloeIcons
 import com.floe.android.design.FloePlainFormField
