@@ -6,6 +6,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -86,6 +88,16 @@ import com.floe.android.host.meeting.MeetingPlayerStatus
 import com.floe.android.host.meeting.MeetingRecordingPhase
 import com.floe.android.host.meeting.MeetingRecordingState
 import com.floe.android.host.meeting.MeetingSummary
+import com.floe.android.host.meetingtranscription.MeetingTranscriptionCancelResult
+import com.floe.android.host.meetingtranscription.MeetingTranscriptionCleanupFailure
+import com.floe.android.host.meetingtranscription.MeetingTranscriptionFailure
+import com.floe.android.host.meetingtranscription.MeetingTranscriptionFailureCode
+import com.floe.android.host.meetingtranscription.MeetingTranscriptionManager
+import com.floe.android.host.meetingtranscription.MeetingTranscriptionPhase
+import com.floe.android.host.meetingtranscription.MeetingTranscriptionReadiness
+import com.floe.android.host.meetingtranscription.MeetingTranscriptionStart
+import com.floe.android.host.meetingtranscription.MeetingTranscriptionState
+import com.floe.android.host.meetingtranscription.MeetingTranscriptionText
 import io.github.robinpcrd.cupertino.CupertinoAlertDialog
 import io.github.robinpcrd.cupertino.cancel
 import io.github.robinpcrd.cupertino.default
@@ -94,6 +106,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import java.text.DateFormat
 import java.util.Date
+import kotlin.math.roundToInt
 
 /**
  * Standalone Android meeting workspace for the Space entry.
@@ -115,8 +128,11 @@ import java.util.Date
  * process-wide [MeetingManager.recorder] state. Every mutation calls the
  * manager's suspend API; failures remain visible instead of being converted
  * into local success. Recording is owned by the foreground service, so this
- * composable never stops capture on disposal. Playback is owned by this page
- * and is released when the page or material changes.
+ * composable never stops capture on disposal. Transcription is owned by a
+ * process-scoped coordinator: page disposal, rotation or backgrounding never
+ * cancels it, and only the explicit Cancel action asks the provider to stop.
+ * Playback is owned by this page and is released when the page or material
+ * changes.
  *
  * Phone windows show one pane (list or detail); tablet windows use a list /
  * detail split. [onExit] is the shell-owned return path and runs only after
@@ -138,8 +154,23 @@ internal fun MeetingDestination(
     val permission by manager.permission.collectAsState()
     val scope = rememberCoroutineScope()
     val lifecycleOwner = LocalLifecycleOwner.current
+    val applicationContext = LocalContext.current.applicationContext
+    // Process-owned transcription. Constructing a second instance (page
+    // recreation, rotation) reuses the same process coordinator and therefore
+    // the same running attempt; this page never owns or cancels that job.
+    val transcriptionManager = remember(applicationContext) {
+        MeetingTranscriptionManager(
+            context = applicationContext,
+            currentEpoch = {
+                (applicationContext as? FloeApplication)?.runtimeHost?.nativeRootEpoch()
+            },
+        )
+    }
+    val transcriptionState by transcriptionManager.state.collectAsState()
+    val transcriptionCleanupFailure by transcriptionManager.cleanupFailure.collectAsState()
 
     var selectedId by rememberSaveable { mutableStateOf<String?>(null) }
+    var transcriptionMaterialId by rememberSaveable(selectedId) { mutableStateOf<String?>(null) }
     var listError by remember { mutableStateOf<MeetingError?>(null) }
     var listNoticeRes by remember { mutableStateOf<Int?>(null) }
     var refreshing by remember { mutableStateOf(false) }
@@ -190,6 +221,9 @@ internal fun MeetingDestination(
 
     val selectedSummary = meetings.firstOrNull { it.id == selectedId }
     val recordingMeetingTitle = recorderState.meetingId?.let { activeId ->
+        meetings.firstOrNull { it.id == activeId }?.title
+    }
+    val transcriptionMeetingTitle = transcriptionState.session?.meetingId?.let { activeId ->
         meetings.firstOrNull { it.id == activeId }?.title
     }
 
@@ -622,6 +656,33 @@ internal fun MeetingDestination(
         }
     }
 
+    LaunchedEffect(selectedId, detail?.revision, detail?.transcription?.materialId) {
+        val loaded = detail ?: return@LaunchedEffect
+        if (selectedId != loaded.id) return@LaunchedEffect
+        val resolved = meetingTranscriptionDefaultMaterial(loaded, transcriptionMaterialId)
+        if (resolved != transcriptionMaterialId) transcriptionMaterialId = resolved
+    }
+
+    // The process-owned attempt may finish while this page is open, or while
+    // the user is elsewhere. On re-entry this reads the same durable meeting
+    // record again; it never displays a synthetic transcript from state alone.
+    LaunchedEffect(
+        selectedId,
+        transcriptionState.phase,
+        transcriptionState.receipt?.transcriptionRevision,
+        transcriptionState.session?.meetingId,
+        transcriptionState.session?.materialId,
+    ) {
+        val id = selectedId ?: return@LaunchedEffect
+        val session = transcriptionState.session ?: return@LaunchedEffect
+        if (session.meetingId != id) return@LaunchedEffect
+        if (transcriptionState.phase != MeetingTranscriptionPhase.COMPLETED) return@LaunchedEffect
+        if (transcriptionState.receipt == null) return@LaunchedEffect
+        transcriptionMaterialId = session.materialId
+        loadDetail(id)
+        refreshCatalogQuietly()
+    }
+
     ImeFirstBackHandler {
         if (selectedId != null) {
             requestNavigation(MeetingLeaveTarget.ClearSelection)
@@ -710,6 +771,12 @@ internal fun MeetingDestination(
                             importNotice = importNotice,
                             deleteBusy = deleteBusy,
                             deleteError = deleteError,
+                            transcriptionManager = transcriptionManager,
+                            transcriptionState = transcriptionState,
+                            transcriptionCleanupFailure = transcriptionCleanupFailure,
+                            transcriptionMaterialId = transcriptionMaterialId,
+                            transcriptionMeetingTitle = transcriptionMeetingTitle,
+                            onTranscriptionMaterialSelected = { transcriptionMaterialId = it },
                             twoPane = true,
                             onBack = { requestNavigation(MeetingLeaveTarget.ClearSelection) },
                             onRefresh = {
@@ -836,6 +903,12 @@ internal fun MeetingDestination(
                 importNotice = importNotice,
                 deleteBusy = deleteBusy,
                 deleteError = deleteError,
+                transcriptionManager = transcriptionManager,
+                transcriptionState = transcriptionState,
+                transcriptionCleanupFailure = transcriptionCleanupFailure,
+                transcriptionMaterialId = transcriptionMaterialId,
+                transcriptionMeetingTitle = transcriptionMeetingTitle,
+                onTranscriptionMaterialSelected = { transcriptionMaterialId = it },
                 twoPane = false,
                 onBack = { requestNavigation(MeetingLeaveTarget.ClearSelection) },
                 onRefresh = {
@@ -1323,6 +1396,12 @@ private fun MeetingDetailHost(
     importNotice: String?,
     deleteBusy: Boolean,
     deleteError: MeetingError?,
+    transcriptionManager: MeetingTranscriptionManager,
+    transcriptionState: MeetingTranscriptionState,
+    transcriptionCleanupFailure: MeetingTranscriptionCleanupFailure?,
+    transcriptionMaterialId: String?,
+    transcriptionMeetingTitle: String?,
+    onTranscriptionMaterialSelected: (String) -> Unit,
     twoPane: Boolean,
     onBack: () -> Unit,
     onRefresh: () -> Unit,
@@ -1454,7 +1533,21 @@ private fun MeetingDetailHost(
                         )
                     }
                     item(key = "transcription") {
-                        MeetingTranscriptionSection(detail = detail)
+                        MeetingTranscriptionSection(
+                            manager = transcriptionManager,
+                            state = transcriptionState,
+                            cleanupFailure = transcriptionCleanupFailure,
+                            meetingId = meetingId,
+                            detail = detail,
+                            selectedMaterialId = transcriptionMaterialId,
+                            transcriptionMeetingTitle = transcriptionMeetingTitle,
+                            onSelectMaterial = onTranscriptionMaterialSelected,
+                            onReloadMeeting = onRefresh,
+                            onAcknowledgeCleanupFailure = {
+                                transcriptionManager.acknowledgeCleanupFailure()
+                            },
+                            onOpenOtherMeeting = onOpenOtherMeeting,
+                        )
                     }
                     item(key = "delete") {
                         MeetingDeleteSection(
@@ -2185,58 +2278,437 @@ private fun MeetingPlaybackCard(
 }
 
 @Composable
-private fun MeetingTranscriptionSection(detail: MeetingDetail) {
+private fun MeetingTranscriptionSection(
+    manager: MeetingTranscriptionManager,
+    state: MeetingTranscriptionState,
+    cleanupFailure: MeetingTranscriptionCleanupFailure?,
+    meetingId: String,
+    detail: MeetingDetail,
+    selectedMaterialId: String?,
+    transcriptionMeetingTitle: String?,
+    onSelectMaterial: (String) -> Unit,
+    onReloadMeeting: () -> Unit,
+    onAcknowledgeCleanupFailure: () -> Unit,
+    onOpenOtherMeeting: (String) -> Unit,
+) {
     val transcription = detail.transcription
+    val playableMaterials = remember(detail.materials) {
+        meetingTranscriptionPlayableMaterials(detail)
+    }
+    val anyRunning = meetingTranscriptionIsRunning(state.phase)
+    val session = state.session
+    val sameMeetingRunning = anyRunning && session?.meetingId == meetingId
+    val otherMeetingRunning = anyRunning && session != null && session.meetingId != meetingId
+    val transcriptBoundElsewhere = transcription.segments.isNotEmpty() &&
+        transcription.materialId != null &&
+        transcription.materialId != selectedMaterialId
+
+    var readiness by remember(meetingId, selectedMaterialId) {
+        mutableStateOf<MeetingTranscriptionReadiness?>(null)
+    }
+    var checking by remember(meetingId, selectedMaterialId) { mutableStateOf(false) }
+    var checkNonce by remember(meetingId) { mutableStateOf(0) }
+    var startFailure by remember(meetingId) { mutableStateOf<MeetingTranscriptionFailure?>(null) }
+    var cancelVisible by remember(meetingId) { mutableStateOf(false) }
+    var cancelTooLate by remember(meetingId) { mutableStateOf(false) }
+
+    LaunchedEffect(anyRunning) {
+        if (!anyRunning) {
+            startFailure = null
+            cancelTooLate = false
+        }
+    }
+
+    LaunchedEffect(
+        meetingId,
+        selectedMaterialId,
+        transcription.revision,
+        checkNonce,
+        anyRunning,
+    ) {
+        val materialId = selectedMaterialId
+        if (materialId == null || anyRunning) {
+            readiness = null
+            checking = false
+            return@LaunchedEffect
+        }
+        checking = true
+        readiness = null
+        try {
+            readiness = manager.readiness(meetingId, materialId)
+        } finally {
+            checking = false
+        }
+    }
+
     FloeSettingsSectionCard(title = stringResource(R.string.meeting_ui_transcription_section)) {
         Column(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            if (transcription.segments.isEmpty()) {
+            if (transcription.segments.isEmpty() && playableMaterials.isEmpty()) {
                 MeetingInlineEmpty(
                     icon = FloeIcons.Document,
                     title = stringResource(R.string.meeting_ui_transcription_empty_title),
-                    body = stringResource(R.string.meeting_ui_transcription_empty_body),
+                    body = stringResource(R.string.meeting_ui_transcription_no_playable),
                 )
             } else {
-                FloeText(
-                    text = stringResource(
-                        R.string.meeting_ui_transcription_meta,
-                        transcription.segments.size,
-                        transcription.revision,
-                    ),
-                    style = Floe.typography.metadata,
-                    color = Floe.colors.secondaryLabel,
-                )
-                transcription.segments.forEachIndexed { index, segment ->
-                    Column(
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
-                        verticalArrangement = Arrangement.spacedBy(3.dp),
+                if (transcription.segments.isNotEmpty()) {
+                    val sourceName = transcription.materialId?.let { id ->
+                        detail.materials.firstOrNull { it.id == id }?.displayName
+                    }
+                    FloeText(
+                        text = stringResource(
+                            R.string.meeting_ui_transcription_meta,
+                            transcription.segments.size,
+                            transcription.revision,
+                        ),
+                        style = Floe.typography.metadata,
+                        color = Floe.colors.secondaryLabel,
+                    )
+                    sourceName?.let {
+                        FloeText(
+                            text = stringResource(R.string.meeting_ui_transcription_source, it),
+                            style = Floe.typography.metadata,
+                            color = Floe.colors.tertiaryLabel,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    transcription.segments.forEachIndexed { index, segment ->
+                        Column(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                            verticalArrangement = Arrangement.spacedBy(3.dp),
+                        ) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                FloeText(
+                                    text = segment.speaker?.let {
+                                        stringResource(R.string.meeting_ui_transcription_speaker, it)
+                                    } ?: stringResource(R.string.meeting_ui_transcription_unknown_speaker),
+                                    style = Floe.typography.metadata,
+                                    color = Floe.colors.secondaryLabel,
+                                )
+                                FloeText(
+                                    text = stringResource(
+                                        R.string.meeting_ui_transcription_time,
+                                        meetingDurationLabel(segment.startMillis),
+                                        meetingDurationLabel(segment.endMillis),
+                                    ),
+                                    style = Floe.typography.evidence,
+                                    color = Floe.colors.tertiaryLabel,
+                                )
+                            }
+                            FloeText(segment.text, style = Floe.typography.body)
+                        }
+                        if (index != transcription.segments.lastIndex) FloeDivider()
+                    }
+                } else if (playableMaterials.isNotEmpty()) {
+                    MeetingInlineEmpty(
+                        icon = FloeIcons.Document,
+                        title = stringResource(R.string.meeting_ui_transcription_empty_title),
+                        body = stringResource(R.string.meeting_ui_transcription_empty_body),
+                    )
+                }
+
+                if (playableMaterials.isNotEmpty()) {
+                    FloeText(
+                        text = stringResource(R.string.meeting_ui_transcription_choose),
+                        style = Floe.typography.metadata,
+                        color = Floe.colors.secondaryLabel,
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            FloeText(
-                                text = segment.speaker?.let {
-                                    stringResource(R.string.meeting_ui_transcription_speaker, it)
-                                } ?: stringResource(R.string.meeting_ui_transcription_unknown_speaker),
-                                style = Floe.typography.metadata,
-                                color = Floe.colors.secondaryLabel,
-                            )
-                            FloeText(
-                                text = stringResource(
-                                    R.string.meeting_ui_transcription_time,
-                                    meetingDurationLabel(segment.startMillis),
-                                    meetingDurationLabel(segment.endMillis),
-                                ),
-                                style = Floe.typography.evidence,
-                                color = Floe.colors.tertiaryLabel,
+                        playableMaterials.forEach { material ->
+                            FloeCapsuleAction(
+                                label = if (material.id == selectedMaterialId) {
+                                    "✓ ${material.displayName}"
+                                } else {
+                                    material.displayName
+                                },
+                                onClick = {
+                                    startFailure = null
+                                    cancelTooLate = false
+                                    onSelectMaterial(material.id)
+                                },
+                                enabled = !anyRunning && !checking,
+                                tint = if (material.id == selectedMaterialId) {
+                                    Floe.colors.accent
+                                } else {
+                                    Floe.colors.secondaryLabel
+                                },
+                                showHairline = material.id == selectedMaterialId,
                             )
                         }
-                        FloeText(segment.text, style = Floe.typography.body)
                     }
-                    if (index != transcription.segments.lastIndex) FloeDivider()
+                }
+
+                when {
+                    otherMeetingRunning -> {
+                        val title = transcriptionMeetingTitle
+                        FloeStatusLine(
+                            icon = FloeIcons.Clock,
+                            text = title?.let {
+                                stringResource(R.string.meeting_ui_transcription_other_meeting, it)
+                            } ?: stringResource(R.string.meeting_ui_transcription_other_meeting_unknown),
+                            color = Floe.colors.pending,
+                        )
+                        session?.meetingId?.let { otherId ->
+                            FloeCapsuleAction(
+                                label = stringResource(R.string.meeting_ui_transcription_open_other),
+                                onClick = { onOpenOtherMeeting(otherId) },
+                            )
+                        }
+                    }
+
+                    sameMeetingRunning -> {
+                        val runningMaterialName = playableMaterials
+                            .firstOrNull { it.id == session?.materialId }
+                            ?.displayName
+                        val progressText = when (state.phase) {
+                            MeetingTranscriptionPhase.PREPARING ->
+                                stringResource(R.string.meeting_ui_transcription_preparing)
+                            MeetingTranscriptionPhase.FINALIZING ->
+                                stringResource(R.string.meeting_ui_transcription_finalizing)
+                            MeetingTranscriptionPhase.CANCELLING ->
+                                stringResource(R.string.meeting_ui_transcription_cancelling)
+                            MeetingTranscriptionPhase.TRANSCRIBING -> {
+                                val running = state.session
+                                if (running != null && running.totalChunks > 0) {
+                                    stringResource(
+                                        R.string.meeting_ui_transcription_running,
+                                        (running.progress * 100.0).roundToInt(),
+                                    )
+                                } else {
+                                    stringResource(R.string.meeting_ui_transcription_running_unknown)
+                                }
+                            }
+                            else -> stringResource(R.string.meeting_ui_transcription_running_unknown)
+                        }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            FloeActivityIndicator(description = progressText)
+                            FloeText(
+                                text = progressText,
+                                style = Floe.typography.metadata,
+                                color = Floe.colors.secondaryLabel,
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                        runningMaterialName?.let {
+                            FloeText(
+                                text = stringResource(R.string.meeting_ui_transcription_source, it),
+                                style = Floe.typography.metadata,
+                                color = Floe.colors.tertiaryLabel,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        if (cancelTooLate) {
+                            FloeStatusLine(
+                                icon = FloeIcons.InfoCircle,
+                                text = stringResource(R.string.meeting_ui_transcription_cancel_too_late),
+                                color = Floe.colors.secondaryLabel,
+                            )
+                        }
+                        FloeCapsuleAction(
+                            label = stringResource(R.string.meeting_ui_transcription_cancel),
+                            onClick = { cancelVisible = true },
+                            enabled = state.phase != MeetingTranscriptionPhase.CANCELLING,
+                            tint = Floe.colors.destructive,
+                        )
+                    }
+
+                    else -> {
+                        when (val ready = readiness) {
+                            null -> if (checking) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    val checkingText =
+                                        stringResource(R.string.meeting_ui_transcription_checking)
+                                    FloeActivityIndicator(description = checkingText)
+                                    FloeText(
+                                        text = checkingText,
+                                        style = Floe.typography.metadata,
+                                        color = Floe.colors.secondaryLabel,
+                                    )
+                                }
+                            }
+
+                            is MeetingTranscriptionReadiness.Unavailable -> {
+                                MeetingErrorBanner(
+                                    text = stringResource(
+                                        if (transcriptBoundElsewhere) {
+                                            R.string.meeting_ui_transcription_other_source
+                                        } else {
+                                            meetingTranscriptionFailureTextRes(ready.failure)
+                                        },
+                                    ),
+                                )
+                                FloeCapsuleAction(
+                                    label = stringResource(R.string.meeting_ui_transcription_retry),
+                                    onClick = {
+                                        startFailure = null
+                                        checkNonce += 1
+                                    },
+                                    enabled = !checking,
+                                )
+                            }
+
+                            is MeetingTranscriptionReadiness.Ready -> {
+                                FloeText(
+                                    text = stringResource(
+                                        R.string.meeting_ui_transcription_provider,
+                                        ready.providerName,
+                                    ),
+                                    style = Floe.typography.metadata,
+                                    color = Floe.colors.secondaryLabel,
+                                )
+                                if (transcriptBoundElsewhere) {
+                                    FloeStatusLine(
+                                        icon = FloeIcons.WarningTriangle,
+                                        text = stringResource(
+                                            R.string.meeting_ui_transcription_other_source,
+                                        ),
+                                        color = Floe.colors.pending,
+                                    )
+                                }
+                                FloeCapsuleAction(
+                                    label = stringResource(R.string.meeting_ui_transcription_start),
+                                    onClick = {
+                                        startFailure = null
+                                        cancelTooLate = false
+                                        when (
+                                            val result = manager.start(
+                                                meetingId = meetingId,
+                                                materialId = ready.materialId,
+                                                expectedTranscriptionRevision =
+                                                    ready.transcriptionRevision,
+                                            )
+                                        ) {
+                                            is MeetingTranscriptionStart.Started -> Unit
+                                            is MeetingTranscriptionStart.Busy ->
+                                                startFailure = result.failure
+                                            is MeetingTranscriptionStart.Rejected ->
+                                                startFailure = result.failure
+                                        }
+                                    },
+                                    enabled = meetingTranscriptionCanStart(
+                                        detail = detail,
+                                        selectedMaterialId = selectedMaterialId,
+                                        readiness = readiness,
+                                        state = state,
+                                    ),
+                                )
+                            }
+                        }
+
+                        startFailure?.let { failure ->
+                            MeetingErrorBanner(
+                                text = stringResource(meetingTranscriptionFailureTextRes(failure)),
+                            )
+                        }
+                    }
+                }
+
+                if (!anyRunning) {
+                    when (state.phase) {
+                        MeetingTranscriptionPhase.COMPLETED -> {
+                            if (state.session?.meetingId == meetingId) {
+                                MeetingNoticeBanner(
+                                    text = stringResource(R.string.meeting_ui_transcription_completed),
+                                )
+                            }
+                        }
+                        MeetingTranscriptionPhase.CANCELLED -> {
+                            if (state.session?.meetingId == meetingId) {
+                                val failure = state.failure
+                                when {
+                                    failure?.reason == "cancelUnconfirmed" -> {
+                                        MeetingErrorBanner(
+                                            text = stringResource(
+                                                R.string.meeting_ui_transcription_cancel_unconfirmed,
+                                            ),
+                                        )
+                                    }
+                                    failure != null -> {
+                                        MeetingErrorBanner(
+                                            text = stringResource(
+                                                meetingTranscriptionFailureTextRes(failure),
+                                            ),
+                                        )
+                                    }
+                                    else -> {
+                                        FloeStatusLine(
+                                            icon = FloeIcons.InfoCircle,
+                                            text = stringResource(
+                                                R.string.meeting_ui_transcription_cancelled,
+                                            ),
+                                            color = Floe.colors.secondaryLabel,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        MeetingTranscriptionPhase.FAILED -> {
+                            if (state.session?.meetingId == meetingId) {
+                                state.failure?.let { failure ->
+                                    val stale = failure.code ==
+                                        MeetingTranscriptionFailureCode.STALE_REVISION
+                                    MeetingErrorBanner(
+                                        text = stringResource(
+                                            meetingTranscriptionFailureTextRes(failure),
+                                        ),
+                                        actionLabel = if (stale) {
+                                            stringResource(R.string.meeting_ui_transcription_reload)
+                                        } else {
+                                            null
+                                        },
+                                        onAction = if (stale) onReloadMeeting else null,
+                                    )
+                                }
+                            }
+                        }
+                        else -> Unit
+                    }
                 }
             }
+
+            cleanupFailure?.takeIf { it.meetingId == meetingId }?.let {
+                MeetingErrorBanner(
+                    text = stringResource(R.string.meeting_ui_transcription_cleanup_failed),
+                    actionLabel = stringResource(R.string.meeting_ui_transcription_dismiss),
+                    onAction = onAcknowledgeCleanupFailure,
+                )
+            }
+
+            FloeText(
+                text = stringResource(R.string.meeting_ui_transcription_service_note),
+                style = Floe.typography.metadata,
+                color = Floe.colors.tertiaryLabel,
+            )
         }
+    }
+
+    if (cancelVisible) {
+        FloeConfirmDialog(
+            title = stringResource(R.string.meeting_ui_transcription_cancel_title),
+            message = stringResource(R.string.meeting_ui_transcription_cancel_body),
+            confirmLabel = stringResource(R.string.meeting_ui_transcription_cancel_confirm),
+            dismissLabel = stringResource(R.string.meeting_ui_transcription_keep_running),
+            onConfirm = {
+                cancelVisible = false
+                if (manager.cancel() == MeetingTranscriptionCancelResult.TOO_LATE) {
+                    cancelTooLate = true
+                }
+            },
+            onDismiss = { cancelVisible = false },
+        )
     }
 }
 
@@ -2778,6 +3250,79 @@ internal fun meetingMaterialTone(status: MeetingMaterialStatus): FloeBadgeTone =
     MeetingMaterialStatus.INCOMPLETE,
     MeetingMaterialStatus.MISSING,
     -> FloeBadgeTone.DESTRUCTIVE
+}
+
+/**
+ * Transcription is intentionally process-owned: page composition, rotation,
+ * backgrounding and re-entry do not cancel it. Only the explicit Cancel action
+ * does.
+ */
+internal fun meetingTranscriptionIsRunning(phase: MeetingTranscriptionPhase): Boolean =
+    phase == MeetingTranscriptionPhase.PREPARING ||
+        phase == MeetingTranscriptionPhase.TRANSCRIBING ||
+        phase == MeetingTranscriptionPhase.FINALIZING ||
+        phase == MeetingTranscriptionPhase.CANCELLING
+
+/** Existing playable app-owned materials are the only transcription sources. */
+internal fun meetingTranscriptionPlayableMaterials(detail: MeetingDetail): List<MeetingMaterial> =
+    detail.materials.filter { it.isPlayable }
+
+/**
+ * Keeps an explicit choice while it is still playable; otherwise prefers the
+ * material the durable transcript belongs to, then the newest playable file.
+ */
+internal fun meetingTranscriptionDefaultMaterial(
+    detail: MeetingDetail,
+    current: String?,
+): String? {
+    val playable = meetingTranscriptionPlayableMaterials(detail)
+    if (current != null && playable.any { it.id == current }) return current
+    val bound = detail.transcription.materialId
+    if (bound != null && playable.any { it.id == bound }) return bound
+    return playable.lastOrNull()?.id
+}
+
+/**
+ * Start requires a ready cloud selection, a playable selected material and no
+ * other attempt. A transcript bound to another material cannot be silently
+ * replaced from this page.
+ */
+internal fun meetingTranscriptionCanStart(
+    detail: MeetingDetail,
+    selectedMaterialId: String?,
+    readiness: MeetingTranscriptionReadiness?,
+    state: MeetingTranscriptionState,
+): Boolean {
+    if (meetingTranscriptionIsRunning(state.phase)) return false
+    val selected = selectedMaterialId ?: return false
+    if (meetingTranscriptionPlayableMaterials(detail).none { it.id == selected }) return false
+    val ready = readiness as? MeetingTranscriptionReadiness.Ready ?: return false
+    if (ready.meetingId != detail.id || ready.materialId != selected) return false
+    val bound = detail.transcription.materialId
+    if (detail.transcription.segments.isNotEmpty() && bound != null && bound != selected) {
+        return false
+    }
+    return ready.transcriptionRevision >= 0L
+}
+
+/**
+ * Page copy for typed failures. Pagination-shape failures share the bounded
+ * [MeetingTranscriptionFailureCode.NO_TIMED_TRANSCRIPT] code with a precise
+ * lane reason; they must say that nothing was saved, not that no speech was
+ * found.
+ */
+internal fun meetingTranscriptionFailureTextRes(failure: MeetingTranscriptionFailure): Int = when {
+    failure.code == MeetingTranscriptionFailureCode.NO_TIMED_TRANSCRIPT &&
+        failure.reason == "transcriptTooLong" ->
+        R.string.meeting_ui_transcription_too_long
+    failure.code == MeetingTranscriptionFailureCode.NO_TIMED_TRANSCRIPT &&
+        (failure.reason?.startsWith("transcriptPage") == true ||
+            failure.reason == "transcriptCountMismatch") ->
+        R.string.meeting_ui_transcription_incomplete
+    failure.code == MeetingTranscriptionFailureCode.CANCELLED &&
+        failure.reason == "cancelUnconfirmed" ->
+        R.string.meeting_ui_transcription_cancel_unconfirmed
+    else -> MeetingTranscriptionText.messageRes(failure)
 }
 
 private sealed interface MeetingLeaveTarget {

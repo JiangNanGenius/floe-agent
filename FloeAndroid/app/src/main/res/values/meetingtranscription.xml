@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Meeting cloud transcription failure messages. -->
+    <string name="meeting_transcription_busy">Another meeting transcription is already running.</string>
+    <string name="meeting_transcription_unconfigured">Choose a cloud transcription service in Voice settings first.</string>
+    <string name="meeting_transcription_credential_missing">The selected transcription service needs a valid credential in Settings.</string>
+    <string name="meeting_transcription_service_unavailable">The transcription service is unavailable right now.</string>
+    <string name="meeting_transcription_core_unavailable">Transcription is not available until the local service starts.</string>
+    <string name="meeting_transcription_source_unavailable">This recording is not available for transcription.</string>
+    <string name="meeting_transcription_unsupported_audio">This file has no audio that can be transcribed.</string>
+    <string name="meeting_transcription_source_too_large">This recording is too long to transcribe.</string>
+    <string name="meeting_transcription_provider_rejected">The transcription service could not process this recording.</string>
+    <string name="meeting_transcription_quota_limited">The transcription service limit was reached. Try again later.</string>
+    <string name="meeting_transcription_timeout">Transcription took too long to complete.</string>
+    <string name="meeting_transcription_empty">No speech was found in this recording.</string>
+    <string name="meeting_transcription_conflict">The transcript changed. Try again to use the latest version.</string>
+    <string name="meeting_transcription_storage_failed">The transcript could not be saved. Your recording is unchanged.</string>
+    <string name="meeting_transcription_cancelled">Transcription was cancelled.</string>
+    <string name="meeting_transcription_failed">Transcription failed. Your recording is unchanged.</string>
+</resources>
