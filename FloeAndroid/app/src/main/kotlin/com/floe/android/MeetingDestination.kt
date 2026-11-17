@@ -89,6 +89,17 @@ import com.floe.android.host.meeting.MeetingRecordingPhase
 import com.floe.android.host.meeting.MeetingRecordingState
 import com.floe.android.host.meeting.MeetingSummary
 import com.floe.android.host.meetingtranscription.MeetingTranscriptionCancelResult
+import com.floe.android.host.meetingassistant.MeetingAssistantAction
+import com.floe.android.host.meetingassistant.MeetingAssistantAvailability
+import com.floe.android.host.meetingassistant.MeetingAssistantEntry
+import com.floe.android.host.meetingassistant.MeetingAssistantEntryStatus
+import com.floe.android.host.meetingassistant.MeetingAssistantFailure
+import com.floe.android.host.meetingassistant.MeetingAssistantFailureCode
+import com.floe.android.host.meetingassistant.MeetingAssistantHost
+import com.floe.android.host.meetingassistant.MeetingAssistantState
+import com.floe.android.host.meetingassistant.MeetingAssistantStore
+import com.floe.android.host.meetingassistant.MeetingAssistantTurnPhase
+import com.floe.android.host.meetingassistant.MeetingAssistantTurnView
 import com.floe.android.host.meetingtranscription.MeetingTranscriptionCleanupFailure
 import com.floe.android.host.meetingtranscription.MeetingTranscriptionFailure
 import com.floe.android.host.meetingtranscription.MeetingTranscriptionFailureCode
@@ -103,7 +114,9 @@ import io.github.robinpcrd.cupertino.cancel
 import io.github.robinpcrd.cupertino.default
 import io.github.robinpcrd.cupertino.destructive
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
+import java.io.File
 import java.text.DateFormat
 import java.util.Date
 import kotlin.math.roundToInt
@@ -168,9 +181,34 @@ internal fun MeetingDestination(
     }
     val transcriptionState by transcriptionManager.state.collectAsState()
     val transcriptionCleanupFailure by transcriptionManager.cleanupFailure.collectAsState()
+    // The meeting assistant is ONE process-owned adapter over the existing
+    // text-only task/run surface. It never creates a provider client or a
+    // second conversation store; a missing runtime simply hides the section
+    // instead of rendering an unusable button.
+    val assistantApplication = applicationContext as? FloeApplication
+    val assistantRuntime = assistantApplication?.runtimeHost
+    val assistantHost = remember(assistantApplication, assistantRuntime, manager) {
+        val runtime = assistantRuntime
+        val store = assistantApplication?.let {
+            MeetingAssistantStore.instance(File(it.filesDir, "meeting-assistant"))
+        }
+        if (runtime != null && store != null) {
+            MeetingAssistantHost(runtime, store, runtime.scope, runtime.ioDispatcher)
+        } else {
+            null
+        }
+    }
+    DisposableEffect(assistantHost) { onDispose { assistantHost?.close() } }
+    val assistantStateFlow = remember(assistantHost) {
+        assistantHost?.state ?: MutableStateFlow(MeetingAssistantState())
+    }
+    val assistantRawState by assistantStateFlow.collectAsState()
+    val assistantState = if (assistantHost != null) assistantRawState else null
 
     var selectedId by rememberSaveable { mutableStateOf<String?>(null) }
     var transcriptionMaterialId by rememberSaveable(selectedId) { mutableStateOf<String?>(null) }
+    var assistantQuestion by rememberSaveable(selectedId) { mutableStateOf("") }
+    var assistantAskOpen by rememberSaveable(selectedId) { mutableStateOf(false) }
     var listError by remember { mutableStateOf<MeetingError?>(null) }
     var listNoticeRes by remember { mutableStateOf<Int?>(null) }
     var refreshing by remember { mutableStateOf(false) }
@@ -214,6 +252,9 @@ internal fun MeetingDestination(
     var deleteBusy by remember(selectedId) { mutableStateOf(false) }
     var deleteError by remember(selectedId) { mutableStateOf<MeetingError?>(null) }
 
+    LaunchedEffect(assistantHost, selectedId) {
+        assistantHost?.selectMeeting(selectedId)
+    }
     var pendingNotesLeave by remember { mutableStateOf<MeetingLeaveTarget?>(null) }
     var pendingRecordingLeave by remember { mutableStateOf<MeetingLeaveTarget?>(null) }
     var stoppingToLeave by remember { mutableStateOf(false) }
@@ -248,33 +289,47 @@ internal fun MeetingDestination(
         }
     }
 
-    fun saveNotes(onSaved: (() -> Unit)? = null) {
+    fun commitNotes(
+        draft: String,
+        successNoticeRes: Int,
+        conflictNoticeRes: Int? = null,
+        onSaved: (() -> Unit)? = null,
+    ) {
         val id = selectedId ?: return
-        if (notesBusy || !notesState.canSave) return
+        if (notesBusy) return
+        // Capture the EXACT meeting revision at the action boundary. A later
+        // meeting switch must never pair this meeting id with another
+        // meeting's editor revision.
+        val expectedRevision = notesState.revision
         notesBusy = true
         notesError = null
         notesNoticeRes = null
         scope.launch {
             try {
-                val saved = manager.updateNotes(id, notesState.draft, notesState.revision)
+                val saved = manager.updateNotes(id, draft, expectedRevision)
                 if (selectedId != id) return@launch
                 detail = saved
                 notesState = notesState.afterSave(saved.notes, saved.notesRevision)
-                notesNoticeRes = R.string.meeting_ui_notes_saved_notice
+                notesNoticeRes = successNoticeRes
                 refreshCatalogQuietly()
                 onSaved?.invoke()
             } catch (error: MeetingException) {
                 if (selectedId != id) return@launch
                 if (error.code == MeetingErrorCode.CONFLICT) {
+                    // The proposed text stays recoverable in BOTH paths: the
+                    // normal save restores the user's draft, and an assistant
+                    // insert restores the exact would-be notes so nothing is
+                    // silently lost when another editor won the revision.
                     notesState = notesState.copy(
                         conflict = true,
-                        recovery = notesState.recovery ?: notesState.draft,
+                        recovery = notesState.recovery ?: draft,
                     )
                     try {
                         val latest = manager.meeting(id)
                         if (selectedId != id) return@launch
                         detail = latest
                         notesState = notesState.afterConflict(latest.notes, latest.notesRevision)
+                        if (conflictNoticeRes != null) notesNoticeRes = conflictNoticeRes
                     } catch (fetchError: MeetingException) {
                         if (selectedId == id) notesError = fetchError.error
                     }
@@ -287,6 +342,41 @@ internal fun MeetingDestination(
                 if (selectedId == id) notesBusy = false
             }
         }
+    }
+
+    fun saveNotes(onSaved: (() -> Unit)? = null) {
+        if (notesBusy || !notesState.canSave) return
+        commitNotes(
+            draft = notesState.draft,
+            successNoticeRes = R.string.meeting_ui_notes_saved_notice,
+            onSaved = onSaved,
+        )
+    }
+
+    /**
+     * Explicit user action: append one complete assistant answer to the real
+     * notes with the existing notes-revision CAS. A dirty/conflicted editor is
+     * never overwritten; it must be saved or resolved first.
+     */
+    fun insertAssistantAnswer(text: String, heading: String) {
+        val id = selectedId ?: return
+        if (!meetingAssistantCanInsertNotes(
+                notesDirty = notesState.dirty,
+                notesConflict = notesState.conflict,
+                notesBusy = notesBusy,
+            )
+        ) {
+            return
+        }
+        val current = detail ?: return
+        if (current.id != id) return
+        val combined = meetingAssistantAppendText(current.notes, heading, text)
+        if (combined == current.notes) return
+        commitNotes(
+            draft = combined,
+            successNoticeRes = R.string.meeting_ui_assistant_inserted,
+            conflictNoticeRes = R.string.meeting_ui_assistant_insert_conflict,
+        )
     }
 
     fun reloadLatestNotes() {
@@ -777,6 +867,38 @@ internal fun MeetingDestination(
                             transcriptionMaterialId = transcriptionMaterialId,
                             transcriptionMeetingTitle = transcriptionMeetingTitle,
                             onTranscriptionMaterialSelected = { transcriptionMaterialId = it },
+                            assistantState = assistantState,
+                            assistantQuestion = assistantQuestion,
+                            assistantAskOpen = assistantAskOpen,
+                            assistantCanInsertNotes = meetingAssistantCanInsertNotes(
+                                notesDirty = notesState.dirty,
+                                notesConflict = notesState.conflict,
+                                notesBusy = notesBusy,
+                            ),
+                            assistantNotesUnsaved = notesState.dirty,
+                            onAssistantQuestionChange = { assistantQuestion = it },
+                            onAssistantAskOpenChange = { assistantAskOpen = it },
+                            onAssistantSend = { action, question ->
+                                selectedId?.let { id ->
+                                    assistantHost?.send(id, action, question) { meetingId ->
+                                        manager.meeting(meetingId)
+                                    }
+                                }
+                            },
+                            onAssistantCancel = { selectedId?.let { assistantHost?.cancel(it) } },
+                            onAssistantCheckActive = {
+                                selectedId?.let { assistantHost?.checkActive(it) }
+                            },
+                            onAssistantCheckAgain = { entryId ->
+                                selectedId?.let { assistantHost?.checkAgain(it, entryId) }
+                            },
+                            onAssistantSelectModel = { modelId ->
+                                selectedId?.let { assistantHost?.selectModel(modelId) }
+                            },
+                            onAssistantRefresh = { assistantHost?.refresh() },
+                            onAssistantInsert = { text, heading ->
+                                insertAssistantAnswer(text, heading)
+                            },
                             twoPane = true,
                             onBack = { requestNavigation(MeetingLeaveTarget.ClearSelection) },
                             onRefresh = {
@@ -909,6 +1031,38 @@ internal fun MeetingDestination(
                 transcriptionMaterialId = transcriptionMaterialId,
                 transcriptionMeetingTitle = transcriptionMeetingTitle,
                 onTranscriptionMaterialSelected = { transcriptionMaterialId = it },
+                assistantState = assistantState,
+                assistantQuestion = assistantQuestion,
+                assistantAskOpen = assistantAskOpen,
+                assistantCanInsertNotes = meetingAssistantCanInsertNotes(
+                    notesDirty = notesState.dirty,
+                    notesConflict = notesState.conflict,
+                    notesBusy = notesBusy,
+                ),
+                assistantNotesUnsaved = notesState.dirty,
+                onAssistantQuestionChange = { assistantQuestion = it },
+                onAssistantAskOpenChange = { assistantAskOpen = it },
+                onAssistantSend = { action, question ->
+                    selectedId?.let { id ->
+                        assistantHost?.send(id, action, question) { meetingId ->
+                            manager.meeting(meetingId)
+                        }
+                    }
+                },
+                onAssistantCancel = { selectedId?.let { assistantHost?.cancel(it) } },
+                onAssistantCheckActive = {
+                    selectedId?.let { assistantHost?.checkActive(it) }
+                },
+                onAssistantCheckAgain = { entryId ->
+                    selectedId?.let { assistantHost?.checkAgain(it, entryId) }
+                },
+                onAssistantSelectModel = { modelId ->
+                    selectedId?.let { assistantHost?.selectModel(modelId) }
+                },
+                onAssistantRefresh = { assistantHost?.refresh() },
+                onAssistantInsert = { text, heading ->
+                    insertAssistantAnswer(text, heading)
+                },
                 twoPane = false,
                 onBack = { requestNavigation(MeetingLeaveTarget.ClearSelection) },
                 onRefresh = {
@@ -1402,6 +1556,20 @@ private fun MeetingDetailHost(
     transcriptionMaterialId: String?,
     transcriptionMeetingTitle: String?,
     onTranscriptionMaterialSelected: (String) -> Unit,
+    assistantState: MeetingAssistantState?,
+    assistantQuestion: String,
+    assistantAskOpen: Boolean,
+    assistantCanInsertNotes: Boolean,
+    assistantNotesUnsaved: Boolean,
+    onAssistantQuestionChange: (String) -> Unit,
+    onAssistantAskOpenChange: (Boolean) -> Unit,
+    onAssistantSend: (MeetingAssistantAction, String) -> Unit,
+    onAssistantCancel: () -> Unit,
+    onAssistantCheckActive: () -> Unit,
+    onAssistantCheckAgain: (String) -> Unit,
+    onAssistantSelectModel: (String) -> Unit,
+    onAssistantRefresh: () -> Unit,
+    onAssistantInsert: (String, String) -> Unit,
     twoPane: Boolean,
     onBack: () -> Unit,
     onRefresh: () -> Unit,
@@ -1501,6 +1669,27 @@ private fun MeetingDetailHost(
                             onReload = onReloadNotes,
                             onRestore = onRestoreNotes,
                         )
+                    }
+                    assistantState?.let { assistant ->
+                        item(key = "assistant") {
+                            MeetingAssistantSection(
+                                state = assistant,
+                                detail = detail,
+                                question = assistantQuestion,
+                                askOpen = assistantAskOpen,
+                                canInsertNotes = assistantCanInsertNotes,
+                                notesUnsaved = assistantNotesUnsaved,
+                                onQuestionChange = onAssistantQuestionChange,
+                                onAskOpenChange = onAssistantAskOpenChange,
+                                onSend = onAssistantSend,
+                                onCancel = onAssistantCancel,
+                                onCheckActive = onAssistantCheckActive,
+                                onCheckAgain = onAssistantCheckAgain,
+                                onSelectModel = onAssistantSelectModel,
+                                onRefresh = onAssistantRefresh,
+                                onInsert = onAssistantInsert,
+                            )
+                        }
                     }
                     item(key = "recording") {
                         MeetingRecordingSection(
@@ -1707,6 +1896,385 @@ private fun MeetingNotesSection(
                     onClick = onSave,
                     enabled = state.canSave && !busy,
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun MeetingAssistantSection(
+    state: MeetingAssistantState,
+    detail: MeetingDetail,
+    question: String,
+    askOpen: Boolean,
+    canInsertNotes: Boolean,
+    notesUnsaved: Boolean,
+    onQuestionChange: (String) -> Unit,
+    onAskOpenChange: (Boolean) -> Unit,
+    onSend: (MeetingAssistantAction, String) -> Unit,
+    onCancel: () -> Unit,
+    onCheckActive: () -> Unit,
+    onCheckAgain: (String) -> Unit,
+    onSelectModel: (String) -> Unit,
+    onRefresh: () -> Unit,
+    onInsert: (String, String) -> Unit,
+) {
+    val contextReady = meetingAssistantContextReady(detail)
+    val availability = state.availability
+    val active = state.active
+    val canStartTurn = meetingAssistantCanSend(availability, active, contextReady)
+    val answerHeading = stringResource(R.string.meeting_ui_assistant_answer_heading)
+    val minutesHeading = stringResource(R.string.meeting_ui_assistant_minutes_heading)
+    val todosHeading = stringResource(R.string.meeting_ui_assistant_todos_heading)
+    val hasAnswer = state.entries.any { it.answer != null }
+
+    FloeSettingsSectionCard(title = stringResource(R.string.meeting_ui_assistant_section)) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            when (availability) {
+                MeetingAssistantAvailability.Checking -> {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        val checking = stringResource(R.string.meeting_ui_assistant_checking)
+                        FloeActivityIndicator(description = checking)
+                        FloeText(
+                            text = checking,
+                            style = Floe.typography.metadata,
+                            color = Floe.colors.secondaryLabel,
+                        )
+                    }
+                }
+
+                is MeetingAssistantAvailability.NotConfigured -> {
+                    FloeStatusLine(
+                        icon = FloeIcons.WarningTriangle,
+                        text = stringResource(meetingAssistantFailureResource(availability.reason)),
+                        color = Floe.colors.pending,
+                    )
+                    FloeCapsuleAction(
+                        label = stringResource(R.string.meeting_ui_assistant_check_again),
+                        onClick = onRefresh,
+                    )
+                }
+
+                is MeetingAssistantAvailability.Unavailable -> {
+                    FloeStatusLine(
+                        icon = FloeIcons.WarningTriangle,
+                        text = stringResource(meetingAssistantFailureResource(availability.reason)),
+                        color = Floe.colors.pending,
+                    )
+                    FloeCapsuleAction(
+                        label = stringResource(R.string.meeting_ui_assistant_check_again),
+                        onClick = onRefresh,
+                    )
+                }
+
+                is MeetingAssistantAvailability.Ready -> {
+                    FloeText(
+                        text = stringResource(
+                            R.string.meeting_ui_assistant_model,
+                            availability.modelLabel,
+                        ),
+                        style = Floe.typography.metadata,
+                        color = Floe.colors.secondaryLabel,
+                    )
+                    if (availability.models.size > 1) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            availability.models.forEach { model ->
+                                FloeCapsuleAction(
+                                    label = model.label,
+                                    onClick = { onSelectModel(model.modelId) },
+                                    tint = if (model.modelId == availability.modelId) {
+                                        Floe.colors.accent
+                                    } else {
+                                        Floe.colors.secondaryLabel
+                                    },
+                                    showHairline = model.modelId == availability.modelId,
+                                )
+                            }
+                        }
+                    }
+                    FloeText(
+                        text = stringResource(R.string.meeting_ui_assistant_privacy),
+                        style = Floe.typography.metadata,
+                        color = Floe.colors.tertiaryLabel,
+                    )
+                }
+            }
+
+            if (!contextReady) {
+                MeetingInlineEmpty(
+                    icon = FloeIcons.Wand,
+                    title = stringResource(R.string.meeting_ui_assistant_context_empty_title),
+                    body = stringResource(R.string.meeting_ui_assistant_context_empty_body),
+                )
+            } else if (canStartTurn) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    FloeCapsuleAction(
+                        label = stringResource(R.string.meeting_ui_assistant_ask),
+                        onClick = { onAskOpenChange(true) },
+                        enabled = !askOpen,
+                        tint = if (askOpen) Floe.colors.accent else null,
+                        showHairline = askOpen,
+                    )
+                    FloeCapsuleAction(
+                        label = stringResource(R.string.meeting_ui_assistant_minutes),
+                        onClick = { onSend(MeetingAssistantAction.MINUTES, "") },
+                    )
+                    FloeCapsuleAction(
+                        label = stringResource(R.string.meeting_ui_assistant_todos),
+                        onClick = { onSend(MeetingAssistantAction.TODOS, "") },
+                    )
+                }
+                if (askOpen) {
+                    FloePlainFormField(
+                        label = stringResource(R.string.meeting_ui_assistant_question_hint),
+                        value = question,
+                        onValueChange = onQuestionChange,
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = false,
+                        minLines = 2,
+                        maxLines = 6,
+                    )
+                    FloeCapsuleAction(
+                        label = stringResource(R.string.meeting_ui_assistant_send),
+                        onClick = { onSend(MeetingAssistantAction.ASK, question) },
+                        enabled = question.isNotBlank(),
+                    )
+                }
+            }
+
+            active?.let { turn ->
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    val label = when (turn.phase) {
+                        MeetingAssistantTurnPhase.PREPARING ->
+                            stringResource(R.string.meeting_ui_assistant_preparing)
+                        MeetingAssistantTurnPhase.RUNNING ->
+                            stringResource(R.string.meeting_ui_assistant_working)
+                        MeetingAssistantTurnPhase.CANCELLING ->
+                            stringResource(R.string.meeting_ui_assistant_cancelling)
+                    }
+                    if (turn.phase != MeetingAssistantTurnPhase.CANCELLING) {
+                        FloeActivityIndicator(description = label)
+                    }
+                    FloeText(
+                        text = label,
+                        style = Floe.typography.metadata,
+                        color = Floe.colors.secondaryLabel,
+                        modifier = Modifier.weight(1f),
+                    )
+                    if (turn.phase == MeetingAssistantTurnPhase.RUNNING) {
+                        FloeCapsuleAction(
+                            label = stringResource(R.string.meeting_ui_assistant_cancel),
+                            onClick = onCancel,
+                            tint = Floe.colors.destructive,
+                        )
+                    }
+                    if (state.error?.code == MeetingAssistantFailureCode.STREAM_LOST) {
+                        FloeCapsuleAction(
+                            label = stringResource(R.string.meeting_ui_assistant_check_status),
+                            onClick = onCheckActive,
+                        )
+                    }
+                }
+            }
+
+            state.error?.let { failure ->
+                MeetingErrorBanner(text = meetingAssistantFailureText(failure))
+            }
+            if (state.historyUnreadable) {
+                FloeStatusLine(
+                    icon = FloeIcons.WarningTriangle,
+                    text = stringResource(R.string.meeting_ui_assistant_history_unreadable),
+                    color = Floe.colors.pending,
+                )
+            }
+            if (notesUnsaved) {
+                FloeStatusLine(
+                    icon = FloeIcons.InfoCircle,
+                    text = stringResource(R.string.meeting_ui_assistant_unsaved_notes),
+                    color = Floe.colors.pending,
+                )
+            }
+            if (hasAnswer && !canInsertNotes) {
+                FloeText(
+                    text = stringResource(R.string.meeting_ui_assistant_insert_requires_saved_notes),
+                    style = Floe.typography.metadata,
+                    color = Floe.colors.tertiaryLabel,
+                )
+            }
+            if (state.entries.isEmpty() && contextReady && canStartTurn) {
+                MeetingInlineEmpty(
+                    icon = FloeIcons.Wand,
+                    title = stringResource(R.string.meeting_ui_assistant_empty_title),
+                    body = stringResource(R.string.meeting_ui_assistant_empty_body),
+                )
+            }
+
+            state.entries.forEachIndexed { index, entry ->
+                val heading = when (entry.action) {
+                    MeetingAssistantAction.ASK -> answerHeading
+                    MeetingAssistantAction.MINUTES -> minutesHeading
+                    MeetingAssistantAction.TODOS -> todosHeading
+                }
+                MeetingAssistantEntryRow(
+                    entry = entry,
+                    checking = entry.id in state.checkingEntryIds,
+                    active = active,
+                    canInsertNotes = canInsertNotes,
+                    onCheckAgain = { onCheckAgain(entry.id) },
+                    onInsert = {
+                        entry.answer?.let { answer ->
+                            val text = if (
+                                entry.action == MeetingAssistantAction.ASK &&
+                                entry.question.isNotBlank()
+                            ) {
+                                "${entry.question}\n\n$answer"
+                            } else {
+                                answer
+                            }
+                            onInsert(text, heading)
+                        }
+                    },
+                )
+                if (index != state.entries.lastIndex) FloeDivider()
+            }
+        }
+    }
+}
+
+@Composable
+private fun MeetingAssistantEntryRow(
+    entry: MeetingAssistantEntry,
+    checking: Boolean,
+    active: MeetingAssistantTurnView?,
+    canInsertNotes: Boolean,
+    onCheckAgain: () -> Unit,
+    onInsert: () -> Unit,
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            FloeText(
+                text = stringResource(meetingAssistantKindResource(entry.action)),
+                style = Floe.typography.metadata,
+                color = Floe.colors.secondaryLabel,
+            )
+            val time = meetingAssistantTimeLabel(entry.createdAtMillis)
+            if (time.isNotEmpty()) {
+                FloeText(
+                    text = time,
+                    style = Floe.typography.evidence,
+                    color = Floe.colors.tertiaryLabel,
+                )
+            }
+        }
+        if (entry.action == MeetingAssistantAction.ASK && entry.question.isNotBlank()) {
+            FloeText(entry.question, style = Floe.typography.bodyEmphasized)
+        }
+        val answer = entry.answer
+        if (!answer.isNullOrBlank()) {
+            FloeText(answer, style = Floe.typography.body)
+            if (entry.answerTruncated) {
+                FloeText(
+                    text = stringResource(R.string.meeting_ui_assistant_truncated),
+                    style = Floe.typography.metadata,
+                    color = Floe.colors.tertiaryLabel,
+                )
+            }
+            if (entry.status == MeetingAssistantEntryStatus.PARTIAL) {
+                FloeStatusLine(
+                    icon = FloeIcons.InfoCircle,
+                    text = stringResource(R.string.meeting_ui_assistant_partial),
+                    color = Floe.colors.pending,
+                )
+            }
+        } else if (entry.status == MeetingAssistantEntryStatus.PENDING) {
+            if (active != null) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    val pending = stringResource(R.string.meeting_ui_assistant_pending)
+                    FloeActivityIndicator(description = pending)
+                    FloeText(
+                        text = pending,
+                        style = Floe.typography.metadata,
+                        color = Floe.colors.secondaryLabel,
+                    )
+                }
+            } else {
+                FloeStatusLine(
+                    icon = FloeIcons.Clock,
+                    text = stringResource(R.string.meeting_ui_assistant_unfinished),
+                    color = Floe.colors.secondaryLabel,
+                )
+            }
+        } else {
+            FloeStatusLine(
+                icon = FloeIcons.WarningTriangle,
+                text = meetingAssistantFailureText(
+                    MeetingAssistantFailure(
+                        entry.failure ?: MeetingAssistantFailureCode.RESULT_UNREADABLE,
+                    ),
+                ),
+                color = Floe.colors.secondaryLabel,
+            )
+        }
+        FloeText(
+            text = stringResource(
+                R.string.meeting_ui_assistant_provenance,
+                entry.notesRevision,
+                entry.transcriptRevision,
+            ),
+            style = Floe.typography.evidence,
+            color = Floe.colors.tertiaryLabel,
+        )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (!answer.isNullOrBlank() && canInsertNotes) {
+                FloeCapsuleAction(
+                    label = stringResource(R.string.meeting_ui_assistant_insert),
+                    onClick = onInsert,
+                )
+            }
+            val canCheckAgain = entry.status == MeetingAssistantEntryStatus.UNRESOLVED ||
+                (entry.status == MeetingAssistantEntryStatus.PENDING && active == null)
+            if (canCheckAgain) {
+                if (checking) {
+                    val label = stringResource(R.string.meeting_ui_assistant_check_again)
+                    FloeActivityIndicator(description = label)
+                    FloeText(
+                        text = label,
+                        style = Floe.typography.metadata,
+                        color = Floe.colors.secondaryLabel,
+                    )
+                } else {
+                    FloeCapsuleAction(
+                        label = stringResource(R.string.meeting_ui_assistant_check_again),
+                        onClick = onCheckAgain,
+                    )
+                }
             }
         }
     }
@@ -3195,6 +3763,93 @@ internal fun meetingDurationLabel(durationMillis: Long): String {
         "$minutes:${seconds.toString().padStart(2, '0')}"
     }
 }
+
+/**
+ * The assistant may start only when the real model projection is usable, this
+ * meeting has notes or a transcript, and no turn is already active.
+ */
+internal fun meetingAssistantContextReady(detail: MeetingDetail): Boolean =
+    detail.notes.isNotBlank() ||
+        detail.transcription.segments.any { it.text.isNotBlank() }
+
+internal fun meetingAssistantCanSend(
+    availability: MeetingAssistantAvailability,
+    active: MeetingAssistantTurnView?,
+    contextReady: Boolean,
+): Boolean = contextReady &&
+    active == null &&
+    availability is MeetingAssistantAvailability.Ready
+
+/** Never overwrite an unsaved or conflicted notes editor with an AI answer. */
+internal fun meetingAssistantCanInsertNotes(
+    notesDirty: Boolean,
+    notesConflict: Boolean,
+    notesBusy: Boolean,
+): Boolean = !notesDirty && !notesConflict && !notesBusy
+
+/** Deterministic append used by the explicit "Add to notes" action. */
+internal fun meetingAssistantAppendText(
+    existingNotes: String,
+    heading: String,
+    text: String,
+): String {
+    val body = text.trim()
+    if (body.isEmpty()) return existingNotes
+    val block = heading.trim().let { if (it.isEmpty()) body else "$it\n$body" }
+    val base = existingNotes.trimEnd()
+    return if (base.isEmpty()) block else "$base\n\n$block"
+}
+
+internal fun meetingAssistantKindResource(action: MeetingAssistantAction): Int = when (action) {
+    MeetingAssistantAction.ASK -> R.string.meeting_ui_assistant_kind_ask
+    MeetingAssistantAction.MINUTES -> R.string.meeting_ui_assistant_kind_minutes
+    MeetingAssistantAction.TODOS -> R.string.meeting_ui_assistant_kind_todos
+}
+
+internal fun meetingAssistantFailureResource(code: MeetingAssistantFailureCode): Int = when (code) {
+    MeetingAssistantFailureCode.RUNTIME_UNAVAILABLE ->
+        R.string.meeting_ui_assistant_runtime_unavailable
+    MeetingAssistantFailureCode.PROVIDERS_NOT_READY ->
+        R.string.meeting_ui_assistant_providers_not_ready
+    MeetingAssistantFailureCode.NO_TEXT_MODEL -> R.string.meeting_ui_assistant_no_model
+    MeetingAssistantFailureCode.MODEL_UNAVAILABLE ->
+        R.string.meeting_ui_assistant_model_unavailable
+    MeetingAssistantFailureCode.NO_CONTEXT ->
+        R.string.meeting_ui_assistant_context_empty_body
+    MeetingAssistantFailureCode.INVALID_QUESTION ->
+        R.string.meeting_ui_assistant_invalid_question
+    MeetingAssistantFailureCode.PROMPT_TOO_LARGE -> R.string.meeting_ui_assistant_too_long
+    MeetingAssistantFailureCode.BUSY -> R.string.meeting_ui_assistant_busy
+    MeetingAssistantFailureCode.CONTEXT_UNAVAILABLE ->
+        R.string.meeting_ui_assistant_context_error
+    MeetingAssistantFailureCode.LAUNCH_REFUSED ->
+        R.string.meeting_ui_assistant_launch_refused
+    MeetingAssistantFailureCode.LAUNCH_FAILED -> R.string.meeting_ui_assistant_launch_failed
+    MeetingAssistantFailureCode.STREAM_LOST -> R.string.meeting_ui_assistant_stream_lost
+    MeetingAssistantFailureCode.RESULT_UNREADABLE ->
+        R.string.meeting_ui_assistant_result_unreadable
+    MeetingAssistantFailureCode.RUN_FAILED -> R.string.meeting_ui_assistant_run_failed
+    MeetingAssistantFailureCode.RUN_CANCELLED ->
+        R.string.meeting_ui_assistant_run_cancelled
+    MeetingAssistantFailureCode.NO_ANSWER -> R.string.meeting_ui_assistant_no_answer
+    MeetingAssistantFailureCode.STILL_RUNNING -> R.string.meeting_ui_assistant_still_running
+    MeetingAssistantFailureCode.CANCEL_REFUSED ->
+        R.string.meeting_ui_assistant_cancel_refused
+    MeetingAssistantFailureCode.HISTORY_UNAVAILABLE ->
+        R.string.meeting_ui_assistant_history_unreadable
+    MeetingAssistantFailureCode.STORE_FAILED -> R.string.meeting_ui_assistant_store_failed
+}
+
+@Composable
+private fun meetingAssistantFailureText(failure: MeetingAssistantFailure): String =
+    stringResource(meetingAssistantFailureResource(failure.code))
+
+private fun meetingAssistantTimeLabel(millis: Long): String =
+    if (millis <= 0L) {
+        ""
+    } else {
+        DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(millis))
+    }
 
 internal fun meetingErrorResource(code: MeetingErrorCode): Int = when (code) {
     MeetingErrorCode.PERMISSION_REQUIRED -> R.string.meeting_ui_error_permission

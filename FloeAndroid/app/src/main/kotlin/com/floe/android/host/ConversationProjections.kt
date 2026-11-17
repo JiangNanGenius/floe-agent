@@ -2602,6 +2602,10 @@ internal object ConversationWire {
         val startedAt: String,
         /** Durable `conversation_mode` for THIS run (`chat|plan|goal`). */
         val conversationModeRaw: String? = null,
+        /** The App composer's EXPLICIT `agent|chat|plan|goal` selection the
+         * launch recorded, or null when it was never recorded (legacy/
+         * unlabeled). Null is honest absence — never default it to Agent. */
+        val explicitExecutionModeRaw: String? = null,
     )
 
     class MessagePage(
@@ -2748,6 +2752,7 @@ internal object ConversationWire {
                 modelName = obj.string("modelName"),
                 startedAt = obj.string("startedAt") ?: "",
                 conversationModeRaw = obj.string("conversationMode"),
+                explicitExecutionModeRaw = obj.string("explicitExecutionMode"),
             )
         } ?: emptyList()
         val pendingInputs = (root["pendingInputs"] as? JsonArray)?.mapNotNull { element ->
@@ -3556,6 +3561,20 @@ internal object ConversationWire {
      * * `mode` is the ORIGINAL `RunLaunchMode` vocabulary `chat|plan|goal`;
      *   the composer's AGENT and CHAT both mean the ordinary chat-capable
      *   turn, while PLAN/GOAL keep their own spellings.
+     * * `executionMode` is the additive, OPTIONAL provenance member. It is
+     *   present only when the App really holds an explicit selection: either
+     *   the durable per-conversation composer choice ([persistedModeRaw], the
+     *   same `TaskContinuityPreferences` record restored on reopen) agrees
+     *   with this launch, or the mode is CHAT — which can never be the
+     *   untouched Agent default. An absent member stays NULL in native
+     *   storage (legacy/unlabeled), never a fabricated Agent choice, and old
+     *   callers (`run.startTask`, meeting assistant) keep their exact bytes.
+     *   PLAN/GOAL remain exact in `conversation_mode` even when the member is
+     *   absent.
+     * * CHAT is a normal task-authorized turn: it does NOT send an empty
+     *   `toolCeiling`. Ordinary text/voice Chat and Agent share the persisted
+     *   task policy, tool availability and approvals; only Plan's read-only
+     *   projection and the separate temporary ceiling narrow the toolchain.
      * * `providerID` + `modelID` are REQUIRED native UUIDs; the App sends the
      *   real selected model's provider/model identities (never a default or a
      *   fabricated id).
@@ -3563,7 +3582,9 @@ internal object ConversationWire {
      *   the previous App invented both and native rejected the whole
      *   payload. Temporary launches travel the dedicated `temp.*` surface.
      */
-    fun runStartPayload(request: RunLaunchRequest, stagedHandles: List<String>): JsonObject {
+    fun runStartPayload(request: RunLaunchRequest,
+                        stagedHandles: List<String>,
+                        persistedModeRaw: String? = null): JsonObject {
         val members = mutableMapOf<String, JsonElement>(
             "goal" to JsonPrimitive(request.goalText),
             "mode" to JsonPrimitive(runLaunchMode(request.executionMode)),
@@ -3571,18 +3592,20 @@ internal object ConversationWire {
         )
         request.providerId?.let { members["providerID"] = JsonPrimitive(it) }
         request.modelId?.let { members["modelID"] = JsonPrimitive(it) }
-        // Product CHAT (an explicit ordinary chat-only turn) sends the EMPTY
-        // tool ceiling: the current native assembly already maps an empty
-        // ceiling to `toolsEnabled=false`. AGENT omits the key and keeps the
-        // native tool path enabled. This NEVER generalizes from the wire
-        // `mode:"chat"` — AGENT also travels the chat spelling — only from
-        // the composer's own CHAT selection on an ORDINARY launch (a
-        // temporary session's ceiling is the native frozen public-web
-        // allowlist and must stay unchanged).
-        if (request.executionMode == AgentExecutionModeUi.CHAT &&
-            request.temporaryIncarnationId == null
-        ) {
-            members["toolCeiling"] = JsonArray(emptyList())
+        // Presence-based provenance. A stored composer choice that matches
+        // this launch is the user's real selection (AGENT included); CHAT is
+        // inherently a selection because the untouched default is AGENT.
+        // Everything else stays absent, so native records NULL — never a
+        // claimed Agent — and a temporary session invents nothing here.
+        val declaredMode = when {
+            persistedModeRaw != null && persistedModeRaw == request.executionMode.swiftRaw ->
+                request.executionMode.swiftRaw
+            request.executionMode == AgentExecutionModeUi.CHAT ->
+                AgentExecutionModeUi.CHAT.swiftRaw
+            else -> null
+        }
+        if (declaredMode != null && request.temporaryIncarnationId == null) {
+            members["executionMode"] = JsonPrimitive(declaredMode)
         }
         // The Home draft-task policy for the FIRST fresh launch of a new
         // ordinary conversation (⇄ persisted atomically with the launch by
@@ -3634,7 +3657,9 @@ internal object ConversationWire {
      * the payload so the durable row owns it (iOS parity) and the native
      * terminal drain launches exactly the queued mode instead of a silent
      * default. Native keeps the historical `agent` default for an absent
-     * key, so the grammar stays additive.
+     * key, so the grammar stays additive. The member's PRESENCE is also the
+     * row's explicit-provenance source: the drain persists it on the run
+     * (an old envelope without the key stays NULL, never a claimed Agent).
      */
     fun runningInputPayload(request: RunningInputRequest, stagedHandles: List<String>): JsonObject {
         val members = mutableMapOf<String, JsonElement>(

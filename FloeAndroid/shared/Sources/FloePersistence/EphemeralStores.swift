@@ -1055,6 +1055,18 @@ public actor EphemeralRunLaunchStore: RunLaunchStore {
         guard ["user", "goalContinuation"].contains(request.messageRole) else {
             throw FloeError.validationFailed("Unknown launch message role")
         }
+        if let explicit = request.explicitExecutionMode {
+            guard ["agent", "chat", "plan", "goal"].contains(explicit) else {
+                throw FloeError.validationFailed("Unknown explicit execution mode")
+            }
+            let expectedLaunchMode: String =
+                (explicit == "plan" || explicit == "goal") ? explicit : "chat"
+            guard expectedLaunchMode == request.conversationMode else {
+                throw FloeError.validationFailed(
+                    "Explicit execution mode does not match the launch mode"
+                )
+            }
+        }
         let now = request.startedAt
         let conversation = ConversationRecord(
             id: hostedConversationID,
@@ -1082,7 +1094,8 @@ public actor EphemeralRunLaunchStore: RunLaunchStore {
             modelID: request.modelID,
             providerName: request.providerName,
             modelName: request.modelName,
-            conversationMode: request.conversationMode
+            conversationMode: request.conversationMode,
+            explicitExecutionMode: request.explicitExecutionMode
         )
         let messageID = UUID()
         var parts: [MessagePart] = [MessagePart(

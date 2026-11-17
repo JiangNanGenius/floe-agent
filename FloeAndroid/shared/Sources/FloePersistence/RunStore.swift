@@ -23,6 +23,12 @@ public struct RunRecord: Sendable, Hashable, Identifiable {
     /// Immutable execution contract for this run. NULL is reserved for legacy
     /// rows whose historical mode could not be proven during migration.
     public var conversationMode: String?
+    /// The App composer's explicit `agent|chat|plan|goal` selection recorded at
+    /// launch. NULL is honest absence (legacy rows, internal launches, or a
+    /// caller that never sent one) and is never presented as a user choice.
+    /// Provenance/UI/recovery only: the permission contract remains the
+    /// persisted task policy plus `conversationMode`.
+    public var explicitExecutionMode: String?
 
     public init(
         id: UUID,
@@ -36,7 +42,8 @@ public struct RunRecord: Sendable, Hashable, Identifiable {
         modelID: UUID? = nil,
         providerName: String? = nil,
         modelName: String? = nil,
-        conversationMode: String? = nil
+        conversationMode: String? = nil,
+        explicitExecutionMode: String? = nil
     ) {
         self.id = id
         self.conversationID = conversationID
@@ -50,6 +57,7 @@ public struct RunRecord: Sendable, Hashable, Identifiable {
         self.providerName = providerName
         self.modelName = modelName
         self.conversationMode = conversationMode
+        self.explicitExecutionMode = explicitExecutionMode
     }
 }
 
@@ -275,8 +283,8 @@ public actor SQLiteRunStore: RunStore {
                     INSERT INTO runs (
                         id, conversation_id, state, goal, started_at, ended_at, goal_id,
                         provider_id, model_id, provider_name_snapshot, model_name_snapshot,
-                        conversation_mode
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        conversation_mode, explicit_execution_mode
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         state = excluded.state,
                         goal = excluded.goal,
@@ -289,7 +297,10 @@ public actor SQLiteRunStore: RunStore {
                         model_name_snapshot = COALESCE(
                             excluded.model_name_snapshot, runs.model_name_snapshot
                         ),
-                        conversation_mode = runs.conversation_mode
+                        conversation_mode = runs.conversation_mode,
+                        explicit_execution_mode = COALESCE(
+                            runs.explicit_execution_mode, excluded.explicit_execution_mode
+                        )
                     """,
                 arguments: [
                     run.id.uuidString,
@@ -303,7 +314,8 @@ public actor SQLiteRunStore: RunStore {
                     run.modelID?.uuidString,
                     run.providerName,
                     run.modelName,
-                    run.conversationMode
+                    run.conversationMode,
+                    run.explicitExecutionMode
                 ]
             )
         }
@@ -650,7 +662,8 @@ public actor SQLiteRunStore: RunStore {
             modelID: (row["model_id"] as String?).flatMap(UUID.init(uuidString:)),
             providerName: row["provider_name_snapshot"],
             modelName: row["model_name_snapshot"],
-            conversationMode: row["conversation_mode"]
+            conversationMode: row["conversation_mode"],
+            explicitExecutionMode: row["explicit_execution_mode"]
         )
     }
 

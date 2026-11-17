@@ -379,6 +379,9 @@ enum RunSnapshotWireBuilder {
                 "durableTerminal": .boolean(N113RunTerminal.isDurableTerminal(record.state)),
                 "terminalDisposition": .string(disposition.rawValue),
                 "conversationMode": record.conversationMode.map { .string($0) } ?? .null,
+                // Presence-based composer provenance; null = never recorded
+                // (legacy/unlabeled), never a fabricated Agent selection.
+                "explicitExecutionMode": record.explicitExecutionMode.map { .string($0) } ?? .null,
                 "liveOwner": .boolean(liveOwner),
                 "durableWatermark": .integer(Int64(watermark)),
             ]
@@ -428,6 +431,7 @@ enum RunSnapshotWireBuilder {
             N113RunTerminal.disposition(
                 state: record.state, isLiveOwner: liveService != nil).rawValue)
         fields["conversationMode"] = record.conversationMode.map { .string($0) } ?? .null
+        fields["explicitExecutionMode"] = record.explicitExecutionMode.map { .string($0) } ?? .null
         fields["goal"] = .string(bounded(record.goal, maxBytes: 2_048))
         fields["liveOwner"] = .boolean(liveService != nil)
         if let snapshot {

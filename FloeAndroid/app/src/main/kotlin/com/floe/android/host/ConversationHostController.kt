@@ -3140,6 +3140,15 @@ class ConversationHostController internal constructor(
             // for the close boundary to settle.
             refreshCommittedRowsAfterLaunch(entry, prepared.runID)
         }
+        // The REAL explicit composer selection, if this conversation has one
+        // durably recorded (the same preference restored on reopen). nil is
+        // honest absence: a never-touched Agent default is not relabelled as
+        // a user choice, and a temporary session never reads this store.
+        val persistedMode = if (request.temporaryIncarnationId == null) {
+            continuityPreferences()?.read(request.conversationId)?.modeRaw
+        } else {
+            null
+        }
         host.trackOperation(
             request = HostCommandRequest(
                 command = "run.start",
@@ -3147,7 +3156,8 @@ class ConversationHostController internal constructor(
                 stateful = true,
                 correlationID = client().correlationID("rstart"),
                 revision = revision,
-                payload = ConversationWire.runStartPayload(request, stagedHandles),
+                payload = ConversationWire.runStartPayload(
+                    request, stagedHandles, persistedMode),
             ),
             onFrame = { frame ->
                 if (frame.kind == "prepared") {

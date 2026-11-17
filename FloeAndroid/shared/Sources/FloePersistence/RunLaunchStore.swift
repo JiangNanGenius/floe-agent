@@ -45,6 +45,12 @@ public struct RunLaunchRequest: Sendable, Hashable {
     public var attachments: [AttachmentRef]
     public var startedAt: Date
     public var conversationMode: String
+    /// The App composer's EXPLICIT `agent|chat|plan|goal` selection, when the
+    /// trusted caller actually provided one. nil means "not recorded" and is
+    /// persisted as NULL — never a retroactive Agent/Chat claim. Validated
+    /// against `conversationMode` (agent/chat ⇒ chat, plan ⇒ plan, goal ⇒ goal)
+    /// so the immutable three-value contract cannot be contradicted.
+    public var explicitExecutionMode: String?
     public var initialPolicy: DraftTaskPolicy
     /// `goalContinuation` is an internal cycle prompt. It is durable for
     /// audit/recovery, but is not rendered as a user-authored chat message.
@@ -91,7 +97,8 @@ public struct RunLaunchRequest: Sendable, Hashable {
         modelName: String? = nil,
         providerProfile: ProviderProfile? = nil,
         modelProfile: ModelProfile? = nil,
-        startedAt: Date = Date()
+        startedAt: Date = Date(),
+        explicitExecutionMode: String? = nil
     ) {
         self.conversationID = conversationID
         self.newConversationID = newConversationID
@@ -111,6 +118,7 @@ public struct RunLaunchRequest: Sendable, Hashable {
         self.providerProfile = providerProfile
         self.modelProfile = modelProfile
         self.startedAt = startedAt
+        self.explicitExecutionMode = explicitExecutionMode
     }
 }
 
@@ -242,6 +250,21 @@ public actor SQLiteRunLaunchStore: ExistingConversationRunLaunchStore, AtomicInt
         }
         guard ["user", "goalContinuation"].contains(request.messageRole) else {
             throw FloeError.validationFailed("Unknown launch message role")
+        }
+        if let explicit = request.explicitExecutionMode {
+            // Closed provenance vocabulary, consistent with the immutable
+            // launch mode. A mismatch is a typed refusal BEFORE any durable
+            // effect; nothing is rewritten to make the pair "fit".
+            guard ["agent", "chat", "plan", "goal"].contains(explicit) else {
+                throw FloeError.validationFailed("Unknown explicit execution mode")
+            }
+            let expectedLaunchMode: String =
+                (explicit == "plan" || explicit == "goal") ? explicit : "chat"
+            guard expectedLaunchMode == request.conversationMode else {
+                throw FloeError.validationFailed(
+                    "Explicit execution mode does not match the launch mode"
+                )
+            }
         }
 
         return try await database.writer { db in
@@ -479,15 +502,16 @@ public actor SQLiteRunLaunchStore: ExistingConversationRunLaunchStore, AtomicInt
                 modelID: resolvedModelID,
                 providerName: request.providerName,
                 modelName: request.modelName,
-                conversationMode: request.conversationMode
+                conversationMode: request.conversationMode,
+                explicitExecutionMode: request.explicitExecutionMode
             )
             try db.execute(
                 sql: """
                     INSERT INTO runs (
                         id, conversation_id, state, goal, started_at, ended_at, goal_id,
                         provider_id, model_id, provider_name_snapshot, model_name_snapshot,
-                        conversation_mode
-                    ) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?)
+                        conversation_mode, explicit_execution_mode
+                    ) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?)
                     """,
                 arguments: [
                     run.id.uuidString,
@@ -499,7 +523,8 @@ public actor SQLiteRunLaunchStore: ExistingConversationRunLaunchStore, AtomicInt
                     run.modelID?.uuidString,
                     run.providerName,
                     run.modelName,
-                    run.conversationMode
+                    run.conversationMode,
+                    run.explicitExecutionMode
                 ]
             )
 

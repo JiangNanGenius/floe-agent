@@ -509,6 +509,14 @@ public struct RunStartQuery: Sendable, Equatable {
     /// chat | plan | goal — the original RunLaunchStore vocabulary. Plan and
     /// goal are ACTUAL supported modes of the same engine, not new commands.
     public var mode: RunLaunchMode
+    /// The App composer's EXPLICIT `agent|chat|plan|goal` selection, present
+    /// only when the trusted caller actually sent one (the additive
+    /// `executionMode` member). nil means "not recorded" and is persisted as
+    /// NULL — never defaulted to Agent, so legacy/unspecified launches are not
+    /// relabelled as a user choice. It never changes tool availability: the
+    /// task-authorized ceiling/approvals still decide, except Plan's existing
+    /// read-only projection and the separate temporary ceiling.
+    public var explicitExecutionMode: String?
     public var providerID: UUID
     public var modelID: UUID
     /// Opaque host-issued staging handles for already-owned staged
@@ -550,7 +558,8 @@ public struct RunStartQuery: Sendable, Equatable {
                 requestedEnvironmentID: String? = nil,
                 requestedJobID: String? = nil,
                 goalDefinition: StructuredGoalDefinition? = nil,
-                explicitInitialApprovalMode: TaskApprovalMode? = nil) {
+                explicitInitialApprovalMode: TaskApprovalMode? = nil,
+                explicitExecutionMode: String? = nil) {
         self.conversationID = conversationID
         self.goal = goal
         self.mode = mode
@@ -563,12 +572,13 @@ public struct RunStartQuery: Sendable, Equatable {
         self.requestedJobID = requestedJobID
         self.goalDefinition = goalDefinition
         self.explicitInitialApprovalMode = explicitInitialApprovalMode
+        self.explicitExecutionMode = explicitExecutionMode
     }
 
     public static let allowedKeys: Set<String> = [
         "goal", "mode", "providerID", "modelID", "stagedAttachments",
         "toolCeiling", "approvalMode", "recoveryPolicy", "notificationPolicy",
-        "environmentID", "jobID", "goalDefinition",
+        "environmentID", "jobID", "goalDefinition", "executionMode",
     ]
 
     public static func parse(payload: SettingsDomainV1.JSONValue?,
@@ -618,6 +628,13 @@ public struct RunStartQuery: Sendable, Equatable {
             // original grammar and behavior (unknown-for-mode keys refuse).
             throw RunDomainError(.invalidState, .payloadInvalid)
         }
+        // Additive optional provenance: present ONLY when the trusted caller
+        // really sent it. Absence stays nil (NULL in storage); it is never
+        // defaulted to Agent, so an old/unspecified launch is not rewritten
+        // into a user choice. A present value must be in the closed App
+        // vocabulary and agree with the immutable launch mode.
+        let explicitExecutionMode = try Self.explicitExecutionMode(
+            object, mode: mode)
         return RunStartQuery(
             conversationID: conversationID,
             goal: goal,
@@ -631,7 +648,24 @@ public struct RunStartQuery: Sendable, Equatable {
             requestedJobID: try object.optionalString("jobID", maxBytes: 64),
             goalDefinition: goalDefinition,
             explicitInitialApprovalMode: try object.optionalString("approvalMode", maxBytes: 24) == nil
-                ? nil : policy.approvalMode)
+                ? nil : policy.approvalMode,
+            explicitExecutionMode: explicitExecutionMode)
+    }
+
+    /// Presence-based explicit `agent|chat|plan|goal` provenance shared by
+    /// `run.start`/`run.startTask`. No member ⇒ nil (unknown/default
+    /// semantics); a foreign value or a pair that contradicts `mode` is a
+    /// typed payload refusal, never a silent rewrite.
+    static func explicitExecutionMode(_ object: RunPayloadReader.Object,
+                                      mode: RunLaunchMode) throws -> String? {
+        guard let raw = try object.optionalString("executionMode", maxBytes: 12) else {
+            return nil
+        }
+        guard let parsed = ExplicitExecutionMode(rawValue: raw),
+              parsed.launchMode.rawValue == mode.rawValue else {
+            throw RunDomainError(.invalidState, .payloadInvalid)
+        }
+        return parsed.rawValue
     }
 
     static func approvalMode(_ object: RunPayloadReader.Object) throws -> TaskApprovalMode {
@@ -886,6 +920,10 @@ public struct RunQueueQuery: Sendable, Equatable {
     /// key keeps the historical `agent` default, so old envelopes are
     /// unchanged.
     public var executionMode: String
+    /// Presence-based provenance for the SAME `executionMode` member: nil when
+    /// the envelope never carried it (old callers), the exact closed value
+    /// otherwise. Stored separately so an old row is never relabelled Agent.
+    public var explicitExecutionMode: String?
 
     /// The CLOSED execution-mode vocabulary a queued row may carry.
     public static let allowedExecutionModes: Set<String> = [
@@ -900,7 +938,8 @@ public struct RunQueueQuery: Sendable, Equatable {
     public init(conversationID: UUID, runID: UUID, content: String,
                 mode: RunningInputMode, selectedModelID: UUID?,
                 stagedAttachmentHandles: [String],
-                executionMode: String = "agent") {
+                executionMode: String = "agent",
+                explicitExecutionMode: String? = nil) {
         self.conversationID = conversationID
         self.runID = runID
         self.content = content
@@ -908,6 +947,7 @@ public struct RunQueueQuery: Sendable, Equatable {
         self.selectedModelID = selectedModelID
         self.stagedAttachmentHandles = stagedAttachmentHandles
         self.executionMode = executionMode
+        self.explicitExecutionMode = explicitExecutionMode
     }
 
     public static func parse(payload: SettingsDomainV1.JSONValue?, owner: OwnerIdentity) throws
@@ -931,7 +971,8 @@ public struct RunQueueQuery: Sendable, Equatable {
                 return handle
             }
         }
-        let executionMode = try object.optionalString("executionMode", maxBytes: 12) ?? "agent"
+        let rawExecutionMode = try object.optionalString("executionMode", maxBytes: 12)
+        let executionMode = rawExecutionMode ?? "agent"
         guard allowedExecutionModes.contains(executionMode) else {
             throw RunDomainError(.invalidState, .payloadInvalid)
         }
@@ -939,7 +980,8 @@ public struct RunQueueQuery: Sendable, Equatable {
                              content: content, mode: mode,
                              selectedModelID: try object.optionalUUID("selectedModelID"),
                              stagedAttachmentHandles: handles,
-                             executionMode: executionMode)
+                             executionMode: executionMode,
+                             explicitExecutionMode: rawExecutionMode)
     }
 }
 

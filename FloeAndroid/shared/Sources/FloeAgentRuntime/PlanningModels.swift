@@ -10,6 +10,46 @@ public enum ConversationMode: String, Sendable, Codable, Hashable, CaseIterable 
     case goal
 }
 
+/// The App composer's EXPLICIT execution-mode selection
+/// (`agent|chat|plan|goal`), persisted beside the immutable three-value
+/// `ConversationMode`/`RunLaunchMode` contract.
+///
+/// `agent` and `chat` are NOT permission tiers: both run the ordinary
+/// task-authorized tool chain with the persisted task policy, availability and
+/// approvals. The distinction is the user's visible intent (and therefore
+/// restart/queue/resume provenance), never a read-only ceiling. Plan keeps its
+/// read-only projection and Goal keeps its durable-goal contract; temporary
+/// sessions keep their own separate stricter ceiling. A nil value means the
+/// mode was never recorded (legacy/ambiguous data) and is never presented as a
+/// user selection.
+public enum ExplicitExecutionMode: String, Sendable, Codable, Hashable, CaseIterable {
+    /// Ordinary agent behavior (chat plus approved tool calls).
+    case agent
+    /// Ordinary conversation turn under the same task-authorized tool chain.
+    case chat
+    /// Read-only discovery that produces a reviewable plan.
+    case plan
+    /// Persistent, budgeted execution toward evidence-backed criteria.
+    case goal
+
+    /// The ORIGINAL launch vocabulary this selection maps to. The persisted
+    /// `conversation_mode` column keeps exactly these three values.
+    public var launchMode: ConversationMode {
+        switch self {
+        case .agent, .chat: .chat
+        case .plan: .plan
+        case .goal: .goal
+        }
+    }
+
+    /// Whether a recorded selection is CONSISTENT with an immutable launch
+    /// mode. Used by the trusted launch parser: a mismatched pair is a typed
+    /// payload refusal, never a silent rewrite.
+    public func matches(launchMode: ConversationMode) -> Bool {
+        self.launchMode == launchMode
+    }
+}
+
 /// The model's recommendation is advisory and visible before acceptance. A
 /// user may always force ordinary execution or durable Goal execution.
 public enum PlanExecutionRecommendation: String, Sendable, Codable, Hashable, CaseIterable {

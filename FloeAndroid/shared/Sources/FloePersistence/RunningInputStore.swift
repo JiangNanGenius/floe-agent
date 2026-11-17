@@ -7,6 +7,15 @@ import FloeModels
 
 public protocol RunningInputStore: Sendable {
     func enqueue(_ input: PendingUserInput) async throws -> PendingUserInput
+    /// Additive provenance overload: stores that can persist the composer's
+    /// EXPLICIT `agent|chat|plan|goal` selection do so; a RAM-only store keeps
+    /// the row's existing semantics. nil means the caller never provided a
+    /// selection and records honest absence — never a guessed Agent.
+    func enqueue(_ input: PendingUserInput,
+                 explicitExecutionMode: String?) async throws -> PendingUserInput
+    /// The recorded explicit composer selection for one durable row. nil for
+    /// legacy rows, unlabeled envelopes and RAM-only stores (never a guess).
+    func explicitExecutionMode(id: UUID) async throws -> String?
     /// Idempotent by-id write used by temporary-chat promotion: inserts the
     /// row with its exact identity/position/status, or updates every mutable
     /// column when it already exists. Never mints a new id or position.
@@ -24,6 +33,18 @@ public protocol RunningInputStore: Sendable {
     func recoverTransientInputs() async throws
 }
 
+public extension RunningInputStore {
+    /// Default: stores without explicit-mode storage keep the original row
+    /// write byte-identical. The durable SQLite store overrides this.
+    func enqueue(_ input: PendingUserInput,
+                 explicitExecutionMode: String?) async throws -> PendingUserInput {
+        try await enqueue(input)
+    }
+
+    /// Default: no provenance is stored (RAM-only lanes / legacy fixtures).
+    func explicitExecutionMode(id: UUID) async throws -> String? { nil }
+}
+
 public actor SQLiteRunningInputStore: RunningInputStore {
     public static let maximumPendingPerConversation = 100
     private let database: DatabaseManager
@@ -31,8 +52,21 @@ public actor SQLiteRunningInputStore: RunningInputStore {
     public init(database: DatabaseManager) { self.database = database }
 
     public func enqueue(_ input: PendingUserInput) async throws -> PendingUserInput {
+        try await enqueue(input, explicitExecutionMode: nil)
+    }
+
+    public func enqueue(_ input: PendingUserInput,
+                        explicitExecutionMode: String?) async throws -> PendingUserInput {
         let trimmed = input.content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw FloeError.validationFailed("Input must not be empty") }
+        if let explicitExecutionMode {
+            // The durable row's provenance is a closed vocabulary. The launch
+            // mode itself is still `execution_mode`; a mismatch is refused by
+            // the launch lane, not silently repaired here.
+            guard ["agent", "chat", "plan", "goal"].contains(explicitExecutionMode) else {
+                throw FloeError.validationFailed("Unknown explicit execution mode")
+            }
+        }
         return try await database.writer { db in
             let count = try Int.fetchOne(db, sql: """
                 SELECT COUNT(*) FROM pending_user_inputs
@@ -49,8 +83,17 @@ public actor SQLiteRunningInputStore: RunningInputStore {
             value.content = trimmed
             value.position = position
             value.updatedAt = Date()
-            try Self.insert(value, db: db)
+            try Self.insert(value, db: db, explicitExecutionMode: explicitExecutionMode)
             return value
+        }
+    }
+
+    public func explicitExecutionMode(id: UUID) async throws -> String? {
+        try await database.reader { db in
+            try String.fetchOne(
+                db,
+                sql: "SELECT explicit_execution_mode FROM pending_user_inputs WHERE id = ?",
+                arguments: [id.uuidString])
         }
     }
 
@@ -200,17 +243,19 @@ public actor SQLiteRunningInputStore: RunningInputStore {
         }
     }
 
-    private static func insert(_ value: PendingUserInput, db: Database, orReplace: Bool = false) throws {
+    private static func insert(_ value: PendingUserInput, db: Database,
+                               orReplace: Bool = false,
+                               explicitExecutionMode: String? = nil) throws {
         let attachments = try String(decoding: JSONEncoder().encode(value.attachments), as: UTF8.self)
         let columns = """
             id, conversation_id, target_run_id, content, mode, status, position,
             attachments_json, selected_model_id, workspace_id, execution_mode,
-            consumed_run_id, created_at, updated_at, consumed_at
+            explicit_execution_mode, consumed_run_id, created_at, updated_at, consumed_at
             """
         let sql: String = if orReplace {
             """
             INSERT INTO pending_user_inputs (\(columns))
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 conversation_id = excluded.conversation_id,
                 target_run_id = excluded.target_run_id,
@@ -222,6 +267,10 @@ public actor SQLiteRunningInputStore: RunningInputStore {
                 selected_model_id = excluded.selected_model_id,
                 workspace_id = excluded.workspace_id,
                 execution_mode = excluded.execution_mode,
+                explicit_execution_mode = COALESCE(
+                    pending_user_inputs.explicit_execution_mode,
+                    excluded.explicit_execution_mode
+                ),
                 consumed_run_id = excluded.consumed_run_id,
                 created_at = excluded.created_at,
                 updated_at = excluded.updated_at,
@@ -230,14 +279,14 @@ public actor SQLiteRunningInputStore: RunningInputStore {
         } else {
             """
             INSERT INTO pending_user_inputs (\(columns))
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """
         }
         try db.execute(sql: sql, arguments: [
                 value.id.uuidString, value.conversationID.uuidString, value.targetRunID?.uuidString,
                 value.content, value.mode.rawValue, value.status.rawValue, value.position,
                 attachments, value.selectedModelID?.uuidString, value.workspaceID?.uuidString,
-                value.executionMode, value.consumedRunID?.uuidString,
+                value.executionMode, explicitExecutionMode, value.consumedRunID?.uuidString,
                 PersistenceCodec.encode(value.createdAt), PersistenceCodec.encode(value.updatedAt),
                 value.consumedAt.map(PersistenceCodec.encode)
             ])

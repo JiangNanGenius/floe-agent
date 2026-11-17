@@ -268,6 +268,12 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
     /// V2 orchestration metadata. Optional fields keep V1 files decodable.
     public var parentRunID: UUID?
     public var conversationMode: ConversationMode?
+    /// The App's explicit composer selection at launch (`agent|chat|plan|goal`).
+    /// Additive optional: checkpoints written before this field and legacy
+    /// runs with no recorded selection stay nil (never guessed). It carries UI
+    /// and recovery intent only — the permission contract stays the persisted
+    /// task policy plus `ConversationMode`.
+    public var explicitExecutionMode: ExplicitExecutionMode?
     public var planID: UUID?
     public var goalID: UUID?
     public var contextCompaction: ContextCompactionRecord?
@@ -318,9 +324,10 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
     public var sensitiveToolCallIDs: [String]?
 
     /// Current checkpoint file format. Additive optional fields
-    /// (`discoveredToolNames`, `discoveryPriority`) intentionally keep v5:
-    /// older readers ignore unknown JSON keys and new readers treat absence as
-    /// nil with the documented last-offer fallback, so no migration is needed.
+    /// (`discoveredToolNames`, `discoveryPriority`, `explicitExecutionMode`)
+    /// intentionally keep v5: older readers ignore unknown JSON keys and new
+    /// readers treat absence as nil with the documented fallback, so no
+    /// migration is needed.
     public static let currentFormatVersion = 5
     /// Current GRDB schema version.
     public static let currentSchemaVersion = 1
@@ -354,7 +361,8 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
         discoveredToolNames: [String]? = nil,
         discoveryPriority: [String]? = nil,
         ownedSystemContextID: UUID? = nil,
-        sensitiveToolCallIDs: [String]? = nil
+        sensitiveToolCallIDs: [String]? = nil,
+        explicitExecutionMode: ExplicitExecutionMode? = nil
     ) {
         self.formatVersion = formatVersion
         self.runID = runID
@@ -385,6 +393,7 @@ public struct AgentCheckpoint: Sendable, Codable, Hashable {
         self.discoveryPriority = discoveryPriority
         self.ownedSystemContextID = ownedSystemContextID
         self.sensitiveToolCallIDs = sensitiveToolCallIDs
+        self.explicitExecutionMode = explicitExecutionMode
     }
 
     public func encoded() throws -> Data {

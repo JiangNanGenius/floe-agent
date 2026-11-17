@@ -403,6 +403,12 @@ public actor FloeAgentRuntime {
         /// Determines the hard capability contract for this run. Plan mode
         /// exposes and executes read-only tools only.
         public var conversationMode: ConversationMode
+        /// The App composer's explicit `agent|chat|plan|goal` selection, when
+        /// it was recorded at launch. UI/recovery provenance only: it never
+        /// narrows or widens `allowedToolNames`, approvals or the Plan /
+        /// temporary contracts. Nil keeps legacy checkpoints and unlabeled
+        /// launches decodable without inventing a selection.
+        public var explicitExecutionMode: ExplicitExecutionMode?
         /// Installed instruction skills selected for this activation.
         public var activeSkillIDs: Set<String>
         public var relatedSkillIDsByTool: [String: [String]]
@@ -574,12 +580,14 @@ public actor FloeAgentRuntime {
             localLinuxShellTarget: Bool = false,
             serviceStorePaths: [String: String] = [:],
             outstandingDependencies: (@Sendable () async -> [RunDependencyLabel])? = nil,
-            userQuestionRecovery: (any UserQuestionRuntimeRecovery)? = nil
+            userQuestionRecovery: (any UserQuestionRuntimeRecovery)? = nil,
+            explicitExecutionMode: ExplicitExecutionMode? = nil
         ) {
             self.conversationID = conversationID
             self.provider = provider
             self.model = model
             self.conversationMode = conversationMode
+            self.explicitExecutionMode = explicitExecutionMode
             self.activeSkillIDs = activeSkillIDs
             self.relatedSkillIDsByTool = relatedSkillIDsByTool
             self.allowedToolNames = allowedToolNames
@@ -6432,7 +6440,8 @@ public actor FloeAgentRuntime {
             discoveredToolNames: discoveredToolNames.sorted(),
             discoveryPriority: discoveryPriority,
             ownedSystemContextID: ownedSystemContextID,
-            sensitiveToolCallIDs: sensitiveCallIDs.isEmpty ? nil : sensitiveCallIDs
+            sensitiveToolCallIDs: sensitiveCallIDs.isEmpty ? nil : sensitiveCallIDs,
+            explicitExecutionMode: configuration.explicitExecutionMode
         )
         let invariantViolations = HarnessInvariantRegistry.validateCheckpoint(checkpoint)
         guard invariantViolations.isEmpty else {

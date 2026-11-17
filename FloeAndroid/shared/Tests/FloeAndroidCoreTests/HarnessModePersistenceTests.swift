@@ -3,15 +3,17 @@
 // Mode-boundary tests for the G02 Harness registration lane. AUTHORED, NOT
 // EXECUTED here (no shared Swift/Gradle build in this task).
 //
-// The explicit Agent/Chat split is NOT closed on Android yet: `RunLaunchMode`
-// and `ConversationMode` still carry only chat|plan|goal, the host's
-// `run.start` payload spells Agent and Chat both as `mode:"chat"` (Chat adds
-// an empty `toolCeiling`), and `QueueDrain.queuedLaunchMode` folds both
-// execution-mode strings to `.chat`. A real split needs a Kotlin wire field
-// plus a durable run/checkpoint binding, which is outside this lane.
+// The explicit Agent/Chat split is now persisted ADDITIVELY: the original
+// `RunLaunchMode`/`ConversationMode` contract keeps chat|plan|goal, while
+// `runs.explicit_execution_mode` / `pending_user_inputs.explicit_execution_mode`
+// / `AgentCheckpoint.explicitExecutionMode` carry the composer's real
+// agent|chat|plan|goal selection when the caller provided one. Agent/Chat are
+// NOT permission tiers: ordinary Chat and Agent share the persisted task tool
+// chain (the previous empty Chat `toolCeiling` is gone), and a missing value is
+// never relabelled as Agent. See `ExplicitExecutionModeTests` for the
+// persistence/wire contract.
 //
-// What this file DOES pin is the safe part that must not regress while that
-// work is pending:
+// What this file DOES pin is the safe part that must not regress:
 //   * Plan may perform only the three exact registered memory writes;
 //   * forged memory descriptors never inherit the Plan exception;
 //   * the temporary ceiling never admits memory/history tools;

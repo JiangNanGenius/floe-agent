@@ -457,7 +457,9 @@ extension FacadeRunDomain {
                                      toolsEnabled: Bool,
                                      temporary: Bool,
                                      environmentID: String?,
-                                     localLinuxShellTarget: Bool = false) -> FloeAgentRuntime.Configuration {
+                                     localLinuxShellTarget: Bool = false,
+                                     explicitExecutionMode: ExplicitExecutionMode? = nil)
+        -> FloeAgentRuntime.Configuration {
         FloeAgentRuntime.Configuration(
             conversationID: conversationID,
             provider: provider,
@@ -470,7 +472,8 @@ extension FacadeRunDomain {
             temporaryReadOnly: temporary,
             environmentID: environmentID,
             localLinuxGuestEnvironment: false,
-            localLinuxShellTarget: localLinuxShellTarget)
+            localLinuxShellTarget: localLinuxShellTarget,
+            explicitExecutionMode: explicitExecutionMode)
     }
 }
 
@@ -582,7 +585,8 @@ extension FacadeRunDomain {
         hostToolCeiling: [String]?,
         environmentID: String?,
         notes: NotesRunBinding? = nil,
-        retryWorkspaceReadOnly: Bool = false
+        retryWorkspaceReadOnly: Bool = false,
+        explicitExecutionMode: ExplicitExecutionMode? = nil
     ) async throws -> ConversationRunService {
         let temporary = bundle.identity == .temporary
         let isNotes = bundle.identity == .notes
@@ -803,7 +807,8 @@ extension FacadeRunDomain {
             temporary: temporary,
             environmentID: resolvedExecutionTarget?.target.kind == .localLinux
                 ? resolvedExecutionTarget?.target.environmentID : environmentID,
-            localLinuxShellTarget: resolvedExecutionTarget?.target.kind == .localLinux)
+            localLinuxShellTarget: resolvedExecutionTarget?.target.kind == .localLinux,
+            explicitExecutionMode: explicitExecutionMode)
         if var owner = owners[runID], owner.conversationID == conversationID,
            owner.epoch == epoch, !owner.cancelRequested, G02NativeRootEpoch.readback() == epoch,
            fenceIsValid(owner.launchToken) {

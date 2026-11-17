@@ -301,7 +301,11 @@ extension FacadeRunDomain {
                 goal: record.goal, mode: mode, launch: launch,
                 history: history, images: [], bundle: durable,
                 draftPolicy: nil, gate: gate, workspaceName: nil,
-                hostToolCeiling: nil, environmentID: nil)
+                hostToolCeiling: nil, environmentID: nil,
+                // Same restart contract as an explicit retry: the immutable
+                // run row first, then the exact checkpoint it just loaded.
+                explicitExecutionMode: FacadeRunDomain.resumedExplicitExecutionMode(
+                    record: record, checkpoint: checkpoint))
         } catch let error as RunDomainError {
             return Self.resumeRefusal(error)
         } catch {

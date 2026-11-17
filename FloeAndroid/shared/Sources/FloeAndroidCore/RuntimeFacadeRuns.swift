@@ -1271,6 +1271,17 @@ public actor FacadeRunDomain {
         -> RunDomainReply {
         let bundle = bundleOverride ?? durable
         let isCreateIntent = conversationID == nil
+        // Explicit-mode provenance is proven BEFORE any durable effect. The
+        // wire parser already enforces this for public launches; internal
+        // lanes (queue drain, continuation) get the same boundary so a bad
+        // caller can never persist a contradictory pair. nil stays nil.
+        if let explicit = query.explicitExecutionMode {
+            guard let parsed = ExplicitExecutionMode(rawValue: explicit),
+                  parsed.launchMode.rawValue == query.mode.rawValue else {
+                return RunDomainReply(.rejected(RunDomainError(
+                    .invalidState, .payloadInvalid)))
+            }
+        }
         // G07.3B: a scheduled launch is ALWAYS a create intent against the
         // deterministic occurrence identities and the frozen project
         // workspace. It is an internal in-process launch only (the ordinary
@@ -1795,7 +1806,11 @@ public actor FacadeRunDomain {
             providerName: launch.provider.displayName,
             modelName: launch.model.displayName,
             providerProfile: launch.provider,
-            modelProfile: launch.model)
+            modelProfile: launch.model,
+            // Presence-based explicit composer provenance (nil = never
+            // recorded). Stored in the SAME atomic launch transaction as the
+            // immutable conversation_mode; it cannot change tools/approvals.
+            explicitExecutionMode: query.explicitExecutionMode)
         request.activatesEmptyOrdinaryHeader = bundle.identity == .ordinary
         request.explicitInitialApprovalMode = query.explicitInitialApprovalMode
         let prepared: PreparedRun
@@ -1978,7 +1993,12 @@ public actor FacadeRunDomain {
                 workspaceName: prepared.workspace.name,
                 hostToolCeiling: query.hostToolCeiling,
                 environmentID: provenEnvironmentID,
-                notes: notesBinding)
+                notes: notesBinding,
+                // The durable row is the authority (it was written in this
+                // same launch transaction); the query value is identical but
+                // never re-derived here.
+                explicitExecutionMode: prepared.run.explicitExecutionMode
+                    .flatMap(ExplicitExecutionMode.init(rawValue:)))
             assemblyPhase = nil
         } catch let error as RunDomainError {
             await markCommittedLaunchAbandoned(runID: prepared.run.id,
@@ -2939,7 +2959,13 @@ public actor FacadeRunDomain {
                 // The retry envelope carries no requested environment/job
                 // role; there is no accepted binding to forward here (the
                 // original launch's admission was not durable state).
-                environmentID: nil, retryWorkspaceReadOnly: true)
+                environmentID: nil, retryWorkspaceReadOnly: true,
+                // Restart/resume keeps the mode recorded by the immutable run
+                // row. A checkpoint written before the row could carry it is
+                // only a fallback when the row has no value; neither source is
+                // ever defaulted to Agent.
+                explicitExecutionMode: Self.resumedExplicitExecutionMode(
+                    record: record, checkpoint: checkpoint))
         } catch let error as RunDomainError {
             // C0: nothing durable was committed for this resume yet (the
             // failed/checkpointed row is untouched), so the exact owner is
@@ -3172,7 +3198,10 @@ public actor FacadeRunDomain {
                 // G04R2 queue-input repair: persist the composer's REAL
                 // execution mode (iOS parity) so the terminal drain
                 // launches exactly the mode the user queued under.
-                executionMode: query.executionMode))
+                executionMode: query.executionMode),
+                // Presence-based provenance: the key's presence is the
+                // caller's real selection; an old envelope stays NULL.
+                explicitExecutionMode: query.explicitExecutionMode)
             // Queue accepted is NOT approval resolved, NOT secret committed
             // and NOT a started run; the durable row + position are the
             // truth, and consumption stays the service's exactly-once
@@ -3602,7 +3631,8 @@ public actor FacadeRunDomain {
                     workspaceID: nil,
                     // G04R2 queue-input repair: the LIVE temporary row
                     // carries the same REAL execution-mode vocabulary.
-                    executionMode: query.executionMode))
+                    executionMode: query.executionMode),
+                explicitExecutionMode: query.explicitExecutionMode)
             return RunDomainReply(.mutationAccepted(detail: [
                 "inputID": stored.id.uuidString,
                 "position": String(stored.position),
@@ -4043,7 +4073,9 @@ public actor FacadeRunDomain {
                 draftPolicy: nil,
                 gate: gate, workspaceName: nil,
                 hostToolCeiling: route.frozenToolCeiling.sorted(by: <),
-                environmentID: nil)
+                environmentID: nil,
+                explicitExecutionMode: record.explicitExecutionMode
+                    .flatMap(ExplicitExecutionMode.init(rawValue:)))
         } catch let error as RunDomainError {
             return await failTemporaryRetry(runID: record.id, error: error,
                                             bundle: route.runBundle)
@@ -4923,6 +4955,20 @@ public actor FacadeRunDomain {
 
     private func notesTaskLaunchCancelled(_ runID: UUID, _ token: LaunchEpochFence.Token) -> Bool {
         shouldAbortBeforeEffects(runID) || !fenceIsValid(token)
+    }
+
+    /// Restart/resume provenance: the immutable run row is authoritative; an
+    /// older checkpoint is only a fallback when the row has no recorded value
+    /// (a checkpoint written before the row column existed). Absence stays nil
+    /// on both sides and is NEVER defaulted to `agent`.
+    static func resumedExplicitExecutionMode(record: RunRecord,
+                                             checkpoint: AgentCheckpoint?)
+        -> ExplicitExecutionMode? {
+        if let raw = record.explicitExecutionMode,
+           let value = ExplicitExecutionMode(rawValue: raw) {
+            return value
+        }
+        return checkpoint?.explicitExecutionMode
     }
 
     private func refuseLaunch(runID: UUID, error: RunDomainError) -> RunDomainReply {

@@ -21,10 +21,12 @@ public actor DatabaseManager {
     private let queue: DatabaseQueue?
     private var migrator = DatabaseMigrator()
 
-    /// Schema version tracked in `user_version`-aligned migrations. Must
-    /// match the highest registered migration (v52); every historical bump
-    /// paired this constant with the new migration so that
-    /// `user_version == currentSchemaVersion` after `migrate()`.
+    /// Pinned shipped schema marker (`user_version`). Historical bumps paired
+    /// this constant with a migration that set the same value. The additive
+    /// v53/v54 migrations apply by identifier WITHOUT moving this marker (the
+    /// same mechanism v53 already uses), so `user_version` stays 52 until the
+    /// integration owner performs the coordinated bump together with the
+    /// version-pinned tests.
     public static let currentSchemaVersion = 52
 
     public init(path: URL) throws {
@@ -95,6 +97,7 @@ public actor DatabaseManager {
         V51MailAccounts.register(into: &migrator)
         V52AndroidCodeClosure.register(into: &migrator)
         V53AndroidSystemConditions.register(into: &migrator)
+        V54ExplicitExecutionMode.register(into: &migrator)
     }
 
     private static func configuration() -> Configuration {
