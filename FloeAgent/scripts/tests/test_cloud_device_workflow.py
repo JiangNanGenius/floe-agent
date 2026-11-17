@@ -28,9 +28,12 @@ class CloudDeviceWorkflowTests(unittest.TestCase):
         self.assertIn('needs: validate-selectors', header)
         self.assertIn("github.event_name == 'workflow_dispatch' && inputs.cloud_device_only", header)
         self.assertIn('uses: ./.github/workflows/cloud-device-build-only.yml', header)
-        for key in ('source_sha', 'recipient_certificate_base64', 'recipient_sha256'):
+        for key in ('source_sha', 'infra_sha', 'occt_release_id', 'occt_asset_id', 'occt_sha256', 'recipient_certificate_base64', 'recipient_sha256'):
             self.assertIn(key + ': ${{ inputs.cloud_', header)
-        self.assertIn("test \"$SOURCE_SHA\" = \"$GITHUB_SHA\"", self.build)
+        self.assertIn('test "$INFRA_SHA" = "$GITHUB_SHA"', self.build)
+        self.assertIn('test "$SOURCE_SHA" = fa252b61852dd37d489635c0dd83fe8c6b4b2d00', self.build)
+        self.assertIn("refs/tags/v1.8.42^{commit}", self.build)
+        self.assertIn("'infrastructureSHA': os.environ['INFRA_SHA']", self.build)
         self.assertIn('git tag --points-at "$SOURCE_SHA"', self.build)
         self.assertIn('[[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]', self.build)
 
@@ -39,6 +42,25 @@ class CloudDeviceWorkflowTests(unittest.TestCase):
             '- name: Check out the exact source and tags', 1)[0]
         self.assertIn('working-directory: ${{ runner.temp }}', precheckout)
         self.assertNotIn('working-directory: FloeAgent', precheckout)
+
+    def test_native_input_download_has_step_scoped_token(self):
+        native = next(s for s in self.steps if s.startswith('Prepare and verify native inputs\n'))
+        self.assertIn('GH_TOKEN: ${{ github.token }}', native)
+        self.assertIn('prime_shell_artifact_cache.py', native)
+        job_header = self.build.split('    steps:', 1)[0]
+        self.assertNotIn('GH_TOKEN:', job_header)
+        self.assertNotIn('contents: write', self.build)
+
+    def test_qualified_occt_input_is_restricted_and_rechecked(self):
+        for required in ('occt_release_id', 'occt_asset_id', 'occt_sha256',
+                         '.draft == true', 'verified-occt-inputs.zip',
+                         'occt_transport.py" install', 'occt_transport.py" verify',
+                         'bootstrap.py --release-check', "'occtInputs': occt_evidence",
+                         '27.1-derived locked input'):
+            self.assertIn(required, self.build)
+        self.assertGreaterEqual(self.build.count('bootstrap.py --release-check'), 2)
+        self.assertIn('-p test_cloud_occt_transport.py', self.caller)
+        self.assertNotIn('contents: write', self.build)
 
     def test_failure_diagnostics_work_when_checkout_fails(self):
         diagnostics = next(s for s in self.steps if s.startswith('Encrypt failure diagnostics\n'))

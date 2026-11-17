@@ -10,6 +10,18 @@ on:
       source_sha:
         required: true
         type: string
+      infra_sha:
+        required: true
+        type: string
+      occt_release_id:
+        required: true
+        type: string
+      occt_asset_id:
+        required: true
+        type: string
+      occt_sha256:
+        required: true
+        type: string
       recipient_certificate_base64:
         required: true
         type: string
@@ -31,8 +43,8 @@ jobs:
     timeout-minutes: 150
     env:
       DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
-      GH_TOKEN: ${{ github.token }}
       SOURCE_SHA: ${{ inputs.source_sha }}
+      INFRA_SHA: ${{ inputs.infra_sha }}
     defaults:
       run:
         working-directory: FloeAgent
@@ -47,7 +59,9 @@ jobs:
           set -euo pipefail
           umask 077
           [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
-          test "$SOURCE_SHA" = "$GITHUB_SHA"
+          test "$SOURCE_SHA" = fa252b61852dd37d489635c0dd83fe8c6b4b2d00
+          [[ "$INFRA_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$INFRA_SHA" = "$GITHUB_SHA"
           python3 - <<'PY'
           import base64, hashlib, os, pathlib, re, subprocess
           value = os.environ['RECIPIENT_SHA256']
@@ -81,6 +95,22 @@ jobs:
           PY
           echo 'validated=true' >> "$GITHUB_OUTPUT"
 
+      - name: Check out the exact infrastructure
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ inputs.infra_sha }}
+          path: .floe-infra
+          persist-credentials: false
+
+      - name: Retain verified infrastructure helper
+        working-directory: .floe-infra
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$INFRA_SHA"
+          test "$(git cat-file -t "$INFRA_SHA")" = commit
+          cp .github/scripts/occt_transport.py "$RUNNER_TEMP/occt_transport.py"
+          shasum -a 256 "$RUNNER_TEMP/occt_transport.py" > "$RUNNER_TEMP/occt-helper.sha256"
+
       - name: Check out the exact source and tags
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -94,6 +124,7 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
           test "$(git cat-file -t "$SOURCE_SHA")" = commit
+          test "$(git rev-parse 'refs/tags/v1.8.42^{commit}')" = "$SOURCE_SHA"
           git tag --points-at "$SOURCE_SHA" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' > "$RUNNER_TEMP/source-release-tags.txt"
           test -s "$RUNNER_TEMP/source-release-tags.txt"
           xcodebuild -version > "$RUNNER_TEMP/xcode-version.txt"
@@ -119,7 +150,36 @@ jobs:
             FloeAgent/FloeApp/Resources/Fonts/Bundled
           key: floe-fonts-${{ hashFiles('FloeAgent/scripts/fonts/manifest.json') }}
 
+      - name: Retrieve the restricted qualified OCCT transport
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OCCT_RELEASE_ID: ${{ inputs.occt_release_id }}
+          OCCT_ASSET_ID: ${{ inputs.occt_asset_id }}
+          OCCT_TRANSPORT_SHA256: ${{ inputs.occt_sha256 }}
+        run: |
+          set -euo pipefail
+          exec 3>&2
+          exec > "$RUNNER_TEMP/cloud-occt.log" 2>&1
+          trap 'echo "Restricted OCCT input unavailable or invalid; no permission escalation was attempted." >&3' ERR
+          [[ "$OCCT_RELEASE_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$OCCT_ASSET_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$OCCT_TRANSPORT_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/releases/$OCCT_RELEASE_ID" > "$RUNNER_TEMP/occt-release.json"
+          jq -e --arg sha "$SOURCE_SHA" --arg asset "$OCCT_ASSET_ID" --arg digest "sha256:$OCCT_TRANSPORT_SHA256" '
+            .draft == true and .tag_name == "v1.8.42-occt-qualified-fa252b61852d" and
+            .target_commitish == $sha and
+            (.assets | length == 1 and .[0].name == "verified-occt-inputs.zip" and
+             (.[0].id | tostring) == $asset and .[0].state == "uploaded" and .[0].digest == $digest)
+          ' "$RUNNER_TEMP/occt-release.json" >/dev/null
+          gh api -H 'Accept: application/octet-stream' "repos/$GITHUB_REPOSITORY/releases/assets/$OCCT_ASSET_ID" > "$RUNNER_TEMP/verified-occt-inputs.zip"
+          python3 "$RUNNER_TEMP/occt_transport.py" install --root ThirdParty/FloeCADKit \
+            --archive "$RUNNER_TEMP/verified-occt-inputs.zip" --sha256 "$OCCT_TRANSPORT_SHA256" \
+            --evidence "$RUNNER_TEMP/occt-input-evidence.json"
+          env -u FLOECAD_LOCAL_RELINK python3 ThirdParty/FloeCADKit/bootstrap.py --release-check
+
       - name: Prepare and verify native inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           exec 3>&2
@@ -129,9 +189,7 @@ jobs:
           xcodebuild -downloadComponent MetalToolchain
           python3 scripts/prime_shell_artifact_cache.py --cache-dir "$FLOE_SPM_CACHE_ROOT/artifacts"
           scripts/bootstrap_native_components.sh
-          if test -f ThirdParty/FloeCADKit/bootstrap.py; then
-            env -u FLOECAD_LOCAL_RELINK python3 ThirdParty/FloeCADKit/bootstrap.py
-          fi
+          env -u FLOECAD_LOCAL_RELINK python3 ThirdParty/FloeCADKit/bootstrap.py --release-check
           python3 scripts/fonts/fetch_fonts.py --check || {
             python3 scripts/fonts/fetch_fonts.py
             python3 scripts/fonts/fetch_fonts.py --check
@@ -181,11 +239,15 @@ jobs:
               exit 1
             }
           test -z "$(git status --porcelain --untracked-files=no -- .)"
+          python3 "$RUNNER_TEMP/occt_transport.py" verify --root ThirdParty/FloeCADKit --evidence "$RUNNER_TEMP/occt-input-evidence.json"
+          env -u FLOECAD_LOCAL_RELINK python3 ThirdParty/FloeCADKit/bootstrap.py --release-check > "$RUNNER_TEMP/cloud-occt-post-build.log" 2>&1
 
       # The pinned Office framework is supplied as a prebuilt native input;
       # Xcode does not recreate its dSYM. Reuse only the private, source-bound
       # 362 symbols artifact and require its UUID to match this build below.
       - name: Retrieve and verify the prior private Office symbols
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           exec 3>&2
@@ -224,6 +286,9 @@ jobs:
           ditto -x -k "$RUNNER_TEMP/office-source-symbols.zip" "$RUNNER_TEMP/office-source-symbols"
 
       - name: Preserve the App, matching symbols and source receipt
+        env:
+          OCCT_RELEASE_ID: ${{ inputs.occt_release_id }}
+          OCCT_ASSET_ID: ${{ inputs.occt_asset_id }}
         run: |
           set -euo pipefail
           exec 3>&2
@@ -346,7 +411,14 @@ jobs:
                            if p.is_file() and (p.suffix.lower() in font_exts or p.name == 'provenance.json')}
           if not any(Path(p).suffix.lower() in font_exts for p in font_inputs):
               raise SystemExit('No staged font inputs found')
-          manifest = {'schemaVersion': 1, 'sourceSHA': os.environ['SOURCE_SHA'], 'tag': tag,
+          occt_evidence = json.loads((temp / 'occt-input-evidence.json').read_text())
+          occt_evidence.update(releaseID=os.environ['OCCT_RELEASE_ID'], assetID=os.environ['OCCT_ASSET_ID'],
+                               releaseTag='v1.8.42-occt-qualified-fa252b61852d',
+                               infrastructureHelperSHA256=sha(temp / 'occt_transport.py'))
+          manifest = {'schemaVersion': 1, 'sourceSHA': os.environ['SOURCE_SHA'],
+                      'infrastructureSHA': os.environ['INFRA_SHA'],
+                      'occtInputs': occt_evidence,
+                      'occtQualificationLimitation': 'OCCT is the reviewed 27.1-derived locked input; the App uses Xcode 27.2 and iPhoneOS SDK 27.2.', 'tag': tag,
                       'version': version, 'build': str(build), 'sdk': app_info['DTSDKName'],
                       'xcode': (temp / 'xcode-version.txt').read_text().strip(),
                       'kind': 'unsigned-device-app-and-matching-symbols',
@@ -361,7 +433,7 @@ jobs:
           (stage / 'manifest.json').write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n')
           PY
           mkdir -p "$RUNNER_TEMP/FloeCloudDevice/diagnostics"
-          for name in cloud-native-inputs.log cloud-dependency-console.log cloud-device-build.log cloud-prior-symbols.log xcode-version.txt; do
+          for name in cloud-native-inputs.log cloud-dependency-console.log cloud-device-build.log cloud-prior-symbols.log cloud-occt.log cloud-occt-post-build.log xcode-version.txt; do
             if test -f "$RUNNER_TEMP/$name"; then
               cp "$RUNNER_TEMP/$name" "$RUNNER_TEMP/FloeCloudDevice/diagnostics/$name"
             fi
@@ -400,7 +472,7 @@ jobs:
           trap 'echo "Failure diagnostics could not be encrypted; no plaintext artifact was uploaded." >&3' ERR
           diag="$RUNNER_TEMP/FloeCloudFailure"
           mkdir "$diag"
-          for name in cloud-native-inputs.log cloud-dependency-console.log cloud-device-build.log cloud-prior-symbols.log cloud-archive.log xcode-version.txt; do
+          for name in cloud-native-inputs.log cloud-dependency-console.log cloud-device-build.log cloud-prior-symbols.log cloud-occt.log cloud-occt-post-build.log cloud-archive.log xcode-version.txt; do
             if test -f "$RUNNER_TEMP/$name"; then cp "$RUNNER_TEMP/$name" "$diag/$name"; fi
           done
           if test -d "$RUNNER_TEMP/FloeDependencyTransport/cloud-device"; then
