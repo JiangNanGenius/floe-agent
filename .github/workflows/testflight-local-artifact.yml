@@ -13,6 +13,10 @@ name: Sign and upload verified local device artifact
       artifact_sha256:
         required: true
         type: string
+      secure_testflight:
+        required: false
+        default: ''
+        type: string
 permissions:
   contents: write
   actions: read
@@ -28,6 +32,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       RELEASE_TAG: ${{ inputs.tag }}
+      ARTIFACT_SHA256: ${{ inputs.artifact_sha256 }}
     defaults:
       run:
         working-directory: FloeAgent
@@ -37,6 +42,16 @@ jobs:
       with:
         fetch-depth: 0
         ref: ${{ inputs.tag }}
+    - name: Validate encrypted export recipient and pinned source
+      id: secure_recipient
+      if: ${{ inputs.secure_testflight != '' }}
+      env:
+        SECURE_TESTFLIGHT: ${{ inputs.secure_testflight }}
+      run: |
+        set -euo pipefail
+        umask 077
+        git show "$GITHUB_SHA:.github/scripts/secure_testflight_artifact.py" > "$RUNNER_TEMP/secure_testflight_artifact.py"
+        python3 "$RUNNER_TEMP/secure_testflight_artifact.py" validate
     - name: Require exact local release source
       id: source
       run: |
@@ -242,7 +257,7 @@ jobs:
           "$RUNNER_TEMP/FloeScreenShare.entitlements"
         test "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.developer.icloud-container-environment' "$RUNNER_TEMP/Floe.entitlements")" = Production
         test "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.developer.ubiquity-kvstore-identifier' "$RUNNER_TEMP/Floe.entitlements")" = QYL72C43K6.org.floeagent.ios
-    - name: Sign, verify, package, and upload to TestFlight
+    - name: Sign, verify, and package for TestFlight
       env:
         APPLE_SHARE_PROVISIONING_PROFILE_BASE64: ${{ secrets.APPLE_SHARE_PROVISIONING_PROFILE_BASE64 }}
         APPLE_WIDGETS_PROVISIONING_PROFILE_BASE64: ${{ secrets.APPLE_WIDGETS_PROVISIONING_PROFILE_BASE64 }}
@@ -283,11 +298,43 @@ jobs:
         )
         unzip -t "$RUNNER_TEMP/TestFlightExport/FloeAgent.ipa"
         python3 scripts/audit_native_runtime_free.py --ipa "$RUNNER_TEMP/TestFlightExport/FloeAgent.ipa"
+    - name: Encrypt TestFlight export and symbols before upload
+      id: encrypt_export
+      if: ${{ always() && inputs.secure_testflight != '' && steps.secure_recipient.outcome == 'success' }}
+      env:
+        SECURE_TESTFLIGHT: ${{ inputs.secure_testflight }}
+        SIGNING_JOB_STATUS: ${{ job.status }}
+      run: |
+        set -euo pipefail
+        umask 077
+        python3 "$RUNNER_TEMP/secure_testflight_artifact.py" encrypt-early
+    - name: Upload only encrypted TestFlight artifacts
+      if: ${{ always() && inputs.secure_testflight != '' && steps.encrypt_export.outcome == 'success' }}
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: secure-testflight-${{ inputs.tag }}
+        path: |
+          ${{ runner.temp }}/FloeTestFlightExport.cms
+          ${{ runner.temp }}/FloeTestFlightEvidence.cms
+        if-no-files-found: error
+        compression-level: 0
+    - name: Validate package with Apple
+      env:
+        ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+        ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+      run: |
+        set -euo pipefail
         xcrun altool --validate-app \
           --file "$RUNNER_TEMP/TestFlightExport/FloeAgent.ipa" \
           --type ios \
           --apiKey "$ASC_KEY_ID" \
           --apiIssuer "$ASC_ISSUER_ID"
+    - name: Upload validated package to TestFlight
+      env:
+        ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+        ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+      run: |
+        set -euo pipefail
         xcrun altool --upload-app \
           --file "$RUNNER_TEMP/TestFlightExport/FloeAgent.ipa" \
           --type ios \
@@ -316,14 +363,33 @@ jobs:
             ''.join(key + '=' + str(value).replace('\r', '\\r').replace('\n', '\\n') + '\n'
                     for key, value in summary.items()))
         SUMMARY
+    - name: Encrypt TestFlight upload receipt
+      id: encrypt_upload
+      if: ${{ always() && inputs.secure_testflight != '' && steps.secure_recipient.outcome == 'success' }}
+      env:
+        SECURE_TESTFLIGHT: ${{ inputs.secure_testflight }}
+        SIGNING_JOB_STATUS: ${{ job.status }}
+      run: |
+        set -euo pipefail
+        umask 077
+        python3 "$RUNNER_TEMP/secure_testflight_artifact.py" encrypt-upload
+    - name: Upload only encrypted TestFlight receipt
+      if: ${{ always() && inputs.secure_testflight != '' && steps.encrypt_upload.outcome == 'success' }}
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: secure-testflight-${{ inputs.tag }}-upload
+        path: ${{ runner.temp }}/FloeTestFlightUpload.cms
+        if-no-files-found: error
+        compression-level: 0
     - name: Upload TestFlight evidence
+      if: ${{ success() && inputs.secure_testflight == '' }}
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
       with:
         name: testflight-${{ steps.source.outputs.version }}-build${{ steps.source.outputs.build }}
         path: ${{ runner.temp }}/TestFlightExport/
         if-no-files-found: error
     - name: Retain local provenance and symbols
-      if: always()
+      if: ${{ always() && inputs.secure_testflight == '' }}
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
       with:
         name: local-${{ inputs.tag }}-provenance-symbols
@@ -375,9 +441,27 @@ jobs:
         else: raise RuntimeError('Apple processing timeout; inspect before retrying any upload')
         CHECK
     - name: Save Apple internal availability evidence
-      if: always()
+      if: ${{ always() && inputs.secure_testflight == '' }}
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
       with:
         name: local-${{ inputs.tag }}-apple-internal
         path: ${{ runner.temp }}/APPLE-INTERNAL.json
         if-no-files-found: warn
+    - name: Encrypt Apple internal availability evidence
+      id: encrypt_apple
+      if: ${{ always() && inputs.secure_testflight != '' && steps.secure_recipient.outcome == 'success' }}
+      env:
+        SECURE_TESTFLIGHT: ${{ inputs.secure_testflight }}
+        SIGNING_JOB_STATUS: ${{ job.status }}
+      run: |
+        set -euo pipefail
+        umask 077
+        python3 "$RUNNER_TEMP/secure_testflight_artifact.py" encrypt-apple
+    - name: Upload only encrypted Apple internal evidence
+      if: ${{ always() && inputs.secure_testflight != '' && steps.encrypt_apple.outcome == 'success' }}
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: secure-testflight-${{ inputs.tag }}-apple
+        path: ${{ runner.temp }}/FloeTestFlightApple.cms
+        if-no-files-found: error
+        compression-level: 0
