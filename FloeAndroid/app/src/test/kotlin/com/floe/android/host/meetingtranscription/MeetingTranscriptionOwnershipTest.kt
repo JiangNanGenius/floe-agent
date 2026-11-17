@@ -92,7 +92,7 @@ class MeetingTranscriptionOwnershipTest {
             val (second, _) = addMeeting(repository, "Second")
             val backend = MeetingTranscriptionBackendFake()
             val blocking = BlockingExtractor()
-            val manager = manager(repository, backend) { blocking }
+            val manager = manager(repository, backend, factory = { blocking })
 
             val started = manager.start(first.meetingId, first.id)
             assertTrue(started is MeetingTranscriptionStart.Started)
@@ -165,7 +165,7 @@ class MeetingTranscriptionOwnershipTest {
         val (material, _) = addMeeting(repository, "Caller")
         val backend = MeetingTranscriptionBackendFake()
         val blocking = BlockingExtractor()
-        val manager = manager(repository, backend) { blocking }
+        val manager = manager(repository, backend, factory = { blocking })
 
         val caller = launch(Dispatchers.Default) {
             runCatching { manager.transcribe(material.meetingId, material.id) }
@@ -408,10 +408,10 @@ class MeetingTranscriptionOwnershipTest {
         val backend = MeetingTranscriptionBackendFake()
         val blocking = BlockingExtractor()
         var extractorCalls = 0
-        val manager = manager(repository, backend) {
+        val manager = manager(repository, backend, factory = {
             extractorCalls += 1
             if (extractorCalls == 1) blocking else TwoChunkExtractor()
-        }
+        })
 
         assertTrue(manager.start(material.meetingId, material.id) is MeetingTranscriptionStart.Started)
         withTimeout(5_000) { blocking.entered.await() }
