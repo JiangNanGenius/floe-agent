@@ -163,14 +163,26 @@ def closure(built_ko: Path, symvers_table, stock_modules, nm):
     return order, needed, self_deps
 
 def main():
+    global PINS, DEB, PACKAGE_SHA256, KERNEL_RELEASE, FIRST_INDEX, FLOE_CODEC_SHA256, MODULE_SHA256
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", type=Path, required=True)
-    ap.add_argument("--image-deb", type=Path, default=DEB, required=DEB is None)
+    ap.add_argument("--pins", type=Path, default=PACKAGE,
+                    help="versioned input pins; defaults to the historical pins")
+    ap.add_argument("--image-deb", type=Path)
     ap.add_argument("--built-ko", type=Path, required=True)
     ap.add_argument("--floe-codec", type=Path, required=True)
     ap.add_argument("--nm", default="aarch64-linux-musl-nm")
     ap.add_argument("--symvers", type=Path, required=True)
     args = ap.parse_args()
+
+    PINS = json.loads(args.pins.read_text())
+    DEB = Path(PINS["linuxImageDeb"]["path"]) if PINS["linuxImageDeb"].get("path") else None
+    PACKAGE_SHA256 = PINS["linuxImageDeb"]["sha256"]
+    KERNEL_RELEASE = PINS["kernelRelease"]
+    FIRST_INDEX = int(PINS["initrdModuleIndex"])
+    FLOE_CODEC_SHA256 = PINS.get("floeCodec", {}).get("sha256")
+    MODULE_SHA256 = PINS["virtioMediaKo"]["sha256"]
+    args.image_deb = args.image_deb or DEB
 
     if args.image_deb is None or not args.image_deb.is_file():
         raise SystemExit("--image-deb is required (no machine-local pin path is embedded)")
@@ -180,12 +192,12 @@ def main():
     if not built_ko.exists():
         raise SystemExit(f"built module not found: {built_ko}")
     if sha256(built_ko) != MODULE_SHA256:
-        raise SystemExit("virtio-media.ko sha256 mismatch against config/video-module-pins.json")
+        raise SystemExit("virtio-media.ko sha256 mismatch against selected pins")
     codec = args.floe_codec
     if not codec.exists() or not codec.is_file():
         raise SystemExit(f"floe-codec not found: {codec}")
     if FLOE_CODEC_SHA256 and sha256(codec) != FLOE_CODEC_SHA256:
-        raise SystemExit("floe-codec sha256 mismatch against config/video-module-pins.json")
+        raise SystemExit("floe-codec sha256 mismatch against selected pins")
     blob = codec.read_bytes()[:20]
     if len(blob) < 20 or blob[:4] != b"\x7fELF" or blob[4] != 2 or blob[5] != 1             or int.from_bytes(blob[18:20], "little") != 183:
         raise SystemExit("floe-codec is not a 64-bit little-endian AArch64 ELF")

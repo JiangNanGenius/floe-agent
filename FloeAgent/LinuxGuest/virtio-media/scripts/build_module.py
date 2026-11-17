@@ -148,7 +148,9 @@ def main():
     outdir = scratch / "kbuild-out"          # O= object dir (internal SSD)
     hostinc = scratch / "host-include"       # Darwin host compat headers
     modsrc = scratch / "modsrc" / "virtio-media"
-    logs = STAGE / "evidence" / "logs"
+    # Receipts contain local paths and belong with the owned scratch build,
+    # never in the source tree or a public commit.
+    logs = scratch / "evidence" / "logs"
     logs.mkdir(parents=True, exist_ok=True)
 
     # ---- 0. pinned input verification (hashes, never unpack the debs) ----
@@ -197,6 +199,26 @@ def main():
     print(f"gmake: {gv}\ncross: {cv}\nhost cc: {hostcc_v}")
     cross = args.cc
     cross_prefix = cross[:-4] + "-" if cross.endswith("-gcc") else cross + "-"
+
+    # A fresh scratch directory must carry the Darwin host headers too; the
+    # previous script silently depended on a pre-populated warm build tree.
+    sysroot_probe = subprocess.run([cc, "-print-sysroot"], capture_output=True,
+                                   text=True, check=True)
+    sysroot = sysroot_probe.stdout.strip()
+    if not sysroot:
+        raise SystemExit("cross compiler did not report a sysroot for elf.h")
+    elf_header = Path(sysroot) / "usr" / "include" / "elf.h"
+    if not elf_header.is_file():
+        raise SystemExit(f"missing cross-toolchain elf.h: {elf_header}")
+    hostinc.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(elf_header, hostinc / "elf.h")
+    compat = STAGE / "scripts" / "host_compat"
+    for name in ("byteswap.h", "fvm-darwin-compat.h"):
+        shutil.copy2(compat / name, hostinc / name)
+    verified["hostElfHeader"] = {"source": "cross-toolchain sysroot", "sha256": sha256(elf_header)}
+    verified["hostCompatHeaders"] = {
+        name: sha256(compat / name) for name in ("byteswap.h", "fvm-darwin-compat.h")
+    }
 
     # Darwin host fixes, injected via KBUILD_USERHOSTCFLAGS (a make command-line
     # variable that flows INTO the top Makefile's own
@@ -360,8 +382,7 @@ def main():
         "notes": "Compile/link stage only. insmod, /dev/video*, codec decode/encode "
                  "are the primary's runtime stage and are NOT claimed here.",
     }
-    (STAGE / "evidence").mkdir(exist_ok=True)
-    rec_path = STAGE / "evidence" / "module-build-receipt.json"
+    rec_path = scratch / "evidence" / "module-build-receipt.json"
     rec_path.write_text(json.dumps(receipt, indent=1) + "\n")
     print("receipt:", rec_path)
     print("MODULE_BUILT", ko)

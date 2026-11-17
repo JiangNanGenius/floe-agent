@@ -88,7 +88,7 @@
 // security boundary, and this supervisor makes no such claim either.
 //
 // Provenance: namespace/cgroup structure adapted from the verified
-// Local/Private/linux-project-isolation-prototype-20261104 primitive
+// Linux project-isolation prototype primitive
 // (MPL-2.0 POC); this file and floe_project_supervisor.c are Floe production
 // source. The fd-fix invariant (dup2(same fd) must clear FD_CLOEXEC
 // explicitly, unrelated descriptors must not survive fork) is carried over

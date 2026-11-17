@@ -1,0 +1,143 @@
+{
+  "schema": "floe.linux-acceleration.source-delta.v1",
+  "purpose": "Record the project video device mapping and project-base codec verification as a separate candidate; this is not a qualified image or a release.",
+  "baseLock": {
+    "path": "FloeAgent/LinuxGuest/image/graphics/ACCELERATION-SOURCE-LOCK.json",
+    "sha256": "df48b5bbdbb13da41e6d9b082151cd5fe277210bbc3eecb2f8068808eb880116"
+  },
+  "changes": [
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/boot_overlay/README.md",
+      "previous": {
+        "bytes": 2358,
+        "sha256": "acd7c4ea4a29d3f39c54d5dfa972447a4ea790f4f6135c09c86fbc0c891bf8e4"
+      },
+      "current": {
+        "bytes": 3031,
+        "sha256": "2d3cfd8b51c45adbe9bc8059cbec65ef5da93b4bac270a1ee147dd35791e0a0b"
+      }
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/boot_overlay/image_gate.py",
+      "previous": {
+        "bytes": 4663,
+        "sha256": "2300f168638c699e000b99781243898fb4080cefb0dd461ece91734675bb048a"
+      },
+      "current": {
+        "bytes": 5854,
+        "sha256": "a7ec89eaa5d1db481428f4c60137638c3364ad884a9e165135d07bcdc84d0773"
+      }
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/driver/virtio_media_ioctls.c",
+      "previous": {
+        "bytes": 39711,
+        "sha256": "0ceffdcaf9e0b9ce12c7cfe58b842a90c8c280ff8e8da04b14103ea1f249ccd7"
+      },
+      "current": {
+        "bytes": 40617,
+        "sha256": "a3d2688d5f61a9b06133bcad2ad340fd0e62ebdbc9b6f0c8023cec04d47e6b5c"
+      },
+      "purpose": "Preserve guest capabilities while accepting the host QUERYCAP bus identity for typed broker discovery; only unsupported ioctl falls back."
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/boot_overlay/install_recipe.py",
+      "previous": {
+        "bytes": 13194,
+        "sha256": "9b6c992df6605bf69f58cc4ef5b748845ee791c94d94a68b0b195120b818bc45"
+      },
+      "current": {
+        "bytes": 13810,
+        "sha256": "75baea2ba04dc426e1664d064379003fe406cb204043105556a5227ac84e32f7"
+      },
+      "purpose": "Allow an explicitly selected versioned module pin set while preserving the historical default."
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/video/floe_codec.c",
+      "previous": {
+        "bytes": 31757,
+        "sha256": "05848195b523c8ef0bc4824b2894e3352203c9b652d26d662f97a4cced7892bc"
+      },
+      "current": {
+        "bytes": 31819,
+        "sha256": "d9d73093fa2a46f7a38d09e4e49680339ec85c645447770c4ce9f90d6013add7"
+      },
+      "purpose": "Handle V4L2 end-of-stream and copy device-mapped output before workspace writes; report flush failures."
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/acceleration/video/floe_codec_v4l2.c",
+      "previous": {
+        "bytes": 16409,
+        "sha256": "b6b76a0b77eae667e1501706925dcd2b44bf73d0317e60622435355aa0158157"
+      },
+      "current": {
+        "bytes": 17591,
+        "sha256": "aa1cbbced0d873b70aba91c6d4055a87395a7cf7f66a283413f68d4e1b4e8cac"
+      },
+      "purpose": "Handle V4L2 end-of-stream and copy device-mapped output before workspace writes; report flush failures."
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/scripts/build_module.py",
+      "previous": {
+        "bytes": 18266,
+        "sha256": "45111451c9f92c18f781fa980265cfb2eff1752939aab0de7b3fb29a93abb70e"
+      },
+      "current": {
+        "bytes": 19429,
+        "sha256": "81b6d6fffebae9759dc1498c1288be817c83ad608b6c563b1b55d023c008673a"
+      },
+      "purpose": "Prepare the required Darwin host headers for clean scratch builds and keep build receipts out of the source tree."
+    }
+  ],
+  "additionalInputs": [
+    {
+      "path": "FloeAgent/LinuxGuest/runner/floe_project_supervisor.c",
+      "bytes": 100386,
+      "sha256": "1f732a1ae78fc918319f1ce56afa13ba5b6eb8376e31a03e26f7d515ea54c8ba",
+      "role": "candidate project supervisor source, outside the original acceleration source lock"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/runner/floe_project_supervisor.h",
+      "bytes": 16211,
+      "sha256": "d4de9a7625572201980729f93775b5068d63fcca8fc7eed90a14a051c19d718d",
+      "role": "candidate supervisor build header"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/runner/floe_net.h",
+      "bytes": 8362,
+      "sha256": "50983633fb25e4db3917767fff01898272d6f51263b42a4f270ccb0ab50e17b7",
+      "role": "candidate supervisor build header"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/config/video-module-pins-20261117-rebuilt-candidate.json",
+      "bytes": 1993,
+      "sha256": "cdecfb1718afb5b6c9c18c93bfd5e407a38f36dfc08f8a21bb57af8283d3e5e0",
+      "role": "rebuilt candidate module and fixed codec pin"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/scripts/host_compat/byteswap.h",
+      "bytes": 721,
+      "sha256": "c323694686dfbcecffe2b8e9c1739951da803ac5d181c6c00637c16d45953ab0",
+      "role": "Darwin kernel host-tool compatibility header"
+    },
+    {
+      "path": "FloeAgent/LinuxGuest/virtio-media/scripts/host_compat/fvm-darwin-compat.h",
+      "bytes": 1701,
+      "sha256": "405f33840a4e20aebe58bb0d06d6d22ef2c67f160fd4abda0f6586eb80e9bf96",
+      "role": "Darwin file2alias compatibility header"
+    }
+  ],
+  "candidateBuild": {
+    "compiler": "aarch64-linux-musl-gcc 15.2.0",
+    "kernelRelease": "6.12.107+deb13-arm64",
+    "supervisorArtifactSHA256": "aa6006ac4e2e3716ffae3076b50ca690030eac0d3141a69a7d9073b6fb9f1039",
+    "codecArtifactSHA256": "5afcc3cbdd219dd67eabb6ef777ee014875eeae562b8d7ddde1c8c3aec274b8d",
+    "candidateModuleSHA256": "8cca72bd79df68e0bf74c1ce4228e3b31ca17d44c90c6956c191c5abd3eec24b",
+    "note": "Fixed candidate tested by a real macOS-hosted Linux V4L2 H.264 run; iOS App, device, fresh image qualification and release remain separate requirements.",
+    "supervisorCompileFlags": "-std=gnu11 -O2 -static -Wall -Wextra -Werror -D_GNU_SOURCE",
+    "codecCompileFlags": "-D_GNU_SOURCE -O2 -std=c11 -Wall -Wextra -Werror -Wno-unused-parameter -static",
+    "moduleSource": "Fresh cold build from the locked source delta; static ABI checks and macOS-hosted Linux H.264 smoke passed. iOS qualification remains separate.",
+    "previousCodecArtifactSHA256": "3a37fa632a828e38dc163318c5198a5641b6d8e3f09a7958529ab0b81cb97295",
+    "previousCandidateModuleSHA256": "097eae02b0c91076df55aa5a3da0f9ef1e9012d07401c1ff40406c9463497026"
+  }
+}

@@ -952,6 +952,27 @@ static int render_node_is_virtio_gpu(void) {
     return matched;
 }
 
+static int media_node_is_virtual(unsigned index, const struct stat *node) {
+    if (!S_ISCHR(node->st_mode) || major(node->st_rdev) != 81) return 0;
+    char path[128], driver[512];
+    int count = snprintf(path, sizeof path, "/sys/class/video4linux/video%u/dev", index);
+    if (count <= 0 || (size_t)count >= sizeof path) return 0;
+    FILE *metadata = fopen(path, "r");
+    if (!metadata) return 0;
+    unsigned device_major = 0, device_minor = 0;
+    int parsed = fscanf(metadata, "%u:%u", &device_major, &device_minor);
+    fclose(metadata);
+    if (parsed != 2 || makedev(device_major, device_minor) != node->st_rdev) return 0;
+    count = snprintf(path, sizeof path,
+                         "/sys/class/video4linux/video%u/device/driver", index);
+    if (count <= 0 || (size_t)count >= sizeof path) return 0;
+    ssize_t length = readlink(path, driver, sizeof driver - 1);
+    if (length <= 0 || (size_t)length >= sizeof driver - 1) return 0;
+    driver[length] = '\0';
+    const char *name = strrchr(driver, '/');
+    return strcmp(name ? name + 1 : driver, "virtio-media") == 0;
+}
+
 static int project_rootfs_mount(floe_project *p) {
     char upper[512], work[512], options[1600];
     if (path_join(upper, sizeof upper, p->dir, "upper") != 0) return -1;
@@ -1042,6 +1063,25 @@ static int project_rootfs_mount(floe_project *p) {
         if (mknod(node, S_IFCHR | 0660, render.st_rdev) != 0) {
             diag("floe-supervisor: project %s: virtual render node: %s\n",
                  p->id, strerror(errno));
+            return -1;
+        }
+    }
+    /* Only this machine's typed virtual video nodes join the project's
+     * minimal /dev. Keep consoles, control devices and other media absent. */
+    unsigned video_nodes = 0;
+    for (unsigned i = 0; i < 64; i++) {
+        char source[64], name[32], node[768];
+        snprintf(source, sizeof source, "/dev/video%u", i);
+        struct stat media;
+        if (lstat(source, &media) != 0 || !media_node_is_virtual(i, &media)) continue;
+        if (++video_nodes > 2) {
+            diag("floe-supervisor: project %s: unexpected virtual video count\n", p->id);
+            return -1;
+        }
+        snprintf(name, sizeof name, "dev/video%u", i);
+        if (path_join(node, sizeof node, p->root, name) != 0) return -1;
+        if (mknod(node, S_IFCHR | 0660, media.st_rdev) != 0) {
+            diag("floe-supervisor: project %s: virtual video node: %s\n", p->id, strerror(errno));
             return -1;
         }
     }

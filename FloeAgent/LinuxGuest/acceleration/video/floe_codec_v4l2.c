@@ -157,12 +157,41 @@ static int dqbuf(int fd, unsigned type, struct v4l2_buffer *b) {
     memset(b, 0, sizeof(*b));
     b->type = type;
     b->memory = V4L2_MEMORY_MMAP;
-    return xioctl(fd, VIDIOC_DQBUF, b, "DQBUF");
+    int rc;
+    do { rc = ioctl(fd, VIDIOC_DQBUF, b); } while (rc < 0 && errno == EINTR);
+    if (rc < 0 && errno != EAGAIN && errno != EPIPE) {
+        int saved = errno;
+        fprintf(stderr, "floe-codec: DQBUF: %s\n", strerror(saved));
+        errno = saved;
+    }
+    return rc;
 }
 
 static void unmap_all(mmap_buffer *bufs, unsigned count) {
     for (unsigned i = 0; i < count; i++)
         if (bufs[i].addr && bufs[i].addr != MAP_FAILED) munmap(bufs[i].addr, bufs[i].len);
+}
+
+/* Some filesystems cannot write directly from a device MMAP (EFAULT). Copy
+ * to ordinary memory first so workspace and local files behave alike. */
+static int write_capture(FILE *output, const mmap_buffer *buffers, unsigned count,
+                         const struct v4l2_buffer *buffer) {
+    if (buffer->index >= count || buffer->bytesused > buffers[buffer->index].len) {
+        errno = EOVERFLOW;
+        return -1;
+    }
+    if (!buffer->bytesused) return 0;
+    uint8_t *copy = malloc(buffer->bytesused);
+    if (!copy) return -1;
+    memcpy(copy, buffers[buffer->index].addr, buffer->bytesused);
+    size_t written = fwrite(copy, 1, buffer->bytesused, output);
+    int saved = errno;
+    free(copy);
+    if (written != buffer->bytesused) {
+        errno = saved ? saved : EIO;
+        return -1;
+    }
+    return 0;
 }
 
 int floe_codec_v4l2_decode(const char *device, uint32_t codec_fourcc,
@@ -225,7 +254,7 @@ int floe_codec_v4l2_decode(const char *device, uint32_t codec_fourcc,
         const floe_au *au = &aus[au_index];
         if (au->bytes > src[index].len) {
             fprintf(stderr, "floe-codec: AU %zu (%zu bytes) exceeds buffer\n", au_index, au->bytes);
-            break;
+            goto fail;
         }
         memcpy(src[index].addr, au->data, au->bytes);
         if (wait_fd(fd, POLLOUT, "OUTPUT queue") <= 0) break;
@@ -249,11 +278,12 @@ int floe_codec_v4l2_decode(const char *device, uint32_t codec_fourcc,
         struct v4l2_buffer b;
         if (dqbuf(fd, V4L2_BUF_TYPE_VIDEO_CAPTURE, &b) < 0) {
             if (errno == EAGAIN) { idle++; continue; }
-            break;
+            if (errno == EPIPE) break;
+            goto fail;
         }
         idle = 0;
         if (b.bytesused) {
-            if (fwrite(dst[b.index].addr, 1, b.bytesused, output) != b.bytesused) break;
+            if (write_capture(output, dst, dst_count, &b) != 0) goto fail;
             total_bytes += b.bytesused;
         }
         frames++;
@@ -357,7 +387,7 @@ int floe_codec_v4l2_encode(const char *device, uint32_t codec_fourcc,
         struct v4l2_buffer b;
         if (dqbuf(fd, V4L2_BUF_TYPE_VIDEO_OUTPUT, &b) == 0) {
             src_free[b.index] = 1;
-        } else if (errno != EAGAIN) {
+        } else if (errno != EAGAIN && !(draining && errno == EPIPE)) {
             goto fail;
         }
         int ready = wait_fd(fd, POLLIN, "CAPTURE drain");
@@ -365,7 +395,7 @@ int floe_codec_v4l2_encode(const char *device, uint32_t codec_fourcc,
         if (dqbuf(fd, V4L2_BUF_TYPE_VIDEO_CAPTURE, &b) == 0) {
             idle = 0;
             if (b.bytesused) {
-                if (fwrite(dst[b.index].addr, 1, b.bytesused, output) != b.bytesused) goto fail;
+                if (write_capture(output, dst, dst_count, &b) != 0) goto fail;
                 total += b.bytesused;
             }
             chunks++;
@@ -373,6 +403,8 @@ int floe_codec_v4l2_encode(const char *device, uint32_t codec_fourcc,
         } else if (errno == EAGAIN) {
             if (draining && idle >= 2) break;
             idle++;
+        } else if (draining && errno == EPIPE) {
+            break;
         } else {
             goto fail;
         }

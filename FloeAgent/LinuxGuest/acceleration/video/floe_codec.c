@@ -560,7 +560,7 @@ static int standard_decode(const char *device, const codec_entry *codec,
     uint64_t frames = 0, bytes = 0;
     int rc = floe_codec_v4l2_decode(info.path, parse_fourcc(codec->fourcc), aus,
                                     packets.count, width, height, out, limit, &frames, &bytes);
-    if (out != stdout) fclose(out);
+    if ((out != stdout ? fclose(out) : fflush(out)) != 0) rc = -1;
     free(aus);
     free_packets(&packets);
     if (json) {
@@ -588,7 +588,7 @@ static int standard_encode(const char *device, const codec_entry *codec,
     int rc = floe_codec_v4l2_encode(info.path, parse_fourcc(codec->fourcc), in,
                                     width, height, frame_bytes, limit, out, &chunks, &bytes);
     if (in != stdin) fclose(in);
-    if (out != stdout) fclose(out);
+    if ((out != stdout ? fclose(out) : fflush(out)) != 0) rc = -1;
     if (json) {
         fprintf(stderr, "{\"command\":\"encode\",\"backend\":\"v4l2\",\"codec\":\"%s\","
                 "\"device\":\"%s\",\"chunks_out\":%llu,\"bytes_out\":%llu,\"ok\":%s}\n",

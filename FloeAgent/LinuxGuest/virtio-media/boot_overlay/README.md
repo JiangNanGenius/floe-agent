@@ -3,7 +3,7 @@
 This directory assembles the guest-side video stack **from verified inputs**.
 It never edits the frozen initrd, the kernel package or the base image.
 
-## Inputs (exact pins: `config/video-module-pins.json`)
+## Inputs (historical pins: `config/video-module-pins.json`)
 
 | Input | Pin |
 | --- | --- |
@@ -14,20 +14,24 @@ It never edits the frozen initrd, the kernel package or the base image.
 | floe-codec | source-built AArch64 ELF; actual hash recorded in the receipt |
 
 The module source is the vendored ChromeOS driver in `../driver/`; the
-primary build recipe is `../scripts/build_module.py`. The pinned `.ko` was
-built once against the pinned kernel headers and loaded successfully in the
-the primary's private guest evidence; this recipe
-does not reimplement that build.
+primary build recipe is `../scripts/build_module.py`. The separate candidate
+pin set selects the rebuilt module and codec; the historical pin remains
+unchanged. The overlay assembler does not compile the module.
 
 ## Assemble
 
 ```sh
 python3 boot_overlay/install_recipe.py \
+  --pins config/video-module-pins-20261117-rebuilt-candidate.json \
   --built-ko <verified virtio-media.ko> \
   --floe-codec <verified floe-codec> \
   --symvers <pinned Module.symvers> \
   --out <overlay-dir>
 ```
+
+The named pin set is a component candidate, not a released image. Omitting
+`--pins` selects the unchanged historical pin set. Rebuild and qualify the
+exact source and module before publishing a new image; do not alter the old pin.
 
 Output:
 
@@ -44,15 +48,21 @@ imports through the pinned `Module.symvers`; every stock module is extracted
 from the pinned image deb and hashed. Missing providers, hash mismatches and a
 non-AArch64 client fail closed.
 
+The initrd and a project's root filesystem are separate. Before building the
+clean disk, also install the exact staged `usr/local/bin/floe-codec` into the
+clean base at `/base/usr/local/bin/floe-codec`, with executable mode. Merely
+putting it in the initrd does not make it visible to project commands.
+
 ## Gate
 
 ```sh
-python3 boot_overlay/image_gate.py --overlay <overlay-dir> --manifest <image-manifest.json>
+python3 boot_overlay/image_gate.py --overlay <overlay-dir> --manifest <image-manifest.json> \
+  --base-root <unpacked-clean-base-directory>
 ```
 
 The gate requires `deviceCapabilities.videoAcceleration == true` in the
-verified image manifest, checks the receipt hashes, `modules.dep` coverage and
-the installed client ELF. It does **not** prove initrd assembly, module load or
+verified image manifest, checks the receipt hashes, `modules.dep` coverage,
+the staged client ELF and matching executable in the project base. It does **not** prove initrd assembly, module load or
 `/dev/video` operation; those remain primary runtime checks.
 
 ## Image-manifest contract

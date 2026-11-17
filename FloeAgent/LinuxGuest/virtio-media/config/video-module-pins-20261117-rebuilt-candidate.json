@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "kernelRelease": "6.12.107+deb13-arm64",
+  "initrdModuleIndex": 85,
+  "linuxImageDeb": {
+    "path": "",
+    "sha256": "20c92f3f97dd466e0400a6fcb792bde85af842fbb5e8b471370065e3de9d9fc9",
+    "file": "linux-image-6.12.107+deb13-arm64_6.12.107-1_arm64.deb"
+  },
+  "kernelSource": {
+    "file": "linux-source-6.12_6.12.107-1_all.deb",
+    "sha256": "775b9ef84d7fa7927ccebfec33fbbe9aeb2482ebf9a92c771aafd33fb6e2ee27"
+  },
+  "kernelHeaders": {
+    "file": "linux-headers-6.12.107+deb13-arm64_6.12.107-1_arm64.deb",
+    "sha256": "20cc55bde5ceae6411b7554d5fffc937f2df022bf47b6df9cad32b51cb1219f3"
+  },
+  "moduleSymvers": {
+    "file": "Module.symvers-6.12.107+deb13-arm64",
+    "sha256": "4e1420af601b02700a9624ddf10ffc81aebb4934dc811b600d1b2368a5ae3a2a"
+  },
+  "virtioMediaKo": {
+    "path": "",
+    "sha256": "8cca72bd79df68e0bf74c1ce4228e3b31ca17d44c90c6956c191c5abd3eec24b",
+    "bytes": 1335496,
+    "vermagic": "6.12.107+deb13-arm64 SMP mod_unload modversions aarch64",
+    "file": "virtio-media.ko"
+  },
+  "expectedDependencies": [
+    "videobuf2-common",
+    "videobuf2-memops",
+    "videobuf2-v4l2",
+    "videodev"
+  ],
+  "floeCodec": {
+    "source": "FloeAgent/LinuxGuest/acceleration/video",
+    "build": "make CC=aarch64-linux-musl-gcc",
+    "installPath": "/usr/local/bin/floe-codec",
+    "sha256": "5afcc3cbdd219dd67eabb6ef777ee014875eeae562b8d7ddde1c8c3aec274b8d",
+    "note": "Fixed candidate binary; macOS-hosted guest V4L2 encode regression passed. Image release and iPad qualification remain separate."
+  },
+  "imageMetadataGate": {
+    "manifestField": "deviceCapabilities.videoAcceleration",
+    "requiredValue": true,
+    "note": "The App creates an ABI4 machine with video only when the verified image manifest declares this capability. Older images keep a video-disabled machine and report unavailable."
+  },
+  "candidateStatus": "fresh module static ABI and macOS-hosted Linux V4L2 H.264 smoke passed; not a released image or iPad qualification"
+}

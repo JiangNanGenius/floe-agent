@@ -573,8 +573,9 @@ SIMPLE_W_IOCTL(s_hw_freq_seek, VIDIOC_S_HW_FREQ_SEEK,
 	       const struct v4l2_hw_freq_seek)
 
 /*
- * QUERYCAP is handled by reading the configuration area.
- *
+ * Keep the guest driver's configuration-backed standard capabilities.  An
+ * optional host QUERYCAP supplies bus identity (including typed endpoints),
+ * without changing the virtio-media or userspace ABI.
  */
 
 static int virtio_media_querycap(struct file *file, void *fh,
@@ -582,8 +583,30 @@ static int virtio_media_querycap(struct file *file, void *fh,
 {
 	struct video_device *video_dev = video_devdata(file);
 	struct virtio_media *vv = to_virtio_media(video_dev);
+	struct v4l2_capability host_cap = { 0 };
+	struct v4l2_fh *vfh = file_to_v4l2_fh(file);
+	size_t bus_len;
+	int ret;
+
+	/* Older upstream hosts may leave QUERYCAP to the guest.  Fall back only
+	 * for an explicitly unsupported ioctl; transport/session errors must
+	 * reach userspace rather than masquerading as local success.
+	 */
+	ret = virtio_media_send_r_ioctl(vfh, VIDIOC_QUERYCAP, &host_cap,
+				      sizeof(host_cap));
+	if (ret && ret != -ENOTTY && ret != -EOPNOTSUPP)
+		return ret;
+	if (!ret) {
+		bus_len = strnlen((const char *)host_cap.bus_info,
+				  sizeof(host_cap.bus_info));
+		if (bus_len == sizeof(host_cap.bus_info))
+			return -EPROTO;
+	}
 
 	strscpy(cap->bus_info, "platform:virtio-media");
+	if (!ret && host_cap.bus_info[0])
+		strscpy(cap->bus_info, host_cap.bus_info,
+			sizeof(cap->bus_info));
 
 	if (!virtio_media_driver_name)
 		strscpy(cap->driver, VIRTIO_MEDIA_DEFAULT_DRIVER_NAME);
