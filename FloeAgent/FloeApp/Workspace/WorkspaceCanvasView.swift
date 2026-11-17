@@ -97,6 +97,9 @@ struct CreativeModeHubView: View {
 
     @State private var renamingCanvas: WorkspaceCanvasRegistry.CanvasSummary?
     @State private var renameValue = ""
+    @State private var personalCanvasAlert: PersonalCanvasAlert?
+    @State private var deletingPersonalCanvasID: UUID?
+    @State private var personalCanvasDeletionError: String?
     @State private var importsCanvasPackage = false
     @State private var exportedCanvas: CanvasBinaryDocument?
     @State private var exportedCanvasFilename = FloeL10n.l("workspace.workspace_canvas_view.floe_canvas")
@@ -106,6 +109,15 @@ struct CreativeModeHubView: View {
         let id: UUID
         let name: String
         let workspace: WorkspaceRecord?
+    }
+
+    private enum PersonalCanvasAlert: Identifiable {
+        case confirm(PersonalContentRecord)
+        var id: String {
+            switch self {
+            case .confirm(let record): return "confirm-\(record.id.uuidString)"
+            }
+        }
     }
 
     private enum CanvasLibraryEntry: Identifiable {
@@ -136,12 +148,14 @@ struct CreativeModeHubView: View {
                 Button("workspace.file_tree_view.new_folder", systemImage: "folder.badge.plus") {
                     editingFolder = nil; folderName = ""; showsFolderName = true
                 }
+                .accessibilityIdentifier("creative.folder.create")
                 Button("workspace.workspace_canvas_view.import_canvas", systemImage: "square.and.arrow.down") {
                     importsCanvasPackage = true
                 }
-                Button("workspace.add", systemImage: "folder.badge.plus") {
+                Button(IDELanguageRunText.t("选择工作区", "Choose workspace"), systemImage: "square.grid.2x2") {
                     showsWorkspacePicker = true
                 }
+                .accessibilityIdentifier("creative.workspace.choose")
             }
         }
         .task {
@@ -267,6 +281,30 @@ struct CreativeModeHubView: View {
                 workspace: item.workspace
             )
         }
+        .alert(item: $personalCanvasAlert) { alert in
+            switch alert {
+            case .confirm(let record):
+                return Alert(
+                    title: Text(IDELanguageRunText.t("删除画布？", "Delete canvas?")),
+                    message: Text(IDELanguageRunText.t("“\(record.title)”将移至最近删除，可以从那里恢复。", "“\(record.title)” will move to Recently Deleted, where you can restore it.")),
+                    primaryButton: .destructive(Text(IDELanguageRunText.t("删除", "Delete"))) {
+                        guard deletingPersonalCanvasID == nil else { return }
+                        deletingPersonalCanvasID = record.id
+                        personalCanvasDeletionError = nil
+                        Task { @MainActor in
+                            defer { deletingPersonalCanvasID = nil }
+                            do {
+                                try await PersonalLibraryFileActions.delete(record, environment: environment)
+                                listRevision += 1
+                            } catch {
+                                personalCanvasDeletionError = error.localizedDescription
+                            }
+                        }
+                    },
+                    secondaryButton: .cancel()
+                )
+            }
+        }
         .alert(editingFolder == nil ? "workspace.file_tree_view.new_folder" : "workspace.workspace_canvas_view.rename_folder", isPresented: $showsFolderName) {
             TextField("workspace.file_tree_view.folder_name", text: $folderName)
             Button("workspace.workspace_canvas_view.cancel", role: .cancel) {}
@@ -382,6 +420,21 @@ struct CreativeModeHubView: View {
                 }
             }
 
+            if deletingPersonalCanvasID != nil {
+                Section {
+                    ProgressView(IDELanguageRunText.t("正在删除画布…", "Deleting canvas…"))
+                        .accessibilityIdentifier("creative.canvas.deleting")
+                }
+            }
+            if let error = personalCanvasDeletionError {
+                Section {
+                    Label(error, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.red)
+                        .accessibilityIdentifier("creative.canvas.delete.error")
+                    Button(IDELanguageRunText.t("关闭", "Dismiss")) { personalCanvasDeletionError = nil }
+                }
+            }
+
             if !organization.folders.isEmpty {
                 Section("workspace.workspace_canvas_view.folder") {
                     Button("workspace.workspace_canvas_view.all_canvases", systemImage: "square.grid.2x2") { selectedFolder = nil }
@@ -471,6 +524,7 @@ struct CreativeModeHubView: View {
                 Image(systemName: "chevron.right").foregroundStyle(.tertiary)
             }.frame(minHeight: FloeTheme.minimumTarget)
         }.buttonStyle(.plain)
+            .accessibilityIdentifier("creative.canvas.personal.\(record.id.uuidString)")
             .contextMenu {
                 Menu(IDELanguageRunText.t("移入文件夹", "Move to folder"), systemImage: "folder") {
                     Button(IDELanguageRunText.t("所有画布", "All canvases")) { updateOrganization { $0.assignments[record.id] = nil } }
@@ -478,6 +532,11 @@ struct CreativeModeHubView: View {
                         Button(folder.name) { updateOrganization { $0.assignments[record.id] = folder.id } }
                     }
                 }
+                Button(IDELanguageRunText.t("删除", "Delete"), systemImage: "trash", role: .destructive) {
+                    personalCanvasAlert = .confirm(record)
+                }
+                .accessibilityIdentifier("creative.canvas.delete")
+                .disabled(deletingPersonalCanvasID != nil)
             }
     }
 
@@ -1101,11 +1160,7 @@ enum WorkspaceCanvasRegistry {
             candidate.updatedAt = Date()
             candidate.revision += 1
             do {
-                try CanvasProjectFileWriter.shared.compareAndSwap(
-                    candidate,
-                    at: url,
-                    expectedRevision: current.revision
-                )
+                try CanvasFrameworkWriteAuthority.commit(candidate, at: url, expectedRevision: current.revision)
                 return
             } catch {
                 guard CanvasProjectFileWriter.isRevisionConflict(error),
@@ -1347,14 +1402,14 @@ enum WorkspaceCanvasRegistry {
             throw FloeError.validationFailed(FloeL10n.l("workspace.workspace_canvas_view.this_is_not_a_supported_floe"))
         }
         let id = canvasID
-        project.id = id
-        project.workspaceID = nil
+        let name = project.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        project = try CanvasFrameworkLegacyRepository.forkProject(
+            project, newID: id, workspaceID: nil,
+            name: name.isEmpty ? FloeL10n.l("workspace.workspace_canvas_view.import_canvas") : name)
         project.agentConversationID = nil
         project.assistantSessions = []
         project.selectedAssistantSessionID = nil
         project.agentConversationIDsByDocument = [:]
-        project.name = project.name.trimmingCharacters(in: .whitespacesAndNewlines)
-        if project.name.isEmpty { project.name = FloeL10n.l("workspace.workspace_canvas_view.import_canvas") }
         project.updatedAt = Date()
         try encodeProject(project, to: projectURL(canvasID: id, createDirectory: true))
         return id
@@ -1375,8 +1430,9 @@ enum WorkspaceCanvasRegistry {
             floeRoot: floeRoot,
             canvasID: canvasID
         ) { project in
-            try encodeProject(project,
-                              to: projectURL(canvasID: project.id, createDirectory: true))
+            let restored = try CanvasFrameworkLegacyRepository.reconcileRestoredProject(project)
+            try encodeProject(restored,
+                              to: projectURL(canvasID: restored.id, createDirectory: true))
             registeredID = project.id
         }
         guard let id = registeredID else {
@@ -1431,13 +1487,13 @@ enum WorkspaceCanvasRegistry {
         let url = try projectURL(canvasID: canvasID, createDirectory: true)
         guard !FileManager.default.fileExists(atPath: url.path) else { return }
         let initial = FloeCanvasDocument(name: FloeL10n.l("workspace.workspace_canvas_view.canvas_1"))
-        let project = FloeCanvasProject(
+        let project = try CanvasFrameworkLegacyRepository.seedFrameworkState(FloeCanvasProject(
             id: canvasID,
             workspaceID: workspaceID,
             name: name,
             documents: [initial],
             selectedDocumentID: initial.id
-        )
+        ))
         do {
             try CanvasProjectFileWriter.shared.compareAndSwap(
                 project,
@@ -1496,7 +1552,8 @@ enum WorkspaceCanvasRegistry {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
-        try CanvasProjectCodec.encode(project, encoder: encoder).write(to: url, options: .atomic)
+        let seeded = try CanvasFrameworkLegacyRepository.seedFrameworkState(project)
+        try CanvasProjectCodec.encode(seeded, encoder: encoder).write(to: url, options: .atomic)
     }
 }
 
@@ -1775,6 +1832,9 @@ final class WorkspaceCanvasStoreQualification {
     init(backing: CanvasFrameworkBacking, project: FloeCore.CanvasProject) {
         store = CanvasDocumentStore(backing: backing, project: project)
     }
+    init(canvasID: UUID, workspaceID: UUID?, name: String) {
+        store = CanvasDocumentStore(canvasID: canvasID, workspaceID: workspaceID, canvasName: name)
+    }
     var project: FloeCore.CanvasProject { store.project }
     var selectedDocument: FloeCore.CanvasDocument? { store.selectedDocument }
     var saveError: String? { store.saveError }
@@ -1896,36 +1956,15 @@ private final class CanvasDocumentStore: ObservableObject {
                 // another writer that read that revision could still commit a
                 // stale N -> N+1 candidate over the canonicalization write.
             } else {
-                let backup = try Self.preserveReadOnlyBackup(of: fileURL)
-                var replacement = fallback
-                replacement.revision = decoded.revision + 1
-                project = replacement
-                let replaced = persist(
-                    incrementRevision: false,
-                    expectedRevision: decoded.revision,
-                    requireRevisionAdvance: true
-                )
-                if replaced {
-                    saveError = FloeL10n.l("workspace.workspace_canvas_view.the_original_canvas_could_not_be", backup.lastPathComponent)
-                }
+                // Do not replace a canvas whose owner or documents do not
+                // match. The new framework must not open an invented blank
+                // project over an existing user's file.
+                project = fallback
+                saveError = IDELanguageRunText.t("画布内容或所属工作区不匹配，原文件已保留。", "The canvas content or workspace does not match. The original file was retained.")
             }
         } catch {
-            do {
-                let backup = try Self.preserveReadOnlyBackup(of: fileURL)
-                project = fallback
-                let replaced = persist(
-                    incrementRevision: false,
-                    expectedRevision: fallback.revision,
-                    requireRevisionAdvance: false,
-                    allowReplacingUnreadableFile: true
-                )
-                if replaced {
-                    saveError = FloeL10n.l("workspace.workspace_canvas_view.the_original_canvas_could_not_be_2", backup.lastPathComponent)
-                }
-            } catch {
-                project = fallback
-                saveError = error.localizedDescription
-            }
+            project = fallback
+            saveError = error.localizedDescription
         }
     }
 
@@ -2083,12 +2122,12 @@ private final class CanvasDocumentStore: ObservableObject {
             guard remote.id == canvasID else { return }
             let expectedRevision = project.revision
             remote.revision = expectedRevision + 1
-            try CanvasProjectFileWriter.shared.compareAndSwap(
-                remote,
-                at: fileURL,
-                expectedRevision: expectedRevision
-            )
-            project = remote
+            // Cloud changes pass through the same native engine transaction as
+            // local edits. Refresh the UI backing after the commit; this read
+            // may legitimately include a later concurrent writer.
+            guard let frameworkBacking else { throw FloeError.validationFailed("Canvas engine is not ready") }
+            try CanvasFrameworkWriteAuthority.commit(remote, at: fileURL, expectedRevision: expectedRevision)
+            project = try frameworkBacking.load()
             undoStack.removeAll(); redoStack.removeAll()
             for hash in newest.assetHashes {
                 _ = try? await service.downloadAssetIfNeeded(contentHash: hash)
@@ -3766,15 +3805,21 @@ private final class CanvasDocumentStore: ObservableObject {
             if frameworkBacking.isLegacySource { try enqueueFrameworkSync(committed) }
             return
         }
+        // A legacy-shaped file may be created as an atomic storage carrier,
+        // but all later edits must go through the native framework authority.
+        guard allowCreateIfMissing, !allowReplacingUnreadableFile else {
+            throw FloeError.validationFailed("Canvas engine is not ready")
+        }
+        let seeded = try CanvasFrameworkLegacyRepository.seedFrameworkState(candidate)
         let data = try CanvasProjectFileWriter.shared.compareAndSwap(
-            candidate,
+            seeded,
             at: fileURL,
             expectedRevision: expectedRevision,
             requireRevisionAdvance: requireRevisionAdvance,
             allowCreateIfMissing: allowCreateIfMissing,
             allowReplacingUnreadableFile: allowReplacingUnreadableFile
         )
-        project = candidate
+        project = seeded
         saveError = nil
         // Reconcile complete reachable ownership (current assets PLUS typed
         // CAD revision history). Increments are applied before decrements so
@@ -5973,8 +6018,12 @@ struct WorkspaceCanvasView: View {
     @StateObject private var store: CanvasDocumentStore
     private let workspace: WorkspaceRecord?
     private let personalRecord: PersonalContentRecord?
+    private let onPersonalClose: (() -> Void)?
+    private let initialAssistantDocumentID: UUID?
     @State private var kitStore: CanvasEditorStore?
     @State private var moduleSession: CanvasHostSession?
+    @State private var engineOpenError: String?
+    @State private var engineOpenAttempt = 0
     @State private var moduleSourceRequest: CanvasFrameworkSourceRequest?
     @State private var referenceGeneration = UUID()
     @State private var selectedNodeIDs = Set<UUID>()
@@ -6103,18 +6152,20 @@ struct WorkspaceCanvasView: View {
     init(canvasID: UUID, name: String, workspace: WorkspaceRecord?, assistantDocumentID: UUID? = nil) {
         self.workspace = workspace
         personalRecord = nil
+        onPersonalClose = nil
+        initialAssistantDocumentID = assistantDocumentID
         kitStore = nil
         let documentStore = CanvasDocumentStore(canvasID: canvasID, workspaceID: workspace?.id, canvasName: name)
-        if let assistantDocumentID, documentStore.project.selectedDocumentID != assistantDocumentID {
-            documentStore.select(assistantDocumentID)
-        }
         _store = StateObject(wrappedValue: documentStore)
         _showsAgent = State(initialValue: assistantDocumentID != nil)
     }
 
-    init(backing: CanvasFrameworkBacking, project: FloeCore.CanvasProject, kitStore: CanvasEditorStore) {
+    init(backing: CanvasFrameworkBacking, project: FloeCore.CanvasProject, kitStore: CanvasEditorStore,
+         onClose: (() -> Void)? = nil) {
         workspace = nil
         personalRecord = backing.record
+        onPersonalClose = onClose
+        initialAssistantDocumentID = nil
         self.kitStore = kitStore
         _store = StateObject(wrappedValue: CanvasDocumentStore(backing: backing, project: project))
     }
@@ -6128,7 +6179,30 @@ struct WorkspaceCanvasView: View {
     #endif
 
     var body: some View {
-        canvasWithHandwritingAlert
+        Group {
+            if kitStore?.isLoaded == true {
+                canvasWithHandwritingAlert
+            } else if let engineOpenError {
+                VStack(spacing: 16) {
+                    ContentUnavailableView(IDELanguageRunText.t("无法打开画布", "Unable to open canvas"),
+                                           systemImage: "exclamationmark.triangle", description: Text(engineOpenError))
+                    if store.saveError != nil {
+                        Text(IDELanguageRunText.t("请关闭后重新打开画布。", "Close and reopen the canvas."))
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Button(IDELanguageRunText.t("重试", "Retry")) {
+                            self.engineOpenError = nil
+                            engineOpenAttempt += 1
+                        }
+                    }
+                    Button(IDELanguageRunText.t("关闭", "Close")) { closePresentation() }
+                }
+            } else {
+                ProgressView(IDELanguageRunText.t("正在打开画布", "Opening canvas"))
+            }
+        }
+        .task(id: engineOpenAttempt) { await runCanvasBackgroundLoop() }
         .fullScreenCover(item: $moduleSourceRequest) { request in CanvasFrameworkSourceDestination(sourceID: request.id) }
     }
 
@@ -6438,7 +6512,6 @@ struct WorkspaceCanvasView: View {
 
     private var canvasWithLifecycle: some View {
         canvasWithEditors
-        .task { await runCanvasBackgroundLoop() }
         .onDisappear {
             if !nativeEditorCovered && moduleSourceRequest == nil { referenceGeneration = UUID() }
             // The canvas is going away: flush unsaved CAD edits to their
@@ -6529,6 +6602,20 @@ struct WorkspaceCanvasView: View {
     /// Xcode 26.6 type-check budget for a single expression.
     @MainActor
     private func runCanvasBackgroundLoop() async {
+        if let error = store.saveError {
+            engineOpenError = error
+            return
+        }
+        if kitStore == nil { await enableLegacyModules() }
+        guard kitStore?.isLoaded == true, !Task.isCancelled else {
+            if engineOpenError == nil && !Task.isCancelled {
+                engineOpenError = IDELanguageRunText.t("画布引擎未能加载，原文件已保留。", "The canvas engine could not load. The original file was retained.")
+            }
+            return
+        }
+        if let documentID = initialAssistantDocumentID, store.project.selectedDocumentID != documentID {
+            store.select(documentID)
+        }
         if canvasOnboardingVersion < 1 { showsCanvasOnboarding = true }
         // Retry CAD drafts whose durable flush failed on a previous view:
         // the recovery center owns those live sessions until they land.
@@ -6538,7 +6625,6 @@ struct WorkspaceCanvasView: View {
             assetStore: environment.creativeAssetStore,
             globalEnabled: globalCanvasSyncEnabled
         )
-        if kitStore == nil { await enableLegacyModules() }
         restoreViewport()
         await store.synchronizeFromCloud(environment.canvasCloudAssetService)
         while !Task.isCancelled {
@@ -6566,10 +6652,11 @@ struct WorkspaceCanvasView: View {
             let native = CanvasEditorStore(canvasID: backing.record.id, services: services)
             await native.load()
             try Task.checkCancellation()
+            guard native.isLoaded else { throw PersonalContentError.invalidProject }
             let session = try await CanvasHostSessions.shared.session(record: backing.record, directory: backing.directory,
                 environment: environment, repository: backing.repository, legacyAssets: assets)
             kitStore = native; moduleSession = session
-        } catch is CancellationError {} catch { store.saveError = error.localizedDescription }
+        } catch is CancellationError {} catch { engineOpenError = error.localizedDescription }
     }
 
     private var documentSidebar: some View {
@@ -6640,7 +6727,11 @@ struct WorkspaceCanvasView: View {
         if let documentAssistantLeaveIntent,
            !(await documentAssistantLeaveIntent.authorize()) { return }
         guard !Task.isCancelled else { return }
-        dismiss()
+        closePresentation()
+    }
+
+    @MainActor private func closePresentation() {
+        if let onPersonalClose { onPersonalClose() } else { dismiss() }
     }
 
     private func requestDeletion(_ document: FloeCanvasDocument) {

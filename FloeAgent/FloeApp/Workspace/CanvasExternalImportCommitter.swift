@@ -307,10 +307,17 @@ enum CanvasExternalImportPublication {
             var (candidate, _) = try CanvasCommandService.applying(patch, to: current)
             if syncEnabled && candidate.sync.isEnabled { candidate.sync.revision += 1 }
             do {
-                try writer.compareAndSwap(
-                    candidate, at: url, expectedRevision: current.revision,
-                    allowCreateIfMissing: !exists && creating
-                )
+                if exists {
+                    // The returned project is the exact new-engine CAS result,
+                    // not a subsequent read that could contain another edit.
+                    candidate = try CanvasFrameworkWriteAuthority.commit(candidate, at: url, expectedRevision: current.revision)
+                } else {
+                    // First publication stays a single atomic CAS, seeded with
+                    // the new engine state before it becomes visible.
+                    candidate = try CanvasFrameworkLegacyRepository.seedFrameworkState(candidate)
+                    try writer.compareAndSwap(candidate, at: url, expectedRevision: current.revision,
+                                              allowCreateIfMissing: creating)
+                }
                 return candidate
             } catch {
                 guard CanvasProjectFileWriter.isRevisionConflict(error), attempt < 3 else { throw error }

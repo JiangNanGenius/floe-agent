@@ -567,6 +567,28 @@ final class WorkspaceCenter: ObservableObject {
             release: { if scoped { root.stopAccessingSecurityScopedResource() } })
     }
 
+    /// Holds only the original workspace root/security scope. Document writes
+    /// must separately validate ownership and their exact file identity; this
+    /// lease deliberately does not register or unregister shared mounts.
+    func acquireDocumentRootOnly(_ record: WorkspaceRecord, ownerConversationID: UUID? = nil) async throws -> TaskRootLease {
+        if record.kind == .privateTask, record.internalRelativePath == nil {
+            guard let ownerConversationID, try await store.workspaceID(conversationID: ownerConversationID) == record.id else {
+                throw FloeError.unauthorized
+            }
+            let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
+                appropriateFor: nil, create: false)
+            let root = support.appendingPathComponent("FloeAgent/PrivateTasks", isDirectory: true)
+                .appendingPathComponent(ownerConversationID.uuidString, isDirectory: true)
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: root.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+                throw FloeError.notFound("Workspace root")
+            }
+            return TaskRootLease(url: root, release: {})
+        }
+        let rootLease = try await acquireMemorySourceRoot(record)
+        return TaskRootLease(url: rootLease.root, release: { Task { await rootLease.release() } })
+    }
+
     /// Acquires the root belonging to a specific task. Private chats receive
     /// an app-owned directory; projects receive their security-scoped root.
     /// The caller must release the lease when the run becomes terminal.

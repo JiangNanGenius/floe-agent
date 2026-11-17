@@ -7,7 +7,7 @@
 // persists it into the app-owned material library and commits it into the
 // canvas with the SAME atomic patch primitives the 2D flow uses
 // (`CADCanvasNodePlanner` + `CanvasCommandService.applying` +
-// `CanvasProjectFileWriter.compareAndSwap`):
+// `CanvasFrameworkWriteAuthority.commit`):
 //
 //   * "Apply to canvas" updates the ORIGINAL bound node in place — identity,
 //     name, position, size and edges are preserved; only its rendered asset
@@ -920,8 +920,7 @@ enum CADCanvasActionBridge {
                     expectedRevision: current.revision,
                     operations: operations)
                 let (updated, result) = try CanvasCommandService.applying(patch, to: current)
-                try CanvasProjectFileWriter.shared.compareAndSwap(
-                    updated, at: url, expectedRevision: current.revision)
+                try CanvasFrameworkWriteAuthority.commit(updated, at: url, expectedRevision: current.revision)
                 await reconcileReferences(from: current, to: updated, assetStore: assetStore)
                 NotificationCenter.default.post(
                     name: .floeCanvasProjectDidChange, object: nil,

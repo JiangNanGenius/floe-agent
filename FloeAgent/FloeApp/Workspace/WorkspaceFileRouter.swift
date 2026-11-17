@@ -35,6 +35,24 @@ enum WorkspaceFileDestination: Equatable {
 }
 
 enum WorkspaceFileRouter {
+    /// A route hint only. A name never grants access; the native Studio
+    /// service verifies the current workspace and its durable binding.
+    static func isWorkspaceStudioPath(_ relativePath: String, workspaceID: UUID? = nil) -> Bool {
+        let parts = relativePath.split(separator: "/", omittingEmptySubsequences: false)
+        guard let first = parts.first, !parts.contains(where: { $0.isEmpty || $0 == "." || $0 == ".." }) else { return false }
+        let prefix = "Floe Studio "
+        guard first.hasPrefix(prefix) else { return false }
+        let suffix = first.dropFirst(prefix.count)
+        guard suffix.count == 8 && suffix.allSatisfy({ $0.isHexDigit }) else { return false }
+        return workspaceID.map { first == Substring(prefix + String($0.uuidString.prefix(8))) } ?? true
+    }
+
+    static func isWorkspaceVideoProjectPath(_ relativePath: String, workspaceID: UUID? = nil) -> Bool {
+        let parts = relativePath.split(separator: "/", omittingEmptySubsequences: false)
+        return parts.count == 2 && isWorkspaceStudioPath(relativePath, workspaceID: workspaceID)
+            && (String(parts[1]) as NSString).pathExtension.lowercased() == "floeproject"
+    }
+
     static func destination(for relativePath: String) -> WorkspaceFileDestination {
         switch WorkspaceTextPolicy.kind(forPath: relativePath) {
         case .text, .code, .unknown:

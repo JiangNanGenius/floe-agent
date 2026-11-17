@@ -16,6 +16,7 @@ import simd
 @testable import FloeApp
 import FloePersistence
 import FloeCore
+import FloeCanvasCore
 
 @MainActor
 final class NativeCADCanvasBackupTests: XCTestCase {
@@ -114,6 +115,7 @@ final class NativeCADCanvasBackupTests: XCTestCase {
         let restoredProject = try WorkspaceCanvasRegistry.project(canvasID: restoredCanvasID)
         let restoredNode = try XCTUnwrap(restoredProject.documents.flatMap(\.nodes)
             .first { CADCanvasNodePlanner.isNativeCADNode($0) })
+        XCTAssertEqual(restoredNode.id, node.id, "restored CAD drafts retain their node identity")
         let restoredKey = try XCTUnwrap(
             restoredNode.metadata[CADCanvasNodePlanner.MetadataKeys.sourcePath])
         let binding = try XCTUnwrap(CanvasCADStorage.parse(key: restoredKey))
@@ -121,6 +123,18 @@ final class NativeCADCanvasBackupTests: XCTestCase {
                        "the restored node must bind the RESTORED canvas identity")
         XCTAssertEqual(binding.packageFileName, name,
                        "the package name is preserved verbatim")
+        let record = PersonalContentRecord(id: restoredCanvasID, kind: .canvas, title: restoredProject.name,
+            createdAt: restoredProject.createdAt, modifiedAt: restoredProject.updatedAt, folders: [],
+            relativePath: ".CanvasExtensions/\(restoredCanvasID.uuidString).floeproject")
+        let registryURL = try WorkspaceCanvasRegistry.projectURL(canvasID: restoredCanvasID, createDirectory: false)
+        let repository = CanvasFrameworkLegacyRepository(record: record, originalURL: registryURL,
+                                                        root: registryURL.deletingLastPathComponent())
+        let snapshot = try repository.loadSynchronously(canvasID: restoredCanvasID)
+        XCTAssertEqual(snapshot.id, restoredCanvasID)
+        let projected = try CanvasFrameworkProjection.project(snapshot, record: record)
+        let projectedNode = try XCTUnwrap(projected.documents.flatMap(\.nodes).first { $0.id == node.id })
+        XCTAssertEqual(projectedNode.metadata[CADCanvasNodePlanner.MetadataKeys.sourcePath], restoredKey,
+                       "the native engine must see the restored CAD binding")
         let restoredURL = try XCTUnwrap(CADCanvasActionBridge.packageURL(forSourceKey: restoredKey))
         openedCADURLs.insert(restoredURL)
         XCTAssertTrue(FileManager.default.fileExists(atPath: restoredURL.path))
@@ -130,8 +144,8 @@ final class NativeCADCanvasBackupTests: XCTestCase {
         XCTAssertEqual(reopened.summary().bodyCount, 1,
                        "the editable BODY must survive the backup round trip")
         XCTAssertEqual(reopened.summary().drawingPageCount, 0)
-        let snapshot = reopened.snapshotJSON()
-        XCTAssertTrue(String(decoding: snapshot, as: UTF8.self).contains("\"bodies\""))
+        let reopenedSnapshot = reopened.snapshotJSON()
+        XCTAssertTrue(String(decoding: reopenedSnapshot, as: UTF8.self).contains("\"bodies\""))
         await FloeCAD3DBridge.shared.releaseDocument(at: restoredURL)
     }
 

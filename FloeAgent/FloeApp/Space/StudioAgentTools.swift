@@ -65,7 +65,7 @@ enum StudioToolOutput {
     let buildingProjects = BuildingStudioRegistry()
     private var preparations: [UUID: Task<UUID, Error>] = [:]
     private var mutating: Set<UUID> = []
-    static let names: Set<String> = ["studio.create", "studio.list", "studio.library", "studio.read", "studio.edit", "studio.run", "studio.media", "studio.media.provider", "studio.chemistry", "studio.machining"]
+    static let names: Set<String> = ["studio.create", "studio.list", "studio.library", "studio.read", "studio.edit", "studio.run", "studio.media", "studio.media.provider", "studio.chemistry", "studio.machining", "studio.workspaceVideo", "studio.workspaceVideoRead"]
 
     init(environment: AppEnvironment, authority: StudioDocumentAccess? = nil, library: PersonalContentLibrary? = nil,
          openAuthority: @escaping @MainActor () throws -> StudioDocumentAccess = {
@@ -422,6 +422,7 @@ enum StudioToolOutput {
             electronicsCapabilities: try electronicsProject.map { try StudioElectronicsContract.capabilities($0) },
             electronicsSelection: value.record.kind == .electronics ? try StudioElectronicsRuntime.selection(id: id, directory: value.url, savedProject: electronicsProject) : nil,
             hostToolIDs: value.record.kind == .geography ? GISProductionHost.names.sorted() : value.record.kind == .music ? StudioMediaSourceContracts.musicHostToolIDs.sorted()
+                : value.record.kind == .video ? StudioMediaSourceContracts.videoHostToolIDs.sorted()
                 : [.image, .drawing, .video].contains(value.record.kind) ? StudioMediaSourceContracts.hostToolIDs.sorted() : [],
             providerToolIDs: providerToolIDs, toolInputExamples: mediaExamples))
     }
@@ -462,7 +463,7 @@ enum StudioToolOutput {
             }
             let catalog = try JSONSerialization.jsonObject(with: StudioToolOutput.data(entries))
             let data = try JSONSerialization.data(withJSONObject: ["project": project, "catalog": catalog,
-                "localToolIDs": localToolIDs.sorted(), "hostToolIDs": StudioMediaSourceContracts.hostToolIDs.sorted(),
+                "localToolIDs": localToolIDs.sorted(), "hostToolIDs": (value.record.kind == .video ? StudioMediaSourceContracts.videoHostToolIDs : StudioMediaSourceContracts.hostToolIDs).sorted(),
                 "providerToolIDs": Self.availableMediaProviderToolIDs(kind: value.record.kind)], options: [.sortedKeys])
             return (data, String(prepared.revision))
         case .document:
@@ -1316,13 +1317,62 @@ enum StudioToolOutput {
             throw FloeError.validationFailed("Use studio.media.provider for provider-backed media commands and studio.media for local commands")
         }
         guard ([.image, .drawing, .video].contains(location.record.kind)
-                && (MediaV2Session.localToolIDs.contains(toolID) || providerOperation || StudioMediaSourceContracts.hostToolIDs.contains(toolID)))
+                && (MediaV2Session.localToolIDs.contains(toolID) || providerOperation || StudioMediaSourceContracts.hostToolIDs.contains(toolID)
+                    || (location.record.kind == .video && StudioMediaSourceContracts.videoHostToolIDs.contains(toolID))))
               || (location.record.kind == .music && StudioMediaSourceContracts.musicHostToolIDs.contains(toolID)),
               inputJSON.utf8.count <= 256 * 1_024, mutating.insert(id).inserted else { throw PersonalContentError.invalidProject }
         defer { mutating.remove(id) }
         let fileUse = try PersonalLibraryFileActions.acquireUse(id: id, directory: location.url)
         defer { fileUse.release() }
         try context.cancellation.throwIfCancelled()
+        if toolID == "video.importFrames" {
+            guard location.record.kind == .video, let workspaceRoot = context.workspaceRootURL else { throw PersonalContentError.invalidProject }
+            let input = try StudioMediaSourceContracts.decodeFrames(inputJSON)
+            let source = try StudioMediaSourceContracts.workspaceURL(input.source.workspacePath, context: context)
+            guard let sha = input.source.expectedSHA256 else { throw PersonalContentError.invalidProject }
+            let groupID = Self.requestID(context)
+            let hash = SHA256.hash(data: Data(groupID.uuidString.utf8) + (try StudioToolOutput.data(input)))
+            let bytes = Array(hash.prefix(16))
+            let identity = MediaV2Session.ImportIdentity(groupID: groupID,
+                operationID: UUID(uuid: (bytes[0],bytes[1],bytes[2],bytes[3],bytes[4],bytes[5],bytes[6],bytes[7],bytes[8],bytes[9],bytes[10],bytes[11],bytes[12],bytes[13],bytes[14],bytes[15])))
+            let session = try await PersonalMediaFactory.session(id: id, directory: location.url)
+            func receipt(_ imported: MediaV2Session.ImportedAsset) async throws -> ToolExecutionOutput {
+                guard let outputHash = imported.asset.contentHash else { throw PersonalContentError.invalidProject }
+                let refreshPending = await StudioFrameImportFinalization.libraryRefreshPending {
+                    try await PersonalContentService.shared.library().markChanged(id)
+                }
+                changed(id)
+                return try StudioToolOutput.make(StudioFrameImportReceipt(documentID: id, revision: imported.commit.revision,
+                    groupID: imported.commit.groupID, assetID: imported.asset.id, sourceWorkspacePath: input.source.workspacePath,
+                    sourceSHA256: sha, sha256: outputHash, byteCount: imported.asset.byteCount ?? 0,
+                    width: input.width, height: input.height, frameRate: input.frameRate, frameCount: input.frameCount,
+                    replayed: imported.replayed, journalStatus: imported.journalStatus.rawValue,
+                    sessionRefreshPending: imported.refreshPending, libraryRefreshPending: refreshPending))
+            }
+            if let replay = try await session.replayImport(identity, expectedRevision: input.expectedRevision) {
+                return try await receipt(replay)
+            }
+            guard session.document.revision == input.expectedRevision else { throw MediaPreparedCoreError.documentChanged }
+            let spec = StudioFrameSequenceEncoder.Specification(width: input.width, height: input.height,
+                frameRate: input.frameRate, frameCount: input.frameCount, expectedSHA256: sha)
+            let cancellation = context.cancellation
+            let work = Task.detached(priority: .userInitiated) {
+                try await StudioFrameSequenceEncoder.encode(source: source, workspaceRoot: workspaceRoot, spec: spec, cancellation: cancellation)
+            }
+            let encoded = try await withTaskCancellationHandler { try await work.value } onCancel: { work.cancel() }
+            defer { try? FileManager.default.removeItem(at: encoded.url) }
+            let imported = try await session.importAuthorizedFile(encoded.url, expectedRevision: input.expectedRevision,
+                expectedSHA256: encoded.outputSHA256, actor: .model, cancellation: cancellation,
+                validateSource: { @MainActor in
+                    try cancellation.throwIfCancelled()
+                    let current = try await self.location(id, context: context, editing: true)
+                    guard current.url == location.url, current.record.kind == .video,
+                          try StudioMediaSourceContracts.workspaceURL(input.source.workspacePath, context: context) == source else {
+                        throw PersonalContentError.changedDocument
+                    }
+                }, identity: identity)
+            return try await receipt(imported)
+        }
         if toolID == "music.import" {
             guard let environment, let taskID = context.conversationID, let sourceRoot = context.workspaceRootURL else { throw PersonalContentError.storageUnavailable }
             let input = try StudioMediaSourceContracts.decodeImport(inputJSON)
@@ -1560,6 +1610,14 @@ private struct StudioMediaImportReceipt: Encodable {
     let documentID: UUID; let revision: Int64; let groupID: UUID; let assetID: UUID
     let sourceWorkspacePath: String; let sha256: String; let byteCount: Int64; let kind: String
 }
+private struct StudioFrameImportReceipt: Encodable {
+    let toolID = "video.importFrames"
+    let documentID: UUID; let revision: Int64; let groupID: UUID; let assetID: UUID
+    let sourceWorkspacePath: String; let sourceSHA256: String; let sha256: String; let byteCount: Int64
+    let width: Int; let height: Int; let frameRate: Int; let frameCount: Int
+    let replayed: Bool; let journalStatus: String
+    let sessionRefreshPending: Bool; let libraryRefreshPending: Bool
+}
 private struct StudioMusicImportReceipt: Encodable {
     let toolID = "music.import"
     let documentID: UUID; let revision: Int64; let assetID: MusicAssetID
@@ -1726,7 +1784,7 @@ private struct StudioRunTool: AgentTool {
 private struct StudioMediaTool: AgentTool {
     struct Arguments: Decodable, Sendable { let projectID: UUID; let toolID: String; let inputJSON: String }
     static let name = "studio.media"
-    static let toolDescription = "Run one actually implemented native image/drawing/video command. Read studio.read and its complete typed example first. inputJSON is ONE object with required expectedRevision (the current studio.read decimal revision, string or integer); objectID is a UUID string, objectIDs an array of image-layer UUID strings, clipIDs an array of video-clip UUID strings for video.nest, compoundID an optional anchor clip UUID selecting an editable source inside this SAME original, number/secondary/start/duration are numbers, text/color/property are strings, flag is boolean and points is an array of {x:number,y:number}. Video captionStyle is an optional CaptionStyle object; it affects all captions. Use actual object IDs to edit, never invent reduced nested types. Unavailable catalog entries cannot execute. Uses the existing coordinator, revision guard, undo and renderer. Host command media.import accepts {expectedRevision,source:{workspacePath,expectedSHA256?}} for this task's authorized relative file (including existing Attachments paths). It copies into this original and commits through the same undo/CAS coordinator; it never reads arbitrary host/App Documents paths or unbound tokens. No shell or code input. Music originals also accept explicit host toolID=music.import with {expectedRevision,source:{workspacePath,expectedSHA256?}} from this task; it imports real WAV/CAF/AIFF/MP3/M4A or SMF MIDI bytes through the native repository and returns actual asset/track/clip IDs. Read studio.read hostToolIDs and editFormat; never mint asset metadata without its original bytes."
+    static let toolDescription = "Run one actually implemented native image/drawing/video command. Read studio.read and its complete typed example first. inputJSON is ONE object with required expectedRevision (the current studio.read decimal revision, string or integer); objectID is a UUID string, objectIDs an array of image-layer UUID strings, clipIDs an array of video-clip UUID strings for video.nest, compoundID an optional anchor clip UUID selecting an editable source inside this SAME original, number/secondary/start/duration are numbers, text/color/property are strings, flag is boolean and points is an array of {x:number,y:number}. Video captionStyle is an optional CaptionStyle object; it affects all captions. Use actual object IDs to edit, never invent reduced nested types. Unavailable catalog entries cannot execute. Uses the existing coordinator, revision guard, undo and renderer. Host command media.import accepts {expectedRevision,source:{workspacePath,expectedSHA256?}} for this task's authorized relative file (including existing Attachments paths). It copies into this original and commits through the same undo/CAS coordinator; it never reads arbitrary host/App Documents paths or unbound tokens. No shell or code input. Music originals also accept explicit host toolID=music.import with {expectedRevision,source:{workspacePath,expectedSHA256?}} from this task; it imports real WAV/CAF/AIFF/MP3/M4A or SMF MIDI bytes through the native repository and returns actual asset/track/clip IDs. For video.importFrames, read studio.read editFormat for the bounded packed BGRA frame sequence contract; generate the task-relative data file with exec.shell in the resolved Linux environment. Read studio.read hostToolIDs and editFormat; never mint asset metadata without its original bytes."
     static let parametersJSON = #"{"type":"object","properties":{"projectID":{"type":"string","format":"uuid"},"toolID":{"type":"string"},"inputJSON":{"type":"string","maxLength":262144}},"required":["projectID","toolID","inputJSON"],"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.persistsPersonalData]
     static let isSideEffecting = true
@@ -1784,6 +1842,8 @@ private struct StudioProviderMediaTool: AgentTool {
     ToolCatalog.register(StudioSimulationTool.self); registry.register(StudioSimulationTool(coordinator: coordinator))
     ToolCatalog.register(StudioMediaTool.self); registry.register(StudioMediaTool(coordinator: coordinator))
     ToolCatalog.register(StudioProviderMediaTool.self); registry.register(StudioProviderMediaTool(coordinator: coordinator))
+    ToolCatalog.register(StudioWorkspaceVideoCreateTool.self); registry.register(StudioWorkspaceVideoCreateTool(coordinator: coordinator))
+    ToolCatalog.register(StudioWorkspaceVideoReadTool.self); registry.register(StudioWorkspaceVideoReadTool(coordinator: coordinator))
     // Game tools extend the same Space task chain; they use the existing game
     // project repository and do not add a model/provider or interpreter.
     registerGameAgentTools(environment: environment, registry: registry)

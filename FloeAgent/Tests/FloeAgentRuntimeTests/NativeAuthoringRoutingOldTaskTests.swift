@@ -40,6 +40,27 @@ struct NativeAuthoringRoutingOldTaskTests {
         ["exec.shell", "workspace.writeFile", "workspace.readFile", "tools.search", "tools.list", "web.search", "web.fetch"]
     }
 
+    @Test func videoEditingDiscoversOnlyStudioToolsWithinTheLiveTaskCeiling() {
+        let studio = ["studio.create", "studio.list", "studio.read", "studio.media", "studio.run"]
+        let offered = (studio + ["media.project", "video.generate", "workspace.readFile"]).map(descriptor)
+        for request in ["帮我剪辑这个视频", "编辑视频时间线", "edit this video", "trim this video"] {
+            let discovered = Set(ToolDiscovery.matches(query: request, descriptors: offered).map(\.name))
+            #expect(Set(studio).isSubset(of: discovered))
+            #expect(discovered.contains("media.project"))
+            let refreshed = Set(NativeAuthoringRouting.taskBoundAdditions(userTask: request,
+                liveDescriptors: offered, discoveredNames: []).map(\.name))
+            #expect(Set(studio).isSubset(of: refreshed))
+            #expect(refreshed.contains("media.project"))
+
+            // Discovery must never restore a tool excluded by the task ceiling.
+            let reduced = offered.filter { $0.name != "studio.media" }
+            let scoped = Set(NativeAuthoringRouting.taskBoundAdditions(userTask: request,
+                liveDescriptors: reduced, discoveredNames: []).map(\.name))
+            #expect(!scoped.contains("studio.media"))
+            #expect(scoped.isSubset(of: Set(reduced.map(\.name))))
+        }
+    }
+
     // MARK: - The real trigger: decomposed substep + bare 继续
 
     @Test func sgz9StyleBareContinueStillRefreshesMusicFromItsOwnPlan() {

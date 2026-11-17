@@ -5317,6 +5317,7 @@ public actor FloeAgentRuntime {
                     // canonical targets; existing family mirrors stay unchanged.
                     serviceStorePaths: configuration.serviceStorePaths.filter {
                         $0.key == TypedMutationContract.nativeStudioLibraryStoreKey
+                            || $0.key == TypedMutationContract.workspaceStudioStoreKey
                             || $0.key == TypedMutationContract.nativeBiologyStoreKey
                             || $0.key == TypedMutationContract.nativeFontLibraryStoreKey
                             || $0.key == TypedMutationContract.nativeLaTeXStoreKey

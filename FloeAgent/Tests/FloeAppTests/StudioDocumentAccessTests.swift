@@ -9,6 +9,55 @@ import FloePersistence
 
 @Suite("Personal work authority and durable edits", .serialized)
 @MainActor struct StudioDocumentAccessTests {
+    @Test func workspaceRootIntentSurvivesRestartAndRejectsDifferentIdentity() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("workspace-root-intent-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let access = try StudioDocumentAccess(root: root), workspace = UUID()
+        let intent = StudioWorkspaceVideoRootIntent(workspaceID: workspace, relativePath: "Floe Studio 12345678",
+            rootIdentity: "root-id", stagingName: ".floe-studio-" + UUID().uuidString, containerIdentity: "stage-id")
+        try await access.reserveWorkspaceVideoRoot(intent)
+        let reopened = try StudioDocumentAccess(root: root)
+        #expect(try await reopened.workspaceVideoRootIntent(workspaceID: workspace) == intent)
+        let forged = StudioWorkspaceVideoRootIntent(workspaceID: workspace, relativePath: intent.relativePath,
+            rootIdentity: intent.rootIdentity, stagingName: intent.stagingName, containerIdentity: "different")
+        await #expect(throws: (any Error).self) { try await reopened.finishWorkspaceVideoRoot(forged) }
+        try await reopened.finishWorkspaceVideoRoot(intent)
+        #expect(try await reopened.workspaceVideoRootIntent(workspaceID: workspace) == nil)
+        #expect(try await reopened.workspaceVideoRoot(workspaceID: workspace)?.containerIdentity == intent.containerIdentity)
+    }
+    @Test func workspaceVideoBindingRequiresReservedCreationAndSurvivesReopen() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("workspace-video-authority-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let access = try StudioDocumentAccess(root: root)
+        let conversation = UUID(), workspace = UUID()
+        let project = try await access.reserveCreation(operationKey: "run/call", digest: "approved")
+        let binding = StudioWorkspaceVideoBinding(projectID: project, conversationID: conversation, workspaceID: workspace,
+            relativePath: "Studio/Video.floeproject", rootIdentity: "root-identity", projectIdentity: "project-identity", mediaIdentity: "media-identity", storeIdentity: "store-identity")
+        await #expect(throws: (any Error).self) {
+            try await access.finishWorkspaceVideoCreation(binding, operationKey: "unreserved", digest: "approved")
+        }
+        #expect(try await !access.canAccess(conversationID: conversation, projectID: project, editing: true))
+        let rootIntent = StudioWorkspaceVideoRootIntent(workspaceID: workspace, relativePath: "Studio", rootIdentity: binding.rootIdentity,
+            stagingName: ".floe-studio-" + UUID().uuidString, containerIdentity: "container-identity")
+        try await access.reserveWorkspaceVideoRoot(rootIntent)
+        try await access.finishWorkspaceVideoRoot(rootIntent)
+        try await access.reserveWorkspaceVideoProject(.init(projectID: project, conversationID: conversation,
+            workspaceID: workspace, operationKey: "run/call", digest: "approved", rootIdentity: binding.rootIdentity,
+            containerIdentity: "container-identity", stagingName: ".floe-project-" + UUID().uuidString,
+            finalName: "Video.floeproject", projectIdentity: binding.projectIdentity,
+            mediaIdentity: binding.mediaIdentity, storeIdentity: binding.storeIdentity))
+        try await access.finishWorkspaceVideoCreation(binding, operationKey: "run/call", digest: "approved")
+        let reopened = try StudioDocumentAccess(root: root)
+        #expect(try await reopened.workspaceVideoBinding(conversationID: conversation, workspaceID: workspace, projectID: project) == binding)
+        #expect(try await reopened.canAccess(conversationID: conversation, projectID: project, editing: true))
+        #expect(try await reopened.workspaceVideoBinding(conversationID: UUID(), workspaceID: workspace, projectID: project) == nil)
+        #expect(try await reopened.workspaceVideoBinding(conversationID: conversation, workspaceID: UUID(), projectID: project) == nil)
+        let forged = StudioWorkspaceVideoBinding(projectID: project, conversationID: conversation, workspaceID: workspace,
+            relativePath: "Studio/other.floeproject", rootIdentity: "root-identity", projectIdentity: "project-identity", mediaIdentity: "media-identity", storeIdentity: "store-identity")
+        await #expect(throws: (any Error).self) {
+            try await reopened.finishWorkspaceVideoCreation(forged, operationKey: "run/call", digest: "approved")
+        }
+    }
     @Test func archivedAssistantRemainsOutsideOrdinaryListAfterAnUpdate() async throws {
         let database = try DatabaseManager.inMemory()
         try await database.migrate()

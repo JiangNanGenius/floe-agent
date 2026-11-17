@@ -172,6 +172,13 @@ private func stagingEntries(in root: URL) -> [String] {
 }
 
 final class LocalShellLargeScriptTests: XCTestCase {
+    func testVideoDiscoveryRequiresRealBackendEvidence() {
+        let description = LocalShellTool.toolDescription
+        XCTAssertTrue(description.contains("floe-codec list --json"))
+        XCTAssertTrue(description.contains("when ffmpeg is installed"))
+        XCTAssertTrue(description.contains("may have no usable video acceleration"))
+        XCTAssertTrue(description.contains("actual encode and its reported backend"))
+    }
     // MARK: tool-level contract
 
     func testCommandValidationHasNoApplicationLengthCeilingAndRejectsNUL() throws {

@@ -23,6 +23,62 @@ final class CanvasFrameworkLegacyRepository: CanvasFrameworkRepository, Sendable
         var priorIdentityState: Data? = nil
     }
 
+    /// Retain one immediate pre-copy state, never a recursively embedded
+    /// chain of earlier copies. Source files and backup archives stay intact.
+    private static func identityEvidence(_ state: State) throws -> Data {
+        var evidence = state
+        evidence.priorIdentityState = nil
+        return try JSONEncoder().encode(evidence)
+    }
+
+    /// Establish the native canvas engine as the initial authority while
+    /// retaining the original file as the storage carrier. This is used only
+    /// before atomically publishing a new or imported project.
+    static func seedFrameworkState(_ project: FloeCore.CanvasProject) throws -> FloeCore.CanvasProject {
+        if let bytes = project.canvasKitState {
+            let state = try JSONDecoder().decode(State.self, from: bytes)
+            guard state.schemaVersion == 1, state.snapshot.id == project.id,
+                  state.snapshot.revision <= project.revision else { throw PersonalContentError.invalidProject }
+            return project
+        }
+        let snapshot = try CanvasFrameworkProjection.snapshot(project)
+        var seeded = project
+        seeded.canvasKitState = try JSONEncoder().encode(State(snapshot: snapshot, history: .init(), receipts: []))
+        return seeded
+    }
+
+    /// A backup restore rewrites the canvas identity and resource paths, but
+    /// intentionally keeps node IDs so carried CAD drafts still address them.
+    /// Reconcile those changes through the native engine without forking nodes.
+    static func reconcileRestoredProject(_ project: FloeCore.CanvasProject) throws -> FloeCore.CanvasProject {
+        guard let bytes = project.canvasKitState else { return try seedFrameworkState(project) }
+        var state = try JSONDecoder().decode(State.self, from: bytes)
+        guard state.schemaVersion == 1, state.snapshot.revision <= project.revision else {
+            throw PersonalContentError.invalidProject
+        }
+        let evidence = try identityEvidence(state)
+        var baseline = try CanvasFrameworkProjection.project(state.snapshot, record: identityRecord(project))
+        baseline.id = project.id
+        baseline.workspaceID = project.workspaceID
+        baseline.canvasKitState = nil
+        state.snapshot.id = project.id
+        state.snapshot.metadata[CanvasFrameworkProjection.frameworkStateKey] = String(
+            decoding: try JSONEncoder().encode(baseline), as: UTF8.self)
+        state.snapshot.metadata[TemplateOwnership.metadataKey] = String(decoding: try JSONEncoder().encode(
+            TemplateOwnership(kind: project.workspaceID == nil ? .canvas : .workspace,
+                              ownerID: project.workspaceID ?? project.id, directoryID: project.id)), as: UTF8.self)
+        let batch = try CanvasFrameworkProjection.batch(project: project, original: state.snapshot, record: identityRecord(project))
+        state.snapshot = try CanvasDocumentEditEngine.apply(batch, to: state.snapshot).snapshot
+        state.snapshot.revision = project.revision
+        state.snapshot.updatedAt = project.updatedAt
+        state.history = .init()
+        state.receipts = []
+        state.priorIdentityState = evidence
+        var result = project
+        result.canvasKitState = try JSONEncoder().encode(state)
+        return result
+    }
+
     /// Copy/identity-changing save uses the existing identity mapper, never
     /// blindly replaces UUID-like user content. Live runs/receipts do not fork.
     static func forkProject(_ source: FloeCore.CanvasProject, newID: UUID,
@@ -33,6 +89,7 @@ final class CanvasFrameworkLegacyRepository: CanvasFrameworkRepository, Sendable
         }
         var state = try JSONDecoder().decode(State.self, from: bytes)
         guard state.schemaVersion == 1, state.snapshot.id == source.id else { throw PersonalContentError.invalidProject }
+        let evidence = try identityEvidence(state)
         if state.snapshot.revision < source.revision {
             let record = identityRecord(source)
             let batch = try CanvasFrameworkProjection.batch(project: source, original: state.snapshot, record: record)
@@ -101,7 +158,7 @@ final class CanvasFrameworkLegacyRepository: CanvasFrameworkRepository, Sendable
         snapshot.name = name; snapshot.createdAt = framework.createdAt; snapshot.updatedAt = framework.updatedAt
         snapshot.metadata[CanvasFrameworkProjection.frameworkStateKey] = String(decoding: try JSONEncoder().encode(framework), as: UTF8.self)
         var result = try CanvasFrameworkProjection.project(snapshot, record: identityRecord(framework))
-        result.canvasKitState = try JSONEncoder().encode(State(snapshot: snapshot, history: .init(), receipts: [], priorIdentityState: bytes))
+        result.canvasKitState = try JSONEncoder().encode(State(snapshot: snapshot, history: .init(), receipts: [], priorIdentityState: evidence))
         return result
     }
 
@@ -169,21 +226,30 @@ final class CanvasFrameworkLegacyRepository: CanvasFrameworkRepository, Sendable
         return (project, state)
     }
 
-    private func mutate(_ canvasID: UUID, _ change: (inout CanvasRepositoryEngine) throws -> CanvasCommitReceipt) throws -> CanvasCommitReceipt {
+    private func mutateAndReturnProject(_ canvasID: UUID, requireExactReplay: Bool = false, _ change: (inout CanvasRepositoryEngine) throws -> CanvasCommitReceipt) throws -> (CanvasCommitReceipt, FloeCore.CanvasProject, CanvasSnapshot, CanvasHistoryAvailability) {
         let (original, state) = try read(canvasID)
         var engine = CanvasRepositoryEngine(snapshot: state.snapshot,
             existingReceipts: Dictionary(uniqueKeysWithValues: state.receipts.map { ($0.requestID, $0) }),
             historyState: state.history)
         let receipt = try change(&engine)
         let next = engine.snapshotForPersistence()
-        if next.revision == state.snapshot.revision { return receipt } // exact replay
+        if requireExactReplay, receipt.revision != next.revision {
+            throw CanvasKitError.revisionConflict(expected: receipt.revision, current: next.revision)
+        }
+        let history = engine.historyForPersistence()
+        let availability = CanvasHistoryAvailability(undoCount: history.undoStack.count, redoCount: history.redoStack.count)
+        if next.revision == state.snapshot.revision { return (receipt, original, next, availability) } // exact replay
         var project = try CanvasFrameworkProjection.project(next, record: record)
         project.canvasKitState = try JSONEncoder().encode(State(snapshot: next,
             history: engine.historyForPersistence(), receipts: Array(engine.receiptsForPersistence().values),
             priorIdentityState: state.priorIdentityState))
         _ = try CanvasProjectFileWriter.shared.compareAndSwap(project, at: originalURL, expectedRevision: original.revision)
         NotificationCenter.default.post(name: .floeCanvasProjectDidChange, object: nil, userInfo: ["canvasID": canvasID])
-        return receipt
+        return (receipt, project, next, availability)
+    }
+
+    private func mutate(_ canvasID: UUID, _ change: (inout CanvasRepositoryEngine) throws -> CanvasCommitReceipt) throws -> CanvasCommitReceipt {
+        try mutateAndReturnProject(canvasID, change).0
     }
 
     func loadSynchronously(canvasID: UUID) throws -> CanvasSnapshot { try read(canvasID).1.snapshot }
@@ -201,6 +267,41 @@ final class CanvasFrameworkLegacyRepository: CanvasFrameworkRepository, Sendable
     }
     func commitDocumentSynchronously(_ batch: CanvasDocumentBatch, canvasID: UUID, expectedRevision: Int64, requestID: UUID) throws -> CanvasCommitReceipt {
         try mutate(canvasID) { try $0.commitDocument(batch, canvasID: canvasID, expectedRevision: expectedRevision, requestID: requestID) }
+    }
+    /// Returns the exact project published by this CAS, not a later reload
+    /// that may have incorporated another writer's changes.
+    func commitDocumentAndReturnProjectSynchronously(_ batch: CanvasDocumentBatch, canvasID: UUID,
+        expectedRevision: Int64, requestID: UUID) throws -> FloeCore.CanvasProject {
+        let (receipt, project, _, _) = try mutateAndReturnProject(canvasID, requireExactReplay: true) {
+            try $0.commitDocument(batch, canvasID: canvasID, expectedRevision: expectedRevision, requestID: requestID)
+        }
+        // A replay after a later writer cannot reconstruct the exact old
+        // project; do not misrepresent the current project as that result.
+        guard receipt.revision == project.revision else {
+            throw CanvasKitError.revisionConflict(expected: receipt.revision, current: project.revision)
+        }
+        return project
+    }
+    func commitDocumentAndReturnSnapshotSynchronously(_ batch: CanvasDocumentBatch, canvasID: UUID,
+        expectedRevision: Int64, requestID: UUID) throws -> (CanvasCommitReceipt, CanvasSnapshot, CanvasHistoryAvailability, FloeCore.CanvasProject) {
+        let (receipt, project, snapshot, history) = try mutateAndReturnProject(canvasID, requireExactReplay: true) {
+            try $0.commitDocument(batch, canvasID: canvasID, expectedRevision: expectedRevision, requestID: requestID)
+        }
+        return (receipt, snapshot, history, project)
+    }
+    func undoAndReturnSnapshotSynchronously(canvasID: UUID, expectedRevision: Int64, requestID: UUID)
+        throws -> (CanvasCommitReceipt, CanvasSnapshot, CanvasHistoryAvailability, FloeCore.CanvasProject) {
+        let (receipt, project, snapshot, history) = try mutateAndReturnProject(canvasID, requireExactReplay: true) {
+            try $0.undo(canvasID: canvasID, expectedRevision: expectedRevision, requestID: requestID)
+        }
+        return (receipt, snapshot, history, project)
+    }
+    func redoAndReturnSnapshotSynchronously(canvasID: UUID, expectedRevision: Int64, requestID: UUID)
+        throws -> (CanvasCommitReceipt, CanvasSnapshot, CanvasHistoryAvailability, FloeCore.CanvasProject) {
+        let (receipt, project, snapshot, history) = try mutateAndReturnProject(canvasID, requireExactReplay: true) {
+            try $0.redo(canvasID: canvasID, expectedRevision: expectedRevision, requestID: requestID)
+        }
+        return (receipt, snapshot, history, project)
     }
     func undo(canvasID: UUID, expectedRevision: Int64, requestID: UUID) async throws -> CanvasCommitReceipt {
         try undoSynchronously(canvasID: canvasID, expectedRevision: expectedRevision, requestID: requestID)

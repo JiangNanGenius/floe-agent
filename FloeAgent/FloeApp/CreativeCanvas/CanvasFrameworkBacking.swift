@@ -62,9 +62,7 @@ extension FileCanvasRepository: CanvasFrameworkRepository {
               expectedRevision == snapshot.revision else { throw PersonalContentError.changedDocument }
         let batch = try CanvasFrameworkProjection.batch(project: project, original: snapshot, record: record)
         do {
-            _ = try repository.commitDocumentSynchronously(batch, canvasID: record.id,
-                expectedRevision: expectedRevision, requestID: UUID())
-            return try load()
+            return try apply(.commit(batch), expectedRevision: expectedRevision)
         } catch {
             // Keep the complete gesture draft, including native metadata. An
             // intervening AI commit never silently replaces the user's edit.
@@ -76,12 +74,51 @@ extension FileCanvasRepository: CanvasFrameworkRepository {
     }
 
     func undo(expectedRevision: Int64) throws -> FloeCore.CanvasProject {
-        _ = try repository.undoSynchronously(canvasID: record.id, expectedRevision: expectedRevision, requestID: UUID())
-        return try load()
+        try apply(.undo, expectedRevision: expectedRevision)
     }
     func redo(expectedRevision: Int64) throws -> FloeCore.CanvasProject {
-        _ = try repository.redoSynchronously(canvasID: record.id, expectedRevision: expectedRevision, requestID: UUID())
-        return try load()
+        try apply(.redo, expectedRevision: expectedRevision)
+    }
+
+    private enum Operation {
+        case commit(CanvasDocumentBatch), undo, redo
+    }
+
+    private func apply(_ operation: Operation, expectedRevision: Int64) throws -> FloeCore.CanvasProject {
+        let requestID = UUID()
+        if let legacy = repository as? CanvasFrameworkLegacyRepository {
+            let result: (CanvasCommitReceipt, CanvasSnapshot, CanvasHistoryAvailability, FloeCore.CanvasProject)
+            switch operation {
+            case .commit(let batch):
+                result = try legacy.commitDocumentAndReturnSnapshotSynchronously(batch, canvasID: record.id, expectedRevision: expectedRevision, requestID: requestID)
+            case .undo:
+                result = try legacy.undoAndReturnSnapshotSynchronously(canvasID: record.id, expectedRevision: expectedRevision, requestID: requestID)
+            case .redo:
+                result = try legacy.redoAndReturnSnapshotSynchronously(canvasID: record.id, expectedRevision: expectedRevision, requestID: requestID)
+            }
+            snapshot = result.1; history = result.2
+            return result.3
+        }
+        guard let files = repository as? FileCanvasRepository else {
+            throw CanvasKitError.missingEntity("atomic canvas repository")
+        }
+        // Projection can fail on malformed input. Compute it while the
+        // repository still holds its lock and before publishing the CAS.
+        var prepared = try CanvasFrameworkProjection.project(snapshot, record: record)
+        let prepare: (CanvasSnapshot) throws -> Void = { next in
+            prepared = try CanvasFrameworkProjection.project(next, record: self.record)
+        }
+        let result: (CanvasCommitReceipt, CanvasSnapshot, CanvasHistoryAvailability)
+        switch operation {
+        case .commit(let batch):
+            result = try files.commitDocumentAndReturnSnapshotSynchronously(batch, canvasID: record.id, expectedRevision: expectedRevision, requestID: requestID, prepare: prepare)
+        case .undo:
+            result = try files.undoAndReturnSnapshotSynchronously(canvasID: record.id, expectedRevision: expectedRevision, requestID: requestID, prepare: prepare)
+        case .redo:
+            result = try files.redoAndReturnSnapshotSynchronously(canvasID: record.id, expectedRevision: expectedRevision, requestID: requestID, prepare: prepare)
+        }
+        snapshot = result.1; history = result.2
+        return prepared
     }
 }
 #endif

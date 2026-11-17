@@ -103,6 +103,9 @@ extension MediaV2Session {
         _ = try await apply(actions.map { .init(action: $0) }, expectedRevision: base)
     }
     func exportCaptions(_ format: MediaV2SubtitleCodec.Format) throws -> URL {
+        guard !store.hasWritePermitProvider else {
+            throw MediaPreparedCoreError.invalidOperation(WorkbenchText.t("此工程暂不支持单独导出字幕，请先在个人作品中处理。", "Separate caption export is unavailable here. Use a personal project instead."))
+        }
         let cues = document.trackGraph.tracks.filter { $0.kind == .caption }.flatMap(\.clips).compactMap { clip -> MediaV2SubtitleCodec.Cue? in
             guard let text = clip.captionText else { return nil }
             return .init(start: clip.timelineRange.startSeconds, duration: clip.timelineRange.durationSeconds, text: text)

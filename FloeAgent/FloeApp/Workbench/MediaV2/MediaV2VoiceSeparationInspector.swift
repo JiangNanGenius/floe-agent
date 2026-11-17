@@ -151,16 +151,20 @@ struct MediaV2VoiceSeparationInspector: View {
                 HStack(spacing: 10) {
                     Button(WorkbenchText.t("继续并保存", "Continue and save")) {
                         Task { await run { try await session.resumeVoiceSeparationJob(clipID: pending.clipID) } }
-                    }.buttonStyle(.borderedProminent).frame(minHeight: 44).disabled(busy)
+                    }.buttonStyle(.borderedProminent).frame(minHeight: 44).disabled(busy || session.store.hasWritePermitProvider)
                     Button(WorkbenchText.t("停止等待", "Stop waiting")) {
                         Task { do { try await session.detachVoiceSeparationJob(clipID: pending.clipID,
                             reason: WorkbenchText.t("用户停止等待", "user stopped waiting")); await refreshState() }
                             catch { session.diagnostic = error.localizedDescription } }
-                    }.frame(minHeight: 44).disabled(busy)
+                    }.frame(minHeight: 44).disabled(busy || session.store.hasWritePermitProvider)
                     Button(WorkbenchText.t("删除远端记录", "Delete remote record")) {
                         Task { do { try await session.releaseVoiceSeparationJob(clipID: pending.clipID); await refreshState() }
                             catch { session.diagnostic = error.localizedDescription } }
-                    }.frame(minHeight: 44).disabled(busy)
+                    }.frame(minHeight: 44).disabled(busy || session.store.hasWritePermitProvider)
+                }
+                if session.store.hasWritePermitProvider {
+                    Text(WorkbenchText.t("此工程暂不支持管理此任务，请先在个人作品中处理。", "Managing this job is unavailable here. Use a personal project instead."))
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 Text(WorkbenchText.t("删除远端记录只清除本服务拥有的任务与结果存储，不承诺撤销已产生的费用。",
                     "Deleting removes only this service's own remote job and stored results. It does not claim to revoke charges already incurred."))

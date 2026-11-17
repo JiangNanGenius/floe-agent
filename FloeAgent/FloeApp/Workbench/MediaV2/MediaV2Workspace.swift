@@ -165,7 +165,9 @@ struct MediaV2Workspace: View {
                     Button(WorkbenchText.t("导出图片…", "Export image…")) { showingImageExport = true }
                 } else { Button(WorkbenchText.t("导出 MP4", "Export MP4")) { session.export() } }
                 Button(WorkbenchText.t("完整工程包", "Complete original")) { exchange(.original) }
+                    .disabled(session.store.hasWritePermitProvider)
                 Button(WorkbenchText.t("引用工程包", "Referenced original")) { exchange(.references) }
+                    .disabled(session.store.hasWritePermitProvider)
                 if session.project.kind == .image {
                     Button("OpenRaster (.ora)") { exchange(.ora) }
                     Button("Photoshop (.psd)") { exchange(.psd) }
@@ -183,7 +185,10 @@ struct MediaV2Workspace: View {
                             }
                         }
                     }
-                } else { Button("OpenTimelineIO (.otio)") { exchange(.otio) } }
+                } else { Button("OpenTimelineIO (.otio)") { exchange(.otio) }.disabled(session.store.hasWritePermitProvider) }
+                if session.store.hasWritePermitProvider {
+                    Text(WorkbenchText.t("此工程暂不支持工程交换，请先在个人作品中处理。", "Project exchange is unavailable here. Use a personal project instead."))
+                }
             } label: {
                 if session.project.kind == .image { Image(systemName: "ellipsis.circle").frame(width: 44, height: 44) }
                 else if wide { Label(WorkbenchText.t("导出", "Export"), systemImage: "square.and.arrow.up").frame(minHeight: 44) }

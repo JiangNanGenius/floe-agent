@@ -8,11 +8,8 @@ import FloeWorkbench
 /// borrows a chat workspace or relies on a chat's lifetime.
 enum PersonalMediaFactory {
     static func mediaRoot(directory: URL) -> URL { directory.appendingPathComponent("Media", isDirectory: true) }
-    static func create(kind: PersonalContentKind, title: String, id: UUID, directory: URL) async throws {
+    static func initialProject(kind: PersonalContentKind, title: String, id: UUID, mediaRoot root: URL) throws -> MediaProject {
         guard [.image, .drawing, .video].contains(kind) else { throw PersonalContentError.invalidProject }
-        let root = mediaRoot(directory: directory)
-        try FileManager.default.createDirectory(at: root.appendingPathComponent("Assets"), withIntermediateDirectories: true)
-        let store = MediaProjectStore(directory: root.appendingPathComponent("Projects"))
         var project = MediaProject(id: id, kind: kind == .video ? .video : .image, name: title,
             canvas: kind == .video ? .init(width: 1920, height: 1080, frameRate: 30) : .init(width: 1600, height: 1200),
             ownerKind: "files", ownerID: id, taskWorkspacePath: root.path)
@@ -29,6 +26,14 @@ enum PersonalMediaFactory {
                 .init(kind: .caption, name: WorkbenchText.t("字幕", "Captions"))]
             project.prepared = prepared
         }
+        try MediaPreparedIntegrity.validateEnvelope(project)
+        return project
+    }
+    static func create(kind: PersonalContentKind, title: String, id: UUID, directory: URL) async throws {
+        let root = mediaRoot(directory: directory)
+        let project = try initialProject(kind: kind, title: title, id: id, mediaRoot: root)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("Assets"), withIntermediateDirectories: true)
+        let store = MediaProjectStore(directory: root.appendingPathComponent("Projects"))
         try await store.save(project)
         try await verify(kind: kind, id: id, directory: directory)
     }
@@ -40,10 +45,13 @@ enum PersonalMediaFactory {
               project.kind == (kind == .video ? .video : .image), project.prepared != nil else { throw PersonalContentError.invalidProject }
         try MediaPreparedIntegrity.validateEnvelope(project)
     }
-    @MainActor static func session(id: UUID, directory: URL) async throws -> MediaV2Session {
+    @MainActor static func session(id: UUID, directory: URL,
+        acquireWritePermit: (@Sendable (UUID) async throws -> MediaProjectWritePermit)? = nil,
+        writePermitIdentity: String? = nil) async throws -> MediaV2Session {
         let root = mediaRoot(directory: directory)
         return try await MediaV2Session.open(projectID: id, root: root,
-            store: MediaProjectStore(directory: root.appendingPathComponent("Projects")))
+            store: MediaProjectStore(directory: root.appendingPathComponent("Projects"),
+                acquireWritePermit: acquireWritePermit, writePermitIdentity: writePermitIdentity))
     }
     @MainActor static func apply(id: UUID, directory: URL, operations: [MediaPreparedOperation], expectedRevision: Int64) async throws -> MediaPreparedCommit {
         try await session(id: id, directory: directory).apply(operations, expectedRevision: expectedRevision, actor: .model)
@@ -59,6 +67,7 @@ struct PersonalMediaEditorView: View {
     let record: PersonalContentRecord
     let directory: URL
     var onAssistant: (() -> Void)? = nil
+    var sessionProvider: (@MainActor () async throws -> MediaV2Session)? = nil
     @State private var session: MediaV2Session?
     @State private var diagnostic: String?
     var body: some View {
@@ -74,7 +83,11 @@ struct PersonalMediaEditorView: View {
             }
     }
     private func load() async {
-        do { session = try await PersonalMediaFactory.session(id: record.id, directory: directory); diagnostic = nil }
+        do {
+            if let sessionProvider { session = try await sessionProvider() }
+            else { session = try await PersonalMediaFactory.session(id: record.id, directory: directory) }
+            diagnostic = nil
+        }
         catch { diagnostic = error.localizedDescription }
     }
 }

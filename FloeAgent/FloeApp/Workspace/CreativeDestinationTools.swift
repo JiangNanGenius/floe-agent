@@ -159,9 +159,11 @@ enum CreativeRouteStore {
     }
 
     static func upsert(_ record: CreativeRouteRecord) throws {
-        try synchronizedSave(load().filter {
-            !($0.operationID == record.operationID && $0.sourceRunID == record.sourceRunID)
-        } + [record])
+        try synchronized { records in
+            try save(records.filter {
+                !($0.operationID == record.operationID && $0.sourceRunID == record.sourceRunID)
+            } + [record])
+        }
     }
 }
 
@@ -771,7 +773,7 @@ enum CreativeDestinationRouter {
             destinationEnvironmentID: nil, canvasID: nil,
             sourceDocumentID: nil, sourceRevision: nil,
             nodeIDs: [], materialSHAs: [])
-        enum CanvasReservation { case reserved(CreativeRouteRecord), returnNavigable(UUID) }
+        enum CanvasReservation { case reserved(CreativeRouteRecord, resumed: Bool), returnNavigable(UUID) }
         let reservation: CanvasReservation = try CreativeRouteStore.synchronized { records in
             if let existing = records.first(where: {
                 $0.operationID == operationID && $0.sourceRunID == sourceRunID
@@ -783,7 +785,11 @@ enum CreativeDestinationRouter {
                 guard let canvasID = existing.destinationCanvasID else {
                     throw CreativeRouteError.storeCorrupt("canvas route without a destination canvas id")
                 }
-                return .returnNavigable(canvasID)
+                if existing.status == .started { return .returnNavigable(canvasID) }
+                // A prepared route can outlive the process that reserved it.
+                // Reconcile its durable destination instead of reporting a
+                // canvas that may never have been created.
+                return .reserved(existing, resumed: true)
             }
             let record = CreativeRouteRecord(
                 operationID: operationID,
@@ -807,31 +813,52 @@ enum CreativeDestinationRouter {
             var updated = records
             updated.append(record)
             try CreativeRouteStore.save(updated)
-            return .reserved(record)
+            return .reserved(record, resumed: false)
         }
         if case .returnNavigable(let canvasID) = reservation {
             return (canvasID, false)
         }
-        guard case .reserved(let record) = reservation else {
+        guard case .reserved(let record, let resumed) = reservation else {
             throw CreativeRouteError.storeUnavailable("unexpected canvas reservation state")
         }
+        let key = inFlightKey(operationID: operationID, sourceRunID: sourceRunID)
+        guard registerInFlight(key) else {
+            throw CreativeRouteError.storeUnavailable("the canvas destination is still being prepared")
+        }
+        defer { unregisterInFlight(key) }
         guard let canvasID = record.destinationCanvasID else {
             throw CreativeRouteError.storeCorrupt("reserved canvas route without a destination canvas id")
         }
-        let workspaceID = record.destinationWorkspaceID
         let title = String(goal.trimmingCharacters(in: .whitespacesAndNewlines).prefix(40))
         // Durable canvas document (WorkspaceCanvasRegistry storage).
         let projectURL = try WorkspaceCanvasRegistry.projectURL(canvasID: canvasID, createDirectory: true)
-        let document = CanvasDocument(id: UUID(), name: title.isEmpty ? "创意画布" : title, nodes: [])
-        let project = CanvasProject(
-            id: canvasID,
-            name: title.isEmpty ? "创意画布" : title,
-            documents: [document],
-            selectedDocumentID: document.id)
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = [.sortedKeys]
-        try CanvasProjectCodec.encode(project, encoder: encoder).write(to: projectURL, options: .atomic)
+        let documentID = initialCanvasDocumentID(canvasID: canvasID, sourceRunID: sourceRunID, payloadDigest: digest)
+        func existingDestination() throws -> CanvasProject {
+            let project = try CanvasProjectFileWriter.shared.project(canvasID: canvasID, at: projectURL)
+            guard project.id == canvasID, project.documents.contains(where: { $0.id == documentID }) else {
+                throw CreativeRouteError.storeCorrupt("the reserved canvas belongs to a different destination")
+            }
+            return project
+        }
+        let project: CanvasProject
+        if FileManager.default.fileExists(atPath: projectURL.path) {
+            project = try existingDestination()
+        } else {
+            let document = CanvasDocument(id: documentID, name: title.isEmpty ? "创意画布" : title, nodes: [])
+            let initial = CanvasProject(id: canvasID, name: document.name,
+                                        documents: [document], selectedDocumentID: document.id)
+            let seeded = try CanvasFrameworkLegacyRepository.seedFrameworkState(initial)
+            do {
+                try CanvasProjectFileWriter.shared.compareAndSwap(seeded, at: projectURL, expectedRevision: 0,
+                    requireRevisionAdvance: false, allowCreateIfMissing: true)
+                project = seeded
+            } catch {
+                // A concurrent creator may have published this reservation.
+                // Only the same deterministic initial page proves ownership.
+                guard FileManager.default.fileExists(atPath: projectURL.path) else { throw error }
+                project = try existingDestination()
+            }
+        }
         // Workspace record so the canvas appears in the sidebar and opens
         // through the SAME surface as every other canvas.
         let support = try FileManager.default.url(
@@ -841,22 +868,40 @@ enum CreativeDestinationRouter {
         try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
         // The canvas opens through the EXISTING surface keyed by the
         // workspace id, so the workspace record carries the canvas id.
-        let workspace = WorkspaceRecord(
-            id: canvasID,
-            name: project.name,
-            rootBookmark: try support.bookmarkData(options: .minimalBookmark),
-            kind: .project)
-        try await SQLiteWorkspaceStore(database: environment.database).saveWorkspace(workspace)
+        let workspaceStore = SQLiteWorkspaceStore(database: environment.database)
+        if let existing = try await workspaceStore.workspace(id: canvasID) {
+            var stale = false
+            let root = try URL(resolvingBookmarkData: existing.rootBookmark, options: [],
+                               relativeTo: nil, bookmarkDataIsStale: &stale)
+            guard !stale, existing.kind == .project,
+                  root.standardizedFileURL.resolvingSymlinksInPath().pathComponents ==
+                    support.standardizedFileURL.resolvingSymlinksInPath().pathComponents else {
+                throw CreativeRouteError.storeCorrupt("the reserved canvas workspace has changed")
+            }
+        } else {
+            let workspace = WorkspaceRecord(id: canvasID, name: project.name,
+                rootBookmark: try support.bookmarkData(options: .minimalBookmark), kind: .project)
+            try await workspaceStore.saveWorkspace(workspace)
+        }
         var started = record
         started.status = .started
         try CreativeRouteStore.upsert(started)
-        let foreground = await Self.foregroundRunProbe?(sourceRunID) ?? false
+        var foreground = false
+        if !resumed { foreground = await Self.foregroundRunProbe?(sourceRunID) ?? false }
         var navigated = false
         if foreground, let navigator = Self.canvasNavigator {
             navigator(canvasID)
             navigated = true
         }
         return (canvasID, navigated)
+    }
+
+    /// Stable ownership marker for recovering the same prepared reservation.
+    private static func initialCanvasDocumentID(canvasID: UUID, sourceRunID: UUID, payloadDigest: String) -> UUID {
+        let digest = FloeDigest.sha256Hex(Data("creative-canvas:\(canvasID.uuidString):\(sourceRunID.uuidString):\(payloadDigest)".utf8))
+        let value = Array(digest.prefix(32))
+        return UUID(uuidString: String(value[0..<8]) + "-" + String(value[8..<12]) + "-" +
+                    String(value[12..<16]) + "-" + String(value[16..<20]) + "-" + String(value[20..<32]))!
     }
 
 

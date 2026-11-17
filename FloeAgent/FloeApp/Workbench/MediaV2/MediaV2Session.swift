@@ -10,6 +10,7 @@ import FloeTools
 
 @MainActor @Observable final class MediaV2Session {
     private static var sessions: [String: MediaV2Session] = [:]
+    private static var openingSessions: [String: Task<MediaV2Session, Error>] = [:]
     static func requireIdleForDeletion(id: UUID) throws {
         guard !sessions.values.contains(where: { $0.id == id && ($0.saving || $0.rendering || $0.processingTool || $0.exportTask != nil || $0.compoundEditorRoute?.session.saving == true || $0.compoundEditorRoute?.session.processingTool == true || $0.compoundEditorRoute?.session.rendering == true) }) else { throw PersonalFileActionError.busy }
     }
@@ -77,6 +78,7 @@ import FloeTools
     var zoom = 1.0
     var viewportResetID = UUID()
     private(set) var saving = false
+    private var importRefreshRequired = false
     private var sourceSaveRevision: Int64?
     private var sourceSaveMessage: String?
     var sourceSaveFeedback: String? { sourceSaveRevision == document.revision ? sourceSaveMessage : nil }
@@ -111,15 +113,35 @@ import FloeTools
     }
     static func open(projectID: UUID, root: URL, store: MediaProjectStore, upgrade: Bool = false) async throws -> MediaV2Session {
         let key = store.storeRootPath + "/" + projectID.uuidString
-        if let existing = sessions[key] { try await existing.reload(); return existing }
-        let coordinator = MediaPreparedCoordinator(store: store)
-        if upgrade { _ = try await coordinator.upgradeDocument(id: projectID) }
-        guard let project = try await store.loadProject(id: projectID), project.prepared != nil else { throw PersonalContentError.invalidProject }
-        try MediaPreparedIntegrity.validateEnvelope(project)
-        let value = MediaV2Session(project: project, root: root, store: store, coordinator: coordinator)
-        sessions[key] = value
-        value.refreshPreview()
-        return value
+        func check(_ session: MediaV2Session) throws {
+            guard session.id == projectID,
+                  session.root.standardizedFileURL.resolvingSymlinksInPath() == root.standardizedFileURL.resolvingSymlinksInPath(),
+                  session.store.hasWritePermitProvider == store.hasWritePermitProvider,
+                  session.store.writePermitIdentity == store.writePermitIdentity else { throw PersonalContentError.changedDocument }
+        }
+        if let existing = sessions[key] {
+            try check(existing)
+            try await existing.reload()
+            return existing
+        }
+        if let pending = openingSessions[key] {
+            let value = try await pending.value
+            try check(value)
+            return value
+        }
+        let pending = Task { @MainActor in
+            let coordinator = MediaPreparedCoordinator(store: store)
+            if upgrade { _ = try await coordinator.upgradeDocument(id: projectID) }
+            guard let project = try await store.loadProject(id: projectID), project.prepared != nil else { throw PersonalContentError.invalidProject }
+            try MediaPreparedIntegrity.validateEnvelope(project)
+            let value = MediaV2Session(project: project, root: root, store: store, coordinator: coordinator)
+            sessions[key] = value
+            value.refreshPreview()
+            return value
+        }
+        openingSessions[key] = pending
+        defer { openingSessions.removeValue(forKey: key) }
+        return try await pending.value
     }
     /// Snapshot lookup only: unlike open/reload it never refreshes a frame or
     /// upgrades/saves a document just to inspect an existing source asset.
@@ -148,15 +170,20 @@ import FloeTools
         reconcileSelection()
         if let canonical=compoundCanonicalCoordinator { onCommit?(try await canonical.loadProjectSnapshot(id:id)) } else { onCommit?(next) }
         refreshPreview()
+        importRefreshRequired = false
     }
     @discardableResult
     func apply(_ operations: [MediaPreparedOperation], expectedRevision: Int64? = nil,
-               actor: MediaPreparedActorKind = .user, didCommit: (() -> Void)? = nil) async throws -> MediaPreparedCommit {
+               actor: MediaPreparedActorKind = .user, didCommit: (() -> Void)? = nil,
+               validateOwner: (@MainActor @Sendable () async throws -> Void)? = nil) async throws -> MediaPreparedCommit {
         guard !saving else { throw MediaPreparedCoreError.conflict("an edit is saving") }
+        guard !importRefreshRequired else { throw MediaPreparedCoreError.conflict("Reopen this work to refresh the saved import.") }
         if let expectedRevision, expectedRevision != document.revision { throw MediaPreparedCoreError.documentChanged }
         saving = true
         defer { saving = false }
-        let commit = try await coordinator.applyUserOperations(operations, to: id, actor: actor)
+        try await validateOwner?()
+        try Task.checkCancellation()
+        let commit = try await coordinator.applyUserOperations(operations, to: id, actor: actor, expectedRevision: expectedRevision)
         didCommit?()
         try await reload()
         return commit
@@ -384,12 +411,52 @@ import FloeTools
         }
         catch is CancellationError { } catch { diagnostic = error.localizedDescription }
     }
-    struct ImportedAsset { let commit: MediaPreparedCommit; let asset: MediaAssetReference }
+    struct ImportedAsset {
+        let commit: MediaPreparedCommit
+        let asset: MediaAssetReference
+        var refreshPending = false
+        var replayed = false
+        var journalStatus: MediaPreparedJournalStatus = .committed
+    }
+    struct ImportIdentity: Sendable {
+        let groupID: UUID
+        let operationID: UUID
+    }
+    struct ImportPlacement: Sendable {
+        let trackID: UUID
+        let startSeconds: Double
+    }
+    /// Read the durable journal rather than current session state: a reload
+    /// may have failed after the transaction was already published.
+    func replayImport(_ identity: ImportIdentity, expectedRevision: Int64) async throws -> ImportedAsset? {
+        guard let saved = try await store.loadProject(id: id) else { throw PersonalContentError.invalidProject }
+        guard let entry = saved.preparedJournal?.entry(identity.groupID) else { return nil }
+        guard entry.documentID == id, entry.baseRevision == expectedRevision,
+              entry.operationIDs.contains(identity.operationID) else {
+            throw MediaPreparedCoreError.conflict("import request identity was reused with different input")
+        }
+        let assets = entry.changes.compactMap { change -> MediaAssetReference? in
+            guard change.before == nil, case .asset(let value) = change.after, value.reference.kind == .video else { return nil }
+            return value.reference
+        }
+        guard assets.count == 1 else { throw MediaPreparedCoreError.conflict("saved import receipt cannot be recovered") }
+        let commit = MediaPreparedCommit(groupID: entry.id, documentID: entry.documentID, revision: entry.committedRevision,
+            touched: entry.changes.map(\.ref), created: entry.changes.filter { $0.before == nil }.map(\.ref),
+            deleted: entry.changes.filter { $0.after == nil }.map(\.ref), operationCount: entry.operationIDs.count)
+        return .init(commit: commit, asset: assets[0], refreshPending: false, replayed: true, journalStatus: entry.status)
+    }
     /// URL is supplied only by a system picker or the verified native host.
     /// No model-authored host URL is accepted at the callable boundary.
     func importAuthorizedFile(_ url: URL, expectedRevision: Int64, expectedSHA256: String? = nil,
                               actor: MediaPreparedActorKind = .user, cancellation: CancellationToken? = nil,
-                              validateSource: @MainActor () async throws -> Void = {}) async throws -> ImportedAsset {
+                              validateSource: @MainActor () async throws -> Void = {},
+                              identity: ImportIdentity? = nil,
+                              placement: ImportPlacement? = nil,
+                              refreshAfterCommit: (@MainActor () async throws -> Void)? = nil) async throws -> ImportedAsset {
+        let operationPermit = try await store.beginOperationPermit(projectID: id)
+        defer { operationPermit?.release() }
+        try operationPermit?.validate()
+        if let identity, let replay = try await replayImport(identity, expectedRevision: expectedRevision) { return replay }
         guard expectedRevision == document.revision else { throw MediaPreparedCoreError.documentChanged }
         let scope = MediaV2ImportScope(token: cancellation)
         var admitted = false
@@ -404,13 +471,22 @@ import FloeTools
                 actions.append(.insertLayer(layer: layer, parentID: nil, index: nil)); selectedLayerID = layer.id
             } else {
                 let kind: MediaPreparedTrackKind = reference.kind == .audio ? .audio : .visual
-                let track = document.trackGraph.tracks.first { $0.id == selectedTrackID && $0.kind == kind }
-                    ?? document.trackGraph.tracks.first { $0.kind == kind }
-                    ?? MediaPreparedTrack(kind: kind, name: reference.originalName)
+                let track: MediaPreparedTrack
+                if let placement {
+                    guard placement.startSeconds.isFinite, placement.startSeconds >= 0,
+                          let selected = document.trackGraph.tracks.first(where: { $0.id == placement.trackID && $0.kind == kind }) else {
+                        throw MediaV2CommandError.invalidInput
+                    }
+                    track = selected
+                } else {
+                    track = document.trackGraph.tracks.first { $0.id == selectedTrackID && $0.kind == kind }
+                        ?? document.trackGraph.tracks.first { $0.kind == kind }
+                        ?? MediaPreparedTrack(kind: kind, name: reference.originalName)
+                }
                 if !document.trackGraph.tracks.contains(where: { $0.id == track.id }) { actions.append(.insertTrack(track: track, index: nil)) }
                 let seconds = reference.kind == .image ? 5 : reference.metadata?.durationSeconds ?? 0
                 guard seconds > 0 else { throw PersonalContentError.invalidProject }
-                let range = try Self.range(start: playhead, duration: seconds)
+                let range = try Self.range(start: placement?.startSeconds ?? playhead, duration: seconds)
                 let clip = MediaPreparedClip(assetID: reference.id, timelineRange: range, sourceRange: try Self.range(start: 0, duration: seconds), isMuted: reference.kind == .video && (reference.metadata?.audioTracks ?? 0) > 0)
                 actions.append(.insertClip(trackID: track.id, clip: clip, index: nil)); selectedTrackID = track.id; selectedClipID = clip.id
                 if reference.kind == .video, (reference.metadata?.audioTracks ?? 0) > 0 {
@@ -423,8 +499,42 @@ import FloeTools
             }
             try scope.validate()
             try await validateSource()
+            try operationPermit?.validate()
             try scope.validate()
             admitted = true
+            if let identity {
+                guard !saving else { throw MediaPreparedCoreError.conflict("an edit is saving") }
+                guard !importRefreshRequired else { throw MediaPreparedCoreError.conflict("Reopen this work to refresh the saved import.") }
+                guard expectedRevision == document.revision else { throw MediaPreparedCoreError.documentChanged }
+                saving = true
+                defer { saving = false }
+                var operations = actions.map { MediaPreparedOperation(action: $0) }
+                operations[0].id = identity.operationID
+                let commit: MediaPreparedCommit
+                do {
+                    commit = try await coordinator.applyUserOperations(operations, to: id, groupID: identity.groupID, actor: actor, expectedRevision: expectedRevision)
+                } catch {
+                    let recovered: ImportedAsset?
+                    do { recovered = try await replayImport(identity, expectedRevision: expectedRevision) }
+                    catch { throw MediaPreparedCoreError.conflict("Import result is unknown; inspect the saved work before retrying.") }
+                    guard var recovered else { throw error }
+                    scope.didCommit()
+                    importRefreshRequired = true
+                    recovered.refreshPending = true
+                    diagnostic = WorkbenchText.t("内容已保存，请重新打开以刷新。", "Saved. Reopen to refresh.")
+                    return recovered
+                }
+                scope.didCommit()
+                var refreshPending = false
+                do {
+                    if let refreshAfterCommit { try await refreshAfterCommit() } else { try await reload() }
+                } catch {
+                    refreshPending = true
+                    importRefreshRequired = true
+                    diagnostic = WorkbenchText.t("内容已保存，请重新打开以刷新。", "Saved. Reopen to refresh.")
+                }
+                return .init(commit: commit, asset: reference, refreshPending: refreshPending)
+            }
             let commit = try await apply(actions.map { .init(action: $0) }, expectedRevision: expectedRevision, actor: actor, didCommit: { scope.didCommit() })
             return .init(commit: commit, asset: reference)
         } catch {
@@ -475,6 +585,12 @@ import FloeTools
     }
     private func prepareVideoSourceAudio(targetClipID: UUID? = nil) async throws {
         guard project.kind == .video else { return }
+        let permit = try await store.beginOperationPermit(projectID: id)
+        defer { permit?.release() }
+        try permit?.validate()
+        let scope = MediaV2ImportScope(token: nil)
+        var admitted = false
+        do {
         let frozen = document
         let sources = try resolvedAssets()
         var actions: [MediaPreparedAction] = []
@@ -487,7 +603,12 @@ import FloeTools
                 guard hasAudio else { continue }
                 let source: MediaAssetReference
                 if let existing = staged[assetID] { source = existing }
-                else { source = try await extractAudio(asset); staged[assetID] = source; actions.append(.insertAsset(source)) }
+                else {
+                    try permit?.validate()
+                    source = try await extractAudio(asset, importScope: scope)
+                    try permit?.validate()
+                    staged[assetID] = source; actions.append(.insertAsset(source))
+                }
                 var visual = clip; visual.isMuted = true
                 actions.append(.replaceClip(trackID: track.id, clipID: clip.id, expectedRevision: clip.revision, clip: visual))
                 let audio = MediaPreparedTrack(kind: .audio, name: asset.originalName + WorkbenchText.t(" · 原声", " · source audio"), isMuted: track.isMuted, volume: track.volume)
@@ -497,7 +618,20 @@ import FloeTools
                 actions.append(.insertClip(trackID: audio.id, clip: sound, index: nil))
             }
         }
-        if !actions.isEmpty { _ = try await apply(actions.map { .init(action: $0) }, expectedRevision: frozen.revision) }
+        if !actions.isEmpty {
+            try scope.validate(); try permit?.validate()
+            admitted = true
+            _ = try await apply(actions.map { .init(action: $0) }, expectedRevision: frozen.revision, didCommit: { scope.didCommit() })
+        }
+        } catch {
+            if admitted {
+                do {
+                    if let durable = try await store.loadProject(id: id), durable.prepared != nil { scope.retainReferenced(in: durable) }
+                    else { scope.didCommit() }
+                } catch { scope.didCommit() }
+            }
+            throw error
+        }
     }
     static func time(_ seconds: Double) throws -> MediaRationalTime {
         guard seconds.isFinite, abs(seconds) <= 100_000 else { throw PersonalContentError.invalidProject }
@@ -517,14 +651,22 @@ import FloeTools
         exportTask = Task { [self] in
             defer { rendering = false; exportTask = nil; cancellation = nil }
             do {
+                let permit = try await store.beginOperationPermit(projectID: id)
+                defer { permit?.release() }
+                try permit?.validate()
                 if project.kind == .video {
                     guard Self.hasVisibleClips(document.trackGraph) else { throw PreparedVideoError.emptyTimeline }
                 }
                 try await prepareVideoSourceAudio()
                 let frozen = project
                 let urls = try resolvedAssets()
-                let folder = root.appendingPathComponent("Exports").appendingPathComponent(UUID().uuidString)
+                try permit?.validate()
+                // Workspace output lives in the app's temporary area until the user
+                // explicitly saves/shares it, never in a replaceable project path.
+                let folder = (store.hasWritePermitProvider ? FileManager.default.temporaryDirectory.appendingPathComponent("FloeStudioExports") : root.appendingPathComponent("Exports")).appendingPathComponent(UUID().uuidString)
                 try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                var delivered = false
+                defer { if !delivered { try? FileManager.default.removeItem(at: folder) } }
                 let stem = imageOptions.fileName.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: "\\", with: "-")
                     .components(separatedBy: .controlCharacters).joined().trimmingCharacters(in: CharacterSet(charactersIn: ". ").union(.whitespacesAndNewlines))
                 let file = folder.appendingPathComponent((frozen.kind == .image ? (stem.isEmpty ? "export" : String(stem.prefix(100))) : "export") + "." + (frozen.kind == .image ? imageOptions.format.fileExtension : "mp4"))
@@ -538,8 +680,10 @@ import FloeTools
                         }
                 }
                 try token.check()
+                try permit?.validate()
                 guard project.id == frozen.id, project.revision == frozen.revision else { throw MediaPreparedCoreError.documentChanged }
                 exportedFile = file
+                delivered = true
             } catch {
                 exportError = error
                 if !Task.isCancelled { diagnostic = Self.exportFailureMessage(error) }
@@ -569,17 +713,27 @@ import FloeTools
         let generation = playbackGeneration
         playbackTask = Task { [self] in
             do {
+                let permit = try await store.beginOperationPermit(projectID: id)
+                defer { permit?.release() }
+                try permit?.validate()
                 try await prepareVideoSourceAudio()
+                try permit?.validate()
                 let frozen = project
                 let assets = try resolvedAssets(), canvas = document.canvas!
-                let file = root.appendingPathComponent("Previews/\(UUID().uuidString).mp4")
+                let folder = store.hasWritePermitProvider ? FileManager.default.temporaryDirectory.appendingPathComponent("FloeStudioPreviews", isDirectory: true) : root.appendingPathComponent("Previews", isDirectory: true)
+                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                let file = folder.appendingPathComponent("\(UUID().uuidString).mp4")
+                var adopted = false
+                defer { if !adopted { try? FileManager.default.removeItem(at: file) } }
                 _ = try await videoDelivery.export(document: frozen.prepared!, assetURLs: assets,
                     options: .init(codec: canvas.videoColorProfile?.isHDR == true ? .hevc : .h264,width: max(2, canvas.width / 4 / 2 * 2), height: max(2, canvas.height / 4 / 2 * 2), frameRate: document.trackGraph.frameRate?.seconds ?? 30,colorProfile: canvas.videoColorProfile), destination: file)
+                try permit?.validate()
                 guard !Task.isCancelled, generation == playbackGeneration, frozen.revision == project.revision else {
                     try? FileManager.default.removeItem(at: file); return
                 }
                 try authority.acquirePlayback(); playbackAuthority = authority
                 playbackFile = file
+                adopted = true
                 let previewPlayer = AVPlayer(url: file)
                 player = previewPlayer
                 await previewPlayer.seek(to: .init(seconds: playhead, preferredTimescale: 90_000))

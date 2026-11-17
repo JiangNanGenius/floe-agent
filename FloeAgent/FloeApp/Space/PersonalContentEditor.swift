@@ -101,7 +101,7 @@ struct PersonalContentEditor: View {
                     onAssistant: { showingAssistant = true })
             } else if let content, case .canvas(let store) = content {
                 // The original canvas owns its split navigation and close path.
-                CreativeCanvasSurface(record: record, store: store)
+                CreativeCanvasSurface(record: record, store: store, onClose: { dismissAfterClosing() })
             } else if let content, case .geography(let session, _) = content {
                 GISProjectEditorSurface(session: session, onClose: { Task { await finish() } },
                     onAssistant: { showingAssistant = true })
@@ -249,7 +249,7 @@ struct PersonalContentEditor: View {
                 if let content {
                     switch content {
                     case .canvas(let store):
-                        CreativeCanvasSurface(record: record, store: store)
+                        CreativeCanvasSurface(record: record, store: store, onClose: { dismissAfterClosing() })
                     case .diagram(let model):
                         DiagramEditorView(model: model)
                     case .file(let url):
@@ -413,6 +413,8 @@ struct PersonalContentEditor: View {
         do {
             let library = try await PersonalContentService.shared.library()
             let value = try await library.resolve(record.id)
+            try Task.checkCancellation()
+            guard isPresented, presentationGeneration == generation, record.id == value.record.id else { return }
             let loadingUse = try PersonalLibraryFileActions.acquireUse(id: record.id, directory: value.url)
             defer { loadingUse.release() }
             if fileUsage == nil { fileUsage = try PersonalLibraryFileActions.acquireUse(id: record.id, directory: value.url) }
@@ -421,6 +423,8 @@ struct PersonalContentEditor: View {
             case .canvas:
                 let repository = try FileCanvasRepository(root: value.url.appendingPathComponent("Canvas"))
                 _ = try await repository.load(canvasID: record.id)
+                try Task.checkCancellation()
+                guard isPresented, presentationGeneration == generation, record.id == value.record.id else { return }
                 let navigation = CanvasHostNavigation(openWork: { id in
                     let work = try await library.resolve(id)
                     childWork = work.record
@@ -438,6 +442,8 @@ struct PersonalContentEditor: View {
                 }, openAssistant: { _ in showingAssistant = true })
                 let services = try await CanvasHostServices.make(record: record, directory: value.url,
                     environment: environment, navigation: navigation)
+                try Task.checkCancellation()
+                guard isPresented, presentationGeneration == generation, record.id == value.record.id else { return }
                 content = .canvas(CanvasEditorStore(canvasID: record.id,
                     services: services))
             case .diagram:
@@ -494,6 +500,7 @@ struct PersonalContentEditor: View {
             }
             try await library.markOpened(record.id)
         } catch {
+            guard isPresented, presentationGeneration == generation else { return }
             if case nil = content { fileUsage?.release(); fileUsage = nil }
             self.error = error.localizedDescription
         }

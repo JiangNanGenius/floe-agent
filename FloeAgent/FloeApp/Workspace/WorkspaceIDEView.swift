@@ -68,6 +68,7 @@ struct WorkspaceIDEView: View {
         min(300, max(200, availableWidth * 0.3))
     }
     @State private var forwardedInitialNativeTextPath = false
+    @State private var workspaceVideoRouteGeneration = UUID()
     /// In-flight Office share snapshot. The owning tab session reclaims it on
     /// dismiss via `finishSaveCopy()`.
     @State private var officeShareSnapshot: DocumentExportSnapshot?
@@ -90,7 +91,10 @@ struct WorkspaceIDEView: View {
         self.root = center.currentRootURL
         let workbench = IDEWorkbenchState(files: center.fileService)
         _state = StateObject(wrappedValue: workbench)
-        _tabs = StateObject(wrappedValue: IDEWorkspaceTabStore(initialRelativePath: initialRelativePath))
+        let possibleVideo = initialRelativePath.map {
+            WorkspaceFileRouter.isWorkspaceVideoProjectPath($0, workspaceID: center.currentWorkspace?.id)
+        } ?? false
+        _tabs = StateObject(wrappedValue: IDEWorkspaceTabStore(initialRelativePath: possibleVideo ? nil : initialRelativePath))
         let sourceControl = center === center.environment.workspaceCenter
             ? center.environment.sourceControlCenter
             : SourceControlCenter(environment: center.environment, workspaceCenter: center)
@@ -221,6 +225,7 @@ struct WorkspaceIDEView: View {
         }
         .interactiveDismissDisabled(state.saving || hasOfficeEdits || state.nativeText.hasDirty || gameLookupTask != nil)
         .onDisappear {
+            workspaceVideoRouteGeneration = UUID()
             if gameRunRequest == nil {
                 gameLookupGeneration &+= 1
                 gameLookupTask?.cancel()
@@ -228,6 +233,7 @@ struct WorkspaceIDEView: View {
         }
         .onChange(of: center.currentWorkspace?.id) { _, _ in
             if !pinnedWorkspaceIsCurrent {
+                workspaceVideoRouteGeneration = UUID()
                 gameLookupGeneration &+= 1
                 gameLookupTask?.cancel()
             }
@@ -818,6 +824,35 @@ struct WorkspaceIDEView: View {
     /// native buffer; PDF/Office and other typed documents use their typed
     /// outer tab. Text editing is native-only.
     private func openRoutedPath(_ path: String) {
+        workspaceVideoRouteGeneration = UUID()
+        let generation = workspaceVideoRouteGeneration
+        if WorkspaceFileRouter.isWorkspaceVideoProjectPath(path, workspaceID: workspaceID), workspaceID != nil {
+            Task {
+                do {
+                    let scope = try WorkspaceFileActionScope(center: center)
+                    let classification = try await StudioWorkspaceVideoService.classifyVideoPathForNativeUI(
+                        relativePath: path, center: center, expectedScope: scope, environment: center.environment)
+                    try scope.validate(center)
+                    guard generation == workspaceVideoRouteGeneration, scope.workspaceID == workspaceID else { return }
+                    switch classification {
+                    case .verified:
+                        tabs.openVerifiedWorkspaceDocument(relativePath: path)
+                    case .unavailableBound:
+                        routingNotice = IDELanguageRunText.t("作品暂时无法打开，请检查原文件。", "This work cannot be opened. Check the original file.")
+                    case .unbound:
+                        openOrdinaryRoutedPath(path)
+                    }
+                } catch {
+                    guard generation == workspaceVideoRouteGeneration else { return }
+                    routingNotice = error.localizedDescription
+                }
+            }
+            return
+        }
+        openOrdinaryRoutedPath(path)
+    }
+
+    private func openOrdinaryRoutedPath(_ path: String) {
         switch WorkspaceTextPolicy.kind(forPath: path) {
         case .text, .code, .unknown:
             openNativeText(path)
@@ -850,6 +885,10 @@ struct WorkspaceIDEView: View {
 
     /// Opens the path the IDE was launched with in the surface that owns it.
     private func openInitialPath(_ path: String) {
+        if WorkspaceFileRouter.isWorkspaceVideoProjectPath(path, workspaceID: workspaceID), workspaceID != nil {
+            openRoutedPath(path)
+            return
+        }
         switch WorkspaceTextPolicy.kind(forPath: path) {
         case .text, .code, .unknown:
             guard IDENativeTextPolicy.supportsNativeEditing(path),

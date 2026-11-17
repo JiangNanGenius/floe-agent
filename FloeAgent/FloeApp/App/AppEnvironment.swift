@@ -3184,6 +3184,36 @@ final class AppEnvironment: ObservableObject {
                 }
             }
             if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
+               ProcessInfo.processInfo.arguments.contains("--ui-test-workspace-video-fixture") {
+                // Use the real service and durable authority; this fixture never
+                // treats a package name or manifest as permission to open it.
+                let conversationID = UUID(uuidString: "57C0A79F-CF1B-45D2-B640-EF54E5C55391")!
+                let runID = UUID(uuidString: "A13F22E8-2F47-48A6-BAC4-993F3FAD9AB1")!
+                let workspaceStore = SQLiteWorkspaceStore(database: database)
+                let workspace = try await workspaceStore.ensureWorkspace(conversationID: conversationID, title: "批量选择测试")
+                let lease = try await workspaceCenter.acquireTaskRoot(workspace, conversationID: conversationID)
+                defer { lease.release() }
+                let authority = try studioCoordinator.access.get()
+                let existing = try await authority.workspaceVideoBindings(conversationID: conversationID, workspaceID: workspace.id)
+                if !existing.contains(where: { $0.relativePath.split(separator: "/").last?.hasPrefix("Workspace Video UI Fixture ") == true }) {
+                    let now = Date()
+                    if try await runStore.run(id: runID) == nil {
+                        try await runStore.saveRun(.init(id: runID, conversationID: conversationID, state: "executing", goal: "Workspace video UI fixture", startedAt: now))
+                    } else {
+                        try await runStore.updateRunState(id: runID, state: "executing", endedAt: nil)
+                    }
+                    let names: Set<String> = ["studio.workspaceVideo"]
+                    var context = ToolContext(runID: runID, toolCallID: "workspace-video-ui-fixture", approvalGrantID: UUID(),
+                        allowedToolNames: names, workspaceRootURL: lease.url, cancellation: CancellationToken(),
+                        conversationID: conversationID, frozenEffectiveCatalogNames: names)
+                    context.executionToolName = "studio.workspaceVideo"
+                    context.serviceStorePaths[TypedMutationContract.workspaceStudioStoreKey] = lease.url
+                        .appendingPathComponent("Floe Studio " + String(workspace.id.uuidString.prefix(8))).path
+                    _ = try await StudioWorkspaceVideoService.create(title: "Workspace Video UI Fixture", coordinator: studioCoordinator, context: context)
+                    try await runStore.updateRunState(id: runID, state: "completed", endedAt: Date())
+                }
+            }
+            if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
                ProcessInfo.processInfo.arguments.contains("--ui-test-engineering-fixture") {
                 let fixtureID = UUID(uuidString: "57C0A79F-CF1B-45D2-B640-EF54E5C55391")!
                 let record = try await SQLiteWorkspaceStore(database: database).ensureWorkspace(

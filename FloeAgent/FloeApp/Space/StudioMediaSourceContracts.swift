@@ -13,6 +13,14 @@ struct StudioMediaImportInput: Codable, Sendable {
     let expectedRevision: Int64
     let source: Source
 }
+struct StudioFrameSequenceInput: Codable, Sendable {
+    let expectedRevision: Int64
+    let source: StudioMediaImportInput.Source
+    let width: Int
+    let height: Int
+    let frameRate: Int
+    let frameCount: Int
+}
 struct StudioAudioInspectInput: Codable, Sendable {
     let assetID: MusicAssetID?
     let sourceID: String?
@@ -30,6 +38,7 @@ struct StudioAudioInspectInput: Codable, Sendable {
 }
 enum StudioMediaSourceContracts {
     static let hostToolIDs: Set<String> = ["media.import"]
+    static let videoHostToolIDs: Set<String> = ["media.import", "video.importFrames"]
     static let musicHostToolIDs: Set<String> = ["music.import"]
     private static func object(_ json: String, allowed: Set<String>) throws -> [String: Any] {
         guard let value = try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any],
@@ -57,6 +66,22 @@ enum StudioMediaSourceContracts {
         if let digest = input.source.expectedSHA256 {
             guard digest.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else { throw FloeError.validationFailed("expectedSHA256 must be lowercase 64-hex SHA256.") }
         }
+        return input
+    }
+    static func decodeFrames(_ json: String) throws -> StudioFrameSequenceInput {
+        var value = try object(json, allowed: ["expectedRevision", "source", "width", "height", "frameRate", "frameCount"])
+        let sourceJSON = try JSONSerialization.data(withJSONObject: [
+            "expectedRevision": value["expectedRevision"] ?? NSNull(),
+            "source": value["source"] ?? NSNull()
+        ])
+        let imported = try decodeImport(String(decoding: sourceJSON, as: UTF8.self))
+        guard let sha = imported.source.expectedSHA256 else {
+            throw FloeError.validationFailed("Frame input requires the task file's SHA256.")
+        }
+        value["expectedRevision"] = imported.expectedRevision
+        let input = try JSONDecoder().decode(StudioFrameSequenceInput.self, from: JSONSerialization.data(withJSONObject: value))
+        _ = try StudioFrameSequenceEncoder.Specification(width: input.width, height: input.height,
+            frameRate: input.frameRate, frameCount: input.frameCount, expectedSHA256: sha).validate()
         return input
     }
     static func workspaceURL(_ path: String, context: ToolContext) throws -> URL {

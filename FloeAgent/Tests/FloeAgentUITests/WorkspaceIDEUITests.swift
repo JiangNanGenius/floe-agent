@@ -4,6 +4,48 @@ import UIKit
 
 @MainActor
 final class WorkspaceIDEUITests: XCTestCase {
+    func testWorkspaceVideoOpensAndReopensFromRealExplorer() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN", "-ui-testing",
+                               "-ui-testing-ipad", "--ui-test-skip-onboarding", "--ui-test-batch-fixture",
+                               "--ui-test-ide-fixture", "--ui-test-workspace-video-fixture"]
+        XCUIDevice.shared.orientation = .landscapeLeft
+        app.launch()
+        defer { app.terminate() }
+        try openWorkbench(app, ipad: true)
+
+        let container = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "fileTree.row.Floe Studio "))
+        XCTAssertTrue(container.firstMatch.waitForExistence(timeout: 30))
+        XCTAssertEqual(container.count, 1, "the fixture must identify one workspace container")
+        container.firstMatch.tap()
+        let project = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "fileTree.row.Workspace Video UI Fixture "))
+        XCTAssertTrue(project.firstMatch.waitForExistence(timeout: 30))
+        XCTAssertEqual(project.count, 1, "the test must open its own unique project")
+
+        func assertVideoOpen() {
+            XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "media.v2.canvas").firstMatch.waitForExistence(timeout: 30))
+            XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "media.v2.timeline").firstMatch.waitForExistence(timeout: 10))
+            XCTAssertTrue(app.buttons["media.v2.fileActions"].waitForExistence(timeout: 10))
+        }
+        project.firstMatch.tap()
+        assertVideoOpen()
+        capture("workspace-studio-video-open")
+        let close = app.buttons.matching(identifier: "workspace.ide.tab.close")
+        XCTAssertTrue(close.firstMatch.waitForExistence(timeout: 10))
+        XCTAssertEqual(close.count, 1)
+        close.firstMatch.tap()
+        let documentTab = app.buttons["workspace.ide.tab.document"]
+        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: documentTab)
+        XCTAssertEqual(XCTWaiter.wait(for: [gone], timeout: 10), .completed)
+        project.firstMatch.tap()
+        assertVideoOpen()
+        capture("workspace-studio-video-reopened")
+        app.buttons["workspace.ide.tab.close"].tap()
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: documentTab)], timeout: 10), .completed)
+        app.buttons["workspace.ide.close"].tap()
+    }
+
     /// The IDE's text/code editor is native Swift/UIKit only (no Web/Monaco
     /// text kernel and no switch entry). This is the reachability proof: real
     /// keystrokes into the real UITextView, real save, disk readback after a

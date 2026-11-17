@@ -746,17 +746,25 @@ public struct WorkspaceFileService: Sendable {
         try rejectWorkspaceRootMutation(destination, operation: "import")
         try guardResolver.assertWritable(destination)
         try assertNotFrozen(destination)
-        let root = guardResolver.rootURL.standardizedFileURL.resolvingSymlinksInPath()
+        // resolve() and rootURL share WorkspacePathGuard's component-wise
+        // physical path. Re-standardizing this root can turn /private/var
+        // into /var while a new destination still starts with /private/var.
+        let root = guardResolver.rootURL
         guard destination.path.hasPrefix(root.path + "/") else { throw WorkspaceToolError.escapesRoot(path) }
         // Reject symlink components even if their resolved target stays inside
         // the workspace; importing must not silently select another document.
-        let lexical = root.appendingPathComponent(path).standardizedFileURL
-        var cursor = lexical
-        while cursor.path != root.path && cursor.path.hasPrefix(root.path + "/") {
-            if (try? cursor.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true {
+        let normalized = (path.trimmingCharacters(in: .whitespaces) as NSString).standardizingPath
+        var cursor = root
+        for component in normalized.split(separator: "/") {
+            cursor.appendPathComponent(String(component))
+            var info = stat()
+            if lstat(cursor.path, &info) == 0 {
+                guard (info.st_mode & S_IFMT) != S_IFLNK else {
+                    throw WorkspaceToolError.escapesRoot(path)
+                }
+            } else if errno != ENOENT {
                 throw WorkspaceToolError.escapesRoot(path)
             }
-            cursor.deleteLastPathComponent()
         }
         guard !fileManager.fileExists(atPath: destination.path) else { throw WorkspaceToolError.alreadyExists(path) }
         let keys: Set<URLResourceKey> = [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey, .contentModificationDateKey]

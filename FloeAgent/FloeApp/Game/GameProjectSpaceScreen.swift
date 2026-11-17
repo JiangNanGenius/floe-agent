@@ -618,6 +618,14 @@ struct GameProjectSpaceScreen: View {
             } else if underlying.domain == NSCocoaErrorDomain && underlying.code == NSFileWriteOutOfSpaceError
                         || underlying.domain == NSPOSIXErrorDomain && underlying.code == 28 {
                 self.error = IDELanguageRunText.t("存储空间不足，请清理空间后重试。", "Not enough storage space. Free up space and try again.")
+            } else if case WorkspaceToolError.escapesRoot = error {
+                self.error = IDELanguageRunText.t(
+                    "游戏文件中有无法安全访问的路径。请检查文件夹或压缩包中的链接后重试。",
+                    "The game contains a path that cannot be accessed safely. Check links in the folder or archive and try again.")
+            } else if case WorkspaceToolError.secretFile = error {
+                self.error = IDELanguageRunText.t(
+                    "游戏文件夹中包含受保护的文件，请检查所选文件后重试。",
+                    "The game folder contains a protected file. Check the selected files and try again.")
             } else {
                 self.error = error.localizedDescription
             }

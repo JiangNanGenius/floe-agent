@@ -13,6 +13,9 @@ extension MediaV2Session {
     /// Full originals preserve every typed object. External formats use their
     /// reviewed subset bridge and refuse unsupported content before export.
     func exportInterchange(_ format: MediaV2ExchangeFormat) async throws -> URL {
+        guard !store.hasWritePermitProvider else {
+            throw MediaPreparedCoreError.invalidOperation(WorkbenchText.t("此工程暂不支持工程交换，请先在个人作品中处理。", "Project exchange is unavailable here. Use a personal project instead."))
+        }
         let frozen = project, assets = try resolvedAssets()
         let directory = root.appendingPathComponent("Exports")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

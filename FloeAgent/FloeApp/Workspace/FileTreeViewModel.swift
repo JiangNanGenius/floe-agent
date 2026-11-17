@@ -24,6 +24,7 @@ struct FileTreeNode: Identifiable, Hashable, Sendable {
     let size: Int64
     /// Lazily loaded children; nil = not loaded yet, [] = loaded & empty.
     var children: [FileTreeNode]?
+    var isBoundStudioVideo = false
 
     var id: String { relativePath }
 
@@ -33,7 +34,10 @@ struct FileTreeNode: Identifiable, Hashable, Sendable {
         isDirectory && (name as NSString).pathExtension.lowercased() == "floecad"
     }
 
-    var isBrowsableDirectory: Bool { isDirectory && !isCADDocumentPackage }
+    var isWorkspaceVideoPackage: Bool {
+        isDirectory && isBoundStudioVideo
+    }
+    var isBrowsableDirectory: Bool { isDirectory && !isCADDocumentPackage && !isWorkspaceVideoPackage }
 }
 
 struct VisibleFileTreeNode: Identifiable, Sendable {
@@ -56,6 +60,9 @@ final class FileTreeViewModel: ObservableObject {
     /// Root-level nodes (loaded on appear / refresh).
     @Published private(set) var rootNodes: [FileTreeNode] = []
     @Published private(set) var loadedScope: WorkspaceFileActionScope?
+    @Published private(set) var managedStudioRoot: String?
+    @Published private(set) var boundStudioVideos: Set<String> = []
+    @Published private(set) var protectedStudioVideos: Set<String> = []
     @Published private(set) var searchScope: WorkspaceFileActionScope?
     /// Search hits while `query` is non-empty (flat list, not a tree).
     @Published private(set) var searchHits: [SearchHit] = []
@@ -102,6 +109,9 @@ final class FileTreeViewModel: ObservableObject {
     func loadRoot() async {
         guard center.fileService != nil else {
             loadedScope = nil
+            managedStudioRoot = nil
+            boundStudioVideos = []
+            protectedStudioVideos = []
             rootNodes = []
             return
         }
@@ -110,13 +120,33 @@ final class FileTreeViewModel: ObservableObject {
         do {
             let scope = try WorkspaceFileActionScope(center: center)
             let page = try await center.listDirectory(relativePath: ".")
+            let candidateName = "Floe Studio " + String(scope.workspaceID.uuidString.prefix(8))
+            let managed: String?
+            if page.entries.contains(where: { $0.name == candidateName && $0.isDirectory }) {
+                managed = try await StudioWorkspaceVideoService.managedRootForNativeUI(
+                    center: center, expectedScope: scope, environment: center.environment)
+            } else { managed = nil }
+            let protected: Set<String>
+            if managed != nil {
+                protected = try await StudioWorkspaceVideoService.protectedVideoPathsForNativeUI(
+                    center: center, expectedScope: scope, environment: center.environment)
+            } else { protected = [] }
             try scope.validate(center)
             loadedScope = scope
-            rootNodes = page.entries.map(Self.node(from:))
+            managedStudioRoot = managed
+            // This is an index hint only. The target package is verified
+            // again before it enters the native editor.
+            boundStudioVideos = protected
+            protectedStudioVideos = protected
+            rootNodes = page.entries.map { Self.node(from: $0, boundStudioVideos: protected) }
             expandedDirectoryPaths = []
             errorMessage = nil
         } catch {
             rootNodes = []
+            loadedScope = nil
+            managedStudioRoot = nil
+            boundStudioVideos = []
+            protectedStudioVideos = []
             errorMessage = error.localizedDescription
         }
     }
@@ -125,8 +155,11 @@ final class FileTreeViewModel: ObservableObject {
     func loadChildren(of node: FileTreeNode) async -> [FileTreeNode] {
         guard node.isBrowsableDirectory, center.fileService != nil else { return [] }
         do {
+            guard let scope = loadedScope else { throw WorkspaceFileDeletionError.changed }
+            try scope.validate(center)
             let page = try await center.listDirectory(relativePath: node.relativePath)
-            return page.entries.map(Self.node(from:))
+            try scope.validate(center)
+            return page.entries.map { Self.node(from: $0, boundStudioVideos: boundStudioVideos) }
         } catch {
             errorMessage = error.localizedDescription
             return []
@@ -167,14 +200,19 @@ final class FileTreeViewModel: ObservableObject {
         _ = replace(in: &rootNodes)
     }
 
-    private static func node(from node: FileNode) -> FileTreeNode {
+    private static func node(from node: FileNode, boundStudioVideos: Set<String>) -> FileTreeNode {
         FileTreeNode(
             relativePath: node.relativePath,
             name: node.name,
             isDirectory: node.isDirectory,
             size: node.size,
-            children: node.isDirectory ? nil : nil
+            children: nil, isBoundStudioVideo: boundStudioVideos.contains(node.relativePath)
         )
+    }
+
+    func isManagedStudioPath(_ path: String) -> Bool {
+        guard let root = managedStudioRoot else { return false }
+        return path == root || protectedStudioVideos.contains(where: { path == $0 || path.hasPrefix($0 + "/") })
     }
 
     // MARK: - Mutations
@@ -227,6 +265,7 @@ final class FileTreeViewModel: ObservableObject {
 
     /// Deletes a node and reloads the tree.
     func deletionRequest(_ node: FileTreeNode, scope: WorkspaceFileActionScope?) async throws -> WorkspaceFileDeletionRequest {
+        guard !isManagedStudioPath(node.relativePath) else { throw WorkspaceFileDeletionError.closeFirst }
         guard let scope else { throw WorkspaceFileDeletionError.changed }
         return try await WorkspaceFileDeletion.prepare(path: node.relativePath, scope: scope, center: center)
     }
@@ -242,6 +281,7 @@ final class FileTreeViewModel: ObservableObject {
 
     /// Renames a node (a move within its parent directory).
     func rename(_ node: FileTreeNode, to newName: String) async throws {
+        guard !isManagedStudioPath(node.relativePath) else { throw WorkspaceFileDeletionError.closeFirst }
         let parent = (node.relativePath as NSString).deletingLastPathComponent
         let destination = parent.isEmpty ? newName : "\(parent)/\(newName)"
         try center.move(from: node.relativePath, to: destination)
@@ -249,6 +289,7 @@ final class FileTreeViewModel: ObservableObject {
     }
 
     func move(_ node: FileTreeNode, to path: String) async throws {
+        guard !isManagedStudioPath(node.relativePath), !isManagedStudioPath(path) else { throw WorkspaceFileDeletionError.closeFirst }
         guard !center.isCloudWorkspacePath(node.relativePath), !center.isNetworkWorkspacePath(node.relativePath),
               !center.isCloudWorkspacePath(path), !center.isNetworkWorkspacePath(path) else {
             throw CocoaError(.featureUnsupported)
@@ -355,6 +396,7 @@ final class FileTreeViewModel: ObservableObject {
 
     func prepareDeletionBatch(_ paths: Set<String>, scope: WorkspaceFileActionScope?) async throws -> FileTreeDeletionBatch {
         guard let scope, !paths.isEmpty else { throw WorkspaceFileDeletionError.changed }
+        guard !paths.contains(where: { isManagedStudioPath($0) }) else { throw WorkspaceFileDeletionError.closeFirst }
         try scope.validate(center)
         let roots = paths.filter { path in !paths.contains { other in path.hasPrefix(other + "/") } }.sorted()
         var requests: [WorkspaceFileDeletionRequest] = []

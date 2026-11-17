@@ -2,6 +2,7 @@
 import Foundation
 import Crypto
 import FloeCore
+import enum FloeCanvasCore.CanvasKitError
 import FloeModels
 import FloePersistence
 import FloeProviders
@@ -174,7 +175,7 @@ final class CanvasProjectFileWriter: @unchecked Sendable {
         )
     }
 
-    private static func revisionConflict(
+    fileprivate static func revisionConflict(
         expected: Int64,
         current: Int64
     ) -> FloeError {
@@ -190,6 +191,34 @@ final class CanvasProjectFileWriter: @unchecked Sendable {
     }
 }
 
+/// Commits legacy-shaped edits through the same native canvas repository
+/// engine as interactive edits. The JSON file remains the storage adapter;
+/// it is not an independent editing authority.
+enum CanvasFrameworkWriteAuthority {
+    @discardableResult
+    static func commit(_ project: CanvasProject, at url: URL, expectedRevision: Int64) throws -> CanvasProject {
+        guard expectedRevision < Int64.max, project.revision == expectedRevision + 1 else {
+            throw FloeError.validationFailed("Canvas revision must advance exactly once")
+        }
+        let relative = ".CanvasExtensions/" + project.id.uuidString + ".floeproject"
+        let record = PersonalContentRecord(id: project.id, kind: .canvas, title: project.name,
+            createdAt: project.createdAt, modifiedAt: project.updatedAt, folders: [], relativePath: relative)
+        let root = try PersonalContentLibrary.applicationRoot().appendingPathComponent(relative, isDirectory: true)
+        let repository = CanvasFrameworkLegacyRepository(record: record, originalURL: url, root: root)
+        let snapshot = try repository.loadSynchronously(canvasID: project.id)
+        guard snapshot.revision == expectedRevision else {
+            throw CanvasProjectFileWriter.revisionConflict(expected: expectedRevision, current: snapshot.revision)
+        }
+        let batch = try CanvasFrameworkProjection.batch(project: project, original: snapshot, record: record)
+        do {
+            return try repository.commitDocumentAndReturnProjectSynchronously(batch, canvasID: project.id,
+                expectedRevision: expectedRevision, requestID: UUID())
+        } catch CanvasKitError.revisionConflict(let expected, let current) {
+            throw CanvasProjectFileWriter.revisionConflict(expected: expected, current: current)
+        }
+    }
+}
+
 actor FileCanvasDocumentRepository: CanvasDocumentRepository {
     func project(canvasID: UUID) async throws -> CanvasProject {
         let url = try WorkspaceCanvasRegistry.projectURL(canvasID: canvasID, createDirectory: false)
@@ -198,11 +227,7 @@ actor FileCanvasDocumentRepository: CanvasDocumentRepository {
 
     func save(_ project: CanvasProject, expectedRevision: Int64) async throws {
         let url = try WorkspaceCanvasRegistry.projectURL(canvasID: project.id, createDirectory: false)
-        try CanvasProjectFileWriter.shared.compareAndSwap(
-            project,
-            at: url,
-            expectedRevision: expectedRevision
-        )
+        try CanvasFrameworkWriteAuthority.commit(project, at: url, expectedRevision: expectedRevision)
     }
 }
 
@@ -453,7 +478,7 @@ actor CanvasToolCoordinator {
             throw FloeError.validationFailed("Asset does not exist")
         }
         let targetDocumentID = documentID ?? project.selectedDocumentID
-        let kind: CanvasNodeKind = switch asset.kind {
+        let kind: FloeCore.CanvasNodeKind = switch asset.kind {
         case .image: .image
         case .video: .video
         case .audio: .audio
@@ -977,7 +1002,7 @@ private enum CanvasToolOutput {
 
 struct CanvasInspectionPage: Encodable {
     struct Node: Encodable {
-        var id: UUID; var kind: CanvasNodeKind; var text: String
+        var id: UUID; var kind: FloeCore.CanvasNodeKind; var text: String
         var position: CanvasPoint; var size: CanvasSize
         var groupID: UUID?; var isLocked: Bool; var assetID: UUID?
         /// `legacyUnchanged` | `migrated` | `conflict` for legacy scenes.
@@ -989,7 +1014,7 @@ struct CanvasInspectionPage: Encodable {
     struct Connection: Encodable {
         var id: UUID; var sourceNodeID: UUID; var destinationNodeID: UUID
         var kind: CanvasConnectionKind
-        var sourcePort: CanvasConnectionPort?; var destinationPort: CanvasConnectionPort?
+        var sourcePort: FloeCore.CanvasConnectionPort?; var destinationPort: FloeCore.CanvasConnectionPort?
         var label: String?
     }
     var canvasID: UUID; var documentID: UUID; var revision: Int64

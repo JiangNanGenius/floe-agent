@@ -19,6 +19,167 @@ private actor CanvasReferenceProbe: CanvasEditorGateway, CanvasSourceOpening {
 }
 
 @MainActor final class CanvasFrameworkClosureAppTests: XCTestCase {
+    func testLegacyMetadataAndGroupRoundTripPreservesConnectionsAndUndo() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("canvas-fields-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let first = FloeCore.CanvasNode(kind: .shape, text: "First", position: .init(x: 0, y: 0), size: .init(width: 200, height: 100), shape: .rectangle)
+        let second = FloeCore.CanvasNode(kind: .text, text: "Second", position: .init(x: 300, y: 0), size: .init(width: 200, height: 100))
+        let connection = FloeCore.CanvasConnection(sourceNodeID: first.id, destinationNodeID: second.id)
+        let page = FloeCore.CanvasDocument(name: "Page", nodes: [first, second], connections: [connection])
+        let original = FloeCore.CanvasProject(id: UUID(), name: "Canvas", documents: [page], selectedDocumentID: page.id)
+        let url = root.appendingPathComponent("Canvas.json")
+        _ = try CanvasProjectFileWriter.shared.compareAndSwap(original, at: url, expectedRevision: 0,
+            requireRevisionAdvance: false, allowCreateIfMissing: true)
+        let groupID = UUID(), runID = UUID(), jobID = UUID()
+        var changed = original
+        changed.revision = original.revision + 1
+        changed.documents[0].nodes[0].groupID = groupID
+        changed.documents[0].nodes[0].createdByRunID = runID
+        changed.documents[0].nodes[0].generationJobID = jobID
+        changed.documents[0].nodes[0].sourceURLs = [URL(string: "https://example.org/source")!]
+        changed.documents[0].nodes[0].shape = .ellipse
+        _ = try CanvasFrameworkWriteAuthority.commit(changed, at: url, expectedRevision: 0)
+        let record = PersonalContentRecord(id: original.id, kind: .canvas, title: original.name,
+            createdAt: original.createdAt, modifiedAt: original.updatedAt, folders: [], relativePath: "Canvas.floeproject")
+        let reopened = CanvasFrameworkLegacyRepository(record: record, originalURL: url, root: root)
+        let snapshot = try reopened.loadSynchronously(canvasID: original.id)
+        let projected = try CanvasFrameworkProjection.project(snapshot, record: record)
+        XCTAssertEqual(projected.documents[0].nodes.first(where: { $0.id == first.id }), changed.documents[0].nodes[0])
+        XCTAssertEqual(projected.documents[0].connections, [connection])
+        XCTAssertEqual(snapshot.pages[0].groups.first(where: { $0.id == groupID })?.memberNodeIDs, [first.id])
+        _ = try reopened.undoSynchronously(canvasID: original.id, expectedRevision: 1, requestID: UUID())
+        let undone = try CanvasFrameworkProjection.project(reopened.loadSynchronously(canvasID: original.id), record: record)
+        XCTAssertEqual(Set(undone.documents[0].nodes), Set(original.documents[0].nodes))
+        XCTAssertEqual(undone.documents[0].connections, [connection])
+    }
+
+    func testNativeShapeAndMetadataEditsKeepContentAndRelationships() throws {
+        let node = CanvasNodeSnapshot(content: .shape(kind: .rectangle, text: "Before"),
+            frame: .init(center: .zero, size: .init(width: 200, height: 100)))
+        let other = CanvasNodeSnapshot(content: .text("Other"),
+            frame: .init(center: .init(x: 300, y: 0), size: .init(width: 200, height: 100)))
+        let link = CanvasConnectionSnapshot(sourceNodeID: node.id, destinationNodeID: other.id)
+        let page = CanvasPageSnapshot(nodes: [node, other], connections: [link])
+        let snapshot = CanvasSnapshot(name: "Native", pages: [page])
+        let record = PersonalContentRecord(id: snapshot.id, kind: .canvas, title: snapshot.name,
+            createdAt: snapshot.createdAt, modifiedAt: snapshot.updatedAt, folders: [], relativePath: "Native.floeproject")
+        var candidate = try CanvasFrameworkProjection.project(snapshot, record: record)
+        candidate.documents[0].nodes[0].shape = .ellipse
+        candidate.documents[0].nodes[0].text = "After"
+        candidate.documents[0].nodes[0].generationJobID = UUID()
+        candidate.documents[0].nodes[0].sourceURLs = [URL(string: "https://example.org")!]
+        let batch = try CanvasFrameworkProjection.batch(project: candidate, original: snapshot, record: record)
+        let result = try CanvasDocumentEditEngine.apply(batch, to: snapshot).snapshot
+        let savedNode = try XCTUnwrap(result.pages[0].nodes.first(where: { $0.id == node.id }))
+        guard case .shape(let kind, let text) = savedNode.content else { return XCTFail("Native shape was flattened") }
+        XCTAssertEqual(kind, .ellipse)
+        XCTAssertEqual(text, "After")
+        XCTAssertEqual(result.pages[0].connections, [link])
+        let projected = try CanvasFrameworkProjection.project(result, record: record)
+        XCTAssertEqual(projected.documents[0].nodes.first(where: { $0.id == node.id }), candidate.documents[0].nodes[0])
+    }
+
+    func testBackingReturnsAtomicCommitUndoRedoAndFailedPreparationDoesNotWrite() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("canvas-atomic-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let node = CanvasNodeSnapshot(content: .text("Before"),
+            frame: .init(center: .zero, size: .init(width: 200, height: 100)))
+        let page = CanvasPageSnapshot(nodes: [node])
+        let snapshot = CanvasSnapshot(name: "Atomic", pages: [page])
+        let record = PersonalContentRecord(id: snapshot.id, kind: .canvas, title: snapshot.name,
+            createdAt: snapshot.createdAt, modifiedAt: snapshot.updatedAt, folders: [], relativePath: "Atomic.floeproject")
+        let repo = try FileCanvasRepository(root: root)
+        try await repo.create(canvasID: snapshot.id, snapshot: snapshot, requestID: UUID())
+        let batch = CanvasDocumentBatch(operations: [.editPage(.init(pageID: page.id, operations: [.updateContent(nodeID: node.id, content: .text("Rejected"))]))])
+        XCTAssertThrowsError(try repo.commitDocumentAndReturnSnapshotSynchronously(batch, canvasID: snapshot.id,
+            expectedRevision: 0, requestID: UUID(), prepare: { _ in throw PersonalContentError.invalidProject }))
+        XCTAssertEqual(try repo.loadSynchronously(canvasID: snapshot.id).revision, 0)
+        let backing = try CanvasFrameworkBacking(record: record, directory: root, repository: repo)
+        var project = try backing.load()
+        project.documents[0].nodes[0].text = "After"
+        let committed = try backing.commit(project, expectedRevision: 0)
+        XCTAssertEqual(committed.revision, 1)
+        XCTAssertEqual(committed.documents[0].nodes[0].text, "After")
+        XCTAssertEqual(backing.snapshot.revision, 1)
+        let undone = try backing.undo(expectedRevision: 1)
+        XCTAssertEqual(undone.revision, 2)
+        XCTAssertEqual(undone.documents[0].nodes[0].text, "Before")
+        let redone = try backing.redo(expectedRevision: 2)
+        XCTAssertEqual(redone.revision, 3)
+        XCTAssertEqual(redone.documents[0].nodes[0].text, "After")
+    }
+
+    func testOldRequestReplayNeverPairsReceiptWithNewerSnapshot() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("canvas-replay-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let node = CanvasNodeSnapshot(content: .text("Before"),
+            frame: .init(center: .zero, size: .init(width: 200, height: 100)))
+        let page = CanvasPageSnapshot(nodes: [node])
+        let snapshot = CanvasSnapshot(name: "Replay", pages: [page])
+        let repo = try FileCanvasRepository(root: root)
+        try await repo.create(canvasID: snapshot.id, snapshot: snapshot, requestID: UUID())
+        let first = CanvasDocumentBatch(operations: [.editPage(.init(pageID: page.id, operations: [.updateContent(nodeID: node.id, content: .text("First"))]))])
+        let second = CanvasDocumentBatch(operations: [.editPage(.init(pageID: page.id, operations: [.updateContent(nodeID: node.id, content: .text("Second"))]))])
+        let requestID = UUID()
+        let (receipt, _, _) = try repo.commitDocumentAndReturnSnapshotSynchronously(first, canvasID: snapshot.id, expectedRevision: 0, requestID: requestID)
+        _ = try repo.commitDocumentSynchronously(second, canvasID: snapshot.id, expectedRevision: 1, requestID: UUID())
+        XCTAssertThrowsError(try repo.commitDocumentAndReturnSnapshotSynchronously(first, canvasID: snapshot.id, expectedRevision: 0, requestID: requestID))
+        XCTAssertEqual(try repo.commitDocumentSynchronously(first, canvasID: snapshot.id, expectedRevision: 0, requestID: requestID), receipt)
+        let current = try repo.loadSynchronously(canvasID: snapshot.id)
+        XCTAssertEqual(current.revision, 2)
+        XCTAssertEqual(current.pages[0].nodes[0].content, .text("Second"))
+
+        let record = PersonalContentRecord(id: snapshot.id, kind: .canvas, title: snapshot.name,
+            createdAt: snapshot.createdAt, modifiedAt: snapshot.updatedAt, folders: [], relativePath: "Legacy.floeproject")
+        let legacyURL = root.appendingPathComponent("Legacy.json")
+        let project = try CanvasFrameworkProjection.project(snapshot, record: record)
+        _ = try CanvasProjectFileWriter.shared.compareAndSwap(project, at: legacyURL, expectedRevision: 0,
+            requireRevisionAdvance: false, allowCreateIfMissing: true)
+        let legacy = CanvasFrameworkLegacyRepository(record: record, originalURL: legacyURL, root: root)
+        let legacyRequestID = UUID()
+        let (legacyReceipt, _, _, _) = try legacy.commitDocumentAndReturnSnapshotSynchronously(first, canvasID: snapshot.id, expectedRevision: 0, requestID: legacyRequestID)
+        _ = try legacy.commitDocumentSynchronously(second, canvasID: snapshot.id, expectedRevision: 1, requestID: UUID())
+        XCTAssertThrowsError(try legacy.commitDocumentAndReturnSnapshotSynchronously(first, canvasID: snapshot.id, expectedRevision: 0, requestID: legacyRequestID))
+        XCTAssertEqual(try legacy.commitDocumentSynchronously(first, canvasID: snapshot.id, expectedRevision: 0, requestID: legacyRequestID), legacyReceipt)
+        let legacyCurrent = try legacy.loadSynchronously(canvasID: snapshot.id)
+        XCTAssertEqual(legacyCurrent.revision, 2)
+        XCTAssertEqual(try CanvasFrameworkProjection.project(legacyCurrent, record: record).documents[0].nodes[0].text, "Second")
+    }
+
+    func testLegacyShapedWriteUsesNativeRepositoryHistoryAndRejectsStaleRevision() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("canvas-native-write-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let node = FloeCore.CanvasNode(kind: .stickyNote, text: "Before", position: .init(x: 0, y: 0), size: .init(width: 300, height: 200))
+        let page = FloeCore.CanvasDocument(name: "Page", nodes: [node])
+        let original = FloeCore.CanvasProject(id: UUID(), name: "Canvas", documents: [page], selectedDocumentID: page.id)
+        let url = root.appendingPathComponent("Canvas.json")
+        _ = try CanvasProjectFileWriter.shared.compareAndSwap(original, at: url, expectedRevision: 0,
+            requireRevisionAdvance: false, allowCreateIfMissing: true)
+
+        var candidate = original
+        candidate.documents[0].nodes[0].text = "After"
+        candidate.revision = original.revision + 1
+        try CanvasFrameworkWriteAuthority.commit(candidate, at: url, expectedRevision: original.revision)
+        let committed = try CanvasProjectFileWriter.shared.project(canvasID: original.id, at: url)
+        XCTAssertEqual(committed.documents[0].nodes[0].text, "After")
+        XCTAssertEqual(committed.revision, 1)
+        XCTAssertNotNil(committed.canvasKitState)
+
+        XCTAssertThrowsError(try CanvasFrameworkWriteAuthority.commit(candidate, at: url, expectedRevision: original.revision)) {
+            XCTAssertTrue(CanvasProjectFileWriter.isRevisionConflict($0))
+        }
+        let record = PersonalContentRecord(id: original.id, kind: .canvas, title: original.name,
+            createdAt: original.createdAt, modifiedAt: original.updatedAt, folders: [], relativePath: "Canvas.floeproject")
+        let repo = CanvasFrameworkLegacyRepository(record: record, originalURL: url, root: root)
+        XCTAssertEqual(try repo.historyAvailabilitySynchronously(canvasID: original.id).undoCount, 1)
+        _ = try repo.undoSynchronously(canvasID: original.id, expectedRevision: 1, requestID: UUID())
+        let undone = try CanvasProjectFileWriter.shared.project(canvasID: original.id, at: url)
+        XCTAssertEqual(undone.documents[0].nodes[0].text, "Before")
+        XCTAssertEqual(undone.revision, 2)
+    }
+
     func testPrimaryReferenceActionsOpenExactServicesAndPersistChildReturnWithLockFence() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("canvas-reference-actions-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

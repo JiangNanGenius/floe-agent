@@ -213,9 +213,13 @@ struct MediaV2CaptionInspector: View {
             Button(WorkbenchText.t("应用时间偏移", "Apply time shift")) { do { try session.shiftCaptions(by: shift) } catch { session.diagnostic = error.localizedDescription } }.frame(minHeight: 44)
             Button(WorkbenchText.t("导入纯文本 SRT/VTT", "Import plain-text SRT/VTT"), action: onImport).frame(minHeight: 44)
             HStack {
-                Button(WorkbenchText.t("导出 SRT", "Export SRT")) { export(.srt) }
-                Spacer(); Button(WorkbenchText.t("导出 VTT", "Export VTT")) { export(.vtt) }
+                Button(WorkbenchText.t("导出 SRT", "Export SRT")) { export(.srt) }.disabled(session.store.hasWritePermitProvider)
+                Spacer(); Button(WorkbenchText.t("导出 VTT", "Export VTT")) { export(.vtt) }.disabled(session.store.hasWritePermitProvider)
             }.frame(minHeight: 44)
+            if session.store.hasWritePermitProvider {
+                Text(WorkbenchText.t("此工程暂不支持单独导出字幕，请先在个人作品中处理。", "Separate caption export is unavailable here. Use a personal project instead."))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             if let exported { ShareLink(item: exported) { Label(WorkbenchText.t("分享字幕文件", "Share captions"), systemImage: "square.and.arrow.up").frame(minHeight: 44) } }
         }.disabled(session.saving)
             .onAppear { sync() }

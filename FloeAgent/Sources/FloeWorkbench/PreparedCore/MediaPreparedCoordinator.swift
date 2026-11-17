@@ -270,8 +270,12 @@ public actor MediaPreparedCoordinator {
     /// untouched.
     @discardableResult
     public func apply(_ operations: [MediaPreparedOperation],
-                      instruction: MediaPreparedInstruction) async throws -> MediaPreparedCommit {
-        if let scope=compoundScope { return try await applyCompound(scope:scope,operations:operations,instruction:instruction) }
+                      instruction: MediaPreparedInstruction,
+                      expectedRevision: Int64? = nil) async throws -> MediaPreparedCommit {
+        if let scope=compoundScope {
+            guard expectedRevision == nil else { throw MediaPreparedCoreError.invalidOperation("expected revision is unavailable for compound edits") }
+            return try await applyCompound(scope:scope,operations:operations,instruction:instruction)
+        }
         await acquireDocument(instruction.documentID)
         defer { releaseDocument(instruction.documentID) }
         try Task.checkCancellation()
@@ -298,6 +302,7 @@ public actor MediaPreparedCoordinator {
         }
 
         let project = try await envelope(for: run.handle.documentID)
+        if let expectedRevision, project.revision != expectedRevision { throw MediaPreparedCoreError.documentChanged }
         guard var prepared = project.prepared else {
             throw MediaPreparedCoreError.notPrepared(run.handle.documentID)
         }
@@ -445,15 +450,19 @@ public actor MediaPreparedCoordinator {
     public func applyUserOperations(_ operations: [MediaPreparedOperation],
                                     to documentID: UUID,
                                     groupID: UUID = UUID(),
-                                    actor: MediaPreparedActorKind = .user) async throws -> MediaPreparedCommit {
-        if let scope=compoundScope { return try await userCompound(scope:scope,operations:operations,documentID:documentID,groupID:groupID,actor:actor) }
+                                    actor: MediaPreparedActorKind = .user,
+                                    expectedRevision: Int64? = nil) async throws -> MediaPreparedCommit {
+        if let scope=compoundScope {
+            guard expectedRevision == nil else { throw MediaPreparedCoreError.invalidOperation("expected revision is unavailable for compound edits") }
+            return try await userCompound(scope:scope,operations:operations,documentID:documentID,groupID:groupID,actor:actor)
+        }
         let targets = try await targets(of: operations, in: documentID)
         let instruction = try await beginInstruction(documentID: documentID,
                                                      targets: targets,
                                                      actor: actor,
                                                      groupID: groupID)
         do {
-            let commit = try await apply(operations, instruction: instruction)
+            let commit = try await apply(operations, instruction: instruction, expectedRevision: expectedRevision)
             try await stop(instruction)
             return commit
         } catch {

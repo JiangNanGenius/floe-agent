@@ -137,7 +137,11 @@ extension MediaV2Session {
     /// Every advertised local route below either edits the canonical document
     /// or explicitly reports a selection-only editor operation.
     func performTool(_ id: String, input: MediaV2ToolInput, actor: MediaPreparedActorKind = .user,
-                     providerAuthority: MediaV2ProviderAuthority? = nil) async throws -> MediaV2ToolReceipt {
+                     providerAuthority: MediaV2ProviderAuthority? = nil,
+                     validateOwner: (@MainActor @Sendable () async throws -> Void)? = nil) async throws -> MediaV2ToolReceipt {
+        let operationPermit = try await store.beginOperationPermit(projectID: self.id)
+        defer { operationPermit?.release() }
+        try operationPermit?.validate()
         if input.compoundID != nil { return try await performScopedCompoundTool(id,input:input,actor:actor,authority:providerAuthority) }
         guard input.clipIDs == nil || id == "video.nest" else { throw MediaV2CommandError.invalidInput }
         if id == "video.voice-separate",
@@ -175,7 +179,7 @@ extension MediaV2Session {
             guard id.hasPrefix(document.kind.rawValue + "."), let assetID = input.objectID,
                   input.objectIDs == nil, !processingTool, imageWarpDraft == nil else { throw MediaV2CommandError.invalidInput }
             let operation = try MediaPreparedAssets.removal(assetID: assetID, in: document)
-            let commit = try await apply([operation], expectedRevision: input.expectedRevision ?? document.revision, actor: actor)
+            let commit = try await apply([operation], expectedRevision: input.expectedRevision ?? document.revision, actor: actor, validateOwner: validateOwner)
             return .init(documentID: document.id, revision: document.revision, toolID: id, groupID: commit.groupID, selectionOnly: false)
         }
         let explicitLayer = input.objectID.flatMap { document.layer($0) }
@@ -463,11 +467,11 @@ extension MediaV2Session {
             case "video.trim", "video.ripple":
                 let start = input.start ?? clip.sourceRange.startSeconds, length = input.duration ?? clip.sourceRange.durationSeconds
                 actions.append(contentsOf: try trimActions(track: selected.track, clip: clip, sourceStart: start, sourceDuration: length, ripple: id == "video.ripple"))
-                let commit = try await apply(actions.map { .init(action: $0) }, expectedRevision: input.expectedRevision, actor: actor)
+                let commit = try await apply(actions.map { .init(action: $0) }, expectedRevision: input.expectedRevision, actor: actor, validateOwner: validateOwner)
                 return .init(documentID: document.id, revision: document.revision, toolID: id, groupID: commit.groupID, selectionOnly: false)
             case "video.roll":
                 actions.append(contentsOf: try rollActions(track: selected.track, right: clip, boundary: input.start ?? clip.timelineRange.startSeconds + (input.number ?? 0)))
-                let commit = try await apply(actions.map { .init(action: $0) }, expectedRevision: input.expectedRevision, actor: actor)
+                let commit = try await apply(actions.map { .init(action: $0) }, expectedRevision: input.expectedRevision, actor: actor, validateOwner: validateOwner)
                 return .init(documentID: document.id, revision: document.revision, toolID: id, groupID: commit.groupID, selectionOnly: false)
             case "video.slip":
                 let nextStart = max(0, clip.sourceRange.startSeconds + (input.number ?? 0))
@@ -609,7 +613,7 @@ extension MediaV2Session {
             }
             try replace(clip)
         }
-        let commit = actions.isEmpty ? nil : try await apply(actions.map { .init(action: $0) }, expectedRevision: input.expectedRevision, actor: actor)
+        let commit = actions.isEmpty ? nil : try await apply(actions.map { .init(action: $0) }, expectedRevision: input.expectedRevision, actor: actor, validateOwner: validateOwner)
         return .init(documentID: document.id, revision: document.revision, toolID: id, groupID: commit?.groupID, selectionOnly: selectionOnly)
     }
 }

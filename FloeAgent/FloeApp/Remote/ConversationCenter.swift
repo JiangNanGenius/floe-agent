@@ -4769,6 +4769,14 @@ final class ConversationCenter: ObservableObject {
             let studioStores = await library.typedServiceStorePaths()
             serviceStorePaths.merge(studioStores) { _, actual in actual }
         }
+        if !isTemporary, runSurface == .ordinary, let workspaceID = canonicalWorkspaceID,
+           let root = runWorkspaceRoot {
+            // A stable host-derived target is frozen before any model call.
+            // Creating or opening a project still requires the native binding
+            // and filesystem identity checks in the workspace-video service.
+            let name = "Floe Studio " + String(workspaceID.uuidString.prefix(8))
+            serviceStorePaths[TypedMutationContract.workspaceStudioStoreKey] = root.appendingPathComponent(name, isDirectory: true).path
+        }
         for (key, path) in CadDocumentCenter.trustedNativeCanvasDocumentPaths(conversationID: conversationID) {
             serviceStorePaths[TypedMutationContract.cadCanvasBindingPrefix + key] = path
         }

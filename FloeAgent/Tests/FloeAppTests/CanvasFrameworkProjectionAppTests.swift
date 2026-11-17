@@ -7,6 +7,64 @@ import FloeCanvasIntegration
 @testable import FloeApp
 
 @MainActor final class CanvasFrameworkProjectionAppTests: XCTestCase {
+    func testRepeatedRestoreAndCopyKeepOnlyOnePriorState() throws {
+        let node = FloeCore.CanvasNode(kind: .stickyNote, text: "Keep this", position: .init(x: 2, y: 3),
+            size: .init(width: 300, height: 200))
+        let page = FloeCore.CanvasDocument(name: "Page", nodes: [node])
+        var project = try CanvasFrameworkLegacyRepository.seedFrameworkState(
+            FloeCore.CanvasProject(id: UUID(), name: "Canvas", documents: [page], selectedDocumentID: page.id))
+        var restoreSizes: [Int] = []
+        var copySizes: [Int] = []
+        func verifyEvidence(_ project: FloeCore.CanvasProject) throws -> Int {
+            let bytes = try XCTUnwrap(project.canvasKitState)
+            let state = try XCTUnwrap(JSONSerialization.jsonObject(with: bytes) as? [String: Any])
+            let prior = try XCTUnwrap(state["priorIdentityState"] as? String)
+            let priorBytes = try XCTUnwrap(Data(base64Encoded: prior))
+            let evidence = try XCTUnwrap(JSONSerialization.jsonObject(with: priorBytes) as? [String: Any])
+            XCTAssertNil(evidence["priorIdentityState"], "pre-copy evidence must not contain another chain")
+            XCTAssertEqual(project.documents.first?.nodes.first?.text, "Keep this")
+            return bytes.count
+        }
+        for _ in 0..<12 {
+            var restored = project
+            restored.id = UUID()
+            project = try CanvasFrameworkLegacyRepository.reconcileRestoredProject(restored)
+            XCTAssertEqual(project.documents.first?.nodes.first?.id, node.id)
+            restoreSizes.append(try verifyEvidence(project))
+        }
+        for _ in 0..<12 {
+            project = try CanvasFrameworkLegacyRepository.forkProject(project, newID: UUID(), workspaceID: nil, name: "Canvas")
+            copySizes.append(try verifyEvidence(project))
+        }
+        XCTAssertLessThanOrEqual(try XCTUnwrap(restoreSizes.max()), restoreSizes[1] + 1024)
+        XCTAssertLessThanOrEqual(try XCTUnwrap(copySizes.max()), copySizes[1] + 1024)
+    }
+
+    func testOpeningUnreadableLegacyCanvasDoesNotReplaceOriginal() throws {
+        let id = UUID()
+        let url = try WorkspaceCanvasRegistry.projectURL(canvasID: id, createDirectory: true)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let original = Data("{not a valid canvas".utf8)
+        try original.write(to: url, options: .atomic)
+        let store = WorkspaceCanvasStoreQualification(canvasID: id, workspaceID: nil, name: "Test")
+        XCTAssertNotNil(store.saveError)
+        XCTAssertEqual(try Data(contentsOf: url), original)
+    }
+
+    func testOpeningLegacyCanvasWithDifferentWorkspaceDoesNotReplaceOriginal() throws {
+        let id = UUID()
+        let url = try WorkspaceCanvasRegistry.projectURL(canvasID: id, createDirectory: true)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let document = FloeCore.CanvasDocument(name: "Retained")
+        let project = FloeCore.CanvasProject(id: id, workspaceID: UUID(), name: "Original",
+            documents: [document], selectedDocumentID: document.id)
+        let original = try JSONEncoder().encode(project)
+        try original.write(to: url, options: .atomic)
+        let store = WorkspaceCanvasStoreQualification(canvasID: id, workspaceID: nil, name: "Test")
+        XCTAssertNotNil(store.saveError)
+        XCTAssertEqual(try Data(contentsOf: url), original)
+    }
+
     func testOriginalFrameworkEditsPreserveRichTextFlowAndSourceAcrossUndoAndReopen() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("canvas-framework-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

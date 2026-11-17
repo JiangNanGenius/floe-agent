@@ -24,6 +24,7 @@ struct CanvasExternalImportTests {
         let first = try CanvasExternalImportPublication.publish(
             operationID: operation, canvasID: canvas, creating: true,
             items: items, syncEnabled: true, at: url)
+        #expect(first.canvasKitState != nil)
         let bytes = try Data(contentsOf: url)
         let retry = try CanvasExternalImportPublication.publish(
             operationID: operation, canvasID: canvas, creating: true,
@@ -60,6 +61,7 @@ struct CanvasExternalImportTests {
         #expect(final.selectedDocumentID == document.id)
         #expect(final.workspaceID == original.workspaceID)
         #expect(final.revision == 2)
+        #expect(final.canvasKitState != nil)
         #expect(final.sync.revision == 0)
     }
 

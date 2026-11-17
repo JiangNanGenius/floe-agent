@@ -6,6 +6,38 @@ import XCTest
 /// Real small image files/manifests and the production origin Codable model.
 /// The lookup verifies source bytes instead of returning a canned if/else.
 final class LinuxResidentImageResolverTests: XCTestCase, @unchecked Sendable {
+    func testVideoCatalogKeepsV8AndPinsPublishedArchive() throws {
+        let newID = "floe-debian13-arm64-video-resident-20261117-v1"
+        let oldID = "floe-debian13-arm64-gpu-resident-20261111-v8"
+        XCTAssertEqual(LinuxGuestImageDistributionCatalog.defaultImageID, newID)
+        let current = try XCTUnwrap(LinuxGuestImageDistributionCatalog.entry(id: newID))
+        XCTAssertEqual(current.assetPin?.githubAssetID, 756969199)
+        XCTAssertEqual(current.assetPin?.bytes, 392998346)
+        XCTAssertEqual(current.assetPin?.sha256, "ea97121aedd8e3a3946f341d384879b9c13fd8ebd85a75a9e6e4ec455e9a7242")
+        XCTAssertEqual(current.archiveSHA512, "e4985b602547c56bf97e9ceddf075d341298f28564b57cb1741ed5fbb4fab8ffa9205a4a7c071687abfd3b78e513b391f0a76dff36e340783c6b6f794b32f581")
+        XCTAssertNotNil(LinuxGuestImageDistributionCatalog.entry(id: oldID))
+    }
+
+    func testNewDefaultDoesNotReplaceExistingV8Disk() async throws {
+        let fixture = try Fixture(); defer { fixture.remove() }
+        let oldID = "floe-debian13-arm64-gpu-resident-20261111-v8"
+        let newID = LinuxGuestImageDistributionCatalog.defaultImageID
+        let old = LinuxResidentImageCandidate(imageID: oldID, diskSHA512: fixture.old.diskSHA512,
+                                               diskBytes: fixture.old.diskBytes)
+        let new = LinuxResidentImageCandidate(imageID: newID, diskSHA512: fixture.new.diskSHA512,
+                                               diskBytes: fixture.new.diskBytes)
+        try fixture.writeImage(old, bytes: Data("old-qualified-base".utf8))
+        try fixture.writeImage(new, bytes: Data("new-qualified-base".utf8))
+        let resolver = LinuxResidentImageResolver(residentRoot: fixture.resident, defaultImageID: newID,
+            trustedImageIDs: [oldID, newID], lookup: { await fixture.lookup($0) })
+        let newSelection = try await resolver.resolve()
+        XCTAssertEqual(newSelection, newID)
+        try fixture.writeResident(old)
+        let before = try fixture.snapshot()
+        let existingSelection = try await resolver.resolve(requireExistingDisk: true)
+        XCTAssertEqual(existingSelection, oldID)
+        XCTAssertEqual(try fixture.snapshot(), before)
+    }
     private struct Fixture: Sendable {
         let root: URL
         let images: URL

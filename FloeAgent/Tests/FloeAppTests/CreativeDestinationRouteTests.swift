@@ -546,9 +546,10 @@ struct CreativeDestinationRouteTests {
     func canvasDestinationIsRealAndIdempotent() async throws {
         let world = try await makeWorld()
         let tool = CreativeChooseDestinationTool(environment: world.environment)
+        let operationID = "canvas-\(UUID().uuidString)"
         let args = CreativeChooseDestinationTool.Arguments(
             goal: "做视觉海报", family: "image", needsLinux: false,
-            hint: nil, operationID: "canvas-\(UUID().uuidString)")
+            hint: nil, operationID: operationID)
         let first = try await tool.execute(args, context: context(world))
         #expect(first.summary.contains("destination=canvas"))
         guard let range = first.summary.range(of: "canvasID=") else {
@@ -560,11 +561,61 @@ struct CreativeDestinationRouteTests {
         #expect(WorkspaceCanvasRegistry.exists(canvasID: canvasID))
         #expect(try await SQLiteWorkspaceStore(
             database: world.environment.database).workspace(id: canvasID) != nil)
+        let url = try WorkspaceCanvasRegistry.projectURL(canvasID: canvasID, createDirectory: false)
+        // This test owns only the randomly allocated destination and its
+        // workspace directory; leave every other simulator project intact.
+        let workspaceDirectory = url.deletingLastPathComponent().appendingPathComponent(canvasID.uuidString, isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: url)
+            try? FileManager.default.removeItem(at: workspaceDirectory)
+        }
+        let initial = try CanvasProjectFileWriter.shared.project(canvasID: canvasID, at: url)
+        #expect(initial.canvasKitState != nil, "the initial publication carries native engine state")
         // Replay returns the SAME canvas without recreating.
         let replay = try await tool.execute(args, context: context(world))
         #expect(replay.summary.contains("canvasID=\(canvasID.uuidString)"))
         #expect(replay.summary.contains("navigated=false"))
         #expect(try CreativeRouteStore.load().count == 1)
+
+        // Simulate a crash after the canvas was published but before the
+        // reservation was marked started. Existing user edits must survive.
+        var edited = initial
+        edited.name = "Edited after creation"
+        edited.revision += 1
+        _ = try CanvasFrameworkWriteAuthority.commit(edited, at: url, expectedRevision: initial.revision)
+        var prepared = try #require(try CreativeRouteStore.existing(operationID: operationID, sourceRunID: world.runID))
+        prepared.status = .prepared
+        try CreativeRouteStore.upsert(prepared)
+        let originalBytes = try Data(contentsOf: url)
+        let recovered = try await tool.execute(args, context: context(world))
+        #expect(recovered.summary.contains("canvasID=\(canvasID.uuidString)"))
+        #expect(recovered.summary.contains("navigated=false"))
+        #expect(try Data(contentsOf: url) == originalBytes)
+        #expect(try CreativeRouteStore.existing(operationID: operationID, sourceRunID: world.runID)?.status == .started)
+
+        // A crash before first publication resumes with the same identity.
+        prepared.status = .prepared
+        try CreativeRouteStore.upsert(prepared)
+        try FileManager.default.removeItem(at: url)
+        let recreated = try await tool.execute(args, context: context(world))
+        #expect(recreated.summary.contains("canvasID=\(canvasID.uuidString)"))
+        let restored = try CanvasProjectFileWriter.shared.project(canvasID: canvasID, at: url)
+        #expect(restored.canvasKitState != nil)
+        #expect(restored.selectedDocumentID == initial.selectedDocumentID)
+
+        // A different file at the reserved identity is never overwritten.
+        prepared.status = .prepared
+        try CreativeRouteStore.upsert(prepared)
+        let foreignPage = CanvasDocument(name: "Existing unrelated content")
+        let foreign = CanvasProject(id: canvasID, name: "Do not overwrite",
+                                    documents: [foreignPage], selectedDocumentID: foreignPage.id)
+        let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+        let foreignBytes = try CanvasProjectCodec.encode(foreign, encoder: encoder)
+        try foreignBytes.write(to: url, options: .atomic)
+        await #expect(throws: (any Error).self) {
+            _ = try await tool.execute(args, context: context(world))
+        }
+        #expect(try Data(contentsOf: url) == foreignBytes)
     }
 
     @Test("tools are discoverable in the shared catalog/registry AND inside the real canvas ceiling")

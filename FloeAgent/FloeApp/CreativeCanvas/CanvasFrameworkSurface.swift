@@ -8,6 +8,7 @@ import FloeCanvasUI
 struct CreativeCanvasSurface: View {
     let record: PersonalContentRecord
     @ObservedObject var store: CanvasEditorStore
+    var onClose: (() -> Void)? = nil
     @State private var backing: CanvasFrameworkBacking?
     @State private var project: FloeCore.CanvasProject?
     @State private var error: String?
@@ -15,7 +16,7 @@ struct CreativeCanvasSurface: View {
     var body: some View {
         Group {
             if let backing, let project {
-                WorkspaceCanvasView(backing: backing, project: project, kitStore: store)
+                WorkspaceCanvasView(backing: backing, project: project, kitStore: store, onClose: onClose)
             } else if let error {
                 ContentUnavailableView(IDELanguageRunText.t("无法打开画布", "Unable to open canvas"),
                     systemImage: "exclamationmark.triangle", description: Text(error))

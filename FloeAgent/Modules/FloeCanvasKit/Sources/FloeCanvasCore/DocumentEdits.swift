@@ -75,6 +75,9 @@ public enum CanvasDocumentOperation: Codable, Hashable, Sendable {
     // MARK: Node attribute edits (beyond CanvasEditOperation)
     /// Replaces or detaches (nil) the node's source reference.
     case updateNodeSource(nodeID: UUID, source: CanvasSourceReference?)
+    /// Update the node's group and creator without replacing its content,
+    /// connections, child references, or other native state.
+    case updateNodeOwnership(nodeID: UUID, groupID: UUID?, createdByRunID: UUID?)
     case updateNodeRotation(nodeID: UUID, rotationDegrees: Double)
     /// Updates presentation style (zIndex). Visual styling metadata is
     /// validated against `CanvasVisualStyle` canonical spellings.
@@ -577,6 +580,30 @@ public enum CanvasDocumentEditEngine {
                     nodeID, in: next, operationIndex: index,
                     violations: &violations) else { continue }
                 next.pages[pageIndex].nodes[nodeIndex].source = source
+                changedNodes.insert(nodeID)
+                changedPages.insert(next.pages[pageIndex].id)
+
+            case .updateNodeOwnership(let nodeID, let groupID, let createdByRunID):
+                guard let (pageIndex, nodeIndex) = editableNode(
+                    nodeID, in: next, operationIndex: index,
+                    violations: &violations) else { continue }
+                if let groupID, !next.pages[pageIndex].groups.contains(where: { $0.id == groupID }) {
+                    violations.append(.init(operationIndex: index, reason: .invalidReference,
+                                            nodeID: nodeID, detail: "group is not on the node's page"))
+                    continue
+                }
+                let previousGroupID = next.pages[pageIndex].nodes[nodeIndex].groupID
+                for index in next.pages[pageIndex].groups.indices {
+                    if next.pages[pageIndex].groups[index].id == groupID {
+                        if !next.pages[pageIndex].groups[index].memberNodeIDs.contains(nodeID) {
+                            next.pages[pageIndex].groups[index].memberNodeIDs.append(nodeID)
+                        }
+                    } else if next.pages[pageIndex].groups[index].id == previousGroupID {
+                        next.pages[pageIndex].groups[index].memberNodeIDs.removeAll { $0 == nodeID }
+                    }
+                }
+                next.pages[pageIndex].nodes[nodeIndex].groupID = groupID
+                next.pages[pageIndex].nodes[nodeIndex].createdByRunID = createdByRunID
                 changedNodes.insert(nodeID)
                 changedPages.insert(next.pages[pageIndex].id)
 

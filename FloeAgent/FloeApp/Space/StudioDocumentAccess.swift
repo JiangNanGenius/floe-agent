@@ -13,6 +13,43 @@ struct StudioAssistantBinding: Codable, Sendable, Hashable {
     var conversationID: UUID
 }
 
+/// Native-owned locator for a workspace video project. Its metadata is not a
+/// grant by itself: every operation must also check document_access and the
+/// current task's workspace lease and revalidate both filesystem identities.
+struct StudioWorkspaceVideoBinding: Sendable, Hashable {
+    let projectID: UUID
+    let conversationID: UUID
+    let workspaceID: UUID
+    let relativePath: String
+    let rootIdentity: String
+    let projectIdentity: String
+    let mediaIdentity: String
+    let storeIdentity: String
+}
+
+struct StudioWorkspaceVideoRootIntent: Sendable, Hashable {
+    let workspaceID: UUID
+    let relativePath: String
+    let rootIdentity: String
+    let stagingName: String
+    let containerIdentity: String
+}
+
+struct StudioWorkspaceVideoProjectIntent: Codable, Sendable, Hashable {
+    let projectID: UUID
+    let conversationID: UUID
+    let workspaceID: UUID
+    let operationKey: String
+    let digest: String
+    let rootIdentity: String
+    let containerIdentity: String
+    let stagingName: String
+    let finalName: String
+    let projectIdentity: String
+    let mediaIdentity: String
+    let storeIdentity: String
+}
+
 /// Native selection bindings live outside documents and exported preferences.
 /// Imported work packages and model-authored metadata can never mint grants.
 actor StudioDocumentAccess {
@@ -49,7 +86,41 @@ actor StudioDocumentAccess {
                     operation_id TEXT NOT NULL
                 );
                 CREATE UNIQUE INDEX IF NOT EXISTS document_file_lifecycle_entry ON document_file_lifecycles(entry_id);
+                CREATE TABLE IF NOT EXISTS workspace_video_bindings (
+                    project_id TEXT PRIMARY KEY NOT NULL,
+                    conversation_id TEXT NOT NULL,
+                    workspace_id TEXT NOT NULL,
+                    relative_path TEXT NOT NULL,
+                    root_identity TEXT NOT NULL,
+                    project_identity TEXT NOT NULL,
+                    media_identity TEXT NOT NULL DEFAULT '',
+                    store_identity TEXT NOT NULL DEFAULT ''
+                );
+                CREATE TABLE IF NOT EXISTS workspace_video_roots (
+                    workspace_id TEXT PRIMARY KEY NOT NULL,
+                    relative_path TEXT NOT NULL,
+                    root_identity TEXT NOT NULL,
+                    container_identity TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS workspace_video_root_intents (
+                    workspace_id TEXT PRIMARY KEY NOT NULL,
+                    relative_path TEXT NOT NULL,
+                    root_identity TEXT NOT NULL,
+                    staging_name TEXT NOT NULL,
+                    container_identity TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS workspace_video_project_intents (
+                    project_id TEXT PRIMARY KEY NOT NULL,
+                    payload BLOB NOT NULL
+                );
                 """)
+            let workspaceColumns = try Set(db.columns(in: "workspace_video_bindings").map(\.name))
+            if !workspaceColumns.contains("media_identity") {
+                try db.execute(sql: "ALTER TABLE workspace_video_bindings ADD COLUMN media_identity TEXT NOT NULL DEFAULT ''")
+            }
+            if !workspaceColumns.contains("store_identity") {
+                try db.execute(sql: "ALTER TABLE workspace_video_bindings ADD COLUMN store_identity TEXT NOT NULL DEFAULT ''")
+            }
         }
     }
     func canAccess(conversationID: UUID, projectID: UUID, editing: Bool) throws -> Bool {
@@ -177,6 +248,167 @@ actor StudioDocumentAccess {
                 INSERT INTO document_access(conversation_id,project_id,can_edit) VALUES (?,?,1)
                 ON CONFLICT(conversation_id,project_id) DO NOTHING
                 """, arguments: [conversationID.uuidString, projectID.uuidString])
+        }
+    }
+
+    /// Completes only this native service's reserved creation. A path or ID
+    /// supplied by a model or found in an imported package cannot bind an
+    /// existing project. The caller must verify the live lease and filesystem
+    /// identities before invoking this transactional commit.
+    func finishWorkspaceVideoCreation(_ binding: StudioWorkspaceVideoBinding,
+                                      operationKey: String, digest: String) throws {
+        let components = binding.relativePath.split(separator: "/", omittingEmptySubsequences: false)
+        guard !binding.relativePath.hasPrefix("/"), !binding.relativePath.contains("\\"),
+              !components.isEmpty, components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }),
+              binding.relativePath.lowercased().hasSuffix(".floeproject"),
+              !binding.rootIdentity.isEmpty, !binding.projectIdentity.isEmpty,
+              !binding.mediaIdentity.isEmpty, !binding.storeIdentity.isEmpty else {
+            throw PersonalContentError.invalidProject
+        }
+        try pool.write { db in
+            guard let reservation = try Row.fetchOne(db, sql: "SELECT project_id,payload_digest FROM document_creations WHERE operation_key=?", arguments: [operationKey]),
+                  UUID(uuidString: reservation["project_id"]) == binding.projectID,
+                  (reservation["payload_digest"] as String) == digest,
+                  try !Self.hasLifecycle(db, projectID: binding.projectID, conversationID: binding.conversationID) else {
+                throw PersonalContentError.changedDocument
+            }
+            if let old = try Row.fetchOne(db, sql: "SELECT conversation_id,workspace_id,relative_path,root_identity,project_identity,media_identity,store_identity FROM workspace_video_bindings WHERE project_id=?", arguments: [binding.projectID.uuidString]) {
+                guard (old["conversation_id"] as String) == binding.conversationID.uuidString,
+                      (old["workspace_id"] as String) == binding.workspaceID.uuidString,
+                      (old["relative_path"] as String) == binding.relativePath,
+                      (old["root_identity"] as String) == binding.rootIdentity,
+                      (old["project_identity"] as String) == binding.projectIdentity,
+                      (old["media_identity"] as String) == binding.mediaIdentity,
+                      (old["store_identity"] as String) == binding.storeIdentity else { throw PersonalContentError.changedDocument }
+            } else {
+                guard let payload = try Data.fetchOne(db, sql: "SELECT payload FROM workspace_video_project_intents WHERE project_id=?", arguments: [binding.projectID.uuidString]),
+                      let intent = try? JSONDecoder().decode(StudioWorkspaceVideoProjectIntent.self, from: payload),
+                      let root = try Row.fetchOne(db, sql: "SELECT relative_path,root_identity,container_identity FROM workspace_video_roots WHERE workspace_id=?", arguments: [binding.workspaceID.uuidString]),
+                      intent.projectID == binding.projectID, intent.conversationID == binding.conversationID,
+                      intent.workspaceID == binding.workspaceID, intent.operationKey == operationKey, intent.digest == digest,
+                      intent.rootIdentity == binding.rootIdentity, intent.projectIdentity == binding.projectIdentity,
+                      intent.mediaIdentity == binding.mediaIdentity, intent.storeIdentity == binding.storeIdentity,
+                      (root["root_identity"] as String) == intent.rootIdentity,
+                      (root["container_identity"] as String) == intent.containerIdentity,
+                      binding.relativePath == (root["relative_path"] as String) + "/" + intent.finalName else { throw PersonalContentError.changedDocument }
+                try db.execute(sql: "INSERT INTO workspace_video_bindings(project_id,conversation_id,workspace_id,relative_path,root_identity,project_identity,media_identity,store_identity) VALUES (?,?,?,?,?,?,?,?)",
+                    arguments: [binding.projectID.uuidString, binding.conversationID.uuidString, binding.workspaceID.uuidString,
+                                binding.relativePath, binding.rootIdentity, binding.projectIdentity, binding.mediaIdentity, binding.storeIdentity])
+                try db.execute(sql: "DELETE FROM workspace_video_project_intents WHERE project_id=?", arguments: [binding.projectID.uuidString])
+            }
+            try db.execute(sql: "INSERT INTO document_access(conversation_id,project_id,can_edit) VALUES (?,?,1) ON CONFLICT(conversation_id,project_id) DO NOTHING",
+                arguments: [binding.conversationID.uuidString, binding.projectID.uuidString])
+        }
+    }
+
+    func workspaceVideoProjectIntent(projectID: UUID) throws -> StudioWorkspaceVideoProjectIntent? {
+        try pool.read { db in
+            guard let payload = try Data.fetchOne(db, sql: "SELECT payload FROM workspace_video_project_intents WHERE project_id=?", arguments: [projectID.uuidString]) else { return nil }
+            return try JSONDecoder().decode(StudioWorkspaceVideoProjectIntent.self, from: payload)
+        }
+    }
+
+    func reserveWorkspaceVideoProject(_ intent: StudioWorkspaceVideoProjectIntent) throws {
+        guard intent.stagingName.hasPrefix(".floe-project-"), !intent.stagingName.contains("/"),
+              !intent.finalName.contains("/"), !intent.finalName.contains("\\"), intent.finalName.lowercased().hasSuffix(".floeproject"),
+              !intent.rootIdentity.isEmpty, !intent.containerIdentity.isEmpty, !intent.projectIdentity.isEmpty,
+              !intent.mediaIdentity.isEmpty, !intent.storeIdentity.isEmpty else { throw PersonalContentError.invalidProject }
+        try pool.write { db in
+            guard let reservation = try Row.fetchOne(db, sql: "SELECT project_id,payload_digest FROM document_creations WHERE operation_key=?", arguments: [intent.operationKey]),
+                  UUID(uuidString: reservation["project_id"]) == intent.projectID,
+                  (reservation["payload_digest"] as String) == intent.digest else { throw PersonalContentError.changedDocument }
+            if let payload = try Data.fetchOne(db, sql: "SELECT payload FROM workspace_video_project_intents WHERE project_id=?", arguments: [intent.projectID.uuidString]) {
+                guard try JSONDecoder().decode(StudioWorkspaceVideoProjectIntent.self, from: payload) == intent else { throw PersonalContentError.changedDocument }
+            } else {
+                try db.execute(sql: "INSERT INTO workspace_video_project_intents(project_id,payload) VALUES (?,?)", arguments: [intent.projectID.uuidString, try JSONEncoder().encode(intent)])
+            }
+        }
+    }
+
+    func workspaceVideoBinding(conversationID: UUID, workspaceID: UUID, projectID: UUID) throws -> StudioWorkspaceVideoBinding? {
+        try pool.read { db in
+            guard let row = try Row.fetchOne(db, sql: "SELECT relative_path,root_identity,project_identity,media_identity,store_identity FROM workspace_video_bindings WHERE project_id=? AND conversation_id=? AND workspace_id=?",
+                arguments: [projectID.uuidString, conversationID.uuidString, workspaceID.uuidString]) else { return nil }
+            return StudioWorkspaceVideoBinding(projectID: projectID, conversationID: conversationID, workspaceID: workspaceID,
+                relativePath: row["relative_path"], rootIdentity: row["root_identity"], projectIdentity: row["project_identity"], mediaIdentity: row["media_identity"], storeIdentity: row["store_identity"])
+        }
+    }
+
+    func workspaceVideoBindings(conversationID: UUID, workspaceID: UUID) throws -> [StudioWorkspaceVideoBinding] {
+        try pool.read { db in
+            try Row.fetchAll(db, sql: "SELECT project_id,relative_path,root_identity,project_identity,media_identity,store_identity FROM workspace_video_bindings WHERE conversation_id=? AND workspace_id=? ORDER BY project_id",
+                arguments: [conversationID.uuidString, workspaceID.uuidString]).compactMap { row in
+                guard let id = UUID(uuidString: row["project_id"]) else { return nil }
+                return StudioWorkspaceVideoBinding(projectID: id, conversationID: conversationID, workspaceID: workspaceID,
+                    relativePath: row["relative_path"], rootIdentity: row["root_identity"], projectIdentity: row["project_identity"], mediaIdentity: row["media_identity"], storeIdentity: row["store_identity"])
+            }
+        }
+    }
+
+    func workspaceVideoBindingsForNativeUI(workspaceID: UUID) throws -> [StudioWorkspaceVideoBinding] {
+        try pool.read { db in
+            try Row.fetchAll(db, sql: "SELECT project_id,conversation_id,relative_path,root_identity,project_identity,media_identity,store_identity FROM workspace_video_bindings WHERE workspace_id=? ORDER BY project_id",
+                arguments: [workspaceID.uuidString]).compactMap { row in
+                guard let id = UUID(uuidString: row["project_id"]), let conversation = UUID(uuidString: row["conversation_id"]) else { return nil }
+                return StudioWorkspaceVideoBinding(projectID: id, conversationID: conversation, workspaceID: workspaceID,
+                    relativePath: row["relative_path"], rootIdentity: row["root_identity"], projectIdentity: row["project_identity"], mediaIdentity: row["media_identity"], storeIdentity: row["store_identity"])
+            }
+        }
+    }
+
+    /// Read-only lookup for a user explicitly opening a workspace file. This
+    /// does not grant the current conversation access to the project.
+    func workspaceVideoBindingForNativeUI(workspaceID: UUID, relativePath: String) throws -> StudioWorkspaceVideoBinding? {
+        try pool.read { db in
+            let rows = try Row.fetchAll(db, sql: "SELECT project_id,conversation_id,root_identity,project_identity,media_identity,store_identity FROM workspace_video_bindings WHERE workspace_id=? AND relative_path=?",
+                arguments: [workspaceID.uuidString, relativePath])
+            guard rows.count == 1, let row = rows.first, let projectID = UUID(uuidString: row["project_id"]),
+                  let conversationID = UUID(uuidString: row["conversation_id"]) else { return nil }
+            return StudioWorkspaceVideoBinding(projectID: projectID, conversationID: conversationID, workspaceID: workspaceID,
+                relativePath: relativePath, rootIdentity: row["root_identity"], projectIdentity: row["project_identity"], mediaIdentity: row["media_identity"], storeIdentity: row["store_identity"])
+        }
+    }
+
+    func workspaceVideoRoot(workspaceID: UUID) throws -> (relativePath: String, rootIdentity: String, containerIdentity: String)? {
+        try pool.read { db in
+            guard let row = try Row.fetchOne(db, sql: "SELECT relative_path,root_identity,container_identity FROM workspace_video_roots WHERE workspace_id=?",
+                arguments: [workspaceID.uuidString]) else { return nil }
+            return (row["relative_path"], row["root_identity"], row["container_identity"])
+        }
+    }
+
+    func workspaceVideoRootIntent(workspaceID: UUID) throws -> StudioWorkspaceVideoRootIntent? {
+        try pool.read { db in
+            guard let row = try Row.fetchOne(db, sql: "SELECT relative_path,root_identity,staging_name,container_identity FROM workspace_video_root_intents WHERE workspace_id=?", arguments: [workspaceID.uuidString]) else { return nil }
+            return StudioWorkspaceVideoRootIntent(workspaceID: workspaceID, relativePath: row["relative_path"],
+                rootIdentity: row["root_identity"], stagingName: row["staging_name"], containerIdentity: row["container_identity"])
+        }
+    }
+
+    func reserveWorkspaceVideoRoot(_ intent: StudioWorkspaceVideoRootIntent) throws {
+        guard !intent.relativePath.isEmpty, !intent.relativePath.contains("/"),
+              intent.stagingName.hasPrefix(".floe-studio-"), !intent.stagingName.contains("/"),
+              !intent.rootIdentity.isEmpty, !intent.containerIdentity.isEmpty else { throw PersonalContentError.invalidProject }
+        try pool.write { db in
+            guard try Row.fetchOne(db, sql: "SELECT workspace_id FROM workspace_video_roots WHERE workspace_id=?", arguments: [intent.workspaceID.uuidString]) == nil else { throw PersonalContentError.changedDocument }
+            if let row = try Row.fetchOne(db, sql: "SELECT relative_path,root_identity,staging_name,container_identity FROM workspace_video_root_intents WHERE workspace_id=?", arguments: [intent.workspaceID.uuidString]) {
+                guard (row["relative_path"] as String) == intent.relativePath, (row["root_identity"] as String) == intent.rootIdentity,
+                      (row["staging_name"] as String) == intent.stagingName, (row["container_identity"] as String) == intent.containerIdentity else { throw PersonalContentError.changedDocument }
+            } else {
+                try db.execute(sql: "INSERT INTO workspace_video_root_intents(workspace_id,relative_path,root_identity,staging_name,container_identity) VALUES (?,?,?,?,?)",
+                    arguments: [intent.workspaceID.uuidString, intent.relativePath, intent.rootIdentity, intent.stagingName, intent.containerIdentity])
+            }
+        }
+    }
+
+    func finishWorkspaceVideoRoot(_ intent: StudioWorkspaceVideoRootIntent) throws {
+        try pool.write { db in
+            guard let row = try Row.fetchOne(db, sql: "SELECT relative_path,root_identity,staging_name,container_identity FROM workspace_video_root_intents WHERE workspace_id=?", arguments: [intent.workspaceID.uuidString]),
+                  (row["relative_path"] as String) == intent.relativePath, (row["root_identity"] as String) == intent.rootIdentity,
+                  (row["staging_name"] as String) == intent.stagingName, (row["container_identity"] as String) == intent.containerIdentity else { throw PersonalContentError.changedDocument }
+            try db.execute(sql: "INSERT INTO workspace_video_roots(workspace_id,relative_path,root_identity,container_identity) VALUES (?,?,?,?)",
+                arguments: [intent.workspaceID.uuidString, intent.relativePath, intent.rootIdentity, intent.containerIdentity])
+            try db.execute(sql: "DELETE FROM workspace_video_root_intents WHERE workspace_id=?", arguments: [intent.workspaceID.uuidString])
         }
     }
 

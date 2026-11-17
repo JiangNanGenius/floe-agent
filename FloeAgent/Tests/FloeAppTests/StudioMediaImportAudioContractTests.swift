@@ -2,6 +2,7 @@
 #if canImport(UIKit)
 import AVFoundation
 import CoreVideo
+import Darwin
 import Foundation
 import Testing
 import FloeCore
@@ -133,6 +134,294 @@ import FloeMedia
                 #expect(try FileManager.default.contentsOfDirectory(atPath: session.root.appendingPathComponent("Assets").path).sorted() == assetsBefore)
             }
             #expect(try Data(contentsOf: source) == sourceBytes)
+        }
+    }
+    @Test func guestFrameFileImportsAsRealVideoAndPreservesTaskBoundary() async throws {
+        try await withContexts { initial, other in
+            var context = initial
+            let sourcePath = "frames/sequence.bgra"
+            let source = try #require(context.workspaceRootURL).appendingPathComponent(sourcePath)
+            try FileManager.default.createDirectory(at: source.deletingLastPathComponent(), withIntermediateDirectories: true)
+            var bytes = Data()
+            for frame in 0..<4 {
+                let pixel: [UInt8] = frame.isMultiple(of: 2) ? [0, 0, 255, 255] : [255, 0, 0, 255]
+                for _ in 0..<(32 * 32) { bytes.append(contentsOf: pixel) }
+            }
+            try bytes.write(to: source)
+            let id = try await create("video", context)
+            let read = try await invoke("studio.read", ["projectID": id.uuidString, "limit": 12000], context)
+            let revision = try #require(read["revision"] as? String)
+            let state = try await readState(id, context: context, revision: revision)
+            #expect((state["hostToolIDs"] as? [String])?.contains("video.importFrames") == true)
+            #expect((read["editFormat"] as? String)?.contains("video.importFrames") == true)
+            let input: [String: Any] = ["expectedRevision": revision,
+                "source": ["workspacePath": sourcePath, "expectedSHA256": StudioToolOutput.hash(bytes)],
+                "width": 32, "height": 32, "frameRate": 4, "frameCount": 4]
+            context.toolCallID = "import-guest-frames"
+            let receipt = try await invoke("studio.media", ["projectID": id.uuidString, "toolID": "video.importFrames", "inputJSON": try encode(input)], context)
+            #expect(receipt["sourceSHA256"] as? String == StudioToolOutput.hash(bytes))
+            let library = try await PersonalContentService.shared.library()
+            let location = try await library.resolve(id)
+            let session = try await PersonalMediaFactory.session(id: id, directory: location.url)
+            let asset = try #require(session.document.assets.first)
+            #expect(asset.kind == .video && asset.metadata?.audioTracks == 0)
+            #expect(session.document.trackGraph.tracks.flatMap(\.clips).contains { $0.assetID == asset.id })
+            let movieURL = try #require(session.resolvedAssets()[asset.id])
+            #expect(try Data(contentsOf: movieURL).count > 0)
+            #expect(try Data(contentsOf: source) == bytes)
+            let disk = MediaProjectStore(directory: session.root.appendingPathComponent("Projects"))
+            let saved = try #require(try await disk.loadProject(id: id))
+            #expect(saved.prepared?.assets.contains(where: { $0.id == asset.id }) == true)
+            let replay = try await invoke("studio.media", ["projectID": id.uuidString, "toolID": "video.importFrames", "inputJSON": try encode(input)], context)
+            #expect(replay["replayed"] as? Bool == true)
+            #expect(replay["groupID"] as? String == receipt["groupID"] as? String)
+            context.toolCallID = "new-stale-frame-import"
+            for owner in [context, other] {
+                do {
+                    _ = try await invoke("studio.media", ["projectID": id.uuidString, "toolID": "video.importFrames", "inputJSON": try encode(input)], owner)
+                    Issue.record("Stale or foreign frame import was accepted")
+                } catch {}
+                let after = try #require(try await disk.loadProject(id: id))
+                #expect(after.prepared?.assets == saved.prepared?.assets)
+            }
+        }
+    }
+    @Test func importCommitSurvivesRefreshFailureAndReplaysDurableJournal() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("media-frame-replay-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("source.mp4"), root = directory.appendingPathComponent("Media")
+        try await movie(source); try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let store = MediaProjectStore(directory: root.appendingPathComponent("Projects")), id = UUID()
+        try await store.save(.init(id: id, kind: .video, name: "Replay", canvas: .init(width: 32, height: 32, frameRate: 4), videoTimeline: .init()))
+        let session = try await MediaV2Session.open(projectID: id, root: root, store: store, upgrade: true)
+        let base = session.document.revision
+        let identity = MediaV2Session.ImportIdentity(groupID: UUID(), operationID: UUID())
+        let imported = try await session.importAuthorizedFile(source, expectedRevision: base, actor: .model,
+            identity: identity, refreshAfterCommit: { throw PersonalContentError.storageUnavailable })
+        #expect(imported.refreshPending)
+        let saved = try #require(try await store.loadProject(id: id))
+        #expect(saved.prepared?.assets.count == 1)
+        #expect(saved.preparedJournal?.entry(identity.groupID)?.committedRevision == imported.commit.revision)
+        let replay = try #require(try await session.replayImport(identity, expectedRevision: base))
+        #expect(replay.replayed && replay.commit.groupID == imported.commit.groupID && replay.asset.id == imported.asset.id)
+        do {
+            _ = try await session.importAuthorizedFile(source, expectedRevision: base, actor: .model,
+                identity: .init(groupID: identity.groupID, operationID: UUID()))
+            Issue.record("Changed input reused a committed request")
+        } catch {}
+        #expect(try await store.loadProject(id: id)?.prepared?.assets.count == 1)
+        try await session.reload()
+        _ = try await session.coordinator.undoGroup(identity.groupID, in: id)
+        let undone = try #require(try await session.replayImport(identity, expectedRevision: base))
+        #expect(undone.replayed && undone.journalStatus == .undone)
+        do {
+            _ = try await MediaV2Session.open(projectID: id, root: directory.appendingPathComponent("DifferentRoot"), store: store)
+            Issue.record("A cached session was reused for a different root")
+        } catch PersonalContentError.changedDocument {} catch { Issue.record("Unexpected root mismatch error: \(error)") }
+        let pending = await StudioFrameImportFinalization.libraryRefreshPending { throw PersonalContentError.storageUnavailable }
+        #expect(pending)
+        let refreshed = await StudioFrameImportFinalization.libraryRefreshPending {}
+        #expect(!refreshed)
+    }
+    @Test func competingCommitCannotBypassOriginalExpectedRevision() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("media-frame-cas-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = MediaProjectStore(directory: root.appendingPathComponent("Projects")), id = UUID()
+        try await store.save(.init(id: id, kind: .video, name: "CAS", canvas: .init(width: 32, height: 32, frameRate: 4), videoTimeline: .init()))
+        let coordinator = MediaPreparedCoordinator(store: store)
+        let base = try await coordinator.upgradeDocument(id: id).revision
+        let earlier = try await coordinator.beginInstruction(documentID: id, targets: [], actor: .model)
+        let winner = MediaPreparedTrack(kind: .visual, name: "Winner")
+        _ = try await coordinator.applyUserOperations([.init(action: .insertTrack(track: winner, index: nil))], to: id, expectedRevision: base)
+        let rejected = MediaPreparedTrack(kind: .visual, name: "Stale")
+        do {
+            _ = try await coordinator.apply([.init(action: .insertTrack(track: rejected, index: nil))], instruction: earlier, expectedRevision: base)
+            Issue.record("An operation admitted before a competing write overwrote the expected revision")
+        } catch { #expect(error as? MediaPreparedCoreError == .documentChanged) }
+        try await coordinator.stop(earlier)
+        let saved = try #require(try await store.loadProject(id: id))
+        #expect(saved.prepared?.trackGraph.tracks.contains(where: { $0.id == winner.id }) == true)
+        #expect(saved.prepared?.trackGraph.tracks.contains(where: { $0.id == rejected.id }) == false)
+        #expect(saved.revision == base + 1)
+    }
+    @Test func staleSessionCannotOverwriteAnotherStoreInstance() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("media-session-cas-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let directory = root.appendingPathComponent("Projects"), id = UUID()
+        let firstStore = MediaProjectStore(directory: directory)
+        try await firstStore.save(.init(id: id, kind: .video, name: "CAS", canvas: .init(width: 32, height: 32, frameRate: 4), videoTimeline: .init()))
+        let session = try await MediaV2Session.open(projectID: id, root: root, store: firstStore, upgrade: true)
+        let base = session.document.revision
+        let competing = MediaPreparedCoordinator(store: MediaProjectStore(directory: directory))
+        let winner = MediaPreparedTrack(kind: .visual, name: "Winner")
+        _ = try await competing.applyUserOperations([.init(action: .insertTrack(track: winner, index: nil))], to: id, expectedRevision: base)
+        let stale = MediaPreparedTrack(kind: .visual, name: "Stale")
+        await #expect(throws: (any Error).self) {
+            _ = try await session.apply([.init(action: .insertTrack(track: stale, index: nil))], expectedRevision: base, actor: .model)
+        }
+        let saved = try #require(try await firstStore.loadProject(id: id))
+        #expect(saved.prepared?.trackGraph.tracks.contains(where: { $0.id == winner.id }) == true)
+        #expect(saved.prepared?.trackGraph.tracks.contains(where: { $0.id == stale.id }) == false)
+    }
+    @Test func explicitImportPlacementIsNotChangedByConcurrentSelection() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("media-import-placement-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("source.mp4"), root = directory.appendingPathComponent("Media")
+        try await movie(source)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let store = MediaProjectStore(directory: root.appendingPathComponent("Projects")), id = UUID()
+        try await store.save(.init(id: id, kind: .video, name: "Placement", canvas: .init(width: 32, height: 32, frameRate: 4), videoTimeline: .init()))
+        let session = try await MediaV2Session.open(projectID: id, root: root, store: store, upgrade: true)
+        let first = MediaPreparedTrack(kind: .visual, name: "First")
+        let second = MediaPreparedTrack(kind: .visual, name: "Second")
+        _ = try await session.coordinator.applyUserOperations([.init(action: .insertTrack(track: first, index: nil)),
+            .init(action: .insertTrack(track: second, index: nil))], to: id, expectedRevision: session.document.revision)
+        try await session.reload()
+        let base = session.document.revision
+        let imported = try await session.importAuthorizedFile(source, expectedRevision: base, actor: .model,
+            validateSource: { session.selectedTrackID = second.id; session.playhead = 9 },
+            identity: .init(groupID: UUID(), operationID: UUID()),
+            placement: .init(trackID: first.id, startSeconds: 1))
+        let saved = try #require(try await store.loadProject(id: id))
+        let track = try #require(saved.prepared?.trackGraph.tracks.first(where: { $0.id == first.id }))
+        let clip = try #require(track.clips.first(where: { $0.assetID == imported.asset.id }))
+        #expect(abs(clip.timelineRange.start.seconds - 1) < 0.0001)
+        #expect(saved.prepared?.trackGraph.tracks.first(where: { $0.id == second.id })?.clips.isEmpty == true)
+    }
+    @Test func workspaceVideoUsesBoundOriginalAndPreservesSource() async throws {
+        try await withContexts { initial, other in
+            let environment = FloeAgentApp.liveEnvironment
+            let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("workspace-video-authority-" + UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: scratch) }
+            let authority = try StudioDocumentAccess(root: scratch)
+            let coordinator = StudioCoordinator(environment: environment, authority: authority)
+            #expect(ToolRunnerRegistry.shared.runner(named: "studio.workspaceVideo") != nil)
+            #expect(ToolRunnerRegistry.shared.runner(named: "studio.workspaceVideoRead") != nil)
+            let registry = ToolRunnerRegistry()
+            registry.register(StudioWorkspaceVideoCreateTool(coordinator: coordinator))
+            registry.register(StudioWorkspaceVideoReadTool(coordinator: coordinator))
+            let writer = try #require(registry.runner(named: "studio.workspaceVideo"))
+            let reader = try #require(registry.runner(named: "studio.workspaceVideoRead"))
+            let workspaceStore = SQLiteWorkspaceStore(database: environment.database)
+            let conversationID = try #require(initial.conversationID), otherConversationID = try #require(other.conversationID)
+            let workspaceID = try #require(try await workspaceStore.workspaceID(conversationID: conversationID))
+            let otherWorkspaceID = try #require(try await workspaceStore.workspaceID(conversationID: otherConversationID))
+            let names: Set<String> = ["studio.workspaceVideo", "studio.workspaceVideoRead"]
+            func prepared(_ original: ToolContext, workspace: UUID) throws -> ToolContext {
+                var value = original
+                value.allowedToolNames = names; value.frozenEffectiveCatalogNames = names
+                value.executionToolName = "studio.workspaceVideo"
+                value.serviceStorePaths[TypedMutationContract.workspaceStudioStoreKey] = try #require(value.workspaceRootURL)
+                    .appendingPathComponent("Floe Studio " + String(workspace.uuidString.prefix(8))).path
+                return value
+            }
+            var context = try prepared(initial, workspace: workspaceID)
+            let workspaceRoot = try #require(context.workspaceRootURL).standardizedFileURL.resolvingSymlinksInPath()
+            let source = workspaceRoot.appendingPathComponent("source.mp4")
+            try await movie(source)
+            let sourceBytes = try Data(contentsOf: source)
+            // Resume the exact host-journaled staging inode after an
+            // interruption before the root directory was published.
+            func directoryIdentity(_ url: URL) throws -> String {
+                let fd = open(url.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                guard fd >= 0 else { throw PersonalContentError.changedDocument }
+                defer { close(fd) }
+                var value = stat()
+                guard fstat(fd, &value) == 0 else { throw PersonalContentError.changedDocument }
+                return "\(value.st_dev):\(value.st_ino)"
+            }
+            let stagingName = ".floe-studio-" + UUID().uuidString
+            let staging = workspaceRoot.appendingPathComponent(stagingName, isDirectory: true)
+            try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: false)
+            let intent = StudioWorkspaceVideoRootIntent(workspaceID: workspaceID,
+                relativePath: "Floe Studio " + String(workspaceID.uuidString.prefix(8)),
+                rootIdentity: try directoryIdentity(workspaceRoot), stagingName: stagingName,
+                containerIdentity: try directoryIdentity(staging))
+            try await authority.reserveWorkspaceVideoRoot(intent)
+            let created = try await writer.execute(argumentsJSON: JSONSerialization.data(withJSONObject: ["action": "create", "title": "Workspace video"]), context: context)
+            #expect(try await authority.workspaceVideoRootIntent(workspaceID: workspaceID) == nil)
+            #expect(try directoryIdentity(workspaceRoot.appendingPathComponent(intent.relativePath)) == intent.containerIdentity)
+            let createdJSON = try #require(JSONSerialization.jsonObject(with: Data(created.summary.utf8)) as? [String: Any])
+            let id = try #require((createdJSON["projectID"] as? String).flatMap(UUID.init(uuidString:)))
+            let retry = try await writer.execute(argumentsJSON: JSONSerialization.data(withJSONObject: ["action": "create", "title": "Workspace video"]), context: context)
+            let retryJSON = try #require(JSONSerialization.jsonObject(with: Data(retry.summary.utf8)) as? [String: Any])
+            #expect(retryJSON["projectID"] as? String == id.uuidString)
+            #expect(retryJSON["replayed"] as? Bool == true)
+            let binding = try #require(try await authority.workspaceVideoBinding(conversationID: conversationID, workspaceID: workspaceID, projectID: id))
+            let directory = try #require(context.workspaceRootURL).appendingPathComponent(binding.relativePath)
+#if DEBUG
+            // Replace the selected staging pathname after its descriptor was
+            // opened: initial package writes must never follow the symlink.
+            do {
+                var raced = context
+                raced.toolCallID = "stage-symlink-replacement"
+                let racedTitle = "Stage replacement"
+                let key = raced.runID.uuidString + "/" + raced.toolCallID!
+                let digest = StudioToolOutput.hash(try StudioToolOutput.data([workspaceID.uuidString, conversationID.uuidString, racedTitle]))
+                let racedID = try await authority.reserveCreation(operationKey: key, digest: digest)
+                let victim = workspaceRoot.appendingPathComponent("untouched-victim", isDirectory: true)
+                let parked = workspaceRoot.appendingPathComponent("parked-stage", isDirectory: true)
+                try FileManager.default.createDirectory(at: victim, withIntermediateDirectories: false)
+                StudioWorkspaceVideoService.afterProjectStageOpenForTesting = { stage in
+                    try FileManager.default.moveItem(at: stage, to: parked)
+                    try FileManager.default.createSymbolicLink(at: stage, withDestinationURL: victim)
+                }
+                defer { StudioWorkspaceVideoService.afterProjectStageOpenForTesting = nil }
+                await #expect(throws: (any Error).self) {
+                    _ = try await writer.execute(argumentsJSON: JSONSerialization.data(withJSONObject: ["action": "create", "title": racedTitle]), context: raced)
+                }
+                #expect(try FileManager.default.contentsOfDirectory(atPath: victim.path).isEmpty)
+                #expect(try await authority.workspaceVideoBinding(conversationID: conversationID, workspaceID: workspaceID, projectID: racedID) == nil)
+                #expect(try await authority.workspaceVideoProjectIntent(projectID: racedID) == nil)
+            }
+#endif
+            // A crash after publication must not let a same-manifest replacement
+            // acquire the original host-issued project authorization on retry.
+            var interrupted = context
+            interrupted.toolCallID = "interrupted-project-replacement"
+            let operationKey = interrupted.runID.uuidString + "/" + interrupted.toolCallID!
+            let replacementTitle = "Interrupted video"
+            let digest = StudioToolOutput.hash(try StudioToolOutput.data([workspaceID.uuidString, conversationID.uuidString, replacementTitle]))
+            let pendingID = try await authority.reserveCreation(operationKey: operationKey, digest: digest)
+            let container = workspaceRoot.appendingPathComponent(intent.relativePath, isDirectory: true)
+            let finalName = replacementTitle + " " + String(pendingID.uuidString.prefix(8)) + ".floeproject"
+            let published = container.appendingPathComponent(finalName, isDirectory: true)
+            try FileManager.default.copyItem(at: directory, to: published)
+            let pendingRecord = PersonalContentRecord(id: pendingID, kind: .video, title: replacementTitle,
+                createdAt: Date(), modifiedAt: Date(), folders: [], relativePath: finalName)
+            try JSONEncoder().encode(pendingRecord).write(to: published.appendingPathComponent("FloeProject.json"))
+            let pending = StudioWorkspaceVideoProjectIntent(projectID: pendingID, conversationID: conversationID,
+                workspaceID: workspaceID, operationKey: operationKey, digest: digest, rootIdentity: intent.rootIdentity,
+                containerIdentity: intent.containerIdentity, stagingName: ".floe-project-" + UUID().uuidString,
+                finalName: finalName, projectIdentity: try directoryIdentity(published),
+                mediaIdentity: try directoryIdentity(published.appendingPathComponent("Media")),
+                storeIdentity: try directoryIdentity(published.appendingPathComponent("Media/Projects")))
+            try await authority.reserveWorkspaceVideoProject(pending)
+            let original = workspaceRoot.appendingPathComponent("preserved-published-project", isDirectory: true)
+            try FileManager.default.moveItem(at: published, to: original)
+            try FileManager.default.copyItem(at: original, to: published)
+            await #expect(throws: (any Error).self) {
+                _ = try await writer.execute(argumentsJSON: JSONSerialization.data(withJSONObject: ["action": "create", "title": replacementTitle]), context: interrupted)
+            }
+            #expect(try await authority.workspaceVideoBinding(conversationID: conversationID, workspaceID: workspaceID, projectID: pendingID) == nil)
+            #expect(try await authority.workspaceVideoProjectIntent(projectID: pendingID) == pending)
+            #expect(try directoryIdentity(original) == pending.projectIdentity)
+            let record = try await PersonalContentLibrary(root: directory.deletingLastPathComponent()).resolve(id).record
+            let session = try await StudioWorkspaceVideoService.sessionForNativeUI(record: record, directory: directory,
+                workspaceID: workspaceID, environment: environment, authority: authority)
+            let track = try #require(session.document.trackGraph.tracks.first(where: { $0.kind == .visual }))
+            context.toolCallID = "import-workspace-video"
+            let input = try encode(["expectedRevision": session.document.revision,
+                "source": ["workspacePath": "source.mp4"], "trackID": track.id.uuidString, "startSeconds": 1])
+            _ = try await writer.execute(argumentsJSON: JSONSerialization.data(withJSONObject: ["action": "import", "projectID": id.uuidString, "inputJSON": input]), context: context)
+            #expect(try Data(contentsOf: source) == sourceBytes)
+            let reopened = try #require(try await MediaProjectStore(directory: directory.appendingPathComponent("Media/Projects")).loadProject(id: id))
+            #expect(reopened.prepared?.trackGraph.tracks.first(where: { $0.id == track.id })?.clips.count == 1)
+            var stranger = try prepared(other, workspace: otherWorkspaceID)
+            stranger.executionToolName = "studio.workspaceVideoRead"
+            await #expect(throws: (any Error).self) {
+                _ = try await reader.execute(argumentsJSON: JSONSerialization.data(withJSONObject: ["projectID": id.uuidString]), context: stranger)
+            }
         }
     }
     @Test func cancellationDuringBoundedCopyDeletesItsPartialAssetAndPreservesSource() throws {

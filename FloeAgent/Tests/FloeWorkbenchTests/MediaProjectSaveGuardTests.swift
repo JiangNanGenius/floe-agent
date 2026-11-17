@@ -32,6 +32,110 @@ struct MediaProjectSaveGuardTests {
         return directory
     }
 
+    @Test func concurrentStoreInstancesCannotBothCommitTheSameBaseRevision() async throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let firstStore = MediaProjectStore(directory: directory)
+        let secondStore = MediaProjectStore(directory: directory)
+        let base = imageProject()
+        try await firstStore.save(base)
+        var first = base, second = base
+        try MediaTransactions.apply(.setCanvas(width: 320, height: 240, frameRate: nil), to: &first)
+        try MediaTransactions.apply(.setCanvas(width: 800, height: 600, frameRate: nil), to: &second)
+        let one = first, two = second
+        let successes = await withTaskGroup(of: Bool.self, returning: Int.self) { group in
+            group.addTask { (try? await firstStore.save(one, expectedRevision: base.revision)) != nil }
+            group.addTask { (try? await secondStore.save(two, expectedRevision: base.revision)) != nil }
+            var count = 0
+            for await succeeded in group { if succeeded { count += 1 } }
+            return count
+        }
+        #expect(successes == 1)
+        let result = try #require(try await firstStore.loadProject(id: base.id))
+        #expect(result.revision == base.revision + 1)
+        #expect(result.canvas?.width == 320 || result.canvas?.width == 800)
+    }
+
+    @Test func largeDocumentIsReadCompletelyBeforeCompareAndSwap() async throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = MediaProjectStore(directory: directory)
+        let base = imageProject(name: String(repeating: "canvas", count: 20_000))
+        try await store.save(base)
+        var updated = base
+        try MediaTransactions.apply(.setCanvas(width: 320, height: 240, frameRate: nil), to: &updated)
+        try await store.save(updated, expectedRevision: base.revision)
+        let reopened = try #require(try await store.loadProject(id: base.id))
+        #expect(reopened.name == base.name)
+        #expect(reopened.revision == updated.revision)
+    }
+
+    @Test func deniedHostPermitDoesNotChangeAnExistingDocument() async throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let baseStore = MediaProjectStore(directory: directory)
+        let base = imageProject()
+        try await baseStore.save(base)
+        let originalBytes = try Data(contentsOf: baseStore.projectURL(id: base.id))
+        let protected = MediaProjectStore(directory: directory, acquireWritePermit: { _ in
+            MediaProjectWritePermit(validate: { throw FloeError.unauthorized }, release: {})
+        })
+        var updated = base
+        try MediaTransactions.apply(.setCanvas(width: 320, height: 240, frameRate: nil), to: &updated)
+        await #expect(throws: FloeError.self) { try await protected.save(updated, expectedRevision: base.revision) }
+        #expect(try Data(contentsOf: baseStore.projectURL(id: base.id)) == originalBytes)
+    }
+
+#if DEBUG
+    @Test func sameSizeInPlaceChangeCannotBeOverwritten() async throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = MediaProjectStore(directory: directory)
+        let base = imageProject()
+        try await store.save(base)
+        var updated = base
+        try MediaTransactions.apply(.setCanvas(width: 320, height: 240, frameRate: nil), to: &updated)
+        let file = store.projectURL(id: base.id)
+        let original = try Data(contentsOf: file)
+        var other = original
+        let range = try #require(other.range(of: Data("Guard".utf8)))
+        other.replaceSubrange(range, with: Data("Other".utf8))
+        #expect(other.count == original.count)
+        let externalBytes = other
+        await store.setBeforeCommitForTesting {
+            let handle = try FileHandle(forWritingTo: file)
+            defer { try? handle.close() }
+            try handle.seek(toOffset: 0)
+            try handle.write(contentsOf: externalBytes)
+        }
+        await #expect(throws: FloeError.self) { try await store.save(updated, expectedRevision: base.revision) }
+        #expect(try Data(contentsOf: file) == externalBytes)
+    }
+
+    @Test func replacedDirectoryCannotRedirectACommit() async throws {
+        let directory = try makeDirectory()
+        let moved = directory.deletingLastPathComponent().appendingPathComponent("\(directory.lastPathComponent)-moved")
+        defer {
+            try? FileManager.default.removeItem(at: directory)
+            try? FileManager.default.removeItem(at: moved)
+        }
+        let store = MediaProjectStore(directory: directory)
+        let base = imageProject()
+        try await store.save(base)
+        var updated = base
+        try MediaTransactions.apply(.setCanvas(width: 320, height: 240, frameRate: nil), to: &updated)
+        await store.setBeforeCommitForTesting {
+            try FileManager.default.moveItem(at: directory, to: moved)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        }
+        await #expect(throws: FloeError.self) { try await store.save(updated, expectedRevision: base.revision) }
+        #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent(MediaProjectStore.projectFileName(id: base.id)).path))
+        let original = MediaProjectStore(directory: moved)
+        let saved = try #require(try await original.loadProject(id: base.id))
+        #expect(saved.revision == base.revision)
+    }
+#endif
+
     @Test func staleRevisionCannotOverwriteNewerDocument() async throws {
         let directory = try makeDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

@@ -183,6 +183,9 @@ extension MediaV2Session {
     /// cancellation; the owned ID remains recoverable. Pure local bookkeeping,
     /// so no network client is required even if the key was removed later.
     func detachVoiceSeparationJob(clipID: UUID, reason: String) async throws {
+        guard !self.store.hasWritePermitProvider else {
+            throw MediaPreparedCoreError.invalidOperation(WorkbenchText.t("此工程暂不支持管理此任务，请先在个人作品中处理。", "Managing this job is unavailable here. Use a personal project instead."))
+        }
         let store = try AudioStemCloudFileReceiptStore(root: root, projectID: id)
         guard var receipt = try await store.owned(projectID: id, clipID: clipID) else {
             throw MediaPreparedCoreError.invalidOperation(WorkbenchText.t("此片段没有进行中的云端任务。", "This clip has no outstanding cloud job."))
@@ -194,6 +197,9 @@ extension MediaV2Session {
     /// DELETE only the owned remote record for this clip. Billed in-flight
     /// computation is not claimed to be revoked.
     func releaseVoiceSeparationJob(clipID: UUID) async throws {
+        guard !self.store.hasWritePermitProvider else {
+            throw MediaPreparedCoreError.invalidOperation(WorkbenchText.t("此工程暂不支持管理此任务，请先在个人作品中处理。", "Managing this job is unavailable here. Use a personal project instead."))
+        }
         let authority = try await MediaV2ProviderAuthority.userAction(session: self, capability: .stemSeparation)
         let workflow = try await voiceSeparationWorkflow(authority: authority, revision: document.revision)
         _ = try await workflow.releaseOwned(projectID: id, clipID: clipID)
@@ -202,6 +208,9 @@ extension MediaV2Session {
     /// stems with the current document fences. Never creates a second job.
     @discardableResult
     func resumeVoiceSeparationJob(clipID: UUID) async throws -> MediaV2ToolReceipt {
+        guard !self.store.hasWritePermitProvider else {
+            throw MediaPreparedCoreError.invalidOperation(WorkbenchText.t("此工程暂不支持管理此任务，请先在个人作品中处理。", "Managing this job is unavailable here. Use a personal project instead."))
+        }
         let authority = try await MediaV2ProviderAuthority.userAction(session: self, capability: .stemSeparation)
         guard !processingTool, !saving, let found = document.trackGraph.clip(id: clipID),
               found.track.kind == .audio, !found.track.isLocked, let assetID = found.clip.assetID,

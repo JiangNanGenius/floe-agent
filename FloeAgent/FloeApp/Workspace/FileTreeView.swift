@@ -134,6 +134,10 @@ struct FileTreeView: View {
         .onChange(of: workspaceContext.activeMountNames) { _, _ in cancelPendingDeletion() }
         .onChange(of: workspaceContext.cloudWorkspaceLinks) { _, _ in cancelPendingDeletion() }
         .onChange(of: workspaceContext.networkWorkspaceMounts) { _, _ in cancelPendingDeletion() }
+        .onReceive(NotificationCenter.default.publisher(for: .floeWorkspaceVideoDidChange)) { note in
+            guard note.object as? UUID == workspaceContext.currentWorkspace?.id else { return }
+            Task { await viewModel.loadRoot() }
+        }
         .onDisappear { cancelPendingDeletion() }
         .onChange(of: compressFormatID) { oldValue, newValue in
             updateCompressNameExtension(from: oldValue, to: newValue)
@@ -299,6 +303,9 @@ struct FileTreeView: View {
 
     @ViewBuilder
     private func rowMenu(for node: FileTreeNode, scope: WorkspaceFileActionScope?, deletionOnly: Bool = false) -> some View {
+        if scope != nil, viewModel.isManagedStudioPath(node.relativePath) {
+            Text(IDELanguageRunText.t("此处暂不支持移动或删除。", "Moving or deleting is not available here yet."))
+        } else {
         if !deletionOnly {
         if node.isBrowsableDirectory {
             Button {
@@ -349,6 +356,7 @@ struct FileTreeView: View {
         } label: {
             Label("workspace.workspace_canvas_view.delete", systemImage: "trash")
         }.disabled(scope == nil).accessibilityIdentifier("fileTree.row.delete")
+        }
     }
 
     private func cancelPendingDeletion() {
@@ -686,7 +694,7 @@ private struct FileTreeRow: View {
                 } else {
                     Color.clear.frame(width: 12, height: 1)
                 }
-                Image(systemName: node.isCADDocumentPackage ? "cube.transparent" : node.isDirectory
+                Image(systemName: node.isWorkspaceVideoPackage ? "film" : node.isCADDocumentPackage ? "cube.transparent" : node.isDirectory
                     ? (isExpanded ? "folder.fill" : "folder")
                     : "doc.text")
                     .foregroundStyle(node.isDirectory ? FloeTheme.primary : Color.secondary)

@@ -315,6 +315,31 @@ public final class FileCanvasRepository: CanvasDocumentStore, Sendable {
         }
     }
 
+    public func commitDocumentAndReturnSnapshotSynchronously(
+        _ batch: CanvasDocumentBatch, canvasID: UUID, expectedRevision: Int64, requestID: UUID,
+        prepare: (CanvasSnapshot) throws -> Void = { _ in }
+    ) throws -> (CanvasCommitReceipt, CanvasSnapshot, CanvasHistoryAvailability) {
+        try mutateAndReturnSnapshot(canvasID: canvasID, requireExactReplay: true, prepare: prepare) {
+            try $0.commitDocument(batch, canvasID: canvasID, expectedRevision: expectedRevision, requestID: requestID)
+        }
+    }
+
+    public func undoAndReturnSnapshotSynchronously(canvasID: UUID, expectedRevision: Int64, requestID: UUID,
+        prepare: (CanvasSnapshot) throws -> Void = { _ in })
+        throws -> (CanvasCommitReceipt, CanvasSnapshot, CanvasHistoryAvailability) {
+        try mutateAndReturnSnapshot(canvasID: canvasID, requireExactReplay: true, prepare: prepare) {
+            try $0.undo(canvasID: canvasID, expectedRevision: expectedRevision, requestID: requestID)
+        }
+    }
+
+    public func redoAndReturnSnapshotSynchronously(canvasID: UUID, expectedRevision: Int64, requestID: UUID,
+        prepare: (CanvasSnapshot) throws -> Void = { _ in })
+        throws -> (CanvasCommitReceipt, CanvasSnapshot, CanvasHistoryAvailability) {
+        try mutateAndReturnSnapshot(canvasID: canvasID, requireExactReplay: true, prepare: prepare) {
+            try $0.redo(canvasID: canvasID, expectedRevision: expectedRevision, requestID: requestID)
+        }
+    }
+
     public func undo(
         canvasID: UUID,
         expectedRevision: Int64,
@@ -401,6 +426,15 @@ public final class FileCanvasRepository: CanvasDocumentStore, Sendable {
         canvasID: UUID,
         _ mutation: (inout CanvasRepositoryEngine) throws -> CanvasCommitReceipt
     ) throws -> CanvasCommitReceipt {
+        try mutateAndReturnSnapshot(canvasID: canvasID, mutation).0
+    }
+
+    private func mutateAndReturnSnapshot(
+        canvasID: UUID,
+        requireExactReplay: Bool = false,
+        prepare: (CanvasSnapshot) throws -> Void = { _ in },
+        _ mutation: (inout CanvasRepositoryEngine) throws -> CanvasCommitReceipt
+    ) throws -> (CanvasCommitReceipt, CanvasSnapshot, CanvasHistoryAvailability) {
         try withDocumentLock(canvasID) {
             let committed = try readCommitted(canvasID)
             var receiptsByID: [UUID: CanvasCommitReceipt] = [:]
@@ -415,6 +449,10 @@ public final class FileCanvasRepository: CanvasDocumentStore, Sendable {
             let receipt = try mutation(&engine)
             let finalSnapshot = engine.snapshotForPersistence()
             let finalHistory = engine.historyForPersistence()
+            if requireExactReplay, receipt.revision != finalSnapshot.revision {
+                throw CanvasKitError.revisionConflict(expected: receipt.revision, current: finalSnapshot.revision)
+            }
+            try prepare(finalSnapshot)
             receiptsByID[receipt.requestID] = receipt
             if failureInjection.consume() {
                 throw CanvasKitError.io("injected failure before manifest write")
@@ -425,7 +463,7 @@ public final class FileCanvasRepository: CanvasDocumentStore, Sendable {
                 receipts: Array(receiptsByID.values),
                 canvasID: canvasID
             )
-            return receipt
+            return (receipt, finalSnapshot, .init(undoCount: finalHistory.undoStack.count, redoCount: finalHistory.redoStack.count))
         }
     }
 

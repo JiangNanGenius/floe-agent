@@ -7,6 +7,44 @@ import FloeWorkspace
 
 @Suite("User-selected workspace imports")
 struct WorkspaceUserImportTests {
+    #if canImport(Darwin)
+    @Test("Imports into a physical private-var workspace without accepting symlink paths")
+    func physicalRootImportAndSymlinkFences() throws {
+        // Foundation standardizes /private/var to /var, but the guard's
+        // component walk resolves the physical root to /private/var.
+        let base = URL(fileURLWithPath: "/private/var/tmp", isDirectory: true)
+            .appendingPathComponent("floe-game-import-" + UUID().uuidString)
+        let root = base.appendingPathComponent("游戏 工程", isDirectory: true)
+        let outside = base.appendingPathComponent("outside", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let source = base.appendingPathComponent("source.bin")
+        let payload = Data("game content".utf8)
+        try payload.write(to: source)
+        let service = WorkspaceFileService(guard: WorkspacePathGuard(rootURL: root))
+        let digest = FloeDigest.sha256Hex(payload)
+        let outcome = try service.importUserFile(from: source, to: "Game.exe", expectedSHA256: digest)
+        #expect(outcome.sha256 == digest)
+        #expect(try Data(contentsOf: root.appendingPathComponent("Game.exe")) == payload)
+        _ = try service.importUserFile(from: source, to: "www/游戏数据.json", expectedSHA256: digest)
+        #expect(try Data(contentsOf: root.appendingPathComponent("www/游戏数据.json")) == payload)
+
+        let internalTarget = root.appendingPathComponent("real", isDirectory: true)
+        try FileManager.default.createDirectory(at: internalTarget, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("internal"), withDestinationURL: internalTarget)
+        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("external"), withDestinationURL: outside)
+        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("dangling"), withDestinationURL: outside.appendingPathComponent("missing"))
+        for path in ["internal/file.bin", "external/file.bin", "dangling/file.bin", "../escape.bin"] {
+            #expect(throws: Error.self) {
+                try service.importUserFile(from: source, to: path, expectedSHA256: digest)
+            }
+        }
+        #expect(!FileManager.default.fileExists(atPath: outside.appendingPathComponent("file.bin").path))
+        #expect(!FileManager.default.fileExists(atPath: internalTarget.appendingPathComponent("file.bin").path))
+    }
+    #endif
+
     @Test func userImportDoesNotRelaxModelPayloadCap() throws {
         try fixture { root, source, service in
             let bytes = Data(repeating: 71, count: 5 * 1024 * 1024)

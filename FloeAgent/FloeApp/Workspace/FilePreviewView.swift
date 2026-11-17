@@ -104,6 +104,15 @@ struct FilePreviewView: View {
     @State private var deletionGeneration = UUID()
     @State private var deletionPreparationTask: Task<Void, Never>?
     @State private var mediaEditorSource: URL?
+    private struct WorkspaceVideoOpen {
+        let record: PersonalContentRecord
+        let directory: URL
+        let workspaceID: UUID
+        let lease: WorkspaceCenter.TaskRootLease
+    }
+    @State private var workspaceVideoOpen: WorkspaceVideoOpen?
+    @State private var workspaceVideoGeneration = UUID()
+    @State private var workspaceVideoChecking = false
     /// Reading mode: a read-only alternate view of this same original file
     /// (never an editor, and never a conversion of the original bytes).
     @State private var isReadingModePresented = false
@@ -185,6 +194,13 @@ struct FilePreviewView: View {
                         Button("engineering.large_model.open") { largePreviewPath = displayedPath }
                     }
                 }
+            } else if let workspaceVideoOpen {
+                PersonalMediaEditorView(record: workspaceVideoOpen.record, directory: workspaceVideoOpen.directory,
+                    sessionProvider: {
+                        try await StudioWorkspaceVideoService.sessionForNativeUI(record: workspaceVideoOpen.record,
+                            directory: workspaceVideoOpen.directory, workspaceID: workspaceVideoOpen.workspaceID, environment: environment)
+                    })
+                    .id(workspaceVideoOpen.record.id)
             } else if let floecadDocument {
                 // The Canvas entry path (Apply to canvas / Make variant) is
                 // host-injected: FloeCADKit never sees app Canvas types. The
@@ -296,9 +312,9 @@ struct FilePreviewView: View {
         .navigationTitle(embeddedInInspector ? "" : fileName)
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden(embeddedInInspector)
-        .toolbar { if !embeddedInInspector { toolbarContent } }
+        .toolbar { if !embeddedInInspector && workspaceVideoOpen == nil && !workspaceVideoChecking { toolbarContent } }
         .safeAreaInset(edge: .top, spacing: 0) {
-            if embeddedInInspector {
+            if embeddedInInspector && workspaceVideoOpen == nil && !workspaceVideoChecking {
                 HStack { Spacer(minLength: 0); previewActions }
                     .labelStyle(.iconOnly).padding(.horizontal, 8).background(.bar)
             }
@@ -323,6 +339,7 @@ struct FilePreviewView: View {
         }
         .task(id: "\(relativePath)-\(usesExpandedReadOnly)-\(reloadGeneration)") { await load() }
         .onChange(of: relativePath) { _, _ in
+            releaseWorkspaceVideo()
             cancelDeletionPreparation()
             printPreparation = nil
             invalidateDrawingTransferRoute()
@@ -339,8 +356,14 @@ struct FilePreviewView: View {
             recoverySheet = nil
             recoveredCopyNotice = nil
         }
-        .onChange(of: center.currentWorkspace?.id) { _, _ in cancelDeletionPreparation(); printPreparation = nil; invalidateDrawingTransferRoute() }
-        .onChange(of: center.fileService?.guardResolver.rootURL) { _, _ in cancelDeletionPreparation(); printPreparation = nil; invalidateDrawingTransferRoute() }
+        .onChange(of: center.currentWorkspace?.id) { _, _ in
+            if WorkspaceFileRouter.isWorkspaceVideoProjectPath(relativePath) { releaseWorkspaceVideo(); loadError = WorkspaceFileDeletionError.changed.localizedDescription }
+            cancelDeletionPreparation(); printPreparation = nil; invalidateDrawingTransferRoute()
+        }
+        .onChange(of: center.fileService?.guardResolver.rootURL) { _, _ in
+            if WorkspaceFileRouter.isWorkspaceVideoProjectPath(relativePath) { releaseWorkspaceVideo(); loadError = WorkspaceFileDeletionError.changed.localizedDescription }
+            cancelDeletionPreparation(); printPreparation = nil; invalidateDrawingTransferRoute()
+        }
         .onChange(of: engineeringConversationID) { _, _ in printPreparation = nil; invalidateDrawingTransferRoute() }
         .fullScreenCover(isPresented: $isDrawingTransferPresented, onDismiss: finishDrawingTransferPresentation) {
             if let destination = drawingTransferDestination {
@@ -493,6 +516,7 @@ struct FilePreviewView: View {
                 .ignoresSafeArea()
         }
         .onDisappear {
+            releaseWorkspaceVideo()
             cancelDeletionPreparation()
             // This also runs for modal transitions. Only the source callback
             // epoch changes: an already accepted route keeps its operation.
@@ -1554,7 +1578,23 @@ struct FilePreviewView: View {
         }
     }
 
+    private var isWorkspaceVideoCandidate: Bool {
+        guard let id = center.currentWorkspace?.id else { return false }
+        return WorkspaceFileRouter.isWorkspaceVideoProjectPath(displayedPath, workspaceID: id)
+    }
+
+    @MainActor private func releaseWorkspaceVideo() {
+        workspaceVideoGeneration = UUID()
+        workspaceVideoChecking = false
+        if let opened = workspaceVideoOpen {
+            workspaceVideoOpen = nil
+            opened.lease.release()
+        }
+    }
+
     private func load() async {
+        releaseWorkspaceVideo()
+        let workspaceVideoTicket = workspaceVideoGeneration
         // A view retargeted to another file must not keep showing (or acting
         // on) the previous file's recovered copy.
         if recoveredCopyOrigin != relativePath {
@@ -1635,6 +1675,44 @@ struct FilePreviewView: View {
         guard center.fileService != nil else {
             loadError = String(localized: "inspector.no_workspace")
             return
+        }
+        if isWorkspaceVideoCandidate {
+            workspaceVideoChecking = true
+            do {
+                let scope = try WorkspaceFileActionScope(center: center)
+                let classification = try await StudioWorkspaceVideoService.classifyVideoPathForNativeUI(
+                    relativePath: path, center: center, expectedScope: scope, environment: environment)
+                try Task.checkCancellation()
+                try scope.validate(center)
+                guard workspaceVideoGeneration == workspaceVideoTicket, displayedPath == path else {
+                    throw WorkspaceFileDeletionError.changed
+                }
+                if classification == .verified {
+                    let opened = try await StudioWorkspaceVideoService.openForNativeUI(
+                        relativePath: path, center: center, expectedScope: scope, environment: environment)
+                    do {
+                        try Task.checkCancellation()
+                        try scope.validate(center)
+                        guard workspaceVideoGeneration == workspaceVideoTicket, displayedPath == path else {
+                            throw WorkspaceFileDeletionError.changed
+                        }
+                    } catch {
+                        opened.lease.release()
+                        throw error
+                    }
+                    workspaceVideoOpen = .init(record: opened.record, directory: opened.directory, workspaceID: scope.workspaceID, lease: opened.lease)
+                    workspaceVideoChecking = false
+                    return
+                }
+                if classification == .unavailableBound { throw PersonalContentError.changedDocument }
+                workspaceVideoChecking = false
+            } catch {
+                if workspaceVideoGeneration == workspaceVideoTicket, !Task.isCancelled {
+                    workspaceVideoChecking = false
+                    loadError = error.localizedDescription
+                }
+                return
+            }
         }
         if (path as NSString).pathExtension.lowercased() == "floecad" {
             // Native FloeCAD package: a directory with JSON metadata and

@@ -194,6 +194,17 @@ final class IDEWorkspaceTabStore: ObservableObject {
         case .documentViewer, .cadViewer, .imageViewer, .mediaEditor, .archiveBrowser, .quickLook:
             kind = .document
         }
+        return openTyped(relativePath: relativePath, kind: kind)
+    }
+
+    /// Caller must first verify the workspace package binding. The name
+    /// alone is not authority to treat an arbitrary path as a document.
+    @discardableResult
+    func openVerifiedWorkspaceDocument(relativePath: String) -> IDEWorkspaceTab {
+        openTyped(relativePath: relativePath, kind: .document)
+    }
+
+    private func openTyped(relativePath: String, kind: IDEWorkspaceTabKind) -> IDEWorkspaceTab {
         if let existing = tabs.first(where: { $0.id == relativePath }) {
             activeTabID = existing.id
             return existing

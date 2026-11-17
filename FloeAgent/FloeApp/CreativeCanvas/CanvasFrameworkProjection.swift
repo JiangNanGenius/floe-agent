@@ -10,6 +10,13 @@ import FloeCanvasIntegration
 enum CanvasFrameworkProjection {
     static let frameworkStateKey = "floe.framework.project"
     static let frameworkNodeKind = "floe.framework.node"
+    private static let legacyNodeExtrasKey = "floe.framework.nodeExtras.v1"
+
+    private struct LegacyNodeExtras: Codable {
+        var generationJobID: UUID?
+        var sourceURLs: [URL]
+        var shape: FloeCore.CanvasShapeKind?
+    }
 
     static func snapshot(_ project: FloeCore.CanvasProject) throws -> CanvasSnapshot {
         var state = project
@@ -83,6 +90,14 @@ enum CanvasFrameworkProjection {
             let projectedNodes = Dictionary(uniqueKeysWithValues: projected.nodes.map { ($0.id, $0) })
             let nodeIDs = Set(document.nodes.map(\.id))
             var edits: [CanvasEditOperation] = []
+            var afterEdits: [CanvasDocumentOperation] = []
+            var deferredLocks: [CanvasEditOperation] = []
+            let existingGroupIDs = Set(old.groups.map(\.id))
+            let newGroupIDs = Set(document.nodes.compactMap(\.groupID)).subtracting(existingGroupIDs)
+            for groupID in newGroupIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
+                let name = document.nodes.first(where: { $0.id == groupID })?.text ?? ""
+                operations.append(.createGroup(pageID: document.id, group: .init(id: groupID, name: name)))
+            }
             let connections = Dictionary(uniqueKeysWithValues: document.connections.map { ($0.id, $0) })
             for connection in old.connections where connections[connection.id] == nil
                 && nodeIDs.contains(connection.sourceNodeID) && nodeIDs.contains(connection.destinationNodeID) {
@@ -91,7 +106,16 @@ enum CanvasFrameworkProjection {
             for node in old.nodes where !nodeIDs.contains(node.id) { edits.append(.removeNode(nodeID: node.id)) }
             for value in document.nodes {
                 guard let oldNode = oldNodes[value.id], let oldProjection = projectedNodes[value.id] else {
-                    edits.append(.insertNode(try nativeNode(value))); continue
+                    var inserted = try nativeNode(value)
+                    if value.groupID != nil && value.isLocked {
+                        inserted.isLocked = false
+                        deferredLocks.append(.setLocked(nodeID: value.id, isLocked: true))
+                    }
+                    edits.append(.insertNode(inserted))
+                    if value.groupID != nil {
+                        afterEdits.append(.updateNodeOwnership(nodeID: value.id, groupID: value.groupID, createdByRunID: value.createdByRunID))
+                    }
+                    continue
                 }
                 if value == oldProjection { continue }
                 if oldNode.isLocked && !value.isLocked { edits.append(.setLocked(nodeID: value.id, isLocked: false)) }
@@ -101,18 +125,34 @@ enum CanvasFrameworkProjection {
                 if value.title != oldProjection.title { edits.append(.updateTitle(nodeID: value.id, title: value.title)) }
                 if value.position != oldProjection.position { edits.append(.move(nodeID: value.id, center: .init(x: value.x, y: value.y))) }
                 if value.size != oldProjection.size { edits.append(.resize(nodeID: value.id, size: .init(width: value.width, height: value.height))) }
-                if !oldNode.isLocked && value.isLocked { edits.append(.setLocked(nodeID: value.id, isLocked: true)) }
-                if value.rotation != oldProjection.rotation { operations.append(.updateNodeRotation(nodeID: value.id, rotationDegrees: value.rotation)) }
-                if value.zIndex != oldProjection.zIndex { operations.append(.updateNodeStyle(nodeID: value.id, zIndex: value.zIndex)) }
+                if !oldNode.isLocked && value.isLocked { deferredLocks.append(.setLocked(nodeID: value.id, isLocked: true)) }
+                if value.rotation != oldProjection.rotation { afterEdits.append(.updateNodeRotation(nodeID: value.id, rotationDegrees: value.rotation)) }
+                if value.zIndex != oldProjection.zIndex { afterEdits.append(.updateNodeStyle(nodeID: value.id, zIndex: value.zIndex)) }
+                if value.groupID != oldProjection.groupID || value.createdByRunID != oldProjection.createdByRunID {
+                    afterEdits.append(.updateNodeOwnership(nodeID: value.id, groupID: value.groupID, createdByRunID: value.createdByRunID))
+                }
                 let changed = value.metadata.filter { oldProjection.metadata[$0.key] != $0.value }
                 let removed = oldProjection.metadata.keys.filter { value.metadata[$0] == nil }
                 if !changed.isEmpty || !removed.isEmpty {
-                    operations.append(.updateNodeMetadata(nodeID: value.id, values: changed, removingKeys: Array(removed)))
+                    afterEdits.append(.updateNodeMetadata(nodeID: value.id, values: changed, removingKeys: Array(removed)))
                 }
                 // Native child/media edits are retained in full. A geometry
                 // gesture never re-encodes or flattens existing rich content.
-                if value.asset != oldProjection.asset || value.scene3D != oldProjection.scene3D || value.kind != oldProjection.kind {
+                let extrasChanged = value.generationJobID != oldProjection.generationJobID ||
+                    value.sourceURLs != oldProjection.sourceURLs || value.shape != oldProjection.shape
+                let opaque: Bool = { if case .unknown(let kind, _) = oldNode.content { return kind == frameworkNodeKind }; return false }()
+                if value.asset != oldProjection.asset || value.scene3D != oldProjection.scene3D || value.kind != oldProjection.kind || (opaque && extrasChanged) {
                     edits.append(.updateContent(nodeID: value.id, content: try preservedFrameworkContent(value)))
+                } else if extrasChanged {
+                    // A native rich node must keep its native content; retain
+                    // legacy-only fields in a namespaced sidecar instead.
+                    let extras = LegacyNodeExtras(generationJobID: value.generationJobID, sourceURLs: value.sourceURLs, shape: value.shape)
+                    let raw = String(decoding: try JSONEncoder().encode(extras), as: UTF8.self)
+                    afterEdits.append(.updateNodeMetadata(nodeID: value.id, values: [legacyNodeExtrasKey: raw], removingKeys: []))
+                    if value.shape != oldProjection.shape, case .shape(_, let text) = oldNode.content,
+                       let shape = value.shape.flatMap({ FloeCanvasCore.CanvasShapeKind(rawValue: $0.rawValue) }) {
+                        edits.append(.updateContent(nodeID: value.id, content: .shape(kind: shape, text: value.text != oldProjection.text ? value.text : text)))
+                    }
                 }
             }
             let oldConnections = Dictionary(uniqueKeysWithValues: old.connections.map { ($0.id, $0) })
@@ -125,7 +165,9 @@ enum CanvasFrameworkProjection {
                 } else { edits.append(.insertConnection(connection)) }
             }
             if document.pencilDrawingData != old.pencilDrawingData { edits.append(.setPencilDrawingData(document.pencilDrawingData)) }
-            if !edits.isEmpty { operations.insert(.editPage(.init(pageID: document.id, operations: edits)), at: 0) }
+            if !edits.isEmpty { operations.append(.editPage(.init(pageID: document.id, operations: edits))) }
+            operations.append(contentsOf: afterEdits)
+            if !deferredLocks.isEmpty { operations.append(.editPage(.init(pageID: document.id, operations: deferredLocks))) }
             let oldStrokes = Dictionary(uniqueKeysWithValues: old.strokes.map { ($0.id, $0) })
             let strokes = Dictionary(uniqueKeysWithValues: document.strokes.map { ($0.id, $0) })
             for stroke in old.strokes where strokes[stroke.id] == nil { operations.append(.removeStroke(strokeID: stroke.id)) }
@@ -159,15 +201,24 @@ enum CanvasFrameworkProjection {
             original.metadata = value.metadata; original.createdByRunID = value.createdByRunID
             return original
         }
+        var metadata = value.metadata
+        let extras: LegacyNodeExtras?
+        if let raw = metadata.removeValue(forKey: legacyNodeExtrasKey) {
+            guard let data = raw.data(using: .utf8) else { throw PersonalContentError.invalidProject }
+            extras = try JSONDecoder().decode(LegacyNodeExtras.self, from: data)
+        } else { extras = nil }
         var result = FloeCore.CanvasNode(id: value.id, kind: .card, title: value.title,
             text: CanvasHostSources.text(value.content) ?? value.title ?? "",
             position: .init(x: value.frame.center.x, y: value.frame.center.y),
             size: .init(width: value.frame.size.width, height: value.frame.size.height),
             rotation: value.rotationDegrees, zIndex: value.zIndex, isLocked: value.isLocked,
-            groupID: value.groupID, createdByRunID: value.createdByRunID, metadata: value.metadata)
+            groupID: value.groupID, createdByRunID: value.createdByRunID, metadata: metadata)
         switch value.content {
         case .text: result.kind = .text
-        case .shape(let kind, _): result.kind = .shape; result.shape = .init(rawValue: kind.rawValue) ?? .roundedRectangle
+        case .shape(let kind, let text):
+            result.kind = .shape
+            result.shape = .init(rawValue: kind.rawValue) ?? .roundedRectangle
+            result.text = text
         case .media(let locator):
             result.kind = locator.mimeType?.hasPrefix("video/") == true ? .video : locator.mimeType?.hasPrefix("audio/") == true ? .audio : .image
             result.asset = asset(locator, record: record)
@@ -179,6 +230,11 @@ enum CanvasFrameworkProjection {
         }
         if value.kind == .legacyGroup { result.kind = .group }
         if value.kind == .generationTask, CanvasFlowCardBinding(metadata: value.metadata) == nil { result.kind = .generationTask }
+        if let extras {
+            result.generationJobID = extras.generationJobID
+            result.sourceURLs = extras.sourceURLs
+            result.shape = extras.shape
+        }
         return result
     }
 
