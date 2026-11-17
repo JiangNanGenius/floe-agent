@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 会议导出/分享。仅新增此功能的文案；持久化默认值与录音通知文案保留在 meeting_strings.xml。 -->
+    <string name="meeting_exchange_format_txt">纯文本（.txt）</string>
+    <string name="meeting_exchange_format_markdown">Markdown（.md）</string>
+    <string name="meeting_exchange_share_chooser">分享会议</string>
+    <string name="meeting_exchange_share_opened">分享面板已打开。选择应用后才会发送内容。</string>
+    <string name="meeting_exchange_saved">会议已导出。</string>
+
+    <string name="meeting_exchange_error_not_found">此会议已不可用。</string>
+    <string name="meeting_exchange_error_read_failed">无法读取此会议，未导出任何内容。</string>
+    <string name="meeting_exchange_error_identity_mismatch">会议数据与所选会议不一致，未导出任何内容。</string>
+    <string name="meeting_exchange_error_too_large">此会议过大，无法导出。</string>
+    <string name="meeting_exchange_error_meeting_changed">所选会议已变更，请重新选择会议。</string>
+    <string name="meeting_exchange_error_invalid_destination">无法写入该位置。</string>
+    <string name="meeting_exchange_error_write_permission_missing">所选位置的写入权限已失效。</string>
+    <string name="meeting_exchange_error_destination_not_empty">所选文档已有内容，请选择新文件。</string>
+    <string name="meeting_exchange_error_destination_unreadable">无法检查所选位置，请选择其他位置。</string>
+    <string name="meeting_exchange_error_write_failed">导出写入失败，未确认保存。</string>
+    <string name="meeting_exchange_error_share_too_large">此会议过大，无法以文本分享。请改为保存文件。</string>
+    <string name="meeting_exchange_error_share_failed">无法打开分享面板。</string>
+
+    <string name="meeting_exchange_label_created">创建时间</string>
+    <string name="meeting_exchange_label_updated">更新时间</string>
+    <string name="meeting_exchange_label_materials">媒体</string>
+    <string name="meeting_exchange_label_recordings">录音</string>
+    <string name="meeting_exchange_label_imports">导入</string>
+    <string name="meeting_exchange_heading_notes">笔记</string>
+    <string name="meeting_exchange_heading_transcript">转录</string>
+    <string name="meeting_exchange_no_notes">此会议没有保存笔记。</string>
+    <string name="meeting_exchange_no_transcript">此会议没有可用的转录。</string>
+    <string name="meeting_exchange_speaker_fallback">发言人</string>
+    <string name="meeting_exchange_untitled_meeting">会议</string>
+</resources>
