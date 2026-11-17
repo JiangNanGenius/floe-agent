@@ -1055,6 +1055,89 @@ public final class G02InstalledComposition: @unchecked Sendable {
         guard AndroidRuntimeBootstrap.bootstrapStillCurrent(epoch: epoch, owner: gen.owner) else {
             return nil
         }
+        // RB3b/RB3: durable memory and cross-task history are REAL tools over
+        // the SAME accepted generation database, not discovery placeholders.
+        // The availability closure is the generation fence: the process-wide
+        // registry may still hold an older runner, but a retired epoch (or a
+        // store that is not ready) removes it from discovery AND execution.
+        // Memory writes resolve their owning conversation through the run
+        // row and additionally pass the ordinary approval policy; memory
+        // recall reads only the person-level user/global facts. The exact
+        // memory-write identity remains the only Plan exception in
+        // `PlanToolPolicy`. Temporary and Notes runs never admit these names
+        // through their existing immutable ceilings.
+        //
+        // Memory registration is deliberately the OWNED subset: remember
+        // writes against this run's conversation and recall reads only the
+        // person-level user/global facts. The cross-task inspection and
+        // maintenance tools (search/list/update/forget/organizePreview/
+        // batchApply) stay unregistered until per-entry task/workspace
+        // authorization exists, because their current store APIs accept a
+        // model-supplied task/workspace id or scan every task scope.
+        let toolGenerationAvailable: @Sendable () -> Bool = {
+            guard let pumps = AndroidRuntimeBootstrap.currentPumps() else { return false }
+            return pumps.storeReady && pumps.epoch == epoch
+        }
+        registerMemoryTools(
+            registry: runComponents.registry,
+            store: intelligence,
+            taskIDForRun: { runID in
+                // Re-prove the ACTIVE run in this generation at the callable
+                // boundary too: a captured runner cannot write memory for a
+                // retired root or an already-ended run.
+                guard let pumps = AndroidRuntimeBootstrap.currentPumps(),
+                      pumps.epoch == epoch, pumps.storeReady,
+                      let run = try await cluster.runStore.run(id: runID),
+                      run.endedAt == nil
+                else { return nil }
+                return run.conversationID
+            },
+            includeGlobalMemoryInspection: false,
+            isAvailable: toolGenerationAvailable)
+        // Read-only history tools only: `conversation.spawn` stays
+        // unregistered until a real host producer can expose the new task and
+        // the explicit-request/ownership proof has an end-to-end test. A
+        // successful discovery entry alone is never treated as that proof.
+        //
+        // The authorizer is the callable boundary: it re-proves the ACTIVE
+        // durable run in THIS generation, requires the runtime-issued
+        // conversation identity to match that run, and derives the existing
+        // workspace ownership. Search/list are forced into that workspace;
+        // model `workspaceID`/`includeAllWorkspaces` cannot widen it. A read
+        // target must be an ordinary conversation in the same workspace. Any
+        // lookup failure returns nil and the tool fails closed — an unknown
+        // run never becomes "no current task, so show everything".
+        let conversationHistoryAuthorizer: ConversationHistoryAuthorizer = {
+            context, targetConversationID in
+            guard let pumps = AndroidRuntimeBootstrap.currentPumps(),
+                  pumps.epoch == epoch, pumps.storeReady else { return nil }
+            guard let run = try await cluster.runStore.run(id: context.runID),
+                  run.endedAt == nil,
+                  let boundConversationID = context.conversationID,
+                  boundConversationID == run.conversationID,
+                  let conversation = try await conversations.conversation(
+                    id: boundConversationID),
+                  conversation.purpose == .ordinary,
+                  let workspaceID = try await workspace.workspaceID(
+                    conversationID: boundConversationID)
+            else { return nil }
+            if let targetConversationID, targetConversationID != boundConversationID {
+                guard let target = try await conversations.conversation(
+                        id: targetConversationID),
+                      target.purpose == .ordinary
+                else { return nil }
+                let targetWorkspaceID = try await workspace.workspaceID(
+                    conversationID: targetConversationID)
+                guard targetWorkspaceID == workspaceID else { return nil }
+            }
+            return ConversationHistoryScope(
+                conversationID: boundConversationID, workspaceID: workspaceID)
+        }
+        registerConversationTools(
+            registry: runComponents.registry,
+            reader: intelligence,
+            authorize: conversationHistoryAuthorizer,
+            isAvailable: toolGenerationAvailable)
         // Use the existing validated install/manage/read adapters over the
         // SAME domain as Settings. Registration does not widen task/model,
         // Notes or temporary-chat ceilings, nor grant skill capabilities.

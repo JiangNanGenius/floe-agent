@@ -7,12 +7,14 @@ import FloeCore
 enum ToolDiscovery {
     static let coreNames: Set<String> = ["skill.search", "skill.read", "skill.list", "checklist.readPlan", "checklist.updatePlan", "exec.shell"]
 
-    /// Canonical durable-memory names the runtime is designed to serve.
-    /// Android's current composition does not call `registerMemoryTools`, so
-    /// these stay absent from the live catalog until that wiring exists; a
-    /// name here never creates a runner. The Agent base offers the full set,
-    /// while Plan's base covers the read-only lookups plus the exact
-    /// policy-approved writes.
+    /// Canonical durable-memory names the runtime can serve. The G02 ordinary
+    /// composition registers only the currently authorized subset
+    /// (`memory.remember` + `memory.recall`) under the accepted generation;
+    /// this presentation list creates nothing by itself, and an unregistered,
+    /// unavailable or retired tool is never offered. The Agent base offers the
+    /// full candidate set, while Plan's base covers the read-only lookups plus
+    /// the exact policy-approved writes; the live-catalog intersection is what
+    /// removes every tool the composition did not register.
     static let memoryToolNames: Set<String> = [
         "memory.search", "memory.recall", "memory.list",
         "memory.remember", "memory.update", "memory.forget",

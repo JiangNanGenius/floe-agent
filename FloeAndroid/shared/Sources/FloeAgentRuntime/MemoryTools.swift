@@ -45,7 +45,7 @@ public struct MemoryRememberTool: AgentTool {
       "type": "object",
       "properties": {
         "content": {"type": "string", "description": "The memory content to store"},
-        "scope": {"type": "string", "description": "\"user\" or \"global\" (default \"global\")"},
+        "scope": {"type": "string", "description": "\"user\", \"global\" or this run's own \"task\" (default \"global\")"},
         "importance": {"type": "number", "description": "Importance 0..1 (default 0.5)"},
         "isPinned": {"type": "boolean", "description": "Pin this memory so it always surfaces"}
         ,"subjectKey": {"type": "string", "description": "Stable fact subject, for example host:hk4h4g"}
@@ -170,12 +170,12 @@ public struct MemoryRecallTool: AgentTool {
 
     public static let name = "memory.recall"
     public static let toolDescription =
-        "List active durable memories for a scope (\"user\" or \"global\"), most important first. Use it to remember preferences, decisions and conventions recorded with memory.remember."
+        "List active durable memories for a scope (\"user\", \"global\" or this run's own \"task\"), most important first. Use it to remember preferences, decisions and conventions recorded with memory.remember."
     public static let parametersJSON = #"""
     {
       "type": "object",
       "properties": {
-        "scope": {"type": "string", "description": "\"user\" or \"global\" (default \"global\")"}
+        "scope": {"type": "string", "description": "\"user\", \"global\" or this run's own \"task\" (default \"global\")"}
       },
       "required": [],
       "additionalProperties": false
@@ -186,20 +186,34 @@ public struct MemoryRecallTool: AgentTool {
     public static let toolEffect: ToolEffect = .readOnly
 
     private let store: any DurableMemoryStore
+    private let taskIDForRun: @Sendable (UUID) async throws -> UUID?
 
-    public init(store: any DurableMemoryStore) {
+    public init(
+        store: any DurableMemoryStore,
+        taskIDForRun: @escaping @Sendable (UUID) async throws -> UUID? = { _ in nil }
+    ) {
         self.store = store
+        self.taskIDForRun = taskIDForRun
     }
 
     public func validate(_ args: Arguments) throws {}
 
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
+        let scope: MemoryScope
+        if ["task", "conversation"].contains(args.scope?.lowercased() ?? "") {
+            // Task-scoped recall resolves the owner from THIS run. It can
+            // never be pointed at another task by model input.
+            guard let ownerTaskID = try await taskIDForRun(context.runID) else {
+                return MemoryRememberTool.output(
+                    "status=failed error=memory owner task is unavailable", exitStatus: 1)
+            }
+            scope = .task(ownerTaskID)
+        } else {
+            scope = MemoryRememberTool.parseScope(args.scope)
+        }
         do {
-            let entries = try await store.memories(
-                scope: MemoryRememberTool.parseScope(args.scope),
-                status: .active
-            )
+            let entries = try await store.memories(scope: scope, status: .active)
             let sorted = entries.sorted {
                 if $0.isPinned != $1.isPinned { return $0.isPinned }
                 if $0.importance != $1.importance { return $0.importance > $1.importance }
@@ -531,27 +545,52 @@ public struct MemoryBatchApplyTool: AgentTool {
 }
 
 /// Registers the memory tools against the shared durable memory store.
+///
+/// `isAvailable` is the generation fence: Android's composition registers
+/// these runners on the process-wide registry, so a closure that proves the
+/// SAME accepted epoch and a ready store keeps a retired generation's tools
+/// out of discovery and execution. `nil` keeps the historical
+/// always-registered behavior for isolated fixtures.
+///
+/// `includeGlobalMemoryInspection` controls the tools that scan or maintain
+/// memory ACROSS task/workspace scopes (`memory.search`, `memory.list`,
+/// `memory.update`, `memory.forget`, `memory.organizePreview`,
+/// `memory.batchApply`). Those need per-entry ownership/scope authorization
+/// before they can be exposed to a model; without it they would let model
+/// input select another task's memory. The SAFE DEFAULT is `false`: only
+/// `memory.remember` (owning-task write, approval-gated) and `memory.recall`
+/// (user/global durable facts) are registered. A caller may opt in only after
+/// it can prove that authority.
 @discardableResult
 public func registerMemoryTools(
     registry: ToolRunnerRegistry = .shared,
     store: any DurableMemoryStore,
-    taskIDForRun: @escaping @Sendable (UUID) async throws -> UUID? = { _ in nil }
+    taskIDForRun: @escaping @Sendable (UUID) async throws -> UUID? = { _ in nil },
+    includeGlobalMemoryInspection: Bool = false,
+    isAvailable: (@Sendable () -> Bool)? = nil
 ) -> any DurableMemoryStore {
+    func erased<T: AgentTool>(_ tool: T) -> AnyAgentTool {
+        var value = AnyAgentTool(tool)
+        if let isAvailable { value.isAvailable = isAvailable }
+        return value
+    }
     ToolCatalog.register(MemoryRememberTool.self)
     ToolCatalog.register(MemoryRecallTool.self)
+    registry.register(erased(MemoryRememberTool(store: store, taskIDForRun: taskIDForRun)))
+    registry.register(erased(MemoryRecallTool(
+        store: store, taskIDForRun: taskIDForRun)))
+    guard includeGlobalMemoryInspection else { return store }
     ToolCatalog.register(MemorySearchTool.self)
     ToolCatalog.register(MemoryListTool.self)
     ToolCatalog.register(MemoryUpdateTool.self)
     ToolCatalog.register(MemoryForgetTool.self)
     ToolCatalog.register(MemoryOrganizePreviewTool.self)
     ToolCatalog.register(MemoryBatchApplyTool.self)
-    registry.register(MemoryRememberTool(store: store, taskIDForRun: taskIDForRun))
-    registry.register(MemoryRecallTool(store: store))
-    registry.register(MemorySearchTool(store: store))
-    registry.register(MemoryListTool(store: store))
-    registry.register(MemoryUpdateTool(store: store))
-    registry.register(MemoryForgetTool(store: store))
-    registry.register(MemoryOrganizePreviewTool(store: store))
-    registry.register(MemoryBatchApplyTool(store: store))
+    registry.register(erased(MemorySearchTool(store: store)))
+    registry.register(erased(MemoryListTool(store: store)))
+    registry.register(erased(MemoryUpdateTool(store: store)))
+    registry.register(erased(MemoryForgetTool(store: store)))
+    registry.register(erased(MemoryOrganizePreviewTool(store: store)))
+    registry.register(erased(MemoryBatchApplyTool(store: store)))
     return store
 }
