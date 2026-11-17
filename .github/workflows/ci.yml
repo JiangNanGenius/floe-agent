@@ -241,10 +241,9 @@ jobs:
     needs: validate-selectors
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.cloud_device_only }}
     permissions:
-      # DRAFT: GitHub denied contents:read for draft release assets. This
-      # job-wide write permission is proposed for review; it can mutate the
-      # repository and must not be enabled or dispatched before approval.
-      contents: write
+      # The one-time build completed; its draft transport was retired.
+      # Restore read-only permissions for any future dispatch.
+      contents: read
       actions: read
     uses: ./.github/workflows/cloud-device-build-only.yml
     with:

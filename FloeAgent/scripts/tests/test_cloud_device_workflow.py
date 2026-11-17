@@ -69,8 +69,8 @@ class CloudDeviceWorkflowTests(unittest.TestCase):
             self.assertNotIn(forbidden, self.build)
             self.assertNotIn(forbidden, self.caller)
         cloud_header = self.caller.split('  cloud-device:', 1)[1].split('\n  live-agent-demo:', 1)[0]
-        self.assertIn('contents: write', cloud_header)
-        self.assertRegex(self.build, r'device:\s*\n(?:.*\n)*?    permissions:\s*\n\s+contents: write')
+        self.assertIn('contents: read', cloud_header)
+        self.assertRegex(self.build, r'device:\s*\n(?:.*\n)*?    permissions:\s*\n\s+contents: read')
 
     def test_restricted_simulation_input_checked_before_and_after_build(self):
         step = next(s for s in self.steps if s.startswith('Retrieve and verify restricted SimulationKit inputs\n'))
@@ -82,7 +82,7 @@ class CloudDeviceWorkflowTests(unittest.TestCase):
         self.assertGreaterEqual(self.build.count('verify_apple.py --check'), 2)
         self.assertIn("'simulationInputs': simulation_evidence", self.build)
         self.assertIn('-p test_cloud_simulation_transport.py', self.caller)
-        self.assertIn('DRAFT ONLY', self.build)
+        self.assertIn('one-time qualified build completed', self.build)
 
     def test_failure_diagnostics_work_when_checkout_fails(self):
         diagnostics = next(s for s in self.steps if s.startswith('Encrypt failure diagnostics\n'))

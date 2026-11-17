@@ -39,10 +39,10 @@ concurrency:
 
 jobs:
   device:
-    # DRAFT ONLY: required for draft release visibility after contents:read
-    # returned 403. This token can also write repository contents; review first.
+    # The one-time qualified build completed and its draft was retired.
+    # This workflow no longer receives repository write permissions.
     permissions:
-      contents: write
+      contents: read
       actions: read
     runs-on: xcode-27
     timeout-minutes: 150
