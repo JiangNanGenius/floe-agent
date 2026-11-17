@@ -87,6 +87,16 @@ public enum C03VoiceBridge {
             return applyChunk(object, operation: operation)
         case "c03.asr.finish":
             return finishChunks(object, operation: operation)
+        case "c03.meeting.asr.plan":
+            return planMeetingTranscription(object, operation: operation)
+        case "c03.meeting.asr.chunk":
+            return applyMeetingChunk(object, operation: operation)
+        case "c03.meeting.asr.finish":
+            return finishMeetingChunks(object, operation: operation)
+        case "c03.meeting.asr.page":
+            return meetingASRPage(object, operation: operation)
+        case "c03.meeting.asr.cancel":
+            return cancelMeetingASR(object, operation: operation)
         case "c03.asr.text":
             return asrText(object, operation: operation)
         case "c03.asr.utterance.start":
@@ -423,6 +433,197 @@ public enum C03VoiceBridge {
             await C03VoiceDomain.shared.cancelTranscription(id)
             return true
         }.map { _ in ["ok": true] }
+    }
+
+    // MARK: - Independent meeting material transcription
+
+    private struct MeetingIdentityInput: Sendable {
+        var meetingID: String
+        var materialID: String
+    }
+
+    /// The only accepted meeting identity is a canonical lowercase UUID pair.
+    /// A meeting/material id is never derived from a path or display name.
+    private static func meetingIdentity(
+        _ object: [String: Any]
+    ) throws -> MeetingIdentityInput {
+        guard let meetingID = boundedString(object["meetingID"], 64),
+              let materialID = boundedString(object["materialID"], 64),
+              C03VoiceDomain.isCanonicalMeetingIdentifier(meetingID),
+              C03VoiceDomain.isCanonicalMeetingIdentifier(materialID) else {
+            throw C03VoiceError(.invalidSelection, "meetingIdentityInvalid")
+        }
+        return MeetingIdentityInput(
+            meetingID: meetingID, materialID: materialID)
+    }
+
+    private static func planMeetingTranscription(
+        _ object: [String: Any], operation: String
+    ) -> [String: Any] {
+        do {
+            let epoch = try requireEpoch(object)
+            let identity = try meetingIdentity(object)
+            guard let sourceBytes = exactInt64(object["sourceBytes"]),
+                  sourceBytes > 0 else {
+                throw C03VoiceError(.invalidSelection, "invalidMeetingSourceBytes")
+            }
+            guard let duration = double(object["durationSeconds"]),
+                  duration.isFinite, duration > 0 else {
+                throw C03VoiceError(.invalidSelection, "invalidMeetingSourceDuration")
+            }
+            let selection = try parseSelection(object["selection"])
+            let language = boundedString(object["language"], 64)
+            return block(seconds: 45, operation: operation) {
+                try await C03VoiceDomain.shared.planMeetingTranscription(
+                    meetingID: identity.meetingID,
+                    materialID: identity.materialID,
+                    sourceBytes: sourceBytes,
+                    durationSeconds: duration,
+                    selection: selection,
+                    language: language,
+                    epoch: epoch)
+            }.map { plan in
+                [
+                    "ok": true,
+                    "operationID": plan.operationID,
+                    "stagingPath": plan.stagingPath,
+                    "sourceBytes": plan.sourceBytes,
+                    "durationSeconds": plan.durationSeconds,
+                    "chunkLimitBytes": plan.chunkLimitBytes,
+                    "estimatedChunks": plan.estimatedChunks,
+                ]
+            }
+        } catch let error as C03VoiceError {
+            return failure(error, operation: operation)
+        } catch {
+            return failure(
+                C03VoiceError(.invalidSelection, "invalidMeetingTranscriptionPlan"),
+                operation: operation)
+        }
+    }
+
+    private static func applyMeetingChunk(
+        _ object: [String: Any], operation: String
+    ) -> [String: Any] {
+        do {
+            let identity = try meetingIdentity(object)
+            guard let id = boundedString(object["operationID"], 128),
+                  let chunkIndex = integer(object["chunkIndex"]),
+                  let sourceStart = double(object["sourceStart"]),
+                  let sourceDuration = double(object["sourceDuration"]),
+                  let sampleRate = integer(object["sampleRate"]),
+                  let channels = integer(object["channels"]) else {
+                throw C03VoiceError(.invalidSelection, "invalidMeetingChunkRequest")
+            }
+            return block(seconds: 300, operation: operation) {
+                try await C03VoiceDomain.shared.applyMeetingChunk(
+                    meetingID: identity.meetingID,
+                    materialID: identity.materialID,
+                    operationID: id,
+                    chunkIndex: chunkIndex,
+                    sourceStart: sourceStart,
+                    sourceDuration: sourceDuration,
+                    sampleRate: sampleRate,
+                    channels: channels)
+            }.map { count in
+                ["ok": true, "segmentCount": count]
+            }
+        } catch let error as C03VoiceError {
+            return failure(error, operation: operation)
+        } catch {
+            return failure(
+                C03VoiceError(.invalidSelection, "invalidMeetingChunkRequest"),
+                operation: operation)
+        }
+    }
+
+    private static func finishMeetingChunks(
+        _ object: [String: Any], operation: String
+    ) -> [String: Any] {
+        do {
+            let identity = try meetingIdentity(object)
+            guard let id = boundedString(object["operationID"], 128),
+                  let totalChunks = integer(object["totalChunks"]),
+                  let sourceDuration = double(object["sourceDuration"]) else {
+                throw C03VoiceError(.invalidSelection, "invalidMeetingChunkFinish")
+            }
+            return block(seconds: 20, operation: operation) {
+                try await C03VoiceDomain.shared.finishMeetingChunks(
+                    meetingID: identity.meetingID,
+                    materialID: identity.materialID,
+                    operationID: id,
+                    totalChunks: totalChunks,
+                    sourceDuration: sourceDuration)
+            }.map { count in
+                ["ok": true, "segmentCount": count]
+            }
+        } catch let error as C03VoiceError {
+            return failure(error, operation: operation)
+        } catch {
+            return failure(
+                C03VoiceError(.invalidSelection, "invalidMeetingChunkFinish"),
+                operation: operation)
+        }
+    }
+
+    private static func meetingASRPage(
+        _ object: [String: Any], operation: String
+    ) -> [String: Any] {
+        do {
+            let identity = try meetingIdentity(object)
+            guard let id = boundedString(object["operationID"], 128) else {
+                throw C03VoiceError(.invalidSelection, "missingOperationID")
+            }
+            let offset = max(0, integer(object["offset"]) ?? 0)
+            let limit = min(max(1, integer(object["limit"]) ?? 100), 200)
+            return block(seconds: 5, operation: operation) {
+                try await C03VoiceDomain.shared.meetingASRPage(
+                    meetingID: identity.meetingID,
+                    materialID: identity.materialID,
+                    operationID: id,
+                    offset: offset,
+                    limit: limit)
+            }.map { page in
+                [
+                    "ok": true,
+                    "segments": page.segments.map { segment in
+                        ["start": segment.start, "end": segment.end, "text": segment.text]
+                    },
+                    "nextOffset": page.nextOffset,
+                    "total": page.total,
+                ]
+            }
+        } catch let error as C03VoiceError {
+            return failure(error, operation: operation)
+        } catch {
+            return failure(
+                C03VoiceError(.invalidSelection, "invalidMeetingPageRequest"),
+                operation: operation)
+        }
+    }
+
+    private static func cancelMeetingASR(
+        _ object: [String: Any], operation: String
+    ) -> [String: Any] {
+        do {
+            let identity = try meetingIdentity(object)
+            guard let id = boundedString(object["operationID"], 128) else {
+                throw C03VoiceError(.invalidSelection, "missingOperationID")
+            }
+            return block(seconds: 30, operation: operation) {
+                try await C03VoiceDomain.shared.cancelMeetingTranscription(
+                    meetingID: identity.meetingID,
+                    materialID: identity.materialID,
+                    operationID: id)
+                return true
+            }.map { _ in ["ok": true] }
+        } catch let error as C03VoiceError {
+            return failure(error, operation: operation)
+        } catch {
+            return failure(
+                C03VoiceError(.invalidSelection, "invalidMeetingCancelRequest"),
+                operation: operation)
+        }
     }
 
     private static func writeSubtitles(

@@ -284,6 +284,33 @@ public struct C03TranscriptionPlan: Sendable {
     public var estimatedChunks: Int
 }
 
+/// Bounded long-media plan for one independent MEETING material.
+///
+/// The Android meeting store resolves the exact recording/import by meeting
+/// ID + material ID and remains the sole owner of the source file. This plan
+/// accepts no caller path, resolves no G09 media project and synthesizes no
+/// task/utterance owner. It owns only bounded PCM staging for the native
+/// chunker, which is released on finish, failure or cancellation.
+public struct C03MeetingTranscriptionPlan: Sendable {
+    public var operationID: String
+    public var stagingPath: String
+    public var sourceBytes: Int64
+    public var durationSeconds: Double
+    public var chunkLimitBytes: Int64
+    public var estimatedChunks: Int
+
+    public init(operationID: String, stagingPath: String, sourceBytes: Int64,
+                durationSeconds: Double, chunkLimitBytes: Int64,
+                estimatedChunks: Int) {
+        self.operationID = operationID
+        self.stagingPath = stagingPath
+        self.sourceBytes = sourceBytes
+        self.durationSeconds = durationSeconds
+        self.chunkLimitBytes = chunkLimitBytes
+        self.estimatedChunks = estimatedChunks
+    }
+}
+
 public struct C03UtteranceStagingPlan: Sendable {
     public var pathToken: String
     public var path: String
@@ -1811,6 +1838,16 @@ public actor C03VoiceDomain {
         case single
         case chunked
         case utterance
+        /// Independent meeting recording/import. It has no G09 project,
+        /// task, conversation or utterance owner and can never write
+        /// subtitles back to a media project.
+        case meeting
+    }
+
+    /// Strict canonical meeting/material UUID binding for one operation.
+    private struct MeetingIdentity: Equatable, Sendable {
+        var meetingID: String
+        var materialID: String
     }
 
     private struct InflightChunk {
@@ -1833,6 +1870,9 @@ public actor C03VoiceDomain {
         var language: String?
         var epoch: UInt64
         var owner: C03VoiceOwner?
+        /// Non-nil only for `.meeting`. Every chunk/finish/page/cancel call
+        /// must present this exact meeting ID + material ID pair.
+        var meetingIdentity: MeetingIdentity?
         /// The `Voice` root owned when the operation was created. Cleanup
         /// uses this captured root even if the live composition was retired
         /// before cancellation drained.
@@ -1948,6 +1988,15 @@ public actor C03VoiceDomain {
         }
     }
 
+    /// Strict canonical lowercase UUID used by the independent meeting
+    /// store. A meeting/material id is never inferred from a path, display
+    /// name or another domain id.
+    nonisolated static func isCanonicalMeetingIdentifier(_ value: String) -> Bool {
+        guard value.utf8.count == 36,
+              let parsed = UUID(uuidString: value) else { return false }
+        return parsed.uuidString.lowercased() == value
+    }
+
     /// Removes only paths that live under the ONE owned `Voice` directory.
     /// A staging/source value can never cause a delete outside that root.
     private func removeOwned(_ url: URL?) {
@@ -2025,6 +2074,7 @@ public actor C03VoiceDomain {
             language: language?.nilIfEmpty,
             epoch: route.epoch,
             owner: owner,
+            meetingIdentity: nil,
             voiceRoot: ownedVoiceRoot(),
             task: nil,
             taskToken: token,
@@ -2106,6 +2156,7 @@ public actor C03VoiceDomain {
             language: language?.nilIfEmpty,
             epoch: epoch,
             owner: owner,
+            meetingIdentity: nil,
             voiceRoot: ownedVoiceRoot(),
             task: nil,
             taskToken: nil,
@@ -2122,6 +2173,93 @@ public actor C03VoiceDomain {
             estimatedChunks: estimated)
     }
 
+    // MARK: Independent meeting material plan/chunk/finish
+
+    /// Creates a bounded cloud-ASR operation for one meeting recording/import.
+    ///
+    /// The Android meeting store has already resolved the exact material by
+    /// meeting ID + material ID and verified that it is a playable app-owned
+    /// file. This method accepts only that identity and measured size/duration;
+    /// it does not accept a path, refresh a G09 project, create a task or use
+    /// the 60-second utterance owner. The native chunker writes bounded WAV
+    /// chunks into `stagingPath`, which this actor deletes on settlement.
+    public func planMeetingTranscription(
+        meetingID: String,
+        materialID: String,
+        sourceBytes: Int64,
+        durationSeconds: Double,
+        selection: C03VoiceSelection,
+        language: String?,
+        epoch: UInt64
+    ) async throws -> C03MeetingTranscriptionPlan {
+        guard Self.isCanonicalMeetingIdentifier(meetingID),
+              Self.isCanonicalMeetingIdentifier(materialID) else {
+            throw C03VoiceError(.invalidSelection, "meetingIdentityInvalid")
+        }
+        guard sourceBytes > 0, sourceBytes <= Self.maxSourceBytes else {
+            throw C03VoiceError(.fileTooLarge, "meetingSourceSizeInvalid")
+        }
+        guard durationSeconds.isFinite, durationSeconds > 0,
+              durationSeconds <= Double(Self.maxSourceDurationSeconds) else {
+            throw C03VoiceError(.invalidSelection, "meetingSourceDurationInvalid")
+        }
+        try requireAcceptingNewWork()
+        try requireEpoch(epoch)
+        guard selection.configured else {
+            throw C03VoiceError(.invalidSelection, "providerAndModelRequired")
+        }
+        let route = try await C03SpeechRouteResolver().resolve(selection)
+        try requireAcceptingNewWork()
+        try requireEpoch(epoch)
+        guard route.epoch == epoch,
+              let composition = G02RuntimeComposition.shared.installedComposition,
+              composition.epoch == epoch else {
+            throw C03VoiceError(.coreUnavailable, "rootChanged", retryable: true)
+        }
+        let id = UUID().uuidString.lowercased()
+        let staging = composition.cluster.identity.root.artifactStoreURL
+            .appendingPathComponent("Voice/MeetingASR", isDirectory: true)
+            .appendingPathComponent(id, isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(
+                at: staging, withIntermediateDirectories: true)
+        } catch {
+            throw C03VoiceError(.writeFailed, "meetingStagingUnavailable", retryable: true)
+        }
+        let estimated = max(
+            1,
+            min(512, Int(ceil(Double(sourceBytes) / Double(Self.maxChunkBytes)))))
+        asrOperations[id] = ASROperation(
+            status: C03ASRStatus(state: .running, progress: 0, segmentCount: 0),
+            transcript: nil,
+            context: nil,
+            kind: .meeting,
+            route: route,
+            sourceURL: nil,
+            stagingURL: staging,
+            chunkCount: 0,
+            expectedChunks: estimated,
+            sourceDuration: durationSeconds,
+            language: language?.nilIfEmpty,
+            epoch: epoch,
+            owner: nil,
+            meetingIdentity: MeetingIdentity(
+                meetingID: meetingID, materialID: materialID),
+            voiceRoot: ownedVoiceRoot(),
+            task: nil,
+            taskToken: nil,
+            cancelRequested: false,
+            inflightChunk: nil)
+        remember(id)
+        return C03MeetingTranscriptionPlan(
+            operationID: id,
+            stagingPath: staging.path,
+            sourceBytes: sourceBytes,
+            durationSeconds: durationSeconds,
+            chunkLimitBytes: Int64(C03VoiceDomain.maxChunkBytes),
+            estimatedChunks: estimated)
+    }
+
     public func applyChunk(
         operationID: String,
         chunkIndex: Int,
@@ -2130,8 +2268,64 @@ public actor C03VoiceDomain {
         sampleRate: Int,
         channels: Int
     ) async throws -> Int {
-        guard var operation = asrOperations[operationID],
-              operation.kind == .chunked else {
+        try await applyChunk(
+            operationID: operationID,
+            expectedMeeting: nil,
+            chunkIndex: chunkIndex,
+            sourceStart: sourceStart,
+            sourceDuration: sourceDuration,
+            sampleRate: sampleRate,
+            channels: channels)
+    }
+
+    /// Uploads one decoded meeting chunk. The meeting/material pair is bound
+    /// at plan time and re-checked here; a call for another meeting or
+    /// material is refused before any chunk file or provider work.
+    public func applyMeetingChunk(
+        meetingID: String,
+        materialID: String,
+        operationID: String,
+        chunkIndex: Int,
+        sourceStart: Double,
+        sourceDuration: Double,
+        sampleRate: Int,
+        channels: Int
+    ) async throws -> Int {
+        guard Self.isCanonicalMeetingIdentifier(meetingID),
+              Self.isCanonicalMeetingIdentifier(materialID) else {
+            throw C03VoiceError(.invalidSelection, "meetingIdentityInvalid")
+        }
+        return try await applyChunk(
+            operationID: operationID,
+            expectedMeeting: MeetingIdentity(
+                meetingID: meetingID, materialID: materialID),
+            chunkIndex: chunkIndex,
+            sourceStart: sourceStart,
+            sourceDuration: sourceDuration,
+            sampleRate: sampleRate,
+            channels: channels)
+    }
+
+    private func applyChunk(
+        operationID: String,
+        expectedMeeting: MeetingIdentity?,
+        chunkIndex: Int,
+        sourceStart: Double,
+        sourceDuration: Double,
+        sampleRate: Int,
+        channels: Int
+    ) async throws -> Int {
+        guard var operation = asrOperations[operationID] else {
+            throw C03VoiceError(.invalidSelection, "unknownChunkOperation")
+        }
+        switch (operation.kind, expectedMeeting) {
+        case (.chunked, nil):
+            break
+        case (.meeting, let expected?):
+            guard operation.meetingIdentity == expected else {
+                throw C03VoiceError(.invalidSelection, "meetingIdentityMismatch")
+            }
+        default:
             throw C03VoiceError(.invalidSelection, "unknownChunkOperation")
         }
         if operation.cancelRequested || operation.status.state == .cancelled {
@@ -2233,7 +2427,8 @@ public actor C03VoiceDomain {
         // superseded, re-rooted or re-owned operation cannot accept this
         // result, and its late callback never mutates the transcript.
         guard var current = asrOperations[operationID],
-              current.kind == .chunked else {
+              current.kind == operation.kind,
+              current.meetingIdentity == expectedMeeting else {
             clearInflightChunk(operationID, token: token)
             throw C03VoiceError(.coreUnavailable, "chunkOperationLost", retryable: false)
         }
@@ -2304,8 +2499,52 @@ public actor C03VoiceDomain {
         totalChunks: Int,
         sourceDuration: Double
     ) async throws -> Int {
-        guard var operation = asrOperations[operationID],
-              operation.kind == .chunked else {
+        try await finishChunks(
+            operationID: operationID,
+            expectedMeeting: nil,
+            totalChunks: totalChunks,
+            sourceDuration: sourceDuration)
+    }
+
+    /// Settles one meeting chunk set. The same meeting/material binding from
+    /// plan/apply is required; a mismatched call cannot complete the
+    /// operation or clean another owner's staging.
+    public func finishMeetingChunks(
+        meetingID: String,
+        materialID: String,
+        operationID: String,
+        totalChunks: Int,
+        sourceDuration: Double
+    ) async throws -> Int {
+        guard Self.isCanonicalMeetingIdentifier(meetingID),
+              Self.isCanonicalMeetingIdentifier(materialID) else {
+            throw C03VoiceError(.invalidSelection, "meetingIdentityInvalid")
+        }
+        return try await finishChunks(
+            operationID: operationID,
+            expectedMeeting: MeetingIdentity(
+                meetingID: meetingID, materialID: materialID),
+            totalChunks: totalChunks,
+            sourceDuration: sourceDuration)
+    }
+
+    private func finishChunks(
+        operationID: String,
+        expectedMeeting: MeetingIdentity?,
+        totalChunks: Int,
+        sourceDuration: Double
+    ) async throws -> Int {
+        guard var operation = asrOperations[operationID] else {
+            throw C03VoiceError(.invalidSelection, "unknownChunkOperation")
+        }
+        switch (operation.kind, expectedMeeting) {
+        case (.chunked, nil):
+            break
+        case (.meeting, let expected?):
+            guard operation.meetingIdentity == expected else {
+                throw C03VoiceError(.invalidSelection, "meetingIdentityMismatch")
+            }
+        default:
             throw C03VoiceError(.invalidSelection, "unknownChunkOperation")
         }
         if operation.cancelRequested || operation.status.state == .cancelled {
@@ -2472,6 +2711,7 @@ public actor C03VoiceDomain {
             language: language?.nilIfEmpty,
             epoch: epoch,
             owner: owner,
+            meetingIdentity: nil,
             voiceRoot: ownedRoot,
             task: nil,
             taskToken: token,
@@ -2553,6 +2793,28 @@ public actor C03VoiceDomain {
         return (page, end, transcript.segments.count)
     }
 
+    /// Pages one meeting transcript only when the caller presents the exact
+    /// meeting/material pair bound at plan time.
+    public func meetingASRPage(
+        meetingID: String,
+        materialID: String,
+        operationID: String,
+        offset: Int,
+        limit: Int
+    ) throws -> (segments: [C03TimedSegment], nextOffset: Int, total: Int) {
+        guard Self.isCanonicalMeetingIdentifier(meetingID),
+              Self.isCanonicalMeetingIdentifier(materialID) else {
+            throw C03VoiceError(.invalidSelection, "meetingIdentityInvalid")
+        }
+        guard let operation = asrOperations[operationID],
+              operation.kind == .meeting,
+              operation.meetingIdentity == MeetingIdentity(
+                meetingID: meetingID, materialID: materialID) else {
+            throw C03VoiceError(.invalidSelection, "meetingIdentityMismatch")
+        }
+        return try asrPage(operationID, offset: offset, limit: limit)
+    }
+
     /// Requests cancellation and waits for the real provider task to settle.
     /// The state is NOT reported as completed/cancelled merely because
     /// `Task.cancel()` was called: the operation keeps ownership, the
@@ -2589,6 +2851,26 @@ public actor C03VoiceDomain {
         asrOperations[id] = drained
     }
 
+    /// Cancels one meeting operation only when the exact meeting/material
+    /// binding matches. An already-pruned operation is idempotently absent.
+    public func cancelMeetingTranscription(
+        meetingID: String,
+        materialID: String,
+        operationID: String
+    ) async throws {
+        guard Self.isCanonicalMeetingIdentifier(meetingID),
+              Self.isCanonicalMeetingIdentifier(materialID) else {
+            throw C03VoiceError(.invalidSelection, "meetingIdentityInvalid")
+        }
+        guard let operation = asrOperations[operationID] else { return }
+        guard operation.kind == .meeting,
+              operation.meetingIdentity == MeetingIdentity(
+                meetingID: meetingID, materialID: materialID) else {
+            throw C03VoiceError(.invalidSelection, "meetingIdentityMismatch")
+        }
+        await cancelTranscription(operationID)
+    }
+
     public func writeSubtitles(
         operationID: String,
         expectedRevision: Int64,
@@ -2597,6 +2879,11 @@ public actor C03VoiceDomain {
     ) async throws -> C03SubtitleReceipt {
         guard let operation = asrOperations[operationID] else {
             throw C03VoiceError(.invalidSelection, "unknownOperation")
+        }
+        guard operation.kind != .meeting else {
+            // A meeting transcript belongs to the meeting store, never to a
+            // G09 media project or manual subtitle track.
+            throw C03VoiceError(.invalidSelection, "meetingOperationNotSubtitle")
         }
         guard !operation.cancelRequested,
               operation.status.state == .completed,
@@ -2963,6 +3250,54 @@ public actor C03VoiceDomain {
             language: language,
             epoch: epoch,
             owner: owner,
+            meetingIdentity: nil,
+            voiceRoot: ownedVoiceRoot(),
+            task: nil,
+            taskToken: nil,
+            cancelRequested: false,
+            inflightChunk: nil)
+        remember(id)
+        return id
+    }
+
+    /// Seeds one independent meeting operation in a test-owned staging root.
+    /// Production always goes through `planMeetingTranscription`, which
+    /// resolves the configured route and validates the canonical identity.
+    @discardableResult
+    func installMeetingOperationForTesting(
+        epoch: UInt64,
+        meetingID: String,
+        materialID: String,
+        stagingURL: URL,
+        sourceDuration: Double,
+        expectedChunks: Int = 1,
+        language: String? = nil
+    ) -> String {
+        let id = UUID().uuidString.lowercased()
+        let route = C03ResolvedSpeechRoute(
+            providerID: UUID(),
+            modelID: UUID(),
+            providerName: "fixture",
+            remoteModelID: "fixture",
+            baseURL: URL(string: "https://fixture.invalid")!,
+            credential: "",
+            epoch: epoch)
+        asrOperations[id] = ASROperation(
+            status: C03ASRStatus(state: .running, progress: 0, segmentCount: 0),
+            transcript: nil,
+            context: nil,
+            kind: .meeting,
+            route: route,
+            sourceURL: nil,
+            stagingURL: stagingURL,
+            chunkCount: 0,
+            expectedChunks: max(1, expectedChunks),
+            sourceDuration: sourceDuration,
+            language: language,
+            epoch: epoch,
+            owner: nil,
+            meetingIdentity: MeetingIdentity(
+                meetingID: meetingID, materialID: materialID),
             voiceRoot: ownedVoiceRoot(),
             task: nil,
             taskToken: nil,
