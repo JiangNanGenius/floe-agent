@@ -28,7 +28,7 @@ class CloudDeviceWorkflowTests(unittest.TestCase):
         self.assertIn('needs: validate-selectors', header)
         self.assertIn("github.event_name == 'workflow_dispatch' && inputs.cloud_device_only", header)
         self.assertIn('uses: ./.github/workflows/cloud-device-build-only.yml', header)
-        for key in ('source_sha', 'infra_sha', 'occt_release_id', 'occt_asset_id', 'occt_sha256', 'recipient_certificate_base64', 'recipient_sha256'):
+        for key in ('source_sha', 'infra_sha', 'recipient_certificate_base64', 'recipient_sha256'):
             self.assertIn(key + ': ${{ inputs.cloud_', header)
         self.assertIn('test "$INFRA_SHA" = "$GITHUB_SHA"', self.build)
         self.assertIn('test "$SOURCE_SHA" = fa252b61852dd37d489635c0dd83fe8c6b4b2d00', self.build)
@@ -51,16 +51,27 @@ class CloudDeviceWorkflowTests(unittest.TestCase):
         self.assertNotIn('GH_TOKEN:', job_header)
         self.assertNotIn('contents: write', self.build)
 
-    def test_qualified_occt_input_is_restricted_and_rechecked(self):
-        for required in ('occt_release_id', 'occt_asset_id', 'occt_sha256',
-                         '.draft == true', 'verified-occt-inputs.zip',
-                         'occt_transport.py" install', 'occt_transport.py" verify',
-                         'bootstrap.py --release-check', "'occtInputs': occt_evidence",
-                         '27.1-derived locked input'):
-            self.assertIn(required, self.build)
+    def test_qualified_occt_is_derived_with_locked_toolchain_and_rechecked(self):
+        derive = next(s for s in self.steps if s.startswith('Derive and qualify locked OCCT inputs with Xcode 27.1\n'))
+        for required in ('/Applications/Xcode_27.1.app/Contents/Developer',
+                         "'Xcode 27.1'", "'Build version 27A9275'", '--sdk iphoneos',
+                         '--sdk iphonesimulator', 'DEVELOPER_DIR="$occt_developer"',
+                         'bootstrap.py --release-check', 'occt_transport.py" capture'):
+            self.assertIn(required, derive)
+        for required in ('occt_transport.py" verify', "'occtInputs': occt_evidence",
+                         '27.1-derived locked input', "'derivationSDK='",):
+            if required == "'derivationSDK='":
+                self.assertIn("derivationSDK='27.1'", self.build)
+            else:
+                self.assertIn(required, self.build)
         self.assertGreaterEqual(self.build.count('bootstrap.py --release-check'), 2)
         self.assertIn('-p test_cloud_occt_transport.py', self.caller)
+        for forbidden in ('occt_release_id', 'occt_asset_id', 'occt_sha256', 'verified-occt-inputs.zip'):
+            self.assertNotIn(forbidden, self.build)
+            self.assertNotIn(forbidden, self.caller)
+        cloud_header = self.caller.split('  cloud-device:', 1)[1].split('\n  live-agent-demo:', 1)[0]
         self.assertNotIn('contents: write', self.build)
+        self.assertNotIn('contents: write', cloud_header)
 
     def test_failure_diagnostics_work_when_checkout_fails(self):
         diagnostics = next(s for s in self.steps if s.startswith('Encrypt failure diagnostics\n'))

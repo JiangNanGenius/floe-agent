@@ -95,18 +95,6 @@ on:
         description: 'Full commit SHA of the dispatched infrastructure ref'
         type: string
         default: ''
-      cloud_occt_release_id:
-        description: 'Restricted OCCT draft release ID'
-        type: string
-        default: ''
-      cloud_occt_asset_id:
-        description: 'Unique OCCT draft archive asset ID'
-        type: string
-        default: ''
-      cloud_occt_sha256:
-        description: 'SHA256 of the restricted OCCT transport ZIP'
-        type: string
-        default: ''
       cloud_recipient_certificate_base64:
         description: 'Canonical DER public recipient certificate, Base64 encoded; no private key'
         type: string
@@ -246,9 +234,6 @@ jobs:
     with:
       source_sha: ${{ inputs.cloud_source_sha }}
       infra_sha: ${{ inputs.cloud_infra_sha }}
-      occt_release_id: ${{ inputs.cloud_occt_release_id }}
-      occt_asset_id: ${{ inputs.cloud_occt_asset_id }}
-      occt_sha256: ${{ inputs.cloud_occt_sha256 }}
       recipient_certificate_base64: ${{ inputs.cloud_recipient_certificate_base64 }}
       recipient_sha256: ${{ inputs.cloud_recipient_sha256 }}
 
