@@ -31,6 +31,16 @@ class MeetingRepositoryTest {
     private lateinit var repository: MeetingRepository
     private var now = 1_700_000_000_000L
 
+    private val readableProbe: MediaProbe = { _ ->
+        ProbedMedia(
+            readable = true,
+            durationMillis = 60_000L,
+            hasAudio = true,
+            hasVideo = false,
+            mimeType = "audio/mp4",
+        )
+    }
+
     private fun setUpRepository() {
         root = File(folder.root, "meetings")
         repository = MeetingRepository(root) { now }
@@ -259,6 +269,72 @@ class MeetingRepositoryTest {
                 failure.code == MeetingErrorCode.STORAGE_FAILURE,
         )
         assertFalse(outside.listFiles().orEmpty().isNotEmpty())
+    }
+
+    @Test
+    fun `recordings directory alias inside the same meeting is refused`() = runBlocking {
+        setUpRepository()
+        val meeting = repository.createMeeting("Inside alias")
+        val meetingDir = File(root, meeting.id)
+        val recordings = File(meetingDir, "recordings")
+        assertTrue(recordings.mkdirs())
+        val imports = File(meetingDir, "imports")
+        assertTrue(imports.mkdirs())
+        Files.delete(recordings.toPath())
+        Files.createSymbolicLink(recordings.toPath(), imports.toPath())
+
+        expectFailure(MeetingErrorCode.STORAGE_FAILURE) {
+            repository.recordingFile(meeting.id, MeetingIds.newId(), final = false)
+        }
+        assertTrue(imports.listFiles().orEmpty().isEmpty())
+    }
+
+    @Test
+    fun `same-directory recording symlink never resolves another take`() = runBlocking {
+        setUpRepository()
+        val meeting = repository.createMeeting("Material alias")
+        val first = repository.createRecordingDraft(meeting.id, "First")
+        val second = repository.createRecordingDraft(meeting.id, "Second")
+        val firstFile = repository.recordingFile(meeting.id, first.id, final = true)
+        val secondFile = repository.recordingFile(meeting.id, second.id, final = true)
+        firstFile.writeBytes(ByteArray(64) { 1 })
+        secondFile.writeBytes(ByteArray(64) { 2 })
+        for (draft in listOf(first, second)) {
+            repository.updateRecording(meeting.id, draft.id) {
+                it.copy(
+                    state = MeetingRepository.STATE_COMPLETED,
+                    sizeBytes = 64L,
+                    durationMillis = 5_000L,
+                )
+            }
+        }
+        Files.delete(firstFile.toPath())
+        Files.createSymbolicLink(firstFile.toPath(), secondFile.toPath())
+
+        expectFailure(MeetingErrorCode.STORAGE_FAILURE) {
+            repository.material(meeting.id, first.id)
+        }
+        expectFailure(MeetingErrorCode.STORAGE_FAILURE) {
+            repository.transcriptionSource(meeting.id, first.id, readableProbe)
+        }
+        assertEquals(64L, secondFile.length())
+        assertEquals(2.toByte(), secondFile.readBytes().first())
+    }
+
+    @Test
+    fun `symlinked meeting directory is refused before any lookup`() = runBlocking {
+        setUpRepository()
+        val real = repository.createMeeting("Real")
+        val aliased = repository.createMeeting("Aliased")
+        val aliasedDir = File(root, aliased.id)
+        Files.delete(File(aliasedDir, "meeting.json").toPath())
+        Files.delete(aliasedDir.toPath())
+        Files.createSymbolicLink(aliasedDir.toPath(), File(root, real.id).toPath())
+
+        expectFailure(MeetingErrorCode.INVALID_IDENTIFIER) {
+            repository.detail(aliased.id)
+        }
+        assertEquals("Real", repository.detail(real.id).title)
     }
 
     @Test

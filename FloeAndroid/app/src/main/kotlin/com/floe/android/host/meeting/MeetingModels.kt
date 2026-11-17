@@ -82,6 +82,8 @@ data class MeetingTranscription(
     val revision: Long = 0L,
     val language: String? = null,
     val updatedAtMillis: Long? = null,
+    /** Exact app-owned material this transcript was produced from. */
+    val materialId: String? = null,
     val segments: List<MeetingTranscriptSegment> = emptyList(),
 ) {
     companion object {
@@ -89,6 +91,23 @@ data class MeetingTranscription(
         val EMPTY = MeetingTranscription()
     }
 }
+
+/**
+ * Durable receipt for one committed meeting transcription.
+ *
+ * [transcriptionRevision] is the compare-and-swap revision of the transcript
+ * document, not the meeting's general metadata revision. [idempotent] is true
+ * when an exact retry of an already-committed result was observed and no
+ * second write occurred.
+ */
+data class MeetingTranscriptionReceipt(
+    val meetingId: String,
+    val materialId: String,
+    val transcriptionRevision: Long,
+    val segmentCount: Int,
+    val updatedAtMillis: Long,
+    val idempotent: Boolean,
+)
 
 data class MeetingTranscriptSegment(
     val id: String,
@@ -233,4 +252,23 @@ internal fun storageFailure(cause: Throwable, detail: String): MeetingException 
 internal data class ResolvedMaterial(
     val material: MeetingMaterial,
     val file: File,
+)
+
+/**
+ * One private, immutable-for-one-attempt copy of an exact transcript source.
+ *
+ * [file] is an app-owned file under the meeting's snapshot namespace, never a
+ * caller-supplied path. [sourceBytes] and [sourceSha256] identify the exact
+ * bytes copied from the original material; [commitTranscription] re-hashes the
+ * current original and refuses a mismatch. [snapshotId] is the only handle
+ * accepted by [MeetingRepository.releaseTranscriptionSource].
+ */
+internal data class MeetingTranscriptionSnapshot(
+    val material: MeetingMaterial,
+    val file: File,
+    val durationMillis: Long,
+    val transcriptionRevision: Long,
+    val sourceBytes: Long,
+    val sourceSha256: String,
+    val snapshotId: String,
 )
