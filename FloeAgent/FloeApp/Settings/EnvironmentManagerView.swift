@@ -86,11 +86,13 @@ private final class SharedJobWaitContinuation: @unchecked Sendable {
 @MainActor
 private final class SharedJobWaiter {
     let id: UUID
+    let ownsJob: Bool
     let continuation = SharedJobWaitContinuation()
     var pollTask: Task<Void, Never>?
 
-    init(id: UUID) {
+    init(id: UUID, ownsJob: Bool) {
         self.id = id
+        self.ownsJob = ownsJob
     }
 
     func resume(with result: Result<String, Error>) {
@@ -416,6 +418,82 @@ private final class SharedJobAttempt {
         sharedAttempts[id]?.epoch
     }
 
+    /// Join only the attempt already owned by another caller. Leaving this
+    /// passive wait never cancels the underlying maintenance operation.
+    @discardableResult
+    func waitForExistingShared(id: String, cancellation: CancellationToken?) async throws -> Bool {
+        try Task.checkCancellation()
+        if cancellation?.isCancelled == true { throw CancellationError() }
+        guard let attempt = sharedAttempts[id] else { return false }
+        let waiterID = UUID()
+        do {
+            _ = try await withTaskCancellationHandler {
+                try await waitForSharedAttempt(
+                    attempt, waiterID: waiterID, cancellation: cancellation,
+                    createdAttempt: false, stopJobIfLastOnCancellation: false
+                )
+            } onCancel: {
+                Task { @MainActor [weak self] in
+                    self?.callerTaskCancelled(jobID: id, waiterID: waiterID,
+                        cancellation: cancellation, stopJobIfLastOnCancellation: false)
+                }
+            }
+            try Task.checkCancellation()
+            if cancellation?.isCancelled == true { throw CancellationError() }
+            return true
+        } catch is CancellationError {
+            if Task.isCancelled || cancellation?.isCancelled == true { throw CancellationError() }
+            throw FloeError.validationFailed(String(localized: "execution.runtime_rebuild.cancelled_wait"))
+        }
+    }
+
+    /// Never hold an execution lease while joining resident maintenance.
+    /// A rebuild can start while acquisition is suspended, so check again
+    /// after admission and relinquish that lease before joining it.
+    func acquireOutsideSharedMaintenance<Lease: Sendable>(
+        id: String,
+        cancellation: CancellationToken,
+        validate: @Sendable () async throws -> Void,
+        acquire: @Sendable () async throws -> Lease,
+        release: @Sendable (Lease) async -> Void
+    ) async throws -> Lease {
+        while true {
+            try cancellation.throwIfCancelled()
+            try Task.checkCancellation()
+            _ = try await waitForExistingShared(id: id, cancellation: cancellation)
+            try await validate()
+            let lease: Lease
+            do {
+                lease = try await acquire()
+            } catch {
+                // Only this coordinator rejection means the maintenance
+                // admission fence won the race. Preserve every other error.
+                if case FloeError.validationFailed("Linux runtime maintenance is in progress") = error,
+                   attemptEpoch(id: id) != nil {
+                    continue
+                }
+                throw error
+            }
+            if attemptEpoch(id: id) != nil {
+                await release(lease)
+                continue
+            }
+            do {
+                try cancellation.throwIfCancelled()
+                try Task.checkCancellation()
+                try await validate()
+            } catch {
+                await release(lease)
+                throw error
+            }
+            if attemptEpoch(id: id) != nil {
+                await release(lease)
+                continue
+            }
+            return lease
+        }
+    }
+
     /// Legacy shape for callers that do not have a per-waiter token. It still
     /// gains the service-owned attempt and lease semantics; only explicit
     /// cancellation is unavailable without a token.
@@ -523,8 +601,13 @@ private final class SharedJobAttempt {
                 self?.finishSharedAttempt(attempt, result: .success(result))
                 return result
             } catch {
-                self?.finishSharedAttempt(attempt, result: .failure(error))
-                throw error
+                // CancellationToken throws FloeError.cancelled, whereas
+                // Swift task cancellation throws CancellationError. Both
+                // denote the same terminal state for a shared attempt.
+                let terminalError: any Error = (error as? FloeError) == .cancelled
+                    ? CancellationError() : error
+                self?.finishSharedAttempt(attempt, result: .failure(terminalError))
+                throw terminalError
             }
         }
         return attempt
@@ -538,9 +621,10 @@ private final class SharedJobAttempt {
         _ attempt: SharedJobAttempt,
         waiterID: UUID,
         cancellation: CancellationToken?,
-        createdAttempt: Bool
+        createdAttempt: Bool,
+        stopJobIfLastOnCancellation: Bool = true
     ) async throws -> String {
-        let waiter = SharedJobWaiter(id: waiterID)
+        let waiter = SharedJobWaiter(id: waiterID, ownsJob: stopJobIfLastOnCancellation)
         attempt.waiters[waiterID] = waiter
         if let cancellation {
             if cancellation.isCancelled {
@@ -551,7 +635,7 @@ private final class SharedJobAttempt {
                 // instead of leaving a download no task is waiting for. A
                 // pre-existing resource job is left to its own owners.
                 attempt.waiters[waiterID] = nil
-                if createdAttempt, attempt.waiters.isEmpty {
+                if createdAttempt, !attempt.waiters.values.contains(where: \.ownsJob) {
                     cancelSharedAttempt(attempt)
                 }
                 throw CancellationError()
@@ -564,7 +648,7 @@ private final class SharedJobAttempt {
                     guard attempt.waiters[waiterID] != nil else { return }
                     if cancellation.isCancelled {
                         self?.leaveWaiter(
-                            attempt: attempt, waiterID: waiterID, stopJobIfLast: true
+                            attempt: attempt, waiterID: waiterID, stopJobIfLast: stopJobIfLastOnCancellation
                         )
                         return
                     }
@@ -588,7 +672,8 @@ private final class SharedJobAttempt {
     private func callerTaskCancelled(
         jobID: String,
         waiterID: UUID,
-        cancellation: CancellationToken?
+        cancellation: CancellationToken?,
+        stopJobIfLastOnCancellation: Bool = true
     ) {
         guard let attempt = sharedAttempts[jobID], attempt.waiters[waiterID] != nil else {
             return
@@ -596,7 +681,7 @@ private final class SharedJobAttempt {
         Task { @MainActor [weak self] in
             if cancellation?.isCancelled == true {
                 self?.leaveWaiter(
-                    attempt: attempt, waiterID: waiterID, stopJobIfLast: true
+                    attempt: attempt, waiterID: waiterID, stopJobIfLast: stopJobIfLastOnCancellation
                 )
                 return
             }
@@ -604,7 +689,7 @@ private final class SharedJobAttempt {
             guard let self else { return }
             if cancellation?.isCancelled == true {
                 self.leaveWaiter(
-                    attempt: attempt, waiterID: waiterID, stopJobIfLast: true
+                    attempt: attempt, waiterID: waiterID, stopJobIfLast: stopJobIfLastOnCancellation
                 )
             } else {
                 self.leaveWaiter(
@@ -625,7 +710,7 @@ private final class SharedJobAttempt {
         guard let waiter = attempt.waiters.removeValue(forKey: waiterID) else { return }
         waiter.pollTask?.cancel()
         waiter.resumeCancelled()
-        guard stopJobIfLast, attempt.waiters.isEmpty else { return }
+        guard stopJobIfLast, !attempt.waiters.values.contains(where: \.ownsJob) else { return }
         cancelSharedAttempt(attempt)
     }
 

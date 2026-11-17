@@ -156,7 +156,7 @@ final class GameWorkspaceProjectSession {
     }
 
     func select(root: GameRelativePath?, engine: GameEngineID) async throws {
-        try await prepareForHandoff()
+        try await prepareForSelection()
         let epoch = generation
         let snapshot = try await selection.select(root: root, engine: engine, context: context)
         try requireCurrent()
@@ -169,7 +169,7 @@ final class GameWorkspaceProjectSession {
     /// marker evidence. The caller (UI) owns the acknowledgement prompt.
     func selectManual(root: GameRelativePath?, engine: GameEngineID,
                       acknowledgingUnverified: Bool) async throws {
-        try await prepareForHandoff()
+        try await prepareForSelection()
         let epoch = generation
         let snapshot = try await selection.selectManual(
             root: root, engine: engine, context: context,
@@ -187,7 +187,7 @@ final class GameWorkspaceProjectSession {
                           evidencePaths: [GameRelativePath], rationale: String,
                           generatedBy: String) async throws
         -> GameProjectSelectionProposal {
-        try await prepareForHandoff()
+        try await prepareForSelection()
         let epoch = generation
         let proposal = try await selection.proposeSelection(
             root: root, engine: engine, evidencePaths: evidencePaths,
@@ -296,6 +296,36 @@ final class GameWorkspaceProjectSession {
         try requireCurrent()
         if let visualSession { _ = try await visualSession.prepareForHandoff() }
         try await refresh()
+    }
+
+    /// The selection coordinator performs its own fresh discovery and checks.
+    /// Refresh only the saved project here, so a tap does not first perform a
+    /// complete independent engine discovery and then repeat it for selection.
+    private func prepareForSelection() async throws {
+        try requireCurrent()
+        guard !operationInProgress else { throw GameAuthoringError.busy }
+        let epoch = generation
+        if let visualSession { _ = try await visualSession.prepareForHandoff() }
+        let saved = try await repository.open(project.projectID, owner: project.owner)
+        try Task.checkCancellation(); try requireCurrent()
+        guard generation == epoch else { throw GameIDEBridgeError.superseded }
+        project = saved
+    }
+
+    /// Navigation into the existing IDE needs the owned workspace and any
+    /// open visual draft, not another full-game inventory/engine discovery.
+    /// The editor and later mutations retain their normal revision checks.
+    func prepareForIDE() async throws {
+        try requireCurrent()
+        guard !operationInProgress else { throw GameAuthoringError.busy }
+        let epoch = generation
+        if let visualSession {
+            let saved = try await visualSession.prepareForHandoff()
+            try Task.checkCancellation()
+            try requireCurrent()
+            guard generation == epoch else { throw GameIDEBridgeError.superseded }
+            project = saved
+        }
     }
 
     /// Called by the center's actual workspace/navigation observer, not by a

@@ -41,6 +41,7 @@ public enum ToolAliasTable {
         "packages": ["apt", "package", "packages", "包", "安装", "pip", "dpkg", "pkg"],
         "python": ["python", "numpy", "pillow", "pandas", "scipy", "matplotlib", "数据分析"],
         "pdf": ["pdf"],
+        "game": ["游戏文件", "游戏工程", "游戏项目", "游戏引擎", "game project", "game engine", "rpg maker"],
         "cad": ["cad", "dwg", "dxf", "drawing", "图纸", "图纸助手", "工程图", "二维图", "cad drawing", "建筑", "墙体", "房间"],
         "office": ["markdown", "rtf", "富文本", "格式转换", "互转", "office", "word", "excel", "powerpoint", "ppt", "幻灯片", "演示文稿", "表格", "工作簿", "文档"],
         "studio": ["studio", "current work", "native work", "作品", "作品助手", "当前会议", "会议笔记", "会议", "meeting", "meeting notes", "cad", "加工", "制造单元", "多主轴", "多刀塔", "machining", "multi-spindle", "multi-turret",

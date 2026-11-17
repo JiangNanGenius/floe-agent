@@ -7,6 +7,43 @@ import Darwin
 import Glibc
 #endif
 
+/// An in-process optimization hint, never an authorization or persisted
+/// project revision. A cached digest is reusable only while the same regular
+/// file is reopened beneath the captured root with unchanged metadata.
+public struct GameFileFingerprint: Equatable, Sendable {
+    public let bytes: Int
+    public let sha256: String
+    fileprivate let device: UInt64
+    fileprivate let inode: UInt64
+    fileprivate let mode: UInt32
+    fileprivate let modifiedSeconds: Int64
+    fileprivate let modifiedNanoseconds: Int64
+    fileprivate let changedSeconds: Int64
+    fileprivate let changedNanoseconds: Int64
+
+    fileprivate init(bytes: Int, sha256: String, info: stat) {
+        self.bytes = bytes; self.sha256 = sha256
+        device = UInt64(truncatingIfNeeded: info.st_dev)
+        inode = UInt64(truncatingIfNeeded: info.st_ino)
+        mode = UInt32(truncatingIfNeeded: info.st_mode)
+        #if canImport(Darwin)
+        modifiedSeconds = Int64(info.st_mtimespec.tv_sec)
+        modifiedNanoseconds = Int64(info.st_mtimespec.tv_nsec)
+        changedSeconds = Int64(info.st_ctimespec.tv_sec)
+        changedNanoseconds = Int64(info.st_ctimespec.tv_nsec)
+        #else
+        modifiedSeconds = Int64(info.st_mtim.tv_sec)
+        modifiedNanoseconds = Int64(info.st_mtim.tv_nsec)
+        changedSeconds = Int64(info.st_ctim.tv_sec)
+        changedNanoseconds = Int64(info.st_ctim.tv_nsec)
+        #endif
+    }
+
+    fileprivate func matches(_ info: stat) -> Bool {
+        info.st_size >= 0 && info.st_size == bytes && self == .init(bytes: bytes, sha256: sha256, info: info)
+    }
+}
+
 /// Bounded read-only probe. Descriptor-relative opens refuse symlinks at every
 /// component, including a manifest replaced after the initial directory listing.
 /// The host still owns sandbox grants and its original-file lifecycle lease.
@@ -137,6 +174,18 @@ public final class GameProjectReader {
     /// descriptor walk retains the same no-symlink rules as ordinary reads.
     public func fingerprint(_ path: GameRelativePath, honorCancellation: Bool = true,
                             writeChunk: ((Data) throws -> Void)? = nil) throws -> (bytes: Int, sha256: String)? {
+        guard let result = try fingerprintWithIdentity(path, honorCancellation: honorCancellation,
+                                                       writeChunk: writeChunk) else { return nil }
+        return (result.bytes, result.sha256)
+    }
+
+    /// Reuses a digest only after opening the same file under the same root and
+    /// confirming its file identity and nanosecond change metadata. Copying a
+    /// file always reads its actual bytes, even when a cache hint is supplied.
+    public func fingerprintWithIdentity(_ path: GameRelativePath,
+                                        cached: GameFileFingerprint? = nil,
+                                        honorCancellation: Bool = true,
+                                        writeChunk: ((Data) throws -> Void)? = nil) throws -> GameFileFingerprint? {
         guard let descriptor = try openRelative(path, directory: false) else { return nil }
         defer { close(descriptor) }
         var before = stat()
@@ -145,6 +194,11 @@ public final class GameProjectReader {
         }
         guard before.st_size >= 0, before.st_size <= off_t(maximumFileBytes) else {
             throw GameProjectError.limitExceeded(path.value)
+        }
+        if honorCancellation { try Task.checkCancellation() }
+        if writeChunk == nil, let cached, cached.matches(before) {
+            try verifyFingerprintPath(path, expected: cached)
+            return cached
         }
         var hash = SHA256(), total = 0
         var buffer = [UInt8](repeating: 0, count: 1_048_576)
@@ -161,9 +215,20 @@ public final class GameProjectReader {
             total += count
         }
         var after = stat()
-        guard fstat(descriptor, &after) == 0, before.st_size == after.st_size,
-              total == before.st_size else { throw GameProjectError.corruptStorage }
-        return (total, hash.finalize().map { String(format: "%02x", $0) }.joined())
+        let result = GameFileFingerprint(bytes: total,
+            sha256: hash.finalize().map { String(format: "%02x", $0) }.joined(), info: before)
+        guard fstat(descriptor, &after) == 0, total == before.st_size,
+              result.matches(after) else { throw GameProjectError.corruptStorage }
+        try verifyFingerprintPath(path, expected: result)
+        return result
+    }
+
+    private func verifyFingerprintPath(_ path: GameRelativePath, expected: GameFileFingerprint) throws {
+        guard let current = try openRelative(path, directory: false) else { throw GameProjectError.unreadableFile(path.value) }
+        defer { close(current) }
+        var info = stat()
+        guard fstat(current, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG,
+              expected.matches(info) else { throw GameProjectError.corruptStorage }
     }
 
     /// Engine-project readers pass their own bounded allowance without raising

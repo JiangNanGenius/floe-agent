@@ -64,6 +64,10 @@ public protocol GameWorkingTreePort: Sendable {
     func importedTree(_ project: GameStoredProject, limits: GameRepositoryLimits) throws -> GameWorkingTreeImportTree
     func snapshot(projectID: UUID, owner: GameProjectOwner,
                   limits: GameRepositoryLimits) throws -> GameWorkingTreeSnapshot
+    /// Write/import boundaries require actual bytes even when a host keeps
+    /// metadata-based fingerprint hints for repeated read-only discovery.
+    func verifiedSnapshot(projectID: UUID, owner: GameProjectOwner,
+                          limits: GameRepositoryLimits) throws -> GameWorkingTreeSnapshot
     func read(_ file: GameProjectFile, snapshot: GameWorkingTreeSnapshot,
               limits: GameRepositoryLimits) throws -> Data
     func transact(project: GameStoredProject, previous: GameStoredProject?,
@@ -74,6 +78,10 @@ public protocol GameWorkingTreePort: Sendable {
 }
 
 extension GameWorkingTreePort {
+    public func verifiedSnapshot(projectID: UUID, owner: GameProjectOwner,
+                                 limits: GameRepositoryLimits) throws -> GameWorkingTreeSnapshot {
+        try snapshot(projectID: projectID, owner: owner, limits: limits)
+    }
     public func importedTree(_ project: GameStoredProject, limits: GameRepositoryLimits) throws -> GameWorkingTreeImportTree {
         .init(directories: project.directories, files: project.files)
     }

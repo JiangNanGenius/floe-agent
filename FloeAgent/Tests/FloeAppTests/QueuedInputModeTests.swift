@@ -236,6 +236,47 @@ struct GoalComposerTests {
             "The selected owned round did not stop (state=\(final?.state ?? "missing"), ended=\(final?.endedAt != nil), owned=\(f.center.hasLiveOwner(runID: runID)))")
     }
 
+    @Test("An explicit assistant request starts one agent run without consuming the draft")
+    func explicitAssistantRequestPreservesDraftAndAttachments() async throws {
+        let f = try await fixture()
+        let conversation = try await f.center.createConversation(title: "Game assistant")
+        let view = ThreadDetailViewModel(conversationID: conversation.id, center: f.center)
+        await view.load()
+        view.selectedModelID = f.modelID
+        view.selectAgentMode(.chat)
+        view.draft = "A separate unsent draft"
+        let attachment = AttachmentRef(kind: .document, displayName: "Unsent.pdf", uti: "public.data")
+        view.attachments = [attachment]
+        let task = Task { await view.sendExplicitAssistantRequest("Inspect the game engine") }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+        var found: RunRecord?
+        while ContinuousClock.now < deadline {
+            found = try await f.environment.runStore.recentRuns(conversationID: conversation.id, limit: 10).first
+            if found != nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let run = try #require(found)
+        #expect(run.goal == "Inspect the game engine")
+        #expect(run.conversationMode == AgentExecutionMode.agent.conversationMode.rawValue)
+        #expect(view.draft == "A separate unsent draft")
+        #expect(view.attachments.map(\.id) == [attachment.id])
+        #expect(try await f.environment.runStore.recentRuns(conversationID: conversation.id, limit: 10).count == 1)
+        await f.center.cancel(runID: run.id)
+        await task.value
+    }
+
+    @Test("An explicit assistant request remains editable when no model is configured")
+    func explicitAssistantRequestWithoutModelPreservesPrompt() async throws {
+        let f = try await fixture(configured: false)
+        let conversation = try await f.center.createConversation(title: "Game assistant")
+        let view = ThreadDetailViewModel(conversationID: conversation.id, center: f.center)
+        view.draft = "Existing text"
+        await view.sendExplicitAssistantRequest("Inspect the game engine")
+        #expect(view.draft == "Existing text\n\nInspect the game engine")
+        #expect(view.actionError != nil)
+        #expect(try await f.environment.runStore.recentRuns(conversationID: conversation.id, limit: 10).isEmpty)
+    }
+
     @Test("Goal setup resets only the composer; pause/resume preserves the same durable goal")
     func successfulSetupThenPauseResumeKeepsGoalAndAgentComposer() async throws {
         let f = try await fixture()

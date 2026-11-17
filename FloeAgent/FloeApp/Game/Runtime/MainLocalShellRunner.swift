@@ -126,6 +126,8 @@ public actor MainLocalShellRunner: GameShellRunning {
                 throw GameExecutionError.cancelled
             case .notStarted(let reason):
                 throw GameExecutionError.commandNotStarted(reason)
+            case .linuxUpgradePending(let pending):
+                throw GameExecutionError.commandNotStarted(pending.localizedDescription)
             case .outcomeUnknown(let jobID, let message):
                 throw GameExecutionError.outcomeUnknown("job \(jobID): \(message)")
             case .failed(let message):

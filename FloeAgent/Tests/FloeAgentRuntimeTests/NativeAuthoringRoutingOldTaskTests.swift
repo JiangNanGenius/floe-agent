@@ -61,6 +61,21 @@ struct NativeAuthoringRoutingOldTaskTests {
         }
     }
 
+    @Test func gameEngineRequestDiscoversOnlyOfferedGameTools() {
+        let names = ["game.selection", "game.inspect", "game.read", "game.edit"]
+        let offered = (names + ["workspace.readFile", "tools.search"]).map(descriptor)
+        for request in ["请检查我导入的游戏文件，判断使用了哪个引擎", "Identify the game engine and project root"] {
+            let added = Set(NativeAuthoringRouting.taskBoundAdditions(userTask: request,
+                liveDescriptors: offered, discoveredNames: []).map(\.name))
+            #expect(Set(names).isSubset(of: added))
+            let limited = offered.filter { $0.name != "game.read" }
+            let restricted = Set(NativeAuthoringRouting.taskBoundAdditions(userTask: request,
+                liveDescriptors: limited, discoveredNames: []).map(\.name))
+            #expect(!restricted.contains("game.read"))
+            #expect(restricted.isSubset(of: Set(limited.map(\.name))))
+        }
+    }
+
     // MARK: - The real trigger: decomposed substep + bare 继续
 
     @Test func sgz9StyleBareContinueStillRefreshesMusicFromItsOwnPlan() {

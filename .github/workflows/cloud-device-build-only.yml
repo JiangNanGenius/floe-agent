@@ -1,0 +1,425 @@
+name: Exact-source unsigned iOS device build
+
+# Build-only capacity fallback. Only the validated CI selector calls this
+# workflow. No signing, publishing or TestFlight step is present.
+# Only the explicitly uploaded build and diagnostic artifacts are encrypted;
+# Actions/setup logs and the existing dependency caches remain separate output surfaces.
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        required: true
+        type: string
+      recipient_certificate_base64:
+        required: true
+        type: string
+      recipient_sha256:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: floe-cloud-device-${{ inputs.source_sha }}
+  cancel-in-progress: false
+
+jobs:
+  device:
+    runs-on: xcode-27
+    timeout-minutes: 150
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_SHA: ${{ inputs.source_sha }}
+    defaults:
+      run:
+        working-directory: FloeAgent
+    steps:
+      - name: Validate the immutable source and public recipient
+        id: recipient
+        working-directory: ${{ runner.temp }}
+        env:
+          RECIPIENT_DER_BASE64: ${{ inputs.recipient_certificate_base64 }}
+          RECIPIENT_SHA256: ${{ inputs.recipient_sha256 }}
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$SOURCE_SHA" = "$GITHUB_SHA"
+          python3 - <<'PY'
+          import base64, hashlib, os, pathlib, re, subprocess
+          value = os.environ['RECIPIENT_SHA256']
+          if not re.fullmatch(r'[0-9a-f]{64}', value):
+              raise SystemExit('Invalid recipient digest')
+          try:
+              der = base64.b64decode(''.join(os.environ['RECIPIENT_DER_BASE64'].split()), validate=True)
+          except ValueError:
+              raise SystemExit('Invalid public certificate encoding') from None
+          if not 100 <= len(der) <= 65536 or hashlib.sha256(der).hexdigest() != value:
+              raise SystemExit('Public certificate digest mismatch')
+          work = pathlib.Path(os.environ['RUNNER_TEMP']) / 'FloeCloudRecipient'
+          work.mkdir(mode=0o700)
+          source = work / 'recipient.der'
+          source.write_bytes(der)
+          canonical = subprocess.run(['openssl', 'x509', '-inform', 'DER', '-in', str(source), '-outform', 'DER'],
+                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=True).stdout
+          if canonical != der:
+              raise SystemExit('Expected one canonical DER public certificate')
+          subprocess.run(['openssl', 'x509', '-inform', 'DER', '-in', str(source), '-out', str(work / 'recipient.pem')],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+          subprocess.run(['openssl', 'x509', '-in', str(work / 'recipient.pem'), '-checkend', '0', '-noout'],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+          public_key = subprocess.run(['openssl', 'x509', '-in', str(work / 'recipient.pem'), '-pubkey', '-noout'],
+                                      stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=True).stdout
+          details = subprocess.run(['openssl', 'pkey', '-pubin', '-text', '-noout'], input=public_key,
+                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=True).stdout.decode('ascii')
+          size = re.search(r'Public-Key:\s*\((\d+) bit\)', details)
+          if not size or int(size.group(1)) < 3072 or 'Modulus:' not in details:
+              raise SystemExit('A public RSA certificate with at least 3072 bits is required')
+          PY
+          echo 'validated=true' >> "$GITHUB_OUTPUT"
+
+      - name: Check out the exact source and tags
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Verify source, release tag and exact toolchain
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git cat-file -t "$SOURCE_SHA")" = commit
+          git tag --points-at "$SOURCE_SHA" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' > "$RUNNER_TEMP/source-release-tags.txt"
+          test -s "$RUNNER_TEMP/source-release-tags.txt"
+          xcodebuild -version > "$RUNNER_TEMP/xcode-version.txt"
+          cat "$RUNNER_TEMP/xcode-version.txt"
+          grep -Fx 'Xcode 27.2' "$RUNNER_TEMP/xcode-version.txt"
+          grep -Fx 'Build version 27B52' "$RUNNER_TEMP/xcode-version.txt"
+          test "$(xcrun --sdk iphoneos --show-sdk-version)" = 27.2
+
+      - name: Select the job-local package cache
+        run: echo "FLOE_SPM_CACHE_ROOT=$RUNNER_TEMP/FloePackageCache" >> "$GITHUB_ENV"
+
+      - name: Restore verified shell binary archives
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.FLOE_SPM_CACHE_ROOT }}/artifacts
+          key: floe-shell-archives-v1-${{ hashFiles('FloeAgent/ThirdParty/FloeShellEngine/Package.swift') }}
+
+      - name: Restore bundled font cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            FloeAgent/Vendor/Fonts/downloads
+            FloeAgent/FloeApp/Resources/Fonts/Bundled
+          key: floe-fonts-${{ hashFiles('FloeAgent/scripts/fonts/manifest.json') }}
+
+      - name: Prepare and verify native inputs
+        run: |
+          set -euo pipefail
+          exec 3>&2
+          exec > "$RUNNER_TEMP/cloud-native-inputs.log" 2>&1
+          trap 'echo "Native input preparation failed; diagnostic output will be encrypted." >&3' ERR
+          brew install xcodegen automake cmake
+          xcodebuild -downloadComponent MetalToolchain
+          python3 scripts/prime_shell_artifact_cache.py --cache-dir "$FLOE_SPM_CACHE_ROOT/artifacts"
+          scripts/bootstrap_native_components.sh
+          if test -f ThirdParty/FloeCADKit/bootstrap.py; then
+            env -u FLOECAD_LOCAL_RELINK python3 ThirdParty/FloeCADKit/bootstrap.py
+          fi
+          python3 scripts/fonts/fetch_fonts.py --check || {
+            python3 scripts/fonts/fetch_fonts.py
+            python3 scripts/fonts/fetch_fonts.py --check
+          }
+          scripts/gen_project.sh
+          python3 scripts/audit_native_runtime_free.py --project
+          scripts/pin_check.sh
+          python3 scripts/tests/test_dash_framework_provenance.py
+
+      - name: Resolve and check the committed package revisions
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          git show HEAD:FloeAgent/Package.resolved > "$RUNNER_TEMP/FloeCanonicalPackage.resolved"
+          scripts/resolve_xcode_dependencies.sh \
+            --project FloeAgent.xcodeproj \
+            --scheme FloeAgent \
+            --configuration Release \
+            --destination 'generic/platform=iOS' \
+            --package-cache-path "$FLOE_SPM_CACHE_ROOT" \
+            --derived-data-path "$RUNNER_TEMP/FloeCloudDeviceDerivedData" \
+            --resolved-file Package.resolved \
+            --canonical-lock "$RUNNER_TEMP/FloeCanonicalPackage.resolved" \
+            --xcode-lock FloeAgent.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved \
+            --project-yml project.yml \
+            --log-dir "$RUNNER_TEMP/FloeDependencyTransport/cloud-device" \
+            --max-attempts 3 > "$RUNNER_TEMP/cloud-dependency-console.log" 2>&1 || {
+              echo 'Dependency resolution failed; diagnostic output will be encrypted.' >&2
+              exit 1
+            }
+
+      - name: Build the unsigned device App
+        run: |
+          set -euo pipefail
+          xcodebuild -packageCachePath "$FLOE_SPM_CACHE_ROOT" \
+            -onlyUsePackageVersionsFromResolvedFile \
+            -project FloeAgent.xcodeproj -scheme FloeAgent \
+            -configuration Release -sdk iphoneos27.2 \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/FloeCloudDeviceDerivedData" \
+            -jobs 6 ARCHS=arm64 ONLY_ACTIVE_ARCH=YES \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY='' \
+            COMPILER_INDEX_STORE_ENABLE=NO LD_GENERATE_MAP_FILE=YES \
+            DEBUG_INFORMATION_FORMAT=dwarf-with-dsym build \
+            > "$RUNNER_TEMP/cloud-device-build.log" 2>&1 || {
+              echo 'Device build failed; diagnostic output will be encrypted.' >&2
+              exit 1
+            }
+          test -z "$(git status --porcelain --untracked-files=no -- .)"
+
+      # The pinned Office framework is supplied as a prebuilt native input;
+      # Xcode does not recreate its dSYM. Reuse only the private, source-bound
+      # 362 symbols artifact and require its UUID to match this build below.
+      - name: Retrieve and verify the prior private Office symbols
+        run: |
+          set -euo pipefail
+          exec 3>&2
+          exec > "$RUNNER_TEMP/cloud-prior-symbols.log" 2>&1
+          trap 'echo "Prior symbol verification failed; diagnostic output will be encrypted." >&3' ERR
+          previous_run=43999163235
+          previous_source=b5aecab188f032a68f8368101897c67edb67948b
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$previous_run" > "$RUNNER_TEMP/office-source-run.json"
+          jq -e --arg sha "$previous_source" '.head_sha == $sha and .event == "workflow_dispatch" and .conclusion == "success"' "$RUNNER_TEMP/office-source-run.json" >/dev/null
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$previous_run/artifacts?per_page=100" > "$RUNNER_TEMP/office-source-artifacts.json"
+          artifact_id="$(jq -er '[.artifacts[] | select(.name == "local-v1.8.41-provenance-symbols" and .expired == false)] | if length == 1 then .[0].id else empty end' "$RUNNER_TEMP/office-source-artifacts.json")"
+          artifact_digest="$(jq -er --argjson id "$artifact_id" '.artifacts[] | select(.id == $id) | .digest' "$RUNNER_TEMP/office-source-artifacts.json")"
+          [[ "$artifact_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" > "$RUNNER_TEMP/office-source-symbols.zip"
+          actual_digest="$(shasum -a 256 "$RUNNER_TEMP/office-source-symbols.zip" | awk '{print $1}')"
+          test "sha256:$actual_digest" = "$artifact_digest"
+          python3 - <<'PY'
+          import os, stat, zipfile
+          from pathlib import Path, PurePosixPath
+          archive = Path(os.environ['RUNNER_TEMP']) / 'office-source-symbols.zip'
+          with zipfile.ZipFile(archive) as source:
+              entries = source.infolist()
+              if len(entries) > 100000 or sum(item.file_size for item in entries) > 2 * 1024**3:
+                  raise SystemExit('Prior symbols archive exceeds its bounds')
+              seen = set()
+              for item in entries:
+                  name = item.filename
+                  path = PurePosixPath(name)
+                  mode = item.external_attr >> 16
+                  if (not name or '\\' in name or path.is_absolute() or '..' in path.parts or
+                          name in seen or item.flag_bits & 1 or stat.S_ISLNK(mode)):
+                      raise SystemExit('Unsafe prior symbols archive entry')
+                  seen.add(name)
+          PY
+          mkdir "$RUNNER_TEMP/office-source-symbols"
+          ditto -x -k "$RUNNER_TEMP/office-source-symbols.zip" "$RUNNER_TEMP/office-source-symbols"
+
+      - name: Preserve the App, matching symbols and source receipt
+        run: |
+          set -euo pipefail
+          exec 3>&2
+          exec > "$RUNNER_TEMP/cloud-archive.log" 2>&1
+          trap 'echo "Device artifact preparation failed; diagnostic output will be encrypted." >&3' ERR
+          python3 - <<'PY'
+          import hashlib, json, os, plistlib, re, subprocess
+          from pathlib import Path
+
+          temp = Path(os.environ['RUNNER_TEMP'])
+          products = temp / 'FloeCloudDeviceDerivedData/Build/Products/Release-iphoneos'
+          apps = list(products.glob('*.app'))
+          if len(apps) != 1:
+              raise SystemExit('Expected exactly one device App')
+          app = apps[0]
+          info = lambda b: plistlib.loads((b / 'Info.plist').read_bytes())
+          app_info = info(app)
+          expected_ids = {'org.floeagent.ios', 'org.floeagent.ios.share',
+                          'org.floeagent.ios.fileprovider', 'org.floeagent.ios.widgets',
+                          'org.floeagent.ios.screenshare'}
+          extensions = list((app / 'PlugIns').glob('*.appex'))
+          if len(extensions) != 4 or {info(b)['CFBundleIdentifier'] for b in [app, *extensions]} != expected_ids:
+              raise SystemExit('Unexpected application or extension bundle identifiers')
+          version, build = app_info['CFBundleShortVersionString'], app_info['CFBundleVersion']
+          if not str(build).isdigit() or not app_info.get('DTSDKName', '').startswith('iphoneos27.2'):
+              raise SystemExit('Unexpected build number or device SDK')
+          if any((info(b)['CFBundleShortVersionString'], info(b)['CFBundleVersion']) != (version, build) for b in extensions):
+              raise SystemExit('Application and extension version mismatch')
+          tag = 'v' + version
+          tags = (temp / 'source-release-tags.txt').read_text().splitlines()
+          if tag not in tags:
+              raise SystemExit('Release tag does not match the built App version')
+
+          def sha(path):
+              h = hashlib.sha256()
+              with path.open('rb') as stream:
+                  for block in iter(lambda: stream.read(8 * 1024 * 1024), b''):
+                      h.update(block)
+              return h.hexdigest()
+
+          def uuids(path):
+              r = subprocess.run(['xcrun', 'dwarfdump', '--uuid', str(path)], capture_output=True, text=True)
+              if r.returncode:
+                  return set()
+              matches = (re.match(r'^UUID:\s+([0-9A-Fa-f-]{36})\s+\(([^)]+)\)', line)
+                         for line in r.stdout.splitlines())
+              return {(m.group(2), m.group(1).upper()) for m in matches if m}
+
+          bundles = {}
+          for bundle in [app, *app.rglob('*.framework'), *extensions]:
+              try:
+                  binary = bundle / info(bundle)['CFBundleExecutable']
+              except (OSError, KeyError, TypeError, plistlib.InvalidFileException):
+                  continue
+              identifiers = uuids(binary)
+              if not identifiers:
+                  continue
+              if bundle.name in bundles:
+                  raise SystemExit('Ambiguous shipped binary: ' + bundle.name)
+              bundles[bundle.name] = (binary, identifiers)
+
+          old = temp / 'office-source-symbols'
+          provenances = list(old.rglob('provenance.json'))
+          if len(provenances) != 1 or json.loads(provenances[0].read_text()).get('source_sha') != 'b5aecab188f032a68f8368101897c67edb67948b':
+              raise SystemExit('Prior private symbol artifact is not bound to the expected source')
+          old_symbols = list(old.rglob('*.dSYM'))
+          if len({p.name for p in old_symbols}) != len(old_symbols):
+              raise SystemExit('Ambiguous baseline symbol bundle')
+          baseline = {p.name: p for p in old_symbols}
+          available = {p.name: p for p in products.glob('*.dSYM') if p.name.removesuffix('.dSYM') in bundles}
+          office_name = 'FloeOfficeNative.framework.dSYM'
+          if office_name not in available and office_name in baseline:
+              available[office_name] = baseline[office_name]
+          required = {name for name in baseline if name.removesuffix('.dSYM') in bundles}
+          required |= {b.name + '.dSYM' for b in [app, *extensions]}
+          missing = sorted(required - available.keys())
+          if missing:
+              raise SystemExit('Required shipped dSYMs are missing: ' + ', '.join(missing))
+
+          lock = json.loads(Path('ThirdParty/Collabora/engine.lock.json').read_text())
+          office_binary = bundles.get('FloeOfficeNative.framework')
+          if not office_binary or sha(office_binary[0]) != lock['qualifiedHostArtifact']['executableSHA256']:
+              raise SystemExit('Office executable no longer matches the pinned symbol source')
+          stage = temp / 'FloeCloudDevice'
+          stage.mkdir()
+          (stage / 'Payload').mkdir()
+          (stage / 'symbols').mkdir()
+          subprocess.run(['ditto', str(app), str(stage / 'Payload' / app.name)], check=True)
+          matching = {}
+          for name, dsym in sorted(available.items()):
+              binary, expected = bundles[name.removesuffix('.dSYM')]
+              actual = uuids(dsym)
+              if not expected or actual != expected:
+                  raise SystemExit('Binary/dSYM UUID mismatch: ' + name)
+              subprocess.run(['ditto', str(dsym), str(stage / 'symbols' / name)], check=True)
+              dwarfs = sorted((dsym / 'Contents/Resources/DWARF').glob('*'))
+              if not dwarfs or any(not p.is_file() for p in dwarfs):
+                  raise SystemExit('Missing DWARF data: ' + name)
+              for dwarf in dwarfs:
+                  copied = stage / 'symbols' / name / 'Contents/Resources/DWARF' / dwarf.name
+                  if not copied.is_file() or sha(copied) != sha(dwarf):
+                      raise SystemExit('Copied symbol content differs: ' + name)
+              copied_binary = stage / 'Payload' / app.name / binary.relative_to(app)
+              if not copied_binary.is_file() or sha(copied_binary) != sha(binary):
+                  raise SystemExit('Copied App binary content differs: ' + name)
+              matching[name] = {'uuids': sorted(actual), 'binarySHA256': sha(binary),
+                                'dwarfSHA256': {p.name: sha(p) for p in dwarfs}}
+          without_symbols = sorted(name for name in bundles if name + '.dSYM' not in available)
+          # The source manifest defines URLs, but no expected font digests. The
+          # staged provenance is cache-controlled as well: record observed
+          # bytes, not a claim that these inputs are source-pinned.
+          font_manifest = Path('scripts/fonts/manifest.json')
+          font_root = Path('FloeApp/Resources/Fonts/Bundled')
+          font_exts = {'.ttf', '.otf', '.ttc', '.otc'}
+          font_inputs = {str(p.relative_to(font_root)): sha(p)
+                         for p in sorted(font_root.rglob('*'))
+                         if p.is_file() and (p.suffix.lower() in font_exts or p.name == 'provenance.json')}
+          shipped_fonts = {str(p.relative_to(app)): sha(p)
+                           for p in sorted(app.rglob('*'))
+                           if p.is_file() and (p.suffix.lower() in font_exts or p.name == 'provenance.json')}
+          if not any(Path(p).suffix.lower() in font_exts for p in font_inputs):
+              raise SystemExit('No staged font inputs found')
+          manifest = {'schemaVersion': 1, 'sourceSHA': os.environ['SOURCE_SHA'], 'tag': tag,
+                      'version': version, 'build': str(build), 'sdk': app_info['DTSDKName'],
+                      'xcode': (temp / 'xcode-version.txt').read_text().strip(),
+                      'kind': 'unsigned-device-app-and-matching-symbols',
+                      'fontInputs': {'sourceManifestSHA256': sha(font_manifest),
+                                     'stagedFilesSHA256': font_inputs,
+                                     'shippedFilesSHA256': shipped_fonts,
+                                     'limitation': 'Font manifest has no source-bound expected hashes; staged provenance and cache are mutable. Hashes record observed bytes, not authenticated upstream origin.'},
+                      'outputSurfaceLimitation': 'Only uploaded build and diagnostic artifacts are encrypted; Actions/setup logs and dependency caches are separate output surfaces.',
+                      'baselineSymbolsArtifactRun': 43999163235, 'matchedSymbols': matching,
+                      'shippedBinariesWithoutAvailableSymbols': without_symbols,
+                      'limitation': 'No signing, TestFlight, publication, or device acceptance was performed.'}
+          (stage / 'manifest.json').write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n')
+          PY
+          mkdir -p "$RUNNER_TEMP/FloeCloudDevice/diagnostics"
+          for name in cloud-native-inputs.log cloud-dependency-console.log cloud-device-build.log cloud-prior-symbols.log xcode-version.txt; do
+            if test -f "$RUNNER_TEMP/$name"; then
+              cp "$RUNNER_TEMP/$name" "$RUNNER_TEMP/FloeCloudDevice/diagnostics/$name"
+            fi
+          done
+          if test -d "$RUNNER_TEMP/FloeDependencyTransport/cloud-device"; then
+            ditto "$RUNNER_TEMP/FloeDependencyTransport/cloud-device" "$RUNNER_TEMP/FloeCloudDevice/diagnostics/dependency-transport"
+          fi
+          ditto -c -k --sequesterRsrc --keepParent "$RUNNER_TEMP/FloeCloudDevice" "$RUNNER_TEMP/FloeCloudDevice.zip"
+          unzip -t "$RUNNER_TEMP/FloeCloudDevice.zip" > /dev/null
+          openssl cms -encrypt -binary -aes256 -outform DER \
+            -in "$RUNNER_TEMP/FloeCloudDevice.zip" -out "$RUNNER_TEMP/FloeCloudDevice.cms" \
+            "$RUNNER_TEMP/FloeCloudRecipient/recipient.pem"
+          openssl cms -cmsout -inform DER -in "$RUNNER_TEMP/FloeCloudDevice.cms" -noout
+          (cd "$RUNNER_TEMP" && shasum -a 256 FloeCloudDevice.cms > FloeCloudDevice.cms.sha256)
+
+      - name: Retain the encrypted unsigned App and symbols
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cloud-device-${{ inputs.source_sha }}
+          path: |
+            ${{ runner.temp }}/FloeCloudDevice.cms
+            ${{ runner.temp }}/FloeCloudDevice.cms.sha256
+          compression-level: 0
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Encrypt failure diagnostics
+        working-directory: ${{ runner.temp }}
+        id: encrypted-diagnostics
+        if: ${{ failure() && steps.recipient.outputs.validated == 'true' }}
+        run: |
+          set -euo pipefail
+          umask 077
+          exec 3>&2
+          exec > "$RUNNER_TEMP/cloud-failure-encryption.log" 2>&1
+          trap 'echo "Failure diagnostics could not be encrypted; no plaintext artifact was uploaded." >&3' ERR
+          diag="$RUNNER_TEMP/FloeCloudFailure"
+          mkdir "$diag"
+          for name in cloud-native-inputs.log cloud-dependency-console.log cloud-device-build.log cloud-prior-symbols.log cloud-archive.log xcode-version.txt; do
+            if test -f "$RUNNER_TEMP/$name"; then cp "$RUNNER_TEMP/$name" "$diag/$name"; fi
+          done
+          if test -d "$RUNNER_TEMP/FloeDependencyTransport/cloud-device"; then
+            ditto "$RUNNER_TEMP/FloeDependencyTransport/cloud-device" "$diag/dependency-transport"
+          fi
+          ditto -c -k --sequesterRsrc --keepParent "$diag" "$RUNNER_TEMP/FloeCloudFailure.zip"
+          openssl cms -encrypt -binary -aes256 -outform DER \
+            -in "$RUNNER_TEMP/FloeCloudFailure.zip" -out "$RUNNER_TEMP/FloeCloudFailure.cms" \
+            "$RUNNER_TEMP/FloeCloudRecipient/recipient.pem"
+          openssl cms -cmsout -inform DER -in "$RUNNER_TEMP/FloeCloudFailure.cms" -noout
+          (cd "$RUNNER_TEMP" && shasum -a 256 FloeCloudFailure.cms > FloeCloudFailure.cms.sha256)
+
+      - name: Retain encrypted failure diagnostics
+        if: ${{ failure() && steps.encrypted-diagnostics.outcome == 'success' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cloud-device-diagnostics-${{ inputs.source_sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/FloeCloudFailure.cms
+            ${{ runner.temp }}/FloeCloudFailure.cms.sha256
+          retention-days: 14
+          if-no-files-found: error

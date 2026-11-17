@@ -37,18 +37,30 @@ final class PredevelopmentWorkspaceEntryUITests: XCTestCase {
         title.tap()
         title.typeText("QA-Game-" + String(UUID().uuidString.prefix(8)))
         app.buttons["创建"].tap()
+        let setup = app.buttons["game.setup.open"]
+        XCTAssertTrue(setup.waitForExistence(timeout: 25))
+        let assistant = app.buttons["game.assistant.open"]
+        XCTAssertTrue(assistant.waitForExistence(timeout: 10))
+        assistant.tap()
+        let panel = app.descendants(matching: .any).matching(identifier: "studio.assistant.content").firstMatch
+        XCTAssertTrue(panel.waitForExistence(timeout: 15))
+        let close = app.buttons["studio.assistant.close"]
+        XCTAssertTrue(close.waitForExistence(timeout: 10))
+        XCTAssertTrue(setup.isHittable, "The game remains interactive while the assistant is open")
+        XCTAssertGreaterThan(panel.frame.minX, setup.frame.midX, "The assistant is shown to the right of the game")
+        close.tap()
+        XCTAssertTrue(close.waitForNonExistence(timeout: 10))
+        setup.tap()
         let ask = app.buttons["game.setup.askAI"]
         XCTAssertTrue(ask.waitForExistence(timeout: 25))
         XCTAssertTrue(app.buttons["game.setup.import"].exists)
         ask.tap()
         XCTAssertTrue(app.buttons["studio.assistant.sessions"].waitForExistence(timeout: 15))
-        let close = app.buttons["studio.assistant.close"]
         XCTAssertTrue(close.waitForExistence(timeout: 10))
         XCTAssertEqual(close.label, "关闭助手")
         close.tap()
         XCTAssertTrue(close.waitForNonExistence(timeout: 10))
-        XCTAssertTrue(ask.isHittable)
-        XCTAssertTrue(app.buttons["game.setup.import"].isHittable)
+        XCTAssertTrue(setup.isHittable)
     }
 
     func testNewBuildingDrawsConnectedWallsAndChangesOneFinish() {

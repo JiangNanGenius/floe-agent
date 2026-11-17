@@ -54,5 +54,29 @@ struct GameWorkspaceImportIntegrationTests {
         #expect(inspection.candidates.contains { $0.engine == .rpgMakerMV })
     }
 
+    @Test("A replaced game root never reuses the earlier workspace snapshot")
+    func replacedRootFailsClosed() throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("floe-game-root-" + UUID().uuidString)
+        let root = base.appendingPathComponent("game", isDirectory: true)
+        let old = base.appendingPathComponent("old", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        try Data("original".utf8).write(to: root.appendingPathComponent("index.html"))
+        let id = UUID(), workspaceID = UUID(), owner = GameProjectOwner.space(recordID: id)
+        let context = try GameProjectContext(projectID: id, owner: owner, rootURL: root, savedRevision: "initial")
+        let binding = try GameWorkingTreeBinding(workspaceID: workspaceID, context: context)
+        let tracker = GameWorkspaceRevisionTracker(binding: try GameIDEWorkspacePin(workspaceID: workspaceID, context: context))
+        let target = try ExistingGameWorkspaceTarget(binding: binding,
+            service: WorkspaceFileService(guard: WorkspacePathGuard(rootURL: root)), revisions: tracker)
+        let tree = try ExistingWorkspaceGameFiles(targets: [target], repositoryDirectory: base.appendingPathComponent("history"))
+        _ = try tree.snapshot(projectID: id, owner: owner, limits: GameRepositoryLimits())
+        try FileManager.default.moveItem(at: root, to: old)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try Data("replacement".utf8).write(to: root.appendingPathComponent("index.html"))
+        #expect(throws: GameProjectError.rootUnavailable) {
+            try tree.snapshot(projectID: id, owner: owner, limits: GameRepositoryLimits())
+        }
+        #expect(try Data(contentsOf: old.appendingPathComponent("index.html")) == Data("original".utf8))
+    }
 }
 #endif

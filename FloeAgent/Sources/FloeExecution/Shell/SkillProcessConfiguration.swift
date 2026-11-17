@@ -50,6 +50,7 @@ public struct SkillProcessConfiguration: Sendable, CustomStringConvertible,
         case .timedOut(let stdout, let stderr, let duration):
             return .timedOut(partialStdout: outputProjection(stdout), partialStderr: outputProjection(stderr), durationMs: duration)
         case .notStarted(let reason): return .notStarted(reason: outputProjection(reason))
+        case .linuxUpgradePending(let pending): return .linuxUpgradePending(pending)
         case .outcomeUnknown(let id, let message): return .outcomeUnknown(jobID: id, message: outputProjection(message))
         case .failed(let message): return .failed(message: outputProjection(message))
         case .cancelled: return .cancelled

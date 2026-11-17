@@ -3,6 +3,11 @@ import Foundation
 import FloeCore
 import FloeGameCore
 import FloeWorkspace
+#if canImport(Darwin)
+import Darwin
+#else
+import Glibc
+#endif
 
 public struct ExistingGameWorkspaceTarget: Sendable {
     public let binding: GameWorkingTreeBinding
@@ -53,6 +58,19 @@ public final class ExistingWorkspaceGameFiles: GameWorkingTreePort, @unchecked S
     private let vcsNames: Set<String> = [".git", ".hg", ".svn"]
     private let lock = ManagedFileMutationLock.shared
     private var activeTransactions: Set<UUID> = []
+    // Hints only: every hit is reopened descriptor-relatively and checked
+    // against device/inode and change metadata by GameProjectReader.
+    private var fingerprintCache: [UUID: [GameRelativePath: GameFileFingerprint]] = [:]
+    private let rootIdentities: [UUID: RootIdentity]
+
+    private struct RootIdentity: Equatable {
+        let device: UInt64
+        let inode: UInt64
+        init(_ info: stat) {
+            device = UInt64(truncatingIfNeeded: info.st_dev)
+            inode = UInt64(truncatingIfNeeded: info.st_ino)
+        }
+    }
 
     private struct Stamp: Codable, Equatable {
         let digest: String
@@ -84,16 +102,31 @@ public final class ExistingWorkspaceGameFiles: GameWorkingTreePort, @unchecked S
             throw GameProjectError.invalidContext
         }
         let store = repositoryDirectory.standardizedFileURL.resolvingSymlinksInPath()
+        var identities: [UUID: RootIdentity] = [:]
         for target in targets {
             let a = store.pathComponents, b = target.binding.rootURL.pathComponents
             guard !a.starts(with: b), !b.starts(with: a) else { throw GameProjectError.invalidContext }
+            var info = stat()
+            guard lstat(target.binding.rootURL.path, &info) == 0,
+                  (info.st_mode & S_IFMT) == S_IFDIR else { throw GameProjectError.rootUnavailable }
+            identities[target.binding.projectID] = RootIdentity(info)
         }
         self.targets = Dictionary(uniqueKeysWithValues: targets.map { ($0.binding.projectID, $0) })
         self.repositoryDirectory = store
+        self.rootIdentities = identities
     }
 
     public func snapshot(projectID: UUID, owner: GameProjectOwner,
                          limits: GameRepositoryLimits) throws -> GameWorkingTreeSnapshot {
+        lock.lock(); defer { lock.unlock() }
+        guard !activeTransactions.contains(projectID) else { throw GameProjectError.invalidContext }
+        let target = try target(projectID, owner)
+        try recover(target, limits: limits)
+        return try capture(target, limits: limits, allowCache: true)
+    }
+
+    public func verifiedSnapshot(projectID: UUID, owner: GameProjectOwner,
+                                 limits: GameRepositoryLimits) throws -> GameWorkingTreeSnapshot {
         lock.lock(); defer { lock.unlock() }
         guard !activeTransactions.contains(projectID) else { throw GameProjectError.invalidContext }
         let target = try target(projectID, owner)
@@ -303,25 +336,49 @@ public final class ExistingWorkspaceGameFiles: GameWorkingTreePort, @unchecked S
         try? FileManager.default.removeItem(at: directory)
     }
 
-    private func capture(_ target: ExistingGameWorkspaceTarget, limits: GameRepositoryLimits) throws -> GameWorkingTreeSnapshot {
+    private func capture(_ target: ExistingGameWorkspaceTarget, limits: GameRepositoryLimits,
+                         allowCache: Bool = false) throws -> GameWorkingTreeSnapshot {
         let revision = try target.revisions.revisionID()
+        try verifyRoot(target)
         let reader = try GameProjectReader(rootURL: target.binding.rootURL, maximumFileBytes: limits.maximumFileBytes)
         let entries = try reader.tree(maximumEntries: limits.maximumEntries, excludingNames: vcsNames)
         let service = scoped(target, limits)
         var total = 0, files: [GameProjectFile] = []
+        // Only app-owned Space games use hints. Ordinary workspace roots can
+        // be externally provided filesystems with unreliable change metadata.
+        let home = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true).resolvingSymlinksInPath().pathComponents
+        let appOwned: Bool
+        if case .space = target.binding.owner {
+            appOwned = target.binding.rootURL.pathComponents.starts(with: home)
+        } else { appOwned = false }
+        let cached = allowCache && appOwned ? (fingerprintCache[target.binding.projectID] ?? [:]) : [:]
+        var nextCache: [GameRelativePath: GameFileFingerprint] = [:]
         for entry in entries {
             _ = try service.guardResolver.resolve(entry.path.value)
             if entry.directory { continue }
-            guard let data = try reader.fingerprint(entry.path), total <= limits.maximumProjectBytes - data.bytes else {
+            guard let data = try reader.fingerprintWithIdentity(entry.path, cached: cached[entry.path]),
+                  total <= limits.maximumProjectBytes - data.bytes else {
                 throw GameProjectError.limitExceeded("projectBytes")
             }
             total += data.bytes
+            nextCache[entry.path] = data
             files.append(.init(path: entry.path, sha256: data.sha256, bytes: data.bytes,
                                executable: try reader.isExecutable(entry.path)))
         }
         guard revision == (try target.revisions.revisionID()) else { throw GameProjectError.invalidContext }
-        return try .init(binding: target.binding, revision: revision,
-                         directories: entries.filter(\.directory).map(\.path), files: files)
+        try verifyRoot(target)
+        let snapshot = try GameWorkingTreeSnapshot(binding: target.binding, revision: revision,
+            directories: entries.filter(\.directory).map(\.path), files: files)
+        fingerprintCache[target.binding.projectID] = nextCache
+        return snapshot
+    }
+
+    private func verifyRoot(_ target: ExistingGameWorkspaceTarget) throws {
+        var info = stat()
+        guard lstat(target.binding.rootURL.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFDIR,
+              rootIdentities[target.binding.projectID] == RootIdentity(info) else {
+            throw GameProjectError.rootUnavailable
+        }
     }
 
     private func target(_ id: UUID, _ owner: GameProjectOwner) throws -> ExistingGameWorkspaceTarget {

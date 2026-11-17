@@ -43,7 +43,7 @@ enum ToolDiscovery {
         .union([
             "chat.present", "chat.content.list",
             "conversation.list", "conversation.search", "conversation.read", "conversation.message",
-            "conversation.spawn", "delegate",
+            "conversation.spawn", "delegate", "delegate.wait",
             "workspace.listDirectory", "workspace.searchFiles", "workspace.readFile", "workspace.inspectFileMetadata",
             "workspace.createFile", "workspace.appendFile", "workspace.replaceText", "workspace.applyPatch",
             "workspace.writeFile", "workspace.createDirectory", "workspace.copyFile", "workspace.moveFile",

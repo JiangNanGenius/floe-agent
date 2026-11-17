@@ -359,6 +359,14 @@ public actor LocalShellService {
                 outcome: "cancelled",
                 approvalGrantID: context.approvalGrantID?.uuidString
             )
+        case .linuxUpgradePending:
+            entry = ShellOperationJournal.Entry(
+                runID: context.runID.uuidString, toolCallID: context.toolCallID,
+                sessionID: context.clientScopedSessionToken,
+                commandSHA256: FloeDigest.sha256Hex(Data(command.utf8)), cwd: cwd,
+                exitCode: nil, stdoutBytes: 0, stderrBytes: 0, truncated: false,
+                durationMs: durationMs, outcome: "linuxUpgradePending",
+                approvalGrantID: context.approvalGrantID?.uuidString)
         case .notStarted(let reason):
             entry = ShellOperationJournal.Entry(
                 runID: context.runID.uuidString,

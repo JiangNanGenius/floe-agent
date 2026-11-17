@@ -1276,13 +1276,28 @@ final class ThreadDetailViewModel: ObservableObject {
 
     // MARK: - Actions
 
+    /// A focused button represents an explicit request, not a replacement for
+    /// the text or attachments the user may already have in this composer.
+    func sendExplicitAssistantRequest(_ prompt: String) async {
+        await send(goalOverride: prompt, executionModeOverride: .agent,
+                   includeComposerAttachments: false, preserveUnsentGoal: true)
+    }
+
+    private func preserveExplicitAssistantRequest(_ goal: String) {
+        guard !goal.isEmpty else { return }
+        draft += (draft.isEmpty ? "" : "\n\n") + goal
+    }
+
     /// Sends through the canonical conversation lifecycle. Canvas and future
     /// focused surfaces may supply a contextual goal while retaining the same
     /// run owner, queue/steer path, checkpoint recovery, and live projection.
     func send(
         goalOverride: String? = nil,
         runSurface: AgentRunSurface = .ordinary,
-        canvasContext: CanvasRunContextSeed? = nil
+        canvasContext: CanvasRunContextSeed? = nil,
+        executionModeOverride: AgentExecutionMode? = nil,
+        includeComposerAttachments: Bool = true,
+        preserveUnsentGoal: Bool = false
     ) async {
         let goal = (goalOverride ?? draft).trimmingCharacters(in: .whitespacesAndNewlines)
         reconcilePlanComposerMode()
@@ -1290,10 +1305,16 @@ final class ThreadDetailViewModel: ObservableObject {
         // enabled and the immutable public-web ceiling in ConversationCenter
         // (TemporaryChatToolPolicy + descriptor projection) is the authority
         // that decides what the model may call.
-        let executionMode = effectiveAgentMode
+        let executionMode = executionModeOverride ?? effectiveAgentMode
         let modeSelectionAtSend = modeSelectionGeneration
         guard !isConversationMissing, !goal.isEmpty,
-              let (provider, model) = center.providerAndModel(modelID: selectedModelID) else { return }
+              let (provider, model) = center.providerAndModel(modelID: selectedModelID) else {
+            if preserveUnsentGoal {
+                preserveExplicitAssistantRequest(goal)
+                actionError = IDELanguageRunText.t("请选择可用的模型后发送。", "Choose an available model, then send.")
+            }
+            return
+        }
         let projectIDAtSend = selectedProjectID
         let modelIDAtSend = selectedModelID
         let inputModeAtSend = runningInputMode
@@ -1304,7 +1325,7 @@ final class ThreadDetailViewModel: ObservableObject {
         // OR offscreen) deliberately through notes.read section=officeRegion,
         // whose real PNG artifacts reach the next provider request. Actual
         // user-staged attachments and every other mode are unchanged.
-        let stagedAttachments = attachments
+        let stagedAttachments = includeComposerAttachments ? attachments : []
         // Temporary chat is text-only: the launch carries no attachments
         // while the staged files stay in the composer (and the ordinary
         // draft) untouched — the center also refuses a nonempty temporary
@@ -1373,6 +1394,7 @@ final class ThreadDetailViewModel: ObservableObject {
                 pendingInputs = try await center.runningInputStore(for: conversationID)
                     .pending(conversationID: conversationID)
             } catch {
+                if preserveUnsentGoal { preserveExplicitAssistantRequest(goal) }
                 actionError = presentableError(error, stage: "submitRunningInput")
             }
             return
@@ -1437,6 +1459,9 @@ final class ThreadDetailViewModel: ObservableObject {
                     attachments = ComposerDraftStore.shared.attachments(for: conversationID)
                 }
 
+            }
+            if !launchAccepted && preserveUnsentGoal && sendOriginAllowsDraftMutation(sendOrigin) {
+                preserveExplicitAssistantRequest(goal)
             }
             actionError = presentableError(error, stage: "startOrCompleteRun")
         }

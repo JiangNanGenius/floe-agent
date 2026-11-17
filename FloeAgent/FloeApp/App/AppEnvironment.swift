@@ -1154,6 +1154,11 @@ final class AppEnvironment: ObservableObject {
         )
         self.environmentExecutions = environmentExecutions
         let executionPins = SQLiteRunStore(database: database)
+        ToolEnvironmentRouting.shared.configureRetry { context, retry in
+            try await FloePlatformServices.shared.waitForPendingLinuxUpgrade(
+                expectedImageID: retry.expectedLinuxImageID, cancellation: context.cancellation)
+            return true
+        }
         ToolEnvironmentRouting.shared.configure { original in
             var context = original
             var savedPin: TaskExecutionBinding?
@@ -1175,7 +1180,60 @@ final class AppEnvironment: ObservableObject {
                     throw FloeError.validationFailed("The selected execution environment is unavailable. Reconnect or explicitly choose another location; no fallback was started.")
                 }
             }
-            let lease = try await environmentExecutions.acquire(context)
+            // Join an already-authorized Settings upgrade before acquiring a
+            // lease: maintenance must drain all leases before rebuilding.
+            // Native, remote and unrelated environments do not wait.
+            let backend = context.executionToolName.map { CapabilityExecutionRouter.decision(for: $0).backend }
+            var useRecoveryAdmission = false
+            var selectedBefore: ContainerRecord?
+            var pinBefore: TaskExecutionBinding?
+            if context.scope == .local, context.workspaceRootURL != nil, backend != .nativeApple {
+                try await environmentRegistry.prepare()
+                selectedBefore = if let id = context.environmentID {
+                    await environmentRegistry.record(id: id)
+                } else { nil }
+                if selectedBefore?.effectiveExecutionBackend == .linuxVM || context.environmentID == nil {
+                    let runID = context.childExecution?.identity.parentRunID ?? context.runID
+                    pinBefore = try await executionPins.run(id: runID)?.executionBinding
+                    if context.executionToolName != nil, pinBefore != savedPin {
+                        throw FloeError.validationFailed("The task environment changed. Continue from its saved state; this command was not executed.")
+                    }
+                    useRecoveryAdmission = true
+                }
+            }
+            let lease: ToolEnvironmentLease
+            if useRecoveryAdmission {
+                let originalContext = context
+                let originalPin = pinBefore
+                let originalSelection = selectedBefore
+                let runID = context.childExecution?.identity.parentRunID ?? context.runID
+                lease = try await EnvironmentPackageJobs.shared.acquireOutsideSharedMaintenance(
+                    id: FloePlatformServices.residentRecoveryJobID,
+                    cancellation: context.cancellation,
+                    validate: {
+                        try originalContext.cancellation.throwIfCancelled()
+                        try Task.checkCancellation()
+                        let currentPin = try await executionPins.run(id: runID)?.executionBinding
+                        guard currentPin == originalPin else {
+                            throw FloeError.validationFailed("The task environment changed. Continue from its saved state; this command was not executed.")
+                        }
+                        if let originalSelection {
+                            guard let selectedAfter = await environmentRegistry.record(id: originalSelection.id),
+                                  selectedAfter.effectiveExecutionBackend == originalSelection.effectiveExecutionBackend,
+                                  selectedAfter.runtimeGeneration == originalSelection.runtimeGeneration else {
+                                throw FloeError.validationFailed("The task environment changed. Continue from its saved state; this command was not executed.")
+                            }
+                        }
+                    }, acquire: {
+                        // Maintenance may cancel this admission while it is
+                        // racing the fence. Do not cancel the user's run.
+                        var attemptContext = originalContext
+                        attemptContext.cancellation = originalContext.cancellation.derived()
+                        return try await environmentExecutions.acquire(attemptContext)
+                    }, release: { await $0.finish() })
+            } else {
+                lease = try await environmentExecutions.acquire(context)
+            }
             guard let name = context.executionToolName,
                   CapabilityExecutionRouter.decision(for: name).backend == .linuxGuest else { return lease }
             do {

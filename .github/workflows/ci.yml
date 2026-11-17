@@ -33,7 +33,7 @@ name: CI
 # group so a targeted rerun cannot cancel or be cancelled by a full run of the
 # same ref; the default group string is unchanged when those inputs are off.
 concurrency:
-  group: floe-ci-${{ github.workflow }}-${{ github.ref }}${{ inputs.full && '-full' || '' }}${{ inputs.feedback_ui && '-ui' || '' }}${{ inputs.live_agent_demo && '-live-demo' || '' }}${{ inputs.local_inference && '-inference' || '' }}${{ inputs.ide_only && '-ide' || '' }}
+  group: floe-ci-${{ github.workflow }}-${{ github.ref }}${{ inputs.full && '-full' || '' }}${{ inputs.feedback_ui && '-ui' || '' }}${{ inputs.live_agent_demo && '-live-demo' || '' }}${{ inputs.local_inference && '-inference' || '' }}${{ inputs.ide_only && '-ide' || '' }}${{ inputs.cloud_device_only && '-cloud-device' || '' }}
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 on:
@@ -83,6 +83,22 @@ on:
         description: 'Rerun only the dual-device WorkspaceIDEUITests on a freshly built App test host (skips unrelated modules, Notes, other App regressions, SPM suite and SDK/Linux jobs); targeted rerun evidence, not release acceptance'
         type: boolean
         default: false
+      cloud_device_only:
+        description: 'Build one frozen unsigned iOS device App and encrypt the artifact; no distribution'
+        type: boolean
+        default: false
+      cloud_source_sha:
+        description: 'Full frozen source commit SHA; must equal the dispatch ref'
+        type: string
+        default: ''
+      cloud_recipient_certificate_base64:
+        description: 'Canonical DER public recipient certificate, Base64 encoded; no private key'
+        type: string
+        default: ''
+      cloud_recipient_sha256:
+        description: 'SHA256 of the canonical DER public recipient certificate'
+        type: string
+        default: ''
   push:
     branches: [main]
     # Documentation-only delivery updates do not change the App.
@@ -115,6 +131,7 @@ jobs:
             --set "publish_skill_hub=${{ inputs.publish_skill_hub }}" \
             --set "build_test_only=${{ inputs.build_test_only }}" \
             --set "ide_only=${{ inputs.ide_only }}" \
+            --set "cloud_device_only=${{ inputs.cloud_device_only }}" \
             --set "palette_only=${{ inputs.palette_only }}" \
             --set "palette_unit_only=${{ inputs.palette_unit_only }}"
 
@@ -124,7 +141,7 @@ jobs:
   lean-checks:
     permissions:
       contents: read
-    if: ${{ !inputs.full && !inputs.live_agent_demo && !inputs.local_inference && !inputs.feedback_ui && !inputs.publish_skill_hub && !inputs.build_test_only && !inputs.ide_only && !inputs.palette_only && !inputs.palette_unit_only }}
+    if: ${{ !inputs.full && !inputs.live_agent_demo && !inputs.local_inference && !inputs.feedback_ui && !inputs.publish_skill_hub && !inputs.build_test_only && !inputs.ide_only && !inputs.cloud_device_only && !inputs.palette_only && !inputs.palette_unit_only }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
@@ -174,6 +191,7 @@ jobs:
         run: |
           python3 -m unittest discover -s scripts/tests -p test_ci_scope.py
           python3 -m unittest discover -s scripts/tests -p test_ci_ide_only.py
+          python3 -m unittest discover -s scripts/tests -p test_cloud_device_workflow.py
 
       # Pinned, checksum-verified release binary: this lane runs on
       # ubuntu-latest, where no macOS package manager exists. The digest comes
@@ -200,6 +218,18 @@ jobs:
           path: FloeAgent/.gitleaks-report.json
           if-no-files-found: ignore
           retention-days: 7
+
+  cloud-device:
+    needs: validate-selectors
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.cloud_device_only }}
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/cloud-device-build-only.yml
+    with:
+      source_sha: ${{ inputs.cloud_source_sha }}
+      recipient_certificate_base64: ${{ inputs.cloud_recipient_certificate_base64 }}
+      recipient_sha256: ${{ inputs.cloud_recipient_sha256 }}
 
   live-agent-demo:
     # validate-selectors runs first and rejects every ambiguous combination,

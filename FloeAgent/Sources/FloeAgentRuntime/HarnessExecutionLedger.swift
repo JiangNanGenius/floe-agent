@@ -125,6 +125,13 @@ struct HarnessExecutionLedger: Sendable {
         }
     }
 
+    private static func isNonMutationEvidence(_ call: ToolCall) -> Bool {
+        if call.toolName == "delegate",
+           let object = try? JSONSerialization.jsonObject(with: call.argumentsJSON) as? [String: Any],
+           object["background"] as? Bool == true { return true }
+        return OrdinaryDocumentActionProfile.role(forToolName: call.toolName, argumentsJSON: call.argumentsJSON) != nil
+    }
+
     /// Projects only final-answer evidence; it never changes a ledger entry,
     /// dispatch authority, checkpoint schema, or replay decision. A mixed
     /// tool's successful inspection/draft cannot prove a write. Legacy
@@ -135,7 +142,7 @@ struct HarnessExecutionLedger: Sendable {
         guard let call = replayedCalls.last(where: {
             $0.toolName == entry.toolName && Self.fingerprint($0.argumentsJSON) == entry.callFingerprint
         }) else { return false }
-        return OrdinaryDocumentActionProfile.role(forToolName: call.toolName, argumentsJSON: call.argumentsJSON) == nil
+        return !Self.isNonMutationEvidence(call)
     }
 
     /// Tool schemas for stateful workflows are exposed progressively. This is
@@ -376,9 +383,7 @@ struct HarnessExecutionLedger: Sendable {
             }
         }
         let excerpt = Self.boundedExcerpt(result, toolName: call.toolName)
-        let isAuditedNonMutation = OrdinaryDocumentActionProfile.role(
-            forToolName: call.toolName, argumentsJSON: call.argumentsJSON
-        ) != nil
+        let isAuditedNonMutation = Self.isNonMutationEvidence(call)
 
         if let index = entries.firstIndex(where: {
             $0.toolName == call.toolName

@@ -227,6 +227,7 @@ public actor ConversationRunService {
     )
     private var providerAttempt: ProviderAttemptSnapshot?
     private var latestState: AgentState = .idle
+    private var backgroundApproval: AgentState.WaitingApproval?
     private var isReviewingApproval = false
     private var pendingUserQuestion: UserQuestionWaitingSnapshot?
     /// Last runtime-published compression state for this exact run. Stored so
@@ -533,8 +534,28 @@ public actor ConversationRunService {
         forwarder.onApprovalReview = { [weak self] snapshot in
             await self?.handleApprovalReview(snapshot)
         }
+        forwarder.onBackgroundApproval = { [weak self] waiting in
+            await self?.handleBackgroundApproval(waiting)
+        }
         forwarder.onApprovalDecisionRecorded = { [weak self] receipt in
             self?.eventChannel.yield(.approvalResolved(callID: receipt.callID))
+        }
+    }
+
+    private func handleBackgroundApproval(_ waiting: AgentState.WaitingApproval?) async {
+        if waiting != nil, isTerminal(latestState) { return }
+        let prior = backgroundApproval
+        backgroundApproval = waiting
+        if let waiting {
+            eventChannel.yield(.approvalRequested(ApprovalRequestSnapshot(toolCall: waiting.toolCall,
+                reason: waiting.reason, requestedAt: waiting.requestedAt)))
+            _ = await appendEventReliably(runID: runID, kind: .approval,
+                payloadJSON: Self.approvalPayload(waiting), boundary: "backgroundApprovalRequest",
+                completionCritical: true)
+        } else if prior != nil {
+            // This is only a presentation change. The real approval receipt
+            // is published by the dispatch/audit path after persistence.
+            eventChannel.yield(.stateChanged(Self.harnessState(latestState)))
         }
     }
 
@@ -544,7 +565,7 @@ public actor ConversationRunService {
         if case .waitingApproval(let waiting) = latestState {
             pendingApproval = waiting
         } else {
-            pendingApproval = nil
+            pendingApproval = backgroundApproval
         }
         let checkpointReason: String?
         if case .checkpointed(let reference) = latestState {
@@ -2931,12 +2952,17 @@ private final class SinkForwarder: AgentEventSink, @unchecked Sendable {
     var onSteerConsumed: (@Sendable (RuntimeSteerInput) async -> Void)?
     var onCompaction: (@Sendable (ContextCompactionRecord) async -> Void)?
     var onApprovalReview: (@Sendable (ApprovalReviewSnapshot) async -> Void)?
+    var onBackgroundApproval: (@Sendable (AgentState.WaitingApproval?) async -> Void)?
     var onApprovalDecisionRecorded: (@Sendable (ApprovalDecisionReceipt) async -> Void)?
     var onToolDispatch: (@Sendable (ToolCall, ToolTimingStamp) async -> Void)?
     var onToolFinish: (@Sendable (ToolCall, ToolResult.Status, ToolTimingStamp) async -> Void)?
     var onNativeDiagnostic: (@Sendable (String, TaskDiagnosticProgress) async -> Void)?
     var onContextCompression: (@Sendable (ContextCompressionSnapshot) async -> Void)?
     var onToolOutcome: (@Sendable (ToolOutcomeClassification) async -> Void)?
+
+    func agentRuntime(_ runtime: FloeAgentRuntime, didChangeBackgroundApproval waiting: AgentState.WaitingApproval?) async {
+        await onBackgroundApproval?(waiting)
+    }
 
     func agentRuntime(_ runtime: FloeAgentRuntime, didTransitionTo state: AgentState) async {
         await onTransition?(state)

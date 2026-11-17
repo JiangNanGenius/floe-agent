@@ -44,6 +44,33 @@ private func phaser() throws -> ProjectFixture {
     try .init(["package.json": #"{"dependencies":{"phaser":"^3.90.0"}}"#])
 }
 
+@Test func cachedFingerprintRechecksChangedAndReplacedFiles() throws {
+    let fixture = try ProjectFixture(["assets/game.bin": "original"])
+    let reader = try GameProjectReader(rootURL: fixture.root, maximumFileBytes: 1_024)
+    let path = try GameRelativePath("assets/game.bin")
+    let original = try #require(try reader.fingerprintWithIdentity(path))
+    #expect(try reader.fingerprintWithIdentity(path, cached: original) == original)
+
+    // Same-size changes must not reuse the prior digest, even if a caller
+    // restores the original modification time. The filesystem change time
+    // and file identity remain part of the validation.
+    let url = fixture.root.appendingPathComponent(path.value)
+    let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+    let modified = try #require(attributes[.modificationDate] as? Date)
+    let handle = try FileHandle(forWritingTo: url)
+    try handle.write(contentsOf: Data("modified".utf8))
+    try handle.close()
+    try FileManager.default.setAttributes([.modificationDate: modified], ofItemAtPath: url.path)
+    let changed = try #require(try reader.fingerprintWithIdentity(path, cached: original))
+    #expect(changed.bytes == original.bytes)
+    #expect(changed.sha256 != original.sha256)
+
+    // A cache hint never turns a replaced symlink into an allowed path.
+    try FileManager.default.removeItem(at: url)
+    try FileManager.default.createSymbolicLink(at: url, withDestinationURL: fixture.root.appendingPathComponent("outside"))
+    #expect(throws: (any Error).self) { try reader.fingerprintWithIdentity(path, cached: changed) }
+}
+
 @Test(arguments: GameEngineID.allCases)
 func projectEngineMetadataNeverGrantsARuntime(_ engine: GameEngineID) throws {
     let metadata = try JSONSerialization.data(withJSONObject: ["engine": engine.rawValue, "permissions": ["native.execute"], "buildCommand": "untrusted"])

@@ -106,7 +106,7 @@ public actor FileGameProjectRepository {
             // Attach to the already host-owned live workspace. Existing IDE
             // files are adopted as history; never replace them with an empty
             // materialization when adding game capabilities to a code project.
-            if let snapshot = try liveSnapshot(projectID, owner: owner), let workingTree {
+            if let snapshot = try liveSnapshot(projectID, owner: owner, verifyBytes: true), let workingTree {
                 try validate(GameStoredProject(version: 1, projectID: projectID, owner: owner,
                     revision: UUID().uuidString.lowercased(), parent: nil, title: title, engine: engine,
                     directories: snapshot.directories, files: snapshot.files, workspaceRevision: snapshot.revision))
@@ -118,7 +118,7 @@ public actor FileGameProjectRepository {
                     }
                     files.append(try put(data, path: file.path, executable: file.executable))
                 }
-                guard snapshot == (try workingTree.snapshot(projectID: projectID, owner: owner, limits: limits)) else {
+                guard snapshot == (try workingTree.verifiedSnapshot(projectID: projectID, owner: owner, limits: limits)) else {
                     throw GameProjectError.invalidContext
                 }
                 let attached = GameStoredProject(version: 1, projectID: projectID, owner: owner,
@@ -139,7 +139,7 @@ public actor FileGameProjectRepository {
     public func importContents(from source: URL, into projectID: UUID, owner: GameProjectOwner,
                                expectedRevision: String, replaceExisting: Bool = false) throws -> GameStoredProject {
         try locked(projectID) {
-            let current = try load(projectID, owner: owner)
+            let current = try load(projectID, owner: owner, verifyBytes: true)
             try requireRevision(current, expectedRevision)
             guard replaceExisting || (current.files.isEmpty && current.directories.isEmpty) else { throw GameProjectError.importDestinationNotEmpty }
             let reader = try GameProjectReader(rootURL: source, maximumFileBytes: limits.maximumFileBytes)
@@ -223,7 +223,7 @@ public actor FileGameProjectRepository {
     public func readHistorical(_ id: UUID, owner: GameProjectOwner, expectedRevision: String,
                                historicalRevision: String, path: GameRelativePath) throws -> Data {
         try locked(id) {
-            let current = try load(id, owner: owner)
+            let current = try load(id, owner: owner, verifyBytes: true)
             try requireRevision(current, expectedRevision)
             let original = try reachableRevision(from: current, revision: historicalRevision)
             guard let file = original.files.first(where: { $0.path == path }) else { throw GameProjectError.unreadableFile(path.value) }
@@ -255,7 +255,7 @@ public actor FileGameProjectRepository {
     public func commit(_ id: UUID, owner: GameProjectOwner, expectedRevision: String,
                        changes: [GameFileChange], title: String? = nil) throws -> GameStoredProject {
         try locked(id) {
-            let current = try load(id, owner: owner)
+            let current = try load(id, owner: owner, verifyBytes: true)
             try requireRevision(current, expectedRevision)
             var files = Dictionary(uniqueKeysWithValues: current.files.map { ($0.path, $0) })
             var changed = Set<GameRelativePath>()
@@ -288,7 +288,7 @@ public actor FileGameProjectRepository {
                               moves: [GameFileRelocation], removeEmptyDirectories: Bool = false) throws -> GameStoredProject {
         guard !moves.isEmpty, moves.count <= limits.maximumEntries else { throw GameProjectError.invalidEdit }
         return try locked(id) {
-            let current = try load(id, owner: owner)
+            let current = try load(id, owner: owner, verifyBytes: true)
             try requireRevision(current, expectedRevision)
             let original = Dictionary(uniqueKeysWithValues: current.files.map { ($0.path, $0) })
             let sources = Set(moves.map(\.from)), targets = Set(moves.map(\.to))
@@ -335,7 +335,7 @@ public actor FileGameProjectRepository {
     public func restore(_ id: UUID, owner: GameProjectOwner, expectedRevision: String,
                         historicalRevision: String) throws -> GameStoredProject {
         try locked(id) {
-            let current = try load(id, owner: owner)
+            let current = try load(id, owner: owner, verifyBytes: true)
             try requireRevision(current, expectedRevision)
             let old = try loadRevision(id, revision: historicalRevision)
             guard old.owner == owner else { throw GameProjectError.ownershipMismatch }
@@ -348,7 +348,7 @@ public actor FileGameProjectRepository {
     public func copy(_ id: UUID, owner: GameProjectOwner, to newID: UUID,
                      newOwner: GameProjectOwner, title: String? = nil) throws -> GameStoredProject {
         // Immutable blobs can be shared; neither HEAD nor assistant ownership is shared.
-        let source = try locked(id) { try load(id, owner: owner) }
+        let source = try locked(id) { try load(id, owner: owner, verifyBytes: true) }
         try validateIdentity(newID, owner: newOwner, title: title ?? source.title)
         return try locked(newID) {
             guard !FileManager.default.fileExists(atPath: headURL(newID).path) else { throw GameProjectError.destinationExists }
@@ -365,7 +365,7 @@ public actor FileGameProjectRepository {
                            to targetID: UUID, targetOwner: GameProjectOwner, expectedTargetRevision: String) throws -> GameStoredProject {
         guard sourceID != targetID else { throw GameProjectError.invalidEdit }
         return try locked(targetID) {
-            let source = try load(sourceID, owner: sourceOwner), target = try load(targetID, owner: targetOwner)
+            let source = try load(sourceID, owner: sourceOwner, verifyBytes: true), target = try load(targetID, owner: targetOwner, verifyBytes: true)
             try requireRevision(source, sourceRevision)
             try requireRevision(target, expectedTargetRevision)
             for file in source.files { try Task.checkCancellation(); try verifyObject(file) }
@@ -588,9 +588,11 @@ public actor FileGameProjectRepository {
         guard result.owner == owner else { throw GameProjectError.ownershipMismatch }
         return result
     }
-    private func liveSnapshot(_ id: UUID, owner: GameProjectOwner) throws -> GameWorkingTreeSnapshot? {
+    private func liveSnapshot(_ id: UUID, owner: GameProjectOwner, verifyBytes: Bool = false) throws -> GameWorkingTreeSnapshot? {
         guard let workingTree else { return nil }
-        let snapshot = try workingTree.snapshot(projectID: id, owner: owner, limits: limits)
+        let snapshot = try verifyBytes
+            ? workingTree.verifiedSnapshot(projectID: id, owner: owner, limits: limits)
+            : workingTree.snapshot(projectID: id, owner: owner, limits: limits)
         guard snapshot.binding.projectID == id, snapshot.binding.owner == owner else {
             throw GameProjectError.ownershipMismatch
         }
@@ -601,9 +603,10 @@ public actor FileGameProjectRepository {
         return snapshot
     }
 
-    private func load(_ id: UUID, owner: GameProjectOwner, honorCancellation: Bool = true) throws -> GameStoredProject {
+    private func load(_ id: UUID, owner: GameProjectOwner, honorCancellation: Bool = true,
+                      verifyBytes: Bool = false) throws -> GameStoredProject {
         let stored = try loadStored(id, owner: owner, honorCancellation: honorCancellation)
-        guard honorCancellation, let snapshot = try liveSnapshot(id, owner: owner), let workingTree else { return stored }
+        guard honorCancellation, let snapshot = try liveSnapshot(id, owner: owner, verifyBytes: verifyBytes), let workingTree else { return stored }
         try validate(GameStoredProject(version: 1, projectID: id, owner: owner, revision: stored.revision,
             parent: stored.parent, title: stored.title, engine: stored.engine,
             directories: snapshot.directories, files: snapshot.files, workspaceRevision: snapshot.revision))
@@ -617,7 +620,7 @@ public actor FileGameProjectRepository {
             guard data.count == file.bytes, GameDigest.sha256(data) == file.sha256 else { throw GameProjectError.corruptStorage }
             files.append(try put(data, path: file.path, executable: file.executable))
         }
-        let after = try workingTree.snapshot(projectID: id, owner: owner, limits: limits)
+        let after = try workingTree.verifiedSnapshot(projectID: id, owner: owner, limits: limits)
         guard snapshot == after else { throw GameProjectError.conflict(expected: snapshot.revision, actual: after.revision) }
         let adopted = GameStoredProject(version: 1, projectID: id, owner: owner,
             revision: UUID().uuidString.lowercased(), parent: stored.revision,

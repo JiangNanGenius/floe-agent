@@ -364,6 +364,8 @@ enum FloeShellCommands {
                 case .timedOut(let out, let err, _):
                     FloeShellWrite(stdout, out); FloeShellWrite(stderr, err + "\nWASM command timed out; interpreter startup may need a longer shell timeout (tool timeout up to 120s or jobs.submit)\n"); return 124
                 case .cancelled: return 130
+                case .linuxUpgradePending(let pending):
+                    FloeShellWrite(stderr, pending.localizedDescription + "\n"); return 75
                 case .notStarted(let reason):
                     // The shared engine gate was still owned by another worker;
                     // nothing of this command ran. Exit 75 (notStarted) is not

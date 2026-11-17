@@ -50,11 +50,13 @@ struct ThreadScrollRequest: Equatable {
     let messageID: UUID
 }
 
-/// A user-selected context staged for review in the regular composer; never auto-sends.
+/// A user-selected context normally staged for review. A focused action may
+/// explicitly request one immediate send without consuming an existing draft.
 struct ThreadComposerInput: Identifiable {
     let id = UUID()
     let text: String
     let attachments: [AttachmentRef]
+    var sendImmediately = false
 }
 
 /// View-only dismissal identity. A new revision or another conversation is
@@ -131,6 +133,7 @@ struct ThreadDetailView: View {
     @State private var showsChecklist = false
     @State private var hiddenPlanConfirmations: Set<ThreadPlanConfirmationPresentationKey> = []
     @State private var consumedInputID: UUID?
+    @State private var initialLoadFinished = false
     @State private var refreshingMediaJobs = false
     /// The delegated child opened from a delegate card's "View" action. The
     /// sheet renders the same durable transcript view the child-agents
@@ -182,6 +185,24 @@ struct ThreadDetailView: View {
                 return await model.revealSearchHit(hit)
             }
         ))
+    }
+
+    @MainActor private func consumeComposerInputIfReady() {
+        guard let input = composerInput, consumedInputID != input.id else { return }
+        if input.sendImmediately {
+            // Wait until the conversation's model, mode and run are restored.
+            // A cancelled presentation keeps the request with its owner.
+            guard initialLoadFinished else { return }
+            consumedInputID = input.id
+            onInputConsumed(input.id)
+            Task { await viewModel.sendExplicitAssistantRequest(input.text) }
+            return
+        }
+        viewModel.draft += (viewModel.draft.isEmpty ? "" : "\n\n") + input.text
+        let existing = Set(viewModel.attachments.map(\.id))
+        viewModel.attachments.append(contentsOf: input.attachments.filter { !existing.contains($0.id) })
+        consumedInputID = input.id
+        onInputConsumed(input.id)
     }
 
     var body: some View {
@@ -307,6 +328,9 @@ struct ThreadDetailView: View {
             .task {
                 if !embedded { viewModel.selectedRunID = router.selectedRunID }
                 await viewModel.load()
+                guard !Task.isCancelled else { return }
+                initialLoadFinished = true
+                consumeComposerInputIfReady()
                 if !embedded {
                     // Execution locations belong to SAVED ordinary tasks only.
                     // Notes assistants are embedded, and temporary sessions
@@ -363,12 +387,7 @@ struct ThreadDetailView: View {
                 }
             }
             .task(id: composerInput?.id) {
-                guard let input = composerInput, consumedInputID != input.id else { return }
-                viewModel.draft += (viewModel.draft.isEmpty ? "" : "\n\n") + input.text
-                let existing = Set(viewModel.attachments.map(\.id))
-                viewModel.attachments.append(contentsOf: input.attachments.filter { !existing.contains($0.id) })
-                consumedInputID = input.id
-                onInputConsumed(input.id)
+                consumeComposerInputIfReady()
             }
             .onReceive(NotificationCenter.default.publisher(for: .floeInteractiveMessageDidChange)) { notice in
                 if notice.object as? UUID == viewModel.conversationID { Task { await viewModel.refreshPresentedMessages() } }

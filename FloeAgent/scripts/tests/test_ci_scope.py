@@ -55,6 +55,7 @@ def expected_condition(job, event, combo):
         "build-test": mode in ("full", "build_test_only", "ide_only"),
         "appstore-sdk-compatibility": mode == "full",
         "spm-linux-build": mode == "full",
+        "cloud-device": mode == "cloud_device_only",
     }[job]
 
 
@@ -74,6 +75,7 @@ def expected_raw_condition(job, event, combo):
         "build-test": bool({"full", "build_test_only", "ide_only"} & combo),
         "appstore-sdk-compatibility": "full" in combo,
         "spm-linux-build": "full" in combo,
+        "cloud-device": "cloud_device_only" in combo,
     }[job]
 
 
@@ -254,6 +256,7 @@ class SelectorTruthTableTests(unittest.TestCase):
             ("workflow_dispatch", frozenset({"build_test_only"}), True,
              frozenset({"build-test"})),
             ("workflow_dispatch", frozenset({"ide_only"}), True, frozenset({"build-test"})),
+            ("workflow_dispatch", frozenset({"cloud_device_only"}), True, frozenset({"cloud-device"})),
             ("workflow_dispatch", frozenset({"live_agent_demo"}), True,
              frozenset({"live-agent-demo"})),
             ("workflow_dispatch", frozenset({"local_inference"}), True,
@@ -267,6 +270,7 @@ class SelectorTruthTableTests(unittest.TestCase):
             ("workflow_dispatch", frozenset({"publish_skill_hub"}), True,
              frozenset({"publish-skill-hub"})),
             ("workflow_dispatch", frozenset({"full", "ide_only"}), False, frozenset()),
+            ("workflow_dispatch", frozenset({"full", "cloud_device_only"}), False, frozenset()),
             ("workflow_dispatch", frozenset({"full", "publish_skill_hub"}), False,
              frozenset()),
             ("workflow_dispatch", frozenset({"full", "build_test_only"}), False,
@@ -389,7 +393,7 @@ class WorkflowSelectorWiringTests(unittest.TestCase):
         # read-only, including the paid demo and the write-capable publish job.
         for job in ("live-agent-demo", "local-inference", "feedback-ui",
                     "publish-skill-hub", "build-test",
-                    "appstore-sdk-compatibility", "spm-linux-build"):
+                    "appstore-sdk-compatibility", "spm-linux-build", "cloud-device"):
             self.assertIn("needs: validate-selectors", self.blocks[job], job)
 
     def test_validator_receives_every_declared_selector(self):

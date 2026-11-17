@@ -213,6 +213,91 @@ public struct SubagentRunner: Sendable {
         self.onChildStateChange = onChildStateChange
     }
 
+    struct BackgroundTranscript: Sendable {
+        var isBackground = false
+        var delivered = false
+        var resultJSON: String?
+        var resumedParentID: UUID?
+        var startReady = false
+        var startFailed = false
+    }
+
+    func children(parentRunID: UUID, conversationID: UUID) async throws -> [ChildRunRecord] {
+        guard let childRunStore else { throw FloeError.invalidConfiguration("Background delegation requires durable storage") }
+        return try await childRunStore.children(parentRunID: parentRunID).filter { $0.conversationID == conversationID }
+    }
+
+    // Page with bounded memory; never confuse an unreadable/truncated scan
+    // with an empty transcript. This preserves failure evidence for recovery.
+    func backgroundTranscript(childID: UUID) async throws -> BackgroundTranscript {
+        guard let childRunStore else { throw FloeError.invalidConfiguration("Background delegation requires durable storage") }
+        var result = BackgroundTranscript()
+        var cursor = 0
+        var count = 0
+        repeat {
+            let page = try await childRunStore.entries(childRunID: childID, afterSequence: cursor, limit: 200)
+            count += page.entries.count
+            guard count <= 20_000 else { throw FloeError.storageCorrupted("Child transcript exceeds the recovery scan limit") }
+            for entry in page.entries {
+                if entry.kind == .result { result.resultJSON = entry.payloadJSON }
+                guard entry.kind == .state, let data = entry.payloadJSON.data(using: .utf8),
+                      let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+                if obj["backgroundDelegate"] as? Bool == true { result.isBackground = true }
+                if obj["backgroundStartReady"] as? Bool == true { result.startReady = true }
+                if obj["backgroundStartFailed"] as? Bool == true { result.startFailed = true }
+                if obj["state"] as? String == "resumed", let raw = obj["resumedParentRunID"] as? String,
+                   let parent = UUID(uuidString: raw) {
+                    result.resumedParentID = parent
+                    result.delivered = false
+                    // An explicitly resumed child may follow an earlier
+                    // proven startup failure. Its new lease/provenance means
+                    // execution can now occur; never replay the old failure.
+                    result.startFailed = false
+                    result.startReady = true
+                }
+                if obj["backgroundDelivered"] as? Bool == true { result.delivered = true }
+            }
+            guard let next = page.nextSequence, next > cursor else { break }
+            cursor = next
+        } while true
+        guard !(result.startReady && result.startFailed) else {
+            throw FloeError.storageCorrupted("Conflicting background start evidence")
+        }
+        return result
+    }
+
+    func isBackgroundChild(id: UUID, conversationID: UUID) async throws -> Bool {
+        guard let childRunStore, let owner = try await childRunStore.backgroundOwner(childID: id) else { return false }
+        return owner.conversationID == conversationID
+    }
+
+    func backgroundChild(id: UUID, parentRunID: UUID, conversationID: UUID) async throws -> ChildRunRecord? {
+        guard let childRunStore, let owner = try await childRunStore.backgroundOwner(childID: id),
+              owner.parentRunID == parentRunID, owner.conversationID == conversationID,
+              let child = try await childRunStore.child(id: id), child.conversationID == conversationID,
+              child.delegateCallID != nil else { return nil }
+        guard try await backgroundTranscript(childID: id).isBackground else {
+            throw FloeError.storageCorrupted("The background child provenance is missing")
+        }
+        return child
+    }
+
+    func backgroundChildren(parentRunID: UUID, conversationID: UUID) async throws -> [ChildRunRecord] {
+        guard let childRunStore else { throw FloeError.invalidConfiguration("Background delegation requires durable storage") }
+        return try await childRunStore.backgroundChildren(parentRunID: parentRunID, conversationID: conversationID)
+    }
+
+    func recordBackgroundStartFailure(childID: UUID, parentRunID: UUID, conversationID: UUID) async throws {
+        guard let childRunStore else { throw FloeError.invalidConfiguration("Background delegation requires durable storage") }
+        try await childRunStore.recordBackgroundStartFailure(childID: childID, parentRunID: parentRunID, conversationID: conversationID)
+    }
+
+    func markBackgroundDelivered(childID: UUID) async throws {
+        guard let childRunStore else { throw FloeError.invalidConfiguration("Background delegation requires durable storage") }
+        try await childRunStore.appendEntry(id: childID, kind: .state,
+            payloadJSON: Self.jsonPayload(["backgroundDelivered": true]))
+    }
+
     /// Legacy plain-text entry point: renders the structured outcome into the
     /// historical summary string. New callers should use `runStructured` so
     /// termination state is never flattened into an ambiguous string.
@@ -230,9 +315,12 @@ public struct SubagentRunner: Sendable {
     /// as structured statuses, never as wrapped success.
     public func runStructured(
         _ request: SubagentRequest,
-        context: ToolContext
+        context: ToolContext,
+        onDurableRegistration: (@Sendable (Bool) -> Void)? = nil,
+        isBackgroundInterrupted: (@Sendable () async -> Bool)? = nil
     ) async throws -> SubagentOutcome {
         guard let childBudget = context.childBudget else {
+            onDurableRegistration?(false)
             throw FloeError.validationFailed("Subagent budget is unavailable")
         }
         let persistence: ChildRunPersistence?
@@ -244,31 +332,69 @@ public struct SubagentRunner: Sendable {
             // would leave the parent's transcript implying a child run whose
             // identity never existed.
             await childBudget.finish()
+            onDurableRegistration?(false)
             return SubagentOutcome(
                 status: .toolError,
                 iterationsUsed: 0,
                 findings: "The delegated child was not started: \(error.localizedDescription)")
         }
+        if let onDurableRegistration {
+            guard let persistence, checkpointStore != nil else {
+                await childBudget.finish()
+                onDurableRegistration(false)
+                return SubagentOutcome(status: .toolError, iterationsUsed: 0,
+                    findings: "Background delegation requires durable storage.")
+            }
+            guard await persistence.assignBackground(parentRunID: context.runID,
+                conversationID: context.conversationID ?? context.runID, resumeOwner: nil,
+                payload: Self.jsonPayload(["backgroundDelegate": true])) else {
+                let outcome = SubagentOutcome(status: .toolError, iterationsUsed: 0,
+                    findings: "The background child could not be recorded and was not started.")
+                _ = await persistence.interrupt(outcome)
+                await childBudget.finish()
+                onDurableRegistration(false)
+                return outcome
+            }
+        }
         do {
             let outcome = try await runLoop(
-                request, context: context, childBudget: childBudget, persistence: persistence
+                request, context: context, childBudget: childBudget, persistence: persistence,
+                backgroundReady: onDurableRegistration
             )
+            // A preflight return can occur before the ready boundary. The
+            // callback's stream is already closed if readiness was signalled.
+            onDurableRegistration?(false)
             await childBudget.finish()
-            if let persistence { return await persistence.finish(outcome) }
+            if let persistence {
+                if onDurableRegistration != nil { await persistence.recordBackgroundFailureIfUnready() }
+                if outcome.status != .completed, await isBackgroundInterrupted?() == true {
+                    return await persistence.interrupt(outcome)
+                }
+                return await persistence.finish(outcome, requireResult: onDurableRegistration != nil)
+            }
             return outcome
         } catch let stopped as CheckpointStop {
+            onDurableRegistration?(false)
             await childBudget.finish()
+            if onDurableRegistration != nil { await persistence?.recordBackgroundFailureIfUnready() }
             let outcome = SubagentOutcome(status: .toolError, iterationsUsed: stopped.iterations,
                                            findings: stopped.reason, unfinished: [stopped.reason])
             if let persistence { return await persistence.interrupt(outcome) }
             return outcome
         } catch let termination as Termination {
+            onDurableRegistration?(false)
             await childBudget.finish()
+            if onDurableRegistration != nil { await persistence?.recordBackgroundFailureIfUnready() }
             let outcome = Self.terminatedOutcome(termination, request: request)
-            if let persistence { return await persistence.finish(outcome) }
+            if let persistence {
+                if await isBackgroundInterrupted?() == true { return await persistence.interrupt(outcome) }
+                return await persistence.finish(outcome, requireResult: onDurableRegistration != nil)
+            }
             return outcome
         } catch {
+            onDurableRegistration?(false)
             await childBudget.finish()
+            if onDurableRegistration != nil { await persistence?.recordBackgroundFailureIfUnready() }
             // Defensive: runLoop classifies every expected failure into a
             // Termination. An error reaching here is an unclassified harness
             // failure, never a success.
@@ -277,7 +403,10 @@ public struct SubagentRunner: Sendable {
                 iterationsUsed: 0,
                 findings: "Subagent stopped by a harness guard: \(error.localizedDescription)"
             )
-            if let persistence { return await persistence.finish(outcome) }
+            if let persistence {
+                if await isBackgroundInterrupted?() == true { return await persistence.interrupt(outcome) }
+                return await persistence.finish(outcome, requireResult: onDurableRegistration != nil)
+            }
             return outcome
         }
     }
@@ -369,6 +498,15 @@ public struct SubagentRunner: Sendable {
         let checkpointStore: (any ChildRunCheckpointStoring)?
         let resumeOwner: UUID?
         private var failures: [Failure] = []
+        private var backgroundStartReady = false
+        func markBackgroundReady() { backgroundStartReady = true }
+        func recordBackgroundFailureIfUnready() async {
+            guard !backgroundStartReady else { return }
+            do {
+                try await store.recordBackgroundStartFailure(childID: record.id, parentRunID: record.parentRunID,
+                    conversationID: record.conversationID)
+            } catch { recordFailure("recordBackgroundStartFailure", error) }
+        }
 
         init(
             store: any ChildRunStoring,
@@ -408,8 +546,19 @@ public struct SubagentRunner: Sendable {
         /// Durable resume marker, written BEFORE the first resumed provider
         /// turn: the original history stays untouched while the ACTIVE
         /// authorized resuming parent is recorded as provenance.
-        func noteResumeBegin(_ plan: ChildResumePlan) async {
-            _ = await append(.state, SubagentRunner.jsonPayload([
+        func assignBackground(parentRunID: UUID, conversationID: UUID, resumeOwner: UUID?, payload: String) async -> Bool {
+            do {
+                try await store.assignBackgroundOwner(childID: record.id, parentRunID: parentRunID,
+                    conversationID: conversationID, resumeOwner: resumeOwner, payloadJSON: payload)
+                return true
+            } catch {
+                recordFailure("assignBackgroundOwner", error)
+                return false
+            }
+        }
+
+        func noteResumeBegin(_ plan: ChildResumePlan) async -> Bool {
+            let payload = SubagentRunner.jsonPayload([
                 "state": "resumed",
                 "childID": plan.childID.uuidString,
                 "originalParentRunID": plan.record.parentRunID.uuidString,
@@ -417,8 +566,22 @@ public struct SubagentRunner: Sendable {
                 "resumeOrdinal": plan.resumeOrdinal,
                 "spentIterations": plan.checkpoint.iterationsUsed,
                 "hardCeiling": plan.checkpoint.hardCeiling,
-            ]))
-            await notify(state: .running, iterations: plan.checkpoint.iterationsUsed)
+            ])
+            do {
+                let owner = try await store.backgroundOwner(childID: record.id)
+                let saved: Bool
+                if owner != nil {
+                    saved = await assignBackground(parentRunID: plan.resumedIdentity.parentRunID,
+                        conversationID: plan.record.conversationID, resumeOwner: plan.ownerToken, payload: payload)
+                } else {
+                    saved = await append(.state, payload)
+                }
+                if saved { await notify(state: .running, iterations: plan.checkpoint.iterationsUsed) }
+                return saved
+            } catch {
+                recordFailure("backgroundOwner", error)
+                return false
+            }
         }
 
         @discardableResult
@@ -468,13 +631,18 @@ public struct SubagentRunner: Sendable {
         /// write failed, an explicit warning entry and the terminal summary
         /// carry the incomplete state; a failed terminal write never notifies
         /// the UI as a durable completion.
-        func finish(_ outcome: SubagentOutcome) async -> SubagentOutcome {
+        func finish(_ outcome: SubagentOutcome, requireResult: Bool = false) async -> SubagentOutcome {
             let resultOutcome = augmented(outcome)
+            var wroteResult = false
             do {
                 let payload = try Self.resultPayload(resultOutcome)
-                _ = await append(.result, payload)
+                wroteResult = await append(.result, payload)
             } catch {
                 recordFailure("encode(result)", error)
+            }
+            if requireResult && !wroteResult {
+                // Never publish a terminal row backed by an older result.
+                return await interrupt(augmented(outcome))
             }
             if !failures.isEmpty {
                 _ = await append(.error, Self.warningPayload())
@@ -536,7 +704,9 @@ public struct SubagentRunner: Sendable {
                 return augmented(outcome)
             }
             do {
-                _ = await append(.result, try Self.resultPayload(augmented(outcome)))
+                guard await append(.result, try Self.resultPayload(augmented(outcome))) else {
+                    return await interrupt(augmented(outcome))
+                }
                 let final = augmented(outcome)
                 let state = Self.state(for: outcome.status)
                 try await checkpointStore.finishResumedChild(
@@ -670,7 +840,8 @@ public struct SubagentRunner: Sendable {
         context: ToolContext,
         childBudget: ChildBudgetContext,
         persistence: ChildRunPersistence?,
-        resume: ChildResumePlan? = nil
+        resume: ChildResumePlan? = nil,
+        backgroundReady: (@Sendable (Bool) -> Void)? = nil
     ) async throws -> SubagentOutcome {
         // The ceiling stays ABSOLUTE across a resume: the spent total is
         // restored from the checkpoint and the loop bound is
@@ -884,7 +1055,10 @@ public struct SubagentRunner: Sendable {
             peerMessagesDelivered = resume.checkpoint.peerMessagesDelivered
 
             // Durable resume marker BEFORE the first resumed provider turn.
-            await persistence?.noteResumeBegin(resume)
+            guard let persistence, await persistence.noteResumeBegin(resume) else {
+                throw CheckpointStop(iterations: iterationsUsed,
+                    reason: "The resumed child's ownership could not be saved; it was not restarted.")
+            }
 
             // Resolve unknown in-flight calls (preCall crash): read-only calls
             // re-execute through the CURRENT parent's canonical dispatcher;
@@ -970,6 +1144,32 @@ public struct SubagentRunner: Sendable {
             evidence = []
             pendingRoutes = []
             peerMessagesDelivered = 0
+        }
+        if let backgroundReady, resume == nil {
+            // The model has not run and no effect has crossed a boundary.
+            // Persist the entire bounded initial child state before returning
+            // a background acknowledgement to the parent.
+            let saved = await persistCheckpoint(captureCheckpoint(
+                kind: .postCall, identity: checkpointIdentity, request: request, context: context,
+                iterationsUsed: iterationsUsed, hardCeiling: hardCeiling, messages: messages,
+                replayedPairs: replayedPairs, pendingCalls: pendingToolCalls, pendingSettled: pendingSettled,
+                pendingReasoning: pendingAssistantReasoning, discovery: discovery,
+                childSkillRevisions: childSkillRevisions, childActiveSkillIDs: childActiveSkillIDs,
+                droppedReplayedPairs: droppedSettledPairs, droppedAssistantMessages: droppedAssistantMessages,
+                truncatedResultOutputs: truncatedResultOutputs, peerMessagesDelivered: peerMessagesDelivered,
+                evidence: evidence, pendingRoutes: pendingRoutes, lastAssistantText: lastAssistantText,
+                resume: nil, recoveryHoldCallIDs: []), resume: nil, persistence: persistence)
+            guard saved else {
+                throw CheckpointStop(iterations: 0,
+                    reason: "The background child could not save its initial recovery point and was not started.")
+            }
+            guard let persistence,
+                  await persistence.append(.state, Self.jsonPayload(["backgroundStartReady": true])) else {
+                throw CheckpointStop(iterations: 0,
+                    reason: "The background child could not record its start boundary and was not started.")
+            }
+            await persistence.markBackgroundReady()
+            backgroundReady(true)
         }
         if let resume {
             messages.append((role: "system", content: Self.resumeNote(

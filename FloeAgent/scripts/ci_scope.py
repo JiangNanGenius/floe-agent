@@ -11,7 +11,8 @@ boots a simulator or produces an archive.
 matrix (build-test, appstore-sdk-compatibility, spm-linux-build).
 ``build_test_only`` and ``ide_only`` remain narrow reruns of the build-test
 lane; ``live_agent_demo``, ``local_inference``, ``feedback_ui`` and
-``publish_skill_hub`` remain the existing single-purpose modes.
+``publish_skill_hub`` remain the existing single-purpose modes. The separate
+``cloud_device_only`` mode produces an encrypted unsigned device artifact.
 
 At most one top-level mode may be selected per dispatch, and the palette
 modifiers require ``feedback_ui``.  The ``validate-selectors`` job runs this
@@ -39,6 +40,7 @@ MODES = (
     "publish_skill_hub",
     "build_test_only",
     "ide_only",
+    "cloud_device_only",
 )
 
 # Modifiers never select a lane on their own; they refine `feedback_ui`.
@@ -58,10 +60,11 @@ JOBS = (
     "build-test",
     "appstore-sdk-compatibility",
     "spm-linux-build",
+    "cloud-device",
 )
 
 # The heavy jobs that only ever run from an explicit manual selection.
-HEAVY_JOBS = ("build-test", "appstore-sdk-compatibility", "spm-linux-build")
+HEAVY_JOBS = ("build-test", "appstore-sdk-compatibility", "spm-linux-build", "cloud-device")
 
 # `full` expands to exactly these three jobs; build_test_only and ide_only
 # rerun only build-test.
@@ -141,6 +144,7 @@ def scope(event, selectors):
         jobs["publish-skill-hub"] = mode == "publish_skill_hub"
         jobs["appstore-sdk-compatibility"] = mode == "full"
         jobs["spm-linux-build"] = mode == "full"
+        jobs["cloud-device"] = mode == "cloud_device_only"
     return {
         "event": event,
         "selectors": list(modes + modifiers),

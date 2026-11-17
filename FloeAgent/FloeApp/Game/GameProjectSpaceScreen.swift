@@ -79,7 +79,8 @@ struct GameProjectSpaceScreen: View {
                     }.disabled(session == nil || pending != nil)
                     Button(IDELanguageRunText.t("助手", "Assistant"), systemImage: "sparkles") {
                         showingAssistant = true
-                    }.disabled(session == nil || pending != nil)
+                    }.accessibilityIdentifier("game.assistant.open")
+                        .disabled(session == nil || pending != nil)
                     if let session {
                         projectMenu(session)
                     }
@@ -96,13 +97,22 @@ struct GameProjectSpaceScreen: View {
                     environment.gameWorkspaces.navigation.handler = nil
                 }
             }
-            .sheet(isPresented: $showingAssistant, onDismiss: { engineQuestion = nil }) {
-                if let session, let record = session.record {
+            .inspector(isPresented: $showingAssistant) {
+                // SwiftUI can retain a closed inspector's NavigationStack
+                // toolbar in the surrounding navigation bar. Remove the
+                // assistant content when hidden so its close action does not
+                // remain visible or accessible after the panel is dismissed.
+                if showingAssistant, let session, let record = session.record {
                     StudioAssistantView(record: record, composerInput: engineQuestion, onInputConsumed: { id in
                         if engineQuestion?.id == id { engineQuestion = nil }
                     }, onClose: { showingAssistant = false })
+                        .id(record.id)
+                        .inspectorColumnWidth(min: 320, ideal: 420, max: 520)
                         .environmentObject(environment)
                 }
+            }
+            .onChange(of: showingAssistant) { _, visible in
+                if !visible { engineQuestion = nil }
             }
             .fullScreenCover(isPresented: $showingQuickEdit) {
                 if let session {
@@ -278,9 +288,9 @@ struct GameProjectSpaceScreen: View {
                 },
                 onAskAI: {
                     engineQuestion = ThreadComposerInput(text: IDELanguageRunText.t(
-                        "请检查我导入的游戏文件，判断使用了哪个引擎，以及哪个文件夹是游戏根目录。请列出判断依据，有不确定的地方请指出。",
-                        "Inspect my imported game files. Which engine and project root do they use? Show the evidence and explain any uncertainty."
-                    ), attachments: [])
+                        "请检查我导入的游戏文件，判断游戏引擎和根目录，列出文件依据并提出可供我确认的建议；有不确定的地方请说明。",
+                        "Inspect my imported game files to identify the engine and project root. Show the file evidence and propose a choice for me to confirm; explain any uncertainty."
+                    ), attachments: [], sendImmediately: true)
                     assistantAfterSetup = true
                     showingProjectSetup = false
                 },
@@ -407,7 +417,11 @@ struct GameProjectSpaceScreen: View {
         }
             ?? IDELanguageRunText.t("尚未选择引擎", "No engine selected")
         let summary: String
-        if let state, state.selectedEngine != nil {
+        if session.project.pendingSelectionProposal != nil {
+            summary = session.project.isPendingSelectionProposalStale
+                ? IDELanguageRunText.t("工程已变化，请重新判断引擎", "Project changed. Recheck the engine")
+                : IDELanguageRunText.t("AI 建议待确认", "AI suggestion ready to review")
+        } else if let state, state.selectedEngine != nil {
             summary = engineName + " · " + (state.selectedRoot?.value ?? IDELanguageRunText.t("工程根目录", "Project root"))
                 + (state.isManualUnverified
                     ? " · " + IDELanguageRunText.t("手动未验证", "manual, unverified")
@@ -544,7 +558,7 @@ struct GameProjectSpaceScreen: View {
             // assistant run. The existing WorkspaceIDEView is shown first; its
             // optional Run extension resolves separately and reports any real
             // missing prerequisite there.
-            try await session.project.prepareForHandoff()
+            try await session.project.prepareForIDE()
             try Task.checkCancellation()
             guard let workspace = session.center.currentWorkspace else {
                 throw GameIDEBridgeError.workspaceChanged

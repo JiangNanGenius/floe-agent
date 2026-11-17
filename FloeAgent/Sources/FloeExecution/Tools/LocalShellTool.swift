@@ -334,6 +334,11 @@ public struct LocalShellTool: AgentTool {
             let text = "status=blocked pattern=\(verdict.matchedPatternID ?? "policy")\n\(verdict.reason ?? "Command blocked")\nexit=126"
             return Self.output(text, exitStatus: 126)
         case .outcome(let outcome):
+            if case .linuxUpgradePending(let pending) = outcome,
+               (args.packages ?? []).isEmpty,
+               (args.skillID?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) {
+                throw ToolPreDispatchRetry(expectedLinuxImageID: pending.currentImageID)
+            }
             return render(
                 outcome: outcome,
                 command: command,
@@ -419,6 +424,8 @@ public struct LocalShellTool: AgentTool {
             // Cancellation returns a receipt with no collected stdout: the
             // command's output is unknown, so the capture is partial too.
             return Self.output("exit=130 status=cancelled cwd=\(cwd)", exitStatus: 130, captureTruncated: true)
+        case .linuxUpgradePending(let pending):
+            return Self.output(prefix() + "exit=75 status=notStarted cwd=\(cwd)\n\(pending.localizedDescription)", exitStatus: 75)
         case .notStarted(let reason):
             // The engine gate was still owned by another worker. Nothing of
             // this command ran, so there is no exit code and no output to

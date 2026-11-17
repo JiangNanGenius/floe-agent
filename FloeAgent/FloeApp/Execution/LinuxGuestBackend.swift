@@ -784,6 +784,8 @@ struct RoutingLocalShellBackend: LocalShellBackend {
                 try await FloePlatformServices.shared.activateLinuxGuest(
                     id: environmentID, taskID: request.runID?.uuidString, runID: request.runID)
             }
+        } catch let pending as LinuxGuestImageUpgradePending {
+            return .linuxUpgradePending(pending)
         } catch {
             return .failed(message: error.localizedDescription)
         }

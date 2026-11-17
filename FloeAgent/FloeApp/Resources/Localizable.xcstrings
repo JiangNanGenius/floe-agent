@@ -142891,6 +142891,12 @@
         }
       }
     },
+    "execution.runtime_rebuild.cancelled_wait": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "The Linux upgrade was cancelled. The previous environment and its data were retained." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Linux 升级已取消，原环境和资料已保留。" } }
+      }
+    },
     "execution.runtime_rebuild.progress": {
       "localizations": {
         "en": {

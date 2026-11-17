@@ -46,7 +46,9 @@ import Foundation
 import Testing
 @testable import FloeApp
 import FloeExecution
+import FloeCore
 import FloeSkills
+import FloeTools
 
 @Suite("FloeApp.SetupDownloadOwnerHooks")
 @MainActor
@@ -399,6 +401,133 @@ struct SetupDownloadOwnerHooksTests {
         func markReached() { reachedAfterFence = true }
         var started: Int { transactionsStarted }
         var reached: Bool { reachedAfterFence }
+    }
+
+    private actor AdmissionTrace {
+        var acquisitions = 0
+        var releases = 0
+        func acquire() -> Int { acquisitions += 1; return acquisitions }
+        func release() { releases += 1 }
+    }
+
+    @Test("Recovery starting during lease acquisition releases it before waiting and retries")
+    func recoveryStartsDuringAdmission() async throws {
+        let jobs = EnvironmentPackageJobs.shared
+        let id = uniqueImageJobID("admission-race")
+        let acquisitionGate = TestGate()
+        let releaseGate = TestGate()
+        let trace = AdmissionTrace()
+        let token = CancellationToken()
+        let admission = Task { @MainActor in
+            try await jobs.acquireOutsideSharedMaintenance(id: id, cancellation: token,
+                validate: {}, acquire: {
+                    let number = await trace.acquire()
+                    if number == 1 { await acquisitionGate.wait() }
+                    return number
+                }, release: { _ in
+                    await trace.release()
+                    await releaseGate.open()
+                })
+        }
+        for _ in 0..<500 {
+            if await trace.acquisitions == 1 { break }
+            try await Task.sleep(for: .milliseconds(2))
+        }
+        #expect(await trace.acquisitions == 1)
+        let owner = Task { @MainActor in
+            try await jobs.runShared(id: id, title: "settings", cancellation: nil) { _, _ in
+                // Maintenance cannot finish until the in-flight lease leaves.
+                await releaseGate.wait()
+                return "complete"
+            }
+        }
+        try await Self.waitForRecoveryReport { jobs.attemptEpoch(id: id) != nil }
+        await acquisitionGate.open()
+        #expect(try await admission.value == 2)
+        #expect(try await owner.value == "complete")
+        #expect(await trace.releases == 1)
+    }
+
+    @Test("Passive Linux recovery wait joins without owning or cancelling the upgrade")
+    func passiveRecoveryWait() async throws {
+        let jobs = EnvironmentPackageJobs.shared
+        let id = uniqueImageJobID("passive-recovery")
+        let gate = TestGate()
+        #expect(try await !jobs.waitForExistingShared(id: id, cancellation: nil))
+        let owner = Task { @MainActor in
+            try await jobs.runShared(id: id, title: "settings", cancellation: nil) { _, token in
+                await gate.wait()
+                try token.throwIfCancelled()
+                return "completed"
+            }
+        }
+        try await Self.waitForRecoveryReport { jobs.attemptEpoch(id: id) != nil }
+        let cancelledToken = CancellationToken()
+        let cancelledWaiter = Task { @MainActor in
+            try await jobs.waitForExistingShared(id: id, cancellation: cancelledToken)
+        }
+        await Task.yield()
+        cancelledToken.cancel()
+        do {
+            _ = try await cancelledWaiter.value
+            Issue.record("Cancelled waiter must not continue")
+        } catch is CancellationError { }
+        #expect(jobs.attemptEpoch(id: id) != nil)
+        let waiter = Task { @MainActor in try await jobs.waitForExistingShared(id: id, cancellation: nil) }
+        await Task.yield()
+        await gate.open()
+        #expect(try await waiter.value)
+        #expect(try await owner.value == "completed")
+    }
+
+    @Test("Passive recovery wait returns the actual shared failure")
+    func passiveRecoveryFailure() async throws {
+        enum Failure: Error { case disk }
+        let jobs = EnvironmentPackageJobs.shared
+        let id = uniqueImageJobID("passive-failure")
+        let gate = TestGate()
+        let owner = Task { @MainActor in
+            try await jobs.runShared(id: id, title: "settings", cancellation: nil) { _, _ in
+                await gate.wait()
+                throw Failure.disk
+            }
+        }
+        try await Self.waitForRecoveryReport { jobs.attemptEpoch(id: id) != nil }
+        let waiter = Task { @MainActor in try await jobs.waitForExistingShared(id: id, cancellation: nil) }
+        await Task.yield()
+        await gate.open()
+        do { _ = try await waiter.value; Issue.record("Failure must reach waiter") }
+        catch Failure.disk { }
+        do { _ = try await owner.value; Issue.record("Failure must reach owner") }
+        catch Failure.disk { }
+    }
+
+    @Test("Cancelling the settings owner still cancels an upgrade with passive waiters")
+    func passiveRecoveryOwnerCancellation() async throws {
+        let jobs = EnvironmentPackageJobs.shared
+        let id = uniqueImageJobID("passive-owner-cancellation")
+        let gate = TestGate()
+        let ownerToken = CancellationToken()
+        let owner = Task { @MainActor in
+            try await jobs.runShared(id: id, title: "settings", cancellation: ownerToken) { _, token in
+                await gate.wait()
+                try token.throwIfCancelled()
+                return "unexpected"
+            }
+        }
+        try await Self.waitForRecoveryReport { jobs.attemptEpoch(id: id) != nil }
+        let waiter = Task { @MainActor in try await jobs.waitForExistingShared(id: id, cancellation: nil) }
+        await Task.yield()
+        ownerToken.cancel()
+        do { _ = try await owner.value; Issue.record("Owner cancellation must return") }
+        catch is CancellationError { }
+        await gate.open()
+        do { _ = try await waiter.value; Issue.record("Upgrade cancellation must reach waiter") }
+        catch let error as FloeError {
+            guard case .validationFailed = error else { throw error }
+        }
+        #expect(!jobs.running.contains(id))
+        #expect(!jobs.failures.contains(id), "Cancellation must not be recorded as an upgrade failure")
     }
 
     private func makeCenter() -> ContentUpdateCenter {

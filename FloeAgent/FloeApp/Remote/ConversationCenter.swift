@@ -4907,6 +4907,22 @@ final class ConversationCenter: ObservableObject {
                 return names
             }
         )
+        let subagentRegistry = environment.subagentRunnerRegistry
+        configuration.settleBackgroundChildren = {
+            try await subagentRegistry.settleBackground(runID: runID, conversationID: conversationID)
+        }
+        configuration.markBackgroundChildrenDelivered = { childIDs in
+            try await subagentRegistry.markBackgroundDelivered(runID: runID, conversationID: conversationID, childIDs: childIDs)
+        }
+        configuration.cancelBackgroundChildren = {
+            await subagentRegistry.cancelBackground(runID: runID)
+        }
+        configuration.markBackgroundChildrenInterrupted = {
+            await subagentRegistry.markBackgroundInterrupted(runID: runID)
+        }
+        configuration.isBackgroundChild = { childID in
+            try await subagentRegistry.isBackgroundChild(runID: runID, conversationID: conversationID, childID: childID)
+        }
         configuration.offersCloudAgentBaseTools = offersCloudAgentBaseTools
         if effectiveExecutionMode.conversationMode == .goal, let activeGoal {
             configuration.goalBudgets = activeGoal.budgets
@@ -4937,6 +4953,7 @@ final class ConversationCenter: ObservableObject {
             ),
             for: runID
         )
+        if !isTemporary { await environment.subagentRunnerRegistry.enableBackground(for: runID) }
         preparationStage("end:subagent_registry")
         preparationStage("begin:document_contexts")
         let notesContext: String?

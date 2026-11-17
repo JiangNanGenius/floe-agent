@@ -73,6 +73,29 @@ private actor RoutingLeaseProbe {
 
 @Suite("FloeTools.ToolRunnerRegistry")
 struct ToolRunnerRegistryTests {
+    @Test("Proven pre-dispatch retry releases its lease before waiting and reacquires once")
+    func preDispatchRetryReleasesLease() async throws {
+        let probe = RoutingLeaseProbe(), routing = ToolEnvironmentRouting()
+        routing.configure { context in
+            await probe.recordAcquire()
+            return ToolEnvironmentLease(context: context, finish: { await probe.recordFinish() })
+        }
+        routing.configureRetry { _, reason in
+            #expect(reason.expectedLinuxImageID == "current")
+            #expect(await probe.finished == 1)
+            return true
+        }
+        let runner = AnyAgentTool(descriptor: AnyAgentTool(EchoRunnerTool()).descriptor, run: { _, _ in
+            await probe.recordRun()
+            if await probe.ran == 1 { throw ToolPreDispatchRetry(expectedLinuxImageID: "current") }
+            return ToolExecutionOutput(summary: "once", fullOutputSHA256: "d")
+        }, routing: routing)
+        #expect(try await runner.execute(argumentsJSON: Data(), context: makeContext()).summary == "once")
+        #expect(await probe.acquired == 2)
+        #expect(await probe.finished == 2)
+        #expect(await probe.ran == 2)
+    }
+
     @Test("Owned routing stays local and finishes leases after success and failure")
     func isolatedRoutingKeepsLeaseLifecycle() async throws {
         let probe = RoutingLeaseProbe(), routing = ToolEnvironmentRouting()

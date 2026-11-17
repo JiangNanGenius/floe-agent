@@ -23,6 +23,20 @@ import FloeTools
 @Suite("feedback runtime shell gate and cancellation")
 struct FeedbackRuntimeShellGateTests {
 
+    @Test("Only a proven pre-dispatch Linux upgrade produces the retry marker")
+    func upgradePendingIsMarkedBeforeDispatch() async throws {
+        let root = FileManager.default.temporaryDirectory
+        let service = LocalShellService(backend: UpgradePendingBackend(), rootProvider: { root })
+        let context = ToolContext(runID: UUID(), scope: .local, cancellation: CancellationToken())
+        let tool = LocalShellTool(shell: service)
+        do {
+            _ = try await tool.execute(.init(command: "printf hi"), context: context)
+            Issue.record("Expected a pre-dispatch retry marker")
+        } catch let retry as ToolPreDispatchRetry {
+            #expect(retry.expectedLinuxImageID == "new-image")
+        }
+    }
+
     // MARK: - Gate / timeout distinction
 
     @Test func gateBusyIsNotAnExecutionTimeout() async {
@@ -284,6 +298,19 @@ struct FeedbackRuntimeShellGateTests {
 private actor BusyShellBackend: LocalShellBackend {
     func run(_ request: ShellRunRequest, cancellation: CancellationToken?) async -> ShellRunOutcome {
         .notStarted(reason: "The local shell is still stopping another command; nothing was started (exit 75). Retry after it stops. gate owner=other heldMs=9000")
+    }
+    func openSession(_ request: ShellOpenRequest, cancellation: CancellationToken?) async throws -> ShellOpenResult {
+        .init(sessionID: request.sessionID, initialOutput: "", alive: true)
+    }
+    func exchangeSession(_ request: ShellExchangeRequest, cancellation: CancellationToken?) async throws -> ShellExchangeResult {
+        .init(output: "", alive: false, exitCode: 0)
+    }
+    func closeSession(sessionID: String) async {}
+}
+
+private actor UpgradePendingBackend: LocalShellBackend {
+    func run(_ request: ShellRunRequest, cancellation: CancellationToken?) async -> ShellRunOutcome {
+        .linuxUpgradePending(.init(environmentID: "fixture", installedImageID: "old-image", currentImageID: "new-image"))
     }
     func openSession(_ request: ShellOpenRequest, cancellation: CancellationToken?) async throws -> ShellOpenResult {
         .init(sessionID: request.sessionID, initialOutput: "", alive: true)
