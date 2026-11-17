@@ -40,6 +40,7 @@ internal class MeetingAssistantStore private constructor(
 
     private val lock = Any()
     private val docs = LinkedHashMap<String, MeetingDoc>()
+    private val clearedMeetingIds = LinkedHashSet<String>()
     private var loaded = false
     private var fileUnreadable = false
 
@@ -75,6 +76,7 @@ internal class MeetingAssistantStore private constructor(
         if (!isIdentifier(meetingId) || !isIdentifier(conversationId)) return false
         return synchronized(lock) {
             ensureLoadedLocked()
+            if (meetingId in clearedMeetingIds) return@synchronized false
             val doc = docs.getOrPut(meetingId) { MeetingDoc(null, null, ArrayList()) }
             doc.conversationId = conversationId
             persistLocked()
@@ -85,6 +87,7 @@ internal class MeetingAssistantStore private constructor(
         if (!isIdentifier(meetingId)) return false
         return synchronized(lock) {
             ensureLoadedLocked()
+            if (meetingId in clearedMeetingIds) return@synchronized false
             val doc = docs[meetingId] ?: return@synchronized true
             doc.conversationId = null
             persistLocked()
@@ -95,6 +98,7 @@ internal class MeetingAssistantStore private constructor(
         if (!isIdentifier(meetingId) || !isIdentifier(modelId)) return false
         return synchronized(lock) {
             ensureLoadedLocked()
+            if (meetingId in clearedMeetingIds) return@synchronized false
             val doc = docs.getOrPut(meetingId) { MeetingDoc(null, null, ArrayList()) }
             doc.modelId = modelId
             persistLocked()
@@ -111,6 +115,7 @@ internal class MeetingAssistantStore private constructor(
         if (!entryBelongsToMeeting(entry, meetingId)) return false
         return synchronized(lock) {
             ensureLoadedLocked()
+            if (meetingId in clearedMeetingIds) return@synchronized false
             val doc = docs.getOrPut(meetingId) { MeetingDoc(null, null, ArrayList()) }
             if (doc.conversationId == null) {
                 doc.conversationId = entry.conversationId
@@ -142,6 +147,7 @@ internal class MeetingAssistantStore private constructor(
         if (!entryBelongsToMeeting(entry, meetingId)) return false
         return synchronized(lock) {
             ensureLoadedLocked()
+            if (meetingId in clearedMeetingIds) return@synchronized false
             val doc = docs.getOrPut(meetingId) { MeetingDoc(null, null, ArrayList()) }
             if (doc.conversationId == null) {
                 doc.conversationId = entry.conversationId
@@ -153,17 +159,55 @@ internal class MeetingAssistantStore private constructor(
         }
     }
 
-    /** Removes one meeting's local assistant history; the real task is kept. */
+    /**
+     * Removes one meeting's local assistant history; the real task is kept.
+     *
+     * A successful clear keeps a bounded in-process tombstone, so a late in-flight
+     * callback ([recordPending], [complete], [bindConversation],
+     * [selectModel], [clearConversation]) cannot rebuild that meeting while
+     * the tombstone is retained. When the durable write fails the document is
+     * restored and `false` is returned: the history is still fully present,
+     * a later call really persists the removal, and the failure is never
+     * reported as a success.
+     */
     fun clearMeeting(meetingId: String): Boolean {
         if (!isIdentifier(meetingId)) return false
         return synchronized(lock) {
             ensureLoadedLocked()
-            if (docs.remove(meetingId) == null) return@synchronized true
-            persistLocked()
+            if (!docs.containsKey(meetingId)) {
+                rememberClearedLocked(meetingId)
+                return@synchronized true
+            }
+            // compactLocked mutates entry lists in place; copy them so a
+            // failed persist can honestly restore the pre-clear state.
+            val snapshot = docs.mapValues { (_, value) ->
+                value.copy(entries = ArrayList(value.entries))
+            }
+            docs.remove(meetingId)
+            if (persistLocked()) {
+                rememberClearedLocked(meetingId)
+                true
+            } else {
+                docs.clear()
+                docs.putAll(snapshot)
+                false
+            }
         }
     }
 
     // ------------------------------------------------------------- internals
+
+    /**
+     * Bounded, per-process tombstone of cleared meeting ids. Ids are unique
+     * per meeting, so evicting the oldest entry is safe; the bound only caps
+     * memory across many deletions in one process life.
+     */
+    private fun rememberClearedLocked(meetingId: String) {
+        clearedMeetingIds.add(meetingId)
+        while (clearedMeetingIds.size > MAX_CLEARED_MEETINGS) {
+            clearedMeetingIds.remove(clearedMeetingIds.first())
+        }
+    }
 
     private fun entryBelongsToMeeting(entry: MeetingAssistantEntry, meetingId: String): Boolean =
         entry.id.startsWith("$meetingId$ENTRY_ID_SEPARATOR") &&
@@ -422,6 +466,7 @@ internal class MeetingAssistantStore private constructor(
         private const val MAX_ANSWER_BYTES = 24_000
         private const val MAX_QUESTION_BYTES = 8_000
         private const val MAX_TRIM_ATTEMPTS = 24
+        private const val MAX_CLEARED_MEETINGS = 512
         internal const val ENTRY_ID_SEPARATOR = ":"
         private val json = Json { ignoreUnknownKeys = true; isLenient = false }
         private val instances = HashMap<String, MeetingAssistantStore>()

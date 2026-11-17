@@ -186,6 +186,70 @@ class MeetingAssistantStoreTest {
     }
 
     @Test
+    fun `a cleared meeting can never be rebuilt by a late callback`() {
+        val store = store()
+        val meetingId = UUID.randomUUID().toString()
+        val conversationId = UUID.randomUUID().toString()
+        val late = entry(meetingId = meetingId, status = MeetingAssistantEntryStatus.ANSWERED)
+        assertTrue(store.bindConversation(meetingId, conversationId))
+        assertTrue(store.complete(meetingId, late))
+
+        assertTrue(store.clearMeeting(meetingId))
+
+        // Every mutation entry point refuses the tombstoned meeting, so an
+        // in-flight prepared/settle/check-again callback cannot resurrect
+        // the deleted meeting's binding or history.
+        assertFalse(store.recordPending(meetingId, late.copy(status = MeetingAssistantEntryStatus.PENDING)))
+        assertFalse(store.complete(meetingId, late))
+        assertFalse(store.bindConversation(meetingId, UUID.randomUUID().toString()))
+        assertFalse(store.selectModel(meetingId, UUID.randomUUID().toString()))
+        assertFalse(store.clearConversation(meetingId))
+        assertTrue(store.load(meetingId).entries.isEmpty())
+        assertNull(store.conversationId(meetingId))
+        // Re-clearing is an honest idempotent success.
+        assertTrue(store.clearMeeting(meetingId))
+    }
+
+    @Test
+    fun `clearing before the first callback prevents recreating history`() {
+        val store = store()
+        val meetingId = UUID.randomUUID().toString()
+        assertTrue(store.clearMeeting(meetingId))
+        assertFalse(store.complete(meetingId, entry(meetingId = meetingId)))
+        assertTrue(store.load(meetingId).entries.isEmpty())
+    }
+
+    @Test
+    fun `a failed clear keeps the history recoverable and never false-succeeds`() {
+        val store = store()
+        val meetingId = UUID.randomUUID().toString()
+        val conversationId = UUID.randomUUID().toString()
+        val saved = entry(meetingId = meetingId, status = MeetingAssistantEntryStatus.ANSWERED)
+        assertTrue(store.bindConversation(meetingId, conversationId))
+        assertTrue(store.complete(meetingId, saved))
+
+        // Block the durable write: replace the persisted history file with a
+        // directory, so the atomic move that publishes the removal must fail.
+        val obstructed = File(temporary.root, "meeting-assistant-history.json")
+        assertTrue(!obstructed.exists() || obstructed.delete())
+        assertTrue(obstructed.mkdir())
+
+        assertFalse(store.clearMeeting(meetingId))
+
+        // The removal was rolled back: the full history is still there and
+        // no tombstone was installed, so a later retry can really persist
+        // the cleanup instead of false-succeeding over a hidden removal.
+        val intact = store.load(meetingId)
+        assertEquals(1, intact.entries.size)
+        assertEquals(conversationId, intact.conversationId)
+
+        assertTrue(obstructed.delete())
+        assertTrue(store.clearMeeting(meetingId))
+        assertTrue(store.load(meetingId).entries.isEmpty())
+        assertFalse(store.complete(meetingId, saved))
+    }
+
+    @Test
     fun `assistant history never rewrites the meeting record`() {
         val store = store()
         val meetingRecord = File(temporary.root, "meeting.json")

@@ -119,6 +119,7 @@ internal class MeetingAssistantHost(
     val state: StateFlow<MeetingAssistantState> = stateFlow.asStateFlow()
 
     private val turns = HashMap<String, ActiveTurn>()
+    private val deletedMeetingIds = LinkedHashSet<String>()
     private var selectedMeetingId: String? = null
     private var selectionEpoch = 0L
     private var meetingModelId: String? = null
@@ -250,8 +251,25 @@ internal class MeetingAssistantHost(
             return
         }
         // A late UI callback for a meeting that is no longer selected must not
-        // launch a paid run; switching is a hard fence.
-        if (synchronized(lock) { selectedMeetingId } != meetingId) return
+        // launch a paid run; switching is a hard fence. A deleted meeting is
+        // fenced the same way; while it is still the selected one the fence
+        // is reported honestly instead of failing silently.
+        val fence = synchronized(lock) {
+            when {
+                selectedMeetingId != meetingId -> "notSelected"
+                meetingId in deletedMeetingIds -> "deleted"
+                else -> null
+            }
+        }
+        if (fence != null) {
+            if (fence == "deleted") {
+                publishErrorFor(
+                    meetingId,
+                    MeetingAssistantFailure(MeetingAssistantFailureCode.CONTEXT_UNAVAILABLE),
+                )
+            }
+            return
+        }
         val ready = stateFlow.value.availability as? MeetingAssistantAvailability.Ready
         if (ready == null) {
             publishErrorFor(
@@ -927,6 +945,51 @@ internal class MeetingAssistantHost(
         requestSettle(turn, "check")
     }
 
+    /**
+     * The meeting was really deleted. Detaches exactly this meeting's local
+     * assistant state — the in-flight turn is finished locally and removed,
+     * so a late prepared/settle callback can never reach the store — and
+     * then clears this meeting's binding/history. The native
+     * conversation/task is deliberately never touched here: it stays an
+     * ordinary independent task.
+     *
+     * Returns `false` only when the durable cleanup could not be persisted;
+     * the history is then left fully intact so the removal can be retried
+     * and is never reported as gone.
+     */
+    suspend fun onMeetingDeleted(meetingId: String): Boolean {
+        if (!isIdentifier(meetingId)) return true
+        val stream: EventPumpHandle?
+        synchronized(lock) {
+            rememberDeletedLocked(meetingId)
+            val turn = turns.remove(meetingId)
+            turn?.finished?.set(true)
+            stream = turn?.stream
+            turn?.stream = null
+            if (selectedMeetingId == meetingId) {
+                updateLocked { current ->
+                    current.copy(
+                        entries = emptyList(),
+                        active = null,
+                        checkingEntryIds = emptySet(),
+                        error = null,
+                    )
+                }
+            }
+        }
+        stream?.close()
+        return withContext(ioDispatcher) {
+            runCatching { store.clearMeeting(meetingId) }.getOrDefault(false)
+        }
+    }
+
+    private fun rememberDeletedLocked(meetingId: String) {
+        deletedMeetingIds.add(meetingId)
+        while (deletedMeetingIds.size > MAX_DELETED_MEETINGS) {
+            deletedMeetingIds.remove(deletedMeetingIds.first())
+        }
+    }
+
     // ------------------------------------------------------- recovery/readback
 
     /** Re-reads an entry left PENDING/UNRESOLVED by an earlier process. */
@@ -935,6 +998,7 @@ internal class MeetingAssistantHost(
         if (!entryId.startsWith("$meetingId${MeetingAssistantStore.ENTRY_ID_SEPARATOR}")) return
         synchronized(lock) {
             if (selectedMeetingId != meetingId) return
+            if (meetingId in deletedMeetingIds) return
             if (turns[meetingId]?.entryId == entryId) return
             updateLocked { current ->
                 current.copy(
@@ -994,10 +1058,18 @@ internal class MeetingAssistantHost(
                     runCatching { store.complete(meetingId, updated) }.getOrDefault(false)
                 }
                 if (!persisted) {
-                    publishErrorFor(
-                        meetingId,
-                        MeetingAssistantFailure(MeetingAssistantFailureCode.STORE_FAILED),
-                    )
+                    // A refused write for a just-deleted meeting is not a
+                    // store failure; only a live, non-deleted meeting may
+                    // surface STORE_FAILED.
+                    val stillCurrent = synchronized(lock) {
+                        selectedMeetingId == meetingId && meetingId !in deletedMeetingIds
+                    }
+                    if (stillCurrent) {
+                        publishErrorFor(
+                            meetingId,
+                            MeetingAssistantFailure(MeetingAssistantFailureCode.STORE_FAILED),
+                        )
+                    }
                     return@launch
                 }
                 reloadEntriesIfSelected(meetingId)
@@ -1027,6 +1099,7 @@ internal class MeetingAssistantHost(
         for (entry in candidates) {
             val current = synchronized(lock) {
                 selectionEpoch == epoch && selectedMeetingId == meetingId &&
+                    meetingId !in deletedMeetingIds &&
                     turns[meetingId]?.entryId != entry.id
             }
             if (!current) return
@@ -1170,5 +1243,6 @@ internal class MeetingAssistantHost(
     private companion object {
         const val QUERY_TIMEOUT_MILLIS = 15_000L
         const val MAX_RECONCILE_ENTRIES = 3
+        const val MAX_DELETED_MEETINGS = 512
     }
 }

@@ -128,6 +128,7 @@
     <string name="meeting_ui_delete_confirm">删除</string>
     <string name="meeting_ui_deleting">正在删除…</string>
     <string name="meeting_ui_deleted">会议已删除。</string>
+    <string name="meeting_ui_deleted_assistant_cleanup_failed">会议已删除，但其助手记录未能清理。该记录仍保留在本机。</string>
     <string name="meeting_ui_delete_failed">无法删除会议。</string>
     <string name="meeting_ui_error_generic">出现问题。</string>
     <string name="meeting_ui_error_permission">麦克风权限被拒绝。</string>

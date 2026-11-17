@@ -129,6 +129,7 @@
     <string name="meeting_ui_delete_confirm">Delete</string>
     <string name="meeting_ui_deleting">Deleting…</string>
     <string name="meeting_ui_deleted">Meeting deleted.</string>
+    <string name="meeting_ui_deleted_assistant_cleanup_failed">Meeting deleted, but its assistant history could not be cleaned up. The history is preserved on this device.</string>
     <string name="meeting_ui_delete_failed">The meeting could not be deleted.</string>
     <string name="meeting_ui_error_generic">Something went wrong.</string>
     <string name="meeting_ui_error_permission">Microphone access was denied.</string>

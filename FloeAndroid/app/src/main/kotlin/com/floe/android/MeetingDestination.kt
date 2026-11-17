@@ -813,9 +813,23 @@ internal fun MeetingDestination(
         scope.launch {
             try {
                 manager.deleteMeeting(id)
+                // The meeting is really gone. Clean up exactly this meeting's
+                // assistant binding/history and detach its in-flight
+                // callbacks so a late one can never rebuild it. The native
+                // conversation/task stays an ordinary independent task and
+                // is never touched here.
+                val assistantCleared = runCatching {
+                    assistantHost?.onMeetingDeleted(id) ?: true
+                }.getOrDefault(false)
                 if (selectedId == id) selectedId = null
                 listRetainedTake = null
-                listNoticeRes = R.string.meeting_ui_deleted
+                // A failed assistant cleanup is reported instead of a plain
+                // success notice; the history is preserved on the device.
+                listNoticeRes = if (assistantCleared) {
+                    R.string.meeting_ui_deleted
+                } else {
+                    R.string.meeting_ui_deleted_assistant_cleanup_failed
+                }
                 refreshCatalogQuietly()
             } catch (error: MeetingException) {
                 if (selectedId == id) deleteError = error.error else listError = error.error
