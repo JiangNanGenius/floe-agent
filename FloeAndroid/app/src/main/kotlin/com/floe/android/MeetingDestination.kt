@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 package com.floe.android
 
+import android.app.Activity
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -88,6 +89,13 @@ import com.floe.android.host.meeting.MeetingPlayerStatus
 import com.floe.android.host.meeting.MeetingRecordingPhase
 import com.floe.android.host.meeting.MeetingRecordingState
 import com.floe.android.host.meeting.MeetingSummary
+import com.floe.android.host.meetingexchange.MeetingDocumentDestinationResult
+import com.floe.android.host.meetingexchange.MeetingDocumentRequest
+import com.floe.android.host.meetingexchange.MeetingDocumentWriteResult
+import com.floe.android.host.meetingexchange.MeetingExchange
+import com.floe.android.host.meetingexchange.MeetingExportFormat
+import com.floe.android.host.meetingexchange.MeetingExportPreparationResult
+import com.floe.android.host.meetingexchange.MeetingShareResult
 import com.floe.android.host.meetingtranscription.MeetingTranscriptionCancelResult
 import com.floe.android.host.meetingassistant.MeetingAssistantAction
 import com.floe.android.host.meetingassistant.MeetingAssistantAvailability
@@ -251,6 +259,207 @@ internal fun MeetingDestination(
     var deleteVisible by remember(selectedId) { mutableStateOf(false) }
     var deleteBusy by remember(selectedId) { mutableStateOf(false) }
     var deleteError by remember(selectedId) { mutableStateOf<MeetingError?>(null) }
+
+    val pageContext = LocalContext.current
+    // Export/share host over the SAME MeetingManager. It reads exactly one
+    // explicit meeting on demand and writes only to the document the user
+    // chose in the system picker; it owns no meeting storage of its own.
+    val exchange = remember(applicationContext, manager) {
+        MeetingExchange(applicationContext, manager)
+    }
+    DisposableEffect(exchange) { onDispose { exchange.close() } }
+    var exportUi by remember(selectedId) { mutableStateOf(MeetingExportUiState()) }
+    // Kept outside the meeting-keyed state until the picker returns: a late
+    // result must still be rejected visibly instead of adopting the newly
+    // selected meeting. The host checks identity again before any write.
+    var exportRequest by remember { mutableStateOf<MeetingDocumentRequest?>(null) }
+    val currentSelectedMeetingId by rememberUpdatedState(selectedId)
+
+    // The raw system result Intent is passed through untouched so result.data
+    // still carries the provider's returned flags; the host verifies the write
+    // grant and destination itself. A cancelled result never becomes success.
+    val documentLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        val request = exportRequest
+        exportRequest = null
+        if (request == null) {
+            // A configuration/process recreation can drop the prepared
+            // snapshot while the system picker is open. Never invent one from
+            // whatever meeting is selected now.
+            if (result.resultCode == Activity.RESULT_OK && result.data?.dataString != null) {
+                exportUi = MeetingExportUiState(
+                    error = pageContext.getString(R.string.meeting_ui_export_request_lost),
+                )
+            }
+            return@rememberLauncherForActivityResult
+        }
+        when (
+            val accepted = exchange.acceptDocumentActivityResult(
+                request = request,
+                resultOk = result.resultCode == Activity.RESULT_OK,
+                resultIntent = result.data,
+                selectedMeetingId = currentSelectedMeetingId,
+            )
+        ) {
+            is MeetingDocumentDestinationResult.Ready -> {
+                val target = accepted.target
+                exportUi = MeetingExportUiState(busy = true)
+                scope.launch {
+                    try {
+                        val written = exchange.writeDocument(target, currentSelectedMeetingId)
+                        if (
+                            meetingExportBelongsToCurrentMeeting(
+                                currentSelectedMeetingId,
+                                target.meetingId,
+                            )
+                        ) {
+                            exportUi = when (written) {
+                                is MeetingDocumentWriteResult.Written -> MeetingExportUiState(
+                                    notice = exchange.savedMessage(),
+                                )
+                                is MeetingDocumentWriteResult.Failed -> MeetingExportUiState(
+                                    error = exchange.failureMessage(written.failure),
+                                )
+                            }
+                        }
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (_: Exception) {
+                        if (
+                            meetingExportBelongsToCurrentMeeting(
+                                currentSelectedMeetingId,
+                                target.meetingId,
+                            )
+                        ) {
+                            exportUi = MeetingExportUiState(
+                                error = pageContext.getString(R.string.meeting_ui_export_action_failed),
+                            )
+                        }
+                    }
+                }
+            }
+            MeetingDocumentDestinationResult.Cancelled -> {
+                // The user backed out of the picker: no notice, never success.
+                exportUi = MeetingExportUiState()
+            }
+            is MeetingDocumentDestinationResult.Rejected -> {
+                exportUi = MeetingExportUiState(
+                    error = exchange.failureMessage(accepted.failure),
+                )
+            }
+        }
+    }
+
+    fun applyExportOutcome(meetingId: String, outcome: MeetingExportUiState) {
+        exportUi = if (meetingExportBelongsToCurrentMeeting(currentSelectedMeetingId, meetingId)) {
+            outcome
+        } else {
+            MeetingExportUiState()
+        }
+    }
+
+    fun startDocumentExport(format: MeetingExportFormat) {
+        val id = selectedId ?: return
+        if (!meetingExportCanStart(exportUi.busy, id)) return
+        exportUi = MeetingExportUiState(busy = true)
+        exportRequest = null
+        scope.launch {
+            try {
+                when (val prepared = exchange.prepare(id, format)) {
+                    is MeetingExportPreparationResult.Ready -> {
+                        if (!meetingExportBelongsToCurrentMeeting(currentSelectedMeetingId, id)) {
+                            exportUi = MeetingExportUiState()
+                            return@launch
+                        }
+                        val request = exchange.documentRequest(prepared.document)
+                        exportRequest = request
+                        try {
+                            documentLauncher.launch(exchange.createDocumentIntent(request))
+                        } catch (_: Exception) {
+                            // No picker activity, or the launch was refused.
+                            exportRequest = null
+                            applyExportOutcome(
+                                id,
+                                MeetingExportUiState(
+                                    error = pageContext.getString(
+                                        R.string.meeting_ui_export_picker_unavailable,
+                                    ),
+                                ),
+                            )
+                        }
+                    }
+                    is MeetingExportPreparationResult.Failed -> {
+                        applyExportOutcome(
+                            id,
+                            MeetingExportUiState(
+                                error = exchange.failureMessage(prepared.failure),
+                            ),
+                        )
+                    }
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                applyExportOutcome(
+                    id,
+                    MeetingExportUiState(
+                        error = pageContext.getString(R.string.meeting_ui_export_action_failed),
+                    ),
+                )
+            }
+        }
+    }
+
+    fun shareCurrentMeetingText() {
+        val id = selectedId ?: return
+        if (!meetingExportCanStart(exportUi.busy, id)) return
+        exportUi = MeetingExportUiState(busy = true)
+        exportRequest = null
+        scope.launch {
+            try {
+                when (val prepared = exchange.prepare(id, MeetingExportFormat.TXT)) {
+                    is MeetingExportPreparationResult.Ready -> {
+                        if (!meetingExportBelongsToCurrentMeeting(currentSelectedMeetingId, id)) {
+                            exportUi = MeetingExportUiState()
+                            return@launch
+                        }
+                        when (val shared = exchange.shareText(prepared.document, pageContext)) {
+                            MeetingShareResult.ChooserOpened -> applyExportOutcome(
+                                id,
+                                MeetingExportUiState(notice = exchange.shareOpenedMessage()),
+                            )
+                            is MeetingShareResult.Failed -> applyExportOutcome(
+                                id,
+                                MeetingExportUiState(
+                                    error = exchange.failureMessage(shared.failure),
+                                ),
+                            )
+                        }
+                    }
+                    is MeetingExportPreparationResult.Failed -> {
+                        applyExportOutcome(
+                            id,
+                            MeetingExportUiState(
+                                error = exchange.failureMessage(prepared.failure),
+                            ),
+                        )
+                    }
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                applyExportOutcome(
+                    id,
+                    MeetingExportUiState(
+                        error = pageContext.getString(
+                            R.string.meeting_ui_export_share_action_failed,
+                        ),
+                    ),
+                )
+            }
+        }
+    }
 
     LaunchedEffect(assistantHost, selectedId) {
         assistantHost?.selectMeeting(selectedId)
@@ -848,6 +1057,9 @@ internal fun MeetingDestination(
                             notesError = notesError,
                             notesNoticeRes = notesNoticeRes,
                             detailNoticeRes = detailNoticeRes,
+                            exportState = exportUi,
+                            onExportFormat = { startDocumentExport(it) },
+                            onExportShareText = { shareCurrentMeetingText() },
                             recorderState = recorderState,
                             recordingMeetingTitle = recordingMeetingTitle,
                             permission = permission,
@@ -1012,6 +1224,9 @@ internal fun MeetingDestination(
                 notesError = notesError,
                 notesNoticeRes = notesNoticeRes,
                 detailNoticeRes = detailNoticeRes,
+                exportState = exportUi,
+                onExportFormat = { startDocumentExport(it) },
+                onExportShareText = { shareCurrentMeetingText() },
                 recorderState = recorderState,
                 recordingMeetingTitle = recordingMeetingTitle,
                 permission = permission,
@@ -1537,6 +1752,9 @@ private fun MeetingDetailHost(
     notesError: MeetingError?,
     notesNoticeRes: Int?,
     detailNoticeRes: Int?,
+    exportState: MeetingExportUiState,
+    onExportFormat: (MeetingExportFormat) -> Unit,
+    onExportShareText: () -> Unit,
     recorderState: MeetingRecordingState,
     recordingMeetingTitle: String?,
     permission: MeetingPermissionState,
@@ -1656,6 +1874,14 @@ private fun MeetingDetailHost(
                             detail = detail,
                             noticeRes = detailNoticeRes,
                             onRename = onRename,
+                        )
+                    }
+                    item(key = "export") {
+                        MeetingExportSection(
+                            state = exportState,
+                            notesUnsaved = notesState.dirty,
+                            onExportFormat = onExportFormat,
+                            onShareText = onExportShareText,
                         )
                     }
                     item(key = "notes") {
@@ -1787,6 +2013,75 @@ private fun MeetingHeader(
         }
     }
 }
+
+@Composable
+private fun MeetingExportSection(
+    state: MeetingExportUiState,
+    notesUnsaved: Boolean,
+    onExportFormat: (MeetingExportFormat) -> Unit,
+    onShareText: () -> Unit,
+) {
+    FloeSettingsSectionCard(title = stringResource(R.string.meeting_ui_export_title)) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            FloeText(
+                text = stringResource(R.string.meeting_ui_export_body),
+                style = Floe.typography.metadata,
+                color = Floe.colors.secondaryLabel,
+            )
+            if (notesUnsaved) {
+                FloeStatusLine(
+                    icon = FloeIcons.InfoCircle,
+                    text = stringResource(R.string.meeting_ui_export_unsaved_notes),
+                    color = Floe.colors.pending,
+                )
+            }
+            if (state.busy) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    FloeActivityIndicator(
+                        description = stringResource(R.string.meeting_ui_export_working),
+                    )
+                    FloeText(
+                        stringResource(R.string.meeting_ui_export_working),
+                        style = Floe.typography.metadata,
+                        color = Floe.colors.secondaryLabel,
+                    )
+                }
+            } else {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FloeCapsuleAction(
+                        label = stringResource(R.string.meeting_ui_export_save_txt),
+                        onClick = { onExportFormat(MeetingExportFormat.TXT) },
+                    )
+                    FloeCapsuleAction(
+                        label = stringResource(R.string.meeting_ui_export_save_markdown),
+                        onClick = { onExportFormat(MeetingExportFormat.MARKDOWN) },
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FloeCapsuleAction(
+                        label = stringResource(R.string.meeting_ui_export_share),
+                        onClick = onShareText,
+                    )
+                }
+            }
+            state.error?.let { MeetingErrorBanner(text = it) }
+            state.notice?.let { MeetingNoticeBanner(text = it) }
+        }
+    }
+}
+
+/** Page-owned export attempt state; reset whenever the selected meeting changes. */
+private data class MeetingExportUiState(
+    val busy: Boolean = false,
+    val error: String? = null,
+    val notice: String? = null,
+)
 
 @Composable
 private fun MeetingNotesSection(
@@ -3763,6 +4058,20 @@ internal fun meetingDurationLabel(durationMillis: Long): String {
         "$minutes:${seconds.toString().padStart(2, '0')}"
     }
 }
+
+/** One export/share attempt at a time, and only for an explicitly selected meeting. */
+internal fun meetingExportCanStart(busy: Boolean, meetingId: String?): Boolean =
+    !busy && !meetingId.isNullOrBlank()
+
+/**
+ * A write/share outcome belongs to the page only while the meeting it was
+ * prepared for is still the selected one. A late result for another meeting
+ * is dropped rather than presented as success for the new selection.
+ */
+internal fun meetingExportBelongsToCurrentMeeting(
+    currentMeetingId: String?,
+    requestedMeetingId: String,
+): Boolean = currentMeetingId != null && currentMeetingId == requestedMeetingId
 
 /**
  * The assistant may start only when the real model projection is usable, this

@@ -235,4 +235,16 @@
     <string name="meeting_ui_assistant_kind_ask">Question</string>
     <string name="meeting_ui_assistant_kind_minutes">Minutes</string>
     <string name="meeting_ui_assistant_kind_todos">To-dos</string>
+    <!-- Meeting export/share page actions. The host owns writing and sharing. -->
+    <string name="meeting_ui_export_title">Export &amp; share</string>
+    <string name="meeting_ui_export_body">Save this meeting’s details, notes and transcript as a file, or share them as plain text.</string>
+    <string name="meeting_ui_export_save_txt">Save TXT</string>
+    <string name="meeting_ui_export_save_markdown">Save Markdown</string>
+    <string name="meeting_ui_export_share">Share text</string>
+    <string name="meeting_ui_export_working">Exporting…</string>
+    <string name="meeting_ui_export_unsaved_notes">Unsaved notes are not included. Save them before exporting.</string>
+    <string name="meeting_ui_export_picker_unavailable">No document picker is available. Nothing was saved.</string>
+    <string name="meeting_ui_export_request_lost">The export request was lost. Choose the meeting again and export.</string>
+    <string name="meeting_ui_export_action_failed">The export could not start. Nothing was saved.</string>
+    <string name="meeting_ui_export_share_action_failed">The share could not start. Nothing was sent.</string>
 </resources>

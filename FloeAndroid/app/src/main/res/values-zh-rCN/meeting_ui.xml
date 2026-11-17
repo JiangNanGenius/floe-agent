@@ -234,4 +234,16 @@
     <string name="meeting_ui_assistant_kind_ask">问题</string>
     <string name="meeting_ui_assistant_kind_minutes">纪要</string>
     <string name="meeting_ui_assistant_kind_todos">待办</string>
+    <!-- 会议导出/分享页面操作。文件写入与分享由 host 负责。 -->
+    <string name="meeting_ui_export_title">导出与分享</string>
+    <string name="meeting_ui_export_body">将此会议的详情、笔记和转录保存为文件，或以纯文本分享。</string>
+    <string name="meeting_ui_export_save_txt">保存 TXT</string>
+    <string name="meeting_ui_export_save_markdown">保存 Markdown</string>
+    <string name="meeting_ui_export_share">分享文本</string>
+    <string name="meeting_ui_export_working">正在导出…</string>
+    <string name="meeting_ui_export_unsaved_notes">未保存的笔记不会包含在内，导出前请先保存。</string>
+    <string name="meeting_ui_export_picker_unavailable">没有可用的文档选择器，未保存任何内容。</string>
+    <string name="meeting_ui_export_request_lost">导出请求已丢失，请重新选择会议并导出。</string>
+    <string name="meeting_ui_export_action_failed">导出未能开始，未保存任何内容。</string>
+    <string name="meeting_ui_export_share_action_failed">分享未能开始，未发送任何内容。</string>
 </resources>
