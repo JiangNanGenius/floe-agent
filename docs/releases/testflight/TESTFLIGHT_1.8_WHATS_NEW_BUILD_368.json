@@ -1,0 +1,4 @@
+{
+  "zh-Hans": "请验证游戏工程可以在本地导出源码 ZIP 并分享。通过外部编辑器或 CI 进行远程构建前，确认会先请求授权。重启应用后，聊天中的游戏助手会话应能恢复。试玩一个 Phaser 工程，确认离线运行资源可用。",
+  "en-US": "Verify that a game project can export its source as a local ZIP and share it. Confirm that starting a remote build through an external editor or CI asks for authorization first. After restarting the app, a chat game assistant session should restore. Play a Phaser project and confirm the bundled offline runtime works."
+}
