@@ -801,6 +801,16 @@ final class GameWorkspaceRegistry {
             context: context, history: session.history, support: session.support,
             title: title, starterResources: starterResources())
         try await reopened.refresh(reloadFiles: false)
+        // Selection records include the environment ID. On the first play,
+        // carry the choice from the editor into the newly attached runtime
+        // only if discovery still recognizes it at the same saved revision.
+        if let selected = old.selectionSnapshot?.runSelection,
+           selected.baseRevision == reopened.project.revision,
+           let snapshot = reopened.selectionSnapshot,
+           snapshot.engines(forRoot: selected.gameRoot).contains(where: { $0.engine == selected.engine }),
+           snapshot.runSelection?.engine != selected.engine || snapshot.runSelection?.gameRoot != selected.gameRoot {
+            try await reopened.select(root: selected.gameRoot, engine: selected.engine)
+        }
         try requireOpen(session)
         guard session.project === old else { throw GameIDEBridgeError.superseded }
         await old.close()
@@ -1232,7 +1242,6 @@ final class GameWorkspaceRegistry {
 
     func makeRunExtension(for session: GameWorkspaceSession) async throws -> IDEProjectRunExtension {
         try await ensurePlayableSession(for: session)
-        if session.project.selectionSnapshot == nil { try await session.project.refresh() }
         try ensureIDEHost(session)
         return try await session.project.makeRunExtension()
     }

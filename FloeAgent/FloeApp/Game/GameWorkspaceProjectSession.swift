@@ -280,7 +280,8 @@ final class GameWorkspaceProjectSession {
 
     func makeRunExtension() async throws -> IDEProjectRunExtension {
         try await prepareForHandoff()
-        let selected = try await selection.currentRunSelection(project: project, context: context)
+        guard let selectionSnapshot else { throw GameProjectFlowError.selectionRequired }
+        let selected = try selectionSnapshot.requireRunSelection()
         guard let ideHost else { throw GameIDEBridgeError.workspaceChanged }
         return ideHost.ideRunExtension(engine: selected.engine, gameRoot: selected.gameRoot)
     }
