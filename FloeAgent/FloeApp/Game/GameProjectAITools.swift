@@ -64,8 +64,8 @@ final class GameProjectToolService {
             }
             let store = SQLiteWorkspaceStore(database: environment.database)
             guard try await store.workspaceID(conversationID: conversationID) == requested,
-                  let session = registry.session(projectID: requested,
-                      owner: .conversation(conversationID: conversationID, workspaceID: requested)) else {
+                  let session = try await registry.restoreChatGame(conversationID: conversationID,
+                      workspaceID: requested, leasedRoot: context.workspaceRootURL) else {
                 throw FloeError.validationFailed("This task has no open game workspace")
             }
             try verifyChatRoot(session, context: context)
@@ -90,7 +90,8 @@ final class GameProjectToolService {
     func boundChatSession(_ context: ToolContext, conversationID: UUID) async throws -> GameWorkspaceSession? {
         let store = SQLiteWorkspaceStore(database: environment.database)
         guard let id = try await store.workspaceID(conversationID: conversationID),
-              let session = registry.session(projectID: id, owner: .conversation(conversationID: conversationID, workspaceID: id))
+              let session = try await registry.restoreChatGame(conversationID: conversationID, workspaceID: id,
+                                                          leasedRoot: context.workspaceRootURL)
         else { return nil }
         try verifyChatRoot(session, context: context)
         return session
@@ -416,7 +417,7 @@ final class GameProjectToolService {
             try await access.bindAssistant(conversationID: conversationID, projectID: record.id)
             let session = try await registry.openSpaceGame(record: record)
             if session.project.selectionSnapshot == nil { try await session.project.refresh() }
-            do { try await session.project.initializeStarter(engine: engine) }
+            do { try await registry.initializeStarter(for: engine, session: session) }
             catch {
                 let current = try await session.project.repository.open(record.id,
                     owner: .space(recordID: record.id))
@@ -434,7 +435,7 @@ final class GameProjectToolService {
         let session = try await registry.openChatTaskGame(conversationID: conversationID,
                                                           title: title)
         if session.project.selectionSnapshot == nil { try await session.project.refresh() }
-        do { try await session.project.initializeStarter(engine: engine) }
+        do { try await registry.initializeStarter(for: engine, session: session) }
         catch {
             let current = try await session.project.repository.open(session.key.projectID,
                 owner: session.key.owner)

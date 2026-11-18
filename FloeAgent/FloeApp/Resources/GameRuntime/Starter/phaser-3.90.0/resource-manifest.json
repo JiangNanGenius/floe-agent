@@ -1,0 +1,15 @@
+{
+  "engine": "phaser",
+  "version": "3.90.0",
+  "sourceCommit": "a9965625f49cf366584f454556b039e06e8adad6",
+  "distribution": "Arcade physics",
+  "sourceBaseURL": "https://raw.githubusercontent.com/phaserjs/phaser/a9965625f49cf366584f454556b039e06e8adad6/",
+  "files": {
+    "phaser.js": "2e1bc84f885ab5c62b11ebb72492bb334159ac5678b664c7cb2942fc979e44e3",
+    "LICENSE.phaser.md": "c3123cd25de4eccf1fd5a5a0a6fc872299116d1dbbb48b00f2554a4c35220a65",
+    "THIRD-PARTY-NOTICES.txt": "fd57bb945a3993569b6eae1833d25e9eb1e2a988cca541ba8dc770b0b7b7792b"
+  },
+  "upstreamNoticeBlocks": 29,
+  "eventEmitterVersion": "5.0.1",
+  "nativeCode": false
+}

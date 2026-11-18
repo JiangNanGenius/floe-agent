@@ -4625,11 +4625,10 @@ final class ConversationCenter: ObservableObject {
             allowedToolNames = allowedToolNames.map { $0.intersection(nonWorkspace) }
                 ?? nonWorkspace
         }
-        let chatGameSession: GameWorkspaceSession? = if let id = canonicalWorkspaceID {
-            environment.gameWorkspaces.session(projectID: id,
-                owner: .conversation(conversationID: conversationID, workspaceID: id))
-        } else { nil }
-        if (gameWorkspaceID != nil || chatGameSession != nil), taskRootLease != nil {
+        let hasChatGame = canonicalWorkspaceID.map {
+            environment.gameWorkspaces.hasSavedChatGame(conversationID: conversationID, workspaceID: $0)
+        } ?? false
+        if (gameWorkspaceID != nil || hasChatGame), taskRootLease != nil {
             // Once the assistant is bound to the game tree, the existing
             // workspace/Git catalog owns ordinary files and source control.
             // Keep the old handlers registered for already-frozen runs only.

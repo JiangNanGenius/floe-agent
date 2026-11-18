@@ -486,24 +486,14 @@ final class GameWorkspaceRegistry {
         // Owner-bound repositories: two real conversations can share one IDE
         // workspace/root but must never share a FileGameProjectRepository or
         // history/CAS store. Namespace by the actual owner AND project.
-        let ownerKey: String
-        switch key.owner {
-        case .conversation(let conversationID, let workspaceID):
-            ownerKey = "conversation-" + conversationID.uuidString.lowercased()
-                + "-workspace-" + workspaceID.uuidString.lowercased()
-        case .space(let recordID):
-            ownerKey = "space-" + recordID.uuidString.lowercased()
-        }
-        let history = supportRoot.appendingPathComponent(ownerKey, isDirectory: true)
-            .appendingPathComponent(projectID.uuidString.lowercased(), isDirectory: true)
-            .appendingPathComponent("History", isDirectory: true)
+        let history = chatGameHistory(conversationID: conversationID, workspaceID: workspace.id)
         let support = history.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: history, withIntermediateDirectories: true)
         let repository = try FileGameProjectRepository(directory: history)
         let revision: String
-        if (try? await repository.open(projectID, owner: key.owner)) != nil {
+        do {
             revision = try await repository.open(projectID, owner: key.owner).revision
-        } else {
+        } catch GameProjectError.projectNotFound(let missing) where missing == projectID {
             revision = UUID().uuidString.lowercased()
         }
         let conversation: UUID?
@@ -515,7 +505,7 @@ final class GameWorkspaceRegistry {
         let session = try await GameWorkspaceProjectSession.open(center: center, context: context,
             history: history, support: support, title: title,
             starterResources: starterResources())
-        try await session.refresh()
+        try await session.refresh(reloadFiles: false, allowRecognitionFailure: true)
         let transfer = try GameProjectTransferService(
             stagingDirectory: support.appendingPathComponent("TransferJobs", isDirectory: true))
         let value = GameWorkspaceSession(key: key, record: nil, center: center, project: session,
@@ -535,6 +525,36 @@ final class GameWorkspaceRegistry {
         let center = WorkspaceCenter(environment: environment, publishesSharedState: false)
         try await center.openTaskWorkspace(conversationID: conversationID)
         return try await openChatGame(center: center, conversationID: conversationID, title: title)
+    }
+
+    private func chatGameHistory(conversationID: UUID, workspaceID: UUID) -> URL {
+        let workspace = workspaceID.uuidString.lowercased()
+        let owner = "conversation-" + conversationID.uuidString.lowercased() + "-workspace-" + workspace
+        return supportRoot.appendingPathComponent(owner + "/" + workspace + "/History", isDirectory: true)
+    }
+
+    func hasSavedChatGame(conversationID: UUID, workspaceID: UUID) -> Bool {
+        let history = chatGameHistory(conversationID: conversationID, workspaceID: workspaceID)
+        let head = history.appendingPathComponent(workspaceID.uuidString.lowercased() + "/HEAD.json")
+        return FileManager.default.fileExists(atPath: head.path)
+    }
+
+    func restoreChatGame(conversationID: UUID, workspaceID: UUID, leasedRoot: URL?) async throws -> GameWorkspaceSession? {
+        let owner = GameProjectOwner.conversation(conversationID: conversationID, workspaceID: workspaceID)
+        if let existing = session(projectID: workspaceID, owner: owner) { return existing }
+        guard let leasedRoot, hasSavedChatGame(conversationID: conversationID, workspaceID: workspaceID) else { return nil }
+        let center = WorkspaceCenter(environment: environment, publishesSharedState: false)
+        try await center.openTaskWorkspace(conversationID: conversationID)
+        guard let workspace = center.currentWorkspace, workspace.id == workspaceID,
+              let current = center.currentRootURL, Self.canonical(current) == Self.canonical(leasedRoot) else {
+            throw GameIDEBridgeError.workspaceChanged
+        }
+        let key = GameWorkspaceKey(projectID: workspaceID, owner: owner, rootURL: current)
+        if let pending = opening[key] { return try await pending.value }
+        let task = Task { try await self.openChatGame(center: center, conversationID: conversationID, title: workspace.name) }
+        opening[key] = task
+        defer { opening[key] = nil }
+        return try await task.value
     }
 
     func session(projectID: UUID, owner: GameProjectOwner) -> GameWorkspaceSession? {
@@ -1603,6 +1623,13 @@ final class GameWorkspaceRegistry {
     /// Downloads a reviewed runtime pack on explicit user action and reopens
     /// the project session so the starter scaffolder receives the verified
     /// directories. It never starts an engine, compiler or Linux guest.
+    func initializeStarter(for engine: GameEngineID, session: GameWorkspaceSession) async throws {
+        if [GameEngineID.phaser, .kaplay, .babylon, .playcanvas].contains(engine) {
+            try await prepareRuntimeResource(for: engine, session: session)
+        }
+        try await session.project.initializeStarter(engine: engine)
+    }
+
     func prepareRuntimeResource(for engine: GameEngineID,
                                 session: GameWorkspaceSession? = nil) async throws {
         _ = try await runtimeResources.prepare(for: engine)
@@ -1705,10 +1732,9 @@ final class GameWorkspaceRegistry {
         let selection = try await buildSelection(session: session, engine: engine)
         let execution = try await executionSession(for: session)
         let plan = try await execution.capabilityPlan(engine: engine, selection: selection)
-        let requested = routeIDs ?? Set(plan.outputs
-            .filter { Self.output($0.kind, matches: output) }
-            .map(\.routeID))
-        guard !requested.isEmpty else {
+        let matching = Set(plan.outputs.filter { Self.output($0.kind, matches: output) }.map(\.routeID))
+        let requested = routeIDs ?? matching
+        guard !requested.isEmpty, requested.isSubset(of: matching) else {
             throw FloeError.validationFailed(
                 "The selected output is not available for this engine and revision")
         }
@@ -1729,7 +1755,7 @@ final class GameWorkspaceRegistry {
             throw FloeError.validationFailed(
                 "Allow uploading this project's saved source snapshot to the selected CI repository, or choose a local/source route.")
         }
-        let missing = readiness.missingPrerequisites(in: plan, selectedRouteIDs: viable)
+        let missing = output == .source ? [] : readiness.missingPrerequisites(in: plan, selectedRouteIDs: viable)
         let pairedProvider: (any GameDistributionPairedSourceProvider)?
         if distributionProfileID != nil, runtimeResources.requiresPairedSource(for: engine) {
             let identity = GameSourceCompanionIdentity(

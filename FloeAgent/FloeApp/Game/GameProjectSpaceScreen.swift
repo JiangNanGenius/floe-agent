@@ -730,12 +730,9 @@ struct GameProjectSpaceScreen: View {
         do {
             pending = .simpleEdit
             defer { pending = nil }
-            if [GameEngineID.phaser, .kaplay, .babylon, .playcanvas].contains(engine) {
-                resourceBusy = true
-                defer { resourceBusy = false }
-                try await environment.gameWorkspaces.prepareRuntimeResource(for: engine, session: session)
-            }
-            try await session.project.initializeStarter(engine: engine)
+            resourceBusy = true
+            defer { resourceBusy = false }
+            try await environment.gameWorkspaces.initializeStarter(for: engine, session: session)
             showingCreateStarter = false
             starterError = nil
             notice = IDELanguageRunText.t("已创建真实起始文件。", "Created real starter files.")

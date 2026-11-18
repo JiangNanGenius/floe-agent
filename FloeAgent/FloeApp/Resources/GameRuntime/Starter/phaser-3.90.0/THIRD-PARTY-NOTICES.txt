@@ -1,0 +1,361 @@
+Notices retained from Phaser 3.90.0 Arcade distribution, source commit a9965625f49cf366584f454556b039e06e8adad6.
+No Spine or Matter engine is included in this distribution.
+
+EventEmitter3 5.0.1
+Source: https://raw.githubusercontent.com/primus/eventemitter3/5.0.1/LICENSE
+
+The MIT License (MIT)
+
+Copyright (c) 2014 Arnout Kazemier
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+Original upstream copyright and license comment blocks
+
+/*
+ * ISC License
+ *
+ * Copyright (c) 2016, Mapbox
+ *
+ * Permission to use, copy, modify, and/or distribute this software for any purpose
+ * with or without fee is hereby granted, provided that the above copyright notice
+ * and this permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
+ * REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
+ * FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+ * INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS
+ * OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
+ * TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
+ * THIS SOFTWARE.
+ */
+
+/**
+ * @author       Ben Richards <benjamindrichards@gmail.com>
+ * @copyright    2024 Photon Storm Ltd.
+ * @license      {@link https://opensource.org/licenses/MIT|MIT License}
+ */
+
+/**
+ * @author       Benjamin D. Richards <benjamindrichards@gmail.com>
+ * @copyright    2013-2025 Phaser Studio Inc.
+ * @license      {@link https://opensource.org/licenses/MIT|MIT License}
+ */
+
+/**
+ * @author       Florian Vazelle
+ * @author       Geoffrey Glaive
+ * @copyright    2013-2025 Phaser Studio Inc.
+ * @license      {@link https://opensource.org/licenses/MIT|MIT License}
+ */
+
+/**
+ * @author       Greg McLean <GregDevProjects>
+ * @copyright    2021 Photon Storm Ltd.
+ * @license      {@link https://opensource.org/licenses/MIT|MIT License}
+ */
+
+/**
+ * @author       Jason Nicholls <nicholls.jason@gmail.com>
+ * @copyright    2018 Photon Storm Ltd.
+ * @license      {@link https://github.com/photonstorm/phaser/blob/master/license.txt|MIT License}
+ */
+
+/**
+ * @author       Niklas von Hertzen (https://github.com/niklasvh/base64-arraybuffer)
+ * @author       Richard Davey <rich@phaser.io>
+ * @copyright    2013-2025 Phaser Studio Inc.
+ * @license      {@link https://opensource.org/licenses/MIT|MIT License}
+ */
+
+/**
+ * @author       Richard Davey
+ * @copyright    2013-2025 Phaser Studio Inc.
+ * @license      {@link https://opensource.org/licenses/MIT|MIT License}
+ */
+
+/**
+ * @author       Richard Davey <rich@phaser.io>
+ * @author       @samme
+ * @copyright    2013-2025 Phaser Studio Inc.
+ * @license      {@link https://opensource.org/licenses/MIT|MIT License}
+ */
+
+/**
+ * @author       Richard Davey <rich@phaser.io>
+ * @author       Angry Bytes (and contributors)
+ * @copyright    2013-2025 Phaser Studio Inc.
+ * @license      {@link https://opensource.org/licenses/MIT|MIT License}
+ */
+
+/**
+ * @author       Richard Davey <rich@phaser.io>
+ * @author       Felipe Alfonso <@bitnenfer>
+ * @author       Matthew Groves <@doormat>
+ * @copyright    2013-2025 Phaser Studio Inc.
+ * @license      {@link https://opensource.org/licenses/MIT|MIT License}
+ */
+
+/**
+ * @author       Richard Davey <rich@phaser.io>
+ * @author       Felipe Alfonso <@bitnenfer>
+ * @copyright    2013-2025 Phaser Studio Inc.
+ * @license      {@link https://opensource.org/licenses/MIT|MIT License}
+ */
+
+/**
+ * @author       Richard Davey <rich@phaser.io>
+ * @author       Florian Mertens
+ * @copyright    2013-2025 Phaser Studio Inc.
+ * @license      {@link https://opensource.org/licenses/MIT|MIT License}
+ */
+
+/**
+ * @author       Richard Davey <rich@phaser.io>
+ * @author       Igor Ognichenko <ognichenko.igor@gmail.com>
+ * @copyright    2013-2025 Phaser Studio Inc.
+ * @license      {@link https://opensource.org/licenses/MIT|MIT License}
+ */
+
+/**
+ * @author       Richard Davey <rich@phaser.io>
+ * @author       Pavle Goloskokovic <pgoloskokovic@gmail.com> (http://prunegames.com)
+ * @copyright    2013-2025 Phaser Studio Inc.
+ * @license      {@link https://opensource.org/licenses/MIT|MIT License}
+ */
+
+/**
+ * @author       Richard Davey <rich@phaser.io>
+ * @author       samme <samme.npm@gmail.com>
+ * @copyright    2013-2025 Phaser Studio Inc.
+ * @license      {@link https://opensource.org/licenses/MIT|MIT License}
+ */
+
+/**
+ * @author       Richard Davey <rich@phaser.io>
+ * @copyright    2013-2025 Phaser Studio Inc.
+ * @license      {@link https://opensource.org/licenses/MIT|MIT License}
+ */
+
+/**
+ * @author       Richard Davey <rich@phaser.io>
+ * @copyright    2021 Photon Storm Ltd.
+ * @license      {@link https://opensource.org/licenses/MIT|MIT License}
+ */
+
+/**
+ * @author       Richard Davey <rich@photonstorm.com>
+ * @copyright    2013-2023 Photon Storm Ltd.
+ * @license      {@link https://opensource.org/licenses/MIT|MIT License}
+ */
+
+/**
+ * @author       Seth Berrier <berriers@uwstout.edu>
+ * @copyright    2013-2025 Phaser Studio Inc.
+ * @license      {@link https://opensource.org/licenses/MIT|MIT License}
+ */
+
+/**
+ * @author       Vladimir Agafonkin
+ * @author       Richard Davey <rich@phaser.io>
+ * @copyright    2013-2025 Phaser Studio Inc.
+ * @license      {@link https://opensource.org/licenses/MIT|MIT License}
+ */
+
+/**
+ * @author       Vladislav Forsh <vlad@robowhale.com>
+ * @copyright    2021 RoboWhale
+ * @license      {@link https://opensource.org/licenses/MIT|MIT License}
+ */
+
+/**
+ * @author       pi-kei
+ * @copyright    2013-2025 Phaser Studio Inc.
+ * @license      {@link https://opensource.org/licenses/MIT|MIT License}
+ */
+
+/**
+ * @author       samme
+ * @copyright    2013-2025 Phaser Studio Inc.
+ * @license      {@link https://opensource.org/licenses/MIT|MIT License}
+ */
+
+/**
+ * @author       samme
+ * @copyright    2021 Photon Storm Ltd.
+ * @license      {@link https://opensource.org/licenses/MIT|MIT License}
+ */
+
+/**
+ * @author       samme
+ * @copyright    2025 Phaser Studio Inc.
+ * @license      {@link https://opensource.org/licenses/MIT|MIT License}
+ */
+
+/**
+ * Adds a JSON File Pack, or array of packs, to the current load queue.
+ *
+ * You can call this method from within your Scene's `preload`, along with any other files you wish to load:
+ *
+ * ```javascript
+ * function preload ()
+ * {
+ *     this.load.pack('level1', 'data/Level1Files.json');
+ * }
+ * ```
+ *
+ * A File Pack is a JSON file (or object) that contains details about other files that should be added into the Loader.
+ * Here is a small example:
+ *
+ * ```json
+ * {
+ *    "test1": {
+ *        "files": [
+ *            {
+ *                "type": "image",
+ *                "key": "taikodrummaster",
+ *                "url": "assets/pics/taikodrummaster.jpg"
+ *            },
+ *            {
+ *                "type": "image",
+ *                "key": "sukasuka-chtholly",
+ *                "url": "assets/pics/sukasuka-chtholly.png"
+ *            }
+ *        ]
+ *    },
+ *    "meta": {
+ *        "generated": "1401380327373",
+ *        "app": "Phaser 3 Asset Packer",
+ *        "url": "https://phaser.io",
+ *        "version": "1.0",
+ *        "copyright": "Photon Storm Ltd. 2018"
+ *    }
+ * }
+ * ```
+ *
+ * The pack can be split into sections. In the example above you'll see a section called `test1`. You can tell
+ * the `load.pack` method to parse only a particular section of a pack. The pack is stored in the JSON Cache,
+ * so you can pass it to the Loader to process additional sections as needed in your game, or you can just load
+ * them all at once without specifying anything.
+ *
+ * The pack file can contain an entry for any type of file that Phaser can load. The object structures exactly
+ * match that of the file type configs, and all properties available within the file type configs can be used
+ * in the pack file too. An entry's `type` is the name of the Loader method that will load it, e.g., 'image'.
+ *
+ * The file is **not** loaded right away. It is added to a queue ready to be loaded either when the loader starts,
+ * or if it's already running, when the next free load slot becomes available. This happens automatically if you
+ * are calling this from within the Scene's `preload` method, or a related callback. Because the file is queued
+ * it means you cannot use the file immediately after calling this method, but must wait for the file to complete.
+ * The typical flow for a Phaser Scene is that you load assets in the Scene's `preload` method and then when the
+ * Scene's `create` method is called you are guaranteed that all of those assets are ready for use and have been
+ * loaded.
+ *
+ * If you call this from outside of `preload` then you are responsible for starting the Loader afterwards and monitoring
+ * its events to know when it's safe to use the asset. Please see the Phaser.Loader.LoaderPlugin class for more details.
+ *
+ * The key must be a unique String. It is used to add the file to the global JSON Cache upon a successful load.
+ * The key should be unique both in terms of files being loaded and files already present in the JSON Cache.
+ * Loading a file using a key that is already taken will result in a warning. If you wish to replace an existing file
+ * then remove it from the JSON Cache first, before loading a new one.
+ *
+ * Instead of passing arguments you can pass a configuration object, such as:
+ *
+ * ```javascript
+ * this.load.pack({
+ *     key: 'level1',
+ *     url: 'data/Level1Files.json'
+ * });
+ * ```
+ *
+ * See the documentation for `Phaser.Types.Loader.FileTypes.PackFileConfig` for more details.
+ *
+ * If you have specified a prefix in the loader, via `Loader.setPrefix` then this value will be prepended to this files
+ * key. For example, if the prefix was `LEVEL1.` and the key was `Waves` the final key will be `LEVEL1.Waves` and
+ * this is what you would use to retrieve the text from the JSON Cache.
+ *
+ * The URL can be relative or absolute. If the URL is relative the `Loader.baseURL` and `Loader.path` values will be prepended to it.
+ *
+ * If the URL isn't specified the Loader will take the key and create a filename from that. For example if the key is "data"
+ * and no URL is given then the Loader will set the URL to be "data.json". It will always add `.json` as the extension, although
+ * this can be overridden if using an object instead of method arguments. If you do not desire this action then provide a URL.
+ *
+ * You can also optionally provide a `dataKey` to use. This allows you to extract only a part of the JSON and store it in the Cache,
+ * rather than the whole file. For example, if your JSON data had a structure like this:
+ *
+ * ```json
+ * {
+ *     "level1": {
+ *         "baddies": {
+ *             "aliens": {},
+ *             "boss": {}
+ *         }
+ *     },
+ *     "level2": {},
+ *     "level3": {}
+ * }
+ * ```
+ *
+ * And you only wanted to store the `boss` data in the Cache, then you could pass `level1.baddies.boss`as the `dataKey`.
+ *
+ * Note: The ability to load this type of file will only be available if the Pack File type has been built into Phaser.
+ * It is available in the default build but can be excluded from custom builds.
+ *
+ * @method Phaser.Loader.LoaderPlugin#pack
+ * @fires Phaser.Loader.Events#ADD
+ * @since 3.7.0
+ *
+ * @param {(string|Phaser.Types.Loader.FileTypes.PackFileConfig|Phaser.Types.Loader.FileTypes.PackFileConfig[])} key - The key to use for this file, or a file configuration object, or array of them.
+ * @param {string} [url] - The absolute or relative URL to load this file from. If undefined or `null` it will be set to `<key>.json`, i.e. if `key` was "alien" then the URL will be "alien.json".
+ * @param {string} [dataKey] - When the JSON file loads only this property will be stored in the Cache.
+ * @param {Phaser.Types.Loader.XHRSettingsObject} [xhrSettings] - An XHR Settings configuration object. Used in replacement of the Loaders default XHR Settings.
+ *
+ * @return {this} The Loader instance.
+ */
+
+/**
+ * Copyright (c) 2017, Vladimir Agafonkin
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without modification, are
+ * permitted provided that the following conditions are met:
+ *
+ *    1. Redistributions of source code must retain the above copyright notice, this list of
+ *       conditions and the following disclaimer.
+ *
+ *    2. Redistributions in binary form must reproduce the above copyright notice, this list
+ *       of conditions and the following disclaimer in the documentation and/or other materials
+ *       provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY
+ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+ * COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+ * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+ * TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
+/**
+* @author       Richard Davey <rich@phaser.io>
+* @copyright    2013-2025 Phaser Studio Inc.
+* @license      {@link https://github.com/photonstorm/phaser3-plugin-template/blob/master/LICENSE|MIT License}
+*/

@@ -1755,9 +1755,9 @@
           "sha256": "2e1bc84f885ab5c62b11ebb72492bb334159ac5678b664c7cb2942fc979e44e3"
         },
         {
-          "bytes": 1220,
+          "bytes": 641,
           "path": "resource-manifest.json",
-          "sha256": "aec587c6aea9bcf0cc0d321ec18c9147fa7e0857687e7c331b3aded993d42978"
+          "sha256": "a696cd2fda951b1760e76c703c29ace8f0f00910d4c4d9acfc7cca7e788a5d35"
         }
       ],
       "id": "phaser-3.90.0",

@@ -106,13 +106,14 @@ struct GameProjectBuildScreen: View {
                                         Text(value.deliveryNote).font(.caption2).foregroundStyle(.secondary)
                                     }
                                 }
+                                .disabled(!selectable(value))
                             }
                         }
                     } else if error == nil {
                         ProgressView()
                     }
                     if let plan, let readiness {
-                        let missing = readiness.missingPrerequisites(
+                        let missing = output == .source ? [] : readiness.missingPrerequisites(
                             in: plan, selectedRouteIDs: selectedRoutes)
                         if !missing.isEmpty {
                             Text(IDELanguageRunText.t("需要你配置：", "You need to configure: ")
@@ -367,7 +368,9 @@ struct GameProjectBuildScreen: View {
                             .foregroundStyle(outcome.ready ? .green : .orange)
                         ForEach(outcome.artifacts, id: \.name) { artifact in
                             VStack(alignment: .leading) {
-                                Text(artifact.name)
+                                let artifactURL = session.support.appendingPathComponent("BuildRecords/artifacts-" + outcome.record.buildID)
+                                    .appendingPathComponent(artifact.name)
+                                ShareLink(item: artifactURL) { Label(artifact.name, systemImage: "square.and.arrow.up") }
                                 Text("\(artifact.bytes) B · \(artifact.sha256.prefix(16))")
                                     .font(.caption2).foregroundStyle(.secondary)
                                 if artifact.sealed != nil {
@@ -433,6 +436,8 @@ struct GameProjectBuildScreen: View {
                 }
             }
             .onChange(of: output) { _, value in
+                selectedRoutes = Set(plan?.outputs.filter { matches($0) && selectable($0) }.map(\.routeID) ?? [])
+                outcome = nil
                 if value != .web { includeSourceCompanion = false }
             }
             .sheet(isPresented: $showingRepositoryPicker) {
@@ -507,6 +512,14 @@ struct GameProjectBuildScreen: View {
         } catch { hookError = error.localizedDescription }
     }
 
+    private func selectable(_ value: GameBuildOutput) -> Bool {
+        guard let route = plan?.routes.first(where: { $0.id == value.routeID }) else { return false }
+        if route.id == "gdevelop-web", environment.gameWorkspaces.runtimeResources.executionResources().gdevelopSDKRoot == nil {
+            return false
+        }
+        return [.ci, .hostExporter, .sourceArchive].contains(route.producer)
+    }
+
     private func matches(_ value: GameBuildOutput) -> Bool {
         switch output {
         case .web: value.kind == .webBundle
@@ -524,7 +537,7 @@ struct GameProjectBuildScreen: View {
             let execution = try await environment.gameWorkspaces.executionSession(for: session)
             let plan = try await environment.gameWorkspaces.capabilityPlan(session: session, engine: engine)
             self.plan = plan
-            self.selectedRoutes = Set(plan.outputs.filter { matches($0) }.map(\.routeID))
+            self.selectedRoutes = Set(plan.outputs.filter { matches($0) && selectable($0) }.map(\.routeID))
             self.records = try await execution.restoreBuilds()
             self.repositorySelection = GameBuildRepositorySettings.load()
             self.sourceUploadConsent = GameBuildRepositorySettings.sourceUploadConsent()

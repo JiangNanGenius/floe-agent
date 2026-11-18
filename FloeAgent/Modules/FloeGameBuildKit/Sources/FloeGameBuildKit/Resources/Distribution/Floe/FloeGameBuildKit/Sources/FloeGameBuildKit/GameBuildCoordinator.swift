@@ -439,7 +439,12 @@ public actor GameBuildCoordinator {
             // readiness. Only the tools required by the selected routes gate
             // this build, so a Web-only request does not require Android/native
             // SDKs or unrelated platform modules.
-            let missing = plan.missingPrerequisites(
+            guard !requestedRoutes.isEmpty,
+                  requestedRoutes.allSatisfy({ [.ci, .hostExporter, .sourceArchive].contains($0.producer) }) else {
+                throw GameBuildError.unsupportedTarget("This target must be built in its external editor.")
+            }
+            let sourceOnly = requestedRoutes.allSatisfy { $0.producer == .sourceArchive }
+            let missing = sourceOnly ? [] : plan.missingPrerequisites(
                 configured: configured,
                 selectedRouteIDs: Set(requestedRoutes.map(\.id)))
             guard missing.isEmpty else {
@@ -484,7 +489,7 @@ public actor GameBuildCoordinator {
             guard publication.sha256 == verifiedStagedSHA else {
                 throw GameBuildError.artifactInvalid("staged source zip failed read-back")
             }
-            if let host {
+            if !sourceOnly, let host {
                 let preflight = try await host.run(.init(executable: "unzip",
                                                          arguments: ["-tq", stagedZIP.path]))
                 guard preflight.exitCode == 0 else {
@@ -494,6 +499,31 @@ public actor GameBuildCoordinator {
             try ensureActive(binding.id)
             record.state = .prepared
             try await records.save(record)
+
+            if sourceOnly {
+                guard let route = requestedRoutes.first, requestedRoutes.count == 1, distribution == nil else {
+                    throw GameBuildError.unsupportedTarget("Choose a single source archive.")
+                }
+                let current = try await repository.open(source.projectID, owner: source.owner)
+                guard current.revision == binding.revision else {
+                    throw GameBuildError.staleBinding(expected: binding.revision, actual: current.revision)
+                }
+                try ensureActive(binding.id)
+                let root = records.directory.appendingPathComponent("artifacts-" + record.buildID)
+                try GameBuildFileSupport.makeDirectory(root)
+                let size = try stagedZIP.resourceValues(forKeys: [.fileSizeKey])
+                guard let bytes = size.fileSize else { throw GameBuildError.artifactInvalid(route.artifactName) }
+                try FileManager.default.moveItem(at: stagedZIP, to: root.appendingPathComponent(route.artifactName))
+                let artifact = GameBuildArtifact(name: route.artifactName, sha256: verifiedStagedSHA, bytes: bytes, sealed: nil)
+                let metadata = GameBuildArtifactRecord(name: artifact.name, sha256: artifact.sha256, bytes: bytes, sealedDigest: nil)
+                record.state = .succeeded
+                record.sourceArchive = metadata
+                record.artifacts = [metadata]
+                record.transportKind = nil
+                try await records.save(record)
+                return .init(binding: binding, job: nil, artifacts: [artifact], ready: true, record: record,
+                             sourceTransport: nil, sourceArchive: artifact, distribution: nil, selection: selection)
+            }
 
             if let exporter, let route = selectedHostRoute(plan, selectedRouteIDs: selectedRouteIDs) {
                 return try await runHostExport(route: route, exporter: exporter, plan: plan,
@@ -506,7 +536,24 @@ public actor GameBuildCoordinator {
                                                selection: selection)
             }
 
+            guard requestedRoutes.contains(where: { $0.producer == .ci }),
+                  requestedRoutes.allSatisfy({ $0.producer == .ci || $0.producer == .sourceArchive }) else {
+                throw GameBuildError.unsupportedTarget("No installed exporter for this local target.")
+            }
+            guard let template = GameCIWorkflowTemplates.template(for: plan.engine) else {
+                throw GameBuildError.dispatchFailed("no workflow template for \(plan.engine.rawValue)")
+            }
+            let requested = requestedOutputs(plan, selectedRouteIDs: selectedRouteIDs)
+            guard !requested.isEmpty else {
+                throw GameBuildError.unsupportedTarget(
+                    "no requested build target is available for \(plan.engine.rawValue)")
+            }
             guard let ci else { throw GameBuildError.missingCI }
+            if sourcePublisher != nil, repositoryCoordinates != nil {
+                var inputs = ["artifact_prefix": plan.engine.rawValue, "engine": plan.engine.rawValue]
+                if let version = plan.engineVersion { inputs["engine_version"] = version }
+                _ = try template.selection(forRequestedArtifacts: Set(requested.map(\.artifactName)), inputs: inputs)
+            }
 
             // 4. Resolve the explicit source transport. A repository snapshot is
             // published through the host's Git-data seam; an existing artifact
@@ -550,14 +597,6 @@ public actor GameBuildCoordinator {
             // 5. Dispatch through the existing CI jobs service. The selected
             // route outputs are resolved against the template's atomic target
             // contract; unsupported outputs fail before a job is dispatched.
-            guard let template = GameCIWorkflowTemplates.template(for: plan.engine) else {
-                throw GameBuildError.dispatchFailed("no workflow template for \(plan.engine.rawValue)")
-            }
-            let requested = requestedOutputs(plan, selectedRouteIDs: selectedRouteIDs)
-            guard !requested.isEmpty else {
-                throw GameBuildError.unsupportedTarget(
-                    "no requested build target is available for \(plan.engine.rawValue)")
-            }
             var targetSelection: GameCIWorkflowTargetSelection?
             if let transport {
                 let inputs = transport.dispatchInputs(engine: plan.engine,

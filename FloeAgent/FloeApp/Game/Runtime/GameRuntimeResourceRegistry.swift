@@ -278,7 +278,8 @@ final class GameRuntimeResourceRegistry {
          packStore: GameEnginePackStore?) {
         self.manifest = manifest ?? Self.loadManifest()
         self.sourceCatalog = Self.loadSourceCatalog()
-        self.bundledRoot = bundledRoot?.standardizedFileURL.resolvingSymlinksInPath()
+        self.bundledRoot = (bundledRoot ?? Bundle.main.url(forResource: "GameRuntime", withExtension: nil))?
+            .standardizedFileURL.resolvingSymlinksInPath()
         let root = installationRoot ?? Self.defaultInstallationRoot()
         self.installationRoot = root.standardizedFileURL.resolvingSymlinksInPath()
         self.enginePackRoot = enginePackRoot?.standardizedFileURL.resolvingSymlinksInPath()
@@ -609,8 +610,8 @@ final class GameRuntimeResourceRegistry {
             }
             return .downloadable(bytes: nil)
         case .reviewedPackArchive:
-            // Qualification/development fallback is available only when the
-            // host explicitly injects bundledRoot. Production never does.
+            // Use reviewed resources shipped with the app where available.
+            // The same pinned file receipts apply to bundled and installed packs.
             if let root = bundledContentRoot(for: pack) {
                 do {
                     try await verify(pack: pack, root: root, requireFiles: true)

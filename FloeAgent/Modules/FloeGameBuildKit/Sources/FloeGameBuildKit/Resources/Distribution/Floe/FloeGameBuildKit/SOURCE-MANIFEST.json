@@ -22,8 +22,8 @@
       "sha256": "e12d6838fbd052761edbdf7a596015255dd56c1a0ce361ad937af10480aa2de7"
     },
     "Sources/FloeGameBuildKit/GameArchiveImportPreview.swift": {
-      "bytes": 11919,
-      "sha256": "170a0019098db29d8a053d7d3fe537227c9eee07d43e9e09b0b8be6ca2e9fc87"
+      "bytes": 12010,
+      "sha256": "4db75d8e67d83dd7e9c667577bf231e842fcb724a0e8a6b8b0ad885a6c57319c"
     },
     "Sources/FloeGameBuildKit/GameArchiveOriginalStore.swift": {
       "bytes": 3529,
@@ -46,8 +46,8 @@
       "sha256": "decdf0b50690724d31c5b39d36042b0268976a2092de24866b9bdf76fd8c12d2"
     },
     "Sources/FloeGameBuildKit/GameBuildCoordinator.swift": {
-      "bytes": 68090,
-      "sha256": "5b250fef3ad468a7344ffa5d23422923531230a5fd7b0970383326076ba1bbe0"
+      "bytes": 70976,
+      "sha256": "ffa6bef46c594ef9a73d87cee3d1a3784476f6662daa55887f407725b164b240"
     },
     "Sources/FloeGameBuildKit/GameBuildFileSupport.swift": {
       "bytes": 11995,
