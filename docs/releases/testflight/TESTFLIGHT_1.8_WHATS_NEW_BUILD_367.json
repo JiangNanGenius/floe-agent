@@ -1,0 +1,4 @@
+{
+  "zh-Hans": "请验证游戏工作区可以重新打开，导入工程和编辑器交接正常，结束试玩会话不会卡住。首次试玩应继承工程里选择的根目录和引擎。批量导入工程时观察磁盘写入情况，引擎识别失败后重试。更新 App 后，确认 Space 游戏的引擎选择和恢复记录仍然保留，并检查首次使用的用户协议。",
+  "en-US": "Verify that a game workspace reopens, project imports and editor handoffs work, and closing a play session does not hang. The first play session should inherit the root folder and engine selected in the project. When importing projects in bulk, watch disk writes, and retry after a failed engine identification. After updating the app, confirm Space engine choices and recovery journals are retained, and review the updated first-use agreement."
+}
