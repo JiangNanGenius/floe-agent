@@ -130,6 +130,7 @@
 // launches without the bound vault-backed normalizer), and the
 // intelligence feed hooks NEVER fire from a temporary bundle.
 import Foundation
+import FloeBrowser
 import GRDB
 import FloeCore
 import FloeModels
@@ -277,6 +278,14 @@ public struct RunDomainComponents: Sendable {
     /// the row still belongs to the conversation and still holds the expected
     /// state, so a Stop can never overwrite a resume that committed first.
     public var commitParkedRunStop: (@Sendable (UUID, UUID, String) async -> Bool)?
+    /// Additive typed variant (default nil): the SAME parked-stop writer, but
+    /// in one transaction it re-proves the captured run incarnation and
+    /// appends the self-checking stop settlement row. Production binds it to
+    /// `G02ParkedRunStopCommitter.commitTyped`; when nil, the legacy closure
+    /// above preserves the old plain-row behavior (and no typed proof).
+    public var commitParkedRunStopSettlement:
+        (@Sendable (UUID, UUID, String, RunIncarnation?, Int?) async
+            -> RunStopSettlementCommitResult)?
     /// G03-R4 (additive, default nil): cooperative cancellation of the exact
     /// pending dependency jobs of THIS run after its explicit Stop. The third
     /// argument is the durable pending-edge job set (never "every job of the
@@ -319,6 +328,9 @@ public struct RunDomainComponents: Sendable {
                 executionTargets: C02ExecutionTargetProduction.Components? = nil,
                 runDependencyEdges: (any RunDependencyEdgeReading)? = nil,
                 commitParkedRunStop: (@Sendable (UUID, UUID, String) async -> Bool)? = nil,
+                commitParkedRunStopSettlement:
+                    (@Sendable (UUID, UUID, String, RunIncarnation?, Int?) async
+                        -> RunStopSettlementCommitResult)? = nil,
                 cancelParkedRunJobs: (@Sendable (UUID, UUID, [UUID]) async -> [UUID])? = nil,
                 runForegroundAdmission: (any RunForegroundAdmissionPort)? = nil) {
         self.context = context
@@ -347,6 +359,7 @@ public struct RunDomainComponents: Sendable {
         self.executionTargets = executionTargets
         self.runDependencyEdges = runDependencyEdges
         self.commitParkedRunStop = commitParkedRunStop
+        self.commitParkedRunStopSettlement = commitParkedRunStopSettlement
         self.cancelParkedRunJobs = cancelParkedRunJobs
         self.runForegroundAdmission = runForegroundAdmission
     }
@@ -365,7 +378,45 @@ public enum RunLaunchPhase: String, Sendable, Equatable {
 /// One facade-owned run projection. Mutable ONLY through the domain actor;
 /// the Task/actor references live in the parallel `liveServices` map so the
 /// struct itself stays value-typed.
+struct WorkspaceApprovalLaunchProof: Sendable, Equatable {
+    let workspaceID: UUID
+    let rootURL: URL
+    let allowedPaths: [String]
+    let rootHandle: WorkspaceApprovalRootHandle
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.workspaceID == rhs.workspaceID && lhs.rootURL == rhs.rootURL &&
+            lhs.allowedPaths == rhs.allowedPaths && lhs.rootHandle === rhs.rootHandle
+    }
+}
+
+/// The exact runtime-configured root retained during service assembly. This
+/// is not approval authority: retry remains terminal until C1 commits and an
+/// independent active-run workspace readback promotes it to a proof.
+struct WorkspaceApprovalLaunchCandidate: Sendable, Equatable {
+    let workspaceID: UUID
+    let rootURL: URL
+    let allowedPaths: [String]
+    let rootHandle: WorkspaceApprovalRootHandle
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.workspaceID == rhs.workspaceID && lhs.rootURL == rhs.rootURL &&
+            lhs.allowedPaths == rhs.allowedPaths && lhs.rootHandle === rhs.rootHandle
+    }
+
+    func promote(current: (workspaceID: UUID, conversationID: UUID, rootURL: URL)?,
+                 conversationID: UUID) -> WorkspaceApprovalLaunchProof? {
+        guard let current, current.conversationID == conversationID, current.workspaceID == workspaceID,
+              current.rootURL.standardizedFileURL == rootURL.standardizedFileURL,
+              rootHandle.matches(root: current.rootURL) else { return nil }
+        return WorkspaceApprovalLaunchProof(workspaceID: current.workspaceID, rootURL: rootURL,
+                                            allowedPaths: allowedPaths, rootHandle: rootHandle)
+    }
+}
+
 public struct RunOwnership: Sendable, Equatable {
+    /// Unlike a scoped launch fence, this identifies one admission instance.
+    let instanceID: UUID
     public var conversationID: UUID
     public var runID: UUID
     public var epoch: UInt64
@@ -380,6 +431,14 @@ public struct RunOwnership: Sendable, Equatable {
     /// failed stage after invalidation must stay observable and NEVER
     /// resurrect the old route.
     public var launchToken: LaunchEpochFence.Token
+    /// Durable activation proof of THIS incarnation (launch marker or the
+    /// committed `userResume` marker). `run.cancel` compares it with the
+    /// incarnation captured from the same authority so an old cancel can
+    /// never mark or close a newer incarnation of the same run id. Nil is
+    /// honest for a RAM-only temporary launch and for legacy runs with no
+    /// activation marker; such a run can still be stopped, but no typed
+    /// settlement is minted.
+    public var incarnation: RunIncarnation?
     /// The command receipt whose stream carries this launch's
     /// prepared/started stages (appended BEFORE the command terminal).
     public var commandReceipt: String?
@@ -405,17 +464,27 @@ public struct RunOwnership: Sendable, Equatable {
     public var environmentID: String?
     /// The EXACT admitted job identity (nil when not requested).
     public var jobID: String?
+    // Display proof only, captured from the actual runtime configuration;
+    // never a grant or a replacement for the workspace guard.
+    var workspaceApprovalProof: WorkspaceApprovalLaunchProof?
+    var workspaceApprovalCandidate: WorkspaceApprovalLaunchCandidate?
+    // Exact target+run pin resolved for this service, never a model label.
+    var shellApprovalTarget: C02ResolvedExecutionTarget?
+    var scheduleApprovalEnvironmentID: String?
+    var scheduleApprovalContextCaptured: Bool
 
     public init(conversationID: UUID, runID: UUID, epoch: UInt64,
                 identity: RunExecutionIdentity,
                 launchToken: LaunchEpochFence.Token,
                 bundle: RunPersistenceBundle) {
+        self.instanceID = UUID()
         self.conversationID = conversationID
         self.runID = runID
         self.epoch = epoch
         self.identity = identity
         self.phase = .admitting
         self.launchToken = launchToken
+        self.incarnation = nil
         self.commandReceipt = nil
         self.preparedEffectEmitted = false
         self.startedEffectEmitted = false
@@ -428,6 +497,11 @@ public struct RunOwnership: Sendable, Equatable {
         self.intelligenceTerminalFed = false
         self.environmentID = nil
         self.jobID = nil
+        self.workspaceApprovalProof = nil
+        self.workspaceApprovalCandidate = nil
+        self.shellApprovalTarget = nil
+        self.scheduleApprovalEnvironmentID = nil
+        self.scheduleApprovalContextCaptured = false
         self.bundle = bundle
     }
 
@@ -435,12 +509,14 @@ public struct RunOwnership: Sendable, Equatable {
     /// bundle is implied by (runID, epoch) identity — the stores are
     /// reference-typed protocols and are never compared.
     public static func == (lhs: RunOwnership, rhs: RunOwnership) -> Bool {
-        lhs.conversationID == rhs.conversationID
+        lhs.instanceID == rhs.instanceID
+            && lhs.conversationID == rhs.conversationID
             && lhs.runID == rhs.runID
             && lhs.epoch == rhs.epoch
             && lhs.identity == rhs.identity
             && lhs.phase == rhs.phase
             && lhs.launchToken == rhs.launchToken
+            && lhs.incarnation == rhs.incarnation
             && lhs.commandReceipt == rhs.commandReceipt
             && lhs.preparedEffectEmitted == rhs.preparedEffectEmitted
             && lhs.startedEffectEmitted == rhs.startedEffectEmitted
@@ -453,6 +529,11 @@ public struct RunOwnership: Sendable, Equatable {
             && lhs.intelligenceTerminalFed == rhs.intelligenceTerminalFed
             && lhs.environmentID == rhs.environmentID
             && lhs.jobID == rhs.jobID
+            && lhs.workspaceApprovalProof == rhs.workspaceApprovalProof
+            && lhs.workspaceApprovalCandidate == rhs.workspaceApprovalCandidate
+            && lhs.shellApprovalTarget == rhs.shellApprovalTarget
+            && lhs.scheduleApprovalEnvironmentID == rhs.scheduleApprovalEnvironmentID
+            && lhs.scheduleApprovalContextCaptured == rhs.scheduleApprovalContextCaptured
     }
 }
 
@@ -703,6 +784,25 @@ public actor FacadeRunDomain {
     internal let tools: RunToolAssembly
 
     internal var owners: [UUID: RunOwnership] = [:]
+    // Global generation avoids unbounded per-run tombstones and ABA after an
+    // owner is removed. Exhaustion permanently disables snapshot proof.
+    private var stopOwnershipGeneration: UInt64 = 0
+    private var stopOwnershipGenerationExhausted = false
+
+    func bumpStopOwnershipStamp() {
+        guard !stopOwnershipGenerationExhausted else { return }
+        if stopOwnershipGeneration == UInt64.max {
+            stopOwnershipGenerationExhausted = true
+        } else {
+            stopOwnershipGeneration += 1
+        }
+    }
+
+    func stopOwnershipStamp(runID: UUID) -> UInt64? {
+        guard !stopOwnershipGenerationExhausted else { return nil }
+        return stopOwnershipGeneration
+    }
+    private var workspaceApprovalReceipts = WorkspaceApprovalReceiptStore()
     internal var conversationRuns: [UUID: Set<UUID>] = [:]
     internal var deleteGuards: [UUID: DeleteGuardState] = [:]
     internal var guardCounter: UInt64 = 0
@@ -851,6 +951,7 @@ public actor FacadeRunDomain {
             // Post-DB-commit cleanup for the removed conversation: any
             // residual bookkeeping maps must not outlive the row.
             for runID in conversationRuns[fence.conversationID] ?? [] {
+                bumpStopOwnershipStamp()
                 owners[runID] = nil
                 lastObservedState[runID] = nil
             }
@@ -971,6 +1072,7 @@ public actor FacadeRunDomain {
     // MARK: Ownership helpers
 
     func register(_ ownership: RunOwnership) {
+        bumpStopOwnershipStamp()
         owners[ownership.runID] = ownership
         conversationRuns[ownership.conversationID, default: []].insert(ownership.runID)
         if retiredRunSet.remove(ownership.runID) != nil {
@@ -979,12 +1081,47 @@ public actor FacadeRunDomain {
     }
 
     func unregister(_ ownership: RunOwnership) {
+        workspaceApprovalReceipts.retire(runID: ownership.runID)
+        G073ScheduleApprovalGate.shared.retire(run: ownership.runID)
+        G04BrowserTabApprovalGate.shared.retire(run: ownership.runID)
+        G04BrowserInteractionApprovalGate.shared.retire(run: ownership.runID)
+        bumpStopOwnershipStamp()
         owners[ownership.runID] = nil
         conversationRuns[ownership.conversationID]?.remove(ownership.runID)
         liveServices[ownership.runID] = nil
     }
 
     func ownership(runID: UUID) -> RunOwnership? { owners[runID] }
+
+    /// Capture before suspension: a scoped launch token alone can be reused.
+    enum StopOwnerCapture: Sendable, Equatable {
+        case absent(stamp: UInt64)
+        case owner(instance: UUID, epoch: UInt64, token: LaunchEpochFence.Token)
+        case unavailable
+    }
+
+    func captureStopOwner(runID: UUID) -> StopOwnerCapture {
+        guard !retirementFenced else { return .unavailable }
+        if let owner = owners[runID] {
+            return .owner(instance: owner.instanceID, epoch: owner.epoch,
+                          token: owner.launchToken)
+        }
+        guard let stamp = stopOwnershipStamp(runID: runID) else { return .unavailable }
+        return .absent(stamp: stamp)
+    }
+
+    func stopOwnerMatches(_ capture: StopOwnerCapture, runID: UUID) -> Bool {
+        guard !retirementFenced else { return false }
+        switch (capture, owners[runID]) {
+        case (.absent(let stamp), nil):
+            return stopOwnershipStamp(runID: runID) == stamp
+        case (.owner(let instance, let expectedEpoch, let token), .some(let owner)):
+            return owner.instanceID == instance && owner.epoch == expectedEpoch
+                && expectedEpoch == epoch && owner.launchToken == token
+        default:
+            return false
+        }
+    }
 
     func owners(conversationID: UUID) -> [RunOwnership] {
         (conversationRuns[conversationID] ?? []).compactMap { owners[$0] }
@@ -1134,6 +1271,17 @@ public actor FacadeRunDomain {
         -> RunDomainReply {
         let bundle = bundleOverride ?? durable
         let isCreateIntent = conversationID == nil
+        // Explicit-mode provenance is proven BEFORE any durable effect. The
+        // wire parser already enforces this for public launches; internal
+        // lanes (queue drain, continuation) get the same boundary so a bad
+        // caller can never persist a contradictory pair. nil stays nil.
+        if let explicit = query.explicitExecutionMode {
+            guard let parsed = ExplicitExecutionMode(rawValue: explicit),
+                  parsed.launchMode.rawValue == query.mode.rawValue else {
+                return RunDomainReply(.rejected(RunDomainError(
+                    .invalidState, .payloadInvalid)))
+            }
+        }
         // G07.3B: a scheduled launch is ALWAYS a create intent against the
         // deterministic occurrence identities and the frozen project
         // workspace. It is an internal in-process launch only (the ordinary
@@ -1658,7 +1806,11 @@ public actor FacadeRunDomain {
             providerName: launch.provider.displayName,
             modelName: launch.model.displayName,
             providerProfile: launch.provider,
-            modelProfile: launch.model)
+            modelProfile: launch.model,
+            // Presence-based explicit composer provenance (nil = never
+            // recorded). Stored in the SAME atomic launch transaction as the
+            // immutable conversation_mode; it cannot change tools/approvals.
+            explicitExecutionMode: query.explicitExecutionMode)
         request.activatesEmptyOrdinaryHeader = bundle.identity == .ordinary
         request.explicitInitialApprovalMode = query.explicitInitialApprovalMode
         let prepared: PreparedRun
@@ -1733,6 +1885,18 @@ public actor FacadeRunDomain {
                 ])
         }
         register(current)
+        // Bind the EXACT durable incarnation (activation event + derived
+        // proof) this launch committed. The read happens after the committed
+        // prepare and re-reads the CURRENT owner so a Stop that interleaved
+        // during the read keeps its flags (never resurrect a retired owner).
+        if let launchIncarnation = (await runStopIdentity(
+            runID: prepared.run.id,
+            conversationID: prepared.conversation.id))?.incarnation,
+           var refreshed = owners[prepared.run.id] {
+            refreshed.incarnation = launchIncarnation
+            register(refreshed)
+            current = refreshed
+        }
         // goal-core batch: freeze the RUN identity for the original post-run
         // goal review/continuation lane (ordinary goal-mode launches only;
         // temporary and chat/plan runs never register, so they can never
@@ -1829,7 +1993,12 @@ public actor FacadeRunDomain {
                 workspaceName: prepared.workspace.name,
                 hostToolCeiling: query.hostToolCeiling,
                 environmentID: provenEnvironmentID,
-                notes: notesBinding)
+                notes: notesBinding,
+                // The durable row is the authority (it was written in this
+                // same launch transaction); the query value is identical but
+                // never re-derived here.
+                explicitExecutionMode: prepared.run.explicitExecutionMode
+                    .flatMap(ExplicitExecutionMode.init(rawValue:)))
             assemblyPhase = nil
         } catch let error as RunDomainError {
             await markCommittedLaunchAbandoned(runID: prepared.run.id,
@@ -2103,7 +2272,23 @@ public actor FacadeRunDomain {
 
     // MARK: - run.cancel
 
+    /// Explicit user Stop of ONE run. The accepted detail now carries a TYPED
+    /// settlement fact in addition to the historical `cancel` vocabulary:
+    ///
+    ///   * `settled = "true"` ONLY when a valid durable settlement row exists
+    ///     for the CURRENT incarnation and no live producer owns the run;
+    ///   * `cancel = "requested"/"stopping"/"pendingC0"/"appliedC1"` never
+    ///     proves a stop — the host must keep waiting/refresh;
+    ///   * `cancel = "alreadySettled"` is a cold/hot read-back of that same
+    ///     proof, never the old `alreadyRequested` inference;
+    ///   * localized checkpoint reasons and `null` fields are never used.
+    ///
+    /// Incarnation seal: the command captures the run's durable incarnation and
+    /// re-proves the row state in one read before any mutation. An old cancel
+    /// that races a native retry sees the newer incarnation and refuses stale
+    /// instead of marking/cancelling the newer owner.
     public func cancel(envelope: RunCommandEnvelope) async -> RunDomainReply {
+        let stopAttemptID = UUID()
         let owner: OwnerIdentity
         let query: RunCancelQuery
         do {
@@ -2114,6 +2299,7 @@ public actor FacadeRunDomain {
         } catch {
             return RunDomainReply(.rejected(RunDomainError(.invalidState, .payloadInvalid)))
         }
+        let stopOwner = captureStopOwner(runID: query.runID)
         let record: RunRecord
         do {
             // The run's OWN record. Temporary runs live in the session RAM
@@ -2140,40 +2326,134 @@ public actor FacadeRunDomain {
         } catch {
             return RunDomainReply(.rejected(RunDomainError(.staleRevision, .revisionAbsent)))
         }
+        // Re-prove state + capture the durable incarnation in ONE read before
+        // any mutation. This closes the window where a retry commits between
+        // the record read above and the owner mutation below. An unreadable
+        // extra proof read never blocks the user's physical Stop; it only
+        // means no typed settlement can be claimed.
+        let settlementStore = await runStopSettlementStore(
+            runID: query.runID, conversationID: query.conversationID)
+        var expectedIncarnation: RunIncarnation?
+        var expectedStopStatusSequence: Int?
+        if let settlementStore {
+            do {
+                guard let identity = try await settlementStore.stopIdentity(
+                    runID: query.runID,
+                    conversationID: query.conversationID) else {
+                    return RunDomainReply(.rejected(
+                        RunDomainError(.notFound, .runMissing)))
+                }
+                guard identity.state == record.state else {
+                    return RunDomainReply(.rejected(
+                        RunDomainError(.staleRevision, .revisionMismatch)))
+                }
+                expectedIncarnation = identity.incarnation
+                expectedStopStatusSequence = identity.latestStatusSequence
+            } catch {
+                // Keep stopping; the reply explicitly reports no typed proof.
+                expectedIncarnation = nil
+            }
+        }
+
+        func reply(_ presentation: RunCancelPresentation) -> RunDomainReply {
+            RunDomainReply(.mutationAccepted(detail: presentation.detail(
+                runID: query.runID,
+                ownerPhase: runCancelOwnerPhase(runID: query.runID),
+                liveProducer: runCancelLiveProducer(runID: query.runID))))
+        }
+        guard stopOwnerMatches(stopOwner, runID: query.runID) else {
+            return RunDomainReply(.rejected(RunDomainError(.staleRevision, .revisionMismatch)))
+        }
+
+        // Cold durable proof FIRST: an already-settled run answered from the
+        // append-only settlement row (never from a localized reason or the
+        // small "recent events" tail).
+        if owners[query.runID] == nil, record.state == "checkpointed",
+           let readback = await runStopReadback(
+            runID: query.runID, conversationID: query.conversationID),
+           readback.isSettled, let settlement = readback.settlement {
+            guard stopOwnerMatches(stopOwner, runID: query.runID) else {
+                return RunDomainReply(.rejected(
+                    RunDomainError(.staleRevision, .revisionMismatch)))
+            }
+            return reply(RunCancelPresentation(
+                cancel: "alreadySettled", settled: true,
+                settlement: settlement, reason: nil, pendingJobs: nil,
+                durableState: readback.runState, attemptID: stopAttemptID))
+        }
+
         // G03-R4: a PARKED awaiting-dependency run has no live service owner,
         // yet the user's explicit Stop must really stop it. The CAS commits
-        // checkpointed→cancelled only when no resume won the race; the same
-        // call fences every pending edge, requests cooperative cancellation of
-        // exactly this run's jobs and leaves a truthful stopped checkpoint.
-        // A resume that committed first falls through to the ORIGINAL live
-        // cancel path below (the user's Stop still wins).
+        // checkpointed→checkpointed only when no resume won the race; the
+        // typed settlement row is written in the SAME transaction as the row
+        // CAS and the exact incarnation re-proof. A resume that committed
+        // first falls through to the live-owner branch below (the user's Stop
+        // still wins when the newer incarnation is the one being addressed).
         // An admission that is STILL in flight (a `.admitting` owner) is also
         // routed here: the parked Stop marks that exact admission
         // synchronously so it can never dispatch a provider/tool turn after
-        // the user's Stop. A committed/handed-off resume falls through to the
-        // ORIGINAL live cancel branch below.
+        // the user's Stop.
         if record.state == "checkpointed",
            owners[query.runID] == nil || owners[query.runID]?.phase == .admitting,
            await isAwaitingDependency(runID: query.runID) {
-            switch await stopAwaitingDependency(
-                runID: query.runID, conversationID: query.conversationID) {
+            // An unreadable identity cannot be rebound to a later run while
+            // trying to stop a parked task.
+            if settlementStore != nil && expectedStopStatusSequence == nil {
+                return reply(RunCancelPresentation(
+                    cancel: "unverified", settled: false, settlement: nil,
+                    reason: "incarnationUnbound", pendingJobs: nil,
+                    durableState: record.state, attemptID: stopAttemptID))
+            }
+            switch await stopAwaitingDependencyBound(
+                runID: query.runID, conversationID: query.conversationID,
+                expectedIncarnation: expectedIncarnation,
+                expectedStatusSequence: expectedStopStatusSequence,
+                expectedOwner: stopOwner) {
+            case .settled(let jobs, let settlement):
+                return reply(RunCancelPresentation(
+                    cancel: "settled", settled: true,
+                    settlement: settlement, reason: nil,
+                    pendingJobs: jobs.count,
+                    durableState: "checkpointed", attemptID: stopAttemptID))
+            case .alreadySettled(let settlement):
+                return reply(RunCancelPresentation(
+                    cancel: "alreadySettled", settled: true,
+                    settlement: settlement, reason: nil, pendingJobs: nil,
+                    durableState: "checkpointed", attemptID: stopAttemptID))
             case .stopped(let jobs):
-                return RunDomainReply(.mutationAccepted(detail: [
-                    "cancel": "stoppedAwaitingDependency",
-                    "resourceID": RunWireRevision.runResourceID(query.runID),
-                    "pendingJobs": String(jobs.count),
-                ]))
+                return reply(RunCancelPresentation(
+                    cancel: "stoppedAwaitingDependency", settled: false,
+                    settlement: nil, reason: "incarnationUnbound",
+                    pendingJobs: jobs.count,
+                    durableState: "checkpointed", attemptID: stopAttemptID))
+            case .staleIncarnation:
+                return RunDomainReply(.rejected(
+                    RunDomainError(.staleRevision, .revisionMismatch)))
             case .alreadyStarted(let state):
-                if state == "cancelled" {
-                    return RunDomainReply(.mutationAccepted(detail: [
-                        "cancel": "alreadyRequested"]))
+                if let readback = await runStopReadback(
+                    runID: query.runID,
+                    conversationID: query.conversationID),
+                   readback.isSettled, let settlement = readback.settlement {
+                    return reply(RunCancelPresentation(
+                        cancel: "alreadySettled", settled: true,
+                        settlement: settlement, reason: nil,
+                        pendingJobs: nil, durableState: readback.runState,
+                        attemptID: stopAttemptID))
                 }
-                // A resume committed first: continue to the live-owner branch.
-                break
+                if state != record.state, state != "checkpointed" {
+                    // A newer activation/terminal won while this old cancel
+                    // was in flight. Never fall through and touch it.
+                    return RunDomainReply(.rejected(
+                        RunDomainError(.staleRevision, .revisionMismatch)))
+                }
+                // Still checkpointed for a non-dependency cause: continue to
+                // the ordinary branches below.
             case .busy:
-                // A concurrent parked Stop is already in flight.
-                return RunDomainReply(.mutationAccepted(detail: [
-                    "cancel": "alreadyRequested"]))
+                return reply(RunCancelPresentation(
+                    cancel: "alreadyRequested", settled: false,
+                    settlement: nil, reason: "stopInFlight",
+                    pendingJobs: nil, durableState: record.state,
+                    attemptID: stopAttemptID))
             case .refused(let code, _):
                 let mapped: RunDomainError
                 switch code {
@@ -2189,20 +2469,30 @@ public actor FacadeRunDomain {
             }
         }
         // A parked run already stopped by the user keeps its checkpointed row
-        // with the canonical stop cause: a second Stop is a truthful no-op,
-        // never a generic runNotRetryable error.
+        // with the canonical stop cause. If the durable settlement is not
+        // present/current, this is a LEGACY stop: answer truthfully without a
+        // typed success claim (the old `alreadyRequested` alone is not proof).
         if record.state == "checkpointed", owners[query.runID] == nil,
            await durableCheckpointReason(runID: query.runID)
                 == Self.parkedUserStopReason {
-            return RunDomainReply(.mutationAccepted(detail: [
-                "cancel": "alreadyRequested"]))
+            return reply(RunCancelPresentation(
+                cancel: "unverified", settled: false,
+                settlement: nil, reason: "legacyStopWithoutTypedSettlement",
+                pendingJobs: nil, durableState: record.state,
+                attemptID: stopAttemptID))
+        }
+        guard stopOwnerMatches(stopOwner, runID: query.runID) else {
+            return RunDomainReply(.rejected(RunDomainError(.staleRevision, .revisionMismatch)))
         }
         // Native maintenance work has a real durable header and the same
         // conversation-owned operation lease as other native workspace work.
         // The authoritative owner/state/revision checks above still apply.
         if owners[query.runID] == nil,
            requestG04NativeRunStop(runID: query.runID, conversationID: query.conversationID) {
-            return RunDomainReply(.mutationAccepted(detail: ["cancel": "stopping"]))
+            return reply(RunCancelPresentation(
+                cancel: "stopping", settled: false, settlement: nil,
+                reason: "nativeMaintenanceStopping", pendingJobs: nil,
+                durableState: record.state, attemptID: stopAttemptID))
         }
         // post-run stop wiring (Main review 2026-10-21): for an ordinary
         // COMPLETED goal-mode run, the ORIGINAL post-run review/continuation
@@ -2225,22 +2515,24 @@ public actor FacadeRunDomain {
             // the review can still act. The `run.snapshot` goalReview field
             // reads back the real settlement (stopping -> none only after
             // the actual owner returned).
-            return RunDomainReply(.mutationAccepted(detail: [
-                "cancel": "reviewStopping",
-                "resourceID": RunWireRevision.runResourceID(query.runID),
-            ]))
+            return reply(RunCancelPresentation(
+                cancel: "reviewStopping", settled: false, settlement: nil,
+                reason: "goalReviewStopping", pendingJobs: nil,
+                durableState: record.state, attemptID: stopAttemptID))
         }
         if owners[query.runID] == nil, retiredRunSet.contains(query.runID) {
-            // THIS domain retired this run in the current generation: the
-            // cancel was already requested and settled; answering honestly
-            // (never a fake re-owning, never a runMissing for known work).
-            // A goal review that REALLY settled already cleared its work
-            // handle, so this path only answers after actual settlement.
-            return RunDomainReply(.mutationAccepted(detail: ["cancel": "alreadyRequested"]))
+            // THIS domain retired this run: the only truthful answer now is
+            // the durable settlement (read above). Without a current typed
+            // settlement, do not claim the historical `alreadyRequested` as
+            // proof.
+            return reply(RunCancelPresentation(
+                cancel: "unverified", settled: false, settlement: nil,
+                reason: "retiredWithoutCurrentSettlement", pendingJobs: nil,
+                durableState: record.state, attemptID: stopAttemptID))
         }
         if Self.terminalRunStates.contains(record.state), owners[query.runID] == nil {
             // Already durable-terminal and unowned: nothing to cancel and
-            // NO fake "cancelled" claim.
+            // NO fake "cancelled"/settled claim.
             return RunDomainReply(.rejected(RunDomainError(.invalidState, .runNotRetryable)))
         }
         guard var ownership = owners[query.runID] else {
@@ -2250,6 +2542,15 @@ public actor FacadeRunDomain {
             // process's work this facade must not pretend to own.
             return RunDomainReply(.rejected(RunDomainError(.notFound, .runMissing)))
         }
+        // INCARNATION SEAL: an owner that already committed a newer
+        // incarnation must never be marked/cancelled by this command. Nil
+        // owner incarnations are uncommitted admissions (a Stop during
+        // admission is the documented winner) or legacy RAM launches.
+        if let expectedIncarnation, let ownerIncarnation = ownership.incarnation,
+           ownerIncarnation.proof != expectedIncarnation.proof {
+            return RunDomainReply(.rejected(
+                RunDomainError(.staleRevision, .revisionMismatch)))
+        }
         _ = requestG04NativeRunStop(runID: query.runID, conversationID: query.conversationID)
         switch ownership.phase {
         case .admitting:
@@ -2257,7 +2558,10 @@ public actor FacadeRunDomain {
             // no-effect.
             ownership.cancelRequested = true
             register(ownership)
-            return RunDomainReply(.mutationAccepted(detail: ["cancel": "pendingC0"]))
+            return reply(RunCancelPresentation(
+                cancel: "pendingC0", settled: false, settlement: nil,
+                reason: "startAdmission", pendingJobs: nil,
+                durableState: record.state, attemptID: stopAttemptID))
         case .prepared:
             // C1 before handoff: the committed launch fails truthfully.
             // The run's own bundle performs the marking (the ordinary
@@ -2270,21 +2574,137 @@ public actor FacadeRunDomain {
                                                reason: "cancelledDuringPrepare",
                                                bundle: bundle)
             await retire(runID: query.runID, terminalSucceeded: false, feedTerminal: false)
-            return RunDomainReply(.mutationAccepted(detail: [
-                "cancel": "appliedC1", "resourceID": RunWireRevision.runResourceID(query.runID)]))
+            let durableState = (try? await durable.runs.run(id: query.runID))?.state
+                ?? record.state
+            return reply(RunCancelPresentation(
+                cancel: "appliedC1", settled: false, settlement: nil,
+                reason: "launchAbortedBeforeHandoff", pendingJobs: nil,
+                durableState: durableState, attemptID: stopAttemptID))
         case .handedOff:
+            guard let service = liveServices[query.runID] else {
+                // A handedOff owner without the live producer is an
+                // inconsistent authority state, NOT a successful request.
+                return reply(RunCancelPresentation(
+                    cancel: "unverified", settled: false, settlement: nil,
+                    reason: "liveProducerMissing", pendingJobs: nil,
+                    durableState: record.state, attemptID: stopAttemptID))
+            }
+            ownership.cancelRequested = true
             ownership.phase = .terminating
             register(ownership)
-            // Close the ACTUAL owned producer. The runtime cancel cascade
-            // (stream + in-flight tool + approval expiry + final
-            // checkpoint) is the ORIGINAL engine path.
-            if let service = liveServices[query.runID] {
-                await service.cancel()
+            // The runtime returns the AUTHORITATIVE local fact: only
+            // `.stopped` means this exact call produced the stopped
+            // checkpoint. The localized reason is never consulted.
+            let runtimeOutcome = await service.cancel()
+            switch runtimeOutcome {
+            case .stopped:
+                guard let settlementStore, let expectedIncarnation else {
+                    return reply(RunCancelPresentation(
+                        cancel: "requested", settled: false,
+                        settlement: nil, reason: "incarnationUnbound",
+                        pendingJobs: nil, durableState: "checkpointed",
+                        attemptID: stopAttemptID))
+                }
+                do {
+                    guard let identity = try await settlementStore.stopIdentity(
+                        runID: query.runID,
+                        conversationID: query.conversationID),
+                          identity.state == "checkpointed",
+                          identity.incarnation?.proof
+                            == expectedIncarnation.proof else {
+                        return reply(RunCancelPresentation(
+                            cancel: "unverified", settled: false,
+                            settlement: nil,
+                            reason: "durableTerminalUnproven",
+                            pendingJobs: nil,
+                            durableState: (try? await settlementStore
+                                .stopIdentity(runID: query.runID,
+                                              conversationID: query.conversationID))?
+                                .state ?? record.state,
+                            attemptID: stopAttemptID))
+                    }
+                    let commit = try await settlementStore.commitRuntimeUserStop(
+                        runID: query.runID,
+                        conversationID: query.conversationID,
+                        expectedIncarnation: expectedIncarnation)
+                    switch commit {
+                    case .settled(let settlement):
+                        return reply(RunCancelPresentation(
+                            cancel: "settled", settled: true,
+                            settlement: settlement, reason: nil,
+                            pendingJobs: nil, durableState: "checkpointed",
+                            attemptID: stopAttemptID))
+                    case .alreadySettled(let settlement):
+                        return reply(RunCancelPresentation(
+                            cancel: "alreadySettled", settled: true,
+                            settlement: settlement, reason: nil,
+                            pendingJobs: nil, durableState: "checkpointed",
+                            attemptID: stopAttemptID))
+                    case .staleIncarnation:
+                        return reply(RunCancelPresentation(
+                            cancel: "unverified", settled: false,
+                            settlement: nil, reason: "incarnationChanged",
+                            pendingJobs: nil,
+                            durableState: identity.state,
+                            attemptID: stopAttemptID))
+                    case .notStopped(let state):
+                        return reply(RunCancelPresentation(
+                            cancel: "unverified", settled: false,
+                            settlement: nil, reason: "runtimeStateUnproven",
+                            pendingJobs: nil, durableState: state,
+                            attemptID: stopAttemptID))
+                    case .unboundStopped:
+                        return reply(RunCancelPresentation(
+                            cancel: "requested", settled: false,
+                            settlement: nil, reason: "incarnationUnbound",
+                            pendingJobs: nil, durableState: identity.state,
+                            attemptID: stopAttemptID))
+                    case .unreadable:
+                        return reply(RunCancelPresentation(
+                            cancel: "unverified", settled: false,
+                            settlement: nil,
+                            reason: "settlementStoreUnavailable",
+                            pendingJobs: nil, durableState: identity.state,
+                            attemptID: stopAttemptID))
+                    }
+                } catch {
+                    return reply(RunCancelPresentation(
+                        cancel: "unverified", settled: false,
+                        settlement: nil,
+                        reason: "settlementStoreUnavailable",
+                        pendingJobs: nil, durableState: "checkpointed",
+                        attemptID: stopAttemptID))
+                }
+            case .checkpointFailed:
+                return reply(RunCancelPresentation(
+                    cancel: "unverified", settled: false, settlement: nil,
+                    reason: "checkpointFailed", pendingJobs: nil,
+                    durableState: (try? await durable.runs.run(id: query.runID))?
+                        .state ?? "failed",
+                    attemptID: stopAttemptID))
+            case .notStopped(let state):
+                return reply(RunCancelPresentation(
+                    cancel: "notStopped", settled: false, settlement: nil,
+                    reason: "runtimeAlreadyStoppable", pendingJobs: nil,
+                    durableState: state, attemptID: stopAttemptID))
             }
-            return RunDomainReply(.mutationAccepted(detail: [
-                "cancel": "requested", "resourceID": RunWireRevision.runResourceID(query.runID)]))
         case .terminating, .retired:
-            return RunDomainReply(.mutationAccepted(detail: ["cancel": "alreadyRequested"]))
+            if let readback = await runStopReadback(
+                runID: query.runID, conversationID: query.conversationID),
+               readback.isSettled, let settlement = readback.settlement {
+                return reply(RunCancelPresentation(
+                    cancel: "alreadySettled", settled: true,
+                    settlement: settlement, reason: nil, pendingJobs: nil,
+                    durableState: readback.runState,
+                    attemptID: stopAttemptID))
+            }
+            return reply(RunCancelPresentation(
+                cancel: ownership.phase == .terminating ? "stopping" : "unverified",
+                settled: false, settlement: nil,
+                reason: ownership.phase == .terminating
+                    ? "stopInFlight" : "retiredWithoutCurrentSettlement",
+                pendingJobs: nil, durableState: record.state,
+                attemptID: stopAttemptID))
         }
     }
 
@@ -2339,7 +2759,8 @@ public actor FacadeRunDomain {
         } catch {
             return RunDomainReply(.rejected(RunDomainError(.internalError, .internal)))
         }
-        guard owners[query.runID] == nil else {
+        guard owners[query.runID] == nil,
+              !stoppingDependencyRuns.contains(query.runID) else {
             return RunDomainReply(.rejected(RunDomainError(.duplicateInFlight,
                                                            .launchAlreadyInFlight)))
         }
@@ -2394,6 +2815,25 @@ public actor FacadeRunDomain {
             return refuseLaunch(runID: record.id,
                                 error: RunDomainError(.invalidState, .runNotRetryable))
         }
+        // Capture the SOURCE incarnation in one authority read. A moved row
+        // makes this retry stale, and the SAME proof is handed to the atomic
+        // resume writer so it refuses if a newer Stop/incarnation won.
+        guard let retryIdentity = await runStopIdentity(
+            runID: record.id, conversationID: record.conversationID) else {
+            return refuseLaunch(runID: record.id,
+                                error: RunDomainError(.persistenceUnavailable,
+                                                      .storeReadFailed))
+        }
+        if retryIdentity.state != record.state {
+            return refuseLaunch(runID: record.id,
+                                error: RunDomainError(.staleRevision,
+                                                      .revisionMismatch))
+        }
+        if var owner = owners[record.id] {
+            owner.incarnation = retryIdentity.incarnation
+            register(owner)
+        }
+        let resumeSourceIncarnation = retryIdentity.incarnation?.proof
         // A parked awaiting-dependency run is NOT finished while a required
         // edge is still pending: refuse Continue exactly like the native
         // guard, because its resumption belongs to the exact job callback.
@@ -2519,7 +2959,13 @@ public actor FacadeRunDomain {
                 // The retry envelope carries no requested environment/job
                 // role; there is no accepted binding to forward here (the
                 // original launch's admission was not durable state).
-                environmentID: nil)
+                environmentID: nil, retryWorkspaceReadOnly: true,
+                // Restart/resume keeps the mode recorded by the immutable run
+                // row. A checkpoint written before the row could carry it is
+                // only a fallback when the row has no value; neither source is
+                // ever defaulted to Agent.
+                explicitExecutionMode: Self.resumedExplicitExecutionMode(
+                    record: record, checkpoint: checkpoint))
         } catch let error as RunDomainError {
             // C0: nothing durable was committed for this resume yet (the
             // failed/checkpointed row is untouched), so the exact owner is
@@ -2554,16 +3000,22 @@ public actor FacadeRunDomain {
         // and writes NOTHING; nothing is inferred from untrusted content, no
         // synthetic user message is written and the completed run stays
         // NONRESUMABLE (the state guard above still refuses it).
+        let resumedIncarnation: RunIncarnation
         do {
             guard let resumable = durable.runs as? any ResumeActivationRunStore else {
                 throw RunDomainError(.capabilityNotUsable, .intelligenceStoreUnbound)
             }
-            guard try await resumable.beginUserResume(
+            guard let committed = try await resumable.beginVerifiedUserResume(
                 runID: record.id,
                 conversationID: record.conversationID,
-                expectedState: record.state) != nil else {
+                expectedState: record.state,
+                expectedIncarnation: resumeSourceIncarnation,
+                observedSettlementSequence:
+                    retryIdentity.latestSettlementSequence,
+                expectedStatusSequence: retryIdentity.latestStatusSequence) else {
                 throw RunDomainError(.staleRevision, .revisionMismatch)
             }
+            resumedIncarnation = committed
         } catch let error as RunDomainError {
             return refuseLaunch(runID: record.id, error: error)
         } catch {
@@ -2571,6 +3023,22 @@ public actor FacadeRunDomain {
                                 error: RunDomainError(.persistenceUnavailable,
                                                       .storeWriteFailed))
         }
+        // The committed `userResume` marker's DERIVED incarnation is returned
+        // by the same transaction. Publish it on the current ownership
+        // SYNCHRONOUSLY (no await) so an old cancel that captured the parked
+        // incarnation refuses stale instead of marking the new admission.
+        if var committed = owners[record.id] {
+            committed.incarnation = resumedIncarnation
+            register(committed)
+        }
+        // C1 is durable now. Only now can the read-only resolver treat this
+        // run as active; the retained candidate names the root that was
+        // actually supplied to the already-assembled service. A terminal,
+        // missing, replaced or unreadable directory yields no proof and does
+        // not create or recreate it.
+        let retryCandidate = owners[record.id]?.workspaceApprovalCandidate
+        let retryWorkspace = retryCandidate == nil ? nil :
+            await LinuxWorkspaceAuthority.approvalWorkspaceReadOnly(runID: record.id)
         // C1 landed. Re-prove that the owner is STILL this exact admission
         // before touching anything: if a cancel/retire or a newer resume
         // replaced it while the writer awaited, this admission owns nothing
@@ -2598,6 +3066,13 @@ public actor FacadeRunDomain {
             return RunDomainReply(.rejected(RunDomainError(.sessionFenced,
                                                            .deletingGuarded)))
         }
+        if let candidate = retryCandidate,
+           committedOwnership.workspaceApprovalCandidate == candidate,
+           G02NativeRootEpoch.readback() == epoch,
+           let proof = candidate.promote(current: retryWorkspace, conversationID: record.conversationID) {
+            committedOwnership.workspaceApprovalProof = proof
+        }
+        committedOwnership.workspaceApprovalCandidate = nil
         // Handoff in ONE actor step (no await between the prepared flip and
         // the live-service publication), so a Stop can no longer observe a
         // half-prepared resume owner.
@@ -2723,7 +3198,10 @@ public actor FacadeRunDomain {
                 // G04R2 queue-input repair: persist the composer's REAL
                 // execution mode (iOS parity) so the terminal drain
                 // launches exactly the mode the user queued under.
-                executionMode: query.executionMode))
+                executionMode: query.executionMode),
+                // Presence-based provenance: the key's presence is the
+                // caller's real selection; an old envelope stays NULL.
+                explicitExecutionMode: query.explicitExecutionMode)
             // Queue accepted is NOT approval resolved, NOT secret committed
             // and NOT a started run; the durable row + position are the
             // truth, and consumption stays the service's exactly-once
@@ -3153,7 +3631,8 @@ public actor FacadeRunDomain {
                     workspaceID: nil,
                     // G04R2 queue-input repair: the LIVE temporary row
                     // carries the same REAL execution-mode vocabulary.
-                    executionMode: query.executionMode))
+                    executionMode: query.executionMode),
+                explicitExecutionMode: query.explicitExecutionMode)
             return RunDomainReply(.mutationAccepted(detail: [
                 "inputID": stored.id.uuidString,
                 "position": String(stored.position),
@@ -3594,7 +4073,9 @@ public actor FacadeRunDomain {
                 draftPolicy: nil,
                 gate: gate, workspaceName: nil,
                 hostToolCeiling: route.frozenToolCeiling.sorted(by: <),
-                environmentID: nil)
+                environmentID: nil,
+                explicitExecutionMode: record.explicitExecutionMode
+                    .flatMap(ExplicitExecutionMode.init(rawValue:)))
         } catch let error as RunDomainError {
             return await failTemporaryRetry(runID: record.id, error: error,
                                             bundle: route.runBundle)
@@ -3656,6 +4137,310 @@ public actor FacadeRunDomain {
 
     // MARK: - run.approval.resolve
 
+    /// Read-only proof of the exact local target captured at service assembly.
+    /// The executor's existing live routing, policy and workspace checks stay
+    /// authoritative after approval; this is only a presentation precondition.
+    private func localShellApprovalDetails(waiting: AgentState.WaitingApproval,
+        taskID: UUID, runID: UUID, service: ConversationRunService,
+        proof: WorkspaceApprovalLaunchProof) async -> ([String: SettingsDomainV1.JSONValue], C02ResolvedExecutionTarget)? {
+        guard let owner = owners[runID], owner.conversationID == taskID,
+              let frozen = owner.shellApprovalTarget, proof.allowedPaths.isEmpty,
+              frozen.target.kind == .localLinux, frozen.target.taskID == taskID,
+              frozen.target.workspaceID == proof.workspaceID,
+              frozen.pin.runID == runID, frozen.pin.taskID == taskID,
+              frozen.pin.rootEpoch == epoch, G02NativeRootEpoch.readback() == epoch,
+              let targets = components.executionTargets?.domain else { return nil }
+        guard let current = try? await targets.localShellApprovalReadback(taskID: taskID, runID: runID),
+              LocalShellApprovalPresentation.samePinnedTarget(frozen, current) else { return nil }
+        let currentWorkspace = await LinuxWorkspaceAuthority.approvalWorkspaceReadOnly(runID: runID)
+        let latest = await service.snapshot().pendingApproval
+        guard ownsLiveService(service, runID: runID, conversationID: taskID),
+              owners[runID]?.workspaceApprovalProof == proof,
+              owners[runID]?.shellApprovalTarget == frozen,
+              G02NativeRootEpoch.readback() == epoch, latest == waiting,
+              let currentWorkspace, currentWorkspace.conversationID == taskID,
+              currentWorkspace.workspaceID == proof.workspaceID,
+              currentWorkspace.rootURL.standardizedFileURL == proof.rootURL.standardizedFileURL,
+              let shell = RuntimeFacadeLinuxBindings.shared.components?.service,
+              let details = LocalShellApprovalPresentation.details(waiting: waiting, target: frozen,
+                                                                   workspace: proof, shell: shell) else { return nil }
+        return (details, frozen)
+    }
+
+    private func scheduleApprovalDetails(waiting: AgentState.WaitingApproval, taskID: UUID,
+        runID: UUID, service: ConversationRunService) async -> [String: SettingsDomainV1.JSONValue]? {
+        // Fail closed until the actual runtime grant is bound to this exact
+        // approval generation and verified by the schedule executor.
+        guard G073ScheduleApproval.grantBound else { return nil }
+        guard waiting.toolCall.toolName == "task.schedule", case .local = waiting.toolCall.scope,
+              let owner = owners[runID], owner.conversationID == taskID,
+              owner.epoch == epoch, owner.scheduleApprovalContextCaptured, !owner.cancelRequested,
+              fenceIsValid(owner.launchToken), G02NativeRootEpoch.readback() == epoch,
+              let resolver = G073TaskScheduleFacade.currentApprovalResolver(epoch: epoch),
+              let args = G073ScheduleApproval.arguments(waiting.toolCall.argumentsJSON) else { return nil }
+        let context = ToolContext(runID: runID, toolCallID: waiting.toolCall.id,
+            scope: waiting.toolCall.scope, cancellation: CancellationToken(),
+            environmentID: owner.scheduleApprovalEnvironmentID, conversationID: taskID)
+        guard let binding = await resolver(context),
+              let details = G073ScheduleApproval.details(args: args, binding: binding),
+              await service.snapshot().pendingApproval == waiting,
+              ownsLiveService(service, runID: runID, conversationID: taskID),
+              let latest = owners[runID], latest.conversationID == taskID, latest.epoch == epoch,
+              !latest.cancelRequested, latest.scheduleApprovalContextCaptured,
+              latest.scheduleApprovalEnvironmentID == owner.scheduleApprovalEnvironmentID,
+              latest.launchToken == owner.launchToken, fenceIsValid(latest.launchToken),
+              G02NativeRootEpoch.readback() == epoch else { return nil }
+        return details
+    }
+
+    private func browserTabApprovalDetails(waiting: AgentState.WaitingApproval, taskID: UUID,
+        runID: UUID, service: ConversationRunService, prepareSession: Bool) async -> ([String: SettingsDomainV1.JSONValue], BrowserTabApprovalProof)? {
+        guard let args = G04BrowserTabApprovalPresentation.arguments(waiting),
+              let owner = owners[runID], owner.conversationID == taskID, owner.epoch == epoch,
+              !owner.cancelRequested, fenceIsValid(owner.launchToken),
+              let routing = G04BrowserHostRegistry.shared.currentRouting, routing.epoch == epoch, routing.isLive(),
+              let browserOwner = try? await routing.ladder.ownerVerified(taskID: taskID),
+              // Only "create" may prepare a blank session. Activate/close must
+              // review an already existing session; a stale or forged target
+              // never causes a browser session (or a release fence) to appear.
+              let session = try? await routing.center.approvalSession(for: browserOwner,
+                    preparingIfNeeded: prepareSession && args.action == "create"),
+              let checked = try? await session.approvalTabProof(action: args.action, tabID: args.tabID),
+              checked.owner == browserOwner, checked.sessionID == (await session.sessionID),
+              let details = G04BrowserTabApprovalPresentation.details(for: args, proof: checked),
+              let currentOwner = try? await routing.ladder.ownerVerified(taskID: taskID), currentOwner == browserOwner,
+              await routing.center.existingSession(for: browserOwner) === session,
+              await service.snapshot().pendingApproval == waiting,
+              ownsLiveService(service, runID: runID, conversationID: taskID),
+              let latest = owners[runID], latest.conversationID == taskID, latest.epoch == epoch,
+              !latest.cancelRequested, latest.launchToken == owner.launchToken, fenceIsValid(latest.launchToken),
+              G02NativeRootEpoch.readback() == epoch, routing.isLive() else { return nil }
+        return (details, checked)
+    }
+
+    private func browserInteractionApprovalDetails(waiting: AgentState.WaitingApproval, taskID: UUID,
+        runID: UUID, service: ConversationRunService) async -> ([String: SettingsDomainV1.JSONValue], BrowserInteractionApprovalProof)? {
+        guard let (action, tabID, visualSHA256, visualReason, visualDocument) = G04BrowserInteractionApprovalPresentation.arguments(waiting),
+              let owner = owners[runID], owner.conversationID == taskID, owner.epoch == epoch,
+              !owner.cancelRequested, fenceIsValid(owner.launchToken),
+              let routing = G04BrowserHostRegistry.shared.currentRouting, routing.epoch == epoch, routing.isLive(),
+              let browserOwner = try? await routing.ladder.ownerVerified(taskID: taskID),
+              let session = await routing.center.existingSession(for: browserOwner),
+              let checked = try? await session.approvalInteractionProof(action: action, tabID: tabID, visualSHA256: visualSHA256, visualReason: visualReason, visualDocument: visualDocument),
+              checked.owner == browserOwner, checked.sessionID == (await session.sessionID),
+              let details = G04BrowserInteractionApprovalPresentation.details(checked),
+              let currentOwner = try? await routing.ladder.ownerVerified(taskID: taskID), currentOwner == browserOwner,
+              await routing.center.existingSession(for: browserOwner) === session,
+              await service.snapshot().pendingApproval == waiting,
+              ownsLiveService(service, runID: runID, conversationID: taskID),
+              let latest = owners[runID], latest.conversationID == taskID, latest.epoch == epoch,
+              !latest.cancelRequested, latest.launchToken == owner.launchToken, fenceIsValid(latest.launchToken),
+              G02NativeRootEpoch.readback() == epoch, routing.isLive() else { return nil }
+        return (details, checked)
+    }
+
+    /// Ephemeral, App-host-only human approval details. No event, diagnostic,
+    /// model tool or durable row receives the returned page or file paths.
+    public func approvalPresentation(envelope: RunCommandEnvelope) async -> RunDomainReply {
+        let owner: OwnerIdentity
+        let callID: String
+        let generation: UUID
+        let descriptorID: String
+        let deviceTargetDigest: String?
+        let shellChunkOffset: Int64?
+        let shellChunkToken: String?
+        do {
+            owner = try envelope.requireTaskAndRun()
+            let payload = try RunPayloadReader.Object(envelope.payloadValue ?? .object([:]),
+                allowed: ["approvalSchema", "callID", "generation", "expectedDescriptorIdentity", "canonicalTargetDigest", "shellChunkOffset", "presentationToken"])
+            guard try payload.string("approvalSchema", maxBytes: 32) == "generation-v1" else {
+                throw RunDomainError(.invalidState, .payloadInvalid)
+            }
+            callID = try payload.string("callID", maxBytes: 128)
+            let rawGeneration = try payload.string("generation", maxBytes: 36)
+            guard let parsed = UUID(uuidString: rawGeneration),
+                  parsed.uuidString.lowercased() == rawGeneration else {
+                throw RunDomainError(.invalidState, .payloadInvalid)
+            }
+            generation = parsed
+            descriptorID = try payload.string("expectedDescriptorIdentity", maxBytes: 64)
+            deviceTargetDigest = try payload.optionalString("canonicalTargetDigest", maxBytes: 64)
+            shellChunkOffset = try payload.optionalInteger("shellChunkOffset", min: 0, max: 2 * 1024 * 1024)
+            shellChunkToken = try payload.optionalString("presentationToken", maxBytes: 36)
+            guard (shellChunkOffset == nil) == (shellChunkToken == nil),
+                  shellChunkOffset == nil || deviceTargetDigest == nil else {
+                throw RunDomainError(.invalidState, .payloadInvalid)
+            }
+            if let digest = deviceTargetDigest {
+                guard digest.utf8.count == 64,
+                      digest.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
+                    throw RunDomainError(.invalidState, .payloadInvalid)
+                }
+            }
+            guard descriptorID.utf8.count == 64,
+                  descriptorID.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
+                throw RunDomainError(.invalidState, .payloadInvalid)
+            }
+            try envelope.revisionMatches(resourceID: RunWireRevision.approvalResourceID(callID: callID),
+                version: RunWireRevision.approvalVersion(generation: generation))
+        } catch let error as RunDomainError {
+            return RunDomainReply(.rejected(error))
+        } catch {
+            return RunDomainReply(.rejected(RunDomainError(.invalidState, .payloadInvalid)))
+        }
+        guard let ownership = owners[owner.runID], ownership.conversationID == owner.taskID,
+              ownership.epoch == epoch, G02NativeRootEpoch.readback() == epoch,
+              let service = liveServices[owner.runID], service.conversationID == owner.taskID else {
+            return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalWorkspaceOwnershipChanged)))
+        }
+        guard let waiting = await service.snapshot().pendingApproval,
+              waiting.toolCall.id == callID, waiting.generation == generation,
+              (WorkspaceApprovalPresentation.toolNames.contains(waiting.toolCall.toolName) ||
+               waiting.toolCall.toolName == "exec.shell" || waiting.toolCall.toolName == "device.act" ||
+               waiting.toolCall.toolName == "task.schedule" || waiting.toolCall.toolName == "browser.tab" ||
+               G04BrowserInteractionApprovalPresentation.names.contains(waiting.toolCall.toolName)),
+              let descriptor = tools.registry.descriptor(named: waiting.toolCall.toolName),
+              descriptor.authorizationIdentity == descriptorID else {
+            return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalGenerationMismatch)))
+        }
+        if shellChunkOffset != nil && waiting.toolCall.toolName != "exec.shell" {
+            return RunDomainReply(.rejected(RunDomainError(.invalidState, .payloadInvalid)))
+        }
+        let details: [String: SettingsDomainV1.JSONValue]
+        let shellTarget: C02ResolvedExecutionTarget?
+        let proof = ownership.workspaceApprovalProof
+        let deviceAction = waiting.toolCall.toolName == "device.act"
+        let scheduleAction = waiting.toolCall.toolName == "task.schedule"
+        let browserTabAction = waiting.toolCall.toolName == "browser.tab"
+        let browserInteractionAction = G04BrowserInteractionApprovalPresentation.names.contains(waiting.toolCall.toolName)
+        var browserTabProof: BrowserTabApprovalProof?
+        var browserInteractionProof: BrowserInteractionApprovalProof?
+        if browserInteractionAction {
+            guard deviceTargetDigest == nil,
+                  let (projected, checked) = await browserInteractionApprovalDetails(waiting: waiting,
+                    taskID: owner.taskID, runID: owner.runID, service: service) else {
+                return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalGenerationMismatch)))
+            }
+            details = projected; browserInteractionProof = checked; shellTarget = nil
+        } else if browserTabAction {
+            guard deviceTargetDigest == nil,
+                  let (projected, checked) = await browserTabApprovalDetails(waiting: waiting,
+                    taskID: owner.taskID, runID: owner.runID, service: service, prepareSession: true) else {
+                return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalGenerationMismatch)))
+            }
+            details = projected
+            browserTabProof = checked
+            shellTarget = nil
+        } else if scheduleAction {
+            guard deviceTargetDigest == nil,
+                  let projected = await scheduleApprovalDetails(waiting: waiting, taskID: owner.taskID,
+                    runID: owner.runID, service: service) else {
+                return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalGenerationMismatch)))
+            }
+            details = projected
+            shellTarget = nil
+        } else if deviceAction {
+            guard var projected = DeviceActionApprovalPresentation.details(waiting: waiting) else {
+                return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalGenerationMismatch)))
+            }
+            projected["canonicalTargetDigest"] = deviceTargetDigest.map { .string($0) } ?? .null
+            details = projected
+            shellTarget = nil
+        } else if waiting.toolCall.toolName == "exec.shell" {
+            guard let proof, deviceTargetDigest == nil else {
+                return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalWorkspaceOwnershipChanged)))
+            }
+            guard let checked = await localShellApprovalDetails(waiting: waiting, taskID: owner.taskID,
+                runID: owner.runID, service: service, proof: proof) else {
+                return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalWorkspaceOwnershipChanged)))
+            }
+            (details, shellTarget) = checked
+        } else {
+            guard let proof, deviceTargetDigest == nil else {
+                return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalWorkspaceOwnershipChanged)))
+            }
+            let current = await LinuxWorkspaceAuthority.approvalWorkspaceReadOnly(runID: owner.runID)
+            let latestWaiting = await service.snapshot().pendingApproval
+            guard latestWaiting == waiting,
+                  let checked = WorkspaceApprovalPresentation.details(waiting: waiting, launch: proof,
+                      current: current, conversationID: owner.taskID) else {
+                return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalWorkspaceOwnershipChanged)))
+            }
+            details = checked
+            shellTarget = nil
+        }
+        guard ownsLiveService(service, runID: owner.runID, conversationID: owner.taskID),
+              (deviceAction || scheduleAction || browserTabAction || browserInteractionAction || owners[owner.runID]?.workspaceApprovalProof == proof),
+              G02NativeRootEpoch.readback() == epoch,
+              tools.registry.descriptor(named: waiting.toolCall.toolName)?.authorizationIdentity == descriptorID,
+              let digest = WorkspaceApprovalPresentation.bindingDigest(waiting: waiting, details: details) else {
+            return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalWorkspaceOwnershipChanged)))
+        }
+        if deviceAction && deviceTargetDigest == nil {
+            let page: SettingsDomainV1.JSONValue = .object([
+                "schema": .string("floe.approval-presentation/1"),
+                "conversationID": .string(owner.taskID.uuidString), "runID": .string(owner.runID.uuidString),
+                "callID": .string(callID), "generation": .string(generation.uuidString.lowercased()),
+                "presentationToken": .null, "canonicalTargetDigest": .null,
+                "presentation": RunSnapshotWireBuilder.approvalPresentation(waiting, descriptor: descriptor,
+                    workspaceDetails: details, workspaceVerified: false),
+            ])
+            let bytes = FacadeFrameBudget.serializedBytes(Self.unwrap(page))
+            return RunDomainReply(.completedPage(page: RunTypedPage(object: page, pageBytes: bytes), nextCursor: nil))
+        }
+        let binding = WorkspaceApprovalReceiptStore.Binding(
+            epoch: epoch, taskID: owner.taskID, runID: owner.runID, callID: callID,
+            generation: generation, descriptorIdentity: descriptorID, workspaceProof: (deviceAction || scheduleAction || browserTabAction || browserInteractionAction) ? nil : proof, digest: digest,
+            shellTarget: shellTarget, deviceTargetDigest: deviceTargetDigest, browserTabProof: browserTabProof,
+            browserInteractionProof: browserInteractionProof)
+        if let offset = shellChunkOffset, let token = shellChunkToken {
+            guard waiting.toolCall.toolName == "exec.shell", shellTarget != nil,
+                  workspaceApprovalReceipts.matches(token, binding: binding, now: ProcessInfo.processInfo.systemUptime),
+                  let data = LocalShellApprovalPresentation.privatePayload(waiting: waiting),
+                  let slice = LocalShellApprovalPresentation.privateChunk(data, offset: Int(offset)) else {
+                return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalGenerationMismatch)))
+            }
+            let chunk: SettingsDomainV1.JSONValue = .object([
+                "schema": .string("floe.shell-approval-chunk/1"),
+                "conversationID": .string(owner.taskID.uuidString), "runID": .string(owner.runID.uuidString),
+                "callID": .string(callID), "generation": .string(generation.uuidString.lowercased()),
+                "offset": .integer(offset), "totalBytes": .integer(Int64(data.count)),
+                "sha256": .string(RunWireDigest.sha256Hex(data)),
+                "dataBase64": .string(slice.data.base64EncodedString()),
+                "nextOffset": slice.nextOffset.map { .integer(Int64($0)) } ?? .null,
+            ])
+            let bytes = FacadeFrameBudget.serializedBytes(Self.unwrap(chunk))
+            guard bytes <= 40_000 else {
+                return RunDomainReply(.rejected(RunDomainError(.payloadTooLarge, .payloadTooLarge)))
+            }
+            return RunDomainReply(.completedPage(page: RunTypedPage(object: chunk, pageBytes: bytes), nextCursor: nil))
+        }
+        guard let token = workspaceApprovalReceipts.issue(binding, now: ProcessInfo.processInfo.systemUptime) else {
+            return RunDomainReply(.rejected(RunDomainError(.capabilityNotUsable, .internal)))
+        }
+        let page: SettingsDomainV1.JSONValue = .object([
+            "schema": .string("floe.approval-presentation/1"),
+            "conversationID": .string(owner.taskID.uuidString),
+            "runID": .string(owner.runID.uuidString),
+            "callID": .string(callID),
+            "generation": .string(generation.uuidString.lowercased()),
+            "presentationToken": .string(token),
+            "presentation": RunSnapshotWireBuilder.approvalPresentation(waiting, descriptor: descriptor,
+                    workspaceDetails: details, workspaceVerified: (deviceAction || scheduleAction || browserTabAction || browserInteractionAction) ? false : nil),
+        ])
+        var finalPage = page
+        if deviceAction, let deviceTargetDigest, case .object(var fields) = page {
+            fields["canonicalTargetDigest"] = .string(deviceTargetDigest)
+            finalPage = .object(fields)
+        }
+        let bytes = FacadeFrameBudget.serializedBytes(Self.unwrap(finalPage))
+        guard bytes <= 40_000 else {
+            _ = workspaceApprovalReceipts.consume(token, matching: binding, now: ProcessInfo.processInfo.systemUptime)
+            return RunDomainReply(.rejected(RunDomainError(.payloadTooLarge, .payloadTooLarge)))
+        }
+        return RunDomainReply(.completedPage(page: RunTypedPage(object: finalPage, pageBytes: bytes), nextCursor: nil))
+    }
+
     public func resolveApproval(envelope: RunCommandEnvelope) async -> RunDomainReply {
         let owner: OwnerIdentity
         let query: RunApprovalResolveQuery
@@ -3680,7 +4465,11 @@ public actor FacadeRunDomain {
             return RunDomainReply(.rejected(RunDomainError(.invalidState,
                                                            .approvalGenerationMismatch)))
         }
-        guard RunWireRevision.approvalVersion(requestedAt: waiting.requestedAt)
+        guard let descriptor = tools.registry.descriptor(named: waiting.toolCall.toolName),
+              descriptor.authorizationIdentity == query.expectedDescriptorIdentity else {
+            return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalGenerationMismatch)))
+        }
+        guard RunWireRevision.approvalVersion(generation: waiting.generation)
                 == query.expectedApprovalVersion else {
             return RunDomainReply(.rejected(RunDomainError(.staleRevision, .revisionMismatch)))
         }
@@ -3692,6 +4481,44 @@ public actor FacadeRunDomain {
             return RunDomainReply(.rejected(error))
         } catch {
             return RunDomainReply(.rejected(RunDomainError(.staleRevision, .revisionAbsent)))
+        }
+        let fileTools = WorkspaceApprovalPresentation.toolNames
+        // A positively pinned SSH target keeps its existing remote approval
+        // path. An unknown target cannot be relabelled as local or remote.
+        let localShell: Bool
+        if case .allow = query.branch, waiting.toolCall.toolName == "exec.shell" {
+            guard let pinned = owners[query.runID]?.shellApprovalTarget,
+                  pinned.target.taskID == query.conversationID,
+                  pinned.pin.runID == query.runID, pinned.pin.rootEpoch == epoch else {
+                return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalGenerationMismatch)))
+            }
+            localShell = pinned.target.kind == .localLinux
+        } else {
+            localShell = false
+        }
+        // Existing navigation/launch approval remains unchanged. Node actions
+        // need the separate host-verified target and a one-use receipt.
+        let deviceActionNeedsPresentation: Bool = {
+            guard waiting.toolCall.toolName == "device.act",
+                  let raw = try? JSONSerialization.jsonObject(with: waiting.toolCall.argumentsJSON) as? [String: Any],
+                  let action = raw["action"] as? String else { return waiting.toolCall.toolName == "device.act" }
+            return !["back", "home", "launch"].contains(action)
+        }()
+        let scheduleAction = waiting.toolCall.toolName == "task.schedule"
+        let browserTabAction = waiting.toolCall.toolName == "browser.tab"
+        let browserInteractionAction = G04BrowserInteractionApprovalPresentation.names.contains(waiting.toolCall.toolName)
+        let needsPresentation = fileTools.contains(waiting.toolCall.toolName) || localShell || deviceActionNeedsPresentation || scheduleAction || browserTabAction || browserInteractionAction
+        var workspaceClaim: WorkspaceApprovalReceiptStore.Claim?
+        var expectedScheduleDigest: String?
+        var expectedBrowserTabProof: BrowserTabApprovalProof?
+        var expectedBrowserInteractionProof: BrowserInteractionApprovalProof?
+        if case .allow = query.branch, needsPresentation {
+            guard let token = query.presentationToken,
+                  let tokenUUID = UUID(uuidString: token), tokenUUID.uuidString.lowercased() == token,
+                  let claim = workspaceApprovalReceipts.take(token, now: ProcessInfo.processInfo.systemUptime) else {
+                return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalGenerationMismatch)))
+            }
+            workspaceClaim = claim
         }
         // Grant scope is re-DERIVED from the LIVE request (call-bound +
         // descriptor identity); the payload never carries scope/host/paths.
@@ -3710,12 +4537,127 @@ public actor FacadeRunDomain {
                 decision = .allow(
                     scope: RunApprovalScopeBinding.scope(
                         for: waiting.toolCall,
-                        descriptorLookup: { tools.registry.descriptor(named: $0) }),
+                        descriptorLookup: { _ in descriptor }),
                     expiresAt: nil)
             }
         }
-        let accepted = await service.resolveApproval(decision, for: waiting.toolCall.id)
+        if case .allow = query.branch,
+           needsPresentation {
+            guard let owner = owners[query.runID], owner.conversationID == query.conversationID,
+                  G02NativeRootEpoch.readback() == owner.epoch else {
+                return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalWorkspaceOwnershipChanged)))
+            }
+            let proof = owner.workspaceApprovalProof
+            let details: [String: SettingsDomainV1.JSONValue]
+            let shellTarget: C02ResolvedExecutionTarget?
+            if browserInteractionAction {
+                guard query.canonicalTargetDigest == nil,
+                      let (projected, checked) = await browserInteractionApprovalDetails(waiting: waiting,
+                        taskID: query.conversationID, runID: query.runID, service: service) else {
+                    return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalGenerationMismatch)))
+                }
+                details = projected; shellTarget = nil; expectedBrowserInteractionProof = checked
+            } else if browserTabAction {
+                guard query.canonicalTargetDigest == nil,
+                      let (projected, checked) = await browserTabApprovalDetails(waiting: waiting,
+                        taskID: query.conversationID, runID: query.runID, service: service, prepareSession: false) else {
+                    return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalGenerationMismatch)))
+                }
+                details = projected
+                shellTarget = nil
+                expectedBrowserTabProof = checked
+            } else if scheduleAction {
+                guard query.canonicalTargetDigest == nil,
+                      let projected = await scheduleApprovalDetails(waiting: waiting, taskID: query.conversationID,
+                        runID: query.runID, service: service),
+                      let digest = G073ScheduleApproval.digest(projected) else {
+                    return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalGenerationMismatch)))
+                }
+                details = projected
+                shellTarget = nil
+                expectedScheduleDigest = digest
+            } else if deviceActionNeedsPresentation {
+                guard let targetDigest = query.canonicalTargetDigest, targetDigest.utf8.count == 64,
+                      targetDigest.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }),
+                      var projected = DeviceActionApprovalPresentation.details(waiting: waiting) else {
+                    return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalGenerationMismatch)))
+                }
+                projected["canonicalTargetDigest"] = .string(targetDigest)
+                details = projected
+                shellTarget = nil
+            } else if waiting.toolCall.toolName == "exec.shell" {
+                guard let proof, query.canonicalTargetDigest == nil else {
+                    return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalWorkspaceOwnershipChanged)))
+                }
+                guard let checked = await localShellApprovalDetails(waiting: waiting, taskID: query.conversationID,
+                    runID: query.runID, service: service, proof: proof) else {
+                    return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalWorkspaceOwnershipChanged)))
+                }
+                (details, shellTarget) = checked
+            } else {
+                guard let proof, query.canonicalTargetDigest == nil else {
+                    return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalWorkspaceOwnershipChanged)))
+                }
+                let current = await LinuxWorkspaceAuthority.approvalWorkspaceReadOnly(runID: query.runID)
+                guard let checked = WorkspaceApprovalPresentation.details(waiting: waiting, launch: proof,
+                    current: current, conversationID: query.conversationID) else {
+                    return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalWorkspaceOwnershipChanged)))
+                }
+                details = checked
+                shellTarget = nil
+            }
+            guard ownsLiveService(service, runID: query.runID, conversationID: query.conversationID),
+                  (deviceActionNeedsPresentation || scheduleAction || browserTabAction || browserInteractionAction || owners[query.runID]?.workspaceApprovalProof == proof),
+                  G02NativeRootEpoch.readback() == owner.epoch,
+                  let digest = WorkspaceApprovalPresentation.bindingDigest(waiting: waiting, details: details),
+                  let claim = workspaceClaim else {
+                return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalWorkspaceOwnershipChanged)))
+            }
+            let binding = WorkspaceApprovalReceiptStore.Binding(
+                epoch: owner.epoch, taskID: query.conversationID, runID: query.runID,
+                callID: waiting.toolCall.id, generation: waiting.generation,
+                descriptorIdentity: query.expectedDescriptorIdentity,
+                workspaceProof: (deviceActionNeedsPresentation || scheduleAction || browserTabAction || browserInteractionAction) ? nil : proof, digest: digest,
+                shellTarget: shellTarget, deviceTargetDigest: query.canonicalTargetDigest, browserTabProof: expectedBrowserTabProof,
+                browserInteractionProof: expectedBrowserInteractionProof)
+            guard claim.expiresAt > ProcessInfo.processInfo.systemUptime, claim.binding == binding else {
+                return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalGenerationMismatch)))
+            }
+        }
+        guard tools.registry.descriptor(named: waiting.toolCall.toolName)?.authorizationIdentity ==
+                query.expectedDescriptorIdentity else {
+            return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalGenerationMismatch)))
+        }
+        if let expectedScheduleDigest {
+            guard G073ScheduleApprovalGate.shared.stage(run: query.runID, call: waiting.toolCall.id,
+                                                         grant: waiting.generation,
+                                                         digest: expectedScheduleDigest) else {
+                return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalGenerationMismatch)))
+            }
+        }
+        if let expectedBrowserTabProof {
+            guard G04BrowserTabApprovalGate.shared.stage(run: query.runID, call: waiting.toolCall.id,
+                grant: waiting.generation, proof: expectedBrowserTabProof) else {
+                return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalGenerationMismatch)))
+            }
+        }
+        if let expectedBrowserInteractionProof {
+            guard G04BrowserInteractionApprovalGate.shared.stage(run: query.runID, call: waiting.toolCall.id,
+                grant: waiting.generation, proof: expectedBrowserInteractionProof) else {
+                return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalGenerationMismatch)))
+            }
+        }
+        let accepted = await service.resolveApproval(decision, matching: waiting)
         guard accepted else {
+            if expectedScheduleDigest != nil {
+                G073ScheduleApprovalGate.shared.discard(run: query.runID, call: waiting.toolCall.id, grant: waiting.generation)
+            }
+            if expectedBrowserTabProof != nil {
+                G04BrowserTabApprovalGate.shared.discard(run: query.runID, call: waiting.toolCall.id, grant: waiting.generation)
+            }
+            if expectedBrowserInteractionProof != nil {
+                G04BrowserInteractionApprovalGate.shared.discard(run: query.runID, call: waiting.toolCall.id, grant: waiting.generation)
+            }
             let still = await service.snapshot().pendingApproval?.toolCall.id
             if still != waiting.toolCall.id {
                 return RunDomainReply(.rejected(RunDomainError(.invalidState, .approvalNotPending)))
@@ -3918,13 +4860,15 @@ public actor FacadeRunDomain {
             return RunDomainReply(.rejected(RunDomainError(.invalidState, .payloadInvalid)))
         }
         let requestID = UUID()
+        let registry = tools.registry
         let reply = await RunSnapshotWireBuilder.build(
             domain: self, components: components,
             query: SnapshotQuery(conversationID: owner.taskID, runID: owner.runID),
             ownership: owners[owner.runID],
             liveService: liveServices[owner.runID],
             readBundle: readBundle, metadataOnly: metadataOnly,
-            snapshotRequestID: requestID)
+            snapshotRequestID: requestID,
+            descriptorLookup: { registry.descriptor(named: $0) })
         if case .completedPage = reply.outcome { return reply }
         // Failed page construction must not strand handles never delivered
         // to a client. The request token isolates concurrent reads/owners.
@@ -4011,6 +4955,20 @@ public actor FacadeRunDomain {
 
     private func notesTaskLaunchCancelled(_ runID: UUID, _ token: LaunchEpochFence.Token) -> Bool {
         shouldAbortBeforeEffects(runID) || !fenceIsValid(token)
+    }
+
+    /// Restart/resume provenance: the immutable run row is authoritative; an
+    /// older checkpoint is only a fallback when the row has no recorded value
+    /// (a checkpoint written before the row column existed). Absence stays nil
+    /// on both sides and is NEVER defaulted to `agent`.
+    static func resumedExplicitExecutionMode(record: RunRecord,
+                                             checkpoint: AgentCheckpoint?)
+        -> ExplicitExecutionMode? {
+        if let raw = record.explicitExecutionMode,
+           let value = ExplicitExecutionMode(rawValue: raw) {
+            return value
+        }
+        return checkpoint?.explicitExecutionMode
     }
 
     private func refuseLaunch(runID: UUID, error: RunDomainError) -> RunDomainReply {

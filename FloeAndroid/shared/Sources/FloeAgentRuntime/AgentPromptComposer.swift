@@ -279,7 +279,7 @@ public enum AgentPromptComposer {
         case .chat:
             modeText = "Chat mode: answer or execute the current request within its scope."
         case .plan:
-            modeText = "Plan mode: investigate read-only and prepare ordered work with assumptions, acceptance checks and unresolved decisions. Do not perform implementation. "
+            modeText = "Plan mode: investigate read-only, and use user.ask when it is offered for a materially missing decision; prepare ordered work with assumptions, acceptance checks and unresolved decisions. Do not perform implementation. "
                 + planExecutionDiscoveryContract + " "
                 + (toolsAvailable ? "Submit with plan.submit only if offered; otherwise return the complete plan." : "Return the complete plan from supplied evidence.")
         case .goal:
@@ -385,7 +385,7 @@ public enum AgentPromptComposer {
     /// Planning must not diagnose its own read-only ceiling as an engine fault.
     /// This guides discovery; the native capability and approval gates stay authoritative.
     private static let planExecutionDiscoveryContract = """
-    The catalog is scoped to this read-only Plan run. Mutating execution tools such as exec.shell, delegate and workspace.publishOutput are intentionally not offered here. Do not repeatedly search catalogs or read skills to make those execution tools appear, and do not treat their absence in Plan as an environment failure or a planning blocker. Describe the future authorized work from the supplied facts; put actual execution-schema, dependency and environment checks at the start of the accepted execution run. Use read-only investigation only for material unknowns that change the plan. Once those decisions are resolved, submit the concise plan instead of continuing discovery.
+    The catalog is scoped to this read-only Plan run. Mutating execution tools such as exec.shell, delegate and workspace.publishOutput are intentionally not offered here. Do not repeatedly search catalogs or read skills to make those execution tools appear, and do not treat their absence in Plan as an environment failure or a planning blocker. Describe the future authorized work from the supplied facts; put actual execution-schema, dependency and environment checks at the start of the accepted execution run. Use read-only investigation (and user.ask when offered) only for material unknowns that change the plan. Once those decisions are resolved, submit the concise plan instead of continuing discovery.
     """
 
     private static func modeLayer(_ mode: ConversationMode, toolsAvailable: Bool) -> String {
@@ -398,7 +398,7 @@ public enum AgentPromptComposer {
             }
             return """
             # Plan mode
-            Investigate with read-only tools only. Resolve material ambiguity before submission. Produce a complete implementation plan containing ordered sections, assumptions, risks with mitigations, acceptance criteria, and concrete verification. When ready, call the native `plan.submit` tool exactly once; do not print pseudo function-call markup.
+            Investigate with the offered read-only tools, and user.ask when offered, for material unknowns. Resolve material ambiguity before submission. Produce a complete implementation plan containing ordered sections, assumptions, risks with mitigations, acceptance criteria, and concrete verification. When ready, call the native `plan.submit` tool exactly once; do not print pseudo function-call markup.
 
             \(planExecutionDiscoveryContract)
 

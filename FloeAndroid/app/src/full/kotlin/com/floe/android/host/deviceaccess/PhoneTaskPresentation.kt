@@ -75,6 +75,13 @@ internal object PhoneTaskPresentation {
         actualOwner: PhoneControlOwner?,
         stoppedOwner: PhoneControlOwner?,
         userStopped: Boolean,
+        /**
+         * True only after a trustworthy post-stop proof (real cancel
+         * read-back or the actual holder) showed this exact run no longer
+         * holds the device approval. The default is deliberately NOT settled:
+         * a stop request alone is never displayed as completed.
+         */
+        stoppedOwnerSettled: Boolean = false,
     ): PhoneTaskOwnershipUi? {
         // A stop fence or a service-side fence (user touch/lock/takeover/
         // revocation) means the host's arm is no longer live authorization.
@@ -92,8 +99,12 @@ internal object PhoneTaskPresentation {
             val stoppedHere = userStopped && stoppedOwner == candidate.owner
             return PhoneTaskOwnershipUi(
                 owner = candidate.owner,
+                // The holder still reports this exact run live, so the stop
+                // is NOT settled yet: "Stopping" is the truthful state. Only a
+                // settled proof (run no longer live/approved) may show
+                // "Taken over", and that path has no live candidate.
                 phase = if (stoppedHere) {
-                    DeviceAccessTaskPhaseUi.TAKEN_OVER
+                    DeviceAccessTaskPhaseUi.STOPPING
                 } else {
                     candidate.phase
                 },
@@ -118,7 +129,11 @@ internal object PhoneTaskPresentation {
         if (userStopped && stoppedOwner != null) {
             return PhoneTaskOwnershipUi(
                 owner = stoppedOwner,
-                phase = DeviceAccessTaskPhaseUi.TAKEN_OVER,
+                phase = if (stoppedOwnerSettled) {
+                    DeviceAccessTaskPhaseUi.TAKEN_OVER
+                } else {
+                    DeviceAccessTaskPhaseUi.STOPPING
+                },
                 control = DeviceAccessTaskControlUi.STOPPED,
                 titleSource = PhoneTaskTitleSource.RETAINED,
             )

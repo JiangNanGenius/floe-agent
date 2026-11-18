@@ -357,11 +357,13 @@ final class RuntimeFacadeRunEventsTests: XCTestCase {
             command: "run.approval.resolve", conversationID: conversationID, runID: runID,
             payload: ["callID": waiting.toolCall.id, "decision": "deny",
                       "reason": "test deny",
+                      "approvalSchema": "generation-v1",
+                      "expectedDescriptorIdentity": try XCTUnwrap(fixture.registry.descriptor(named: waiting.toolCall.toolName)).authorizationIdentity,
                       "expectedApprovalVersion": RunWireRevision.approvalVersion(
-                          requestedAt: waiting.requestedAt)],
+                          generation: waiting.generation)],
             correlation: "corr-deny",
             revision: ["resourceID": RunWireRevision.approvalResourceID(callID: waiting.toolCall.id),
-                       "version": RunWireRevision.approvalVersion(requestedAt: waiting.requestedAt)]))
+                       "version": RunWireRevision.approvalVersion(generation: waiting.generation)]))
         let final = await waitDurableTerminal(fixture: fixture, runID: runID)
         XCTAssertNotNil(final)
         // Terminal survives in durable pages even if the live consumer

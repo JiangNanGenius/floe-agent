@@ -11,6 +11,10 @@
     <string name="browser_continue_task">继续任务</string>
     <string name="browser_return_control_cd">交还控制权</string>
     <string name="browser_new_tab">新标签页</string>
+    <string name="browser_tab_position">标签 %1$d</string>
+    <string name="browser_tabs_unavailable">标签列表暂不可用</string>
+    <string name="browser_tabs_reopen">请关闭浏览器后重新打开；如果你正在控制浏览器，请先交还控制权。</string>
+    <string name="browser_close_panel">关闭浏览器</string>
     <string name="browser_new_tab_cd">新建标签页</string>
     <string name="browser_back_cd">后退</string>
     <string name="browser_forward_cd">前进</string>

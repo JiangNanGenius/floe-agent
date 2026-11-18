@@ -165,13 +165,33 @@ public actor BrowserToolSurface {
         name: String,
         caller: BrowserToolCaller,
         arguments: BrowserToolArguments,
-        cancellation: CancellationToken? = nil
+        cancellation: CancellationToken? = nil,
+        approvalTabProof tabApprovalProof: BrowserTabApprovalProof? = nil,
+        approvalInteractionProof interactionProof: BrowserInteractionApprovalProof? = nil
     ) async throws -> ToolExecutionOutput {
         try cancellation?.throwIfCancelled()
         guard Self.frozenToolNames.contains(name) else {
             throw BrowserToolError.validation("Unknown browser tool '\(name)'")
         }
         let owner = try Self.resolveOwner(for: caller)
+        if let proof = tabApprovalProof {
+            // The reviewed operation and its exact target are part of the
+            // one-use approval. A proof for one action/tab can never be
+            // applied to a different action, a different tab or a session the
+            // model selected.
+            guard name == "browser.tab", ["create", "activate", "close"].contains(proof.operation),
+                  case .tab(let action, let tabID) = arguments,
+                  action == proof.operation, tabID == proof.tabID,
+                  (proof.operation == "create") == (tabID == nil) else {
+                throw BrowserToolError.validation("The browser approval does not match this operation")
+            }
+        }
+        if let proof = interactionProof {
+            guard proof.owner == owner, ["browser.click", "browser.clickPoint", "browser.type", "browser.scroll"].contains(name),
+                  name == "browser.\(proof.operation)" else {
+                throw BrowserToolError.validation("The browser approval does not match this operation")
+            }
+        }
         switch (name, arguments) {
         case ("browser.panel", .panel(let action, let reason, let tabID)):
             return try await panel(owner: owner, caller: caller, action: action, reason: reason, tabID: tabID, cancellation: cancellation)
@@ -185,7 +205,8 @@ public actor BrowserToolSurface {
             case "close": guard let tabID else { throw BrowserToolError.validation("Create must omit tabID; activate/close require tabID"); }; command = .closeTab(tabID)
             default: throw BrowserToolError.validation("Unknown tab action")
             }
-            return try await run(owner: owner, action: command, cancellation: cancellation)
+            return try await run(owner: owner, action: command, cancellation: cancellation,
+                                 tabApprovalProof: tabApprovalProof)
         case ("browser.events", .events(let tabID, let afterSequence, let limit)):
             if let sequence = afterSequence, sequence < 0 {
                 throw BrowserToolError.validation("afterSequence must be non-negative")
@@ -274,7 +295,8 @@ public actor BrowserToolSurface {
                 action: .click(.element(ref: ref, documentID: documentID)),
                 tabID: tabID,
                 documentID: documentID,
-                cancellation: cancellation
+                cancellation: cancellation,
+                interactionApprovalProof: interactionProof
             )
         case ("browser.clickPoint", .clickPoint(let tabID, let documentID, let x, let y, let screenshotSHA256, let fallbackReason)):
             guard !documentID.isEmpty, x.isFinite, y.isFinite,
@@ -294,7 +316,8 @@ public actor BrowserToolSurface {
                 documentID: documentID,
                 visualEvidenceSHA256: screenshotSHA256,
                 visualFallbackReason: fallbackReason,
-                cancellation: cancellation
+                cancellation: cancellation,
+                interactionApprovalProof: interactionProof
             )
         case ("browser.type", .type(let tabID, let ref, let documentID, let text, let submit)):
             guard !ref.isEmpty, !documentID.isEmpty else {
@@ -308,7 +331,8 @@ public actor BrowserToolSurface {
                 action: .type(.element(ref: ref, documentID: documentID), text: text, submit: submit ?? false),
                 tabID: tabID,
                 documentID: documentID,
-                cancellation: cancellation
+                cancellation: cancellation,
+                interactionApprovalProof: interactionProof
             )
         case ("browser.scroll", .scroll(let tabID, let deltaX, let deltaY)):
             guard deltaY.isFinite, deltaX?.isFinite != false,
@@ -319,7 +343,8 @@ public actor BrowserToolSurface {
                 owner: owner,
                 action: .scroll(deltaX: deltaX ?? 0, deltaY: deltaY),
                 tabID: tabID,
-                cancellation: cancellation
+                cancellation: cancellation,
+                interactionApprovalProof: interactionProof
             )
         case ("preview.start", .previewStart(let root, let entry)):
             return try await previewStart(owner: owner, caller: caller, root: root,
@@ -434,7 +459,9 @@ public actor BrowserToolSurface {
         visualEvidenceSHA256: String? = nil,
         visualFallbackReason: String? = nil,
         timeoutMilliseconds: Int = 15_000,
-        cancellation: CancellationToken? = nil
+        cancellation: CancellationToken? = nil,
+        tabApprovalProof: BrowserTabApprovalProof? = nil,
+        interactionApprovalProof: BrowserInteractionApprovalProof? = nil
     ) async throws -> ToolExecutionOutput {
         try cancellation?.throwIfCancelled()
         // Cancellation is runtime evidence that the owning run is finished.
@@ -443,7 +470,21 @@ public actor BrowserToolSurface {
         // superseded) run can never recreate a browser for its owner.
         let sessionID: UUID
         do {
-            sessionID = try await center.taskSession(for: owner).sessionID
+            if let proof = tabApprovalProof {
+                guard proof.owner == owner, let existing = await center.existingSession(for: owner),
+                      await existing.sessionID == proof.sessionID else {
+                    throw BrowserToolError.validation("The reviewed browser session is no longer available")
+                }
+                sessionID = proof.sessionID
+            } else if let proof = interactionApprovalProof {
+                guard proof.owner == owner, let existing = await center.existingSession(for: owner),
+                      await existing.sessionID == proof.sessionID else {
+                    throw BrowserToolError.validation("The reviewed browser session is no longer available")
+                }
+                sessionID = proof.sessionID
+            } else {
+                sessionID = try await center.taskSession(for: owner).sessionID
+            }
         } catch {
             throw BrowserToolError.validation(error.localizedDescription)
         }
@@ -454,6 +495,8 @@ public actor BrowserToolSurface {
             timeoutMilliseconds: timeoutMilliseconds,
             visualEvidenceSHA256: visualEvidenceSHA256,
             visualFallbackReason: visualFallbackReason,
+            tabApprovalProof: tabApprovalProof,
+            interactionApprovalProof: interactionApprovalProof,
             action: action
         )
         // The owner is applied explicitly; visibility is irrelevant.

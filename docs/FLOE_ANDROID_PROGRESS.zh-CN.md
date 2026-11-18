@@ -1,5 +1,169 @@
 # Floe Android 分目标实施记录
 
+## 空间、会议记录与 Harness 对齐（2026-11-17，实施中）
+
+以仓库主线 `778bd7157b7e9ee5db35d5c5ce0e0c9d5ce8c520` 和当时实际工作区的 iOS 源码为初始对照，并增量核对较新的活跃 iOS 工作树提交 `a9d66af2a0744b7a82fd8ce21d73c8574274fc16`：两者的 SpaceRoot、NotesRoot 和 Meetings 目录无已提交差异，Harness 差异仍在核对。iOS 空间包含概览、手记、文件和工具箱；会议是有独立存储、录音、逐字稿、笔记及导出的功能。主工作区的 `PersonalContentEditor.swift` 和 `StudioAgentTools.swift` 当时存在其他工作中的未提交修改，不能把其内容记为主线提交已冻结的行为。
+
+安卓按轻量化定位推进空间入口，复用现有文件来源、手记和手机控制授权，不引入重型编辑器，也不伪造任务或工作区。会议接独立存储、录音、播放、配置过的云语音及助手能力；不内置本地语音模型。Harness 增加工具注册和显式执行模式记录；临时聊天的只读限制保留。各项编译与验证范围见下，不把局部检查当作全面验收。
+
+空间文件页现已接入独立的 SAF 文件夹管理源码，使用系统授权并复用已有分页、预览与文件操作服务；provider 不支持的操作需真实报告。该页面仅完成局部源码与单元检查，完整 App、系统选择器及真实 provider 尚未验证。设备通信（BLE/USB）与手机控制是不同入口，不能相互冒充。
+
+空间导航源码已交接：概览、手记、文件和工具箱加安卓独立手机页；手机页复用已连接的现有控制和授权界面。侧栏以空间替代重复的手记项，保留旧手记路由；会议入口已接入会议页面。设计系统定向编译和 9 项测试通过；第一次运行发现原有目的地枚举测试未包含既有 7 项，补齐完整顺序断言后通过，原失败日志保留。完整 App 和设备尚未验证。
+
+Harness 已增加记忆写入／读取及同工作区会话查询的真实注册，受运行归属、存储状态和授权检查约束；其他跨范围记忆维护与会话创建不因候选名称而自动开放。显式 Agent／Chat 模式及队列、恢复字段已接入，可保留旧记录无模式来源的状态。Android ARM64 原生核心编译链接通过；真实旧库迁移测试与全部工具行为尚未完整验证。
+
+会议基础源码已交接：独立会议存储、素材导入、录音前台服务与播放，以及中断素材恢复。工作项报告局部 Kotlin 编译及 17 项仓储／录音时间线检查通过，最初测试初始化失败记录保留；尚未执行完整 Gradle 合并、设备录音、通知、播放或进程死亡验证。
+
+会议云语音底层桥接、素材快照与分页、页面接线已提交，原生核心与 Full Kotlin 均已编译。三星未配置云转写服务，页面提示配置，故真实云转录仍未验证；应用被系统结束后不会自动恢复中断的转写，运行时退役与结果写入之间仍有极窄竞态。会议助手、纯文本／Markdown 导出和分享已接入；待办以助手文本生成，尚非结构化待办系统。助手记录删除修复还在定向验证，失败重试与极端进程中断仍有局限。
+
+1.0.24／133 首个候选 `d6689993b76672619828ac652584386b7f6d4f57` 的 Full APK 已构建并安装三星，实际安装字节与产物一致。三星完成空间→新建会议→笔记保存重开、录音开始／停止、播放状态、TXT 导出文件读回，以及使用 Ark Plan 的 `ark-code-latest` 生成纪要并添加至笔记；未验证录音声音内容或云转写。测试会议、导出文件和生成的独立任务已删除，麦克风权限及屏幕超时已恢复；旧候选可能仍有该已删会议的助手内部记录。相关测试在修正测试调用后 21 组共 214 项通过，首次测试编译失败日志保留。Android 37 平板模拟器已检查空间和会议两栏布局并关闭；不以模拟器替代实机验收。助手清理修复后的最终包已安装并核对字节，未重复设备界面操作。
+
+## 1.0.24／133 预发布（2026-11-17）
+
+[Android 1.0.24](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v1.0.24) 固定源码 `036495b169932d0da95b7c5feff8bacb5b4e44d6`，Full APK SHA-256 `41723741c4c14755fbad655d78b5dc2d72ee16f330faefd4cb3e7e1fa1be0c41`。七项公开附件已从匿名公开地址逐字节校验，匿名更新列表可发现本版，iOS Latest 为 `v1.8.41`。基于 1.0.23 的增量包已在本机重建为相同 APK；设备内下载、增量升级与失败回退未实测。
+
+正式预发布包已覆盖安装三星，设备端 APK 字节与公开包一致；此前候选完成的功能实测见上，最终包的会议清理修复通过 13 项定向测试但尚未重复实机操作。一次并行 Release／Debug 构建因 JVM 垃圾回收过载退出，拆开并提高堆后相关测试通过；原始失败日志保留。会议记录清理失败的重试入口、删除与清理之间的进程中断窗口、未配置的真实云转录和回放声音内容仍为限制。
+
+## 1.0.23／132 预发布（2026-11-17）
+
+[Android 1.0.23](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v1.0.23) 固定源码 `aa0121ffefdaa7cf6f873245c2f2534eb4d1057f`，Full APK SHA-256 `3e0ee7a144244d7cc538345c83419cc64325efac88a017e449c15ec585760b1a`。七个公开附件均已匿名下载并逐字节核对，GitHub 更新列表可发现本版，iOS Latest 仍为 `v1.8.25`。1.0.22 精确基底增量在本机重建匹配；应用内在线升级与失败回退未实测。
+
+本版包括以下 1.0.22 后的设备控制、浏览器审批和终端输入审批源码。Full Release Kotlin 与相关状态测试通过，Android ARM64 原生核心已编译链接；原生编译之后仅更改 Office 源码索引摘要，全部原生输入经哈希核对与候选源码一致。三星覆盖安装后主 APK 字节与候选一致；因设备锁屏，本版悬浮球、网页审批和正在执行中停止尚未实测。录像线程已获设备状态交接。大参数经极端转义后仍可能超过运行时启动帧限制，分片实现草稿因存在启动和停止缺陷未纳入本版。
+
+## 1.0.22 后源码检查点：设备控制悬浮球（2026-11-17，验证中）
+
+任务等待终端、文件等非设备审批时，不再将其投影为设备控制等待，避免取消悬浮球的自动收起；真实设备操作审批仍可显示控制入口。审批类型切换时直接通知后台并刷新控件；停止按钮绑定已过期时刷新状态并提示返回任务重试，不声称停止成功。对话模块 Kotlin 编译及 6 项运行状态定向测试、Full Release Kotlin 编译及 7 项悬浮控件定向测试通过；已包含在上述 1.0.23 预发布中。停止控制的既有路径会撤销当前任务的控制并清理悬浮球。此前 1.0.22 三星测试只覆盖等待设备审批时点击接管；正在执行操作时停止、真实手指操作以及本次修复仍需实机验证。
+
+## 1.0.22 后源码批次：终端输入审批（2026-11-17，验证中）
+
+为带标准输入或环境变量的 `exec.shell` 增加私有分块审批，按任务、运行和审批代次校验并让用户按需核对完整内容；普通记录对这两项脱敏。停止请求会撤销对应私有审批，未确认时需重新检查。独立执行输入上限只针对 `exec.shell` 调整，后端变量限制保持。命令本身主动输出输入或变量时仍会形成普通工具输出。极端转义的命令与环境变量组合仍可能超过运行时启动帧限制，另有源码包处理；本批尚未编译或设备验证。
+
+## 1.0.22 后源码批次：浏览器坐标审批（2026-11-17，未发版）
+
+为 `browser.clickPoint` 接入人工审批，展示经校验的本机截图、点击标记、坐标与原因；截图及页面状态在批准和执行前重新核对，超时、变更或不可验证时拒绝。原图按受限文件大小和尺寸校验后有界采样显示，并绑定当前工作区代次。动态画面在最终重拍与点击之间仍可能变化；Android 默认没有可用 OCR，`browser.clickVisualText` 不伪造支持。
+
+固定源码 `42c8b6b5a4f29127a48303a192857b282eb32956` 的 Android ARM64 原生核心编译链接、Full Release Kotlin 编译和 42 项相关 Kotlin 测试通过；新增 Swift 行为测试与真实网页、三星行为尚未运行。本批尚未打包或发版。
+
+## 1.0.22 后源码批次：浏览器操作审批（2026-11-17，未发版）
+
+接入结构化网页元素点击、普通字段输入和页面滚动的人工审批，展示目标并在执行前复核当前页面与请求身份；自动授权继续沿用既有路径。输入请求在记录中脱敏，输入成功后返回最小回执，不携带输入后的页面内容；后续独立观察网页仍可能读到网页显示的内容。人工审批暂不覆盖 Shadow DOM／iframe、坐标点击和截图文字点击；无法核验或敏感的目标拒绝。悬浮控制面板的自动收起时间从 4 秒调整为 8 秒。
+
+固定源码 `d7ed0cd20891076d029edb63f749b12d970f0378` 的 Android ARM64 原生核心编译链接、Full Release Kotlin 编译及 38 项相关 Kotlin 检查通过；新 Swift 测试和真实 WebView、三星行为尚未运行，不能据此判定运行路径通过。本批尚未打包或发版。
+
+## 1.0.22 后源码检查点：设备屏幕授权代次（2026-11-17，未发版）
+
+为“直到停止”的屏幕授权记录实际接入的任务和使用代次；新任务成功复用授权，或同一任务重新允许后，旧停止回调不能清除新使用代次的授权，旧截图票据失效。失败准入不记为成功，单任务授权仍绑定原任务。Full Release Kotlin 编译和 25 项屏幕授权定向测试通过；独立源码复核覆盖已定位的同任务重新允许交错。本批未打包、未做三星或真实并发设备验收。
+
+## 1.0.22／131 预发布（2026-11-17）
+
+[Android 1.0.22](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v1.0.22) 固定源码 `6458f79870b90df0d0ce5f753281292c34a15117`，Full APK SHA-256 `a8bdc3403992d566604685c790ac0c7b1836904f8b0b697e1241d006c644eff8`。七个公开附件均已匿名下载并逐字节校验，公开更新列表可发现本版，iOS Latest 保持 `v1.8.25`。1.0.21 精确基底增量在本机重建匹配；本版设备内在线更新、增量失败回退尚未实测。三星主包及运行组件的安装字节与候选一致。
+
+候选包含以下设备接管、运行恢复和浏览器标签审批批次。三星以 Ark Plan 的 `ark-code-latest` 发起计算器任务，在 `device.act` 等待授权时通过 ADB 注入触摸展开浮球并立即选择接管：浮球消失，授权按钮收起，任务随后显示已停止。首次两轮点选位置或时机有误，面板可能已自动收起，不能作为接管失败的依据；原截图保留。此次有效结果不代表真实手指操作或设备动作执行中停止也已通过。临时无障碍、悬浮权限、自动化及应用选择已恢复；共享文件夹设置保留。
+
+后续源码补上接管事件的任务／代次绑定和旧审批停止屏障，修复候选的 Release Kotlin 编译和相关 44 项 Kotlin 测试通过。三星覆盖安装并校验本版主包和运行组件后，取得上述有效接管结果。共享屏幕授权存在旧任务停止与新任务复用既有授权之间的竞态，可能导致新任务需要重新授权，仍需修复。
+
+## 1.0.21 后源码批次：设备接管与浏览器标签审批（2026-11-17，未发版）
+
+源码在设备接管时撤销当前运行的操作授权，并将聊天旧授权卡改为停止状态；上方三星验证仅覆盖等待授权时的 ADB 注入触摸。原生运行记录增加绑定任务与运行代次的停止结果，旧运行继续、并发停止和依赖清理使用事务水位与所有权围栏；不能确认的旧记录或仍有待收尾后台作业保持未确认。浏览器标签切换和关闭接入一次性审批，界面展示目标信息和标签序号；无标题且无地址时不能允许但仍可拒绝。
+
+实际 Android ARM64 原生核心及运行库已编译链接；正常依赖校验下，受影响的 Full Kotlin 编译及 97 项定向测试通过。完整 Swift 测试目标此前被既有邮件等测试编译错误阻断；本批尚未构建 APK 或做设备验收。快照检查到 Android 消费之间的极窄并发窗口、标签栏和审批卡异步刷新，以及后台作业协作取消的最终状态，仍需继续验证，不能仅凭源码声明闭合。
+
+后续隔离运行原生测试：首次运行时，停止证明 `RunStopSettlementTests` 16 项通过；`RunDomainParkedDependencyTests` 中旧任务及多依赖自动恢复各有失败，随后一个恢复用例使测试进程崩溃。修复旧等待任务的身份补齐后，原断言不变的同一组测试共 30 项通过；原始失败日志保留。这些是宿主测试结果，尚不能代替 Android 设备验收。
+
+## 1.0.21／130 预发布（2026-11-16）
+
+[Android 1.0.21](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v1.0.21) 固定源码 `1f15f30bc42f87830b5becb91239041e056ff288`，Full APK SHA-256 `ef105f8eb6dcf54bc4376a1ae23c5ccb66b095321dfebfdb3d03bf8e36213216`。三星覆盖安装后，主包及内嵌运行组件的设备端字节均与候选一致，UID 保持，应用启动到首页；没有以此代替其他功能验收。从 1.0.20 基底重建增量结果与完整包匹配；本版设备内在线更新及失败回退尚未实测。七个公开附件已匿名下载并逐字节校验，公开更新列表可发现本版，iOS Latest 保持 `v1.8.25`。具体功能和已知限制见以下源码检查点与 Release 说明。
+
+English: Android 1.0.21 is published as a prerelease from the source and APK above. Samsung installed and launched the exact app and runtime bytes; the 1.0.20 delta was reconstructed locally, not tested through on-device OTA. All seven public assets matched and the iOS Latest release was unchanged.
+
+三星使用公开 1.0.21 及 Ark Plan `ark-code-latest`，在设备操作等待授权时以 ADB 注入触摸展开悬浮球；后续检查确认当次点击落在接管按钮外，且面板可能已自动收起，因此不能据此判断接管效果。球和面板消失后旧授权卡仍显示；真实手指、操作正在执行时停止及接管后迟到回调尚未验证。测试后无障碍、悬浮权限、设备自动化和目标应用选择已恢复。
+
+## 1.0.20 后源码检查点：浏览器新标签审批与提问回执（2026-11-16，未发版）
+
+浏览器新建标签的人工审批绑定真实任务、浏览器会话和一次性授权，执行前重新核验；首次使用会先准备任务自己的空白会话。已有问题的回答回执按请求、问题及版本更新界面，避免旧回读重新展示已答问题。Android ARM64 两个原生产物实际编译链接成功；Full Kotlin 编译及所选提问、审批测试通过。Swift 行为测试、浏览器实际审批和三星旧提问消失仍未验证；网页点击、输入、滚动及切换或关闭标签页的人工审批仍待实现。跨任务终态与通知竞态未在本批宣称修复。
+
+公开 1.0.20 上尝试主动停止收球验证时，设备观察返回 `device_arm_required`，测试即停止。事后发现测试准备时设备自动化开关没有开启，此次不能判定为应用故障，也未进入浮球停止环节；已恢复临时设置并保留现场。
+
+English: Source adds one-shot approval for creating a browser tab and updates answered questions from matching receipts. Android ARM64 products linked and focused Kotlin checks passed. Browser device behavior, stale-question recovery and explicit Stop remain unverified; the attempted public-build Stop test was invalid because device automation had not been enabled.
+
+## 三星设备浮窗复测（2026-11-16，私有候选）
+
+在源码 `36b98b4f11056787420761f4afee4eea95565343` 的私有诊断包上，使用 Ark Plan `ark-code-latest` 执行计算器任务，期间使用截图观察而未调用会压制无障碍服务的界面树读取。ADB 注入触摸展开悬浮球、允许一次点击后，计算器实际显示 1；任务完成后球不再显示。测试没有验证真实手指，也没有单独验证手动停止动作的瞬间。回到聊天时发现已完成任务仍显示旧的屏幕接管提问，正在修复。旧的浮球故障可能受测试工具干扰，不能归因为应用本身。
+
+三星已恢复公开 1.0.20 主包和其内嵌运行组件，设备端字节摘要均匹配公开包；无障碍、悬浮开关、目标应用及屏幕设置已恢复，测试用临时组件已删除。此项不代表公开包完成了同一设备流程验收。
+
+English: A private Samsung candidate completed a calculator click through the floating approval using ADB-injected touches; the bubble was absent after completion. Physical touch and explicit Stop remain unverified. A stale screen-control question remained after completion and is being fixed. The public 1.0.20 app and runtime were restored and hash-checked on device.
+
+## 1.0.20 后源码检查点：定时审批与设备服务状态（2026-11-16，未发版）
+
+接入明确时间的定时任务创建审批，展示任务、触发、时区和执行绑定；人工授权与运行、调用和授权代次绑定，执行前重新核对。其他定时操作和无法完整确认的参数仍不能通过该审批，既有自动授权路径保持。Android ARM64 原生核心及运行库已实际编译链接，相关 Kotlin 编译与定向检查通过；Swift 行为测试仍受既有邮件测试图编译问题阻断，尚未用三星验证定时结果。
+
+设备设置返回与刷新时重读服务状态；工具发现和结构后端统一核对系统启用、真实连接与客户端。服务断连代次使旧屏幕授权及截图票据失效，截图先私有暂存，再在授权有效时原子发布；ADB 断线立即更新控件状态，旧 grant 不清除新的 claim。授权设置并发写入、暂存清理和相关状态机的 Kotlin 定向检查通过；跨文件系统的截图原子发布会失败，ADB 重连和设备页面状态尚未实测。悬浮球触摸诊断轮未采到事件，仍无法确认点球消失的现场原因。
+
+English: This unreleased checkpoint adds approval for explicitly timed schedule creation and refreshes device-service state with revocable screenshot ownership. Android ARM64 products linked and focused Kotlin checks passed. Swift behavioral tests, Samsung scheduling/device flows and the overlay-touch cause remain unverified.
+
+## 1.0.20 后源码检查点：设备工具可用性发布（2026-11-16，未发版）
+
+修复设备工具可用性状态的并发发布：读取、比较和发布统一串行，停止或环境代次变更后旧发布不能重新开放工具。Full Kotlin 编译及并发定向测试通过。三星诊断任务曾返回 `device.observe` 不在工具目录，系统同时显示无障碍服务已绑定；测试使用的 `uiautomator dump` 可能暂时压制其他无障碍服务，现有证据不足以把报错归因于 App 或此竞态，修复尚未实机验证。诊断日志未采到悬浮球触摸事件；测试已停止并恢复公开版、临时权限及诊断开关。
+
+English: Device-tool availability publications are now serialized and fenced on stop or epoch change. Focused Full Kotlin checks passed; the relationship to the observed Samsung tool-unavailable error remains unverified.
+
+## 1.0.20 后源码检查点：浮窗触摸诊断（2026-11-16，未发版）
+
+为定位三星点悬浮球后消失的问题，增加默认关闭的有限本机事件日志；只记录事件类别、时间和触点数量，不记录坐标、界面内容、包名、设备或任务身份，也不改变用户接管规则。phonecontrol 与 Full 主应用 Kotlin 编译通过；尚未用此源码打包或采集设备事件，暂不能确定实机事件顺序。
+
+English: An opt-in, bounded local timing diagnostic was added for overlay touch investigation. Relevant Kotlin compilation passed; no device event sequence has yet been captured.
+
+## 1.0.20／129 已公开：文件审批与设备等待提示（2026-11-16）
+
+[Android 1.0.20 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v1.0.20)固定源码 `3a98cf86e37ad0f31f241fd5666ce44fc55b61fe`；Full APK SHA-256 `6eb25e50f4d050bf8b5b8e35b12a42876f3c94da717af07f79296bf098388232`。公开七附件匿名下载字节逐项匹配，GitHub 更新列表可发现本版，iOS Latest 保持 `v1.8.25`。1.0.19 的增量包已在本机从精确基底重建到本版完整字节；三星本次使用 ADB 覆盖安装，并未验证本版设备内在线升级或增量失败回退。
+
+三星前一私有候选实际通过文件创建的单次授权、工具读回及内置编辑器打开。本发布包只比该候选增加设备等待状态刷新：三星实际出现带等待标识的悬浮球；随后测试点球并使用 `uiautomator dump`，截图中球已消失、审批未完成。该检查工具可能压制 Floe 的无障碍服务，不能确认消失由点球本身引起；任务按失败即停，现场保留，发布说明已更正。设备操作人工审批当前仅接入可核验的无障碍点击，实际交互尚未闭环；其他设备动作及部分浏览器、定时、远程和特殊命令的人工审批仍不完整。停止后的聊天界面没有浮球，但此次不证明消失的精确时刻。
+
+English: Android 1.0.20 is a published prerelease from the source and APK above. All seven public assets matched; delta reconstruction was verified locally, not as an on-device OTA. A Samsung file-approval flow passed on the preceding candidate. The waiting bubble appeared, but overlay approval did not complete; the UI inspection tool may have interrupted the accessibility service, so the cause remains unconfirmed.
+
+## 1.0.20 私有候选：三星文件审批通过，设备浮窗待修复（2026-11-16）
+
+候选 `candidate129-c03` 固定源码 `25c6109993b7d15b80d094f0d7a80d24793a9eb0`，Full APK SHA-256 `3c93ea4f4800669d2adbc766214ef21d907224e46dd959d5edb9a8d787344dfb`。三星保留 UID 覆盖安装，主应用及运行组件均为 1.0.20／129，安装字节与候选主包和内嵌组件一致。使用 Ark Plan 的 `ark-code-latest`，在新建项目触发 `workspace.createFile`；授权卡显示实际目标路径，单次允许后文件创建成功，`workspace.readFile` 读回 `qa129_ok`，工作区列表和内置文本编辑器打开同一文件。第一次测试因误判权限模式而人为停止，未计为通过。
+
+独立计算器任务中，实际启动应用成功、模型观察到页面并请求点击，但外部页面未出现审批浮窗；测试期间使用的 `uiautomator dump` 可能压制无障碍服务，不能仅凭此次结果归因。回到 Floe 时显示详情未就绪，任务已停止，原画面保留。代码确认审批等待变化未触发设备状态刷新，已补通知及定向测试，尚需不干扰服务的复测。测试期间临时启用的设备权限、悬浮开关、目标应用和电源设置已恢复；失败任务及证据保留。c03 未公开发布。
+
+English: A private 1.0.20 candidate passed Samsung's real file approval, creation, model readback and editor open. The separate calculator click waited without a visible approval overlay; the task was stopped and evidence retained. A missing waiting-state notification was fixed and unit-tested but requires a new candidate and device retest.
+
+## 1.0.19 后源码检查点：扩展文件审批与设备浮窗（2026-11-16，未发版）
+
+工作区审批增加追加、替换、创建目录、移动、复制和删除的实际路径及操作条件。设备人工审批接入现有非抢焦点浮窗及单次请求身份，当前只有无障碍点击在目标可实时核验时可批准；ADB、输入和其他动作尚未接通。目标失效或无法核验时显示失败并允许拒绝，暂停、停止、页面释放和旧事件按任务及浮窗实例处理；提交前再次检查归属，原生 CAS 和设备执行期校验仍是最后边界。
+
+Android ARM64 两个原生产品实际编译、链接成功；Kotlin 生产编译及会话、目标摘要、浮窗登记和提交围栏的定向用例通过。旧回调顺序修正后补跑对应定向用例通过，之前并发修改期间的构建失败和可空类型编译失败均保留。Swift 行为测试仍受已有邮件测试编译问题阻断；尚无本批 APK 或三星验收，浮窗触摸是否触发系统接管仍未知。其他浏览器、定时和远程等人工审批仍有缺口，不能将本记录当作全功能完成。
+
+English: This unreleased checkpoint extends workspace approvals and connects an accessibility-click approval overlay to task ownership and live target checks. ARM64 products linked and focused Kotlin checks passed. The actual APK, Samsung behavior and other approval families remain unverified or incomplete.
+
+## 1.0.19 后源码检查点：文件与本地命令审批（2026-11-16，未发版）
+
+补接工作区创建、写入和补丁的私有审批详情，以及本地 Linux 命令的完整命令、工作目录和执行目标展示。允许决定绑定实际任务、运行代次、工具请求和一次性回执；工作区重新选择、恢复任务或执行目标迁移后重新核对。异步拒绝后可重新检查，不自动重放。终端交接使用按钮展示时的会话身份，避免关闭替代会话；结束或变更时给出提示。
+
+Android ARM64 的 `FloeAndroidCore` 和 `FloeAndroidLinuxAuthority` 已实际编译、链接并导出；相关 Kotlin 编译及会话／宿主定向用例通过。Swift 行为测试仍受既有邮件测试模块编译失败阻断，本批尚未构建新 APK、未在三星验证审批和外测故障。现阶段带标准输入、自定义环境变量或目标不能完整核实的命令不可批准；其他设备动作、浏览器、定时等需要人工审批的工具仍有覆盖缺口，本源码检查点不能作为完整功能候选发布。保留原外测证据，截图只能证明工作区创建授权持续等待，不能确定点击或后端回执的具体原因。
+
+English: This unreleased checkpoint connects private workspace-write and local Linux command approval presentations with run ownership and single-use receipts. ARM64 native products linked and focused Kotlin checks passed; Swift behavior tests, an updated APK and Samsung approval flows remain unverified. Other approval families remain incomplete.
+
+## 1.0.19 后源码检查点：审批身份与展示（2026-11-16，未发版）
+
+Android 独立运行时为审批引入唯一代次，决议在 runtime actor 内匹配完整原请求；快照、修订号及界面接入该身份，旧协议缺字段时拒绝决议。旧事件不能提供新卡范围，结果未知的提交不自动重发。当前仅 `device.act` 的返回、主页和启动应用具备完整展示并允许单次批准；其他需要人工审批的操作可在身份可核对时拒绝、否则停止，尚不能批准。工作区、终端和其他常用操作必须继续补全，**此中间源码不可作为完整功能候选发布**。
+
+Android ARM64 `FloeAndroidCore` 实际编译与链接通过，Full Debug Kotlin 编译通过，会话模块 280 项检查及 App 侧选定的 5 项检查通过。Swift 行为测试尚未执行：SwiftPM 测试图被既有邮件测试模块编译错误阻断，原始诊断保留；上述不代表新协议已在三星实测或旧数据恢复已完整验证。
+
+English: This is an unreleased source checkpoint. Generation-bound approval is connected and compiled, but only three device actions can be approved; ordinary file, shell and other approval coverage is incomplete. Swift behavioral tests remain blocked by unrelated mail-test compilation errors, and the integrated flow has not been tested on the device.
+
+## 1.0.19／128 已公开：停止任务后收起设备控制（2026-11-16）
+
+[Android 1.0.19 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v1.0.19)固定源码 `875803254f2929a8410ec81a25d65a6eee94f77b`。聊天停止立即按运行环境代次和任务归属撤销对应设备控制、收起浮球；原有任务取消继续执行，其他任务的控制不受该通知影响。Full 发布构建和定向编译通过；独立 JVM 场景检查覆盖同任务、旧代次和其他任务。主包 SHA-256 为 `a73f555057b5848cae6c35827a04db1908c42654c0c4aec277b6b74147c7c565`。
+
+三星覆盖安装后，主程序和通过系统安装器升级的 Linux 运行组件均为 128，安装字节与发布主包及其内嵌组件一致，UID 保持。实际模型任务出现悬浮球，停止后画面无球、设备页显示已停止；录像显示浮球在部分空闲时段也会自行收起，因此不能证明消失精确发生在停止点击瞬间。测试时回到 Floe 触发的 `device_window_changed` 留作证据，不作为计算完成。临时权限和设置已恢复。
+
+公开七附件的匿名下载字节和摘要逐一匹配；从 1.0.18 的增量补丁在本机真实重建匹配目标，公开更新列表可发现本版，iOS Latest 保持不变。本版覆盖安装使用 ADB，未重复设备内 1.0.18→1.0.19 在线增量或失败回退验证。授权卡点击后仍可能等待；恢复补丁因原生协议无法可靠关联新旧授权范围而未进入本版，另行处理。
+
+English: Android 1.0.19/code128 is published from the source above. Samsung installed the exact app and matching runtime with UIDs retained; the bubble was observed during a task and absent after Stop, though the recording does not establish the exact disappearance instant. All public asset bytes match; the delta was reconstructed locally, while this version's device OTA and the approval-card issue remain unverified or unresolved.
+
 ## 1.0.18／127 已公开：授权应用发现与增量升级（2026-11-16）
 
 [Android 1.0.18 预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v1.0.18)固定源码 `03b777b3dd791367b83125e1329e829fe0852b3e`；Full APK 为 167247443 字节，SHA-256 `46d4d990022fd8441ab264bc06e6a305b5f63f401724c47010a937c7de3a6703`。本版含更新等待修复和已授权可启动应用的发现与分页；Full 构建成功，未变原生库复用 1.0.17 生产证据。公开七附件包括主包、Office／CAD 组件、对应源码、校验文件及从 1.0.17 的补丁和清单；匿名读取的字节逐项匹配，iOS Latest 未改变。

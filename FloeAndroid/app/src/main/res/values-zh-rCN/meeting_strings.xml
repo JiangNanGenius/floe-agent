@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 会议录音前台通知与持久化默认值。 -->
+    <string name="meeting_default_title">新会议</string>
+    <string name="meeting_recording_name">录音 %1$d</string>
+    <string name="meeting_import_default_name">导入的媒体</string>
+    <string name="meeting_channel_name">会议录音</string>
+    <string name="meeting_channel_description">会议的持续麦克风录音。通知显示当前唯一录音。</string>
+    <string name="meeting_notification_title">会议录音</string>
+    <string name="meeting_notification_starting">正在启动麦克风…</string>
+    <string name="meeting_notification_recording">正在录音 · %1$s</string>
+    <string name="meeting_notification_paused">已暂停 · %1$s</string>
+    <string name="meeting_notification_finishing">正在保存录音…</string>
+    <string name="meeting_notification_stop">停止</string>
+</resources>

@@ -119,6 +119,7 @@
 //     restores the row to `queued`.
 
 import Foundation
+import FloeAgentRuntime
 import FloeCore
 import FloeModels
 import FloePersistence
@@ -526,13 +527,22 @@ extension FacadeRunDomain {
             // transition is the row authority and the launch participates
             // in the shared per-conversation reservation (a lost race
             // refuses here and the row restores).
+            // Presence-based composer provenance recorded with the durable
+            // row (nil for legacy envelopes / old rows). A read failure never
+            // fabricates a selection: the launch still proceeds with honest
+            // absence, exactly like the old lane.
+            let persistedExplicit = try? await bundle.runningInputs
+                .explicitExecutionMode(id: row.id)
+            let explicitExecutionMode = Self.queuedExplicitExecutionMode(
+                persistedExplicit, launchMode: mode)
             let reply = await start(
                 query: RunStartQuery(
                     conversationID: conversationID,
                     goal: row.content,
                     mode: mode,
                     providerID: route.provider.id,
-                    modelID: route.model.id),
+                    modelID: route.model.id,
+                    explicitExecutionMode: explicitExecutionMode),
                 conversationTitle: "",
                 receipt: nil,
                 conversationID: conversationID,
@@ -639,6 +649,21 @@ extension FacadeRunDomain {
         case "goal": return .goal
         default: return nil
         }
+    }
+
+    /// The queued row's recorded composer selection is accepted only when it
+    /// is in the closed vocabulary AND agrees with the launch mode the row's
+    /// `execution_mode` selects. nil (legacy row, unlabeled envelope, stale
+    /// value) stays nil — the drained run records honest absence, never a
+    /// guessed `agent`.
+    static func queuedExplicitExecutionMode(_ stored: String?,
+                                            launchMode: RunLaunchMode) -> String? {
+        guard let stored,
+              let explicit = ExplicitExecutionMode(rawValue: stored),
+              explicit.launchMode.rawValue == launchMode.rawValue else {
+            return nil
+        }
+        return explicit.rawValue
     }
 
     /// iOS `providerAndModel` parity (ConversationCenter:7260): an

@@ -2272,9 +2272,13 @@ public struct ConversationRunSummaryWire: Sendable, Equatable {
     public let providerName: String?
     public let modelName: String?
     public let conversationMode: String?
+    /// The explicit composer selection recorded for this run, or nil when it
+    /// was never recorded (legacy/unlabeled). Never defaulted.
+    public let explicitExecutionMode: String?
 
     public init(runID: UUID, state: String, startedAtRaw: String, endedAtRaw: String?,
-                providerName: String?, modelName: String?, conversationMode: String?) {
+                providerName: String?, modelName: String?, conversationMode: String?,
+                explicitExecutionMode: String? = nil) {
         self.runID = runID
         self.state = state
         self.startedAtRaw = startedAtRaw
@@ -2282,6 +2286,7 @@ public struct ConversationRunSummaryWire: Sendable, Equatable {
         self.providerName = providerName
         self.modelName = modelName
         self.conversationMode = conversationMode
+        self.explicitExecutionMode = explicitExecutionMode
     }
 
     /// `goal` text is deliberately NOT part of the snapshot run summaries:
@@ -2298,6 +2303,7 @@ public struct ConversationRunSummaryWire: Sendable, Equatable {
         object["providerName"] = providerName ?? NSNull()
         object["modelName"] = modelName ?? NSNull()
         object["conversationMode"] = conversationMode ?? NSNull()
+        object["explicitExecutionMode"] = explicitExecutionMode ?? NSNull()
         return object
     }
 }
@@ -3197,11 +3203,13 @@ public actor FacadeConversationDomain {
             let startedAtRaw: String; let endedAtRaw: String?
             let providerName: String?; let modelName: String?
             let conversationMode: String?
+            let explicitExecutionMode: String?
         }
         let (runRows, runsTotal): ([RunRow], Int) = try await database.reader { db in
             let rows = try Row.fetchAll(db, sql: """
                 SELECT id, state, started_at, ended_at,
-                       provider_name_snapshot, model_name_snapshot, conversation_mode
+                       provider_name_snapshot, model_name_snapshot, conversation_mode,
+                       explicit_execution_mode
                 FROM runs
                 WHERE conversation_id = ?
                 ORDER BY started_at DESC, id
@@ -3221,7 +3229,8 @@ public actor FacadeConversationDomain {
                               endedAtRaw: row["ended_at"],
                               providerName: row["provider_name_snapshot"],
                               modelName: row["model_name_snapshot"],
-                              conversationMode: row["conversation_mode"])
+                              conversationMode: row["conversation_mode"],
+                              explicitExecutionMode: row["explicit_execution_mode"])
             }
             return (mapped, total)
         }
@@ -3231,7 +3240,8 @@ public actor FacadeConversationDomain {
                                        endedAtRaw: row.endedAtRaw,
                                        providerName: row.providerName,
                                        modelName: row.modelName,
-                                       conversationMode: row.conversationMode)
+                                       conversationMode: row.conversationMode,
+                                       explicitExecutionMode: row.explicitExecutionMode)
         }
 
         // Pending inputs: the ORIGINAL predicate/order via the public store

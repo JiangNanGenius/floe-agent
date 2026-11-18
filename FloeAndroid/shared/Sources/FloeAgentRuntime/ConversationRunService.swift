@@ -101,6 +101,10 @@ public actor ConversationRunService {
     /// Immutable execution contract copied into the durable run and live UI
     /// projection. Recovery must never infer this from mutable conversation UI.
     public nonisolated let conversationMode: ConversationMode
+    /// The App-composer selection this run was launched with, when recorded.
+    /// Provenance only — the tool ceiling/approvals are already frozen in the
+    /// runtime configuration. Nil is honest absence (legacy/ambiguous).
+    public nonisolated let explicitExecutionMode: ExplicitExecutionMode?
     /// Push channel for UI projections. Durable writes remain coalesced, but
     /// token/reasoning display no longer polls actor snapshots at 20 Hz.
     public nonisolated let eventChannel = HarnessEventChannel(bufferLimit: 512)
@@ -318,6 +322,7 @@ public actor ConversationRunService {
         self.runningInputStore = runningInputStore
         self.intelligenceStore = intelligenceStore
         self.conversationMode = configuration.conversationMode
+        self.explicitExecutionMode = configuration.explicitExecutionMode
         self.runContext = runContext
         self.conversationHistory = conversationHistory
         self.currentUserImages = currentUserImages
@@ -505,7 +510,8 @@ public actor ConversationRunService {
             state: AgentState.preparing(AgentState.PreparingInfo(goal: goal)).name,
             goal: goal,
             startedAt: Date(),
-            conversationMode: conversationMode.rawValue
+            conversationMode: conversationMode.rawValue,
+            explicitExecutionMode: explicitExecutionMode?.rawValue
         ))
         let userMessageID = UUID()
         try await conversationStore.appendMessage(PersistedMessage(
@@ -605,8 +611,11 @@ public actor ConversationRunService {
     }
 
     /// Cancels the run. The runtime owns the terminal transition; persistence
-    /// of the checkpoint happens via the runtime's checkpoint store.
-    public func cancel() async {
+    /// of the checkpoint happens via the runtime's checkpoint store. The
+    /// returned value is the authoritative local fact `run.cancel` uses: only
+    /// `.stopped` means THIS call really produced the stopped checkpoint.
+    @discardableResult
+    public func cancel() async -> FloeAgentRuntime.AgentCancelSettlement {
         await runtime.cancel()
     }
 
@@ -658,6 +667,14 @@ public actor ConversationRunService {
     @discardableResult
     public func resolveApproval(_ decision: ApprovalDecision, for callID: String) async -> Bool {
         await runtime.resolveApproval(decision, for: callID)
+    }
+
+    /// Consumes only the exact request captured by the caller. The runtime
+    /// actor performs matching and gate consumption without an intervening await.
+    @discardableResult
+    public func resolveApproval(_ decision: ApprovalDecision,
+                                matching expected: AgentState.WaitingApproval) async -> Bool {
+        await runtime.resolveApproval(decision, matching: expected)
     }
 
     /// Applies a composer permission change to this live run. If the run is

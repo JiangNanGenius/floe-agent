@@ -301,4 +301,6 @@
     <string name="device_automation_viewer_visible">Viewer window shown</string>
     <string name="device_automation_viewer_not_visible">Viewer window not observed</string>
     <string name="device_automation_viewer_unverified">Viewer outcome not verified</string>
+    <string name="device_access_state_inconsistent">System and connection status differ</string>
+    <string name="device_access_accessibility_inconsistent_hint">Refresh, or turn the service off and on again in Android settings.</string>
 </resources>

@@ -21,9 +21,11 @@
         </intent>
     </queries>
     <uses-permission android:name="android.permission.INTERNET" />
-    <!-- C03 short interactive dictation only; long files use a cloud/Linux
-         transcription route and never this microphone permission. -->
+    <!-- C03 short interactive dictation and the user-started meeting recorder.
+         Long imported files never use the microphone. Meeting capture runs as
+         a microphone-typed foreground service started from the visible UI. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <!-- User-started, bounded network monitoring; never a background keepalive. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
@@ -180,6 +182,17 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="user-initiated local packet capture VPN that forwards ordinary traffic" />
         </service>
+        <!-- Independent meeting recorder: one non-exported microphone owner,
+             started only from the visible meeting UI after RECORD_AUDIO is
+             granted. It keeps capturing while the app is backgrounded; swipe-
+             away does not silently restart it (START_NOT_STICKY) and crash
+             recovery keeps an unfinalized .part file without claiming it is
+             playable. -->
+        <service
+            android:name=".host.meeting.MeetingRecordingService"
+            android:exported="false"
+            android:foregroundServiceType="microphone"
+            android:stopWithTask="false" />
         <!-- G09-R2 bounded cloud-generation dataSync owner. Non-exported,
              App-owned, started only for an already persisted native job with
              an opaque in-process claim token; stopWithTask prevents swipe-away

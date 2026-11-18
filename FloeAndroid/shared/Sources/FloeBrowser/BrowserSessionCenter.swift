@@ -348,6 +348,22 @@ public actor BrowserSessionCenter {
         sessions[conversationID]
     }
 
+    /// Read-only: never creates or reactivates a released browser.
+    public func existingSession(for owner: BrowserOwnerID) -> BrowserTaskSession? {
+        guard sessionOwnerBindings[owner.taskID] == owner, !isReleaseFenced(owner.taskID) else { return nil }
+        return sessions[owner.taskID]
+    }
+
+    /// Prepare the ordinary blank browser session when showing the first
+    /// approval. Revalidation must be read-only and must never recreate a
+    /// session discarded while the user was deciding.
+    public func approvalSession(for owner: BrowserOwnerID, preparingIfNeeded: Bool) async throws -> BrowserTaskSession? {
+        if !preparingIfNeeded { return existingSession(for: owner) }
+        let session = try await taskSession(for: owner)
+        guard existingSession(for: owner) === session else { return nil }
+        return session
+    }
+
     public var activeTaskSessionCount: Int { sessions.count }
 
     public func handoff(for conversationID: UUID) -> BrowserHandoff? {
@@ -581,7 +597,22 @@ public actor BrowserSessionCenter {
         cancellation: CancellationToken? = nil
     ) async -> BrowserResult {
         do {
-            let session = try await taskSession(for: owner)
+            let session: BrowserTaskSession
+            if let proof = command.tabApprovalProof {
+                // A reviewed proof belongs to the exact admitted owner and
+                // session it was captured from. It may never be replayed
+                // against another task's browser, and an approval-bound
+                // command may never create or reactivate a released session.
+                guard proof.owner == owner, let existing = existingSession(for: owner),
+                      await existing.sessionID == proof.sessionID else {
+                    return BrowserResult(requestID: command.requestID, status: .stale,
+                        message: "Browser session is no longer available",
+                        error: BrowserFailure(code: "approval-changed", message: "Browser session is no longer available"))
+                }
+                session = existing
+            } else {
+                session = try await taskSession(for: owner)
+            }
             let result = await session.execute(command, cancellation: cancellation)
             emitProjection()
             return result

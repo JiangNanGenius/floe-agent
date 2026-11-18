@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="space_title">空间</string>
+    <string name="space_subtitle">手记、项目文件与安卓设备功能，集中在一个入口。</string>
+    <string name="space_section_overview">概览</string>
+    <string name="space_section_notes">手记</string>
+    <string name="space_section_files">文件</string>
+    <string name="space_section_toolbox">工具箱</string>
+    <string name="space_quick_access">快速入口</string>
+    <string name="space_notes_caption">写作、绘画并保存文档。</string>
+    <string name="space_files_caption">查看项目及其任务文件。</string>
+    <string name="space_toolbox_caption">安卓设备功能与连接。</string>
+    <string name="space_new_task_caption">使用当前模型开始一个任务。</string>
+    <string name="space_pick_document">打开文档</string>
+    <string name="space_pick_document_caption">使用系统文件选择器打开 Word、Excel、PowerPoint 或 PDF。</string>
+    <string name="space_meetings">会议</string>
+    <string name="space_meetings_caption">录音、转写与会议摘要。</string>
+    <string name="space_project_sources">项目来源</string>
+    <string name="space_project_sources_caption">每个项目统一管理其任务工作区。</string>
+    <string name="space_no_projects_title">还没有项目</string>
+    <string name="space_no_projects_description">新建项目后，任务文件会保存在其中。</string>
+    <string name="space_projects_loading">正在载入项目…</string>
+    <string name="space_projects_unavailable">项目暂不可用。请重新连接运行环境后重试。</string>
+    <string name="space_show_all_projects">查看全部项目</string>
+    <string name="space_phone">手机</string>
+    <string name="space_phone_caption">管理本机的授权、配对与控制。</string>
+    <string name="space_device_tools">设备工具</string>
+    <string name="space_tool_devices">设备通信</string>
+    <string name="space_tool_devices_caption">TCP、Telnet、蓝牙 LE 与 USB 串口连接。</string>
+    <string name="space_tool_system_services">系统服务</string>
+    <string name="space_tool_system_services_caption">定位、联系人、健康与系统权限。</string>
+    <string name="space_tool_network">网络</string>
+    <string name="space_tool_network_caption">实时连接、抓包与诊断。</string>
+    <string name="space_tool_remote">远程主机</string>
+    <string name="space_tool_remote_caption">已保存的主机与远程桌面会话。</string>
+</resources>

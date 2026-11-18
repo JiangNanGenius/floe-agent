@@ -59,6 +59,8 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
@@ -239,6 +241,8 @@ private fun FloeShellContent(
     var settingsVisible by rememberSaveable { mutableStateOf(false) }
     var settingsSectionKey by rememberSaveable { mutableStateOf("") }
     var previewVisible by rememberSaveable { mutableStateOf(false) }
+    var meetingsVisible by rememberSaveable { mutableStateOf(false) }
+    var spaceFilesVisible by rememberSaveable { mutableStateOf(false) }
     var inspectorRoute by rememberSaveable { mutableStateOf<String?>(null) }
     fun dismissInspector() {
         application?.componentDocumentReturns?.clear()
@@ -283,8 +287,8 @@ private fun FloeShellContent(
     // and every launch behavior stay exactly as they are; the Settings Dialog
     // overlays the still-composed chat without clearing privacyVisibleHolder,
     // which is precisely why this separate fact exists.
-    androidx.compose.runtime.LaunchedEffect(settingsVisible, previewVisible, drawerOpen) {
-        runtimeHost?.uiModalSurfaceOwned = settingsVisible || previewVisible || drawerOpen
+    androidx.compose.runtime.LaunchedEffect(settingsVisible, previewVisible, drawerOpen, meetingsVisible, spaceFilesVisible) {
+        runtimeHost?.uiModalSurfaceOwned = settingsVisible || previewVisible || drawerOpen || meetingsVisible || spaceFilesVisible
     }
 
     // The actual viewer claim reads these mutable state delegates on the
@@ -294,7 +298,7 @@ private fun FloeShellContent(
     androidx.compose.runtime.SideEffect {
         officePreviews?.setAiLaunchAdmission(officeAiAdmissionOwner) { taskId ->
             taskId != null && application?.isActivityInForeground() == true &&
-                !settingsVisible && !previewVisible && !drawerOpen &&
+                !settingsVisible && !previewVisible && !drawerOpen && !meetingsVisible && !spaceFilesVisible &&
                 runtimeHost?.conversations?.currentVisibleConversationId() == taskId
         }
     }
@@ -747,7 +751,7 @@ private fun FloeShellContent(
         // temporary one, whose id never reaches the persisted key; the
         // decision therefore reads the live selection, not the saved key.
         val baseNavCanRun = !persistentSidebar && route == null && !drawerOpen &&
-            !settingsVisible && !previewVisible &&
+            !settingsVisible && !previewVisible && !meetingsVisible && !spaceFilesVisible &&
             selection.key != SidebarSelection.Workbench(WorkbenchSelection.NEW_TASK).key
         ImeFirstBackHandler(enabled = baseNavCanRun) {
             // System Back at a conversation surface IS an actual navigation
@@ -1110,6 +1114,53 @@ private fun FloeShellContent(
             }
         }
 
+        // ONE owner for the existing Office system-picker entry: the sidebar
+        // folder button and the Space Files row share the exact same
+        // temporary-chat fence, generation invalidation and picker request.
+        val openDocument: (() -> Unit)? = officePreviews?.let { controller ->
+            {
+                val navigation = ++officeNavigationGeneration
+                application?.componentDocumentReturns?.clear()
+                drawerOpen = false
+                scope.launch {
+                    val temporary = runtimeHost?.conversations?.activeTemporarySession()
+                    if (runtimeHost != null && temporary != null) {
+                        // This is explicit navigation to a local document,
+                        // not an expanded temporary-chat tool ceiling or a
+                        // view reconstruction.
+                        runtimeHost.conversations.tempFence.beginEnd(temporary)
+                        if (!runtimeHost.conversations.tempFence.awaitAdmission(temporary) ||
+                            navigation != officeNavigationGeneration ||
+                            runtimeHost.conversations.activeTemporarySession() != null) return@launch
+                        val home = SidebarSelection.Workbench(WorkbenchSelection.NEW_TASK)
+                        runtimeHost.home.onNavigation(home)
+                        commitVisibleSelection(home)
+                    }
+                    if (navigation != officeNavigationGeneration) return@launch
+                    inspectorRoute = null
+                    controller.requestProviderPick()
+                }
+                Unit
+            }
+        }
+
+        val openMeetings: () -> Unit = {
+            dismissIme()
+            drawerOpen = false
+            meetingsVisible = true
+        }
+
+        // PHONE SEAM: reuse the REAL G08 settings section (its exact Compose
+        // content and authorization callbacks) only while the device-access
+        // host has attached it. `sections()` returns an empty list on Play
+        // and before the full host is wired, so Space has no Phone workspace
+        // in those states instead of substituting BLE/USB communication or a
+        // generic settings card.
+        val phoneAccessSection =
+            com.floe.android.host.settings.DistributionSettingsFeature
+                .sections()
+                .firstOrNull { it.key == FLOE_PHONE_ACCESS_SECTION_KEY }
+
         val sidebarBody: @Composable (Boolean) -> Unit = { inDrawer ->
             FloeSidebar(
                 selection = selection,
@@ -1130,32 +1181,7 @@ private fun FloeShellContent(
                     { sidebarCollapsed = true }
                 } else null,
                 runtimeHost = runtimeHost,
-                onOpenDocument = officePreviews?.let { controller ->
-                    {
-                        val navigation = ++officeNavigationGeneration
-                        application?.componentDocumentReturns?.clear()
-                        drawerOpen = false
-                        scope.launch {
-                            val temporary = runtimeHost?.conversations?.activeTemporarySession()
-                            if (runtimeHost != null && temporary != null) {
-                                // This is explicit navigation to a local
-                                // document, not an expanded temporary-chat
-                                // tool ceiling or a view reconstruction.
-                                runtimeHost.conversations.tempFence.beginEnd(temporary)
-                                if (!runtimeHost.conversations.tempFence.awaitAdmission(temporary) ||
-                                    navigation != officeNavigationGeneration ||
-                                    runtimeHost.conversations.activeTemporarySession() != null) return@launch
-                                val home = SidebarSelection.Workbench(WorkbenchSelection.NEW_TASK)
-                                runtimeHost.home.onNavigation(home)
-                                commitVisibleSelection(home)
-                            }
-                            if (navigation != officeNavigationGeneration) return@launch
-                            inspectorRoute = null
-                            controller.requestProviderPick()
-                        }
-                        Unit
-                    }
-                },
+                onOpenDocument = openDocument,
             )
         }
 
@@ -1290,6 +1316,18 @@ private fun FloeShellContent(
                     onTaskCenterSchedulesHandled = {
                         taskCenterSchedulesToken = 0
                     },
+                    // Space never commits a local route: every project,
+                    // device and network row travels the shell's single
+                    // serial reducer (including the temporary-chat fence).
+                    onNavigate = select,
+                    onOpenDocument = openDocument,
+                    onOpenFolderManager = {
+                        dismissIme()
+                        drawerOpen = false
+                        spaceFilesVisible = true
+                    },
+                    onOpenMeetings = openMeetings,
+                    phoneAccessSection = phoneAccessSection,
                 )
             }
         }
@@ -1502,6 +1540,40 @@ private fun FloeShellContent(
                     ),
         )
 
+        if (spaceFilesVisible) {
+            Dialog(
+                onDismissRequest = {},
+                properties = DialogProperties(
+                    dismissOnBackPress = false,
+                    dismissOnClickOutside = false,
+                    usePlatformDefaultWidth = false,
+                ),
+            ) {
+                SpaceFilesDestination(onClose = { spaceFilesVisible = false })
+            }
+        }
+
+        if (meetingsVisible) {
+            // Exit is owned by MeetingDestination so unsaved notes and an
+            // active recording get their explicit leave confirmation.
+            Dialog(
+                onDismissRequest = {},
+                properties = DialogProperties(
+                    dismissOnBackPress = false,
+                    dismissOnClickOutside = false,
+                    usePlatformDefaultWidth = false,
+                ),
+            ) {
+                MeetingDestination(
+                    compact = !twoColumn,
+                    showSidebarToggle = false,
+                    onExpandSidebar = {},
+                    onOpenDrawer = {},
+                    onExit = { meetingsVisible = false },
+                )
+            }
+        }
+
         // G05-R3 Alpha14: one self-update surface (full channel only; the
         // Play flavour object renders nothing and opens no dialog).
         com.floe.android.host.update.AppUpdateFeature.DialogHost()
@@ -1534,9 +1606,11 @@ internal val SidebarSelection.key: String
         is SidebarSelection.More -> "m:${destination.name}"
         is SidebarSelection.Workspace -> "p:$workspaceId"
         is SidebarSelection.Conversation -> "c:$conversationId"
+        is SidebarSelection.Space -> "s:space"
     }
 
 internal fun selectionFromKey(key: String): SidebarSelection = when {
+    key == "s:space" -> SidebarSelection.Space
     key.startsWith("w:") -> SidebarSelection.Workbench(WorkbenchSelection.valueOf(key.removePrefix("w:")))
     key.startsWith("m:") -> SidebarSelection.More(MoreDestination.valueOf(key.removePrefix("m:")))
     key.startsWith("p:") -> SidebarSelection.Workspace(key.removePrefix("p:"))

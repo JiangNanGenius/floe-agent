@@ -166,6 +166,20 @@ data class PhoneControlBounds(
     fun contains(x: Int, y: Int): Boolean = x in left until right && y in top until bottom
 }
 
+/** Current, safely revalidated presentation data, never an action grant. */
+data class PhoneControlApprovalTarget(
+    val packageName: String,
+    val className: String,
+    val bounds: PhoneControlBounds,
+    val label: String,
+    val windowId: Int,
+    val displayId: Int,
+    val fenceGeneration: Long,
+    val pageGeneration: Long,
+) {
+    override fun toString(): String = "PhoneControlApprovalTarget(redacted)"
+}
+
 /**
  * Closed subset of actions the PLATFORM declares for one node
  * (`AccessibilityNodeInfo.actionList`). This is real metadata read from the
@@ -651,4 +665,6 @@ data class PhoneControlStatus(
     val screenshotSupport: PhoneControlScreenshotSupport,
     val automationFinishing: Boolean = false,
     val relockReceipt: PhoneRelockReceipt? = null,
+    /** Monotonic, process-local service teardown/replacement fence. */
+    val serviceTeardownGeneration: Long = 0,
 )

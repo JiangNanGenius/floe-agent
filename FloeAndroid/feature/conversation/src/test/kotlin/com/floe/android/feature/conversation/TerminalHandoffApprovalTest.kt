@@ -61,6 +61,11 @@ class TerminalHandoffApprovalTest {
         isSideEffecting = true,
         requestedAtLabel = "10:00",
         evidenceLines = listOf("command: pwd"),
+        requestGeneration = "11111111-1111-4111-8111-111111111111",
+        approvalRevision = "generation:11111111-1111-4111-8111-111111111111",
+        descriptorIdentity = "a".repeat(64),
+        identityVerified = true,
+        scopeVerified = true,
     )
 
     private fun request(host: RecordingHost) =

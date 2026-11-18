@@ -19,6 +19,9 @@ internal object PhoneControlRuntime {
     @Volatile private var currentService: PhoneControlAccessibilityService? = null
     @Volatile private var enabledHint = false
     @Volatile private var detachedBlocker: PhoneControlBlocker? = null
+    // Incremented under gate before an attached service is detached or replaced.
+    // Unlike StateFlow events this survives an immediately following attach.
+    @Volatile private var teardownGeneration = 0L
     @Volatile private var lastFenceGeneration = 0L
     @Volatile private var lastPageGeneration = 0L
     @Volatile private var lastRelockReceipt: PhoneRelockReceipt? = null
@@ -50,6 +53,7 @@ internal object PhoneControlRuntime {
         val newSession = PhoneControlSession(service)
         val previous = synchronized(gate) {
             val old = current
+            if (old != null) teardownGeneration++
             current = newSession
             currentService = service
             enabledHint = true
@@ -67,6 +71,7 @@ internal object PhoneControlRuntime {
         val removed: PhoneControlSession?
         synchronized(gate) {
             if (currentService !== service) return
+            teardownGeneration++
             val state = current?.fence?.state()
             if (state != null) {
                 lastFenceGeneration = state.fenceGeneration
@@ -86,8 +91,15 @@ internal object PhoneControlRuntime {
 
     internal fun session(): PhoneControlSession? = current
 
+    internal fun teardownGeneration(): Long = teardownGeneration
+
+    /** Linearizes a short artifact commit against service detach/replacement. */
+    internal fun <T> withTeardownFence(expected: Long, action: () -> T): T? = synchronized(gate) {
+        if (teardownGeneration != expected) null else action()
+    }
+
     internal fun snapshot(): PhoneControlStatus {
-        val session = current
+        val (session, generation) = synchronized(gate) { current to teardownGeneration }
         val state = session?.fence?.state()
         return PhoneControlStatus(
             connected = session != null,
@@ -99,6 +111,7 @@ internal object PhoneControlRuntime {
             screenshotSupport = PhoneControlPolicy.screenshotSupport(Build.VERSION.SDK_INT),
             automationFinishing = session?.automationFinishing == true,
             relockReceipt = session?.relockReceipt ?: lastRelockReceipt,
+            serviceTeardownGeneration = generation,
         )
     }
 

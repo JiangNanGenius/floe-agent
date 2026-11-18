@@ -156,6 +156,11 @@ data class ApprovalDecisionRequest(
      * window or a card tier, and never present on a Deny. Null = the ordinary
      * decision path, byte-identical to before. */
     val terminalHandoff: TerminalHandoffConsentUi? = null,
+    /** The exact immutable card and revision shown when the human chose. */
+    val expectedCard: ApprovalCardUi? = null,
+    val presentationLease: String? = null,
+    val presentationToken: String? = null,
+    val canonicalTargetDigest: String? = null,
 ) {
     override fun toString(): String =
         "ApprovalDecisionRequest(approval=$approvalId, run=$runId, decision=$decision" +
@@ -440,6 +445,27 @@ interface ConversationUiCallbacks {
     /** ⇄ center.resolve(approval, decision:) for the EXACT run+call identity.
      * True only when the host accepted the decision for that identity. */
     fun resolveApproval(request: ApprovalDecisionRequest): Boolean
+
+    /** Inform the device overlay about this holder's exact pending device card. */
+    fun onDeviceApprovalWaiting(holder: ConversationFlowHolder, session: ConversationSessionToken, card: ApprovalCardUi?) = Unit
+
+    /**
+     * Synchronous, host-authored narrowing: this exact device approval may no
+     * longer be decided (the user stopped/took over its run, or its native
+     * epoch/generation is gone). It grants nothing and never fabricates a
+     * decision; hosts that do not own device control return false.
+     */
+    fun deviceApprovalRevoked(card: ApprovalCardUi): Boolean = false
+
+    /** Read a private presentation only for a visible, exact approval card. */
+    fun requestApprovalPresentation(session: ConversationSessionToken, card: ApprovalCardUi, lease: String): Boolean = false
+    /** Load the complete private shell input for this visible, exact lease. */
+    fun requestPrivateShellDetails(session: ConversationSessionToken, card: ApprovalCardUi, lease: String): Boolean = false
+    /** True only while a private visual approval still belongs to the live native root. */
+    fun browserVisualApprovalEpochCurrent(epoch: Long): Boolean = false
+
+    /** Read-only refresh of the selected run's authoritative approval. */
+    fun refreshApproval(session: ConversationSessionToken, runId: String): Boolean = false
 
     /**
      * The LIVE owned interactive-terminal capture for the historical

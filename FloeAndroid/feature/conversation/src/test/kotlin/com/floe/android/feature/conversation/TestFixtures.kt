@@ -28,6 +28,7 @@ class RecordingHost : ConversationUiCallbacks {
     var markdownBackendAvailable = true
     var selectModelPersisted = true
     var exportAccepted = true
+    var cancelRunAccepted = true
 
     /** C04 queue-body lane: default false = "the host refused the bounded
      * body read" (the interface default); calls are recorded so tests can
@@ -66,7 +67,7 @@ class RecordingHost : ConversationUiCallbacks {
     }
 
     override fun cancelRun(session: ConversationSessionToken, runId: String): Boolean {
-        record("cancelRun", session, runId); return true
+        record("cancelRun", session, runId); return cancelRunAccepted
     }
 
     override fun retryRun(session: ConversationSessionToken, runId: String): Boolean {
@@ -110,9 +111,32 @@ class RecordingHost : ConversationUiCallbacks {
         record("reorderPendingInputs", session, orderedInputIds); return true
     }
 
+    var privatePresentationAccepted = false
+    override fun refreshApproval(session: ConversationSessionToken, runId: String): Boolean {
+        record("refreshApproval", session, runId)
+        return true
+    }
+    var privateShellReadAccepted = false
+    var privateRootEpoch: Long? = null
+    override fun browserVisualApprovalEpochCurrent(epoch: Long): Boolean = privateRootEpoch == epoch
+    override fun requestPrivateShellDetails(session: ConversationSessionToken, card: ApprovalCardUi, lease: String): Boolean {
+        record("requestPrivateShellDetails", session, card, lease)
+        return privateShellReadAccepted
+    }
+    override fun requestApprovalPresentation(session: ConversationSessionToken, card: ApprovalCardUi, lease: String): Boolean {
+        record("requestApprovalPresentation", session, card, lease)
+        return privatePresentationAccepted
+    }
+
     override fun resolveApproval(request: ApprovalDecisionRequest): Boolean {
         record("resolveApproval", request); return true
     }
+
+    /** Exact card keys the fake host reports as retired by a run Stop. */
+    val deviceRevokedCards = mutableSetOf<String>()
+
+    override fun deviceApprovalRevoked(card: ApprovalCardUi): Boolean =
+        record("deviceApprovalRevoked", card.key).let { card.key in deviceRevokedCards }
 
     /** What the host would answer for the on-demand single-slot capture. Null
      * by default: a live TTY alone is not a blocker under the separated pool. */
@@ -377,6 +401,11 @@ fun approvalCard(
     isSideEffecting = true,
     requestedAtLabel = "10:00",
     evidenceLines = listOf("path: notes.md"),
+    requestGeneration = "11111111-1111-4111-8111-111111111111",
+    approvalRevision = "generation:11111111-1111-4111-8111-111111111111",
+    descriptorIdentity = "a".repeat(64),
+    identityVerified = true,
+    scopeVerified = true,
 )
 
 fun pendingInput(
@@ -416,7 +445,8 @@ fun threadState(
     models: List<ModelOptionUi> = listOf(model()),
     // A RUNNING projection always owns a displayed run (host truth); an idle
     // one without rows honestly has none.
-    selectedRunId: String? = if (rows.isEmpty() && !isRunning) null else "run-1",
+    selectedRunId: String? = pendingApprovals.firstOrNull()?.runId
+        ?: if (rows.isEmpty() && !isRunning) null else "run-1",
     liveStateName: String? = null,
     runStateName: String = "idle",
     usage: UsageUi? = null,

@@ -443,8 +443,8 @@ public actor ConversationPromoter {
                         INSERT INTO runs (
                             id, conversation_id, state, goal, started_at, ended_at, goal_id,
                             provider_id, model_id, provider_name_snapshot, model_name_snapshot,
-                            conversation_mode
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            conversation_mode, explicit_execution_mode
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(id) DO UPDATE SET
                             state = excluded.state,
                             goal = excluded.goal,
@@ -462,7 +462,8 @@ public actor ConversationPromoter {
                         run.modelID?.uuidString,
                         run.providerName,
                         run.modelName,
-                        run.conversationMode
+                        run.conversationMode,
+                        run.explicitExecutionMode
                     ]
                 )
             }

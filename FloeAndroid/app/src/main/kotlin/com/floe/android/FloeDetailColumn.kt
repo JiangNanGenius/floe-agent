@@ -78,6 +78,20 @@ fun FloeDetailColumn(
     /** Clears the one-shot signal after the Task Center really consumed it,
      * so re-entering Task Center later does not reopen schedules. */
     onTaskCenterSchedulesHandled: () -> Unit = {},
+    /** The shell's single serial route reducer. Space rows use it for every
+     * project / device / network destination instead of committing a local
+     * route that bypasses the temporary-chat fence. */
+    onNavigate: (SidebarSelection) -> Unit = {},
+    /** Existing Office system-picker entry, owned by the shell. Null keeps
+     * the Space row hidden (fixtures or a build without the preview host). */
+    onOpenDocument: (() -> Unit)? = null,
+    onOpenFolderManager: (() -> Unit)? = null,
+    /** Optional meeting entry supplied only once the meeting service has a
+     * real surface. Null keeps the entry invisible. */
+    onOpenMeetings: (() -> Unit)? = null,
+    /** The REAL wired phone-access settings section. Its own Compose content
+     * becomes the independent Phone Space workspace; null removes it. */
+    phoneAccessSection: FloeSettingsExternalSection? = null,
 ) {
     androidx.compose.runtime.LaunchedEffect(selection, runtimeHost) {
         if (selection == SidebarSelection.More(MoreDestination.NETWORK)) runtimeHost?.networkWorkbench?.enter()
@@ -175,6 +189,19 @@ fun FloeDetailColumn(
                 MoreDestination.SKILLS -> FloeTaskCenterPage(showSidebarToggle, onExpandSidebar, onOpenDrawer, compact)
                 else -> FloePlaceholderPage(stringResource(R.string.app_name), FloeIcons.InfoCircle, stringResource(R.string.workspace_later_update), showSidebarToggle, onExpandSidebar, onOpenDrawer, compact)
             }
+            is SidebarSelection.Space -> FloeSpaceDestination(
+                showSidebarToggle = showSidebarToggle,
+                onExpandSidebar = onExpandSidebar,
+                onOpenDrawer = onOpenDrawer,
+                compact = compact,
+                runtimeHost = runtimeHost,
+                onNavigate = onNavigate,
+                onOpenSettingsSection = onOpenSettingsSection,
+                onOpenDocument = onOpenDocument,
+                onOpenFolderManager = onOpenFolderManager,
+                onOpenMeetings = onOpenMeetings,
+                phoneAccessSection = phoneAccessSection,
+            )
             is SidebarSelection.Workspace -> ProjectDetailPage(
                 projectId = selection.workspaceId,
                 showSidebarToggle = showSidebarToggle,

@@ -46,6 +46,28 @@ class PhoneControlClient internal constructor(
 
     val isClosed: Boolean get() = closed.get()
 
+    /** Read-only: neither claims the session nor creates an observation. */
+    suspend fun approvalClickTarget(
+        principal: PhoneControlPrincipal,
+        observationId: String,
+        nodeRef: String,
+        stillCurrent: () -> Boolean,
+    ): PhoneControlApprovalTarget? {
+        if (observationId.isBlank() || observationId.length > 64 ||
+            nodeRef.isBlank() || nodeRef.length > 128 || !stillCurrent()) return null
+        val grant = (authorization(principal, rememberOwner = false) as? PhoneControlResult.Ok)?.value
+            ?: return null
+        val result = dispatch<PhoneControlApprovalTarget> { session, _, finish ->
+            val before = (authorization(principal, rememberOwner = false) as? PhoneControlResult.Ok)?.value
+            val target = if (before == grant && stillCurrent())
+                session.approvalClickTarget(principal, grant, observationId, nodeRef) else null
+            val after = (authorization(principal, rememberOwner = false) as? PhoneControlResult.Ok)?.value
+            if (target != null && after == grant && stillCurrent()) finish(PhoneControlResult.Ok(target))
+            else finish(PhoneControlResult.Unavailable(PhoneControlUnavailable.STRUCTURED_UI_NOT_READY))
+        }
+        return (result as? PhoneControlResult.Ok)?.value?.takeIf { stillCurrent() }
+    }
+
     suspend fun observe(
         principal: PhoneControlPrincipal,
         request: PhoneControlObserveRequest = PhoneControlObserveRequest(),
@@ -352,6 +374,7 @@ class PhoneControlClient internal constructor(
 
     private fun authorization(
         principal: PhoneControlPrincipal,
+        rememberOwner: Boolean = true,
     ): PhoneControlResult<PhoneControlGrant> {
         if (closed.get()) return PhoneControlResult.Denied(PhoneControlDenial.CLIENT_CLOSED)
         PhoneControlPolicy.principalDenial(principal)?.let {
@@ -368,7 +391,7 @@ class PhoneControlClient internal constructor(
         PhoneControlPolicy.grantDenial(principal, grant)?.let {
             return PhoneControlResult.Denied(it)
         }
-        lastOwner = principal.owner
+        if (rememberOwner) lastOwner = principal.owner
         return PhoneControlResult.Ok(grant)
     }
 

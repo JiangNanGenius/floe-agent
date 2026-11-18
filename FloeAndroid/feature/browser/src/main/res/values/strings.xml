@@ -17,6 +17,10 @@
     <string name="browser_continue_task">Continue task</string>
     <string name="browser_return_control_cd">Return control</string>
     <string name="browser_new_tab">New tab</string>
+    <string name="browser_tab_position">Tab %1$d</string>
+    <string name="browser_tabs_unavailable">Tab list unavailable</string>
+    <string name="browser_tabs_reopen">Close the browser and reopen it to try again. If you are in control, return control first.</string>
+    <string name="browser_close_panel">Close browser</string>
     <string name="browser_new_tab_cd">New tab</string>
     <string name="browser_back_cd">Back</string>
     <string name="browser_forward_cd">Forward</string>

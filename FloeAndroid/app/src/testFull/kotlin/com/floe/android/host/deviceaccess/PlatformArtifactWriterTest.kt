@@ -24,6 +24,43 @@ class PlatformArtifactWriterTest {
     }
 
     @Test
+    fun startupCleanupOnlyRemovesExpiredPrivateStages() {
+        val now = System.currentTimeMillis()
+        val old = File(root, "floe-private-shot-old.tmp").apply { writeText("x"); setLastModified(now - 2L * 86400000) }
+        val fresh = File(root, "floe-private-shot-active.tmp").apply { writeText("x") }
+        val unrelated = File(root, "other.tmp").apply { writeText("x"); setLastModified(now - 2L * 86400000) }
+        PlatformArtifactWriter.cleanupExpiredStages(root, now)
+        assertTrue(!old.exists())
+        assertTrue(fresh.exists())
+        assertTrue(unrelated.exists())
+    }
+
+    @Test
+    fun preparedScreenshotIsPrivateUntilCommitAndDiscardRemovesIt() {
+        val cache = File(root, "cache").apply { mkdirs() }
+        val result = PlatformArtifactWriter.prepare(cache, root.absolutePath, jpegBytes(128), "image/jpeg")
+        assertTrue(result is PlatformArtifactWriter.Preparation.Ready)
+        val stage = (result as PlatformArtifactWriter.Preparation.Ready).stage
+        assertEquals(1, cache.listFiles()?.size)
+        assertEquals(0, File(root, "VNCArtifacts").listFiles()?.size)
+        stage.close()
+        assertEquals(0, cache.listFiles()?.size)
+        assertEquals(0, File(root, "VNCArtifacts").listFiles()?.size)
+    }
+
+    @Test
+    fun preparedScreenshotCommitsOnlyOnceWithActualBytes() {
+        val cache = File(root, "cache").apply { mkdirs() }
+        val bytes = jpegBytes(128)
+        val ready = PlatformArtifactWriter.prepare(cache, root.absolutePath, bytes, "image/jpeg")
+            as PlatformArtifactWriter.Preparation.Ready
+        val result = ready.stage.commit() as PlatformArtifactWriter.Result.Ok
+        assertTrue(File(root, result.artifact.relativePath).readBytes().contentEquals(bytes))
+        assertEquals(0, cache.listFiles()?.size)
+        assertTrue(ready.stage.commit() is PlatformArtifactWriter.Result.Failed)
+    }
+
+    @Test
     fun jpegIsCommittedUnderVncArtifactsWithRealDigestAndSize() {
         val bytes = jpegBytes(2048)
         val digest = MessageDigest.getInstance("SHA-256").digest(bytes)

@@ -11,24 +11,74 @@ public enum PlanToolDenialReason: String, Sendable, Codable, Hashable {
 /// Capability filter used both while constructing provider schemas and
 /// immediately before execution. It is deliberately independent of model
 /// instructions: a forged tool call still reaches `decision(for:)`.
+/// Native questions, the exact main-run checklist reset and the exact
+/// durable-memory writes are narrow internal-state exceptions. None grants
+/// external mutation authority, and each is matched by its full descriptor
+/// identity (name, effect, side-effect flag, risk set and boundary).
 public struct PlanToolPolicy: Sendable {
     public init() {}
 
+    /// The only internal-state writes Plan may perform (see `decision`).
+    static let memoryWriteNames: Set<String> = [
+        "memory.remember", "memory.update", "memory.forget",
+    ]
+
     public func decision(for descriptor: ToolCatalog.Descriptor) -> Result<Void, PlanToolPolicyError> {
+        // Durable-memory writes are the one internal-state family Plan may
+        // exercise, and only with their EXACT registered identity: an
+        // internal-state, side-effecting descriptor whose only risk is
+        // persisted personal data, runnable in any run and requiring no host
+        // scope. This mirrors the latest iOS `ConversationToolAccess`/policy
+        // (Plan inherits the chat memory names); a changed tool name, effect,
+        // risk set, boundary or scope loses the exception. Memory tools still
+        // need a real registered store at runtime — this only removes the
+        // blanket Plan denial, it never registers or fabricates a capability.
+        if Self.memoryWriteNames.contains(descriptor.name) {
+            guard descriptor.effect == .internalState,
+                  descriptor.isSideEffecting,
+                  descriptor.riskLabels == [.persistsPersonalData],
+                  descriptor.executionBoundary == .any,
+                  !descriptor.requiresHostScope else {
+                return .failure(PlanToolPolicyError(reason: .mutationNotAllowed, toolName: descriptor.name))
+            }
+            return .success(())
+        }
         switch descriptor.effect {
         case .readOnly:
-            .success(())
+            // A "read-only" descriptor that still reports an external side
+            // effect or a file write is contradictory; fail closed instead of
+            // trusting the effect label alone.
+            guard !descriptor.isSideEffecting,
+                  !descriptor.riskLabels.contains(.writesFiles) else {
+                return .failure(PlanToolPolicyError(reason: .mutationNotAllowed, toolName: descriptor.name))
+            }
+            return .success(())
         case .internalState:
-            .failure(PlanToolPolicyError(reason: .internalStateNotModelCallable, toolName: descriptor.name))
+            // Closed two-name exception: a question is not implementation and
+            // checklist.resetPlan clears only Floe-owned progress. Every other
+            // internal-state tool (checklist.updatePlan, conversation.spawn,
+            // jobs.cancel, memory.batchApply, …) stays unavailable in Plan;
+            // the three exact memory writes were handled above.
+            if [UserAskTool.name, TaskResetPlanTool.name].contains(descriptor.name),
+               descriptor.executionBoundary == .mainRunOnly,
+               !descriptor.isSideEffecting,
+               descriptor.riskLabels.isEmpty,
+               !descriptor.requiresHostScope {
+                return .success(())
+            }
+            return .failure(PlanToolPolicyError(reason: .internalStateNotModelCallable, toolName: descriptor.name))
         case .mutating:
-            .failure(PlanToolPolicyError(reason: .mutationNotAllowed, toolName: descriptor.name))
+            return .failure(PlanToolPolicyError(reason: .mutationNotAllowed, toolName: descriptor.name))
         }
     }
 
     public func allowedDescriptors(
         from descriptors: [ToolCatalog.Descriptor]
     ) -> [ToolCatalog.Descriptor] {
-        descriptors.filter { $0.effect.isAllowedInPlanMode }
+        descriptors.filter {
+            if case .success = decision(for: $0) { return true }
+            return false
+        }
     }
 
     public func denialResult(

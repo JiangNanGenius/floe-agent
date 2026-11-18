@@ -2,6 +2,17 @@
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
   <channel>
     <item>
+      <title>1.1.6</title>
+      <pubDate>Mon, 16 Nov 2026 19:36:37 +0000</pubDate>
+      <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-bridge-v1.1.6</link>
+      <sparkle:version>9</sparkle:version>
+      <sparkle:shortVersionString>1.1.6</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <description>&lt;p&gt;改进 Bridge 数据使用的互斥保护，为后续升级做好准备。&lt;/p&gt;&lt;p&gt;Improved exclusive access to Bridge data in preparation for future updates.&lt;/p&gt;</description>
+      <enclosure url="https://github.com/JiangNanGenius/floe-agent/releases/download/floe-bridge-v1.1.6/Floe-Bridge-1.1.6.dmg" length="4701350" type="application/octet-stream" sparkle:edSignature="9KGpzGFw4pw5Yw9M4HaYP8AfZUXu2FYkq9N6c939KcrVbyNLCXWaDsCurTuljc3ZT+M+ot4H4hJ6Cv+cu9YdAg==" />
+    </item>
+    <item>
       <title>1.1.5</title>
       <pubDate>Mon, 16 Nov 2026 07:24:41 +0000</pubDate>
       <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-bridge-v1.1.5</link>

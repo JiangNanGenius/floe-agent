@@ -5,6 +5,10 @@ import android.app.Activity
 import android.content.Context
 import com.floe.android.host.RuntimeHost
 import com.floe.android.host.RuntimePlatformExtension
+import com.floe.android.host.DeviceApprovalIdentity
+import com.floe.android.host.DeviceApprovalAction
+import com.floe.android.host.DeviceApprovalTarget
+import com.floe.android.host.DeviceApprovalOverlayCallbacks
 import com.floe.android.host.deviceaccess.DeviceAccessHost
 import java.util.UUID
 
@@ -22,6 +26,20 @@ private class FullRuntimePlatformExtension(
     private val context: Context,
 ) : RuntimePlatformExtension {
     private var device: DeviceAccessHost? = null
+
+    override fun presentDeviceApproval(identity: DeviceApprovalIdentity, callbacks: DeviceApprovalOverlayCallbacks): Boolean =
+        device?.presentDeviceApproval(identity, callbacks) ?: false
+
+    override fun setDeviceApprovalTarget(identity: DeviceApprovalIdentity, presentationId: String,
+                                         action: DeviceApprovalAction?, target: DeviceApprovalTarget?, enabled: Boolean) {
+        device?.setDeviceApprovalTarget(identity, presentationId, action, target, enabled)
+    }
+
+    override fun dismissDeviceApproval(identity: DeviceApprovalIdentity) { device?.dismissDeviceApproval(identity) }
+
+    override suspend fun readDeviceApprovalTarget(identity: DeviceApprovalIdentity, presentationId: String,
+                                                  action: DeviceApprovalAction, stillCurrent: () -> Boolean): DeviceApprovalTarget? =
+        device?.readDeviceApprovalTarget(identity, presentationId, action, stillCurrent)
 
     override fun onHostStarted(host: RuntimeHost) {
         if (device != null) return
@@ -78,6 +96,13 @@ private class FullRuntimePlatformExtension(
     override fun onRunActivityChanged() {
         device?.onRunActivityChanged()
     }
+
+    override fun onRunStopRequested(epoch: Long, taskID: UUID, runID: UUID) {
+        device?.onRunStopRequested(epoch, taskID, runID)
+    }
+
+    override fun isDeviceApprovalRevoked(identity: DeviceApprovalIdentity): Boolean =
+        device?.isDeviceApprovalRevoked(identity) ?: true
 
     override fun onBackgroundWorkStarted(epoch: Long, taskID: UUID, runID: UUID) {
         device?.onBackgroundWorkStarted(epoch, taskID, runID)

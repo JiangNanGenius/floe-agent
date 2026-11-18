@@ -29,6 +29,7 @@ internal data class ScreenScopeBinding(
     /** Exact live owner for CURRENT_TASK; null for the broader UNTIL_STOPPED. */
     val owner: PhoneControlOwner?,
     val epoch: Long,
+    val serviceTeardownGeneration: Long = 0,
 )
 
 internal sealed interface ScreenScopeSelection {
@@ -49,7 +50,11 @@ internal data class ScreenScopeTicket(
     val revision: Long,
     val owner: PhoneControlOwner,
     val epoch: Long,
+    val serviceTeardownGeneration: Long,
 )
+
+/** Stop can revoke only the exact consent use it observed. */
+internal data class ScreenScopeStopTicket(val revision: Long, val owner: PhoneControlOwner)
 
 /**
  * True only when the Accessibility/driver service itself is gone. A
@@ -70,11 +75,14 @@ internal fun phoneServiceTornDown(status: PhoneControlStatus): Boolean =
  * live in one immutable snapshot so a concurrent reconcile/drop cannot pair an
  * old revision with a new binding.
  */
-internal class ScreenScopeConsent {
+internal class ScreenScopeConsent(
+    private val serviceTeardownGeneration: () -> Long = { 0L },
+) {
 
     private data class State(
         val binding: ScreenScopeBinding?,
         val revision: Long,
+        val useOwner: PhoneControlOwner? = null,
     )
 
     private val lock = Any()
@@ -83,7 +91,7 @@ internal class ScreenScopeConsent {
     private var state = State(binding = null, revision = 0)
 
     val binding: ScreenScopeBinding?
-        get() = state.binding
+        get() = state.binding?.takeIf { it.serviceTeardownGeneration == serviceTeardownGeneration() }
 
     /** Monotonic RAM revision; every actual consent transition advances it. */
     val revision: Long
@@ -113,16 +121,16 @@ internal class ScreenScopeConsent {
             DeviceAccessScreenScopeUi.CURRENT_TASK -> {
                 val owner = candidateOwner
                     ?: return ScreenScopeSelection.Refused(CODE_NO_LIVE_TASK)
-                val active = ScreenScopeBinding(requested, owner, epoch)
-                replace(active)
+                val active = ScreenScopeBinding(requested, owner, epoch, serviceTeardownGeneration())
+                replace(active, owner)
                 ScreenScopeSelection.Active(active)
             }
             DeviceAccessScreenScopeUi.UNTIL_STOPPED -> {
                 if (sessionOwner == null) {
                     return ScreenScopeSelection.Refused(CODE_NO_LIVE_TASK)
                 }
-                val active = ScreenScopeBinding(requested, null, epoch)
-                replace(active)
+                val active = ScreenScopeBinding(requested, null, epoch, serviceTeardownGeneration())
+                replace(active, sessionOwner)
                 ScreenScopeSelection.Active(active)
             }
             DeviceAccessScreenScopeUi.OFF -> ScreenScopeSelection.Cleared
@@ -141,8 +149,17 @@ internal class ScreenScopeConsent {
             (current.owner != null && ownerRunLive(current.owner))
         val keep = current.mode != DeviceAccessScreenScopeUi.OFF &&
             epoch != null && epoch > 0 && current.epoch == epoch &&
-            exactTaskLive
+            current.serviceTeardownGeneration == serviceTeardownGeneration() && exactTaskLive
         if (!keep) replaceIfRevision(snapshot.revision, null)
+    }
+
+    /** Drop only a binding older than the live service teardown fence. */
+    fun reconcileServiceTeardown() {
+        val snapshot = state
+        val binding = snapshot.binding ?: return
+        if (binding.serviceTeardownGeneration != serviceTeardownGeneration()) {
+            replaceIfRevision(snapshot.revision, null)
+        }
     }
 
     /** Actual Stop/Takeover or service teardown: both modes end. */
@@ -150,14 +167,43 @@ internal class ScreenScopeConsent {
         replace(null)
     }
 
+    /** Do not erase a newer explicit selection during asynchronous teardown. */
+    fun clearIfRevision(expected: Long) = replaceIfRevision(expected, null)
+
+    /** Called only after this exact run's backend admission really succeeds. */
+    fun noteAdmitted(owner: PhoneControlOwner, epoch: Long, newSession: Boolean = false) = synchronized(lock) {
+        val snapshot = state
+        if (allows(snapshot.binding, owner, epoch, ownerRunLive = true) &&
+            (snapshot.useOwner != owner || newSession)) {
+            state = snapshot.copy(revision = snapshot.revision + 1, useOwner = owner)
+        }
+    }
+
+    fun stopTicket(owner: PhoneControlOwner): ScreenScopeStopTicket? = synchronized(lock) {
+        val snapshot = state
+        val binding = snapshot.binding ?: return@synchronized null
+        if (binding.serviceTeardownGeneration != serviceTeardownGeneration() ||
+            snapshot.useOwner != owner) return@synchronized null
+        ScreenScopeStopTicket(snapshot.revision, owner)
+    }
+
+    fun clearIfStopTicket(ticket: ScreenScopeStopTicket?) = synchronized(lock) {
+        if (ticket == null) return@synchronized
+        val snapshot = state
+        if (snapshot.revision == ticket.revision && snapshot.useOwner == ticket.owner) {
+            state = State(binding = null, revision = snapshot.revision + 1)
+        }
+    }
+
     /**
      * Moving the one phone-control grant away from [endedOwner] ends only that
      * exact "This task" consent. A fresh This-task choice for the NEW task and
      * the explicit broader mode both survive by design.
      */
-    fun clearExactTask(endedOwner: PhoneControlOwner) {
+    fun clearExactTask(endedOwner: PhoneControlOwner, expectedRevision: Long? = null) {
         synchronized(lock) {
             val snapshot = state
+            if (expectedRevision != null && snapshot.revision != expectedRevision) return
             val current = snapshot.binding
             if (current?.mode == DeviceAccessScreenScopeUi.CURRENT_TASK &&
                 current.owner == endedOwner
@@ -183,7 +229,7 @@ internal class ScreenScopeConsent {
     ): ScreenScopeTicket? {
         val snapshot = state
         if (!allows(snapshot.binding, owner, epoch, ownerRunLive)) return null
-        return ScreenScopeTicket(snapshot.revision, owner, epoch)
+        return ScreenScopeTicket(snapshot.revision, owner, epoch, snapshot.binding!!.serviceTeardownGeneration)
     }
 
     /**
@@ -209,6 +255,14 @@ internal class ScreenScopeConsent {
         return allows(snapshot.binding, owner, epoch, ownerRunLive)
     }
 
+    /** Atomically commit only while the same consent revision is valid. */
+    fun <T> commitIfTicketValid(ticket: ScreenScopeTicket?, owner: PhoneControlOwner, epoch: Long,
+        ownerRunLive: Boolean, displayCapture: Boolean, wholeScreenConsent: Boolean,
+        wholeScreenUnchanged: Boolean, action: () -> T): T? = synchronized(lock) {
+        if (!ticketStillValid(ticket, owner, epoch, ownerRunLive, displayCapture,
+                wholeScreenConsent, wholeScreenUnchanged)) null else action()
+    }
+
     /**
      * The scope the settings page may show for its displayed owner. A stale
      * global selection is never projected: "This task" shows only while the
@@ -221,7 +275,8 @@ internal class ScreenScopeConsent {
         epoch: Long?,
     ): DeviceAccessScreenScopeUi {
         val current = state.binding ?: return DeviceAccessScreenScopeUi.OFF
-        if (activeOwner == null || epoch == null || current.epoch != epoch) {
+        if (activeOwner == null || epoch == null || current.epoch != epoch ||
+            current.serviceTeardownGeneration != serviceTeardownGeneration()) {
             return DeviceAccessScreenScopeUi.OFF
         }
         return when (current.mode) {
@@ -243,7 +298,8 @@ internal class ScreenScopeConsent {
         ownerRunLive: Boolean,
     ): Boolean {
         if (binding == null) return false
-        if (binding.epoch <= 0 || binding.epoch != epoch) return false
+        if (binding.epoch <= 0 || binding.epoch != epoch ||
+            binding.serviceTeardownGeneration != serviceTeardownGeneration()) return false
         return when (binding.mode) {
             DeviceAccessScreenScopeUi.OFF -> false
             DeviceAccessScreenScopeUi.CURRENT_TASK ->
@@ -255,9 +311,9 @@ internal class ScreenScopeConsent {
         }
     }
 
-    private fun replace(next: ScreenScopeBinding?) {
+    private fun replace(next: ScreenScopeBinding?, useOwner: PhoneControlOwner? = null) {
         synchronized(lock) {
-            state = State(binding = next, revision = state.revision + 1)
+            state = State(binding = next, revision = state.revision + 1, useOwner = useOwner)
         }
     }
 

@@ -574,6 +574,11 @@
     <string name="external_edit_keep_current">保留当前文件</string>
     <string name="external_edit_finish">结束编辑</string>
     <string name="phone_automation_title">设备自动化</string>
+    <string name="device_approval_allow">允许</string>
+    <string name="device_approval_deny">拒绝</string>
+    <string name="device_approval_checking">正在核对操作目标…</string>
+    <string name="device_approval_unavailable">无法核对目标。收起后重新展开可重试，或拒绝后重新观察设备。</string>
+    <string name="device_approval_click_target">在 %1$s 中点击：\n%2$s</string>
     <string name="phone_automation_automatic">允许已授权任务操作应用</string>
     <string name="phone_automation_automatic_hint">任务可操作你选择的应用。你正在使用设备时先暂停并确认；停止或接管会立即取消控制。</string>
     <string name="phone_automation_unlock">为任务自动解锁</string>
@@ -590,6 +595,7 @@
     <string name="phone_automation_resume">继续</string>
     <string name="phone_automation_paused">设备操作已暂停</string>
     <string name="phone_automation_resume_failed">无法继续，请打开任务重试。</string>
+    <string name="phone_automation_control_changed">控制状态已变化，请返回任务重试。</string>
     <string name="phone_automation_credential_failed">无法更新解锁凭据，请重试。</string>
     <string name="phone_automation_bubble_show">%1$s。%2$s。点按显示控制。</string>
     <string name="phone_automation_bubble_hide">%1$s。%2$s。点按收起控制。</string>

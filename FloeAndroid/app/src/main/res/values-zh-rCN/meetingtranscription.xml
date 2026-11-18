@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 会议云端转写失败提示。 -->
+    <string name="meeting_transcription_busy">另一个会议正在转写，请稍后再试。</string>
+    <string name="meeting_transcription_unconfigured">请先在语音设置中选择云端转写服务。</string>
+    <string name="meeting_transcription_credential_missing">所选转写服务需要有效的凭据，请前往设置检查。</string>
+    <string name="meeting_transcription_service_unavailable">转写服务当前不可用。</string>
+    <string name="meeting_transcription_core_unavailable">本地服务启动后才能使用转写。</string>
+    <string name="meeting_transcription_source_unavailable">该录音当前无法用于转写。</string>
+    <string name="meeting_transcription_unsupported_audio">此文件没有可转写的音频。</string>
+    <string name="meeting_transcription_source_too_large">该录音过长，无法转写。</string>
+    <string name="meeting_transcription_provider_rejected">转写服务无法处理此录音。</string>
+    <string name="meeting_transcription_quota_limited">转写服务额度已用完，请稍后再试。</string>
+    <string name="meeting_transcription_timeout">转写超时。</string>
+    <string name="meeting_transcription_empty">此录音中未检测到语音。</string>
+    <string name="meeting_transcription_conflict">转写内容已变化，请重试以使用最新版本。</string>
+    <string name="meeting_transcription_storage_failed">转写无法保存，原录音未受影响。</string>
+    <string name="meeting_transcription_cancelled">转写已取消。</string>
+    <string name="meeting_transcription_failed">转写失败，原录音未受影响。</string>
+</resources>

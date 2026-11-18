@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Meeting export/share. Only new copy for this host; durable meeting and
+         recording defaults stay in meeting_strings.xml. -->
+    <string name="meeting_exchange_format_txt">Plain text (.txt)</string>
+    <string name="meeting_exchange_format_markdown">Markdown (.md)</string>
+    <string name="meeting_exchange_share_chooser">Share meeting</string>
+    <string name="meeting_exchange_share_opened">Share sheet opened. Nothing is shared until you choose an app.</string>
+    <string name="meeting_exchange_saved">Meeting exported.</string>
+
+    <string name="meeting_exchange_error_not_found">This meeting is no longer available.</string>
+    <string name="meeting_exchange_error_read_failed">This meeting could not be read. Nothing was exported.</string>
+    <string name="meeting_exchange_error_identity_mismatch">The meeting data did not match the selected meeting. Nothing was exported.</string>
+    <string name="meeting_exchange_error_too_large">This meeting is too large to export.</string>
+    <string name="meeting_exchange_error_meeting_changed">The selected meeting changed. Choose the meeting again.</string>
+    <string name="meeting_exchange_error_invalid_destination">That location cannot be written.</string>
+    <string name="meeting_exchange_error_write_permission_missing">Write access to the chosen location is no longer available.</string>
+    <string name="meeting_exchange_error_destination_not_empty">The chosen document already contains data. Choose a new file.</string>
+    <string name="meeting_exchange_error_destination_unreadable">The chosen location could not be checked. Choose another location.</string>
+    <string name="meeting_exchange_error_write_failed">The export could not be written. Nothing was confirmed saved.</string>
+    <string name="meeting_exchange_error_share_too_large">This meeting is too large to share as text. Save a file instead.</string>
+    <string name="meeting_exchange_error_share_failed">The share sheet could not be opened.</string>
+
+    <string name="meeting_exchange_label_created">Created</string>
+    <string name="meeting_exchange_label_updated">Updated</string>
+    <string name="meeting_exchange_label_materials">Materials</string>
+    <string name="meeting_exchange_label_recordings">Recordings</string>
+    <string name="meeting_exchange_label_imports">Imports</string>
+    <string name="meeting_exchange_heading_notes">Notes</string>
+    <string name="meeting_exchange_heading_transcript">Transcript</string>
+    <string name="meeting_exchange_no_notes">No notes were saved for this meeting.</string>
+    <string name="meeting_exchange_no_transcript">No transcript is available for this meeting.</string>
+    <string name="meeting_exchange_speaker_fallback">Speaker</string>
+    <string name="meeting_exchange_untitled_meeting">Meeting</string>
+</resources>

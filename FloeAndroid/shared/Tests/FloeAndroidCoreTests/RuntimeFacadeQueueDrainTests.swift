@@ -356,6 +356,36 @@ final class RuntimeFacadeQueueDrainTests: XCTestCase {
         }, "the queued body must become the new run's user turn")
     }
 
+    func testDrainedRowRecordsItsPersistedExplicitExecutionMode() async throws {
+        let conversationID = try await fixture.makeOrdinaryConversation()
+        let domain = fixture.makeDomain()
+        // Explicit CHAT is the one composer mode the original launch spelling
+        // cannot express (AGENT and CHAT both travel `mode:"chat"`). The
+        // durable row owns it at queue time; the drain must persist the same
+        // value on the launched run instead of folding it away.
+        let row = try await fixture.inputStore.enqueue(PendingUserInput(
+            conversationID: conversationID,
+            content: "queued chat follow-up",
+            mode: .queue,
+            selectedModelID: fixture.modelID,
+            executionMode: "chat"), explicitExecutionMode: "chat")
+        let firstRun = try await startAndCompleteRun(
+            domain, conversationID: conversationID,
+            goal: "first turn", correlation: "corr-explicit-drain-first")
+        let consumed = await pollFor(timeoutSeconds: 12) {
+            let current = try? await self.fixture.inputStore.input(id: row.id)
+            return current?.status == .consumed && current?.consumedRunID != nil
+        }
+        XCTAssertTrue(consumed, "the completed terminal must consume the queued row")
+        let stored = try unwrapAsync(await fixture.inputStore.input(id: row.id))
+        let launchedRunID = try unwrapAsync(stored.consumedRunID)
+        XCTAssertNotEqual(launchedRunID, firstRun)
+        let launched = try unwrapAsync(await fixture.runStore.run(id: launchedRunID))
+        XCTAssertEqual(launched.conversationMode, "chat")
+        XCTAssertEqual(launched.explicitExecutionMode, "chat",
+                       "the drain must persist the composer's real queued selection")
+    }
+
     func testDrainLaunchesAttachmentRowThroughTrustedSeam() async throws {
         // FULL ownership: an attachment-bearing row is launched WITH its
         // resolved durable attachments (never text-only, never stranded).

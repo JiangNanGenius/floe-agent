@@ -229,6 +229,8 @@ public enum BridgeV3 {
         CommandRule(command: "run.input.reorder", scope: .taskExecution, revisionRequired: true),
         CommandRule(command: "run.approval.resolve", scope: .taskExecution,
                     revisionRequired: true),
+        CommandRule(command: "run.approval.presentation", scope: .taskExecution,
+                    revisionRequired: true),
         CommandRule(command: "run.policy.update", scope: .taskExecution,
                     revisionRequired: true),
         CommandRule(command: "run.skillcancel", scope: .taskExecution,

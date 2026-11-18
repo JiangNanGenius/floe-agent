@@ -5,6 +5,12 @@ import com.floe.android.feature.conversation.AgentExecutionModeUi
 import com.floe.android.feature.conversation.ApprovalCardUi
 import com.floe.android.feature.conversation.ApprovalModeUi
 import com.floe.android.feature.conversation.ApprovalTargetUi
+import com.floe.android.feature.conversation.WorkspaceFileApprovalUi
+import com.floe.android.feature.conversation.LocalShellApprovalUi
+import com.floe.android.feature.conversation.ScheduleCreateApprovalUi
+import com.floe.android.feature.conversation.BrowserTabApprovalUi
+import com.floe.android.feature.conversation.BrowserInteractionApprovalUi
+import com.floe.android.feature.conversation.DeviceActionApprovalRequestUi
 import com.floe.android.feature.conversation.AttachmentChipUi
 import com.floe.android.feature.conversation.AttachmentKindUi
 import com.floe.android.feature.conversation.BackgroundJobUi
@@ -64,6 +70,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.longOrNull
 
 /**
@@ -81,6 +88,424 @@ private const val BACKGROUND_LIFECYCLE_PREFIX = "[Floe background work]"
  * The builder never invents identities: everything traces to a decoded wire
  * page or typed effect.
  */
+/** Reject partial, ambiguous or misleading file targets rather than
+ * displaying a truncated/rewritten name as an approved destination. */
+// A general run.snapshot is not yet an approved private channel for these
+// paths. Keep the parser and UI dormant until a dedicated, verified local
+// human-approval channel is integrated; never infer its presence from fields.
+private const val WORKSPACE_APPROVAL_CHANNEL_READY = false
+
+internal fun workspaceApprovalDetails(tool: String, value: JsonObject?): WorkspaceFileApprovalUi? {
+    val details = value ?: return null
+    fun string(key: String): String? = (details[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
+    fun path(raw: String?): String? {
+        val value = raw ?: return null
+        if (value.isEmpty() || value.toByteArray(Charsets.UTF_8).size > 256 || value.trim() != value ||
+            '\\' in value) return null
+        val prohibitedTypes = setOf(Character.CONTROL.toInt(), Character.FORMAT.toInt(),
+            Character.LINE_SEPARATOR.toInt(), Character.PARAGRAPH_SEPARATOR.toInt(),
+            Character.SURROGATE.toInt(), Character.UNASSIGNED.toInt())
+        if (value.codePoints().anyMatch { Character.getType(it) in prohibitedTypes } ||
+            Character.isSpaceChar(value.codePointAt(0)) ||
+            Character.isSpaceChar(value.codePointBefore(value.length))) return null
+        val pieces = value.split('/')
+        if (pieces.any { it.isEmpty() || it == "." || it == ".." } ||
+            pieces.first() == "Network" || pieces.first() == "Mounts") return null
+        return value
+    }
+    if (string("kind") != "workspaceFile") return null
+    val workspaceId = string("workspaceID") ?: return null
+    if (runCatching { java.util.UUID.fromString(workspaceId).toString() }.getOrNull() != workspaceId) return null
+    val operation = string("operation") ?: return null
+    if (tool != "workspace.$operation") return null
+    val target = path(string("target")) ?: return null
+    val source = string("source") ?: return null
+    val overwrite = string("overwrite") ?: return null
+    val precondition = string("precondition") ?: return null
+    val baseKeys = setOf("kind", "workspaceID", "operation", "target", "source", "overwrite", "precondition")
+    val sourcePath = if (source == "workspaceFile") path(string("sourcePath")) ?: return null else null
+    val sourcePrecondition = if (source == "workspaceFile") string("sourcePrecondition") else null
+    val expectedKeys = baseKeys + (if (source == "workspaceFile") setOf("sourcePath", "sourcePrecondition") else emptySet()) +
+        (if (operation == "replaceText") setOf("expectedOccurrences") else emptySet()) +
+        (if (operation == "deleteFile") setOf("recursive") else emptySet())
+    if (details.keys != expectedKeys) return null
+    val occurrences = if (operation == "replaceText") {
+        (details["expectedOccurrences"] as? JsonPrimitive)?.takeUnless { it.isString }?.longOrNull?.takeIf { it > 0 } ?: return null
+    } else null
+    val recursive = if (operation == "deleteFile") {
+        (details["recursive"] as? JsonPrimitive)?.takeUnless { it.isString }?.booleanOrNull ?: return null
+    } else null
+    val valid = when (operation) {
+        "createFile" -> source == "inline" && overwrite in setOf("allowed", "forbidden") && precondition == "none"
+        "applyPatch" -> source == "patch" && overwrite == "conditional" && precondition == "patchContext"
+        "writeFile" -> {
+            val expectedOverwrite = when (precondition) {
+                "none" -> if (source == "inline") "allowed" else "forbidden"
+                "sha256", "mtime", "sha256AndMtime" -> "conditional"
+                else -> null
+            }
+            source in setOf("inline", "workspaceFile") && overwrite == expectedOverwrite &&
+                (source != "workspaceFile" || sourcePrecondition == "sha256")
+        }
+        "appendFile" -> source == "inline" && overwrite == "conditional" && precondition in setOf("fileExists", "fileExistsAndSha256")
+        "replaceText" -> source == "inline" && overwrite == "conditional" && precondition in setOf("occurrences", "occurrencesAndSha256")
+        "createDirectory" -> source == "none" && overwrite == "forbidden" && precondition == "none"
+        "moveFile", "copyFile" -> source == "workspaceFile" && sourcePath != target && sourcePrecondition == "exists" &&
+            overwrite == "forbidden" && precondition == "sourceExists"
+        "deleteFile" -> source == "none" && overwrite == "conditional" && precondition == "exists"
+        else -> false
+    }
+    if (!valid) return null
+    return WorkspaceFileApprovalUi(workspaceId, operation, target, source, overwrite, precondition,
+        sourcePath, sourcePrecondition, occurrences, recursive)
+}
+
+/** Decode only the ephemeral human-facing page; never project it into a run snapshot. */
+private fun privateApprovalPage(value: JsonElement?, card: ApprovalCardUi,
+    requiredRisk: String = "writesFiles", workspaceVerified: Boolean = true,
+    requireToken: Boolean = true): Pair<JsonObject, String?>? {
+    val page = value as? JsonObject ?: return null
+    fun str(o: JsonObject, key: String) = (o[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
+    fun sameUUID(a: String?, b: String): Boolean = runCatching {
+        java.util.UUID.fromString(a) == java.util.UUID.fromString(b)
+    }.getOrDefault(false)
+    val generation = card.requestGeneration ?: return null
+    val descriptor = card.descriptorIdentity ?: return null
+    val token = str(page, "presentationToken")
+    if ((requireToken && token == null) || (token != null &&
+            runCatching { java.util.UUID.fromString(token).toString() }.getOrNull() != token) ||
+        str(page, "schema") != "floe.approval-presentation/1" ||
+        !sameUUID(str(page, "conversationID"), card.conversationId) ||
+        !sameUUID(str(page, "runID"), card.runId) || str(page, "callID") != card.approvalId ||
+        str(page, "generation") != generation || card.approvalRevision != "generation:$generation" ||
+        !card.identityVerified || card.scopeVerified) return null
+    val presentation = page["presentation"] as? JsonObject ?: return null
+    fun bool(key: String): Boolean? = (presentation[key] as? JsonPrimitive)?.takeUnless { it.isString }?.booleanOrNull
+    val risks = (presentation["riskLabels"] as? JsonArray)?.map {
+        (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content ?: return null
+    } ?: return null
+    if (str(presentation, "status") != "available" || str(presentation, "detailStatus") != "available" ||
+        str(presentation, "generation") != generation || str(presentation, "tool") != card.toolName ||
+        str(presentation, "descriptorIdentity") != descriptor || str(presentation, "effect") != "mutating" ||
+        bool("isSideEffecting") != true || !card.isSideEffecting ||
+        risks.toSet() != card.riskLabels || risks.size != risks.toSet().size ||
+        requiredRisk !in card.riskLabels || str(presentation, "requestedScope") != "local" ||
+        card.requestedScope != "local" || str(presentation, "grantScope") != "singleUse" ||
+        bool("workspaceVerified") != workspaceVerified) return null
+    return (presentation["actionDetails"] as? JsonObject ?: return null) to token
+}
+
+internal fun privateWorkspaceApprovalPage(value: JsonElement?, card: ApprovalCardUi): Pair<WorkspaceFileApprovalUi, String>? {
+    val (details, token) = privateApprovalPage(value, card) ?: return null
+    return (workspaceApprovalDetails(card.toolName, details) ?: return null) to (token ?: return null)
+}
+
+/** Accept only the exact private, complete and generation-bound tab target. */
+internal fun privateBrowserTabApprovalPage(value: JsonElement?, card: ApprovalCardUi): Pair<BrowserTabApprovalUi, String>? {
+    if (card.toolName != "browser.tab") return null
+    val (details, token) = privateApprovalPage(value, card, requiredRisk = "controlsGUI", workspaceVerified = false) ?: return null
+    fun str(key: String) = (details[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
+    val operation = str("operation") ?: return null
+    val expected = when (operation) {
+        "create" -> setOf("kind", "operation", "url", "title")
+        "activate", "close" -> setOf("kind", "operation", "tabID", "tabIndex", "tabCount", "url", "title")
+        else -> return null
+    }
+    if (details.keys != expected || str("kind") != "browserTab") return null
+    for (key in listOf("url", "title")) {
+        val field = details[key]
+        if (field !is kotlinx.serialization.json.JsonNull &&
+            (field !is JsonPrimitive || !field.isString)) return null
+    }
+    if (operation == "create" && (details["url"] !is kotlinx.serialization.json.JsonNull ||
+            details["title"] !is kotlinx.serialization.json.JsonNull)) return null
+    fun integer(key: String): Int? = (details[key] as? JsonPrimitive)
+        ?.takeUnless { it.isString }?.content?.toIntOrNull()
+    val action = BrowserTabApprovalUi(operation, str("url")?.takeUnless { it.isBlank() },
+        str("title")?.takeUnless { it.isBlank() }, str("tabID"),
+        integer("tabIndex"), integer("tabCount"))
+    if (!action.isWellFormed()) return null
+    return action to (token ?: return null)
+}
+
+/** Strict private interaction page; the submitted text itself is never transported here. */
+internal fun privateBrowserInteractionApprovalPage(
+    value: JsonElement?, card: ApprovalCardUi,
+): Pair<BrowserInteractionApprovalUi, String>? {
+    if (card.toolName !in setOf("browser.click", "browser.type", "browser.scroll")) return null
+    val (details, token) = privateApprovalPage(
+        value, card, requiredRisk = "controlsGUI", workspaceVerified = false,
+    ) ?: return null
+    if (details.keys != setOf("kind", "operation", "tabID", "documentID", "url", "title",
+            "ref", "role", "label", "textBytes", "submit", "deltaX", "deltaY")) return null
+    fun str(key: String) = (details[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
+    fun nullableString(key: String) = details[key] is kotlinx.serialization.json.JsonNull || str(key) != null
+    fun number(key: String): Double? = (details[key] as? JsonPrimitive)
+        ?.takeIf { !it.isString }?.content?.toDoubleOrNull()?.takeIf { it.isFinite() }
+    fun nullableNumber(key: String) = details[key] is kotlinx.serialization.json.JsonNull || number(key) != null
+    fun integer(key: String) = (details[key] as? JsonPrimitive)?.takeIf { !it.isString }?.longOrNull
+    fun bool(key: String) = (details[key] as? JsonPrimitive)?.takeIf { !it.isString }?.booleanOrNull
+    if (str("kind") != "browserInteraction" ||
+        str("operation") != card.toolName.removePrefix("browser.") ||
+        listOf("title", "ref", "role", "label").any { !nullableString(it) } ||
+        (details["textBytes"] !is kotlinx.serialization.json.JsonNull && integer("textBytes") == null) ||
+        (details["submit"] !is kotlinx.serialization.json.JsonNull && bool("submit") == null) ||
+        !nullableNumber("deltaX") || !nullableNumber("deltaY")) return null
+    val action = BrowserInteractionApprovalUi(
+        operation = str("operation") ?: return null,
+        tabId = str("tabID") ?: return null,
+        documentId = str("documentID") ?: return null,
+        url = str("url") ?: return null,
+        title = str("title"), ref = str("ref"), role = str("role"), label = str("label"),
+        textBytes = integer("textBytes"), submit = bool("submit"),
+        deltaX = number("deltaX"), deltaY = number("deltaY"),
+    )
+    return if (action.isWellFormed()) action to (token ?: return null) else null
+}
+
+/** Private screenshot metadata; no path is accepted from this page. */
+internal data class BrowserVisualEvidence(
+    val url: String, val title: String?, val filename: String, val sha256: String,
+    val byteCount: Int, val width: Int, val height: Int,
+    val pointX: Double, val pointY: Double, val fallbackReason: String,
+) {
+    override fun toString() = "BrowserVisualEvidence(redacted)"
+}
+
+/** Power-of-two sampling bounds decoded pixels independently of source size. */
+internal fun browserVisualSampleSize(width: Int, height: Int): Int? {
+    if (width !in 1..8192 || height !in 1..8192 || width.toLong() * height > 33_554_432) return null
+    var sample = 1
+    while (((width.toLong() + sample - 1) / sample) *
+        ((height.toLong() + sample - 1) / sample) > 4_194_304) sample *= 2
+    return sample
+}
+
+internal fun browserVisualRootCurrent(epoch: Long, native: Long?, accepted: Long?, admitted: Boolean): Boolean =
+    epoch > 0 && admitted && native == epoch && accepted == epoch
+
+internal fun privateBrowserVisualApprovalPage(value: JsonElement?, card: ApprovalCardUi): Pair<BrowserVisualEvidence, String>? {
+    if (card.toolName != "browser.clickPoint") return null
+    val (details, token) = privateApprovalPage(value, card, requiredRisk = "controlsGUI", workspaceVerified = false) ?: return null
+    if (details.keys != setOf("kind", "operation", "tabID", "documentID", "url", "title",
+            "ref", "role", "label", "textBytes", "submit", "deltaX", "deltaY",
+            "evidenceFileName", "evidenceSHA256", "evidenceByteCount", "pixelWidth", "pixelHeight",
+            "pointX", "pointY", "fallbackReason")) return null
+    fun str(key: String) = (details[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
+    fun number(key: String) = (details[key] as? JsonPrimitive)?.takeIf { !it.isString }
+        ?.content?.toDoubleOrNull()?.takeIf { it.isFinite() }
+    fun integer(key: String) = (details[key] as? JsonPrimitive)?.takeIf { !it.isString }?.longOrNull
+    fun safe(value: String?, max: Int): Boolean {
+        if (value == null || value.isBlank() || value.toByteArray(Charsets.UTF_8).size > max) return false
+        return value.codePoints().allMatch { cp ->
+            Character.getType(cp) !in setOf(Character.CONTROL.toInt(), Character.FORMAT.toInt(),
+                Character.LINE_SEPARATOR.toInt(), Character.PARAGRAPH_SEPARATOR.toInt(),
+                Character.SURROGATE.toInt(), Character.UNASSIGNED.toInt())
+        }
+    }
+    if (str("kind") != "browserInteraction" || str("operation") != "clickPoint" ||
+        listOf("ref", "role", "label", "textBytes", "submit", "deltaX", "deltaY")
+            .any { details[it] !is kotlinx.serialization.json.JsonNull }) return null
+    val tab = str("tabID") ?: return null
+    if (runCatching { java.util.UUID.fromString(tab).toString() != tab }.getOrDefault(true) ||
+        !safe(str("documentID"), 128)) return null
+    val url = str("url")?.takeIf { safe(it, 2048) } ?: return null
+    val title = str("title")
+    if (details["title"] !is kotlinx.serialization.json.JsonNull && !safe(title, 512)) return null
+    val filename = str("evidenceFileName") ?: return null
+    if (!filename.endsWith(".jpg") || runCatching {
+            val id = filename.removeSuffix(".jpg")
+            java.util.UUID.fromString(id).toString().equals(id, ignoreCase = true)
+        }.getOrDefault(false).not()) return null
+    val sha = str("evidenceSHA256")?.takeIf { it.matches(Regex("[0-9a-f]{64}")) } ?: return null
+    val count = integer("evidenceByteCount")?.takeIf { it in 1..(8L * 1024 * 1024) }?.toInt() ?: return null
+    val width = integer("pixelWidth")?.takeIf { it in 1..8192 }?.toInt() ?: return null
+    val height = integer("pixelHeight")?.takeIf { it in 1..8192 }?.toInt() ?: return null
+    if (browserVisualSampleSize(width, height) == null) return null
+    val x = number("pointX")?.takeIf { it >= 0 && it < width } ?: return null
+    val y = number("pointY")?.takeIf { it >= 0 && it < height } ?: return null
+    val reason = str("fallbackReason")?.takeIf { it in setOf("noStructuredTarget", "insufficientStructuredInformation") } ?: return null
+    return BrowserVisualEvidence(url, title, filename, sha, count, width, height, x, y, reason) to (token ?: return null)
+}
+
+/** Accept only a complete, generation-bound, local human-review page. */
+internal fun privateScheduleCreateApprovalPage(value: JsonElement?, card: ApprovalCardUi): Pair<ScheduleCreateApprovalUi, String>? {
+    if (card.toolName != "task.schedule") return null
+    val (details, token) = privateApprovalPage(value, card, requiredRisk = "changesAgentBehavior", workspaceVerified = false) ?: return null
+    if (details.keys != setOf("kind", "action", "title", "prompt", "cadence", "scheduledAt", "timezone", "weekday", "intervalSeconds", "upstreamRunID", "workspaceID", "modelID", "environmentID", "approvalMode", "recoveryPolicy", "notificationPolicy")) return null
+    fun str(key: String) = (details[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
+    fun optionalString(key: String): String? = if (details[key] is kotlinx.serialization.json.JsonNull) null else str(key)
+    fun nullableValid(key: String) = details[key] is kotlinx.serialization.json.JsonNull || str(key) != null
+    fun number(key: String): Long? = (details[key] as? JsonPrimitive)?.takeUnless { it.isString }?.longOrNull
+    fun uuid(value: String?): Boolean = value != null && runCatching { java.util.UUID.fromString(value).toString() == value }.getOrDefault(false)
+    fun readable(value: String, limit: Int, newline: Boolean): Boolean {
+        if (value.isEmpty() || value.toByteArray(Charsets.UTF_8).size > limit) return false
+        val bad = setOf(Character.CONTROL.toInt(), Character.FORMAT.toInt(), Character.LINE_SEPARATOR.toInt(),
+            Character.PARAGRAPH_SEPARATOR.toInt(), Character.SURROGATE.toInt(), Character.UNASSIGNED.toInt())
+        return value.codePoints().noneMatch { cp -> !(newline && cp == 10) && Character.getType(cp) in bad }
+    }
+    if (str("kind") != "scheduleCreate" || str("action") != "create") return null
+    val title = str("title")?.takeIf { readable(it, 160, false) && it.isNotBlank() } ?: return null
+    val prompt = str("prompt")?.takeIf { readable(it, 16384, true) && it.isNotBlank() } ?: return null
+    val cadence = str("cadence")?.takeIf { it in setOf("once", "daily", "weekly", "interval", "afterSuccess", "charging", "networkConnected") } ?: return null
+    val time = str("scheduledAt")?.takeIf { it.matches(Regex("[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z")) && runCatching { java.time.Instant.parse(it) }.isSuccess } ?: return null
+    val timezone = str("timezone")?.takeIf { readable(it, 64, false) && runCatching { java.time.ZoneId.of(it) }.isSuccess } ?: return null
+    val weekday = if (details["weekday"] is kotlinx.serialization.json.JsonNull) null else number("weekday")?.takeIf { it in 1L..7L }?.toInt() ?: return null
+    val interval = if (details["intervalSeconds"] is kotlinx.serialization.json.JsonNull) null else number("intervalSeconds")?.takeIf { it in 60L..31536000L } ?: return null
+    if ((cadence == "weekly") != (weekday != null) || (cadence == "interval") != (interval != null)) return null
+    if (weekday != null) {
+        val zonedWeekday = runCatching { java.time.Instant.parse(time).atZone(java.time.ZoneId.of(timezone)).dayOfWeek.value % 7 + 1 }.getOrNull()
+        if (weekday != zonedWeekday) return null
+    }
+    if (!nullableValid("upstreamRunID") || !nullableValid("workspaceID") || !nullableValid("environmentID")) return null
+    val upstream = optionalString("upstreamRunID")
+    val workspace = optionalString("workspaceID")
+    val environment = optionalString("environmentID")
+    if ((cadence == "afterSuccess") != (upstream != null) || (upstream != null && !uuid(upstream)) ||
+        (workspace != null && !uuid(workspace)) || (environment != null && (!readable(environment, 128, false) || workspace == null))) return null
+    val model = str("modelID")?.takeIf(::uuid) ?: return null
+    val approval = str("approvalMode")?.takeIf { it in setOf("ask", "automatic", "fullAccess") } ?: return null
+    val recovery = str("recoveryPolicy")?.takeIf { it in setOf("safePoint", "alwaysRetry") } ?: return null
+    val notifications = str("notificationPolicy")?.takeIf { it in setOf("off", "terminal", "critical", "stages") } ?: return null
+    return ScheduleCreateApprovalUi(title, prompt, cadence, time, timezone, weekday, interval, upstream, workspace, model, environment,
+        approval, recovery, notifications) to (token ?: return null)
+}
+
+/** Decode an action request only. This is not a target proof or an Allow. */
+internal fun privateDeviceActionApprovalPage(value: JsonElement?, card: ApprovalCardUi,
+    expectedDigest: String? = null): Pair<DeviceActionApprovalRequestUi, String?>? {
+    if (card.toolName != "device.act") return null
+    val (details, token) = privateApprovalPage(value, card, requiredRisk = "controlsGUI", workspaceVerified = false, requireToken = false) ?: return null
+    if (details.keys != setOf("kind", "action", "observationId", "nodeRef", "direction", "inputKind", "canonicalTargetDigest")) return null
+    fun str(key: String): String? = (details[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
+    val root = value as? JsonObject ?: return null
+    val rootDigest = (root["canonicalTargetDigest"] as? JsonPrimitive)?.takeIf { it.isString }?.content
+    val actionDigest = str("canonicalTargetDigest")
+    if (expectedDigest == null) {
+        if (token != null || root["presentationToken"] !is kotlinx.serialization.json.JsonNull ||
+            root["canonicalTargetDigest"] !is kotlinx.serialization.json.JsonNull ||
+            details["canonicalTargetDigest"] !is kotlinx.serialization.json.JsonNull) return null
+    } else if (!expectedDigest.matches(Regex("[0-9a-f]{64}")) || rootDigest != expectedDigest ||
+        actionDigest != expectedDigest || token == null) return null
+    if (str("kind") != "deviceAction") return null
+    val action = str("action")?.takeIf { it in setOf("click", "setText", "scroll", "swipe", "focus", "commit") } ?: return null
+    val observation = str("observationId") ?: return null
+    val suffix = observation.removePrefix("adbui-")
+    if (runCatching { java.util.UUID.fromString(suffix).toString() }.getOrNull() != suffix) return null
+    val ref = str("nodeRef")?.takeIf { it.matches(Regex("[A-Za-z0-9]{1,16}")) } ?: return null
+    val direction = if (details["direction"] is kotlinx.serialization.json.JsonNull) null else str("direction") ?: return null
+    val input = if (details["inputKind"] is kotlinx.serialization.json.JsonNull) null else str("inputKind") ?: return null
+    when (action) {
+        "scroll" -> if (direction !in setOf("forward", "backward") || input != null) return null
+        "swipe" -> if (direction !in setOf("up", "down", "left", "right") || input != null) return null
+        "setText" -> if (input !in setOf("text", "sensitiveText") || direction != null) return null
+        else -> if (direction != null || input != null) return null
+    }
+    return DeviceActionApprovalRequestUi(action, observation, ref, direction, input) to token
+}
+
+internal fun privateLocalShellApprovalPage(value: JsonElement?, card: ApprovalCardUi): Pair<LocalShellApprovalUi, String>? {
+    if (card.toolName != "exec.shell") return null
+    val (details, token) = privateApprovalPage(value, card) ?: return null
+    val baseKeys = setOf("kind", "target", "environmentID", "workspaceID", "targetRevision", "command", "cwd",
+        "timeoutSeconds", "maxOutputBytes", "environmentTransaction")
+    val privateKeys = setOf("shellPrivateBytes", "shellPrivateSHA256", "stdinPresent", "envCount")
+    val hasPrivate = details.keys == baseKeys + privateKeys
+    if (!hasPrivate && details.keys != baseKeys) return null
+    fun str(key: String): String? = (details[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
+    fun primitive(key: String): JsonPrimitive? = (details[key] as? JsonPrimitive)?.takeUnless { it.isString }
+    fun readable(value: String, limit: Int, allowNewline: Boolean): Boolean {
+        if (value.isEmpty() || value.toByteArray(Charsets.UTF_8).size > limit) return false
+        val badTypes = setOf(Character.CONTROL.toInt(), Character.FORMAT.toInt(), Character.LINE_SEPARATOR.toInt(),
+            Character.PARAGRAPH_SEPARATOR.toInt(), Character.SURROGATE.toInt(), Character.UNASSIGNED.toInt())
+        return value.codePoints().noneMatch { cp -> !(allowNewline && cp == 10) && Character.getType(cp) in badTypes }
+    }
+    if (str("kind") != "localShell" || str("target") != "localLinux") return null
+    val environment = str("environmentID")?.takeIf { readable(it, 128, false) } ?: return null
+    val workspace = str("workspaceID") ?: return null
+    if (runCatching { java.util.UUID.fromString(workspace).toString() }.getOrNull() != workspace) return null
+    val revision = primitive("targetRevision")?.longOrNull?.takeIf { it > 0 } ?: return null
+    val command = str("command")?.takeIf { readable(it, 16384, true) && it.isNotBlank() } ?: return null
+    val cwd = str("cwd")?.takeIf { readable(it, 1024, false) } ?: return null
+    if (cwd != "." && (cwd.startsWith("/") || cwd.startsWith("~") || '\\' in cwd ||
+            cwd.split('/').any { it.isEmpty() || it == "." || it == ".." })) return null
+    val timeout = primitive("timeoutSeconds")?.doubleOrNull?.takeIf { it.isFinite() && it >= 0.05 && it <= 120.0 } ?: return null
+    val maxOutput = primitive("maxOutputBytes")?.longOrNull?.takeIf { it in 1L..262144L }?.toInt() ?: return null
+    val transaction = primitive("environmentTransaction")?.booleanOrNull ?: return null
+    val privateBytes = if (hasPrivate) primitive("shellPrivateBytes")?.longOrNull
+        ?.takeIf { it in 1..2_097_152 }?.toInt() ?: return null else null
+    val privateSHA = if (hasPrivate) str("shellPrivateSHA256")
+        ?.takeIf { it.matches(Regex("[0-9a-f]{64}")) } ?: return null else null
+    val stdinPresent = if (hasPrivate) primitive("stdinPresent")?.booleanOrNull ?: return null else false
+    val envCount = if (hasPrivate) primitive("envCount")?.longOrNull
+        ?.takeIf { it in 0..32 }?.toInt() ?: return null else 0
+    if (hasPrivate && !stdinPresent && envCount == 0) return null
+    return LocalShellApprovalUi(environment, workspace, revision, command, cwd, timeout, maxOutput, transaction,
+        privateBytes, privateSHA, stdinPresent, envCount) to (token ?: return null)
+}
+
+internal data class ShellPrivateChunk(val bytes: ByteArray, val nextOffset: Int?) {
+    override fun toString() = "ShellPrivateChunk(redacted)"
+}
+
+internal fun privateShellChunk(value: JsonElement?, card: ApprovalCardUi,
+    shell: LocalShellApprovalUi, expectedOffset: Int): ShellPrivateChunk? {
+    val root = value as? JsonObject ?: return null
+    if (root.keys != setOf("schema", "conversationID", "runID", "callID", "generation",
+            "offset", "totalBytes", "sha256", "dataBase64", "nextOffset")) return null
+    fun str(key: String) = (root[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
+    fun num(key: String) = (root[key] as? JsonPrimitive)?.takeIf { !it.isString }?.longOrNull
+    fun sameUUID(a: String?, b: String) = runCatching {
+        java.util.UUID.fromString(a) == java.util.UUID.fromString(b)
+    }.getOrDefault(false)
+    val total = shell.shellPrivateBytes ?: return null
+    if (str("schema") != "floe.shell-approval-chunk/1" ||
+        !sameUUID(str("conversationID"), card.conversationId) || !sameUUID(str("runID"), card.runId) ||
+        str("callID") != card.approvalId || str("generation") != card.requestGeneration ||
+        num("offset") != expectedOffset.toLong() || num("totalBytes") != total.toLong() ||
+        str("sha256") != shell.shellPrivateSHA256) return null
+    val encoded = str("dataBase64")?.takeIf { it.length <= 32_768 } ?: return null
+    val bytes = runCatching { java.util.Base64.getDecoder().decode(encoded) }.getOrNull() ?: return null
+    if (bytes.isEmpty() || bytes.size > 24_576 || expectedOffset < 0 ||
+        bytes.size > total - expectedOffset) { bytes.fill(0); return null }
+    val end = expectedOffset + bytes.size
+    val next = if (root["nextOffset"] is kotlinx.serialization.json.JsonNull) null
+        else num("nextOffset")?.takeIf { it in 0..Int.MAX_VALUE }?.toInt() ?: run { bytes.fill(0); return null }
+    if ((end == total && next != null) || (end < total && next != end)) {
+        bytes.fill(0); return null
+    }
+    return ShellPrivateChunk(bytes, next)
+}
+
+internal fun privateShellPayload(bytes: ByteArray, shell: LocalShellApprovalUi): Pair<String?, Map<String, String>>? {
+    val text = runCatching {
+        Charsets.UTF_8.newDecoder().onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+            .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+            .decode(java.nio.ByteBuffer.wrap(bytes)).toString()
+    }.getOrNull() ?: return null
+    val root = runCatching { kotlinx.serialization.json.Json.parseToJsonElement(text) as? JsonObject }.getOrNull() ?: return null
+    if (root.keys != setOf("stdin", "env")) return null
+    val stdin = if (root["stdin"] is kotlinx.serialization.json.JsonNull) null else
+        (root["stdin"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: return null
+    if ((stdin != null) != shell.stdinPresent || (stdin?.toByteArray(Charsets.UTF_8)?.size ?: 0) > 262_144) return null
+    val raw = root["env"] as? JsonObject ?: return null
+    if (raw.size != shell.envCount || raw.size > 32) return null
+    var bytesTotal = 0L
+    val env = linkedMapOf<String, String>()
+    for ((key, value) in raw) {
+        val string = (value as? JsonPrimitive)?.takeIf { it.isString }?.content ?: return null
+        if (!key.matches(Regex("[A-Za-z_][A-Za-z0-9_]{0,63}")) ||
+            key.startsWith("PROOT_") || key.startsWith("FLOE_") ||
+            key.startsWith("DYLD_") || key.startsWith("LD_") ||
+            key in setOf("HOME", "TMPDIR", "PATH", "PYTHONHOME", "PYTHONPATH") ||
+            '\u0000' in string || string.toByteArray(Charsets.UTF_8).size > 16_384) return null
+        bytesTotal += key.toByteArray(Charsets.UTF_8).size + string.toByteArray(Charsets.UTF_8).size
+        if (bytesTotal > 32_768) return null
+        env[key] = string
+    }
+    return stdin to env
+}
+
 class ThreadProjectionBuilder internal constructor(
     private val conversationId: String,
     /** Read at build time so permission/TTS readiness never stays stale. */
@@ -102,7 +527,7 @@ class ThreadProjectionBuilder internal constructor(
     var conversationRevision: Revision? = null
     var earlierCursor: MessagePageCursorUi? = null
     var hasEarlierMessages: Boolean = false
-    var selectedRunId: String? = null
+    @Volatile var selectedRunId: String? = null
     val childDetails = mutableMapOf<String, ChildRunDetailUi>()
     /**
      * Durable next-input mode + presentation acknowledgement for THIS task
@@ -329,6 +754,13 @@ class ThreadProjectionBuilder internal constructor(
     private val approvalVersionByRunCall = LinkedHashMap<String, String>()
     private val retiredApprovalVersions = LinkedHashSet<String>()
     private fun approvalKey(runID: String, callID: String) = "$runID/$callID"
+
+    private fun sameApprovalOwner(value: String?): Boolean {
+        if (value.isNullOrBlank()) return false
+        val actual = runCatching { java.util.UUID.fromString(value) }.getOrNull()
+        val expected = runCatching { java.util.UUID.fromString(conversationId) }.getOrNull()
+        return if (actual != null && expected != null) actual == expected else value == conversationId
+    }
 
     private fun pruneApprovalFences() {
         while (retiredApprovalVersions.size > 4096) {
@@ -609,7 +1041,16 @@ class ThreadProjectionBuilder internal constructor(
     internal fun runRevision(runID: String): Revision? = runRevisions[runID]
 
     /** The tracked `requestedAt` approval version for one live call. */
-    internal fun approvalVersion(callID: String): String? = approvalVersions[callID]
+    @Synchronized internal fun approvalVersion(callID: String): String? = approvalVersions[callID]
+
+    /** Only immutable, exact-run, generation-bound trusted presentations can
+     * become a human decision. The current native snapshot does not yet carry
+     * complete scope information, so such cards remain non-decidable. */
+    @Synchronized internal fun approvalBinding(runID: String, callID: String): ApprovalCardUi? =
+        pendingApprovalsByRun[runID]?.firstOrNull {
+            it.approvalId == callID && it.identityVerified && it.approvalRevision != null &&
+                approvalVersionByRunCall[approvalKey(runID, callID)] == it.approvalRevision
+        }
 
     /** The tracked `inputVersion` of one durable pending-input row. */
     internal fun inputVersion(inputID: String): String? = inputVersions[inputID]
@@ -706,7 +1147,7 @@ class ThreadProjectionBuilder internal constructor(
      * pending-input rows with their `inputVersion`, and the queue-order
      * revision. Nothing here is synthesized: a missing member stays absent.
      */
-    internal fun applySnapshot(page: ConversationWire.SnapshotPage) {
+    @Synchronized internal fun applySnapshot(page: ConversationWire.SnapshotPage) {
         runRows[page.runID] = (runRows[page.runID]
             ?: RunRowUi(page.runID, page.durableState, null, ""))
             .copy(
@@ -723,7 +1164,7 @@ class ThreadProjectionBuilder internal constructor(
             // after its live owner retired. This does not claim an allow.
             retirePendingApprovals(page.runID, page.durableWatermark)
             advanceApprovalFence(page.runID, page.durableWatermark)
-        } else if (approval != null) {
+        } else if (approval != null && page.liveOwner && sameApprovalOwner(page.conversationID)) {
             // A page older than the newest observed approval state for this
             // run is a late pre-decision read: it must not resurrect a
             // retired card nor roll back a newer request.
@@ -734,38 +1175,99 @@ class ThreadProjectionBuilder internal constructor(
                 page.durableWatermark > (approvalAbsenceFenceByRun[page.runID] ?: -1L) && !retired
             ) {
                 val cards = pendingApprovalsByRun.getOrPut(page.runID) { mutableListOf() }
-                val existing = cards.firstOrNull { it.approvalId == approval.callID }
-                val knownVersion = approvalVersions[approval.callID]
-                if (existing == null) {
-                    cards.add(
-                        ApprovalCardUi(
+                val generation = approval.generation?.let { raw ->
+                    runCatching { java.util.UUID.fromString(raw) }.getOrNull()
+                        ?.toString()?.takeIf { it == raw }
+                }
+                val revision = page.approvalRevision?.takeIf {
+                    generation != null && it.resourceID == ConversationWire.approvalResourceID(approval.callID) &&
+                        it.version == "generation:$generation"
+                }?.version
+                val presentation = approval.presentation?.takeIf {
+                    it.status == "available" && it.generation == generation && it.tool == approval.tool &&
+                        it.effect in setOf("readOnly", "internalState", "mutating") &&
+                        it.requestedScope in setOf("local", "host", "hostPath") &&
+                        it.grantScope == "singleUse" && it.workspaceVerified != null &&
+                        it.descriptorIdentity?.matches(Regex("[0-9a-f]{64}")) == true &&
+                        it.isSideEffecting != null && it.riskLabels != null
+                }
+                // The first complete, generation-bound detail schema only
+                // describes device back/home/launch. Other actions remain
+                // closed until native can show their actual targets in full.
+                val details = presentation?.actionDetails
+                val action = details?.get("action")?.let { (it as? JsonPrimitive)?.takeIf { v -> v.isString }?.content }
+                val packageName = details?.get("packageName")?.let { (it as? JsonPrimitive)?.takeIf { v -> v.isString }?.content }
+                val validPackage = packageName != null && packageName.toByteArray(Charsets.UTF_8).size <= 180 &&
+                    packageName.matches(Regex("[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+"))
+                val completeAction = when (action) {
+                    "back", "home" -> details?.keys == setOf("action")
+                    "launch" -> details?.keys == setOf("action", "packageName") && validPackage
+                    else -> false
+                }
+                val deviceReady = revision != null && presentation != null && approval.tool == "device.act" &&
+                    presentation.detailStatus == "available" && completeAction && presentation.requestedScope == "local" &&
+                    presentation.workspaceVerified == false &&
+                    !(presentation.effect == "readOnly" && presentation.isSideEffecting == true)
+                val fileDetails = if (WORKSPACE_APPROVAL_CHANNEL_READY && revision != null && presentation != null &&
+                    presentation.workspaceVerified == true && presentation.detailStatus == "available" &&
+                    presentation.requestedScope == "local" && presentation.effect == "mutating" &&
+                    presentation.isSideEffecting == true && presentation.riskLabels?.contains("writesFiles") == true
+                ) workspaceApprovalDetails(approval.tool, details) else null
+                val allowReady = deviceReady || fileDetails != null
+                // Every field comes from THIS snapshot. In particular, never
+                // carry an old unversioned event's tool, path or scope here.
+                val card = ApprovalCardUi(
                             approvalId = approval.callID,
                             runId = page.runID,
                             conversationId = conversationId,
-                            workspaceId = null,
+                            workspaceId = fileDetails?.workspaceId,
                             toolName = approval.tool,
                             target = ApprovalTargetUi.Local,
                             scopeDescription = "",
                             reason = approval.reason,
-                            riskLabels = emptySet(),
-                            isSideEffecting = false,
+                            riskLabels = presentation?.riskLabels?.toSet() ?: emptySet(),
+                            isSideEffecting = presentation?.isSideEffecting ?: true,
                             requestedAtLabel = approval.requestedAt,
                             evidenceLines = emptyList(),
-                        ),
-                    )
-                } else if (incomingVersion != null && incomingVersion != knownVersion) {
-                    // A genuinely NEW request for the SAME call id (a new
-                    // `requestedAt` ⇒ a new CAS version): refresh the
-                    // request-bound fields; the run/card identity is kept.
-                    cards[cards.indexOf(existing)] = existing.copy(
-                        reason = approval.reason,
-                        requestedAtLabel = approval.requestedAt,
-                    )
+                            requestGeneration = generation,
+                            approvalRevision = revision,
+                            descriptorIdentity = presentation?.descriptorIdentity,
+                            requestedScope = presentation?.requestedScope,
+                            workspaceVerified = fileDetails != null,
+                            actionKind = action.takeIf { deviceReady },
+                            actionPackage = packageName.takeIf { deviceReady },
+                            workspaceAction = fileDetails,
+                            identityVerified = revision != null && presentation != null,
+                            scopeVerified = allowReady,
+                        )
+                val previousVersion = approvalVersionByRunCall[key]
+                if (previousVersion != null && previousVersion != revision) {
+                    retiredApprovalVersions.add("$key/$previousVersion")
                 }
-                incomingVersion?.let {
+                // The live snapshot has one pending approval for this run;
+                // cards for older calls must not survive a changed gate.
+                val oldCallIDs = cards.map { it.approvalId }.toSet()
+                for (old in cards) {
+                    if (old.approvalId != approval.callID) {
+                        val oldKey = approvalKey(page.runID, old.approvalId)
+                        approvalVersionByRunCall.remove(oldKey)?.let { retiredApprovalVersions.add("$oldKey/$it") }
+                    }
+                }
+                cards.clear()
+                cards.add(card)
+                for (oldID in oldCallIDs) {
+                    if (oldID != approval.callID && pendingApprovalsByRun.values.none { list -> list.any { it.approvalId == oldID } }) {
+                        approvalVersions.remove(oldID)
+                    }
+                }
+                approvalVersionByRunCall.remove(key)
+                revision?.let {
                     approvalVersions[approval.callID] = it
                     approvalVersionByRunCall[key] = it
                 }
+                if (revision == null && pendingApprovalsByRun.none { (run, list) ->
+                        run != page.runID && list.any { it.approvalId == approval.callID }
+                    }) approvalVersions.remove(approval.callID)
                 advanceApprovalFence(page.runID, page.durableWatermark)
             }
         } else if (page.liveOwner) {
@@ -909,7 +1411,7 @@ class ThreadProjectionBuilder internal constructor(
      * successful provider-completion close. Both update the durable run state
      * and its CAS revision version — never an invented `stateChanged`.
      */
-    fun applyRunEvent(frame: HostRunEventFrame) {
+    @Synchronized fun applyRunEvent(frame: HostRunEventFrame) {
         val kind = frame.kind
         val payload = frame.payload
         when (kind) {
@@ -985,43 +1487,9 @@ class ThreadProjectionBuilder internal constructor(
                 if (frame.runID == liveTailRunId || frame.runID == selectedRunId) {
                     reasoningStepOpen = false
                 }
-                // Engine approval rows: a REQUEST carries
-                // {tool,callID,scope,reason}; an OUTCOME carries
-                // {tool,callID,outcome}. Presence of `outcome` is the exact
-                // discriminator (never an invented approvalResolved).
-                val callID = payload?.string("callID")
-                if (callID != null && frame.sequence >= approvalFence(frame.runID) &&
-                    frame.sequence > (approvalAbsenceFenceByRun[frame.runID] ?: -1L)
-                ) {
-                    if (payload.string("outcome") != null) {
-                        val key = approvalKey(frame.runID, callID)
-                        approvalVersionByRunCall.remove(key)?.let { retiredApprovalVersions.add("$key/$it") }
-                        pendingApprovalsByRun[frame.runID]?.removeAll { it.approvalId == callID }
-                        if (pendingApprovalsByRun.values.none { cards -> cards.any { it.approvalId == callID } }) {
-                            approvalVersions.remove(callID)
-                        }
-                        approvalAbsenceFenceByRun[frame.runID] = frame.sequence
-                        // Fence at the outcome record: a pre-outcome snapshot
-                        // page (or a replayed request) must never resurrect
-                        // the retired card.
-                        advanceApprovalFence(frame.runID, frame.sequence)
-                    } else {
-                        val card = ConversationWire.decodeApprovalCard(
-                            conversationId, frame.runID, payload)
-                        if (card != null) {
-                            pendingApprovalsByRun.getOrPut(frame.runID) {
-                                mutableListOf()
-                            }.removeAll { it.approvalId == card.approvalId }
-                            pendingApprovalsByRun.getOrPut(frame.runID) {
-                                mutableListOf()
-                            }.add(card)
-                            // Fence at the request record: a snapshot page
-                            // fetched before this request landed is stale and
-                            // must not clear the just-projected card.
-                            advanceApprovalFence(frame.runID, frame.sequence)
-                        }
-                    }
-                }
+                // Historical approval events have no generation and cannot
+                // establish scope or retire a newer card. The host schedules
+                // an authoritative run.snapshot after this hint instead.
             }
             "userInputConsumed" -> {
                 // Historical/forward-compatible vocabulary: the durable queue
@@ -1902,8 +2370,10 @@ class ThreadProjectionBuilder internal constructor(
         if (reasoningTail.isNotEmpty()) {
             rows.add(TimelineRowUi.LiveReasoning)
         }
-        val selected = selectedRunId
-        val approvals = selected?.let { pendingApprovalsByRun[it].orEmpty() }.orEmpty()
+        val (selected, approvals) = synchronized(this) {
+            val run = selectedRunId
+            run to run?.let { pendingApprovalsByRun[it]?.toList() }.orEmpty()
+        }
         val selectedState = selected?.let { runRows[it]?.stateName }
         // ⇄ the ORIGINAL AgentState vocabulary (FloeAgentRuntime/AgentState.swift):
         // only these states are live work; `interrupted` is a PARKED
@@ -2132,6 +2602,10 @@ internal object ConversationWire {
         val startedAt: String,
         /** Durable `conversation_mode` for THIS run (`chat|plan|goal`). */
         val conversationModeRaw: String? = null,
+        /** The App composer's EXPLICIT `agent|chat|plan|goal` selection the
+         * launch recorded, or null when it was never recorded (legacy/
+         * unlabeled). Null is honest absence — never default it to Agent. */
+        val explicitExecutionModeRaw: String? = null,
     )
 
     class MessagePage(
@@ -2214,6 +2688,22 @@ internal object ConversationWire {
         val conversationModeRaw: String? = null,
         val durableTerminal: Boolean? = null,
         val terminalDispositionRaw: String? = null,
+        /** Whether the native snapshot actually supplied a valid liveOwner
+         * boolean. Existing presentation may use the false fallback above;
+         * stop settlement must not confuse an omitted member with proof that
+         * a run has no live owner. */
+        val liveOwnerPresent: Boolean = false,
+        /** Strict stop-proof carrier facts. Missing/malformed members are
+         * unknown, never evidence that a run or its approval has settled. */
+        val snapshotSchema: String? = null,
+        val isTerminalPresent: Boolean = false,
+        val durableTerminalPresent: Boolean = false,
+        val durableWatermarkPresent: Boolean = false,
+        val pendingApprovalExplicitlyAbsent: Boolean = false,
+        val stopSettlement: JsonObject? = null,
+        /** Current native ownership; absent or malformed is unknown. */
+        val currentOwnerPhase: String? = null,
+        val currentLiveProducer: Boolean? = null,
     )
 
     class PendingApprovalWire(
@@ -2221,6 +2711,15 @@ internal object ConversationWire {
         val tool: String,
         val reason: String,
         val requestedAt: String,
+        val generation: String? = null,
+        val presentation: ApprovalPresentationWire? = null,
+    )
+
+    class ApprovalPresentationWire(
+        val status: String?, val generation: String?, val tool: String?, val effect: String?,
+        val isSideEffecting: Boolean?, val riskLabels: List<String>?, val requestedScope: String?,
+        val grantScope: String?, val workspaceVerified: Boolean?, val descriptorIdentity: String?,
+        val detailStatus: String?, val actionDetails: JsonObject?,
     )
 
     class PendingInputWire(
@@ -2253,6 +2752,7 @@ internal object ConversationWire {
                 modelName = obj.string("modelName"),
                 startedAt = obj.string("startedAt") ?: "",
                 conversationModeRaw = obj.string("conversationMode"),
+                explicitExecutionModeRaw = obj.string("explicitExecutionMode"),
             )
         } ?: emptyList()
         val pendingInputs = (root["pendingInputs"] as? JsonArray)?.mapNotNull { element ->
@@ -2631,11 +3131,25 @@ internal object ConversationWire {
         } ?: return null
         val approval = (root["pendingApproval"] as? JsonObject)?.let { obj ->
             val callID = obj.string("callID") ?: return@let null
+            val presentation = (obj["presentation"] as? JsonObject)?.let { value ->
+                val riskArray = value["riskLabels"] as? JsonArray
+                val risks = riskArray?.mapNotNull { element ->
+                    (element as? JsonPrimitive)?.takeIf { it.isString }?.content
+                        ?.takeIf { it.length in 1..64 }
+                }?.takeIf { it.size == riskArray.size && it.size <= 32 }
+                ApprovalPresentationWire(value.string("status"), value.string("generation"),
+                    value.string("tool"), value.string("effect"), value.bool("isSideEffecting"), risks,
+                    value.string("requestedScope"), value.string("grantScope"),
+                    value.bool("workspaceVerified"), value.string("descriptorIdentity"),
+                    value.string("detailStatus"), value["actionDetails"] as? JsonObject)
+            }
             PendingApprovalWire(
                 callID = callID,
                 tool = obj.string("tool") ?: "",
                 reason = obj.string("reason") ?: "",
                 requestedAt = obj.string("requestedAt") ?: "",
+                generation = obj.string("generation"),
+                presentation = presentation,
             )
         }
         val approvalRevision = (root["approvalRevision"] as? JsonObject)?.let {
@@ -2720,6 +3234,21 @@ internal object ConversationWire {
             conversationModeRaw = root.string("conversationMode"),
             durableTerminal = root.bool("durableTerminal"),
             terminalDispositionRaw = root.string("terminalDisposition"),
+            liveOwnerPresent = (root["liveOwner"] as? JsonPrimitive)
+                ?.takeIf { !it.isString }?.booleanOrNull != null,
+            snapshotSchema = root.string("schema"),
+            isTerminalPresent = (root["isTerminal"] as? JsonPrimitive)
+                ?.takeIf { !it.isString }?.booleanOrNull != null,
+            durableTerminalPresent = (root["durableTerminal"] as? JsonPrimitive)
+                ?.takeIf { !it.isString }?.booleanOrNull != null,
+            durableWatermarkPresent = (root["durableWatermark"] as? JsonPrimitive)
+                ?.takeIf { !it.isString }?.longOrNull != null,
+            pendingApprovalExplicitlyAbsent = root["pendingApproval"] is kotlinx.serialization.json.JsonNull,
+            stopSettlement = root["stopSettlement"] as? JsonObject,
+            currentOwnerPhase = (root["currentOwnerPhase"] as? JsonPrimitive)
+                ?.takeIf { it.isString }?.contentOrNull,
+            currentLiveProducer = (root["currentLiveProducer"] as? JsonPrimitive)
+                ?.takeIf { !it.isString }?.booleanOrNull,
         )
     }
 
@@ -3032,6 +3561,20 @@ internal object ConversationWire {
      * * `mode` is the ORIGINAL `RunLaunchMode` vocabulary `chat|plan|goal`;
      *   the composer's AGENT and CHAT both mean the ordinary chat-capable
      *   turn, while PLAN/GOAL keep their own spellings.
+     * * `executionMode` is the additive, OPTIONAL provenance member. It is
+     *   present only when the App really holds an explicit selection: either
+     *   the durable per-conversation composer choice ([persistedModeRaw], the
+     *   same `TaskContinuityPreferences` record restored on reopen) agrees
+     *   with this launch, or the mode is CHAT — which can never be the
+     *   untouched Agent default. An absent member stays NULL in native
+     *   storage (legacy/unlabeled), never a fabricated Agent choice, and old
+     *   callers (`run.startTask`, meeting assistant) keep their exact bytes.
+     *   PLAN/GOAL remain exact in `conversation_mode` even when the member is
+     *   absent.
+     * * CHAT is a normal task-authorized turn: it does NOT send an empty
+     *   `toolCeiling`. Ordinary text/voice Chat and Agent share the persisted
+     *   task policy, tool availability and approvals; only Plan's read-only
+     *   projection and the separate temporary ceiling narrow the toolchain.
      * * `providerID` + `modelID` are REQUIRED native UUIDs; the App sends the
      *   real selected model's provider/model identities (never a default or a
      *   fabricated id).
@@ -3039,7 +3582,9 @@ internal object ConversationWire {
      *   the previous App invented both and native rejected the whole
      *   payload. Temporary launches travel the dedicated `temp.*` surface.
      */
-    fun runStartPayload(request: RunLaunchRequest, stagedHandles: List<String>): JsonObject {
+    fun runStartPayload(request: RunLaunchRequest,
+                        stagedHandles: List<String>,
+                        persistedModeRaw: String? = null): JsonObject {
         val members = mutableMapOf<String, JsonElement>(
             "goal" to JsonPrimitive(request.goalText),
             "mode" to JsonPrimitive(runLaunchMode(request.executionMode)),
@@ -3047,18 +3592,20 @@ internal object ConversationWire {
         )
         request.providerId?.let { members["providerID"] = JsonPrimitive(it) }
         request.modelId?.let { members["modelID"] = JsonPrimitive(it) }
-        // Product CHAT (an explicit ordinary chat-only turn) sends the EMPTY
-        // tool ceiling: the current native assembly already maps an empty
-        // ceiling to `toolsEnabled=false`. AGENT omits the key and keeps the
-        // native tool path enabled. This NEVER generalizes from the wire
-        // `mode:"chat"` — AGENT also travels the chat spelling — only from
-        // the composer's own CHAT selection on an ORDINARY launch (a
-        // temporary session's ceiling is the native frozen public-web
-        // allowlist and must stay unchanged).
-        if (request.executionMode == AgentExecutionModeUi.CHAT &&
-            request.temporaryIncarnationId == null
-        ) {
-            members["toolCeiling"] = JsonArray(emptyList())
+        // Presence-based provenance. A stored composer choice that matches
+        // this launch is the user's real selection (AGENT included); CHAT is
+        // inherently a selection because the untouched default is AGENT.
+        // Everything else stays absent, so native records NULL — never a
+        // claimed Agent — and a temporary session invents nothing here.
+        val declaredMode = when {
+            persistedModeRaw != null && persistedModeRaw == request.executionMode.swiftRaw ->
+                request.executionMode.swiftRaw
+            request.executionMode == AgentExecutionModeUi.CHAT ->
+                AgentExecutionModeUi.CHAT.swiftRaw
+            else -> null
+        }
+        if (declaredMode != null && request.temporaryIncarnationId == null) {
+            members["executionMode"] = JsonPrimitive(declaredMode)
         }
         // The Home draft-task policy for the FIRST fresh launch of a new
         // ordinary conversation (⇄ persisted atomically with the launch by
@@ -3110,7 +3657,9 @@ internal object ConversationWire {
      * the payload so the durable row owns it (iOS parity) and the native
      * terminal drain launches exactly the queued mode instead of a silent
      * default. Native keeps the historical `agent` default for an absent
-     * key, so the grammar stays additive.
+     * key, so the grammar stays additive. The member's PRESENCE is also the
+     * row's explicit-provenance source: the drain persists it on the run
+     * (an old envelope without the key stays NULL, never a claimed Agent).
      */
     fun runningInputPayload(request: RunningInputRequest, stagedHandles: List<String>): JsonObject {
         val members = mutableMapOf<String, JsonElement>(

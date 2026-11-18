@@ -154,6 +154,45 @@ class ConversationUserQuestionTest {
     }
 
     @Test
+    fun settledReceiptClosesOnlyItsQuestionAndShowsNextPendingQuestion() {
+        val holder = ConversationFlowHolder(RecordingHost(), "conv-1")
+        holder.applyHostSnapshot(threadState(session))
+        val first = question()
+        val second = question("q2").copy(
+            requestId = first.requestId,
+            questionId = "${first.requestId}.q2",
+        )
+        holder.applyUserQuestionSnapshot(session, snapshot(first, second))
+        holder.applyUserQuestionReceipt(UserQuestionAnswerReceiptUi(
+            requestId = first.requestId, questionId = first.questionId,
+            statusRaw = "answered", revision = first.revision + 1,
+            accepted = true, alreadySettled = false, requestStateRaw = "awaitingAnswer",
+        ))
+        assertTrue(holder.showingUserQuestion)
+        assertEquals(second.questionId, holder.currentUserQuestion?.questionId)
+        assertEquals(UserQuestionStatusUi.ANSWERED, holder.userQuestionSnapshot?.questions?.first()?.status)
+    }
+
+    @Test
+    fun staleOrOtherRequestReceiptDoesNotDismissCurrentQuestion() {
+        val holder = ConversationFlowHolder(RecordingHost(), "conv-1")
+        holder.applyHostSnapshot(threadState(session))
+        val current = question(revision = 4)
+        holder.applyUserQuestionSnapshot(session, snapshot(current))
+        val receipt = UserQuestionAnswerReceiptUi(
+            requestId = current.requestId, questionId = current.questionId,
+            statusRaw = "answered", revision = 3, accepted = true,
+            alreadySettled = false, requestStateRaw = "settled",
+        )
+        holder.applyUserQuestionReceipt(receipt)
+        assertTrue(holder.showingUserQuestion)
+        holder.applyUserQuestionReceipt(receipt.copy(requestId = "other", revision = 5))
+        assertTrue(holder.showingUserQuestion)
+        holder.applyUserQuestionReceipt(receipt.copy(revision = 5))
+        assertFalse(holder.showingUserQuestion)
+    }
+
+    @Test
     fun multiSelectTogglesAndFreeTextGate() {
         assertTrue(
             UserQuestionDraftPolicy.canSubmit(

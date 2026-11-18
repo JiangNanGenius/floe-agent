@@ -27,6 +27,14 @@ sealed interface SidebarSelection {
     data class More(val destination: MoreDestination) : SidebarSelection
     data class Workspace(val workspaceId: String) : SidebarSelection
     data class Conversation(val conversationId: String) : SidebarSelection
+
+    /**
+     * Android's lightweight Space hub (overview / notes / files / toolbox,
+     * plus the wired phone workspace). It carries no workspace or task
+     * identity: Space is a navigation surface over existing destinations,
+     * never a synthesized task.
+     */
+    data object Space : SidebarSelection
 }
 
 /** More destinations promoted to the sidebar (iOS `MoreDestination` order). */
@@ -97,12 +105,12 @@ enum class FloeSettingsSection {
 
 /**
  * The sidebar's fixed five routes, locked to the iPad order:
- * New Task, Task Center, Notes, Creative, Plugins.
+ * New Task, Task Center, Space, Creative, Plugins.
  */
 val fixedSidebarRoutes: List<SidebarSelection> = listOf(
     SidebarSelection.Workbench(WorkbenchSelection.NEW_TASK),
     SidebarSelection.Workbench(WorkbenchSelection.OVERVIEW),
-    SidebarSelection.More(MoreDestination.NOTES),
+    SidebarSelection.Space,
     SidebarSelection.More(MoreDestination.CREATIVE),
     SidebarSelection.More(MoreDestination.SKILLS),
 )

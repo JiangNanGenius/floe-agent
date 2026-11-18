@@ -71,6 +71,7 @@
     <string name="app_update_source_restarted">当前连接无法续传，已从头下载。</string>
     <string name="app_update_source_mirror">第三方镜像，仍会校验安装包。</string>
     <string name="device_sensitive_guard_title">敏感输入保护</string>
+    <string name="device_sensitive_guard_observe_notice">protection=active。请用户先清空目标应用中的敏感内容并离开该屏幕，再到 Floe 的设置 › 设备 › 敏感输入保护中手动解除对应保护，然后重新观察。</string>
     <string name="device_sensitive_guard_unavailable">暂时无法读取保护状态，请刷新后重试。</string>
     <string name="device_sensitive_guard_limit">保护记录已满，未输入内容。请在设置 › 设备 › 敏感输入保护中检查旧记录；清空相应敏感内容并离开屏幕后，再手动解除保护。</string>
     <string name="device_sensitive_guard_empty">当前没有受保护的屏幕。</string>

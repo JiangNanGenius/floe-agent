@@ -681,7 +681,7 @@ public struct TaskContinuityWait: Sendable, Equatable {
     /// the live card.
     public var requestDigest: String?
     public var answerNonce: String?
-    /// Approval-only live revision (`approval.<callID>/<requestedAt>`).
+    /// Approval-only live revision (`approval.<callID>/<generation>`).
     public var approvalVersion: String?
     public var runState: String
 
@@ -870,12 +870,15 @@ public struct TaskContinuityLiveApproval: Sendable, Equatable {
     public var tool: String
     public var reason: String
     public var requestedAt: Date
+    public var generation: UUID?
 
-    public init(callID: String, tool: String, reason: String, requestedAt: Date) {
+    public init(callID: String, tool: String, reason: String, requestedAt: Date,
+                generation: UUID? = nil) {
         self.callID = callID
         self.tool = tool
         self.reason = reason
         self.requestedAt = requestedAt
+        self.generation = generation
     }
 }
 
@@ -2509,14 +2512,14 @@ public struct C02SQLiteTaskContinuityWaitProvider: TaskContinuityWaitProviding {
                     prompt: Self.boundedPrompt("\(live.tool): \(live.reason)").text,
                     promptTruncated: false,
                     waitPolicy: "approval",
-                    answerableNow: true,
+                    answerableNow: live.generation != nil,
                     requiresResume: false,
                     createdAt: live.requestedAt,
                     updatedAt: live.requestedAt,
                     deadlineAt: nil,
                     requestDigest: nil,
                     answerNonce: nil,
-                    approvalVersion: RunWireDate.encode(live.requestedAt),
+                    approvalVersion: live.generation.map { RunWireRevision.approvalVersion(generation: $0) },
                     runState: run.state))
                 continue
             }
@@ -2555,7 +2558,7 @@ public struct C02SQLiteTaskContinuityWaitProvider: TaskContinuityWaitProviding {
                     deadlineAt: nil,
                     requestDigest: nil,
                     answerNonce: nil,
-                    approvalVersion: RunWireDate.encode(pending.requestedAt),
+                    approvalVersion: nil,
                     runState: run.state))
             }
         }

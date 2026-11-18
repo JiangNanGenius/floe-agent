@@ -13,10 +13,197 @@ import FloeProviders
 import FloePersistence
 import FloeAgentRuntime
 import FloeSecurity
+import FloeTools
 @testable import FloeAndroidCore
 
 final class RuntimeFacadeRunControlTests: XCTestCase {
     private var fixture: RunDomainFixture!
+
+    func testDeviceActionApprovalProjectionNeverIncludesInputAndRejectsAmbiguity() throws {
+        let observation = UUID().uuidString.lowercased()
+        func project(_ json: String) throws -> [String: SettingsDomainV1.JSONValue]? {
+            let call = try ToolCall(id: "call", toolName: "device.act", argumentsJSON: Data(json.utf8), scope: .local)
+            return DeviceActionApprovalPresentation.details(waiting: .init(toolCall: call, reason: "test"))
+        }
+        let secret = "synthetic-canary-credential"
+        let input = try XCTUnwrap(project("{\"action\":\"setText\",\"observationId\":\"\(observation)\",\"nodeRef\":\"n3\",\"sensitiveText\":\"\(secret)\"}"))
+        XCTAssertEqual(input["inputKind"], .string("sensitiveText"))
+        XCTAssertEqual(input["direction"], .null)
+        XCTAssertFalse(String(describing: input).contains(secret))
+        let swipe = try XCTUnwrap(project("{\"action\":\"swipe\",\"observationId\":\"adbui-\(observation)\",\"nodeRef\":\"n3\",\"direction\":\"up\"}"))
+        XCTAssertEqual(swipe["direction"], .string("up"))
+        XCTAssertNil(try project("{\"action\":\"setText\",\"observationId\":\"\(observation)\",\"nodeRef\":\"n3\",\"text\":\"a\",\"sensitiveText\":\"b\"}"))
+        XCTAssertNil(try project("{\"action\":\"click\",\"observationId\":\"\(observation)\",\"nodeRef\":\"n3\",\"extra\":true}"))
+        XCTAssertNil(try project("{\"action\":\"click\",\"observationId\":\"foreign\",\"nodeRef\":\"n3\"}"))
+        XCTAssertNil(try project("{\"action\":\"scroll\",\"observationId\":\"\(observation)\",\"nodeRef\":\"n3\",\"direction\":\"up\"}"))
+    }
+
+    func testWorkspaceApprovalReadbackRejectsTerminalAndUnknownStates() {
+        XCTAssertTrue(LinuxWorkspaceAuthority.approvalWorkspaceStateAllowed("preparing"))
+        XCTAssertTrue(LinuxWorkspaceAuthority.approvalWorkspaceStateAllowed("waitingApproval"))
+        for state in ["failed", "interrupted", "checkpointed", "completed", "cancelling", "idle", "futureUnknown"] {
+            XCTAssertFalse(LinuxWorkspaceAuthority.approvalWorkspaceStateAllowed(state), state)
+        }
+    }
+
+    func testWorkspacePresentationReceiptIsBoundOneShotAndExpires() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let proof = WorkspaceApprovalLaunchProof(workspaceID: UUID(), rootURL: root, allowedPaths: [],
+            rootHandle: try XCTUnwrap(WorkspaceApprovalRootHandle(root: root)))
+        let task = UUID(), run = UUID(), generation = UUID()
+        let original = WorkspaceApprovalReceiptStore.Binding(epoch: 7, taskID: task, runID: run,
+            callID: "call", generation: generation, descriptorIdentity: "descriptor", workspaceProof: proof, digest: "digest")
+        let otherRun = WorkspaceApprovalReceiptStore.Binding(epoch: 7, taskID: task, runID: UUID(),
+            callID: "call", generation: generation, descriptorIdentity: "descriptor", workspaceProof: proof, digest: "digest")
+        let changedDetails = WorkspaceApprovalReceiptStore.Binding(epoch: 7, taskID: task, runID: run,
+            callID: "call", generation: generation, descriptorIdentity: "descriptor", workspaceProof: proof, digest: "different")
+        var store = WorkspaceApprovalReceiptStore()
+        let wrongOwner = try XCTUnwrap(store.issue(original, now: 1))
+        XCTAssertFalse(store.consume(wrongOwner, matching: otherRun, now: 2))
+        XCTAssertFalse(store.consume(wrongOwner, matching: original, now: 2))
+        let changed = try XCTUnwrap(store.issue(original, now: 2))
+        XCTAssertFalse(store.consume(changed, matching: changedDetails, now: 3))
+        let valid = try XCTUnwrap(store.issue(original, now: 3))
+        XCTAssertTrue(store.matches(valid, binding: original, now: 4))
+        XCTAssertTrue(store.matches(valid, binding: original, now: 4), "chunk reads do not consume the receipt")
+        XCTAssertFalse(store.matches(valid, binding: otherRun, now: 4))
+        XCTAssertFalse(store.matches(valid, binding: changedDetails, now: 4))
+        XCTAssertFalse(store.matches(valid, binding: original, now: 603))
+        XCTAssertTrue(store.consume(valid, matching: original, now: 4))
+        XCTAssertFalse(store.consume(valid, matching: original, now: 4))
+        let expired = try XCTUnwrap(store.issue(original, now: 4))
+        XCTAssertFalse(store.consume(expired, matching: original, now: 604))
+        let old = try XCTUnwrap(store.issue(original, now: 10))
+        let replacement = try XCTUnwrap(store.issue(original, now: 11))
+        XCTAssertFalse(store.consume(old, matching: original, now: 12))
+        store.retire(runID: run)
+        XCTAssertFalse(store.consume(replacement, matching: original, now: 12))
+        let device = WorkspaceApprovalReceiptStore.Binding(epoch: 7, taskID: task, runID: run,
+            callID: "device-call", generation: generation, descriptorIdentity: "descriptor",
+            workspaceProof: nil, digest: "request", deviceTargetDigest: String(repeating: "a", count: 64))
+        let changedTarget = WorkspaceApprovalReceiptStore.Binding(epoch: 7, taskID: task, runID: run,
+            callID: "device-call", generation: generation, descriptorIdentity: "descriptor",
+            workspaceProof: nil, digest: "request", deviceTargetDigest: String(repeating: "b", count: 64))
+        let deviceToken = try XCTUnwrap(store.issue(device, now: 13))
+        XCTAssertFalse(store.consume(deviceToken, matching: changedTarget, now: 14))
+        XCTAssertFalse(store.consume(deviceToken, matching: device, now: 14))
+    }
+
+    func testWorkspaceApprovalDetailsRequireOriginalRootAndNeverIncludeContent() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let conversationID = UUID(), workspaceID = UUID()
+        let launch = WorkspaceApprovalLaunchProof(workspaceID: workspaceID, rootURL: root, allowedPaths: [],
+            rootHandle: try XCTUnwrap(WorkspaceApprovalRootHandle(root: root)))
+        let current = (workspaceID: workspaceID, conversationID: conversationID, rootURL: root)
+        let candidate = WorkspaceApprovalLaunchCandidate(workspaceID: workspaceID, rootURL: root,
+            allowedPaths: [], rootHandle: launch.rootHandle)
+        XCTAssertNil(candidate.promote(current: nil, conversationID: conversationID),
+                     "a terminal or absent run has no active workspace readback")
+        XCTAssertNil(candidate.promote(current: current, conversationID: UUID()),
+                     "another conversation cannot promote this root")
+        XCTAssertNil(candidate.promote(current: (workspaceID: UUID(), conversationID: conversationID, rootURL: root),
+                                       conversationID: conversationID),
+                     "the same path cannot replace the workspace identity frozen at selection")
+        XCTAssertNil(candidate.promote(current: (workspaceID: workspaceID, conversationID: conversationID,
+                                                 rootURL: root.appendingPathComponent("other")),
+                                       conversationID: conversationID),
+                     "the same workspace ID cannot replace the root selected for the service")
+        XCTAssertEqual(candidate.promote(current: current, conversationID: conversationID), launch)
+        func details(_ tool: String, _ json: String, currentWorkspace: UUID? = nil) throws -> [String: SettingsDomainV1.JSONValue]? {
+            let call = try ToolCall(id: "call", toolName: tool, argumentsJSON: Data(json.utf8), scope: .local)
+            return WorkspaceApprovalPresentation.details(waiting: .init(toolCall: call, reason: "test"),
+                launch: launch, current: (workspaceID: currentWorkspace ?? current.workspaceID,
+                    conversationID: current.conversationID, rootURL: current.rootURL), conversationID: conversationID)
+        }
+        let create = try XCTUnwrap(details("workspace.createFile", #"{"path":"notes/a.txt","content":"synthetic-secret","overwrite":false}"#))
+        XCTAssertEqual(create["target"], .string("notes/a.txt"))
+        XCTAssertEqual(create["overwrite"], .string("forbidden"))
+        XCTAssertFalse(String(describing: create).contains("synthetic-secret"))
+        let write = try XCTUnwrap(details("workspace.writeFile", #"{"path":"report.txt","content":"synthetic-secret","expectedMtime":5}"#))
+        XCTAssertEqual(write["overwrite"], .string("conditional"))
+        XCTAssertEqual(write["precondition"], .string("mtime"))
+        let draft = try XCTUnwrap(details("workspace.writeFile", "{\"path\":\"final.txt\",\"sourcePath\":\"draft.txt\",\"expectedSourceSHA256\":\"" + String(repeating: "a", count: 64) + "\"}"))
+        XCTAssertEqual(draft["sourcePath"], .string("draft.txt"))
+        XCTAssertEqual(draft["overwrite"], .string("forbidden"))
+        let patch = try XCTUnwrap(details("workspace.applyPatch", #"{"path":"a.txt","patch":"synthetic-secret"}"#))
+        XCTAssertEqual(patch["precondition"], .string("patchContext"))
+        let append = try XCTUnwrap(details("workspace.appendFile", #"{"path":"a.txt","content":"synthetic-secret","expectedSHA256":"hash-value"}"#))
+        XCTAssertEqual(append["precondition"], .string("fileExistsAndSha256"))
+        XCTAssertFalse(String(describing: append).contains("synthetic-secret"))
+        XCTAssertFalse(String(describing: append).contains("hash-value"))
+        let replace = try XCTUnwrap(details("workspace.replaceText", #"{"path":"a.txt","oldText":"secret-old","newText":"secret-new","expectedOccurrences":2}"#))
+        XCTAssertEqual(replace["expectedOccurrences"], .integer(2))
+        XCTAssertEqual(replace["precondition"], .string("occurrences"))
+        XCTAssertFalse(String(describing: replace).contains("secret-old"))
+        let directory = try XCTUnwrap(details("workspace.createDirectory", #"{"path":"new/目录"}"#))
+        XCTAssertEqual(directory["overwrite"], .string("forbidden"))
+        for operation in ["moveFile", "copyFile"] {
+            let transfer = try XCTUnwrap(details("workspace.\(operation)", #"{"from":"one.txt","to":"new/two.txt"}"#))
+            XCTAssertEqual(transfer["sourcePath"], .string("one.txt"))
+            XCTAssertEqual(transfer["target"], .string("new/two.txt"))
+            XCTAssertEqual(transfer["sourcePrecondition"], .string("exists"))
+            XCTAssertNil(try details("workspace.\(operation)", #"{"from":"one.txt","to":"../outside"}"#))
+        }
+        let deletion = try XCTUnwrap(details("workspace.deleteFile", #"{"path":"folder","recursive":true}"#))
+        XCTAssertEqual(deletion["recursive"], .boolean(true))
+        XCTAssertNil(try details("workspace.deleteFile", #"{"path":"folder","scope":"remote"}"#))
+        XCTAssertFalse(String(describing: patch).contains("synthetic-secret"))
+        let call = try ToolCall(id: "call", toolName: "workspace.createFile",
+            argumentsJSON: Data(#"{"path":"a.txt","content":"first"}"#.utf8), scope: .local)
+        let firstWaiting = AgentState.WaitingApproval(toolCall: call, reason: "test")
+        var changedWaiting = firstWaiting
+        changedWaiting.toolCall.argumentsJSON = Data(#"{"path":"a.txt","content":"second"}"#.utf8)
+        XCTAssertNotEqual(WorkspaceApprovalPresentation.bindingDigest(waiting: firstWaiting, details: create),
+                          WorkspaceApprovalPresentation.bindingDigest(waiting: changedWaiting, details: create))
+        XCTAssertNil(try details("workspace.createFile", #"{"path":"Network/remote/a.txt","content":""}"#))
+        XCTAssertNil(try details("workspace.createFile", #"{"path":"../escape","content":""}"#))
+        XCTAssertNil(try details("workspace.createFile", #"{"path":".env","content":""}"#))
+        let chinese = try XCTUnwrap(details("workspace.createFile", #"{"path":"文档/报告.txt","content":""}"#))
+        XCTAssertEqual(chinese["target"], .string("文档/报告.txt"))
+        XCTAssertNil(try details("workspace.createFile", "{\"path\":\"ab\u{202e}cd.txt\",\"content\":\"\"}"))
+        XCTAssertNil(try details("workspace.createFile", #"{"path":"file.txt","content":""}"#, currentWorkspace: UUID()))
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("real"), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("link"), withDestinationURL: root.appendingPathComponent("real"))
+        XCTAssertNil(try details("workspace.createFile", #"{"path":"link/file.txt","content":""}"#))
+        let moved = root.deletingLastPathComponent().appendingPathComponent("old-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: moved) }
+        try FileManager.default.moveItem(at: root, to: moved)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        XCTAssertNil(candidate.promote(current: current, conversationID: conversationID),
+                     "a replacement directory is not the root passed to the service")
+        XCTAssertNil(try details("workspace.createFile", #"{"path":"file.txt","content":""}"#))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: moved.path))
+    }
+
+    func testApprovalPresentationFailsClosedForUnknownOrSensitiveActions() throws {
+        let descriptor = ToolCatalog.Descriptor(name: "device.act", riskLabels: [.controlsGUI], isSideEffecting: true)
+        func project(_ json: String, descriptor: ToolCatalog.Descriptor?) throws -> SettingsDomainV1.JSONValue {
+            let call = try ToolCall(id: "one", toolName: "device.act", argumentsJSON: Data(json.utf8), scope: .local)
+            return RunSnapshotWireBuilder.approvalPresentation(.init(toolCall: call, reason: "test"), descriptor: descriptor)
+        }
+        let back = try project(#"{"action":"back","observationId":"00000000-0000-0000-0000-000000000001"}"#, descriptor: descriptor)
+        guard case .object(let fields) = back else { return XCTFail("object expected") }
+        XCTAssertEqual(fields["detailStatus"], .string("available"))
+        XCTAssertEqual(fields["actionDetails"], .object(["action": .string("back")]))
+        let launch = try project(#"{"action":"launch","packageName":"org.example.editor"}"#, descriptor: descriptor)
+        guard case .object(let launchFields) = launch else { return XCTFail("object expected") }
+        XCTAssertEqual(launchFields["detailStatus"], .string("available"))
+        XCTAssertEqual(launchFields["actionDetails"], .object([
+            "action": .string("launch"), "packageName": .string("org.example.editor")]))
+        let secret = try project(#"{"action":"setText","sensitiveText":"synthetic-secret"}"#, descriptor: descriptor)
+        guard case .object(let secretFields) = secret else { return XCTFail("object expected") }
+        XCTAssertEqual(secretFields["detailStatus"], .string("unavailable"))
+        XCTAssertNil(secretFields["actionDetails"])
+        XCTAssertFalse(String(describing: secret).contains("synthetic-secret"))
+        let unknown = try project(#"{"action":"home","observationId":"00000000-0000-0000-0000-000000000001"}"#, descriptor: nil)
+        guard case .object(let unknownFields) = unknown else { return XCTFail("object expected") }
+        XCTAssertEqual(unknownFields["status"], .string("unavailable"))
+        XCTAssertNil(unknownFields["descriptorIdentity"])
+    }
 
     override func setUp() async throws {
         fixture = try await RunDomainFixture.make()
@@ -212,9 +399,14 @@ final class RuntimeFacadeRunControlTests: XCTestCase {
             payload: ["expectedState": state], correlation: "corr-late2",
             revision: ["resourceID": RunWireRevision.runResourceID(runID), "version": state]))
         guard case .mutationAccepted(let detail) = again.outcome else {
-            return XCTFail("already-retired cancel reports alreadyRequested")
+            return XCTFail("a retired, settled run must answer from its durable settlement")
         }
-        XCTAssertEqual(detail["cancel"], "alreadyRequested")
+        // The earlier live Stop appended a typed settlement; a cold second
+        // Stop reads that EXACT proof. The old `alreadyRequested` string alone
+        // was never a settlement claim.
+        XCTAssertEqual(detail["cancel"], "alreadySettled")
+        XCTAssertEqual(detail["settled"], "true")
+        XCTAssertEqual(detail["incarnation"]?.count, 64)
     }
 
     func testCancelBeforePrepareCommitProvesC0NoEffect() async throws {
@@ -471,6 +663,77 @@ final class RuntimeFacadeRunControlTests: XCTestCase {
 
     // MARK: - approval.resolve / policy.update / skillcancel
 
+    func testBoundApprovalConsumesOnlyExactLiveGenerationAndCall() async throws {
+        let conversationID = try await fixture.makeOrdinaryConversation()
+        let domain = fixture.makeDomain()
+        let call = try ToolCall(
+            id: "call-bound-generation", toolName: FixtureSideEffectTool.name,
+            argumentsJSON: Data(#"{"target":"notes.txt"}"#.utf8),
+            scope: .hostPath(hostID: UUID(), path: "notes.txt"))
+        fixture.adapter.enqueue(script: .init(events: [
+            .toolRequest(call), .completed(.init(stopReason: .endTurn)),
+        ]), forRequest: fixture.adapter.requestCount)
+        let revision = try await fixture.revision(conversationID: conversationID)
+        let receipt = try XCTUnwrap(fixture.effects.register(correlationID: "corr-bound-generation"))
+        _ = await domain.start(envelope: fixture.launchEnvelope(
+            conversationID: conversationID, payload: fixture.startPayload(goal: "modify a file"),
+            revisionVersion: revision, correlation: "corr-bound-generation"),
+            receipt: receipt, correlation: "corr-bound-generation")
+        let runID = try XCTUnwrap(pollEffects(fixture.effects, receipt: receipt)
+            .first { $0.kind == .prepared }?.detail?["runID"].flatMap(UUID.init(uuidString:)))
+        let pending = await pollFor(timeoutSeconds: 8) {
+            await domain.liveService(runID)?.snapshot().pendingApproval != nil
+        }
+        XCTAssertTrue(pending)
+        let service = try unwrapAsync(await domain.liveService(runID))
+        let waiting = try unwrapAsync(await service.snapshot().pendingApproval)
+        let deny = ApprovalDecision.deny(reason: "test decision")
+
+        let newGeneration = AgentState.WaitingApproval(
+            toolCall: waiting.toolCall, reason: waiting.reason,
+            requestedAt: waiting.requestedAt, generation: UUID())
+        var changedArguments = waiting
+        changedArguments.toolCall.argumentsJSON = Data(#"{"target":"another.txt"}"#.utf8)
+        var changedScope = waiting
+        changedScope.toolCall.scope = .hostPath(hostID: UUID(), path: "another.txt")
+        var changedTool = waiting
+        changedTool.toolCall.toolName = "fixture.different"
+        var changedReason = waiting
+        changedReason.reason = "different reason"
+        let changedTime = AgentState.WaitingApproval(
+            toolCall: waiting.toolCall, reason: waiting.reason,
+            requestedAt: waiting.requestedAt.addingTimeInterval(1), generation: waiting.generation)
+        for mismatch in [newGeneration, changedArguments, changedScope, changedTool, changedReason, changedTime] {
+            let accepted = await service.resolveApproval(deny, matching: mismatch)
+            XCTAssertFalse(accepted, "a stale or modified exact request cannot consume the gate")
+        }
+        let stillWaiting = await service.snapshot().pendingApproval
+        XCTAssertEqual(stillWaiting, waiting)
+        let accepted = await service.resolveApproval(deny, matching: waiting)
+        XCTAssertTrue(accepted)
+        let repeated = await service.resolveApproval(deny, matching: waiting)
+        XCTAssertFalse(repeated, "the bound decision can only consume once")
+    }
+
+    func testLegacyApprovalDecodingMintsAStableFreshGeneration() throws {
+        let call = try ToolCall(id: "legacy-call", toolName: FixtureSideEffectTool.name,
+            argumentsJSON: Data(#"{"target":"notes.txt"}"#.utf8), scope: .local)
+        let original = AgentState.WaitingApproval(toolCall: call, reason: "needs approval")
+        let encoder = JSONEncoder()
+        let decoder = JSONDecoder()
+        let encoded = try encoder.encode(original)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        object.removeValue(forKey: "generation")
+        let legacy = try JSONSerialization.data(withJSONObject: object)
+        let recovered = try decoder.decode(AgentState.WaitingApproval.self, from: legacy)
+        let anotherRecovery = try decoder.decode(AgentState.WaitingApproval.self, from: legacy)
+        XCTAssertEqual(recovered.toolCall, original.toolCall)
+        XCTAssertEqual(recovered.requestedAt, original.requestedAt)
+        XCTAssertNotEqual(recovered.generation, anotherRecovery.generation)
+        let roundTrip = try decoder.decode(AgentState.WaitingApproval.self, from: encoder.encode(recovered))
+        XCTAssertEqual(roundTrip, recovered)
+    }
+
     func testApprovalCardAppearsFromRealEngineAndResolveIsCallBound() async throws {
         let conversationID = try await fixture.makeOrdinaryConversation()
         let domain = fixture.makeDomain()
@@ -502,11 +765,86 @@ final class RuntimeFacadeRunControlTests: XCTestCase {
         }
         XCTAssertTrue(pending, "the ENGINE must request approval, not a synthesized card")
         let waiting = try unwrapAsync(await domain.liveService(runID)?.snapshot().pendingApproval)
-        let requestVersion = RunWireRevision.approvalVersion(requestedAt: waiting.requestedAt)
+        let requestVersion = RunWireRevision.approvalVersion(generation: waiting.generation)
+        let snapshotReply = await domain.snapshot(envelope: fixture.executionEnvelope(
+            command: "run.snapshot", conversationID: conversationID, runID: runID,
+            payload: nil, correlation: "corr-approval-generation-snapshot"))
+        guard case .completedPage(let page, _) = snapshotReply.outcome,
+              case .object(let fields) = page.object,
+              case .object(let pending) = fields["pendingApproval"],
+              case .object(let revision) = fields["approvalRevision"] else {
+            return XCTFail("a live approval must publish its exact generation")
+        }
+        XCTAssertEqual(pending["generation"], .string(waiting.generation.uuidString.lowercased()))
+        XCTAssertEqual(pending["requestedAt"], .string(RunWireDate.encode(waiting.requestedAt)))
+        XCTAssertEqual(revision["version"], .string(requestVersion))
+        guard case .object(let presentation) = pending["presentation"] else {
+            return XCTFail("the same live snapshot must carry its presentation")
+        }
+        XCTAssertEqual(presentation["generation"], pending["generation"])
+        XCTAssertEqual(presentation["status"], .string("available"))
+        XCTAssertEqual(presentation["detailStatus"], .string("unavailable"))
+        XCTAssertEqual(presentation["workspaceVerified"], .boolean(false))
+        let forgedPresentation = await domain.approvalPresentation(envelope: fixture.executionEnvelope(
+            command: "run.approval.presentation", conversationID: conversationID, runID: runID,
+            payload: ["approvalSchema": "generation-v1", "callID": waiting.toolCall.id,
+                      "generation": waiting.generation.uuidString.lowercased(),
+                      "expectedDescriptorIdentity": try XCTUnwrap(fixture.registry.descriptor(named: waiting.toolCall.toolName)).authorizationIdentity,
+                      "target": "synthetic-secret"],
+            correlation: "corr-forged-presentation",
+            revision: ["resourceID": RunWireRevision.approvalResourceID(callID: waiting.toolCall.id),
+                       "version": requestVersion]))
+        guard case .rejected(let invalidPresentation) = forgedPresentation.outcome else {
+            return XCTFail("a client cannot inject a displayed target")
+        }
+        XCTAssertEqual(invalidPresentation.reason, .payloadInvalid)
+        XCTAssertFalse(String(describing: forgedPresentation.outcome).contains("synthetic-secret"))
+        let mismatch = await domain.approvalPresentation(envelope: fixture.executionEnvelope(
+            command: "run.approval.presentation", conversationID: conversationID, runID: runID,
+            payload: ["approvalSchema": "generation-v1", "callID": waiting.toolCall.id,
+                      "generation": waiting.generation.uuidString.lowercased(),
+                      "expectedDescriptorIdentity": try XCTUnwrap(fixture.registry.descriptor(named: waiting.toolCall.toolName)).authorizationIdentity],
+            correlation: "corr-presentation-stale",
+            revision: ["resourceID": RunWireRevision.approvalResourceID(callID: waiting.toolCall.id),
+                       "version": RunWireRevision.approvalVersion(generation: UUID())]))
+        guard case .rejected(let stalePresentation) = mismatch.outcome else {
+            return XCTFail("a stale revision cannot read an approval")
+        }
+        XCTAssertEqual(stalePresentation.code, .staleRevision)
+        let legacy = await domain.resolveApproval(envelope: fixture.executionEnvelope(
+            command: "run.approval.resolve", conversationID: conversationID, runID: runID,
+            payload: ["callID": waiting.toolCall.id, "decision": "allow",
+                      "expectedApprovalVersion": requestVersion],
+            correlation: "corr-old-client-generation",
+            revision: ["resourceID": RunWireRevision.approvalResourceID(callID: waiting.toolCall.id),
+                       "version": requestVersion]))
+        guard case .rejected = legacy.outcome else {
+            return XCTFail("a client unaware of presentation schema must be rejected")
+        }
+        // Legacy timestamp revisions and a different generation must never
+        // authorize the current request, even for the same call/time.
+        for stale in [RunWireDate.encode(waiting.requestedAt),
+                      RunWireRevision.approvalVersion(generation: UUID())] {
+            let staleReply = await domain.resolveApproval(envelope: fixture.executionEnvelope(
+                command: "run.approval.resolve", conversationID: conversationID, runID: runID,
+                payload: ["callID": waiting.toolCall.id, "decision": "allow",
+                          "approvalSchema": "generation-v1",
+                          "expectedDescriptorIdentity": try XCTUnwrap(fixture.registry.descriptor(named: waiting.toolCall.toolName)).authorizationIdentity,
+                          "expectedApprovalVersion": stale],
+                correlation: "corr-stale-generation-\(UUID().uuidString)",
+                revision: ["resourceID": RunWireRevision.approvalResourceID(callID: waiting.toolCall.id),
+                           "version": stale]))
+            guard case .rejected(let error) = staleReply.outcome else {
+                return XCTFail("a stale approval revision must not resolve")
+            }
+            XCTAssertEqual(error, RunDomainError(.staleRevision, .revisionMismatch))
+        }
         // Wrong callID can never resolve the pending request.
         let wrong = await domain.resolveApproval(envelope: fixture.executionEnvelope(
             command: "run.approval.resolve", conversationID: conversationID, runID: runID,
             payload: ["callID": "not-the-live-call", "decision": "allow",
+                      "approvalSchema": "generation-v1",
+                      "expectedDescriptorIdentity": try XCTUnwrap(fixture.registry.descriptor(named: waiting.toolCall.toolName)).authorizationIdentity,
                       "expectedApprovalVersion": requestVersion],
             correlation: "corr-wrong",
             revision: ["resourceID": RunWireRevision.approvalResourceID(callID: "not-the-live-call"),
@@ -519,6 +857,8 @@ final class RuntimeFacadeRunControlTests: XCTestCase {
         let right = await domain.resolveApproval(envelope: fixture.executionEnvelope(
             command: "run.approval.resolve", conversationID: conversationID, runID: runID,
             payload: ["callID": waiting.toolCall.id, "decision": "allow",
+                      "approvalSchema": "generation-v1",
+                      "expectedDescriptorIdentity": try XCTUnwrap(fixture.registry.descriptor(named: waiting.toolCall.toolName)).authorizationIdentity,
                       "expectedApprovalVersion": requestVersion],
             correlation: "corr-right",
             revision: ["resourceID": RunWireRevision.approvalResourceID(callID: waiting.toolCall.id),
@@ -731,7 +1071,7 @@ final class RuntimeFacadeRunControlTests: XCTestCase {
             XCTAssertTrue(result.isValid, "\(command): \(result.errorCode)/\(result.reason)")
         }
         // taskExecution stateful trio with revision + owner roles:
-        for command in ["run.cancel", "run.retry", "run.approval.resolve", "run.policy.update",
+        for command in ["run.cancel", "run.retry", "run.approval.resolve", "run.approval.presentation", "run.policy.update",
                         "run.skillcancel"] {
             let envelope: [String: Any] = [
                 "schema": BridgeV3.commandSchema,

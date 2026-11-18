@@ -27,6 +27,13 @@ object PhoneControlModule : CapabilitySource {
 
     fun statusSnapshot(): PhoneControlStatus = PhoneControlRuntime.snapshot()
 
+    /** Synchronous fence; changes before a live service is detached/replaced. */
+    fun serviceTeardownGeneration(): Long = PhoneControlRuntime.teardownGeneration()
+
+    /** Short synchronous commit only; never suspend or perform network work. */
+    fun <T> withServiceTeardownFence(expected: Long, action: () -> T): T? =
+        PhoneControlRuntime.withTeardownFence(expected, action)
+
     fun client(context: Context, authority: PhoneControlAuthority): PhoneControlClient =
         PhoneControlClient(context.applicationContext, authority)
 

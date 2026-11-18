@@ -60,6 +60,8 @@ enum class ConversationRejectedReason {
     HOST_UNAVAILABLE,
 }
 
+enum class ApprovalDispatchState { PROCESSING, CHECKING, NEEDS_CHECK, STOP_REQUIRED, RETRY_READY }
+
 private fun rejected(reason: ConversationRejectedReason): ConversationFlowResult =
     ConversationFlowResult.Rejected(reason)
 
@@ -85,7 +87,7 @@ class ConversationFlowHolder(
     val conversationId: String get() = conversationIdInternal
 
     /** Current session identity; epoch bumps on every rebind. */
-    var session: ConversationSessionToken = ConversationSessionToken(conversationIdInternal, initialSessionEpoch)
+    @Volatile var session: ConversationSessionToken = ConversationSessionToken(conversationIdInternal, initialSessionEpoch)
         private set
 
     /**
@@ -562,6 +564,35 @@ class ConversationFlowHolder(
     /** Approvals dispatched with no projection change yet (duplicate-press
      * latch; cleared when the card leaves the projection). */
     private val approvalDispatched = mutableSetOf<String>()
+    private data class PrivateApproval(val card: ApprovalCardUi, val details: WorkspaceFileApprovalUi? = null, val token: String? = null, val shell: LocalShellApprovalUi? = null, val device: DeviceActionApprovalUi? = null, val schedule: ScheduleCreateApprovalUi? = null, val browserTab: BrowserTabApprovalUi? = null, val browserInteraction: BrowserInteractionApprovalUi? = null, val browserVisual: BrowserVisualApprovalUi? = null, val visualVisible: Boolean = false, val shellLoading: Boolean = false, val shellLoadFailed: Boolean = false, val shellReviewed: Boolean = false) {
+        override fun toString() = "PrivateApproval(redacted)"
+    }
+    private val privateApprovals = mutableStateOf<Map<String, PrivateApproval>>(emptyMap())
+    private data class ShellStopIdentity(val key: String, val generation: String?)
+    private data class ShellStopBarrier(val attempt: Long, val identities: List<ShellStopIdentity>, val failed: Boolean = false)
+    private val shellStopBarriers = mutableStateOf<Map<String, ShellStopBarrier>>(emptyMap())
+    private var nextShellStopAttempt = 0L
+    val privateApprovalRefresh = mutableStateOf<Map<String, Int>>(emptyMap())
+    private val rejectedPrivateApprovals = mutableSetOf<String>()
+    private var publishedDeviceApproval: ApprovalCardUi? = null
+
+    /**
+     * Host-authored Stop/Takeover projection for one exact run/call. It only
+     * narrows presentation and decisions; settlement is decided by the host
+     * from the real cancel/snapshot receipt.
+     */
+    private val deviceApprovalStops = mutableStateOf<Map<String, DeviceApprovalStopUi>>(emptyMap())
+
+    private fun sameWorkspace(a: String?, b: String?): Boolean = a != null && b != null &&
+        runCatching { UUID.fromString(a) == UUID.fromString(b) }.getOrDefault(false)
+
+    private fun refreshPrivateApproval(key: String) {
+        privateApprovalRefresh.value = privateApprovalRefresh.value +
+            (key to ((privateApprovalRefresh.value[key] ?: 0) + 1))
+    }
+    val approvalDispatchStates: MutableState<Map<String, ApprovalDispatchState>> = mutableStateOf(emptyMap())
+    private val approvalAttempts = mutableMapOf<String, String>()
+    private val approvalChecks = mutableMapOf<String, () -> Unit>()
 
     /** Host-published live truth: THIS conversation's own interactive terminal
      * currently holds the single Linux engine workload slot (⇄
@@ -691,9 +722,11 @@ class ConversationFlowHolder(
     /** Genuine conversation change (NOT a recreation): fence the old session,
      * drop presentation state, and rebind with a new epoch. View
      * reconstruction never calls this. */
-    fun rebind(newConversationId: String, initialDraft: ComposerDraftSeedUi? = null) {
+    @Synchronized fun rebind(newConversationId: String, initialDraft: ComposerDraftSeedUi? = null) {
         if (newConversationId == conversationIdInternal) return
         host.threadViewDetached(session)
+        if (publishedDeviceApproval != null) host.onDeviceApprovalWaiting(this, session, null)
+        publishedDeviceApproval = null
         conversationIdInternal = newConversationId
         session = ConversationSessionToken(newConversationId, session.sessionEpoch + 1)
         // The OLD conversation's entire presentation payload is discarded
@@ -723,7 +756,7 @@ class ConversationFlowHolder(
     }
 
     /** True after a GENUINE navigation retired this holder. */
-    var retired: Boolean = false
+    @Volatile var retired: Boolean = false
         private set
 
     /**
@@ -745,9 +778,11 @@ class ConversationFlowHolder(
      * host's durable draft store exactly as before (this holder is
      * RAM-only), and [detach] still retains everything.
      */
-    fun retireForNavigation() {
+    @Synchronized fun retireForNavigation() {
         if (retired) return
         host.threadViewDetached(session)
+        if (publishedDeviceApproval != null) host.onDeviceApprovalWaiting(this, session, null)
+        publishedDeviceApproval = null
         // The temporary posture is captured BEFORE the snapshot clear
         // (Main): the in-flight Keep is temporary-session state and must
         // flip to Idle with the discard, never after — the discard below
@@ -789,7 +824,17 @@ class ConversationFlowHolder(
         expandedToolCards.value = emptySet()
         expandedApprovalEvidence.value = emptySet()
         approvalScopeChoices.value = emptyMap()
+        privateApprovals.value = emptyMap()
+        shellStopBarriers.value = emptyMap()
+        deviceApprovalStops.value = emptyMap()
+        if (publishedDeviceApproval != null) host.onDeviceApprovalWaiting(this, session, null)
+        publishedDeviceApproval = null
+        privateApprovalRefresh.value = emptyMap()
+        rejectedPrivateApprovals.clear()
         approvalDispatched.clear()
+        approvalDispatchStates.value = emptyMap()
+        approvalAttempts.clear()
+        approvalChecks.clear()
         // The reset/rebind ends this surface's ownership: the live conflict
         // fact and any pending handoff refusal belong to the retired session
         // and must not survive into a replacement (the host republishes the
@@ -855,13 +900,18 @@ class ConversationFlowHolder(
 
     /** Apply one immutable host snapshot. Stale epochs and foreign
      * conversations are ignored (late results cannot touch another session). */
-    fun applyHostSnapshot(next: ThreadUiState) {
+    @Synchronized fun applyHostSnapshot(next: ThreadUiState) {
         if (!echoAccepted(next.session)) return
         val previous = snapshot.value
         snapshot.value = next
         // Background services must see this canonical transition directly;
         // history refresh and Compose apply notifications can wait for UI.
-        if (previous?.isRunning != next.isRunning || previous?.selectedRunId != next.selectedRunId) {
+        fun ThreadUiState.waitsForDeviceApproval() = pendingApprovals.any {
+            it.toolName == "device.act" && it.runId == selectedRunId
+        }
+        if (previous?.isRunning != next.isRunning || previous?.selectedRunId != next.selectedRunId ||
+            previous?.pendingApprovals?.isNotEmpty() != next.pendingApprovals.isNotEmpty() ||
+            previous?.waitsForDeviceApproval() != next.waitsForDeviceApproval()) {
             onRunActivityChanged()
         }
 
@@ -902,13 +952,69 @@ class ConversationFlowHolder(
 
         // Approvals that left the projection were resolved/expired
         // host-side; their dispatch latches are released with the card.
+        val deviceCard = next.pendingApprovals.firstOrNull {
+            it.toolName == "device.act" && it.identityVerified && !it.scopeVerified && it.runId == next.selectedRunId
+        }
+        if (publishedDeviceApproval != deviceCard) {
+            publishedDeviceApproval = deviceCard
+            host.onDeviceApprovalWaiting(this, session, deviceCard)
+        }
+        val oldByKey = previous?.pendingApprovals?.associateBy { it.key }.orEmpty()
         val liveKeys = next.pendingApprovals.map { it.key }.toSet()
-        approvalDispatched.retainAll(liveKeys)
+        // The pending list only covers the selected run. A different run or
+        // a transient empty list cannot retire this run's stop projection.
+        // A visible same-key card with a different request identity is a new
+        // incarnation and must never inherit the older call's stop state.
+        deviceApprovalStops.value = deviceApprovalStops.value.filter { (runKey, stop) ->
+            if (!runKey.equals(next.selectedRunId, ignoreCase = true) || !stop.identityCaptured) {
+                true
+            } else {
+                val sameKey = next.pendingApprovals.firstOrNull {
+                    it.toolName == "device.act" && deviceApprovalKeysMatch(stop.approvalKey, it.key)
+                }
+                sameKey == null || !deviceStopProvenDifferent(stop, sameKey)
+            }
+        }
+        val replaced = next.pendingApprovals.filter { card ->
+            val old = oldByKey[card.key]
+            old != null && (old.requestGeneration != card.requestGeneration ||
+                old.approvalRevision != card.approvalRevision || old.descriptorIdentity != card.descriptorIdentity)
+        }.map { it.key }.toSet()
+        val stillSame = liveKeys - replaced
+        val bindingChanged = previous != null && previous.boundWorkspaceId != next.boundWorkspaceId &&
+            !sameWorkspace(previous.boundWorkspaceId, next.boundWorkspaceId)
+        val revokedDetails = privateApprovals.value.values.filter { item ->
+            bindingChanged || (item.details != null && !sameWorkspace(next.boundWorkspaceId, item.details.workspaceId)) ||
+                (item.shell != null && !sameWorkspace(next.boundWorkspaceId, item.shell.workspaceId))
+        }.map { it.card.key }.toSet()
+        privateApprovals.value = privateApprovals.value.filterValues { item ->
+            !bindingChanged && next.selectedRunId == item.card.runId && next.pendingApprovals.any { it == item.card } &&
+                (item.details == null || sameWorkspace(next.boundWorkspaceId, item.details.workspaceId)) &&
+                (item.shell == null || sameWorkspace(next.boundWorkspaceId, item.shell.workspaceId))
+        }
+        rejectedPrivateApprovals.retainAll(stillSame)
+        privateApprovalRefresh.value = privateApprovalRefresh.value.filterKeys { it in stillSame }
+        revokedDetails.filter { it in stillSame }.forEach(::refreshPrivateApproval)
+        approvalScopeChoices.value = approvalScopeChoices.value.filterKeys { it in stillSame }
+        expandedApprovalEvidence.value = expandedApprovalEvidence.value.intersect(stillSame)
+        approvalDispatchStates.value = approvalDispatchStates.value.filterKeys { it in stillSame }
+        approvalAttempts.keys.retainAll(stillSame)
+        approvalChecks.keys.retainAll(stillSame)
+        approvalDispatched.retainAll(stillSame)
+        val changedInFlight = next.pendingApprovals.filter { card ->
+            card.key in approvalDispatched && card.key in stillSame &&
+                oldByKey[card.key] != null && oldByKey[card.key] != card
+        }
+        if (changedInFlight.isNotEmpty()) {
+            for (card in changedInFlight) approvalChecks.remove(card.key)
+            approvalDispatchStates.value = approvalDispatchStates.value +
+                changedInFlight.associate { it.key to ApprovalDispatchState.STOP_REQUIRED }
+        }
         // A handoff refusal for a card that left the projection describes a
         // decision that no longer exists; drop it with the card instead of
         // keeping a stale banner over an unrelated approval.
         terminalHandoffRefusal.value?.let { refusal ->
-            if (refusal.approvalKey !in liveKeys) terminalHandoffRefusal.value = null
+            if (refusal.approvalKey !in stillSame) terminalHandoffRefusal.value = null
         }
 
         // ⇄ onChange(of: hasLoaded) → scroll to latest anchor.
@@ -1300,12 +1406,16 @@ class ConversationFlowHolder(
 
     /** ⇄ cancel(): stop the composer immediately; the durable cancelled state
      * arrives later through the authoritative projection. */
-    fun cancel(): ConversationFlowResult {
+    @Synchronized fun cancel(): ConversationFlowResult {
         val runId = snapshot.value?.selectedRunId
             ?: return rejected(ConversationRejectedReason.RUN_NOT_CONTINUABLE)
+        val shellAttempt = fenceShellApprovalsForStop(runId)
         actionError = null
         return if (host.cancelRun(session, runId)) ConversationFlowResult.Accepted
-        else rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
+        else {
+            shellAttempt?.let { markShellStopUnconfirmed(runId, it) }
+            rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
+        }
     }
 
     /** Explicit human Stop for LIVE post-run goal REVIEW/continuation work.
@@ -1343,29 +1453,444 @@ class ConversationFlowHolder(
         else rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
     }
 
-    fun selectRun(runId: String) {
+    @Synchronized fun selectRun(runId: String) {
         if (retired) return
         selectedRunId.value = runId
+        privateApprovals.value = emptyMap()
     }
 
     /* ---------------------------------- approvals ---------------------------------- */
 
     /** Current projected card for one run+call key, or null. */
-    fun approvalCard(key: String): ApprovalCardUi? =
+    @Synchronized fun approvalCard(key: String): ApprovalCardUi? =
         snapshot.value?.pendingApprovals?.firstOrNull { it.key == key }
+
+    private fun shellStopBlocked(card: ApprovalCardUi): Boolean {
+        if (card.toolName != "exec.shell") return false
+        val stopped = shellStopBarriers.value[card.runId.lowercase(java.util.Locale.ROOT)] ?: return false
+        // When Stop arrived off-screen there was no card whose generation
+        // could be captured; no later card is proof it belongs to a new run.
+        if (stopped.identities.isEmpty()) return true
+        val identity = stopped.identities.firstOrNull { deviceApprovalKeysMatch(it.key, card.key) } ?: return false
+        val generation = card.requestGeneration
+        // Missing or malformed identity is not proof of a new request.
+        return generation == null || identity.generation == null || generation == identity.generation ||
+            !card.identityVerified || card.approvalRevision != "generation:$generation"
+    }
+
+    /** Stop immediately invalidates this run's old private lease and token. */
+    private fun fenceShellApprovalsForStop(runId: String, evenIfNoCard: Boolean = false): Long? {
+        val cards = snapshot.value?.pendingApprovals.orEmpty().filter {
+            it.toolName == "exec.shell" && it.runId.equals(runId, ignoreCase = true)
+        }
+        if (cards.isEmpty() && !evenIfNoCard) return null
+        val attempt = ++nextShellStopAttempt
+        shellStopBarriers.value = shellStopBarriers.value + (
+            runId.lowercase(java.util.Locale.ROOT) to
+                ShellStopBarrier(attempt, cards.map { ShellStopIdentity(it.key, it.requestGeneration) }))
+        privateApprovals.value = privateApprovals.value.filterValues {
+            it.card.toolName != "exec.shell" || !it.card.runId.equals(runId, ignoreCase = true)
+        }
+        return attempt
+    }
+
+    /** Notification stops can target an existing holder without navigating to it. */
+    @Synchronized fun fenceShellApprovalForNotificationStop(taskId: String, runId: String): Long? {
+        if (retired || !conversationId.equals(taskId, ignoreCase = true) || runId.isBlank()) return null
+        return fenceShellApprovalsForStop(runId, evenIfNoCard = true)
+    }
+
+    @Synchronized fun shellStopAttempt(runId: String): Long? =
+        shellStopBarriers.value[runId.lowercase(java.util.Locale.ROOT)]?.attempt
+
+    /** Null means this card is not blocked; true means Stop is in flight. */
+    @Synchronized fun shellStopPending(card: ApprovalCardUi): Boolean? {
+        if (!shellStopBlocked(card)) return null
+        return shellStopBarriers.value[card.runId.lowercase(java.util.Locale.ROOT)]?.failed == false
+    }
+
+    @Synchronized fun markShellStopUnconfirmed(runId: String, attempt: Long) {
+        val key = runId.lowercase(java.util.Locale.ROOT)
+        val current = shellStopBarriers.value[key] ?: return
+        if (current.attempt == attempt) shellStopBarriers.value =
+            shellStopBarriers.value + (key to current.copy(failed = true))
+    }
+
+    /** Only a confirmed retry may retire the off-screen Stop it observed. */
+    @Synchronized fun retireShellStopAfterConfirmedRetry(runId: String, attempt: Long) {
+        val key = runId.lowercase(java.util.Locale.ROOT)
+        val current = shellStopBarriers.value[key] ?: return
+        if (current.attempt == attempt && current.identities.isEmpty()) {
+            shellStopBarriers.value = shellStopBarriers.value - key
+        }
+    }
+
+    @Synchronized fun showPrivateApproval(card: ApprovalCardUi, lease: String) {
+        val state = snapshot.value ?: return
+        if (shellStopBlocked(card)) return
+        // A user Stop/Takeover or a revoked host identity closes this exact
+        // call: a later scroll/resume must not re-open a decision lease.
+        if (card.toolName == "device.act" &&
+            (deviceApprovalStopFor(card) != null || host.deviceApprovalRevoked(card))) return
+        if (retired || card.key in approvalDispatched || !card.identityVerified || card.scopeVerified ||
+            card.toolName !in setOf("workspace.createFile", "workspace.writeFile", "workspace.applyPatch", "workspace.appendFile", "workspace.replaceText", "workspace.createDirectory", "workspace.moveFile", "workspace.copyFile", "workspace.deleteFile", "exec.shell", "device.act", "task.schedule", "browser.tab", "browser.click", "browser.type", "browser.scroll", "browser.clickPoint") ||
+            state.selectedRunId != card.runId || (selectedRunId.value != null && selectedRunId.value != card.runId) ||
+            state.pendingApprovals.none { it == card }) return
+        if (card.toolName == "device.act" || card.toolName in setOf("browser.tab", "browser.click", "browser.type", "browser.scroll", "browser.clickPoint")) {
+            privateApprovals.value = privateApprovals.value.filterValues { it.card != card }
+        }
+        privateApprovals.value = privateApprovals.value + (lease to PrivateApproval(card))
+        if (!host.requestApprovalPresentation(session, card, lease)) {
+            privateApprovals.value = privateApprovals.value - lease
+        }
+    }
+
+    @Synchronized fun hidePrivateApproval(lease: String) {
+        privateApprovals.value = privateApprovals.value - lease
+    }
+
+    /** Drop private images on root retirement; never retain them for a later root. */
+    @Synchronized fun discardBrowserVisualApprovals(onlyStale: Boolean = false) {
+        privateApprovals.value = privateApprovals.value.filterValues { item ->
+            val visual = item.browserVisual
+            val shellEpoch = item.shell?.takeIf { it.shellPrivateBytes != null }?.nativeEpoch
+            (visual == null || (onlyStale && host.browserVisualApprovalEpochCurrent(visual.nativeEpoch))) &&
+                (shellEpoch == null || (onlyStale && host.browserVisualApprovalEpochCurrent(shellEpoch)))
+        }
+    }
+
+    /**
+     * Host publication of a Stop/Takeover that already retired one exact
+     * device approval. [approvalKey] binds it to the call card that was
+     * retired, so a later retry/new call of the same run is not blocked.
+     * The phase is display/decision gating only; settlement stays with the
+     * host's real cancel/snapshot receipt.
+     */
+    @Synchronized fun applyDeviceApprovalStop(runId: String, stop: DeviceApprovalStopUi?) {
+        val runKey = runId.lowercase(java.util.Locale.ROOT)
+        val current = deviceApprovalStops.value
+        val previous = current[runKey]
+        val card = snapshot.value?.pendingApprovals?.firstOrNull {
+            it.toolName == "device.act" && it.runId.equals(runId, ignoreCase = true) &&
+                (stop?.approvalKey == null || deviceApprovalKeysMatch(stop.approvalKey, it.key))
+        }
+        // An update to an existing stop retains the original request identity;
+        // the next selected snapshot will retire it if that identity changes.
+        val boundStop = stop?.let {
+            when {
+                it.identityCaptured -> it
+                previous?.identityCaptured == true &&
+                    deviceApprovalKeysMatch(previous.approvalKey, it.approvalKey) ->
+                    it.copy(approvalKey = previous.approvalKey, identityCaptured = true,
+                        requestGeneration = previous.requestGeneration,
+                        approvalRevision = previous.approvalRevision,
+                        descriptorIdentity = previous.descriptorIdentity)
+                card != null -> it.copy(approvalKey = card.key, identityCaptured = true,
+                    requestGeneration = card.requestGeneration,
+                    approvalRevision = card.approvalRevision,
+                    descriptorIdentity = card.descriptorIdentity)
+                else -> it
+            }
+        }
+        val next = if (boundStop == null) current - runKey else current + (runKey to boundStop)
+        if (next != current) deviceApprovalStops.value = next
+        if (stop != null) {
+            // Withdraw the private lease immediately; don't wait for a host
+            // visibility callback that may already be queued behind the tap.
+            privateApprovals.value = privateApprovals.value.filterValues { item ->
+                !item.card.runId.equals(runId, ignoreCase = true) ||
+                    (stop.approvalKey != null && !deviceApprovalKeysMatch(stop.approvalKey, item.card.key))
+            }
+        }
+    }
+
+    /** Stop state for this exact call card (never another call of the run). */
+    fun deviceApprovalStopFor(card: ApprovalCardUi): DeviceApprovalStopUi? {
+        val stop = deviceApprovalStops.value[card.runId.lowercase(java.util.Locale.ROOT)] ?: return null
+        return stop.takeIf { deviceStopMatches(it, card) }
+    }
+
+    private fun deviceStopMatches(stop: DeviceApprovalStopUi, card: ApprovalCardUi): Boolean =
+        stop.identityCaptured && deviceApprovalKeysMatch(stop.approvalKey, card.key) &&
+            !deviceStopProvenDifferent(stop, card)
+
+    /** Missing identity or changed presentation on a late page is uncertainty.
+     * Only an explicitly different request generation retires the barrier. */
+    private fun deviceStopProvenDifferent(stop: DeviceApprovalStopUi, card: ApprovalCardUi): Boolean {
+        val old = stop.requestGeneration
+        val new = card.requestGeneration
+        return old != null && new != null && old != new && card.identityVerified &&
+            card.approvalRevision == "generation:$new"
+    }
+
+    /** UUID spelling may differ by case; tool call IDs are case-sensitive. */
+    private fun deviceApprovalKeysMatch(left: String?, right: String?): Boolean {
+        if (left == null || right == null) return false
+        val leftSlash = left.indexOf('/')
+        val rightSlash = right.indexOf('/')
+        if (leftSlash <= 0 || rightSlash <= 0) return false
+        return left.substring(0, leftSlash).equals(right.substring(0, rightSlash), ignoreCase = true) &&
+            left.substring(leftSlash + 1) == right.substring(rightSlash + 1)
+    }
+
+    @Synchronized fun acceptPrivateApproval(echo: ConversationSessionToken, card: ApprovalCardUi,
+        lease: String, details: WorkspaceFileApprovalUi, token: String) {
+        val state = snapshot.value ?: return
+        val current = privateApprovals.value[lease] ?: return
+        if (retired || !echo.isCurrentFor(session) || current.card != card || current.details != null || current.shell != null ||
+            state.selectedRunId != card.runId || (selectedRunId.value != null && selectedRunId.value != card.runId) ||
+            !sameWorkspace(state.boundWorkspaceId, details.workspaceId) || state.pendingApprovals.none { it == card }) return
+        privateApprovals.value = privateApprovals.value + (lease to PrivateApproval(card, details, token))
+    }
+
+    @Synchronized fun acceptPrivateShellApproval(echo: ConversationSessionToken, card: ApprovalCardUi,
+        lease: String, details: LocalShellApprovalUi, token: String) {
+        val state = snapshot.value ?: return
+        val current = privateApprovals.value[lease] ?: return
+        if (retired || !echo.isCurrentFor(session) || current.card != card || current.details != null ||
+            current.shell != null || card.toolName != "exec.shell" || !sameWorkspace(state.boundWorkspaceId, details.workspaceId) ||
+            state.selectedRunId != card.runId || (selectedRunId.value != null && selectedRunId.value != card.runId) ||
+            state.pendingApprovals.none { it == card }) return
+        privateApprovals.value = privateApprovals.value + (lease to PrivateApproval(card, token = token, shell = details))
+    }
+
+    @Synchronized fun privateShellLoading(lease: String): Boolean = privateApprovals.value[lease]?.shellLoading == true
+    @Synchronized fun privateShellLoadFailed(lease: String): Boolean = privateApprovals.value[lease]?.shellLoadFailed == true
+    @Synchronized fun privateShellReviewed(lease: String): Boolean {
+        val item = privateApprovals.value[lease] ?: return false
+        return item.shellReviewed && item.shell?.nativeEpoch?.let {
+            host.browserVisualApprovalEpochCurrent(it)
+        } == true
+    }
+    @Synchronized fun currentPrivateShellRequest(echo: ConversationSessionToken, card: ApprovalCardUi,
+        lease: String): Pair<LocalShellApprovalUi, String>? {
+        val item = privateApprovals.value[lease] ?: return null
+        val shell = item.shell ?: return null
+        val token = item.token ?: return null
+        if (!item.shellLoading || shell.env != null ||
+            !isPrivateApprovalLeaseCurrent(echo, card, lease) ||
+            shell.nativeEpoch?.let { host.browserVisualApprovalEpochCurrent(it) } != true) return null
+        return shell to token
+    }
+
+    @Synchronized fun loadPrivateShellDetails(card: ApprovalCardUi, lease: String) {
+        val item = privateApprovals.value[lease] ?: return
+        val shell = item.shell ?: return
+        if (!isPrivateApprovalLeaseCurrent(session, card, lease) || shell.shellPrivateBytes == null ||
+            shell.env != null || item.shellLoading ||
+            shell.nativeEpoch?.let { host.browserVisualApprovalEpochCurrent(it) } != true) return
+        privateApprovals.value = privateApprovals.value + (lease to item.copy(shellLoading = true, shellLoadFailed = false))
+        if (!host.requestPrivateShellDetails(session, card, lease)) {
+            privateApprovals.value[lease]?.takeIf { it.card == card }?.let {
+                privateApprovals.value = privateApprovals.value + (lease to it.copy(shellLoading = false, shellLoadFailed = true))
+            }
+        }
+    }
+
+    @Synchronized fun privateShellLoadResult(echo: ConversationSessionToken, card: ApprovalCardUi, lease: String,
+        token: String, stdin: String?, env: Map<String, String>?): Boolean {
+        val item = privateApprovals.value[lease] ?: return false
+        val shell = item.shell ?: return false
+        if (!isPrivateApprovalLeaseCurrent(echo, card, lease) || item.token != token || !item.shellLoading ||
+            shell.nativeEpoch?.let { host.browserVisualApprovalEpochCurrent(it) } != true) return false
+        if (env == null || (stdin != null) != shell.stdinPresent || env.size != shell.envCount) {
+            privateApprovals.value = privateApprovals.value + (lease to item.copy(shellLoading = false, shellLoadFailed = true))
+            return false
+        }
+        privateApprovals.value = privateApprovals.value + (lease to item.copy(
+            shell = shell.copy(stdin = stdin, env = env.toMap()), shellLoading = false, shellLoadFailed = false))
+        return true
+    }
+
+    @Synchronized fun confirmPrivateShellDetails(card: ApprovalCardUi, lease: String) {
+        val item = privateApprovals.value[lease] ?: return
+        val shell = item.shell ?: return
+        if (!isPrivateApprovalLeaseCurrent(session, card, lease) || shell.env == null ||
+            shell.nativeEpoch?.let { host.browserVisualApprovalEpochCurrent(it) } != true) return
+        privateApprovals.value = privateApprovals.value + (lease to item.copy(shellReviewed = true))
+    }
+
+    @Synchronized fun isPrivateApprovalLeaseCurrent(echo: ConversationSessionToken, card: ApprovalCardUi, lease: String): Boolean {
+        val state = snapshot.value ?: return false
+        if (shellStopBlocked(card)) return false
+        val item = privateApprovals.value[lease] ?: return false
+        if (item.browserVisual?.let { !host.browserVisualApprovalEpochCurrent(it.nativeEpoch) } == true ||
+            item.shell?.takeIf { it.shellPrivateBytes != null }?.nativeEpoch?.let {
+                !host.browserVisualApprovalEpochCurrent(it)
+            } == true) {
+            privateApprovals.value = privateApprovals.value - lease
+            return false
+        }
+        return !retired && echo.isCurrentFor(session) && item.card == card &&
+            state.selectedRunId == card.runId && (selectedRunId.value == null || selectedRunId.value == card.runId) &&
+            state.pendingApprovals.any { it == card }
+    }
+
+    @Synchronized fun acceptPrivateScheduleApproval(echo: ConversationSessionToken, card: ApprovalCardUi,
+        lease: String, details: ScheduleCreateApprovalUi, token: String): Boolean {
+        val current = privateApprovals.value[lease] ?: return false
+        if (!isPrivateApprovalLeaseCurrent(echo, card, lease) || card.toolName != "task.schedule" ||
+            current.details != null || current.shell != null || current.device != null || current.schedule != null) return false
+        privateApprovals.value = privateApprovals.value + (lease to PrivateApproval(card, token = token, schedule = details))
+        return true
+    }
+
+    @Synchronized fun acceptPrivateBrowserTabApproval(echo: ConversationSessionToken, card: ApprovalCardUi,
+        lease: String, details: BrowserTabApprovalUi, token: String): Boolean {
+        val current = privateApprovals.value[lease] ?: return false
+        if (!isPrivateApprovalLeaseCurrent(echo, card, lease) || card.toolName != "browser.tab" ||
+            !details.isWellFormed() ||
+            current.details != null || current.shell != null || current.device != null ||
+            current.schedule != null || current.browserTab != null) return false
+        privateApprovals.value = privateApprovals.value + (lease to PrivateApproval(card, token = token, browserTab = details))
+        return true
+    }
+
+    @Synchronized fun acceptPrivateBrowserInteractionApproval(echo: ConversationSessionToken, card: ApprovalCardUi,
+        lease: String, details: BrowserInteractionApprovalUi, token: String): Boolean {
+        val current = privateApprovals.value[lease] ?: return false
+        if (!isPrivateApprovalLeaseCurrent(echo, card, lease) ||
+            card.toolName !in setOf("browser.click", "browser.type", "browser.scroll") ||
+            card.toolName != "browser.${details.operation}" || !details.isWellFormed() ||
+            current.details != null || current.shell != null || current.device != null ||
+            current.schedule != null || current.browserTab != null || current.browserInteraction != null) return false
+        privateApprovals.value = privateApprovals.value +
+            (lease to PrivateApproval(card, token = token, browserInteraction = details))
+        return true
+    }
+
+    @Synchronized fun acceptPrivateBrowserVisualApproval(echo: ConversationSessionToken, card: ApprovalCardUi,
+        lease: String, details: BrowserVisualApprovalUi, token: String): Boolean {
+        val current = privateApprovals.value[lease] ?: return false
+        if (!isPrivateApprovalLeaseCurrent(echo, card, lease) || card.toolName != "browser.clickPoint" ||
+            !details.isWellFormed() || !host.browserVisualApprovalEpochCurrent(details.nativeEpoch) ||
+            current.details != null || current.shell != null ||
+            current.device != null || current.schedule != null || current.browserTab != null ||
+            current.browserInteraction != null || current.browserVisual != null) return false
+        privateApprovals.value = privateApprovals.value +
+            (lease to PrivateApproval(card, token = token, browserVisual = details))
+        return true
+    }
+
+    @Synchronized fun setPrivateBrowserVisualVisible(card: ApprovalCardUi, lease: String, visible: Boolean) {
+        val current = privateApprovals.value[lease] ?: return
+        if (current.card != card || current.browserVisual == null ||
+            !isPrivateApprovalLeaseCurrent(session, card, lease)) return
+        if (current.visualVisible != visible)
+            privateApprovals.value = privateApprovals.value + (lease to current.copy(visualVisible = visible))
+    }
+
+    @Synchronized fun acceptPrivateDeviceApproval(echo: ConversationSessionToken, card: ApprovalCardUi,
+        lease: String, details: DeviceActionApprovalUi, token: String): Boolean {
+        val current = privateApprovals.value[lease] ?: return false
+        if (!isPrivateApprovalLeaseCurrent(echo, card, lease) || current.details != null || current.shell != null ||
+            current.device != null || card.toolName != "device.act") return false
+        privateApprovals.value = privateApprovals.value + (lease to PrivateApproval(card, token = token, device = details))
+        return true
+    }
+
+    @Synchronized fun visibleApprovalCard(card: ApprovalCardUi, lease: String): ApprovalCardUi {
+        val privateEntry = privateApprovals.value[lease]?.takeIf { it.card == card } ?: return card
+        val visual = privateEntry.browserVisual
+        if (visual != null && card.toolName == "browser.clickPoint" &&
+            host.browserVisualApprovalEpochCurrent(visual.nativeEpoch))
+            return card.copy(browserVisualAction = visual, scopeVerified = true)
+        val interaction = privateEntry.browserInteraction
+        if (interaction != null && card.toolName == "browser.${interaction.operation}")
+            return card.copy(browserInteractionAction = interaction, scopeVerified = true)
+        val browserTab = privateEntry.browserTab
+        if (browserTab != null && card.toolName == "browser.tab") return card.copy(browserTabAction = browserTab, scopeVerified = true)
+        val schedule = privateEntry.schedule
+        if (schedule != null && card.toolName == "task.schedule") return card.copy(scheduleCreateAction = schedule, scopeVerified = true)
+        val device = privateEntry.device
+        if (device != null && card.toolName == "device.act") return card.copy(deviceAction = device, scopeVerified = true)
+        val shell = privateEntry.shell
+        if (shell != null && card.toolName == "exec.shell" && sameWorkspace(snapshot.value?.boundWorkspaceId, shell.workspaceId) &&
+            (shell.shellPrivateBytes == null || shell.nativeEpoch?.let { host.browserVisualApprovalEpochCurrent(it) } == true))
+            return card.copy(localShellAction = shell, scopeVerified = true)
+        val details = privateEntry.details ?: return card
+        if (!sameWorkspace(snapshot.value?.boundWorkspaceId, details.workspaceId)) return card
+        return card.copy(workspaceId = details.workspaceId, workspaceVerified = true,
+            workspaceAction = details, scopeVerified = true)
+    }
+
+    @Synchronized fun privateApprovalValid(card: ApprovalCardUi, lease: String?, token: String?): Boolean {
+        val item = privateApprovals.value[lease ?: return false] ?: return false
+        val state = snapshot.value ?: return false
+        return !retired && token != null && item.token == token && item.card == card &&
+            ((item.details != null && sameWorkspace(state.boundWorkspaceId, item.details.workspaceId)) ||
+                (item.shell != null && card.toolName == "exec.shell" && sameWorkspace(state.boundWorkspaceId, item.shell.workspaceId) &&
+                    (item.shell.shellPrivateBytes == null ||
+                        (item.shell.env != null && item.shellReviewed &&
+                            item.shell.nativeEpoch?.let { host.browserVisualApprovalEpochCurrent(it) } == true))) ||
+                (item.device != null && card.toolName == "device.act") ||
+                (item.schedule != null && card.toolName == "task.schedule") ||
+                (item.browserTab?.isReviewable() == true && card.toolName == "browser.tab") ||
+                (item.browserInteraction?.isWellFormed() == true &&
+                    card.toolName == "browser.${item.browserInteraction.operation}") ||
+                (item.browserVisual?.let {
+                    it.isWellFormed() && item.visualVisible && host.browserVisualApprovalEpochCurrent(it.nativeEpoch)
+                } == true && card.toolName == "browser.clickPoint")) &&
+            state.selectedRunId == card.runId && (selectedRunId.value == null || selectedRunId.value == card.runId) &&
+            state.pendingApprovals.any { it == card }
+    }
+
+    /** A terminal rejection may have consumed the one-shot token; never reuse it. */
+    @Synchronized fun invalidateRejectedPrivateApproval(
+        echo: ConversationSessionToken, card: ApprovalCardUi, attempt: String, lease: String?, token: String?,
+    ) {
+        withCurrentApproval(echo, card, attempt) {
+            if (token == null || lease == null) return@withCurrentApproval
+            // A disappeared lease is still unusable; invalidate every view of
+            // this card and require a fresh read after the pending check.
+            privateApprovals.value = privateApprovals.value.filterValues { it.card != card }
+            rejectedPrivateApprovals.add(card.key)
+        }
+    }
 
     /** ⇄ resolve(approval, decision): dispatch the EXACT run+call identity
      * once. Deny carries the stable "user denied" vocabulary; the grant tier
      * is the user's chosen scope for the projected target — never a
      * content-imported permission (APR-UNTRUSTED-NO-GRANT / APR-CALL-BOUND). */
-    fun resolveApproval(
+    @Synchronized fun resolveApproval(
         approval: ApprovalCardUi,
         allow: Boolean,
         terminalHandoff: TerminalHandoffConsentUi? = null,
+        presentationLease: String? = null,
     ): ConversationFlowResult {
         val state = snapshot.value ?: return rejected(ConversationRejectedReason.NO_SESSION)
         val live = state.pendingApprovals.firstOrNull { it.key == approval.key }
             ?: return ConversationFlowResult.Stale
+        if (shellStopBlocked(live)) return rejected(ConversationRejectedReason.STALE)
+        // The host's exact-run Stop/Takeover projection wins over a stale
+        // private lease: no allow/deny may be dispatched for a retired call.
+        if (live.toolName == "device.act" &&
+            (deviceApprovalStopFor(live) != null || host.deviceApprovalRevoked(live))) {
+            return rejected(ConversationRejectedReason.STALE)
+        }
+        val privateEntry = presentationLease?.let { privateApprovals.value[it] }
+        val privateToken = privateEntry?.token
+        val privateShell = privateEntry?.shell
+        if (allow && live.toolName == "exec.shell" && privateShell?.shellPrivateBytes != null &&
+            (privateShell.env == null || privateEntry?.shellReviewed != true ||
+                privateShell.nativeEpoch?.let { host.browserVisualApprovalEpochCurrent(it) } != true))
+            return rejected(ConversationRejectedReason.INPUT_INSUFFICIENT)
+        if (allow && live.toolName == "browser.clickPoint" &&
+            (privateEntry?.visualVisible != true || privateEntry?.browserVisual?.let {
+                host.browserVisualApprovalEpochCurrent(it.nativeEpoch)
+            } != true))
+            return rejected(ConversationRejectedReason.INPUT_INSUFFICIENT)
+        if (allow && privateEntry?.browserTab?.isReviewable() == false) {
+            return rejected(ConversationRejectedReason.INPUT_INSUFFICIENT)
+        }
+        val privateVisible = privateEntry != null && privateEntry.card == live &&
+            (privateEntry.details != null || privateEntry.shell != null || privateEntry.device != null || privateEntry.schedule != null || privateEntry.browserTab != null || privateEntry.browserInteraction != null || privateEntry.browserVisual != null) &&
+            visibleApprovalCard(live, presentationLease ?: "") == approval
+        if ((live != approval && !privateVisible) || state.selectedRunId != live.runId ||
+            (selectedRunId.value != null && selectedRunId.value != live.runId)) return ConversationFlowResult.Stale
+        if (!live.identityVerified || (allow && !live.scopeVerified && !privateVisible) || live.requestGeneration == null ||
+            live.approvalRevision == null || live.descriptorIdentity == null)
+            return rejected(ConversationRejectedReason.INPUT_INSUFFICIENT)
         if (live.key in approvalDispatched) return rejected(ConversationRejectedReason.OPERATION_IN_FLIGHT)
         val choice = approvalScopeChoices.value[live.key] ?: ApprovalScopeChoiceUi.ONCE
         val decision: ApprovalUserDecisionUi =
@@ -1377,6 +1902,10 @@ class ConversationFlowHolder(
         // the same card: the stale refusal must not keep shouting over a new
         // attempt, and it can never widen the once-only dispatch latch.
         terminalHandoffRefusal.value?.let { if (it.approvalKey == live.key) terminalHandoffRefusal.value = null }
+        approvalDispatched.add(live.key)
+        val attempt = UUID.randomUUID().toString()
+        approvalAttempts[live.key] = attempt
+        approvalDispatchStates.value = approvalDispatchStates.value + (live.key to ApprovalDispatchState.PROCESSING)
         val started = host.resolveApproval(
             ApprovalDecisionRequest(
                 conversationId = conversationId,
@@ -1392,11 +1921,87 @@ class ConversationFlowHolder(
                 // of a denial, and the host treats a consent on anything else
                 // as a refusal.
                 terminalHandoff = if (allow) terminalHandoff else null,
+                expectedCard = live,
+                presentationLease = if (allow && privateVisible) presentationLease else null,
+                presentationToken = if (allow && privateVisible) privateToken else null,
+                canonicalTargetDigest = if (allow && privateVisible) privateEntry?.device?.canonicalTargetDigest else null,
             )
         )
-        if (!started) return rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
-        approvalDispatched.add(live.key)
+        if (!started) {
+            if (approvalAttempts[live.key] == attempt) {
+                approvalDispatched.remove(live.key)
+                approvalAttempts.remove(live.key)
+                approvalChecks.remove(live.key)
+                approvalDispatchStates.value = approvalDispatchStates.value + (live.key to ApprovalDispatchState.RETRY_READY)
+            }
+            return rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
+        }
         return ConversationFlowResult.Accepted
+    }
+
+    @Synchronized fun approvalAttempt(session: ConversationSessionToken, key: String): String? =
+        if (!retired && session.isCurrentFor(this.session)) approvalAttempts[key] else null
+
+    @Synchronized fun withCurrentApproval(
+        session: ConversationSessionToken, expected: ApprovalCardUi, attempt: String, action: () -> Unit,
+    ): Boolean {
+        val state = snapshot.value ?: return false
+        if (retired || !session.isCurrentFor(this.session) || approvalAttempts[expected.key] != attempt ||
+            state.selectedRunId != expected.runId || (selectedRunId.value != null && selectedRunId.value != expected.runId) ||
+            state.pendingApprovals.firstOrNull { it.key == expected.key } != expected) return false
+        action()
+        return true
+    }
+
+    @Synchronized fun setApprovalRecovery(
+        session: ConversationSessionToken, expected: ApprovalCardUi, attempt: String,
+        state: ApprovalDispatchState, check: (() -> Unit)? = null,
+        onlyIfState: ApprovalDispatchState? = null,
+    ) {
+        withCurrentApproval(session, expected, attempt) {
+            if (onlyIfState != null && approvalDispatchStates.value[expected.key] != onlyIfState) return@withCurrentApproval
+            if (check != null) approvalChecks[expected.key] = check
+            if (state == ApprovalDispatchState.RETRY_READY) {
+                approvalDispatched.remove(expected.key)
+                approvalAttempts.remove(expected.key)
+                approvalChecks.remove(expected.key)
+                if (rejectedPrivateApprovals.remove(expected.key)) refreshPrivateApproval(expected.key)
+            }
+            approvalDispatchStates.value = approvalDispatchStates.value + (expected.key to state)
+        }
+    }
+
+    @Synchronized fun recheckApproval(card: ApprovalCardUi) {
+        if (snapshot.value?.pendingApprovals?.firstOrNull { it.key == card.key } != card) return
+        if (shellStopBlocked(card)) {
+            val key = card.runId.lowercase(java.util.Locale.ROOT)
+            val barrier = shellStopBarriers.value[key] ?: return
+            if (!barrier.failed) return
+            // A deliberate retry obtains a NEW native presentation token.
+            shellStopBarriers.value = shellStopBarriers.value - key
+        }
+        if (approvalDispatchStates.value[card.key] == ApprovalDispatchState.NEEDS_CHECK) {
+            approvalChecks[card.key]?.invoke()
+        } else if (approvalDispatchStates.value[card.key] != ApprovalDispatchState.PROCESSING &&
+            approvalDispatchStates.value[card.key] != ApprovalDispatchState.CHECKING) {
+            if (!card.scopeVerified && card.toolName in setOf("workspace.createFile", "workspace.writeFile", "workspace.applyPatch", "workspace.appendFile", "workspace.replaceText", "workspace.createDirectory", "workspace.moveFile", "workspace.copyFile", "workspace.deleteFile", "exec.shell", "device.act")) {
+                privateApprovals.value = privateApprovals.value.filterValues { it.card != card }
+                refreshPrivateApproval(card.key)
+            }
+            host.refreshApproval(session, card.runId)
+        }
+    }
+
+    /** Explicit Stop when even the current approval identity is unverifiable. */
+    @Synchronized fun stopForApproval(card: ApprovalCardUi): Boolean {
+        val state = snapshot.value ?: return false
+        if (retired || state.selectedRunId != card.runId ||
+            state.pendingApprovals.firstOrNull { it.key == card.key } != card ||
+            (selectedRunId.value != null && selectedRunId.value != card.runId)) return false
+        val shellAttempt = fenceShellApprovalsForStop(card.runId)
+        val started = host.cancelRun(session, card.runId)
+        if (!started) shellAttempt?.let { markShellStopUnconfirmed(card.runId, it) }
+        return started
     }
 
     /**
@@ -1432,15 +2037,22 @@ class ConversationFlowHolder(
      * any approval was dispatched. The duplicate-press latch is released for
      * exactly that card so the user can decide again explicitly; nothing is
      * re-dispatched here and no other card is touched. */
-    fun applyTerminalHandoffRefusal(
+    @Synchronized fun applyTerminalHandoffRefusal(
         session: ConversationSessionToken,
         approvalKey: String,
         code: String,
+        expected: ApprovalCardUi? = null,
+        attempt: String? = null,
     ) {
         if (retired) return
         if (!session.isCurrentFor(this.session)) return
         if (approvalKey.isBlank()) return
+        if (expected != null && (attempt == null || expected.key != approvalKey ||
+                !withCurrentApproval(session, expected, attempt) {})) return
         approvalDispatched.remove(approvalKey)
+        approvalAttempts.remove(approvalKey)
+        approvalChecks.remove(approvalKey)
+        approvalDispatchStates.value = approvalDispatchStates.value - approvalKey
         terminalHandoffRefusal.value = TerminalHandoffRefusalUi(approvalKey, code)
     }
 
@@ -1448,11 +2060,22 @@ class ConversationFlowHolder(
         terminalHandoffRefusal.value = null
     }
 
-    fun setApprovalScope(key: String, choice: ApprovalScopeChoiceUi) {
+    /** A stale UI tap must not release a newer attempt for the same call. */
+    @Synchronized fun noteTerminalCaptureRefusal(expected: ApprovalCardUi, code: String) {
+        if (retired || expected.key in approvalDispatched ||
+            snapshot.value?.pendingApprovals?.firstOrNull { it.key == expected.key } != expected) return
+        terminalHandoffRefusal.value = TerminalHandoffRefusalUi(expected.key, code)
+    }
+
+    @Synchronized fun setApprovalScope(key: String, choice: ApprovalScopeChoiceUi, expected: ApprovalCardUi? = null) {
+        if (retired || snapshot.value?.pendingApprovals?.none { it.key == key } != false) return
+        if (expected != null && snapshot.value?.pendingApprovals?.firstOrNull { it.key == key } != expected) return
         approvalScopeChoices.value = approvalScopeChoices.value + (key to choice)
     }
 
-    fun toggleApprovalEvidence(key: String) {
+    @Synchronized fun toggleApprovalEvidence(key: String, expected: ApprovalCardUi? = null) {
+        if (retired || snapshot.value?.pendingApprovals?.none { it.key == key } != false) return
+        if (expected != null && snapshot.value?.pendingApprovals?.firstOrNull { it.key == key } != expected) return
         val current = expandedApprovalEvidence.value
         expandedApprovalEvidence.value = if (key in current) current - key else current + key
     }
@@ -2629,10 +3252,32 @@ class ConversationFlowHolder(
 
     fun applyUserQuestionReceipt(receipt: UserQuestionAnswerReceiptUi) {
         if (retired) return
+        val snapshot = userQuestionSnapshot ?: return
+        val question = snapshot.currentQuestion ?: return
+        if (snapshot.requestId != receipt.requestId ||
+            question.questionId != receipt.questionId ||
+            receipt.revision < question.revision
+        ) return
         userQuestionSubmitting = false
         if (receipt.settled) {
             userQuestionNotice = null
             userQuestionError = null
+            val status = when {
+                receipt.statusRaw == UserQuestionStatusUi.ANSWERED.raw -> UserQuestionStatusUi.ANSWERED
+                receipt.statusRaw == UserQuestionStatusUi.EXPIRED.raw -> UserQuestionStatusUi.EXPIRED
+                receipt.statusRaw == UserQuestionStatusUi.CANCELLED.raw -> UserQuestionStatusUi.CANCELLED
+                receipt.accepted -> UserQuestionStatusUi.ANSWERED
+                else -> return // An ambiguous receipt still needs the native re-read.
+            }
+            // Only this matching question settled. Preserve the rest of a
+            // multi-question request and let the next pending question open.
+            val updated = snapshot.copy(questions = snapshot.questions.map {
+                if (it.questionId == receipt.questionId) it.copy(
+                    status = status, revision = receipt.revision,
+                    answeredLabels = receipt.selectedLabels,
+                ) else it
+            })
+            applyUserQuestionSnapshot(session, updated)
         }
     }
 

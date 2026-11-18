@@ -58,7 +58,7 @@ class ComposerStateTest {
             listOf(
                 SidebarSelection.Workbench(WorkbenchSelection.NEW_TASK),
                 SidebarSelection.Workbench(WorkbenchSelection.OVERVIEW),
-                SidebarSelection.More(MoreDestination.NOTES),
+                SidebarSelection.Space,
                 SidebarSelection.More(MoreDestination.CREATIVE),
                 SidebarSelection.More(MoreDestination.SKILLS),
             ),
@@ -72,6 +72,9 @@ class ComposerStateTest {
                 MoreDestination.NOTES, MoreDestination.CREATIVE, MoreDestination.RUNS, MoreDestination.SETUP_GUIDE,
                 MoreDestination.PROVIDERS, MoreDestination.AUXILIARY_MODELS, MoreDestination.SKILLS,
                 MoreDestination.MEMORY, MoreDestination.SETTINGS, MoreDestination.DIAGNOSTICS,
+                MoreDestination.NETWORK, MoreDestination.REMOTE, MoreDestination.MAIL,
+                MoreDestination.CALENDAR, MoreDestination.DEVICES, MoreDestination.SYSTEM_SERVICES,
+                MoreDestination.RDP,
             ),
             MoreDestination.entries.toList(),
         )

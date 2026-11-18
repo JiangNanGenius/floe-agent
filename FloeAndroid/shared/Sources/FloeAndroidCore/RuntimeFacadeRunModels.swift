@@ -227,7 +227,7 @@ public struct RunDomainError: Error, Sendable, Equatable {
 
 /// Canonical resourceID spelling for run-domain revisions. Values mirror the
 /// contract binding table exactly: `run.<runID>/state`,
-/// `approval.<callID>/requestedAt`, `taskPolicy.<conversationID>/updatedAt`,
+/// `approval.<callID>/generation`, `taskPolicy.<conversationID>/updatedAt`,
 /// plus the conversation-row CAS (`ConversationRowRevision.resourceID`,
 /// floe.conversation-row.v1) reused from RB3 for `run.start` / `run.queue`.
 /// `pendingInput.<inputID>` / `pendingQueue.<conversationID>` are the closed
@@ -270,10 +270,10 @@ public enum RunWireRevision {
     /// AgentState.name) — never a facade-invented status promotion.
     public static func runVersion(state: String) -> String { state }
 
-    /// Approval revision version = requestedAt wire date (fractional-second
-    /// ISO-8601, the mirrored original PersistenceCodec shape).
-    public static func approvalVersion(requestedAt: Date) -> String {
-        RunWireDate.encode(requestedAt)
+    /// Per-decision identity. A call ID or timestamp can recur, so neither
+    /// can authorize a newer waiting approval on its own.
+    public static func approvalVersion(generation: UUID) -> String {
+        "generation:\(generation.uuidString.lowercased())"
     }
 
     public static func taskPolicyVersion(updatedAt: Date) -> String {
@@ -509,6 +509,14 @@ public struct RunStartQuery: Sendable, Equatable {
     /// chat | plan | goal — the original RunLaunchStore vocabulary. Plan and
     /// goal are ACTUAL supported modes of the same engine, not new commands.
     public var mode: RunLaunchMode
+    /// The App composer's EXPLICIT `agent|chat|plan|goal` selection, present
+    /// only when the trusted caller actually sent one (the additive
+    /// `executionMode` member). nil means "not recorded" and is persisted as
+    /// NULL — never defaulted to Agent, so legacy/unspecified launches are not
+    /// relabelled as a user choice. It never changes tool availability: the
+    /// task-authorized ceiling/approvals still decide, except Plan's existing
+    /// read-only projection and the separate temporary ceiling.
+    public var explicitExecutionMode: String?
     public var providerID: UUID
     public var modelID: UUID
     /// Opaque host-issued staging handles for already-owned staged
@@ -550,7 +558,8 @@ public struct RunStartQuery: Sendable, Equatable {
                 requestedEnvironmentID: String? = nil,
                 requestedJobID: String? = nil,
                 goalDefinition: StructuredGoalDefinition? = nil,
-                explicitInitialApprovalMode: TaskApprovalMode? = nil) {
+                explicitInitialApprovalMode: TaskApprovalMode? = nil,
+                explicitExecutionMode: String? = nil) {
         self.conversationID = conversationID
         self.goal = goal
         self.mode = mode
@@ -563,12 +572,13 @@ public struct RunStartQuery: Sendable, Equatable {
         self.requestedJobID = requestedJobID
         self.goalDefinition = goalDefinition
         self.explicitInitialApprovalMode = explicitInitialApprovalMode
+        self.explicitExecutionMode = explicitExecutionMode
     }
 
     public static let allowedKeys: Set<String> = [
         "goal", "mode", "providerID", "modelID", "stagedAttachments",
         "toolCeiling", "approvalMode", "recoveryPolicy", "notificationPolicy",
-        "environmentID", "jobID", "goalDefinition",
+        "environmentID", "jobID", "goalDefinition", "executionMode",
     ]
 
     public static func parse(payload: SettingsDomainV1.JSONValue?,
@@ -618,6 +628,13 @@ public struct RunStartQuery: Sendable, Equatable {
             // original grammar and behavior (unknown-for-mode keys refuse).
             throw RunDomainError(.invalidState, .payloadInvalid)
         }
+        // Additive optional provenance: present ONLY when the trusted caller
+        // really sent it. Absence stays nil (NULL in storage); it is never
+        // defaulted to Agent, so an old/unspecified launch is not rewritten
+        // into a user choice. A present value must be in the closed App
+        // vocabulary and agree with the immutable launch mode.
+        let explicitExecutionMode = try Self.explicitExecutionMode(
+            object, mode: mode)
         return RunStartQuery(
             conversationID: conversationID,
             goal: goal,
@@ -631,7 +648,24 @@ public struct RunStartQuery: Sendable, Equatable {
             requestedJobID: try object.optionalString("jobID", maxBytes: 64),
             goalDefinition: goalDefinition,
             explicitInitialApprovalMode: try object.optionalString("approvalMode", maxBytes: 24) == nil
-                ? nil : policy.approvalMode)
+                ? nil : policy.approvalMode,
+            explicitExecutionMode: explicitExecutionMode)
+    }
+
+    /// Presence-based explicit `agent|chat|plan|goal` provenance shared by
+    /// `run.start`/`run.startTask`. No member ⇒ nil (unknown/default
+    /// semantics); a foreign value or a pair that contradicts `mode` is a
+    /// typed payload refusal, never a silent rewrite.
+    static func explicitExecutionMode(_ object: RunPayloadReader.Object,
+                                      mode: RunLaunchMode) throws -> String? {
+        guard let raw = try object.optionalString("executionMode", maxBytes: 12) else {
+            return nil
+        }
+        guard let parsed = ExplicitExecutionMode(rawValue: raw),
+              parsed.launchMode.rawValue == mode.rawValue else {
+            throw RunDomainError(.invalidState, .payloadInvalid)
+        }
+        return parsed.rawValue
     }
 
     static func approvalMode(_ object: RunPayloadReader.Object) throws -> TaskApprovalMode {
@@ -886,6 +920,10 @@ public struct RunQueueQuery: Sendable, Equatable {
     /// key keeps the historical `agent` default, so old envelopes are
     /// unchanged.
     public var executionMode: String
+    /// Presence-based provenance for the SAME `executionMode` member: nil when
+    /// the envelope never carried it (old callers), the exact closed value
+    /// otherwise. Stored separately so an old row is never relabelled Agent.
+    public var explicitExecutionMode: String?
 
     /// The CLOSED execution-mode vocabulary a queued row may carry.
     public static let allowedExecutionModes: Set<String> = [
@@ -900,7 +938,8 @@ public struct RunQueueQuery: Sendable, Equatable {
     public init(conversationID: UUID, runID: UUID, content: String,
                 mode: RunningInputMode, selectedModelID: UUID?,
                 stagedAttachmentHandles: [String],
-                executionMode: String = "agent") {
+                executionMode: String = "agent",
+                explicitExecutionMode: String? = nil) {
         self.conversationID = conversationID
         self.runID = runID
         self.content = content
@@ -908,6 +947,7 @@ public struct RunQueueQuery: Sendable, Equatable {
         self.selectedModelID = selectedModelID
         self.stagedAttachmentHandles = stagedAttachmentHandles
         self.executionMode = executionMode
+        self.explicitExecutionMode = explicitExecutionMode
     }
 
     public static func parse(payload: SettingsDomainV1.JSONValue?, owner: OwnerIdentity) throws
@@ -931,7 +971,8 @@ public struct RunQueueQuery: Sendable, Equatable {
                 return handle
             }
         }
-        let executionMode = try object.optionalString("executionMode", maxBytes: 12) ?? "agent"
+        let rawExecutionMode = try object.optionalString("executionMode", maxBytes: 12)
+        let executionMode = rawExecutionMode ?? "agent"
         guard allowedExecutionModes.contains(executionMode) else {
             throw RunDomainError(.invalidState, .payloadInvalid)
         }
@@ -939,7 +980,8 @@ public struct RunQueueQuery: Sendable, Equatable {
                              content: content, mode: mode,
                              selectedModelID: try object.optionalUUID("selectedModelID"),
                              stagedAttachmentHandles: handles,
-                             executionMode: executionMode)
+                             executionMode: executionMode,
+                             explicitExecutionMode: rawExecutionMode)
     }
 }
 
@@ -1056,27 +1098,36 @@ public struct RunApprovalResolveQuery: Sendable, Equatable {
     public var runID: UUID
     public var callID: String
     public var expectedApprovalVersion: String
+    public var expectedDescriptorIdentity: String
+    public var presentationToken: String?
+    public var canonicalTargetDigest: String?
     public var branch: Branch
     public var denyReason: String?
 
 
-    public init(conversationID: UUID, runID: UUID, callID: String, expectedApprovalVersion: String, branch: Branch, denyReason: String?) {
+    public init(conversationID: UUID, runID: UUID, callID: String, expectedApprovalVersion: String, expectedDescriptorIdentity: String, presentationToken: String? = nil, canonicalTargetDigest: String? = nil, branch: Branch, denyReason: String?) {
         self.conversationID = conversationID
         self.runID = runID
         self.callID = callID
         self.expectedApprovalVersion = expectedApprovalVersion
+        self.expectedDescriptorIdentity = expectedDescriptorIdentity
+        self.presentationToken = presentationToken
+        self.canonicalTargetDigest = canonicalTargetDigest
         self.branch = branch
         self.denyReason = denyReason
     }
 
     public static let allowedKeys: Set<String> = [
-        "callID", "decision", "reason", "expectedApprovalVersion",
+        "callID", "decision", "reason", "expectedApprovalVersion", "approvalSchema", "expectedDescriptorIdentity", "presentationToken", "canonicalTargetDigest",
     ]
 
     public static func parse(payload: SettingsDomainV1.JSONValue?, owner: OwnerIdentity) throws
         -> RunApprovalResolveQuery {
         let object = try RunPayloadReader.Object(
             payload ?? .object([:]), allowed: allowedKeys)
+        guard try object.string("approvalSchema", maxBytes: 32) == "generation-v1" else {
+            throw RunDomainError(.invalidState, .payloadInvalid)
+        }
         let rawBranch = try object.string("decision", maxBytes: 12)
         guard let branch = Branch(rawValue: rawBranch) else {
             throw RunDomainError(.invalidState, .payloadInvalid)
@@ -1085,6 +1136,9 @@ public struct RunApprovalResolveQuery: Sendable, Equatable {
             conversationID: owner.taskID, runID: owner.runID,
             callID: try object.string("callID", maxBytes: 128, nonBlank: true),
             expectedApprovalVersion: try object.string("expectedApprovalVersion", maxBytes: 64),
+            expectedDescriptorIdentity: try object.string("expectedDescriptorIdentity", maxBytes: 64, nonBlank: true),
+            presentationToken: try object.optionalString("presentationToken", maxBytes: 36),
+            canonicalTargetDigest: try object.optionalString("canonicalTargetDigest", maxBytes: 64),
             branch: branch,
             denyReason: try object.optionalString("reason", maxBytes: 512))
     }
@@ -1534,7 +1588,11 @@ public enum RunDomainHandlerPlan {
             Binding(handlerKey: BridgeV3.handlerKey(scope: .taskExecution, command: "run.approval.resolve"),
                     command: "run.approval.resolve", scope: .taskExecution, configurationScope: nil,
                     serviceMethod: "FacadeRunDomain.resolveApproval",
-                    integrationNote: "revision approval.<callID>/requestedAt; only a matching LIVE request resolves; scope re-derived from the bound ToolCall (call-bound + toolAuthorizationIdentity), card retires only on durable approvalResolved"),
+                    integrationNote: "revision approval.<callID>/generation; only a matching LIVE request resolves; scope re-derived from the bound ToolCall (call-bound + toolAuthorizationIdentity), card retires only on durable approvalResolved"),
+            Binding(handlerKey: BridgeV3.handlerKey(scope: .taskExecution, command: "run.approval.presentation"),
+                    command: "run.approval.presentation", scope: .taskExecution, configurationScope: nil,
+                    serviceMethod: "FacadeRunDomain.approvalPresentation",
+                    integrationNote: "host-only ephemeral approval details, exact live owner and generation; never a model tool or durable event"),
             Binding(handlerKey: BridgeV3.handlerKey(scope: .taskExecution, command: "run.policy.update"),
                     command: "run.policy.update", scope: .taskExecution, configurationScope: nil,
                     serviceMethod: "FacadeRunDomain.policyUpdate",

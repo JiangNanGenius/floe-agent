@@ -403,6 +403,12 @@ public actor FloeAgentRuntime {
         /// Determines the hard capability contract for this run. Plan mode
         /// exposes and executes read-only tools only.
         public var conversationMode: ConversationMode
+        /// The App composer's explicit `agent|chat|plan|goal` selection, when
+        /// it was recorded at launch. UI/recovery provenance only: it never
+        /// narrows or widens `allowedToolNames`, approvals or the Plan /
+        /// temporary contracts. Nil keeps legacy checkpoints and unlabeled
+        /// launches decodable without inventing a selection.
+        public var explicitExecutionMode: ExplicitExecutionMode?
         /// Installed instruction skills selected for this activation.
         public var activeSkillIDs: Set<String>
         public var relatedSkillIDsByTool: [String: [String]]
@@ -574,12 +580,14 @@ public actor FloeAgentRuntime {
             localLinuxShellTarget: Bool = false,
             serviceStorePaths: [String: String] = [:],
             outstandingDependencies: (@Sendable () async -> [RunDependencyLabel])? = nil,
-            userQuestionRecovery: (any UserQuestionRuntimeRecovery)? = nil
+            userQuestionRecovery: (any UserQuestionRuntimeRecovery)? = nil,
+            explicitExecutionMode: ExplicitExecutionMode? = nil
         ) {
             self.conversationID = conversationID
             self.provider = provider
             self.model = model
             self.conversationMode = conversationMode
+            self.explicitExecutionMode = explicitExecutionMode
             self.activeSkillIDs = activeSkillIDs
             self.relatedSkillIDsByTool = relatedSkillIDsByTool
             self.allowedToolNames = allowedToolNames
@@ -693,6 +701,10 @@ public actor FloeAgentRuntime {
     /// batch on the provider's completion event.
     private var pendingToolBatch: [ToolCall] = []
     private var grants: [ApprovalGrant] = []
+    // Runtime-only provenance distinguishes deterministic policy allow from
+    // a human decision even when the policy itself is named "human".
+    private var scheduleGrantProvenance: [UUID: ToolApprovalProvenance] = [:]
+    private var policyResolvedScheduleApprovals: Set<UUID> = []
     private var executedIdempotencyKeys: Set<String> = []
     private var totalInputTokens = 0
     private var totalOutputTokens = 0
@@ -1139,12 +1151,30 @@ public actor FloeAgentRuntime {
         executionLedger.entries
     }
 
+    /// Authoritative result of ONE runtime cancel call. A state name, a
+    /// localized checkpoint reason or an owner's disappearance is not proof:
+    /// only `.stopped` means THIS call performed the cancel terminal and the
+    /// recovery checkpoint was really persisted. The Android run domain uses
+    /// this value before it appends any durable user-stop settlement.
+    public enum AgentCancelSettlement: Sendable, Equatable {
+        /// An active run was transitioned to `checkpointed` by THIS call and
+        /// the recovery checkpoint write completed.
+        case stopped
+        /// An active run was transitioned to `failed` because the checkpoint
+        /// write failed. No stopped checkpoint exists.
+        case checkpointFailed
+        /// The prior state did not admit a cancel (idle/terminal/cancelling);
+        /// this call wrote nothing.
+        case notStopped(String)
+    }
+
     /// streamingModel/executingTool/waitingApproval → cancelling → checkpointed.
-    public func cancel() async {
+    @discardableResult
+    public func cancel() async -> AgentCancelSettlement {
         let prior = state
         switch prior {
         case .idle, .completed, .failed, .checkpointed, .cancelling:
-            return
+            return .notStopped(prior.name)
         default:
             break
         }
@@ -1193,15 +1223,18 @@ public actor FloeAgentRuntime {
         await activeRunTask?.value
         // 5. Persist and park.
         await releaseRunAuthorities()
+        let settlement: AgentCancelSettlement
         do {
             try await writeCheckpoint()
             await transition(to: .checkpointed(AgentState.CheckpointRef(
                 reason: FloeL10n.l("runtime.agent_runtime.the_task_was_stopped_by_you")
             )))
+            settlement = .stopped
         } catch {
             await transition(to: .failed(AgentState.AgentFailure(
                 message: "Checkpoint write failed during cancel: \(error.localizedDescription)"
             )))
+            settlement = .checkpointFailed
         }
         // 6. Release any model loop waiting in `quiesceCancellingRun`. The
         // loop can exit on `modelTurnContinuationRequested == false` while
@@ -1213,6 +1246,7 @@ public actor FloeAgentRuntime {
             cancelCompletion = nil
             continuation.resume()
         }
+        return settlement
     }
 
     /// Set while `start`/`resume` wait for an in-flight caller cancel to reach
@@ -1681,6 +1715,21 @@ public actor FloeAgentRuntime {
     @discardableResult
     public func resolveApproval(_ decision: ApprovalDecision, for callID: String) async -> Bool {
         guard case .waitingApproval = state else { return false }
+        return consumePendingApproval(decision, callID: callID)
+    }
+
+    /// The bound entry point validates the precise live request and consumes
+    /// its gate in the same actor turn, with no suspension between them. A
+    /// reused provider call ID can never make an old decision authorize a new
+    /// generation or a different set of arguments/scope.
+    @discardableResult
+    public func resolveApproval(_ decision: ApprovalDecision,
+                                matching expected: AgentState.WaitingApproval) async -> Bool {
+        guard case .waitingApproval(let current) = state, current == expected else { return false }
+        return consumePendingApproval(decision, callID: expected.toolCall.id)
+    }
+
+    private func consumePendingApproval(_ decision: ApprovalDecision, callID: String) -> Bool {
         switch approvalGate {
         case .waiting(let current):
             guard current == callID, let continuation = approvalContinuation else { return false }
@@ -1743,7 +1792,14 @@ public actor FloeAgentRuntime {
               current.toolCall.id == callID else { return }
         switch decision {
         case .allow, .deny, .stopped:
-            await resolveApproval(decision, for: callID)
+            if ["task.schedule", "browser.tab", "browser.click", "browser.clickPoint", "browser.type", "browser.scroll"].contains(waiting.toolCall.toolName) {
+                policyResolvedScheduleApprovals.insert(waiting.generation)
+                if !(await resolveApproval(decision, matching: waiting)) {
+                    policyResolvedScheduleApprovals.remove(waiting.generation)
+                }
+            } else {
+                await resolveApproval(decision, matching: waiting)
+            }
         case .escalateToHuman:
             break
         }
@@ -2258,6 +2314,16 @@ public actor FloeAgentRuntime {
         // On-device runs keep their curated discovery behavior; the frozen
         // identity above already carries the curated ceiling.
         let isLocalProvider = configuration.provider.kind == .local
+        // Presentation base for THIS run. Plan keeps its read-only
+        // investigation set plus the two policy-approved main-run internal
+        // tools; an ordinary cloud Agent run gets the base memory/workspace/
+        // conversation/jobs/user.ask set so it does not need a discovery
+        // round-trip for ordinary work. The catalog above is already the real
+        // availability/ceiling projection, so this never invents a tool.
+        let coreNames = ToolDiscovery.baseNames(
+            mode: configuration.conversationMode,
+            isLocalProvider: isLocalProvider
+        )
         discoverableDescriptors = catalogDescriptors
         let userTask = messages.last(where: { $0.role == "user" })?.content ?? ""
         // Eviction notices only make sense for schemas the model actually saw
@@ -2287,7 +2353,7 @@ public actor FloeAgentRuntime {
         // Restore recently used groups without replaying a discovery call.
         let recentGroups = Set(executionLedger.entries.suffix(6).map { ToolDiscovery.group($0.toolName) })
         catalogDescriptors = catalogDescriptors.filter {
-            ToolDiscovery.coreNames.contains($0.name) || discoveredToolNames.contains($0.name) || recentGroups.contains(ToolDiscovery.group($0.name))
+            coreNames.contains($0.name) || discoveredToolNames.contains($0.name) || recentGroups.contains(ToolDiscovery.group($0.name))
         }
         let statefulGroups: Set<String> = ["vnc", "executor", "terminal"]
         var pinned = Set(catalogDescriptors.filter { statefulGroups.contains(ToolDiscovery.group($0.name)) && recentGroups.contains(ToolDiscovery.group($0.name)) }.map(\.name))
@@ -2308,7 +2374,7 @@ public actor FloeAgentRuntime {
             catalogDescriptors,
             priority: discoveryPriority,
             pinned: pinned,
-            coreNames: ToolDiscovery.coreNames
+            coreNames: coreNames
         )
         catalogDescriptors.append(ToolDiscovery.descriptor)
         catalogDescriptors.append(ToolDiscovery.listDescriptor)
@@ -2681,7 +2747,7 @@ public actor FloeAgentRuntime {
             // then the previous request's surviving order, then newly
             // admitted definitions appended. Admission itself never changes
             // permissions; this only orders complete definitions.
-            let baseNames = ToolDiscovery.coreNames
+            let baseNames = coreNames
                 .union([ToolDiscovery.name, ToolDiscovery.listName])
             var ordered = schemas.sorted { left, right in
                 let leftBase = baseNames.contains(left.name)
@@ -3928,11 +3994,13 @@ public actor FloeAgentRuntime {
         let isAutomaticApprovalPolicy = ["automatic", "approval-model"].contains(approvalPolicyName)
         switch decision {
         case .allow(let scope, let expiresAt):
-            return .approved(grant: ApprovalGrant(
+            let grant = ApprovalGrant(
                 scope: Self.bind(scope, to: authorizationIdentity),
                 expiresAt: expiresAt,
                 policyName: policy.policyName
-            ))
+            )
+            if ["task.schedule", "browser.tab", "browser.click", "browser.clickPoint", "browser.type", "browser.scroll"].contains(call.toolName) { scheduleGrantProvenance[grant.id] = .automatic }
+            return .approved(grant: grant)
         case .deny(let reason):
             return .denied(reason: reason, decision: "deny:\(reason)")
         case .escalateToHuman(let reason):
@@ -3974,7 +4042,8 @@ public actor FloeAgentRuntime {
             // Arm the gate before publishing so a decision racing the
             // publish is attributed to this exact escalation.
             approvalGate = .publishing(callID: call.id)
-            await transition(to: .waitingApproval(AgentState.WaitingApproval(toolCall: call, reason: reason)))
+            let humanApproval = AgentState.WaitingApproval(toolCall: call, reason: reason)
+            await transition(to: .waitingApproval(humanApproval))
             // Consume a decision that raced the publish above, or an
             // interruption installed by `cancel()` while the publish was in
             // flight, before parking on the continuation. The checks, the
@@ -4000,15 +4069,20 @@ public actor FloeAgentRuntime {
             bufferedApprovalDecision = nil
             approvalGate = .idle
             guard case .waitingApproval = state else {
+                policyResolvedScheduleApprovals.remove(humanApproval.generation)
                 return .denied(reason: "Cancelled while waiting for approval", decision: "deny:cancelled")
             }
+            let policyResolved = policyResolvedScheduleApprovals.remove(humanApproval.generation) != nil
             switch humanDecision {
             case .allow(let scope, let expiresAt):
-                return .approved(grant: ApprovalGrant(
+                let grant = ApprovalGrant(
+                    id: ["task.schedule", "browser.tab", "browser.click", "browser.clickPoint", "browser.type", "browser.scroll"].contains(call.toolName) && !policyResolved ? humanApproval.generation : UUID(),
                     scope: Self.bind(scope, to: authorizationIdentity),
                     expiresAt: expiresAt,
                     policyName: "human"
-                ))
+                )
+                if ["task.schedule", "browser.tab", "browser.click", "browser.clickPoint", "browser.type", "browser.scroll"].contains(call.toolName) { scheduleGrantProvenance[grant.id] = policyResolved ? .automatic : .human }
+                return .approved(grant: grant)
             case .deny(let denyReason):
                 return .denied(reason: denyReason, decision: "deny:human:\(denyReason)")
             case .escalateToHuman, .stopped:
@@ -4315,6 +4389,7 @@ public actor FloeAgentRuntime {
             toolCallID: call.id,
             toolIdempotencyKey: call.idempotencyKey,
             approvalGrantID: grant.id,
+            approvalProvenance: scheduleGrantProvenance[grant.id] ?? (grant.policyName == "human" ? .human : .automatic),
             scope: call.scope,
             activeSkillIDs: effectiveSkillIDs,
             allowedToolNames: configuration.allowedToolNames,
@@ -5616,6 +5691,7 @@ public actor FloeAgentRuntime {
                 toolCallID: call.id,
                 toolIdempotencyKey: call.idempotencyKey,
                 approvalGrantID: grant.id,
+                approvalProvenance: scheduleGrantProvenance[grant.id] ?? (grant.policyName == "human" ? .human : .automatic),
                 scope: call.scope,
                 activeSkillIDs: configuration.activeSkillIDs,
                 allowedToolNames: configuration.allowedToolNames,
@@ -6364,7 +6440,8 @@ public actor FloeAgentRuntime {
             discoveredToolNames: discoveredToolNames.sorted(),
             discoveryPriority: discoveryPriority,
             ownedSystemContextID: ownedSystemContextID,
-            sensitiveToolCallIDs: sensitiveCallIDs.isEmpty ? nil : sensitiveCallIDs
+            sensitiveToolCallIDs: sensitiveCallIDs.isEmpty ? nil : sensitiveCallIDs,
+            explicitExecutionMode: configuration.explicitExecutionMode
         )
         let invariantViolations = HarnessInvariantRegistry.validateCheckpoint(checkpoint)
         guard invariantViolations.isEmpty else {

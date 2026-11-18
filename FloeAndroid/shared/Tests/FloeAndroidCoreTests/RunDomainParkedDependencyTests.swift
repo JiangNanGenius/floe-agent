@@ -14,6 +14,32 @@ import FloeAgentRuntime
 final class RunDomainParkedDependencyTests: XCTestCase {
     private var fixture: RunDomainFixture!
 
+    private actor StopBarrier {
+        private var arrived = false
+        private var released = false
+        private var arrivalWaiter: CheckedContinuation<Void, Never>?
+        private var releaseWaiter: CheckedContinuation<Void, Never>?
+
+        func pause() async {
+            arrived = true
+            arrivalWaiter?.resume()
+            arrivalWaiter = nil
+            if released { return }
+            await withCheckedContinuation { releaseWaiter = $0 }
+        }
+
+        func waitForArrival() async {
+            if arrived { return }
+            await withCheckedContinuation { arrivalWaiter = $0 }
+        }
+
+        func release() {
+            released = true
+            releaseWaiter?.resume()
+            releaseWaiter = nil
+        }
+    }
+
     override func setUp() async throws {
         fixture = try await RunDomainFixture.make()
     }
@@ -346,6 +372,132 @@ final class RunDomainParkedDependencyTests: XCTestCase {
     }
 
     // MARK: Explicit Continue after settled edges
+
+    func testOldStopCannotMarkANewUncommittedAdmission() async throws {
+        let conversationID = try await fixture.makeOrdinaryConversation()
+        let parked = try await makeParkedRun(
+            conversationID: conversationID, named: [], edges: [])
+        let domain = fixture.makeCustomDomain(components())
+        let runID = parked.runID
+        let ownerBefore = await domain.captureStopOwner(runID: runID)
+        let identity = try await fixture.runStore.stopIdentity(
+            runID: runID, conversationID: conversationID)
+        let statusSequence = try XCTUnwrap(identity?.latestStatusSequence)
+        let gate = StopBarrier()
+        let stop = Task {
+            await gate.pause()
+            return await domain.stopAwaitingDependencyBound(
+                runID: runID, conversationID: conversationID,
+                expectedIncarnation: nil, expectedStatusSequence: statusSequence,
+                expectedOwner: ownerBefore)
+        }
+        await gate.waitForArrival()
+        let token = await domain.issueFence(conversationID)
+        let replacement = RunOwnership(
+            conversationID: conversationID, runID: runID,
+            epoch: fixture.epoch, identity: .ordinary,
+            launchToken: token, bundle: fixture.components().durable)
+        await domain.register(replacement)
+        await gate.release()
+        let stopped = await stop.value
+        XCTAssertEqual(stopped, .staleIncarnation)
+        let current = await domain.ownership(runID: runID)
+        XCTAssertEqual(current?.instanceID, replacement.instanceID)
+        XCTAssertEqual(current?.cancelRequested, false)
+        let state = try await fixture.runState(runID)
+        XCTAssertEqual(state, "checkpointed")
+        await domain.unregister(replacement)
+    }
+
+    func testStopCannotMarkReplacementEvenWhenScopedLaunchTokenIsReused() async throws {
+        let conversationID = try await fixture.makeOrdinaryConversation()
+        let parked = try await makeParkedRun(
+            conversationID: conversationID, named: [], edges: [])
+        let domain = fixture.makeCustomDomain(components())
+        let runID = parked.runID
+        let token = await domain.issueFence(conversationID)
+        let bundle = fixture.components().durable
+        let first = RunOwnership(conversationID: conversationID, runID: runID,
+                                 epoch: fixture.epoch, identity: .ordinary,
+                                 launchToken: token, bundle: bundle)
+        await domain.register(first)
+        let captured = await domain.captureStopOwner(runID: runID)
+        let gate = StopBarrier()
+        let stop = Task {
+            await gate.pause()
+            return await domain.stopAwaitingDependencyBound(
+                runID: runID, conversationID: conversationID,
+                expectedIncarnation: nil, expectedStatusSequence: nil,
+                expectedOwner: captured)
+        }
+        await gate.waitForArrival()
+        await domain.unregister(first)
+        let replacement = RunOwnership(conversationID: conversationID, runID: runID,
+                                       epoch: fixture.epoch, identity: .ordinary,
+                                       launchToken: token, bundle: bundle)
+        await domain.register(replacement)
+        await gate.release()
+        let result = await stop.value
+        XCTAssertEqual(result, .staleIncarnation)
+        let current = await domain.ownership(runID: runID)
+        XCTAssertEqual(current?.instanceID, replacement.instanceID)
+        XCTAssertEqual(current?.cancelRequested, false)
+        await domain.unregister(replacement)
+    }
+
+    func testRetryWaitsForParkedStopPostCommitCleanup() async throws {
+        let conversationID = try await fixture.makeOrdinaryConversation()
+        let jobID = UUID()
+        let parked = try await makeParkedRun(
+            conversationID: conversationID, named: [jobID],
+            edges: [(jobID, .pending)])
+        let gate = StopBarrier()
+        let database = fixture.database
+        var bound = components()
+        bound.commitParkedRunStop = { runID, conversationID, expected in
+            let committed = await G02ParkedRunStopCommitter(database: database).commit(
+                runID: runID, conversationID: conversationID, expectedState: expected)
+            await gate.pause()
+            return committed
+        }
+        let domain = fixture.makeCustomDomain(bound)
+        let runID = parked.runID
+        let stop = Task {
+            await domain.stopAwaitingDependency(runID: runID, conversationID: conversationID)
+        }
+        await gate.waitForArrival()
+        let receipt = try XCTUnwrap(fixture.effects.register(correlationID: "stop-cleanup-retry"))
+        let blocked = await domain.retry(
+            envelope: fixture.executionEnvelope(
+                command: "run.retry", conversationID: conversationID, runID: runID,
+                payload: ["expectedState": "checkpointed"], correlation: "stop-cleanup-retry",
+                revision: ["resourceID": RunWireRevision.runResourceID(runID),
+                           "version": "checkpointed"]),
+            receipt: receipt)
+        guard case .rejected(let error) = blocked.outcome else {
+            await gate.release()
+            _ = await stop.value
+            return XCTFail("Continue must wait until stop cleanup finishes")
+        }
+        XCTAssertEqual(error.code.rawValue, "duplicateInFlight")
+        let during = try await fixture.runState(runID)
+        XCTAssertEqual(during, "checkpointed")
+        await gate.release()
+        _ = await stop.value
+        _ = enqueueAnswer("Continued after stop cleanup.")
+        let laterReceipt = try XCTUnwrap(fixture.effects.register(correlationID: "stop-cleanup-retry-later"))
+        let later = await domain.retry(
+            envelope: fixture.executionEnvelope(
+                command: "run.retry", conversationID: conversationID, runID: runID,
+                payload: ["expectedState": "checkpointed"], correlation: "stop-cleanup-retry-later",
+                revision: ["resourceID": RunWireRevision.runResourceID(runID),
+                           "version": "checkpointed"]),
+            receipt: laterReceipt)
+        guard case .mutationAccepted = later.outcome else {
+            return XCTFail("Continue should be available after cleanup: \(later.outcome)")
+        }
+        _ = await waitDurableTerminal(fixture: fixture, runID: runID)
+    }
 
     func testContinueIsAllowedOnlyAfterEveryRequiredEdgeSettles() async throws {
         let conversationID = try await fixture.makeOrdinaryConversation()

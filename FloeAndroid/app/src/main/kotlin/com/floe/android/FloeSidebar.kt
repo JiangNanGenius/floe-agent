@@ -137,10 +137,11 @@ fun FloeSidebar(
                 modifier = Modifier.padding(horizontal = 12.dp),
             )
             FloeSidebarRow(
-                icon = FloeIcons.BookPages,
-                label = stringResource(R.string.notes),
-                selected = selection == SidebarSelection.More(MoreDestination.NOTES),
-                onClick = { onSelect(SidebarSelection.More(MoreDestination.NOTES)) },
+                icon = FloeIcons.Compass,
+                label = stringResource(R.string.space_title),
+                selected = selection is SidebarSelection.Space ||
+                    selection == SidebarSelection.More(MoreDestination.NOTES),
+                onClick = { onSelect(SidebarSelection.Space) },
                 selectionStyle = FloeSelectionStyle.GRAY,
                 modifier = Modifier.padding(horizontal = 12.dp),
             )

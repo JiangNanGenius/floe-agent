@@ -238,6 +238,7 @@ sealed interface DeviceAccessAccessibilityUi {
     data object NotGranted : DeviceAccessAccessibilityUi
     data object Granted : DeviceAccessAccessibilityUi
     data object Restricted : DeviceAccessAccessibilityUi
+    data object Inconsistent : DeviceAccessAccessibilityUi
     data object Revoked : DeviceAccessAccessibilityUi
 }
 
@@ -451,6 +452,7 @@ object DeviceAccessPresentation {
         DeviceAccessAccessibilityUi.NotGranted -> R.string.device_access_state_not_granted
         DeviceAccessAccessibilityUi.Granted -> R.string.device_access_state_granted
         DeviceAccessAccessibilityUi.Restricted -> R.string.device_access_state_restricted
+        DeviceAccessAccessibilityUi.Inconsistent -> R.string.device_access_state_inconsistent
         DeviceAccessAccessibilityUi.Revoked -> R.string.device_access_state_revoked
     }
 
@@ -1248,6 +1250,9 @@ fun DeviceAccessSettingsPage(
             title = stringResource(R.string.device_access_accessibility_section),
             caption = {
                 Column {
+                    if (state.accessibility == DeviceAccessAccessibilityUi.Inconsistent) {
+                        CaptionText(stringResource(R.string.device_access_accessibility_inconsistent_hint))
+                    }
                     if (state.accessibility == DeviceAccessAccessibilityUi.Restricted) {
                         CaptionText(
                             stringResource(R.string.device_access_accessibility_restricted_hint),

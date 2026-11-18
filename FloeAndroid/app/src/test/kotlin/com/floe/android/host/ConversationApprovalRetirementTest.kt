@@ -38,6 +38,9 @@ class ConversationApprovalRetirementTest {
     private val callId = "call-9f8e7d"
     private val requestedAt1 = "2026-10-21T12:00:00.000Z"
     private val requestedAt2 = "2026-10-21T12:05:00.000Z"
+    private val generation1 = "55555555-5555-4555-8555-555555555555"
+    private val generation2 = "66666666-6666-4666-8666-666666666666"
+    private fun generationFor(date: String) = if (date == requestedAt1) generation1 else generation2
 
     // ------------------------------------------------------------ fixtures
 
@@ -54,12 +57,12 @@ class ConversationApprovalRetirementTest {
             "null"
         } else {
             """{"callID":"$callId","tool":"mcp.fs.read","reason":"Needs approval",""" +
-                """"requestedAt":"$requestedAt"}"""
+                """"requestedAt":"$requestedAt","generation":"${generationFor(requestedAt)}"}"""
         }
         val approvalRevision = if (requestedAt == null) {
             "null"
         } else {
-            """{"resourceID":"approval.$callId","version":"$requestedAt"}"""
+            """{"resourceID":"approval.$callId","version":"generation:${generationFor(requestedAt)}"}"""
         }
         val json =
             """{"schema":"floe.command-envelope/3","conversationID":"$conversationId",""" +
@@ -114,7 +117,7 @@ class ConversationApprovalRetirementTest {
         val builder = builderFor(runId)
         builder.applySnapshot(snapshotPage(watermark = 4, requestedAt = requestedAt1))
         assertEquals(1, builder.build().pendingApprovals.size)
-        assertEquals(requestedAt1, builder.approvalVersion(callId))
+        assertEquals("generation:$generation1", builder.approvalVersion(callId))
 
         builder.applySnapshot(snapshotPage(watermark = 6))
         assertTrue(
@@ -138,7 +141,7 @@ class ConversationApprovalRetirementTest {
         builder.applySnapshot(snapshotPage(watermark = 4, requestedAt = requestedAt1))
         builder.applySnapshot(snapshotPage(watermark = 6, liveOwner = false))
         assertEquals(1, builder.build().pendingApprovals.size)
-        assertEquals(requestedAt1, builder.approvalVersion(callId))
+        assertEquals("generation:$generation1", builder.approvalVersion(callId))
     }
 
     /**
@@ -175,7 +178,7 @@ class ConversationApprovalRetirementTest {
         builder.applySnapshot(snapshotPage(watermark = 6, requestedAt = requestedAt1))
         builder.applySnapshot(snapshotPage(watermark = 4))
         assertEquals(1, builder.build().pendingApprovals.size)
-        assertEquals(requestedAt1, builder.approvalVersion(callId))
+        assertEquals("generation:$generation1", builder.approvalVersion(callId))
     }
 
     /**
@@ -191,7 +194,7 @@ class ConversationApprovalRetirementTest {
         val approvals = builder.build().pendingApprovals
         assertEquals(1, approvals.size)
         assertEquals(requestedAt2, approvals.single().requestedAtLabel)
-        assertEquals(requestedAt2, builder.approvalVersion(callId))
+        assertEquals("generation:$generation2", builder.approvalVersion(callId))
     }
 
     /**
@@ -213,7 +216,7 @@ class ConversationApprovalRetirementTest {
         builder.selectedRunId = siblingRunId
         assertEquals(1, builder.build().pendingApprovals.size)
         // …and the CAS version still bound to B's live card.
-        assertEquals(requestedAt1, builder.approvalVersion(callId))
+        assertEquals("generation:$generation1", builder.approvalVersion(callId))
     }
 
     /**
@@ -222,11 +225,15 @@ class ConversationApprovalRetirementTest {
      * must not resurrect it.
      */
     @Test
-    fun durableOutcomeEventRetiresAndLateSnapshotCannotResurrect() {
+    fun unversionedOutcomeWaitsForAuthoritativeAbsence() {
         val builder = builderFor(runId)
         builder.applyRunEvent(approvalRequestFrame(runId, sequence = 10))
+        assertTrue(builder.build().pendingApprovals.isEmpty())
+        builder.applySnapshot(snapshotPage(watermark = 10, requestedAt = requestedAt1))
         assertEquals(1, builder.build().pendingApprovals.size)
         builder.applyRunEvent(approvalOutcomeFrame(runId, sequence = 11))
+        assertEquals(1, builder.build().pendingApprovals.size)
+        builder.applySnapshot(snapshotPage(watermark = 12))
         assertTrue(builder.build().pendingApprovals.isEmpty())
         assertNull(builder.approvalVersion(callId))
 
@@ -243,10 +250,12 @@ class ConversationApprovalRetirementTest {
      * must not clear it.
      */
     @Test
-    fun durableRequestEventIsNotClearedByPreRequestSnapshot() {
+    fun durableRequestRequiresFreshAuthoritativeSnapshot() {
         val builder = builderFor(runId)
         builder.applySnapshot(snapshotPage(watermark = 4))
         builder.applyRunEvent(approvalRequestFrame(runId, sequence = 5))
+        assertTrue(builder.build().pendingApprovals.isEmpty())
+        builder.applySnapshot(snapshotPage(watermark = 6, requestedAt = requestedAt1))
         assertEquals(1, builder.build().pendingApprovals.size)
         builder.applySnapshot(snapshotPage(watermark = 4))
         assertEquals(1, builder.build().pendingApprovals.size)
@@ -265,7 +274,7 @@ class ConversationApprovalRetirementTest {
         builder.applySnapshot(snapshotPage(watermark = 11, requestedAt = requestedAt1))
         assertTrue(builder.build().pendingApprovals.isEmpty())
         builder.applySnapshot(snapshotPage(watermark = 12, requestedAt = requestedAt2))
-        assertEquals(requestedAt2, builder.approvalVersion(callId))
+        assertEquals("generation:$generation2", builder.approvalVersion(callId))
         assertEquals(1, builder.build().pendingApprovals.size)
     }
 
@@ -285,6 +294,6 @@ class ConversationApprovalRetirementTest {
         builder.applySnapshot(snapshotPage(watermark = 20, requestedAt = requestedAt2))
         builder.applyRunEvent(approvalOutcomeFrame(runId, sequence = 10))
         assertEquals(1, builder.build().pendingApprovals.size)
-        assertEquals(requestedAt2, builder.approvalVersion(callId))
+        assertEquals("generation:$generation2", builder.approvalVersion(callId))
     }
 }

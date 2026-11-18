@@ -211,6 +211,8 @@ public enum RunDomainFacade {
                 reply = await domain.inputReorder(envelope: envelope)
             case "run.approval.resolve":
                 reply = await domain.resolveApproval(envelope: envelope)
+            case "run.approval.presentation":
+                reply = await domain.approvalPresentation(envelope: envelope)
             case "run.policy.update":
                 reply = await domain.policyUpdate(envelope: envelope)
             case "run.skillcancel":
@@ -253,6 +255,7 @@ extension FacadeRunDomain {
     /// zero ONLY at real settlement; nothing here waits on a timer and
     /// nothing detaches early.
     func beginGenerationRetirement() async {
+        bumpStopOwnershipStamp()
         retirementFenced = true
         cancelG04WorkspaceOperations()
         retiredRunSet.removeAll()

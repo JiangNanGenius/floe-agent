@@ -213,6 +213,15 @@ extension FacadeRunDomain {
         -> JobDependencyResumeResult {
         let runID = record.id
         let conversationID = record.conversationID
+        guard let identity = await runStopIdentity(
+            runID: runID, conversationID: conversationID),
+              identity.state == "checkpointed" else {
+            return .unverified
+        }
+        // Legacy parks can predate activation markers. The store must prove
+        // the entire legacy history and bootstrap inside the same park CAS;
+        // a missing identity is never itself evidence of a completed stop.
+        let sourceIncarnation = identity.incarnation
         // Re-prove the owner/fences after the edge read suspend.
         guard !retirementFenced, globalFence == nil,
               deleteGuards[conversationID] == nil,
@@ -292,7 +301,11 @@ extension FacadeRunDomain {
                 goal: record.goal, mode: mode, launch: launch,
                 history: history, images: [], bundle: durable,
                 draftPolicy: nil, gate: gate, workspaceName: nil,
-                hostToolCeiling: nil, environmentID: nil)
+                hostToolCeiling: nil, environmentID: nil,
+                // Same restart contract as an explicit retry: the immutable
+                // run row first, then the exact checkpoint it just loaded.
+                explicitExecutionMode: FacadeRunDomain.resumedExplicitExecutionMode(
+                    record: record, checkpoint: checkpoint))
         } catch let error as RunDomainError {
             return Self.resumeRefusal(error)
         } catch {
@@ -339,6 +352,7 @@ extension FacadeRunDomain {
                 conversationID: conversationID, runID: runID, epoch: epoch,
                 identity: .ordinary, launchToken: launchToken, bundle: durable)
             ownership.phase = .admitting
+            ownership.incarnation = sourceIncarnation
             ownership.ownedTokens[RuntimeOwnedWorkKind.run.rawValue] = token
             register(ownership)
             recordDrainEvidence(conversationID: conversationID, token: token)
@@ -391,15 +405,16 @@ extension FacadeRunDomain {
                                                excluding: runID) ? .busy : .fenced
         }
 
-        var committed = false
+        var committedIncarnation: RunIncarnation?
         do {
             guard let resumable = durable.runs as? any ResumeActivationRunStore else {
                 throw RunDomainError(.capabilityNotUsable, .intelligenceStoreUnbound)
             }
-            let proof = try await resumable.beginUserResume(
+            committedIncarnation = try await resumable.beginDependencyResume(
                 runID: runID, conversationID: conversationID,
-                expectedState: "checkpointed")
-            committed = proof != nil
+                expectedIncarnation: sourceIncarnation?.proof,
+                observedSettlementSequence: identity.latestSettlementSequence,
+                expectedParkSequence: park.sequence)
         } catch let error as RunDomainError {
             await releaseForegroundAdmission(runID: runID, epoch: epoch)
             releaseResumeAdmission(runID: runID)
@@ -410,11 +425,15 @@ extension FacadeRunDomain {
             return .refused(code: RunDomainError.Code.persistenceUnavailable.rawValue,
                             reason: RunDomainError.Reason.storeWriteFailed.rawValue)
         }
-        guard committed else {
+        guard let committedIncarnation else {
             await releaseForegroundAdmission(runID: runID, epoch: epoch)
             let current = (try? await durable.runs.run(id: runID))?.state
             releaseResumeAdmission(runID: runID)
             return current == "checkpointed" ? .unverified : .notAwaiting
+        }
+        if var current = owners[runID], current.launchToken == launchToken {
+            current.incarnation = committedIncarnation
+            register(current)
         }
         // ATOMIC STOP FENCE: `beginUserResume` re-proves only the row state,
         // and a parked Stop keeps `checkpointed`; the canonical userStop row
@@ -423,7 +442,8 @@ extension FacadeRunDomain {
         let fenceVerdict = RunDependencyResumeFence.verdict(
             park: park,
             eventsAfterPark: await resumeFenceEvents(
-                runID: runID, afterSequence: park.sequence))
+                runID: runID, afterSequence: park.sequence),
+            allowsLegacyBootstrap: sourceIncarnation == nil)
         switch fenceVerdict {
         case .clean:
             break
@@ -613,8 +633,29 @@ extension FacadeRunDomain {
 
     /// The user's explicit Stop of a parked waiting run. It never fakes a job
     /// terminal; it fences the run so no late callback can revive it.
+    ///
+    /// `expectedIncarnation` is the durable activation the caller's command
+    /// addressed. When supplied, the writer re-proves that EXACT incarnation
+    /// inside the same transaction as the row CAS; a retry that committed a
+    /// newer activation makes this Stop stale and writes nothing.
     public func stopAwaitingDependency(runID: UUID,
-                                       conversationID: UUID) async
+                                       conversationID: UUID,
+                                       expectedIncarnation: RunIncarnation? = nil,
+                                       expectedStatusSequence: Int? = nil) async
+        -> JobDependencyStopResult {
+        let expectedOwner = captureStopOwner(runID: runID)
+        return await stopAwaitingDependencyBound(
+            runID: runID, conversationID: conversationID,
+            expectedIncarnation: expectedIncarnation,
+            expectedStatusSequence: expectedStatusSequence,
+            expectedOwner: expectedOwner)
+    }
+
+    func stopAwaitingDependencyBound(runID: UUID,
+                                     conversationID: UUID,
+                                     expectedIncarnation: RunIncarnation?,
+                                     expectedStatusSequence: Int?,
+                                     expectedOwner: StopOwnerCapture) async
         -> JobDependencyStopResult {
         guard !stoppingDependencyRuns.contains(runID) else { return .busy }
         guard !retirementFenced, globalFence == nil else {
@@ -626,13 +667,21 @@ extension FacadeRunDomain {
             return .refused(code: RunDomainError.Code.sessionFenced.rawValue,
                             reason: RunDomainError.Reason.deletingGuarded.rawValue)
         }
+        guard stopOwnerMatches(expectedOwner, runID: runID) else {
+            return .staleIncarnation
+        }
         // A Stop that lands while an AUTOMATIC resume is still admitting MUST
         // win. The in-flight admission is marked synchronously here (it
         // re-proves this exact flag after every await and before any provider
         // or tool side effect); a genuinely live/handed-off run keeps the
-        // ordinary live-cancel path instead.
+        // ordinary live-cancel path instead. Once that admission COMMITTED
+        // its new incarnation proof, an older Stop must not touch it.
         if var owner = owners[runID] {
             guard owner.phase == .admitting else { return .busy }
+            if let ownerIncarnation = owner.incarnation,
+               ownerIncarnation.proof != expectedIncarnation?.proof {
+                return .staleIncarnation
+            }
             owner.cancelRequested = true
             register(owner)
         }
@@ -656,16 +705,69 @@ extension FacadeRunDomain {
         // Only an admission still in flight (or no owner yet) may run the
         // parked-stop CAS; a handed-off owner is a live cancel.
         if let owner = owners[runID], owner.phase != .admitting { return .busy }
-        guard let commit = components.commitParkedRunStop else {
-            return .refused(code: RunDomainError.Code.persistenceUnavailable.rawValue,
-                            reason: RunDomainError.Reason.storeWriteFailed.rawValue)
+        // Read state + incarnation from ONE reader transaction before the
+        // commit. When the caller supplied an incarnation, a moved row is a
+        // stale command; when it did not, the same read can still BIND the
+        // proof (direct trusted callers) instead of silently writing a
+        // less-provable stop.
+        let identity = await runStopIdentity(runID: runID,
+                                             conversationID: conversationID)
+        if let identity {
+            guard identity.state == "checkpointed" else {
+                return .alreadyStarted(state: identity.state)
+            }
+            if let expectedStatusSequence,
+               identity.latestStatusSequence != expectedStatusSequence {
+                return .staleIncarnation
+            }
+            if let expectedIncarnation,
+               identity.incarnation?.proof != expectedIncarnation.proof {
+                return .staleIncarnation
+            }
         }
+        // A caller that captured a nil incarnation may not silently rebind
+        // to a new activation observed after its Stop request.
+        let boundIncarnation = expectedStatusSequence == nil
+            ? (expectedIncarnation ?? identity?.incarnation) : expectedIncarnation
+        let boundStatusSequence = expectedStatusSequence ?? identity?.latestStatusSequence
         // The CAS is the fence: if a resume committed first, the row is no
-        // longer checkpointed and NOTHING is rewritten.
-        let committed = await commit(runID, conversationID, "checkpointed")
-        guard committed else {
-            let current = (try? await durable.runs.run(id: runID))?.state
-            return .alreadyStarted(state: current ?? record.state)
+        // longer checkpointed and NOTHING is rewritten. The typed commit
+        // additionally re-proves the exact incarnation in the SAME writer
+        // transaction and appends the settlement row there.
+        var typedSettlement: RunStopSettlement?
+        var alreadySettled = false
+        if let typedCommit = components.commitParkedRunStopSettlement {
+            let outcome = await typedCommit(runID, conversationID,
+                                            "checkpointed", boundIncarnation,
+                                            boundStatusSequence)
+            switch outcome {
+            case .settled(let settlement):
+                typedSettlement = settlement
+            case .alreadySettled(let settlement):
+                typedSettlement = settlement
+                alreadySettled = true
+            case .unboundStopped:
+                break
+            case .staleIncarnation:
+                return .staleIncarnation
+            case .notStopped(let state):
+                return .alreadyStarted(state: state)
+            case .unreadable:
+                return .refused(
+                    code: RunDomainError.Code.persistenceUnavailable.rawValue,
+                    reason: RunDomainError.Reason.storeWriteFailed.rawValue)
+            }
+        } else {
+            guard let commit = components.commitParkedRunStop else {
+                return .refused(
+                    code: RunDomainError.Code.persistenceUnavailable.rawValue,
+                    reason: RunDomainError.Reason.storeWriteFailed.rawValue)
+            }
+            let committed = await commit(runID, conversationID, "checkpointed")
+            guard committed else {
+                let current = (try? await durable.runs.run(id: runID))?.state
+                return .alreadyStarted(state: current ?? record.state)
+            }
         }
         // The run is durably stopped from this point on. Rewrite the recovery
         // checkpoint's reason (identity preserved) so the durable cause is the
@@ -709,6 +811,12 @@ extension FacadeRunDomain {
         // The CAS transaction already appended the ONE canonical userStop
         // status row; no second, contradictory cause is written here.
         lastObservedState[runID] = "checkpointed"
+        if let typedSettlement {
+            return alreadySettled
+                ? .alreadySettled(settlement: typedSettlement)
+                : .settled(cancelledJobIDs: requested,
+                           settlement: typedSettlement)
+        }
         return .stopped(cancelledJobIDs: requested)
     }
 

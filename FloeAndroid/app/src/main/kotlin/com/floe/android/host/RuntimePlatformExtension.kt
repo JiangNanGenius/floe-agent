@@ -4,6 +4,29 @@ package com.floe.android.host
 import android.app.Activity
 import java.util.UUID
 
+/** Exact waiting request. It contains no model input text or authority. */
+data class DeviceApprovalIdentity(
+    val taskID: UUID, val runID: UUID, val nativeEpoch: Long, val hostGeneration: Long,
+    val callID: String, val generation: String, val descriptorIdentity: String,
+)
+
+data class DeviceApprovalAction(
+    val observationId: String, val nodeRef: String, val action: String,
+    val direction: String?, val inputKind: String?,
+)
+
+data class DeviceApprovalTarget(
+    val packageName: String, val className: String, val label: String,
+    val left: Int, val top: Int, val right: Int, val bottom: Int, val digest: String,
+) {
+    override fun toString(): String = "DeviceApprovalTarget(redacted)"
+}
+
+interface DeviceApprovalOverlayCallbacks {
+    fun onVisibilityChanged(identity: DeviceApprovalIdentity, presentationId: String, visible: Boolean)
+    fun onDecision(identity: DeviceApprovalIdentity, presentationId: String, allow: Boolean)
+}
+
 /**
  * Channel-neutral lifecycle seam for an OPTIONAL platform extension that is
  * owned by the Application (never by a view, sheet or composition).
@@ -32,6 +55,22 @@ import java.util.UUID
  *  - [close] is terminal for the process host.
  */
 interface RuntimePlatformExtension {
+    /** Callback lease belongs to the waiting holder; the overlay grants nothing. */
+    fun presentDeviceApproval(identity: DeviceApprovalIdentity, callbacks: DeviceApprovalOverlayCallbacks): Boolean = false
+    fun setDeviceApprovalTarget(identity: DeviceApprovalIdentity, presentationId: String,
+                                action: DeviceApprovalAction?, target: DeviceApprovalTarget?, enabled: Boolean) = Unit
+    fun dismissDeviceApproval(identity: DeviceApprovalIdentity) = Unit
+    suspend fun readDeviceApprovalTarget(identity: DeviceApprovalIdentity, presentationId: String, action: DeviceApprovalAction,
+                                         stillCurrent: () -> Boolean): DeviceApprovalTarget? = null
+
+    /**
+     * Synchronous narrowing for a device approval decision: true when this
+     * exact card was retired by the user's Stop/Takeover (or its native epoch/
+     * host generation is gone). It grants nothing; PLAY/inert hosts keep the
+     * default false and never own device control.
+     */
+    fun isDeviceApprovalRevoked(identity: DeviceApprovalIdentity): Boolean = false
+
     fun onHostStarted(host: RuntimeHost) = Unit
 
     fun onOwnedStoreReady(epoch: Long) = Unit
@@ -46,6 +85,10 @@ interface RuntimePlatformExtension {
 
     /** Notification only: authoritative holder activity changed, including in background. */
     fun onRunActivityChanged() = Unit
+
+    /** A user requested Stop for this exact live-generation run. This is not a
+     * claim that its durable cancellation has already completed. */
+    fun onRunStopRequested(epoch: Long, taskID: UUID, runID: UUID) = Unit
 
     /** Presentation only, from an admitted native workspace grant, never tool arguments. */
     fun onBackgroundWorkStarted(epoch: Long, taskID: UUID, runID: UUID) = Unit

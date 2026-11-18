@@ -751,16 +751,27 @@ final class C02TaskContinuityWaitTests: XCTestCase {
         XCTAssertEqual(durable.waits[0].identity.itemID, "call-1")
         XCTAssertTrue(durable.waits[0].requiresResume)
         XCTAssertFalse(durable.waits[0].answerableNow)
+        XCTAssertNil(durable.waits[0].approvalVersion)
 
-        let live = TaskContinuityLiveApproval(
+        let unversioned = TaskContinuityLiveApproval(
             callID: "call-1", tool: "exec.shell",
             reason: "needs approval", requestedAt: Date())
+        let unversionedRead = try await provider(fixture, liveApproval: unversioned).pendingWaits(
+            taskID: fixture.taskID, runID: fixture.runID)
+        XCTAssertFalse(unversionedRead.waits[0].answerableNow)
+        XCTAssertNil(unversionedRead.waits[0].approvalVersion)
+
+        let generation = UUID()
+        let live = TaskContinuityLiveApproval(
+            callID: "call-1", tool: "exec.shell",
+            reason: "needs approval", requestedAt: Date(), generation: generation)
         let liveRead = try await provider(fixture, liveApproval: live).pendingWaits(
             taskID: fixture.taskID, runID: fixture.runID)
         XCTAssertEqual(liveRead.waits.count, 1)
         XCTAssertTrue(liveRead.waits[0].answerableNow)
         XCTAssertFalse(liveRead.waits[0].requiresResume)
-        XCTAssertNotNil(liveRead.waits[0].approvalVersion)
+        XCTAssertEqual(liveRead.waits[0].approvalVersion,
+                       RunWireRevision.approvalVersion(generation: generation))
 
         try await fixture.runStore.appendEvent(
             runID: fixture.runID,

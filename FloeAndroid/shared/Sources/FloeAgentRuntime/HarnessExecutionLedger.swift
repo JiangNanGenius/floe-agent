@@ -173,7 +173,7 @@ struct HarnessExecutionLedger: Sendable {
             }
         }
         if Self.memoryMutationTools.contains(toolName) {
-            return "Inspect prior memory with memory.search, memory.list, memory.recall, or memory.organizePreview before writing, updating, or deleting memory."
+            return "Inspect prior memory with memory.recall (or any registered memory search/list/organizePreview tool) before writing, updating, or deleting memory."
         }
         return nil
     }

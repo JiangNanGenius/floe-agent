@@ -19,6 +19,17 @@ import org.json.JSONObject
  */
 internal object PlatformArtifactWriter {
 
+    /** Only this writer's long-expired app-cache stages are disposable. */
+    fun cleanupExpiredStages(privateDirectory: File, now: Long = System.currentTimeMillis()) {
+        val cutoff = now - 24L * 60 * 60 * 1000
+        privateDirectory.listFiles()?.forEach { file ->
+            if (file.name.startsWith("floe-private-shot-") && file.name.endsWith(".tmp") &&
+                file.isFile && file.lastModified() in 1 until cutoff) {
+                runCatching { file.delete() }
+            }
+        }
+    }
+
     data class Artifact(
         val relativePath: String,
         val mimeType: String,
@@ -35,6 +46,72 @@ internal object PlatformArtifactWriter {
     sealed interface Result {
         data class Ok(val artifact: Artifact) : Result
         data class Failed(val code: String) : Result
+    }
+
+    sealed interface Preparation {
+        data class Ready(val stage: PrivateStage) : Preparation
+        data class Failed(val code: String) : Preparation
+    }
+
+    /** Prepared entirely in the caller's app-private cache; no public artifact yet. */
+    class PrivateStage internal constructor(
+        private val temporary: File, private val directory: File, private val name: String,
+        private val mimeType: String, private val size: Int, private val digest: ByteArray,
+    ) : AutoCloseable {
+        private var consumed = false
+
+        /** Caller must hold the live consent/teardown fences across this commit. */
+        fun commit(): Result {
+            if (consumed) return Result.Failed("artifact_stage_consumed")
+            consumed = true
+            val target = File(directory, name)
+            try {
+                if (target.exists()) return Result.Failed("artifact_commit")
+                // A same-filesystem rename is the only publication point.
+                // A different volume fails closed instead of copying sensitive
+                // bytes to the visible namespace outside the commit fence.
+                if (!temporary.renameTo(target)) return Result.Failed("artifact_commit")
+                return Result.Ok(Artifact("VNCArtifacts/$name", mimeType, size,
+                    digest.joinToString("") { "%02x".format(it) }))
+            } catch (_: Throwable) {
+                return Result.Failed("artifact_write")
+            } finally {
+                runCatching { temporary.delete() }
+            }
+        }
+
+        override fun close() { runCatching { temporary.delete() } }
+    }
+
+    fun prepare(privateDirectory: File, artifactRoot: String?, bytes: ByteArray, mimeType: String): Preparation {
+        if (artifactRoot.isNullOrBlank() || !artifactRoot.startsWith("/")) return Preparation.Failed("artifact_root_unbound")
+        if (bytes.isEmpty()) return Preparation.Failed("artifact_empty")
+        val extension = when (mimeType) { "image/png" -> "png"; "image/jpeg" -> "jpg"; else -> return Preparation.Failed("artifact_mime") }
+        if (!hasImageSignature(bytes, mimeType)) return Preparation.Failed("artifact_signature")
+        val root = try { File(artifactRoot).canonicalFile } catch (_: Throwable) { return Preparation.Failed("artifact_root_unbound") }
+        val directory = File(root, "VNCArtifacts")
+        if ((!directory.exists() && !directory.mkdirs()) || !directory.isDirectory) return Preparation.Failed("artifact_directory")
+        val canonical = try { directory.canonicalFile } catch (_: Throwable) { return Preparation.Failed("artifact_directory") }
+        if (!canonical.path.startsWith(root.path.trimEnd('/') + "/")) return Preparation.Failed("artifact_escape")
+        val temporary = try { File.createTempFile("floe-private-shot-", ".tmp", privateDirectory) }
+            catch (_: Throwable) { return Preparation.Failed("artifact_create") }
+        var ready = false
+        try {
+            FileOutputStream(temporary).use { output -> output.write(bytes); output.flush(); output.fd.sync() }
+            val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
+            val actual = temporary.readBytes()
+            try {
+                if (actual.size != bytes.size || !MessageDigest.getInstance("SHA-256").digest(actual).contentEquals(digest) ||
+                    !hasImageSignature(actual, mimeType)) return Preparation.Failed("artifact_verify")
+            } finally { actual.fill(0) }
+            ready = true
+            return Preparation.Ready(PrivateStage(temporary, canonical,
+                UUID.randomUUID().toString() + "." + extension, mimeType, bytes.size, digest))
+        } catch (_: Throwable) {
+            return Preparation.Failed("artifact_write")
+        } finally {
+            if (!ready) runCatching { temporary.delete() }
+        }
     }
 
     /**

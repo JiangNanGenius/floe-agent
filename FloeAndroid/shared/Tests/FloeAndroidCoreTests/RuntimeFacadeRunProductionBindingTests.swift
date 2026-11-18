@@ -408,10 +408,12 @@ final class RuntimeFacadeRunProductionBindingTests: XCTestCase {
         XCTAssertEqual(gateway.storedValueCount, 1)
 
         // Resolve the card with the real engine-bound approval flow.
-        let requestVersion = RunWireRevision.approvalVersion(requestedAt: waiting.requestedAt)
+        let requestVersion = RunWireRevision.approvalVersion(generation: waiting.generation)
         let right = await domain.resolveApproval(envelope: fixture.executionEnvelope(
             command: "run.approval.resolve", conversationID: conversationID, runID: runID,
             payload: ["callID": waiting.toolCall.id, "decision": "allow",
+                      "approvalSchema": "generation-v1",
+                      "expectedDescriptorIdentity": try XCTUnwrap(fixture.registry.descriptor(named: waiting.toolCall.toolName)).authorizationIdentity,
                       "expectedApprovalVersion": requestVersion],
             correlation: "corr-actual-norm-resolve",
             revision: ["resourceID": RunWireRevision.approvalResourceID(callID: waiting.toolCall.id),
@@ -819,10 +821,12 @@ final class RuntimeFacadeRunProductionBindingTests: XCTestCase {
         }
         XCTAssertTrue(pending, "the delegate call must escalate under ask")
         let waiting = try unwrapAsync(await domain.liveService(runID)?.snapshot().pendingApproval)
-        let requestVersion = RunWireRevision.approvalVersion(requestedAt: waiting.requestedAt)
+        let requestVersion = RunWireRevision.approvalVersion(generation: waiting.generation)
         let right = await domain.resolveApproval(envelope: fixture.executionEnvelope(
             command: "run.approval.resolve", conversationID: conversationID, runID: runID,
             payload: ["callID": waiting.toolCall.id, "decision": "allow",
+                      "approvalSchema": "generation-v1",
+                      "expectedDescriptorIdentity": try XCTUnwrap(fixture.registry.descriptor(named: waiting.toolCall.toolName)).authorizationIdentity,
                       "expectedApprovalVersion": requestVersion],
             correlation: "corr-env-child-approve",
             revision: ["resourceID": RunWireRevision.approvalResourceID(callID: waiting.toolCall.id),

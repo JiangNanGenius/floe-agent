@@ -2359,6 +2359,22 @@ public actor C02ExecutionTargetDomain {
         try await store.runPin(runID: runID)
     }
 
+    /// Read-only approval proof: never creates, migrates or re-pins a target.
+    /// Re-read the pair around the asynchronous store calls so a changed
+    /// target or an active migration is not presented as local Linux.
+    func localShellApprovalReadback(taskID: UUID, runID: UUID) async throws -> C02ResolvedExecutionTarget? {
+        try await requireLiveEpoch()
+        guard try await store.activeMigration(taskID: taskID) == nil,
+              let target = try await store.target(taskID: taskID), target.kind == .localLinux,
+              let pin = try await store.runPin(runID: runID), pin.runID == runID,
+              pin.taskID == taskID, pin.rootEpoch == epoch, pin.matches(target),
+              let targetAgain = try await store.target(taskID: taskID), targetAgain == target,
+              let pinAgain = try await store.runPin(runID: runID), pinAgain == pin,
+              try await store.activeMigration(taskID: taskID) == nil else { return nil }
+        try await requireLiveEpoch()
+        return C02ResolvedExecutionTarget(target: target, pin: pin)
+    }
+
     // MARK: Private
 
     private func requireLiveEpoch() async throws {

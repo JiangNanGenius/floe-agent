@@ -75,6 +75,7 @@
     <string name="app_update_source_restarted">This connection could not resume. Download restarted.</string>
     <string name="app_update_source_mirror">Third-party mirror; package verification stays enabled.</string>
     <string name="device_sensitive_guard_title">Sensitive input protection</string>
+    <string name="device_sensitive_guard_observe_notice">protection=active. Ask the user to clear the sensitive content in the target app and leave that screen, then manually release its protection in Floe Settings › Device › Sensitive input protection. Observe again afterward.</string>
     <string name="device_sensitive_guard_unavailable">Protection status is unavailable. Try refreshing.</string>
     <string name="device_sensitive_guard_limit">Protection records are full. Nothing was entered. Review old records in Settings › Device › Sensitive input protection. Clear the sensitive content and leave its screen before releasing protection.</string>
     <string name="device_sensitive_guard_empty">No protected screens.</string>

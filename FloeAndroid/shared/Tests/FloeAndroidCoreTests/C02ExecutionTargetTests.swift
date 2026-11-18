@@ -488,6 +488,25 @@ final class C02ExecutionTargetTests: XCTestCase {
         )
     }
 
+    func testLocalShellApprovalReadbackRequiresExistingExactRunPin() async throws {
+        try await withFixture { fixture in
+            let harness = try await makeHarness(fixture: fixture)
+            _ = try await harness.domain.initialize(
+                taskID: harness.taskID,
+                selection: C02ExecutionTargetSelection(kind: .localLinux, environmentID: "env-a",
+                                                       remoteHostID: nil, explicitUserChoice: true))
+            let before = try await harness.domain.localShellApprovalReadback(taskID: harness.taskID, runID: harness.runID)
+            XCTAssertNil(before, "approval lookup must not manufacture a run pin")
+            let pinned = try await harness.domain.resolveForRun(taskID: harness.taskID, runID: harness.runID)
+            let readback = try await harness.domain.localShellApprovalReadback(taskID: harness.taskID, runID: harness.runID)
+            XCTAssertNotNil(readback)
+            XCTAssertEqual(readback?.target.environmentID, pinned.target.environmentID)
+            XCTAssertEqual(readback?.pin.targetRevision, pinned.pin.targetRevision)
+            let other = try await harness.domain.localShellApprovalReadback(taskID: harness.taskID, runID: UUID())
+            XCTAssertNil(other)
+        }
+    }
+
     func testInitialTargetPersistsAndLaterDefaultsCannotRewriteIt() async throws {
         try await withFixture { fixture in
             let harness = try await makeHarness(fixture: fixture)

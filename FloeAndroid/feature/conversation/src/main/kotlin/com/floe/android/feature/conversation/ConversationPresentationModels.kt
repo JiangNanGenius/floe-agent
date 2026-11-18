@@ -230,6 +230,257 @@ enum class ApprovalScopeChoiceUi(val swiftRaw: String) {
  * first became visible: an allowed workspace action is denied if the user
  * switches roots (the host enforces; the UI preserves the identity).
  */
+data class WorkspaceFileApprovalUi(
+    val workspaceId: String,
+    val operation: String,
+    val targetPath: String,
+    val source: String,
+    val overwrite: String,
+    val precondition: String,
+    val sourcePath: String? = null,
+    val sourcePrecondition: String? = null,
+    val expectedOccurrences: Long? = null,
+    val recursive: Boolean? = null,
+) {
+    override fun toString(): String = "WorkspaceFileApprovalUi(operation=$operation, details=redacted)"
+}
+
+/** Private request identity only; a verified live node is still required before allowing. */
+data class DeviceActionApprovalRequestUi(
+    val action: String,
+    val observationId: String,
+    val nodeRef: String,
+    val direction: String?,
+    val inputKind: String?,
+) {
+    override fun toString(): String = "DeviceActionApprovalRequestUi(action=$action, details=redacted)"
+}
+
+data class DeviceActionApprovalUi(
+    val request: DeviceActionApprovalRequestUi,
+    val packageName: String,
+    val className: String,
+    val label: String,
+    val left: Int, val top: Int, val right: Int, val bottom: Int,
+    val canonicalTargetDigest: String,
+) {
+    override fun toString(): String = "DeviceActionApprovalUi(details=redacted)"
+}
+
+/** Full local-only shell review, never an execution grant. */
+internal fun escapePrivateShellText(value: String): String = buildString {
+    var index = 0
+    while (index < value.length) {
+        val cp = Character.codePointAt(value, index)
+        when (cp) {
+            0x5c -> append("\\\\")
+            0x22 -> append("\\\"")
+            0x0a -> append("\\n")
+            0x0d -> append("\\r")
+            0x09 -> append("\\t")
+            else -> when (Character.getType(cp)) {
+                Character.CONTROL.toInt(), Character.FORMAT.toInt(),
+                Character.LINE_SEPARATOR.toInt(), Character.PARAGRAPH_SEPARATOR.toInt(),
+                Character.SURROGATE.toInt(), Character.UNASSIGNED.toInt() ->
+                    append("\\u{").append(cp.toString(16).uppercase()).append('}')
+                else -> appendCodePoint(cp)
+            }
+        }
+        index += Character.charCount(cp)
+    }
+}
+
+/** Split without bisecting a surrogate pair or an escaped control token. */
+internal fun chunkPrivateShellText(value: String, limit: Int = 2048): List<String> {
+    require(limit >= 16)
+    val escaped = escapePrivateShellText(value)
+    if (escaped.isEmpty()) return listOf("")
+    val chunks = mutableListOf<String>()
+    val current = StringBuilder()
+    var index = 0
+    while (index < escaped.length) {
+        val end = if (escaped[index] == '\\' && index + 1 < escaped.length) {
+            if (escaped[index + 1] == 'u' && index + 2 < escaped.length && escaped[index + 2] == '{') {
+                val closing = escaped.indexOf('}', index + 3)
+                if (closing >= 0) closing + 1 else index + 2
+            } else index + 2
+        } else index + Character.charCount(Character.codePointAt(escaped, index))
+        if (current.isNotEmpty() && current.length + end - index > limit) {
+            chunks += current.toString()
+            current.setLength(0)
+        }
+        current.append(escaped, index, end)
+        index = end
+    }
+    if (current.isNotEmpty()) chunks += current.toString()
+    return chunks
+}
+
+data class LocalShellApprovalUi(
+    val environmentId: String,
+    val workspaceId: String,
+    val targetRevision: Long,
+    val command: String,
+    val cwd: String,
+    val timeoutSeconds: Double,
+    val maxOutputBytes: Int,
+    val environmentTransaction: Boolean,
+    val shellPrivateBytes: Int? = null,
+    val shellPrivateSHA256: String? = null,
+    val stdinPresent: Boolean = false,
+    val envCount: Int = 0,
+    val stdin: String? = null,
+    /** Null until the complete private page has been verified. */
+    val env: Map<String, String>? = null,
+    val nativeEpoch: Long? = null,
+) {
+    override fun toString(): String = "LocalShellApprovalUi(details=redacted)"
+}
+
+/** Full, ephemeral human review of a single scheduled-task creation. */
+data class ScheduleCreateApprovalUi(
+    val title: String,
+    val prompt: String,
+    val cadence: String,
+    val scheduledAt: String,
+    val timezone: String,
+    val weekday: Int?,
+    val intervalSeconds: Long?,
+    val upstreamRunId: String?,
+    val workspaceId: String?,
+    val modelId: String,
+    val environmentId: String?,
+    val approvalMode: String,
+    val recoveryPolicy: String,
+    val notificationPolicy: String,
+) {
+    override fun toString(): String = "ScheduleCreateApprovalUi(details=redacted)"
+}
+
+/** Complete private tab operation, scoped to the currently visible card. */
+data class BrowserTabApprovalUi(
+    val operation: String,
+    val url: String?,
+    val title: String?,
+    val tabId: String? = null,
+    val tabIndex: Int? = null,
+    val tabCount: Int? = null,
+) {
+    /** Match the native private presentation contract; never infer a tab from a URL. */
+    fun isWellFormed(): Boolean = when (operation) {
+        "create" -> tabId == null && tabIndex == null && tabCount == null && url == null && title == null
+        "activate", "close" -> isCanonicalTabId(tabId) &&
+            tabCount != null && tabCount > 1 && tabIndex != null && tabIndex in 1..tabCount &&
+            isSafeDisplayText(url, 2_048) && isSafeDisplayText(title, 512)
+        else -> false
+    }
+
+    /** An ordinal alone is insufficient if the tab strip is momentarily stale. */
+    fun isReviewable(): Boolean = isWellFormed() && (operation == "create" ||
+        !url.isNullOrBlank() || !title.isNullOrBlank())
+
+    private fun isCanonicalTabId(value: String?): Boolean = value != null &&
+        runCatching { java.util.UUID.fromString(value).toString() == value }.getOrDefault(false)
+
+    private fun isSafeDisplayText(value: String?, maximumBytes: Int): Boolean {
+        if (value == null) return true
+        if (value.isBlank() || value.toByteArray(Charsets.UTF_8).size > maximumBytes) return false
+        var offset = 0
+        while (offset < value.length) {
+            val scalar = Character.codePointAt(value, offset)
+            when (Character.getType(scalar)) {
+                Character.CONTROL.toInt(), Character.FORMAT.toInt(),
+                Character.LINE_SEPARATOR.toInt(), Character.PARAGRAPH_SEPARATOR.toInt(),
+                Character.SURROGATE.toInt(), Character.UNASSIGNED.toInt() -> return false
+            }
+            offset += Character.charCount(scalar)
+        }
+        return true
+    }
+
+    override fun toString(): String = "BrowserTabApprovalUi(redacted)"
+}
+
+/** Private, generation-bound browser interaction. Typed text is never carried. */
+data class BrowserInteractionApprovalUi(
+    val operation: String,
+    val tabId: String,
+    val documentId: String,
+    val url: String,
+    val title: String?,
+    val ref: String?,
+    val role: String?,
+    val label: String?,
+    val textBytes: Long?,
+    val submit: Boolean?,
+    val deltaX: Double?,
+    val deltaY: Double?,
+) {
+    private fun safe(value: String?, limit: Int): Boolean {
+        if (value == null) return true
+        if (value.isBlank() || value.toByteArray(Charsets.UTF_8).size > limit) return false
+        var offset = 0
+        while (offset < value.length) {
+            val cp = Character.codePointAt(value, offset)
+            when (Character.getType(cp)) {
+                Character.CONTROL.toInt(), Character.FORMAT.toInt(),
+                Character.LINE_SEPARATOR.toInt(), Character.PARAGRAPH_SEPARATOR.toInt(),
+                Character.SURROGATE.toInt(), Character.UNASSIGNED.toInt() -> return false
+            }
+            offset += Character.charCount(cp)
+        }
+        return true
+    }
+
+    fun isWellFormed(): Boolean {
+        if (!runCatching { java.util.UUID.fromString(tabId).toString() == tabId }.getOrDefault(false) ||
+            !safe(documentId, 128) || !safe(url, 2_048) || !safe(title, 512) ||
+            !safe(ref, 128) || !safe(role, 128) || !safe(label, 512)) return false
+        val target = ref != null && (role != null || label != null)
+        return when (operation) {
+            "click" -> target && textBytes == null && submit == null && deltaX == null && deltaY == null
+            "type" -> target && textBytes != null && textBytes >= 0 && submit != null && deltaX == null && deltaY == null
+            "scroll" -> ref == null && role == null && label == null && textBytes == null && submit == null &&
+                deltaX != null && deltaX.isFinite() && deltaY != null && deltaY.isFinite()
+            else -> false
+        }
+    }
+
+    override fun toString(): String = "BrowserInteractionApprovalUi(redacted)"
+}
+
+/** A verified private screenshot; retained only while its approval lease is visible. */
+internal fun browserVisualFitPoint(
+    originalWidth: Int, originalHeight: Int, decodedWidth: Int, decodedHeight: Int,
+    x: Double, y: Double, viewportWidth: Float, viewportHeight: Float,
+): Pair<Float, Float> {
+    val scale = minOf(viewportWidth / decodedWidth, viewportHeight / decodedHeight)
+    val left = (viewportWidth - decodedWidth * scale) / 2f
+    val top = (viewportHeight - decodedHeight * scale) / 2f
+    return (left + (x / originalWidth).toFloat() * decodedWidth * scale) to
+        (top + (y / originalHeight).toFloat() * decodedHeight * scale)
+}
+
+data class BrowserVisualApprovalUi(
+    val url: String,
+    val title: String?,
+    val screenshot: android.graphics.Bitmap,
+    val originalWidth: Int,
+    val originalHeight: Int,
+    val nativeEpoch: Long,
+    val pointX: Double,
+    val pointY: Double,
+    val fallbackReason: String,
+) {
+    fun isWellFormed(): Boolean = nativeEpoch > 0 && !screenshot.isRecycled &&
+        originalWidth > 0 && originalHeight > 0 && screenshot.width > 0 && screenshot.height > 0 &&
+        pointX.isFinite() && pointY.isFinite() && pointX >= 0 && pointY >= 0 &&
+        pointX < originalWidth && pointY < originalHeight &&
+        fallbackReason in setOf("noStructuredTarget", "insufficientStructuredInformation")
+
+    override fun toString(): String = "BrowserVisualApprovalUi(redacted)"
+}
+
 data class ApprovalCardUi(
     val approvalId: String,           // ⇄ toolCall.id (provider call id)
     val runId: String,
@@ -248,10 +499,52 @@ data class ApprovalCardUi(
     /** Foldable exact evidence (⇄ argumentSummary): host-projected key-sorted
      * argument lines, size-capped and redacted upstream. Display-only. */
     val evidenceLines: List<String>,
+    /** Exact native request identity; absent means the runtime must be updated. */
+    val requestGeneration: String? = null,
+    val approvalRevision: String? = null,
+    val descriptorIdentity: String? = null,
+    val requestedScope: String? = null,
+    val workspaceVerified: Boolean = false,
+    val actionKind: String? = null,
+    val actionPackage: String? = null,
+    val workspaceAction: WorkspaceFileApprovalUi? = null,
+    val localShellAction: LocalShellApprovalUi? = null,
+    val scheduleCreateAction: ScheduleCreateApprovalUi? = null,
+    val browserTabAction: BrowserTabApprovalUi? = null,
+    val browserInteractionAction: BrowserInteractionApprovalUi? = null,
+    val browserVisualAction: BrowserVisualApprovalUi? = null,
+    val deviceAction: DeviceActionApprovalUi? = null,
+    /** The generation and descriptor are verified independently of whether
+     * enough action detail exists to allow the request. */
+    val identityVerified: Boolean = false,
+    /** True only when this presentation is sufficient for a decision. */
+    val scopeVerified: Boolean = false,
 ) {
     /** Exact card identity: runID + callID (the membership predicate rule). */
     val key: String get() = "$runId/$approvalId"
 }
+
+enum class DeviceApprovalStopPhaseUi { STOPPING, FAILED, STOPPED }
+
+/**
+ * Host-owned projection that a user Stop/Takeover already retired one device
+ * approval of this run. Display and decision-gating only: the host still
+ * decides settlement from the real cancel/snapshot receipt, and a FAILED
+ * phase never claims the run terminated.
+ *
+ * [approvalKey] binds the state to the exact call card that was retired, so a
+ * later retry/incarnation with a new call is not blocked by an old stop.
+ */
+data class DeviceApprovalStopUi(
+    val phase: DeviceApprovalStopPhaseUi,
+    val approvalKey: String? = null,
+    /** Captured from the real card, including explicit nulls. A reused
+     * run/call ID with a new native request must not inherit the old stop. */
+    val identityCaptured: Boolean = false,
+    val requestGeneration: String? = null,
+    val approvalRevision: String? = null,
+    val descriptorIdentity: String? = null,
+)
 
 /**
  * Host truth (never inferred in this module): THIS conversation owns a LIVE

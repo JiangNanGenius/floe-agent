@@ -129,7 +129,8 @@ enum TemporaryConversationProjection {
                 endedAtRaw: run.endedAt.map(ConversationWireDate.encode),
                 providerName: run.providerName,
                 modelName: run.modelName,
-                conversationMode: run.conversationMode)
+                conversationMode: run.conversationMode,
+                explicitExecutionMode: run.explicitExecutionMode)
         }
         let runsTotal = runRecords.count
         var runsTruncated = runsTotal > snapshotRunsWindow

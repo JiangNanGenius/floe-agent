@@ -58,6 +58,7 @@ import FloeModels
 import FloePersistence
 import FloeAgentRuntime
 import FloeSecurity
+import FloeTools
 
 // MARK: - Track producer
 
@@ -328,12 +329,16 @@ enum RunSnapshotWireBuilder {
                       liveService: ConversationRunService?,
                       readBundle: RunPersistenceBundle? = nil,
                       metadataOnly: Bool = false,
-                      snapshotRequestID: UUID? = nil) async -> RunDomainReply {
+                      snapshotRequestID: UUID? = nil,
+                      descriptorLookup: @Sendable (String) -> ToolCatalog.Descriptor?) async -> RunDomainReply {
         // The RUN'S OWN stores answer every run-scoped read. An ordinary
         // run's bundle IS the durable cluster; a temporary run's bundle is
         // the session's ORIGINAL Ephemeral* set. The durable singleton is
         // never a fallback for a supplied temporary bundle.
         let stores = readBundle ?? ownership?.bundle ?? components.durable
+        // Observe before the first suspension: a complete same-run restart
+        // during the storage reads must not turn an old proof into a new one.
+        let initialOwner = await domain.currentStopOwnership(runID: query.runID)
         let record: RunRecord?
         do {
             record = try await stores.runs.run(id: query.runID)
@@ -362,7 +367,7 @@ enum RunSnapshotWireBuilder {
             // explicitly parked approval) is a terminal disposition.
             let disposition = N113RunTerminal.disposition(
                 state: record.state, isLiveOwner: liveOwner)
-            let page: [String: SettingsDomainV1.JSONValue] = [
+            var page: [String: SettingsDomainV1.JSONValue] = [
                 "schema": .string(BridgeV3.commandSchema),
                 "conversationID": .string(record.conversationID.uuidString),
                 "runID": .string(record.id.uuidString),
@@ -374,9 +379,32 @@ enum RunSnapshotWireBuilder {
                 "durableTerminal": .boolean(N113RunTerminal.isDurableTerminal(record.state)),
                 "terminalDisposition": .string(disposition.rawValue),
                 "conversationMode": record.conversationMode.map { .string($0) } ?? .null,
+                // Presence-based composer provenance; null = never recorded
+                // (legacy/unlabeled), never a fabricated Agent selection.
+                "explicitExecutionMode": record.explicitExecutionMode.map { .string($0) } ?? .null,
                 "liveOwner": .boolean(liveOwner),
                 "durableWatermark": .integer(Int64(watermark)),
             ]
+            let readback: RunStopSettlementReadback?
+            if record.state == "checkpointed" {
+                readback = await RunStopSettlementWire.readback(
+                    store: stores.runs, runID: record.id,
+                    conversationID: record.conversationID)
+            } else {
+                readback = nil
+            }
+            let current = await domain.currentStopOwnership(runID: record.id)
+            let verified = initialOwner.isStable(through: current)
+            page["liveOwner"] = verified ? .boolean(current.ownerPresent) : .null
+            page["currentOwnerPhase"] = .string(verified ? current.ownerPhase : "unknown")
+            page["currentLiveProducer"] = verified ? .boolean(current.liveProducer) : .null
+            if record.state == "checkpointed" {
+                page["stopSettlement"] = RunStopSettlementWire.snapshotValue(
+                    readback, currentOwnerPresent: current.ownerPresent,
+                    currentOwnerPhase: current.ownerPhase,
+                    currentLiveProducer: current.liveProducer,
+                    ownershipVerified: verified)
+            }
             return RunDomainReply(.completedPage(
                 page: RunTypedPage(object: .object(page), pageBytes: measured(page)),
                 nextCursor: nil))
@@ -403,6 +431,7 @@ enum RunSnapshotWireBuilder {
             N113RunTerminal.disposition(
                 state: record.state, isLiveOwner: liveService != nil).rawValue)
         fields["conversationMode"] = record.conversationMode.map { .string($0) } ?? .null
+        fields["explicitExecutionMode"] = record.explicitExecutionMode.map { .string($0) } ?? .null
         fields["goal"] = .string(bounded(record.goal, maxBytes: 2_048))
         fields["liveOwner"] = .boolean(liveService != nil)
         if let snapshot {
@@ -422,12 +451,17 @@ enum RunSnapshotWireBuilder {
                     "tool": .string(waiting.toolCall.toolName),
                     "reason": .string(bounded(waiting.reason, maxBytes: 1_024)),
                     "requestedAt": .string(RunWireDate.encode(waiting.requestedAt)),
+                    "generation": .string(waiting.generation.uuidString.lowercased()),
+                    // The generic snapshot is shared by several host readers.
+                    // Never add workspace paths to it; a dedicated human-only
+                    // presentation channel is needed before enabling them.
+                    "presentation": approvalPresentation(waiting, descriptor: descriptorLookup(waiting.toolCall.toolName)),
                 ])
                 fields["approvalRevision"] = .object([
                     "resourceID": .string(RunWireRevision.approvalResourceID(
                         callID: waiting.toolCall.id)),
                     "version": .string(RunWireRevision.approvalVersion(
-                        requestedAt: waiting.requestedAt)),
+                        generation: waiting.generation)),
                 ])
             }
             if let reason = snapshot.checkpointReason {
@@ -469,6 +503,17 @@ enum RunSnapshotWireBuilder {
                     break
                 }
             }
+        }
+
+        // Typed stop settlement: the cold/hot authoritative read-back. The
+        // localized `checkpointReason` above stays for human copy only; a
+        // host must key "stopped" on `stopSettlement.settled` (and, for a
+        // cold ownerless read, `liveOwner == false`), never on the reason
+        // string or on a null field.
+        if record.state == "checkpointed" {
+            fields["stopSettlement"] = RunStopSettlementWire.snapshotValue(
+                nil, currentOwnerPresent: true, currentOwnerPhase: "unknown",
+                currentLiveProducer: true, ownershipVerified: false)
         }
 
         // Usage (original records, bounded to last 16 + run totals).
@@ -712,10 +757,95 @@ enum RunSnapshotWireBuilder {
             // silent truncation. (The durable pages + cursor walk remain.)
             return RunDomainReply(.rejected(RunDomainError(.payloadTooLarge, .payloadTooLarge)))
         }
+        let stopReadback: RunStopSettlementReadback?
+        if record.state == "checkpointed" {
+            stopReadback = await RunStopSettlementWire.readback(
+                store: stores.runs, runID: record.id,
+                conversationID: record.conversationID)
+        } else {
+            stopReadback = nil
+        }
+        let current = await domain.currentStopOwnership(runID: record.id)
+        let verified = initialOwner.isStable(through: current)
+        page["liveOwner"] = verified ? .boolean(current.ownerPresent) : .null
+        page["currentOwnerPhase"] = .string(verified ? current.ownerPhase : "unknown")
+        page["currentLiveProducer"] = verified ? .boolean(current.liveProducer) : .null
+        if record.state == "checkpointed" {
+            page["stopSettlement"] = RunStopSettlementWire.snapshotValue(
+                stopReadback, currentOwnerPresent: current.ownerPresent,
+                currentOwnerPhase: current.ownerPhase,
+                currentLiveProducer: current.liveProducer,
+                ownershipVerified: verified)
+        }
         let bytes = measured(page)
+        guard bytes <= 64 * 1024 else {
+            return RunDomainReply(.rejected(
+                RunDomainError(.payloadTooLarge, .payloadTooLarge)))
+        }
         return RunDomainReply(.completedPage(
             page: RunTypedPage(object: .object(page), pageBytes: bytes),
             nextCursor: nil))
+    }
+
+    /// A same-generation, display-only projection. Never copy arbitrary
+    /// arguments here: shell commands, URLs and even innocently named string
+    /// values can contain credentials that key-based redaction cannot prove safe.
+    static func approvalPresentation(
+        _ waiting: AgentState.WaitingApproval,
+        descriptor: ToolCatalog.Descriptor?,
+        workspaceDetails: [String: SettingsDomainV1.JSONValue]? = nil,
+        workspaceVerified: Bool? = nil
+    ) -> SettingsDomainV1.JSONValue {
+        let generation = waiting.generation.uuidString.lowercased()
+        guard let descriptor else {
+            return .object(["status": .string("unavailable"), "generation": .string(generation)])
+        }
+        let requestedScope: String
+        switch waiting.toolCall.scope {
+        case .local: requestedScope = "local"
+        case .host: requestedScope = "host"
+        case .hostPath: requestedScope = "hostPath"
+        }
+        let details = safeApprovalActionDetails(waiting.toolCall) ?? workspaceDetails
+        var value: [String: SettingsDomainV1.JSONValue] = [
+            "status": .string("available"),
+            "generation": .string(generation),
+            "tool": .string(waiting.toolCall.toolName),
+            "effect": .string(descriptor.effect.rawValue),
+            "isSideEffecting": .boolean(descriptor.isSideEffecting),
+            "riskLabels": .array(descriptor.riskLabels.map(\.rawValue).sorted().map { .string($0) }),
+            "requestedScope": .string(requestedScope),
+            "grantScope": .string("singleUse"),
+            "workspaceVerified": .boolean(workspaceVerified ?? (workspaceDetails != nil)),
+            "descriptorIdentity": .string(descriptor.authorizationIdentity),
+            "detailStatus": .string(details == nil ? "unavailable" : "available"),
+        ]
+        if let details { value["actionDetails"] = .object(details) }
+        return .object(value)
+    }
+
+    private static func safeApprovalActionDetails(_ call: ToolCall) -> [String: SettingsDomainV1.JSONValue]? {
+        guard call.toolName == "device.act",
+              let values = try? JSONSerialization.jsonObject(with: call.argumentsJSON) as? [String: Any],
+              let action = values["action"] as? String else { return nil }
+        switch action {
+        case "back", "home":
+            guard Set(values.keys).isSubset(of: ["action", "observationId"]),
+                  let observation = values["observationId"] as? String,
+                  UUID(uuidString: observation) != nil else { return nil }
+            return ["action": .string(action)]
+        case "launch":
+            guard Set(values.keys).isSubset(of: ["action", "packageName", "observationId"]),
+                  let package = values["packageName"] as? String,
+                  (values["observationId"] == nil ||
+                    (values["observationId"] as? String).flatMap(UUID.init(uuidString:)) != nil),
+                  package.utf8.count <= 180,
+                  package.range(of: #"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$"#,
+                                options: .regularExpression) != nil else { return nil }
+            return ["action": .string(action), "packageName": .string(package)]
+        default:
+            return nil
+        }
     }
 
     /// Bounded child list page.

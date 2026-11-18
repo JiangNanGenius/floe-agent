@@ -6,6 +6,76 @@ import FloeCore
 /// already inside this run's permission/skill ceiling.
 enum ToolDiscovery {
     static let coreNames: Set<String> = ["skill.search", "skill.read", "skill.list", "checklist.readPlan", "checklist.updatePlan", "exec.shell"]
+
+    /// Canonical durable-memory names the runtime can serve. The G02 ordinary
+    /// composition registers only the currently authorized subset
+    /// (`memory.remember` + `memory.recall`) under the accepted generation;
+    /// this presentation list creates nothing by itself, and an unregistered,
+    /// unavailable or retired tool is never offered. The Agent base offers the
+    /// full candidate set, while Plan's base covers the read-only lookups plus
+    /// the exact policy-approved writes; the live-catalog intersection is what
+    /// removes every tool the composition did not register.
+    static let memoryToolNames: Set<String> = [
+        "memory.search", "memory.recall", "memory.list",
+        "memory.remember", "memory.update", "memory.forget",
+    ]
+
+    /// Presentation base for an ordinary cloud Agent run: the capabilities
+    /// the person expects to be reachable without a discovery round-trip
+    /// (durable memory, workspace files, task history/siblings, background
+    /// jobs, `user.ask`, the checklist and skills). Every entry is only a
+    /// preference: the runtime intersects this set with the run's live,
+    /// availability-filtered catalog, so an unregistered, disabled,
+    /// unconfigured, retired, ceiling-filtered or permission-limited tool is
+    /// never offered by this list. Presence here grants no permission and
+    /// never bypasses PlanToolPolicy, approvals or the task ceiling.
+    static let cloudAgentCoreNames: Set<String> = coreNames
+        .union(memoryToolNames)
+        .union([
+            "user.ask", "checklist.resetPlan",
+            "conversation.list", "conversation.search", "conversation.read", "conversation.spawn",
+            "delegate",
+            "workspace.listDirectory", "workspace.searchFiles", "workspace.readFile",
+            "workspace.inspectFileMetadata", "workspace.createFile", "workspace.appendFile",
+            "workspace.replaceText", "workspace.writeFile", "workspace.applyPatch",
+            "workspace.createDirectory", "workspace.copyFile", "workspace.moveFile",
+            "workspace.deleteFile", "workspace.publishOutput",
+            "jobs.submit", "jobs.status", "jobs.result", "jobs.cancel",
+            "task.schedule",
+        ])
+
+    /// Plan mode's read-only investigation base plus the tools
+    /// `PlanToolPolicy` explicitly permits: the two narrow main-run internal
+    /// tools (`user.ask`, `checklist.resetPlan`) and the three exact
+    /// durable-memory writes (matching the latest iOS plan/chat memory
+    /// inheritance). The live catalog is still projected through
+    /// PlanToolPolicy, and a name whose descriptor/store is not registered
+    /// simply never appears.
+    static let planCoreNames: Set<String> = [
+        "skill.list", "skill.search", "skill.read",
+        "checklist.readPlan", "checklist.resetPlan",
+        "user.ask",
+        "web.search", "web.fetch",
+        "workspace.listDirectory", "workspace.searchFiles", "workspace.readFile",
+        "workspace.inspectFileMetadata",
+        "conversation.list", "conversation.search", "conversation.read",
+        "git.status", "git.diff", "git.log",
+        "memory.search", "memory.recall", "memory.list",
+        "memory.remember", "memory.update", "memory.forget",
+    ]
+
+    /// The presentation base for one run. It never widens anything: the
+    /// runtime has already removed unavailable descriptors and, for Plan,
+    /// projected the catalog through `PlanToolPolicy`. On-device providers
+    /// keep their existing curated seed instead of the cloud base.
+    static func baseNames(mode: ConversationMode, isLocalProvider: Bool) -> Set<String> {
+        guard !isLocalProvider else { return coreNames }
+        switch mode {
+        case .plan: return planCoreNames
+        case .chat, .goal: return cloudAgentCoreNames
+        }
+    }
+
     static let name = "tools.search"
     static let listName = "tools.list"
     /// A discovery result may carry complete exact schemas. Keep that
@@ -90,6 +160,37 @@ enum ToolDiscovery {
 
     static func group(_ name: String) -> String { ToolCapabilityGroups.group(name) }
 
+    /// An operation is more specific than the whole workspace namespace.
+    /// Bare Chinese terms are common in discovery requests; inside a longer
+    /// phrase require file context so e.g. “搜索网页” keeps its web meaning.
+    private static let workspaceOperations: [(name: String, terms: [String])] = [
+        ("workspace.archive", ["压缩", "解压", "压缩包", "解压缩", "打包", "unzip"]),
+        ("workspace.copyFile", ["复制"]),
+        ("workspace.moveFile", ["重命名"]),
+        ("workspace.appendFile", ["追加"]),
+        ("workspace.searchFiles", ["搜索"]),
+        ("workspace.replaceText", ["替换"])
+    ]
+
+    /// Canonical names of the workspace operations a Chinese/English file
+    /// request names explicitly. Only names the caller's live descriptors
+    /// actually contain are returned by `matches`; this helper itself never
+    /// invents a tool.
+    static func workspaceOperationNames(in query: String) -> Set<String> {
+        var names = Set<String>()
+        for line in query.lowercased().split(whereSeparator: \.isNewline) {
+            let phrase = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            let fileContext = ["文件", "目录", "工作区", "压缩包"].contains(where: phrase.contains)
+            let unzip = phrase.split { !$0.isLetter && !$0.isNumber }.contains("unzip")
+            for operation in workspaceOperations where operation.terms.contains(where: { term in
+                phrase == term || (term == "unzip" ? unzip : fileContext && phrase.contains(term))
+            }) {
+                names.insert(operation.name)
+            }
+        }
+        return names
+    }
+
     static func matches(queries: [String], descriptors: [ToolCatalog.Descriptor]) -> [ToolCatalog.Descriptor] {
         var seen = Set<String>()
         return queries.flatMap { matches(query: $0, descriptors: descriptors) }.filter { seen.insert($0.name).inserted }
@@ -121,6 +222,14 @@ enum ToolDiscovery {
                 })
         }
         if !exact.isEmpty { return exact }
+        // A named file operation is more specific than its whole namespace.
+        // It leads the matched set, but the namespace and every other
+        // genuinely matched capability stay discoverable: this is ordering,
+        // never a permission or availability change.
+        let operationNames = workspaceOperationNames(in: query)
+        let fileOperations = descriptors
+            .filter { operationNames.contains($0.name) }
+            .sorted { $0.name < $1.name }
         // Guest topology is controlled by the host-side environment tools,
         // not by commands inside the guest. A query such as "Linux 虚拟机多核"
         // also matches the generic shell synonym, so put the three relevant
@@ -136,7 +245,8 @@ enum ToolDiscovery {
             let shell = descriptors.filter { $0.name == "exec.shell" }
             return lifecycle + shell
         }
-        if ["port", "forward", FloeL10n.l("runtime.tool_discovery.port"), FloeL10n.l("runtime.tool_discovery.forward")].contains(where: query.contains),
+        if operationNames.isEmpty,
+           ["port", "forward", FloeL10n.l("runtime.tool_discovery.port"), FloeL10n.l("runtime.tool_discovery.forward")].contains(where: query.contains),
            let ports = descriptors.first(where: { $0.name == "linux.port" }) {
             return [ports] + descriptors.filter { $0.name == "environment.linuxStatus" || $0.name == "exec.localService" }
         }
@@ -177,16 +287,22 @@ enum ToolDiscovery {
                     ? left.descriptor.name < right.descriptor.name
                     : left.score > right.score
             }
-            return capabilityGapFallback(ranked.prefix(8).map { $0.descriptor }, routing: routing, descriptors: descriptors)
+            return capabilityGapFallback(
+                fileOperations + ranked.prefix(8).map { $0.descriptor }
+                    .filter { !operationNames.contains($0.name) },
+                routing: routing,
+                descriptors: descriptors
+            )
         }
         let selected = descriptors.filter { groups.contains(group($0.name)) }
+        let ordered = fileOperations + selected.filter { !operationNames.contains($0.name) }
         guard routing.prefersNativeTools else {
-            return capabilityGapFallback(selected, routing: routing, descriptors: descriptors)
+            return capabilityGapFallback(ordered, routing: routing, descriptors: descriptors)
         }
         // Native media tools lead the curated set for a media task; other
         // matched groups (office, workspace, http, …) stay available.
-        return selected.filter { ToolRoutingPolicy.isNativeMediaTool($0.name) }
-            + selected.filter { !ToolRoutingPolicy.isNativeMediaTool($0.name) }
+        return ordered.filter { ToolRoutingPolicy.isNativeMediaTool($0.name) }
+            + ordered.filter { !ToolRoutingPolicy.isNativeMediaTool($0.name) }
     }
 
     /// Primary guest entry points, used only for a media task no offered native

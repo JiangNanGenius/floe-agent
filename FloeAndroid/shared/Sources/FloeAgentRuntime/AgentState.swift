@@ -70,11 +70,31 @@ public enum AgentState: Sendable, Codable, Hashable {
         public var toolCall: ToolCall
         public var reason: String
         public var requestedAt: Date
+        /// Unique identity of this particular human decision, independent of
+        /// provider call-ID reuse and wire-date precision.
+        public let generation: UUID
 
-        public init(toolCall: ToolCall, reason: String, requestedAt: Date = Date()) {
+        public init(toolCall: ToolCall, reason: String, requestedAt: Date = Date(),
+                    generation: UUID = UUID()) {
             self.toolCall = toolCall
             self.reason = reason
             self.requestedAt = requestedAt
+            self.generation = generation
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case toolCall, reason, requestedAt, generation
+        }
+
+        public init(from decoder: Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            toolCall = try values.decode(ToolCall.self, forKey: .toolCall)
+            reason = try values.decode(String.self, forKey: .reason)
+            requestedAt = try values.decode(Date.self, forKey: .requestedAt)
+            // Legacy checkpoints do not have the field. Mint once for this
+            // recovered value; re-encoding preserves it rather than assigning
+            // the same identity to multiple independent recoveries.
+            generation = try values.decodeIfPresent(UUID.self, forKey: .generation) ?? UUID()
         }
     }
 

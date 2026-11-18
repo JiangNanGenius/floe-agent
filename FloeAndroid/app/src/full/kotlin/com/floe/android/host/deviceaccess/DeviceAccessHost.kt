@@ -46,9 +46,17 @@ import com.floe.android.DeviceAccessUiError
 import com.floe.android.R
 import com.floe.android.credentials.AndroidKeystoreCredentialStore
 import com.floe.android.host.RuntimeHost
+import com.floe.android.host.DeviceApprovalIdentity
+import com.floe.android.host.DeviceApprovalAction
+import com.floe.android.host.DeviceApprovalTarget
+import com.floe.android.host.DeviceApprovalOverlayCallbacks
+import com.floe.android.host.DeviceRunStopPolicy
+import com.floe.android.host.DeviceRunStopReceipt
 import com.floe.android.host.HostCommandRequest
 import com.floe.android.host.HostOperationOutcome
 import com.floe.android.host.HostScope
+import com.floe.android.feature.conversation.DeviceApprovalStopPhaseUi
+import com.floe.android.feature.conversation.DeviceApprovalStopUi
 import com.floe.android.host.questions.UserQuestionWire
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
@@ -162,12 +170,94 @@ import kotlinx.coroutines.withTimeoutOrNull
  *    cancel through the existing conversation authority. It does not become a
  *    host-wide latch. Saved automation consent never clears a user stop.
  */
+/** Discovery and settings use the same live service/client prerequisites. */
+internal fun phoneAccessibilityBackendReady(enabled: Boolean, status: PhoneControlStatus, clientOpen: Boolean): Boolean =
+    enabled && clientOpen && status.connected && status.enabled && status.blocker !in setOf(
+        PhoneControlBlocker.LOCKED, PhoneControlBlocker.SERVICE_REVOKED, PhoneControlBlocker.SERVICE_DISCONNECTED)
+
+/** System setting and actual in-process attachment are independently observed. */
+internal fun deviceAccessibilityUi(enabled: Boolean, status: PhoneControlStatus): DeviceAccessAccessibilityUi {
+    if (enabled != status.connected) return DeviceAccessAccessibilityUi.Inconsistent
+    if (!enabled) return DeviceAccessAccessibilityUi.NotGranted
+    return when (status.blocker) {
+        PhoneControlBlocker.SERVICE_REVOKED -> DeviceAccessAccessibilityUi.Revoked
+        PhoneControlBlocker.SERVICE_DISCONNECTED -> DeviceAccessAccessibilityUi.Restricted
+        else -> DeviceAccessAccessibilityUi.Granted
+    }
+}
+
+/** Only an explicitly retried, still-current failed stop may start another
+ * bounded native readback; it cannot replace another owner's generation. */
+internal fun mayRetryDeviceStopReadback(
+    owner: PhoneControlOwner,
+    epoch: Long,
+    stop: PhoneControlStopFence.Entry?,
+    settlement: PhoneControlStopSettlements.Entry?,
+): Boolean = stop != null && settlement != null && stop.owner == owner &&
+    settlement.owner == owner && stop.epoch == epoch && settlement.epoch == epoch &&
+    settlement.token == stop.token && settlement.phase == DeviceStopUiPhase.FAILED
+
 internal class DeviceAccessHost(
     private val context: Context,
     private val host: RuntimeHost,
     private val scope: CoroutineScope,
     private val io: CoroutineDispatcher,
 ) {
+    fun presentDeviceApproval(identity: DeviceApprovalIdentity, callbacks: DeviceApprovalOverlayCallbacks): Boolean =
+        automationControls.presentApproval(identity, callbacks)
+
+    fun setDeviceApprovalTarget(identity: DeviceApprovalIdentity, presentationId: String,
+                                action: DeviceApprovalAction?, target: DeviceApprovalTarget?, enabled: Boolean) =
+        automationControls.setApprovalTarget(identity, presentationId, action, target, enabled)
+
+    fun dismissDeviceApproval(identity: DeviceApprovalIdentity) = automationControls.dismissApproval(identity)
+
+    /**
+     * Synchronous narrowing used by the chat decision path: this exact device
+     * approval may no longer be presented or decided. It grants nothing and
+     * never fabricates a stop/terminal; only the exact stopped owner or a
+     * changed native/host generation revokes it.
+     */
+    fun isDeviceApprovalRevoked(identity: DeviceApprovalIdentity): Boolean {
+        if (closed) return true
+        if (host.nativeRootEpoch() != identity.nativeEpoch) return true
+        if (host.commandClient.generation() != identity.hostGeneration) return true
+        return isOwnerStopped(PhoneControlOwner(identity.taskID, identity.runID))
+    }
+
+    /** No platform-tool claim is manufactured. A null result never authorizes an action. */
+    suspend fun readDeviceApprovalTarget(identity: DeviceApprovalIdentity, presentationId: String, action: DeviceApprovalAction,
+                                         stillCurrent: () -> Boolean): DeviceApprovalTarget? =
+        withContext(Dispatchers.Main.immediate) {
+            sensitiveGuardMutex.withLock {
+                val owner = PhoneControlOwner(identity.taskID, identity.runID)
+                val revision = phoneControlRevision.current(owner)
+                val targetRevision = targetScopeRevision.get()
+                fun live(): Boolean = !closed && targetRevision % 2L == 0L &&
+                    targetScopeRevision.get() == targetRevision && phoneControlRevision.current(owner) == revision &&
+                    host.nativeRootEpoch() == identity.nativeEpoch &&
+                    host.commandClient.generation() == identity.hostGeneration &&
+                    armedOwner == owner && armedBackend == PhoneControlBackend.ACCESSIBILITY &&
+                    phoneStatus.activeOwner == owner && phoneStatus.blocker == null &&
+                    !phoneStatus.automationFinishing && !pauseStateInvalid && !phonePause.isPaused(owner) &&
+                    !isOwnerStopped(owner) && isOwnerRunLive(owner) && phoneServiceUsable() &&
+                    automationControls.isApprovalVisible(identity, presentationId) && runCatching { stillCurrent() }.getOrDefault(false)
+                if (action.action != "click" || action.direction != null || action.inputKind != null || !live()) return@withLock null
+                val packages = settings.allowedPackages
+                if (packages.isEmpty()) return@withLock null
+                val principal = PhoneControlPrincipal(owner, identity.nativeEpoch, packages,
+                    generation = identity.nativeEpoch, grantID = null, callID = null)
+                val client = phoneClient?.takeIf { !it.isClosed } ?: return@withLock null
+                val target = client.approvalClickTarget(principal, action.observationId, action.nodeRef, ::live)
+                    ?: return@withLock null
+                if (!live()) return@withLock null
+                val b = target.bounds
+                val digest = DeviceApprovalDigest.compute(identity, action, target, revision, targetRevision)
+                if (!live()) return@withLock null
+                DeviceApprovalTarget(target.packageName, target.className, target.label,
+                    b.left, b.top, b.right, b.bottom, digest)
+            }
+        }
     private data class AccessSettings(
         val allowedPackages: Set<String> = emptySet(),
         val fileRootIds: Set<String> = emptySet(),
@@ -196,6 +286,7 @@ internal class DeviceAccessHost(
         val owner: PhoneControlOwner,
         val title: String,
         val phase: DeviceAccessTaskPhaseUi,
+        val waitingForDeviceApproval: Boolean,
     )
 
     private class PhoneCallBinding(
@@ -556,12 +647,21 @@ internal class DeviceAccessHost(
      * different live task under the saved Automatic device-control consent.
      */
     private val stopFence = PhoneControlStopFence()
+    /** Exact-generation stop projection; never an authorization source. */
+    private val stopSettlements = PhoneControlStopSettlements()
     /** Per-owner asynchronous fences; stopping A never invalidates B's call. */
     private val phoneControlRevision = PhoneControlRevisions()
     @Volatile private var explicitResumeOwner: PhoneControlOwner? = null
     @Volatile private var pauseStateInvalid = pauseSaved != null && phonePause.snapshot == null
     private val automationControls = PhoneAutomationControls(
-        context, ::onAutomationControl, ::canPresentAutomationControls, ::automationOwnerStillLive)
+        context, ::onAutomationControl, ::captureOverlayTakeover, ::onOverlayTakeover,
+        ::canPresentAutomationControls, ::automationOwnerStillLive,
+        approvalStillCurrent = { identity ->
+            val owner = PhoneControlOwner(identity.taskID, identity.runID)
+            !closed && host.nativeRootEpoch() == identity.nativeEpoch &&
+                host.commandClient.generation() == identity.hostGeneration &&
+                !isOwnerStopped(owner) && isOwnerRunLive(owner)
+        })
     private val automatedOwner = java.util.concurrent.atomic.AtomicReference<PhoneControlOwner?>(null)
     /** Seqlock for exposing selected app metadata; never authorizes an action. */
     private val targetScopeRevision = AtomicLong(0)
@@ -573,6 +673,7 @@ internal class DeviceAccessHost(
         if (!closed) publish()
     }
     private var unlockConfigured = false
+    private val phoneStatusRefreshLock = Any()
     @Volatile
     private var phoneStatus: PhoneControlStatus = PhoneControlModule.statusSnapshot()
     @Volatile
@@ -684,13 +785,14 @@ internal class DeviceAccessHost(
      * "Until stopped" is the distinct broader session mode. See
      * [ScreenScopeConsent].
      */
-    private val screenShare = ScreenScopeConsent()
+    private val screenShare = ScreenScopeConsent(PhoneControlModule::serviceTeardownGeneration)
 
     /**
      * RAM revision of the separate whole-screen consent. It does not replace
      * that persistent user ceiling; it lets a pending display capture prove
      * the exact consent it started under was not revoked and re-granted.
      */
+    private val wholeScreenConsentLock = Any()
     @Volatile
     private var wholeScreenConsentRevision = 0L
 
@@ -764,13 +866,13 @@ internal class DeviceAccessHost(
         onAdvancedTargetLookup = ::lookupAdvancedSystemTarget,
         onArmPhoneControl = ::armVisibleTask,
         onAutomaticControlChange = { enabled ->
-            settings = settings.copy(automaticPhoneControl = enabled)
+            updateSettings { current -> current.copy(automaticPhoneControl = enabled) }
             persist()
             if (!enabled) stopActiveTask(takeOver = true)
             publish()
         },
         onAutoUnlockChange = { enabled ->
-            settings = settings.copy(autoUnlock = enabled && unlockConfigured)
+            updateSettings { current -> current.copy(autoUnlock = enabled && unlockConfigured) }
             persist(); publish()
         },
         onSaveUnlockCredential = ::saveUnlockCredential,
@@ -826,7 +928,8 @@ internal class DeviceAccessHost(
         // RAM-only and never restored across process death.
         pairingNotification.close()
         cancelPairingNotification()
-        settings = loadSettings()
+        synchronized(wholeScreenConsentLock) { settings = loadSettings() }
+        scope.launch(io) { PlatformArtifactWriter.cleanupExpiredStages(context.cacheDir) }
         // The artifact-handoff Full extension reads the SAME target ceiling.
         // Setting this is not a grant; it only lets that lane refuse targets
         // outside the user's existing device-app selection.
@@ -852,23 +955,10 @@ internal class DeviceAccessHost(
         ensureAdbUiBackend()
         registerPackageChangeMonitor()
         statusJobs += scope.launch {
-            PhoneControlModule.status.collect { status ->
-                val tornDownBefore = phoneServiceTornDown(phoneStatus)
-                val previousRelock = phoneStatus.relockReceipt
-                phoneStatus = status
-                if (status.relockReceipt != previousRelock &&
-                    status.relockReceipt?.result == PhoneRelockResult.USER_REQUIRED) {
-                    error = DeviceAccessUiError(context.getString(R.string.phone_automation_relock_failed),
-                        "device_relock_unconfirmed")
-                }
-                // Actual Accessibility/driver teardown revokes the RAM-only
-                // screen consent. A user Stop/Takeover is cleared by its own
-                // action; the transient blockers emitted while explicitly
-                // arming the next task must not discard its fresh choice.
-                if (!tornDownBefore && phoneServiceTornDown(status)) {
-                    screenShare.clear()
-                }
-                publish()
+            PhoneControlModule.status.collect {
+                // The event is an invalidation, not an ordered snapshot: a
+                // simultaneous explicit refresh must never reinstall its old value.
+                refreshPhoneStatusNow()
             }
         }
         // The module-level flows survive a controller rebuild; a per-controller
@@ -879,6 +969,12 @@ internal class DeviceAccessHost(
             }.collectLatest { (adb, root) ->
                 adbStatus = adb
                 rootStatus = root
+                // Immediately retire stale ADB controls on disconnect; the
+                // background readiness and system probes may take time.
+                if (adb !is AdbStatus.ServiceAlive || adb.effectiveUid != 2000) {
+                    adbUiReady = false
+                    publish()
+                }
                 onRootStateChanged()
                 // These are ordinary volatile fields, not Compose state.
                 // Observe the actual service flows, including peer changes
@@ -900,7 +996,7 @@ internal class DeviceAccessHost(
             snapshotFlow {
                 host.conversations.historyHolder.state.value?.runningConversationIds.orEmpty()
                     .mapNotNull { candidateFor(it) }
-                    .map { it.owner to it.phase }
+                    .map { Triple(it.owner, it.phase, it.waitingForDeviceApproval) }
             }
                 .distinctUntilChanged()
                 .collect { if (!closed) publish() }
@@ -973,13 +1069,31 @@ internal class DeviceAccessHost(
         recentOwner = null
         recentTitle = null
         stopFence.clearAll()
+        stopSettlements.clearAll()
         phoneControlRevision.clearAll()
         screenShare.clear()
         publish()
     }
 
+    private fun refreshPhoneStatusNow() = synchronized(phoneStatusRefreshLock) {
+        if (closed) return@synchronized
+        val latest = runCatching { PhoneControlModule.statusSnapshot() }.getOrNull() ?: return@synchronized
+        val previousRelock = phoneStatus.relockReceipt
+        phoneStatus = latest
+        if (latest.relockReceipt != previousRelock && latest.relockReceipt?.result == PhoneRelockResult.USER_REQUIRED) {
+            error = DeviceAccessUiError(context.getString(R.string.phone_automation_relock_failed), "device_relock_unconfirmed")
+        }
+        // Even if StateFlow collapsed detach+attach, the generation is
+        // monotonic and existing grants were already fenced at use time.
+        screenShare.reconcileServiceTeardown()
+        publish()
+    }
+
     fun onActivityResumed(activity: Activity) {
         if (closed) return
+        // Refresh the real in-process accessibility session immediately; do
+        // not wait for unrelated ADB/root/package work to finish first.
+        refreshPhoneStatusNow()
         // The permission broker belongs to the main/platform lane. Read its
         // CURRENT state on the main thread; never touch it from the IO worker.
         val discoveryBlocked = pairingSessionOpen && localNetworkBlocked()
@@ -999,6 +1113,62 @@ internal class DeviceAccessHost(
 
     fun onRunActivityChanged() {
         if (!closed) publish()
+    }
+
+    /** The chat Stop is a user request, not proof that the durable run has
+     * already settled. Fence only its exact device owner immediately. */
+    fun onRunStopRequested(epoch: Long, taskID: UUID, runID: UUID) {
+        val applyStop = stop@{
+            if (closed || epoch <= 0 || host.nativeRootEpoch() != epoch) return@stop
+            val owner = PhoneControlOwner(taskID, runID)
+            if (controlOwner() != owner) {
+                // Another owner can be arming while this owner is still
+                // retiring. Fence the stopped owner without touching the new
+                // session or its controls.
+                // A user retry after an unconfirmed stop has no overlay
+                // registration left. Preserve the exact old card identity;
+                // never select another task's current overlay.
+                val approvalKey = automationControls.approvalKey(owner)
+                    ?: stopSettlements.entry(owner)?.approvalKey
+                val streamStamp = host.conversations.deviceStopStreamStamp(
+                    owner.taskID.toString(), owner.runID.toString())
+                var markedToken: Long? = null
+                synchronized(activeStopLock) {
+                    if (host.nativeRootEpoch() != epoch) return@stop
+                    val oldStop = stopFence.entry(owner)
+                    val oldSettlement = stopSettlements.entry(owner)
+                    val explicitRetry = mayRetryDeviceStopReadback(owner, epoch, oldStop, oldSettlement)
+                    if (explicitRetry || (oldStop == null && (armedOwner == owner || armingOwner == owner ||
+                        automatedOwner.get() == owner || phoneStatus.activeOwner == owner))) {
+                        phoneControlRevision.bump(owner)
+                        markedToken = stopFence.markStopped(owner, epoch).token
+                    }
+                }
+                automatedOwner.compareAndSet(owner, null)
+                screenShare.clearExactTask(owner)
+                // Bind to the exact card BEFORE clear() retires its
+                // registration, then make it non-actionable immediately.
+                // Unconditional: it resolves the exact card in the real
+                // holder; a task with no device card is a no-op.
+                publishDeviceStop(owner, DeviceStopUiPhase.STOPPING, approvalKey)
+                automationControls.clear(expectedOwner = owner)
+                deviceRunLiveness.stop(owner)
+                // The chat path already dispatches canonical run.cancel; this
+                // only performs the bounded read-only settlement proof.
+                markedToken?.let {
+                    stopSettlements.begin(owner, it, epoch, approvalKey)
+                    startDeviceStopReadback(owner, it, dispatchCancel = false,
+                        approvalKey = approvalKey, expectedStreamStamp = streamStamp)
+                }
+                return@stop
+            }
+            // The caller already sends canonical run.cancel; never send a
+            // second cancel or wait for the native terminal before hiding.
+            stopActiveTask(takeOver = true, expectedOwner = owner,
+                requestRunCancellation = false, userStopEpoch = epoch)
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) applyStop()
+        else Handler(Looper.getMainLooper()).post { applyStop() }
     }
 
     fun onBackgroundWorkStarted(epoch: Long, taskID: UUID, runID: UUID) {
@@ -1038,6 +1208,7 @@ internal class DeviceAccessHost(
         automatedOwner.getAndSet(null)?.let { phoneClient?.finishAutomation(it) }
         automationControls.clear()
         stopFence.clearAll()
+        stopSettlements.clearAll()
         phoneControlRevision.clearAll()
         closePairingSession()
         PairingNotificationRelay.detach(this)
@@ -1143,21 +1314,28 @@ internal class DeviceAccessHost(
         )
     }
 
-    private fun persist() {
+    private fun updateSettings(transform: (AccessSettings) -> AccessSettings) {
+        updateSettingsAtomically(wholeScreenConsentLock, { settings }, { settings = it }, transform)
+    }
+
+    private fun persist() = synchronized(wholeScreenConsentLock) {
+        // Serialize the snapshot and its persistence with every settings
+        // transformation, so an older copy cannot restore revoked consent.
+        val snapshot = settings
         preferences.edit()
-            .putStringSet(KEY_PACKAGES, HashSet(settings.allowedPackages))
-            .putStringSet(KEY_ROOTS, HashSet(settings.fileRootIds))
-            .putStringSet(KEY_APP_DATA_ROOTS, HashSet(settings.appDataPaths))
-            .putBoolean(KEY_FILE_WRITES, settings.fileWritesAllowed)
-            .putBoolean(KEY_WHOLE_SCREEN, settings.wholeScreenConsent)
-            .putBoolean(KEY_MANAGEMENT, settings.packageManagementAllowed)
-            .putBoolean(KEY_ADVANCED_SYSTEM, settings.advancedSystemManagementAllowed)
-            .putStringSet(KEY_ADVANCED_TOOLS, HashSet(settings.advancedSystemAllowedTools))
-            .putStringSet(KEY_ADVANCED_TARGETS, HashSet(settings.advancedSystemTargets))
-            .putBoolean(KEY_ADB_ENABLED, settings.adbEnabled)
-            .putBoolean("automatic_phone_control", settings.automaticPhoneControl)
-            .putBoolean("automatic_unlock", settings.autoUnlock)
-            .putBoolean("floating_controls", settings.floatingControls)
+            .putStringSet(KEY_PACKAGES, HashSet(snapshot.allowedPackages))
+            .putStringSet(KEY_ROOTS, HashSet(snapshot.fileRootIds))
+            .putStringSet(KEY_APP_DATA_ROOTS, HashSet(snapshot.appDataPaths))
+            .putBoolean(KEY_FILE_WRITES, snapshot.fileWritesAllowed)
+            .putBoolean(KEY_WHOLE_SCREEN, snapshot.wholeScreenConsent)
+            .putBoolean(KEY_MANAGEMENT, snapshot.packageManagementAllowed)
+            .putBoolean(KEY_ADVANCED_SYSTEM, snapshot.advancedSystemManagementAllowed)
+            .putStringSet(KEY_ADVANCED_TOOLS, HashSet(snapshot.advancedSystemAllowedTools))
+            .putStringSet(KEY_ADVANCED_TARGETS, HashSet(snapshot.advancedSystemTargets))
+            .putBoolean(KEY_ADB_ENABLED, snapshot.adbEnabled)
+            .putBoolean("automatic_phone_control", snapshot.automaticPhoneControl)
+            .putBoolean("automatic_unlock", snapshot.autoUnlock)
+            .putBoolean("floating_controls", snapshot.floatingControls)
             .apply()
     }
 
@@ -1168,7 +1346,7 @@ internal class DeviceAccessHost(
             try {
                 unlockCredentials.write("device-lock", bytes)
                 unlockConfigured = true
-                settings = settings.copy(autoUnlock = true)
+                updateSettings { current -> current.copy(autoUnlock = true) }
                 persist()
                 error = null
             } catch (_: Exception) {
@@ -1178,7 +1356,7 @@ internal class DeviceAccessHost(
     }
 
     private fun forgetUnlockCredential() {
-        settings = settings.copy(autoUnlock = false)
+        updateSettings { current -> current.copy(autoUnlock = false) }
         persist()
         scope.launch(io) {
             try { unlockCredentials.delete("device-lock"); unlockConfigured = false }
@@ -1194,7 +1372,7 @@ internal class DeviceAccessHost(
             runCatching { context.startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
                 android.net.Uri.parse("package:${context.packageName}")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
         }
-        settings = settings.copy(floatingControls = enabled)
+        updateSettings { current -> current.copy(floatingControls = enabled) }
         persist()
         publish()
     }
@@ -1207,7 +1385,7 @@ internal class DeviceAccessHost(
             .toSet()
         val changed = next != settings.allowedPackages
         if (changed) targetScopeRevision.incrementAndGet()
-        settings = settings.copy(allowedPackages = next)
+        updateSettings { current -> current.copy(allowedPackages = next) }
         if (changed) targetScopeRevision.incrementAndGet()
         if (changed && armedBackend == PhoneControlBackend.ADB_UI_AUTOMATION) {
             // The UI target ceiling changed: the old ADB session grant is no
@@ -1240,11 +1418,11 @@ internal class DeviceAccessHost(
             appDataUsable = appDataUsable(),
         )
         if (next != settings.fileRootIds) fenceActiveRootGrants()
-        settings = settings.copy(
+        updateSettings { current -> current.copy(
             fileRootIds = next,
             appDataPaths = nextAppData,
-            fileWritesAllowed = settings.fileWritesAllowed && writableSelected,
-        )
+            fileWritesAllowed = current.fileWritesAllowed && writableSelected,
+        ) }
         persist()
         refreshRootCatalog()
         if (ceilingChanged) requestRootConfigRebuild()
@@ -1281,10 +1459,10 @@ internal class DeviceAccessHost(
             publish()
             return
         }
-        settings = settings.copy(
-            fileRootIds = settings.fileRootIds + root.id,
-            appDataPaths = settings.appDataPaths + root.path,
-        )
+        updateSettings { current -> current.copy(
+            fileRootIds = current.fileRootIds + root.id,
+            appDataPaths = current.appDataPaths + root.path,
+        ) }
         error = null
         persist()
         refreshRootCatalog()
@@ -1295,9 +1473,9 @@ internal class DeviceAccessHost(
     private fun setFileWrites(enabled: Boolean) {
         if (busy != DeviceAccessBusyUi.NONE) return
         if (!enabled) fenceActiveRootGrants()
-        settings = settings.copy(
+        updateSettings { current -> current.copy(
             fileWritesAllowed = enabled && hasWritableSelection(),
-        )
+        ) }
         persist()
         publish()
     }
@@ -1324,9 +1502,11 @@ internal class DeviceAccessHost(
 
     private fun setWholeScreenConsent(enabled: Boolean) {
         if (busy != DeviceAccessBusyUi.NONE) return
-        if (settings.wholeScreenConsent == enabled) return
-        settings = settings.copy(wholeScreenConsent = enabled)
-        wholeScreenConsentRevision += 1
+        synchronized(wholeScreenConsentLock) {
+            if (settings.wholeScreenConsent == enabled) return
+            updateSettings { current -> current.copy(wholeScreenConsent = enabled) }
+            wholeScreenConsentRevision += 1
+        }
         persist()
         publish()
     }
@@ -1334,7 +1514,7 @@ internal class DeviceAccessHost(
     private fun setPackageManagement(enabled: Boolean) {
         if (busy != DeviceAccessBusyUi.NONE) return
         if (!enabled) fenceActiveRootGrants()
-        settings = settings.copy(packageManagementAllowed = enabled)
+        updateSettings { current -> current.copy(packageManagementAllowed = enabled) }
         persist()
         publish()
     }
@@ -1347,7 +1527,7 @@ internal class DeviceAccessHost(
     private fun setAdvancedSystem(enabled: Boolean) {
         if (busy != DeviceAccessBusyUi.NONE) return
         if (!enabled) fenceActiveRootGrants()
-        settings = settings.copy(advancedSystemManagementAllowed = enabled)
+        updateSettings { current -> current.copy(advancedSystemManagementAllowed = enabled) }
         persist()
         publish()
     }
@@ -1356,7 +1536,7 @@ internal class DeviceAccessHost(
         if (busy != DeviceAccessBusyUi.NONE) return
         val allowed = tools.intersect(DeviceAccessToolCatalog.SHIPPED_ADVANCED_TOOLS)
         if (allowed != settings.advancedSystemAllowedTools) fenceActiveRootGrants()
-        settings = settings.copy(advancedSystemAllowedTools = allowed)
+        updateSettings { current -> current.copy(advancedSystemAllowedTools = allowed) }
         persist()
         publish()
     }
@@ -1368,7 +1548,7 @@ internal class DeviceAccessHost(
             .take(MAX_TARGET_PACKAGES)
             .toSet()
         if (clean != settings.advancedSystemTargets) fenceActiveRootGrants()
-        settings = settings.copy(advancedSystemTargets = clean)
+        updateSettings { current -> current.copy(advancedSystemTargets = clean) }
         persist()
         publish()
     }
@@ -1603,31 +1783,43 @@ internal class DeviceAccessHost(
         val backend = adbUiBackend ?: return
         val live = (adbStatus as? AdbStatus.ServiceAlive)?.takeIf { it.effectiveUid == 2000 }
         if (live == null) {
-            backend.onServiceLost()
+            val consentRevision = screenShare.revision
+            val owner = armedOwner
+            val epoch = host.nativeRootEpoch()
+            val grant = if (owner != null && epoch != null) backend.scopeSessionIdentity(owner, epoch) else null
             adbUiStatus = null
             adbUiReady = false
-            uiSessionGrants.clear()
             if (armedBackend == PhoneControlBackend.ADB_UI_AUTOMATION) {
-                val owner = armedOwner
-                if (owner != null) runCatching { backend.stop(owner) }
-                armedBackend = null
-                if (armedOwner == owner) armedOwner = null
-                screenShare.clear()
+                screenShare.clearIfRevision(consentRevision)
             }
+            // Remove the disconnected owner's controls before any remote
+            // cancellation can suspend; presentation rechecks the live backend.
+            publish()
+            // A reconnect can create a new grant while stop is suspended. The
+            // backend removes only this frozen grant and its own claims.
+            if (owner != null && grant != null) runCatching { backend.stop(owner, grant) }
             return
         }
+        val expectedOwner = armedOwner
+        val expectedEpoch = host.nativeRootEpoch()
+        val expectedGrant = if (expectedOwner != null && expectedEpoch != null) {
+            backend.scopeSessionIdentity(expectedOwner, expectedEpoch)
+        } else null
         // A new helper cannot be ready until the latest durable snapshot,
         // including a legitimately empty first-install state, is ACKed.
         val status = sensitiveGuardMutex.withLock {
             if (backend.syncSensitiveGuard()) backend.refreshReadiness() else null
         }
+        // The readiness request can outlive a disconnect/reconnect. Never let
+        // its old result revoke a replacement session.
+        if (adbStatus !== live || adbUiBackend !== backend) return
         adbUiStatus = status
         adbUiReady = status?.ready == true
-        if (!adbUiReady && armedBackend == PhoneControlBackend.ADB_UI_AUTOMATION) {
-            val owner = armedOwner
-            if (owner != null) runCatching { backend.stop(owner) }
-            armedBackend = null
-            if (armedOwner == owner) armedOwner = null
+        if (!adbUiReady && expectedOwner != null && expectedGrant != null &&
+            armedBackend == PhoneControlBackend.ADB_UI_AUTOMATION && armedOwner == expectedOwner
+        ) {
+            publish()
+            runCatching { backend.stop(expectedOwner, expectedGrant) }
         }
     }
 
@@ -1756,11 +1948,11 @@ internal class DeviceAccessHost(
         }.toSet()
         val stale = derived + settings.fileRootIds.filter { FileRootCatalog.isAppDataId(it) }
         if (stale.isEmpty() && settings.appDataPaths.isEmpty()) return
-        settings = settings.copy(
-            fileRootIds = settings.fileRootIds - stale,
+        updateSettings { current -> current.copy(
+            fileRootIds = current.fileRootIds - stale,
             appDataPaths = emptySet(),
-            fileWritesAllowed = settings.fileWritesAllowed && hasWritableSelectionAfter(stale),
-        )
+            fileWritesAllowed = current.fileWritesAllowed && hasWritableSelectionAfter(stale),
+        ) }
         persist()
         refreshRootCatalog()
         if (rebuild && rootController != null) requestRootConfigRebuild()
@@ -1892,6 +2084,7 @@ internal class DeviceAccessHost(
 
     private fun refreshFromUser() {
         if (busy != DeviceAccessBusyUi.NONE) return
+        refreshPhoneStatusNow()
         error = null
         scope.launch(io) {
             // Re-read only the existing guard file before syncing a helper.
@@ -2250,6 +2443,11 @@ internal class DeviceAccessHost(
             owner = PhoneControlOwner(taskUuid, runUuid),
             title = state.taskTitle.ifBlank { context.getString(R.string.device_access_current_task) },
             phase = phase,
+            // General task approvals also set phase to WAITING_FOR_USER. They
+            // must not keep the screen-control bubble alive after device work.
+            waitingForDeviceApproval = state.pendingApprovals.any {
+                it.runId == runId && it.toolName == "device.act"
+            },
         )
     }
 
@@ -2345,6 +2543,24 @@ internal class DeviceAccessHost(
             else !stopFence.isStopped(owner)
         }
 
+    /** Called while the backend admission mutex is held. Stop and adoption
+     * use the same short lock so neither can observe a half-admitted owner. */
+    private fun noteSuccessfulScreenAdmission(
+        owner: PhoneControlOwner, epoch: Long, expectedRevision: Long,
+        rearmStopToken: Long? = null,
+    ) = synchronized(activeStopLock) {
+        val currentStop = stopFence.entry(owner)
+        if (!closed && host.nativeRootEpoch() == epoch &&
+            phoneControlRevision.current(owner) == expectedRevision &&
+            !phonePause.isPaused(owner) && isOwnerRunLive(owner) &&
+            (if (rearmStopToken == null) currentStop == null else currentStop?.token == rearmStopToken)) {
+            // The matching stop token denotes a fresh explicit re-arm even
+            // when it reuses the same task/run identity. Advance its consent
+            // use before the old stop worker can clear that old ticket.
+            screenShare.noteAdmitted(owner, epoch, newSession = rearmStopToken != null)
+        }
+    }
+
     /**
      * Claim one exact-owner stop and its stop generation. A duplicate Stop for
      * the SAME still-current owner returns null; a different owner's pending
@@ -2353,7 +2569,11 @@ internal class DeviceAccessHost(
     private fun claimTaskStop(
         owner: PhoneControlOwner,
         takeOver: Boolean,
+        expectedEpoch: Long? = null,
+        overlayBinding: OverlayTakeoverBinding? = null,
     ): PhoneControlStopClaims.Claim? = synchronized(activeStopLock) {
+        if (expectedEpoch != null && host.nativeRootEpoch() != expectedEpoch) return@synchronized null
+        if (overlayBinding != null && !overlayTakeoverIsCurrent(owner, overlayBinding)) return@synchronized null
         val currentToken = stopFence.entry(owner)?.token
         if (currentToken != null && stopClaims.isDuplicate(owner, currentToken)) {
             return@synchronized null
@@ -2423,23 +2643,10 @@ internal class DeviceAccessHost(
         )
     }
 
-    /**
-     * Latch each exact stop as settled only after the ACTUAL holder no longer
-     * reports that run live. This is what separates the short cancellation
-     * window from a real Continue/retry incarnation of the same run id.
-     * A missing/released holder is not live and therefore settled. Other
-     * stopped owners are evaluated independently; nothing becomes host-wide.
-     */
-    private fun markStoppedOwnersSettled() {
-        if (stopFence.size() == 0) return
-        stopFence.settleIfNotLive(::isOwnerRunLive)
-    }
-
     // ------------------------------------------------------------ presentation
 
     private fun publish() {
         if (closed) return
-        markStoppedOwnersSettled()
         val ended = automatedOwner.get()?.takeUnless { isOwnerRunLive(it) }
         if (ended != null && automatedOwner.compareAndSet(ended, null)) {
             runCatching { android.util.Log.i("FloePhoneUnlock", "AUTOMATION_RUN_NO_LONGER_LIVE") }
@@ -2458,10 +2665,10 @@ internal class DeviceAccessHost(
             if (canPresentAutomationControls(owner)) {
                 val candidate = PhoneTaskPresentation.holderLookupKeys(owner.taskID)
                     .firstNotNullOfOrNull { key -> candidateFor(key)?.takeIf { it.owner == owner } }
-                val waiting = candidate?.phase == DeviceAccessTaskPhaseUi.WAITING_FOR_USER
+                val waiting = candidate?.waitingForDeviceApproval == true
                 automationControls.show(owner, titleFor(owner), settings.floatingControls, phonePause.isPaused(owner), waiting)
             } else {
-                automationControls.clear(expectedOwner = owner)
+                automationControls.clear(expectedOwner = owner, retainApprovalRegistration = automationOwnerStillLive(owner))
             }
         }
         reconcileScreenShare()
@@ -2475,6 +2682,8 @@ internal class DeviceAccessHost(
         // another owner's retained stop never colors the current run.
         val stoppedCandidate = candidate?.owner?.takeIf(stopFence::isStopped)
         val retainedStoppedOwner = if (candidate == null) stopFence.lastStoppedOwner() else null
+        val stoppedDisplayOwner = stoppedCandidate ?: retainedStoppedOwner
+        val stoppedDisplaySettled = stoppedDisplayOwner?.let { stopFence.entry(it)?.settled } == true
         val ownership = PhoneTaskPresentation.ownership(
             candidate = candidate?.let {
                 PhoneTaskLiveCandidate(it.owner, it.title, it.phase)
@@ -2485,8 +2694,9 @@ internal class DeviceAccessHost(
             } else {
                 phoneStatus.activeOwner
             },
-            stoppedOwner = stoppedCandidate ?: retainedStoppedOwner,
-            userStopped = stoppedCandidate != null || retainedStoppedOwner != null,
+            stoppedOwner = stoppedDisplayOwner,
+            userStopped = stoppedDisplayOwner != null,
+            stoppedOwnerSettled = stoppedDisplaySettled,
         )
         val active = ownership?.let {
             DeviceAccessActiveTaskUi(
@@ -2560,19 +2770,20 @@ internal class DeviceAccessHost(
             enabled = systemSettingsCeilingEnabled(),
         )
         val sensitiveState = PhoneControlSensitiveGuard.state(context)
+        val accessibilityEnabled = runCatching { activation.isEnabled() }.getOrDefault(false)
+        val accessibilityReady = phoneAccessibilityBackendReady(accessibilityEnabled, phoneStatus, phoneClient?.isClosed == false)
         mutablePresentation.value = DeviceAccessPresentationState(
             sensitiveGuardsAvailable = sensitiveState != null,
             sensitiveGuards = sensitiveState?.tickets?.map {
                 DeviceAccessSensitiveGuardUi(guardId(it), it.packageName, it.windowId, it.displayId)
             }.orEmpty(),
-            accessibility = accessibilityUi(),
+            accessibility = accessibilityUi(accessibilityEnabled),
             adb = adbUi(),
             structuredUi = when {
                 armedBackend == PhoneControlBackend.ADB_UI_AUTOMATION &&
                     armedOwner != null && adbUiReady ->
                     com.floe.android.DeviceAccessStructuredUiUi.ADB_UI_AUTOMATION
-                phoneServiceArmable() && phoneClient?.isClosed == false ->
-                    com.floe.android.DeviceAccessStructuredUiUi.ACCESSIBILITY
+                accessibilityReady -> com.floe.android.DeviceAccessStructuredUiUi.ACCESSIBILITY
                 adbUiReady -> com.floe.android.DeviceAccessStructuredUiUi.ADB_UI_AUTOMATION
                 else -> com.floe.android.DeviceAccessStructuredUiUi.NONE
             },
@@ -2609,19 +2820,9 @@ internal class DeviceAccessHost(
     private fun pairingSupported(): Boolean =
         rootController?.pairingSupported ?: (Build.VERSION.SDK_INT >= 30)
 
-    private fun accessibilityUi(): DeviceAccessAccessibilityUi {
+    private fun accessibilityUi(enabled: Boolean): DeviceAccessAccessibilityUi {
         if (closed) return DeviceAccessAccessibilityUi.Revoked
-        val enabled = runCatching { activation.isEnabled() }.getOrDefault(false)
-        if (!enabled) return DeviceAccessAccessibilityUi.NotGranted
-        return when (phoneStatus.blocker) {
-            PhoneControlBlocker.SERVICE_REVOKED -> DeviceAccessAccessibilityUi.Revoked
-            PhoneControlBlocker.SERVICE_DISCONNECTED -> DeviceAccessAccessibilityUi.Restricted
-            else -> if (phoneStatus.connected) {
-                DeviceAccessAccessibilityUi.Granted
-            } else {
-                DeviceAccessAccessibilityUi.Restricted
-            }
-        }
+        return deviceAccessibilityUi(enabled, phoneStatus)
     }
 
     private fun adbUi(): DeviceAccessAdbUi {
@@ -2718,7 +2919,6 @@ internal class DeviceAccessHost(
     }
 
     private fun armVisibleTask() {
-        markStoppedOwnersSettled()
         val candidate = currentCandidate()
         if (busy != DeviceAccessBusyUi.NONE) {
             // A pending STOP/TAKE_OVER for a DIFFERENT owner must not block
@@ -2827,9 +3027,6 @@ internal class DeviceAccessHost(
                         )
                         return@launch
                     }
-                    val screenAllowed = screenShare.allows(
-                        owner, epoch, ownerRunLive = isOwnerRunLive(owner),
-                    )
                     // Serialize the actual-owner takeover check with the ADB
                     // arm under the same admission mutex used by automatic
                     // arms and the global stop decision.
@@ -2839,13 +3036,20 @@ internal class DeviceAccessHost(
                         ) {
                             client?.takeover()
                         }
-                        backend.arm(
+                        val screenAllowed = screenShare.allows(
+                            owner, epoch, ownerRunLive = isOwnerRunLive(owner),
+                        )
+                        val result = backend.arm(
                             owner = owner,
                             epoch = epoch,
                             targets = packages,
                             screenAllowed = true,
                             screenshotAllowed = screenAllowed,
                         )
+                        if (result is PhoneControlResult.Ok) {
+                            noteSuccessfulScreenAdmission(owner, epoch, armRevision, rearmStopToken)
+                        }
+                        result
                     }
                     when (armResult) {
                         is PhoneControlResult.Ok -> {
@@ -2875,6 +3079,10 @@ internal class DeviceAccessHost(
                             recentOwner = owner
                             recentTitle = title
                             error = null
+                            // An explicit re-allow/Continue of this exact
+                            // owner clears only that owner's stop projection.
+                            stopSettlements.clear(owner)
+                            publishDeviceStop(owner, null, null)
                         }
                         is PhoneControlResult.Denied -> {
                             error = DeviceAccessUiError(
@@ -2925,7 +3133,11 @@ internal class DeviceAccessHost(
                         screenShare.clearExactTask(liveOwner)
                         asClient.takeover()
                     }
-                    asClient.arm(principal)
+                    val result = asClient.arm(principal)
+                    if (result is PhoneControlResult.Ok) {
+                        noteSuccessfulScreenAdmission(owner, epoch, armRevision, rearmStopToken)
+                    }
+                    result
                 }
                 when (armResult) {
                     is PhoneControlResult.Ok -> {
@@ -2956,6 +3168,10 @@ internal class DeviceAccessHost(
                         recentOwner = owner
                         recentTitle = title
                         error = null
+                        // An explicit re-allow/Continue of this exact owner
+                        // clears only that owner's stop projection.
+                        stopSettlements.clear(owner)
+                        publishDeviceStop(owner, null, null)
                     }
                     is PhoneControlResult.Denied -> {
                         error = DeviceAccessUiError(
@@ -3094,6 +3310,33 @@ internal class DeviceAccessHost(
         }
     }
 
+    private fun captureOverlayTakeover(owner: PhoneControlOwner): OverlayTakeoverBinding? {
+        val epoch = host.nativeRootEpoch()?.takeIf { it > 0 } ?: return null
+        return OverlayTakeoverBinding(
+            epoch = epoch,
+            ownerRevision = phoneControlRevision.current(owner),
+            streamStamp = host.conversations.deviceStopStreamStamp(
+                owner.taskID.toString(), owner.runID.toString()),
+        )
+    }
+
+    private fun overlayTakeoverIsCurrent(owner: PhoneControlOwner, binding: OverlayTakeoverBinding): Boolean =
+        binding.matches(host.nativeRootEpoch(), phoneControlRevision.current(owner),
+            host.conversations.deviceStopStreamStamp(owner.taskID.toString(), owner.runID.toString()), closed)
+
+    private fun onOverlayTakeover(owner: PhoneControlOwner, binding: OverlayTakeoverBinding) {
+        if (!overlayTakeoverIsCurrent(owner, binding)) {
+            // A stale tap cannot stop a newly resumed run. Refresh the
+            // presentation so its next tap is bound to the current owner.
+            publish()
+            android.widget.Toast.makeText(context, R.string.phone_automation_control_changed,
+                android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
+        stopActiveTask(takeOver = true, expectedOwner = owner,
+            userStopEpoch = binding.epoch, overlayBinding = binding)
+    }
+
     /** A real user Continue settles only the matching durable pause question
      * through its existing digest/nonce/revision CAS. No synthetic run start. */
     private fun resumePausedQuestion(pause: PhoneAutomationPause.Snapshot) {
@@ -3139,7 +3382,8 @@ internal class DeviceAccessHost(
         // still exists. A retained pause must not keep an overlay/notification
         // resident after Accessibility revocation or ADB disconnection.
         val backendAvailable = if (armedBackend == PhoneControlBackend.ADB_UI_AUTOMATION) {
-            adbUiReady && (host.nativeRootEpoch() ?: 0L) > 0L
+            adbUiReady && (adbStatus as? AdbStatus.ServiceAlive)?.effectiveUid == 2000 &&
+                (host.nativeRootEpoch() ?: 0L) > 0L
         } else {
             !phoneServiceTornDown(phoneStatus)
         }
@@ -3164,12 +3408,20 @@ internal class DeviceAccessHost(
         )
     }
 
-    private fun stopActiveTask(takeOver: Boolean, expectedOwner: PhoneControlOwner? = null) {
+    private fun stopActiveTask(
+        takeOver: Boolean,
+        expectedOwner: PhoneControlOwner? = null,
+        requestRunCancellation: Boolean = true,
+        userStopEpoch: Long? = null,
+        overlayBinding: OverlayTakeoverBinding? = null,
+    ) {
+        if (userStopEpoch != null && host.nativeRootEpoch() != userStopEpoch) return
         // Prefer an actual arm/admission owner over an in-flight arming
         // placeholder, so a stale A arm cannot misdirect a Stop meant for a
         // newly admitted B.
         val owner = expectedOwner ?: armedOwner ?: automatedOwner.get() ?: armingOwner ?: currentCandidate()?.owner
-        if (expectedOwner != null && (!isOwnerRunLive(expectedOwner) || controlOwner() != expectedOwner)) {
+        if (expectedOwner != null && overlayBinding == null &&
+            ((userStopEpoch == null && !isOwnerRunLive(expectedOwner)) || controlOwner() != expectedOwner)) {
             // A late notification callback for an old owner may remove only
             // that owner's presentation. It must not stop/renew the current
             // actual owner or create a new cross-task stop latch.
@@ -3190,15 +3442,47 @@ internal class DeviceAccessHost(
             publish()
             return
         }
-        OwnedExternalViewLaunch.clearForOwner(owner.taskID.toString(), owner.runID.toString())
+        // Capture the exact launch before claiming Stop. A late callback must
+        // never clear a replacement launch, even for the same task/run.
+        val ownedLaunch = OwnedExternalViewLaunch.current()?.takeIf {
+            it.taskID.equals(owner.taskID.toString(), ignoreCase = true) &&
+                it.runID.equals(owner.runID.toString(), ignoreCase = true) &&
+                (userStopEpoch == null || it.nativeEpoch == userStopEpoch)
+        }
+        // The registered device card is captured BEFORE the presentation is
+        // cleared, so the stop note is bound to the call it actually retired
+        // and a later retry/new call of the same run is not blocked.
+        val approvalKey = automationControls.approvalKey(owner)
+        // A later retry may reuse the exact run ID. Capture the stream stamp
+        // synchronously at the user's gesture, before any async cleanup.
+        val streamStamp = overlayBinding?.streamStamp ?: host.conversations.deviceStopStreamStamp(
+            owner.taskID.toString(), owner.runID.toString())
         // Dedupe only the SAME still-current stop owner/generation. A pending
         // A cleanup must not swallow an immediate Stop of a newly active B.
-        val stop = claimTaskStop(owner, takeOver)
+        var screenStopTicket: ScreenScopeStopTicket? = null
+        val stop = synchronized(activeStopLock) {
+            val claimed = claimTaskStop(owner, takeOver, expectedEpoch = userStopEpoch,
+                overlayBinding = overlayBinding)
+            if (claimed != null) screenStopTicket = screenShare.stopTicket(owner)
+            claimed
+        }
         if (stop == null) {
+            if (userStopEpoch != null && host.nativeRootEpoch() != userStopEpoch) return
             automationControls.clear(expectedOwner = owner)
             publish()
             return
         }
+        if (userStopEpoch != null && host.nativeRootEpoch() != userStopEpoch) {
+            finishTaskStop(stop)
+            return
+        }
+        ownedLaunch?.let(OwnedExternalViewLaunch::clearIfCurrent)
+        val stopEpoch = host.nativeRootEpoch() ?: 0L
+        stopSettlements.begin(owner, stop.stopToken, stopEpoch, approvalKey)
+        // Immediate truthful projection: the user's stop is recorded and the
+        // exact old approval is no longer decidable, but nothing is claimed
+        // settled until the real cancel/snapshot proof arrives.
+        publishDeviceStop(owner, DeviceStopUiPhase.STOPPING, approvalKey)
         // Retire this owner's controls and presentation BEFORE any queued or
         // backend cleanup. Late show/result posts recheck the live authority.
         automatedOwner.compareAndSet(owner, null)
@@ -3210,10 +3494,6 @@ internal class DeviceAccessHost(
         }
         if (readbackOwner == owner) readbackOwner = null
         recentOwner = owner
-        // An actual Stop/Takeover ends BOTH screen-share modes, including the
-        // broader "Until stopped"; a later task must ask again. This is
-        // synchronous so a pending capture ticket is invalidated immediately.
-        screenShare.clear()
         publish()
         val stoppingOwner = stop.owner
         val stopToken = stop.stopToken
@@ -3225,6 +3505,12 @@ internal class DeviceAccessHost(
                 // newer session or cancel a different owner's run.
                 fun stillThisStop(): Boolean =
                     stopFence.entry(stoppingOwner)?.token == stopToken
+                // Serialize against successful backend admissions. A's
+                // synchronous run/phone revision fence already blocks its
+                // in-flight capture; B's accepted reuse advances this ticket.
+                automationMutex.withLock {
+                    if (stillThisStop()) screenShare.clearIfStopTicket(screenStopTicket)
+                }
                 if (stillThisStop()) {
                     phonePause.snapshot?.takeIf { it.owner == stoppingOwner }?.let {
                         phonePause.resume(stoppingOwner, it.id, ::clearPersistedPause)
@@ -3239,11 +3525,15 @@ internal class DeviceAccessHost(
                 // Retire only this owner's native observer after fencing
                 // input, so a later owner's proof is untouched.
                 if (stillThisStop()) deviceRunLiveness.stop(stoppingOwner)
+                // The canonical cancel is fire-and-verify: its snapshot/cancel
+                // receipt is the only thing that may settle this stop. A chat
+                // Stop already dispatched run.cancel itself, so that path only
+                // performs the read-only settlement check.
                 if (stillThisStop()) {
-                    runCatching {
-                        host.conversations.cancelRunFromNotification(
-                            stoppingOwner.taskID.toString(), stoppingOwner.runID.toString())
-                    }
+                    startDeviceStopReadback(
+                        stoppingOwner, stopToken, dispatchCancel = requestRunCancellation,
+                        approvalKey = approvalKey, expectedStreamStamp = streamStamp,
+                    )
                 }
             } finally {
                 // Clear busy only when this exact stop still owns it; a later
@@ -3252,6 +3542,124 @@ internal class DeviceAccessHost(
                 publish()
             }
         }
+    }
+
+    /** Display-only projection of one exact-owner stop. Never a grant. */
+    private fun publishDeviceStop(
+        owner: PhoneControlOwner,
+        phase: DeviceStopUiPhase?,
+        approvalKey: String?,
+    ) {
+        val ui = phase?.let {
+            DeviceApprovalStopUi(
+                phase = when (it) {
+                    DeviceStopUiPhase.FAILED -> DeviceApprovalStopPhaseUi.FAILED
+                    DeviceStopUiPhase.STOPPED -> DeviceApprovalStopPhaseUi.STOPPED
+                    DeviceStopUiPhase.STOPPING -> DeviceApprovalStopPhaseUi.STOPPING
+                },
+                approvalKey = approvalKey,
+            )
+        }
+        runCatching {
+            host.conversations.applyDeviceApprovalStop(
+                owner.taskID.toString(), owner.runID.toString(), ui)
+        }
+    }
+
+    private fun startDeviceStopReadback(
+        owner: PhoneControlOwner,
+        stopToken: Long,
+        dispatchCancel: Boolean,
+        approvalKey: String?,
+        expectedStreamStamp: Map<String, Long>,
+    ) {
+        val epoch = host.nativeRootEpoch() ?: return
+        val delivered = AtomicBoolean(false)
+        fun deliver(receipt: DeviceRunStopReceipt) {
+            if (delivered.compareAndSet(false, true)) {
+                onDeviceStopReceipt(owner, stopToken, epoch, approvalKey, receipt)
+            }
+        }
+        val started = runCatching {
+            host.conversations.observeDeviceRunStop(
+                owner.taskID.toString(), owner.runID.toString(), epoch, dispatchCancel,
+                expectedStreamStamp,
+                stopStillCurrent = {
+                    !closed && host.nativeRootEpoch() == epoch &&
+                        stopFence.entry(owner)?.token == stopToken &&
+                        stopSettlements.entry(owner)?.token == stopToken
+                },
+            ) { receipt -> deliver(receipt) }
+        }.getOrElse { false }
+        if (!started && delivered.compareAndSet(false, true)) {
+            onDeviceStopReceipt(owner, stopToken, epoch, approvalKey,
+                DeviceRunStopReceipt.Refused("not_dispatched"))
+        }
+    }
+
+    /**
+     * Apply only the still-current stop generation. A settled receipt marks
+     * the fence settled only because the REAL native snapshot/holder proof
+     * said the exact run no longer holds the device approval; a refusal or an
+     * unverifiable read-back stays visibly recoverable and never claims a
+     * cancellation or terminal state.
+     */
+    private fun onDeviceStopReceipt(
+        owner: PhoneControlOwner,
+        stopToken: Long,
+        epoch: Long,
+        approvalKey: String?,
+        receipt: DeviceRunStopReceipt,
+    ) {
+        if (closed) return
+        val settlement = stopSettlements.entry(owner) ?: return
+        if (settlement.token != stopToken) return
+        val key = settlement.approvalKey ?: approvalKey
+        if (host.nativeRootEpoch() != epoch) {
+            stopSettlements.clear(owner, stopToken)
+            publishDeviceStop(owner, null, key)
+            publish()
+            return
+        }
+        when (receipt) {
+            is DeviceRunStopReceipt.Settled -> {
+                stopSettlements.clear(owner, stopToken)
+                stopFence.settle(owner, stopToken)
+                // The independent proof may arrive before the chat holder's
+                // authoritative page. Retain the exact old card barrier so a
+                // delayed page cannot make that call actionable again.
+                publishDeviceStop(owner, DeviceStopUiPhase.STOPPED, key)
+            }
+            DeviceRunStopReceipt.StillStopping -> {
+                stopSettlements.mark(owner, stopToken, DeviceStopUiPhase.STOPPING)
+                publishDeviceStop(owner, DeviceStopUiPhase.STOPPING, key)
+            }
+            is DeviceRunStopReceipt.Refused ->
+                failDeviceStop(owner, stopToken, key, receipt.code)
+            is DeviceRunStopReceipt.Unverified ->
+                failDeviceStop(owner, stopToken, key, receipt.code)
+            DeviceRunStopReceipt.EpochChanged -> {
+                // The native generation changed: this stop projection is moot.
+                // The root-stop path clears the fence; never settle it here.
+                stopSettlements.clear(owner, stopToken)
+                publishDeviceStop(owner, null, key)
+            }
+        }
+        publish()
+    }
+
+    private fun failDeviceStop(
+        owner: PhoneControlOwner,
+        stopToken: Long,
+        approvalKey: String?,
+        code: String,
+    ) {
+        stopSettlements.mark(owner, stopToken, DeviceStopUiPhase.FAILED, code)
+        error = DeviceAccessUiError(
+            context.getString(R.string.device_access_error_backend_failed),
+            "run_cancel_" + DeviceRunStopPolicy.safeCode(code),
+        )
+        publishDeviceStop(owner, DeviceStopUiPhase.FAILED, approvalKey)
     }
 
     // ---------------------------------------------------------------- ADB flow
@@ -3351,7 +3759,7 @@ internal class DeviceAccessHost(
 
     private fun enableAdb() {
         if (busy != DeviceAccessBusyUi.NONE) return
-        settings = settings.copy(adbEnabled = true)
+        updateSettings { current -> current.copy(adbEnabled = true) }
         persist()
         error = null
         scope.launch(io) {
@@ -4084,9 +4492,12 @@ internal class DeviceAccessHost(
 
     private fun availableToolNames(): Set<String> {
         val state = mutablePresentation.value
+        val accessibilityReady = state.structuredUi == com.floe.android.DeviceAccessStructuredUiUi.ACCESSIBILITY &&
+            state.accessibility == DeviceAccessAccessibilityUi.Granted &&
+            phoneAccessibilityBackendReady(true, phoneStatus, phoneClient?.isClosed == false)
         return DeviceAccessToolCatalog.availableNames(
             DeviceAccessToolCatalog.Availability(
-                accessibilityConnected = phoneServiceArmable(),
+                accessibilityConnected = accessibilityReady,
                 adbStructuredUiReady = adbUiReady,
                 targetPackagesSelected = state.targets.selectedPackages.isNotEmpty(),
                 // Potential capability only: mirrors
@@ -4098,7 +4509,7 @@ internal class DeviceAccessHost(
                 screenCaptureSupported = Build.VERSION.SDK_INT >= 30 ||
                     (Build.VERSION.SDK_INT >= 28 && adbUiReady &&
                         (armedBackend == PhoneControlBackend.ADB_UI_AUTOMATION ||
-                            !phoneServiceArmable())),
+                            !accessibilityReady)),
                 systemServiceAlive = systemServiceAlive(),
                 fileRootsSelected = effectiveSelectedRoots().isNotEmpty(),
                 fileWritesAllowed = state.targets.fileWritesAllowed,
@@ -4345,6 +4756,7 @@ internal class DeviceAccessHost(
             // Never silently switch an armed ADB observation base to a newly
             // enabled Accessibility service; the old page refs stay backend-
             // specific until a fresh observation.
+            noteSuccessfulScreenAdmission(owner, call.epoch, phoneControlRevision.current(owner))
             return@withLock null
         }
         val asClient = client?.takeIf { !it.isClosed }
@@ -4362,6 +4774,7 @@ internal class DeviceAccessHost(
         if (armedOwner == owner && phoneStatus.activeOwner == owner &&
             armedBackend == PhoneControlBackend.ACCESSIBILITY
         ) {
+            noteSuccessfulScreenAdmission(owner, call.epoch, phoneControlRevision.current(owner))
             return@withLock null
         }
         if (!settings.automaticPhoneControl && explicitResumeOwner != owner) return@withLock null
@@ -4465,6 +4878,7 @@ internal class DeviceAccessHost(
             }
             when (val result = asClient.arm(principal)) {
                 is PhoneControlResult.Ok -> {
+                    noteSuccessfulScreenAdmission(owner, call.epoch, armRevision)
                     if (isOwnerStopped(owner) || phonePause.isPaused(owner) ||
                         armRevision != phoneControlRevision.current(owner)
                     ) {
@@ -4586,6 +5000,7 @@ internal class DeviceAccessHost(
                 screenshotAllowed = screenAllowed,
             )) {
                 is PhoneControlResult.Ok -> {
+                    noteSuccessfulScreenAdmission(owner, call.epoch, armRevision)
                     if (isOwnerStopped(owner) || phonePause.isPaused(owner) ||
                         armRevision != phoneControlRevision.current(owner)
                     ) {
@@ -5312,8 +5727,34 @@ internal class DeviceAccessHost(
                     val screenshot = result.value
                     try {
                         val root = com.floe.android.swiftbridge.PlatformToolsNative.artifactRootPath()
-                        val written = PlatformArtifactWriter.write(
-                            root, screenshot.bytes, screenshot.mimeType)
+                        val prepared = PlatformArtifactWriter.prepare(context.cacheDir, root, screenshot.bytes, screenshot.mimeType)
+                        if (prepared is PlatformArtifactWriter.Preparation.Failed) {
+                            return PlatformToolOutcome.Failure("artifact_store_failed", prepared.code)
+                        }
+                        val stage = (prepared as PlatformArtifactWriter.Preparation.Ready).stage
+                        val written = try {
+                            // Lock order: service teardown -> whole-screen
+                            // choice -> screen-scope ticket. Only the final
+                            // publication is inside these short fences.
+                            PhoneControlModule.withServiceTeardownFence(ticket.serviceTeardownGeneration) {
+                                synchronized(wholeScreenConsentLock) {
+                                    screenShare.commitIfTicketValid(ticket, owner, liveEpoch,
+                                        ownerRunLive = isOwnerRunLive(owner), displayCapture = displayCapture,
+                                        wholeScreenConsent = settings.wholeScreenConsent,
+                                        wholeScreenUnchanged = wholeScreenConsentRevision == wholeScreenRevision) {
+                                        if (host.nativeRootEpoch() != liveEpoch || isOwnerStopped(owner) ||
+                                            phonePause.isPaused(owner) || captureRevision != phoneControlRevision.current(owner) ||
+                                            armedOwner != owner || !PlatformToolsNativeLive.isLive(call.claim) ||
+                                            PlatformToolsNativeLive.shouldStop(call.claim) ||
+                                            com.floe.android.swiftbridge.PlatformToolsNative.artifactRootPath() != root) {
+                                            PlatformArtifactWriter.Result.Failed("artifact_fenced")
+                                        } else stage.commit()
+                                    }
+                                }
+                            } ?: PlatformArtifactWriter.Result.Failed("artifact_fenced")
+                        } finally {
+                            stage.close()
+                        }
                         when (written) {
                             is PlatformArtifactWriter.Result.Ok -> PlatformToolOutcome.Success(
                                 summary = "Captured ${screenshot.width}x${screenshot.height} " +
@@ -5486,7 +5927,15 @@ internal class DeviceAccessHost(
     }
 
     private fun observationDigest(observation: PhoneControlObservation): String {
-        return com.floe.android.phonecontrol.PhoneControlObservationText.summary(observation, MAX_DIGEST_NODES)
+        // The persisted guard applies across windows, not just to a password
+        // field on this observation. Never infer it from sensitiveWindow,
+        // which also represents ordinary protected system/password screens.
+        val notice = PhoneControlSensitiveGuard.state(context)?.tickets
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { context.getString(R.string.device_sensitive_guard_observe_notice) }
+        return com.floe.android.phonecontrol.PhoneControlObservationText.summary(
+            observation, MAX_DIGEST_NODES, protectionNotice = notice,
+        )
     }
 
     private fun observationEvidence(observation: PhoneControlObservation): List<String> {
