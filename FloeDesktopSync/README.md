@@ -262,6 +262,14 @@ try await store.registerLegacyBridgeIdentifier(
 - 冲突解决是显式操作：`keepLocal` 保留本地脏数据，`acceptRemote` 只在本地完整记录仍与冲突记录一致时替换；接受同修订或更旧的远端记录会生成一个以本地当前行为基线的较新本地修订，避免复用旧 CAS 版本。不会自动合并内容。
 - 已提交的入站快照回执每个 scope 只保留最近一条；staging 会话与页/记录行由过期清理删除。旧版本创建的数据库打开时自动升级到 v5，不删除历史行。
 
+## 已提交任务接入层（2026-11-19）
+
+`CommittedTaskProjection.swift` 在既有 CanonicalMessageFeed / RunProjectionProducer / SyncStore 之上提供受限的已提交任务接入层：`bootstrapSnapshot` 以有界 keyset 扫描读取已提交会话的规范消息并返回精确重放水印；`importSnapshot` 把任务头与 user/assistant 消息子集以与运行投影生产者完全一致的记录形状写入本机 store（修订按实体合并，重复导入为无操作）；`projectNextPage` 从宿主分类的已提交运行事件推进运行级投影，崩溃/重启后从持久检查点续传；`changes`/`applyFeedTombstone` 暴露会话级变更流并对墓碑幂等；`readBack` 在重新核验执行头（任务绑定、属主、拒绝过期 epoch）之后回读持久投影。消息一律归一化为 `{runID, role, text}`，不导出原始事件、载荷或凭证，不打开任何监听；跨设备传输仍是独立课题。
+
+接线缝：`FloeMacSelfCore` 的 `FloeMacCanonicalFeedStorage` 提供 `beginBootstrap/bootstrapPage/changes/rotateHistory(in:)` GRDB 事务包装；`FloeMacHost` 的 `HostAgentDatabase.committedSyncStoreURL` 给出与宿主库同目录的 SyncStore 位置。宿主运行时需提供：`CommittedCanonicalFeedSource` 实现（用上述包装在 `DatabaseManager` 读事务内执行）、按 RunStore 事件分类的 `RunProjectionSource` 适配（reasoning→`.excludedReasoning`，assistantText→经持久映射的 `.canonicalMessage`，未知→`.unsupported`）、在受理时 `establishExecutionHead` 的当前 epoch，以及用于导入任务头的会话标题摘要。
+
+验证（Xcode 27.2 / Apple Swift 6.4，`xcrun swift test --package-path FloeDesktopSync`，独立 scratch）：150 项 XCTest 全部通过，其中新增 `CommittedTaskProjectionTests` 3 项，使用种子化临时源库（conversations/messages/message_parts + 规范 feed）与临时 SyncStore 覆盖快照导入、增量投影、过期 epoch/重绑定/异主拒绝、墓碑幂等与 feed 轮换后 `wrongGeneration`。`FloeMacSelfCore` 包构建通过且既有 CanonicalFeedStorageTests 2 项通过。未做整包 App 构建（归主任务），未接真实网络或跨设备传输。
+
 ## 本轮验证
 
 测试使用独立 SwiftPM scratch 目录，不接触 iOS 工程或其他任务的构建缓存。命令：
