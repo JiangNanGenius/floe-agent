@@ -7,9 +7,13 @@
 // button with an explicit "copied" confirmation. The button never drops
 // below the 44pt minimum target.
 
-#if canImport(SwiftUI) && canImport(UIKit)
+#if canImport(SwiftUI) && (canImport(UIKit) || os(macOS))
 import SwiftUI
+#if canImport(UIKit)
 import UIKit
+#elseif os(macOS)
+import AppKit
+#endif
 
 /// One fenced code block: language tag + copy action header over a
 /// horizontally scrollable monospaced body.
@@ -21,6 +25,7 @@ struct CodeBlockView: View {
 
     @State private var didCopy = false
 
+    #if canImport(UIKit)
     /// Fenced SVG goes through the shared bounded preview surface; the
     /// source stays fully viewable and copyable there too.
     private var isSVGFence: Bool {
@@ -29,13 +34,18 @@ struct CodeBlockView: View {
         default: return false
         }
     }
+    #endif
 
     var body: some View {
+        #if canImport(UIKit)
         if isSVGFence {
             SVGCodeBlockView(language: language, code: code)
         } else {
             plainCodeBlock
         }
+        #else
+        plainCodeBlock
+        #endif
     }
 
     private var plainCodeBlock: some View {
@@ -66,7 +76,12 @@ struct CodeBlockView: View {
             }
             Spacer()
             Button {
+                #if canImport(UIKit)
                 UIPasteboard.general.string = code
+                #elseif os(macOS)
+                NSPasteboard.general.clearContents()
+                guard NSPasteboard.general.setString(code, forType: .string) else { return }
+                #endif
                 didCopy = true
                 Task {
                     try? await Task.sleep(for: .seconds(2))

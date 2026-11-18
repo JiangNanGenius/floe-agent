@@ -101,6 +101,14 @@ class OTACandidateMetadataTests(unittest.TestCase):
         self.assertFalse(any(self.m00[i].get('productName') == 'Sparkle'
                              for i in m00_host.get('packageProductDependencies', [])))
 
+    def test_released_host_compiles_the_original_workbench_components(self):
+        sources = next(self.ota[i] for i in self.ota_host['buildPhases']
+                       if self.ota[i]['isa'] == 'PBXSourcesBuildPhase')
+        file_paths = [self.ota[self.ota[i]['fileRef']]['path'] for i in sources['files']]
+        filenames = {Path(path).name for path in file_paths}
+        self.assertTrue({'FloeTheme.swift', 'UserMessageBubble.swift', 'MarkdownRendererView.swift',
+                         'CodeBlockView.swift', 'ErrorEventView.swift'}.issubset(filenames))
+
     def test_generated_validation_script_rejects_missing_or_invalid_inputs(self):
         identity = 'Developer ID Application: Synthetic Fixture (QYL72C43K6)'
         fixture = {'PATH': '/usr/bin:/bin', 'FLOE_OTA_VERSION': '1.1.7', 'FLOE_OTA_BUILD': '10',

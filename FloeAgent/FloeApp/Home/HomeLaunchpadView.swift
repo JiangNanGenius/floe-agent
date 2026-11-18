@@ -167,22 +167,9 @@ struct HomeLaunchpadView: View {
     // MARK: - Header: brand mark + welcome
 
     private var header: some View {
-        VStack(spacing: 16) {
-            // The existing brand asset — no mascot, no third-party art.
-            Image(uiImage: AppIconImage.current ?? UIImage())
-                .resizable()
-                .aspectRatio(contentMode: .fit)
-                .frame(width: 76, height: 76)
-                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                .shadow(color: FloeTheme.primary.opacity(0.18), radius: 18, y: 8)
-                .accessibilityHidden(true)
-
+        FloeWorkbenchWelcomeHeader(icon: Image(uiImage: AppIconImage.current ?? UIImage())) {
             HomeWelcomeText(key: launchPromptKey)
-                .font(.title2.weight(.semibold))
-                .multilineTextAlignment(.center)
-                .accessibilityAddTraits(.isHeader)
         }
-        .accessibilityElement(children: .combine)
     }
 
     // MARK: - Composer (centered, prominent)

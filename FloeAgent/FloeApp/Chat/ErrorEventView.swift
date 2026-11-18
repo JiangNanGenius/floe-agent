@@ -8,7 +8,7 @@
 // — RunStateLocalizer.isLoading returns false as soon as any error
 // event exists.
 
-#if canImport(SwiftUI) && canImport(UIKit)
+#if canImport(SwiftUI)
 import SwiftUI
 
 /// One error event: destructive-tinted card with message + retry.

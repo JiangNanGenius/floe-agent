@@ -10,7 +10,7 @@
 // only the unfinished tail is re-parsed per token; once the run
 // terminates the full document is parsed once and cached.
 
-#if canImport(SwiftUI) && canImport(UIKit)
+#if canImport(SwiftUI) && (canImport(UIKit) || os(macOS))
 import SwiftUI
 import FloeMarkdown
 

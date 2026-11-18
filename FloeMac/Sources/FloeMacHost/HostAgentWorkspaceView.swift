@@ -1,11 +1,16 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import FloeCore
+import FloePersistence
 import SwiftUI
+#if FLOE_UNIFIED_MAC
+import AppKit
+#endif
 
 struct HostAgentWorkspaceView: View {
     @ObservedObject var workspace: HostAgentWorkspace
     var workspaceDraft: Binding<String>? = nil
+    var openModelSettings: (() -> Void)? = nil
     @State private var standaloneDraft = ""
     #if !FLOE_UNIFIED_MAC
     @State private var showingSettings = false
@@ -40,6 +45,9 @@ struct HostAgentWorkspaceView: View {
                     .disabled(workspace.isTerminating)
             } else {
                 conversation
+                #if FLOE_UNIFIED_MAC
+                composer
+                #else
                 HStack(alignment: .bottom) {
                     TextField("host.chat.prompt", text: draft, axis: .vertical)
                         .textFieldStyle(.roundedBorder)
@@ -56,12 +64,24 @@ struct HostAgentWorkspaceView: View {
                         .keyboardShortcut(.return, modifiers: .command)
                     }
                 }
+                #endif
             }
             if let notice = workspace.notice {
+                #if FLOE_UNIFIED_MAC
+                ErrorEventView(message: notice)
+                    .frame(maxWidth: 720)
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 20)
+                #else
                 Text(notice).foregroundStyle(.secondary)
+                #endif
             }
         }
+        #if FLOE_UNIFIED_MAC
+        .background(FloeTheme.readingSurface)
+        #else
         .padding(20)
+        #endif
         .task { await workspace.prepare() }
         #if !FLOE_UNIFIED_MAC
         .sheet(isPresented: $showingSettings) {
@@ -70,6 +90,99 @@ struct HostAgentWorkspaceView: View {
         #endif
     }
 
+    #if FLOE_UNIFIED_MAC
+    private var composer: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            TextField("host.chat.prompt", text: draft, axis: .vertical)
+                .textFieldStyle(.plain)
+                .font(FloeTheme.Typography.body)
+                .lineLimit(2...7)
+                .accessibilityIdentifier("thread.composer.input")
+            HStack {
+                if let openModelSettings {
+                    Button(action: openModelSettings) {
+                        Label(workspace.modelName ?? String(localized: "host.chat.provider"), systemImage: "cpu")
+                            .font(FloeTheme.Typography.metadata)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(workspace.isSending || workspace.isTerminating)
+                }
+                Spacer()
+                if workspace.isSending {
+                    Button(action: workspace.stop) {
+                        FloeComposerActionGlyph(systemImage: "stop.fill", enabled: workspace.canStop, destructive: true)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("host.chat.stop")
+                    .disabled(!workspace.canStop)
+                } else {
+                    let canSend = !draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !workspace.isTerminating
+                    Button {
+                        if workspace.send(draft.wrappedValue) { draft.wrappedValue = "" }
+                    } label: {
+                        FloeComposerActionGlyph(systemImage: "arrow.up", enabled: canSend)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("host.chat.send")
+                    .accessibilityIdentifier("composer.send")
+                    .keyboardShortcut(.return, modifiers: .command)
+                    .disabled(!canSend)
+                }
+            }
+        }
+        .padding(12)
+        .modifier(FloeThreadComposerChrome())
+        .frame(maxWidth: 720)
+        .frame(maxWidth: .infinity)
+    }
+
+    private var conversation: some View {
+        GeometryReader { proxy in
+            ScrollView {
+                if workspace.messages.isEmpty && workspace.pendingPrompt == nil {
+                    FloeWorkbenchWelcomeHeader(icon: Image(nsImage: NSImage(named: "FloeBrand") ?? NSApp.applicationIconImage)) {
+                        Text("home.welcome")
+                    }
+                    .frame(maxWidth: .infinity, minHeight: max(240, proxy.size.height))
+                } else {
+                    LazyVStack(alignment: .leading, spacing: 16) {
+                        ForEach(workspace.messages) { message in
+                            VStack(alignment: message.role == "user" ? .trailing : .leading, spacing: 4) {
+                                if message.role == "user" {
+                                    UserMessageBubble(text: message.content, attachments: AttachmentChipItem.items(in: message.parts))
+                                } else if message.role == "assistant" {
+                                    MarkdownRendererView(source: message.content)
+                                } else {
+                                    Text(verbatim: message.content).foregroundStyle(.secondary)
+                                }
+                                ChatMessageFooter(sentAt: message.createdAt, messageID: message.id.uuidString,
+                                                  userText: message.role == "user" ? message.content : nil)
+                            }
+                            .frame(maxWidth: .infinity, alignment: message.role == "user" ? .trailing : .leading)
+                            .contextMenu {
+                                if let text = CredentialMessagePart.clipboardText(message.content) {
+                                    Button("action.copy") {
+                                        NSPasteboard.general.clearContents()
+                                        NSPasteboard.general.setString(text, forType: .string)
+                                    }
+                                }
+                            }
+                        }
+                        if let prompt = workspace.pendingPrompt { UserMessageBubble(text: prompt) }
+                        if !workspace.streamedText.isEmpty {
+                            MarkdownRendererView(source: workspace.streamedText, isStreaming: true)
+                        }
+                    }
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 16)
+                    .frame(maxWidth: 760)
+                    .frame(maxWidth: .infinity)
+                }
+            }
+            .defaultScrollAnchor(.bottom)
+        }
+    }
+    #else
     private var conversation: some View {
         ScrollView {
             if workspace.messages.isEmpty && workspace.pendingPrompt == nil {
@@ -108,6 +221,7 @@ struct HostAgentWorkspaceView: View {
             }
         }
     }
+    #endif
 }
 
 struct HostAgentProviderForm: View {

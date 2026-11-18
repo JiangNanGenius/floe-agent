@@ -1,10 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import AppKit
+import Darwin
+import FloeMacBridgeProtocol
 import Quartz
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct MacWorkspaceFilesView: View {
+    let insertInDraft: (String) -> Void
+    var canInsertInDraft: Bool
     @Environment(\.locale) private var locale
     @State private var root: URL?
     @State private var directory: URL?
@@ -16,6 +21,8 @@ struct MacWorkspaceFilesView: View {
     @State private var limited = false
     @State private var failed = false
     @State private var preview: MacWorkspaceFileEntry?
+    @State private var importingText = false
+    @State private var showTextImportError = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -52,6 +59,11 @@ struct MacWorkspaceFilesView: View {
                 MacWorkspaceQuickLook(url: entry.url)
             }
             .frame(minWidth: 460, idealWidth: 680, minHeight: 360, idealHeight: 520)
+        }
+        .alert(t("无法读取文本", "Couldn’t Read Text"), isPresented: $showTextImportError) {
+            Button(t("确定", "OK"), role: .cancel) {}
+        } message: {
+            Text(t("请选择 32 KB 以内的 UTF-8 文本文件。", "Choose a UTF-8 text file of 32 KB or less."))
         }
     }
 
@@ -119,6 +131,10 @@ struct MacWorkspaceFilesView: View {
             Button(t("快速查看", "Quick Look")) {
                 if canAccess(entry) { preview = entry }
             }
+            if UTType(filenameExtension: entry.url.pathExtension)?.conforms(to: .text) == true {
+                Button(t("将文本插入新任务", "Insert Text in New Task")) { quoteText(entry) }
+                    .disabled(!canInsertInDraft || importingText)
+            }
         }
         Button(t("在 Finder 中显示", "Show in Finder")) {
             if canAccess(entry, allowLink: true) { NSWorkspace.shared.activateFileViewerSelecting([entry.url]) }
@@ -156,6 +172,23 @@ struct MacWorkspaceFilesView: View {
         guard canAccess(entry) else { return }
         if entry.folder { navigate(to: entry.url) }
         else if entry.openable { NSWorkspace.shared.open(entry.url) }
+    }
+
+    private func quoteText(_ entry: MacWorkspaceFileEntry) {
+        guard canInsertInDraft, !importingText, let root, canAccess(entry) else { return }
+        importingText = true
+        Task {
+            defer { importingText = false }
+            do {
+                let text = try await Task.detached(priority: .userInitiated) {
+                    try MacWorkspaceFolderSnapshot.readPlainText(entry.url, in: root)
+                }.value
+                guard self.root == root, canAccess(entry) else { return }
+                let name = entry.name.components(separatedBy: .newlines).joined(separator: " ")
+                let quote = text.components(separatedBy: .newlines).map { "> " + $0 }.joined(separator: "\n")
+                insertInDraft("\(name)\n\n\(quote)")
+            } catch { showTextImportError = true }
+        }
     }
 
     private func canAccess(_ entry: MacWorkspaceFileEntry, allowLink: Bool = false) -> Bool {
@@ -209,6 +242,36 @@ private struct MacWorkspaceFolderSnapshot: Sendable {
 
     static func contains(_ directory: URL, in root: URL) -> Bool {
         directory.pathComponents.starts(with: root.pathComponents)
+    }
+
+    static func readPlainText(_ url: URL, in root: URL) throws -> String {
+        let limit = 32 * 1024
+        guard let rootPath = physicalPath(root.path), let requested = physicalPath(url.path),
+              contains(URL(fileURLWithPath: requested), in: URL(fileURLWithPath: rootPath)),
+              !BridgeAbsoluteFileRead.isSecretPath(requested) else { throw CocoaError(.fileReadNoPermission) }
+        let descriptor = open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard descriptor >= 0 else { throw CocoaError(.fileReadNoPermission) }
+        let file = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        var info = stat()
+        var path = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+        guard fstat(descriptor, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_size <= limit,
+              fcntl(descriptor, F_GETPATH, &path) == 0, let openedPath = path.withUnsafeBufferPointer({ buffer in
+                  buffer.baseAddress.flatMap { String(validatingCString: $0) }
+              }),
+              physicalPath(openedPath) == requested else {
+            throw CocoaError(.fileReadNoPermission)
+        }
+        let bytes = try file.read(upToCount: limit + 1) ?? Data()
+        guard !bytes.isEmpty, bytes.count <= limit, !bytes.contains(0), let text = String(data: bytes, encoding: .utf8) else {
+            throw CocoaError(.fileReadInapplicableStringEncoding)
+        }
+        return text
+    }
+
+    private static func physicalPath(_ path: String) -> String? {
+        guard let resolved = realpath(path, nil) else { return nil }
+        defer { free(resolved) }
+        return String(validatingCString: resolved)
     }
 
     static func read(_ directory: URL, in root: URL) throws -> Self {

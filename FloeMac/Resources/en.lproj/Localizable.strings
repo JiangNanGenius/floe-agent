@@ -232,3 +232,26 @@
 "mac.workspace.inspector.running" = "Running";
 "mac.workspace.inspector.updated" = "Last updated";
 "mac.workspace.browseFiles" = "Browse Files";
+
+"app.name" = "Floe Agent";
+"app.floe_agent_app.task_center" = "Task Center";
+"workbench.new_task" = "New task";
+"home.welcome" = "What should Floe get done today?";
+"more.settings" = "Settings";
+"action.copy" = "Copy";
+"action.copied" = "Copied";
+"codeblock.language" = "Code language";
+"thread.role.user" = "You";
+"thread.role.assistant" = "Assistant";
+"chat.attachment.open_named %@" = "Open %@";
+"design.owner.from_attachment_named %@" = "Design from %@";
+"chat.user_message_bubble.secure_credentials" = "Secure credentials";
+"chat.user_message_bubble.saved_securely_this_task_can_reference" = "Saved securely; this task can reference it by purpose";
+"chat.user_message_bubble.secure_credentials_card" = "Secure credentials card";
+"mac.workspace.rename" = "Rename Task…";
+"mac.workspace.taskName" = "Task Name";
+"mac.workspace.pin" = "Pin Task";
+"mac.workspace.unpin" = "Unpin Task";
+"mac.workspace.exportChat" = "Export Displayed Messages…";
+"mac.workspace.saveFailed" = "Couldn’t update this task. Try again.";
+"mac.workspace.exportFailed" = "Couldn’t save the conversation. Choose another location and try again.";

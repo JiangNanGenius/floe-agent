@@ -826,6 +826,41 @@ public actor FloeMacSelfRuntime {
         }
     }
 
+    public enum ConversationMetadataChange: Sendable {
+        case rename(String)
+        case pin(Bool)
+    }
+
+    public func changeConversationMetadata(id: UUID, change: ConversationMetadataChange) async throws {
+        try ensureAdmissionStillAllowed()
+        try requireAuthority()
+        let stores = try requireStores()
+        let operation = UUID()
+        guard claims.claim(conversationID: id, runID: operation) else {
+            throw FloeMacSelfCoreError.conversationBusy(id)
+        }
+        activeAdmissions.insert(operation)
+        defer {
+            activeAdmissions.remove(operation)
+            claims.release(conversationID: id, runID: operation)
+        }
+        guard try await stores.conversations.conversation(id: id)?.isVisibleInOrdinaryList == true else {
+            throw FloeMacSelfCoreError.invalidRequest("Only ordinary saved tasks can be edited.")
+        }
+        try ensureAdmissionStillAllowed()
+        try requireAuthority()
+        switch change {
+        case .rename(let proposed):
+            let title = proposed.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !title.isEmpty, title.utf8.count <= 200, !title.utf8.contains(0) else {
+                throw FloeMacSelfCoreError.invalidRequest("Invalid conversation title.")
+            }
+            try await stores.conversations.renameConversation(id: id, title: title)
+        case .pin(let pinned):
+            try await stores.conversations.setPinned(id: id, pinnedAt: pinned ? Date() : nil)
+        }
+    }
+
     public func conversationMessages(
         conversationID: UUID,
         limit: Int = 100

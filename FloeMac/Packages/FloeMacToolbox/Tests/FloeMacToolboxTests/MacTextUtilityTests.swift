@@ -101,8 +101,13 @@ struct MacTextUtilityTests {
         let all = ToolboxTool.allCases
         #expect(all.count == 31)
         #expect(Set(all.map(\.rawValue)).count == 31)
-        #expect(MacToolboxAvailability.available == Set([.hash, .json, .encoding, .calculator, .qr]))
+        #expect(MacToolboxAvailability.available == Set([.hash, .json, .encoding, .calculator, .qr,
+            .ruler, .photoMeasure, .location, .timer, .magnifier, .browser, .sound,
+            .http, .webSocket, .mqtt, .serialAssistant,
+            .ping, .traceroute, .dns, .port, .wifi, .roaming]))
         #expect(MacToolboxAvailability.available.isSubset(of: Set(all)))
+        // LAN discovery stays fenced until its Bonjour teardown is owned.
+        #expect(!MacToolboxAvailability.available.contains(.lan))
         for group in ToolboxGroup.allCases {
             #expect(!all.filter { $0.group == group }.isEmpty)
         }

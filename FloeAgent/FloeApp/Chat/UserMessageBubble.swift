@@ -12,10 +12,15 @@
 // notices carrying a real file/image part) render the same chips leading,
 // so a returned attachment is never a second, bespoke presentation path.
 
-#if canImport(SwiftUI) && canImport(UIKit)
+#if canImport(SwiftUI)
 import SwiftUI
 import FloeCore
 import FloeModels
+#if canImport(UIKit)
+import UIKit
+#elseif canImport(AppKit)
+import AppKit
+#endif
 
 /// One attachment chip: the display name plus the REAL part kind (an image
 /// attachment must not render as a generic file, and vice versa).
@@ -115,10 +120,16 @@ struct ChatMessageCopyButton: View {
 
     var body: some View {
         Button {
+            #if canImport(UIKit)
             UIPasteboard.general.string = text
+            #elseif canImport(AppKit)
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            pasteboard.setString(text, forType: .string)
+            #endif
             copied = true
         } label: {
-            Label(copied ? IDELanguageRunText.t("已复制", "Copied") : FloeL10n.l("workspace.workspace_canvas_view.copy"),
+            Label(copyTitle,
                   systemImage: copied ? "checkmark" : "doc.on.doc")
                 .font(FloeTheme.Typography.metadata)
                 .foregroundStyle(.secondary)
@@ -132,6 +143,15 @@ struct ChatMessageCopyButton: View {
             if !Task.isCancelled { copied = false }
         }
     }
+
+    private var copyTitle: String {
+        #if canImport(UIKit)
+        copied ? IDELanguageRunText.t("已复制", "Copied") : FloeL10n.l("workspace.workspace_canvas_view.copy")
+        #else
+        copied ? String(localized: "action.copied") : String(localized: "action.copy")
+        #endif
+    }
+
 }
 
 /// One user message: right-aligned bubble + attachment chips.

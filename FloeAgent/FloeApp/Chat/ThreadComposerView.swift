@@ -329,16 +329,7 @@ struct ThreadComposerView: View {
                     value: inlineInputIsEditing && !isFullEditorPresented
                         && !voiceInput.state.hasSession && voiceInput.state != .requestingPermission
                         ? [inputFocusSourceID] : [])
-        .background(FloeTheme.chromeMaterial, in: RoundedRectangle(cornerRadius: documentAssistant ? 0 : 22, style: .continuous))
-        .overlay {
-            if !documentAssistant {
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .strokeBorder(FloeTheme.separator, lineWidth: 0.5)
-            }
-        }
-        .padding(.horizontal, documentAssistant ? 0 : 12)
-        .padding(.vertical, documentAssistant ? 0 : 8)
-        .shadow(color: .black.opacity(documentAssistant ? 0 : 0.08), radius: 14, y: 5)
+        .modifier(FloeThreadComposerChrome(documentAssistant: documentAssistant))
         .sheet(isPresented: $isPickerPresented) {
             DocumentPickerView { url in
                 Task { await registerPicked(url) }
@@ -1082,11 +1073,7 @@ struct ThreadComposerView: View {
                 Button(role: .destructive) {
                     onStop()
                 } label: {
-                    Image(systemName: "stop.fill")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .frame(width: 34, height: 34)
-                        .background(FloeTheme.destructive, in: Circle())
+                    FloeComposerActionGlyph(systemImage: "stop.fill", destructive: true)
                 }
                 .buttonStyle(.plain)
                 .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
@@ -1100,11 +1087,7 @@ struct ThreadComposerView: View {
                     ProgressView()
                         .controlSize(.small)
                 } else {
-                    Image(systemName: sendSystemImage)
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundStyle(canSend ? Color.white : Color.secondary)
-                        .frame(width: 34, height: 34)
-                        .background(canSend ? FloeTheme.primary : Color.secondary.opacity(0.12), in: Circle())
+                    FloeComposerActionGlyph(systemImage: sendSystemImage, enabled: canSend)
                         .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
                 }
             }

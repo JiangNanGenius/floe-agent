@@ -20,6 +20,7 @@ let package = Package(
             name: "FloeMacToolbox",
             dependencies: [
                 .product(name: "FloeToolboxCore", package: "FloeToolbox"),
+                .product(name: "FloeToolboxClients", package: "FloeToolbox"),
                 .product(name: "FloeToolboxUI", package: "FloeToolbox"),
                 .product(name: "FloeToolboxUtilities", package: "FloeToolbox"),
                 .product(name: "FloeToolboxWorkbenches", package: "FloeToolbox"),
@@ -34,6 +35,7 @@ let package = Package(
             dependencies: [
                 "FloeMacToolbox",
                 .product(name: "FloeToolboxCore", package: "FloeToolbox"),
+                .product(name: "FloeToolboxClients", package: "FloeToolbox"),
                 .product(name: "FloeToolboxUtilities", package: "FloeToolbox"),
                 .product(name: "FloeMacMediaSystem", package: "FloeMacToolboxMedia"),
             ]

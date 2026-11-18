@@ -233,3 +233,26 @@
 "mac.workspace.inspector.running" = "运行中";
 "mac.workspace.inspector.updated" = "最近更新";
 "mac.workspace.browseFiles" = "浏览文件";
+
+"app.name" = "Floe Agent";
+"app.floe_agent_app.task_center" = "任务中心";
+"workbench.new_task" = "新建任务";
+"home.welcome" = "今天想让 Floe 完成什么？";
+"more.settings" = "设置";
+"action.copy" = "复制";
+"action.copied" = "已复制";
+"codeblock.language" = "代码语言";
+"thread.role.user" = "我";
+"thread.role.assistant" = "助手";
+"chat.attachment.open_named %@" = "打开 %@";
+"design.owner.from_attachment_named %@" = "从 %@ 创作";
+"chat.user_message_bubble.secure_credentials" = "安全凭据";
+"chat.user_message_bubble.saved_securely_this_task_can_reference" = "已安全保存，可由本任务按用途引用";
+"chat.user_message_bubble.secure_credentials_card" = "安全凭据卡";
+"mac.workspace.rename" = "重命名任务…";
+"mac.workspace.taskName" = "任务名称";
+"mac.workspace.pin" = "置顶任务";
+"mac.workspace.unpin" = "取消置顶";
+"mac.workspace.exportChat" = "导出当前消息…";
+"mac.workspace.saveFailed" = "无法更新此任务，请重试。";
+"mac.workspace.exportFailed" = "无法保存对话，请选择其他位置后重试。";

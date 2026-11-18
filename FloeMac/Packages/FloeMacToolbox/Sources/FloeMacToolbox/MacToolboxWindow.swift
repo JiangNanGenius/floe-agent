@@ -9,7 +9,8 @@ import FloeMacNetwork
 
 enum MacToolboxAvailability {
     static let available: Set<ToolboxTool> = Set([.hash, .json, .encoding, .calculator, .qr,
-        .ruler, .photoMeasure, .location, .timer, .magnifier, .browser, .sound]).union(MacToolboxNetworkScope.tools)
+        .ruler, .photoMeasure, .location, .timer, .magnifier, .browser, .sound,
+        .http, .webSocket, .mqtt, .serialAssistant]).union(MacToolboxNetworkScope.tools)
 
     static func groupTitle(_ group: ToolboxGroup, locale: Locale) -> String {
         switch group {
@@ -149,6 +150,10 @@ public struct MacToolboxWindow: View {
         case .ping, .traceroute, .dns, .port, .wifi, .roaming:
             if let tool = selection.wrappedValue {
                 MacNetworkToolView(tool: tool, owner: services.networkOwner).id(tool.rawValue)
+            }
+        case .http, .webSocket, .mqtt, .serialAssistant:
+            if let tool = selection.wrappedValue {
+                MacCommunicationToolView(tool: tool, owner: services.communicationOwner).id(tool.rawValue)
             }
         case .timer:
             MacSilentTimerView(service: services.silentTimekeeping())

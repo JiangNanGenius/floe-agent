@@ -163,6 +163,20 @@ public enum MacToolboxFilePanels {
         return url
     }
 
+    /// Binary-safe export path for journaled captures and other byte payloads.
+    public static func saveData(_ data: Data, suggestedName: String, contentType: UTType, locale: Locale,
+                                title: String) async throws -> URL? {
+        let panel = NSSavePanel()
+        panel.title = title
+        panel.prompt = MacToolboxText.t("导出", "Export", locale)
+        panel.nameFieldStringValue = suggestedName
+        panel.allowedContentTypes = [contentType]
+        panel.canCreateDirectories = true
+        guard await run(panel) == .OK, let url = panel.url else { return nil }
+        try data.write(to: url, options: .atomic)
+        return url
+    }
+
     private static func run(_ panel: NSSavePanel) async -> NSApplication.ModalResponse {
         await withCheckedContinuation { continuation in
             panel.begin { response in continuation.resume(returning: response) }

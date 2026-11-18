@@ -43,6 +43,7 @@ let package = Package(
                 "FloeProviders",
                 "FloeModels",
                 "FloeCore",
+                "FloeMarkdown",
             ]
         )
     ],
@@ -55,6 +56,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-asn1.git", exact: "1.7.1"),
     ],
     targets: [
+        .target(name: "FloeMarkdown", dependencies: ["FloeCore"]),
         // Narrow C primitives used by FloeCore. Exact upstream bytes.
         .target(
             name: "CFloeExtentShim",

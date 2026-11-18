@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
+import AppKit
+import FloeMacSelfCore
 import FloePersistence
 import SwiftUI
+import UniformTypeIdentifiers
 
 private enum MacWorkspaceDestination: Hashable {
     case newTask, taskCenter, files, toolbox, services, conversation(UUID)
@@ -11,12 +14,18 @@ struct MacWorkspaceRootView: View {
     @ObservedObject var workspace: HostAgentWorkspace
     let openBridge: () -> Void
     let openToolbox: (String) -> Void
+    @Environment(\.colorScheme) private var colorScheme
 
-    @State private var destination: MacWorkspaceDestination? = .taskCenter
+    @State private var destination: MacWorkspaceDestination? = .newTask
     @State private var showInspector = false
     @State private var showModelSettings = false
     @State private var historySearch = ""
     @State private var drafts: [UUID?: String] = [:]
+    @State private var taskToRename: ConversationRecord?
+    @State private var taskTitle = ""
+    @State private var showRename = false
+    @State private var showExportError = false
+    @State private var showMetadataError = false
 
     var body: some View {
         NavigationSplitView {
@@ -25,9 +34,9 @@ struct MacWorkspaceRootView: View {
         } detail: {
             VStack(spacing: 0) {
                 header
-                Divider()
+                Rectangle().fill(FloeTheme.separator.opacity(0.45)).frame(height: 1)
                 ZStack {
-                    MacWorkspaceFilesView()
+                    MacWorkspaceFilesView(insertInDraft: insertFileText, canInsertInDraft: canSelectTask)
                         .opacity(destination == .files ? 1 : 0)
                         .allowsHitTesting(destination == .files)
                         .accessibilityHidden(destination != .files)
@@ -41,7 +50,10 @@ struct MacWorkspaceRootView: View {
             }
         }
         .navigationSplitViewStyle(.balanced)
-        .task { await workspace.prepare() }
+        .task {
+            await workspace.prepare()
+            if destination == .newTask, workspace.selectedID != nil { await workspace.select(nil) }
+        }
         .task(id: destination) {
             guard workspace.isReady else { return }
             switch destination {
@@ -59,46 +71,81 @@ struct MacWorkspaceRootView: View {
             if !showsTask { showInspector = false }
         }
         .sheet(isPresented: $showModelSettings) {
-            HostAgentProviderForm(workspace: workspace, isPresented: $showModelSettings)
+            MacProviderSettingsView(workspace: workspace, isPresented: $showModelSettings)
+        }
+        .alert("mac.workspace.rename", isPresented: $showRename) {
+            TextField("mac.workspace.taskName", text: $taskTitle)
+            Button("host.chat.cancel", role: .cancel) {}
+            Button("host.chat.save") {
+                guard let task = taskToRename else { return }
+                let title = taskTitle
+                updateTask(id: task.id, change: .rename(title))
+            }
+        }
+        .alert("mac.workspace.exportFailed", isPresented: $showExportError) {
+            Button("OK", role: .cancel) {}
+        }
+        .alert("mac.workspace.saveFailed", isPresented: $showMetadataError) {
+            Button("OK", role: .cancel) {}
         }
     }
 
     private var sidebar: some View {
-        List(selection: $destination) {
-            Section {
-                Label("mac.workspace.newTask", systemImage: "square.and.pencil")
-                    .tag(MacWorkspaceDestination.newTask)
-                    .disabled(!canSelectTask)
-                Label("mac.workspace.taskCenter", systemImage: "checklist")
-                    .tag(MacWorkspaceDestination.taskCenter)
-                Label("mac.workspace.files", systemImage: "folder")
-                    .tag(MacWorkspaceDestination.files)
-                Label("host.menu.tools", systemImage: "wrench.and.screwdriver")
-                    .tag(MacWorkspaceDestination.toolbox)
-                Label("mac.workspace.services", systemImage: "slider.horizontal.3")
-                    .tag(MacWorkspaceDestination.services)
-            }
-            Section("host.chat.history") {
+        VStack(spacing: 0) {
+            List(selection: $destination) {
+                Section {
+                    FloeWorkbenchSidebarItem(title: "workbench.new_task", systemImage: "square.and.pencil", foreground: sidebarText(for: .newTask))
+                        .tag(MacWorkspaceDestination.newTask)
+                        .disabled(!canSelectTask)
+                    FloeWorkbenchSidebarItem(title: "app.floe_agent_app.task_center", systemImage: "checklist", foreground: sidebarText(for: .taskCenter))
+                        .tag(MacWorkspaceDestination.taskCenter)
+                    FloeWorkbenchSidebarItem(title: "mac.workspace.files", systemImage: "folder", foreground: sidebarText(for: .files))
+                        .tag(MacWorkspaceDestination.files)
+                    FloeWorkbenchSidebarItem(title: "host.menu.tools", systemImage: "wrench.and.screwdriver", foreground: sidebarText(for: .toolbox))
+                        .tag(MacWorkspaceDestination.toolbox)
+                }
                 if !workspace.conversations.isEmpty {
-                    TextField("mac.workspace.findTask", text: $historySearch)
-                        .textFieldStyle(.roundedBorder)
-                }
-                ForEach(filteredConversations) { conversation in
-                    Label(conversation.title, systemImage: conversation.isPinned ? "pin" : "bubble.left")
-                        .lineLimit(1)
-                        .tag(MacWorkspaceDestination.conversation(conversation.id))
-                        .disabled(!canSelectTask && workspace.selectedID != conversation.id)
+                    Section {
+                        TextField("mac.workspace.findTask", text: $historySearch)
+                            .textFieldStyle(.roundedBorder)
+                        ForEach(filteredConversations) { conversation in
+                            Label(conversation.title, systemImage: conversation.isPinned ? "pin" : "bubble.left")
+                                .foregroundStyle(sidebarText(for: .conversation(conversation.id)))
+                                .lineLimit(1)
+                                .tag(MacWorkspaceDestination.conversation(conversation.id))
+                                .disabled(!canSelectTask && workspace.selectedID != conversation.id)
+                            .contextMenu {
+                                Button(LocalizedStringKey(conversation.isPinned ? "mac.workspace.unpin" : "mac.workspace.pin"),
+                                   systemImage: conversation.isPinned ? "pin.slash" : "pin") {
+                                updateTask(id: conversation.id, change: .pin(!conversation.isPinned))
+                                }
+                                .disabled(!canSelectTask)
+                                Button("mac.workspace.rename", systemImage: "pencil") {
+                                taskToRename = conversation
+                                taskTitle = conversation.title
+                                showRename = true
+                                }
+                                .disabled(!canSelectTask)
+                            }
+                        }
+                    } header: { Text("host.chat.history").foregroundStyle(.secondary) }
                 }
             }
+            .listStyle(.sidebar)
+            FloeWorkbenchSidebarFooter { destination = .services }
         }
-        .listStyle(.sidebar)
-        .navigationTitle("host.role.agent")
+        .navigationTitle("app.name")
     }
 
     private var filteredConversations: [ConversationRecord] {
         workspace.conversations.filter {
             $0.isVisibleInOrdinaryList && (historySearch.isEmpty || $0.title.localizedStandardContains(historySearch))
         }
+    }
+
+    private func sidebarText(for row: MacWorkspaceDestination) -> Color {
+        if destination == row { return .white }
+        return colorScheme == .dark ? Color(white: 0.90) : .primary
     }
 
     private var canSelectTask: Bool { workspace.isReady && !workspace.isSending && !workspace.isTerminating }
@@ -135,34 +182,42 @@ struct MacWorkspaceRootView: View {
         HStack(spacing: 14) {
             Text(title).font(.headline).lineLimit(1)
             Spacer(minLength: 8)
-            if showsTask {
+            if case .conversation = destination {
+                Button(action: exportConversation) {
+                    Label("mac.workspace.exportChat", systemImage: "square.and.arrow.up")
+                }
+                .labelStyle(.iconOnly)
+                .help("mac.workspace.exportChat")
+                .disabled(!canSelectTask || workspace.messages.isEmpty || destinationConversationID != workspace.selectedID)
                 Button { showInspector.toggle() } label: {
                     Label("mac.workspace.inspector", systemImage: "sidebar.trailing")
                 }
                 .labelStyle(.iconOnly)
                 .help("mac.workspace.inspector")
             }
-            Button { showModelSettings = true } label: {
-                Label(workspace.modelName ?? String(localized: "host.chat.provider"), systemImage: "cpu")
-                    .lineLimit(1)
+            if destination != .newTask {
+                Button { showModelSettings = true } label: {
+                    Label(workspace.modelName ?? String(localized: "host.chat.provider"), systemImage: "cpu")
+                        .lineLimit(1)
+                }
+                .disabled(!canSelectTask)
+                Button(action: startNewTask) {
+                    Label("mac.workspace.newTask", systemImage: "plus")
+                }
+                .disabled(!canSelectTask)
+                .keyboardShortcut("n", modifiers: .command)
             }
-            .disabled(!canSelectTask)
-            Button(action: startNewTask) {
-                Label("mac.workspace.newTask", systemImage: "plus")
-            }
-            .disabled(!canSelectTask)
-            .keyboardShortcut("n", modifiers: .command)
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 12)
-        .background(.bar)
+        .background(FloeTheme.chromeMaterial)
     }
 
     @ViewBuilder private var detail: some View {
         switch destination {
         case .newTask, .conversation:
             if destinationConversationID == workspace.selectedID {
-                HostAgentWorkspaceView(workspace: workspace, workspaceDraft: taskDraft)
+                HostAgentWorkspaceView(workspace: workspace, workspaceDraft: taskDraft) { showModelSettings = true }
             } else {
                 ProgressView("host.chat.opening")
             }
@@ -211,7 +266,44 @@ struct MacWorkspaceRootView: View {
         if canSelectTask { destination = .newTask }
     }
 
+    private func insertFileText(_ text: String) {
+        guard canSelectTask, destination == .files else { return }
+        let current = drafts[nil] ?? ""
+        drafts[nil] = current.isEmpty ? text : current + "\n\n" + text
+        destination = .newTask
+    }
+
     private func openTask(_ id: UUID) {
         if canSelectTask || workspace.selectedID == id { destination = .conversation(id) }
+    }
+
+    private func updateTask(id: UUID, change: FloeMacSelfRuntime.ConversationMetadataChange) {
+        Task {
+            let saved = await workspace.changeConversationMetadata(id: id, change: change)
+            if !saved { showMetadataError = true }
+        }
+    }
+
+    private func exportConversation() {
+        guard canSelectTask, let id = destinationConversationID, id == workspace.selectedID else { return }
+        let name = workspace.conversations.first { $0.id == id }?.title ?? String(localized: "mac.workspace.task")
+        var sections = ["# \(name)"]
+        sections += workspace.messages.compactMap { message in
+            let role: String
+            switch message.role {
+            case "user": role = String(localized: "thread.role.user")
+            case "assistant": role = String(localized: "thread.role.assistant")
+            default: return nil
+            }
+            guard let text = CredentialMessagePart.clipboardText(message.content) else { return nil }
+            return "## \(role)\n\n\(text)"
+        }
+        let output = sections.joined(separator: "\n\n") + "\n"
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText]
+        panel.nameFieldStringValue = "Floe Conversation.md"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do { try Data(output.utf8).write(to: url, options: .atomic) }
+        catch { showExportError = true }
     }
 }

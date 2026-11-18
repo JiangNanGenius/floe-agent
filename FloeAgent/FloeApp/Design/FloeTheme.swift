@@ -10,9 +10,13 @@
 // composer. All tokens are light/dark aware and honor accessibility
 // settings (Reduce Motion, Increased Contrast, Dynamic Type).
 
-#if canImport(SwiftUI) && canImport(UIKit)
+#if canImport(SwiftUI)
 import SwiftUI
+#if canImport(UIKit)
 import UIKit
+#elseif canImport(AppKit)
+import AppKit
+#endif
 
 /// Semantic design tokens for the Floe Agent shell.
 enum FloeTheme {
@@ -52,6 +56,8 @@ enum FloeTheme {
     /// Honest unknown / indeterminate state (e.g. unmanaged disconnect).
     static var unknown: Color { .secondary }
 
+    /// Opaque platform reading and grouped surfaces.
+    #if canImport(UIKit)
     /// Opaque reading surface. Thread content, documents and evidence read
     /// on this; it never goes translucent.
     static var readingSurface: Color { Color(uiColor: .systemBackground) }
@@ -64,6 +70,15 @@ enum FloeTheme {
     static var separator: Color { Color(uiColor: .separator) }
 
     static var groupedSurface: Color { Color(uiColor: .systemGroupedBackground) }
+
+    #elseif canImport(AppKit)
+    static var readingSurface: Color { Color(nsColor: .textBackgroundColor) }
+    static var sidebarSurface: Color { Color(nsColor: .windowBackgroundColor) }
+    static var stepSurface: Color { Color(nsColor: .controlBackgroundColor) }
+    static var fieldSurface: Color { Color(nsColor: .unemphasizedSelectedContentBackgroundColor) }
+    static var separator: Color { Color(nsColor: .separatorColor) }
+    static var groupedSurface: Color { Color(nsColor: .windowBackgroundColor) }
+    #endif
 
     /// Chrome material for navigation bars, the composer and floating
     /// actions. Glass is allowed here and only here.
@@ -121,6 +136,102 @@ enum FloeTheme {
     /// `.animation(FloeTheme.motionAnimation(reduceMotion: reduceMotion), value: state)`
     static func motionAnimation(reduceMotion: Bool) -> Animation? {
         reduceMotion ? nil : .snappy
+    }
+}
+
+/// The shared labels and settings control in the Floe workbench sidebar.
+struct FloeWorkbenchSidebarItem: View {
+    let title: LocalizedStringKey
+    let systemImage: String
+    var foreground: Color? = nil
+
+    var body: some View {
+        if let foreground {
+            Label {
+                Text(title).foregroundStyle(foreground)
+            } icon: {
+                Image(systemName: systemImage).symbolRenderingMode(.monochrome).foregroundStyle(foreground)
+            }
+        } else {
+            Label(title, systemImage: systemImage)
+        }
+    }
+}
+
+struct FloeWorkbenchSidebarFooter: View {
+    let openSettings: () -> Void
+
+    var body: some View {
+        Divider()
+        HStack(spacing: 8) {
+            Button(action: openSettings) { Image(systemName: "gearshape") }
+                .buttonStyle(.plain)
+                .frame(minWidth: 44, minHeight: 44)
+                .accessibilityLabel("more.settings")
+                .accessibilityIdentifier("sidebar.settings")
+            Spacer()
+        }
+        .padding(.horizontal, 16)
+    }
+}
+
+/// The icon, type and rhythm of the existing Floe launchpad.
+struct FloeWorkbenchWelcomeHeader<Welcome: View>: View {
+    let icon: Image
+    @ViewBuilder var welcome: () -> Welcome
+
+    var body: some View {
+        VStack(spacing: 16) {
+            icon
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(width: 76, height: 76)
+                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .shadow(color: FloeTheme.primary.opacity(0.18), radius: 18, y: 8)
+                .accessibilityHidden(true)
+            welcome()
+                .font(.title2.weight(.semibold))
+                .multilineTextAlignment(.center)
+                .accessibilityAddTraits(.isHeader)
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
+struct FloeThreadComposerChrome: ViewModifier {
+    var documentAssistant = false
+
+    func body(content: Content) -> some View {
+        content
+            .background(FloeTheme.chromeMaterial, in: RoundedRectangle(cornerRadius: documentAssistant ? 0 : 22, style: .continuous))
+            .overlay {
+                if !documentAssistant {
+                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                        .strokeBorder(FloeTheme.separator, lineWidth: 0.5)
+                }
+            }
+            .padding(.horizontal, documentAssistant ? 0 : 12)
+            .padding(.vertical, documentAssistant ? 0 : 8)
+            .shadow(color: .black.opacity(documentAssistant ? 0 : 0.08), radius: 14, y: 5)
+    }
+}
+
+struct FloeComposerActionGlyph: View {
+    let systemImage: String
+    var enabled = true
+    var destructive = false
+
+    var body: some View {
+        Image(systemName: systemImage)
+            .font(.system(size: destructive ? 13 : 17, weight: .semibold))
+            .foregroundStyle(enabled ? Color.white : Color.secondary)
+            .frame(width: 34, height: 34)
+            .background(background, in: Circle())
+    }
+
+    private var background: Color {
+        guard enabled else { return Color.secondary.opacity(0.12) }
+        return destructive ? FloeTheme.destructive : FloeTheme.primary
     }
 }
 #endif

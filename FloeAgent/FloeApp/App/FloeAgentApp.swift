@@ -1519,19 +1519,19 @@ struct RootView: View {
         VStack(spacing: 0) {
             List(selection: $router.sidebarSelection) {
                 Section {
-                    Label("workbench.new_task", systemImage: "square.and.pencil")
+                    FloeWorkbenchSidebarItem(title: "workbench.new_task", systemImage: "square.and.pencil")
                         .tag(SidebarSelection.workbench(.newTask(workspaceID: nil)))
                         .accessibilityIdentifier("sidebar.workbench.new_task")
-                    Label("app.floe_agent_app.task_center", systemImage: "checklist")
+                    FloeWorkbenchSidebarItem(title: "app.floe_agent_app.task_center", systemImage: "checklist")
                         .tag(SidebarSelection.workbench(.overview))
                         .accessibilityIdentifier("sidebar.task_center")
-                    Label("space.title", systemImage: "square.stack.3d.up")
+                    FloeWorkbenchSidebarItem(title: "space.title", systemImage: "square.stack.3d.up")
                         .tag(SidebarSelection.more(.notes))
                         .accessibilityIdentifier("sidebar.notes")
-                    Label("app.floe_agent_app.creative", systemImage: "rectangle.and.pencil.and.ellipsis")
+                    FloeWorkbenchSidebarItem(title: "app.floe_agent_app.creative", systemImage: "rectangle.and.pencil.and.ellipsis")
                         .tag(SidebarSelection.more(.creative))
                         .accessibilityIdentifier("sidebar.creative")
-                    Label("plugins.title", systemImage: "puzzlepiece.extension")
+                    FloeWorkbenchSidebarItem(title: "plugins.title", systemImage: "puzzlepiece.extension")
                         .tag(SidebarSelection.more(.skills))
                         .accessibilityIdentifier("sidebar.skills")
                 }
@@ -1595,20 +1595,7 @@ struct RootView: View {
             }
             .accessibilityIdentifier("sidebar.list")
             .disabled(inlineSelection.busy)
-            Divider()
-            HStack(spacing: 8) {
-                Button {
-                    router.presentedSettings = true
-                } label: {
-                    Image(systemName: "gearshape")
-                }
-                .buttonStyle(.plain)
-                .frame(minWidth: 44, minHeight: 44)
-                .accessibilityLabel("more.settings")
-                .accessibilityIdentifier("sidebar.settings")
-                Spacer()
-            }
-            .padding(.horizontal, 16)
+            FloeWorkbenchSidebarFooter { router.presentedSettings = true }
         }
         .navigationTitle("app.name")
         // Same inline bar as the split sidebar on iPad (sidebars always

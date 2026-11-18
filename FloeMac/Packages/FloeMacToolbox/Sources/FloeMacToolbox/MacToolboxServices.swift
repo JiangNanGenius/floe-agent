@@ -23,6 +23,7 @@ public final class MacToolboxServices: ObservableObject {
     public let mediaEnvironment: MacToolboxMediaEnvironment
     public let instrumentActivity: MacInstrumentActivityCoordinator
     public let networkOwner: MacManualNetworkOwner
+    public let communicationOwner: MacCommunicationOwner
     let instrumentModels: MacInstrumentModels
     private var ownedSilentTimekeeping: MacSilentTimekeeping?
     private enum TerminationState { case active, preparing, terminal }
@@ -42,6 +43,9 @@ public final class MacToolboxServices: ObservableObject {
         let rulerStore = MacRulerCalibrationStore(url: root.appendingPathComponent("MacInstruments/ruler.json"))
         self.instrumentActivity = instrumentActivity
         self.networkOwner = MacManualNetworkOwner()
+        self.communicationOwner = MacCommunicationOwner(
+            storageRoot: root.appendingPathComponent("Communication", isDirectory: true)
+        )
         self.instrumentModels = MacInstrumentModels(activity: instrumentActivity, archive: locationArchive, rulerStore: rulerStore)
         self.calculatorHistoryCoordinator = MacCalculatorHistoryCoordinator(
             baseURL: root.appendingPathComponent("Everyday/CalculatorHistory.json")
@@ -86,6 +90,7 @@ public final class MacToolboxServices: ObservableObject {
         terminationState = .terminal
         ownedSilentTimekeeping?.closeAdmissions()
         networkOwner.closeAdmissions()
+        communicationOwner.closeAdmissions()
         instrumentActivity.closeAdmissions()
         mediaEnvironment.soundOwner.shutdown()
         mediaEnvironment.scannerDraft.shutdown()
@@ -100,6 +105,7 @@ public final class MacToolboxServices: ObservableObject {
         terminationState = .preparing
         ownedSilentTimekeeping?.closeAdmissions()
         networkOwner.closeAdmissions()
+        communicationOwner.closeAdmissions()
         instrumentActivity.closeAdmissions()
         calculatorHistoryCoordinator.closeAdmissions()
         mediaEnvironment.soundOwner.beginTermination()
@@ -118,6 +124,7 @@ public final class MacToolboxServices: ObservableObject {
         guard await calculatorHistoryCoordinator.drain() else { return false }
         guard await instrumentActivity.drain() else { return false }
         guard await networkOwner.drain() else { return false }
+        guard await communicationOwner.drain() else { return false }
         guard await mediaEnvironment.soundOwner.drain() else { return false }
         if let ownedSilentTimekeeping { return await ownedSilentTimekeeping.drain() }
         return true
@@ -143,6 +150,7 @@ public final class MacToolboxServices: ObservableObject {
         terminationState = .active
         ownedSilentTimekeeping?.resumeAfterCancelledTermination()
         networkOwner.resumeAfterCancelledTermination()
+        communicationOwner.resumeAfterCancelledTermination()
         instrumentActivity.resumeAfterCancelledTermination()
         mediaEnvironment.soundOwner.cancelTermination()
         mediaEnvironment.scannerDraft.cancelTermination()

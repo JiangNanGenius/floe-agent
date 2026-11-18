@@ -71,6 +71,7 @@ final class UnifiedMacSmoke {
         }
         var nativeChat = false
         var storedTaskRun = false
+        var taskMetadataSaved = false
         if let agent = model.macWorkspace.agent {
             await agent.prepare()
             // The visible SwiftUI view may already own preparation.
@@ -78,6 +79,12 @@ final class UnifiedMacSmoke {
             while (agent.isPreparing || model.updates.installation.activity.activityCount != 0)
                     && ContinuousClock.now < prepareDeadline {
                 try? await Task.sleep(for: .milliseconds(50))
+            }
+            if let view = NSApp.windows.first(where: {
+                $0.isVisible && $0.title == String(localized: "host.role.agent")
+            })?.contentView, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                view.cacheDisplay(in: view.bounds, to: bitmap)
+                try? bitmap.representation(using: .png, properties: [:])?.write(to: report.appendingPathExtension("png"))
             }
             nativeChat = await agent.verifyChatSmoke { model.verifyActiveAgentDefersInstall() }
             await agent.loadTaskRuns()
@@ -87,6 +94,10 @@ final class UnifiedMacSmoke {
                     try? await Task.sleep(for: .milliseconds(50))
                 }
                 storedTaskRun = agent.recentTaskRuns[id]?.conversationID == id
+                let renamed = await agent.changeConversationMetadata(id: id, change: .rename("Fixture desktop task"))
+                let pinned = await agent.changeConversationMetadata(id: id, change: .pin(true))
+                let saved = agent.conversations.first { $0.id == id }
+                taskMetadataSaved = renamed && pinned && saved?.title == "Fixture desktop task" && saved?.isPinned == true
             }
             if agent.beginTermination() { try? await agent.finishTermination() }
         }
@@ -98,6 +109,7 @@ final class UnifiedMacSmoke {
             "workbenchWindowVisible": workbenchVisible,
             "nativeChatAndUpdateAdmissionVerified": nativeChat,
             "storedTaskRunFound": storedTaskRun,
+            "taskMetadataSaved": taskMetadataSaved,
             "toolboxAndLoopbackVerified": toolbox,
             "activityBeforeQuit": model.updates.installation.activity.activityCount,
             "pid": getpid()
