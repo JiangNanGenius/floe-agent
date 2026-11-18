@@ -347,6 +347,7 @@ struct GameProjectSpaceScreen: View {
         if let engine = session.project.selectionSnapshot?.selectedEngine
             ?? session.project.project.engine,
            let readiness = environment.gameWorkspaces.runtimeResources.readiness(for: engine) {
+            let installing = if case .installing = readiness.state { true } else { false }
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 8) {
                     Image(systemName: readiness.isReady
@@ -355,13 +356,13 @@ struct GameProjectSpaceScreen: View {
                     VStack(alignment: .leading, spacing: 1) {
                         Text(IDELanguageRunText.t("可选运行资源", "Optional runtime resources"))
                             .font(.callout.weight(.medium))
-                        Text(readiness.isReady ? readiness.displayName : IDELanguageRunText.t(
+                        Text(installing ? readiness.statusText : readiness.isReady ? readiness.displayName : IDELanguageRunText.t(
                             "部分工程需要额外资源；已包含运行文件的游戏可以直接试玩。",
                             "Some projects need extra resources; games with their own runtime can play directly."))
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
-                    if resourceBusy {
+                    if resourceBusy || installing {
                         ProgressView(value: environment.gameWorkspaces.runtimeResources
                             .progress[readiness.packID] ?? 0)
                             .progressViewStyle(.linear)
@@ -714,7 +715,9 @@ struct GameProjectSpaceScreen: View {
             pending = .simpleEdit
             defer { pending = nil }
             if [GameEngineID.phaser, .kaplay, .babylon, .playcanvas].contains(engine) {
-                _ = try environment.gameWorkspaces.runtimeResources.requireReady(engine)
+                resourceBusy = true
+                defer { resourceBusy = false }
+                try await environment.gameWorkspaces.prepareRuntimeResource(for: engine, session: session)
             }
             try await session.project.initializeStarter(engine: engine)
             showingCreateStarter = false

@@ -35,12 +35,14 @@ struct GameRuntimeRemoteArchive: Codable, Sendable, Equatable {
     /// Nil until the producer has generated the exact archive and its digest
     /// has been recorded. A missing digest never becomes a download.
     let sha256: String?
+    enum Assembly: String, Codable, Sendable { case rpgMakerMVCoreScript }
+    let assembly: Assembly?
     let format: String
     let markers: [String]
     let markerContents: [String: String]
 
     private enum CodingKeys: String, CodingKey {
-        case url, sha256, format, markers, markerContents
+        case url, sha256, assembly, format, markers, markerContents
     }
 }
 
@@ -635,8 +637,8 @@ final class GameRuntimeResourceRegistry {
                 return .downloadable(bytes: nil)
             }
             return .userAction(pack.requirement ?? (FloeL10n.isChinese
-                ? "已审阅资源包尚未发布。请用 Checks/make_runtime_pack.py 生成并托管精确归档，再配置 FloeGameRuntimePackBaseURL 与固定 SHA-256；App 默认不内置 77 MB 资源。"
-                : "The reviewed pack archive is not published yet. Produce and host the exact archive with Checks/make_runtime_pack.py, then configure FloeGameRuntimePackBaseURL and its pinned SHA-256. The App does not bundle 77 MB by default."))
+                ? "当前版本暂未提供此运行资源的下载。"
+                : "This version does not offer a download for this runtime resource yet."))
         case .remoteFiles, .remoteArchive:
             guard resolvedArchiveURL(pack) != nil, hasPinnedArchiveSHA(pack) else {
                 return .userAction(pack.requirement ?? (FloeL10n.isChinese
@@ -724,8 +726,8 @@ final class GameRuntimeResourceRegistry {
                   let sha = pack.archive?.sha256, !sha.isEmpty else {
                 throw GameRuntimeResourceError.configurationRequired(
                     pack.requirement ?? (FloeL10n.isChinese
-                        ? "已审阅资源包尚未发布。请生成并托管精确归档，配置 FloeGameRuntimePackBaseURL 与固定 SHA-256。"
-                        : "The reviewed pack archive is not published. Produce/host the exact archive, then configure FloeGameRuntimePackBaseURL and its pinned SHA-256."))
+                        ? "当前版本暂未提供此运行资源的下载。"
+                        : "This version does not offer a download for this runtime resource yet."))
             }
             let destination = installationRoot.appendingPathComponent(pack.id, isDirectory: true)
             let root = try await installer.installArchive(pack, archiveURL: url,
@@ -1078,6 +1080,25 @@ actor GameReviewedResourceInstaller {
         try await extract(format: Self.archiveEngineFormat(archive.format),
                           source: downloaded, destination: extracted)
         progress(0.9)
+        if archive.assembly == .rpgMakerMVCoreScript {
+            guard let contentSubdirectory, let manifestPath = pack.portableManifest,
+                  let bundleRoot = Bundle.main.resourceURL?.appendingPathComponent("GameRuntime") else {
+                throw GameRuntimeResourceError.corruptInstallation(pack.id)
+            }
+            let source = try findRoot(in: extracted, markers: archive.markers,
+                                      markerContents: archive.markerContents)
+            let prepared = stage.appendingPathComponent("prepared", isDirectory: true)
+            let content = prepared.appendingPathComponent(contentSubdirectory, isDirectory: true)
+            let notices = bundleRoot.appendingPathComponent("Attribution/rpg-maker-mv")
+            try Self.assembleMV(pack, source: source, notices: notices, destination: content)
+            let manifest = prepared.appendingPathComponent(manifestPath)
+            try FileManager.default.copyItem(at: bundleRoot.appendingPathComponent(manifestPath), to: manifest)
+            _ = try GamePortablePreparedResources(rootURL: content, manifestURL: manifest)
+            try Task.checkCancellation()
+            try FileManager.default.moveItem(at: prepared, to: destination)
+            progress(1)
+            return destination.appendingPathComponent(contentSubdirectory, isDirectory: true)
+        }
         if let contentSubdirectory {
             guard FileManager.default.fileExists(
                 atPath: extracted.appendingPathComponent("PACK-MANIFEST.json").path) else {
@@ -1102,6 +1123,41 @@ actor GameReviewedResourceInstaller {
         try FileManager.default.moveItem(at: root, to: destination)
         progress(1)
         return destination
+    }
+
+    /// Reproduce the reviewed CoreScript producer using the pinned upstream
+    /// source. Only the verified runtime files and bundled notices are installed.
+    static func assembleMV(_ pack: GameRuntimePackManifest, source: URL,
+                           notices: URL, destination: URL) throws {
+        let files = FileManager.default
+        for record in pack.files {
+            try Task.checkCancellation()
+            let target = destination.appendingPathComponent(record.path)
+            try files.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+            if record.path.hasPrefix("js/rpg_") {
+                let name = target.deletingPathExtension().lastPathComponent
+                let list = source.appendingPathComponent("\(name).json")
+                let modules = try JSONDecoder().decode([String].self, from: Data(contentsOf: list))
+                var combined = Data()
+                for (index, module) in modules.enumerated() {
+                    let path = try GameRelativePath(module)
+                    guard path.value.hasPrefix("js/\(name)/"), path.value.hasSuffix(".js") else {
+                        throw GameRuntimeResourceError.corruptInstallation(record.path)
+                    }
+                    if index != 0 { combined.append(10) }
+                    combined.append(try Data(contentsOf: source.appendingPathComponent(path.value)))
+                    guard combined.count <= record.bytes else {
+                        throw GameRuntimeResourceError.digestMismatch(record.path)
+                    }
+                }
+                try combined.write(to: target)
+            } else {
+                try files.copyItem(at: (record.path.hasPrefix("js/libs/") ? source : notices)
+                    .appendingPathComponent(record.path), to: target)
+            }
+        }
+        try GameRuntimeResourceVerifier.verify(.init(root: destination, files: pack.files,
+            markers: pack.markers, markerContents: [:]))
     }
 
     // MARK: Download/extract

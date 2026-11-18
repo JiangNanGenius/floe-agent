@@ -12,7 +12,10 @@ final class GameLiveWorkspaceRunTests: XCTestCase {
         var files: [String: Data] = [:]
         for case let url as URL in enumerator {
             if try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true {
-                let relative = String(url.path.dropFirst(root.path.count + 1))
+                let rootPrefix = root.resolvingSymlinksInPath().path + "/"
+                let path = url.resolvingSymlinksInPath().path
+                guard path.hasPrefix(rootPrefix) else { throw CocoaError(.fileReadInvalidFileName) }
+                let relative = String(path.dropFirst(rootPrefix.count))
                 files[relative] = try Data(contentsOf: url)
             }
         }
@@ -30,7 +33,12 @@ final class GameLiveWorkspaceRunTests: XCTestCase {
         let workspace = try TestWorkspace()
         let project = try await TestProject.make(workspace: workspace, files: files)
         let preparer = try GameUnifiedRunPreparer(configuration: .init(
-            artifactDirectory: project.artifacts, contexts: project.host))
+            artifactDirectory: project.artifacts,
+            preparePortableResource: { _ in
+                XCTFail("An MV Web export must use its own runtime")
+                return nil
+            },
+            contexts: project.host))
         let plan = try await preparer.plan(context: project.context, engine: .rpgMakerMV)
         XCTAssertEqual(plan.action, .staticWeb)
         XCTAssertEqual(plan.routeID, "static.rpgmaker-mv-web")

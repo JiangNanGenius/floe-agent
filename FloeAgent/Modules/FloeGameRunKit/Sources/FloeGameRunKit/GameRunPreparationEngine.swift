@@ -325,7 +325,7 @@ struct GameRunPreparationEngine: Sendable {
                                target: URL) async throws -> GameWebArtifactPackage {
         let descriptor = try descriptor(context: context, index: index)
         if engine == .rpgMakerMV {
-            return try buildMV(context: context, descriptor: descriptor, index: index,
+            return try await buildMV(context: context, descriptor: descriptor, index: index,
                                entry: entry, selection: selection, staging: staging, target: target)
         }
         guard engine == .love || engine == .renpy else {
@@ -403,7 +403,7 @@ struct GameRunPreparationEngine: Sendable {
                          descriptor: GamePortableProjectDescriptor,
                          index: GameRunSourceIndex, entry: GameRelativePath?,
                          selection: GameRunSelection, staging: URL,
-                         target: URL) throws -> GameWebArtifactPackage {
+                         target: URL) async throws -> GameWebArtifactPackage {
         let adapter = GamePortableMVAdapter()
         let profile = try adapter.inspect(descriptor)
         if profile.readiness == .webReady {
@@ -416,7 +416,15 @@ struct GameRunPreparationEngine: Sendable {
             throw GameRunPreparationError.invalidProject("MV source has no index.html entry")
         }
         let modules = index.anyFile(prefix: "js/rpg_core/")
-        let resources = configuration.portableResources[.rpgMakerMV]
+        var resources = configuration.portableResources[.rpgMakerMV]
+        if !modules, resources == nil {
+            resources = try await configuration.preparePortableResource?(.rpgMakerMV)
+            try Task.checkCancellation()
+            try await checkCurrent(context)
+            if let resources, resources.engine != .rpgMakerMV {
+                throw GameRunPreparationError.invalidConfiguration("portable resource engine mismatch")
+            }
+        }
         if !modules && resources == nil {
             throw GameRunPreparationError.missingPrerequisite(
                 .preparedResourcePack(id: "rpg-maker-mv-corescript",

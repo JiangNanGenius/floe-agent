@@ -117,8 +117,13 @@ final class GameRunResourceBackedTests: XCTestCase {
         let preparer = try GameUnifiedRunPreparer(configuration:
             GameRunPreparationConfiguration(
                 artifactDirectory: project.artifacts,
-                portableResources: [.rpgMakerMV: resources],
+                preparePortableResource: { engine in
+                    XCTAssertEqual(engine, .rpgMakerMV)
+                    return resources
+                },
                 contexts: project.host))
+        let plan = try await preparer.plan(context: project.context, engine: .rpgMakerMV)
+        XCTAssertEqual(plan.action, .portableAssembly)
         let prepared = try await preparer.prepare(makeRequest(project.context, .rpgMakerMV))
         let paths = Set(prepared.package.files.map(\.path.value))
         XCTAssertTrue(paths.contains("index.html"))

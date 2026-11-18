@@ -4623,7 +4623,7 @@ final class ConversationCenter: ObservableObject {
             // Once the assistant is bound to the game tree, the existing
             // workspace/Git catalog owns ordinary files and source control.
             // Keep the old handlers registered for already-frozen runs only.
-            let legacyFileTools: Set<String> = ["game.read", "game.edit", "game.history", "game.rollback"]
+            let legacyFileTools: Set<String> = ["game.inspect", "game.read", "game.edit", "game.history", "game.rollback"]
             allowedToolNames = (allowedToolNames ?? Set(availableDescriptors.map(\.name)))
                 .subtracting(legacyFileTools)
         }

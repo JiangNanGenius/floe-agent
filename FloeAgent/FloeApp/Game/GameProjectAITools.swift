@@ -200,8 +200,7 @@ final class GameProjectToolService {
     private func selectionReport(_ session: GameWorkspaceSession,
                                  refresh: Bool) async throws -> GameSelectionReport {
         if refresh { try await session.project.refresh() }
-        let project = try await session.project.repository.open(
-            session.key.projectID, owner: session.key.owner)
+        let project = session.project.project
         let snapshot = session.project.selectionSnapshot
         let engineEntries = registry.library?.entries ?? []
         let displayNames = Dictionary(uniqueKeysWithValues: engineEntries.map {
@@ -272,7 +271,9 @@ final class GameProjectToolService {
             displayNames[$0] ?? $0.rawValue
         }
         let nextStep: String
-        if snapshot?.isEmptyProject != false {
+        if pending != nil, !session.project.isPendingSelectionProposalStale {
+            nextStep = "The proposal is submitted. If the request was to recommend a root/engine, report the recommendation and ask the user to confirm it in Game engine settings. Do not call confirm or run on their behalf."
+        } else if snapshot?.isEmptyProject != false {
             nextStep = "No game files exist yet. Ask the user to create a starter or import files in the project screen; do not assume an engine."
         } else if snapshot?.isManualUnverified == true {
             nextStep = "The current root/engine choice is unverified, but other roots may already have recognized markers. Inspect all choices and their evidence; when supported, propose the recognized root and engine for the user to confirm. Do not run or build the unverified selection."
@@ -939,7 +940,7 @@ struct GameSelectionReport: Encodable, Sendable {
 private struct GameListTool: AgentTool {
     typealias Arguments = GameInspectArguments
     static let name = "game.list"
-    static let toolDescription = "List the game projects bound to this Space work or chat task. activeProjectID is the current work; a game project's files and assistant are independent from ordinary chat attachments. Call game.inspect for engine/root selection and exact revision."
+    static let toolDescription = "List the game projects bound to this Space work or chat task. activeProjectID is the current work; a game project's files and assistant are independent from ordinary chat attachments. Use game.selection to check the engine, root and project revision. Use workspace tools for files when offered."
     static let parametersJSON = #"{"type":"object","properties":{},"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = []
     static let isSideEffecting = false

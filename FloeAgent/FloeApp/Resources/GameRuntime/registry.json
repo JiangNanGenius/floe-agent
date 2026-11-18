@@ -2059,12 +2059,15 @@
     },
     {
       "archive": {
-        "format": "tar.xz",
+        "assembly": "rpgMakerMVCoreScript",
+        "format": "tar.gz",
         "markerContents": {},
         "markers": [
-          "PACK-MANIFEST.json"
+          "rpg_core.json",
+          "js/libs/pixi.js"
         ],
-        "packProducer": "Checks/make_runtime_pack.py"
+        "sha256": "51edffd5dbe3ce377452cd1df36dc2168e3b3da95b17667ec20fc77fa304203c",
+        "url": "https://codeload.github.com/rpgtkoolmv/corescript/tar.gz/182e31449707ba7e406db0485c44c2a9d11e2dcd"
       },
       "bundledDirectory": "Portable/rpg-maker-mv-corescript-1.3b",
       "displayName": "RPG Maker MV CoreScript 1.3b",

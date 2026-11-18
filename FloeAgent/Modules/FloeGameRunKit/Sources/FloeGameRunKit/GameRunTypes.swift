@@ -454,6 +454,7 @@ public struct GameRunPreparationConfiguration: Sendable {
     public let artifactDirectory: URL
     public let narrativeResources: URL?
     public let portableResources: [GameEngineID: GamePortablePreparedResources]
+    public let preparePortableResource: (@Sendable (GameEngineID) async throws -> GamePortablePreparedResources?)?
     /// Host-owned portable build port: `FloeGamePortableKit` already defines the
     /// typed job/CI seam for LÖVE and Ren'Py. This package never executes a
     /// process, Node, Python or a shell command itself.
@@ -475,6 +476,7 @@ public struct GameRunPreparationConfiguration: Sendable {
     public init(artifactDirectory: URL,
                 narrativeResources: URL? = nil,
                 portableResources: [GameEngineID: GamePortablePreparedResources] = [:],
+                preparePortableResource: (@Sendable (GameEngineID) async throws -> GamePortablePreparedResources?)? = nil,
                 portableBuildPort: (any GamePortableBuildPort)? = nil,
                 externalBuildProvider: (any GameRunExternalBuildProviding)? = nil,
                 runtimePacks: (any GameRunRuntimePackProviding)? = nil,
@@ -501,6 +503,7 @@ public struct GameRunPreparationConfiguration: Sendable {
         self.artifactDirectory = artifactDirectory.standardizedFileURL
         self.narrativeResources = narrativeResources?.standardizedFileURL.resolvingSymlinksInPath()
         self.portableResources = portableResources
+        self.preparePortableResource = preparePortableResource
         self.portableBuildPort = portableBuildPort
         self.externalBuildProvider = externalBuildProvider
         self.runtimePacks = runtimePacks

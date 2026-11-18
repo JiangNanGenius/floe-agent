@@ -1057,6 +1057,10 @@ final class GameWorkspaceRegistry {
             shell: MainLocalShellRunner(shell: environment.localShellService, runs: environment.runStore),
             gitHub: resolvedGitHub,
             portableResources: resources.portableResources,
+            preparePortableResource: { [runtimeResources] engine in
+                try await runtimeResources.prepare(for: engine)
+                return await runtimeResources.portableResources()[engine]
+            },
             renpySDK: resources.renpySDK,
             narrativeResources: resources.narrativeResources,
             runtimePacks: resources.runtimePacks,

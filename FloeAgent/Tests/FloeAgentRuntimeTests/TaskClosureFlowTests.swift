@@ -46,6 +46,18 @@ struct TaskClosureFlowTests {
         #expect(gate.evaluate(answer: "请确认，之后我会继续检查。", facts: facts, corrections: 0, isVerification: false) == .allow)
     }
 
+    @Test("An engine recommendation can end the turn while confirmation is pending")
+    func engineRecommendationAwaitsUser() {
+        let facts = TaskClosureGate.Facts(
+            steps: [.init(id: "engine", title: "Confirm the proposed engine", status: "pending")],
+            receipts: [.init(toolName: "game.selection", callFingerprint: "proposal", status: "ok",
+                             isSideEffecting: true, outcomeUnknown: false)],
+            availableToolNames: ["game.selection"])
+        let answer = "已提交建议。请在项目设置面板确认 RPG Maker MV 和 www。"
+        #expect(TaskClosureGate().evaluate(answer: answer, facts: facts,
+                                          corrections: 0, isVerification: false) == .allow)
+    }
+
     @Test("A pending task promise continues through the actual executor once")
     func promisedWorkActuallyExecutes() async throws {
         let run = UUID(), adapter = MockAdapter(), calls = executor()

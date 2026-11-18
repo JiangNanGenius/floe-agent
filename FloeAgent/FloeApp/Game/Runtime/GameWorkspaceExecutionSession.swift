@@ -48,6 +48,7 @@ public struct GameWorkspaceExecutionConfiguration {
     public let shell: any GameShellRunning
     public let gitHub: GameGitHubExecutionConfiguration?
     public let portableResources: [GameEngineID: GamePortablePreparedResources]
+    public let preparePortableResource: (@Sendable (GameEngineID) async throws -> GamePortablePreparedResources?)?
     public let renpySDK: URL?
     public let narrativeResources: URL?
     public let runtimePacks: (any GameRunRuntimePackProviding)?
@@ -66,6 +67,7 @@ public struct GameWorkspaceExecutionConfiguration {
                 shell: any GameShellRunning,
                 gitHub: GameGitHubExecutionConfiguration?,
                 portableResources: [GameEngineID: GamePortablePreparedResources] = [:],
+                preparePortableResource: (@Sendable (GameEngineID) async throws -> GamePortablePreparedResources?)? = nil,
                 renpySDK: URL? = nil,
                 narrativeResources: URL? = nil,
                 runtimePacks: (any GameRunRuntimePackProviding)? = nil,
@@ -86,6 +88,7 @@ public struct GameWorkspaceExecutionConfiguration {
         self.shell = shell
         self.gitHub = gitHub
         self.portableResources = portableResources
+        self.preparePortableResource = preparePortableResource
         self.renpySDK = renpySDK
         self.narrativeResources = narrativeResources
         self.runtimePacks = runtimePacks
@@ -209,6 +212,7 @@ public final class GameWorkspaceExecutionSession {
             artifactDirectory: artifacts,
             narrativeResources: configuration.narrativeResources,
             portableResources: configuration.portableResources,
+            preparePortableResource: configuration.preparePortableResource,
             portableBuildPort: portableBridge,
             externalBuildProvider: externalProvider,
             runtimePacks: configuration.runtimePacks,
