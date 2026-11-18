@@ -17,6 +17,17 @@ struct FloeMacBridgeApp: App {
             BridgeSettingsView(model: model).frame(width: 520, height: 560)
         }
         .commands {
+            #if FLOE_UNIFIED_MAC
+            CommandGroup(after: .appSettings) {
+                Button("Check for Updates…") { model.updates.checkForUpdates() }
+                    .disabled(!model.updates.canCheckForUpdates)
+            }
+            CommandGroup(after: .windowArrangement) {
+                Button("host.menu.openAgent") { model.openAgentWorkspace() }
+                Button("host.menu.bridge") { model.switchToBridge() }
+                Button("host.menu.tools") { model.macWorkspace.openToolbox() }
+            }
+            #endif
             CommandGroup(replacing: .appSettings) {
                 Button("Settings…") { model.openSettings() }.keyboardShortcut(",")
             }
@@ -76,9 +87,31 @@ final class BridgeAppModel: ObservableObject {
     let updates: BridgeUpdaterModel
     #if FLOE_UNIFIED_MAC
     let macWorkspace: UnifiedMacWorkspace
+    private enum LaunchMode: String {
+        case bridge, agent
+        static let preferenceKey = "floe.mac.launchMode"
+    }
+
+    private var launchMode: LaunchMode? {
+        #if FLOE_MAC_HOST_SMOKE
+        if smoke != nil { return smokeLaunchMode }
+        #endif
+        return UserDefaults.standard.string(forKey: LaunchMode.preferenceKey).flatMap(LaunchMode.init(rawValue:))
+    }
+
+    private func rememberMode(_ mode: LaunchMode) {
+        #if FLOE_MAC_HOST_SMOKE
+        if smoke != nil {
+            smokeLaunchMode = mode
+            return
+        }
+        #endif
+        UserDefaults.standard.set(mode.rawValue, forKey: LaunchMode.preferenceKey)
+    }
     #endif
     #if FLOE_UNIFIED_MAC && FLOE_MAC_HOST_SMOKE
     private let smoke = UnifiedMacSmoke.configured()
+    private var smokeLaunchMode: LaunchMode?
     var smokePort: UInt16? { server?.boundPort }
     private(set) var smokeSwitchFrame: CGRect?
 
@@ -155,8 +188,25 @@ final class BridgeAppModel: ObservableObject {
             return
         }
         #endif
-        applicationLaunched = true; startUpdaterWhenReady()
+        applicationLaunched = true
+        startUpdaterWhenReady()
+        #if FLOE_UNIFIED_MAC
+        if launchMode == .agent {
+            reopenPreferredWindow()
+            return
+        }
+        #endif
         if !UserDefaults.standard.bool(forKey: "bridge.setupWindowShown") { openSettings() }
+    }
+
+    func reopenPreferredWindow() {
+        #if FLOE_UNIFIED_MAC
+        if launchMode == .agent {
+            openAgentWorkspace()
+            return
+        }
+        #endif
+        openSettings()
     }
     private func startUpdaterWhenReady() {
         // Only the process that owns the loopback listener may update this
@@ -231,7 +281,17 @@ final class BridgeAppModel: ObservableObject {
     }
     #if FLOE_UNIFIED_MAC
     func openAgentWorkspace() {
-        macWorkspace.openAgent { [weak self] in self?.openSettings() }
+        rememberMode(.agent)
+        NSApp.setActivationPolicy(.regular)
+        settingsWindow?.orderOut(nil)
+        macWorkspace.openAgent { [weak self] in self?.switchToBridge() }
+    }
+
+    func switchToBridge() {
+        rememberMode(.bridge)
+        macWorkspace.hideAgentWindow()
+        NSApp.setActivationPolicy(.accessory)
+        openSettings()
     }
     #endif
     private func presentSettingsWindow() {
@@ -265,10 +325,7 @@ final class BridgeAppModel: ObservableObject {
     func quit() {
         #if FLOE_UNIFIED_MAC
         Task {
-            guard await macWorkspace.closeToolbox() else {
-                error = String(localized: "host.toolboxHistorySaveFailed")
-                return
-            }
+            guard await macWorkspace.closeToolbox(promptForScannerDraft: true) else { return }
             await service?.jobs.stopAllAndWait()
             DispatchQueue.main.async { NSApp.terminate(nil) }
         }

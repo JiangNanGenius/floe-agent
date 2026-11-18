@@ -121,6 +121,8 @@
 "host.toolboxHistorySaveFailed" = "A toolbox operation is still running or could not be saved. Check the toolbox and try quitting again.";
 "host.toolboxCameraStopFailed" = "The camera is still stopping. Check the toolbox and try quitting again.";
 "host.scanner.quitTitle" = "Scanner draft is not saved";
+"host.scanner.closeDetail" = "Return to the draft to keep working, or discard it to close the toolbox.";
+"host.scanner.closeDiscard" = "Discard Draft";
 "host.scanner.quitDetail" = "The draft is kept only while Floe is running. Exporting an image or PDF does not save the complete draft. Return to the app, or discard the draft to quit.";
 "host.scanner.quitReview" = "Return to Draft";
 "host.scanner.quitDiscard" = "Discard and Quit";

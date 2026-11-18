@@ -69,6 +69,7 @@ final class UnifiedMacSmoke {
         let workbenchVisible = NSApp.windows.contains {
             $0.isVisible && $0.title == String(localized: "host.role.agent")
         }
+        let modeRoundTrip = await exerciseModeRoundTrip(model: model)
         var nativeChat = false
         var storedTaskRun = false
         var taskMetadataSaved = false
@@ -107,6 +108,7 @@ final class UnifiedMacSmoke {
             "legacyPairAndSignatureVerified": pairedRequest,
             "switchedToAgentFromBridge": switchedToAgent,
             "workbenchWindowVisible": workbenchVisible,
+            "modeRoundTripVerified": modeRoundTrip,
             "nativeChatAndUpdateAdmissionVerified": nativeChat,
             "storedTaskRunFound": storedTaskRun,
             "taskMetadataSaved": taskMetadataSaved,
@@ -166,6 +168,23 @@ final class UnifiedMacSmoke {
             && reopened?.services.mediaEnvironment !== first.services.mediaEnvironment
         let closed = await workspace.closeToolbox()
         return pingPassed && distinctOwner && closed
+    }
+
+    private func exerciseModeRoundTrip(model: BridgeAppModel) async -> Bool {
+        guard let initialAgent = model.macWorkspace.agent, NSApp.activationPolicy() == .regular else { return false }
+        model.switchToBridge()
+        let deadline = ContinuousClock.now + .seconds(3)
+        while !NSApp.windows.contains(where: { $0.title == "Floe Bridge" && $0.isVisible }),
+              ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        guard NSApp.activationPolicy() == .accessory,
+              NSApp.windows.contains(where: { $0.title == "Floe Bridge" && $0.isVisible }) else { return false }
+        model.reopenPreferredWindow()
+        guard model.macWorkspace.agent === initialAgent else { return false }
+        model.openAgentWorkspace()
+        return NSApp.activationPolicy() == .regular && model.macWorkspace.agent === initialAgent
+            && NSApp.windows.contains { $0.isVisible && $0.title == String(localized: "host.role.agent") }
     }
 
     private func callPairedBridge(port: UInt16) async throws -> Bool {

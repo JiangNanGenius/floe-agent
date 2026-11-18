@@ -121,6 +121,8 @@
 "host.toolboxHistorySaveFailed" = "工具箱操作仍在进行或未能保存，请检查工具箱后再退出。";
 "host.toolboxCameraStopFailed" = "相机尚未停止，请检查工具箱后再退出。";
 "host.scanner.quitTitle" = "扫描草稿尚未保存";
+"host.scanner.closeDetail" = "可以返回草稿继续编辑，或放弃草稿并关闭工具箱。";
+"host.scanner.closeDiscard" = "放弃草稿";
 "host.scanner.quitDetail" = "草稿只在 Floe 运行期间保留。导出图片或 PDF 不会保存完整草稿。请返回应用处理，或放弃草稿后退出。";
 "host.scanner.quitReview" = "返回处理";
 "host.scanner.quitDiscard" = "放弃并退出";

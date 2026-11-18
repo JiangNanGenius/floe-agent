@@ -54,6 +54,8 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate {
 
     func openToolbox() { openToolbox(toolID: nil) }
 
+    func hideAgentWindow() { agentWindow?.orderOut(nil) }
+
     func openToolbox(toolID: String?) {
         guard !drainingToolbox else { return }
         if toolbox == nil {
@@ -68,15 +70,32 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate {
         toolbox?.present(toolID: toolID)
     }
 
-    func closeToolbox() async -> Bool {
+    func closeToolbox(promptForScannerDraft: Bool = false) async -> Bool {
         guard let toolbox else { return true }
         guard let lease = toolboxLease, !drainingToolbox else { return false }
         drainingToolbox = true
         defer { drainingToolbox = false }
         let services = toolbox.services
         services.closeAdmissionsForTermination()
-        guard await services.drainForTermination(), await services.drainCameraForTermination() else {
+        guard await services.drainNonScannerForTermination() else {
             services.resumeAfterCancelledTermination()
+            if promptForScannerDraft { showToolboxCloseError("host.toolboxHistorySaveFailed") }
+            return false
+        }
+        let outcome = await MacScannerQuitDecision.resolve(
+            status: { await services.scannerTerminationStatus() },
+            choose: { promptForScannerDraft ? self.askAboutScannerDraft() : .cancel },
+            discard: { await services.discardScannerDraftForTermination() }
+        )
+        guard outcome == .ready else {
+            services.resumeAfterCancelledTermination()
+            if outcome == .review { toolbox.present(toolID: "scanner") }
+            if outcome == .pending, promptForScannerDraft { showToolboxCloseError("host.scanner.quitPending") }
+            return false
+        }
+        guard await services.drainCameraForTermination() else {
+            services.resumeAfterCancelledTermination()
+            if promptForScannerDraft { showToolboxCloseError("host.toolboxCameraStopFailed") }
             return false
         }
         services.shutdown()
@@ -88,7 +107,30 @@ final class UnifiedMacWorkspace: NSObject, NSWindowDelegate {
         return true
     }
 
-    func windowWillClose(_ notification: Notification) {
-        Task { _ = await closeToolbox() }
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard sender === toolbox?.window else { return true }
+        Task { _ = await closeToolbox(promptForScannerDraft: true) }
+        return false
+    }
+
+    private func askAboutScannerDraft() -> MacScannerQuitChoice {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = String(localized: "host.scanner.quitTitle")
+        alert.informativeText = String(localized: "host.scanner.closeDetail")
+        alert.addButton(withTitle: String(localized: "host.scanner.quitReview"))
+        alert.addButton(withTitle: String(localized: "host.scanner.closeDiscard"))
+        alert.addButton(withTitle: String(localized: "Cancel"))
+        switch alert.runModal() {
+        case .alertFirstButtonReturn: return .review
+        case .alertSecondButtonReturn: return .discard
+        default: return .cancel
+        }
+    }
+
+    private func showToolboxCloseError(_ message: String.LocalizationValue) {
+        let alert = NSAlert()
+        alert.messageText = String(localized: message)
+        alert.runModal()
     }
 }

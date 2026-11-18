@@ -6,7 +6,7 @@ final class BridgeApplicationDelegate: NSObject, NSApplicationDelegate {
     static weak var model: BridgeAppModel?
     func applicationDidFinishLaunching(_ notification: Notification) { Self.model?.applicationDidFinishLaunching() }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        Self.model?.openSettings()
+        Self.model?.reopenPreferredWindow()
         return true
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }

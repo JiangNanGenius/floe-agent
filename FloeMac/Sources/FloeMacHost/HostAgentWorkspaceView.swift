@@ -11,6 +11,7 @@ struct HostAgentWorkspaceView: View {
     @ObservedObject var workspace: HostAgentWorkspace
     var workspaceDraft: Binding<String>? = nil
     var openModelSettings: (() -> Void)? = nil
+    var openFiles: (() -> Void)? = nil
     @State private var standaloneDraft = ""
     #if !FLOE_UNIFIED_MAC
     @State private var showingSettings = false
@@ -93,21 +94,22 @@ struct HostAgentWorkspaceView: View {
     #if FLOE_UNIFIED_MAC
     private var composer: some View {
         VStack(alignment: .leading, spacing: 9) {
-            TextField("host.chat.prompt", text: draft, axis: .vertical)
-                .textFieldStyle(.plain)
-                .font(FloeTheme.Typography.body)
-                .lineLimit(2...7)
-                .accessibilityIdentifier("thread.composer.input")
             HStack {
-                if let openModelSettings {
-                    Button(action: openModelSettings) {
-                        Label(workspace.modelName ?? String(localized: "host.chat.provider"), systemImage: "cpu")
-                            .font(FloeTheme.Typography.metadata)
+                if let openFiles {
+                    Button(action: openFiles) {
+                        Label("mac.workspace.browseFiles", systemImage: "paperclip")
                     }
+                    .labelStyle(.iconOnly)
                     .buttonStyle(.plain)
-                    .disabled(workspace.isSending || workspace.isTerminating)
+                    .foregroundStyle(Color.accentColor)
+                    .help("mac.workspace.browseFiles")
+                    .frame(width: 30)
                 }
-                Spacer()
+                TextField("host.chat.prompt", text: draft, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .font(FloeTheme.Typography.body)
+                    .lineLimit(2...7)
+                    .accessibilityIdentifier("thread.composer.input")
                 if workspace.isSending {
                     Button(action: workspace.stop) {
                         FloeComposerActionGlyph(systemImage: "stop.fill", enabled: workspace.canStop, destructive: true)
@@ -129,11 +131,53 @@ struct HostAgentWorkspaceView: View {
                     .disabled(!canSend)
                 }
             }
+            if let openModelSettings {
+                HStack(spacing: 6) {
+                    modelControl(openSettings: openModelSettings)
+                    Spacer()
+                }
+                .padding(.leading, 4)
+                .disabled(workspace.isSending || workspace.isTerminating)
+            }
         }
         .padding(12)
         .modifier(FloeThreadComposerChrome())
         .frame(maxWidth: 720)
+        .padding(.horizontal, 14)
+        .padding(.bottom, 12)
         .frame(maxWidth: .infinity)
+    }
+
+    @ViewBuilder private func modelControl(openSettings: @escaping () -> Void) -> some View {
+        if workspace.providers.isEmpty {
+            Button(action: openSettings) {
+                Label("host.chat.provider", systemImage: "cpu")
+                    .font(FloeTheme.Typography.metadata)
+            }
+            .buttonStyle(.plain)
+        } else {
+            Menu {
+                ForEach(workspace.providers, id: \.profile.id) { provider in
+                    Button {
+                        workspace.selectChatProvider(id: provider.profile.id)
+                    } label: {
+                        if provider.profile.id == workspace.selectedProviderID {
+                            Label(provider.displayTitle, systemImage: "checkmark")
+                        } else {
+                            Text(verbatim: provider.displayTitle)
+                        }
+                    }
+                }
+                Divider()
+                Button("host.chat.provider", action: openSettings)
+            } label: {
+                Label(workspace.modelName ?? String(localized: "host.chat.provider"), systemImage: "cpu")
+                    .font(FloeTheme.Typography.metadata)
+                    .lineLimit(1)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize(horizontal: true, vertical: false)
+        }
     }
 
     private var conversation: some View {
