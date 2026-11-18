@@ -2,6 +2,17 @@
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
   <channel>
     <item>
+      <title>Floe Agent 1.3.0</title>
+      <pubDate>Wed, 18 Nov 2026 15:57:23 +0000</pubDate>
+      <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-mac-v1.3.0</link>
+      <sparkle:version>12</sparkle:version>
+      <sparkle:shortVersionString>1.3.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <description>&lt;p&gt;为 Floe Agent 加入 Mac 工作台、任务中心、文件浏览和工具箱目录。&lt;/p&gt;&lt;p&gt;Adds the Mac workbench with a task center, file browsing, and a toolbox catalog.&lt;/p&gt;</description>
+      <enclosure url="https://github.com/JiangNanGenius/floe-agent/releases/download/floe-mac-v1.3.0/Floe-Agent-1.3.0.dmg" length="26512523" type="application/octet-stream" sparkle:edSignature="j/lZnEGUIBBhoknxv6/ASntnNiAWDc/wffDzpZ9Y0rN+/qgvXAimv2sGb5jedvEpnR/f8vP5oc2iSr6sNxh6Cg==" />
+    </item>
+    <item>
       <title>Floe Agent 1.2.1</title>
       <pubDate>Wed, 18 Nov 2026 15:35:02 +0000</pubDate>
       <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-mac-v1.2.1</link>
