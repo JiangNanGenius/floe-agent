@@ -2,6 +2,17 @@
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
   <channel>
     <item>
+      <title>Floe for Mac 1.2.0</title>
+      <pubDate>Wed, 18 Nov 2026 15:15:32 +0000</pubDate>
+      <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-mac-v1.2.0</link>
+      <sparkle:version>10</sparkle:version>
+      <sparkle:shortVersionString>1.2.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <description>&lt;p&gt;Floe Bridge 直接升级到 Floe for Mac，增加原生对话与工具箱。&lt;/p&gt;&lt;p&gt;Upgrade directly from Floe Bridge to Floe for Mac with native conversations and the Toolbox.&lt;/p&gt;</description>
+      <enclosure url="https://github.com/JiangNanGenius/floe-agent/releases/download/floe-mac-v1.2.0/FloeMac-1.2.0.dmg" length="25602633" type="application/octet-stream" sparkle:edSignature="BvOpJVx5xKjoBNFWFnsrcQ8IT9pX1Zk11H+xpW8rVd/y+biJ0UfDStyOfwytM+cXEH+vsTaLDZf0bjrquGMiCQ==" />
+    </item>
+    <item>
       <title>1.1.6</title>
       <pubDate>Mon, 16 Nov 2026 19:36:37 +0000</pubDate>
       <link>https://github.com/JiangNanGenius/floe-agent/releases/tag/floe-bridge-v1.1.6</link>
