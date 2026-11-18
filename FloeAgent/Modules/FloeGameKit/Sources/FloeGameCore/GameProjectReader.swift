@@ -201,7 +201,7 @@ public final class GameProjectReader {
             return cached
         }
         var hash = SHA256(), total = 0
-        var buffer = [UInt8](repeating: 0, count: 1_048_576)
+        var buffer = [UInt8](repeating: 0, count: max(1, min(1_048_576, Int(before.st_size))))
         while true {
             if honorCancellation { try Task.checkCancellation() }
             let count = buffer.withUnsafeMutableBytes { systemRead(descriptor, $0.baseAddress!, $0.count) }

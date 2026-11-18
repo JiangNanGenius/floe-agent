@@ -22,6 +22,7 @@ struct GameProjectSpaceScreen: View {
     @EnvironmentObject private var environment: AppEnvironment
     @Environment(\.dismiss) private var dismiss
     @State private var session: GameWorkspaceSession?
+    @State private var openedCopy: PersonalContentRecord?
     @State private var error: String?
     @State private var notice: String?
     @State private var loading = true
@@ -67,7 +68,7 @@ struct GameProjectSpaceScreen: View {
                     }
                 }
             }
-            .navigationTitle(record.title)
+            .navigationTitle((openedCopy ?? record).title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -247,6 +248,18 @@ struct GameProjectSpaceScreen: View {
         VStack(spacing: 0) {
             if let error { noticeBar(error, failed: true) }
             if let notice { noticeBar(notice, failed: false) }
+            if let issue = session.project.recognitionIssue {
+                HStack {
+                    Text(IDELanguageRunText.t("引擎识别失败：", "Engine detection failed: ") + issue)
+                        .font(.callout)
+                    Spacer()
+                    Button(IDELanguageRunText.t("重新识别", "Retry detection")) {
+                        Task { await refresh(session) }
+                    }
+                    .disabled(pending != nil || session.project.operationInProgress)
+                }
+                .padding(.horizontal)
+            }
             runtimeBanner(session)
             if pending == .importProject {
                 importProgress
@@ -543,6 +556,7 @@ struct GameProjectSpaceScreen: View {
         case .simpleEdit:
             if session.project.selectionSnapshot?.selectedEngine == nil {
                 notice = IDELanguageRunText.t("请先选择引擎。", "Choose an engine first.")
+                showingProjectSetup = true
             } else {
                 showingQuickEdit = true
             }
@@ -582,6 +596,9 @@ struct GameProjectSpaceScreen: View {
     }
 
     private func play(_ session: GameWorkspaceSession) async {
+        guard pending == nil else { return }
+        pending = .play
+        defer { pending = nil }
         do {
             // Normal workspace/Git edits may have changed the game since this
             // overview last rendered; validate against the current tree.
@@ -599,12 +616,11 @@ struct GameProjectSpaceScreen: View {
             } else {
                 notice = IDELanguageRunText.t("请先确认游戏目录和引擎。",
                                               "Choose and confirm a game folder and engine first.")
+                showingProjectSetup = true
             }
             return
         }
         do {
-            pending = .play
-            defer { pending = nil }
             _ = try await environment.gameWorkspaces.ensurePlayableSession(for: session)
             let play = environment.gameWorkspaces.playCoordinator(for: session)
             _ = try await play.start()
@@ -634,10 +650,7 @@ struct GameProjectSpaceScreen: View {
             pending = .importProject
             defer { pending = nil }
             try await environment.gameWorkspaces.importSource(url, into: session)
-            await refresh(session)
-            if error == nil {
-                notice = IDELanguageRunText.t("已导入游戏文件，查看引擎识别结果后即可继续。", "Game files imported. Check the engine selection to continue.")
-            }
+            notice = session.project.importSummary
         } catch {
             let underlying = error as NSError
             if error is CancellationError || (underlying.domain == NSCocoaErrorDomain && underlying.code == NSUserCancelledError) { return }
@@ -645,6 +658,9 @@ struct GameProjectSpaceScreen: View {
                 self.error = detail == "projectBytes"
                     ? IDELanguageRunText.t("游戏文件总量过大，无法完成导入。", "The game files are too large to import.")
                     : IDELanguageRunText.t("导入内容超出大小或数量限制。", "The import exceeds a size or item limit.")
+            } else if case GameProjectError.importDestinationNotEmpty = error {
+                self.error = IDELanguageRunText.t("此工程已有文件。要重新导入，请先新建一个空白游戏工程。",
+                    "This project already contains files. Create a new empty game project to import again.")
             } else if case GameArchiveError.io("insufficient storage") = error {
                 self.error = IDELanguageRunText.t("存储空间不足，请清理空间后重试。", "Not enough storage space. Free up space and try again.")
             } else if underlying.domain == NSCocoaErrorDomain && underlying.code == NSFileWriteOutOfSpaceError
@@ -735,15 +751,20 @@ struct GameProjectSpaceScreen: View {
             defer { pending = nil }
             let converted = try await environment.gameWorkspaces.makeEngineConversionCopy(
                 source: session, title: session.record?.title ?? "Game", engine: engine)
-            notice = IDELanguageRunText.t("已创建新副本。原工程未改变。", "A new copy was created. The original is unchanged.")
-            _ = converted
+            showingAssistant = false
+            engineQuestion = nil
+            openedCopy = converted.record
+            self.session = converted
+            error = nil
+            resourceError = nil
+            notice = IDELanguageRunText.t("已打开新副本。", "Opened the new copy.")
         } catch {
             self.error = error.localizedDescription
         }
     }
 
     private func refresh(_ session: GameWorkspaceSession) async {
-        do { try await session.project.refresh() }
+        do { try await session.project.refresh(allowRecognitionFailure: true) }
         catch { self.error = error.localizedDescription }
     }
 
@@ -751,10 +772,10 @@ struct GameProjectSpaceScreen: View {
         loading = true
         defer { loading = false }
         do {
-            let value = try await environment.gameWorkspaces.openSpaceGame(record: record)
+            let (value, reused) = try await environment.gameWorkspaces.openSpaceGameSession(record: openedCopy ?? record)
             session = value
-            try await value.project.refresh()
             error = nil
+            if reused { await refresh(value) }
         } catch {
             self.error = error.localizedDescription
         }

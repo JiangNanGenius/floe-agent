@@ -43,7 +43,7 @@ struct SpaceGameOriginal: Codable, Equatable, Sendable {
         try data.write(to: directory.appendingPathComponent("Game/Original.json"), options: [.atomic])
     }
 
-    static func read(id: UUID, directory: URL) async throws -> Location {
+    static func read(id: UUID, directory: URL) async throws -> (paths: Location, project: GameStoredProject) {
         let reader = try GameProjectReader(rootURL: directory, maximumFileBytes: 8_192)
         guard let data = try reader.read(GameRelativePath("Game/Original.json")) else { throw PersonalContentError.invalidProject }
         let original = try JSONDecoder().decode(Self.self, from: data)
@@ -56,7 +56,7 @@ struct SpaceGameOriginal: Codable, Equatable, Sendable {
         let repository = try FileGameProjectRepository(directory: paths.history)
         let project = try await repository.open(id, owner: .space(recordID: id))
         guard project.projectID == id, project.owner == .space(recordID: id) else { throw PersonalContentError.invalidProject }
-        return paths
+        return (paths, project)
     }
 }
 #endif

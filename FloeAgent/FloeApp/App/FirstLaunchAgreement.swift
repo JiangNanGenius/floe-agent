@@ -7,7 +7,7 @@ import FloeCore
 // It carries no identity, timestamp, or event history.
 enum FloeUserAgreement {
     static let storageKey = "floe.userAgreement.acceptedRelease"
-    static let revision = "1"
+    static let revision = "2"
 
     static func receipt(for version: String) -> String { "\(version)/\(revision)" }
 
@@ -38,6 +38,8 @@ enum FloeUserAgreement {
 
     本协议适用于 Floe 应用、桌面客户端、Bridge 及其他配套软件。请阅读后选择是否同意。选择「同意并继续」即表示你接受本协议。
 
+    **请特别阅读下方「不作额外保证」和「免责与责任限制」条款。**
+
     **软件与第三方服务**
 
     Floe 提供 AI 对话、文件和创作工具，也可以连接你选择的服务和设备。功能因版本、平台和配置而异。你自行选择和配置的 AI、云端或其他第三方服务适用各自的条款和费用。Floe 中列出的服务预设不代表合作或背书。
@@ -52,9 +54,21 @@ enum FloeUserAgreement {
 
     请在你有权使用的文件、设备、网络和账户范围内操作，不得利用 Floe 诈骗、侵权、违法或绕过他人的授权与安全措施。你创建或导入的内容，其权利由你或相应权利人享有。软件、第三方组件和模型中的开源部分仍按各自许可证使用。
 
-    **更新、停止使用与责任**
+    **不作额外保证**
 
-    软件更新、系统兼容性和第三方服务变化可能影响功能。你可以随时停止使用，并在适用功能中导出需要保留的文件。你与 Floe 各自依法承担应负的责任。本协议不限制你依法享有的消费者权利，也不排除法律规定不得排除的责任。
+    在适用法律允许的最大范围内，Floe 按现状及可用状态提供，不作额外的明示或默示保证。Floe 不保证软件或输出的准确性、完整性、特定用途适用性、兼容性或持续可用性，也不保证操作结果符合预期或运行无中断、无错误。
+
+    **免责与责任限制**
+
+    在适用法律允许的最大范围内，Floe 对可归因于你自行使用、依赖或发布 AI 输出，你自行选择、配置或授权的操作，或第三方服务、设备或网络的故障、变更、停用或收费的损失，不承担赔偿责任。
+
+    在同等范围内，无论请求基于合同、侵权（包括过失）或其他依据，Floe 不赔偿因使用或无法使用软件、AI 输出或任务执行产生的间接、附带、特殊或后果性损失，也不赔偿利润、收入、商业机会或数据丢失造成的损失，即使此类损失的可能性已被告知。
+
+    **本协议不排除或限制依法不得排除或限制的责任、消费者保证或救济。** 如某项免责或限制依法不能适用，其余条款在法律允许的范围内仍继续适用。
+
+    **更新与停止使用**
+
+    软件更新、系统兼容性和第三方服务变化可能影响功能。你可以随时停止使用，并在软件支持导出的功能中保留所需文件。
 
     **协议变更与联系**
 
@@ -65,6 +79,8 @@ enum FloeUserAgreement {
     **Scope**
 
     This agreement covers the Floe apps, desktop client, Bridge, and related software. Read it before choosing whether to accept. By selecting Agree and Continue, you accept this agreement.
+
+    **Please read the No Additional Warranties and Exclusions and Limits of Liability sections below.**
 
     **Software and third-party services**
 
@@ -80,9 +96,21 @@ enum FloeUserAgreement {
 
     Use Floe only with files, devices, networks, and accounts you are authorized to use. Do not use it for fraud, infringement, unlawful activity, or to bypass someone else's permissions or safeguards. Rights in content you create or import remain with you or the relevant rights holder. Open-source software, components, and models remain subject to their own licenses.
 
-    **Updates, stopping use, and responsibility**
+    **No Additional Warranties**
 
-    App updates, system compatibility, and changes to third-party services may affect features. You can stop using Floe at any time and export files you want to keep where the app supports export. You and Floe each remain responsible as provided by applicable law. This agreement does not limit your statutory consumer rights or exclude liability that cannot lawfully be excluded.
+    To the fullest extent permitted by applicable law, Floe is provided as is and as available, without additional express or implied warranties. Floe does not warrant the accuracy, completeness, fitness for a particular purpose, compatibility, or continued availability of the software or its output. Floe does not guarantee expected results or uninterrupted or error-free operation.
+
+    **Exclusions and Limits of Liability**
+
+    To the fullest extent permitted by applicable law, Floe is not liable for losses attributable to your decision to use, rely on, or publish AI output, to operations you choose, configure, or authorize, or to failures, changes, discontinuation, or charges of third-party services, devices, or networks.
+
+    To the same extent, whether a claim arises in contract, tort (including negligence), or otherwise, Floe is not liable for indirect, incidental, special, or consequential losses, or for loss of profit, revenue, business opportunities, or data arising from the use or inability to use the software, AI output, or task execution, even if Floe was advised that such losses could occur.
+
+    **This agreement does not exclude or limit liability, consumer guarantees, or remedies that cannot lawfully be excluded or limited.** If an exclusion or limit is unenforceable, the remaining provisions apply to the extent permitted by law.
+
+    **Updates and Stopping Use**
+
+    App updates, system compatibility, and changes to third-party services may affect features. You can stop using Floe at any time and export files you want to keep where the app supports export.
 
     **Changes and contact**
 

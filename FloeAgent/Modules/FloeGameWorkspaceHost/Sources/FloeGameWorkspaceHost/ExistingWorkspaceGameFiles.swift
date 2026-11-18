@@ -95,6 +95,11 @@ public final class ExistingWorkspaceGameFiles: GameWorkingTreePort, @unchecked S
         var addedDirectories: [String]
         var removedDirectories: [String]
     }
+    private enum JournalChange: Codable {
+        case file(index: Int, installed: Stamp?)
+        case addedDirectory(String)
+        case removedDirectory(String)
+    }
 
     public init(targets: [ExistingGameWorkspaceTarget], repositoryDirectory: URL) throws {
         guard repositoryDirectory.isFileURL,
@@ -176,12 +181,13 @@ public final class ExistingWorkspaceGameFiles: GameWorkingTreePort, @unchecked S
         guard !activeTransactions.contains(projectID) else { throw GameProjectError.invalidContext }
         let target = try target(projectID, owner)
         let directory = recoveryDirectory(projectID)
-        let data = try GameWorkingTreeJournalFiles.read(directory.appendingPathComponent("pending.json"), maximum: 32 * 1_024 * 1_024)
-        let journal = try JSONDecoder().decode(Journal.self, from: data)
+        let journal = try loadJournal(at: directory, limits: limits)
         guard journal.projectID == projectID, journal.root == target.binding.rootURL.path,
               journal.workspaceID == target.binding.workspaceID else { throw GameProjectError.ownershipMismatch }
         let snapshot = try capture(target, limits: limits)
-        let id = GameDigest.sha256(data + Data(snapshot.revision.utf8) + (try JSONEncoder().encode(snapshot.files))
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let id = GameDigest.sha256((try encoder.encode(journal)) + Data(snapshot.revision.utf8) + (try JSONEncoder().encode(snapshot.files))
             + (try JSONEncoder().encode(snapshot.directories)))
         return .init(id: id, binding: target.binding, paths: journal.items.map(\.path),
                      retainedOriginals: directory, snapshot: snapshot)
@@ -250,14 +256,15 @@ public final class ExistingWorkspaceGameFiles: GameWorkingTreePort, @unchecked S
         var journal = Journal(projectID: project.projectID, intendedRevision: project.revision,
             root: target.binding.rootURL.path, workspaceID: target.binding.workspaceID, items: [],
             addedDirectories: [], removedDirectories: [])
-        let desiredAdded = project.directories.map(\.value).filter { !before.directories.map(\.value).contains($0) }
-        let desiredRemoved = before.directories.map(\.value).filter { !project.directories.map(\.value).contains($0) }
+        let originalDirectories = Set(before.directories), proposedDirectories = Set(project.directories)
+        let desiredAdded = proposedDirectories.subtracting(originalDirectories).map(\.value)
+        let desiredRemoved = originalDirectories.subtracting(proposedDirectories).map(\.value)
         let reader = try GameProjectReader(rootURL: target.binding.rootURL, maximumFileBytes: limits.maximumFileBytes)
         do {
             try save(journal, at: directory)
             for (index, path) in changed.enumerated() {
                 try Task.checkCancellation()
-                let stamp = try stamp(path, target, limits: limits)
+                let stamp = old[path] == nil ? nil : try stamp(path, target, limits: limits)
                 let backup = stamp == nil ? nil : "old-" + String(index)
                 if let backup {
                     guard let data = try reader.read(GameRelativePath(path)) else { throw GameProjectError.corruptStorage }
@@ -265,7 +272,6 @@ public final class ExistingWorkspaceGameFiles: GameWorkingTreePort, @unchecked S
                 }
                 journal.items.append(.init(path: path, before: stamp, afterDigest: new[path]?.sha256,
                     backup: backup, installed: nil, applied: false))
-                try save(journal, at: directory)
             }
             try save(journal, at: directory)
             guard before == (try capture(target, limits: limits)) else { throw GameProjectError.invalidContext }
@@ -276,7 +282,7 @@ public final class ExistingWorkspaceGameFiles: GameWorkingTreePort, @unchecked S
                 if !FileManager.default.fileExists(atPath: url.path) {
                     try service.createDirectory(path)
                     journal.addedDirectories.append(path)
-                    try save(journal, at: directory)
+                    try saveChange(.addedDirectory(path), named: "add-\(journal.addedDirectories.count)", at: directory)
                 }
             }
             for index in journal.items.indices {
@@ -296,18 +302,20 @@ public final class ExistingWorkspaceGameFiles: GameWorkingTreePort, @unchecked S
                     }
                     journal.items[index].applied = true
                     journal.items[index].installed = try stamp(path, target, limits: limits)
-                    try save(journal, at: directory)
-                    let url = try service.guardResolver.resolve(path)
-                    try service.mutationGuard?(url)
                     let originalMode = journal.items[index].before?.mode ?? 0o600
                     let mode = file.executable ? originalMode | 0o100 : originalMode & ~0o111
-                    try FileManager.default.setAttributes([.posixPermissions: mode], ofItemAtPath: url.path)
-                    journal.items[index].installed = try stamp(path, target, limits: limits)
+                    if journal.items[index].installed?.mode != mode {
+                        try saveChange(.file(index: index, installed: journal.items[index].installed), named: "file-\(index)", at: directory)
+                        let url = try service.guardResolver.resolve(path)
+                        try service.mutationGuard?(url)
+                        try FileManager.default.setAttributes([.posixPermissions: mode], ofItemAtPath: url.path)
+                        journal.items[index].installed = try stamp(path, target, limits: limits)
+                    }
                 } else {
                     try service.delete(path)
                     journal.items[index].applied = true
                 }
-                try save(journal, at: directory)
+                try saveChange(.file(index: index, installed: journal.items[index].installed), named: "file-\(index)", at: directory)
             }
             for path in desiredRemoved.sorted(by: { $0.count > $1.count }) {
                 let url = try service.guardResolver.resolve(path)
@@ -315,7 +323,7 @@ public final class ExistingWorkspaceGameFiles: GameWorkingTreePort, @unchecked S
                     try service.mutationGuard?(url)
                     try service.delete(path, recursive: false)
                     journal.removedDirectories.append(path)
-                    try save(journal, at: directory)
+                    try saveChange(.removedDirectory(path), named: "remove-\(journal.removedDirectories.count)", at: directory)
                 }
             }
             let after = try capture(target, limits: limits)
@@ -412,6 +420,39 @@ public final class ExistingWorkspaceGameFiles: GameWorkingTreePort, @unchecked S
     private func save(_ journal: Journal, at directory: URL) throws {
         try GameWorkingTreeJournalFiles.write(JSONEncoder().encode(journal), to: directory.appendingPathComponent("pending.json"))
     }
+    // The complete plan and backups are durable before any live change. Keep
+    // each subsequent checkpoint independently atomic so imports scale with
+    // the number of files without rewriting the entire plan for every file.
+    private func saveChange(_ change: JournalChange, named name: String, at directory: URL) throws {
+        let url = directory.appendingPathComponent("change-" + name + ".json")
+        try GameWorkingTreeJournalFiles.write(JSONEncoder().encode(change), to: url)
+    }
+
+    private func loadJournal(at directory: URL, limits: GameRepositoryLimits) throws -> Journal {
+        let data = try GameWorkingTreeJournalFiles.read(directory.appendingPathComponent("pending.json"), maximum: 32 * 1_024 * 1_024)
+        let decoder = JSONDecoder()
+        var journal = try decoder.decode(Journal.self, from: data)
+        let changes = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+            .filter { $0.hasPrefix("change-") && $0.hasSuffix(".json") }.sorted()
+        guard journal.items.count <= limits.maximumEntries,
+              changes.count <= limits.maximumEntries * 3 else { throw GameProjectError.corruptStorage }
+        for name in changes {
+            let bytes = try GameWorkingTreeJournalFiles.read(directory.appendingPathComponent(name), maximum: 32 * 1_024)
+            switch try decoder.decode(JournalChange.self, from: bytes) {
+            case .file(let index, let installed):
+                guard journal.items.indices.contains(index), name == "change-file-\(index).json" else {
+                    throw GameProjectError.corruptStorage
+                }
+                journal.items[index].installed = installed
+                journal.items[index].applied = true
+            case .addedDirectory(let path):
+                journal.addedDirectories.append(path)
+            case .removedDirectory(let path):
+                journal.removedDirectories.append(path)
+            }
+        }
+        return journal
+    }
     private func recoveryError(_ directory: URL, _ conflicts: [String]) -> GameWorkingTreeRecoveryRequired {
         .init(recoveryDirectory: directory, conflictingPaths: conflicts)
     }
@@ -461,8 +502,7 @@ public final class ExistingWorkspaceGameFiles: GameWorkingTreePort, @unchecked S
     private func recover(_ target: ExistingGameWorkspaceTarget, limits: GameRepositoryLimits) throws {
         let directory = recoveryDirectory(target.binding.projectID)
         guard FileManager.default.fileExists(atPath: directory.path) else { return }
-        let data = try GameWorkingTreeJournalFiles.read(directory.appendingPathComponent("pending.json"), maximum: 32 * 1_024 * 1_024)
-        let journal = try JSONDecoder().decode(Journal.self, from: data)
+        let journal = try loadJournal(at: directory, limits: limits)
         guard journal.projectID == target.binding.projectID, journal.root == target.binding.rootURL.path,
               journal.workspaceID == target.binding.workspaceID,
               journal.items.count <= limits.maximumEntries else { throw GameProjectError.corruptStorage }

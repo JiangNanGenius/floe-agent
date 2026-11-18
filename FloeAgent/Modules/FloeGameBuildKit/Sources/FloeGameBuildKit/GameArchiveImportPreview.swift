@@ -71,19 +71,26 @@ public struct GameArchiveProjectPreviewer: Sendable {
         let paths: [(path: String, kind: GameArchiveEntryKind, bytes: Int)] = entries.map {
             ($0.path.value, $0.directory ? .directory : .file, $0.bytes)
         }
-        let topLevel = Set(entries.map { $0.path.value.split(separator: "/").first.map(String.init) ?? "" })
-        let candidates = topLevel.sorted().map { name -> GameArchiveRootCandidate in
+        var topLevel: [String: Bool] = [:]
+        var rootsWithMarkers = Set<String>()
+        let markers = [".rxproj", ".rvproj", ".rvproj2", ".rpgproject", ".rmmzproject",
+                       "project.godot", "projectsettings/projectversion.txt", "package.json"]
+        for entry in entries {
+            try Task.checkCancellation()
+            let components = entry.path.value.split(separator: "/", maxSplits: 1)
+            let name = String(components[0])
+            topLevel[name] = topLevel[name] == true || entry.directory || components.count > 1
+            if components.count > 1, !entry.directory {
+                let relative = components[1].lowercased()
+                if markers.contains(where: { relative.hasSuffix($0) }) {
+                    rootsWithMarkers.insert(name.lowercased())
+                }
+            }
+        }
+        let candidates = topLevel.keys.sorted().map { name -> GameArchiveRootCandidate in
             GameArchiveRootCandidate(name: name,
-                                     isDirectory: entries.contains { $0.path.value.hasPrefix(name + "/") },
-                                     containsProjectMarkers: entries.contains {
-                                         let lower = $0.path.value.lowercased()
-                                         return lower.hasPrefix(name.lowercased() + "/")
-                                             && (lower.hasSuffix(".rxproj") || lower.hasSuffix(".rvproj")
-                                                 || lower.hasSuffix(".rvproj2") || lower.hasSuffix(".rpgproject")
-                                                 || lower.hasSuffix(".rmmzproject") || lower.hasSuffix("project.godot")
-                                                 || lower.hasSuffix("projectsettings/projectversion.txt")
-                                                 || lower.hasSuffix("package.json"))
-                                     })
+                                     isDirectory: topLevel[name] == true,
+                                     containsProjectMarkers: rootsWithMarkers.contains(name.lowercased()))
         }
         return try classify(paths: paths, rootCandidates: candidates) { path in
             self.readPeek(root.appendingPathComponent(path))
@@ -164,7 +171,7 @@ public struct GameArchiveProjectPreviewer: Sendable {
         // Bounded peeks: shallowest package.json and RPG_RT.ini/Game.ini.
         if let packagePath = shallowestPath(in: paths, matching: { $0.lowercased().hasSuffix("package.json") }),
            let data = try peek(packagePath),
-           let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
+           let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
             let engineDeps: [String: GameEngineID] = [
                 "phaser": .phaser, "kaplay": .kaplay, "@babylonjs/core": .babylon,
                 "babylonjs": .babylon, "playcanvas": .playcanvas, "inkjs": .ink,

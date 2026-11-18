@@ -612,15 +612,20 @@ public actor FileGameProjectRepository {
             directories: snapshot.directories, files: snapshot.files, workspaceRevision: snapshot.revision))
         if snapshot.files == stored.files, snapshot.directories == stored.directories,
            snapshot.revision == stored.workspaceRevision { return stored }
+        let originals = Dictionary(uniqueKeysWithValues: stored.files.map { ($0.path, $0) })
         var files: [GameProjectFile] = []
         for file in snapshot.files {
             try Task.checkCancellation()
-            if let original = stored.files.first(where: { $0 == file }) { files.append(original); continue }
+            if originals[file.path] == file { files.append(file); continue }
             let data = try workingTree.read(file, snapshot: snapshot, limits: limits)
             guard data.count == file.bytes, GameDigest.sha256(data) == file.sha256 else { throw GameProjectError.corruptStorage }
             files.append(try put(data, path: file.path, executable: file.executable))
         }
-        let after = try workingTree.verifiedSnapshot(projectID: id, owner: owner, limits: limits)
+        // Workspace hosts can reuse descriptor-checked fingerprints for a
+        // read-only reopen. Mutation paths still verify every byte.
+        let after = try verifyBytes
+            ? workingTree.verifiedSnapshot(projectID: id, owner: owner, limits: limits)
+            : workingTree.snapshot(projectID: id, owner: owner, limits: limits)
         guard snapshot == after else { throw GameProjectError.conflict(expected: snapshot.revision, actual: after.revision) }
         let adopted = GameStoredProject(version: 1, projectID: id, owner: owner,
             revision: UUID().uuidString.lowercased(), parent: stored.revision,

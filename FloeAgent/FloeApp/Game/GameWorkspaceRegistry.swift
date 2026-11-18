@@ -224,7 +224,7 @@ final class GameWorkspaceSession {
         // the retained live handle.
         if let launchTask {
             launchTask.cancel()
-            let drained = await waitForLaunch(launchTask, timeout: .seconds(30))
+            let drained = await waitForDrain { self.launchTask == launchTask }
             guard drained else {
                 let detail = "The game run preparation did not drain after cancellation."
                 closeFailure = detail
@@ -235,7 +235,7 @@ final class GameWorkspaceSession {
         }
         launchGate.cancel()
         if let stopTask {
-            let drained = await waitForStop(stopTask, timeout: .seconds(30))
+            let drained = await waitForDrain { self.stopTask == stopTask }
             guard drained else {
                 let detail = "The previous game stop did not drain."
                 closeFailure = detail
@@ -303,30 +303,18 @@ final class GameWorkspaceSession {
         return .confirmed
     }
 
-    private func waitForLaunch(_ task: Task<Void, Error>, timeout: Duration) async -> Bool {
-        let timeoutTask = Task { try? await Task.sleep(for: timeout) }
-        let drained = await withTaskGroup(of: Bool.self) { group in
-            group.addTask { _ = try? await task.value; return true }
-            group.addTask { _ = await timeoutTask.value; return false }
-            let first = await group.next() ?? false
-            group.cancelAll()
-            return first
+    /// Launch and stop owners clear their handles after their own cleanup.
+    /// Waiting on an unstructured task's value inside a task group can keep
+    /// the group alive even after its timeout child has returned.
+    private func waitForDrain(while isPending: () -> Bool) async -> Bool {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(30))
+        while isPending() {
+            guard clock.now < deadline, !Task.isCancelled else { return false }
+            do { try await Task.sleep(for: .milliseconds(50)) }
+            catch { return false }
         }
-        timeoutTask.cancel()
-        return drained
-    }
-
-    private func waitForStop(_ task: Task<Void, Never>, timeout: Duration) async -> Bool {
-        let timeoutTask = Task { try? await Task.sleep(for: timeout) }
-        let drained = await withTaskGroup(of: Bool.self) { group in
-            group.addTask { await task.value; return true }
-            group.addTask { _ = await timeoutTask.value; return false }
-            let first = await group.next() ?? false
-            group.cancelAll()
-            return first
-        }
-        timeoutTask.cancel()
-        return drained
+        return true
     }
 
     func replaceProject(_ value: GameWorkspaceProjectSession) { project = value }
@@ -408,9 +396,14 @@ final class GameWorkspaceRegistry {
     // MARK: - Opening
 
     func openSpaceGame(record: PersonalContentRecord) async throws -> GameWorkspaceSession {
+        try await openSpaceGameSession(record: record).session
+    }
+
+    func openSpaceGameSession(record: PersonalContentRecord) async throws
+        -> (session: GameWorkspaceSession, reused: Bool) {
         guard record.kind == .game else { throw GameWorkspaceRegistryError.notGameRecord }
         let resolved = try await PersonalContentService.shared.library().resolve(record.id)
-        let paths = try await SpaceGameOriginal.read(id: record.id, directory: resolved.url)
+        let (paths, storedProject) = try await SpaceGameOriginal.read(id: record.id, directory: resolved.url)
         let key = GameWorkspaceKey(projectID: record.id,
                                    owner: .space(recordID: record.id), rootURL: paths.files)
         if let existing = sessions[key], !existing.closed {
@@ -418,9 +411,9 @@ final class GameWorkspaceRegistry {
                 throw GameWorkspaceRegistryError.workStopUnconfirmed(
                     existing.closeFailure ?? "")
             }
-            return existing
+            return (existing, true)
         }
-        if let pending = opening[key] { return try await pending.value }
+        if let pending = opening[key] { return (try await pending.value, false) }
         let task = Task { @MainActor [environment] in
             let libraryUse = try PersonalLibraryFileActions.acquireUse(id: record.id,
                                                                        directory: resolved.url)
@@ -430,23 +423,24 @@ final class GameWorkspaceRegistry {
                 projectID: record.id, title: record.title, rootURL: paths.files)
             let center = WorkspaceCenter(environment: environment, publishesSharedState: false)
             try await center.openAppOwnedWorkspace(id: workspaceRecord.id)
-            let repository = try FileGameProjectRepository(directory: paths.history)
-            let project = try await repository.open(record.id, owner: .space(recordID: record.id))
-            var context = try GameProjectContext(projectID: record.id,
-                owner: .space(recordID: record.id), rootURL: paths.files,
-                savedRevision: project.revision, environmentID: nil)
-            let environmentID = try await self.existingEnvironmentID(for: record.id,
-                conversationID: nil, rootURL: paths.files, requireSession: true)
-            if let environmentID {
-                context = try GameProjectContext(projectID: record.id,
-                    owner: .space(recordID: record.id), rootURL: paths.files,
-                    savedRevision: project.revision, environmentID: environmentID)
+            let environmentID: String?
+            do {
+                environmentID = try await self.existingEnvironmentID(for: record.id,
+                    conversationID: nil, rootURL: paths.files, requireSession: true)
+            } catch GameWorkspaceRegistryError.environmentRootMismatch {
+                // An update can relocate the App container while a saved Linux
+                // binding still points at its former path. Open the verified
+                // library files without attaching that execution environment.
+                environmentID = nil
             }
+            let context = try GameProjectContext(projectID: record.id,
+                owner: .space(recordID: record.id), rootURL: paths.files,
+                savedRevision: storedProject.revision, environmentID: environmentID)
             let session = try await GameWorkspaceProjectSession.open(
                 center: center, context: context, history: paths.history,
                 support: paths.support, title: record.title,
                 starterResources: self.starterResources())
-            try await session.refresh()
+            try await session.refresh(reloadFiles: false, allowRecognitionFailure: true)
             let transfer = try GameProjectTransferService(stagingDirectory: paths.transferJobs)
             let value = GameWorkspaceSession(key: key, record: record, center: center,
                 project: session, paths: paths, support: paths.support, history: paths.history,
@@ -464,7 +458,7 @@ final class GameWorkspaceRegistry {
         do {
             let value = try await task.value
             opening[key] = nil
-            return value
+            return (value, false)
         } catch {
             opening[key] = nil
             throw error
@@ -695,7 +689,13 @@ final class GameWorkspaceRegistry {
         guard let root = try await environment.environmentRegistry
             .workspaceRoot(for: binding.target.environmentID),
               Self.canonical(root) == Self.canonical(rootURL) else {
-            throw GameWorkspaceRegistryError.environmentRootMismatch
+            guard requireSession,
+                  try await environment.environmentRegistry.restoreSpaceGameRoot(
+                    containerID: binding.target.environmentID, conversationID: conversation,
+                    projectID: projectID, verifiedRoot: rootURL) else {
+                throw GameWorkspaceRegistryError.environmentRootMismatch
+            }
+            return binding.target.environmentID
         }
         return binding.target.environmentID
     }
@@ -789,19 +789,20 @@ final class GameWorkspaceRegistry {
             || visual.conflict != nil || !visual.fileConflicts.isEmpty {
             throw GameWorkspaceRegistryError.editorBusy
         }
-        try await session.project.prepareForHandoff()
+        try await session.project.prepareForIDE()
         try await closeExecutionForReplacement(session)
         session.setRGSSHost(nil)
         let title = session.record?.title ?? session.center.currentWorkspace?.name ?? "Game"
         let old = session.project
-        let revision = try await currentRevision(session, expected: nil)
         let context = try GameProjectContext(projectID: session.key.projectID,
             owner: session.key.owner, rootURL: session.key.rootPathURL,
-            savedRevision: revision, environmentID: environmentID)
+            savedRevision: old.project.revision, environmentID: environmentID)
         let reopened = try await GameWorkspaceProjectSession.open(center: session.center,
             context: context, history: session.history, support: session.support,
             title: title, starterResources: starterResources())
-        try await reopened.refresh()
+        try await reopened.refresh(reloadFiles: false)
+        try requireOpen(session)
+        guard session.project === old else { throw GameIDEBridgeError.superseded }
         await old.close()
         session.replaceProject(reopened)
         return session
@@ -1553,9 +1554,9 @@ final class GameWorkspaceRegistry {
                                   engine: GameEngineID) async throws -> GameWorkspaceSession {
         guard let record = source.record else { throw GameWorkspaceRegistryError.engineChangeNeedsNewProject }
         let destinationID = UUID()
-        let destinationTitle = title.isEmpty ? record.title + " (" + engine.rawValue + ")" : title
+        let destinationTitle = (title.isEmpty ? record.title : title) + " (" + engine.rawValue + ")"
         _ = try await PersonalContentService.shared.createGame(title: destinationTitle,
-                                                               engine: engine, id: destinationID)
+                                                               engine: engine, folders: record.folders, id: destinationID)
         let resolved = try await PersonalContentService.shared.library().resolve(destinationID)
         _ = try await SpaceGameOriginal.read(id: destinationID, directory: resolved.url)
         let destination = try await openSpaceGame(record: resolved.record)

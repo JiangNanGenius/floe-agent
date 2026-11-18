@@ -4261,7 +4261,17 @@ final class ConversationCenter: ObservableObject {
            let game = try? await PersonalContentService.shared.library().resolve(owner.documentID),
            game.record.kind == .game {
             let expected = GameWorkspaceRegistry.workspaceID(for: game.record.id)
-            if try await workspaceStore.workspaceID(conversationID: conversationID) == expected {
+            let assigned = try await workspaceStore.workspaceID(conversationID: conversationID)
+            if assigned == expected {
+                gameWorkspaceID = expected
+            } else if try await runStore.run(id: runID) == nil {
+                // A fresh run can repair an idle assignment. A resumed run
+                // retains the workspace that owns its existing checkpoint.
+                try await environment.gameWorkspaces.bindAssistantWorkspace(record: game.record,
+                    conversationID: conversationID)
+                guard try await workspaceStore.workspaceID(conversationID: conversationID) == expected else {
+                    throw GameWorkspaceRegistryError.conversationBindingChanged
+                }
                 gameWorkspaceID = expected
             }
         }

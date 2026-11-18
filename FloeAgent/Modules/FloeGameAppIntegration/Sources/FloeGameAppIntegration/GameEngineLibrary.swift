@@ -104,8 +104,9 @@ public struct GameEngineLibrary: Sendable {
     public func recognizedEngine(in inspection: GameProjectInspection,
                                  preferred: GameEngineID? = nil) -> GameEngineID? {
         let found = Set(inspection.candidates.map(\.engine))
-        if let preferred, found.contains(preferred), entries.contains(where: { $0.engine == preferred }) {
-            return preferred
+        if let preferred {
+            return found.contains(preferred) && entries.contains(where: { $0.engine == preferred })
+                ? preferred : nil
         }
         for entry in entries where found.contains(entry.engine) { return entry.engine }
         return nil

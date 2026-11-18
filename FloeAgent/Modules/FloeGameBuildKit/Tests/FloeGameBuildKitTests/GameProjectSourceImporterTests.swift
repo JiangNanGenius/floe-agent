@@ -71,18 +71,25 @@ final class GameProjectSourceImporterTests: XCTestCase {
         try FileManager.default.createDirectory(at: source.appendingPathComponent("empty"), withIntermediateDirectories: true)
         let bytes = Data([0, 255, 71, 12])
         try bytes.write(to: source.appendingPathComponent(".unknown"))
+        // A broken dependency hint must not block a complete folder import.
+        let brokenPackage = Data("{unfinished".utf8)
+        try brokenPackage.write(to: source.appendingPathComponent("package.json"))
         let repository = try FileGameProjectRepository(directory: f.root.appendingPathComponent("repo"))
         let id = UUID(), owner = GameProjectOwner.space(recordID: id)
         let created = try await repository.createProject(projectID: id, owner: owner, title: "Folder")
         let store = try GameArchiveOriginalStore(directory: f.root.appendingPathComponent("originals"))
         let imported = try await GameProjectSourceImporter(originalStore: store).importSource(source,
             into: created, repository: repository, workspace: f.root.appendingPathComponent("jobs"))
-        XCTAssertEqual(imported.project.files.map(\.path.value), [".unknown"])
+        XCTAssertEqual(imported.project.files.map(\.path.value), [".unknown", "package.json"])
         XCTAssertTrue(imported.project.directories.map(\.value).contains("empty"))
+        XCTAssertTrue(imported.preview.rootCandidates.contains { $0.name == "empty" && $0.isDirectory })
         XCTAssertNil(imported.originalArchiveSHA256)
         let saved = try await repository.read(id, owner: owner, revision: imported.project.revision,
                                              path: GameRelativePath(".unknown"))
         XCTAssertEqual(saved, bytes)
+        let savedPackage = try await repository.read(id, owner: owner, revision: imported.project.revision,
+                                                    path: GameRelativePath("package.json"))
+        XCTAssertEqual(savedPackage, brokenPackage)
         XCTAssertEqual(try Data(contentsOf: source.appendingPathComponent(".unknown")), bytes)
     }
 

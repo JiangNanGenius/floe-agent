@@ -1140,6 +1140,23 @@ public actor EnvironmentRegistry {
         return workspaceRootFromLoadedRecords(for: containerID, mapping: try workspaceMappings())
     }
 
+    /// Only native Space assembly supplies the verified project and assistant identity.
+    /// Carry a session across an iOS data-container move without creating another environment.
+    public func restoreSpaceGameRoot(containerID: String, conversationID: UUID,
+                                     projectID: UUID, verifiedRoot: URL) throws -> Bool {
+        try prepare()
+        guard let session = records[containerID], session.kind == .session,
+              session.ownerID == conversationID.uuidString else { return false }
+        var mapping = try workspaceMappings()
+        guard let previous = workspaceRootFromLoadedRecords(for: containerID, mapping: mapping),
+              let current = relocatedSpaceGameRoot(previous, projectID: projectID),
+              current.path == verifiedRoot.resolvingSymlinksInPath().standardizedFileURL.path else { return false }
+        mapping["spaceGame:" + containerID] = ["projectID": projectID.uuidString]
+        try JSONEncoder().encode(mapping).write(to: roots.rootURL.appendingPathComponent("workspace-containers.json"),
+                                                options: .atomic)
+        return true
+    }
+
     /// Native task binding callers supply the currently leased task root.
     /// Shared project dependencies do not make another project's files owned.
     public func ownsExecutionLocation(containerID: String, conversationID: UUID, taskRoot: URL) throws -> Bool {
@@ -1179,7 +1196,37 @@ public actor EnvironmentRegistry {
            let relocated = relocatedPrivateTaskRoot(root, projectName: project.name, under: managedPrivateTasksRoot) {
             return relocated
         }
+        if record.kind == .session, let rawID = mapping["spaceGame:" + containerID]?["projectID"],
+           let projectID = UUID(uuidString: rawID) {
+            return relocatedSpaceGameRoot(root, projectID: projectID)
+        }
         return root
+    }
+
+    private func relocatedSpaceGameRoot(_ original: URL, projectID: UUID) -> URL? {
+        guard let appRoot = managedPrivateTasksRoot?.deletingLastPathComponent() else { return nil }
+        let currentContainer = appRoot.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let prefix = currentContainer.deletingLastPathComponent().pathComponents
+        let parts = original.pathComponents
+        guard prefix.suffix(3).elementsEqual(["Containers", "Data", "Application"]),
+              UUID(uuidString: currentContainer.lastPathComponent) != nil,
+              parts.starts(with: prefix), parts.count >= prefix.count + 8,
+              UUID(uuidString: parts[prefix.count]) != nil else { return nil }
+        let suffix = parts.dropFirst(prefix.count + 1)
+        guard suffix.starts(with: ["Library", "Application Support", "FloeAgent", "PersonalContent"]),
+              suffix.suffix(2).elementsEqual(["Game", "Files"]),
+              suffix.dropLast(2).last?.hasSuffix(".floeproject") == true else { return nil }
+        let candidate = suffix.reduce(currentContainer) { $0.appendingPathComponent($1, isDirectory: true) }
+        guard candidate.resolvingSymlinksInPath().standardizedFileURL.path == candidate.standardizedFileURL.path,
+              (try? candidate.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else { return nil }
+        let originalFile = candidate.deletingLastPathComponent().appendingPathComponent("Original.json")
+        struct Identity: Decodable { let schemaVersion: Int; let projectID: UUID }
+        guard let info = try? originalFile.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]),
+              info.isRegularFile == true, info.isSymbolicLink == false, (info.fileSize ?? .max) <= 8192,
+              let data = try? Data(contentsOf: originalFile),
+              let identity = try? JSONDecoder().decode(Identity.self, from: data),
+              identity.schemaVersion == 1, identity.projectID == projectID else { return nil }
+        return candidate.standardizedFileURL
     }
 
     private func relocatedPrivateTaskRoot(_ original: URL, projectName: String?, under root: URL) -> URL? {

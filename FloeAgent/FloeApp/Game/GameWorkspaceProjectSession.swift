@@ -26,7 +26,10 @@ final class GameWorkspaceProjectSession {
     let support: URL
     let selection: GameProjectSelectionCoordinator
     private(set) var project: GameStoredProject
-    private(set) var selectionSnapshot: GameProjectSelectionSnapshot?
+    private(set) var selectionSnapshot: GameProjectSelectionSnapshot? {
+        didSet { if selectionSnapshot != nil { recognitionIssue = nil } }
+    }
+    private(set) var recognitionIssue: String?
     /// One assistant proposal for this live project. It is advisory only and
     /// is never written to the selection store until the user approves it in
     /// the project setup surface.
@@ -110,17 +113,28 @@ final class GameWorkspaceProjectSession {
         }
     }
 
-    func refresh() async throws {
+    func refresh(reloadFiles: Bool = true, allowRecognitionFailure: Bool = false) async throws {
         let epoch = generation
         try requireCurrent()
-        let saved = try await repository.open(project.projectID, owner: project.owner)
+        let saved = reloadFiles ? try await repository.open(project.projectID, owner: project.owner) : project
         try Task.checkCancellation(); try requireCurrent()
         guard generation == epoch else { throw GameIDEBridgeError.superseded }
         project = saved
-        let snapshot = try await selection.refresh(project: saved, context: context)
+        let captured = try context
+        let result: Result<GameProjectSelectionSnapshot, Error>
+        do { result = .success(try await selection.refresh(project: saved, context: captured)) }
+        catch { result = .failure(error) }
         try Task.checkCancellation(); try requireCurrent()
-        guard generation == epoch else { throw GameIDEBridgeError.superseded }
-        selectionSnapshot = snapshot
+        guard generation == epoch, project.revision == saved.revision else { throw GameIDEBridgeError.superseded }
+        switch result {
+        case .success(let snapshot):
+            selectionSnapshot = snapshot
+        case .failure(let error):
+            selectionSnapshot = nil
+            pendingSelectionProposal = nil
+            guard allowRecognitionFailure, !(error is CancellationError) else { throw error }
+            recognitionIssue = error.localizedDescription
+        }
         // Native drafts retain their base bytes; a repository refresh cannot
         // silently discard them or replace their undo/conflict state.
     }
@@ -151,8 +165,10 @@ final class GameWorkspaceProjectSession {
         guard !isClosed, generation == epoch else { return }
         try requireCurrent()
         project = result.project
-        selectionSnapshot = try await selection.refresh(project: result.project, context: context)
+        selectionSnapshot = nil
+        pendingSelectionProposal = nil
         importSummary = IDELanguageRunText.t("已导入 \(result.importedFiles) 个文件", "Imported \(result.importedFiles) files")
+        try await refresh(reloadFiles: false, allowRecognitionFailure: true)
     }
 
     func select(root: GameRelativePath?, engine: GameEngineID) async throws {

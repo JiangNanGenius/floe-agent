@@ -91,7 +91,7 @@ struct GameProjectQuickEditScreen: View {
                         onOpenIDE: { path in Task { await openIDE(path, visualHandoffPrepared: true) } },
                         onClose: { Task { await close() } },
                         onSaved: { _ in
-                            Task { try? await session.project.refresh(); await loadEntries() }
+                            Task { await refreshEntries() }
                         })
                         .id(visualContentGeneration)
                         .disabled(openingIDE)
@@ -168,12 +168,11 @@ struct GameProjectQuickEditScreen: View {
         }
     }
 
-    private func loadEntries() async {
+    private func refreshEntries() async {
         guard let engine else { return }
         do {
-            let project = try await session.project.repository.open(session.key.projectID,
-                owner: session.key.owner)
-            updateEntries(project, engine: engine)
+            try await session.project.refresh(allowRecognitionFailure: true)
+            updateEntries(session.project.project, engine: engine)
         } catch { self.error = error.localizedDescription }
     }
 
@@ -214,11 +213,7 @@ struct GameProjectQuickEditScreen: View {
         do {
             // Commit the visual draft through the existing CAS path before the
             // IDE reads its initial buffers. Conflicts keep this editor open.
-            if visualHandoffPrepared {
-                try await session.project.refresh()
-            } else {
-                try await session.project.prepareForHandoff()
-            }
+            if !visualHandoffPrepared { try await session.project.prepareForIDE() }
             try Task.checkCancellation()
             guard let workspace = session.center.currentWorkspace else {
                 throw GameIDEBridgeError.workspaceChanged
@@ -244,20 +239,19 @@ struct GameProjectQuickEditScreen: View {
                 // Recreate them only after an actual external IDE revision.
                 visualContentGeneration &+= 1
             }
-            await loadEntries()
+            if let engine { updateEntries(session.project.project, engine: engine) }
             error = nil
         } catch { self.error = error.localizedDescription }
     }
 
     private func close() async {
-        do { _ = try await editing?.prepareForHandoff() }
-        catch { self.error = error.localizedDescription }
-        if editing?.isDirty == true || editing?.pendingDraft != nil || editing?.conflict != nil {
-            self.error = IDELanguageRunText.t("请先保存或处理冲突。", "Save or resolve conflicts first.")
-            return
+        do {
+            _ = try await editing?.prepareForHandoff()
+            try session.attachVisual(nil)
+            dismiss()
+        } catch {
+            self.error = error.localizedDescription
         }
-        try? session.attachVisual(nil)
-        dismiss()
     }
 }
 #endif

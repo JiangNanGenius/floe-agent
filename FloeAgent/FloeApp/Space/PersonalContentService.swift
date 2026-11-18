@@ -171,10 +171,7 @@ actor PersonalContentService {
             guard FileManager.default.fileExists(atPath: file.path) else { throw PersonalContentError.invalidProject }
             _ = try await MeetingService(database: MeetingDatabase(path: file.path)).meeting(MeetingID(record.id))
         case .game:
-            let paths = try await SpaceGameOriginal.read(id: record.id, directory: location.url)
-            let repository = try FileGameProjectRepository(directory: paths.history)
-            let project = try await repository.open(record.id, owner: .space(recordID: record.id))
-            guard project.projectID == record.id else { throw PersonalContentError.invalidProject }
+            _ = try await SpaceGameOriginal.read(id: record.id, directory: location.url)
         case .manufacturing:
             let data = try Data(contentsOf: location.url.appendingPathComponent("Manufacturing/draft.json"))
             guard data.count <= 32_000_000 else { throw PersonalContentError.invalidProject }
