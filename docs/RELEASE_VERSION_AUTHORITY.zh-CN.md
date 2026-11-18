@@ -1,9 +1,9 @@
-<!-- docs-updated: 2026-11-16 -->
+<!-- docs-updated: 2026-11-18 -->
 # iOS 发布版本依据
 
 本文是 iOS／iPadOS 下一版版本选择的唯一维护入口；各渠道实际交付状态见[当前状态](CURRENT_STATUS.md)与[逐版交付记录](releases/README.md)。Android 版本独立管理。
 
-**最近已核验的内部测试为 1.8.36（357）。** Apple 返回 `VALID`，构建未过期，唯一测试组 Floe QA 为 `IN_BETA_TESTING`。签名包主程序 UUID 与本地构建一致。GitHub stable/latest 与 Feather 最近一次核验为 346。[357 交付记录](releases/builds/FLOE_1.8.36_BUILD357_DELIVERY.md)
+**最近已核验的内部测试为 1.8.43（364）。** Apple 返回 `VALID`、未过期，Floe QA 为 `IN_BETA_TESTING`。公开 TestFlight 已送审，为 `WAITING_FOR_BETA_REVIEW`；GitHub stable/latest 和实时 Feather 源已核验为 364。353 正式版关联和发布设置保持。[364 交付记录](releases/builds/FLOE_1.8.43_BUILD364_DELIVERY.md)
 
 ## 依据与判定
 
@@ -12,6 +12,8 @@
 标签、源提交、候选目录、版本说明、构建／归档成功和签名流程启动，都不能单独证明上传、审核通过或可安装。不得从最高标签自动推算下一版，也不得把未交付尝试称为上一已交付版本。
 
 ## 本轮版本记录
+
+1.8.43（364）固定于 `00629979157db5aa738b4c11fc5fde4d18ec7278`／`v1.8.43`，已交付内部 TestFlight、GitHub 和 Feather，并提交现有 publictest1 公开测试审核。游戏助手接入标准工作区／Git，改进工程目录选择及试玩前刷新。完整本地设备构建和签名／资源核验通过；多引擎真实试玩未全部完成。后续交付文档不改变冻结源码或标签。
 
 1.8.36（357）已交付内部 Floe QA，固定源码 `0e3d646e6a8e87c1b4144fafdf8395e219414f41`。本版包含性能、打印状态和包体优化。Mac Bridge 传输修复在其后进入主线。
 

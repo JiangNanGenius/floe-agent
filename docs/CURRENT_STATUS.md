@@ -1,9 +1,15 @@
-<!-- docs-updated: 2026-11-16 -->
+<!-- docs-updated: 2026-11-18 -->
 # 当前版本与验证状态 / Current release and verification status
 
 这是带核实日期的渠道快照。各渠道独立更新；源码版本、公开下载、Apple 审核与测试组可用性分别核对。 / This is a dated channel snapshot. Source versions, public downloads, Apple review and beta-group availability are separate states.
 
-最新内部 TestFlight 为 1.8.36（357），GitHub／Feather 最近一次已核验的稳定版为 346。[发布版本依据](RELEASE_VERSION_AUTHORITY.zh-CN.md)
+最新内部 TestFlight、GitHub／Feather 已核验为 1.8.43（364）；公开 TestFlight 已送审，等待审核。 / Build 364 is verified for internal TestFlight, GitHub and Feather; public TestFlight is awaiting review. [发布版本依据](RELEASE_VERSION_AUTHORITY.zh-CN.md)
+
+## 2026-11-18 iOS 1.8.43（364）
+
+Floe QA 已可安装 364；publictest1 为 `WAITING_FOR_BETA_REVIEW`。GitHub stable/latest、完整安装包检查及在线 Feather 源均通过。353 的正式版关联和发布设置未改动。 / Floe QA can install 364; public beta review is pending. Stable/latest publication, full IPA verification and live Feather readback passed. The formal build 353 bindings and settings were preserved. [364 交付记录 / Delivery](releases/builds/FLOE_1.8.43_BUILD364_DELIVERY.md)
+
+本版改进游戏助手的标准工作区／Git 工具、目录选择和试玩前刷新。完整本地设备构建及签名核验通过；多引擎真实试玩仍未全部覆盖。 / This build improves workspace/Git tools, game folder selection and pre-play refresh. Local device build and signing checks passed; complete multi-engine gameplay remains unverified.
 
 ## 2026-11-16 iOS 内部测试 / Internal TestFlight
 
