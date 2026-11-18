@@ -1,14 +1,46 @@
 #if os(macOS)
 import Foundation
 import CryptoKit
+import Darwin
 import AppKit
 import ApplicationServices
 import FloeMacBridgeProtocol
 
 actor BridgeService {
     struct Pair: Codable, Sendable { let key: Data; let name: String; let acceptedAt: Date; let verification: String?; let nonce: String? }
+    enum PairStoreIdentity: Equatable, Sendable {
+        case missing
+        case file(device: Int32, inode: UInt64, size: Int64, digest: String)
+    }
+    struct PairStoreSnapshot: Sendable {
+        let pairs: [String: Pair]
+        let identity: PairStoreIdentity
+    }
     struct Delivery: Sendable { let data: Data; let lease: BridgeUpdateActivity.Lease }
     struct Transfer: Sendable { let root: URL; let relativePath: String; let stage: URL; let expected: String?; let clientID: String; var expires: ContinuousClock.Instant; let updateLease: BridgeUpdateActivity.Lease }
+    struct PairingAttempt: Sendable, Equatable {
+        let attemptID: String
+        let clientID: String
+        let displayName: String
+        let verification: String
+        let receivedAt: String
+        let sequence: UInt64
+    }
+    struct PairingSnapshot: Sendable, Equatable {
+        let revision: UInt64
+        let pending: [PairingAttempt]
+    }
+    private struct PendingPairing {
+        let attemptID: String
+        let clientID: String
+        let name: String
+        let key: Data
+        let nonce: String
+        let verification: String
+        let receivedAt: String
+        let sequence: UInt64
+        let updateLease: BridgeUpdateActivity.Lease
+    }
     let paths: BridgePaths
     nonisolated let updateActivity: BridgeUpdateActivity
     let jobs: BridgeJobs
@@ -30,42 +62,209 @@ actor BridgeService {
         var expires: ContinuousClock.Instant
     }
     private var listings: [ListingKey: Listing] = [:]
-    private var pending: [String: (name: String, key: Data, nonce: String, verification: String, updateLease: BridgeUpdateActivity.Lease)] = [:]
+    private var pending: [String: PendingPairing] = [:]
+    private var pendingSequence: UInt64 = 0
+    private var pairingRevision: UInt64 = 0
+    private var pairingObserver: (@Sendable (PairingSnapshot) -> Void)?
     private var rejected: [String: String] = [:]
     var skillPins: [String: Set<String>] = [:]
-    var consent: (@MainActor @Sendable (String, String, String) -> Void)?
+    // Kept for the standalone app's modal promise presentation. The embedded
+    // host uses the ordered snapshot observer instead.
+    var consent: (@MainActor @Sendable (String, String, String, String) -> Void)?
+    private let pairStoreWriter: (@Sendable (Data) throws -> Void)?
     // A caller-supplied key permits isolated synthetic contract fixtures without
     // accessing the user's Keychain. The application uses the existing default.
     init(paths: BridgePaths, updateActivity: BridgeUpdateActivity = BridgeUpdateActivity(),
          signingKey: Curve25519.Signing.PrivateKey? = nil, transferLifetime: Duration = .seconds(900),
-         listingLifetime: Duration = .seconds(120)) throws {
+         listingLifetime: Duration = .seconds(120), expectedPairStore: PairStoreIdentity? = nil,
+         pairStoreWriter: (@Sendable (Data) throws -> Void)? = nil) throws {
+        // Isolated storage must never fall back to the legacy Keychain. This
+        // is intentionally before jobs, pair-store reads or key resolution.
+        // A supplied key still needs host-verified isolated provenance.
+        guard paths.namespace != .isolated || signingKey != nil else {
+            throw BridgeFailure.remote("The separate Bridge requires an explicitly resolved identity.")
+        }
         self.paths = paths; self.updateActivity = updateActivity
         self.transferLifetime = transferLifetime
         self.listingLifetime = listingLifetime
+        self.pairStoreWriter = pairStoreWriter
         self.jobs = BridgeJobs(paths: paths, updateActivity: updateActivity)
-        self.signingKey = try signingKey ?? BridgeKeychain.signingKey(service: "org.floeagent.bridge.server")
         let pairURL = paths.root.appendingPathComponent("State/paired-clients.json")
-        pairs = (try? BridgeWire.decode([String: Pair].self, from: Data(contentsOf: pairURL))) ?? [:]
+        let snapshot = try Self.pairStoreSnapshot(at: pairURL)
+        guard expectedPairStore == nil || expectedPairStore == snapshot.identity else {
+            throw BridgeFailure.remote("The Bridge pairing store changed after preflight; it was not modified.")
+        }
+        self.signingKey = try signingKey ?? Self.legacySigningKey(hasPairings: !snapshot.pairs.isEmpty)
+        pairs = snapshot.pairs
         skillPins = (try? BridgeWire.decode([String: Set<String>].self, from: Data(contentsOf: paths.root.appendingPathComponent("State/skill-pins.json")))) ?? [:]
         accepted = (try? BridgeWire.decode([String: Int64].self, from: Data(contentsOf: paths.root.appendingPathComponent("State/request-ids.json")))) ?? [:]
     }
-    func setConsent(_ callback: @escaping @MainActor @Sendable (String, String, String) -> Void) { consent = callback }
-    func approve(_ clientID: String, verification: String, allow: Bool) throws {
+
+    static func legacySigningKey(
+        hasPairings: Bool,
+        read: (String, String) throws -> Data? = BridgeKeychain.read,
+        create: (String) throws -> Curve25519.Signing.PrivateKey = BridgeKeychain.signingKey
+    ) throws -> Curve25519.Signing.PrivateKey {
+        let service = "org.floeagent.bridge.server"
+        if let bytes = try read(service, "identity-v1") {
+            return try Curve25519.Signing.PrivateKey(rawRepresentation: bytes)
+        }
+        guard !hasPairings else {
+            throw BridgeFailure.remote(String(localized:
+                "The existing Floe Bridge key could not be found. Your pairings were kept."))
+        }
+        return try create(service)
+    }
+    /// Read and decode the exact file used by the running service. Only an
+    /// absent file represents a first installation; an unreadable, damaged,
+    /// symlinked or replaced file must never become an empty pairing store.
+    static func loadPairs(at url: URL) throws -> [String: Pair] {
+        try pairStoreSnapshot(at: url).pairs
+    }
+
+    static func pairStoreSnapshot(at url: URL) throws -> PairStoreSnapshot {
+        let descriptor = open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+        guard descriptor >= 0 else {
+            if errno == ENOENT { return PairStoreSnapshot(pairs: [:], identity: .missing) }
+            throw BridgeFailure.remote("The existing Bridge pairing store cannot be opened; it was not modified.")
+        }
+        defer { close(descriptor) }
+        var before = stat()
+        guard fstat(descriptor, &before) == 0, (before.st_mode & S_IFMT) == S_IFREG else {
+            throw BridgeFailure.remote("The Bridge pairing store is not a regular file; it was not modified.")
+        }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
+        let data: Data
+        do {
+            guard let contents = try handle.readToEnd() else { throw BridgeFailure.authentication }
+            data = contents
+        } catch {
+            throw BridgeFailure.remote("The existing Bridge pairing store cannot be read; it was not modified.")
+        }
+        var after = stat()
+        var current = stat()
+        guard fstat(descriptor, &after) == 0,
+              lstat(url.path, &current) == 0,
+              (current.st_mode & S_IFMT) == S_IFREG,
+              before.st_dev == after.st_dev, before.st_ino == after.st_ino,
+              before.st_dev == current.st_dev, before.st_ino == current.st_ino,
+              before.st_size == after.st_size,
+              before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec,
+              before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec,
+              before.st_ctimespec.tv_sec == after.st_ctimespec.tv_sec,
+              before.st_ctimespec.tv_nsec == after.st_ctimespec.tv_nsec,
+              after.st_size == current.st_size,
+              after.st_mtimespec.tv_sec == current.st_mtimespec.tv_sec,
+              after.st_mtimespec.tv_nsec == current.st_mtimespec.tv_nsec,
+              after.st_ctimespec.tv_sec == current.st_ctimespec.tv_sec,
+              after.st_ctimespec.tv_nsec == current.st_ctimespec.tv_nsec,
+              Int64(data.count) == before.st_size else {
+            throw BridgeFailure.remote("The Bridge pairing store changed while it was read; it was not modified.")
+        }
+        do {
+            let pairs = try BridgeWire.decode([String: Pair].self, from: data)
+            return PairStoreSnapshot(pairs: pairs, identity: .file(
+                device: before.st_dev, inode: before.st_ino, size: before.st_size,
+                digest: BridgeWire.digest(data)
+            ))
+        } catch {
+            throw BridgeFailure.remote("The existing Bridge pairing store is invalid; it was not modified.")
+        }
+    }
+    func setConsent(_ callback: @escaping @MainActor @Sendable (String, String, String, String) -> Void) { consent = callback }
+    /// Install the ordered pending-request observer and return the current
+    /// snapshot atomically. The callback is invoked from the actor after every
+    /// change, before any consent callback suspends.
+    func setPairingObserver(_ observer: @escaping @Sendable (PairingSnapshot) -> Void) -> PairingSnapshot {
+        pairingObserver = observer
+        return currentPairingSnapshot()
+    }
+    func pairingSnapshot() -> PairingSnapshot { currentPairingSnapshot() }
+
+    private func currentPairingSnapshot() -> PairingSnapshot {
+        PairingSnapshot(
+            revision: pairingRevision,
+            pending: pending.values
+                .sorted { $0.sequence < $1.sequence }
+                .map {
+                    PairingAttempt(attemptID: $0.attemptID, clientID: $0.clientID,
+                                   displayName: $0.name, verification: $0.verification,
+                                   receivedAt: $0.receivedAt, sequence: $0.sequence)
+                }
+        )
+    }
+
+    private func pairingDidChange() {
+        pairingRevision &+= 1
+        pairingObserver?(currentPairingSnapshot())
+    }
+
+    /// Exact per-attempt decision. Returns false when the attempt is no longer
+    /// current (cancelled, superseded or already decided) and performs no
+    /// mutation in that case.
+    @discardableResult
+    func decide(attemptID: String, verification: String, allow: Bool) throws -> Bool {
         let operation = try updateActivity.begin(.maintenance)
         defer { updateActivity.finish(operation) }
-        guard let proposal = pending[clientID], proposal.verification == verification else { return }
-        pending.removeValue(forKey: clientID)
-        defer { updateActivity.finish(proposal.updateLease) }
-        if allow {
-            pairs[clientID] = Pair(key: proposal.key, name: proposal.name, acceptedAt: Date(), verification: proposal.verification, nonce: proposal.nonce)
-            try savePairs()
-        } else { rejected[clientID] = proposal.nonce }
+        guard let proposal = pending.values.first(where: {
+            $0.attemptID == attemptID && $0.verification == verification
+        }) else { return false }
+        return try decide(proposal: proposal, allow: allow)
     }
+
+    /// A modal decision belongs to exactly the attempt that displayed it.
+    /// Even a retry with the same client, nonce and verification must not
+    /// accept a delayed response from the previous modal.
+    @discardableResult
+    func approve(_ clientID: String, attemptID: String, verification: String, allow: Bool) throws -> Bool {
+        let operation = try updateActivity.begin(.maintenance)
+        defer { updateActivity.finish(operation) }
+        guard let proposal = pending.values.first(where: {
+            !$0.attemptID.isEmpty && $0.attemptID == attemptID && $0.clientID == clientID && $0.verification == verification
+        }) else { return false }
+        return try decide(proposal: proposal, allow: allow)
+    }
+
+    private func decide(proposal: PendingPairing, allow: Bool) throws -> Bool {
+        // Re-check under the actor: another decision or a pairCancel may have
+        // removed this exact attempt between snapshot creation and this call.
+        guard pending[proposal.clientID]?.attemptID == proposal.attemptID else { return false }
+        if allow {
+            var updated = pairs
+            updated[proposal.clientID] = Pair(
+                key: proposal.key, name: proposal.name, acceptedAt: Date(),
+                verification: proposal.verification, nonce: proposal.nonce
+            )
+            // Persist before publishing the in-memory pair. A failed write
+            // leaves the pending request, its consent lease and the UI intact.
+            try savePairs(updated)
+            pairs = updated
+        } else {
+            rejected[proposal.clientID] = proposal.nonce
+        }
+        pending.removeValue(forKey: proposal.clientID)
+        updateActivity.finish(proposal.updateLease)
+        pairingDidChange()
+        return true
+    }
+
     func pairedClients() -> [(String, String)] { pairs.map { ($0.key, $0.value.name + ($0.value.verification.map { " · " + $0 } ?? "")) } }
     func revoke(_ clientID: String) async throws {
         let operation = try updateActivity.begin(.maintenance)
         defer { updateActivity.finish(operation) }
-        pairs.removeValue(forKey: clientID); try savePairs()
+        var updated = pairs
+        updated.removeValue(forKey: clientID)
+        // Do not drop a pending consent before the pairing store is durable;
+        // a failed write leaves the exact request still actionable.
+        try savePairs(updated)
+        pairs = updated
+        var changedPending = false
+        if let proposal = pending.removeValue(forKey: clientID) {
+            updateActivity.finish(proposal.updateLease)
+            changedPending = true
+        }
+        rejected.removeValue(forKey: clientID)
+        if changedPending { pairingDidChange() }
         listings = listings.filter { $0.key.client != clientID }
         for (id, transfer) in transfers where transfer.clientID == clientID {
             try? FileManager.default.removeItem(at: transfer.stage); transfers.removeValue(forKey: id)
@@ -73,8 +272,13 @@ actor BridgeService {
         }
         await jobs.cancelAll(clientID: clientID)
     }
-    private func savePairs() throws {
-        try BridgeWire.encode(pairs).write(to: paths.root.appendingPathComponent("State/paired-clients.json"), options: .atomic)
+    private func savePairs(_ values: [String: Pair]) throws {
+        let data = try BridgeWire.encode(values)
+        if let pairStoreWriter {
+            try pairStoreWriter(data)
+        } else {
+            try data.write(to: paths.root.appendingPathComponent("State/paired-clients.json"), options: .atomic)
+        }
     }
     /// HTTP owns this lease until the full signed reply finishes sending.
     func respondForDelivery(_ request: BridgeRequest) async throws -> Delivery {
@@ -83,8 +287,10 @@ actor BridgeService {
         catch { updateActivity.finish(lease); throw error }
     }
     nonisolated func finishDelivery(_ lease: BridgeUpdateActivity.Lease) { updateActivity.finish(lease) }
-    nonisolated func reserveUpdateInstallationIfIdle() -> BridgeUpdateActivity.Installation? {
-        updateActivity.reserveInstallationIfIdle()
+    nonisolated func reserveUpdateInstallationIfIdle(
+        reason: String = String(localized: "Floe Bridge is installing an update. Reconnect shortly.")
+    ) -> BridgeUpdateActivity.Installation? {
+        updateActivity.reserveInstallationIfIdle(reason: reason)
     }
     func respond(_ request: BridgeRequest) async throws -> Data {
         let operation = try updateActivity.begin(.request)
@@ -101,11 +307,14 @@ actor BridgeService {
         do {
             if body.method == "pairCancel" {
                 guard let nonce = body.payload["nonce"]?.string, nonce.count >= 32, nonce.count <= 160 else { throw BridgeFailure.authentication }
+                var changed = false
                 if let proposal = pending[clientID], proposal.nonce == nonce {
                     pending.removeValue(forKey: clientID)
                     updateActivity.finish(proposal.updateLease)
+                    changed = true
                 }
                 if rejected[clientID] == nonce { rejected.removeValue(forKey: clientID) }
+                if changed { pairingDidChange() }
                 result = ["cancelled": .bool(true), "nonce": .string(nonce)]
             } else if body.method == "pair" || body.method == "pairStatus" {
                 guard let nonce = body.payload["nonce"]?.string, nonce.count >= 32, nonce.count <= 160 else { throw BridgeFailure.authentication }
@@ -120,8 +329,26 @@ actor BridgeService {
                     if pending[clientID] == nil {
                         let name = String(String.UnicodeScalarView((body.payload["name"]?.string ?? "Floe").unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) })).prefix(80).description
                         let verification = BridgeWire.pairingVerification(clientKey: body.clientKey, serverKey: signingKey.publicKey.rawRepresentation, nonce: nonce)
-                        pending[clientID] = (name, body.clientKey, nonce, verification, try updateActivity.begin(.consent))
-                        if let consent { await consent(clientID, name, verification) }
+                        // A new pending instance must never reuse the old
+                        // identity, even if the client repeats its nonce.
+                        let attemptID = UUID().uuidString.lowercased()
+                        pendingSequence &+= 1
+                        pending[clientID] = PendingPairing(
+                            attemptID: attemptID,
+                            clientID: clientID,
+                            name: name,
+                            key: body.clientKey,
+                            nonce: nonce,
+                            verification: verification,
+                            receivedAt: ISO8601DateFormatter().string(from: Date()),
+                            sequence: pendingSequence,
+                            updateLease: try updateActivity.begin(.consent)
+                        )
+                        // Publish before the callback can suspend the actor. A
+                        // later pairCancel/approve always produces a newer
+                        // revision; the host never sees a ghost request.
+                        pairingDidChange()
+                        if let consent { await consent(clientID, name, verification, attemptID) }
                     }
                     // Re-read admission after the consent await: native approval
                     // removes `pending`, and a decline inserts `rejected`.

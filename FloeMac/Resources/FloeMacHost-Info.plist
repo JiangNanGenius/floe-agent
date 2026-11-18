@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+<key>CFBundleExecutable</key><string>$(EXECUTABLE_NAME)</string>
+<key>CFBundleName</key><string>Floe</string>
+<key>CFBundleDisplayName</key><string>Floe</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleShortVersionString</key><string>0.1.0</string>
+<key>CFBundleVersion</key><string>1</string>
+<key>CFBundleDevelopmentRegion</key><string>en</string>
+<key>CFBundleLocalizations</key><array><string>en</string><string>zh-Hans</string></array>
+<key>LSMinimumSystemVersion</key><string>$(MACOSX_DEPLOYMENT_TARGET)</string>
+<key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
+<key>NSPrincipalClass</key><string>NSApplication</string>
+<key>NSHighResolutionCapable</key><true/>
+<key>NSCameraUsageDescription</key><string>Floe uses the camera to scan QR codes and magnify images.</string>
+<key>NSMicrophoneUsageDescription</key><string>Floe uses the microphone when you start the sound analyzer.</string>
+<key>NSLocationUsageDescription</key><string>Floe uses your location when you choose to use the location tool.</string>
+<key>NSLocalNetworkUsageDescription</key><string>Floe searches your local network when you choose to discover services.</string>
+<key>NSBonjourServices</key><array>
+<string>_airplay._tcp</string><string>_afpovertcp._tcp</string><string>_googlecast._tcp</string><string>_hap._tcp</string>
+<string>_home-assistant._tcp</string><string>_http._tcp</string><string>_https._tcp</string><string>_ipp._tcp</string>
+<string>_ipps._tcp</string><string>_printer._tcp</string><string>_raop._tcp</string><string>_rfb._tcp</string>
+<string>_sftp-ssh._tcp</string><string>_smb._tcp</string><string>_uscan._tcp</string><string>_workstation._tcp</string>
+</array>
+<key>NSHumanReadableCopyright</key><string>Floe Agent M00 architecture validation. Not a distribution build.</string>
+</dict></plist>

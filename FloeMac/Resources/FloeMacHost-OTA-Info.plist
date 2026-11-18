@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+<key>CFBundleExecutable</key><string>$(EXECUTABLE_NAME)</string>
+<key>CFBundleName</key><string>Floe</string>
+<key>CFBundleDisplayName</key><string>Floe</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleIconFile</key><string>FloeBridge.icns</string>
+<key>CFBundleShortVersionString</key><string>$(FLOE_OTA_VERSION)</string>
+<key>CFBundleVersion</key><string>$(FLOE_OTA_BUILD)</string>
+<key>CFBundleDevelopmentRegion</key><string>en</string>
+<key>CFBundleLocalizations</key><array><string>en</string><string>zh-Hans</string></array>
+<key>LSMinimumSystemVersion</key><string>$(MACOSX_DEPLOYMENT_TARGET)</string>
+<key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
+<key>NSPrincipalClass</key><string>NSApplication</string>
+<key>NSHighResolutionCapable</key><true/>
+<key>NSCameraUsageDescription</key><string>Floe uses the camera to scan QR codes and magnify images.</string>
+<key>NSMicrophoneUsageDescription</key><string>Floe uses the microphone when you start the sound analyzer.</string>
+<key>NSLocationUsageDescription</key><string>Floe uses your location when you choose to use the location tool.</string>
+<key>NSLocalNetworkUsageDescription</key><string>Floe searches your local network when you choose to discover services.</string>
+<key>NSBonjourServices</key><array>
+<string>_airplay._tcp</string><string>_afpovertcp._tcp</string><string>_googlecast._tcp</string><string>_hap._tcp</string>
+<string>_home-assistant._tcp</string><string>_http._tcp</string><string>_https._tcp</string><string>_ipp._tcp</string>
+<string>_ipps._tcp</string><string>_printer._tcp</string><string>_raop._tcp</string><string>_rfb._tcp</string>
+<string>_sftp-ssh._tcp</string><string>_smb._tcp</string><string>_uscan._tcp</string><string>_workstation._tcp</string>
+</array>
+<key>CFBundleURLTypes</key><array><dict><key>CFBundleURLName</key><string>org.floeagent.macbridge.connect</string><key>CFBundleURLSchemes</key><array><string>floe-bridge</string></array></dict></array>
+<!-- The updater retains the public Bridge feed and public update key. -->
+<key>SUFeedURL</key><string>https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/appcast.xml</string>
+<key>SUPublicEDKey</key><string>QIFJI+XvAj+Y8aPn8OMgKd68FM9/DDmTo7WznatP3Ts=</string>
+<key>SUEnableAutomaticChecks</key><false/>
+<key>SUAutomaticallyUpdate</key><false/>
+<key>SUAllowsAutomaticUpdates</key><false/>
+<key>SUVerifyUpdateBeforeExtraction</key><true/>
+<key>NSHumanReadableCopyright</key><string>Floe Mac OTA candidate. Not a distribution build.</string>
+</dict></plist>

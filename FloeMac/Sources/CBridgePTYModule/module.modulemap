@@ -1,0 +1,4 @@
+module CBridgePTY {
+    header "../../../FloeMacBridge/Sources/CBridgePTY/include/CBridgePTY.h"
+    export *
+}

@@ -1,0 +1,2523 @@
+{
+  "schemaVersion": 1,
+  "package": {
+    "name": "FloeMacSelfCore",
+    "version": "0.1.0",
+    "swiftToolsVersion": "6.2",
+    "platform": "macOS 15",
+    "products": [
+      "FloeMacSelfCore"
+    ],
+    "modules": [
+      "FloeMacSelfCore",
+      "CFloeExtentShim",
+      "CFloeSparseRewriteShim",
+      "FloeCore",
+      "FloeModels",
+      "FloeProviders",
+      "FloeTools",
+      "FloeSecurity",
+      "FloePersistence",
+      "FloeAgentRuntime"
+    ]
+  },
+  "generatedAtUTC": "2026-11-16T15:06:14.882734+00:00",
+  "gitHeadAtGeneration": "99f743f4a5d1cd1c38f7ff43f1f11ba071856c35",
+  "sourcePolicy": {
+    "mode": "directory-symlinks-to-exact-upstream-working-tree-sources",
+    "upstreamEdits": "read-only; FloeMacSelfCore/ is the only directory this task created or edited",
+    "drift": "any upstream byte change changes the compiled package and requires regenerating this manifest",
+    "hashScope": "working-tree bytes, including dirty paths not edited by this task (listed below)",
+    "note": "The dirty-path list is the tracked working-tree state at generation time. The checkout is shared with other tasks; this task did not edit any path outside FloeMacSelfCore/. Upstream target hashes above cover the actual compiled bytes."
+  },
+  "dirtyUpstreamPathsNotEditedByThisTask": [
+    "M FloeAgent/FloeApp/App/DesignWorkflowFixture.swift",
+    "M FloeAgent/FloeApp/App/FloeAgentApp.swift",
+    "M FloeAgent/FloeApp/Browser/BrowserSessionCenter.swift",
+    "M FloeAgent/FloeApp/Browser/BrowserSettings.swift",
+    "M FloeAgent/FloeApp/Browser/BrowserSettingsView.swift",
+    "M FloeAgent/FloeApp/Browser/BrowserTaskSessionStore.swift",
+    "M FloeAgent/FloeApp/Browser/BrowserTools.swift",
+    "M FloeAgent/FloeApp/Browser/BrowserView.swift",
+    "M FloeAgent/FloeApp/Chat/RunFileChanges.swift",
+    "M FloeAgent/FloeApp/Chat/ThreadDetailView.swift",
+    "M FloeAgent/FloeApp/Remote/ConversationCenter.swift",
+    "M FloeAgent/FloeApp/Resources/Info.plist",
+    "M FloeAgent/FloeApp/Resources/Localizable.xcstrings",
+    "M FloeAgent/FloeApp/Space/Biology/BiologyHostContracts.swift",
+    "M FloeAgent/FloeApp/Space/Biology/BiologyProjectSession.swift",
+    "M FloeAgent/FloeApp/Space/GIS/GISProjectSession.swift",
+    "M FloeAgent/FloeApp/Space/LaTeX/LaTeXOriginalEditor.swift",
+    "M FloeAgent/FloeApp/Space/PersonalContentEditor.swift",
+    "M FloeAgent/FloeApp/Space/StudioAgentTools.swift",
+    "M FloeAgent/FloeApp/Space/StudioAssistantView.swift",
+    "M FloeAgent/FloeApp/Space/Toolbox/ToolboxCenter.swift",
+    "M FloeAgent/FloeApp/Workspace/Building/BuildingProjectWorkspaceView.swift",
+    "M FloeAgent/FloeApp/Workspace/CADSelectionAssistantEntry.swift",
+    "M FloeAgent/FloeApp/Workspace/DesignConversationPageView.swift",
+    "M FloeAgent/Modules/FloeInteriorKit/Sources/FloeBuildingUI/BuildingWorkbenchView.swift",
+    "M FloeAgent/Package.resolved",
+    "M FloeAgent/Sources/FloeAgentRuntime/AgentRuntime.swift",
+    "M FloeAgent/Sources/FloeAgentRuntime/ConversationHistoryAssembler.swift",
+    "M FloeAgent/Sources/FloeAgentRuntime/ConversationRunService.swift",
+    "M FloeAgent/Sources/FloeCore/ProviderConfigurationValidation.swift",
+    "M FloeAgent/Sources/FloePersistence/EphemeralStores.swift",
+    "M FloeAgent/Sources/FloePersistence/RunningInputStore.swift",
+    "M FloeAgent/Tests/FloeAgentRuntimeTests/ConversationRunServiceTests.swift",
+    "M FloeAgent/Tests/FloeAgentUITests/ChemistryNativePreviewUITests.swift",
+    "M FloeAgent/Tests/FloeAgentUITests/DesignConversationPageUITests.swift",
+    "M FloeAgent/Tests/FloeAgentUITests/PredevelopmentWorkspaceEntryUITests.swift",
+    "M FloeAgent/Tests/FloeAppTests/BiologyHostIntegrationTests.swift",
+    "M FloeAgent/Tests/FloeAppTests/BrowserPreviewOwnershipTests.swift",
+    "M FloeAgent/Tests/FloeAppTests/BrowserTaskSessionTests.swift",
+    "M FloeAgent/Tests/FloeAppTests/FileAssistantLifecycleTests.swift",
+    "M FloeAgent/Tests/FloeAppTests/GISProductionOriginalTests.swift",
+    "M FloeAgent/Tests/FloeAppTests/MapEditorAppClosureTests.swift",
+    "M FloeAgent/Tests/FloeAppTests/NextRoundFileChangeEvidenceTests.swift",
+    "M FloeAgent/Tests/FloeCoreTests/ProviderProfileTests.swift",
+    "M FloeAgent/project.yml",
+    "M FloeMacBridge/Sources/FloeMacBridgeApp/BridgeHTTPServer.swift",
+    "M FloeMacBridge/Sources/FloeMacBridgeApp/BridgeService.swift",
+    "M FloeMacBridge/Sources/FloeMacBridgeApp/BridgeUpdateActivity.swift",
+    "M FloeMacBridge/Sources/FloeMacBridgeApp/FloeMacBridgeApp.swift",
+    "M FloeMacBridge/Tests/FloeMacBridgeAppTests/BridgeAbsoluteFileReadTests.swift",
+    "M FloeMacBridge/Tests/FloeMacBridgeAppTests/BridgePairingLifecycleTests.swift",
+    "M FloeMacBridge/Tests/FloeMacBridgeAppTests/BridgeUpdateTests.swift",
+    "M docs/FLOE_IOS_STABLE_FIXES_20261112.zh-CN.md",
+    "M docs/README.md"
+  ],
+  "dependencies": {
+    "swift-crypto": {
+      "kind": "local-path",
+      "path": "FloeAgent/ThirdParty/swift-crypto",
+      "upstreamVersion": "3.15.1",
+      "upstreamRevision": "95ba0316a9b733e92bb6b071255ff46263bbe7dc",
+      "provenance": "FloeAgent/ThirdParty/swift-crypto/FLOE_UPSTREAM.json"
+    },
+    "GRDB.swift": {
+      "kind": "remoteSourceControl",
+      "url": "https://github.com/groue/GRDB.swift.git",
+      "exactVersion": "7.8.0",
+      "expectedRevision": "18497b68fdbb3a09528d260a0a0e1e7e61c8c53d"
+    },
+    "swift-asn1": {
+      "kind": "remoteSourceControl",
+      "url": "https://github.com/apple/swift-asn1.git",
+      "exactVersion": "1.7.1",
+      "expectedRevision": "a9a5efd40eaf558a2bcd48d64b1d1646be686008"
+    }
+  },
+  "targets": [
+    {
+      "target": "CFloeExtentShim",
+      "upstreamDirectory": "FloeAgent/Sources/CFloeExtentShim",
+      "packageSymlink": "Sources/CFloeExtentShim",
+      "symlinkTarget": "../../FloeAgent/Sources/CFloeExtentShim",
+      "isSymlink": true,
+      "fileCount": 2,
+      "files": [
+        {
+          "path": "CFloeExtentShim.c",
+          "sha256": "24064d5f8303ae542679f96530cc8e0706343a4ad028725e22ee609a00529fc3",
+          "bytes": 1147
+        },
+        {
+          "path": "include/CFloeExtentShim.h",
+          "sha256": "71ecdad1efc541b660ce360a4097d4cc080761c0337b7b749f10c2091e135b44",
+          "bytes": 1208
+        }
+      ]
+    },
+    {
+      "target": "CFloeSparseRewriteShim",
+      "upstreamDirectory": "FloeAgent/Sources/CFloeSparseRewriteShim",
+      "packageSymlink": "Sources/CFloeSparseRewriteShim",
+      "symlinkTarget": "../../FloeAgent/Sources/CFloeSparseRewriteShim",
+      "isSymlink": true,
+      "fileCount": 2,
+      "files": [
+        {
+          "path": "CFloeSparseRewriteShim.c",
+          "sha256": "e9ecf07a707a308bc5466878d89a98a84774d1c136a2f67eb3b8feec5ba5424a",
+          "bytes": 2232
+        },
+        {
+          "path": "include/CFloeSparseRewriteShim.h",
+          "sha256": "302998d762c1bc7deaa3bc01222f6241a6654841dfda87beb81fb28747cb27ca",
+          "bytes": 980
+        }
+      ]
+    },
+    {
+      "target": "FloeCore",
+      "upstreamDirectory": "FloeAgent/Sources/FloeCore",
+      "packageSymlink": "Sources/FloeCore",
+      "symlinkTarget": "../../FloeAgent/Sources/FloeCore",
+      "isSymlink": true,
+      "fileCount": 108,
+      "files": [
+        {
+          "path": "ASRConfiguration.swift",
+          "sha256": "e49ddc0e35eb68375f53d7c85b8922515a3f18cf36e514f1a1daf4ff8bc41b19",
+          "bytes": 57877
+        },
+        {
+          "path": "AgentPromptOverlay.swift",
+          "sha256": "1659da1db53e61fdfeb75ad0eb2b94251b4cc42522cea108c254fab55a1963c6",
+          "bytes": 6280
+        },
+        {
+          "path": "AppSettings.swift",
+          "sha256": "2a78e5b8670afbcdec866f8bc4697a46abd81cf77ebd099b84408150151d852f",
+          "bytes": 7193
+        },
+        {
+          "path": "AppleImagePlaygroundModelIdentity.swift",
+          "sha256": "f69951a566f9ffea4bc940685a1309d0ed798ea7727ca6aa9f3dea42732d3905",
+          "bytes": 1920
+        },
+        {
+          "path": "ApplicationSettingsSync.swift",
+          "sha256": "9fca25118fe5a5748bf1deba2cb44e54e122fc71b9fdc2f182d659a550e33345",
+          "bytes": 14687
+        },
+        {
+          "path": "BackgroundDownloadEventSettlement.swift",
+          "sha256": "d10b92c815d333154138dafe184d10870eca01accd0b332325f0db5efca26092",
+          "bytes": 12765
+        },
+        {
+          "path": "BackgroundExecutionPreference.swift",
+          "sha256": "832b874b6d9c3764b01ec9583d3a04d4f0e44e276f8d9b3685093465d33ef5ff",
+          "bytes": 15989
+        },
+        {
+          "path": "BackgroundSurfaceCompletionPolicy.swift",
+          "sha256": "58fadc384319b39b406236ec9119defd21befdcb750821fedb4ad6d3d698a20f",
+          "bytes": 3126
+        },
+        {
+          "path": "BackgroundVisualSurfacePolicy.swift",
+          "sha256": "09284e9f3d93c9ca77cd19a1dfc9ca17c1c6bf37e1ecc760fc7904687b07c8f3",
+          "bytes": 2251
+        },
+        {
+          "path": "BackgroundWork.swift",
+          "sha256": "177474e0801979831c8b86e75d0a4026f4a26af023c3f4b67928bab57d669006",
+          "bytes": 18852
+        },
+        {
+          "path": "BackgroundWorkSession.swift",
+          "sha256": "bd8cef7c8251a7426eed850f72ff1a92ee5fdacd9ea700b81f4298c62bb4c5d6",
+          "bytes": 15530
+        },
+        {
+          "path": "BoundedRecoverableBox.swift",
+          "sha256": "42f751ed549365f3344560f4ee6856422b2e72d43117626a9507b22ce75f291b",
+          "bytes": 4670
+        },
+        {
+          "path": "BoundedVisualTextRecognizer.swift",
+          "sha256": "69e79f623e03ae6d82b79d6bdbf69c0fd4fea2ab425bb3f42e05a9db5291b783",
+          "bytes": 3174
+        },
+        {
+          "path": "CADCanvasNodePlanner.swift",
+          "sha256": "72be46079555bebdf466f003acee625e4e12144a5f3aaf651c9886be2c80f3f5",
+          "bytes": 19451
+        },
+        {
+          "path": "CanvasCopyForkPlanner.swift",
+          "sha256": "a169fc6985a84154af2d3f8ef9043a0782746ac87289cce49af9f8ec990ce8fe",
+          "bytes": 33053
+        },
+        {
+          "path": "CanvasDrawingRevisionHistory.swift",
+          "sha256": "430ff82d231d1b1db652a34d2c2815e989cfe8b5a9d75c5168fb03050bc1f450",
+          "bytes": 21520
+        },
+        {
+          "path": "CanvasOperations.swift",
+          "sha256": "20553ec480312c70f0058d55300b9ba62b945d9012e0bb813e476c84674affab",
+          "bytes": 71342
+        },
+        {
+          "path": "CanvasPreferences.swift",
+          "sha256": "4003451d076caac5815bc9c899f4acc3149569072023c305fbb13e6b42746fb9",
+          "bytes": 2366
+        },
+        {
+          "path": "CanvasProjectModels.swift",
+          "sha256": "9948f9ce660124bbab3134cf9cf5431d66c671be69b8292a7db0288bc45f9897",
+          "bytes": 49589
+        },
+        {
+          "path": "CapabilityProbe.swift",
+          "sha256": "8be79dd7bc848037d7231d4464ff65c00891dc1ca30fe4391e47b452b6466cc0",
+          "bytes": 1139
+        },
+        {
+          "path": "ChatReasoningPreference.swift",
+          "sha256": "af35144886d08667e8e74514dfd82803d2d9a2a9215df40b9fdc0ba58b3da331",
+          "bytes": 7691
+        },
+        {
+          "path": "ComposerSlashCommand.swift",
+          "sha256": "bd4a0bf79b141eec2035fcb760d059f964681ebdf1d39a953018e204790d3648",
+          "bytes": 1166
+        },
+        {
+          "path": "CreativeMediaModels.swift",
+          "sha256": "ab5f3f4260180d7176585db467c1af1bb65847c90ab9aba53a1d8fbf4d260e62",
+          "bytes": 10133
+        },
+        {
+          "path": "DataFloeContentsOf.swift",
+          "sha256": "7861b60e7a04e07bec44e9fd82d957c7d72ee561fe38de211d4b296bf391806b",
+          "bytes": 1752
+        },
+        {
+          "path": "DesignCanvasMetadata.swift",
+          "sha256": "0db6e380f8766ace81a5b147354bbe503bba781baea5e97c53299df787631da2",
+          "bytes": 10003
+        },
+        {
+          "path": "DesignCanvasService.swift",
+          "sha256": "9c3728c32858a59b5c51b1a9dcb0f2d98c9b688a38c753e215633ef8048dbecd",
+          "bytes": 27029
+        },
+        {
+          "path": "DesignCapabilities.swift",
+          "sha256": "1c125aa14725ae6b16392ac8786e367fd5996ba0889208d61e2720c0a69eee21",
+          "bytes": 12374
+        },
+        {
+          "path": "DesignDecisionOutbox.swift",
+          "sha256": "103fdb46aeb29bdae9128f7fa574456cc35a173acbb7fecc23a4818caa8edf82",
+          "bytes": 26315
+        },
+        {
+          "path": "DesignFreezeRegistry.swift",
+          "sha256": "2fde65f4d879ea597ca90011da9308261a3eb70d99de355d14da0aae8252d3a4",
+          "bytes": 21697
+        },
+        {
+          "path": "DesignMDCodec.swift",
+          "sha256": "3bb453b97745ad82d66ad33a34908a4a4ea3a41c99a327e021042c0dacbffc75",
+          "bytes": 7328
+        },
+        {
+          "path": "DesignOwnerAdapters.swift",
+          "sha256": "96a0c559eef69afb27dc3c6ed205082d8459c5c5ed744abec9b67f57b2f27f64",
+          "bytes": 40790
+        },
+        {
+          "path": "DesignOwnerWorkflow.swift",
+          "sha256": "b74769c8abc55b687117c58f14f4894c4b8e40c60c094030a37f4fc356f88f21",
+          "bytes": 111811
+        },
+        {
+          "path": "DesignTarget.swift",
+          "sha256": "dffdeb19c2160b009635f67ba422798c6f9a3dc7c9f7880042df92f7e934cf7d",
+          "bytes": 13769
+        },
+        {
+          "path": "DesignTargetService.swift",
+          "sha256": "982b84ba9013aaf3cdd7acf1b8426e0c9298002e1756b70e8059a3f6eeb3ebb3",
+          "bytes": 9516
+        },
+        {
+          "path": "DesignTemplateStore.swift",
+          "sha256": "8972444f742f0ae363e1486b9a8160666554cc86a9c537eb3acae3b78589140f",
+          "bytes": 15834
+        },
+        {
+          "path": "DesignWorkflow.swift",
+          "sha256": "031d3ea42fe568a70a29a3e8da0de3751570864e0d3ce3cd38e004d3b90b7f8c",
+          "bytes": 79206
+        },
+        {
+          "path": "DesignWorkspace.swift",
+          "sha256": "c6617411a8687ec9aa6bcc9a86fc1793687a526e487b0ed616dfa4e157f7a4b4",
+          "bytes": 13772
+        },
+        {
+          "path": "DeviceStorageAvailability.swift",
+          "sha256": "ef1be402f45e55c1c2df07b98f82b86131da862f3c34363863a39ae41afd1f20",
+          "bytes": 2839
+        },
+        {
+          "path": "Digest.swift",
+          "sha256": "4363efbb8aa6d7d3b6e251030ec0a0deaab34bec76ac8e47be24a36949de698f",
+          "bytes": 13064
+        },
+        {
+          "path": "ExecutionBreadcrumbs.swift",
+          "sha256": "686a0a907bb5641a89542930a411f57a303426f2cb282f76710a0cb2f87a9515",
+          "bytes": 2850
+        },
+        {
+          "path": "FloeAppEntryRoute.swift",
+          "sha256": "ef5c365eb177368e0f473da34df5b83005d20b8b558954ce52a5c1e6b34e86f9",
+          "bytes": 4394
+        },
+        {
+          "path": "FloeError.swift",
+          "sha256": "2478118bb8407c3100dd75157d552e1b767a4d3a14f7c1a86ff80f8a48433c2a",
+          "bytes": 1643
+        },
+        {
+          "path": "FloeL10n.swift",
+          "sha256": "b8f33a13775f5bd773aeb570c3d5b5faa451484c54524158327587fe7e437875",
+          "bytes": 28236
+        },
+        {
+          "path": "FloeLogger.swift",
+          "sha256": "f956d2c0044d0f7ce817212f3a04f27b8245cbc5dfcce07f82de116094c8624f",
+          "bytes": 13399
+        },
+        {
+          "path": "GuestProcFiles.swift",
+          "sha256": "c5de8adf46940b1cb074703b617e5fd1216191946a7992bde837e430df7d325e",
+          "bytes": 5371
+        },
+        {
+          "path": "HeavyRuntimeArbiter.swift",
+          "sha256": "28d49fc6e9a7730186752fefbb22ed99197be5586290c6174e65d24b15deb731",
+          "bytes": 39392
+        },
+        {
+          "path": "Help/HelpContracts.swift",
+          "sha256": "0cd5c064f9847ca109f5b5545534357b7480635aab553a3a23bad9ff4e8ab93d",
+          "bytes": 6558
+        },
+        {
+          "path": "Help/HelpLibrary.swift",
+          "sha256": "02b7834b856f5cba46f77772427a412dc12753d162c65f1e98572e0cbcbbc5da",
+          "bytes": 30549
+        },
+        {
+          "path": "LatestMessageFollowState.swift",
+          "sha256": "9f73053add07a08f382810ee871f8d626a5af338552a1ed9a8c073398008d363",
+          "bytes": 882
+        },
+        {
+          "path": "LaunchEpochFence.swift",
+          "sha256": "233f9d811bb69ea0eb34d6ce74497a5c08f57e708c447b40a0bb191a64f1ef9f",
+          "bytes": 1152
+        },
+        {
+          "path": "LaunchRunRecoveryPolicy.swift",
+          "sha256": "b1d726e036a64e16344a91e0e5b99e73a5e0daec5cd3b24ae0a691697f9e7844",
+          "bytes": 487
+        },
+        {
+          "path": "LayoutDisplay.swift",
+          "sha256": "72455f31717c991f851fbee3f80afbfee7a76bdb296f6ed99d8a0c653e043a1b",
+          "bytes": 30921
+        },
+        {
+          "path": "LegacySceneMigration.swift",
+          "sha256": "be53550c9048a0e3ea6fd3a8e21e881a918247eedf64becdafb38b4549e1dd11",
+          "bytes": 13678
+        },
+        {
+          "path": "LinuxBackgroundSession.swift",
+          "sha256": "542e0952c4d22560e2c39ce8a155cbaa64d7128871781072c2aff3d4f9b017e7",
+          "bytes": 12485
+        },
+        {
+          "path": "LinuxBackgroundSurface.swift",
+          "sha256": "c6167d4ceaee4e7579179901dd7f911e86bc04e9bdcfaad96063c7cb60014429",
+          "bytes": 8851
+        },
+        {
+          "path": "LinuxPortForwardRules.swift",
+          "sha256": "7e2e7b9bff26546c9d475649e29c8c3ed759d6f014f451426e16da9420b159c2",
+          "bytes": 18929
+        },
+        {
+          "path": "LinuxResidentRuntimeGeneration.swift",
+          "sha256": "d5ce8a0442df2cad3fe79eb509d60d141018e5943b994302ae480bba709fe547",
+          "bytes": 1026
+        },
+        {
+          "path": "LocalBridgePlatform.swift",
+          "sha256": "94d99cd2b2256f2a3327d230c1ed6ee69a679bddb1c8bab4fd0719eded38a5be",
+          "bytes": 976
+        },
+        {
+          "path": "MacBridgePromptState.swift",
+          "sha256": "1c7e3d652dac142b12d79dfd4414ab9bbd85de22b1d6441a67d81c0c1b4849d9",
+          "bytes": 1383
+        },
+        {
+          "path": "ManagedFileMutationLock.swift",
+          "sha256": "7518d19cfae6d9022a8b86b9466e26fea2b7036db1f8934d3a48c8f2ec7139a1",
+          "bytes": 487
+        },
+        {
+          "path": "ManagedPythonPackageSpecParser.swift",
+          "sha256": "c91cb93e575eaa688a79c02badb0b1ebe9b1482d707b71ed8510528830d87eaa",
+          "bytes": 5011
+        },
+        {
+          "path": "ModelProfile.swift",
+          "sha256": "83635b37a7f394dd981e247a6e13330b6e8d7b81f6d29b7cc29fec6cfea95517",
+          "bytes": 14408
+        },
+        {
+          "path": "ModelProtocol.swift",
+          "sha256": "1a011f7b2811a6aba551b404b9f4aabda960ccd9dab21183c101512a9d35e57c",
+          "bytes": 379
+        },
+        {
+          "path": "ModelSelectionPreferences.swift",
+          "sha256": "82bb08fe031aa919da13cc0591cba74b19a715e2abbaec06863401e22da9b88f",
+          "bytes": 5731
+        },
+        {
+          "path": "NativeValuePreparation.swift",
+          "sha256": "e08dc5e44cee130525d46062d872cb9a7cf49f0379da577e0f4cc23a66799d47",
+          "bytes": 668
+        },
+        {
+          "path": "OfficialMediaModelCatalog.swift",
+          "sha256": "32477ef7d2b445de55bbd30c6166d9c9e3c26b44ff8dda65d546970fc5a10c1c",
+          "bytes": 9569
+        },
+        {
+          "path": "PhoneShellLayout.swift",
+          "sha256": "7bd8e86fd0e2dc1990091a994e2db5d99e39460209badb7b8910743490849785",
+          "bytes": 12125
+        },
+        {
+          "path": "ProviderBillingEndpoint.swift",
+          "sha256": "90b71095372bf31268a95d6e6cfc475eca084028d477deedc2f66b1152d2dd62",
+          "bytes": 986
+        },
+        {
+          "path": "ProviderConfigurationValidation.swift",
+          "sha256": "7afaff52bbe384979b571820726f644c92e95e70e3ff8f51a6f5db15fd18cbbb",
+          "bytes": 24948
+        },
+        {
+          "path": "ProviderProfile.swift",
+          "sha256": "712ea6ae9326347a53c04a7dd615b95fcc1e6deb5c248ca8055b6c3d8b328a99",
+          "bytes": 8606
+        },
+        {
+          "path": "ProviderSaveRunner.swift",
+          "sha256": "1eee813794859da033edfcdc837360943e80b91fc948151bfd3bf5b5e225cdd6",
+          "bytes": 20128
+        },
+        {
+          "path": "ProviderTraits.swift",
+          "sha256": "3b39b852bba743dfd6263d7024f0d05b537962949e70034ff0c1a76abe0cd07f",
+          "bytes": 2799
+        },
+        {
+          "path": "ResidentMemoryReservations.swift",
+          "sha256": "19edf13e008cd52b626c1c6b579d7de350a08202834b4c53de2765ac1ed6a16e",
+          "bytes": 2390
+        },
+        {
+          "path": "RuntimeMemoryBudget.swift",
+          "sha256": "1494d426948403838d54668c68a9146adcb7924b267092b926e9ed75d0943863",
+          "bytes": 6388
+        },
+        {
+          "path": "ScreenShareSessionState.swift",
+          "sha256": "18dd2e357fa8f5e291543f97335653bd35c167af1df096e3addfb8b733a7fbf2",
+          "bytes": 5111
+        },
+        {
+          "path": "ScreenShareSharedStore.swift",
+          "sha256": "dbf38c39c7ed386ac3d05d2a549a6e6c952fa5f047bafd7abaa257958f0fe65a",
+          "bytes": 6573
+        },
+        {
+          "path": "SecretRedactor.swift",
+          "sha256": "39771e16d5d561730f3620ebd0141baa352485bcb15538135712201ad4c19cb6",
+          "bytes": 2907
+        },
+        {
+          "path": "SettingsProbes.swift",
+          "sha256": "b8e434642156cf1d22b7c49b5135d43673e8df6f77f919a191168c2fcc7dd7c5",
+          "bytes": 4634
+        },
+        {
+          "path": "ShareInbox.swift",
+          "sha256": "b47a35b2d2065ac8eca0d8ede3d3cb1d14f242baef510c96238418733a8e886b",
+          "bytes": 70001
+        },
+        {
+          "path": "ShareProviderIntakePolicy.swift",
+          "sha256": "1a16ac1af6c491d5ae8705f4b932c4e76f8457ad12c7a1a3be9f762541c27c11",
+          "bytes": 7207
+        },
+        {
+          "path": "SpeechConfiguration.swift",
+          "sha256": "3374eecffa5ba568d172de3ba6b95bec5abadc4bf335c8b4a204d289c069cf41",
+          "bytes": 44163
+        },
+        {
+          "path": "StatusPiPReleaseGate.swift",
+          "sha256": "b0e083274b7a3322bab518f9e988522485597e17bc2ddba7c38fa7bac4ea8dbe",
+          "bytes": 2498
+        },
+        {
+          "path": "StorageAccounting.swift",
+          "sha256": "a8328d08da79074dadec92d1702633f4fef3bc381b79387abec18fe7b0d5c0d7",
+          "bytes": 54518
+        },
+        {
+          "path": "StorageCleanup.swift",
+          "sha256": "773c78b498254c17d47a8e3bbd8c30c9cab2bf11d7778f0e61fbb05327dcaadf",
+          "bytes": 17673
+        },
+        {
+          "path": "StorageCleanupLease.swift",
+          "sha256": "fe37cbb4fb4d941093feba4e355d11585914534e5f332c0db799d53cf032aa8f",
+          "bytes": 12185
+        },
+        {
+          "path": "StorageCloneAccounting.swift",
+          "sha256": "d0e0c2021fa23e895eec964c53b05eda38fc72b98405b20b25b145ecf73b0f0f",
+          "bytes": 7696
+        },
+        {
+          "path": "StorageCloneDescriptorReader.swift",
+          "sha256": "c8936302db69adfcc2cab1db6c8dcca96713e8a79dc69e8df62a3ff6d8182de5",
+          "bytes": 1887
+        },
+        {
+          "path": "StorageExtentAccounting.swift",
+          "sha256": "bb04000094051c4743b16b823d02a8acefc823540f0f2015fd9a48aa2eb00e83",
+          "bytes": 29504
+        },
+        {
+          "path": "StorageOperationBudget.swift",
+          "sha256": "50d7e17cd4e1fd0960762d8e5550e7e66f9104050a5c594700607e1822c06ee8",
+          "bytes": 5937
+        },
+        {
+          "path": "StorageReportBuilder.swift",
+          "sha256": "433882ee896d4f2e84a7b22602140b6906e2dbdabba792871b73fc73c0b2e670",
+          "bytes": 11571
+        },
+        {
+          "path": "StorageSnapshot.swift",
+          "sha256": "b807da116d34b589e822550c949005fbd90a1d1a8676d1cb31920cc5b3caeecf",
+          "bytes": 34765
+        },
+        {
+          "path": "StorageSparseDiskRewrite.swift",
+          "sha256": "406c4531bd1f6400c8d7da465b69f6031c11be1fc8b0348bfa9640784d983f60",
+          "bytes": 33946
+        },
+        {
+          "path": "StorageSparseDiskRewriteEngine.swift",
+          "sha256": "1713e42843831610dd06ab1c7f1ca649ca6ab8dc6fcb6d6ab69641509c137cac",
+          "bytes": 33495
+        },
+        {
+          "path": "StorageSparseDiskRewriteIO.swift",
+          "sha256": "7e904e5e01827903912ee57bda90e7ae95f0425027cdce0bc4c2906a53f99d73",
+          "bytes": 50895
+        },
+        {
+          "path": "StorageSparseDiskRewriteJournal.swift",
+          "sha256": "b9c87dc2a639ec3a8a027d7d3a979a1fe0c72904aad19aeddebf2eed04e1ebee",
+          "bytes": 10094
+        },
+        {
+          "path": "StorageSparseDiskRewriteRecovery.swift",
+          "sha256": "40d9edd050e9941206e73f771319b997f80f28972fa7e8a24baac7c7083af20b",
+          "bytes": 43941
+        },
+        {
+          "path": "StreamingTextAnimator.swift",
+          "sha256": "940fc6f6457d6eeecff1ec2957ec6b66fffa11dcffbec2cfad48bbad89c8909e",
+          "bytes": 9254
+        },
+        {
+          "path": "SystemAlarmActivityAttributes.swift",
+          "sha256": "26c21aa2c60574bf5f5352ec05e69e20d4a44bd9ae76f0b1fdba00c1d2f43700",
+          "bytes": 1960
+        },
+        {
+          "path": "SystemAlarmIntentHooks.swift",
+          "sha256": "4bc46dd4d1a71e61d5e4191fc577f92a381c362f16b95be7a075b6bb72c89f44",
+          "bytes": 683
+        },
+        {
+          "path": "TaskActivityAttributes.swift",
+          "sha256": "68f783f137990c8f3242e683f45b8bcda005bb2ad8583b6583991d85cbd8b4ad",
+          "bytes": 13684
+        },
+        {
+          "path": "TaskNotificationDeliveryFence.swift",
+          "sha256": "1657d0720b90837a3aa998ea6c532b65a989eee835aa26a0359da236e25f5bf1",
+          "bytes": 870
+        },
+        {
+          "path": "TaskNotificationOutbox.swift",
+          "sha256": "aa66c1510e81478e14b4b11886a52b7e66a3d356a293495be36c0d452fd5a4e5",
+          "bytes": 19647
+        },
+        {
+          "path": "TimelinePageCoverage.swift",
+          "sha256": "edd0d8b74f352f2fbe3ad0fee7859672fd821e73bdd50f9118051eedd8729c5f",
+          "bytes": 1722
+        },
+        {
+          "path": "ToolNameSpelling.swift",
+          "sha256": "416b7d03f08aeb14b1faf02daeaf9be1f75e57ee81cffce9e139745b1aca087a",
+          "bytes": 1409
+        },
+        {
+          "path": "UnsafeResourceStateError.swift",
+          "sha256": "54178e6578421c3e27ffd725f17bb1e5961fa49214f6c6be2b48cf39dc221404",
+          "bytes": 1864
+        },
+        {
+          "path": "VisualTextRecognition.swift",
+          "sha256": "6eb85fc6904829b536edd54405f473c0b6388d4c968a5ff92595b1c048d74bbd",
+          "bytes": 4710
+        },
+        {
+          "path": "VoicePlaybackReceipt.swift",
+          "sha256": "6092bc39b0e603dce2563e950570060bbcbc9e6770fdea379681c4cec3fba570",
+          "bytes": 1900
+        },
+        {
+          "path": "WidgetTaskSnapshot.swift",
+          "sha256": "2b14d9d4d487d3fb3e2e14af4dda9e9223441f6c9b5509b7d6d86fb4c6ba03c4",
+          "bytes": 16779
+        }
+      ]
+    },
+    {
+      "target": "FloeModels",
+      "upstreamDirectory": "FloeAgent/Sources/FloeModels",
+      "packageSymlink": "Sources/FloeModels",
+      "symlinkTarget": "../../FloeAgent/Sources/FloeModels",
+      "isSymlink": true,
+      "fileCount": 20,
+      "files": [
+        {
+          "path": "AgentEvent.swift",
+          "sha256": "dbf5ce2e47f59b81109d520db97ba43975c419860ca91ece16608386a0ca6a66",
+          "bytes": 4920
+        },
+        {
+          "path": "AgentThread.swift",
+          "sha256": "eeffa7a014c2722471ecca7a74da701337946e849cb0f424548b8b8c8704422b",
+          "bytes": 9325
+        },
+        {
+          "path": "ChatContentReference.swift",
+          "sha256": "32ef4b8c37cbcefef3f34052e7cab817480c9e45d033d53db645fd0274b26818",
+          "bytes": 4236
+        },
+        {
+          "path": "ExecutionExperience.swift",
+          "sha256": "d332aac7f273bff5ea14206bb007f10f497c597ef4ac3dd2cb1dbcc25a6f4961",
+          "bytes": 32915
+        },
+        {
+          "path": "LinuxCacheCleanupTaskProfile.swift",
+          "sha256": "9762e0137476b4571f21efd1fd5e436871e5c339ac9a294f840bfb87fd937dfb",
+          "bytes": 10320
+        },
+        {
+          "path": "RunOutputFile.swift",
+          "sha256": "d3550958bcd06e2e8c93f6fdaed61723164944689bd70212a06cd488aa135fec",
+          "bytes": 9416
+        },
+        {
+          "path": "RunningInput.swift",
+          "sha256": "92f1be6b5895d3224b1bcfcc92d43b606716b70f54ec4fd917b257fb664e50eb",
+          "bytes": 3075
+        },
+        {
+          "path": "ShortcutInbox.swift",
+          "sha256": "57e5a89a9d41c7b718f64c36565a5041f5a39c44fd4fc51dd76fb0a5a6d123a2",
+          "bytes": 4528
+        },
+        {
+          "path": "TaskExecutionBinding.swift",
+          "sha256": "14cf47714237a1e5a0e2e316c1ce593cad67fd201d800768290ce0c9ce05a078",
+          "bytes": 3773
+        },
+        {
+          "path": "TaskNotificationDecision.swift",
+          "sha256": "7dbad6cd5b988b3261c704245ef1d296c497da0307e064b16a3dde7acedeb7c8",
+          "bytes": 14043
+        },
+        {
+          "path": "TaskPolicy.swift",
+          "sha256": "93e0bd85a428077ec375073bf38dc8e437cf127c3ad6512a2ab9bb1b50fa664c",
+          "bytes": 5436
+        },
+        {
+          "path": "TaskRunConclusion.swift",
+          "sha256": "d08cd45addaf80ad68b1dd9b37483472ef868403217271a8d8b8bbcd8186f78e",
+          "bytes": 1053
+        },
+        {
+          "path": "TaskSchedule.swift",
+          "sha256": "9d4c9b139413684303375b9b70ca7d8f7f632ed350ae5de2c5dfc6e83ea4a317",
+          "bytes": 18366
+        },
+        {
+          "path": "TaskScheduleCleanupReminder.swift",
+          "sha256": "dba1bb14d67ade42dd73eccbc821721c28c43126654165bbd88dcaa345e82930",
+          "bytes": 6059
+        },
+        {
+          "path": "ToolCall.swift",
+          "sha256": "cbdfeb88694a318d1fe5d2e27708a9e50356778212f31e7c4904ff36fcf4a6ed",
+          "bytes": 19077
+        },
+        {
+          "path": "UserQuestion.swift",
+          "sha256": "5cd238d0751790e6fd54589cf211506f1a202381decf2c5ddf48204275d4a87f",
+          "bytes": 51484
+        },
+        {
+          "path": "UserQuestionDeadlinePolicy.swift",
+          "sha256": "5d4014a8bf9364d750da726067471c5830837d7454be76c63a60fd5721b4c03d",
+          "bytes": 1281
+        },
+        {
+          "path": "UserQuestionDefaults.swift",
+          "sha256": "236f406233251c7fae29a6850769d60220ecf444543366d99a9bff7119521f2c",
+          "bytes": 3081
+        },
+        {
+          "path": "Workspace.swift",
+          "sha256": "4eac0d0ee54e9ca3f1b3f4d9d4eb22a111395ebdae07cefd5485341a2750e74a",
+          "bytes": 3955
+        },
+        {
+          "path": "WorkspaceFileChangePreview.swift",
+          "sha256": "703b4dce562f324874fbc86193af4c31d3285d518aeebe7c36fcaa78f4deb955",
+          "bytes": 1010
+        }
+      ]
+    },
+    {
+      "target": "FloeProviders",
+      "upstreamDirectory": "FloeAgent/Sources/FloeProviders",
+      "packageSymlink": "Sources/FloeProviders",
+      "symlinkTarget": "../../FloeAgent/Sources/FloeProviders",
+      "isSymlink": true,
+      "fileCount": 58,
+      "files": [
+        {
+          "path": "AlibabaEndpointIdentity.swift",
+          "sha256": "8dc91836e93e619a3d71ba242159654498e59d1ff6d9cf041df3affbe253e464",
+          "bytes": 8545
+        },
+        {
+          "path": "AutomaticReasoningEffort.swift",
+          "sha256": "479ab2fa3eeed76735913e306b30c70604f903fd2e9c20e0ee29f9cf2662662a",
+          "bytes": 46328
+        },
+        {
+          "path": "ChatCompletionStreamBoundary.swift",
+          "sha256": "a87c46491f9f7707f30138a61bfd1791e64adae6ddf89070f9507b4da69c0aff",
+          "bytes": 3916
+        },
+        {
+          "path": "DeepSeekAssistantProtocolGuard.swift",
+          "sha256": "32e6ffdf62f127d0ef27085dee1b17f8a16329be031997553a228bc08ae671fc",
+          "bytes": 4796
+        },
+        {
+          "path": "ImageAdapters.swift",
+          "sha256": "53b28c6170760e31411350ebe769e57f8da56798f3fa08db4f03f41da5fa1537",
+          "bytes": 51417
+        },
+        {
+          "path": "ImageGenerationBatch.swift",
+          "sha256": "c60e7fdcec3f293679220feac151036eae7bc692502422c6ecef34d6032d9e4f",
+          "bytes": 20876
+        },
+        {
+          "path": "ImageGenerationPresetResolver.swift",
+          "sha256": "1931b9ab29c28a875ed1e2f1fd28b1cb5d3a57ded94aff97faa52f70f287d58b",
+          "bytes": 22060
+        },
+        {
+          "path": "ImageModelRouteResolver.swift",
+          "sha256": "4766f42d21ce90ae6f3d9525c457225b3276156713f61a762702a8d4f04cef5a",
+          "bytes": 4290
+        },
+        {
+          "path": "ImageProviderAdapter.swift",
+          "sha256": "40be2b6b15f13e4a4ce1469e5141fe4615a9d8543e2142e82d89addfff79e118",
+          "bytes": 12699
+        },
+        {
+          "path": "KimiImageAdapter.swift",
+          "sha256": "b113e69bb9ab92a1445a42366b98520b7cd9fb58d9d4b070ba25dd632fda8d56",
+          "bytes": 13728
+        },
+        {
+          "path": "LocalModelToolPolicy.swift",
+          "sha256": "8b73bd145c842f95805c055be678132ceb4fefe500db9d27619a28dcb6f49f42",
+          "bytes": 12706
+        },
+        {
+          "path": "ModelDiscovery.swift",
+          "sha256": "831fcef8f448b191f89d8dacbee208d51e948814c05e024dae263ea8a916a108",
+          "bytes": 14937
+        },
+        {
+          "path": "NativeToolCapability.swift",
+          "sha256": "2533079ea319ba2b075c239faac438288eedede7910ee44ba6b9b14ec65998c6",
+          "bytes": 5944
+        },
+        {
+          "path": "ProviderAdapter.swift",
+          "sha256": "4aa21568d25b11ae7e13fb7e1fb6f3f848baf5f7cc168065679941f4dd57d35d",
+          "bytes": 76027
+        },
+        {
+          "path": "ProviderAdapterFactory.swift",
+          "sha256": "f7eaa8f1d835b8bdfbd4c1e225e663132a8eaa233190cf3f49d3a2a929e6ca63",
+          "bytes": 11744
+        },
+        {
+          "path": "ProviderCatalog.swift",
+          "sha256": "5f5dd4fa5af68794e4dc534338d2bd57a428c304931112373b22ff92597fbfda",
+          "bytes": 32637
+        },
+        {
+          "path": "ProviderCatalogCapabilities.swift",
+          "sha256": "51f0f9bb057437e3418530f45b5e893ca505a64b17d11473229208508cfbff7a",
+          "bytes": 13150
+        },
+        {
+          "path": "ProviderCatalogReviewService.swift",
+          "sha256": "07e788eaa31e6d7039dd37ad685b7e3605bcf9b6b8660c61a478346c6686b7f5",
+          "bytes": 4881
+        },
+        {
+          "path": "ProviderConnectionProbe.swift",
+          "sha256": "351373ab75e9bd3d4c99a3a220b8b76e4dffa7ee5ecd97e117e86f239d53ed4c",
+          "bytes": 8060
+        },
+        {
+          "path": "ProviderFormSpec.swift",
+          "sha256": "4a76b938035295a8255d1719e53944719315173072f2fdcbf08a21ed9711408e",
+          "bytes": 17502
+        },
+        {
+          "path": "ProviderServiceOffers.swift",
+          "sha256": "9dc9d44f42ef2ea0f49f94ca5147f0bbc119a1030de7c54a11f1b0f46e5edfc9",
+          "bytes": 14255
+        },
+        {
+          "path": "ReasoningCompatibility.swift",
+          "sha256": "0cfdfcec47b4b8475876864c421739a4399c26bc8454c80b6e88bc0cbfbcccfa",
+          "bytes": 20694
+        },
+        {
+          "path": "SSE/SSEEvent.swift",
+          "sha256": "c9b1fcf0167091068779c09ba56791cc99be49e7c93bd9298fc3440bd7e72303",
+          "bytes": 781
+        },
+        {
+          "path": "SSE/SSEParser.swift",
+          "sha256": "6775a32d2606dc3bf0504cc440ef124daf9f9ff28a4ea183a290132bf9fd3bd0",
+          "bytes": 9079
+        },
+        {
+          "path": "Seedream5ImageFamily.swift",
+          "sha256": "96fc5b1ed2df37a3043c75c0339e684bbd1362d81d9e936571a8d7b79d8103e1",
+          "bytes": 7324
+        },
+        {
+          "path": "Speech/ASRAdapterFactory.swift",
+          "sha256": "475cc58125bb7f7f9b3e4a60532f828000828d0e14a751583cb88cfbb2981c42",
+          "bytes": 5174
+        },
+        {
+          "path": "Speech/ASRTransport.swift",
+          "sha256": "9a301a1d4f15b7ad488f4e4107742a715bec3b6da8a1b4f70c7f49d9d526cc30",
+          "bytes": 17968
+        },
+        {
+          "path": "Speech/ASRVendorSupport.swift",
+          "sha256": "f681ba79dbddd2131e7580f6b2b5ac7762e00d43eae08064746d4b1a5defd73f",
+          "bytes": 31436
+        },
+        {
+          "path": "Speech/AlibabaASRAdapter.swift",
+          "sha256": "bcb99ebea3df916571f931408c6d53a691a7cbb47c349dac5be12617b467cd08",
+          "bytes": 35359
+        },
+        {
+          "path": "Speech/AlibabaSpeechAdapter.swift",
+          "sha256": "db31fe70274a9bb504091f52a050657bdc187852414549fb0cf65e4659b16a8e",
+          "bytes": 8502
+        },
+        {
+          "path": "Speech/AnswerSpeechProjection.swift",
+          "sha256": "4a885f16aa7390bb7ab9ddcb15bcf11587209df328e94533a3e4bda85ba82603",
+          "bytes": 20926
+        },
+        {
+          "path": "Speech/AppleSpeechSource.swift",
+          "sha256": "dfb73e341c0a8fec25c080b3cfe67886728a55b1ff82cb226dd76b6aaeed67e6",
+          "bytes": 15074
+        },
+        {
+          "path": "Speech/DeepSeekSpeechAdapter.swift",
+          "sha256": "5e52faf8fcc5602bbc756f06a0956ce3e95080af7c6d617de7b0107cd7e4e2a1",
+          "bytes": 2743
+        },
+        {
+          "path": "Speech/DeepSeekTranscriptionAdapter.swift",
+          "sha256": "6234fcb0728d790aa0c3f555418aca9814ab49426ba15574cfbf4612735c1382",
+          "bytes": 8043
+        },
+        {
+          "path": "Speech/MossProsodyPlanner.swift",
+          "sha256": "0563a2f0b4634fab5e8c7ffcbba77a9d7603e98381357e6a831cf44246f4f4dd",
+          "bytes": 22309
+        },
+        {
+          "path": "Speech/OpenAIRealtimeTranscriptionAdapter.swift",
+          "sha256": "b8339b4058ac2a9f8e54eaae9c7bcdb733081732c18808cf6f271a992628fbcc",
+          "bytes": 20930
+        },
+        {
+          "path": "Speech/OpenAITranscriptionAdapter.swift",
+          "sha256": "4e9cc4b1b2cf0d646bbf255a737c9ab96607696870e7503eadd8caace5e61feb",
+          "bytes": 25642
+        },
+        {
+          "path": "Speech/SpeechAdapters.swift",
+          "sha256": "0400a22163ef0fcc163897a415778cc48cdc2bdfbdbe2825a1652f342c2a9305",
+          "bytes": 24834
+        },
+        {
+          "path": "Speech/SpeechChannel.swift",
+          "sha256": "cb710b51c92f7cb4a194db139f0244d3b9fd00176d8b71eb7d30f5636bc25da1",
+          "bytes": 14131
+        },
+        {
+          "path": "Speech/SpeechTransport.swift",
+          "sha256": "190f0f3cf8715245c52d2c2f16f2edea6c87ab513269ac664d43666a28ddee7a",
+          "bytes": 15106
+        },
+        {
+          "path": "Speech/TextSegmenter.swift",
+          "sha256": "3b0b655b904038bb04f4c1d10268edf94c0fbf0b5027329b961071f6a2e87ae5",
+          "bytes": 19616
+        },
+        {
+          "path": "Speech/VolcengineASRAdapter.swift",
+          "sha256": "f1146f816cb67191a5cc17a6823060fe8797015467296bcfdc3f3d0f68a353b5",
+          "bytes": 47027
+        },
+        {
+          "path": "Speech/VolcengineASRFrame.swift",
+          "sha256": "99eb72a13c5a0976596642c467a580762694cd4f2dab689eea2b0127f7d68328",
+          "bytes": 9693
+        },
+        {
+          "path": "Speech/VolcengineSpeechAdapter.swift",
+          "sha256": "309e11b9d97babd5041695ab4eefea1e14c50debb15c60673d227336eeef7a96",
+          "bytes": 19801
+        },
+        {
+          "path": "Speech/VolcengineSpeechFrame.swift",
+          "sha256": "947c33a0251f38f24f3ad6da18a67130627357680049253116ca18ef5d25f6eb",
+          "bytes": 12612
+        },
+        {
+          "path": "VideoEndpointRouting.swift",
+          "sha256": "e242cd81893361f6f70a84c2f1515892b1a8ba8b68e14b9e44680dda4adcaf84",
+          "bytes": 3332
+        },
+        {
+          "path": "VideoModelRegistry.swift",
+          "sha256": "3ecb1d4a2dc16d131bf988f86b65119725032fc18c435bafc540a6d1a540a399",
+          "bytes": 20356
+        },
+        {
+          "path": "VideoProviderAdapter.swift",
+          "sha256": "f2d4285b76c119ff9396e55740eb2127e07cdb2fe86b080dde1ca0126c8a9c96",
+          "bytes": 40619
+        },
+        {
+          "path": "VideoReferenceImageSupport.swift",
+          "sha256": "7088671995fcc01abe5f28d9042622208a4ca2210c58d99c0d7216bc3778c1f3",
+          "bytes": 8758
+        },
+        {
+          "path": "Wire/AnthropicMessages.swift",
+          "sha256": "0141bc5e86fdfe11895a67444a35d4aa4c99a7d61d546ee24d363edfebd31c24",
+          "bytes": 21264
+        },
+        {
+          "path": "Wire/ArkToolSchemaProjection.swift",
+          "sha256": "160498030b3f34ccaaf3ce40460f569bf2f3b137a0e7b52d70997c6fa039c457",
+          "bytes": 4756
+        },
+        {
+          "path": "Wire/ChatRequestContract.swift",
+          "sha256": "2eb4085e5d8193cd7fe55ba6d4a8086d5ee0601c35c6997aa3724f67b20362fb",
+          "bytes": 7312
+        },
+        {
+          "path": "Wire/OpenAIChatCompletions.swift",
+          "sha256": "84f902222a5ef278069eae3c16104a4beb7741cc234ed41f2ca4e87f8925259c",
+          "bytes": 17680
+        },
+        {
+          "path": "Wire/OpenAIResponses.swift",
+          "sha256": "627cdfa57e4b91f3548ddb91b9bfa69c4f746b3611e4e20dd4053dce3583ba7b",
+          "bytes": 16730
+        },
+        {
+          "path": "Wire/ReasoningEffortProjection.swift",
+          "sha256": "1b1143721cbc9ec072a295c02120368b3478f3501a36b21e63c5162855f6cba5",
+          "bytes": 2102
+        },
+        {
+          "path": "Wire/ThinkingFieldCompatibility.swift",
+          "sha256": "3c21816ce3347ce3da9ee354fbe849ffea6a69f620b4fc8c86557b32852fc61b",
+          "bytes": 3032
+        },
+        {
+          "path": "Wire/VeniceReasoningProjection.swift",
+          "sha256": "5845210eaaaf3e8002a5ec72b0220573e5a4168a6525edb021bbe06e322d7efd",
+          "bytes": 2037
+        },
+        {
+          "path": "WireTranslator.swift",
+          "sha256": "372cb0b29c28555f79e20d4ad06e0e782415ca5eb5b0f19349d4e2ec2de71f6a",
+          "bytes": 16125
+        }
+      ]
+    },
+    {
+      "target": "FloeTools",
+      "upstreamDirectory": "FloeAgent/Sources/FloeTools",
+      "packageSymlink": "Sources/FloeTools",
+      "symlinkTarget": "../../FloeAgent/Sources/FloeTools",
+      "isSymlink": true,
+      "fileCount": 33,
+      "files": [
+        {
+          "path": "AgentTool.swift",
+          "sha256": "b1e43e3e8a5e033cea0144e98540e4df01bf3c8d4b08b4ab644f6a7199d01d7b",
+          "bytes": 10457
+        },
+        {
+          "path": "AtomicFileCommitter.swift",
+          "sha256": "0dad2eea8f357b487a4cfcd249836d0c5ed783d4c0cf22c632e0a44bd8ace0f1",
+          "bytes": 7096
+        },
+        {
+          "path": "CanvasAgentToolPolicy.swift",
+          "sha256": "d0d79fd8ae0b42f4910975f25bdb224a088e71d16f30578b1a2758753770d55b",
+          "bytes": 3441
+        },
+        {
+          "path": "CapabilityExecutionRouter.swift",
+          "sha256": "071559fa0717726f57e8dcb9d66e01901986e52137568fb525fe461088a0ab48",
+          "bytes": 11225
+        },
+        {
+          "path": "ChatInlineContentCatalog.swift",
+          "sha256": "5b385d74c6088b4de66479dec1319de30715630126a9bd853e81538d79406bad",
+          "bytes": 19743
+        },
+        {
+          "path": "ChildBudgetContext.swift",
+          "sha256": "93a2a09cb61b36f8b8ac4006e6fda25c541e9f02efb611bd41ab084719a901ef",
+          "bytes": 1754
+        },
+        {
+          "path": "ChildExecution.swift",
+          "sha256": "7d0ca71e38d9a7053ebb45deb66fa31af52a774f95ba36bf5a78a9da274084b5",
+          "bytes": 10200
+        },
+        {
+          "path": "DesignRevisionPayloadStore.swift",
+          "sha256": "fdc85e3aa12c90814118d837daae3cbc57279a785bc907e38dd82ec2dcf1d1ef",
+          "bytes": 10150
+        },
+        {
+          "path": "DiscoveryQueries.swift",
+          "sha256": "8f02a348409981e1f698d601fe938307bbcf6f73fac6d14c026d9e563208a4f5",
+          "bytes": 1181
+        },
+        {
+          "path": "FileLimits.swift",
+          "sha256": "fe4f46a90c49389c1709413e3b4463a4f9be289c4bfa29c6116deaf3432f1832",
+          "bytes": 792
+        },
+        {
+          "path": "FloeArtifactStore.swift",
+          "sha256": "6f2c327ceae6d988bcb49f313e84703bcfedd0eb1b0702c48b6dfb3e906c6fd0",
+          "bytes": 4816
+        },
+        {
+          "path": "LinuxCacheCleanupScope.swift",
+          "sha256": "fe0b5a7e9d0ccdb7bdf72f02ca6eb42f1d259c29256c26de9b4d2369496c5c84",
+          "bytes": 13405
+        },
+        {
+          "path": "MCPRemoteToolSource.swift",
+          "sha256": "be2b071ae76709cd8b80b478415a7795e6611d5041a061ef0e55e5cbe00c3b38",
+          "bytes": 65635
+        },
+        {
+          "path": "MediaExportOutputContract.swift",
+          "sha256": "8af847881cd98ffaf6bf898ed68abe8c75e5fe07ac2df5e2bc98d7210f2a90c1",
+          "bytes": 2958
+        },
+        {
+          "path": "MutationLease.swift",
+          "sha256": "f3cb3b2d86dd19a09b7932144c64f40a26dda02d37928fc423add1fe7b04378c",
+          "bytes": 22373
+        },
+        {
+          "path": "NetworkDestinationPolicy.swift",
+          "sha256": "05f04071cde33c1fd7eb105611ce5738754d3f0273da8f2a19e1ecb60cc9b81b",
+          "bytes": 8973
+        },
+        {
+          "path": "ProfessionalDatasetRequest.swift",
+          "sha256": "d6f806cab5db93104ea2af4639b3c69f5982e83cfd1faf2d37611b36d9f21b28",
+          "bytes": 4886
+        },
+        {
+          "path": "ProfessionalSearchAuthority.swift",
+          "sha256": "dc05fedad36bd3ce0366316d0d597f780951fa1d19356b68dd9f63f692f05a3c",
+          "bytes": 15853
+        },
+        {
+          "path": "ProviderImageEvidencePolicy.swift",
+          "sha256": "c3d0073074903d468bb85fc4ff35e4b9182e69cc690c1c25b371f815c341ce31",
+          "bytes": 5970
+        },
+        {
+          "path": "RunOutputCleanupQueue.swift",
+          "sha256": "d1aa45376f972db89eb757306a9dc315994a8138c5775a51773926f8c37d1654",
+          "bytes": 14210
+        },
+        {
+          "path": "RunOutputSnapshotStore.swift",
+          "sha256": "2212f43825039c1c0845f5df2a53b2571fa985c9a3d0edfea64765707bf3cd92",
+          "bytes": 55322
+        },
+        {
+          "path": "RuntimeTaskAuthority.swift",
+          "sha256": "7aede79fd0fcde30c7244d4c1e1ce623dcc49b704a4aef6a0ae112c7d7ba9ba5",
+          "bytes": 22438
+        },
+        {
+          "path": "RuntimeWaitHandle.swift",
+          "sha256": "1241695cec1a7578b2a95475cdeb1d19e5ffceffc707c985b45c668c46429959",
+          "bytes": 1471
+        },
+        {
+          "path": "TaskProgressReporting.swift",
+          "sha256": "ae95c0258a70ec752f7196df16c1135beb1dd5cc84916a33e53dfeb1dddd2fba",
+          "bytes": 5624
+        },
+        {
+          "path": "TemporaryChatToolPolicy.swift",
+          "sha256": "905d9ee3c0e1aafd2adf26263e3b88abb0e31de82d647bdf450d974124b4bd0e",
+          "bytes": 16684
+        },
+        {
+          "path": "ToolAliasTable.swift",
+          "sha256": "f768515f8d58a6494f5f3f8839ac5dc3bd40a89fa0803479aebc8f817f3f6114",
+          "bytes": 6959
+        },
+        {
+          "path": "ToolCapabilityGroups.swift",
+          "sha256": "2b8028e6c14e96a16deff34b34f4a77ace38bb1d0fcc483aae770cc1993387df",
+          "bytes": 15295
+        },
+        {
+          "path": "ToolCatalog.swift",
+          "sha256": "ba76bb5bf96aa0d2b626ba6ca52bf1b5283c316be6c8c6b7c49ec45223cb1a88",
+          "bytes": 10750
+        },
+        {
+          "path": "ToolContext.swift",
+          "sha256": "0e96859b059c9c8486badef182053adde3940bb6934a20e3664e785c0dca97a7",
+          "bytes": 19848
+        },
+        {
+          "path": "ToolEnvironment.swift",
+          "sha256": "7f007c6477e0228fa5fa3072806c19c93129ded18ddf1a48c7215e6d7628c83b",
+          "bytes": 1540
+        },
+        {
+          "path": "ToolRunnerRegistry.swift",
+          "sha256": "35dfe73cbf737c96f877d62962bb1e364ef163f74995d6bb0608e6329c843a5d",
+          "bytes": 10041
+        },
+        {
+          "path": "TypedMutationTargets.swift",
+          "sha256": "ec9ab2fa94dd41e3390cd16f46a87057551682827984c118e942ee21cd9cf843",
+          "bytes": 52814
+        },
+        {
+          "path": "VerifiedToolImageArtifact.swift",
+          "sha256": "28f35ac699a6cb2ee3248adae936b91b4d063b21bccdb9769b3e6f0b43b222ef",
+          "bytes": 12268
+        }
+      ]
+    },
+    {
+      "target": "FloeSecurity",
+      "upstreamDirectory": "FloeAgent/Sources/FloeSecurity",
+      "packageSymlink": "Sources/FloeSecurity",
+      "symlinkTarget": "../../FloeAgent/Sources/FloeSecurity",
+      "isSymlink": true,
+      "fileCount": 15,
+      "files": [
+        {
+          "path": "ApprovalDecision.swift",
+          "sha256": "154828d8db12f2702135393ddabeca01e6b355d1c05cefea1707bf457075eaac",
+          "bytes": 4669
+        },
+        {
+          "path": "ApprovalDecisionParser.swift",
+          "sha256": "67faa9a56208e3b93846ab69608d76878b67ad0b01b2bf1ea7bb3ec0f6878125",
+          "bytes": 8532
+        },
+        {
+          "path": "ApprovalGrantStore.swift",
+          "sha256": "11cfe4551c59811e28eddae88f996a4573473e3ef78fe538ce40b12c99ef2acd",
+          "bytes": 4049
+        },
+        {
+          "path": "ApprovalPolicy.swift",
+          "sha256": "cde5c25836250cdd9623a94f9f7e4ab2e108da32b2109c70b88b232db98e1a42",
+          "bytes": 33428
+        },
+        {
+          "path": "AuditEntry.swift",
+          "sha256": "c545e4927e1b5841b6707b9c4986564338f4760df4565d55e450229e2394f9e6",
+          "bytes": 8541
+        },
+        {
+          "path": "CanonicalJSONEncoder.swift",
+          "sha256": "ca1e4439579765854f3d20f51a1749e6b1c8143f617d12cb7d472adf7ad379ed",
+          "bytes": 14631
+        },
+        {
+          "path": "CatastrophicActionGate.swift",
+          "sha256": "babf00ddf9c9c7c33d40273efd0d42c37e291fd924522bdd97862d1a0d02dbc3",
+          "bytes": 4329
+        },
+        {
+          "path": "DeterministicLocalApprovalPolicy.swift",
+          "sha256": "e8b98c92c1b16ab721d294fdd18e41c32e325f755d1ca9d5917ae0dafeedb576",
+          "bytes": 39758
+        },
+        {
+          "path": "KeychainStore.swift",
+          "sha256": "02a2a19ad7e69fca799ea8382ba59eb8f688389abc154f655d2cc748ba1e832c",
+          "bytes": 8896
+        },
+        {
+          "path": "ManagedPythonPluginCatalog.swift",
+          "sha256": "fe51a5d82c568572c88e2fc1025c7a16223563fb0568fedcde2b90fe74b055fa",
+          "bytes": 1933
+        },
+        {
+          "path": "ModelUserInputProjection.swift",
+          "sha256": "70f7a05d7968efd3b63ff623b2e6897c9e80eae7ef1e370ec5d5cfa24de51d72",
+          "bytes": 8755
+        },
+        {
+          "path": "OrdinaryDocumentActionProfile.swift",
+          "sha256": "a6f8f563b8d794bb8c15754cf0409a4357998f7c5a0f134f0e0f83703830b5b8",
+          "bytes": 17338
+        },
+        {
+          "path": "Resources/catastrophic-patterns.json",
+          "sha256": "b20667f2d9713961231327c931188cc74474cdbd294593c6071c804edf0c038b",
+          "bytes": 3109
+        },
+        {
+          "path": "SecretIngressScanner.swift",
+          "sha256": "1a8aac33c8e71961c038362e54793849e87a664f1d23f4bd684da67833f3418a",
+          "bytes": 7093
+        },
+        {
+          "path": "TrustedExecutionContext.swift",
+          "sha256": "80d2fc129ab24bdc94d682baefe594b7a4766687a408025de01232a77982dd75",
+          "bytes": 10415
+        }
+      ]
+    },
+    {
+      "target": "FloePersistence",
+      "upstreamDirectory": "FloeAgent/Sources/FloePersistence",
+      "packageSymlink": "Sources/FloePersistence",
+      "symlinkTarget": "../../FloeAgent/Sources/FloePersistence",
+      "isSymlink": true,
+      "fileCount": 107,
+      "files": [
+        {
+          "path": "BackgroundJobStore.swift",
+          "sha256": "cd89c7b75f38695b62d92807d095ba0de72fc4d0626266166e0ceeab30917000",
+          "bytes": 19434
+        },
+        {
+          "path": "CanvasRunContextStore.swift",
+          "sha256": "cfbed610f00d5cb23cbec8e8e4837bb632fd19b16a7f8ca3ef847b8b69a2d3c1",
+          "bytes": 3900
+        },
+        {
+          "path": "CanvasSyncOperationStore.swift",
+          "sha256": "4cb8c2646a337fc048b914211a1a36a307bbb71f0ee054fa5ff806fba022355e",
+          "bytes": 4840
+        },
+        {
+          "path": "ChatPreferenceStore.swift",
+          "sha256": "6b92d536907a76705ceeea79ea734517d171c39d3cc0f26d40b4040b3ccf6390",
+          "bytes": 8867
+        },
+        {
+          "path": "ChildRunPayload.swift",
+          "sha256": "85e8ef795a325821fc7ac3397fd3011fe8ec816991bdbe0038e0b24b9b36025b",
+          "bytes": 15013
+        },
+        {
+          "path": "ChildRunStore.swift",
+          "sha256": "595678120268838f029b3252ef9c3079ebca28a5cb227150f2fbc5e08fa89fbf",
+          "bytes": 50001
+        },
+        {
+          "path": "ConfigSyncMetadataStore.swift",
+          "sha256": "f74167a94c22cb694958d4c8a6ef92e0c60fce5c9702b08ab8f450fe111d52c8",
+          "bytes": 10884
+        },
+        {
+          "path": "ConversationActivityStore.swift",
+          "sha256": "779704324f7c557747b4e7339854c7ec486234ec8fdec59a01afbfdf62c5c31a",
+          "bytes": 6691
+        },
+        {
+          "path": "ConversationPresentationState.swift",
+          "sha256": "8f89d869d172b2ee09305fea56048850ec43904804e3fee3c0eb7279856f96b9",
+          "bytes": 4865
+        },
+        {
+          "path": "ConversationPromoter.swift",
+          "sha256": "9089f95c4563416cbaec5a61abbdae86e2fcbdfe12ffbced45165c0eb5cfef77",
+          "bytes": 27035
+        },
+        {
+          "path": "ConversationStore.swift",
+          "sha256": "bc66e640fdab9c3539315bcec452d1ee0e802c0f020df1ef97cc18e14c0858c2",
+          "bytes": 49005
+        },
+        {
+          "path": "CreativeAssetStore.swift",
+          "sha256": "c4937c2cff961fd859eccb71df0863ad900cad596d0b2998e3e7f8b391674922",
+          "bytes": 60745
+        },
+        {
+          "path": "CredentialStore.swift",
+          "sha256": "7560a9367022737dbaaa9610cc365d3971d2740b0e7b794e13594dd859d2cb68",
+          "bytes": 9901
+        },
+        {
+          "path": "DatabaseManager.swift",
+          "sha256": "232a61580de534ae8a6a6bd1c2f383d2d750ef923200362a84025c480dd74241",
+          "bytes": 18779
+        },
+        {
+          "path": "EnvironmentReferenceProjection.swift",
+          "sha256": "691d2df209c0cd9e1aef4da362be6c0612255ff082bfbf638054f8f15c5fc87f",
+          "bytes": 25615
+        },
+        {
+          "path": "EphemeralStores.swift",
+          "sha256": "4ea589a8cb5d5a8847e6e18ccfb8d7185e0d1ba8e676c924fad2e41ba7cf224c",
+          "bytes": 47437
+        },
+        {
+          "path": "ExecutionExperienceStore.swift",
+          "sha256": "a7f53d380de0890967d3512511fdd9935dae744c6e4b4c0dca4a3408acd44164",
+          "bytes": 25070
+        },
+        {
+          "path": "LinuxCacheCleanupTaskStore.swift",
+          "sha256": "8fb84a28d54ecf1cc11b252382d954fc222bbc8d5c9bc7618ea61d4d034f440d",
+          "bytes": 5771
+        },
+        {
+          "path": "MediaGenerationJobStore.swift",
+          "sha256": "be939b7c6c2a4006fdcc3dc477e62321dd20e4da3e7bbcaac2e58a9a914d592c",
+          "bytes": 21306
+        },
+        {
+          "path": "MediaJobOwnership.swift",
+          "sha256": "2bb89b4a2a34214e8155daa4a360467ecae1d5d8f402f24bad626f9c97c11416",
+          "bytes": 2606
+        },
+        {
+          "path": "Migrations/V10ConversationContinuity.swift",
+          "sha256": "a79ac4b20a3e4601371c5d6e05a04b493e3ffafc6fce4468af510c9ad2a541ee",
+          "bytes": 2594
+        },
+        {
+          "path": "Migrations/V11ArchiveCredentials.swift",
+          "sha256": "f485af1005feaa310585340fbc04aee29e97cac2f752f76cdeb461d901221173",
+          "bytes": 3294
+        },
+        {
+          "path": "Migrations/V12RunningInputs.swift",
+          "sha256": "07e9eabf6c50499f307e696e8d7a73b89534817081d454210a0e7ada876f832f",
+          "bytes": 1865
+        },
+        {
+          "path": "Migrations/V13PersonalizationMemory.swift",
+          "sha256": "a40d4ffc615d62fc57841cac9fdbca92b907e4cb03eba9b061628fe59b9293b8",
+          "bytes": 4971
+        },
+        {
+          "path": "Migrations/V14PlanGoalControls.swift",
+          "sha256": "01b41e59290a2bc6c125e4f6198714f4d35f775a574fa1fe0d2a62c0482baa36",
+          "bytes": 960
+        },
+        {
+          "path": "Migrations/V15ProviderDisplayName.swift",
+          "sha256": "ac5962e4f3ddebac6f41241a6edbceb0ba33e5bf1a93f08802d340aaf191df57",
+          "bytes": 539
+        },
+        {
+          "path": "Migrations/V16ProviderCompatibilityAndPackageReview.swift",
+          "sha256": "e8cc9338e69a4f1af43b3667d850a95d80f3d41021fa5d313640635858588521",
+          "bytes": 689
+        },
+        {
+          "path": "Migrations/V17ModelReasoningEffort.swift",
+          "sha256": "8996e4f675235519f6ef41a9f66620dff4ac62062cc79ed95166700ae9738289",
+          "bytes": 503
+        },
+        {
+          "path": "Migrations/V18RunUsageDimensions.swift",
+          "sha256": "66df5cdcf04685905f67aaafbf2e38cc263e501e02a1d970ffe1f35649f351f5",
+          "bytes": 1080
+        },
+        {
+          "path": "Migrations/V19DetailedRunUsage.swift",
+          "sha256": "9da5c7f695d32eafe288f887b86f8cd4df56bd4b3d53beabd240e03677bf4005",
+          "bytes": 772
+        },
+        {
+          "path": "Migrations/V1Initial.swift",
+          "sha256": "b436a3c0a83746989d859b09adfbd02311b54617ccc95a758f574ba550a2e64a",
+          "bytes": 7382
+        },
+        {
+          "path": "Migrations/V20RunResponseTiming.swift",
+          "sha256": "f72919b87a8d8bd21ecd9b90a572f2ad82be66a406ce59337980bf8d944b675f",
+          "bytes": 658
+        },
+        {
+          "path": "Migrations/V21MemoryLifecycle.swift",
+          "sha256": "c7d4b3f410389f08c1f509fa2071e5fb5a02e34c99a12a85b8302d9addae8d48",
+          "bytes": 2483
+        },
+        {
+          "path": "Migrations/V22RemoteDevices.swift",
+          "sha256": "f58e2c4bdae15c2de2812fb93dc96c40f8b0e806dea18e3a06872e877d27ef52",
+          "bytes": 781
+        },
+        {
+          "path": "Migrations/V23ModelPickerVisibility.swift",
+          "sha256": "d8fb872f07689259c94e82ae23e29179f4232b0900eef6348f30f9952822c5a3",
+          "bytes": 646
+        },
+        {
+          "path": "Migrations/V24VideoModelRouting.swift",
+          "sha256": "bad20cd0d45aa45ff51fe395ca527b1258047b44d0d7eb295616e9bb05f023c5",
+          "bytes": 596
+        },
+        {
+          "path": "Migrations/V25DeferredSyncPayloads.swift",
+          "sha256": "411294be50a303463cd2b669ad7b56699e89f19284c7ef1dd196871e816b597b",
+          "bytes": 536
+        },
+        {
+          "path": "Migrations/V26CreativeMediaJobs.swift",
+          "sha256": "ab2cf37ea62f98a5e6c1d0f4c888f60fdccce0dea2a31743dce7106289e776fe",
+          "bytes": 6183
+        },
+        {
+          "path": "Migrations/V27CloudReleaseModes.swift",
+          "sha256": "7e27caaef17c5eebd891fe140a2d036f0c611e99cbfea304583d62aad61c9a3c",
+          "bytes": 587
+        },
+        {
+          "path": "Migrations/V28CanvasModelRouting.swift",
+          "sha256": "fc875fa5b3cf63759cb5fe9164cc86625ac89a4f12f27db5bf9bac024d7504ec",
+          "bytes": 1210
+        },
+        {
+          "path": "Migrations/V2ConfigSync.swift",
+          "sha256": "13a309cfa40c52dbe1e4859bde13298978f425841c18fb5cf4b67f4aabff76e0",
+          "bytes": 1020
+        },
+        {
+          "path": "Migrations/V30MemoryOrganization.swift",
+          "sha256": "3bb427554cb20498d9b297c638ababd628a70d1dd149c92a44a9cb0c7d153946",
+          "bytes": 1072
+        },
+        {
+          "path": "Migrations/V31TimelinePerformance.swift",
+          "sha256": "ebefb22dc5654235a10c26c92b399cbd0ef8f95c7554bbccc576edd94bae523a",
+          "bytes": 702
+        },
+        {
+          "path": "Migrations/V32CanvasRunContexts.swift",
+          "sha256": "b0d36c3d6a567ce921f57a644776932d83fd5685672a8b3e42a96d9cb7331b9a",
+          "bytes": 1160
+        },
+        {
+          "path": "Migrations/V33GeneratedAssetReservations.swift",
+          "sha256": "2d64b52d1ff7c861190d806d6c65e8f44f9fc7bcc4349c7b64a7ada3e5743834",
+          "bytes": 2536
+        },
+        {
+          "path": "Migrations/V34RunConversationModes.swift",
+          "sha256": "4e5f2a5d02cd6b2cd70690dc0eb38fd7125fe4acc24c085245acb209e98bc451",
+          "bytes": 607
+        },
+        {
+          "path": "Migrations/V35GeneralAuxiliaryLLM.swift",
+          "sha256": "450556dd1cdf7a052a8046664166e6b7c7ef2d83e1c84cbee7762881873c0ac4",
+          "bytes": 452
+        },
+        {
+          "path": "Migrations/V36LocalWorkspaceCleanup.swift",
+          "sha256": "9b7a299791aa3b9e2f5132e2af47343f6695505a66f405bb92361a45bb3f883f",
+          "bytes": 1468
+        },
+        {
+          "path": "Migrations/V37TaskChecklists.swift",
+          "sha256": "07384db86e4e246dc2d806b85682cde0ce9be0d4bdf3cdd0bdd08d36c28f4bb3",
+          "bytes": 853
+        },
+        {
+          "path": "Migrations/V38ImageAutonomy.swift",
+          "sha256": "d4412e8eb0eb72aff15fe7051be156913c013bca0f02458839a7052939992568",
+          "bytes": 381
+        },
+        {
+          "path": "Migrations/V39BackgroundJobs.swift",
+          "sha256": "a6227bef2cfa5ecd72ce086c8a9c40acf446a631a56782cdbbbd7557f447a849",
+          "bytes": 2844
+        },
+        {
+          "path": "Migrations/V3AgentDaily.swift",
+          "sha256": "db6678b59ea7c13c06d3e7aa037639eb865a3d1f429d559e4886a4271ca7d8d2",
+          "bytes": 5362
+        },
+        {
+          "path": "Migrations/V40ExecutionEnvironments.swift",
+          "sha256": "66da1738e7566c637c90b5a206c42c192f212d5192f98d681a8a57ce8345edfe",
+          "bytes": 508
+        },
+        {
+          "path": "Migrations/V41ConversationPurpose.swift",
+          "sha256": "d33ce295072bac892286c80ed2a69d8c9c2128f4a87ee161da2343626c1dbeee",
+          "bytes": 540
+        },
+        {
+          "path": "Migrations/V42MediaJobOwners.swift",
+          "sha256": "642f7913a31f32c0c6b6bc7c207915f549bdd388a74769e45f4aa45809dd5592",
+          "bytes": 4224
+        },
+        {
+          "path": "Migrations/V43MediaJobIdempotency.swift",
+          "sha256": "a6810e31afb37d745c7d9f7095c6d94ce3def72bb3f04c37a2ee42e9adf3cf08",
+          "bytes": 1231
+        },
+        {
+          "path": "Migrations/V44ConversationSearchIndexRepair.swift",
+          "sha256": "e99a0cef3d12262d44069955b6d50e0ccea9ff5369400bc45deddd8d3b1ce2b1",
+          "bytes": 842
+        },
+        {
+          "path": "Migrations/V45AssetReferenceOps.swift",
+          "sha256": "f65861dd7ff3eaa04ddbe991d77355ab6fa541be0df3809ece9b7c837d38519b",
+          "bytes": 1367
+        },
+        {
+          "path": "Migrations/V46TaskLifecycle.swift",
+          "sha256": "d4002baf9acba11f303a500b416d72fb2702047a7c09e1ecd643314cf0ab0b13",
+          "bytes": 10536
+        },
+        {
+          "path": "Migrations/V47ShortcutInbox.swift",
+          "sha256": "7a4f54d599b18d647a4e995ccf0b50f95289487cd47fafe26bc3be7df93de89a",
+          "bytes": 2443
+        },
+        {
+          "path": "Migrations/V48SystemAlarms.swift",
+          "sha256": "980048b652794bc56afc156273caad0283b70c0ee783f0d4b7c69520d8ffad9b",
+          "bytes": 1515
+        },
+        {
+          "path": "Migrations/V49ChildRunCheckpoints.swift",
+          "sha256": "b65c3f20881bc0dd57e305f3e919c00c7045434b46cb7aab19b67c66db3a129b",
+          "bytes": 2633
+        },
+        {
+          "path": "Migrations/V4ModelPreferences.swift",
+          "sha256": "f62088c5ef5cf873086fbb1bc0a76e3a39c9a6c18a0030a11b37f8332eec7401",
+          "bytes": 1769
+        },
+        {
+          "path": "Migrations/V50ScheduleCleanupReminders.swift",
+          "sha256": "d97ea536981e4224ef79b2ee1946e5dc33fd770bf6c9d2473de77dbfe41972a6",
+          "bytes": 3404
+        },
+        {
+          "path": "Migrations/V51ChatPreferences.swift",
+          "sha256": "d025b75af9197a960b747789dc7b41cfd3dc15f1f0bdf1b67a43358490bfc65e",
+          "bytes": 1522
+        },
+        {
+          "path": "Migrations/V52PersonalizationRetention.swift",
+          "sha256": "138af081edad4f18570529362fcec6ca008595e7e7ac26e568a36287a1507f1d",
+          "bytes": 6245
+        },
+        {
+          "path": "Migrations/V53ConversationVisibility.swift",
+          "sha256": "a249b362139f124fae90bd3c897e0d2a2a543e92ecda00923c98561343b643e2",
+          "bytes": 953
+        },
+        {
+          "path": "Migrations/V54JobAdvisoryGroups.swift",
+          "sha256": "33571328b44c5a70d55b011c9949ac83f2423f627896e634592dc8ff42a03f9a",
+          "bytes": 1694
+        },
+        {
+          "path": "Migrations/V55ConversationPinning.swift",
+          "sha256": "cb330e1178fed3367f4de8c4dec6e47a320f7fa31160b3eb2e1053b62f9ac849",
+          "bytes": 1288
+        },
+        {
+          "path": "Migrations/V56UserQuestions.swift",
+          "sha256": "fd87ff875d690b750a1f247c38885fe3ca1f7ee72af50a307e6257ea57d775d9",
+          "bytes": 2521
+        },
+        {
+          "path": "Migrations/V57SchedulePresentation.swift",
+          "sha256": "42c2e46578d9d65841a970df58987ba1b5f475bf1b7d70cd12e31bc669fb81ce",
+          "bytes": 1799
+        },
+        {
+          "path": "Migrations/V58TaskExecutionBindings.swift",
+          "sha256": "618d7de764b53d55ceee186c85ce0437c2a8b0e5bd82c03ec4da7a4301291202",
+          "bytes": 1628
+        },
+        {
+          "path": "Migrations/V59SkillConfiguration.swift",
+          "sha256": "30ae732ebbb0fba81d2997dc448393242fb1bbf4c953ec0ead13d8a209505836",
+          "bytes": 5020
+        },
+        {
+          "path": "Migrations/V5Workspace.swift",
+          "sha256": "365d03b6462f18130fd87a4306b080fc70c596320c35519102d8cd0d8a7889ed",
+          "bytes": 3450
+        },
+        {
+          "path": "Migrations/V60ExecutionExperiences.swift",
+          "sha256": "4f5609cae95f774cded10257ec4b2a0f1aa7b951873a1b428d8e610cfe4b9a31",
+          "bytes": 5571
+        },
+        {
+          "path": "Migrations/V61EditorAssistantOwnership.swift",
+          "sha256": "7b209bfe760452528d90c7ede0eef2650b7357ad8834357603a8baa7890dfc9c",
+          "bytes": 1494
+        },
+        {
+          "path": "Migrations/V62ModelReasoningMetadata.swift",
+          "sha256": "ead8b4f1eaff51c0e226d943234c64127a3c4fed4695c745269e61ce32f7e137",
+          "bytes": 732
+        },
+        {
+          "path": "Migrations/V63LinuxCacheCleanupTasks.swift",
+          "sha256": "0448216567f93611615e30f2dc3701f462cd05ad1786081bb382cc8effc0d18c",
+          "bytes": 1468
+        },
+        {
+          "path": "Migrations/V6AppSettings.swift",
+          "sha256": "1bc852fef75ac8f98dc9cd4ec5b0c743cb9b4ecb76f7028997450cebb1957f2c",
+          "bytes": 1012
+        },
+        {
+          "path": "Migrations/V7WorkbenchIntelligence.swift",
+          "sha256": "7a49c760e0a42470eb068c8c7dd5f4ba73a98d8d9bcb22649109a95ac45ce65d",
+          "bytes": 11347
+        },
+        {
+          "path": "Migrations/V8TaskOwnership.swift",
+          "sha256": "52d387bef95390759a1fa6fecc1b59f7715b7cdc18b658bfe22a2b608e0fa5b3",
+          "bytes": 8946
+        },
+        {
+          "path": "Migrations/V9HarnessAndPermissions.swift",
+          "sha256": "e08dd270cff20544892f7fb2cee21d1a6aae0f5baa0efb61116b60c15180f7b7",
+          "bytes": 1114
+        },
+        {
+          "path": "ModelConfigurationStore.swift",
+          "sha256": "3ff630033102529955e77a8ec131fe316db33dcab46f601ab9cd4627e3d8a69a",
+          "bytes": 39243
+        },
+        {
+          "path": "PersistenceCodec.swift",
+          "sha256": "acd10fae9a675d87a22fe58d4203af94859dfc3cb41e57a4ee20569b4f1f4d67",
+          "bytes": 1582
+        },
+        {
+          "path": "RemoteHostStore.swift",
+          "sha256": "5fed29c9d4a381a1d97259ed157bb7349689d46d967e227ead9d8cc50e219f89",
+          "bytes": 12654
+        },
+        {
+          "path": "RemoteSessionRegistry.swift",
+          "sha256": "8cbe459599f421e3e806043777120d467b0c4bea20be89e71dd64ee7bf819397",
+          "bytes": 5485
+        },
+        {
+          "path": "RunDependencyStore.swift",
+          "sha256": "2690fbf7ed43d74174a51adf957b8c8a1c808b353fad4ca300df902d39917f28",
+          "bytes": 7468
+        },
+        {
+          "path": "RunLaunchStore.swift",
+          "sha256": "659730c957327dd77c2c70222be9206b4186f0036b04dc01eea0bd6ee0f50fd8",
+          "bytes": 33475
+        },
+        {
+          "path": "RunLifecycleRetention.swift",
+          "sha256": "1c8970957d5925059eeb0014dc778f67315e8ea7e0a2b934753df16fc56d93a0",
+          "bytes": 4602
+        },
+        {
+          "path": "RunStore.swift",
+          "sha256": "89191f577c684d4f972a44f3d450fca2519dfc20e51b3ce5af6f1d1d8b95eff7",
+          "bytes": 38630
+        },
+        {
+          "path": "RunningInputStore.swift",
+          "sha256": "ae2ad17173420dcbd89a2275091a5c739a4cd217ed6f8f86c520f6ab25936e1d",
+          "bytes": 14525
+        },
+        {
+          "path": "SQLiteRunOutputReader.swift",
+          "sha256": "b030290cf4c8d7218f6a5b96d32f823596c44298302b981fd19d05a22e4b8675",
+          "bytes": 21617
+        },
+        {
+          "path": "SQLiteRunReplyReader.swift",
+          "sha256": "c1f48cf6121021bedf4dacc27b9b13d761fc32d5bdeb833d546a98c4c0a5e5e1",
+          "bytes": 2553
+        },
+        {
+          "path": "SettingsStore.swift",
+          "sha256": "0ea5acb3e7c1f7eedbaa2053d23113d4b375ffd36388f8d88737c57be1f9311b",
+          "bytes": 4765
+        },
+        {
+          "path": "SharedDocumentsStore.swift",
+          "sha256": "c6020358c3b99caa8957767132fc608239c51514f0b020aa3475276d4b312893",
+          "bytes": 106893
+        },
+        {
+          "path": "ShortcutInboxStore.swift",
+          "sha256": "56c000baad2d4b0d5dfdb2ece26d67236c06e71d6b1b19478aa74246441773fe",
+          "bytes": 13636
+        },
+        {
+          "path": "SkillAuthoringModels.swift",
+          "sha256": "c1a75670a007608e36ead440f7ceacc0e77cb3f1045951dd85514c0f12a12e98",
+          "bytes": 6109
+        },
+        {
+          "path": "SkillAuthoringStore.swift",
+          "sha256": "5c3793562c7086b6a7616a47c5c3341d884ca1d01f4ac5ad42e68ab2a78ee52c",
+          "bytes": 33179
+        },
+        {
+          "path": "SkillConfigurationStore.swift",
+          "sha256": "444097ad353980fbd4dd36be735ca2352b861cb8995e125729039dd9e0fa8807",
+          "bytes": 73264
+        },
+        {
+          "path": "SkillStore.swift",
+          "sha256": "7e7f2baed985c456bcefdf463186bf62674f4b4a2c093239dddc44b933e6b96f",
+          "bytes": 27543
+        },
+        {
+          "path": "SystemAlarmStore.swift",
+          "sha256": "555f44c2db297bbcf54b1eb748dff3e693f2e522f452d6b83d2eb901ba64d950",
+          "bytes": 22428
+        },
+        {
+          "path": "TaskExecutionBindingStore.swift",
+          "sha256": "9492d64de07de271d925950f925d882c1cd0c1f489ad2e12073c9629c465621a",
+          "bytes": 37766
+        },
+        {
+          "path": "TaskScheduleCleanupReminderStore.swift",
+          "sha256": "b8575d24c04f399782234d91126ee11ff68164bf15095dea80538c9ff6182c5c",
+          "bytes": 26554
+        },
+        {
+          "path": "TaskScheduleStore.swift",
+          "sha256": "f2ef55321ca24a6e9ffe6359399ac1c2b5e56e5931cc6ea7a76904a02370862c",
+          "bytes": 45545
+        },
+        {
+          "path": "ToolCaptureCleanupRequestStore.swift",
+          "sha256": "b2a2253e4ba8454c7e1d465e539d2d80dd8342da227be7c54970d7a877020b71",
+          "bytes": 10215
+        },
+        {
+          "path": "UserQuestionStore.swift",
+          "sha256": "0a75ff89bc66651c55bc0dad0a57f3991a44248212aec48e1a0e45379d0a9a75",
+          "bytes": 35873
+        },
+        {
+          "path": "WorkspaceStore.swift",
+          "sha256": "be046a7c7365116498d724bebf5bf176eb824b39678fe70d01a9c859f63c1da6",
+          "bytes": 32035
+        }
+      ]
+    },
+    {
+      "target": "FloeAgentRuntime",
+      "upstreamDirectory": "FloeAgent/Sources/FloeAgentRuntime",
+      "packageSymlink": "Sources/FloeAgentRuntime",
+      "symlinkTarget": "../../FloeAgent/Sources/FloeAgentRuntime",
+      "isSymlink": true,
+      "fileCount": 65,
+      "files": [
+        {
+          "path": "ActionClaimGate.swift",
+          "sha256": "f163584d114c8d74946a91b3baeb8ccb90247822fe5719212f16b1f0e899ecef",
+          "bytes": 6236
+        },
+        {
+          "path": "AgentCheckpoint.swift",
+          "sha256": "bda1c65e6c8d1d8b2bb646f9732188ef7e3eb92419658173a993886c1abeb5d0",
+          "bytes": 22793
+        },
+        {
+          "path": "AgentPromptComposer.swift",
+          "sha256": "0b972ecdb317a3d65c5347593be461d50c017db3d57c0ae546ee224ffb0840df",
+          "bytes": 42030
+        },
+        {
+          "path": "AgentReminderCenter.swift",
+          "sha256": "1b4cda62490c6c669700847ac0c5d6ffc30948f8816820c54a93d8adb8eebc38",
+          "bytes": 2568
+        },
+        {
+          "path": "AgentRuntime.swift",
+          "sha256": "4629064277fe5cf2d9f38f5a425bcd810da6cb8625c790e8a2a5223fe4db3fe3",
+          "bytes": 503458
+        },
+        {
+          "path": "AgentState.swift",
+          "sha256": "33abe95db7d932017aef1e9b6d04b258ed53f81d56ce3cf79b5d6ea88ca5aa4a",
+          "bytes": 7333
+        },
+        {
+          "path": "AgentWait.swift",
+          "sha256": "0518dbb52abcbfed886e342a12b8a1061d8afdf0d3a76a1153bb2c852183be6f",
+          "bytes": 15519
+        },
+        {
+          "path": "AgentWaitTool.swift",
+          "sha256": "8fc90f07c2e45a37e343328cb242591a8425fb3a0670fe8efa3c6dfb5c523100",
+          "bytes": 2927
+        },
+        {
+          "path": "ChildRunResume.swift",
+          "sha256": "497e63e2832dc7057c3a74c739672709a3fde12cd0654b5be0b113f8b41e2621",
+          "bytes": 14642
+        },
+        {
+          "path": "ChildToolDiscovery.swift",
+          "sha256": "80d7768f9b5232ac2cfc92aee65cfe5b9dbe907c2714ff388e51db9ae601fd0f",
+          "bytes": 20856
+        },
+        {
+          "path": "ContextEngine.swift",
+          "sha256": "ebbc59d3b3b2cb43fd6aa011a3ba4055a60c333fbc53c408da08b8f0ff92b467",
+          "bytes": 53613
+        },
+        {
+          "path": "ContextManagementPolicy.swift",
+          "sha256": "d2c354550a719c549581e64d3809f44d58339f294c54a0ed1e1b0e944c8c55d1",
+          "bytes": 13412
+        },
+        {
+          "path": "ConversationCoordination.swift",
+          "sha256": "a51fc3f58cae1b1951b41751c64cac1da7d5f7a95c1e215a813129d963e8a683",
+          "bytes": 11602
+        },
+        {
+          "path": "ConversationDiscoveryStore.swift",
+          "sha256": "7cffec500fb1bd11d35ad00b332e693539f7570a4f544f721ac7ce0f2471462e",
+          "bytes": 1964
+        },
+        {
+          "path": "ConversationEnvelope.swift",
+          "sha256": "e114aa1359a34eaadf1d1caf1f1f802aa10e44ee0c7c5f06ff3a949154ef4587",
+          "bytes": 20911
+        },
+        {
+          "path": "ConversationHistoryAssembler.swift",
+          "sha256": "6d946f710108a8f278abc0f3c4df6fc0a23fa0e3cad7f5b5a6ad89d95bd2f346",
+          "bytes": 15039
+        },
+        {
+          "path": "ConversationHistoryContracts.swift",
+          "sha256": "5e394262bdbf85ee3903029fc21798eab566bd4ac2df8cb60d2883b1a6fd6a10",
+          "bytes": 11330
+        },
+        {
+          "path": "ConversationRunService.swift",
+          "sha256": "b2d520048732207a069b9063a44edd2548ced158e1e515e6ed511247be8d3dcb",
+          "bytes": 152222
+        },
+        {
+          "path": "ConversationTools.swift",
+          "sha256": "4d53df8cde822f45400cf293f5f7f494576b98a07398bbdbc9e95e82806e0ccc",
+          "bytes": 22390
+        },
+        {
+          "path": "DelegateTool.swift",
+          "sha256": "51345ad4c2e02a5ef63f7e50a3484d6d58d3a4141e50f233d088e385a3e5e0b4",
+          "bytes": 11576
+        },
+        {
+          "path": "DreamPromptInput.swift",
+          "sha256": "e8ce63eedbec40317656452555f5d152d5152395f6b040ad3b8657084a5f6267",
+          "bytes": 2758
+        },
+        {
+          "path": "ExecutionExperienceActivation.swift",
+          "sha256": "40610458cfede5dc509782af576327bf36dd428ea3cab261d6f7f6875807f4fb",
+          "bytes": 697
+        },
+        {
+          "path": "ExecutionExperienceEvidenceCollector.swift",
+          "sha256": "1e030b377496969725bc75fe01bfeebbe56af63bfe2b6aaa95316f7afb5a1b93",
+          "bytes": 8734
+        },
+        {
+          "path": "ExecutionExperienceObservationBuilder.swift",
+          "sha256": "ed92bc9c13930881ae769afc8d4e73aeb13bd1cc200b94fbfa8d638740610ccd",
+          "bytes": 2948
+        },
+        {
+          "path": "ExecutionExperiencePolicy.swift",
+          "sha256": "59fd3165cb6fd915d26abdaa8e50c4c5dcd858bf89553a2d2e04b5a73172f1ce",
+          "bytes": 26110
+        },
+        {
+          "path": "ExecutionExperienceService.swift",
+          "sha256": "a5da6cbffe947513890ffc9cdd15054384b31db5f4c0d782ea6f8b06ec18eb0a",
+          "bytes": 5570
+        },
+        {
+          "path": "GoalEvidenceReviewContract.swift",
+          "sha256": "7017d7c12e3e84b0f813a1c8a56ba61b7c1b65c8cca597b9c522dc482299446b",
+          "bytes": 4480
+        },
+        {
+          "path": "GoalModels.swift",
+          "sha256": "fcf11fa337182e476e0a4cfc456d6624172361beecc5899415636c5900182ed8",
+          "bytes": 11276
+        },
+        {
+          "path": "GoalRunDefinitionFingerprint.swift",
+          "sha256": "9663f2b6c75ad566769a074542f4adcd63a75c4af0c56a172100ab7e4d95d436",
+          "bytes": 1717
+        },
+        {
+          "path": "GoalRunSettlement.swift",
+          "sha256": "beeb5ef761c04e4f747e6046296910e2b4671946ffbde1f02eb66eca4c72af4f",
+          "bytes": 4512
+        },
+        {
+          "path": "Harness.swift",
+          "sha256": "2c24541d170db1e8784df0908a8b8e556451d40a307a781076c22007e7b1a3b7",
+          "bytes": 21182
+        },
+        {
+          "path": "HarnessExecutionLedger.swift",
+          "sha256": "3c8319927411b23d74bfa0e12554ebe9dd4c82d304e9185f1be7b0aa5888351e",
+          "bytes": 31984
+        },
+        {
+          "path": "HarnessInvariant.swift",
+          "sha256": "176510e01b0db4d911226fed7f82b56b10103dd1d3de84d940f06d8778ac6d60",
+          "bytes": 8703
+        },
+        {
+          "path": "IntelligenceStore.swift",
+          "sha256": "f880151513b4d4664d258ab070356f495129115a0122c779dd622f1d8c24ee45",
+          "bytes": 153075
+        },
+        {
+          "path": "LocalEnvelopeBounds.swift",
+          "sha256": "af0d3b328f0882a1269c34a4bec3906eac33c57e28bb593908c2c161e885f556",
+          "bytes": 4453
+        },
+        {
+          "path": "MemoryEmbeddings.swift",
+          "sha256": "aa562ac09617af4a4dbce1d6f538e8598aada443facc657b315e36fa14591b98",
+          "bytes": 12607
+        },
+        {
+          "path": "MemoryMaintenance.swift",
+          "sha256": "d96e1d3d342df9b62bb42067e9488259db11e97ac16196abe356a820b5584be9",
+          "bytes": 11247
+        },
+        {
+          "path": "MemoryReview.swift",
+          "sha256": "0b29c35b85cba75fa5eef7629ec394a7434bbc274cb6f081d170b5607280eae3",
+          "bytes": 14668
+        },
+        {
+          "path": "MemoryTools.swift",
+          "sha256": "77fe02745a96710c3f8525ad00ba7f975f6587a12c3989198f391bf41d150eb9",
+          "bytes": 28184
+        },
+        {
+          "path": "ModelSwitchHistoryPreparer.swift",
+          "sha256": "296851de293baced2981ca515ecdf36ca52f2d8d699a3800399f3c90ab5e92d9",
+          "bytes": 15773
+        },
+        {
+          "path": "NativeAuthoringGuidance.swift",
+          "sha256": "9cc839120af9e2176956996a126052d5ee6df319f0bf18aa9367b21cb45a9741",
+          "bytes": 9236
+        },
+        {
+          "path": "NativeAuthoringRouting.swift",
+          "sha256": "1ec3b40f41d334b14e4fd77782e8e80491c6394f5b87491df7825407f5180d11",
+          "bytes": 21579
+        },
+        {
+          "path": "Personalization.swift",
+          "sha256": "69aad0cc4f40a498ab70595bca5a31d50b96f0bd644d2074afa823b1bd3ca1e5",
+          "bytes": 56115
+        },
+        {
+          "path": "PlanToolPolicy.swift",
+          "sha256": "c16337344903e7c623a088708dd9dbabd93af91588afbe638e9b0cb0067bf642",
+          "bytes": 10465
+        },
+        {
+          "path": "PlanningModels.swift",
+          "sha256": "5a83a64fd97d86e651746df09a2f1acf292682ab7b9e754f5398f5f0bd2d1ff2",
+          "bytes": 28313
+        },
+        {
+          "path": "RuntimeActivityStatus.swift",
+          "sha256": "2f68a00b085f25aada6f8667c2b5642656518f5de2d1a9a8db379d429e3e8795",
+          "bytes": 12379
+        },
+        {
+          "path": "SQLiteRunCheckpointStore.swift",
+          "sha256": "97df994c7f1070c854397af3c20521cd4d7697aa49aacfdce7f85c1205755ca2",
+          "bytes": 20866
+        },
+        {
+          "path": "SharedEnvironmentCoordination.swift",
+          "sha256": "ddee2696cd5a0b3a0566e0e43e9888369ad5d41c7cb1ca2ab652caea9977e0bf",
+          "bytes": 9212
+        },
+        {
+          "path": "SubagentPeers.swift",
+          "sha256": "392e5af8aa7fea5ab616646457de046f2539ffa7b17c36de0ff3fbccee3a62fa",
+          "bytes": 18711
+        },
+        {
+          "path": "SubagentRunner.swift",
+          "sha256": "e3a415538a8ee5231ce49c12103e9fec77ec31eef20665d5c4709e0b6afd4a37",
+          "bytes": 169223
+        },
+        {
+          "path": "TaskChecklistStore.swift",
+          "sha256": "93ce23ac881b7ee9710696facfa4619c77b55611df43c3bf5de2079c62bc1f22",
+          "bytes": 16171
+        },
+        {
+          "path": "TaskChecklistTools.swift",
+          "sha256": "f07f99ad81f8e59b6a032b95a445bb64ccef387c71155d0cff903dcddb28843e",
+          "bytes": 16682
+        },
+        {
+          "path": "TaskClosureGate.swift",
+          "sha256": "bb53f2b880a6fd4d429141e177693e7fdf3285bfe06240e0549d13770c2b4c11",
+          "bytes": 10033
+        },
+        {
+          "path": "TaskTitlePrompt.swift",
+          "sha256": "0de909762e643e0cae0925d9304b9100daeade466b9f7b773e9fe5a387a157dd",
+          "bytes": 1046
+        },
+        {
+          "path": "ToolArgumentSanitizer.swift",
+          "sha256": "eed6adee580141bb741a39c6901f179610894888b666d0863f0175449324b5cd",
+          "bytes": 17753
+        },
+        {
+          "path": "ToolDiscovery.swift",
+          "sha256": "2c1026bcce37ab2932d43827e907007e1412ccf147a0a476e18223a06062161f",
+          "bytes": 37140
+        },
+        {
+          "path": "ToolResultCaptureStore.swift",
+          "sha256": "f3753ee2222afce0d3dc6d66f1a2d1cbeacee5d3a78af3757f00945145743ee1",
+          "bytes": 60127
+        },
+        {
+          "path": "ToolResultPagingTool.swift",
+          "sha256": "dc1aeca4cd4280b6db7168a2e779786750e9e044925ac86296a90ff0eca912b5",
+          "bytes": 21743
+        },
+        {
+          "path": "ToolResultSelection.swift",
+          "sha256": "f0c3fd531b30da5542be4a3420e85220a59203cdff59de523731a6559656f967",
+          "bytes": 20264
+        },
+        {
+          "path": "ToolSchemaOfferPlanner.swift",
+          "sha256": "ff0806c420f45da7fbb44845cb09be5ade91e11c456efb7525cbaf467ffd0559",
+          "bytes": 7307
+        },
+        {
+          "path": "ToolWorkflowGuidance.swift",
+          "sha256": "4d4e634fcb2738d6436ec44674e17272b5b5b9c30cedc1d1f8caca73d074d866",
+          "bytes": 15506
+        },
+        {
+          "path": "UnknownOutcomeReconciler.swift",
+          "sha256": "f38cf60021c02019a52ddc2df4bd83dec73fe0024e2ff6c67e9b945b6fea4abc",
+          "bytes": 3577
+        },
+        {
+          "path": "UserQuestionCoordinator.swift",
+          "sha256": "095a325cdbe1c1ab443f0e129a5bdf659fa00e339c3c976cc7db1b295304e1bd",
+          "bytes": 27792
+        },
+        {
+          "path": "UserQuestionTool.swift",
+          "sha256": "745863e0911984e4aac683a7357330e6e462cba859ab503ff430817598cb5f9d",
+          "bytes": 7275
+        },
+        {
+          "path": "WorkspaceContextBriefing.swift",
+          "sha256": "6e6e50ecea88e2877312b30154d407f6a1950a4801fef5ffe4d125e36bdd79f1",
+          "bytes": 3202
+        }
+      ]
+    }
+  ],
+  "newPackageFiles": [
+    {
+      "path": "Evidence/20261117/CLEANUP_INCIDENT.md",
+      "sha256": "248b390a9ade27a2d7539731b31abc7eaf43eb45c1df64fb956ee09953463b84",
+      "bytes": 1872
+    },
+    {
+      "path": "Evidence/20261117/FINAL_PARSE_CHECKS.txt",
+      "sha256": "a2d349a4c44e9cfbf1261c0b8eb0916f9636b619ed8b2c766f4cecf2bf2b5492",
+      "bytes": 1191
+    },
+    {
+      "path": "Evidence/20261117/PARSE_CHECKS.txt",
+      "sha256": "aea154627fb26968d46176ddfcb0c83888c9de7e5325ccacaa2465c4a6a76a07",
+      "bytes": 1319
+    },
+    {
+      "path": "Evidence/20261117/REPAIR_PARSE_CHECKS.txt",
+      "sha256": "8c7b99e4fbfd0f12eba2fc6c32ee4748edea5c18da16b8e2f3c90be8f03886d6",
+      "bytes": 1736
+    },
+    {
+      "path": "Evidence/20261117/REPAIR_STATUS.md",
+      "sha256": "7364b135ef82f23947ffa2c0b71c805606275938c4fe265bd90715a870070cad",
+      "bytes": 5171
+    },
+    {
+      "path": "Evidence/20261117/STATUS.md",
+      "sha256": "41792620f62127210619c479560ceb0f92bf28c07bda943e5937538f4d599ab9",
+      "bytes": 3012
+    },
+    {
+      "path": "Evidence/20261117/TMP_WRITE_INCIDENT.md",
+      "sha256": "7bc3c1a509d22b8462c73188d79b11780586cb8f7ec9501897d2634f3954200e",
+      "bytes": 2214
+    },
+    {
+      "path": "Evidence/20261117/package-describe.txt",
+      "sha256": "50edea3b580d9d9d0bd2f40c888665f96a09feb17da67c95715d6d28605ad721",
+      "bytes": 20017
+    },
+    {
+      "path": "HANDOFF.md",
+      "sha256": "605ba49d46fc6afb97d6991272218eff1b48a8e68411291ecb2dc3a2d11d3639",
+      "bytes": 13084
+    },
+    {
+      "path": "Package.swift",
+      "sha256": "c6f31edab800fdae13620d232195aa5a01f11fc5afdcfa8411d82e29aa82d654",
+      "bytes": 6766
+    },
+    {
+      "path": "README.md",
+      "sha256": "0f3096f388452c92f6e56d2eb6023e1ee379a9f25ca726b5ec8271c0728ede98",
+      "bytes": 14407
+    },
+    {
+      "path": "Sources/FloeMacSelfCore/FloeMacSelfAdmission.swift",
+      "sha256": "f00b15a27b5b3dfad168041be743af766420ee68e9c8a256451df71f2c757ee2",
+      "bytes": 44351
+    },
+    {
+      "path": "Sources/FloeMacSelfCore/FloeMacSelfApproval.swift",
+      "sha256": "4040f5e8111f34a94148535744dbfe6b4d0eb07270bcc6eefccbf6dcf92411ef",
+      "bytes": 1337
+    },
+    {
+      "path": "Sources/FloeMacSelfCore/FloeMacSelfAuthorityLock.swift",
+      "sha256": "a309bee3cc3dfdae20901576823ac7227d74bcacbefe3f39a861e6d17b542cce",
+      "bytes": 7634
+    },
+    {
+      "path": "Sources/FloeMacSelfCore/FloeMacSelfCapabilities.swift",
+      "sha256": "f22a07c2377c46b26c3ea1a26c59dc8187a2d4791eaa191e68b7a4c6176c8ee6",
+      "bytes": 13643
+    },
+    {
+      "path": "Sources/FloeMacSelfCore/FloeMacSelfConversationClaims.swift",
+      "sha256": "80df62c970eef217ea51346e0d308ca12bb49fec0f5adfaf6dc238f441a571fa",
+      "bytes": 1601
+    },
+    {
+      "path": "Sources/FloeMacSelfCore/FloeMacSelfCoreExports.swift",
+      "sha256": "be4e0bba7b777b544a6e2a46a74832f827af8c80068edb84e4428c60887fb7e8",
+      "bytes": 457
+    },
+    {
+      "path": "Sources/FloeMacSelfCore/FloeMacSelfDeniedCapabilities.swift",
+      "sha256": "42d4eb5a1285166a63d3bed26d2ad8be27dc51649f101a5fa06a38483597ac04",
+      "bytes": 1585
+    },
+    {
+      "path": "Sources/FloeMacSelfCore/FloeMacSelfError.swift",
+      "sha256": "d102c9033a2ac44246d1942b2a13029ae933691d01c9e8d72ab02d29fc9f1f2d",
+      "bytes": 10817
+    },
+    {
+      "path": "Sources/FloeMacSelfCore/FloeMacSelfEventChannel.swift",
+      "sha256": "c137906d226efb7384c6a21be0775e40e3e518f09ed41d0c0b38318308fd6f69",
+      "bytes": 3510
+    },
+    {
+      "path": "Sources/FloeMacSelfCore/FloeMacSelfHostGate.swift",
+      "sha256": "c2d072e693cc073c55fc9d881045b39d13703404fba164badc1d31aa279497ce",
+      "bytes": 5807
+    },
+    {
+      "path": "Sources/FloeMacSelfCore/FloeMacSelfIdentity.swift",
+      "sha256": "67a5c6b26b68234c10c4747ec4c8b10307c6429c59b9031eb6fa94494bd8daea",
+      "bytes": 11160
+    },
+    {
+      "path": "Sources/FloeMacSelfCore/FloeMacSelfRunFence.swift",
+      "sha256": "5cb1fff8ce91ebfb20efcba217465b9237f487fc9c6eef5b1f3b59509828a87e",
+      "bytes": 6464
+    },
+    {
+      "path": "Sources/FloeMacSelfCore/FloeMacSelfRuntime.swift",
+      "sha256": "e816b4eb421c457119049f02361a17225ef46b2ee575c27fff85296081e708ae",
+      "bytes": 38376
+    },
+    {
+      "path": "Sources/FloeMacSelfCore/FloeMacSelfSession.swift",
+      "sha256": "cdf5d33a5090215ad29ce5df0c789ddfd2f93eedd474120361a7e167e24c52a5",
+      "bytes": 24779
+    },
+    {
+      "path": "Sources/FloeMacSelfCore/FloeMacSelfSessionRequest.swift",
+      "sha256": "78a50825fa6311ae27e6f49ad539a7ca1a1baac2a83a66dee58c3df4afe6d78c",
+      "bytes": 7649
+    },
+    {
+      "path": "Tests/FloeMacSelfCoreTests/ApprovalAndToolsTests.swift",
+      "sha256": "1cd467cb0d1016423fcd3de5f161653a754a2880f6bb0d8fed9fded1172d0f46",
+      "bytes": 26742
+    },
+    {
+      "path": "Tests/FloeMacSelfCoreTests/AuthorityAndAdmissionTests.swift",
+      "sha256": "c542bdaa6f8daa75587ae0564c7be8daeaeba3f6cd2d2fe22e0e210e29a3c646",
+      "bytes": 22692
+    },
+    {
+      "path": "Tests/FloeMacSelfCoreTests/DurableProbeTests.swift",
+      "sha256": "7e01879df7e20fc8071f84eb44506aa76675ab9fbffe6074a7d75635f97e291b",
+      "bytes": 15740
+    },
+    {
+      "path": "Tests/FloeMacSelfCoreTests/FenceAndTaskEpochTests.swift",
+      "sha256": "d7c17ef9b006a862ea7626a3e3bc8809de6428f67ed306be57a0742c4b5cb84e",
+      "bytes": 6329
+    },
+    {
+      "path": "Tests/FloeMacSelfCoreTests/FixtureCleanupTests.swift",
+      "sha256": "5991429fd7b714ed20316f249bccd103d43a8153b8b353f19759a39cf9c0cdf1",
+      "bytes": 6496
+    },
+    {
+      "path": "Tests/FloeMacSelfCoreTests/OwnershipAndTeardownTests.swift",
+      "sha256": "3d238f82581bda71b4c69877b2d894a71db4bc4055d6000d946b5f56b41808cd",
+      "bytes": 10592
+    },
+    {
+      "path": "Tests/FloeMacSelfCoreTests/RuntimeLifecycleTests.swift",
+      "sha256": "911727e7579b16297233bcb60456bd7f13b281eb3162b5f136d534472538909f",
+      "bytes": 11897
+    },
+    {
+      "path": "Tests/FloeMacSelfCoreTests/SelfCoreTestSupport.swift",
+      "sha256": "9a45bd4ec297d28637f01bf28a8c9040343274258ce7c9089abd3bd1b24cd1fb",
+      "bytes": 26175
+    },
+    {
+      "path": "Sources/FloeMacSelfCore/FloeMacSelfAuthorityPrimitives.swift",
+      "sha256": "fc5adb10c88e039b8b736507afe0e4a963779647df362f96b729af7372177ebb",
+      "bytes": 9394
+    },
+    {
+      "path": "Tests/AuthorityPrimitiveFixture/main.swift",
+      "sha256": "3571ebeb5c9050f6f03f0f47ba2cf9667efae4e18ff87ee874d76cb7028578b7",
+      "bytes": 11716
+    }
+  ],
+  "totals": {
+    "upstreamTargets": 9,
+    "upstreamFiles": 410,
+    "newPackageFiles": 34,
+    "newSourceFiles": 15,
+    "testSourceFiles": 8
+  },
+  "verification": {
+    "performed": [
+      "read-only review of upstream RunLaunchStore/RunStore/ConversationRunService and schema; no upstream edits",
+      "swiftc -parse on every source and test file after the second safety repair; see Evidence/20261117/REPAIR_PARSE_CHECKS.txt (syntax only, not type checking)",
+      "upstream byte hashes rechecked against the recorded target hashes; 410/410 unchanged at generation time"
+    ],
+    "notPerformed": [
+      "no swift build",
+      "no swift typecheck/SIL/object compilation or link",
+      "no swift test",
+      "no dependency resolution or checkout",
+      "no provider/network call",
+      "no tool execution",
+      "no UI/Simulator/device run",
+      "no Git commit/tag/push"
+    ],
+    "reason": "internal SSD ~22 GiB, full App/M00 requires >=30 GiB, and no serialized build window was authorized; the coordinator asked not to attempt a build or tests"
+  },
+  "buildHandoff": {
+    "requiredMinimumFreeGiBOnInternalSSD": 30,
+    "suggestedScratchRoot": "~/Library/Caches/CodexBuild/floe-mac-self-core/<checkout-id>/xcode-27.2",
+    "commandsPreparedNotRun": [
+      "DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer /usr/bin/swift build --package-path FloeMacSelfCore --scratch-path <dedicated-scratch> --jobs 6",
+      "DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer /usr/bin/swift test --package-path FloeMacSelfCore --scratch-path <dedicated-scratch> --jobs 6"
+    ]
+  },
+  "coordinatorCorrections": [
+    "Updated HANDOFF.md and CLEANUP_INCIDENT.md to record that pre-existing contents of fixed-name temporary directories could not be ruled out; other manifest entries were not refreshed.",
+    "Added independent-review blocker warning to README.md; the package has not been compiled or integrated.",
+    "Second safety repair refreshed newPackageFiles/totals/verification and added repairRound; no upstream file was edited and no build/test was run.",
+    "Independent review found unsafe existing-lock handling and lifecycle races; added an unconditional authority guard and recorded a focused synthetic guard check. Other entries were not refreshed.",
+    "Updated fixture shutdown evidence and targeted test sources after independent review; parse-only, no test execution. Other entries were not refreshed.",
+    "Recorded standalone authority primitive and fixture with post-run hashes; full package unbuilt and runtime guard remains enabled. Other entries were not refreshed.",
+    "Refreshed synthetic authority fixture hash after exact-error and bounded-wait test improvements; runtime guard remains enabled.",
+    "2026-11-17: the earlier file hashes and parse-only status are historical. Current runtime and self-core targets compiled; eight specifically filtered in-memory request-journal safety tests passed. Dispatch and terminal confirmation remain unavailable, the full positive test suite was not run, and the production gate remains closed. Current exact source hashes, test filter, commands, retained failures and limitations are in Evidence/request-journal-safety-20261117.md and Evidence/selfcore-target-build-20261117.md."
+  ],
+  "repairRound": {
+    "date": "2026-11-17",
+    "round": "second independent safety repair",
+    "scope": "durable per-conversation admission, owned cross-process authority lock, short-lived run fence with stop epoch, strict durable terminal proof, explicit host tool gate + task epoch wrapper, serialized shutdown",
+    "sourceOnly": true,
+    "compiled": false,
+    "tested": false,
+    "buildAuthorized": false,
+    "newSources": [
+      "Sources/FloeMacSelfCore/FloeMacSelfAuthorityLock.swift",
+      "Sources/FloeMacSelfCore/FloeMacSelfAdmission.swift",
+      "Sources/FloeMacSelfCore/FloeMacSelfRunFence.swift",
+      "Sources/FloeMacSelfCore/FloeMacSelfHostGate.swift"
+    ],
+    "rewrittenSources": [
+      "Sources/FloeMacSelfCore/FloeMacSelfRuntime.swift",
+      "Sources/FloeMacSelfCore/FloeMacSelfSession.swift"
+    ],
+    "updatedSources": [
+      "Sources/FloeMacSelfCore/FloeMacSelfCapabilities.swift",
+      "Sources/FloeMacSelfCore/FloeMacSelfError.swift",
+      "Sources/FloeMacSelfCore/FloeMacSelfIdentity.swift",
+      "Sources/FloeMacSelfCore/Package.swift"
+    ],
+    "newTests": [
+      "Tests/FloeMacSelfCoreTests/AuthorityAndAdmissionTests.swift",
+      "Tests/FloeMacSelfCoreTests/DurableProbeTests.swift",
+      "Tests/FloeMacSelfCoreTests/FenceAndTaskEpochTests.swift"
+    ],
+    "updatedTests": [
+      "Tests/FloeMacSelfCoreTests/ApprovalAndToolsTests.swift",
+      "Tests/FloeMacSelfCoreTests/FixtureCleanupTests.swift",
+      "Tests/FloeMacSelfCoreTests/RuntimeLifecycleTests.swift",
+      "Tests/FloeMacSelfCoreTests/SelfCoreTestSupport.swift"
+    ],
+    "unresolved": [
+      "full typecheck/link on macOS SDK",
+      "GRDB/swift-asn1 dependency resolution",
+      "real provider/tool/UI behavior",
+      "noncooperating SQLite writers are outside the cooperative lock/admission fence",
+      "module layout conflict with FloeMacGoal if both enter one package graph"
+    ],
+    "incidents": [
+      "Out-of-scope fixed-name write /tmp/floe_dirty_now.txt during evidence gathering; file retained untouched and not read; see Evidence/20261117/TMP_WRITE_INCIDENT.md."
+    ]
+  }
+}

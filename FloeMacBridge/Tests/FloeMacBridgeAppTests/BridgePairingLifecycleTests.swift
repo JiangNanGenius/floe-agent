@@ -33,14 +33,16 @@ struct BridgePairingLifecycleTests {
         }
         let first = String(repeating: "a", count: 64), second = String(repeating: "b", count: 64)
         #expect(try await call("pair", first)["paired"] == .bool(false))
+        let firstAttempt = try #require(await service.pairingSnapshot().pending.first)
         #expect(gate.activityCount == 1)
         #expect(try await call("pairCancel", first)["cancelled"] == .bool(true))
         #expect(gate.activityCount == 0)
         #expect(try await call("pair", second)["paired"] == .bool(false))
-        try await service.approve(clientID, verification: code(first), allow: true)
+        let secondAttempt = try #require(await service.pairingSnapshot().pending.first)
+        #expect(try await service.approve(clientID, attemptID: firstAttempt.attemptID, verification: code(first), allow: true) == false)
         #expect(try await call("pairStatus", second)["paired"] == .bool(false))
         #expect(await service.pairedClients().isEmpty)
-        try await service.approve(clientID, verification: code(second), allow: true)
+        #expect(try await service.approve(clientID, attemptID: secondAttempt.attemptID, verification: code(second), allow: true) == true)
         #expect(try await call("pairStatus", second)["paired"] == .bool(true))
         #expect(gate.activityCount == 0)
     }
@@ -67,7 +69,8 @@ struct BridgePairingLifecycleTests {
         #expect(try await call(first)["paired"] == .bool(false))
         let code = BridgeWire.pairingVerification(clientKey: client.publicKey.rawRepresentation,
             serverKey: server.publicKey.rawRepresentation, nonce: first)
-        try await service.approve(BridgeWire.digest(client.publicKey.rawRepresentation), verification: code, allow: false)
+        let attempt = try #require(await service.pairingSnapshot().pending.first)
+        #expect(try await service.approve(BridgeWire.digest(client.publicKey.rawRepresentation), attemptID: attempt.attemptID, verification: code, allow: false))
         do { _ = try await call(first); Issue.record("A declined attempt was accepted") } catch {}
         #expect(try await call(second)["paired"] == .bool(false))
         #expect(gate.activityCount == 1)

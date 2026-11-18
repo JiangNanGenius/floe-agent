@@ -1,0 +1,124 @@
+# The inherited OTA app uses the released Bridge application entrypoint.
+# The ordinary development project retains its separate test identities.
+# Generate with: xcodegen generate --spec FloeMac/project-ota.yml
+include:
+  - project.yml
+name: FloeMacOTA
+
+packages:
+  # Published Bridge 1.1.6 pins Sparkle 2.10.1 at this exact revision.
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    revision: ab7d71291238df6e0492143b120c9b696a35f603
+
+targets:
+  FloeMacHost:
+    sources:REPLACE:
+      - path: ../FloeMacBridge/Sources/FloeMacBridgeApp
+      - path: ../FloeMacBridge/Sources/CBridgePTY/pty.c
+      - path: Sources/FloeMacHost/HostAgentDatabase.swift
+      - path: Sources/FloeMacHost/HostAgentWorkspace.swift
+      - path: Sources/FloeMacHost/HostAgentWorkspaceView.swift
+      - path: Sources/FloeMacUnified
+      - path: Resources/en.lproj/Localizable.strings
+      - path: Resources/zh-Hans.lproj/Localizable.strings
+      - path: Resources/en.lproj/InfoPlist.strings
+      - path: Resources/zh-Hans.lproj/InfoPlist.strings
+      - path: ../FloeMacBridge/Resources/FloeBridge.icns
+      - path: ../FloeMacBridge/Resources/FloeBrand.png
+      - path: ../FloeMacBridge/Resources/FloeBridgeIcon.png
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.macbridge
+        INFOPLIST_FILE: Resources/FloeMacHost-OTA-Info.plist
+        MARKETING_VERSION: "$(FLOE_OTA_VERSION)"
+        CURRENT_PROJECT_VERSION: "$(FLOE_OTA_BUILD)"
+        DEVELOPMENT_TEAM: "$(FLOE_OTA_TEAM)"
+        CODE_SIGN_IDENTITY: "$(FLOE_OTA_IDENTITY)"
+        CODE_SIGNING_ALLOWED: YES
+        CODE_SIGNING_REQUIRED: YES
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_ENTITLEMENTS: Resources/FloeMacHost-OTA.entitlements
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) FLOE_UNIFIED_MAC"
+        HEADER_SEARCH_PATHS: "$(SRCROOT)/../FloeMacBridge/Sources/CBridgePTY/include"
+        SWIFT_INCLUDE_PATHS: "$(SRCROOT)/Sources/CBridgePTYModule"
+        OTHER_LDFLAGS: "-lutil"
+      configs:
+        Debug:
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) FLOE_UNIFIED_MAC FLOE_MAC_HOST_SMOKE"
+    dependencies:
+      - package: Sparkle
+        product: Sparkle
+        # Xcode embeds the binary SwiftPM framework automatically. A second
+        # explicit copy tries to embed the nonexistent Sparkle-product.
+        embed: false
+    preBuildScripts:
+      - name: Validate explicit OTA candidate inputs
+        basedOnDependencyAnalysis: false
+        script: |
+          set -eu
+          /usr/bin/python3 - <<'PY'
+          import os, re, sys
+          version = os.environ.get('FLOE_OTA_VERSION', '')
+          build = os.environ.get('FLOE_OTA_BUILD', '')
+          team = os.environ.get('FLOE_OTA_TEAM', '')
+          identity = os.environ.get('FLOE_OTA_IDENTITY', '')
+          if not re.fullmatch(r'[0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}', version, re.ASCII):
+              sys.exit('OTA candidate requires an explicit numeric three-part FLOE_OTA_VERSION')
+          if tuple(map(int, version.split('.'))) <= (1, 1, 6):
+              sys.exit('OTA candidate version must exceed the published 1.1.6 baseline')
+          if not re.fullmatch(r'[1-9][0-9]{0,8}', build, re.ASCII) or int(build) <= 9:
+              sys.exit('OTA candidate requires an explicit FLOE_OTA_BUILD greater than 9')
+          if team != 'QYL72C43K6' or os.environ.get('DEVELOPMENT_TEAM') != team:
+              sys.exit('OTA candidate requires the inherited FLOE_OTA_TEAM')
+          if not re.fullmatch(r'Developer ID Application: .+ \(QYL72C43K6\)', identity):
+              sys.exit('OTA candidate requires an explicit Developer ID signing identity')
+          if os.environ.get('CODE_SIGN_IDENTITY') != identity:
+              sys.exit('OTA candidate signing identity differs from the supplied identity')
+          if os.environ.get('CODE_SIGNING_ALLOWED') != 'YES' or os.environ.get('CODE_SIGNING_REQUIRED') != 'YES':
+              sys.exit('OTA candidate cannot be built with signing disabled')
+          if os.environ.get('ENABLE_HARDENED_RUNTIME') != 'YES':
+              sys.exit('OTA candidate requires the hardened runtime')
+          PY
+
+  FloeMacBridgeService:
+    settings:
+      base:
+        DEVELOPMENT_TEAM: "$(FLOE_OTA_TEAM)"
+        CODE_SIGN_IDENTITY: "$(FLOE_OTA_IDENTITY)"
+        CODE_SIGNING_ALLOWED: YES
+        CODE_SIGNING_REQUIRED: YES
+        ENABLE_HARDENED_RUNTIME: YES
+
+  FloeMacAgentUI:
+    settings:
+      base:
+        DEVELOPMENT_TEAM: "$(FLOE_OTA_TEAM)"
+        CODE_SIGN_IDENTITY: "$(FLOE_OTA_IDENTITY)"
+        CODE_SIGNING_ALLOWED: YES
+        CODE_SIGNING_REQUIRED: YES
+        ENABLE_HARDENED_RUNTIME: YES
+
+# Avoid inheriting the M00 scheme names in the distinct project. This scheme
+# is not an installation or release path and the updater is not started.
+schemes:REPLACE:
+  FloeMacOTACandidate:
+    build:
+      targets:
+        FloeMacHost: all
+    run:
+      config: Debug
+    archive:
+      config: Release
+  FloeMacOTABridgeService:
+    build:
+      targets:
+        FloeMacBridgeService: all
+    archive:
+      config: Release
+  FloeMacOTAAgentUI:
+    build:
+      targets:
+        FloeMacAgentUI: all
+    archive:
+      config: Release

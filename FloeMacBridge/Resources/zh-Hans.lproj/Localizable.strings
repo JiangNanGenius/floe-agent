@@ -50,3 +50,4 @@
 "Remove Pairing" = "取消配对";
 "Open" = "打开";
 "Allow…" = "允许…";
+"The update could not finish. Reopen Floe to resume work." = "更新未完成。请退出并重新打开 Floe 后继续。";

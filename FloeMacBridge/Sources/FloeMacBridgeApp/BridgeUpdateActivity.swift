@@ -11,30 +11,46 @@ final class BridgeUpdateActivity: @unchecked Sendable {
     private let lock = NSLock()
     private var active: [Lease: Kind] = [:]
     private var installation: Installation?
+    private var admissionClosedReason: String?
 
     func begin(_ kind: Kind) throws -> Lease {
         try lock.withLock {
             guard installation == nil else {
-                throw BridgeFailure.remote(String(localized: "Floe Bridge is installing an update. Reconnect shortly."))
+                throw BridgeFailure.remote(admissionClosedReason
+                    ?? String(localized: "Floe Bridge is installing an update. Reconnect shortly."))
             }
             let lease = Lease(id: UUID()); active[lease] = kind; return lease
         }
     }
     func finish(_ lease: Lease) { lock.withLock { _ = active.removeValue(forKey: lease) } }
-    func reserveInstallationIfIdle() -> Installation? {
+    /// The same atomic idle check used by update installation. A shutdown uses
+    /// it too: once this returns a token, no request, job, transfer or consent
+    /// can be admitted, and the caller retains the token through listener
+    /// closure and process exit.
+    func reserveInstallationIfIdle(reason: String = String(localized: "Floe Bridge is installing an update. Reconnect shortly.")) -> Installation? {
         lock.withLock {
             guard installation == nil, active.isEmpty else { return nil }
-            let token = Installation(id: UUID()); installation = token; return token
+            let token = Installation(id: UUID())
+            installation = token
+            admissionClosedReason = reason
+            return token
         }
     }
     func owns(_ token: Installation) -> Bool { lock.withLock { installation == token } }
     func resume(after token: Installation) {
-        lock.withLock { if installation == token { installation = nil } }
+        lock.withLock {
+            if installation == token {
+                installation = nil
+                admissionClosedReason = nil
+            }
+        }
     }
     var activityCount: Int { lock.withLock { active.count } }
+    var isAdmissionClosed: Bool { lock.withLock { installation != nil } }
 }
 
 /// Main-actor callbacks remain owned until Sparkle either installs or aborts.
+/// A reserved process exit remains closed for the life of the process.
 /// A handler is always invoked after its delegate method has returned YES.
 @MainActor
 final class BridgeUpdateInstallation {
@@ -59,9 +75,9 @@ final class BridgeUpdateInstallation {
     func postpone(_ handler: @escaping () -> Void) {
         waiter?.cancel()
         generation = UUID(); pending = handler
-        waitingForIdle = true; stateChanged?()
-        guard polling else { return }
         let expected = generation
+        waitingForIdle = true; stateChanged?()
+        guard polling, generation == expected, pending != nil else { return }
         waiter = Task { @MainActor [weak self] in
             // Prevent re-entering Sparkle before its delegate returns YES.
             await Task.yield()
@@ -76,8 +92,10 @@ final class BridgeUpdateInstallation {
     func tryPendingInstallation() -> Bool {
         guard let callback = pending else { return false }
         guard reserveForTerminationIfIdle() else { return false }
-        pending = nil; waitingForIdle = false; stateChanged?()
+        let expected = generation
+        pending = nil; waitingForIdle = false
         callback()
+        if generation == expected { stateChanged?() }
         // Hold admission closed through Sparkle's termination/relaunch. A
         // second Sparkle callback for this installation reuses the same token.
         return true
@@ -87,10 +105,12 @@ final class BridgeUpdateInstallation {
         guard let token = reserveInstallation() else { return false }
         reservation = token; return true
     }
-    func abort() {
+    func updaterDidFail() {
         generation = UUID(); waiter?.cancel(); waiter = nil; pending = nil
-        if let reservation { activity.resume(after: reservation) }
-        reservation = nil; waitingForIdle = false; stateChanged?()
+        // Sparkle's error callbacks do not identify the installation that
+        // acquired the exit reservation. After handoff (or an accepted quit),
+        // opening admission here could race an installer still replacing us.
+        waitingForIdle = false; stateChanged?()
     }
 }
 #endif

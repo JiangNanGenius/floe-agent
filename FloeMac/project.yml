@@ -1,0 +1,223 @@
+# Floe Mac M00 — single-app mode host, Catalyst UI source reuse and embedded Bridge.
+#
+# This is the Mac-only project. It deliberately references existing Floe source
+# files read-only; it does not add them to FloeAgent/project.yml or modify the
+# iOS app target. The outer `Floe.app` is the only installable product. The
+# nested Catalyst UI and Bridge service are internal components assembled by
+# scripts/build_m00.sh.
+#
+# Generate with: xcodegen generate --spec FloeMac/project.yml
+
+name: FloeMac
+options:
+  bundleIdPrefix: org.floeagent.mac
+  deploymentTarget:
+    macOS: "15.0"
+    iOS: "26.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+  groupSortPosition: top
+
+settings:
+  base:
+    ARCHS: arm64
+    SWIFT_VERSION: "6.0"
+    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGN_STYLE: Manual
+    DEVELOPMENT_TEAM: ""
+    CLANG_ENABLE_MODULES: YES
+    MACOSX_DEPLOYMENT_TARGET: "15.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "26.0"
+
+packages:
+  FloeMacToolbox:
+    path: Packages/FloeMacToolbox
+  FloeMacSelfCore:
+    path: ../FloeMacSelfCore
+
+targets:
+  # ---------------------------------------------------------------------------
+  # Native macOS mode host. Owns the single visible app entry, first-run mode
+  # selection, saved preference and the role window title/icon.
+  # ---------------------------------------------------------------------------
+  FloeMacHost:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/FloeMacBridgeControl
+      - path: Sources/FloeMacHost
+      - path: Resources/en.lproj/Localizable.strings
+      - path: Resources/zh-Hans.lproj/Localizable.strings
+      - path: Resources/en.lproj/InfoPlist.strings
+      - path: Resources/zh-Hans.lproj/InfoPlist.strings
+      - path: ../FloeMacBridge/Resources/FloeBrand.png
+      - path: ../FloeMacBridge/Resources/FloeBridgeIcon.png
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.mac
+        PRODUCT_NAME: Floe
+        INFOPLIST_FILE: Resources/FloeMacHost-Info.plist
+        SWIFT_STRICT_CONCURRENCY: complete
+        ENABLE_HARDENED_RUNTIME: NO
+        COMBINE_HIDPI_IMAGES: YES
+      configs:
+        Debug:
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) FLOE_MAC_HOST_SMOKE"
+    dependencies:
+      - package: FloeMacToolbox
+        product: FloeMacToolbox
+      - package: FloeMacSelfCore
+        product: FloeMacSelfCore
+      # The Mode host uses the real Bridge wire types for the synthetic
+      # loopback RPC self-check. This is a static library; it is not a second
+      # product or a second Bridge installation.
+      - target: FloeMacBridgeProtocolKit
+
+  # ---------------------------------------------------------------------------
+  # Real Mac Catalyst UI target. It compiles two untouched FloeApp sources
+  # (FloeTheme + ErrorEventView) plus the M00 Catalyst shell. It is nested in
+  # the host bundle, never installed separately.
+  # ---------------------------------------------------------------------------
+  FloeMacAgentUI:
+    type: application
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: Sources/FloeMacAgentUI
+      - path: ../FloeAgent/FloeApp/Design/FloeTheme.swift
+      - path: ../FloeAgent/FloeApp/Chat/ErrorEventView.swift
+      - path: Resources/en.lproj/Localizable.strings
+      - path: Resources/zh-Hans.lproj/Localizable.strings
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.mac.agentui
+        PRODUCT_NAME: FloeAgentUI
+        MARKETING_VERSION: 0.1.0
+        CURRENT_PROJECT_VERSION: 1
+        INFOPLIST_KEY_CFBundleDisplayName: Floe Agent
+        SUPPORTS_MACCATALYST: YES
+        DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER: NO
+        TARGETED_DEVICE_FAMILY: "1,2"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_LSUIElement: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        SWIFT_STRICT_CONCURRENCY: complete
+
+  # ---------------------------------------------------------------------------
+  # Embedded Bridge service. It reuses the existing FloeMacBridge service,
+  # protocol and PTY sources unchanged, but supplies its own entry point with
+  # an isolated home and a synthetic signing key so the M00 probe never reads
+  # or writes the user's standalone Bridge identity, state or Keychain item.
+  # The standalone FloeMacBridge app target remains untouched.
+  # ---------------------------------------------------------------------------
+  FloeMacBridgeProtocolKit:
+    type: library.static
+    platform: macOS
+    sources:
+      - path: ../FloeMacBridge/Sources/FloeMacBridgeProtocol
+    settings:
+      base:
+        PRODUCT_NAME: FloeMacBridgeProtocol
+        PRODUCT_MODULE_NAME: FloeMacBridgeProtocol
+        DEFINES_MODULE: YES
+        SKIP_INSTALL: YES
+        SWIFT_STRICT_CONCURRENCY: complete
+
+  FloeMacBridgeService:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/FloeMacBridgeControl
+      - path: Sources/FloeMacBridgeService
+      - path: ../FloeMacBridge/Sources/FloeMacBridgeApp
+        excludes:
+          - FloeMacBridgeApp.swift
+          - BridgeApplicationDelegate.swift
+          - BridgeUpdater.swift
+      - path: ../FloeMacBridge/Sources/CBridgePTY/pty.c
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.mac.bridgecomponent
+        PRODUCT_NAME: FloeMacBridgeService
+        INFOPLIST_FILE: Resources/FloeMacBridgeService-Info.plist
+        SWIFT_STRICT_CONCURRENCY: complete
+        HEADER_SEARCH_PATHS: "$(SRCROOT)/../FloeMacBridge/Sources/CBridgePTY/include"
+        SWIFT_INCLUDE_PATHS: "$(SRCROOT)/Sources/CBridgePTYModule"
+        OTHER_LDFLAGS: "-lutil"
+    dependencies:
+      - target: FloeMacBridgeProtocolKit
+
+  # ---------------------------------------------------------------------------
+  # Focused lifecycle/controller tests. They compile the actual service,
+  # Bridge core and controller sources into one test module with isolated temp
+  # data and ephemeral ports. No host app, Keychain or real Bridge is used.
+  # ---------------------------------------------------------------------------
+  FloeMacBridgeServiceTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Sources/FloeMacBridgeControl
+      - path: Sources/FloeMacBridgeService
+        excludes:
+          - BridgeServiceMain.swift
+      - path: ../FloeMacBridge/Sources/FloeMacBridgeApp
+        excludes:
+          - FloeMacBridgeApp.swift
+          - BridgeApplicationDelegate.swift
+          - BridgeUpdater.swift
+      - path: ../FloeMacBridge/Sources/CBridgePTY/pty.c
+      - path: Sources/FloeMacHost/AppMode.swift
+      - path: Sources/FloeMacHost/BridgeComponentController.swift
+      - path: Sources/FloeMacHost/BridgeControlClient.swift
+      - path: Sources/FloeMacHost/BridgeEndpointInspector.swift
+      - path: Sources/FloeMacHost/BridgeIdentityPin.swift
+      - path: Sources/FloeMacHost/LoopbackProbe.swift
+      - path: Sources/FloeMacHost/ModePreferenceStore.swift
+      - path: Sources/FloeMacHost/HostFixturePolicy.swift
+      - path: Sources/FloeMacHost/UserBridgeGuard.swift
+      - path: Tests/BridgeHostControllerTests.swift
+      - path: Tests/BridgeServiceLifecycleTests.swift
+      - path: Tests/HostFixturePolicyTests.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.mac.bridgecomponent.tests
+        PRODUCT_NAME: FloeMacBridgeServiceTests
+        SWIFT_STRICT_CONCURRENCY: complete
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: FLOE_IPC_TESTING
+        HEADER_SEARCH_PATHS: "$(SRCROOT)/../FloeMacBridge/Sources/CBridgePTY/include"
+        SWIFT_INCLUDE_PATHS: "$(SRCROOT)/Sources/CBridgePTYModule"
+        OTHER_LDFLAGS: "-lutil"
+        GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - target: FloeMacBridgeProtocolKit
+
+schemes:
+  FloeMacHost:
+    build:
+      targets:
+        FloeMacHost: all
+    run:
+      config: Debug
+  FloeMacBridgeService:
+    build:
+      targets:
+        FloeMacBridgeService: all
+    run:
+      config: Debug
+  FloeMacAgentUI:
+    build:
+      targets:
+        FloeMacAgentUI: all
+    run:
+      config: Debug
+  FloeMacBridgeServiceTests:
+    build:
+      targets:
+        FloeMacBridgeServiceTests: all
+    test:
+      targets:
+        - FloeMacBridgeServiceTests

@@ -23,12 +23,15 @@ final class BridgeUpdaterDelegate: NSObject, SPUUpdaterDelegate {
         installation.postpone(handler); return true
     }
     func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {
-        installation.abort(); failed?()
+        installation.updaterDidFail(); failed?()
     }
     func updater(_ updater: SPUUpdater, didFinishUpdateCycleFor check: SPUUpdateCheck, error: Error?) {
         // A successful cycle may have handed off to an installer. It must not
         // reopen admission in the gap before the process actually terminates.
-        if error != nil { installation.abort() }
+        if error != nil {
+            installation.updaterDidFail()
+            if installation.activity.isAdmissionClosed { failed?() }
+        }
     }
 }
 
@@ -58,7 +61,8 @@ final class BridgeUpdaterModel: ObservableObject {
                         observe(\.automaticallyDownloadsUpdates), observe(\.allowsAutomaticUpdates)]
     }
     var updater: SPUUpdater { controller.updater }
-    var canCheckForUpdates: Bool { started && updater.canCheckForUpdates }
+    var canCheckForUpdates: Bool { started && !needsRestartAfterFailure && updater.canCheckForUpdates }
+    var needsRestartAfterFailure: Bool { failed && installation.activity.isAdmissionClosed }
     var automaticallyChecks: Bool {
         get { updater.automaticallyChecksForUpdates }
         set { updater.automaticallyChecksForUpdates = newValue }

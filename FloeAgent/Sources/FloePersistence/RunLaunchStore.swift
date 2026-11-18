@@ -144,6 +144,14 @@ public actor SQLiteRunLaunchStore: RunLaunchStore {
     }
 
     public func prepare(_ request: RunLaunchRequest) async throws -> PreparedRun {
+        // Preserve validation-before-writer ordering for the existing API.
+        let goal = try Self.validateLaunch(request)
+        return try await database.writer { db in
+            try Self.prepareValidated(request, goal: goal, in: db)
+        }
+    }
+
+    private static func validateLaunch(_ request: RunLaunchRequest) throws -> String {
         guard request.conversationID == nil || request.newConversationID == nil else {
             throw FloeError.validationFailed("Choose an existing or a new conversation identity, not both")
         }
@@ -177,401 +185,424 @@ public actor SQLiteRunLaunchStore: RunLaunchStore {
             throw FloeError.validationFailed(FloeL10n.isChinese ? "目标消息不属于此次执行，请刷新后重试。" : "The Goal input does not belong to this launch. Refresh and try again.")
         }
 
-        return try await database.writer { db in
-            let now = request.startedAt
-            let conversation: ConversationRecord
-            let createdConversation: Bool
+        return goal
+    }
 
-            var resolvedProviderID = request.providerID
-            var resolvedModelID = request.modelID
+    /// Compose launch preparation into the caller-owned transaction. This is
+    /// provisional evidence only: neither this return nor a successful outer
+    /// writer proves that an enclosing savepoint was not later rolled back.
+    /// It performs the same validation as the async API and cannot open its
+    /// own writer. It grants no authority to dispatch a provider request.
+    public static func prepare(_ request: RunLaunchRequest, in db: Database) throws -> PreparedRun {
+        guard db.isInsideTransaction else {
+            throw FloeError.invalidConfiguration("Launch preparation requires an existing transaction")
+        }
+        let goal = try validateLaunch(request)
+        var prepared: PreparedRun?
+        try db.inSavepoint {
+            prepared = try prepareValidated(request, goal: goal, in: db)
+            return .commit
+        }
+        guard let prepared else {
+            throw FloeError.internalError("Launch preparation returned no provisional result")
+        }
+        return prepared
+    }
 
-            // Repair relational configuration in the same transaction as the
-            // run. This is important for device-local models: an older build
-            // or a CloudKit reconciliation may have removed their local-only
-            // rows while the picker still holds a valid installed profile.
-            if let provider = request.providerProfile {
-                try provider.validate()
-                try ConfigurationCodec.write(provider, to: db)
-                resolvedProviderID = provider.id
-            }
-            if let model = request.modelProfile {
-                try ConfigurationCodec.validate(model)
-                guard model.providerID == resolvedProviderID else {
-                    throw FloeError.invalidConfiguration("The selected model belongs to a different provider")
-                }
-                let canonical = try ConfigurationCodec.write(model, to: db)
-                resolvedModelID = canonical.id
-            }
+    private static func prepareValidated(_ request: RunLaunchRequest, goal: String, in db: Database) throws -> PreparedRun {
+        let now = request.startedAt
+        let conversation: ConversationRecord
+        let createdConversation: Bool
 
-            // Resolve relational configuration before creating any durable
-            // conversation/run rows. This turns a stale picker selection into
-            // an actionable preflight error instead of leaking SQLite's
-            // FOREIGN KEY diagnostic into the composer.
-            if let providerID = resolvedProviderID {
-                guard try Bool.fetchOne(
-                    db,
-                    sql: "SELECT EXISTS(SELECT 1 FROM providers WHERE id = ? AND is_enabled = 1)",
-                    arguments: [providerID.uuidString]
-                ) == true else {
-                    throw FloeError.invalidConfiguration(
-                        "The selected provider is no longer available. Refresh the model list and choose another provider."
-                    )
-                }
-            }
-            if let modelID = resolvedModelID {
-                guard let providerID = resolvedProviderID else {
-                    throw FloeError.invalidConfiguration("A selected model requires a provider")
-                }
-                guard try Bool.fetchOne(
-                    db,
-                    sql: """
-                        SELECT EXISTS(
-                            SELECT 1 FROM models
-                            WHERE id = ? AND provider_id = ? AND is_enabled = 1
-                        )
-                        """,
-                    arguments: [modelID.uuidString, providerID.uuidString]
-                ) == true else {
-                    throw FloeError.invalidConfiguration(
-                        "The selected model is not installed or has been disabled. Refresh the model list and choose an available model."
-                    )
-                }
-            }
+        var resolvedProviderID = request.providerID
+        var resolvedModelID = request.modelID
 
-            if let conversationID = request.conversationID {
-                guard let row = try Row.fetchOne(
-                    db,
-                    sql: "SELECT * FROM conversations WHERE id = ?",
-                    arguments: [conversationID.uuidString]
-                ) else {
-                    throw FloeError.notFound("conversation \(conversationID.uuidString)")
-                }
-                conversation = try Self.conversation(from: row)
-                createdConversation = false
-            } else {
-                conversation = ConversationRecord(
-                    id: request.newConversationID ?? UUID(),
-                    title: request.conversationTitle,
-                    createdAt: now,
-                    updatedAt: now
+        // Repair relational configuration in the same transaction as the
+        // run. This is important for device-local models: an older build
+        // or a CloudKit reconciliation may have removed their local-only
+        // rows while the picker still holds a valid installed profile.
+        if let provider = request.providerProfile {
+            try provider.validate()
+            try ConfigurationCodec.write(provider, to: db)
+            resolvedProviderID = provider.id
+        }
+        if let model = request.modelProfile {
+            try ConfigurationCodec.validate(model)
+            guard model.providerID == resolvedProviderID else {
+                throw FloeError.invalidConfiguration("The selected model belongs to a different provider")
+            }
+            let canonical = try ConfigurationCodec.write(model, to: db)
+            resolvedModelID = canonical.id
+        }
+
+        // Resolve relational configuration before creating any durable
+        // conversation/run rows. This turns a stale picker selection into
+        // an actionable preflight error instead of leaking SQLite's
+        // FOREIGN KEY diagnostic into the composer.
+        if let providerID = resolvedProviderID {
+            guard try Bool.fetchOne(
+                db,
+                sql: "SELECT EXISTS(SELECT 1 FROM providers WHERE id = ? AND is_enabled = 1)",
+                arguments: [providerID.uuidString]
+            ) == true else {
+                throw FloeError.invalidConfiguration(
+                    "The selected provider is no longer available. Refresh the model list and choose another provider."
                 )
-                try db.execute(
-                    sql: """
-                        INSERT INTO conversations (id, title, created_at, updated_at, mode, title_origin)
-                        VALUES (?, ?, ?, ?, ?, 'autoPending')
-                        """,
-                    arguments: [
-                        conversation.id.uuidString,
-                        conversation.title,
-                        PersistenceCodec.encode(conversation.createdAt),
-                        PersistenceCodec.encode(conversation.updatedAt),
-                        request.conversationMode
-                    ]
-                )
-                createdConversation = true
             }
+        }
+        if let modelID = resolvedModelID {
+            guard let providerID = resolvedProviderID else {
+                throw FloeError.invalidConfiguration("A selected model requires a provider")
+            }
+            guard try Bool.fetchOne(
+                db,
+                sql: """
+                    SELECT EXISTS(
+                        SELECT 1 FROM models
+                        WHERE id = ? AND provider_id = ? AND is_enabled = 1
+                    )
+                    """,
+                arguments: [modelID.uuidString, providerID.uuidString]
+            ) == true else {
+                throw FloeError.invalidConfiguration(
+                    "The selected model is not installed or has been disabled. Refresh the model list and choose an available model."
+                )
+            }
+        }
 
-            try db.execute(
-                sql: "UPDATE conversations SET mode = ? WHERE id = ?",
-                arguments: [request.conversationMode, conversation.id.uuidString]
+        if let conversationID = request.conversationID {
+            guard let row = try Row.fetchOne(
+                db,
+                sql: "SELECT * FROM conversations WHERE id = ?",
+                arguments: [conversationID.uuidString]
+            ) else {
+                throw FloeError.notFound("conversation \(conversationID.uuidString)")
+            }
+            conversation = try Self.conversation(from: row)
+            createdConversation = false
+        } else {
+            conversation = ConversationRecord(
+                id: request.newConversationID ?? UUID(),
+                title: request.conversationTitle,
+                createdAt: now,
+                updatedAt: now
             )
-
-            if let workspaceID = request.workspaceID {
-                guard try Bool.fetchOne(
-                    db,
-                    sql: "SELECT EXISTS(SELECT 1 FROM workspaces WHERE id = ?)",
-                    arguments: [workspaceID.uuidString]
-                ) == true else {
-                    throw FloeError.notFound("workspace \(workspaceID.uuidString)")
-                }
-            }
-
-            let owningWorkspaceID: UUID
-            if createdConversation {
-                if let requested = request.workspaceID {
-                    owningWorkspaceID = requested
-                } else {
-                    owningWorkspaceID = UUID()
-                    let privateName = request.conversationTitle
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                    try db.execute(
-                        sql: """
-                            INSERT INTO workspaces (
-                                id, name, root_bookmark, last_opened_at,
-                                active_target_kind, active_target_host_id,
-                                inspector_state_json, instructions_rel_path,
-                                created_at, updated_at, kind, internal_relative_path
-                            ) VALUES (?, ?, ?, NULL, 'local', NULL, '{}', NULL,
-                                      ?, ?, 'privateTask', ?)
-                            """,
-                        arguments: [
-                            owningWorkspaceID.uuidString,
-                            privateName.isEmpty ? "Chat" : String(privateName.prefix(80)),
-                            Data(), PersistenceCodec.encode(now), PersistenceCodec.encode(now),
-                            "PrivateTasks/\(conversation.id.uuidString)"
-                        ]
-                    )
-                }
-                try db.execute(
-                    sql: """
-                        INSERT INTO conversation_workspace_ownership
-                            (conversation_id, workspace_id, assigned_at)
-                        VALUES (?, ?, ?)
-                        """,
-                    arguments: [
-                        conversation.id.uuidString,
-                        owningWorkspaceID.uuidString,
-                        PersistenceCodec.encode(now)
-                    ]
-                )
-                try db.execute(
-                    sql: """
-                        INSERT INTO task_policies (
-                            conversation_id, approval_mode, recovery_policy,
-                            notification_policy, updated_at
-                        ) VALUES (?, ?, ?, ?, ?)
-                        """,
-                    arguments: [
-                        conversation.id.uuidString,
-                        request.initialPolicy.approvalMode.rawValue,
-                        request.initialPolicy.recoveryPolicy.rawValue,
-                        request.initialPolicy.notificationPolicy.rawValue,
-                        PersistenceCodec.encode(now)
-                    ]
-                )
-            } else {
-                guard let rawOwner = try String.fetchOne(
-                    db,
-                    sql: """
-                        SELECT workspace_id FROM conversation_workspace_ownership
-                        WHERE conversation_id = ?
-                        """,
-                    arguments: [conversation.id.uuidString]
-                ), let owner = UUID(uuidString: rawOwner) else {
-                    throw FloeError.storageCorrupted("Conversation has no canonical workspace")
-                }
-                if let requested = request.workspaceID, requested != owner {
-                    throw FloeError.validationFailed(
-                        "A task workspace is fixed after its first message; use Move Task instead"
-                    )
-                }
-                owningWorkspaceID = owner
-            }
-
-            if let goalID = request.goalID, let revision = request.expectedGoalRevision {
-                guard try Bool.fetchOne(db, sql: """
-                    SELECT EXISTS(SELECT 1 FROM conversation_goals
-                        WHERE id = ? AND conversation_id = ? AND status = 'active'
-                        AND COALESCE(revision, 1) = ?)
-                    """, arguments: [goalID.uuidString, conversation.id.uuidString, revision]) == true else {
-                    throw FloeError.validationFailed(FloeL10n.isChinese
-                        ? "目标已改变或已停止，此次执行未启动。请刷新目标后重试。"
-                        : "The Goal changed or stopped, so this execution was not started. Refresh the Goal before retrying.")
-                }
-            }
-            if let inputID = request.consumingGoalInputID {
-                guard let input = try Row.fetchOne(db, sql: """
-                    SELECT content,attachments_json FROM pending_user_inputs WHERE id=? AND conversation_id=?
-                        AND execution_mode='goal' AND status IN ('queued','promoting','steerPending')
-                        AND consumed_run_id IS NULL
-                    """, arguments: [inputID.uuidString, conversation.id.uuidString]),
-                      (input["content"] as String).trimmingCharacters(in: .whitespacesAndNewlines) == goal,
-                      let savedAttachments = try? JSONDecoder().decode([AttachmentRef].self,
-                        from: Data((input["attachments_json"] as String).utf8)),
-                      savedAttachments == request.attachments else {
-                    throw FloeError.validationFailed(FloeL10n.isChinese ? "待执行的目标消息已改变，请刷新后重试。" : "The pending Goal input changed. Refresh and try again.")
-                }
-            }
-            var run = RunRecord(
-                id: request.runID,
-                conversationID: conversation.id,
-                state: request.initialState,
-                goal: goal,
-                startedAt: now,
-                providerID: resolvedProviderID,
-                modelID: resolvedModelID,
-                providerName: request.providerName,
-                modelName: request.modelName,
-                conversationMode: request.conversationMode
-            )
-            run.goalID = request.goalID
             try db.execute(
                 sql: """
-                    INSERT INTO runs (
-                        id, conversation_id, state, goal, started_at, ended_at, goal_id,
-                        provider_id, model_id, provider_name_snapshot, model_name_snapshot,
-                        conversation_mode
-                    ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO conversations (id, title, created_at, updated_at, mode, title_origin)
+                    VALUES (?, ?, ?, ?, ?, 'autoPending')
                     """,
                 arguments: [
-                    run.id.uuidString,
-                    run.conversationID.uuidString,
-                    run.state,
-                    run.goal,
-                    PersistenceCodec.encode(run.startedAt),
-                    run.goalID?.uuidString,
-                    run.providerID?.uuidString,
-                    run.modelID?.uuidString,
-                    run.providerName,
-                    run.modelName,
-                    run.conversationMode
+                    conversation.id.uuidString,
+                    conversation.title,
+                    PersistenceCodec.encode(conversation.createdAt),
+                    PersistenceCodec.encode(conversation.updatedAt),
+                    request.conversationMode
                 ]
             )
+            createdConversation = true
+        }
 
-            let messageID = request.reusingUserMessageID ?? UUID()
-            var messageCreatedAt = now
-            var preservedParts: [MessagePart]?
-            if request.reusingUserMessageID != nil {
-                guard let row = try Row.fetchOne(db,
-                    sql: "SELECT * FROM messages WHERE id = ?", arguments: [messageID.uuidString]),
-                      row["conversation_id"] as String == conversation.id.uuidString,
-                      row["role"] as String == "user", row["content"] as String == goal,
-                      (row["run_id"] as String?) == nil else {
-                    throw FloeError.validationFailed(FloeL10n.isChinese ? "计划确认记录已改变或已被使用，请重新打开任务。" : "The confirmation message is unavailable or already belongs to another run")
-                }
-                let partRows = try Row.fetchAll(db,
-                    sql: "SELECT * FROM message_parts WHERE message_id = ? ORDER BY part_index",
-                    arguments: [messageID.uuidString])
-                let parts = try partRows.map { part -> MessagePart in
-                    guard let kind = MessagePart.Kind(rawValue: part["kind"]),
-                          let id = UUID(uuidString: part["id"]) else {
-                        throw FloeError.storageCorrupted(FloeL10n.isChinese ? "计划确认记录无法读取，请重新打开任务。" : "The confirmation message part is invalid")
-                    }
-                    let metadata = try JSONDecoder().decode([String: String].self,
-                        from: Data((part["metadata_json"] as String).utf8))
-                    return MessagePart(id: id, messageID: messageID, partIndex: part["part_index"],
-                        kind: kind, text: part["text"],
-                        attachmentID: (part["attachment_id"] as String?).flatMap(UUID.init(uuidString:)),
-                        metadata: metadata, createdAt: try PersistenceCodec.decodeDate(part["created_at"]))
-                }
-                // This is an App-owned, staged Plan confirmation, never a
-                // model-selected arbitrary historical user message. Runtime
-                // owns the full typed snapshot; persistence checks its exact
-                // task/run proof and the committed accepted revision here.
-                guard parts.count == 1, let first = parts.first, first.partIndex == 0, first.kind == .text,
-                      first.text == goal,
-                      parts.allSatisfy({ $0.attachmentID == nil }),
-                      let raw = first.metadata["floe.plan.confirmation.v1"],
-                      let proof = try JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any],
-                      proof["schemaVersion"] as? Int == 1,
-                      (proof["executionRunID"] as? String).flatMap(UUID.init(uuidString:)) == run.id,
-                      proof["executionPrompt"] as? String == goal,
-                      let plan = proof["plan"] as? [String: Any],
-                      let planID = (plan["id"] as? String).flatMap(UUID.init(uuidString:)),
-                      (plan["conversationID"] as? String).flatMap(UUID.init(uuidString:)) == conversation.id,
-                      let revision = plan["revision"] as? Int,
-                      try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM plan_drafts WHERE id=? AND conversation_id=? AND revision=? AND status='accepted')",
-                        arguments: [planID.uuidString, conversation.id.uuidString, revision]) == true else {
-                    throw FloeError.validationFailed(FloeL10n.isChinese ? "计划确认记录与本次执行不符，请重新打开任务。" : "The confirmation message does not belong to this plan execution")
-                }
-                try db.execute(sql: "UPDATE messages SET run_id = ? WHERE id = ? AND conversation_id = ? AND run_id IS NULL",
-                    arguments: [run.id.uuidString, messageID.uuidString, conversation.id.uuidString])
-                guard db.changesCount == 1 else { throw FloeError.validationFailed(FloeL10n.isChinese ? "此计划确认记录已被使用，请重新打开任务。" : "The confirmation message was already used") }
-                messageCreatedAt = try PersistenceCodec.decodeDate(row["created_at"])
-                preservedParts = parts
-            } else {
-                try db.execute(sql: """
-                    INSERT INTO messages (id, conversation_id, role, content, created_at, run_id)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    """, arguments: [messageID.uuidString, conversation.id.uuidString,
-                        request.messageRole, goal, PersistenceCodec.encode(now), run.id.uuidString])
-            }
-            var normalizedAttachments: [AttachmentRef] = []
-            normalizedAttachments.reserveCapacity(request.attachments.count)
-            for attachment in request.attachments {
-                var normalized = attachment
-                normalized.conversationID = conversation.id
-                normalized.messageID = messageID
-                normalizedAttachments.append(normalized)
-                try Self.insertAttachment(normalized, db: db)
-            }
+        try db.execute(
+            sql: "UPDATE conversations SET mode = ? WHERE id = ?",
+            arguments: [request.conversationMode, conversation.id.uuidString]
+        )
 
-            var parts = preservedParts ?? [MessagePart(
-                messageID: messageID,
-                partIndex: 0,
-                kind: .text,
-                text: goal,
-                createdAt: now
-            )]
-            parts.append(contentsOf: normalizedAttachments.enumerated().map { offset, attachment in
-                MessagePart(
-                    messageID: messageID,
-                    partIndex: offset + 1,
-                    kind: attachment.kind == .image ? .image : .file,
-                    attachmentID: attachment.id,
-                    metadata: ["name": attachment.displayName],
-                    createdAt: now
-                )
-            })
-            let userMessage = PersistedMessage(
-                id: messageID,
-                conversationID: conversation.id,
-                role: request.messageRole,
-                content: goal,
-                createdAt: messageCreatedAt,
-                parts: parts,
-                runID: run.id
-            )
-            if preservedParts == nil {
-                for part in parts { try Self.insertPart(part, db: db) }
-            }
-
-            guard let workspaceRow = try Row.fetchOne(
+        if let workspaceID = request.workspaceID {
+            guard try Bool.fetchOne(
                 db,
-                sql: "SELECT * FROM workspaces WHERE id = ?",
-                arguments: [owningWorkspaceID.uuidString]
-            ) else {
-                throw FloeError.storageCorrupted("Canonical workspace disappeared during launch")
+                sql: "SELECT EXISTS(SELECT 1 FROM workspaces WHERE id = ?)",
+                arguments: [workspaceID.uuidString]
+            ) == true else {
+                throw FloeError.notFound("workspace \(workspaceID.uuidString)")
             }
-            let owningWorkspace = try Self.workspace(from: workspaceRow)
+        }
 
-            try db.execute(
-                sql: "UPDATE conversations SET updated_at = ? WHERE id = ?",
-                arguments: [PersistenceCodec.encode(now), conversation.id.uuidString]
-            )
-            var admission = ["state": "preparing"]
-            if let goalID = request.goalID, let revision = request.expectedGoalRevision,
-               let fingerprint = request.goalDefinitionFingerprint {
-                admission["goalID"] = goalID.uuidString
-                admission["goalRevision"] = String(revision)
-                admission["goalDefinitionFingerprint"] = fingerprint
+        let owningWorkspaceID: UUID
+        if createdConversation {
+            if let requested = request.workspaceID {
+                owningWorkspaceID = requested
+            } else {
+                owningWorkspaceID = UUID()
+                let privateName = request.conversationTitle
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                try db.execute(
+                    sql: """
+                        INSERT INTO workspaces (
+                            id, name, root_bookmark, last_opened_at,
+                            active_target_kind, active_target_host_id,
+                            inspector_state_json, instructions_rel_path,
+                            created_at, updated_at, kind, internal_relative_path
+                        ) VALUES (?, ?, ?, NULL, 'local', NULL, '{}', NULL,
+                                  ?, ?, 'privateTask', ?)
+                        """,
+                    arguments: [
+                        owningWorkspaceID.uuidString,
+                        privateName.isEmpty ? "Chat" : String(privateName.prefix(80)),
+                        Data(), PersistenceCodec.encode(now), PersistenceCodec.encode(now),
+                        "PrivateTasks/\(conversation.id.uuidString)"
+                    ]
+                )
             }
-            let admissionJSON = String(decoding: try JSONSerialization.data(withJSONObject: admission, options: [.sortedKeys]), as: UTF8.self)
             try db.execute(
                 sql: """
-                    INSERT INTO run_events (id, run_id, sequence, kind, payload_json, created_at)
-                    VALUES (?, ?, 1, 'status', ?, ?)
+                    INSERT INTO conversation_workspace_ownership
+                        (conversation_id, workspace_id, assigned_at)
+                    VALUES (?, ?, ?)
                     """,
                 arguments: [
-                    UUID().uuidString,
-                    run.id.uuidString,
-                    admissionJSON,
+                    conversation.id.uuidString,
+                    owningWorkspaceID.uuidString,
                     PersistenceCodec.encode(now)
                 ]
             )
-
-            if let inputID = request.consumingGoalInputID {
-                try db.execute(sql: """
-                    UPDATE pending_user_inputs SET status='consumed', consumed_run_id=?, consumed_at=?, updated_at=?
-                    WHERE id=? AND conversation_id=? AND execution_mode='goal'
-                        AND status IN ('queued','promoting','steerPending') AND consumed_run_id IS NULL
-                    """, arguments: [run.id.uuidString, PersistenceCodec.encode(now), PersistenceCodec.encode(now),
-                        inputID.uuidString, conversation.id.uuidString])
-                guard db.changesCount == 1 else {
-                    throw FloeError.validationFailed(FloeL10n.isChinese ? "目标消息已被使用，请刷新后重试。" : "The Goal input was already used. Refresh and try again.")
-                }
-            }
-            var updatedConversation = conversation
-            updatedConversation.updatedAt = now
-            return PreparedRun(
-                conversation: updatedConversation,
-                workspace: owningWorkspace,
-                run: run,
-                userMessage: userMessage,
-                attachments: normalizedAttachments,
-                createdConversation: createdConversation
+            try db.execute(
+                sql: """
+                    INSERT INTO task_policies (
+                        conversation_id, approval_mode, recovery_policy,
+                        notification_policy, updated_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                arguments: [
+                    conversation.id.uuidString,
+                    request.initialPolicy.approvalMode.rawValue,
+                    request.initialPolicy.recoveryPolicy.rawValue,
+                    request.initialPolicy.notificationPolicy.rawValue,
+                    PersistenceCodec.encode(now)
+                ]
             )
+        } else {
+            guard let rawOwner = try String.fetchOne(
+                db,
+                sql: """
+                    SELECT workspace_id FROM conversation_workspace_ownership
+                    WHERE conversation_id = ?
+                    """,
+                arguments: [conversation.id.uuidString]
+            ), let owner = UUID(uuidString: rawOwner) else {
+                throw FloeError.storageCorrupted("Conversation has no canonical workspace")
+            }
+            if let requested = request.workspaceID, requested != owner {
+                throw FloeError.validationFailed(
+                    "A task workspace is fixed after its first message; use Move Task instead"
+                )
+            }
+            owningWorkspaceID = owner
         }
+
+        if let goalID = request.goalID, let revision = request.expectedGoalRevision {
+            guard try Bool.fetchOne(db, sql: """
+                SELECT EXISTS(SELECT 1 FROM conversation_goals
+                    WHERE id = ? AND conversation_id = ? AND status = 'active'
+                    AND COALESCE(revision, 1) = ?)
+                """, arguments: [goalID.uuidString, conversation.id.uuidString, revision]) == true else {
+                throw FloeError.validationFailed(FloeL10n.isChinese
+                    ? "目标已改变或已停止，此次执行未启动。请刷新目标后重试。"
+                    : "The Goal changed or stopped, so this execution was not started. Refresh the Goal before retrying.")
+            }
+        }
+        if let inputID = request.consumingGoalInputID {
+            guard let input = try Row.fetchOne(db, sql: """
+                SELECT content,attachments_json FROM pending_user_inputs WHERE id=? AND conversation_id=?
+                    AND execution_mode='goal' AND status IN ('queued','promoting','steerPending')
+                    AND consumed_run_id IS NULL
+                """, arguments: [inputID.uuidString, conversation.id.uuidString]),
+                  (input["content"] as String).trimmingCharacters(in: .whitespacesAndNewlines) == goal,
+                  let savedAttachments = try? JSONDecoder().decode([AttachmentRef].self,
+                    from: Data((input["attachments_json"] as String).utf8)),
+                  savedAttachments == request.attachments else {
+                throw FloeError.validationFailed(FloeL10n.isChinese ? "待执行的目标消息已改变，请刷新后重试。" : "The pending Goal input changed. Refresh and try again.")
+            }
+        }
+        var run = RunRecord(
+            id: request.runID,
+            conversationID: conversation.id,
+            state: request.initialState,
+            goal: goal,
+            startedAt: now,
+            providerID: resolvedProviderID,
+            modelID: resolvedModelID,
+            providerName: request.providerName,
+            modelName: request.modelName,
+            conversationMode: request.conversationMode
+        )
+        run.goalID = request.goalID
+        try db.execute(
+            sql: """
+                INSERT INTO runs (
+                    id, conversation_id, state, goal, started_at, ended_at, goal_id,
+                    provider_id, model_id, provider_name_snapshot, model_name_snapshot,
+                    conversation_mode
+                ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)
+                """,
+            arguments: [
+                run.id.uuidString,
+                run.conversationID.uuidString,
+                run.state,
+                run.goal,
+                PersistenceCodec.encode(run.startedAt),
+                run.goalID?.uuidString,
+                run.providerID?.uuidString,
+                run.modelID?.uuidString,
+                run.providerName,
+                run.modelName,
+                run.conversationMode
+            ]
+        )
+
+        let messageID = request.reusingUserMessageID ?? UUID()
+        var messageCreatedAt = now
+        var preservedParts: [MessagePart]?
+        if request.reusingUserMessageID != nil {
+            guard let row = try Row.fetchOne(db,
+                sql: "SELECT * FROM messages WHERE id = ?", arguments: [messageID.uuidString]),
+                  row["conversation_id"] as String == conversation.id.uuidString,
+                  row["role"] as String == "user", row["content"] as String == goal,
+                  (row["run_id"] as String?) == nil else {
+                throw FloeError.validationFailed(FloeL10n.isChinese ? "计划确认记录已改变或已被使用，请重新打开任务。" : "The confirmation message is unavailable or already belongs to another run")
+            }
+            let partRows = try Row.fetchAll(db,
+                sql: "SELECT * FROM message_parts WHERE message_id = ? ORDER BY part_index",
+                arguments: [messageID.uuidString])
+            let parts = try partRows.map { part -> MessagePart in
+                guard let kind = MessagePart.Kind(rawValue: part["kind"]),
+                      let id = UUID(uuidString: part["id"]) else {
+                    throw FloeError.storageCorrupted(FloeL10n.isChinese ? "计划确认记录无法读取，请重新打开任务。" : "The confirmation message part is invalid")
+                }
+                let metadata = try JSONDecoder().decode([String: String].self,
+                    from: Data((part["metadata_json"] as String).utf8))
+                return MessagePart(id: id, messageID: messageID, partIndex: part["part_index"],
+                    kind: kind, text: part["text"],
+                    attachmentID: (part["attachment_id"] as String?).flatMap(UUID.init(uuidString:)),
+                    metadata: metadata, createdAt: try PersistenceCodec.decodeDate(part["created_at"]))
+            }
+            // This is an App-owned, staged Plan confirmation, never a
+            // model-selected arbitrary historical user message. Runtime
+            // owns the full typed snapshot; persistence checks its exact
+            // task/run proof and the committed accepted revision here.
+            guard parts.count == 1, let first = parts.first, first.partIndex == 0, first.kind == .text,
+                  first.text == goal,
+                  parts.allSatisfy({ $0.attachmentID == nil }),
+                  let raw = first.metadata["floe.plan.confirmation.v1"],
+                  let proof = try JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any],
+                  proof["schemaVersion"] as? Int == 1,
+                  (proof["executionRunID"] as? String).flatMap(UUID.init(uuidString:)) == run.id,
+                  proof["executionPrompt"] as? String == goal,
+                  let plan = proof["plan"] as? [String: Any],
+                  let planID = (plan["id"] as? String).flatMap(UUID.init(uuidString:)),
+                  (plan["conversationID"] as? String).flatMap(UUID.init(uuidString:)) == conversation.id,
+                  let revision = plan["revision"] as? Int,
+                  try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM plan_drafts WHERE id=? AND conversation_id=? AND revision=? AND status='accepted')",
+                    arguments: [planID.uuidString, conversation.id.uuidString, revision]) == true else {
+                throw FloeError.validationFailed(FloeL10n.isChinese ? "计划确认记录与本次执行不符，请重新打开任务。" : "The confirmation message does not belong to this plan execution")
+            }
+            try db.execute(sql: "UPDATE messages SET run_id = ? WHERE id = ? AND conversation_id = ? AND run_id IS NULL",
+                arguments: [run.id.uuidString, messageID.uuidString, conversation.id.uuidString])
+            guard db.changesCount == 1 else { throw FloeError.validationFailed(FloeL10n.isChinese ? "此计划确认记录已被使用，请重新打开任务。" : "The confirmation message was already used") }
+            messageCreatedAt = try PersistenceCodec.decodeDate(row["created_at"])
+            preservedParts = parts
+        } else {
+            try db.execute(sql: """
+                INSERT INTO messages (id, conversation_id, role, content, created_at, run_id)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """, arguments: [messageID.uuidString, conversation.id.uuidString,
+                    request.messageRole, goal, PersistenceCodec.encode(now), run.id.uuidString])
+        }
+        var normalizedAttachments: [AttachmentRef] = []
+        normalizedAttachments.reserveCapacity(request.attachments.count)
+        for attachment in request.attachments {
+            var normalized = attachment
+            normalized.conversationID = conversation.id
+            normalized.messageID = messageID
+            normalizedAttachments.append(normalized)
+            try Self.insertAttachment(normalized, db: db)
+        }
+
+        var parts = preservedParts ?? [MessagePart(
+            messageID: messageID,
+            partIndex: 0,
+            kind: .text,
+            text: goal,
+            createdAt: now
+        )]
+        parts.append(contentsOf: normalizedAttachments.enumerated().map { offset, attachment in
+            MessagePart(
+                messageID: messageID,
+                partIndex: offset + 1,
+                kind: attachment.kind == .image ? .image : .file,
+                attachmentID: attachment.id,
+                metadata: ["name": attachment.displayName],
+                createdAt: now
+            )
+        })
+        let userMessage = PersistedMessage(
+            id: messageID,
+            conversationID: conversation.id,
+            role: request.messageRole,
+            content: goal,
+            createdAt: messageCreatedAt,
+            parts: parts,
+            runID: run.id
+        )
+        if preservedParts == nil {
+            for part in parts { try Self.insertPart(part, db: db) }
+        }
+
+        guard let workspaceRow = try Row.fetchOne(
+            db,
+            sql: "SELECT * FROM workspaces WHERE id = ?",
+            arguments: [owningWorkspaceID.uuidString]
+        ) else {
+            throw FloeError.storageCorrupted("Canonical workspace disappeared during launch")
+        }
+        let owningWorkspace = try Self.workspace(from: workspaceRow)
+
+        try db.execute(
+            sql: "UPDATE conversations SET updated_at = ? WHERE id = ?",
+            arguments: [PersistenceCodec.encode(now), conversation.id.uuidString]
+        )
+        var admission = ["state": "preparing"]
+        if let goalID = request.goalID, let revision = request.expectedGoalRevision,
+           let fingerprint = request.goalDefinitionFingerprint {
+            admission["goalID"] = goalID.uuidString
+            admission["goalRevision"] = String(revision)
+            admission["goalDefinitionFingerprint"] = fingerprint
+        }
+        let admissionJSON = String(decoding: try JSONSerialization.data(withJSONObject: admission, options: [.sortedKeys]), as: UTF8.self)
+        try db.execute(
+            sql: """
+                INSERT INTO run_events (id, run_id, sequence, kind, payload_json, created_at)
+                VALUES (?, ?, 1, 'status', ?, ?)
+                """,
+            arguments: [
+                UUID().uuidString,
+                run.id.uuidString,
+                admissionJSON,
+                PersistenceCodec.encode(now)
+            ]
+        )
+
+        if let inputID = request.consumingGoalInputID {
+            try db.execute(sql: """
+                UPDATE pending_user_inputs SET status='consumed', consumed_run_id=?, consumed_at=?, updated_at=?
+                WHERE id=? AND conversation_id=? AND execution_mode='goal'
+                    AND status IN ('queued','promoting','steerPending') AND consumed_run_id IS NULL
+                """, arguments: [run.id.uuidString, PersistenceCodec.encode(now), PersistenceCodec.encode(now),
+                    inputID.uuidString, conversation.id.uuidString])
+            guard db.changesCount == 1 else {
+                throw FloeError.validationFailed(FloeL10n.isChinese ? "目标消息已被使用，请刷新后重试。" : "The Goal input was already used. Refresh and try again.")
+            }
+        }
+        var updatedConversation = conversation
+        updatedConversation.updatedAt = now
+        return PreparedRun(
+            conversation: updatedConversation,
+            workspace: owningWorkspace,
+            run: run,
+            userMessage: userMessage,
+            attachments: normalizedAttachments,
+            createdConversation: createdConversation
+        )
     }
 
     private static func insertAttachment(_ attachment: AttachmentRef, db: Database) throws {

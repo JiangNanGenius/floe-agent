@@ -61,8 +61,9 @@ struct BridgeAbsoluteFileReadTests {
         let verification = BridgeWire.pairingVerification(
             clientKey: client.publicKey.rawRepresentation,
             serverKey: server.publicKey.rawRepresentation, nonce: nonce)
-        try await service.approve(BridgeWire.digest(client.publicKey.rawRepresentation),
-                                  verification: verification, allow: true)
+        let attempt = try #require(await service.pairingSnapshot().pending.first)
+        #expect(try await service.approve(BridgeWire.digest(client.publicKey.rawRepresentation),
+                                          attemptID: attempt.attemptID, verification: verification, allow: true))
         return (fixture, home)
     }
 

@@ -9,17 +9,27 @@ final class BridgeHTTPServer: @unchecked Sendable {
     private let listener: NWListener
     private let queue = DispatchQueue(label: "org.floeagent.bridge.listener")
     private let service: BridgeService
-    init(service: BridgeService) throws {
+    private let requestedPort: UInt16
+    private let stateLock = NSLock()
+    private var _boundPort: UInt16?
+    var boundPort: UInt16? { stateLock.withLock { _boundPort } }
+    init(service: BridgeService, port: UInt16 = BridgeWire.port) throws {
         self.service = service
+        self.requestedPort = port
         let parameters = NWParameters.tcp
         parameters.allowLocalEndpointReuse = true
-        parameters.requiredLocalEndpoint = .hostPort(host: .ipv4(.loopback), port: NWEndpoint.Port(rawValue: BridgeWire.port)!)
+        parameters.requiredLocalEndpoint = .hostPort(host: .ipv4(.loopback), port: NWEndpoint.Port(rawValue: port)!)
         listener = try NWListener(using: parameters)
     }
     func start(onState: @escaping @Sendable (String?) -> Void) {
-        listener.stateUpdateHandler = { state in
+        listener.stateUpdateHandler = { [weak self] state in
             switch state {
-            case .ready: onState(nil)
+            case .ready:
+                if let self {
+                    let port = self.listener.port?.rawValue
+                    self.stateLock.withLock { self._boundPort = port }
+                }
+                onState(nil)
             case .failed: onState("The local connection could not start. Check whether another Floe Bridge is running.")
             default: break
             }
@@ -31,7 +41,10 @@ final class BridgeHTTPServer: @unchecked Sendable {
         }
         listener.start(queue: queue)
     }
-    func stop() { listener.cancel() }
+    func stop() {
+        listener.cancel()
+        stateLock.withLock { _boundPort = nil }
+    }
     private final class RequestBuffer: @unchecked Sendable { var data = Data() }
     private func read(_ connection: NWConnection, state: RequestBuffer) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: BridgeWire.pageBytes) { [self] bytes, _, complete, error in
@@ -52,8 +65,9 @@ final class BridgeHTTPServer: @unchecked Sendable {
                 guard fields[key] == nil else { reject(connection); return }
                 fields[key] = pair[1].trimmingCharacters(in: .whitespaces)
             }
-            guard fields["origin"] == nil, fields["transfer-encoding"] == nil,
-                  fields["host"] == "127.0.0.1:\(BridgeWire.port)",
+            guard let localPort = boundPort ?? (requestedPort == 0 ? nil : requestedPort),
+                  fields["origin"] == nil, fields["transfer-encoding"] == nil,
+                  fields["host"] == "127.0.0.1:\(localPort)",
                   fields["content-type"]?.hasPrefix("application/json") == true,
                   let text = fields["content-length"], let length = Int(text), length > 0, length <= BridgeWire.maximumFrameBytes else { reject(connection); return }
             let body = state.data[boundary.upperBound...]

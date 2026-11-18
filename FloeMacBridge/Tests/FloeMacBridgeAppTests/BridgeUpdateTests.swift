@@ -42,23 +42,24 @@ struct BridgeUpdateTests {
         #expect(calls == 1)
         #expect(!coordinator.tryPendingInstallation())
         #expect(throws: (any Error).self) { try gate.begin(.job) }
-        coordinator.abort()
-        let next = try gate.begin(.job); gate.finish(next)
+        coordinator.updaterDidFail()
+        #expect(throws: (any Error).self) { try gate.begin(.job) }
     }
     @Test("Abort drops stale pending callback and a second Sparkle callback retains the fence")
     func abortAndSecondCallback() throws {
         let gate = BridgeUpdateActivity()
         let owner = BridgeUpdateInstallation(activity: gate, polling: false)
         var old = 0, replacement = 0
-        owner.postpone { old += 1 }; owner.abort()
+        owner.postpone { old += 1 }; owner.updaterDidFail()
         #expect(!owner.tryPendingInstallation()); #expect(old == 0)
+        let transfer = try gate.begin(.transfer); gate.finish(transfer)
         owner.postpone { replacement += 1 }
         #expect(owner.tryPendingInstallation())
         owner.postpone { replacement += 1 }
         #expect(throws: (any Error).self) { try gate.begin(.transfer) }
         #expect(owner.tryPendingInstallation()); #expect(replacement == 2)
-        owner.abort()
-        let transfer = try gate.begin(.transfer); gate.finish(transfer)
+        owner.updaterDidFail()
+        #expect(throws: (any Error).self) { try gate.begin(.transfer) }
     }
     @Test("Main actor suspension cannot admit a job across a reserved idle check")
     func actorReentryCannotSlipThrough() async throws {
@@ -69,11 +70,25 @@ struct BridgeUpdateTests {
             do { _ = try gate.begin(.job); return false } catch { return true }
         }.value
         #expect(rejected)
-        owner.abort()
+        owner.updaterDidFail()
         let admitted = await Task.detached {
             do { let token = try gate.begin(.job); gate.finish(token); return true } catch { return false }
         }.value
-        #expect(admitted)
+        #expect(!admitted)
+    }
+    @Test("A state observer sees installation only after its handler is consumed")
+    func stateObserverCannotInterposeBeforeHandoff() {
+        let gate = BridgeUpdateActivity()
+        let owner = BridgeUpdateInstallation(activity: gate, polling: false)
+        var callbackRan = false
+        var observedBeforeCallback = false
+        owner.stateChanged = {
+            if gate.isAdmissionClosed && !callbackRan { observedBeforeCallback = true }
+        }
+        owner.postpone { callbackRan = gate.isAdmissionClosed }
+        #expect(owner.tryPendingInstallation())
+        #expect(callbackRan)
+        #expect(!observedBeforeCallback)
     }
     @Test("Real PTY lifetime blocks installation through output and result persistence")
     func actualJobBlocksInstall() async throws {
@@ -185,7 +200,8 @@ struct BridgeUpdateTests {
         #expect(value["paired"] == .bool(false))
         service.finishDelivery(reply.lease)
         #expect(service.reserveUpdateInstallationIfIdle() == nil)
-        try await service.approve(BridgeWire.digest(client.publicKey.rawRepresentation), verification: BridgeWire.pairingVerification(clientKey: client.publicKey.rawRepresentation, serverKey: server.publicKey.rawRepresentation, nonce: String(repeating: "a", count: 64)), allow: false)
+        let attempt = try #require(await service.pairingSnapshot().pending.first)
+        #expect(try await service.approve(BridgeWire.digest(client.publicKey.rawRepresentation), attemptID: attempt.attemptID, verification: BridgeWire.pairingVerification(clientKey: client.publicKey.rawRepresentation, serverKey: server.publicKey.rawRepresentation, nonce: String(repeating: "a", count: 64)), allow: false))
         let token = try #require(service.reserveUpdateInstallationIfIdle()); gate.resume(after: token)
     }
     @Test("Official Sparkle postpone, on-quit and abort selectors are implemented")

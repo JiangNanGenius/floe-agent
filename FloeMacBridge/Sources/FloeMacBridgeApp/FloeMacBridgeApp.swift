@@ -44,6 +44,10 @@ private struct BridgeMenuView: View {
     var body: some View {
         Text("Floe Bridge").font(.headline)
         Text(model.connectionStatus)
+        #if FLOE_UNIFIED_MAC
+        Button("host.menu.openAgent") { model.macWorkspace.openAgent() }
+        Button("host.menu.tools") { model.macWorkspace.openToolbox() }
+        #endif
         Button("Settings…") { model.openSettings() }
         Button("Check for Updates…") { updates.checkForUpdates() }.disabled(!updates.canCheckForUpdates)
         Divider()
@@ -62,19 +66,63 @@ final class BridgeAppModel: ObservableObject {
     @Published private(set) var listenerError: String?
     private var settingsWindow: NSWindow?
     let updates: BridgeUpdaterModel
+    #if FLOE_UNIFIED_MAC
+    let macWorkspace: UnifiedMacWorkspace
+    #endif
+    #if FLOE_UNIFIED_MAC && FLOE_MAC_HOST_SMOKE
+    private let smoke = UnifiedMacSmoke.configured()
+    var smokePort: UInt16? { server?.boundPort }
+
+    func verifyActiveAgentDefersInstall() -> Bool {
+        let activity = updates.installation.activity
+        guard activity.activityCount == 1 else { return false }
+        if let claimed = activity.reserveInstallationIfIdle() {
+            activity.resume(after: claimed)
+            return false
+        }
+        return true
+    }
+    #endif
     private(set) var paths: BridgePaths?
+    private var storeLock: BridgeStoreLock?
     private var service: BridgeService?
     private var server: BridgeHTTPServer?
     private var applicationLaunched = false
     init() {
         let activity = BridgeUpdateActivity()
         updates = BridgeUpdaterModel(activity: activity)
+        #if FLOE_UNIFIED_MAC && FLOE_MAC_HOST_SMOKE
+        macWorkspace = UnifiedMacWorkspace(activity: activity, testSupport: smoke?.root)
+        #elseif FLOE_UNIFIED_MAC
+        macWorkspace = UnifiedMacWorkspace(activity: activity)
+        #endif
         BridgeApplicationDelegate.model = self
         do {
-            let paths = try BridgePaths(); self.paths = paths
-            let service = try BridgeService(paths: paths, updateActivity: activity); self.service = service
+            #if FLOE_UNIFIED_MAC && FLOE_MAC_HOST_SMOKE
+            let paths = try smoke?.seedLegacyState() ?? BridgePaths()
+            #else
+            let paths = try BridgePaths()
+            #endif
+            self.paths = paths
+            // The standalone process takes the same cross-process lock as the
+            // embedded service. A new Bridge build therefore cannot mutate the
+            // same store while another new service owns it. Pre-lock legacy
+            // builds are still mutually excluded only by the fixed listener.
+            let storeLock = try BridgeStoreLock(root: paths.root)
+            self.storeLock = storeLock
+            #if FLOE_UNIFIED_MAC && FLOE_MAC_HOST_SMOKE
+            let service = try BridgeService(paths: paths, updateActivity: activity, signingKey: smoke?.serverKey)
+            #else
+            let service = try BridgeService(paths: paths, updateActivity: activity)
+            #endif
+            self.service = service
             updates.installation.useServiceAdmission(service)
+            #if FLOE_UNIFIED_MAC && FLOE_MAC_HOST_SMOKE
+            let server = try BridgeHTTPServer(service: service, port: smoke == nil ? BridgeWire.port : 0)
+            self.server = server
+            #else
             let server = try BridgeHTTPServer(service: service); self.server = server
+            #endif
             server.start { [weak self] message in
                 Task { @MainActor in
                     self?.listenerReady = message == nil; self?.listenerError = message
@@ -82,12 +130,18 @@ final class BridgeAppModel: ObservableObject {
                 }
             }
             Task { [weak self] in
-                await service.setConsent { [weak self] id, name, verification in self?.offerConnection(id: id, name: name, verification: verification) }
+                await service.setConsent { [weak self] id, name, verification, attemptID in self?.offerConnection(id: id, name: name, verification: verification, attemptID: attemptID) }
                 await self?.refresh()
             }
         } catch { self.error = error.localizedDescription }
     }
     func applicationDidFinishLaunching() {
+        #if FLOE_UNIFIED_MAC && FLOE_MAC_HOST_SMOKE
+        if let smoke {
+            Task { await smoke.exercise(model: self) }
+            return
+        }
+        #endif
         applicationLaunched = true; startUpdaterWhenReady()
         if !UserDefaults.standard.bool(forKey: "bridge.setupWindowShown") { openSettings() }
     }
@@ -96,7 +150,7 @@ final class BridgeAppModel: ObservableObject {
         // bridge. A duplicate instance cannot observe another process's jobs.
         if applicationLaunched && listenerReady { updates.start() }
     }
-    func offerConnection(id: String, name: String, verification: String) {
+    func offerConnection(id: String, name: String, verification: String, attemptID: String) {
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.messageText = String(localized: "Connect Floe to this Mac?")
@@ -105,7 +159,16 @@ final class BridgeAppModel: ObservableObject {
         alert.addButton(withTitle: String(localized: "Connect"))
         alert.addButton(withTitle: String(localized: "Cancel"))
         let allow = alert.runModal() == .alertFirstButtonReturn
-        Task { do { try await service?.approve(id, verification: verification, allow: allow); await refresh() } catch { self.error = error.localizedDescription } }
+        Task {
+            do {
+                guard let service, try await service.approve(id, attemptID: attemptID, verification: verification, allow: allow) else {
+                    self.error = String(localized: "This connection request is no longer current. Please try again.")
+                    await refresh()
+                    return
+                }
+                await refresh()
+            } catch { self.error = error.localizedDescription }
+        }
     }
     func refresh() async {
         guard let service else { return }
@@ -170,8 +233,23 @@ final class BridgeAppModel: ObservableObject {
         window.makeKeyAndOrderFront(nil)
         if window.isVisible { UserDefaults.standard.set(true, forKey: "bridge.setupWindowShown") }
     }
-    func stopListenerForTermination() { server?.stop() }
+    func stopListenerForTermination() {
+        server?.stop()
+        #if FLOE_UNIFIED_MAC && FLOE_MAC_HOST_SMOKE
+        smoke?.cleanup()
+        #endif
+    }
     func quit() {
+        #if FLOE_UNIFIED_MAC
+        Task {
+            guard await macWorkspace.closeToolbox() else {
+                error = String(localized: "host.toolboxHistorySaveFailed")
+                return
+            }
+            await service?.jobs.stopAllAndWait()
+            DispatchQueue.main.async { NSApp.terminate(nil) }
+        }
+        #else
         guard let service else { NSApp.terminate(nil); return }
         Task {
             await service.jobs.stopAllAndWait()
@@ -181,6 +259,7 @@ final class BridgeAppModel: ObservableObject {
             // accepted transfer/operation still prevents termination.
             NSApp.terminate(nil)
         }
+        #endif
     }
 }
 
@@ -327,7 +406,11 @@ private struct BridgeUpdateSettingsView: View {
                 .disabled(!updates.allowsAutomaticDownloads)
             Button("Check for Updates…") { updates.checkForUpdates() }.disabled(!updates.canCheckForUpdates)
             if updates.installation.waitingForIdle { Text("Updates will install when current work finishes.") }
-            if updates.failed { Text("The update could not finish. You can try again later.").foregroundStyle(.secondary) }
+            if updates.needsRestartAfterFailure {
+                Text("The update could not finish. Reopen Floe to resume work.").foregroundStyle(.secondary)
+            } else if updates.failed {
+                Text("The update could not finish. You can try again later.").foregroundStyle(.secondary)
+            }
         }
     }
 }

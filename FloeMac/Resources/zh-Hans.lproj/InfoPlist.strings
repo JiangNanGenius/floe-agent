@@ -1,0 +1,4 @@
+"NSCameraUsageDescription" = "Floe 使用相机扫描二维码和放大画面。";
+"NSLocationUsageDescription" = "使用位置工具时，Floe 会获取你的位置。";
+"NSLocalNetworkUsageDescription" = "选择发现服务时，Floe 会搜索你的本地网络。";
+"NSMicrophoneUsageDescription" = "启动声音分析时，Floe 会使用麦克风。";
