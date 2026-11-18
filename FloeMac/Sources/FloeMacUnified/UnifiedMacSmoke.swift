@@ -65,7 +65,7 @@ final class UnifiedMacSmoke {
             pairedRequest = (try? await callPairedBridge(port: port)) == true
                 && before != nil && before == path.flatMap { try? Data(contentsOf: $0) }
         }
-        model.macWorkspace.openAgent()
+        let switchedToAgent = await exerciseBridgeSwitch(model: model)
         var nativeChat = false
         if let agent = model.macWorkspace.agent {
             await agent.prepare()
@@ -82,6 +82,7 @@ final class UnifiedMacSmoke {
         let output: [String: Any] = [
             "sameProcessBridgeReady": model.listenerReady,
             "legacyPairAndSignatureVerified": pairedRequest,
+            "switchedToAgentFromBridge": switchedToAgent,
             "nativeChatAndUpdateAdmissionVerified": nativeChat,
             "toolboxAndLoopbackVerified": toolbox,
             "activityBeforeQuit": model.updates.installation.activity.activityCount,
@@ -95,6 +96,33 @@ final class UnifiedMacSmoke {
 
     func cleanup() {
         try? FileManager.default.removeItem(at: root)
+    }
+
+    private func exerciseBridgeSwitch(model: BridgeAppModel) async -> Bool {
+        guard model.macWorkspace.agent == nil else { return false }
+        model.openSettings()
+        let deadline = ContinuousClock.now + .seconds(5)
+        while ContinuousClock.now < deadline {
+            if let bridge = NSApp.windows.first(where: { $0.title == "Floe Bridge" && $0.isVisible }),
+               let content = bridge.contentView,
+               let frame = model.smokeSwitchFrame, !frame.isEmpty {
+                let point = NSPoint(x: frame.midX, y: content.isFlipped ? frame.midY : content.bounds.height - frame.midY)
+                let location = content.convert(point, to: nil)
+                for type: NSEvent.EventType in [.leftMouseDown, .leftMouseUp] {
+                    guard let event = NSEvent.mouseEvent(with: type, location: location, modifierFlags: [],
+                                                         timestamp: ProcessInfo.processInfo.systemUptime,
+                                                         windowNumber: bridge.windowNumber, context: nil,
+                                                         eventNumber: 0, clickCount: 1, pressure: 1) else { return false }
+                    NSApp.postEvent(event, atStart: false)
+                }
+                while model.macWorkspace.agent == nil && ContinuousClock.now < deadline {
+                    try? await Task.sleep(for: .milliseconds(50))
+                }
+                return model.macWorkspace.agent != nil
+            }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        return false
     }
 
     private func exerciseToolbox(model: BridgeAppModel) async -> Bool {

@@ -21,7 +21,11 @@ struct FloeMacBridgeApp: App {
                 Button("Settings…") { model.openSettings() }.keyboardShortcut(",")
             }
             CommandGroup(replacing: .appTermination) {
+                #if FLOE_UNIFIED_MAC
+                Button("Quit Floe Agent") { model.quit() }.keyboardShortcut("q")
+                #else
                 Button("Quit Floe Bridge") { model.quit() }.keyboardShortcut("q")
+                #endif
             }
         }
     }
@@ -51,7 +55,11 @@ private struct BridgeMenuView: View {
         Button("Settings…") { model.openSettings() }
         Button("Check for Updates…") { updates.checkForUpdates() }.disabled(!updates.canCheckForUpdates)
         Divider()
+        #if FLOE_UNIFIED_MAC
+        Button("Quit Floe Agent") { model.quit() }
+        #else
         Button("Quit Floe Bridge") { model.quit() }
+        #endif
     }
 }
 
@@ -72,6 +80,11 @@ final class BridgeAppModel: ObservableObject {
     #if FLOE_UNIFIED_MAC && FLOE_MAC_HOST_SMOKE
     private let smoke = UnifiedMacSmoke.configured()
     var smokePort: UInt16? { server?.boundPort }
+    private(set) var smokeSwitchFrame: CGRect?
+
+    func recordSmokeSwitchFrame(_ frame: CGRect) {
+        if smoke != nil { smokeSwitchFrame = frame }
+    }
 
     func verifyActiveAgentDefersInstall() -> Bool {
         let activity = updates.installation.activity
@@ -217,6 +230,11 @@ final class BridgeAppModel: ObservableObject {
         }
     }
     private func presentSettingsWindow() {
+        #if FLOE_UNIFIED_MAC && FLOE_MAC_HOST_SMOKE
+        let persistsPresentation = smoke == nil
+        #else
+        let persistsPresentation = true
+        #endif
         let window: NSWindow
         if let existing = settingsWindow { window = existing }
         else {
@@ -225,13 +243,13 @@ final class BridgeAppModel: ObservableObject {
             window.title = "Floe Bridge"
             window.styleMask = [.titled, .closable, .miniaturizable]
             window.isReleasedWhenClosed = false
-            window.setFrameAutosaveName("FloeBridgeSettings")
+            if persistsPresentation { window.setFrameAutosaveName("FloeBridgeSettings") }
             window.center()
             settingsWindow = window
         }
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
-        if window.isVisible { UserDefaults.standard.set(true, forKey: "bridge.setupWindowShown") }
+        if persistsPresentation && window.isVisible { UserDefaults.standard.set(true, forKey: "bridge.setupWindowShown") }
     }
     func stopListenerForTermination() {
         server?.stop()
@@ -297,6 +315,9 @@ private struct BridgeSettingsView: View {
                     Text(model.connectionStatus).font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
+                #if FLOE_UNIFIED_MAC
+                switchToAgentButton
+                #endif
             }.padding(.horizontal, 20).padding(.top, 14)
             TabView {
                 general.tabItem { Label("General", systemImage: "gearshape") }
@@ -304,6 +325,9 @@ private struct BridgeSettingsView: View {
                 permissions.tabItem { Label("Permissions", systemImage: "hand.raised") }
             }
         }
+        #if FLOE_UNIFIED_MAC && FLOE_MAC_HOST_SMOKE
+        .coordinateSpace(.named("bridgeSettings"))
+        #endif
         .task {
             kimiInstalled = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "ai.kimi.cu") != nil
             await model.refresh()
@@ -325,6 +349,16 @@ private struct BridgeSettingsView: View {
             }.frame(minWidth: 520, minHeight: 320)
         }
     }
+    #if FLOE_UNIFIED_MAC
+    private var switchToAgentButton: some View {
+        Button("host.bridge.switchToAgent") { model.macWorkspace.openAgent() }
+            .buttonStyle(.borderedProminent)
+            .accessibilityIdentifier("bridge.switchToAgent")
+            #if FLOE_MAC_HOST_SMOKE
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("bridgeSettings")) } action: { model.recordSmokeSwitchFrame($0) }
+            #endif
+    }
+    #endif
     private var general: some View {
         Form {
             Section("Paired Apps") {

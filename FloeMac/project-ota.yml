@@ -30,6 +30,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.floeagent.macbridge
+        PRODUCT_NAME: Floe Agent
         INFOPLIST_FILE: Resources/FloeMacHost-OTA-Info.plist
         MARKETING_VERSION: "$(FLOE_OTA_VERSION)"
         CURRENT_PROJECT_VERSION: "$(FLOE_OTA_BUILD)"

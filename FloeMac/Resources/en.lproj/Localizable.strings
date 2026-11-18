@@ -1,5 +1,6 @@
 "host.role.agent" = "Floe Agent";
 "host.role.bridge" = "Floe Bridge";
+"host.bridge.switchToAgent" = "Switch to Floe Agent";
 "host.mode.agent" = "Agent";
 "host.mode.bridge" = "Bridge";
 "host.firstRun.title" = "Choose how this Mac runs Floe";
@@ -200,6 +201,7 @@
 "Paired Apps" = "Paired Apps";
 "Permissions" = "Permissions";
 "Quit Floe Bridge" = "Quit Floe Bridge";
+"Quit Floe Agent" = "Quit Floe Agent";
 "Ready to connect" = "Ready to connect";
 "Remove Pairing" = "Remove Pairing";
 "Screen Recording" = "Screen Recording";

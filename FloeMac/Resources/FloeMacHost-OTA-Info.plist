@@ -3,8 +3,8 @@
 <plist version="1.0"><dict>
 <key>CFBundleIdentifier</key><string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 <key>CFBundleExecutable</key><string>$(EXECUTABLE_NAME)</string>
-<key>CFBundleName</key><string>Floe</string>
-<key>CFBundleDisplayName</key><string>Floe</string>
+<key>CFBundleName</key><string>$(PRODUCT_NAME)</string>
+<key>CFBundleDisplayName</key><string>$(PRODUCT_NAME)</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleIconFile</key><string>FloeBridge.icns</string>
 <key>CFBundleShortVersionString</key><string>$(FLOE_OTA_VERSION)</string>
@@ -33,5 +33,4 @@
 <key>SUAutomaticallyUpdate</key><false/>
 <key>SUAllowsAutomaticUpdates</key><false/>
 <key>SUVerifyUpdateBeforeExtraction</key><true/>
-<key>NSHumanReadableCopyright</key><string>Floe Mac OTA candidate. Not a distribution build.</string>
 </dict></plist>

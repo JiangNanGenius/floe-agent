@@ -1028,7 +1028,7 @@
 					"-ObjC",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.macbridge;
-				PRODUCT_NAME = Floe;
+				PRODUCT_NAME = "Floe Agent";
 				SDKROOT = macosx;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) FLOE_UNIFIED_MAC";
 				SWIFT_INCLUDE_PATHS = "$(SRCROOT)/Sources/CBridgePTYModule";
@@ -1225,7 +1225,7 @@
 					"-ObjC",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.macbridge;
-				PRODUCT_NAME = Floe;
+				PRODUCT_NAME = "Floe Agent";
 				SDKROOT = macosx;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) FLOE_UNIFIED_MAC FLOE_MAC_HOST_SMOKE";
 				SWIFT_INCLUDE_PATHS = "$(SRCROOT)/Sources/CBridgePTYModule";

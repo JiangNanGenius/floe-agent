@@ -46,6 +46,8 @@ class OTACandidateMetadataTests(unittest.TestCase):
         for key in ('SUFeedURL', 'SUPublicEDKey', 'CFBundleURLTypes'):
             self.assertEqual(candidate[key], legacy[key], key)
         self.assertEqual(candidate['CFBundleIdentifier'], '$(PRODUCT_BUNDLE_IDENTIFIER)')
+        self.assertEqual(candidate['CFBundleName'], '$(PRODUCT_NAME)')
+        self.assertEqual(candidate['CFBundleDisplayName'], '$(PRODUCT_NAME)')
         self.assertEqual(candidate['CFBundleShortVersionString'], '$(FLOE_OTA_VERSION)')
         self.assertEqual(candidate['CFBundleVersion'], '$(FLOE_OTA_BUILD)')
         for key in ('SUEnableAutomaticChecks', 'SUAutomaticallyUpdate', 'SUAllowsAutomaticUpdates'):
@@ -59,6 +61,7 @@ class OTACandidateMetadataTests(unittest.TestCase):
             ota = ota_settings[configuration]
             expected = {
                 'PRODUCT_BUNDLE_IDENTIFIER': 'org.floeagent.macbridge',
+                'PRODUCT_NAME': 'Floe Agent',
                 'INFOPLIST_FILE': 'Resources/FloeMacHost-OTA-Info.plist',
                 'MARKETING_VERSION': '$(FLOE_OTA_VERSION)',
                 'CURRENT_PROJECT_VERSION': '$(FLOE_OTA_BUILD)',

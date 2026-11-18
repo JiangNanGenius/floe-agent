@@ -1,5 +1,6 @@
 "host.role.agent" = "Floe Agent";
 "host.role.bridge" = "Floe Bridge";
+"host.bridge.switchToAgent" = "切换到 Floe Agent";
 "host.mode.agent" = "Agent";
 "host.mode.bridge" = "Bridge";
 "host.firstRun.title" = "选择这台 Mac 上 Floe 的运行方式";
@@ -200,6 +201,7 @@
 "Paired Apps" = "已配对的应用";
 "Permissions" = "权限";
 "Quit Floe Bridge" = "退出 Floe Bridge";
+"Quit Floe Agent" = "退出 Floe Agent";
 "Ready to connect" = "可以连接";
 "Remove Pairing" = "取消配对";
 "Screen Recording" = "屏幕录制";
