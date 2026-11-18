@@ -353,8 +353,12 @@ struct GameProjectSpaceScreen: View {
                           ? "checkmark.seal.fill" : "shippingbox")
                         .foregroundStyle(readiness.isReady ? Color.green : Color.orange)
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(readiness.displayName).font(.callout.weight(.medium))
-                        Text(readiness.statusText).font(.caption).foregroundStyle(.secondary)
+                        Text(IDELanguageRunText.t("可选运行资源", "Optional runtime resources"))
+                            .font(.callout.weight(.medium))
+                        Text(readiness.isReady ? readiness.displayName : IDELanguageRunText.t(
+                            "部分工程需要额外资源；已包含运行文件的游戏可以直接试玩。",
+                            "Some projects need extra resources; games with their own runtime can play directly."))
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
                     if resourceBusy {
@@ -487,6 +491,10 @@ struct GameProjectSpaceScreen: View {
                    systemImage: "arrow.triangle.branch") {
                 showingEngineChange = true
             }
+            Button(IDELanguageRunText.t("历史恢复点", "Earlier recovery points"),
+                   systemImage: "clock.arrow.circlepath") {
+                showingHistory = true
+            }
             if let engine = snapshot?.selectedEngine,
                [.rpgMakerXP, .rpgMakerVX, .rpgMakerVXAce, .rpgMakerMV, .rpgMakerMZ].contains(engine) {
                 Button(IDELanguageRunText.t("部署资源", "Deployment assets"), systemImage: "archivebox") {
@@ -544,7 +552,7 @@ struct GameProjectSpaceScreen: View {
         case .files:
             Task { await openIDE(session, destination: .files) }
         case .history:
-            showingHistory = true
+            Task { await openIDE(session, destination: .sourceControl) }
         case .importProject:
             showingImporter = true
         }
@@ -573,11 +581,20 @@ struct GameProjectSpaceScreen: View {
     }
 
     private func play(_ session: GameWorkspaceSession) async {
+        do {
+            // Normal workspace/Git edits may have changed the game since this
+            // overview last rendered; validate against the current tree.
+            try await session.project.refresh()
+        } catch {
+            self.error = error.localizedDescription
+            return
+        }
         guard session.project.selectionSnapshot?.runSelection != nil else {
             if session.project.selectionSnapshot?.isManualUnverified == true {
                 notice = IDELanguageRunText.t(
-                    "当前引擎是手动选择，没有识别依据。工程出现可识别标记后才能试玩。",
-                    "The current engine is a manual choice without recognized evidence. Play opens after a real marker appears.")
+                    "当前目录没有识别到所选引擎，请在游戏引擎中选择已识别的游戏目录。",
+                    "The selected engine was not recognized in this folder. Choose a recognized game folder in Game Engine.")
+                showingProjectSetup = true
             } else {
                 notice = IDELanguageRunText.t("请先确认游戏目录和引擎。",
                                               "Choose and confirm a game folder and engine first.")
@@ -1034,10 +1051,12 @@ struct GameProjectSetupPanel: View {
                         VStack(alignment: .leading, spacing: 3) {
                             HStack(spacing: 6) {
                                 Text(capability.displayName).font(.body.weight(.medium))
-                                if capability.engine == snapshot.aiRecommendation?.engine {
+                                if capability.engine == snapshot.aiRecommendation?.engine,
+                                   choice.root == snapshot.aiRecommendation?.root {
                                     badge(IDELanguageRunText.t("AI 建议", "AI suggestion"), color: .purple)
                                 }
-                                if capability.engine == snapshot.heuristicRecommendation?.engine {
+                                if capability.engine == snapshot.heuristicRecommendation?.engine,
+                                   choice.root == snapshot.heuristicRecommendation?.root {
                                     badge(IDELanguageRunText.t("识别建议", "Hint"), color: .orange)
                                 }
                             }
@@ -1051,6 +1070,9 @@ struct GameProjectSetupPanel: View {
                         if selectedRoot == choice.root && selectedEngine == capability.engine {
                             Image(systemName: "checkmark.circle.fill")
                                 .foregroundStyle(.tint)
+                        } else {
+                            Label(IDELanguageRunText.t("选择", "Choose"), systemImage: "checkmark.circle")
+                                .font(.caption).foregroundStyle(.tint)
                         }
                     }
                     .contentShape(Rectangle())

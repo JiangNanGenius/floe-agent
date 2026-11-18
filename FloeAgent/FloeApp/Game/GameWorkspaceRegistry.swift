@@ -637,14 +637,41 @@ final class GameWorkspaceRegistry {
 
     /// Ensures a real visible assistant for this Space work. The assistant is
     /// created by the existing Studio lifecycle and bound by `document_access`.
-    /// Its own private task workspace is preserved; game files remain explicit
-    /// in the game repository.
+    /// Its conversation uses the game's existing workspace once the assistant
+    /// is idle. Historical private task files are retained during migration.
     func assistantConversation(for record: PersonalContentRecord) async throws -> UUID {
         let id = try await environment.studioCoordinator.assistant(for: record)
         guard try await environment.studioCoordinator.access.get().assistant(projectID: record.id) == id else {
             throw GameWorkspaceRegistryError.conversationBindingChanged
         }
         return id
+    }
+
+    /// Bind the next assistant run to the same root used by the game IDE.
+    /// Never retarget an in-flight run or delete its former private workspace.
+    func bindAssistantWorkspace(record: PersonalContentRecord, conversationID: UUID) async throws {
+        guard record.kind == .game else { throw GameWorkspaceRegistryError.notGameRecord }
+        let access = try environment.studioCoordinator.access.get()
+        guard try await access.assistant(projectID: record.id) == conversationID else {
+            throw GameWorkspaceRegistryError.conversationBindingChanged
+        }
+        let session = try await openSpaceGame(record: record)
+        guard let workspaceID = session.center.currentWorkspace?.id,
+              workspaceID == Self.workspaceID(for: record.id) else {
+            throw GameWorkspaceRegistryError.environmentRootMismatch
+        }
+        let store = SQLiteWorkspaceStore(database: environment.database)
+        let previous = try await store.workspaceID(conversationID: conversationID)
+        guard previous != workspaceID else { return }
+        // The current run owns its frozen root until completion. Opening the
+        // assistant again after it finishes performs this idempotent migration.
+        guard try await access.assistant(projectID: record.id) == conversationID else {
+            throw GameWorkspaceRegistryError.conversationBindingChanged
+        }
+        if try await store.assignConversationIfIdle(workspaceID: workspaceID,
+            conversationID: conversationID, expectedWorkspaceID: previous) {
+            await environment.workspaceCenter.reload()
+        }
     }
 
     /// Finds an already prepared environment without creating a conversation
@@ -1879,7 +1906,7 @@ final class GameWorkspaceRegistry {
         return record
     }
 
-    private static func workspaceID(for projectID: UUID) -> UUID {
+    static func workspaceID(for projectID: UUID) -> UUID {
         let digest = SHA256.hash(data: Data(("floe.game.workspace." + projectID.uuidString.lowercased()).utf8))
         var bytes = Array(digest.prefix(16))
         bytes[6] = (bytes[6] & 0x0F) | 0x50

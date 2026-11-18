@@ -138,7 +138,7 @@ public struct GameProjectOverviewView: View {
         case .ide: zh ? "打开 IDE" : "Open IDE"
         case .play: zh ? "试玩" : "Play"
         case .files: zh ? "工程文件" : "Project files"
-        case .history: zh ? "版本记录" : "Version history"
+        case .history: zh ? "源码管理" : "Source control"
         case .importProject: zh ? "导入文件" : "Import files"
         }
     }

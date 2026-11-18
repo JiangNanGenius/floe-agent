@@ -28,6 +28,7 @@ import FloeExecution
 import GRDB
 import FloeLaTeXHostAdapter
 import FloeWorkspace
+import FloeGameCore
 #if canImport(NaturalLanguage)
 import NaturalLanguage
 #endif
@@ -4251,7 +4252,20 @@ final class ConversationCenter: ObservableObject {
         }
         // A temporary conversation never owns a durable workspace: skip the
         // lease, the ownership lookup and every workspace-side effect.
-        let effectiveWorkspaceID: UUID? = isTemporary ? nil : workspaceID
+        // A game assistant's canonical workspace can be migrated while an
+        // older UI projection still holds its former private task ID. Use the
+        // persisted owner only after verifying the file binding and game ID.
+        var gameWorkspaceID: UUID?
+        if !isTemporary, let owner = conversationRecord?.editorOwnership,
+           owner.kind == .file,
+           let game = try? await PersonalContentService.shared.library().resolve(owner.documentID),
+           game.record.kind == .game {
+            let expected = GameWorkspaceRegistry.workspaceID(for: game.record.id)
+            if try await workspaceStore.workspaceID(conversationID: conversationID) == expected {
+                gameWorkspaceID = expected
+            }
+        }
+        let effectiveWorkspaceID: UUID? = isTemporary ? nil : (gameWorkspaceID ?? workspaceID)
         let canonicalWorkspaceID: UUID?
         if linuxCacheCleanupProfile != nil {
             // The durable owner wins over a not-yet-published/stale UI list.
@@ -4600,6 +4614,18 @@ final class ConversationCenter: ObservableObject {
                 .filter { !$0.hasPrefix("workspace.") && !$0.hasPrefix("preview.") })
             allowedToolNames = allowedToolNames.map { $0.intersection(nonWorkspace) }
                 ?? nonWorkspace
+        }
+        let chatGameSession: GameWorkspaceSession? = if let id = canonicalWorkspaceID {
+            environment.gameWorkspaces.session(projectID: id,
+                owner: .conversation(conversationID: conversationID, workspaceID: id))
+        } else { nil }
+        if (gameWorkspaceID != nil || chatGameSession != nil), taskRootLease != nil {
+            // Once the assistant is bound to the game tree, the existing
+            // workspace/Git catalog owns ordinary files and source control.
+            // Keep the old handlers registered for already-frozen runs only.
+            let legacyFileTools: Set<String> = ["game.read", "game.edit", "game.history", "game.rollback"]
+            allowedToolNames = (allowedToolNames ?? Set(availableDescriptors.map(\.name)))
+                .subtracting(legacyFileTools)
         }
         if isNotesAssistant {
             // Reduced catalog for the document assistant: scoped handlers
@@ -9266,13 +9292,13 @@ final class ConversationCenter: ObservableObject {
             let ownedWorkspace: WorkspaceRecord? = if let ownedWorkspaceID {
                 try await workspaceStore.workspace(id: ownedWorkspaceID)
             } else { nil }
-            let cloudTombstones: [CloudWorkspaceCleanupTombstone] = if ownedWorkspace?.kind == .privateTask, let ownedWorkspaceID {
+            let cloudTombstones: [CloudWorkspaceCleanupTombstone] = if ownedWorkspace?.isDisposableTaskWorkspace == true, let ownedWorkspaceID {
                 await environment.workspaceCenter.cloudCleanupTombstones(workspaceID: ownedWorkspaceID)
             } else { [] }
             try await environment.cloudWorkspaceCleanupQueue.enqueue(cloudTombstones)
             await waitForLaunches()
             try await stopRunsAndDelete(conversationIDs: [id])
-            if ownedWorkspace?.kind == .privateTask, let ownedWorkspaceID {
+            if ownedWorkspace?.isDisposableTaskWorkspace == true, let ownedWorkspaceID {
                 try await environment.workspaceCenter.deleteWorkspace(id: ownedWorkspaceID)
             }
             await environment.credentialVault.drainDeletionQueue()
@@ -9394,7 +9420,7 @@ final class ConversationCenter: ObservableObject {
             nil
         }
         try await store.assignConversation(workspaceID: workspaceID, conversationID: id)
-        if oldWorkspace?.kind == .privateTask, let oldID, oldID != workspaceID {
+        if oldWorkspace?.isDisposableTaskWorkspace == true, let oldID, oldID != workspaceID {
             try? await environment.workspaceCenter.deleteWorkspace(id: oldID)
         }
         await environment.workspaceCenter.reload()
@@ -9423,7 +9449,7 @@ final class ConversationCenter: ObservableObject {
             runCount += try await environment.runStore.runs(conversationID: id).count
             if let workspaceID = try? await workspaceStore.workspaceID(conversationID: id),
                let workspace = try? await workspaceStore.workspace(id: workspaceID),
-               workspace.kind == .privateTask {
+               workspace.isDisposableTaskWorkspace {
                 privateWorkspaceIDs.insert(workspaceID)
                 cloudTombstones += await environment.workspaceCenter.cloudCleanupTombstones(workspaceID: workspaceID)
             }

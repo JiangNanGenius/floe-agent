@@ -356,6 +356,13 @@ final class WorkspaceCenter: ObservableObject {
     /// touched; app-owned private task directories are removed with the record.
     func deleteWorkspace(id: UUID) async throws {
         let deleting = try await store.workspace(id: id)
+        // Validate the cleanup target before removing its database record.
+        // Other app-owned workspaces can share the privateTask storage kind
+        // but do not belong to PrivateTasks and must never be deleted here.
+        if let deleting, deleting.kind == .privateTask,
+           let relative = deleting.internalRelativePath {
+            _ = try privateWorkspaceDirectory(relative: relative)
+        }
         if deleting?.kind == .privateTask, !(try await store.conversations(workspaceID: id)).isEmpty {
             throw FloeError.validationFailed(FloeL10n.l("workspace.workspace_center.delete_or_move_out_the_tasks"))
         }
@@ -421,6 +428,13 @@ final class WorkspaceCenter: ObservableObject {
     }
 
     private func removePrivateWorkspaceDirectory(relative: String) throws {
+        let target = try privateWorkspaceDirectory(relative: relative)
+        if FileManager.default.fileExists(atPath: target.path) {
+            try FileManager.default.removeItem(at: target)
+        }
+    }
+
+    private func privateWorkspaceDirectory(relative: String) throws -> URL {
         let components = relative.split(separator: "/", omittingEmptySubsequences: false)
         guard components.count == 2, components[0] == "PrivateTasks", UUID(uuidString: String(components[1])) != nil else {
             throw FloeError.validationFailed("Invalid private workspace path")
@@ -437,9 +451,7 @@ final class WorkspaceCenter: ObservableObject {
         guard target.resolvingSymlinksInPath().deletingLastPathComponent() == managedRoot else {
             throw FloeError.validationFailed("Invalid private workspace path")
         }
-        if FileManager.default.fileExists(atPath: target.path) {
-            try FileManager.default.removeItem(at: target)
-        }
+        return target
     }
 
     // MARK: - Opening

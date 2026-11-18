@@ -81,6 +81,16 @@ public struct WorkspaceRecord: Sendable, Codable, Hashable, Identifiable {
     public var createdAt: Date
     public var updatedAt: Date
 
+    /// Only a conversation's own PrivateTasks directory is disposable when
+    /// that conversation is removed. Other app-owned roots can share the
+    /// privateTask storage representation without sharing its lifecycle.
+    public var isDisposableTaskWorkspace: Bool {
+        guard kind == .privateTask else { return false }
+        guard let path = internalRelativePath else { return true }
+        let parts = path.split(separator: "/", omittingEmptySubsequences: false)
+        return parts.count == 2 && parts[0] == "PrivateTasks" && UUID(uuidString: String(parts[1])) != nil
+    }
+
     public init(
         id: UUID = UUID(),
         name: String,

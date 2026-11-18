@@ -328,6 +328,20 @@ final class GameRunPreparerTests: XCTestCase {
         }
     }
 
+    func testMVWithOwnRuntimeReportsMissingScriptInsteadOfRequestingCorePack() throws {
+        let workspace = try TestWorkspace()
+        let (index, web) = try scannedLayout(workspace, name: "mv-missing-script", files: [
+            "index.html": html(["js/rpg_core.js", "js/absent.js"]),
+            "js/rpg_core.js": "", "js/main.js": "", "js/plugins.js": "",
+            "data/System.json": "{}"
+        ])
+        let plan = try GameRunRoutePlanner.evaluate(engine: .rpgMakerMV, index: index,
+            web: web, availability: emptyAvailability()).plan
+        XCTAssertEqual(plan.action, .unavailable)
+        XCTAssertTrue(plan.prerequisites.contains { String(describing: $0).contains("js/absent.js") })
+        XCTAssertFalse(plan.prerequisites.contains { if case .preparedResourcePack = $0 { true } else { false } })
+    }
+
     func testMissingPrerequisitesAreActionable() async throws {
         let workspace = try TestWorkspace()
         let inkProject = try await TestProject.make(workspace: workspace, files: [

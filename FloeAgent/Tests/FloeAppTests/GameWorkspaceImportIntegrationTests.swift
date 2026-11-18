@@ -4,6 +4,7 @@ import Testing
 import FloeCore
 import FloeTools
 import FloeWorkspace
+import FloeGit
 import FloeGameCore
 import FloeGameIDEBridge
 import FloeGameWorkspaceHost
@@ -12,6 +13,34 @@ import FloeGameBuildKit
 #if canImport(Darwin)
 @Suite("Game workspace import integration")
 struct GameWorkspaceImportIntegrationTests {
+    @Test("Workspace file edits are adopted by the game repository without changing Git metadata")
+    func workspaceEditsBecomeTheGameRevision() async throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("floe-game-workspace-" + UUID().uuidString)
+        let root = base.appendingPathComponent("game", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let git = LocalGitService.shared
+        _ = try await git.initialize(at: root)
+        let gitConfig = try Data(contentsOf: root.appendingPathComponent(".git/config"))
+        let id = UUID(), workspaceID = UUID(), owner = GameProjectOwner.space(recordID: id)
+        let context = try GameProjectContext(projectID: id, owner: owner, rootURL: root, savedRevision: "initial")
+        let tracker = GameWorkspaceRevisionTracker(binding: try GameIDEWorkspacePin(workspaceID: workspaceID, context: context))
+        let service = WorkspaceFileService(guard: WorkspacePathGuard(rootURL: root))
+        let target = try ExistingGameWorkspaceTarget(binding: GameWorkingTreeBinding(workspaceID: workspaceID, context: context), service: service, revisions: tracker)
+        let history = base.appendingPathComponent("history")
+        let tree = try ExistingWorkspaceGameFiles(targets: [target], repositoryDirectory: history)
+        let repository = try FileGameProjectRepository(directory: history, workingTree: tree)
+        let initial = try await repository.createProject(projectID: id, owner: owner, title: "Game")
+        try service.createFile("script.js", content: "window.ready = true;")
+        let updated = try await repository.open(id, owner: owner)
+        #expect(updated.revision != initial.revision)
+        #expect(updated.files.contains { $0.path.value == "script.js" })
+        #expect(try await repository.read(id, owner: owner, revision: updated.revision,
+                                          path: GameRelativePath("script.js")) == Data("window.ready = true;".utf8))
+        #expect((try await git.snapshot(at: root)).changes.contains { $0.path == "script.js" })
+        #expect(try Data(contentsOf: root.appendingPathComponent(".git/config")) == gitConfig)
+    }
+
     @Test("Game folder imports through the real workspace transaction and remains recognizable")
     func gameImportThroughWorkspaceTransaction() async throws {
         let base = URL(fileURLWithPath: "/private/var/tmp", isDirectory: true)

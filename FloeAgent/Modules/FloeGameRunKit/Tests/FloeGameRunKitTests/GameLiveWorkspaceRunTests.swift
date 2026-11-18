@@ -6,6 +6,39 @@ import FloeGameWebKit
 @testable import FloeGameRunKit
 
 final class GameLiveWorkspaceRunTests: XCTestCase {
+    private func readFixture(_ root: URL) throws -> [String: Data] {
+        let enumerator = try XCTUnwrap(FileManager.default.enumerator(at: root,
+            includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]))
+        var files: [String: Data] = [:]
+        for case let url as URL in enumerator {
+            if try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true {
+                let relative = String(url.path.dropFirst(root.path.count + 1))
+                files[relative] = try Data(contentsOf: url)
+            }
+        }
+        return files
+    }
+
+    /// Opt-in: supply a real, locally obtained MV Web export; third-party game
+    /// files are never bundled with the source or copied into a test fixture.
+    func testRealMVExportImportsAndPreparesItsOwnRuntime() async throws {
+        guard let path = ProcessInfo.processInfo.environment["FLOE_REAL_MV_GAME_ROOT"], !path.isEmpty else {
+            throw XCTSkip("Set FLOE_REAL_MV_GAME_ROOT to a local MV Web export")
+        }
+        let root = URL(fileURLWithPath: path, isDirectory: true).resolvingSymlinksInPath().standardizedFileURL
+        let files = try readFixture(root)
+        let workspace = try TestWorkspace()
+        let project = try await TestProject.make(workspace: workspace, files: files)
+        let preparer = try GameUnifiedRunPreparer(configuration: .init(
+            artifactDirectory: project.artifacts, contexts: project.host))
+        let plan = try await preparer.plan(context: project.context, engine: .rpgMakerMV)
+        XCTAssertEqual(plan.action, .staticWeb)
+        XCTAssertEqual(plan.routeID, "static.rpgmaker-mv-web")
+        let prepared = try await preparer.prepare(makeRequest(project.context, .rpgMakerMV))
+        XCTAssertFalse(try prepared.package.readResource(GameRelativePath("js/rpg_core.js")).isEmpty)
+        XCTAssertFalse(try prepared.package.readResource(GameRelativePath("data/System.json")).isEmpty)
+    }
+
     func testWebPreparationPreservesOriginalGitAndUnknownHiddenGameData() async throws {
         let workspace = try TestWorkspace()
         let project = try await TestProject.make(workspace: workspace, files: [

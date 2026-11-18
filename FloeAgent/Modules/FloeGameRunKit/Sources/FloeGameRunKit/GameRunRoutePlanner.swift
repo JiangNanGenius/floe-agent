@@ -122,6 +122,15 @@ enum GameRunRoutePlanner {
                 notes: ["The imported MV Web runtime is served unchanged; all script references resolve inside the artifact."],
                 evidence: [core!, data!, entry!])
         }
+        if webReady, let web, !web.isSelfContained {
+            let missing = web.missingReferences.joined(separator: ", ")
+            let external = web.externalReferences.joined(separator: ", ")
+            let detail = [missing.isEmpty ? nil : "Missing scripts: \(missing)",
+                          external.isEmpty ? nil : "External scripts: \(external)"]
+                .compactMap { $0 }.joined(separator: "; ")
+            return unavailable(engine: .rpgMakerMV, routeID: "static.rpgmaker-mv-web",
+                detail: "The game's own runtime is present, but its Web entry cannot be loaded locally. \(detail)")
+        }
         let hasSource = data != nil || marker != nil || modules || core != nil
         guard hasSource else {
             return unavailable(engine: .rpgMakerMV, routeID: "portable.mv",

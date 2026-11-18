@@ -177,6 +177,9 @@ enum StudioToolOutput {
         if try await workspace.workspaceID(conversationID: id) == nil {
             _ = try await workspace.ensureWorkspace(conversationID: id, title: record.title)
         }
+        if case .personal(let original) = record, original.kind == .game, libraryOverride == nil {
+            try await environment.gameWorkspaces.bindAssistantWorkspace(record: original, conversationID: id)
+        }
         if legacyArchivedBinding {
             try? await environment.conversationStore.setArchived(id: id, archived: false)
         }

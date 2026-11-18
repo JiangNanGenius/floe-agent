@@ -424,13 +424,14 @@ struct ChildRunStoreTests {
         try await manager.writer { db in
             try db.execute(sql: "DROP TABLE child_background_owners")
             try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier = 'v64_background_child_owners'")
+            try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier = 'v65'")
             try db.execute(sql: "PRAGMA user_version = 63")
         }
         try await manager.close()
         let reopened = try DatabaseManager(path: databaseURL)
         try await reopened.migrate()
         let upgraded = SQLiteChildRunStore(database: reopened)
-        #expect(try await reopened.userVersion() == 64)
+        #expect(try await reopened.userVersion() == 65)
         #expect(try await upgraded.child(id: id)?.delegateCallID == "legacy-call")
         #expect(try await upgraded.child(id: id)?.state == .completed)
         #expect(try await upgraded.entries(childRunID: id, afterSequence: 0, limit: 10).entries.count == 1)

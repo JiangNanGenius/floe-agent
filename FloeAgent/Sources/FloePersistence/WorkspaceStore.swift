@@ -399,6 +399,34 @@ public actor SQLiteWorkspaceStore: WorkspaceStore {
         }
     }
 
+    /// Migrate only the observed owner of an idle conversation. A concurrent
+    /// launch or a later user-selected workspace wins over this migration.
+    public func assignConversationIfIdle(workspaceID: UUID, conversationID: UUID,
+                                         expectedWorkspaceID: UUID?) async throws -> Bool {
+        try await database.writer { db in
+            guard try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM workspaces WHERE id = ?)",
+                                    arguments: [workspaceID.uuidString]) == true else {
+                throw FloeError.notFound("workspace \(workspaceID.uuidString)")
+            }
+            let current = try String.fetchOne(db, sql: "SELECT workspace_id FROM conversation_workspace_ownership WHERE conversation_id = ?",
+                                              arguments: [conversationID.uuidString])
+            guard current == expectedWorkspaceID?.uuidString else { return false }
+            guard try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM runs WHERE conversation_id = ? AND ended_at IS NULL)",
+                                    arguments: [conversationID.uuidString]) != true else { return false }
+            guard try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM conversations WHERE id = ?)",
+                                    arguments: [conversationID.uuidString]) == true else {
+                throw FloeError.notFound("conversation \(conversationID.uuidString)")
+            }
+            try db.execute(sql: """
+                INSERT INTO conversation_workspace_ownership (conversation_id, workspace_id, assigned_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(conversation_id) DO UPDATE SET workspace_id = excluded.workspace_id,
+                    assigned_at = excluded.assigned_at
+                """, arguments: [conversationID.uuidString, workspaceID.uuidString, PersistenceCodec.encode(Date())])
+            return true
+        }
+    }
+
     private static func moveOwnedConversationsToPrivateWorkspaces(
         in db: Database,
         workspaceID: UUID,
