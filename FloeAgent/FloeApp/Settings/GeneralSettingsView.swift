@@ -119,6 +119,11 @@ struct GeneralSettingsView: View {
                 ))
             }
 
+            Section {
+                NavigationLink(FloeUserAgreement.title) { FloeUserAgreementDocument() }
+                    .accessibilityIdentifier("settings.general.userAgreement")
+            }
+
             Section("settings.questions.title") {
                 Stepper(value: Binding(
                     get: { center.userQuestionDefaults.optionalTimeoutSeconds },

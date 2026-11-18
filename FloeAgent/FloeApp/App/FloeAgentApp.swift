@@ -93,6 +93,13 @@ struct FloeAgentApp: App {
     @UIApplicationDelegateAdaptor(FloeApplicationDelegate.self) private var applicationDelegate
     @StateObject private var environment: AppEnvironment
     @StateObject private var router: AppRouter
+    @AppStorage(FloeUserAgreement.storageKey) private var acceptedAgreement = ""
+    @State private var entryBeforeAgreement: URL?
+
+    private var showsMainWindow: Bool {
+        FloeUserAgreement.bypassForTesting || FloeUserAgreement.hasAccepted(
+            acceptedAgreement, version: FloeUserAgreement.currentVersion)
+    }
 
     init() {
         MacMetalCacheLocation.prepare()
@@ -171,105 +178,114 @@ struct FloeAgentApp: App {
         // Construct this main-actor service tree synchronously; keep the
         // nonescaping content initializer until the SDK preserves its executor.
         WindowGroup(content: {
-            Group {
-                #if DEBUG
-                if VoiceComposerUITestMode.isEnabled {
-                    VoiceComposerUITestHarness()
-                } else if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
-                          ProcessInfo.processInfo.arguments.contains("--ui-test-compact-skillhub") {
-                    NavigationStack { SkillsView(center: environment.skillsCenter) }
-                        .frame(maxWidth: 390)
-                        .environment(\.horizontalSizeClass, .compact)
-                } else if ProcessInfo.processInfo.arguments.contains("--ui-test-long-reasoning"),
-                   ProcessInfo.processInfo.arguments.contains("-ui-testing") {
-                    LongReasoningTestHarness()
-                } else if ProcessInfo.processInfo.arguments.contains("--ui-test-workbench-fixture"),
-                          ProcessInfo.processInfo.arguments.contains("-ui-testing") {
-                    // Synthetic media workbench fixture for primary CUA
-                    // acceptance on iPad and iPhone.
-                    WorkbenchUITestHarness()
-                } else if ProcessInfo.processInfo.arguments.contains("--ui-test-cad-fixture"),
-                          ProcessInfo.processInfo.arguments.contains("-ui-testing") {
-                    // Deterministic native CAD fixture: the REAL workbench on a
-                    // 100×60×10 plate with a Ø10 through-hole. No workspace,
-                    // grant or credential setup required.
-                    CADWorkbenchFixtureHarness()
-                } else if ProcessInfo.processInfo.arguments.contains("--ui-test-canvas-cad-fixture"),
-                          ProcessInfo.processInfo.arguments.contains("-ui-testing") {
-                    // Deterministic canvas fixture: an ordinary canvas with
-                    // one canvas-owned native CAD node, for the node preview +
-                    // explicit "Open CAD workbench" entry acceptance.
-                    CanvasCADEntryFixtureHarness()
-                } else if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
-                          ProcessInfo.processInfo.arguments.contains(
-                            EngineeringPreviewEntryFixture.launchArgument) {
-                    // Six real engineering-preview entry surfaces over ONE
-                    // owned CAD GLB. The route is chosen by launch argument;
-                    // no product navigation is replaced.
-                    EngineeringPreviewEntryFixtureHarness()
-                } else if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
-                          ProcessInfo.processInfo.arguments.contains(IDERunWebPreviewFixture.launchArgument),
-                          let previewURL = IDERunWebPreviewFixture.previewURL {
-                    // Native acceptance for the IDE web-service terminal only:
-                    // the REAL terminal/browser views over an in-memory fake
-                    // job and a page served by the UI test process. No durable
-                    // job, workspace/DB write, provider or microphone is used.
-                    IDERunWebPreviewFixtureHarness(
-                        center: environment.workspaceCenter, previewURL: previewURL)
-                } else {
-                    RootView()
-                }
-                #else
-                RootView()
-                #endif
+            if showsMainWindow {
+                mainWindow
+            } else {
+                FirstLaunchAgreementView(acceptedReceipt: $acceptedAgreement)
+                    .onOpenURL { entryBeforeAgreement = $0 }
             }
-                .environmentObject(environment)
-                .environment(\.gameIDERunExtensionProvider,
-                             GameIDERunExtensionProvider(environment: environment))
-                .environmentObject(router)
-                .environmentObject(environment.voiceInput)
-                .environmentObject(environment.speechService)
-                .environmentObject(environment.ttsSettingsService)
-                .environmentObject(environment.designEntryState)
-                .apnsReleasePresentation(center: environment.apnsCenter)
-                .environmentObject(environment.skillAuthoring)
-                .modifier(SkillAuthoringPresentationHost(coordinator: environment.skillAuthoring, router: router))
-                .task {
-                    #if DEBUG
-                    // Hosted actual-entry acceptance parks the entire scene
-                    // startup here, before bootstrap or any scene follow-up.
-                    // The test releases it after driving the real App Intents.
-                    await FloeEntryQualification.awaitSceneBootstrapBarrierIfRequested()
-                    #endif
-                    await environment.bootstrap()
-                    await environment.apnsCenter.reconcile()
-                    #if DEBUG
-                    FloeEntryQualification.noteSceneBootstrapReturned()
-                    // Temporary-chat GUI acceptance: optionally preset a
-                    // separate session with synthetic in-RAM messages and
-                    // navigate to it (DEBUG/simulator/launch-arg gated).
-                    await TemporaryChatUITestFixture.presetSessionIfRequested(
-                        router: router,
-                        center: environment.conversationCenter
-                    )
-                    // Multi-image gallery acceptance: seed the real chat with
-                    // TWO locally rendered, digest-verified GeneratedImages
-                    // artifacts and open it. No provider request or paid
-                    // generation is involved; normal launches skip this.
-                    await MultiImageArtifactUITestFixture.prepareIfRequested(
-                        environment: environment,
-                        router: router
-                    )
-                    #if DEBUG && targetEnvironment(simulator)
-                    await SVGChatUITestFixture.prepareIfRequested(environment: environment, router: router)
-                    await NativeAnswerUITestFixture.prepareIfRequested(environment: environment, router: router)
-                    #endif
-                    #endif
-                }
         })
         .commands {
-            FloeAgentCommands(router: router)
+            if showsMainWindow { FloeAgentCommands(router: router) }
         }
+    }
+
+    private var mainWindow: some View {
+        Group {
+            #if DEBUG
+            if VoiceComposerUITestMode.isEnabled {
+                VoiceComposerUITestHarness()
+            } else if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
+                      ProcessInfo.processInfo.arguments.contains("--ui-test-compact-skillhub") {
+                NavigationStack { SkillsView(center: environment.skillsCenter) }
+                    .frame(maxWidth: 390)
+                    .environment(\.horizontalSizeClass, .compact)
+            } else if ProcessInfo.processInfo.arguments.contains("--ui-test-long-reasoning"),
+               ProcessInfo.processInfo.arguments.contains("-ui-testing") {
+                LongReasoningTestHarness()
+            } else if ProcessInfo.processInfo.arguments.contains("--ui-test-workbench-fixture"),
+                      ProcessInfo.processInfo.arguments.contains("-ui-testing") {
+                // Synthetic media workbench fixture for primary CUA
+                // acceptance on iPad and iPhone.
+                WorkbenchUITestHarness()
+            } else if ProcessInfo.processInfo.arguments.contains("--ui-test-cad-fixture"),
+                      ProcessInfo.processInfo.arguments.contains("-ui-testing") {
+                // Deterministic native CAD fixture: the REAL workbench on a
+                // 100×60×10 plate with a Ø10 through-hole. No workspace,
+                // grant or credential setup required.
+                CADWorkbenchFixtureHarness()
+            } else if ProcessInfo.processInfo.arguments.contains("--ui-test-canvas-cad-fixture"),
+                      ProcessInfo.processInfo.arguments.contains("-ui-testing") {
+                // Deterministic canvas fixture: an ordinary canvas with
+                // one canvas-owned native CAD node, for the node preview +
+                // explicit "Open CAD workbench" entry acceptance.
+                CanvasCADEntryFixtureHarness()
+            } else if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
+                      ProcessInfo.processInfo.arguments.contains(
+                        EngineeringPreviewEntryFixture.launchArgument) {
+                // Six real engineering-preview entry surfaces over ONE
+                // owned CAD GLB. The route is chosen by launch argument;
+                // no product navigation is replaced.
+                EngineeringPreviewEntryFixtureHarness()
+            } else if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
+                      ProcessInfo.processInfo.arguments.contains(IDERunWebPreviewFixture.launchArgument),
+                      let previewURL = IDERunWebPreviewFixture.previewURL {
+                // Native acceptance for the IDE web-service terminal only:
+                // the REAL terminal/browser views over an in-memory fake
+                // job and a page served by the UI test process. No durable
+                // job, workspace/DB write, provider or microphone is used.
+                IDERunWebPreviewFixtureHarness(
+                    center: environment.workspaceCenter, previewURL: previewURL)
+            } else {
+                RootView(entryBeforeAgreement: $entryBeforeAgreement)
+            }
+            #else
+            RootView(entryBeforeAgreement: $entryBeforeAgreement)
+            #endif
+        }
+            .environmentObject(environment)
+            .environment(\.gameIDERunExtensionProvider,
+                         GameIDERunExtensionProvider(environment: environment))
+            .environmentObject(router)
+            .environmentObject(environment.voiceInput)
+            .environmentObject(environment.speechService)
+            .environmentObject(environment.ttsSettingsService)
+            .environmentObject(environment.designEntryState)
+            .apnsReleasePresentation(center: environment.apnsCenter)
+            .environmentObject(environment.skillAuthoring)
+            .modifier(SkillAuthoringPresentationHost(coordinator: environment.skillAuthoring, router: router))
+            .task {
+                #if DEBUG
+                // Hosted actual-entry acceptance parks the entire scene
+                // startup here, before bootstrap or any scene follow-up.
+                // The test releases it after driving the real App Intents.
+                await FloeEntryQualification.awaitSceneBootstrapBarrierIfRequested()
+                #endif
+                await environment.bootstrap()
+                await environment.apnsCenter.reconcile()
+                #if DEBUG
+                FloeEntryQualification.noteSceneBootstrapReturned()
+                // Temporary-chat GUI acceptance: optionally preset a
+                // separate session with synthetic in-RAM messages and
+                // navigate to it (DEBUG/simulator/launch-arg gated).
+                await TemporaryChatUITestFixture.presetSessionIfRequested(
+                    router: router,
+                    center: environment.conversationCenter
+                )
+                // Multi-image gallery acceptance: seed the real chat with
+                // TWO locally rendered, digest-verified GeneratedImages
+                // artifacts and open it. No provider request or paid
+                // generation is involved; normal launches skip this.
+                await MultiImageArtifactUITestFixture.prepareIfRequested(
+                    environment: environment,
+                    router: router
+                )
+                #if DEBUG && targetEnvironment(simulator)
+                await SVGChatUITestFixture.prepareIfRequested(environment: environment, router: router)
+                await NativeAnswerUITestFixture.prepareIfRequested(environment: environment, router: router)
+                #endif
+                #endif
+            }
     }
 }
 
@@ -381,6 +397,7 @@ private struct FloeAgentCommands: Commands {
 /// iPad. Scene-phase transitions are forwarded to
 /// the router, which owns the background policy.
 struct RootView: View {
+    @Binding var entryBeforeAgreement: URL?
     @EnvironmentObject private var router: AppRouter
     @EnvironmentObject private var environment: AppEnvironment
     @Environment(\.scenePhase) private var scenePhase
@@ -559,6 +576,12 @@ struct RootView: View {
             }
         }
         .onOpenURL { handleEntryURL($0) }
+        .onAppear {
+            if let url = entryBeforeAgreement {
+                entryBeforeAgreement = nil
+                handleEntryURL(url)
+            }
+        }
         .fullScreenCover(item:$latexOpenRequest) {request in LaTeXOriginalEditor(projectID:request.id)}
         .task(id: "\(entryNavigationReady)-\(pendingEntry?.id.uuidString ?? "none")") {
             await deliverPendingEntry()
