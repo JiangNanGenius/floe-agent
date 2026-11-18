@@ -94,7 +94,6 @@ struct FloeAgentApp: App {
     @StateObject private var environment: AppEnvironment
     @StateObject private var router: AppRouter
     @AppStorage(FloeUserAgreement.storageKey) private var acceptedAgreement = ""
-    @State private var entryBeforeAgreement: URL?
 
     private var showsMainWindow: Bool {
         FloeUserAgreement.bypassForTesting || FloeUserAgreement.hasAccepted(
@@ -178,11 +177,8 @@ struct FloeAgentApp: App {
         // Construct this main-actor service tree synchronously; keep the
         // nonescaping content initializer until the SDK preserves its executor.
         WindowGroup(content: {
-            if showsMainWindow {
-                mainWindow
-            } else {
-                FirstLaunchAgreementView(acceptedReceipt: $acceptedAgreement)
-                    .onOpenURL { entryBeforeAgreement = $0 }
+            FloeUserAgreementGate { entryBeforeAgreement in
+                mainWindow(entryBeforeAgreement: entryBeforeAgreement)
             }
         })
         .commands {
@@ -190,7 +186,7 @@ struct FloeAgentApp: App {
         }
     }
 
-    private var mainWindow: some View {
+    private func mainWindow(entryBeforeAgreement: Binding<URL?>) -> some View {
         Group {
             #if DEBUG
             if VoiceComposerUITestMode.isEnabled {
@@ -237,10 +233,10 @@ struct FloeAgentApp: App {
                 IDERunWebPreviewFixtureHarness(
                     center: environment.workspaceCenter, previewURL: previewURL)
             } else {
-                RootView(entryBeforeAgreement: $entryBeforeAgreement)
+                RootView(entryBeforeAgreement: entryBeforeAgreement)
             }
             #else
-            RootView(entryBeforeAgreement: $entryBeforeAgreement)
+            RootView(entryBeforeAgreement: entryBeforeAgreement)
             #endif
         }
             .environmentObject(environment)

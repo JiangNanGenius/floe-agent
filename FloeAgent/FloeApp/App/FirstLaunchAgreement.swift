@@ -90,9 +90,26 @@ enum FloeUserAgreement {
     """
 }
 
+struct FloeUserAgreementGate<Content: View>: View {
+    @AppStorage(FloeUserAgreement.storageKey) private var acceptedAgreement = ""
+    @State private var pendingEntryURL: URL?
+    @ViewBuilder let content: (Binding<URL?>) -> Content
+
+    var body: some View {
+        if FloeUserAgreement.bypassForTesting || FloeUserAgreement.hasAccepted(
+            acceptedAgreement, version: FloeUserAgreement.currentVersion) {
+            content($pendingEntryURL)
+        } else {
+            FirstLaunchAgreementView(acceptedReceipt: $acceptedAgreement)
+                .onOpenURL { pendingEntryURL = $0 }
+        }
+    }
+}
+
 struct FirstLaunchAgreementView: View {
     @Binding var acceptedReceipt: String
     @State private var showingAgreement = true
+    @State private var acceptedInSheet = false
 
     var body: some View {
         ContentUnavailableView {
@@ -104,13 +121,14 @@ struct FirstLaunchAgreementView: View {
                 .buttonStyle(.borderedProminent)
                 .accessibilityIdentifier("agreement.reopen")
         }
-        .sheet(isPresented: $showingAgreement) {
+        .sheet(isPresented: $showingAgreement, onDismiss: finishAcceptance) {
             NavigationStack {
                 FloeUserAgreementDocument()
                     .safeAreaInset(edge: .bottom) {
                         VStack(spacing: 8) {
                             Button {
-                                acceptedReceipt = FloeUserAgreement.currentReceipt
+                                acceptedInSheet = true
+                                showingAgreement = false
                             } label: {
                                 Text(FloeL10n.isChinese ? "同意并继续" : "Agree and Continue")
                                     .frame(maxWidth: .infinity, minHeight: 44)
@@ -135,6 +153,11 @@ struct FirstLaunchAgreementView: View {
             .interactiveDismissDisabled()
             .presentationDetents([.large])
         }
+    }
+
+    private func finishAcceptance() {
+        guard acceptedInSheet else { return }
+        acceptedReceipt = FloeUserAgreement.currentReceipt
     }
 }
 
