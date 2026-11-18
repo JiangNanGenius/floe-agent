@@ -19,6 +19,30 @@ public struct GameWorkingTreeBinding: Equatable, Sendable {
     }
 }
 
+/// A persistence key only. A caller must already own the project and use its
+/// resolved live root for all file access. Only the iOS container UUID varies.
+public enum GameSpaceRootIdentity {
+    public static func persistedPath(_ path: String, owner: GameProjectOwner) -> String {
+        guard case .space = owner,
+              let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            return path
+        }
+        let container = support.resolvingSymlinksInPath().deletingLastPathComponent().deletingLastPathComponent()
+        let prefix = container.deletingLastPathComponent().pathComponents
+        let parts = URL(fileURLWithPath: path).standardizedFileURL.pathComponents
+        guard path == "/" + parts.dropFirst().joined(separator: "/"),
+              prefix.suffix(3).elementsEqual(["Containers", "Data", "Application"]),
+              UUID(uuidString: container.lastPathComponent) != nil,
+              parts.starts(with: prefix), parts.count >= prefix.count + 8,
+              UUID(uuidString: parts[prefix.count]) != nil else { return path }
+        let suffix = parts.dropFirst(prefix.count + 1)
+        guard suffix.starts(with: ["Library", "Application Support", "FloeAgent", "PersonalContent"]),
+              suffix.suffix(2).elementsEqual(["Game", "Files"]),
+              suffix.dropLast(2).last?.hasSuffix(".floeproject") == true else { return path }
+        return "space-library:" + suffix.dropFirst(4).joined(separator: "/")
+    }
+}
+
 public struct GameWorkingTreeSnapshot: Equatable, Sendable {
     public let binding: GameWorkingTreeBinding
     public let revision: String

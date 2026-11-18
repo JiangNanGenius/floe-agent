@@ -25,7 +25,9 @@ public struct GameProjectSelectionKey: Hashable, Codable, Sendable {
         self.rootURL = context.rootURL.standardizedFileURL.resolvingSymlinksInPath()
     }
 
-    var canonical: String {
+    var canonical: String { storageIdentity(path: GameSpaceRootIdentity.persistedPath(rootURL.path, owner: owner)) }
+
+    fileprivate func storageIdentity(path: String) -> String {
         let ownerText: String
         switch owner {
         case .space(let recordID):
@@ -39,7 +41,7 @@ public struct GameProjectSelectionKey: Hashable, Codable, Sendable {
             projectID.uuidString.lowercased(),
             ownerText,
             environmentID ?? "-",
-            rootURL.path
+            path
         ].joined(separator: "\n")
     }
 }
@@ -144,7 +146,38 @@ public actor FileGameProjectSelectionStore: GameProjectSelectionStore {
         try validateDirectory()
         try validateOverlap(key)
         let url = fileURL(for: key)
-        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        if FileManager.default.fileExists(atPath: url.path) {
+            let record = try readRecord(at: url)
+            guard matches(record, key: key) else { throw GameProjectSelectionStoreError.corruptRecord }
+            return record
+        }
+        // Older releases hashed the absolute container path into the filename.
+        // This directory is outside the imported working tree and owned by the
+        // project. Migrate only a uniquely identifiable matching record.
+        guard GameSpaceRootIdentity.persistedPath(key.rootURL.path, owner: key.owner) != key.rootURL.path else { return nil }
+        var match: (URL, GameProjectSelectionRecord)?
+        for candidate in try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            where candidate.pathExtension == "json" {
+            guard let record = try? readRecord(at: candidate), matches(record, key: key) else { continue }
+            let legacyID = GameDigest.sha256(Data(key.storageIdentity(path: record.rootURLPath).utf8))
+            guard candidate.lastPathComponent == legacyID + ".json" else { continue }
+            guard match == nil else { return nil }
+            match = (candidate, record)
+        }
+        guard let (legacy, record) = match else { return nil }
+        try FileManager.default.moveItem(at: legacy, to: url)
+        return record
+    }
+
+    private func matches(_ record: GameProjectSelectionRecord, key: GameProjectSelectionKey) -> Bool {
+        record.schemaVersion == 1 && record.projectID == key.projectID && record.owner == key.owner
+            && record.environmentID == key.environmentID && record.rootURLPath.hasPrefix("/")
+            && GameSpaceRootIdentity.persistedPath(record.rootURLPath, owner: key.owner)
+                == GameSpaceRootIdentity.persistedPath(key.rootURL.path, owner: key.owner)
+            && GameProjectSelectionText.validIdentifier(record.baseRevision)
+    }
+
+    private func readRecord(at url: URL) throws -> GameProjectSelectionRecord {
         let values: URLResourceValues
         do {
             values = try url.resourceValues(forKeys: [
@@ -173,14 +206,6 @@ public actor FileGameProjectSelectionStore: GameProjectSelectionStore {
         do {
             record = try JSONDecoder().decode(GameProjectSelectionRecord.self, from: data)
         } catch {
-            throw GameProjectSelectionStoreError.corruptRecord
-        }
-        guard record.schemaVersion == 1,
-              record.projectID == key.projectID,
-              record.owner == key.owner,
-              record.environmentID == key.environmentID,
-              record.rootURLPath == key.rootURL.path,
-              GameProjectSelectionText.validIdentifier(record.baseRevision) else {
             throw GameProjectSelectionStoreError.corruptRecord
         }
         return record

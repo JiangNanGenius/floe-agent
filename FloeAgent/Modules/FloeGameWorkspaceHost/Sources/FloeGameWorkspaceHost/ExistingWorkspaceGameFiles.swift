@@ -182,7 +182,9 @@ public final class ExistingWorkspaceGameFiles: GameWorkingTreePort, @unchecked S
         let target = try target(projectID, owner)
         let directory = recoveryDirectory(projectID)
         let journal = try loadJournal(at: directory, limits: limits)
-        guard journal.projectID == projectID, journal.root == target.binding.rootURL.path,
+        guard journal.projectID == projectID, journal.root.hasPrefix("/"),
+              GameSpaceRootIdentity.persistedPath(journal.root, owner: target.binding.owner)
+                == GameSpaceRootIdentity.persistedPath(target.binding.rootURL.path, owner: target.binding.owner),
               journal.workspaceID == target.binding.workspaceID else { throw GameProjectError.ownershipMismatch }
         let snapshot = try capture(target, limits: limits)
         let encoder = JSONEncoder()
@@ -503,7 +505,9 @@ public final class ExistingWorkspaceGameFiles: GameWorkingTreePort, @unchecked S
         let directory = recoveryDirectory(target.binding.projectID)
         guard FileManager.default.fileExists(atPath: directory.path) else { return }
         let journal = try loadJournal(at: directory, limits: limits)
-        guard journal.projectID == target.binding.projectID, journal.root == target.binding.rootURL.path,
+        guard journal.projectID == target.binding.projectID, journal.root.hasPrefix("/"),
+              GameSpaceRootIdentity.persistedPath(journal.root, owner: target.binding.owner)
+                == GameSpaceRootIdentity.persistedPath(target.binding.rootURL.path, owner: target.binding.owner),
               journal.workspaceID == target.binding.workspaceID,
               journal.items.count <= limits.maximumEntries else { throw GameProjectError.corruptStorage }
         guard UUID(uuidString: journal.intendedRevision) != nil,
